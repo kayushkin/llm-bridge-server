@@ -127,6 +127,23 @@ func (s *Store) GetJob(id int64) (*Job, error) {
 	return &j, nil
 }
 
+func (s *Store) UpdateJobEnabled(id int64, enabled bool) error {
+	enabledInt := 0
+	if enabled {
+		enabledInt = 1
+	}
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`UPDATE jobs SET enabled=?, updated_at=? WHERE id=?`, enabledInt, now, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) DeleteJob(id int64) error {
 	res, err := s.db.Exec(`DELETE FROM jobs WHERE id=?`, id)
 	if err != nil {

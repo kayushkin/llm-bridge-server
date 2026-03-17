@@ -37,6 +37,12 @@ func TestAuthRequired(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", w.Code)
 	}
+	// Verify structured error
+	var apiErr APIError
+	json.NewDecoder(w.Body).Decode(&apiErr)
+	if apiErr.Error == "" {
+		t.Fatal("expected structured error response")
+	}
 }
 
 func TestCreateAndListJobs(t *testing.T) {
@@ -64,6 +70,84 @@ func TestCreateAndListJobs(t *testing.T) {
 	}
 }
 
+func TestCreateJobValidation(t *testing.T) {
+	srv := setup(t, "")
+	// Missing required fields
+	body, _ := json.Marshal(map[string]string{"name": "j1"})
+	req := httptest.NewRequest("POST", "/api/jobs", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetJob(t *testing.T) {
+	srv := setup(t, "")
+	// Create a job
+	body, _ := json.Marshal(map[string]string{"name": "j1", "schedule": "* * * * *", "command": "echo hi"})
+	req := httptest.NewRequest("POST", "/api/jobs", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d", w.Code)
+	}
+
+	// GET single job
+	req = httptest.NewRequest("GET", "/api/jobs/1", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("get: %d %s", w.Code, w.Body.String())
+	}
+	var job db.Job
+	json.NewDecoder(w.Body).Decode(&job)
+	if job.Name != "j1" {
+		t.Fatalf("expected j1, got %s", job.Name)
+	}
+
+	// GET nonexistent
+	req = httptest.NewRequest("GET", "/api/jobs/999", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 404 {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestPatchJobEnabled(t *testing.T) {
+	srv := setup(t, "")
+	// Create
+	body, _ := json.Marshal(map[string]string{"name": "j1", "schedule": "* * * * *", "command": "echo hi"})
+	req := httptest.NewRequest("POST", "/api/jobs", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	// Disable
+	body, _ = json.Marshal(map[string]interface{}{"enabled": false})
+	req = httptest.NewRequest("PATCH", "/api/jobs/1", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("patch: %d %s", w.Code, w.Body.String())
+	}
+	var job db.Job
+	json.NewDecoder(w.Body).Decode(&job)
+	if job.Enabled {
+		t.Fatal("expected disabled")
+	}
+
+	// Enable
+	body, _ = json.Marshal(map[string]interface{}{"enabled": true})
+	req = httptest.NewRequest("PATCH", "/api/jobs/1", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	json.NewDecoder(w.Body).Decode(&job)
+	if !job.Enabled {
+		t.Fatal("expected enabled")
+	}
+}
+
 func TestCalendarStub(t *testing.T) {
 	srv := setup(t, "")
 	req := httptest.NewRequest("GET", "/api/calendar/events", nil)
@@ -71,5 +155,65 @@ func TestCalendarStub(t *testing.T) {
 	srv.ServeHTTP(w, req)
 	if w.Code != http.StatusNotImplemented {
 		t.Fatalf("expected 501, got %d", w.Code)
+	}
+	var apiErr APIError
+	json.NewDecoder(w.Body).Decode(&apiErr)
+	if apiErr.Status != 501 {
+		t.Fatalf("expected structured 501 error")
+	}
+}
+
+func TestHealthEndpoint(t *testing.T) {
+	srv := setup(t, "secret")
+	// Health should work without auth
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "ok" {
+		t.Fatalf("expected ok status, got %v", resp["status"])
+	}
+}
+
+func TestDeleteJob(t *testing.T) {
+	srv := setup(t, "")
+	body, _ := json.Marshal(map[string]string{"name": "j1", "schedule": "* * * * *", "command": "echo"})
+	req := httptest.NewRequest("POST", "/api/jobs", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	req = httptest.NewRequest("DELETE", "/api/jobs/1", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
+	}
+
+	// Delete again → 404
+	req = httptest.NewRequest("DELETE", "/api/jobs/1", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 404 {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestStructuredErrors(t *testing.T) {
+	srv := setup(t, "")
+	// Invalid ID
+	req := httptest.NewRequest("GET", "/api/jobs/abc", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	var apiErr APIError
+	json.NewDecoder(w.Body).Decode(&apiErr)
+	if apiErr.Error == "" || apiErr.Status != 400 {
+		t.Fatalf("expected structured error, got %+v", apiErr)
 	}
 }

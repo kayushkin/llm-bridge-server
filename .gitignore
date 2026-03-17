@@ -1,0 +1,14 @@
+# Compiled binary
+scheduler
+/cmd/scheduler/scheduler
+
+# DB files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# IDE
+.idea/
+.vscode/
+*.swp
