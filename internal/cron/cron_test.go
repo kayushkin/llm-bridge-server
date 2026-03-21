@@ -76,9 +76,10 @@ func TestDisabledJobsNotScheduled(t *testing.T) {
 	defer sched.Stop()
 
 	// The disabled job should not have been added to cron
+	// 1 entry = the hold-clearing periodic task; the disabled job should NOT be added
 	entries := sched.cron.Entries()
-	if len(entries) != 0 {
-		t.Fatalf("expected 0 cron entries for disabled job, got %d", len(entries))
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 cron entry (hold-clearer only) for disabled job, got %d", len(entries))
 	}
 }
 
@@ -90,16 +91,16 @@ func TestReloadPicksUpChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Initially no entries
-	if len(sched.cron.Entries()) != 0 {
-		t.Fatal("expected 0 entries")
+	// Initially 1 entry (hold-clearer only)
+	if len(sched.cron.Entries()) != 1 {
+		t.Fatalf("expected 1 entry (hold-clearer), got %d", len(sched.cron.Entries()))
 	}
 
 	store.CreateJob("new", "* * * * *", "echo")
 	sched.Reload()
 
-	if len(sched.cron.Entries()) != 1 {
-		t.Fatalf("expected 1 entry after reload, got %d", len(sched.cron.Entries()))
+	if len(sched.cron.Entries()) != 2 {
+		t.Fatalf("expected 2 entries after reload (job + hold-clearer), got %d", len(sched.cron.Entries()))
 	}
 
 	sched.Stop()
@@ -117,8 +118,8 @@ func TestInvalidScheduleLogsWarning(t *testing.T) {
 	}
 	sched.Stop()
 
-	// The bad job should not appear in entries
-	if len(sched.cron.Entries()) != 0 {
-		t.Fatalf("expected 0 entries for invalid schedule, got %d", len(sched.cron.Entries()))
+	// The bad job should not appear; only the hold-clearer entry
+	if len(sched.cron.Entries()) != 1 {
+		t.Fatalf("expected 1 entry (hold-clearer only) for invalid schedule, got %d", len(sched.cron.Entries()))
 	}
 }

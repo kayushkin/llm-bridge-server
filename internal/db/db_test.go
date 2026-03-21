@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -66,5 +67,54 @@ func TestRuns(t *testing.T) {
 	}
 	if len(runs) != 1 || runs[0].Status != "success" {
 		t.Fatalf("unexpected: %+v", runs)
+	}
+}
+
+func TestHold(t *testing.T) {
+	s := testStore(t)
+	j, _ := s.CreateJob("hold-test", "* * * * *", "echo")
+
+	until := time.Now().Add(24 * time.Hour)
+	if err := s.SetHold(j.ID, until); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetJob(j.ID)
+	if got.HoldUntil == nil {
+		t.Fatal("expected hold_until to be set")
+	}
+	if !got.IsOnHold() {
+		t.Fatal("expected job to be on hold")
+	}
+
+	if err := s.ClearHold(j.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetJob(j.ID)
+	if got.HoldUntil != nil {
+		t.Fatal("expected hold_until to be nil after clear")
+	}
+
+	if err := s.SetHold(999, until); err != sql.ErrNoRows {
+		t.Fatalf("expected ErrNoRows, got %v", err)
+	}
+}
+
+func TestClearExpiredHolds(t *testing.T) {
+	s := testStore(t)
+	j, _ := s.CreateJob("expired", "* * * * *", "echo")
+
+	past := time.Now().Add(-1 * time.Hour)
+	s.SetHold(j.ID, past)
+
+	cleared, err := s.ClearExpiredHolds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared != 1 {
+		t.Fatalf("expected 1 cleared, got %d", cleared)
+	}
+	got, _ := s.GetJob(j.ID)
+	if got.HoldUntil != nil {
+		t.Fatal("expected hold to be cleared")
 	}
 }

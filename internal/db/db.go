@@ -11,13 +11,19 @@ import (
 )
 
 type Job struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Schedule  string    `json:"schedule"`
-	Command   string    `json:"command"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID            int64      `json:"id"`
+	Name          string     `json:"name"`
+	Schedule      string     `json:"schedule"`
+	Command       string     `json:"command"`
+	Type          string     `json:"type"`                     // "shell" or "agent"
+	Agent         string     `json:"agent,omitempty"`          // agent name (for type=agent)
+	Prompt        string     `json:"prompt,omitempty"`         // prompt text (for type=agent)
+	Model         string     `json:"model,omitempty"`          // model override (for type=agent)
+	SessionTarget string     `json:"session_target,omitempty"` // "main" or "isolated" (for type=agent)
+	Enabled       bool       `json:"enabled"`
+	HoldUntil     *time.Time `json:"hold_until,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 type Run struct {
@@ -66,7 +72,12 @@ func (s *Store) migrate() error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
 			schedule TEXT NOT NULL,
-			command TEXT NOT NULL,
+			command TEXT NOT NULL DEFAULT '',
+			type TEXT NOT NULL DEFAULT 'shell',
+			agent TEXT NOT NULL DEFAULT '',
+			prompt TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			session_target TEXT NOT NULL DEFAULT 'isolated',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -80,24 +91,57 @@ func (s *Store) migrate() error {
 			finished_at DATETIME
 		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Add new columns to existing tables (ignore errors if columns already exist)
+	for _, col := range []string{
+		"ALTER TABLE jobs ADD COLUMN type TEXT NOT NULL DEFAULT 'shell'",
+		"ALTER TABLE jobs ADD COLUMN agent TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE jobs ADD COLUMN prompt TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE jobs ADD COLUMN model TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE jobs ADD COLUMN session_target TEXT NOT NULL DEFAULT 'isolated'",
+		"ALTER TABLE jobs ADD COLUMN hold_until DATETIME",
+	} {
+		s.db.Exec(col)
+	}
+	return nil
 }
 
 func (s *Store) CreateJob(name, schedule, command string) (*Job, error) {
+	return s.CreateJobFull(Job{
+		Name:     name,
+		Schedule: schedule,
+		Command:  command,
+		Type:     "shell",
+	})
+}
+
+func (s *Store) CreateJobFull(j Job) (*Job, error) {
 	now := time.Now().UTC()
+	if j.Type == "" {
+		j.Type = "shell"
+	}
+	if j.SessionTarget == "" {
+		j.SessionTarget = "isolated"
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO jobs (name, schedule, command, enabled, created_at, updated_at) VALUES (?,?,?,1,?,?)`,
-		name, schedule, command, now, now,
+		`INSERT INTO jobs (name, schedule, command, type, agent, prompt, model, session_target, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?)`,
+		j.Name, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.Model, j.SessionTarget, now, now,
 	)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return &Job{ID: id, Name: name, Schedule: schedule, Command: command, Enabled: true, CreatedAt: now, UpdatedAt: now}, nil
+	j.ID = id
+	j.Enabled = true
+	j.CreatedAt = now
+	j.UpdatedAt = now
+	return &j, nil
 }
 
 func (s *Store) ListJobs() ([]Job, error) {
-	rows, err := s.db.Query(`SELECT id, name, schedule, command, enabled, created_at, updated_at FROM jobs ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, schedule, command, type, agent, prompt, model, session_target, enabled, hold_until, created_at, updated_at FROM jobs ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +150,7 @@ func (s *Store) ListJobs() ([]Job, error) {
 	for rows.Next() {
 		var j Job
 		var enabled int
-		if err := rows.Scan(&j.ID, &j.Name, &j.Schedule, &j.Command, &enabled, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		if err := rows.Scan(&j.ID, &j.Name, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.SessionTarget, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt); err != nil {
 			return nil, err
 		}
 		j.Enabled = enabled != 0
@@ -118,8 +162,8 @@ func (s *Store) ListJobs() ([]Job, error) {
 func (s *Store) GetJob(id int64) (*Job, error) {
 	var j Job
 	var enabled int
-	err := s.db.QueryRow(`SELECT id, name, schedule, command, enabled, created_at, updated_at FROM jobs WHERE id=?`, id).
-		Scan(&j.ID, &j.Name, &j.Schedule, &j.Command, &enabled, &j.CreatedAt, &j.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, name, schedule, command, type, agent, prompt, model, session_target, enabled, hold_until, created_at, updated_at FROM jobs WHERE id=?`, id).
+		Scan(&j.ID, &j.Name, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.SessionTarget, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -187,4 +231,44 @@ func (s *Store) ListRuns(jobID int64) ([]Run, error) {
 		runs = append(runs, r)
 	}
 	return runs, rows.Err()
+}
+
+func (s *Store) SetHold(id int64, until time.Time) error {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`UPDATE jobs SET hold_until=?, updated_at=? WHERE id=?`, until.UTC(), now, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) ClearHold(id int64) error {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`UPDATE jobs SET hold_until=NULL, updated_at=? WHERE id=?`, now, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) ClearExpiredHolds() (int64, error) {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`UPDATE jobs SET hold_until=NULL, updated_at=? WHERE hold_until IS NOT NULL AND hold_until <= ?`, now, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// IsOnHold returns true if the job has an active (non-expired) hold.
+func (j *Job) IsOnHold() bool {
+	return j.HoldUntil != nil && j.HoldUntil.After(time.Now())
 }

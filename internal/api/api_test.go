@@ -217,3 +217,80 @@ func TestStructuredErrors(t *testing.T) {
 		t.Fatalf("expected structured error, got %+v", apiErr)
 	}
 }
+
+func TestHoldAndRelease(t *testing.T) {
+	srv := setup(t, "")
+
+	// Create job
+	body, _ := json.Marshal(map[string]string{"name": "j1", "schedule": "* * * * *", "command": "echo"})
+	req := httptest.NewRequest("POST", "/api/jobs", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d", w.Code)
+	}
+
+	// Hold by days
+	body, _ = json.Marshal(map[string]interface{}{"days": 3})
+	req = httptest.NewRequest("POST", "/api/jobs/1/hold", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("hold: %d %s", w.Code, w.Body.String())
+	}
+	var job db.Job
+	json.NewDecoder(w.Body).Decode(&job)
+	if job.HoldUntil == nil {
+		t.Fatal("expected hold_until to be set")
+	}
+
+	// Verify in list
+	req = httptest.NewRequest("GET", "/api/jobs", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	var jobs []db.Job
+	json.NewDecoder(w.Body).Decode(&jobs)
+	if len(jobs) != 1 || jobs[0].HoldUntil == nil {
+		t.Fatal("expected hold_until in list response")
+	}
+
+	// Release hold
+	req = httptest.NewRequest("DELETE", "/api/jobs/1/hold", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("release: %d %s", w.Code, w.Body.String())
+	}
+	var releasedJob db.Job
+	json.NewDecoder(w.Body).Decode(&releasedJob)
+	if releasedJob.HoldUntil != nil {
+		t.Fatalf("expected hold_until to be nil after release, got %v", releasedJob.HoldUntil)
+	}
+}
+
+func TestHoldValidation(t *testing.T) {
+	srv := setup(t, "")
+
+	body, _ := json.Marshal(map[string]string{"name": "j1", "schedule": "* * * * *", "command": "echo"})
+	req := httptest.NewRequest("POST", "/api/jobs", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	// No days or until
+	body, _ = json.Marshal(map[string]interface{}{})
+	req = httptest.NewRequest("POST", "/api/jobs/1/hold", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+
+	// Nonexistent job
+	body, _ = json.Marshal(map[string]interface{}{"days": 1})
+	req = httptest.NewRequest("POST", "/api/jobs/999/hold", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 404 {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
