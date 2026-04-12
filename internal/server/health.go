@@ -15,9 +15,37 @@ type HealthResponse struct {
 
 type HarnessStatus struct {
 	Name         string   `json:"name"`
+	Label        string   `json:"label"`
+	Emoji        string   `json:"emoji"`
+	Image        string   `json:"image,omitempty"`
 	Available    bool     `json:"available"`
 	Binary       string   `json:"binary,omitempty"`
 	Capabilities []string `json:"capabilities"`
+}
+
+// harnessMeta holds display metadata for each harness type.
+type harnessMeta struct {
+	Label string
+	Emoji string
+	Image string // filename in images/harnesses/, empty if none
+}
+
+var harnessMetadata = map[msg.Harness]harnessMeta{
+	msg.HarnessClaudeCode: {Label: "Claude Code", Emoji: "💻", Image: "claude_code.png"},
+	msg.HarnessCodex:      {Label: "Codex", Emoji: "📖"},
+	msg.HarnessOpenClaw:   {Label: "OpenClaw", Emoji: "🦀"},
+	msg.HarnessInber:      {Label: "Inber", Emoji: "🌿"},
+	msg.HarnessHermes:     {Label: "Hermes", Emoji: "📨"},
+	msg.HarnessAider:      {Label: "Aider", Emoji: "🛠️"},
+	msg.HarnessGoose:      {Label: "Goose", Emoji: "🪿"},
+	msg.HarnessAutohand:   {Label: "Autohand", Emoji: "🤖"},
+	msg.HarnessJig:        {Label: "Jig", Emoji: "🧩"},
+	msg.HarnessDexto:      {Label: "Dexto", Emoji: "🎯"},
+	msg.HarnessCommander:  {Label: "Commander", Emoji: "🎖️"},
+	msg.HarnessNanoClaw:   {Label: "NanoClaw", Emoji: "🔬"},
+	msg.HarnessCline:      {Label: "Cline", Emoji: "📝"},
+	msg.HarnessRooCode:    {Label: "Roo Code", Emoji: "🦘"},
+	msg.HarnessKiloCode:   {Label: "Kilo Code", Emoji: "⚡"},
 }
 
 // harnessCapabilities defines what features each harness supports.
@@ -27,6 +55,16 @@ var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessOpenClaw:   {"compact", "model", "effort"},
 	msg.HarnessInber:      {"model"},
 	msg.HarnessHermes:     {"model"},
+	msg.HarnessAider:      {"model"},
+	msg.HarnessGoose:      {"model"},
+	msg.HarnessAutohand:   {"model"},
+	msg.HarnessJig:        {"model"},
+	msg.HarnessDexto:      {"model"},
+	msg.HarnessCommander:  {"model"},
+	msg.HarnessNanoClaw:   {"model"},
+	msg.HarnessCline:      {"model"},
+	msg.HarnessRooCode:    {"model"},
+	msg.HarnessKiloCode:   {"model"},
 }
 
 type SessionCounts struct {
@@ -41,6 +79,16 @@ var allHarnesses = []msg.Harness{
 	msg.HarnessOpenClaw,
 	msg.HarnessInber,
 	msg.HarnessHermes,
+	msg.HarnessAider,
+	msg.HarnessGoose,
+	msg.HarnessAutohand,
+	msg.HarnessJig,
+	msg.HarnessDexto,
+	msg.HarnessCommander,
+	msg.HarnessNanoClaw,
+	msg.HarnessCline,
+	msg.HarnessRooCode,
+	msg.HarnessKiloCode,
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -71,8 +119,16 @@ func (s *Server) discoverHarnesses() []HarnessStatus {
 		if caps == nil {
 			caps = []string{}
 		}
+		meta := harnessMetadata[h]
+		var imageURL string
+		if meta.Image != "" {
+			imageURL = "/images/harnesses/" + meta.Image
+		}
 		statuses = append(statuses, HarnessStatus{
 			Name:         string(h),
+			Label:        meta.Label,
+			Emoji:        meta.Emoji,
+			Image:        imageURL,
 			Available:    available,
 			Binary:       path,
 			Capabilities: caps,

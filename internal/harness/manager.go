@@ -44,6 +44,26 @@ func BinaryName(h msg.Harness) string {
 		return "llm-bridge-inber"
 	case msg.HarnessHermes:
 		return "llm-bridge-hermes"
+	case msg.HarnessAider:
+		return "llm-bridge-aider"
+	case msg.HarnessGoose:
+		return "llm-bridge-goose"
+	case msg.HarnessAutohand:
+		return "llm-bridge-autohand"
+	case msg.HarnessJig:
+		return "llm-bridge-jig"
+	case msg.HarnessDexto:
+		return "llm-bridge-dexto"
+	case msg.HarnessCommander:
+		return "llm-bridge-commander"
+	case msg.HarnessNanoClaw:
+		return "llm-bridge-nanoclaw"
+	case msg.HarnessCline:
+		return "llm-bridge-cline"
+	case msg.HarnessRooCode:
+		return "llm-bridge-roocode"
+	case msg.HarnessKiloCode:
+		return "llm-bridge-kilocode"
 	default:
 		return ""
 	}

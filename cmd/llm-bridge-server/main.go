@@ -64,7 +64,7 @@ func main() {
 		}
 	}
 
-	srv := server.New(st, as, ms, hs)
+	srv := server.New(st, as, ms, hs, cfg)
 
 	go func() {
 		log.Printf("llm-bridge-server listening on %s", cfg.ListenAddr)

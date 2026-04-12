@@ -7,6 +7,7 @@ import (
 	agentstore "github.com/kayushkin/agent-store"
 	harnessstore "github.com/kayushkin/harness-store"
 	memorystore "github.com/kayushkin/memory-store"
+	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
@@ -18,9 +19,10 @@ type Server struct {
 	memoryStore  *memorystore.Store
 	harnessStore *harnessstore.Store
 	harness      *harness.Manager
+	cfg          *config.Config
 }
 
-func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store) *Server {
+func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, cfg *config.Config) *Server {
 	srv := &Server{
 		mux:          http.NewServeMux(),
 		store:        st,
@@ -28,6 +30,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		memoryStore:  ms,
 		harnessStore: hs,
 		harness:      harness.NewManager(st),
+		cfg:          cfg,
 	}
 	srv.routes()
 	return srv
@@ -36,6 +39,9 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /harnesses", s.handleHarnesses)
+
+	// Static harness images
+	s.mux.Handle("GET /images/", http.StripPrefix("/images/", http.FileServer(http.Dir(s.cfg.ImagesDir))))
 
 	// Session routes
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)

@@ -14,6 +14,7 @@ type Config struct {
 	ModelStoreURL  string
 	AgentStoreURL  string
 	NatsURL        string
+	ImagesDir      string
 }
 
 func Load() *Config {
@@ -26,6 +27,7 @@ func Load() *Config {
 		ModelStoreURL:  os.Getenv("LLMBRIDGE_MODEL_STORE_URL"),
 		AgentStoreURL:  os.Getenv("LLMBRIDGE_AGENT_STORE_URL"),
 		NatsURL:        os.Getenv("NATS_URL"),
+		ImagesDir:      envOr("LLMBRIDGE_IMAGES_DIR", "images"),
 	}
 }
 
