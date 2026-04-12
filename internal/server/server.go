@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	agentstore "github.com/kayushkin/agent-store"
@@ -33,7 +34,26 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		cfg:          cfg,
 	}
 	srv.routes()
+	srv.syncHarnessTypes()
 	return srv
+}
+
+// syncHarnessTypes seeds the harness-store with harness type metadata.
+func (s *Server) syncHarnessTypes() {
+	if s.harnessStore == nil {
+		return
+	}
+	for _, h := range allHarnesses {
+		meta := harnessMetadata[h]
+		if err := s.harnessStore.UpsertHarnessType(&harnessstore.HarnessType{
+			Name:  h,
+			Label: meta.Label,
+			Emoji: meta.Emoji,
+			Image: meta.Image,
+		}); err != nil {
+			log.Printf("sync harness type %s: %v", h, err)
+		}
+	}
 }
 
 func (s *Server) routes() {

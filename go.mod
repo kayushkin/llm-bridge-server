@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/kayushkin/agent-store v0.0.0
-	github.com/kayushkin/harness-store v0.0.0
+	github.com/kayushkin/harness-store v0.0.0-00010101000000-000000000000
 	github.com/kayushkin/llm-bridge v0.0.0
 	github.com/kayushkin/memory-store v0.0.0
 	modernc.org/sqlite v1.48.2
