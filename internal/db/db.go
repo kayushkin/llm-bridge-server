@@ -13,13 +13,15 @@ import (
 type Job struct {
 	ID            int64      `json:"id"`
 	Name          string     `json:"name"`
+	Description   string     `json:"description,omitempty"`
 	Schedule      string     `json:"schedule"`
 	Command       string     `json:"command"`
 	Type          string     `json:"type"`                     // "shell" or "agent"
 	Agent         string     `json:"agent,omitempty"`          // agent name (for type=agent)
 	Prompt        string     `json:"prompt,omitempty"`         // prompt text (for type=agent)
 	Model         string     `json:"model,omitempty"`          // model override (for type=agent)
-	SessionTarget string     `json:"session_target,omitempty"` // "main" or "isolated" (for type=agent)
+	Orchestrator  string     `json:"orchestrator,omitempty"`   // "claude-code", "inber", etc. (for type=agent)
+	SessionID     string     `json:"session_id,omitempty"`     // session to resume (for type=agent)
 	Enabled       bool       `json:"enabled"`
 	HoldUntil     *time.Time `json:"hold_until,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
@@ -77,7 +79,8 @@ func (s *Store) migrate() error {
 			agent TEXT NOT NULL DEFAULT '',
 			prompt TEXT NOT NULL DEFAULT '',
 			model TEXT NOT NULL DEFAULT '',
-			session_target TEXT NOT NULL DEFAULT 'isolated',
+			orchestrator TEXT NOT NULL DEFAULT '',
+			session_id TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -100,8 +103,10 @@ func (s *Store) migrate() error {
 		"ALTER TABLE jobs ADD COLUMN agent TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE jobs ADD COLUMN prompt TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE jobs ADD COLUMN model TEXT NOT NULL DEFAULT ''",
-		"ALTER TABLE jobs ADD COLUMN session_target TEXT NOT NULL DEFAULT 'isolated'",
+		"ALTER TABLE jobs ADD COLUMN orchestrator TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE jobs ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE jobs ADD COLUMN hold_until DATETIME",
+		"ALTER TABLE jobs ADD COLUMN description TEXT NOT NULL DEFAULT ''",
 	} {
 		s.db.Exec(col)
 	}
@@ -122,12 +127,9 @@ func (s *Store) CreateJobFull(j Job) (*Job, error) {
 	if j.Type == "" {
 		j.Type = "shell"
 	}
-	if j.SessionTarget == "" {
-		j.SessionTarget = "isolated"
-	}
 	res, err := s.db.Exec(
-		`INSERT INTO jobs (name, schedule, command, type, agent, prompt, model, session_target, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,1,?,?)`,
-		j.Name, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.Model, j.SessionTarget, now, now,
+		`INSERT INTO jobs (name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+		j.Name, j.Description, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.Model, j.Orchestrator, j.SessionID, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -141,7 +143,7 @@ func (s *Store) CreateJobFull(j Job) (*Job, error) {
 }
 
 func (s *Store) ListJobs() ([]Job, error) {
-	rows, err := s.db.Query(`SELECT id, name, schedule, command, type, agent, prompt, model, session_target, enabled, hold_until, created_at, updated_at FROM jobs ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, enabled, hold_until, created_at, updated_at FROM jobs ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +152,7 @@ func (s *Store) ListJobs() ([]Job, error) {
 	for rows.Next() {
 		var j Job
 		var enabled int
-		if err := rows.Scan(&j.ID, &j.Name, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.SessionTarget, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		if err := rows.Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt); err != nil {
 			return nil, err
 		}
 		j.Enabled = enabled != 0
@@ -162,8 +164,8 @@ func (s *Store) ListJobs() ([]Job, error) {
 func (s *Store) GetJob(id int64) (*Job, error) {
 	var j Job
 	var enabled int
-	err := s.db.QueryRow(`SELECT id, name, schedule, command, type, agent, prompt, model, session_target, enabled, hold_until, created_at, updated_at FROM jobs WHERE id=?`, id).
-		Scan(&j.ID, &j.Name, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.SessionTarget, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, enabled, hold_until, created_at, updated_at FROM jobs WHERE id=?`, id).
+		Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +180,19 @@ func (s *Store) UpdateJobEnabled(id int64, enabled bool) error {
 	}
 	now := time.Now().UTC()
 	res, err := s.db.Exec(`UPDATE jobs SET enabled=?, updated_at=? WHERE id=?`, enabledInt, now, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) UpdateJobDescription(id int64, description string) error {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`UPDATE jobs SET description=?, updated_at=? WHERE id=?`, description, now, id)
 	if err != nil {
 		return err
 	}

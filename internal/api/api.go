@@ -97,14 +97,16 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, jobs)
 	case http.MethodPost:
 		var req struct {
-			Name          string `json:"name"`
-			Schedule      string `json:"schedule"`
-			Command       string `json:"command"`
-			Type          string `json:"type"`
-			Agent         string `json:"agent"`
-			Prompt        string `json:"prompt"`
-			Model         string `json:"model"`
-			SessionTarget string `json:"session_target"`
+			Name         string `json:"name"`
+			Description  string `json:"description"`
+			Schedule     string `json:"schedule"`
+			Command      string `json:"command"`
+			Type         string `json:"type"`
+			Agent        string `json:"agent"`
+			Prompt       string `json:"prompt"`
+			Model        string `json:"model"`
+			Orchestrator string `json:"orchestrator"`
+			SessionID    string `json:"session_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, 400, "invalid request body", err.Error())
@@ -131,14 +133,16 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		job, err := s.store.CreateJobFull(db.Job{
-			Name:          req.Name,
-			Schedule:      req.Schedule,
-			Command:       req.Command,
-			Type:          jobType,
-			Agent:         req.Agent,
-			Prompt:        req.Prompt,
-			Model:         req.Model,
-			SessionTarget: req.SessionTarget,
+			Name:         req.Name,
+			Description:  req.Description,
+			Schedule:     req.Schedule,
+			Command:      req.Command,
+			Type:         jobType,
+			Agent:        req.Agent,
+			Prompt:       req.Prompt,
+			Model:        req.Model,
+			Orchestrator: req.Orchestrator,
+			SessionID:    req.SessionID,
 		})
 		if err != nil {
 			writeError(w, 500, "failed to create job", err.Error())
@@ -186,12 +190,23 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, job)
 		case http.MethodPatch:
 			var req struct {
-				Enabled *bool   `json:"enabled"`
-				Name    *string `json:"name"`
+				Enabled     *bool   `json:"enabled"`
+				Name        *string `json:"name"`
+				Description *string `json:"description"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				writeError(w, 400, "invalid request body", err.Error())
 				return
+			}
+			if req.Description != nil {
+				if err := s.store.UpdateJobDescription(id, *req.Description); err != nil {
+					if err == sql.ErrNoRows {
+						writeError(w, 404, "job not found", "")
+						return
+					}
+					writeError(w, 500, "failed to update job", err.Error())
+					return
+				}
 			}
 			if req.Enabled != nil {
 				// Get job info for logging before update

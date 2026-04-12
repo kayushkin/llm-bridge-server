@@ -22,7 +22,8 @@ type Command struct {
 	Agent         string `json:"agent,omitempty"`
 	Prompt        string `json:"prompt,omitempty"`
 	Model         string `json:"model,omitempty"`
-	SessionTarget string `json:"session_target,omitempty"`
+	Orchestrator  string `json:"orchestrator,omitempty"`
+	SessionID     string `json:"session_id,omitempty"`
 	ID            int64  `json:"id,omitempty"`
 	Enabled       *bool  `json:"enabled,omitempty"`
 	JobID         int64  `json:"job_id,omitempty"`
@@ -174,14 +175,15 @@ func (h *Handler) handleCreateJob(cmd Command) (any, error) {
 	}
 
 	job, err := h.store.CreateJobFull(db.Job{
-		Name:          cmd.Name,
-		Schedule:      cmd.Schedule,
-		Command:       cmd.Command,
-		Type:          jobType,
-		Agent:         cmd.Agent,
-		Prompt:        cmd.Prompt,
-		Model:         cmd.Model,
-		SessionTarget: cmd.SessionTarget,
+		Name:         cmd.Name,
+		Schedule:     cmd.Schedule,
+		Command:      cmd.Command,
+		Type:         jobType,
+		Agent:        cmd.Agent,
+		Prompt:       cmd.Prompt,
+		Model:        cmd.Model,
+		Orchestrator: cmd.Orchestrator,
+		SessionID:    cmd.SessionID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create job: %w", err)

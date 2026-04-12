@@ -178,7 +178,7 @@ func (s *Scheduler) executeJob(job db.Job) *db.Run {
 		if s.agentExecutor == nil {
 			result = executor.Result{Status: "error", Output: "agent executor not configured"}
 		} else {
-			result = s.agentExecutor.Run(job.Agent, job.Prompt, job.Model, job.SessionTarget, fmt.Sprintf("%d", job.ID))
+			result = s.agentExecutor.Run(job.Agent, job.Prompt, job.Orchestrator, job.SessionID)
 		}
 	} else {
 		result = s.exec(job.Command, 5*time.Minute)

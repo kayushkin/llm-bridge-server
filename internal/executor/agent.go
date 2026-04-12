@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -9,7 +8,7 @@ import (
 	"github.com/kayushkin/bus/messages"
 )
 
-// AgentExecutor runs agent turns via NATS request/reply.
+// AgentExecutor runs agent turns by publishing a ChatInbound message.
 type AgentExecutor struct {
 	client *natsbus.Client
 }
@@ -18,36 +17,29 @@ func NewAgentExecutor(client *natsbus.Client) *AgentExecutor {
 	return &AgentExecutor{client: client}
 }
 
-func (e *AgentExecutor) Run(agent, prompt, model, sessionTarget, jobID string) Result {
+func (e *AgentExecutor) Run(agent, prompt, orchestrator, sessionID string) Result {
 	if e.client == nil {
 		return Result{Status: "error", Output: "NATS client not configured"}
 	}
 
-	req := messages.AgentRunRequest{
-		Agent:         agent,
-		Prompt:        prompt,
-		Model:         model,
-		SessionTarget: sessionTarget,
-		JobID:         jobID,
+	if orchestrator == "" {
+		orchestrator = "claude-code"
 	}
 
-	respBytes, err := e.client.Request("agent.run", req, 5*time.Minute)
-	if err != nil {
-		return Result{Status: "error", Output: fmt.Sprintf("agent request failed: %v", err)}
+	msg := messages.ChatInbound{
+		Text:         prompt,
+		Author:       "scheduler",
+		Agent:        agent,
+		Orchestrator: orchestrator,
+		Channel:      "scheduler",
+		SessionID:    sessionID,
+		Timestamp:    time.Now().UTC(),
 	}
 
-	var res messages.AgentRunResult
-	if err := json.Unmarshal(respBytes, &res); err != nil {
-		return Result{Status: "error", Output: fmt.Sprintf("failed to parse agent response: %v", err)}
+	subject := fmt.Sprintf("chat.inbound.%s", orchestrator)
+	if err := e.client.Publish(subject, msg); err != nil {
+		return Result{Status: "error", Output: fmt.Sprintf("publish failed: %v", err)}
 	}
 
-	if !res.Success {
-		errMsg := res.Error
-		if errMsg == "" {
-			errMsg = "agent returned failure"
-		}
-		return Result{Status: "error", Output: errMsg}
-	}
-
-	return Result{Status: "success", Output: res.Output}
+	return Result{Status: "success", Output: fmt.Sprintf("published to %s (session=%s)", subject, sessionID)}
 }

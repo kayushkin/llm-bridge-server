@@ -3,8 +3,8 @@
 You maintain two related services for the inber ecosystem:
 
 ## Repos
-- **Scheduler**: ~/life/repos/scheduler — centralized job scheduling
-- **Noteboard**: ~/life/repos/noteboard — unified notes, todos, and ranking lists
+- **Scheduler**: ~/repos/scheduler — centralized job scheduling
+- **Noteboard**: ~/repos/noteboard — unified notes, todos, and ranking lists
 
 ## Scheduler Stack
 - Go service with robfig/cron v3
