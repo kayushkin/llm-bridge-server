@@ -13,12 +13,13 @@ import (
 )
 
 type CreateSessionRequest struct {
-	Harness     string `json:"harness"`
-	InstanceID  string `json:"instance_id,omitempty"` // specific instance to use
-	DisplayName string `json:"display_name,omitempty"`
-	AgentID     string `json:"agent_id,omitempty"`
-	SpawnerID   string `json:"spawner_id,omitempty"`
-	AutoStart   bool   `json:"auto_start,omitempty"` // start harness immediately
+	Harness         string `json:"harness"`
+	InstanceID      string `json:"instance_id,omitempty"`       // specific instance to use
+	DisplayName     string `json:"display_name,omitempty"`
+	AgentID         string `json:"agent_id,omitempty"`
+	SpawnerID       string `json:"spawner_id,omitempty"`
+	AutoStart       bool   `json:"auto_start,omitempty"`        // start harness immediately
+	ClientRequestID string `json:"client_request_id,omitempty"` // frontend correlation ID, echoed back
 }
 
 type SendMessageRequest struct {
@@ -116,12 +117,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sess := &store.Session{
-		ID:          generateID(),
-		DisplayName: req.DisplayName,
-		Harness:     req.Harness,
-		State:       string(msg.SessionIdle),
-		AgentID:     req.AgentID,
-		SpawnerID:   req.SpawnerID,
+		ID:              generateID(),
+		DisplayName:     req.DisplayName,
+		Harness:         req.Harness,
+		State:           string(msg.SessionIdle),
+		AgentID:         req.AgentID,
+		SpawnerID:       req.SpawnerID,
+		ClientRequestID: req.ClientRequestID,
 	}
 
 	if inst != nil {

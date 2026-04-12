@@ -12,17 +12,18 @@ import (
 )
 
 type Session struct {
-	ID          string    `json:"id"`
-	DisplayName string    `json:"display_name"`
-	Harness     string    `json:"harness"`
-	InstanceID  string    `json:"instance_id,omitempty"` // which harness instance runs this session
-	State       string    `json:"state"`
-	PID         int       `json:"pid,omitempty"`
-	AgentID     string    `json:"agent_id,omitempty"`
-	SpawnerID   string    `json:"spawner_id,omitempty"`
-	ParentID    string    `json:"parent_id,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	DisplayName     string    `json:"display_name"`
+	Harness         string    `json:"harness"`
+	InstanceID      string    `json:"instance_id,omitempty"`       // which harness instance runs this session
+	State           string    `json:"state"`
+	PID             int       `json:"pid,omitempty"`
+	AgentID         string    `json:"agent_id,omitempty"`
+	SpawnerID       string    `json:"spawner_id,omitempty"`
+	ParentID        string    `json:"parent_id,omitempty"`
+	ClientRequestID string    `json:"client_request_id,omitempty"` // frontend correlation ID
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type Store struct {
@@ -92,6 +93,7 @@ func (s *Store) migrate() error {
 	// Migrations for existing DBs
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN client_request_id TEXT NOT NULL DEFAULT ''")
 	return nil
 }
 
@@ -100,8 +102,8 @@ func (s *Store) CreateSession(sess *Session) error {
 	sess.CreatedAt = now
 	sess.UpdatedAt = now
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.ID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, sess.CreatedAt, sess.UpdatedAt,
+		`INSERT INTO sessions (id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, client_request_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sess.ID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, sess.ClientRequestID, sess.CreatedAt, sess.UpdatedAt,
 	)
 	return err
 }
@@ -109,9 +111,9 @@ func (s *Store) CreateSession(sess *Session) error {
 func (s *Store) GetSession(id string) (*Session, error) {
 	var sess Session
 	err := s.db.QueryRow(
-		`SELECT id, display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, created_at, updated_at FROM sessions WHERE id=?`,
+		`SELECT id, display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(client_request_id, ''), created_at, updated_at FROM sessions WHERE id=?`,
 		id,
-	).Scan(&sess.ID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &sess.CreatedAt, &sess.UpdatedAt)
+	).Scan(&sess.ID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &sess.ClientRequestID, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +121,7 @@ func (s *Store) GetSession(id string) (*Session, error) {
 }
 
 func (s *Store) ListSessions() ([]Session, error) {
-	rows, err := s.db.Query(`SELECT id, display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, created_at, updated_at FROM sessions ORDER BY created_at DESC`)
+	rows, err := s.db.Query(`SELECT id, display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(client_request_id, ''), created_at, updated_at FROM sessions ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +129,7 @@ func (s *Store) ListSessions() ([]Session, error) {
 	var sessions []Session
 	for rows.Next() {
 		var sess Session
-		if err := rows.Scan(&sess.ID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
+		if err := rows.Scan(&sess.ID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &sess.ClientRequestID, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
 			return nil, err
 		}
 		sessions = append(sessions, sess)
@@ -136,7 +138,7 @@ func (s *Store) ListSessions() ([]Session, error) {
 }
 
 func (s *Store) ListSessionsByState(state string) ([]Session, error) {
-	rows, err := s.db.Query(`SELECT id, display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, created_at, updated_at FROM sessions WHERE state=? ORDER BY created_at DESC`, state)
+	rows, err := s.db.Query(`SELECT id, display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(client_request_id, ''), created_at, updated_at FROM sessions WHERE state=? ORDER BY created_at DESC`, state)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +146,7 @@ func (s *Store) ListSessionsByState(state string) ([]Session, error) {
 	var sessions []Session
 	for rows.Next() {
 		var sess Session
-		if err := rows.Scan(&sess.ID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
+		if err := rows.Scan(&sess.ID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &sess.ClientRequestID, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
 			return nil, err
 		}
 		sessions = append(sessions, sess)
