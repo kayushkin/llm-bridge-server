@@ -61,7 +61,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /harnesses", s.handleHarnesses)
 
 	// Static harness images
-	s.mux.Handle("GET /images/", http.StripPrefix("/images/", http.FileServer(http.Dir(s.cfg.ImagesDir))))
+	s.mux.Handle("/images/", http.StripPrefix("/images/", http.FileServer(http.Dir(s.cfg.ImagesDir))))
 
 	// Session routes
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
