@@ -14,13 +14,14 @@ type HealthResponse struct {
 }
 
 type HarnessStatus struct {
-	Name         string   `json:"name"`
-	Label        string   `json:"label"`
-	Emoji        string   `json:"emoji"`
-	Image        string   `json:"image,omitempty"`
-	Available    bool     `json:"available"`
-	Binary       string   `json:"binary,omitempty"`
-	Capabilities []string `json:"capabilities"`
+	Name               string   `json:"name"`
+	Label              string   `json:"label"`
+	Emoji              string   `json:"emoji"`
+	Image              string   `json:"image,omitempty"`
+	Available          bool     `json:"available"`
+	Binary             string   `json:"binary,omitempty"`
+	Capabilities       []string `json:"capabilities"`
+	SupportedProviders []string `json:"supported_providers,omitempty"`
 }
 
 // harnessMeta holds display metadata for each harness type.
@@ -32,20 +33,29 @@ type harnessMeta struct {
 
 var harnessMetadata = map[msg.Harness]harnessMeta{
 	msg.HarnessClaudeCode: {Label: "Claude Code", Emoji: "💻", Image: "claude_code.png"},
-	msg.HarnessCodex:      {Label: "Codex", Emoji: "📖"},
+	msg.HarnessCodex:      {Label: "Codex", Emoji: "📖", Image: "codex.png"},
 	msg.HarnessOpenClaw:   {Label: "OpenClaw", Emoji: "🦀"},
 	msg.HarnessInber:      {Label: "Inber", Emoji: "🌿"},
 	msg.HarnessHermes:     {Label: "Hermes", Emoji: "📨"},
-	msg.HarnessAider:      {Label: "Aider", Emoji: "🛠️"},
-	msg.HarnessGoose:      {Label: "Goose", Emoji: "🪿"},
+	msg.HarnessAider:      {Label: "Aider", Emoji: "🛠️", Image: "aider.png"},
+	msg.HarnessGoose:      {Label: "Goose", Emoji: "🪿", Image: "goose.png"},
 	msg.HarnessAutohand:   {Label: "Autohand", Emoji: "🤖"},
 	msg.HarnessJig:        {Label: "Jig", Emoji: "🧩"},
 	msg.HarnessDexto:      {Label: "Dexto", Emoji: "🎯"},
 	msg.HarnessCommander:  {Label: "Commander", Emoji: "🎖️"},
 	msg.HarnessNanoClaw:   {Label: "NanoClaw", Emoji: "🔬"},
-	msg.HarnessCline:      {Label: "Cline", Emoji: "📝"},
-	msg.HarnessRooCode:    {Label: "Roo Code", Emoji: "🦘"},
-	msg.HarnessKiloCode:   {Label: "Kilo Code", Emoji: "⚡"},
+	msg.HarnessCline:      {Label: "Cline", Emoji: "📝", Image: "cline.png"},
+	msg.HarnessRooCode:    {Label: "Roo Code", Emoji: "🦘", Image: "roo_code.svg"},
+	msg.HarnessKiloCode:   {Label: "Kilo Code", Emoji: "⚡", Image: "kilo_code.png"},
+}
+
+// harnessSupportedProviders defines which model providers each harness accepts.
+// nil means all providers are valid (framework-managed or multi-provider).
+var harnessSupportedProviders = map[msg.Harness][]string{
+	msg.HarnessClaudeCode: {"anthropic"},
+	msg.HarnessCodex:      {"openai"},
+	msg.HarnessJig:        {"anthropic"},
+	msg.HarnessAutohand:   {"anthropic"},
 }
 
 // harnessCapabilities defines what features each harness supports.
@@ -125,13 +135,14 @@ func (s *Server) discoverHarnesses() []HarnessStatus {
 			imageURL = "/images/harnesses/" + meta.Image
 		}
 		statuses = append(statuses, HarnessStatus{
-			Name:         string(h),
-			Label:        meta.Label,
-			Emoji:        meta.Emoji,
-			Image:        imageURL,
-			Available:    available,
-			Binary:       path,
-			Capabilities: caps,
+			Name:               string(h),
+			Label:              meta.Label,
+			Emoji:              meta.Emoji,
+			Image:              imageURL,
+			Available:          available,
+			Binary:             path,
+			Capabilities:       caps,
+			SupportedProviders: harnessSupportedProviders[h],
 		})
 	}
 	return statuses
