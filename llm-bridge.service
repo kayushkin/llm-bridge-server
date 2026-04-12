@@ -1,0 +1,17 @@
+[Unit]
+Description=LLM Bridge — multi-harness session server
+After=network.target
+
+[Service]
+Type=simple
+User=kayushkincom
+ExecStart=/usr/local/bin/llm-bridge
+Restart=on-failure
+RestartSec=5
+Environment=LLMBRIDGE_LISTEN_ADDR=:8160
+Environment=LLMBRIDGE_IMAGES_DIR=/home/kayushkincom/repos/llm-bridge-server/images
+Environment=PATH=/home/kayushkincom/bin:/home/kayushkincom/.local/share/mise/installs/node/25.8.2/bin:/home/kayushkincom/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/kayushkincom
+
+[Install]
+WantedBy=multi-user.target
