@@ -362,15 +362,44 @@ type MaterializedTool struct {
 }
 
 type MaterializedMeta struct {
-	InputTokens         int     `json:"input_tokens,omitempty"`
-	OutputTokens        int     `json:"output_tokens,omitempty"`
-	CacheReadTokens     int     `json:"cache_read_tokens,omitempty"`
-	CacheCreationTokens int     `json:"cache_creation_tokens,omitempty"`
-	Cost                float64 `json:"cost,omitempty"`
-	DurationMs          int64   `json:"duration_ms,omitempty"`
-	NumTurns            int     `json:"num_turns,omitempty"`
-	Model               string  `json:"model,omitempty"`
-	ToolCalls           int     `json:"tool_calls,omitempty"`
+	// Token usage
+	InputTokens         int `json:"input_tokens,omitempty"`
+	OutputTokens        int `json:"output_tokens,omitempty"`
+	TotalTokens         int `json:"total_tokens,omitempty"`
+	CacheReadTokens     int `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
+	ReasoningTokens     int `json:"reasoning_tokens,omitempty"`
+	ContextTokens       int `json:"context_tokens,omitempty"`
+	ContextLimit        int `json:"context_limit,omitempty"`
+
+	// Cost
+	Cost         float64 `json:"cost,omitempty"`
+	CostInput    float64 `json:"cost_input,omitempty"`
+	CostOutput   float64 `json:"cost_output,omitempty"`
+	CostUpstream float64 `json:"cost_upstream,omitempty"`
+	IsByok       bool    `json:"is_byok,omitempty"`
+
+	// Timing
+	DurationMs    int64 `json:"duration_ms,omitempty"`
+	DurationAPIMs int64 `json:"duration_api_ms,omitempty"`
+
+	// Turns & calls
+	NumTurns  int `json:"num_turns,omitempty"`
+	APICalls  int `json:"api_calls,omitempty"`
+	ToolCalls int `json:"tool_calls,omitempty"`
+	Model     string `json:"model,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
+
+	// Per-API-call breakdown
+	APICallUsages []MaterializedAPICallUsage `json:"api_call_usages,omitempty"`
+}
+
+type MaterializedAPICallUsage struct {
+	InputTokens      int `json:"input_tokens,omitempty"`
+	OutputTokens     int `json:"output_tokens,omitempty"`
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
 }
 
 func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
@@ -437,18 +466,39 @@ func materializeMessages(rawEvents []json.RawMessage) []MaterializedMessage {
 				if ev.Result.Text != "" {
 					current.Content = ev.Result.Text
 				}
-				current.Meta = &MaterializedMeta{
+				meta := &MaterializedMeta{
 					InputTokens:         ev.Result.Usage.InputTokens,
 					OutputTokens:        ev.Result.Usage.OutputTokens,
+					TotalTokens:         ev.Result.Usage.TotalTokens,
 					CacheReadTokens:     ev.Result.Usage.CacheReadTokens,
 					CacheCreationTokens: ev.Result.Usage.CacheWriteTokens,
+					ReasoningTokens:     ev.Result.Usage.ReasoningTokens,
+					ContextTokens:       ev.Result.Usage.ContextTokens,
+					ContextLimit:        ev.Result.Usage.ContextLimit,
 					DurationMs:          ev.Result.DurationMS,
+					DurationAPIMs:       ev.Result.DurationAPIMS,
 					NumTurns:            ev.Result.NumTurns,
+					APICalls:            ev.Result.APICalls,
 					Model:               ev.Result.Model,
+					IsError:             ev.Result.IsError,
 				}
 				if ev.Result.Cost != nil {
-					current.Meta.Cost = ev.Result.Cost.TotalUSD
+					meta.Cost = ev.Result.Cost.TotalUSD
+					meta.CostInput = ev.Result.Cost.InputUSD
+					meta.CostOutput = ev.Result.Cost.OutputUSD
+					meta.CostUpstream = ev.Result.Cost.UpstreamCost
+					meta.IsByok = ev.Result.Cost.IsByok
 				}
+				for _, u := range ev.Result.APICallUsages {
+					meta.APICallUsages = append(meta.APICallUsages, MaterializedAPICallUsage{
+						InputTokens:      u.InputTokens,
+						OutputTokens:     u.OutputTokens,
+						CacheReadTokens:  u.CacheReadTokens,
+						CacheWriteTokens: u.CacheWriteTokens,
+						ReasoningTokens:  u.ReasoningTokens,
+					})
+				}
+				current.Meta = meta
 			}
 			flushAssistant()
 
