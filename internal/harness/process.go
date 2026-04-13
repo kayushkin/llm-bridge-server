@@ -22,6 +22,12 @@ type Request struct {
 	Params json.RawMessage `json:"params,omitempty"`
 }
 
+// isDiscoveredSession returns true if the session ID indicates a discovered
+// session (e.g. CC UUID) rather than one we created (sess_ prefix).
+func isDiscoveredSession(id string) bool {
+	return len(id) > 0 && id[0] != 's' // Our IDs start with "sess_"
+}
+
 // StartParams for the "start" method.
 type StartParams struct {
 	SessionID    string `json:"session_id"`
@@ -31,6 +37,7 @@ type StartParams struct {
 	Prompt       string `json:"prompt,omitempty"`
 	Resume       bool   `json:"resume,omitempty"`
 	Fork         string `json:"fork,omitempty"` // parent session ID
+	WorkDir      string `json:"work_dir,omitempty"`
 }
 
 // MessageParams for the "message" method.
@@ -86,11 +93,17 @@ func StartProcess(ctx context.Context, binPath string, sess *store.Session, cred
 	}
 
 	// Send start request
+	isDiscovered := isDiscoveredSession(sess.ID)
 	params := StartParams{
 		SessionID:    sess.ID,
 		DisplayName:  sess.DisplayName,
 		AgentID:      sess.AgentID,
 		CredentialID: credentialID,
+		Resume:       isDiscovered,
+	}
+	// For discovered sessions, DisplayName contains the project path
+	if isDiscovered && sess.DisplayName != "" && sess.DisplayName[0] == '/' {
+		params.WorkDir = sess.DisplayName
 	}
 	if sess.ParentID != "" {
 		params.Fork = sess.ParentID
@@ -254,11 +267,17 @@ func StartSSHProcess(ctx context.Context, args []string, sess *store.Session, cr
 	}
 
 	// Send start request
+	isDiscovered := isDiscoveredSession(sess.ID)
 	params := StartParams{
 		SessionID:    sess.ID,
 		DisplayName:  sess.DisplayName,
 		AgentID:      sess.AgentID,
 		CredentialID: credentialID,
+		Resume:       isDiscovered,
+	}
+	// For discovered sessions, DisplayName contains the project path
+	if isDiscovered && sess.DisplayName != "" && sess.DisplayName[0] == '/' {
+		params.WorkDir = sess.DisplayName
 	}
 	if sess.ParentID != "" {
 		params.Fork = sess.ParentID

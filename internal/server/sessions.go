@@ -484,6 +484,37 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		sessions = []msg.StoredSession{}
 	}
 
+	// Persist discovered sessions to the store so they appear in GET /sessions
+	var imported int
+	for _, ds := range sessions {
+		// Use project path as display name, fall back to prompt snippet
+		displayName := ds.Project
+		if displayName == "" || displayName == "/" {
+			displayName = ds.Prompt
+		}
+		if len(displayName) > 100 {
+			displayName = displayName[:100]
+		}
+
+		inserted, err := s.store.UpsertDiscoveredSession(
+			ds.ID,
+			displayName,
+			string(ds.Harness),
+			ds.CreatedAt,
+			ds.UpdatedAt,
+		)
+		if err != nil {
+			log.Printf("[discover] failed to upsert session %s: %v", ds.ID, err)
+			continue
+		}
+		if inserted {
+			imported++
+		}
+	}
+	if imported > 0 {
+		log.Printf("[discover] imported %d new sessions", imported)
+	}
+
 	writeJSON(w, sessions)
 }
 

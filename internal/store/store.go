@@ -278,3 +278,29 @@ func (s *Store) DeleteSession(id string) error {
 	}
 	return nil
 }
+
+// UpsertDiscoveredSession inserts a discovered session if it doesn't already exist.
+// Returns true if a new row was inserted.
+func (s *Store) UpsertDiscoveredSession(id, displayName, harness string, createdAt, updatedAt time.Time) (bool, error) {
+	// Check if session already exists
+	var existing int
+	err := s.db.QueryRow(`SELECT 1 FROM sessions WHERE id=?`, id).Scan(&existing)
+	if err == nil {
+		// Already exists, update the timestamp
+		s.db.Exec(`UPDATE sessions SET updated_at=? WHERE id=?`, updatedAt, id)
+		return false, nil
+	}
+	if err != sql.ErrNoRows {
+		return false, err
+	}
+
+	// Insert new discovered session with state "idle"
+	_, err = s.db.Exec(
+		`INSERT INTO sessions (id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, client_request_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, displayName, harness, "", "idle", 0, "", "", "", "", createdAt, updatedAt,
+	)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
