@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -232,6 +233,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if data, err := json.Marshal(userEvent); err == nil {
 		s.store.StoreEvent(id, "user_message", data)
+	}
+	if err := s.harness.PushEvent(userEvent); err != nil {
+		log.Printf("[session] failed to push user_message to log-store: %v", err)
 	}
 
 	if err := s.harness.Send(id, req.Message); err != nil {
@@ -466,6 +470,21 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, sess)
+}
+
+func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) {
+	harnessFilter := msg.Harness(r.URL.Query().Get("harness"))
+
+	sessions, err := s.harness.DiscoverSessions(r.Context(), harnessFilter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if sessions == nil {
+		sessions = []msg.StoredSession{}
+	}
+
+	writeJSON(w, sessions)
 }
 
 func generateID() string {

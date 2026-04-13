@@ -73,6 +73,7 @@ func (s *Server) routes() {
 
 	// Session routes
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
+	s.mux.HandleFunc("GET /sessions/discover", s.handleDiscoverSessions)
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
 	s.mux.HandleFunc("POST /sessions/{id}/send", s.handleSendMessage)

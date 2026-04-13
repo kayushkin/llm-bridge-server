@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strconv"
 	"sync"
@@ -241,6 +242,12 @@ func (m *Manager) readEvents(proc *Process) {
 	m.store.UpdateSessionPID(sid, 0)
 }
 
+// PushEvent sends an event directly to log-store.
+func (m *Manager) PushEvent(ev msg.Event) error {
+	_, err := m.logStore.PushEvent(ev)
+	return err
+}
+
 // ActiveCount returns the number of running processes.
 func (m *Manager) ActiveCount() int {
 	m.mu.RLock()
@@ -325,6 +332,61 @@ func (m *Manager) startSSH(ctx context.Context, sess *store.Session, inst *msg.I
 	args = append(args, remoteCmd)
 
 	return StartSSHProcess(ctx, args, sess, credentialID)
+}
+
+// DiscoverSessions invokes a harness binary with -discover to find sessions
+// stored on disk by the underlying CLI tool.
+// If harness is empty, it discovers across all available harness types.
+func (m *Manager) DiscoverSessions(ctx context.Context, h msg.Harness) ([]msg.StoredSession, error) {
+	var harnesses []msg.Harness
+	if h != "" {
+		harnesses = []msg.Harness{h}
+	} else {
+		harnesses = discoverableHarnesses()
+	}
+
+	var all []msg.StoredSession
+	for _, hType := range harnesses {
+		binPath, ok := Available(hType)
+		if !ok {
+			continue
+		}
+
+		sessions, err := runDiscover(ctx, binPath)
+		if err != nil {
+			log.Printf("[harness] discover %s: %v", hType, err)
+			continue
+		}
+		all = append(all, sessions...)
+	}
+
+	return all, nil
+}
+
+// discoverableHarnesses returns harness types that support -discover.
+func discoverableHarnesses() []msg.Harness {
+	return []msg.Harness{
+		msg.HarnessClaudeCode,
+		msg.HarnessCodex,
+	}
+}
+
+// runDiscover executes a harness binary with -discover and parses the JSON output.
+func runDiscover(ctx context.Context, binPath string) ([]msg.StoredSession, error) {
+	cmd := exec.CommandContext(ctx, binPath, "-discover")
+	cmd.Stderr = os.Stderr
+
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("exec %s -discover: %w", binPath, err)
+	}
+
+	var sessions []msg.StoredSession
+	if err := json.Unmarshal(out, &sessions); err != nil {
+		return nil, fmt.Errorf("parse discover output: %w", err)
+	}
+
+	return sessions, nil
 }
 
 // CheckSSHReachability tests if an SSH instance is reachable.
