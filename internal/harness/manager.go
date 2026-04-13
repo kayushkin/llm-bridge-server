@@ -1,6 +1,8 @@
 package harness
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -387,6 +389,48 @@ func runDiscover(ctx context.Context, binPath string) ([]msg.StoredSession, erro
 	}
 
 	return sessions, nil
+}
+
+// ImportHistory runs a harness with -import-history and pushes events to log-store.
+// Used to import conversation history for discovered sessions.
+func (m *Manager) ImportHistory(ctx context.Context, h msg.Harness, sessionID string) (int, error) {
+	binPath, ok := Available(h)
+	if !ok {
+		return 0, fmt.Errorf("harness binary not found: %s", BinaryName(h))
+	}
+
+	cmd := exec.CommandContext(ctx, binPath, "-import-history", sessionID)
+	cmd.Stderr = os.Stderr
+
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("exec %s -import-history: %w", binPath, err)
+	}
+
+	// Parse NDJSON output and push each event to log-store
+	var imported int
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var event msg.Event
+		if err := json.Unmarshal(line, &event); err != nil {
+			continue
+		}
+
+		if _, err := m.logStore.PushEvent(event); err != nil {
+			log.Printf("[import-history] failed to push event: %v", err)
+			continue
+		}
+		imported++
+	}
+
+	return imported, scanner.Err()
 }
 
 // CheckSSHReachability tests if an SSH instance is reachable.

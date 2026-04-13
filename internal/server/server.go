@@ -204,6 +204,15 @@ func (s *Server) AutoDiscover() {
 			inserted, err := s.store.UpsertDiscoveredSession(ds.ID, displayName, string(ds.Harness), instanceID, ds.CreatedAt, ds.UpdatedAt)
 			if err == nil && inserted {
 				imported++
+				// Import history to log-store for new sessions
+				go func(h msg.Harness, sid string) {
+					n, err := s.harness.ImportHistory(context.Background(), h, sid)
+					if err != nil {
+						log.Printf("[auto-discover] failed to import history for %s: %v", sid, err)
+					} else if n > 0 {
+						log.Printf("[auto-discover] imported %d events for session %s", n, sid)
+					}
+				}(ds.Harness, ds.ID)
 			}
 		}
 		if imported > 0 {
