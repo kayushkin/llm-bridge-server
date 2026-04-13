@@ -189,54 +189,6 @@ func (s *Store) StoreEvent(sessionID, eventType string, data []byte) error {
 	return err
 }
 
-// ListEvents returns all stored events for a session, ordered chronologically.
-func (s *Store) ListEvents(sessionID string) ([]json.RawMessage, error) {
-	rows, err := s.db.Query(
-		`SELECT data FROM events WHERE session_id=? ORDER BY id ASC`,
-		sessionID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var events []json.RawMessage
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return nil, err
-		}
-		events = append(events, json.RawMessage(data))
-	}
-	return events, rows.Err()
-}
-
-// EventCount returns the number of stored events for a session.
-func (s *Store) EventCount(sessionID string) (int, error) {
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM events WHERE session_id=?`, sessionID).Scan(&count)
-	return count, err
-}
-
-// ListEventsSince returns events stored after the given row ID.
-func (s *Store) ListEventsSince(sessionID string, afterID int) ([]json.RawMessage, error) {
-	rows, err := s.db.Query(
-		`SELECT data FROM events WHERE session_id=? AND id > ? ORDER BY id ASC`,
-		sessionID, afterID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var events []json.RawMessage
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return nil, err
-		}
-		events = append(events, json.RawMessage(data))
-	}
-	return events, rows.Err()
-}
 
 // MaxEventID returns the highest event row ID for a session.
 func (s *Store) MaxEventID(sessionID string) (int, error) {
@@ -245,61 +197,10 @@ func (s *Store) MaxEventID(sessionID string) (int, error) {
 	return id, err
 }
 
-// ListCurrentTurnEvents returns events since the last user_message for a session.
-func (s *Store) ListCurrentTurnEvents(sessionID string) ([]json.RawMessage, error) {
-	// Find the row ID of the last user_message
-	var lastUserID int
-	_ = s.db.QueryRow(
-		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id=? AND type='user_message'`,
-		sessionID,
-	).Scan(&lastUserID)
-
-	rows, err := s.db.Query(
-		`SELECT data FROM events WHERE session_id=? AND id > ? AND type != 'user_message' ORDER BY id ASC`,
-		sessionID, lastUserID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var events []json.RawMessage
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return nil, err
-		}
-		events = append(events, json.RawMessage(data))
-	}
-	return events, rows.Err()
-}
-
 // EventWithID is a raw event with its database row ID.
 type EventWithID struct {
 	RowID int
 	Data  json.RawMessage
-}
-
-// ListEventsWithIDs returns events with their row IDs for SSE id: fields.
-func (s *Store) ListEventsWithIDs(sessionID string) ([]EventWithID, error) {
-	rows, err := s.db.Query(
-		`SELECT id, data FROM events WHERE session_id=? ORDER BY id ASC`,
-		sessionID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var events []EventWithID
-	for rows.Next() {
-		var ev EventWithID
-		var data string
-		if err := rows.Scan(&ev.RowID, &data); err != nil {
-			return nil, err
-		}
-		ev.Data = json.RawMessage(data)
-		events = append(events, ev)
-	}
-	return events, rows.Err()
 }
 
 // ListCurrentTurnEventsWithIDs returns current-turn events with row IDs.
