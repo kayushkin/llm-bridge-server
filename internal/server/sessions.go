@@ -484,15 +484,16 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		sessions = []msg.StoredSession{}
 	}
 
-	// Build map of harness type → default instance ID
-	defaultInstances := make(map[msg.Harness]string)
+	// Build map of harness type → local instance ID.
+	// Discovery runs the harness binary locally, so sessions belong to the local instance.
+	localInstances := make(map[msg.Harness]string)
 	if s.harnessStore != nil {
 		for _, h := range []msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex} {
 			instances, err := s.harnessStore.ListInstancesByHarness(h)
-			if err == nil && len(instances) > 0 {
+			if err == nil {
 				for _, inst := range instances {
-					if inst.Enabled {
-						defaultInstances[h] = inst.ID
+					if inst.Enabled && inst.Transport == msg.TransportLocal {
+						localInstances[h] = inst.ID
 						break
 					}
 				}
@@ -512,7 +513,8 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			displayName = displayName[:100]
 		}
 
-		instanceID := defaultInstances[ds.Harness]
+		// Sessions discovered locally belong to the local instance
+		instanceID := localInstances[ds.Harness]
 
 		inserted, err := s.store.UpsertDiscoveredSession(
 			ds.ID,

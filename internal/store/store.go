@@ -280,14 +280,19 @@ func (s *Store) DeleteSession(id string) error {
 }
 
 // UpsertDiscoveredSession inserts a discovered session if it doesn't already exist.
+// instanceID is the instance that discovered this session (the one running the harness binary).
 // Returns true if a new row was inserted.
 func (s *Store) UpsertDiscoveredSession(id, displayName, harness, instanceID string, createdAt, updatedAt time.Time) (bool, error) {
 	// Check if session already exists
-	var existing int
-	err := s.db.QueryRow(`SELECT 1 FROM sessions WHERE id=?`, id).Scan(&existing)
+	var existingInstanceID string
+	err := s.db.QueryRow(`SELECT COALESCE(instance_id, '') FROM sessions WHERE id=?`, id).Scan(&existingInstanceID)
 	if err == nil {
-		// Already exists, update the timestamp and instance if not set
-		s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=COALESCE(NULLIF(instance_id,''), ?) WHERE id=?`, updatedAt, instanceID, id)
+		// Already exists - update timestamp, and set instance_id if currently empty
+		if existingInstanceID == "" && instanceID != "" {
+			s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=? WHERE id=?`, updatedAt, instanceID, id)
+		} else {
+			s.db.Exec(`UPDATE sessions SET updated_at=? WHERE id=?`, updatedAt, id)
+		}
 		return false, nil
 	}
 	if err != sql.ErrNoRows {
