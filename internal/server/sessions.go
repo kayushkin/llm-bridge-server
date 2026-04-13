@@ -484,6 +484,22 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		sessions = []msg.StoredSession{}
 	}
 
+	// Build map of harness type → default instance ID
+	defaultInstances := make(map[msg.Harness]string)
+	if s.harnessStore != nil {
+		for _, h := range []msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex} {
+			instances, err := s.harnessStore.ListInstancesByHarness(h)
+			if err == nil && len(instances) > 0 {
+				for _, inst := range instances {
+					if inst.Enabled {
+						defaultInstances[h] = inst.ID
+						break
+					}
+				}
+			}
+		}
+	}
+
 	// Persist discovered sessions to the store so they appear in GET /sessions
 	var imported int
 	for _, ds := range sessions {
@@ -496,10 +512,13 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			displayName = displayName[:100]
 		}
 
+		instanceID := defaultInstances[ds.Harness]
+
 		inserted, err := s.store.UpsertDiscoveredSession(
 			ds.ID,
 			displayName,
 			string(ds.Harness),
+			instanceID,
 			ds.CreatedAt,
 			ds.UpdatedAt,
 		)

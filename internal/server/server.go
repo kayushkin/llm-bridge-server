@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 type Server struct {
@@ -158,4 +160,53 @@ func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+// AutoDiscover runs session discovery for all harness types and imports them to the store.
+// Called on startup to populate the session list with on-disk sessions.
+func (s *Server) AutoDiscover() {
+	go func() {
+		ctx := context.Background()
+		sessions, err := s.harness.DiscoverSessions(ctx, "")
+		if err != nil {
+			log.Printf("auto-discover: %v", err)
+			return
+		}
+
+		// Build map of harness type → default instance ID
+		defaultInstances := make(map[msg.Harness]string)
+		if s.harnessStore != nil {
+			for _, h := range []msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex} {
+				instances, err := s.harnessStore.ListInstancesByHarness(h)
+				if err == nil {
+					for _, inst := range instances {
+						if inst.Enabled {
+							defaultInstances[h] = inst.ID
+							break
+						}
+					}
+				}
+			}
+		}
+
+		var imported int
+		for _, ds := range sessions {
+			displayName := ds.Project
+			if displayName == "" || displayName == "/" {
+				displayName = ds.Prompt
+			}
+			if len(displayName) > 100 {
+				displayName = displayName[:100]
+			}
+
+			instanceID := defaultInstances[ds.Harness]
+			inserted, err := s.store.UpsertDiscoveredSession(ds.ID, displayName, string(ds.Harness), instanceID, ds.CreatedAt, ds.UpdatedAt)
+			if err == nil && inserted {
+				imported++
+			}
+		}
+		if imported > 0 {
+			log.Printf("[auto-discover] imported %d sessions", imported)
+		}
+	}()
 }

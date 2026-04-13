@@ -79,6 +79,7 @@ func main() {
 	}
 
 	srv := server.New(st, as, ms, hs, mds, cfg)
+	srv.AutoDiscover() // Import on-disk sessions from harnesses
 
 	go func() {
 		log.Printf("llm-bridge-server listening on %s", cfg.ListenAddr)
