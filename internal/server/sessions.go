@@ -504,10 +504,10 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	// Persist discovered sessions to the store so they appear in GET /sessions
 	var imported int
 	for _, ds := range sessions {
-		// Use project path as display name, fall back to prompt snippet
-		displayName := ds.Project
-		if displayName == "" || displayName == "/" {
-			displayName = ds.Prompt
+		// Use prompt as display name - it's more useful for identifying sessions
+		displayName := ds.Prompt
+		if displayName == "" {
+			displayName = ds.Project
 		}
 		if len(displayName) > 100 {
 			displayName = displayName[:100]

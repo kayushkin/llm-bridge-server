@@ -284,15 +284,19 @@ func (s *Store) DeleteSession(id string) error {
 // Returns true if a new row was inserted.
 func (s *Store) UpsertDiscoveredSession(id, displayName, harness, instanceID string, createdAt, updatedAt time.Time) (bool, error) {
 	// Check if session already exists
-	var existingInstanceID string
-	err := s.db.QueryRow(`SELECT COALESCE(instance_id, '') FROM sessions WHERE id=?`, id).Scan(&existingInstanceID)
+	var existingInstanceID, existingDisplayName string
+	err := s.db.QueryRow(`SELECT COALESCE(instance_id, ''), COALESCE(display_name, '') FROM sessions WHERE id=?`, id).Scan(&existingInstanceID, &existingDisplayName)
 	if err == nil {
-		// Already exists - update timestamp, and set instance_id if currently empty
+		// Already exists - update timestamp, display_name, and instance_id if currently empty
+		newInstanceID := existingInstanceID
 		if existingInstanceID == "" && instanceID != "" {
-			s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=? WHERE id=?`, updatedAt, instanceID, id)
-		} else {
-			s.db.Exec(`UPDATE sessions SET updated_at=? WHERE id=?`, updatedAt, id)
+			newInstanceID = instanceID
 		}
+		newDisplayName := existingDisplayName
+		if existingDisplayName == "" && displayName != "" {
+			newDisplayName = displayName
+		}
+		s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=? WHERE id=?`, updatedAt, newInstanceID, newDisplayName, id)
 		return false, nil
 	}
 	if err != sql.ErrNoRows {

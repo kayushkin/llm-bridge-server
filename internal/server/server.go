@@ -192,9 +192,10 @@ func (s *Server) AutoDiscover() {
 
 		var imported int
 		for _, ds := range sessions {
-			displayName := ds.Project
-			if displayName == "" || displayName == "/" {
-				displayName = ds.Prompt
+			// Use prompt as display name - it's more useful for identifying sessions
+			displayName := ds.Prompt
+			if displayName == "" {
+				displayName = ds.Project
 			}
 			if len(displayName) > 100 {
 				displayName = displayName[:100]
