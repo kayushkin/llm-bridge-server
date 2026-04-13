@@ -124,19 +124,6 @@ func (s *Server) handleCredentialDelete(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleCredentialToggle(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID      string `json:"id"`
-		Enabled bool   `json:"enabled"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
-		http.Error(w, `{"error":"id required"}`, http.StatusBadRequest)
-		return
-	}
-
-	// aiauth doesn't support enable/disable per profile — acknowledge only
-	writeJSON(w, map[string]interface{}{"ok": true, "id": req.ID, "enabled": req.Enabled})
-}
 
 func maskKey(key string) string {
 	if len(key) <= 16 {

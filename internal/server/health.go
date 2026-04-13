@@ -47,6 +47,7 @@ var harnessMetadata = map[msg.Harness]harnessMeta{
 	msg.HarnessCline:      {Label: "Cline", Emoji: "📝", Image: "cline.png"},
 	msg.HarnessRooCode:    {Label: "Roo Code", Emoji: "🦘", Image: "roo_code.svg"},
 	msg.HarnessKiloCode:   {Label: "Kilo Code", Emoji: "⚡", Image: "kilo_code.png"},
+	msg.HarnessOpenCode:   {Label: "OpenCode", Emoji: "🔓"},
 }
 
 // harnessSupportedProviders defines which model providers each harness accepts.
@@ -75,6 +76,7 @@ var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessCline:      {"model"},
 	msg.HarnessRooCode:    {"model"},
 	msg.HarnessKiloCode:   {"model"},
+	msg.HarnessOpenCode:   {"model"},
 }
 
 type SessionCounts struct {
@@ -99,6 +101,17 @@ var allHarnesses = []msg.Harness{
 	msg.HarnessCline,
 	msg.HarnessRooCode,
 	msg.HarnessKiloCode,
+	msg.HarnessOpenCode,
+}
+
+// isValidHarness checks whether a harness type is in the known set.
+func isValidHarness(h msg.Harness) bool {
+	for _, known := range allHarnesses {
+		if h == known {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

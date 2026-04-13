@@ -11,6 +11,7 @@ import (
 	agentstore "github.com/kayushkin/agent-store"
 	harnessstore "github.com/kayushkin/harness-store"
 	memorystore "github.com/kayushkin/memory-store"
+	modelstore "github.com/kayushkin/model-store"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -64,7 +65,20 @@ func main() {
 		}
 	}
 
-	srv := server.New(st, as, ms, hs, cfg)
+	// Initialize model-store (optional)
+	var mds *modelstore.Store
+	if cfg.ModelStoreDB != "" {
+		mds, err = modelstore.Open(cfg.ModelStoreDB)
+		if err != nil {
+			log.Printf("model-store: %v (continuing without model data)", err)
+			mds = nil
+		} else {
+			defer mds.Close()
+			log.Printf("model-store loaded from %s", cfg.ModelStoreDB)
+		}
+	}
+
+	srv := server.New(st, as, ms, hs, mds, cfg)
 
 	go func() {
 		log.Printf("llm-bridge-server listening on %s", cfg.ListenAddr)

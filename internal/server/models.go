@@ -8,14 +8,7 @@ import (
 )
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	store, err := modelstore.Open(s.cfg.ModelStoreDB)
-	if err != nil {
-		http.Error(w, `{"error":"failed to open model store"}`, http.StatusInternalServerError)
-		return
-	}
-	defer store.Close()
-
-	statuses, err := store.AllModelsWithStatus()
+	statuses, err := s.modelStore.AllModelsWithStatus()
 	if err != nil {
 		http.Error(w, `{"error":"failed to query models"}`, http.StatusInternalServerError)
 		return
@@ -30,6 +23,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	for name, c := range profiles {
 		cr := credResponse{
 			ID:        name,
+			Provider:  c.Provider,
 			Label:     name,
 			AuthType:  c.Type,
 			Priority:  priority,

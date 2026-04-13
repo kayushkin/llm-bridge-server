@@ -8,6 +8,7 @@ import (
 	agentstore "github.com/kayushkin/agent-store"
 	harnessstore "github.com/kayushkin/harness-store"
 	memorystore "github.com/kayushkin/memory-store"
+	modelstore "github.com/kayushkin/model-store"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -19,18 +20,20 @@ type Server struct {
 	agentStore   *agentstore.Store
 	memoryStore  *memorystore.Store
 	harnessStore *harnessstore.Store
+	modelStore   *modelstore.Store
 	harness      *harness.Manager
 	bridgePrefs  *bridgePrefsStore
 	cfg          *config.Config
 }
 
-func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, cfg *config.Config) *Server {
+func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, mds *modelstore.Store, cfg *config.Config) *Server {
 	srv := &Server{
 		mux:          http.NewServeMux(),
 		store:        st,
 		agentStore:   as,
 		memoryStore:  ms,
 		harnessStore: hs,
+		modelStore:   mds,
 		harness:      harness.NewManager(st),
 		bridgePrefs:  newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfg:          cfg,
@@ -108,10 +111,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /credentials", s.handleCredentialsList)
 	s.mux.HandleFunc("POST /credentials", s.handleCredentialCreate)
 	s.mux.HandleFunc("DELETE /credentials/{id}", s.handleCredentialDelete)
-	s.mux.HandleFunc("POST /credentials/toggle", s.handleCredentialToggle)
 
 	// Model routes (model-store)
-	s.mux.HandleFunc("GET /models", s.handleModels)
+	if s.modelStore != nil {
+		s.mux.HandleFunc("GET /models", s.handleModels)
+	}
 
 	// Bridge prefs
 	s.mux.HandleFunc("GET /bridge-prefs", s.handleBridgePrefs)
