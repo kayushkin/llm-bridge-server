@@ -350,6 +350,7 @@ type MaterializedMessage struct {
 	Thinking  string             `json:"thinking,omitempty"`
 	Tools     []MaterializedTool `json:"tools,omitempty"`
 	Meta      *msg.ResultEvent   `json:"meta,omitempty"`
+	Raw       json.RawMessage    `json:"raw,omitempty"` // original harness event JSON
 	Timestamp string             `json:"timestamp"`
 	Done      bool               `json:"done"`
 }
@@ -420,6 +421,7 @@ func materializeMessages(rawEvents []json.RawMessage) []MaterializedMessage {
 				}
 				current.Meta = ev.Result
 			}
+			current.Raw = ev.Raw
 			flushAssistant()
 
 		case "stream":
