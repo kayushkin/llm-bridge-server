@@ -2,8 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"path"
 
 	agentstore "github.com/kayushkin/agent-store"
 	harnessstore "github.com/kayushkin/harness-store"
@@ -34,7 +37,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		memoryStore:  ms,
 		harnessStore: hs,
 		modelStore:   mds,
-		harness:      harness.NewManager(st),
+		harness:      harness.NewManager(st, cfg.LogStoreURL),
 		bridgePrefs:  newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfg:          cfg,
 	}
@@ -74,8 +77,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
 	s.mux.HandleFunc("POST /sessions/{id}/send", s.handleSendMessage)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleSessionEvents)
-	s.mux.HandleFunc("GET /sessions/{id}/messages", s.handleSessionMessages)
-	s.mux.HandleFunc("GET /sessions/{id}/history", s.handleSessionHistory)
+	s.mux.HandleFunc("GET /sessions/{id}/messages", s.proxyToLogStore)
+	s.mux.HandleFunc("GET /sessions/{id}/history", s.proxyToLogStore)
 	s.mux.HandleFunc("POST /sessions/{id}/interrupt", s.handleInterruptSession)
 	s.mux.HandleFunc("POST /sessions/{id}/resume", s.handleResumeSession)
 	s.mux.HandleFunc("POST /sessions/{id}/stop", s.handleStopSession)
@@ -124,6 +127,37 @@ func (s *Server) routes() {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
+}
+
+// proxyToLogStore proxies /sessions/{id}/messages and /sessions/{id}/history to log-store.
+func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	endpoint := path.Base(r.URL.Path) // "messages" or "history"
+	target := fmt.Sprintf("%s/api/v1/sessions/%s/%s", s.cfg.LogStoreURL, id, endpoint)
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+
+	resp, err := http.Get(target)
+	if err != nil {
+		// Fall back to local store if log-store is unreachable
+		log.Printf("[proxy] log-store unreachable, falling back to local: %v", err)
+		if endpoint == "messages" {
+			s.handleSessionMessages(w, r)
+		} else {
+			s.handleSessionHistory(w, r)
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	for key, vals := range resp.Header {
+		for _, v := range vals {
+			w.Header().Add(key, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

@@ -7,6 +7,7 @@ require (
 	github.com/kayushkin/aiauth v0.0.0
 	github.com/kayushkin/harness-store v0.0.0-00010101000000-000000000000
 	github.com/kayushkin/llm-bridge v0.0.0
+	github.com/kayushkin/log-store v0.0.0
 	github.com/kayushkin/memory-store v0.0.0
 	github.com/kayushkin/model-store v0.0.0
 	modernc.org/sqlite v1.48.2
@@ -32,6 +33,8 @@ require (
 )
 
 replace github.com/kayushkin/llm-bridge => ../llm-bridge
+
+replace github.com/kayushkin/log-store => ../log-store
 
 replace github.com/kayushkin/agent-store => ../agent-store
 

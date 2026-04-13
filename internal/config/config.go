@@ -17,6 +17,7 @@ type Config struct {
 	NatsURL         string
 	ImagesDir       string
 	BridgePrefsPath string
+	LogStoreURL     string
 }
 
 func Load() *Config {
@@ -32,6 +33,7 @@ func Load() *Config {
 		NatsURL:        os.Getenv("NATS_URL"),
 		ImagesDir:       envOr("LLMBRIDGE_IMAGES_DIR", "images"),
 		BridgePrefsPath: envOr("LLMBRIDGE_BRIDGE_PREFS", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "bridge-prefs.json")),
+		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", "http://localhost:8175"),
 	}
 }
 

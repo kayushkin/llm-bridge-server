@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	logstore "github.com/kayushkin/log-store/client"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -20,14 +21,16 @@ type Manager struct {
 	processes   map[string]*Process        // sessionID → process
 	subscribers map[string][]chan msg.Event // sessionID → SSE subscriber channels
 	store       *store.Store
+	logStore    *logstore.Client
 }
 
 // NewManager creates a harness manager.
-func NewManager(st *store.Store) *Manager {
+func NewManager(st *store.Store, logStoreURL string) *Manager {
 	return &Manager{
 		processes:   make(map[string]*Process),
 		subscribers: make(map[string][]chan msg.Event),
 		store:       st,
+		logStore:    logstore.New(logStoreURL),
 	}
 }
 
@@ -190,11 +193,16 @@ func (m *Manager) readEvents(proc *Process) {
 	sid := proc.SessionID()
 
 	for event := range proc.Events() {
-		// Persist event
+		// Persist event locally
 		if data, err := json.Marshal(event); err == nil {
 			if err := m.store.StoreEvent(sid, string(event.Type), data); err != nil {
 				log.Printf("[harness] failed to store event: %v", err)
 			}
+		}
+
+		// Push to log-store (durable source of truth)
+		if _, err := m.logStore.PushEvent(event); err != nil {
+			log.Printf("[harness] failed to push event to log-store: %v", err)
 		}
 
 		// Update session state based on event type
