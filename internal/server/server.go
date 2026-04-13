@@ -151,6 +151,17 @@ func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		// Fall back to local store if log-store returned an error
+		log.Printf("[proxy] log-store returned %d, falling back to local", resp.StatusCode)
+		if endpoint == "messages" {
+			s.handleSessionMessages(w, r)
+		} else {
+			s.handleSessionHistory(w, r)
+		}
+		return
+	}
+
 	for key, vals := range resp.Header {
 		for _, v := range vals {
 			w.Header().Add(key, v)
