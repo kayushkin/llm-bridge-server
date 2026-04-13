@@ -6,15 +6,17 @@ import (
 )
 
 type Config struct {
-	ListenAddr     string
-	DBPath         string
-	AgentStoreDB   string
-	MemoryStoreDB  string
-	HarnessStoreDB string
-	ModelStoreURL  string
-	AgentStoreURL  string
-	NatsURL        string
-	ImagesDir      string
+	ListenAddr      string
+	DBPath          string
+	AgentStoreDB    string
+	MemoryStoreDB   string
+	HarnessStoreDB  string
+	ModelStoreDB    string
+	ModelStoreURL   string
+	AgentStoreURL   string
+	NatsURL         string
+	ImagesDir       string
+	BridgePrefsPath string
 }
 
 func Load() *Config {
@@ -24,10 +26,12 @@ func Load() *Config {
 		AgentStoreDB:   envOr("LLMBRIDGE_AGENT_DB", filepath.Join(os.Getenv("HOME"), ".config", "agent-store", "agents.db")),
 		MemoryStoreDB:  envOr("LLMBRIDGE_MEMORY_DB", filepath.Join(os.Getenv("HOME"), ".config", "memory-store", "memory.db")),
 		HarnessStoreDB: envOr("LLMBRIDGE_HARNESS_DB", filepath.Join(os.Getenv("HOME"), ".config", "harness-store", "harness.db")),
-		ModelStoreURL:  os.Getenv("LLMBRIDGE_MODEL_STORE_URL"),
-		AgentStoreURL:  os.Getenv("LLMBRIDGE_AGENT_STORE_URL"),
+		ModelStoreDB:    envOr("LLMBRIDGE_MODEL_STORE_DB", filepath.Join(os.Getenv("HOME"), ".config", "model-store", "store.db")),
+		ModelStoreURL:   os.Getenv("LLMBRIDGE_MODEL_STORE_URL"),
+		AgentStoreURL:   os.Getenv("LLMBRIDGE_AGENT_STORE_URL"),
 		NatsURL:        os.Getenv("NATS_URL"),
-		ImagesDir:      envOr("LLMBRIDGE_IMAGES_DIR", "images"),
+		ImagesDir:       envOr("LLMBRIDGE_IMAGES_DIR", "images"),
+		BridgePrefsPath: envOr("LLMBRIDGE_BRIDGE_PREFS", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "bridge-prefs.json")),
 	}
 }
 

@@ -20,6 +20,7 @@ type Server struct {
 	memoryStore  *memorystore.Store
 	harnessStore *harnessstore.Store
 	harness      *harness.Manager
+	bridgePrefs  *bridgePrefsStore
 	cfg          *config.Config
 }
 
@@ -31,6 +32,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		memoryStore:  ms,
 		harnessStore: hs,
 		harness:      harness.NewManager(st),
+		bridgePrefs:  newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfg:          cfg,
 	}
 	srv.routes()
@@ -101,6 +103,19 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("POST /instances/{id}/credentials", s.handleBindCredential)
 		s.mux.HandleFunc("DELETE /instances/{id}/credentials/{cred_id}", s.handleUnbindCredential)
 	}
+
+	// Credential routes (aiauth)
+	s.mux.HandleFunc("GET /credentials", s.handleCredentialsList)
+	s.mux.HandleFunc("POST /credentials", s.handleCredentialCreate)
+	s.mux.HandleFunc("DELETE /credentials/{id}", s.handleCredentialDelete)
+	s.mux.HandleFunc("POST /credentials/toggle", s.handleCredentialToggle)
+
+	// Model routes (model-store)
+	s.mux.HandleFunc("GET /models", s.handleModels)
+
+	// Bridge prefs
+	s.mux.HandleFunc("GET /bridge-prefs", s.handleBridgePrefs)
+	s.mux.HandleFunc("PUT /bridge-prefs", s.handleBridgePrefs)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
