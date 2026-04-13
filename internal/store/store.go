@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -293,7 +294,8 @@ func (s *Store) UpsertDiscoveredSession(id, displayName, harness, instanceID str
 			newInstanceID = instanceID
 		}
 		newDisplayName := existingDisplayName
-		if existingDisplayName == "" && displayName != "" {
+		// Update display_name if empty OR if current is a path-based fallback and new one is a real prompt
+		if displayName != "" && (existingDisplayName == "" || (strings.HasPrefix(existingDisplayName, "/") && !strings.HasPrefix(displayName, "/"))) {
 			newDisplayName = displayName
 		}
 		s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=? WHERE id=?`, updatedAt, newInstanceID, newDisplayName, id)
