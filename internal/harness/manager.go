@@ -197,8 +197,9 @@ func (m *Manager) readEvents(proc *Process) {
 	realID := bridgeID // Start assuming they're the same
 
 	for event := range proc.Events() {
-		// On first session_state event, remap temp bridge ID → real harness ID
-		if event.Type == msg.EventSessionState && event.SessionID != bridgeID {
+		// On first event with real harness ID, remap temp bridge ID → real harness ID
+		// (typically session_state, but can be error if CC fails to start)
+		if event.SessionID != "" && event.SessionID != bridgeID && bridgeID == realID {
 			realID = event.SessionID
 			if err := m.store.RemapSessionID(bridgeID, realID); err != nil {
 				log.Printf("[harness] failed to remap session %s → %s: %v", bridgeID, realID, err)
@@ -338,7 +339,7 @@ func (m *Manager) startSSH(ctx context.Context, sess *store.Session, inst *msg.I
 		args = append(args, "-p", strconv.Itoa(port))
 	}
 
-	// Disable host key checking for automated use (conbridgeIDer making this configurable)
+	// Disable host key checking for automated use (consider making this configurable)
 	args = append(args, "-o", "StrictHostKeyChecking=accept-new")
 	args = append(args, "-o", "BatchMode=yes")
 
