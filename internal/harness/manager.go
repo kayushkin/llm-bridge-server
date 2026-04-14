@@ -196,6 +196,10 @@ func (m *Manager) readEvents(proc *Process) {
 	sid := proc.SessionID()
 
 	for event := range proc.Events() {
+		// Normalize session ID to the bridge session ID so all
+		// downstream stores key events consistently.
+		event.SessionID = sid
+
 		// Persist event locally
 		if data, err := json.Marshal(event); err == nil {
 			if err := m.store.StoreEvent(sid, string(event.Type), data); err != nil {
