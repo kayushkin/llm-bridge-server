@@ -201,6 +201,7 @@ func (m *Manager) readEvents(proc *Process) {
 		// (typically session_state, but can be error if CC fails to start)
 		if event.SessionID != "" && event.SessionID != bridgeID && bridgeID == realID {
 			realID = event.SessionID
+			pendingID := bridgeID // preserve for the notification event
 			if err := m.store.RemapSessionID(bridgeID, realID); err != nil {
 				log.Printf("[harness] failed to remap session %s → %s: %v", bridgeID, realID, err)
 			} else {
@@ -217,6 +218,28 @@ func (m *Manager) readEvents(proc *Process) {
 				}
 				m.mu.Unlock()
 				bridgeID = realID // Use real ID for remainder of session
+
+				// Notify SSE subscribers that the session ID changed so frontends
+				// can update their references from the pending/frontend ID to the
+				// canonical harness session ID.
+				remapEvent := msg.Event{
+					Type:            msg.EventSystem,
+					SessionID:       realID,
+					ClientRequestID: pendingID,
+					Timestamp:       time.Now(),
+					System:          &msg.SystemEvent{Subtype: "session_id_changed", Message: pendingID},
+				}
+				if data, err := json.Marshal(remapEvent); err == nil {
+					m.store.StoreEvent(bridgeID, string(remapEvent.Type), data)
+				}
+				m.mu.RLock()
+				for _, ch := range m.subscribers[bridgeID] {
+					select {
+					case ch <- remapEvent:
+					default:
+					}
+				}
+				m.mu.RUnlock()
 			}
 		}
 

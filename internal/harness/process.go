@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -22,10 +23,20 @@ type Request struct {
 	Params json.RawMessage `json:"params,omitempty"`
 }
 
-// isDiscoveredSession returns true if the session ID indicates a discovered
-// session (e.g. CC UUID) rather than one we created (sess_ prefix).
+// isPendingSession returns true if the session ID is a temporary pending ID
+// (frontend fe_ / req_ or server-generated pending_) rather than a
+// harness-native ID (e.g. CC UUID or discovered session).
+func isPendingSession(id string) bool {
+	return strings.HasPrefix(id, "fe_") ||
+		strings.HasPrefix(id, "req_") ||
+		strings.HasPrefix(id, "pending_") ||
+		strings.HasPrefix(id, "sess_") // legacy
+}
+
+// isDiscoveredSession returns true if the session ID is a harness-native ID
+// (e.g. CC UUID) rather than a pending/frontend-generated one.
 func isDiscoveredSession(id string) bool {
-	return len(id) > 0 && id[0] != 's' // Our IDs start with "sess_"
+	return len(id) > 0 && !isPendingSession(id)
 }
 
 // StartParams for the "start" method.

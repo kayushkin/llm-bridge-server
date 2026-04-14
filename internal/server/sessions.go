@@ -99,8 +99,16 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Use the client's request ID as the initial session ID.
+	// The harness will generate the canonical session ID (e.g. CC UUID)
+	// and the server will remap this pending ID → harness ID on first event.
+	initialID := req.ClientRequestID
+	if initialID == "" {
+		initialID = fmt.Sprintf("pending_%d", time.Now().UnixNano())
+	}
+
 	sess := &store.Session{
-		ID:              generateID(),
+		ID:              initialID,
 		DisplayName:     req.DisplayName,
 		Harness:         req.Harness,
 		State:           string(msg.SessionIdle),
@@ -402,8 +410,13 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		displayName = parent.DisplayName + " (fork)"
 	}
 
+	forkID := req.ClientRequestID
+	if forkID == "" {
+		forkID = fmt.Sprintf("pending_%d", time.Now().UnixNano())
+	}
+
 	forked := &store.Session{
-		ID:          generateID(),
+		ID:          forkID,
 		DisplayName: displayName,
 		Harness:     parent.Harness,
 		State:       string(msg.SessionIdle),
@@ -530,6 +543,3 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, sessions)
 }
 
-func generateID() string {
-	return fmt.Sprintf("sess_%d", time.Now().UnixNano())
-}
