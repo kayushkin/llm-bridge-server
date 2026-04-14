@@ -175,7 +175,7 @@ func (s *Store) GetCredentialStatus(instanceID string, credentialBindings []msg.
 func (s *Store) CleanupOrphanedSlots() (int, error) {
 	res, err := s.db.Exec(`
 		DELETE FROM credential_slots
-		WHERE session_id NOT IN (SELECT id FROM sessions)`)
+		WHERE session_id NOT IN (SELECT bridge_id FROM sessions)`)
 	if err != nil {
 		return 0, err
 	}

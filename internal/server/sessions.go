@@ -99,22 +99,19 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The frontend must provide a client_request_id — it's the correlation
-	// key used as the initial session ID until the harness generates the
-	// canonical one. Without it we can't relate events back to the caller.
-	if req.ClientRequestID == "" {
-		http.Error(w, "client_request_id is required", http.StatusBadRequest)
+	if req.ClientID == "" {
+		http.Error(w, "client_id is required", http.StatusBadRequest)
 		return
 	}
 
 	sess := &store.Session{
-		ID:              req.ClientRequestID,
-		DisplayName:     req.DisplayName,
-		Harness:         req.Harness,
-		State:           string(msg.SessionIdle),
-		AgentID:         req.AgentID,
-		SpawnerID:       req.SpawnerID,
-		ClientRequestID: req.ClientRequestID,
+		BridgeID:    generateBridgeID(),
+		ClientID:    req.ClientID,
+		DisplayName: req.DisplayName,
+		Harness:     req.Harness,
+		State:       string(msg.SessionIdle),
+		AgentID:     req.AgentID,
+		SpawnerID:   req.SpawnerID,
 	}
 
 	if inst != nil {
@@ -130,31 +127,25 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.AutoStart {
 		var startErr error
 		if inst != nil && s.harnessStore != nil {
-			// Get credential bindings from harness-store
 			credBindings, _ := s.harnessStore.ListInstanceCredentials(inst.ID)
-
-			// Acquire credential slot using runtime store
-			credID, err := s.store.AcquireCredentialSlot(inst.ID, sess.ID, credBindings)
+			credID, err := s.store.AcquireCredentialSlot(inst.ID, sess.BridgeID, credBindings)
 			if err != nil {
-				// No credentials available - session created but can't start
-				s.store.UpdateSessionState(sess.ID, string(msg.SessionError))
+				s.store.UpdateSessionState(sess.BridgeID, string(msg.SessionError))
 				sess.State = string(msg.SessionError)
 				w.WriteHeader(http.StatusCreated)
 				writeJSON(w, sess)
 				return
 			}
-
 			_, startErr = s.harness.StartOnInstance(r.Context(), sess, inst, credID)
 		} else {
 			_, startErr = s.harness.Start(r.Context(), sess)
 		}
 
 		if startErr != nil {
-			// Release credential slot on failure
 			if inst != nil {
-				s.store.ReleaseCredentialSlot(sess.ID)
+				s.store.ReleaseCredentialSlot(sess.BridgeID)
 			}
-			s.store.UpdateSessionState(sess.ID, string(msg.SessionError))
+			s.store.UpdateSessionState(sess.BridgeID, string(msg.SessionError))
 			sess.State = string(msg.SessionError)
 		} else {
 			sess.State = string(msg.SessionRunning)
@@ -166,24 +157,22 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	sess, err := s.store.GetSession(id)
+	bridgeID := r.PathValue("id")
+	sess, err := s.store.GetSession(bridgeID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
-	// Kill the harness process
-	if err := s.harness.Kill(id); err != nil {
+	if err := s.harness.Kill(bridgeID); err != nil {
 		// Process might not be running, just update state
 	}
 
-	// Release credential slot if session was on an instance
 	if sess.InstanceID != "" {
-		s.store.ReleaseCredentialSlot(id)
+		s.store.ReleaseCredentialSlot(bridgeID)
 	}
 
-	if err := s.store.UpdateSessionState(id, string(msg.SessionAborted)); err != nil {
+	if err := s.store.UpdateSessionState(bridgeID, string(msg.SessionAborted)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -193,8 +182,8 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	sess, err := s.store.GetSession(id)
+	bridgeID := r.PathValue("id")
+	sess, err := s.store.GetSession(bridgeID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -206,29 +195,27 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start harness if not running
-	if s.harness.Get(id) == nil {
+	if s.harness.Get(bridgeID) == nil {
 		if _, err := s.harness.Start(r.Context(), sess); err != nil {
 			http.Error(w, fmt.Sprintf("failed to start harness: %v", err), http.StatusInternalServerError)
 			return
 		}
 	}
 
-	// Persist user message as an event for history
 	userEvent := msg.Event{
 		Type:      "user_message",
-		SessionID: id,
+		SessionID: bridgeID,
 		Timestamp: time.Now(),
 		Result:    &msg.ResultEvent{Text: req.Message},
 	}
 	if data, err := json.Marshal(userEvent); err == nil {
-		s.store.StoreEvent(id, "user_message", data)
+		s.store.StoreEvent(bridgeID, "user_message", data)
 	}
 	if err := s.harness.PushEvent(userEvent); err != nil {
 		log.Printf("[session] failed to push user_message to log-store: %v", err)
 	}
 
-	if err := s.harness.Send(id, req.Message); err != nil {
+	if err := s.harness.Send(bridgeID, req.Message); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -237,40 +224,34 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if _, err := s.store.GetSession(id); err != nil {
+	bridgeID := r.PathValue("id")
+	if _, err := s.store.GetSession(bridgeID); err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
-	// Subscribe to live events fan-out
-	events := s.harness.Subscribe(id)
+	events := s.harness.Subscribe(bridgeID)
 
-	// SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		s.harness.Unsubscribe(id, events)
+		s.harness.Unsubscribe(bridgeID, events)
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
 
-	// Check for Last-Event-ID for reconnection support
 	lastEventID := r.Header.Get("Last-Event-ID")
 	var lastRowID int
 	if lastEventID != "" {
 		fmt.Sscanf(lastEventID, "%d", &lastRowID)
 	}
 
-	// Replay events from DB — either since last event ID (reconnection)
-	// or current turn events (initial connection).
 	replayedIDs := make(map[int]bool)
 	if lastRowID > 0 {
-		// Reconnection: replay everything since last seen event
-		if stored, err := s.store.ListEventsSinceID(id, lastRowID); err == nil {
+		if stored, err := s.store.ListEventsSinceID(bridgeID, lastRowID); err == nil {
 			for _, ev := range stored {
 				var parsed msg.Event
 				if json.Unmarshal(ev.Data, &parsed) == nil {
@@ -281,8 +262,7 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	} else {
-		// Initial connection: replay current turn events
-		if stored, err := s.store.ListCurrentTurnEventsWithIDs(id); err == nil && len(stored) > 0 {
+		if stored, err := s.store.ListCurrentTurnEventsWithIDs(bridgeID); err == nil && len(stored) > 0 {
 			for _, ev := range stored {
 				var parsed msg.Event
 				if json.Unmarshal(ev.Data, &parsed) == nil {
@@ -298,7 +278,7 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.harness.Unsubscribe(id, events)
+			s.harness.Unsubscribe(bridgeID, events)
 			return
 		case event, ok := <-events:
 			if !ok {
@@ -307,8 +287,7 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			data, _ := json.Marshal(event)
-			// Get the row ID for this event (it was just persisted by the manager)
-			rowID, _ := s.store.MaxEventID(id)
+			rowID, _ := s.store.MaxEventID(bridgeID)
 			if replayedIDs[rowID] {
 				delete(replayedIDs, rowID)
 				continue
@@ -319,10 +298,9 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-
 func (s *Server) handleInterruptSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	sess, err := s.store.GetSession(id)
+	bridgeID := r.PathValue("id")
+	sess, err := s.store.GetSession(bridgeID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -333,12 +311,12 @@ func (s *Server) handleInterruptSession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.harness.Stop(id); err != nil {
+	if err := s.harness.Stop(bridgeID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if err := s.store.UpdateSessionState(id, string(msg.SessionIdle)); err != nil {
+	if err := s.store.UpdateSessionState(bridgeID, string(msg.SessionIdle)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -348,8 +326,8 @@ func (s *Server) handleInterruptSession(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	sess, err := s.store.GetSession(id)
+	bridgeID := r.PathValue("id")
+	sess, err := s.store.GetSession(bridgeID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -360,7 +338,6 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Restart harness with resume flag
 	if _, err := s.harness.Start(r.Context(), sess); err != nil {
 		http.Error(w, fmt.Sprintf("failed to resume: %v", err), http.StatusInternalServerError)
 		return
@@ -371,8 +348,8 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCompactSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	sess, err := s.store.GetSession(id)
+	bridgeID := r.PathValue("id")
+	sess, err := s.store.GetSession(bridgeID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -381,12 +358,11 @@ func (s *Server) handleCompactSession(w http.ResponseWriter, r *http.Request) {
 	var req CompactSessionRequest
 	json.NewDecoder(r.Body).Decode(&req)
 
-	// Send compact command
 	cmd := "compact"
 	if req.Summary != "" {
 		cmd = "compact:" + req.Summary
 	}
-	if err := s.harness.SendCommand(id, cmd); err != nil {
+	if err := s.harness.SendCommand(bridgeID, cmd); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -395,8 +371,8 @@ func (s *Server) handleCompactSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	parent, err := s.store.GetSession(id)
+	bridgeID := r.PathValue("id")
+	parent, err := s.store.GetSession(bridgeID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -410,20 +386,20 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		displayName = parent.DisplayName + " (fork)"
 	}
 
-	if req.ClientRequestID == "" {
-		http.Error(w, "client_request_id is required", http.StatusBadRequest)
+	if req.ClientID == "" {
+		http.Error(w, "client_id is required", http.StatusBadRequest)
 		return
 	}
 
 	forked := &store.Session{
-		ID:              req.ClientRequestID,
-		ClientRequestID: req.ClientRequestID,
+		BridgeID:    generateBridgeID(),
+		ClientID:    req.ClientID,
 		DisplayName: displayName,
 		Harness:     parent.Harness,
 		State:       string(msg.SessionIdle),
 		AgentID:     parent.AgentID,
 		SpawnerID:   parent.SpawnerID,
-		ParentID:    parent.ID,
+		ParentID:    parent.BridgeID,
 	}
 
 	if err := s.store.CreateSession(forked); err != nil {
@@ -431,9 +407,8 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start forked session (harness will use parent_id to fork state)
 	if _, err := s.harness.Start(context.Background(), forked); err != nil {
-		s.store.UpdateSessionState(forked.ID, string(msg.SessionError))
+		s.store.UpdateSessionState(forked.BridgeID, string(msg.SessionError))
 		forked.State = string(msg.SessionError)
 	} else {
 		forked.State = string(msg.SessionRunning)
@@ -444,8 +419,8 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	sess, err := s.store.GetSession(id)
+	bridgeID := r.PathValue("id")
+	sess, err := s.store.GetSession(bridgeID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -457,10 +432,8 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send config command to harness (the harness binary interprets the JSON params)
 	params, _ := json.Marshal(req)
-	if err := s.harness.SendCommand(id, "config:"+string(params)); err != nil {
-		// Process might not be running — store config for next start
+	if err := s.harness.SendCommand(bridgeID, "config:"+string(params)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -542,5 +515,9 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, sessions)
+}
+
+func generateBridgeID() string {
+	return fmt.Sprintf("br_%d", time.Now().UnixNano())
 }
 

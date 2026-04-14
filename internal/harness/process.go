@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"syscall"
 
@@ -23,19 +22,6 @@ type Request struct {
 	Params json.RawMessage `json:"params,omitempty"`
 }
 
-// isPendingSession returns true if the session ID is a frontend-generated
-// correlation key (fe_ / req_) rather than a harness-native ID (e.g. CC UUID).
-func isPendingSession(id string) bool {
-	return strings.HasPrefix(id, "fe_") ||
-		strings.HasPrefix(id, "req_") ||
-		strings.HasPrefix(id, "sess_") // legacy
-}
-
-// isDiscoveredSession returns true if the session ID is a harness-native ID
-// (e.g. CC UUID) rather than a pending/frontend-generated one.
-func isDiscoveredSession(id string) bool {
-	return len(id) > 0 && !isPendingSession(id)
-}
 
 // StartParams for the "start" method.
 type StartParams struct {
@@ -52,6 +38,32 @@ type StartParams struct {
 // MessageParams for the "message" method.
 type MessageParams struct {
 	Content string `json:"content"`
+}
+
+// buildStartParams creates the start request params for a harness subprocess.
+// If the session already has a harness_id (discovered/resumed), it's used as
+// the session_id and Resume is set. Otherwise the bridge_id is passed and
+// the harness will generate its own session ID.
+func buildStartParams(sess *store.Session, credentialID string) StartParams {
+	hasHarnessID := sess.HarnessID != ""
+	sid := sess.HarnessID
+	if sid == "" {
+		sid = sess.BridgeID
+	}
+	params := StartParams{
+		SessionID:    sid,
+		DisplayName:  sess.DisplayName,
+		AgentID:      sess.AgentID,
+		CredentialID: credentialID,
+		Resume:       hasHarnessID,
+	}
+	if hasHarnessID && sess.DisplayName != "" && sess.DisplayName[0] == '/' {
+		params.WorkDir = sess.DisplayName
+	}
+	if sess.ParentID != "" {
+		params.Fork = sess.ParentID
+	}
+	return params
 }
 
 // Process represents a running harness subprocess.
@@ -96,27 +108,12 @@ func StartProcess(ctx context.Context, binPath string, sess *store.Session, cred
 		cmd:       cmd,
 		stdin:     stdin,
 		stdout:    stdout,
-		sessionID: sess.ID,
+		sessionID: sess.BridgeID,
 		events:    make(chan msg.Event, 100),
 		done:      make(chan struct{}),
 	}
 
-	// Send start request
-	isDiscovered := isDiscoveredSession(sess.ID)
-	params := StartParams{
-		SessionID:    sess.ID,
-		DisplayName:  sess.DisplayName,
-		AgentID:      sess.AgentID,
-		CredentialID: credentialID,
-		Resume:       isDiscovered,
-	}
-	// For discovered sessions, DisplayName contains the project path
-	if isDiscovered && sess.DisplayName != "" && sess.DisplayName[0] == '/' {
-		params.WorkDir = sess.DisplayName
-	}
-	if sess.ParentID != "" {
-		params.Fork = sess.ParentID
-	}
+	params := buildStartParams(sess, credentialID)
 	if err := p.sendRequest("start", params); err != nil {
 		p.Kill()
 		return nil, fmt.Errorf("send start: %w", err)
@@ -270,27 +267,12 @@ func StartSSHProcess(ctx context.Context, args []string, sess *store.Session, cr
 		cmd:       cmd,
 		stdin:     stdin,
 		stdout:    stdout,
-		sessionID: sess.ID,
+		sessionID: sess.BridgeID,
 		events:    make(chan msg.Event, 100),
 		done:      make(chan struct{}),
 	}
 
-	// Send start request
-	isDiscovered := isDiscoveredSession(sess.ID)
-	params := StartParams{
-		SessionID:    sess.ID,
-		DisplayName:  sess.DisplayName,
-		AgentID:      sess.AgentID,
-		CredentialID: credentialID,
-		Resume:       isDiscovered,
-	}
-	// For discovered sessions, DisplayName contains the project path
-	if isDiscovered && sess.DisplayName != "" && sess.DisplayName[0] == '/' {
-		params.WorkDir = sess.DisplayName
-	}
-	if sess.ParentID != "" {
-		params.Fork = sess.ParentID
-	}
+	params := buildStartParams(sess, credentialID)
 	if err := p.sendRequest("start", params); err != nil {
 		p.Kill()
 		return nil, fmt.Errorf("send start: %w", err)

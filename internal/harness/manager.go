@@ -99,12 +99,12 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 	}
 
 	m.mu.Lock()
-	m.processes[sess.ID] = proc
+	m.processes[sess.BridgeID] = proc
 	m.mu.Unlock()
 
 	// Update session with PID
-	m.store.UpdateSessionPID(sess.ID, proc.PID())
-	m.store.UpdateSessionState(sess.ID, string(msg.SessionRunning))
+	m.store.UpdateSessionPID(sess.BridgeID, proc.PID())
+	m.store.UpdateSessionState(sess.BridgeID, string(msg.SessionRunning))
 
 	// Start event reader goroutine
 	go m.readEvents(proc)
@@ -194,48 +194,32 @@ func (m *Manager) HasProcess(sessionID string) bool {
 // and fans out to all SSE subscribers.
 func (m *Manager) readEvents(proc *Process) {
 	bridgeID := proc.SessionID()
-	realID := bridgeID // Start assuming they're the same
+	harnessIDSet := false
 
 	for event := range proc.Events() {
-		// On first event with real harness ID, remap temp bridge ID → real harness ID
-		// (typically session_state, but can be error if CC fails to start)
-		if event.SessionID != "" && event.SessionID != bridgeID && bridgeID == realID {
-			realID = event.SessionID
-			pendingID := bridgeID // preserve for the notification event
-			if err := m.store.RemapSessionID(bridgeID, realID); err != nil {
-				log.Printf("[harness] failed to remap session %s → %s: %v", bridgeID, realID, err)
+		// On first event with a harness session ID, store it on the session row.
+		// The bridge_id stays stable — we just fill in harness_id.
+		if !harnessIDSet && event.SessionID != "" && event.SessionID != bridgeID {
+			if err := m.store.SetHarnessID(bridgeID, event.SessionID); err != nil {
+				log.Printf("[harness] failed to set harness_id on %s: %v", bridgeID, err)
 			} else {
-				// Update process's session ID and remap in-memory structures
-				proc.sessionID = realID
-				m.mu.Lock()
-				if p, ok := m.processes[bridgeID]; ok {
-					delete(m.processes, bridgeID)
-					m.processes[realID] = p
-				}
-				if subs, ok := m.subscribers[bridgeID]; ok {
-					delete(m.subscribers, bridgeID)
-					m.subscribers[realID] = subs
-				}
-				m.mu.Unlock()
-				bridgeID = realID // Use real ID for remainder of session
+				harnessIDSet = true
 
-				// Notify SSE subscribers that the session ID changed so frontends
-				// can update their references from the pending/frontend ID to the
-				// canonical harness session ID.
-				remapEvent := msg.Event{
-					Type:            msg.EventSystem,
-					SessionID:       realID,
-					ClientRequestID: pendingID,
-					Timestamp:       time.Now(),
-					System:          &msg.SystemEvent{Subtype: "session_id_changed", Message: pendingID},
+				// Notify SSE subscribers so frontends learn the harness ID.
+				idEvent := msg.Event{
+					Type:      msg.EventSystem,
+					SessionID: bridgeID,
+					ClientID:  event.SessionID, // carry harness_id in client_id for now
+					Timestamp: time.Now(),
+					System:    &msg.SystemEvent{Subtype: "harness_id_set", Message: event.SessionID},
 				}
-				if data, err := json.Marshal(remapEvent); err == nil {
-					m.store.StoreEvent(bridgeID, string(remapEvent.Type), data)
+				if data, err := json.Marshal(idEvent); err == nil {
+					m.store.StoreEvent(bridgeID, string(idEvent.Type), data)
 				}
 				m.mu.RLock()
 				for _, ch := range m.subscribers[bridgeID] {
 					select {
-					case ch <- remapEvent:
+					case ch <- idEvent:
 					default:
 					}
 				}
@@ -243,7 +227,7 @@ func (m *Manager) readEvents(proc *Process) {
 			}
 		}
 
-		// Persist event locally (using current bridgeID which may have been remapped)
+		// Persist event keyed by bridge_id (stable PK).
 		if data, err := json.Marshal(event); err == nil {
 			if err := m.store.StoreEvent(bridgeID, string(event.Type), data); err != nil {
 				log.Printf("[harness] failed to store event: %v", err)
@@ -327,11 +311,11 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	}
 
 	m.mu.Lock()
-	m.processes[sess.ID] = proc
+	m.processes[sess.BridgeID] = proc
 	m.mu.Unlock()
 
-	m.store.UpdateSessionPID(sess.ID, proc.PID())
-	m.store.UpdateSessionState(sess.ID, string(msg.SessionRunning))
+	m.store.UpdateSessionPID(sess.BridgeID, proc.PID())
+	m.store.UpdateSessionState(sess.BridgeID, string(msg.SessionRunning))
 
 	go m.readEvents(proc)
 

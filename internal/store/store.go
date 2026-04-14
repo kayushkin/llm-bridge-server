@@ -56,7 +56,9 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) migrate() error {
 	_, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS sessions (
-			id           TEXT PRIMARY KEY,
+			bridge_id    TEXT PRIMARY KEY,
+			harness_id   TEXT NOT NULL DEFAULT '',
+			client_id    TEXT NOT NULL DEFAULT '',
 			display_name TEXT NOT NULL DEFAULT '',
 			harness      TEXT NOT NULL,
 			state        TEXT NOT NULL,
@@ -64,11 +66,13 @@ func (s *Store) migrate() error {
 			agent_id     TEXT NOT NULL DEFAULT '',
 			spawner_id   TEXT NOT NULL DEFAULT '',
 			parent_id    TEXT NOT NULL DEFAULT '',
+			instance_id  TEXT NOT NULL DEFAULT '',
 			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);
 		CREATE INDEX IF NOT EXISTS idx_sessions_harness ON sessions(harness);
+		CREATE INDEX IF NOT EXISTS idx_sessions_harness_id ON sessions(harness_id);
 
 		CREATE TABLE IF NOT EXISTS events (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,17 +80,22 @@ func (s *Store) migrate() error {
 			type       TEXT NOT NULL,
 			data       TEXT NOT NULL,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (session_id) REFERENCES sessions(id)
+			FOREIGN KEY (session_id) REFERENCES sessions(bridge_id)
 		);
 		CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 	`)
 	if err != nil {
 		return err
 	}
-	// Migrations for existing DBs
+	// Migrations for existing DBs (old schema used 'id' as PK)
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN client_request_id TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_id TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN client_id TEXT NOT NULL DEFAULT ''")
+	// Backfill: old rows have 'id' but no bridge_id — handled by the rename below.
+	// If upgrading from old schema where PK was 'id', rename it to bridge_id.
+	s.db.Exec("ALTER TABLE sessions RENAME COLUMN id TO bridge_id")
+	s.db.Exec("ALTER TABLE sessions RENAME COLUMN client_request_id TO client_id")
 	return nil
 }
 
@@ -95,61 +104,74 @@ func (s *Store) CreateSession(sess *Session) error {
 	sess.CreatedAt = now
 	sess.UpdatedAt = now
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, client_request_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.ID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, sess.ClientRequestID, sess.CreatedAt, sess.UpdatedAt,
+		`INSERT INTO sessions (bridge_id, harness_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sess.BridgeID, sess.HarnessID, sess.ClientID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, sess.CreatedAt, sess.UpdatedAt,
 	)
 	return err
 }
 
-func (s *Store) GetSession(id string) (*Session, error) {
+const sessionColumns = `bridge_id, COALESCE(harness_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, created_at, updated_at`
+
+func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var sess Session
-	err := s.db.QueryRow(
-		`SELECT id, display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(client_request_id, ''), created_at, updated_at FROM sessions WHERE id=?`,
-		id,
-	).Scan(&sess.ID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &sess.ClientRequestID, &sess.CreatedAt, &sess.UpdatedAt)
+	err := sc.Scan(&sess.BridgeID, &sess.HarnessID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &sess, nil
 }
 
+// GetSession looks up a session by bridge_id.
+func (s *Store) GetSession(bridgeID string) (*Session, error) {
+	return scanSession(s.db.QueryRow(
+		`SELECT `+sessionColumns+` FROM sessions WHERE bridge_id=?`, bridgeID,
+	))
+}
+
+// GetSessionByHarnessID looks up a session by its harness-reported session ID.
+func (s *Store) GetSessionByHarnessID(harnessID string) (*Session, error) {
+	return scanSession(s.db.QueryRow(
+		`SELECT `+sessionColumns+` FROM sessions WHERE harness_id=?`, harnessID,
+	))
+}
+
 func (s *Store) ListSessions() ([]Session, error) {
-	rows, err := s.db.Query(`SELECT id, display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(client_request_id, ''), created_at, updated_at FROM sessions ORDER BY created_at DESC`)
+	rows, err := s.db.Query(`SELECT ` + sessionColumns + ` FROM sessions ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var sessions []Session
 	for rows.Next() {
-		var sess Session
-		if err := rows.Scan(&sess.ID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &sess.ClientRequestID, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
+		sess, err := scanSession(rows)
+		if err != nil {
 			return nil, err
 		}
-		sessions = append(sessions, sess)
+		sessions = append(sessions, *sess)
 	}
 	return sessions, rows.Err()
 }
 
 func (s *Store) ListSessionsByState(state string) ([]Session, error) {
-	rows, err := s.db.Query(`SELECT id, display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(client_request_id, ''), created_at, updated_at FROM sessions WHERE state=? ORDER BY created_at DESC`, state)
+	rows, err := s.db.Query(`SELECT `+sessionColumns+` FROM sessions WHERE state=? ORDER BY created_at DESC`, state)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var sessions []Session
 	for rows.Next() {
-		var sess Session
-		if err := rows.Scan(&sess.ID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &sess.ClientRequestID, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
+		sess, err := scanSession(rows)
+		if err != nil {
 			return nil, err
 		}
-		sessions = append(sessions, sess)
+		sessions = append(sessions, *sess)
 	}
 	return sessions, rows.Err()
 }
 
-func (s *Store) UpdateSessionState(id, state string) error {
+func (s *Store) UpdateSessionState(bridgeID, state string) error {
 	now := time.Now().UTC()
-	res, err := s.db.Exec(`UPDATE sessions SET state=?, updated_at=? WHERE id=?`, state, now, id)
+	res, err := s.db.Exec(`UPDATE sessions SET state=?, updated_at=? WHERE bridge_id=?`, state, now, bridgeID)
 	if err != nil {
 		return err
 	}
@@ -160,9 +182,9 @@ func (s *Store) UpdateSessionState(id, state string) error {
 	return nil
 }
 
-func (s *Store) UpdateSessionPID(id string, pid int) error {
+func (s *Store) UpdateSessionPID(bridgeID string, pid int) error {
 	now := time.Now().UTC()
-	res, err := s.db.Exec(`UPDATE sessions SET pid=?, updated_at=? WHERE id=?`, pid, now, id)
+	res, err := s.db.Exec(`UPDATE sessions SET pid=?, updated_at=? WHERE bridge_id=?`, pid, now, bridgeID)
 	if err != nil {
 		return err
 	}
@@ -173,30 +195,13 @@ func (s *Store) UpdateSessionPID(id string, pid int) error {
 	return nil
 }
 
-// RemapSessionID updates a session's ID (temp → real harness ID transition).
-// Updates the session row and all associated events.
-func (s *Store) RemapSessionID(oldID, newID string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Update session ID
+// SetHarnessID fills in the harness-reported session ID on a session.
+func (s *Store) SetHarnessID(bridgeID, harnessID string) error {
 	now := time.Now().UTC()
-	_, err = tx.Exec(`UPDATE sessions SET id=?, updated_at=? WHERE id=?`, newID, now, oldID)
-	if err != nil {
-		return fmt.Errorf("update session id: %w", err)
-	}
-
-	// Update all events to use new session ID
-	_, err = tx.Exec(`UPDATE events SET session_id=? WHERE session_id=?`, newID, oldID)
-	if err != nil {
-		return fmt.Errorf("update events session_id: %w", err)
-	}
-
-	return tx.Commit()
+	_, err := s.db.Exec(`UPDATE sessions SET harness_id=?, updated_at=? WHERE bridge_id=?`, harnessID, now, bridgeID)
+	return err
 }
+
 
 // StoreEvent persists a serialized event for a session.
 func (s *Store) StoreEvent(sessionID, eventType string, data []byte) error {
@@ -285,8 +290,8 @@ func (s *Store) StoreEventReturningID(sessionID, eventType string, data []byte) 
 	return result.LastInsertId()
 }
 
-func (s *Store) DeleteSession(id string) error {
-	res, err := s.db.Exec(`DELETE FROM sessions WHERE id=?`, id)
+func (s *Store) DeleteSession(bridgeID string) error {
+	res, err := s.db.Exec(`DELETE FROM sessions WHERE bridge_id=?`, bridgeID)
 	if err != nil {
 		return err
 	}
@@ -298,12 +303,13 @@ func (s *Store) DeleteSession(id string) error {
 }
 
 // UpsertDiscoveredSession inserts a discovered session if it doesn't already exist.
-// instanceID is the instance that discovered this session (the one running the harness binary).
+// harnessID is the harness-native session ID (e.g. CC UUID).
+// instanceID is the instance that discovered this session.
 // Returns true if a new row was inserted.
-func (s *Store) UpsertDiscoveredSession(id, displayName, harness, instanceID string, createdAt, updatedAt time.Time) (bool, error) {
-	// Check if session already exists
-	var existingInstanceID, existingDisplayName string
-	err := s.db.QueryRow(`SELECT COALESCE(instance_id, ''), COALESCE(display_name, '') FROM sessions WHERE id=?`, id).Scan(&existingInstanceID, &existingDisplayName)
+func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanceID string, createdAt, updatedAt time.Time) (bool, error) {
+	// Check if session already exists by harness_id
+	var existingBridgeID, existingInstanceID, existingDisplayName string
+	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, '') FROM sessions WHERE harness_id=?`, harnessID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName)
 	if err == nil {
 		// Already exists - update timestamp, display_name, and instance_id if currently empty
 		newInstanceID := existingInstanceID
@@ -311,11 +317,10 @@ func (s *Store) UpsertDiscoveredSession(id, displayName, harness, instanceID str
 			newInstanceID = instanceID
 		}
 		newDisplayName := existingDisplayName
-		// Update display_name if empty OR if current is a path-based fallback and new one is a real prompt
 		if displayName != "" && (existingDisplayName == "" || (strings.HasPrefix(existingDisplayName, "/") && !strings.HasPrefix(displayName, "/"))) {
 			newDisplayName = displayName
 		}
-		s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=? WHERE id=?`, updatedAt, newInstanceID, newDisplayName, id)
+		s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, existingBridgeID)
 		return false, nil
 	}
 	if err != sql.ErrNoRows {
@@ -323,9 +328,10 @@ func (s *Store) UpsertDiscoveredSession(id, displayName, harness, instanceID str
 	}
 
 	// Insert new discovered session with state "idle"
+	bridgeID := fmt.Sprintf("br_%d", time.Now().UnixNano())
 	_, err = s.db.Exec(
-		`INSERT INTO sessions (id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, client_request_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, displayName, harness, instanceID, "idle", 0, "", "", "", "", createdAt, updatedAt,
+		`INSERT INTO sessions (bridge_id, harness_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		bridgeID, harnessID, "", displayName, harness, instanceID, "idle", 0, "", "", "", createdAt, updatedAt,
 	)
 	if err != nil {
 		return false, err
