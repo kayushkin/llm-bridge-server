@@ -56,7 +56,7 @@ var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessClaudeCode: {"compact", "fork", "model", "effort", "tools", "budget", "system_prompt"},
 	msg.HarnessCodex:      {"model"},
 	msg.HarnessOpenClaw:   {"compact", "model", "effort"},
-	msg.HarnessInber:      {"model"},
+	msg.HarnessInber:      {"compact", "fork", "model", "effort", "tools", "budget"},
 	msg.HarnessHermes:     {"model"},
 	msg.HarnessAider:      {"model"},
 	msg.HarnessGoose:      {"model"},
