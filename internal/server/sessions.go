@@ -13,34 +13,14 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-type CreateSessionRequest struct {
-	Harness         string `json:"harness"`
-	InstanceID      string `json:"instance_id,omitempty"`       // specific instance to use
-	DisplayName     string `json:"display_name,omitempty"`
-	AgentID         string `json:"agent_id,omitempty"`
-	SpawnerID       string `json:"spawner_id,omitempty"`
-	AutoStart       bool   `json:"auto_start,omitempty"`        // start harness immediately
-	ClientRequestID string `json:"client_request_id,omitempty"` // frontend correlation ID, echoed back
-}
-
-type SendMessageRequest struct {
-	Message string `json:"message"`
-}
-
-type ForkSessionRequest struct {
-	DisplayName string `json:"display_name,omitempty"`
-}
-
-type CompactSessionRequest struct {
-	Summary string `json:"summary,omitempty"`
-}
-
-type ConfigSessionRequest struct {
-	Model         string   `json:"model,omitempty"`
-	Effort        string   `json:"effort,omitempty"`
-	DisabledTools []string `json:"disabled_tools,omitempty"`
-	MaxBudget     *float64 `json:"max_budget,omitempty"`
-}
+// Request types are canonical — imported from msg package.
+type (
+	CreateSessionRequest  = msg.CreateSessionRequest
+	SendMessageRequest    = msg.SendMessageRequest
+	ForkSessionRequest    = msg.ForkSessionRequest
+	CompactSessionRequest = msg.CompactSessionRequest
+	ConfigSessionRequest  = msg.ConfigSessionRequest
+)
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	sessions, err := s.store.ListSessions()
@@ -91,7 +71,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "instance is disabled", http.StatusServiceUnavailable)
 			return
 		}
-		if string(inst.HarnessType) != req.Harness {
+		if inst.HarnessType != req.Harness {
 			http.Error(w, fmt.Sprintf("instance is for %s, not %s", inst.HarnessType, req.Harness), http.StatusBadRequest)
 			return
 		}

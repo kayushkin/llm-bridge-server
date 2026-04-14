@@ -9,23 +9,11 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-type CreateInstanceRequest struct {
-	HarnessType           string `json:"harness_type"`
-	Name                  string `json:"name"`
-	Host                  string `json:"host,omitempty"`
-	Transport             string `json:"transport,omitempty"`
-	SSHUser               string `json:"ssh_user,omitempty"`
-	SSHKeyPath            string `json:"ssh_key_path,omitempty"`
-	SSHPort               int    `json:"ssh_port,omitempty"`
-	WorkingDir            string `json:"working_dir,omitempty"`
-	MaxConcurrentSessions int    `json:"max_concurrent_sessions,omitempty"`
-}
-
-type BindCredentialRequest struct {
-	CredentialID  string `json:"credential_id"`
-	Priority      int    `json:"priority"`
-	MaxConcurrent int    `json:"max_concurrent"`
-}
+// Request types are canonical — imported from msg package.
+type (
+	CreateInstanceRequest = msg.CreateInstanceRequest
+	BindCredentialRequest = msg.BindCredentialRequest
+)
 
 func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	instances, err := s.harnessStore.ListInstances()

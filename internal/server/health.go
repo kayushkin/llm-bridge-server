@@ -7,22 +7,12 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-type HealthResponse struct {
-	Status    string          `json:"status"`
-	Harnesses []HarnessStatus `json:"harnesses"`
-	Sessions  SessionCounts   `json:"sessions"`
-}
-
-type HarnessStatus struct {
-	Name               string   `json:"name"`
-	Label              string   `json:"label"`
-	Emoji              string   `json:"emoji"`
-	Image              string   `json:"image,omitempty"`
-	Available          bool     `json:"available"`
-	Binary             string   `json:"binary,omitempty"`
-	Capabilities       []string `json:"capabilities"`
-	SupportedProviders []string `json:"supported_providers,omitempty"`
-}
+// Response types are canonical — imported from msg package.
+type (
+	HealthResponse = msg.HealthResponse
+	HarnessStatus  = msg.HarnessInfo
+	SessionCounts  = msg.SessionCounts
+)
 
 // harnessMeta holds display metadata for each harness type.
 type harnessMeta struct {
@@ -77,12 +67,6 @@ var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessRooCode:    {"model"},
 	msg.HarnessKiloCode:   {"model"},
 	msg.HarnessOpenCode:   {"model"},
-}
-
-type SessionCounts struct {
-	Running   int `json:"running"`
-	Idle      int `json:"idle"`
-	Completed int `json:"completed"`
 }
 
 var allHarnesses = []msg.Harness{

@@ -9,23 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/msg"
 	_ "modernc.org/sqlite"
 )
 
-type Session struct {
-	ID              string    `json:"id"`
-	DisplayName     string    `json:"display_name"`
-	Harness         string    `json:"harness"`
-	InstanceID      string    `json:"instance_id,omitempty"`       // which harness instance runs this session
-	State           string    `json:"state"`
-	PID             int       `json:"pid,omitempty"`
-	AgentID         string    `json:"agent_id,omitempty"`
-	SpawnerID       string    `json:"spawner_id,omitempty"`
-	ParentID        string    `json:"parent_id,omitempty"`
-	ClientRequestID string    `json:"client_request_id,omitempty"` // frontend correlation ID
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-}
+// Session is a type alias for msg.ManagedSession — the canonical type.
+// Kept as an alias so existing store code compiles unchanged.
+type Session = msg.ManagedSession
 
 type Store struct {
 	db *sql.DB

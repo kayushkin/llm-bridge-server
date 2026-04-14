@@ -7,22 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// BridgePrefs stores user preferences for the bridge UI.
-type BridgePrefs struct {
-	LastHarness string                     `json:"last_harness,omitempty"`
-	LastSession map[string]string          `json:"last_session,omitempty"`
-	Defaults    map[string]HarnessDefaults `json:"defaults,omitempty"`
-}
-
-// HarnessDefaults stores per-harness configuration defaults.
-type HarnessDefaults struct {
-	Model         string   `json:"model,omitempty"`
-	Effort        string   `json:"effort,omitempty"`
-	MaxBudget     *float64 `json:"max_budget,omitempty"`
-	DisabledTools []string `json:"disabled_tools,omitempty"`
-}
+// Canonical types from msg package.
+type (
+	BridgePrefs     = msg.BridgePrefs
+	HarnessDefaults = msg.HarnessDefaults
+)
 
 type bridgePrefsStore struct {
 	mu   sync.RWMutex

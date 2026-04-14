@@ -6,19 +6,11 @@ import (
 	"strings"
 
 	"github.com/kayushkin/aiauth"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
-type credResponse struct {
-	ID           string `json:"id"`
-	Provider     string `json:"provider"`
-	Label        string `json:"label"`
-	AuthType     string `json:"auth_type"`
-	APIKeyMasked string `json:"api_key_masked,omitempty"`
-	TokenMasked  string `json:"token_masked,omitempty"`
-	Priority     int    `json:"priority"`
-	Enabled      bool   `json:"enabled"`
-	ExpiresAt    int64  `json:"expires_at"`
-}
+// credResponse is the canonical credential type from msg.
+type credResponse = msg.Credential
 
 func (s *Server) handleCredentialsList(w http.ResponseWriter, _ *http.Request) {
 	store := aiauth.DefaultStore()
