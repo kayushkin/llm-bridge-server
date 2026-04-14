@@ -99,16 +99,16 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Use the client's request ID as the initial session ID.
-	// The harness will generate the canonical session ID (e.g. CC UUID)
-	// and the server will remap this pending ID → harness ID on first event.
-	initialID := req.ClientRequestID
-	if initialID == "" {
-		initialID = fmt.Sprintf("pending_%d", time.Now().UnixNano())
+	// The frontend must provide a client_request_id — it's the correlation
+	// key used as the initial session ID until the harness generates the
+	// canonical one. Without it we can't relate events back to the caller.
+	if req.ClientRequestID == "" {
+		http.Error(w, "client_request_id is required", http.StatusBadRequest)
+		return
 	}
 
 	sess := &store.Session{
-		ID:              initialID,
+		ID:              req.ClientRequestID,
 		DisplayName:     req.DisplayName,
 		Harness:         req.Harness,
 		State:           string(msg.SessionIdle),
@@ -410,13 +410,14 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		displayName = parent.DisplayName + " (fork)"
 	}
 
-	forkID := req.ClientRequestID
-	if forkID == "" {
-		forkID = fmt.Sprintf("pending_%d", time.Now().UnixNano())
+	if req.ClientRequestID == "" {
+		http.Error(w, "client_request_id is required", http.StatusBadRequest)
+		return
 	}
 
 	forked := &store.Session{
-		ID:          forkID,
+		ID:              req.ClientRequestID,
+		ClientRequestID: req.ClientRequestID,
 		DisplayName: displayName,
 		Harness:     parent.Harness,
 		State:       string(msg.SessionIdle),

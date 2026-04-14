@@ -23,13 +23,11 @@ type Request struct {
 	Params json.RawMessage `json:"params,omitempty"`
 }
 
-// isPendingSession returns true if the session ID is a temporary pending ID
-// (frontend fe_ / req_ or server-generated pending_) rather than a
-// harness-native ID (e.g. CC UUID or discovered session).
+// isPendingSession returns true if the session ID is a frontend-generated
+// correlation key (fe_ / req_) rather than a harness-native ID (e.g. CC UUID).
 func isPendingSession(id string) bool {
 	return strings.HasPrefix(id, "fe_") ||
 		strings.HasPrefix(id, "req_") ||
-		strings.HasPrefix(id, "pending_") ||
 		strings.HasPrefix(id, "sess_") // legacy
 }
 
