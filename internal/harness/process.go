@@ -44,7 +44,8 @@ type MessageParams struct {
 // If the session already has a harness_id (discovered/resumed), it's used as
 // the session_id and Resume is set. Otherwise the bridge_id is passed and
 // the harness will generate its own session ID.
-func buildStartParams(sess *store.Session, credentialID string) StartParams {
+// Returns merged JSON: base start params + any harness-specific config from the session.
+func buildStartParams(sess *store.Session, credentialID string) json.RawMessage {
 	hasHarnessID := sess.HarnessID != ""
 	sid := sess.HarnessID
 	if sid == "" {
@@ -63,7 +64,24 @@ func buildStartParams(sess *store.Session, credentialID string) StartParams {
 	if sess.ParentID != "" {
 		params.Fork = sess.ParentID
 	}
-	return params
+
+	data, _ := json.Marshal(params)
+
+	// Merge harness-specific config into the start params so the harness
+	// receives its own flags without the server needing to understand them.
+	if len(sess.HarnessConfig) > 0 {
+		var base map[string]json.RawMessage
+		json.Unmarshal(data, &base)
+		var extra map[string]json.RawMessage
+		if json.Unmarshal(sess.HarnessConfig, &extra) == nil {
+			for k, v := range extra {
+				base[k] = v
+			}
+		}
+		data, _ = json.Marshal(base)
+	}
+
+	return data
 }
 
 // Process represents a running harness subprocess.

@@ -96,6 +96,7 @@ func (s *Store) migrate() error {
 	// If upgrading from old schema where PK was 'id', rename it to bridge_id.
 	s.db.Exec("ALTER TABLE sessions RENAME COLUMN id TO bridge_id")
 	s.db.Exec("ALTER TABLE sessions RENAME COLUMN client_request_id TO client_id")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_config TEXT NOT NULL DEFAULT ''")
 	return nil
 }
 
@@ -103,20 +104,28 @@ func (s *Store) CreateSession(sess *Session) error {
 	now := time.Now().UTC()
 	sess.CreatedAt = now
 	sess.UpdatedAt = now
+	harnessConfig := ""
+	if sess.HarnessConfig != nil {
+		harnessConfig = string(sess.HarnessConfig)
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (bridge_id, harness_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.BridgeID, sess.HarnessID, sess.ClientID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, sess.CreatedAt, sess.UpdatedAt,
+		`INSERT INTO sessions (bridge_id, harness_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, harness_config, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sess.BridgeID, sess.HarnessID, sess.ClientID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.CreatedAt, sess.UpdatedAt,
 	)
 	return err
 }
 
-const sessionColumns = `bridge_id, COALESCE(harness_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, created_at, updated_at`
+const sessionColumns = `bridge_id, COALESCE(harness_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), created_at, updated_at`
 
 func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var sess Session
-	err := sc.Scan(&sess.BridgeID, &sess.HarnessID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &sess.CreatedAt, &sess.UpdatedAt)
+	var harnessConfig string
+	err := sc.Scan(&sess.BridgeID, &sess.HarnessID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if harnessConfig != "" {
+		sess.HarnessConfig = json.RawMessage(harnessConfig)
 	}
 	return &sess, nil
 }

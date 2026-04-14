@@ -105,13 +105,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sess := &store.Session{
-		BridgeID:    generateBridgeID(),
-		ClientID:    req.ClientID,
-		DisplayName: req.DisplayName,
-		Harness:     req.Harness,
-		State:       string(msg.SessionIdle),
-		AgentID:     req.AgentID,
-		SpawnerID:   req.SpawnerID,
+		BridgeID:      generateBridgeID(),
+		ClientID:      req.ClientID,
+		DisplayName:   req.DisplayName,
+		Harness:       req.Harness,
+		State:         string(msg.SessionIdle),
+		AgentID:       req.AgentID,
+		SpawnerID:     req.SpawnerID,
+		HarnessConfig: req.HarnessConfig,
 	}
 
 	if inst != nil {
