@@ -193,16 +193,35 @@ func (m *Manager) HasProcess(sessionID string) bool {
 // readEvents reads events from process, persists them, updates state,
 // and fans out to all SSE subscribers.
 func (m *Manager) readEvents(proc *Process) {
-	sid := proc.SessionID()
+	bridgeID := proc.SessionID()
+	realID := bridgeID // Start assuming they're the same
 
 	for event := range proc.Events() {
-		// Normalize session ID to the bridge session ID so all
-		// downstream stores key events consistently.
-		event.SessionID = sid
+		// On first session_state event, remap temp bridge ID → real harness ID
+		if event.Type == msg.EventSessionState && event.SessionID != bridgeID {
+			realID = event.SessionID
+			if err := m.store.RemapSessionID(bridgeID, realID); err != nil {
+				log.Printf("[harness] failed to remap session %s → %s: %v", bridgeID, realID, err)
+			} else {
+				// Update process's session ID and remap in-memory structures
+				proc.sessionID = realID
+				m.mu.Lock()
+				if p, ok := m.processes[bridgeID]; ok {
+					delete(m.processes, bridgeID)
+					m.processes[realID] = p
+				}
+				if subs, ok := m.subscribers[bridgeID]; ok {
+					delete(m.subscribers, bridgeID)
+					m.subscribers[realID] = subs
+				}
+				m.mu.Unlock()
+				bridgeID = realID // Use real ID for remainder of session
+			}
+		}
 
-		// Persist event locally
+		// Persist event locally (using current bridgeID which may have been remapped)
 		if data, err := json.Marshal(event); err == nil {
-			if err := m.store.StoreEvent(sid, string(event.Type), data); err != nil {
+			if err := m.store.StoreEvent(bridgeID, string(event.Type), data); err != nil {
 				log.Printf("[harness] failed to store event: %v", err)
 			}
 		}
@@ -216,17 +235,17 @@ func (m *Manager) readEvents(proc *Process) {
 		switch event.Type {
 		case msg.EventSessionState:
 			if event.State != nil {
-				m.store.UpdateSessionState(sid, string(event.State.State))
+				m.store.UpdateSessionState(bridgeID, string(event.State.State))
 			}
 		case msg.EventResult:
-			m.store.UpdateSessionState(sid, string(msg.SessionCompleted))
+			m.store.UpdateSessionState(bridgeID, string(msg.SessionCompleted))
 		case msg.EventError:
-			m.store.UpdateSessionState(sid, string(msg.SessionError))
+			m.store.UpdateSessionState(bridgeID, string(msg.SessionError))
 		}
 
 		// Fan out to SSE subscribers
 		m.mu.RLock()
-		for _, ch := range m.subscribers[sid] {
+		for _, ch := range m.subscribers[bridgeID] {
 			select {
 			case ch <- event:
 			default:
@@ -238,14 +257,14 @@ func (m *Manager) readEvents(proc *Process) {
 
 	// Process exited — close all subscriber channels
 	m.mu.Lock()
-	for _, ch := range m.subscribers[sid] {
+	for _, ch := range m.subscribers[bridgeID] {
 		close(ch)
 	}
-	delete(m.subscribers, sid)
-	delete(m.processes, sid)
+	delete(m.subscribers, bridgeID)
+	delete(m.processes, bridgeID)
 	m.mu.Unlock()
 
-	m.store.UpdateSessionPID(sid, 0)
+	m.store.UpdateSessionPID(bridgeID, 0)
 }
 
 // PushEvent sends an event directly to log-store.
@@ -319,7 +338,7 @@ func (m *Manager) startSSH(ctx context.Context, sess *store.Session, inst *msg.I
 		args = append(args, "-p", strconv.Itoa(port))
 	}
 
-	// Disable host key checking for automated use (consider making this configurable)
+	// Disable host key checking for automated use (conbridgeIDer making this configurable)
 	args = append(args, "-o", "StrictHostKeyChecking=accept-new")
 	args = append(args, "-o", "BatchMode=yes")
 

@@ -173,6 +173,31 @@ func (s *Store) UpdateSessionPID(id string, pid int) error {
 	return nil
 }
 
+// RemapSessionID updates a session's ID (temp → real harness ID transition).
+// Updates the session row and all associated events.
+func (s *Store) RemapSessionID(oldID, newID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Update session ID
+	now := time.Now().UTC()
+	_, err = tx.Exec(`UPDATE sessions SET id=?, updated_at=? WHERE id=?`, newID, now, oldID)
+	if err != nil {
+		return fmt.Errorf("update session id: %w", err)
+	}
+
+	// Update all events to use new session ID
+	_, err = tx.Exec(`UPDATE events SET session_id=? WHERE session_id=?`, newID, oldID)
+	if err != nil {
+		return fmt.Errorf("update events session_id: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 // StoreEvent persists a serialized event for a session.
 func (s *Store) StoreEvent(sessionID, eventType string, data []byte) error {
 	_, err := s.db.Exec(
