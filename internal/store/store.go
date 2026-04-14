@@ -72,7 +72,6 @@ func (s *Store) migrate() error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);
 		CREATE INDEX IF NOT EXISTS idx_sessions_harness ON sessions(harness);
-		CREATE INDEX IF NOT EXISTS idx_sessions_harness_id ON sessions(harness_id);
 
 		CREATE TABLE IF NOT EXISTS events (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,6 +96,8 @@ func (s *Store) migrate() error {
 	s.db.Exec("ALTER TABLE sessions RENAME COLUMN id TO bridge_id")
 	s.db.Exec("ALTER TABLE sessions RENAME COLUMN client_request_id TO client_id")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_config TEXT NOT NULL DEFAULT ''")
+	// Index on harness_id must be created after ALTER TABLE migration adds the column.
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_harness_id ON sessions(harness_id)")
 	return nil
 }
 
