@@ -7,7 +7,9 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// Response types are canonical — imported from msg package.
+// Response types are canonical — defined in llm-bridge/msg/server.go.
+// DO NOT define new request/response types here. Add them to msg/ instead,
+// then run generate-ts.sh so the TypeScript frontend stays in sync.
 type (
 	HealthResponse = msg.HealthResponse
 	HarnessStatus  = msg.HarnessInfo

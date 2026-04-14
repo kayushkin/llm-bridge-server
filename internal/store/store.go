@@ -13,8 +13,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Session is a type alias for msg.ManagedSession — the canonical type.
-// Kept as an alias so existing store code compiles unchanged.
+// Session is the canonical type from llm-bridge/msg/server.go.
+// DO NOT define API types here. Add them to msg/ instead, then run
+// generate-ts.sh so the TypeScript frontend stays in sync.
+// Kept as a type alias so existing store code compiles unchanged.
 type Session = msg.ManagedSession
 
 type Store struct {

@@ -11,7 +11,9 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// Canonical types from msg package.
+// Canonical types — defined in llm-bridge/msg/server.go.
+// DO NOT define new request/response types here. Add them to msg/ instead,
+// then run generate-ts.sh so the TypeScript frontend stays in sync.
 type (
 	BridgePrefs     = msg.BridgePrefs
 	HarnessDefaults = msg.HarnessDefaults

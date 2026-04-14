@@ -9,7 +9,9 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// credResponse is the canonical credential type from msg.
+// credResponse is the canonical credential type — defined in llm-bridge/msg/server.go.
+// DO NOT define new request/response types here. Add them to msg/ instead,
+// then run generate-ts.sh so the TypeScript frontend stays in sync.
 type credResponse = msg.Credential
 
 func (s *Server) handleCredentialsList(w http.ResponseWriter, _ *http.Request) {
