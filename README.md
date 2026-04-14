@@ -5,27 +5,42 @@ Central HTTP gateway and session server for the [llm-bridge](https://github.com/
 Spawns harness bridges as subprocesses, manages their lifecycle, and streams canonical `msg.Event` output to clients over SSE. Your application connects to this server and gets a uniform API regardless of which agent is running behind the harness.
 
 ```
-  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
-    Your Application  (dashboard, CLI, bot, anything)
-  └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┬ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-                          │ HTTP / SSE
-  ╔═══════════════════════╪═══════════════════════════╗
-  ║        llm-bridge-server                          ║
-  ║                       │                           ║
-  ║   Sessions ─── lifecycle, events, history         ║
-  ║   Instances ── harness deployment registry        ║
-  ║   Credentials ─ API key / token management        ║
-  ║   Stores ──── agents, memory, models, logs        ║
-  ║                       │                           ║
-  ╚═══════════════════════╪═══════════════════════════╝
-                          │ stdin/stdout NDJSON
-  ┌───────────────────────▼─────────────────────────┐
-  │              Harness Bridges                    │
-  │   claudecode · jig · codex · hermes · aider     │
-  │   goose · openclaw · nanoclaw · cline · inber   │
-  │   roocode · kilocode · commander · autohand     │
-  └─────────────────────────────────────────────────┘
+  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+         Your Application  (dashboard, CLI, bot, anything)
+  └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┬ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+                                        │ HTTP / SSE
+  ╔═════════════════════════════════════╪═════════════════════════════════════╗
+  ║                    llm-bridge-server                                     ║
+  ║                                     │                                    ║
+  ║   Sessions ─── lifecycle, events, history                                ║
+  ║   Instances ── harness deployment registry                               ║
+  ║   Credentials ─ API key / token management                               ║
+  ║   Stores ──── agents, memory, models, logs                               ║
+  ║                                     │                                    ║
+  ╚═════════════════════════════════════╪════════════════════════════════════╝
+           stdin/stdout NDJSON          │           stdin/stdout NDJSON
+       ┌────────────────────────────────┼──────────────────────────────┐
+       │                                │                              │
+       ▼                                ▼                              ▼
+  ┌──────────┐                   ┌──────────┐                   ┌──────────┐
+  │ harness  │                   │ harness  │                   │ harness  │
+  │ bridge   │                   │ bridge   │                   │ bridge   │
+  │          │                   │          │                   │          │
+  │claudecode│                   │  codex   │                   │ hermes   │
+  │  jig     │                   │  aider   │                   │ openclaw │
+  │          │                   │  goose   │                   │ nanoclaw │
+  └────┬─────┘                   └────┬─────┘                   └────┬─────┘
+       │ spawns/connects              │ spawns/connects              │ spawns/connects
+       ▼                              ▼                              ▼
+  ┌──────────┐                   ┌──────────┐                   ┌──────────┐
+  │  claude  │                   │  codex   │                   │  hermes  │
+  │  code    │                   │  agent   │                   │  server  │
+  │  CLI     │                   │  CLI     │                   │  (HTTP)  │
+  └──────────┘                   └──────────┘                   └──────────┘
+   subprocess                     subprocess                     HTTP/WS/Docker
 ```
+
+Each harness bridge is a separate binary that the server spawns as a subprocess. The bridge in turn spawns or connects to the actual agent — whether that's a CLI subprocess, a local HTTP server, a WebSocket endpoint, or a Docker container. The bridge is the only thing that knows the agent's native protocol.
 
 ## Quick start
 
