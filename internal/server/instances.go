@@ -190,17 +190,12 @@ func (s *Server) handleBindCredential(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "credential_id is required", http.StatusBadRequest)
 		return
 	}
-	maxConcurrent := req.MaxConcurrent
-	if maxConcurrent == 0 {
-		maxConcurrent = 1
-	}
 
 	ic := &msg.InstanceCredential{
-		InstanceID:    instanceID,
-		CredentialID:  req.CredentialID,
-		Priority:      req.Priority,
-		MaxConcurrent: maxConcurrent,
-		Enabled:       true,
+		InstanceID:   instanceID,
+		CredentialID: req.CredentialID,
+		Priority:     req.Priority,
+		Enabled:      true,
 	}
 
 	if err := s.harnessStore.BindCredential(ic); err != nil {
@@ -231,14 +226,10 @@ func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get active session count from runtime store
-	activeSessions, _ := s.store.CountSlotsByInstance(id)
-
-	// Get credential bindings from harness-store, compute status with runtime slots
+	// Get credential bindings from harness-store
 	credBindings, _ := s.harnessStore.ListInstanceCredentials(id)
-	credStatus, _ := s.store.GetCredentialStatus(id, credBindings)
-	if credStatus == nil {
-		credStatus = []msg.CredentialStatus{}
+	if credBindings == nil {
+		credBindings = []msg.InstanceCredential{}
 	}
 
 	// SSH reachability check for remote instances
@@ -248,11 +239,10 @@ func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := msg.InstanceStatus{
-		Instance:       *inst,
-		ActiveSessions: activeSessions,
-		Credentials:    credStatus,
-		Reachable:      reachable,
-		LastChecked:    time.Now(),
+		Instance:    *inst,
+		Credentials: credBindings,
+		Reachable:   reachable,
+		LastChecked: time.Now(),
 	}
 
 	writeJSON(w, status)

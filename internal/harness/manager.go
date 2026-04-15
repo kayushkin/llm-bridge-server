@@ -286,7 +286,6 @@ func (m *Manager) readEvents(proc *Process) {
 	m.mu.Unlock()
 
 	m.store.UpdateSessionPID(bridgeID, 0)
-	m.store.ReleaseCredentialSlot(bridgeID)
 }
 
 // PushEvent sends an event directly to log-store.

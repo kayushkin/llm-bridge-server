@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	harnessstore "github.com/kayushkin/harness-store"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -81,10 +82,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// Find an available instance for this harness type
 		instances, err := s.harnessStore.ListInstancesByHarness(h)
 		if err == nil && len(instances) > 0 {
-			// Pick first available instance with capacity
 			for _, candidate := range instances {
-				active, _ := s.store.CountSlotsByInstance(candidate.ID)
-				if active < candidate.MaxConcurrentSessions {
+				if candidate.Enabled {
 					inst = &candidate
 					break
 				}
@@ -128,24 +127,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.AutoStart {
 		var startErr error
 		if inst != nil && s.harnessStore != nil {
-			credBindings, _ := s.harnessStore.ListInstanceCredentials(inst.ID)
-			credID, err := s.store.AcquireCredentialSlot(inst.ID, sess.BridgeID, credBindings)
-			if err != nil {
-				s.store.UpdateSessionState(sess.BridgeID, string(msg.SessionError))
-				sess.State = string(msg.SessionError)
-				w.WriteHeader(http.StatusCreated)
-				writeJSON(w, sess)
-				return
-			}
+			credID := resolveCredential(s.harnessStore, inst.ID)
 			_, startErr = s.harness.StartOnInstance(r.Context(), sess, inst, credID)
 		} else {
 			_, startErr = s.harness.Start(r.Context(), sess)
 		}
 
 		if startErr != nil {
-			if inst != nil {
-				s.store.ReleaseCredentialSlot(sess.BridgeID)
-			}
 			s.store.UpdateSessionState(sess.BridgeID, string(msg.SessionError))
 			sess.State = string(msg.SessionError)
 		} else {
@@ -167,10 +155,6 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.harness.Kill(bridgeID); err != nil {
 		// Process might not be running, just update state
-	}
-
-	if sess.InstanceID != "" {
-		s.store.ReleaseCredentialSlot(bridgeID)
 	}
 
 	if err := s.store.UpdateSessionState(bridgeID, string(msg.SessionAborted)); err != nil {
@@ -204,16 +188,8 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
 				return
 			}
-			credBindings, _ := s.harnessStore.ListInstanceCredentials(inst.ID)
-			credID, err := s.store.AcquireCredentialSlot(inst.ID, sess.BridgeID, credBindings)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("failed to acquire credential: %v", err), http.StatusInternalServerError)
-				return
-			}
+			credID := resolveCredential(s.harnessStore, inst.ID)
 			_, startErr = s.harness.StartOnInstance(r.Context(), sess, inst, credID)
-			if startErr != nil {
-				s.store.ReleaseCredentialSlot(sess.BridgeID)
-			}
 		} else {
 			_, startErr = s.harness.Start(r.Context(), sess)
 		}
@@ -540,5 +516,20 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 
 func generateBridgeID() string {
 	return fmt.Sprintf("br_%d", time.Now().UnixNano())
+}
+
+// resolveCredential returns the highest-priority enabled credential ID for an instance,
+// or empty string if none are bound.
+func resolveCredential(hs *harnessstore.Store, instanceID string) string {
+	bindings, err := hs.ListInstanceCredentials(instanceID)
+	if err != nil || len(bindings) == 0 {
+		return ""
+	}
+	for _, b := range bindings {
+		if b.Enabled {
+			return b.CredentialID
+		}
+	}
+	return ""
 }
 

@@ -44,10 +44,6 @@ func New(dbPath string) (*Store, error) {
 		d.Close()
 		return nil, err
 	}
-	if err := s.migrateSlots(); err != nil {
-		d.Close()
-		return nil, err
-	}
 	return s, nil
 }
 
