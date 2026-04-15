@@ -197,8 +197,28 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.harness.Get(bridgeID) == nil {
-		if _, err := s.harness.Start(r.Context(), sess); err != nil {
-			http.Error(w, fmt.Sprintf("failed to start harness: %v", err), http.StatusInternalServerError)
+		var startErr error
+		if sess.InstanceID != "" && s.harnessStore != nil {
+			inst, err := s.harnessStore.GetInstance(sess.InstanceID)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
+				return
+			}
+			credBindings, _ := s.harnessStore.ListInstanceCredentials(inst.ID)
+			credID, err := s.store.AcquireCredentialSlot(inst.ID, sess.BridgeID, credBindings)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("failed to acquire credential: %v", err), http.StatusInternalServerError)
+				return
+			}
+			_, startErr = s.harness.StartOnInstance(r.Context(), sess, inst, credID)
+			if startErr != nil {
+				s.store.ReleaseCredentialSlot(sess.BridgeID)
+			}
+		} else {
+			_, startErr = s.harness.Start(r.Context(), sess)
+		}
+		if startErr != nil {
+			http.Error(w, fmt.Sprintf("failed to start harness: %v", startErr), http.StatusInternalServerError)
 			return
 		}
 	}
@@ -281,19 +301,18 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			s.harness.Unsubscribe(bridgeID, events)
 			return
-		case event, ok := <-events:
+		case stored, ok := <-events:
 			if !ok {
 				w.Write([]byte("event: close\ndata: {}\n\n"))
 				flusher.Flush()
 				return
 			}
-			data, _ := json.Marshal(event)
-			rowID, _ := s.store.MaxEventID(bridgeID)
-			if replayedIDs[rowID] {
-				delete(replayedIDs, rowID)
+			if replayedIDs[int(stored.RowID)] {
+				delete(replayedIDs, int(stored.RowID))
 				continue
 			}
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", rowID, event.Type, data)
+			data, _ := json.Marshal(stored.Event)
+			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", stored.RowID, stored.Event.Type, data)
 			flusher.Flush()
 		}
 	}

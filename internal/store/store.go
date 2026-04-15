@@ -223,13 +223,6 @@ func (s *Store) StoreEvent(sessionID, eventType string, data []byte) error {
 }
 
 
-// MaxEventID returns the highest event row ID for a session.
-func (s *Store) MaxEventID(sessionID string) (int, error) {
-	var id int
-	err := s.db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id=?`, sessionID).Scan(&id)
-	return id, err
-}
-
 // EventWithID is a raw event with its database row ID.
 type EventWithID struct {
 	RowID int

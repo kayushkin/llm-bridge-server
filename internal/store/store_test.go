@@ -288,15 +288,6 @@ func TestStoreAndListEvents(t *testing.T) {
 		t.Fatalf("store event 2: %v", err)
 	}
 
-	// MaxEventID should return the latest
-	maxID, err := s.MaxEventID("br_ev")
-	if err != nil {
-		t.Fatalf("max event id: %v", err)
-	}
-	if maxID < 2 {
-		t.Errorf("max event id = %d, want >= 2", maxID)
-	}
-
 	// ListEventsSinceID should return events after the given ID
 	events, err := s.ListEventsSinceID("br_ev", 0)
 	if err != nil {
@@ -576,9 +567,13 @@ func TestConcurrentWrites(t *testing.T) {
 		}
 	}
 
-	maxID, _ := s.MaxEventID("br_conc")
-	if maxID < 20 {
-		t.Errorf("max event id = %d, want >= 20", maxID)
+	// Verify all 20 events stored via StoreEventReturningID
+	lastID, err := s.StoreEventReturningID("br_conc", "stream", []byte(`{}`))
+	if err != nil {
+		t.Fatalf("store returning id: %v", err)
+	}
+	if lastID < 21 {
+		t.Errorf("last insert id = %d, want >= 21", lastID)
 	}
 }
 

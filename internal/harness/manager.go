@@ -18,11 +18,17 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
+// StoredEvent pairs an event with its database row ID, assigned at insert time.
+type StoredEvent struct {
+	msg.Event
+	RowID int64
+}
+
 // Manager handles harness subprocess lifecycle.
 type Manager struct {
 	mu          sync.RWMutex
-	processes   map[string]*Process        // sessionID → process
-	subscribers map[string][]chan msg.Event // sessionID → SSE subscriber channels
+	processes   map[string]*Process           // sessionID → process
+	subscribers map[string][]chan StoredEvent  // sessionID → SSE subscriber channels
 	store       *store.Store
 	logStore    *logstore.Client
 }
@@ -31,7 +37,7 @@ type Manager struct {
 func NewManager(st *store.Store, logStoreURL string) *Manager {
 	return &Manager{
 		processes:   make(map[string]*Process),
-		subscribers: make(map[string][]chan msg.Event),
+		subscribers: make(map[string][]chan StoredEvent),
 		store:       st,
 		logStore:    logstore.New(logStoreURL),
 	}
@@ -163,8 +169,8 @@ func (m *Manager) SendCommand(sessionID string, cmd string) error {
 // Subscribe creates a new event channel for SSE consumers.
 // The returned channel receives all events for the session.
 // Call Unsubscribe when done.
-func (m *Manager) Subscribe(sessionID string) chan msg.Event {
-	ch := make(chan msg.Event, 100)
+func (m *Manager) Subscribe(sessionID string) chan StoredEvent {
+	ch := make(chan StoredEvent, 100)
 	m.mu.Lock()
 	m.subscribers[sessionID] = append(m.subscribers[sessionID], ch)
 	m.mu.Unlock()
@@ -172,7 +178,7 @@ func (m *Manager) Subscribe(sessionID string) chan msg.Event {
 }
 
 // Unsubscribe removes an SSE subscriber channel.
-func (m *Manager) Unsubscribe(sessionID string, ch chan msg.Event) {
+func (m *Manager) Unsubscribe(sessionID string, ch chan StoredEvent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	subs := m.subscribers[sessionID]
@@ -214,22 +220,25 @@ func (m *Manager) readEvents(proc *Process) {
 					System:    &msg.SystemEvent{Subtype: "harness_id_set", Message: event.SessionID},
 				}
 				if data, err := json.Marshal(idEvent); err == nil {
-					m.store.StoreEvent(bridgeID, string(idEvent.Type), data)
-				}
-				m.mu.RLock()
-				for _, ch := range m.subscribers[bridgeID] {
-					select {
-					case ch <- idEvent:
-					default:
+					rowID, _ := m.store.StoreEventReturningID(bridgeID, string(idEvent.Type), data)
+					stored := StoredEvent{Event: idEvent, RowID: rowID}
+					m.mu.RLock()
+					for _, ch := range m.subscribers[bridgeID] {
+						select {
+						case ch <- stored:
+						default:
+						}
 					}
+					m.mu.RUnlock()
 				}
-				m.mu.RUnlock()
 			}
 		}
 
-		// Persist event keyed by bridge_id (stable PK).
+		// Persist event keyed by bridge_id (stable PK) and capture row ID.
+		var rowID int64
 		if data, err := json.Marshal(event); err == nil {
-			if err := m.store.StoreEvent(bridgeID, string(event.Type), data); err != nil {
+			rowID, err = m.store.StoreEventReturningID(bridgeID, string(event.Type), data)
+			if err != nil {
 				log.Printf("[harness] failed to store event: %v", err)
 			}
 		}
@@ -251,11 +260,12 @@ func (m *Manager) readEvents(proc *Process) {
 			m.store.UpdateSessionState(bridgeID, string(msg.SessionError))
 		}
 
-		// Fan out to SSE subscribers
+		// Fan out to SSE subscribers with the actual row ID
+		stored := StoredEvent{Event: event, RowID: rowID}
 		m.mu.RLock()
 		for _, ch := range m.subscribers[bridgeID] {
 			select {
-			case ch <- event:
+			case ch <- stored:
 			default:
 				// Subscriber too slow, drop event
 			}
