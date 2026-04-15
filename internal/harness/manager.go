@@ -243,8 +243,11 @@ func (m *Manager) readEvents(proc *Process) {
 			}
 		}
 
-		// Push to log-store (durable source of truth)
-		if _, err := m.logStore.PushEvent(event); err != nil {
+		// Push to log-store keyed by bridge_id so history queries
+		// (GET /sessions/{bridge_id}/messages) find all events together.
+		logEvent := event
+		logEvent.SessionID = bridgeID
+		if _, err := m.logStore.PushEvent(logEvent); err != nil {
 			log.Printf("[harness] failed to push event to log-store: %v", err)
 		}
 
