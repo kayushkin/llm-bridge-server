@@ -226,6 +226,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	userEvent := msg.Event{
 		Type:      "user_message",
 		SessionID: bridgeID,
+		BridgeID:  bridgeID,
 		Timestamp: time.Now(),
 		Result:    &msg.ResultEvent{Text: req.Message},
 	}
