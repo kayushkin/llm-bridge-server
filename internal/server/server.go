@@ -75,6 +75,7 @@ func (s *Server) routes() {
 
 	// Session routes
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
+	s.mux.HandleFunc("GET /sessions/search", s.handleSearchSessions)
 	s.mux.HandleFunc("GET /sessions/discover", s.handleDiscoverSessions)
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
@@ -134,6 +135,27 @@ func (s *Server) routes() {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
+}
+
+// handleSearchSessions proxies /sessions/search to log-store's /api/v1/sessions/search.
+func (s *Server) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
+	target := fmt.Sprintf("%s/api/v1/sessions/search", s.cfg.LogStoreURL)
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	resp, err := http.Get(target)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("log-store unreachable: %v", err), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	for key, vals := range resp.Header {
+		for _, v := range vals {
+			w.Header().Add(key, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 // proxyToLogStore proxies /sessions/{id}/messages and /sessions/{id}/history to log-store.
