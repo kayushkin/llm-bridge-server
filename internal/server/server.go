@@ -123,6 +123,10 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("GET /models", s.handleModels)
 	}
 
+	// Conformance
+	s.mux.HandleFunc("GET /conformance", s.handleConformanceGet)
+	s.mux.HandleFunc("POST /conformance/run", s.handleConformanceRun)
+
 	// Bridge prefs
 	s.mux.HandleFunc("GET /bridge-prefs", s.handleBridgePrefs)
 	s.mux.HandleFunc("PUT /bridge-prefs", s.handleBridgePrefs)
