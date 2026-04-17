@@ -54,7 +54,7 @@ var harnessSupportedProviders = map[msg.Harness][]string{
 // harnessCapabilities defines what features each harness supports.
 var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessClaudeCode: {"compact", "fork", "model", "effort", "tools", "budget", "system_prompt"},
-	msg.HarnessCodex:      {"model"},
+	msg.HarnessCodex:      {"compact", "fork", "model", "effort", "system_prompt"},
 	msg.HarnessOpenClaw:   {"compact", "model", "effort"},
 	msg.HarnessInber:      {"compact", "fork", "model", "effort", "tools", "budget"},
 	msg.HarnessHermes:     {"model", "fork", "effort", "tools", "system_prompt", "interrupt"},
