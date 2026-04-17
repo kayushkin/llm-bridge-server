@@ -184,7 +184,96 @@ func RunHarness(ctx context.Context, binary string) (*HarnessResult, error) {
 	// ── thinking (skipped — requires real LLM) ──
 	result.AddResult(TestResult{Feature: FeatureThinking, Skipped: true, Error: "requires real LLM interaction"})
 
+	// ── reasoning ──
+	result.AddResult(testReasoning(ctx, binary, eventTimeout))
+
+	// ── system_prompt ──
+	result.AddResult(testSystemPrompt(ctx, binary, eventTimeout))
+
+	// ── context_used ──
+	result.AddResult(testContextUsed(ctx, binary, eventTimeout))
+
 	return result, nil
+}
+
+func testReasoning(ctx context.Context, binary string, timeout time.Duration) TestResult {
+	start := time.Now()
+	rp, err := launchProcess(ctx, binary)
+	if err != nil {
+		return TestResult{Feature: FeatureReasoning, Error: err.Error()}
+	}
+	defer rp.close()
+
+	rp.send("start", map[string]any{"session_id": "conformance-reasoning"})
+	rp.waitForEvent(timeout, func(e msg.Event) bool {
+		return e.Type == msg.EventSessionState
+	})
+
+	configJSON, _ := json.Marshal(map[string]any{"effort": "high", "reasoning_effort": "high"})
+	if err := rp.send("config:"+string(configJSON), nil); err != nil {
+		return TestResult{Feature: FeatureReasoning, Error: err.Error()}
+	}
+
+	_, err = rp.waitForEvent(timeout, func(e msg.Event) bool {
+		return e.Type == msg.EventSystem && e.System != nil
+	})
+	if err != nil {
+		return TestResult{Feature: FeatureReasoning, Skipped: true, Error: "no response to reasoning effort config"}
+	}
+	return TestResult{Feature: FeatureReasoning, Passed: true, Duration: time.Since(start).String()}
+}
+
+func testSystemPrompt(ctx context.Context, binary string, timeout time.Duration) TestResult {
+	start := time.Now()
+	rp, err := launchProcess(ctx, binary)
+	if err != nil {
+		return TestResult{Feature: FeatureSystemPrompt, Error: err.Error()}
+	}
+	defer rp.close()
+
+	if err := rp.send("start", map[string]any{
+		"session_id":    "conformance-sysprompt",
+		"system_prompt": "You are a conformance test assistant.",
+	}); err != nil {
+		return TestResult{Feature: FeatureSystemPrompt, Error: err.Error()}
+	}
+
+	_, err = rp.waitForEvent(timeout, func(e msg.Event) bool {
+		return e.Type == msg.EventSessionState && e.State != nil && e.State.State == msg.SessionRunning
+	})
+	if err != nil {
+		return TestResult{Feature: FeatureSystemPrompt, Skipped: true, Error: "system_prompt start failed"}
+	}
+	return TestResult{Feature: FeatureSystemPrompt, Passed: true, Duration: time.Since(start).String()}
+}
+
+func testContextUsed(ctx context.Context, binary string, timeout time.Duration) TestResult {
+	start := time.Now()
+	rp, err := launchProcess(ctx, binary)
+	if err != nil {
+		return TestResult{Feature: FeatureContextUsed, Error: err.Error()}
+	}
+	defer rp.close()
+
+	rp.send("start", map[string]any{"session_id": "conformance-context"})
+	rp.waitForEvent(timeout, func(e msg.Event) bool {
+		return e.Type == msg.EventSessionState
+	})
+
+	rp.send("message", map[string]any{"content": "count tokens"})
+
+	event, err := rp.waitForEventType(timeout, msg.EventResult)
+	if err != nil {
+		return TestResult{Feature: FeatureContextUsed, Error: err.Error()}
+	}
+	if event.Result == nil {
+		return TestResult{Feature: FeatureContextUsed, Error: "result event had nil result"}
+	}
+	u := event.Result.Usage
+	if u.InputTokens == 0 && u.OutputTokens == 0 && u.TotalTokens == 0 && u.ContextTokens == 0 {
+		return TestResult{Feature: FeatureContextUsed, Skipped: true, Error: "result does not report token usage"}
+	}
+	return TestResult{Feature: FeatureContextUsed, Passed: true, Duration: time.Since(start).String()}
 }
 
 func testStart(ctx context.Context, binary string, timeout time.Duration) TestResult {

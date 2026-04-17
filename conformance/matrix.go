@@ -22,10 +22,13 @@ const (
 	FeatureConfig    Feature = "config"     // Can update runtime config (model, effort, etc.)
 	FeatureDiscover  Feature = "discover"   // Can discover on-disk sessions via -discover
 	FeatureImport    Feature = "import"     // Can import history via -import-history
-	FeatureStreaming  Feature = "streaming"  // Emits stream events (not just result)
-	FeatureToolCalls Feature = "tool_calls" // Emits tool_call/tool_result events
-	FeatureThinking  Feature = "thinking"   // Emits thinking events
-	FeatureErrors    Feature = "errors"     // Properly emits error events on failure
+	FeatureStreaming    Feature = "streaming"     // Emits stream events (not just result)
+	FeatureToolCalls    Feature = "tool_calls"    // Emits tool_call/tool_result events
+	FeatureThinking     Feature = "thinking"      // Emits thinking events
+	FeatureErrors       Feature = "errors"        // Properly emits error events on failure
+	FeatureReasoning    Feature = "reasoning"     // Accepts reasoning effort config
+	FeatureSystemPrompt Feature = "system_prompt" // Accepts a custom system_prompt at start
+	FeatureContextUsed  Feature = "context_used"  // Reports token usage in result events
 )
 
 // AllFeatures lists every testable feature.
@@ -42,6 +45,9 @@ var AllFeatures = []Feature{
 	FeatureToolCalls,
 	FeatureThinking,
 	FeatureErrors,
+	FeatureReasoning,
+	FeatureSystemPrompt,
+	FeatureContextUsed,
 }
 
 // TestResult records the outcome of a single feature test.
