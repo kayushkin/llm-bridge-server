@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	harnessstore "github.com/kayushkin/harness-store"
@@ -13,6 +14,21 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
+
+// displayNameFromMessage produces a compact session title from a user message:
+// first non-empty line, truncated to 80 runes with an ellipsis.
+func displayNameFromMessage(text string) string {
+	text = strings.TrimSpace(text)
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = strings.TrimSpace(text[:i])
+	}
+	const maxRunes = 80
+	runes := []rune(text)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "…"
+	}
+	return text
+}
 
 // Request types are canonical — defined in llm-bridge/msg/server.go.
 // DO NOT define new request/response types here. Add them to msg/ instead,
@@ -23,6 +39,7 @@ type (
 	ForkSessionRequest    = msg.ForkSessionRequest
 	CompactSessionRequest = msg.CompactSessionRequest
 	ConfigSessionRequest  = msg.ConfigSessionRequest
+	RenameSessionRequest  = msg.RenameSessionRequest
 )
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +162,30 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, sess)
 }
 
+func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	var req RenameSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(req.DisplayName)
+	if name == "" {
+		http.Error(w, "display_name is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpdateSessionDisplayName(bridgeID, name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sess, err := s.store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, sess)
+}
+
 func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 	bridgeID := r.PathValue("id")
 	sess, err := s.store.GetSession(bridgeID)
@@ -211,6 +252,12 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.harness.PushEvent(userEvent); err != nil {
 		log.Printf("[session] failed to push user_message to log-store: %v", err)
+	}
+
+	if name := displayNameFromMessage(req.Message); name != "" {
+		if _, err := s.store.SetDisplayNameIfEmpty(bridgeID, name); err != nil {
+			log.Printf("[session] failed to set display_name from first message: %v", err)
+		}
 	}
 
 	if err := s.harness.Send(bridgeID, req.Message); err != nil {

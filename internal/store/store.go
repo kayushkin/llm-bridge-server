@@ -92,8 +92,24 @@ func (s *Store) migrate() error {
 	s.db.Exec("ALTER TABLE sessions RENAME COLUMN id TO bridge_id")
 	s.db.Exec("ALTER TABLE sessions RENAME COLUMN client_request_id TO client_id")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_config TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN info TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN folder_name TEXT NOT NULL DEFAULT ''")
 	// Index on harness_id must be created after ALTER TABLE migration adds the column.
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_harness_id ON sessions(harness_id)")
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_folder ON sessions(folder_name)")
+
+	// Folder registry — tracks the ordered list of user-defined folders.
+	// Folders may exist with no sessions (created and not yet populated).
+	_, err = s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS folders (
+			name     TEXT PRIMARY KEY,
+			position INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_folders_position ON folders(position);
+	`)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -112,19 +128,41 @@ func (s *Store) CreateSession(sess *Session) error {
 	return err
 }
 
-const sessionColumns = `bridge_id, COALESCE(harness_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), created_at, updated_at`
+const sessionColumns = `bridge_id, COALESCE(harness_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), created_at, updated_at`
 
 func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var sess Session
 	var harnessConfig string
-	err := sc.Scan(&sess.BridgeID, &sess.HarnessID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &sess.CreatedAt, &sess.UpdatedAt)
+	var info string
+	err := sc.Scan(&sess.BridgeID, &sess.HarnessID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	if harnessConfig != "" {
 		sess.HarnessConfig = json.RawMessage(harnessConfig)
 	}
+	if info != "" {
+		var parsed msg.SessionInfo
+		if err := json.Unmarshal([]byte(info), &parsed); err == nil {
+			sess.Info = &parsed
+		}
+	}
 	return &sess, nil
+}
+
+// SetSessionInfo persists the harness-reported session info for a session.
+func (s *Store) SetSessionInfo(bridgeID string, info *msg.SessionInfo) error {
+	now := time.Now().UTC()
+	var payload string
+	if info != nil {
+		data, err := json.Marshal(info)
+		if err != nil {
+			return fmt.Errorf("marshal session info: %w", err)
+		}
+		payload = string(data)
+	}
+	_, err := s.db.Exec(`UPDATE sessions SET info=?, updated_at=? WHERE bridge_id=?`, payload, now, bridgeID)
+	return err
 }
 
 // GetSession looks up a session by bridge_id.
@@ -206,6 +244,38 @@ func (s *Store) SetHarnessID(bridgeID, harnessID string) error {
 	now := time.Now().UTC()
 	_, err := s.db.Exec(`UPDATE sessions SET harness_id=?, updated_at=? WHERE bridge_id=?`, harnessID, now, bridgeID)
 	return err
+}
+
+// SetDisplayNameIfEmpty sets display_name only when it is currently empty.
+// Returns true if a row was updated.
+func (s *Store) SetDisplayNameIfEmpty(bridgeID, displayName string) (bool, error) {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(
+		`UPDATE sessions SET display_name=?, updated_at=? WHERE bridge_id=? AND display_name=''`,
+		displayName, now, bridgeID,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// UpdateSessionDisplayName sets the session's display_name unconditionally.
+func (s *Store) UpdateSessionDisplayName(bridgeID, displayName string) error {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(
+		`UPDATE sessions SET display_name=?, updated_at=? WHERE bridge_id=?`,
+		displayName, now, bridgeID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 
@@ -299,6 +369,114 @@ func (s *Store) DeleteSession(bridgeID string) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// ── Folder management ─────────────────────────────────────────────────────────
+
+// ListFolders returns all folder names ordered by their stored position.
+func (s *Store) ListFolders() ([]string, error) {
+	rows, err := s.db.Query(`SELECT name FROM folders ORDER BY position ASC, name ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// CreateFolder appends a folder to the registry. No-op if it already exists.
+func (s *Store) CreateFolder(name string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO folders (name, position) VALUES (?, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
+		name,
+	)
+	return err
+}
+
+// DeleteFolder removes a folder from the registry and clears its assignment
+// from any sessions currently in it. Sessions are not deleted; they become unfiled.
+func (s *Store) DeleteFolder(name string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE sessions SET folder_name='' WHERE folder_name=?`, name); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM folders WHERE name=?`, name); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RenameFolder renames a folder, preserving its position. If newName already
+// exists, the two folders are merged: sessions in oldName move to newName and
+// the oldName row is dropped.
+func (s *Store) RenameFolder(oldName, newName string) error {
+	if oldName == newName || oldName == "" || newName == "" {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE sessions SET folder_name=? WHERE folder_name=?`, newName, oldName); err != nil {
+		return err
+	}
+	// Check whether newName already exists (merge case).
+	var exists int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM folders WHERE name=?`, newName).Scan(&exists); err != nil {
+		return err
+	}
+	if exists > 0 {
+		if _, err := tx.Exec(`DELETE FROM folders WHERE name=?`, oldName); err != nil {
+			return err
+		}
+	} else {
+		if _, err := tx.Exec(`UPDATE folders SET name=? WHERE name=?`, newName, oldName); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SetSessionFolder assigns a session to a folder. Empty folder clears the
+// assignment. Auto-creates the folder in the registry if it doesn't exist.
+func (s *Store) SetSessionFolder(bridgeID, folder string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if folder != "" {
+		if _, err := tx.Exec(
+			`INSERT INTO folders (name, position) VALUES (?, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
+			folder,
+		); err != nil {
+			return err
+		}
+	}
+	res, err := tx.Exec(
+		`UPDATE sessions SET folder_name=?, updated_at=? WHERE bridge_id=?`,
+		folder, time.Now().UTC(), bridgeID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
 }
 
 // UpsertDiscoveredSession inserts a discovered session if it doesn't already exist.

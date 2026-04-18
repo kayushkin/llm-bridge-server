@@ -261,6 +261,12 @@ func (m *Manager) readEvents(proc *Process) {
 			m.store.UpdateSessionState(bridgeID, string(msg.SessionCompleted))
 		case msg.EventError:
 			m.store.UpdateSessionState(bridgeID, string(msg.SessionError))
+		case msg.EventSessionInfo:
+			if event.Info != nil {
+				if err := m.store.SetSessionInfo(bridgeID, event.Info); err != nil {
+					log.Printf("[harness] failed to persist session info: %v", err)
+				}
+			}
 		}
 
 		// Fan out to SSE subscribers with the actual row ID

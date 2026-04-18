@@ -88,7 +88,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/stop", s.handleStopSession)
 	s.mux.HandleFunc("POST /sessions/{id}/compact", s.handleCompactSession)
 	s.mux.HandleFunc("POST /sessions/{id}/fork", s.handleForkSession)
+	s.mux.HandleFunc("POST /sessions/{id}/rename", s.handleRenameSession)
 	s.mux.HandleFunc("POST /sessions/{id}/config", s.handleConfigSession)
+	s.mux.HandleFunc("PUT /sessions/{id}/folder", s.handleSetSessionFolder)
+
+	// Folder registry — sidebar organization for sessions
+	s.mux.HandleFunc("GET /folders", s.handleListFolders)
+	s.mux.HandleFunc("POST /folders", s.handleCreateFolder)
+	s.mux.HandleFunc("DELETE /folders/{name}", s.handleDeleteFolder)
+	s.mux.HandleFunc("PUT /folders/{name}", s.handleRenameFolder)
 
 	// Agent-store routes (mounted from agent-store library)
 	if s.agentStore != nil {
