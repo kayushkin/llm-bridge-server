@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Re-exec detached so the script survives if the calling agent's process
+# is a child of llm-bridge.service (stopping the service would otherwise
+# kill the shell running this script mid-deploy).
+if [ -z "${DEPLOY_DETACHED:-}" ]; then
+  LOG=/tmp/llm-bridge-deploy.log
+  DEPLOY_DETACHED=1 setsid nohup bash "$0" "$@" </dev/null >"$LOG" 2>&1 &
+  echo "detached deploy (pid=$!), tail -f $LOG"
+  exit 0
+fi
+
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_NAME="llm-bridge"
 SYSTEM_BIN="/usr/local/bin/$BIN_NAME"
