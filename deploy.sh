@@ -1,13 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Re-exec detached so the script survives if the calling agent's process
-# is a child of llm-bridge.service (stopping the service would otherwise
-# kill the shell running this script mid-deploy).
+# Re-exec inside a fresh systemd transient unit so the deploy survives
+# `systemctl stop llm-bridge.service`. When the deploy is triggered by an
+# agent running inside llm-bridge.service, the agent's bash is in the
+# service's cgroup; `setsid nohup` does NOT escape systemd's control-group
+# kill, so the stop takes the deploy with it. A transient unit lives in
+# its own cgroup under system.slice and is untouched by the service stop.
 if [ -z "${DEPLOY_DETACHED:-}" ]; then
-  LOG=/tmp/llm-bridge-deploy.log
-  DEPLOY_DETACHED=1 setsid nohup bash "$0" "$@" </dev/null >"$LOG" 2>&1 &
-  echo "detached deploy (pid=$!), tail -f $LOG"
+  # Log lives under $HOME (not /tmp) because systemd transient units get a
+  # PrivateTmp namespace, so the unit can't write to the host's /tmp.
+  LOG="$HOME/.cache/llm-bridge-deploy.log"
+  mkdir -p "$(dirname "$LOG")"
+  : >"$LOG"
+  UNIT="llm-bridge-deploy-$$.service"
+  # Resolve $0 to an absolute path — the transient unit doesn't inherit our
+  # working directory, so a relative ./deploy.sh would fail to find itself.
+  SCRIPT="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  sudo systemd-run \
+    --collect \
+    --unit="$UNIT" \
+    --description="llm-bridge deploy ($USER)" \
+    --uid="$(id -u)" \
+    --gid="$(id -g)" \
+    --setenv=DEPLOY_DETACHED=1 \
+    --setenv=HOME="$HOME" \
+    --setenv=PATH="$PATH" \
+    --property=StandardOutput=append:"$LOG" \
+    --property=StandardError=append:"$LOG" \
+    bash "$SCRIPT" "$@" >/dev/null
+  echo "detached deploy (unit=$UNIT), tail -f $LOG"
+  echo "  status: systemctl status $UNIT"
+  echo "  logs:   journalctl -u $UNIT -f"
   exit 0
 fi
 
