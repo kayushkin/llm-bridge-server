@@ -281,10 +281,10 @@ func TestStoreAndListEvents(t *testing.T) {
 	data1, _ := json.Marshal(event1)
 	data2, _ := json.Marshal(event2)
 
-	if err := s.StoreEvent("br_ev", string(event1.Type), data1); err != nil {
+	if err := s.StoreEvent("br_ev", string(event1.Type), "", "", data1); err != nil {
 		t.Fatalf("store event 1: %v", err)
 	}
-	if err := s.StoreEvent("br_ev", string(event2.Type), data2); err != nil {
+	if err := s.StoreEvent("br_ev", string(event2.Type), "", "", data2); err != nil {
 		t.Fatalf("store event 2: %v", err)
 	}
 
@@ -314,7 +314,7 @@ func TestStoreEventReturningID(t *testing.T) {
 	s.CreateSession(sess)
 
 	data, _ := json.Marshal(msg.Event{Type: msg.EventStream})
-	id, err := s.StoreEventReturningID("br_eid", "stream", data)
+	id, err := s.StoreEventReturningID("br_eid", "stream", "", "", data)
 	if err != nil {
 		t.Fatalf("store event returning id: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestListCurrentTurnEvents(t *testing.T) {
 	types := []string{"stream", "result", "user_message", "stream", "result"}
 	for _, typ := range types {
 		data, _ := json.Marshal(msg.Event{Type: msg.EventType(typ)})
-		s.StoreEvent("br_turn", typ, data)
+		s.StoreEvent("br_turn", typ, "", "", data)
 	}
 
 	// Current turn should only return events after the last user_message
@@ -397,13 +397,13 @@ func TestConcurrentWrites(t *testing.T) {
 	// Sequential writes (the production code serializes via Manager.mu)
 	for i := range 20 {
 		data, _ := json.Marshal(msg.Event{Type: msg.EventStream, SessionID: "br_conc"})
-		if err := s.StoreEvent("br_conc", "stream", data); err != nil {
+		if err := s.StoreEvent("br_conc", "stream", "", "", data); err != nil {
 			t.Errorf("write %d: %v", i, err)
 		}
 	}
 
 	// Verify all 20 events stored via StoreEventReturningID
-	lastID, err := s.StoreEventReturningID("br_conc", "stream", []byte(`{}`))
+	lastID, err := s.StoreEventReturningID("br_conc", "stream", "", "", []byte(`{}`))
 	if err != nil {
 		t.Fatalf("store returning id: %v", err)
 	}

@@ -14,9 +14,20 @@ import (
 	"time"
 
 	logstore "github.com/kayushkin/log-store/client"
+	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
+
+// sessionMsgState tracks per-session message-id assignment for the manager.
+// The manager owns the single-threaded event channel for a session, so this
+// is the right place to mint canonical bridge MessageIDs and reconcile them
+// against harness-native ids on resume/replay.
+type sessionMsgState struct {
+	bridgeMsgID     string            // currently-open assistant bridge id, "" between turns
+	harnessMsgID    string            // last-seen harness id for the open bridge message
+	harnessToBridge map[string]string // harness id → bridge id, for resume reconciliation
+}
 
 // StoredEvent pairs an event with its database row ID, assigned at insert time.
 type StoredEvent struct {
@@ -29,6 +40,7 @@ type Manager struct {
 	mu          sync.RWMutex
 	processes   map[string]*Process           // sessionID → process
 	subscribers map[string][]chan StoredEvent  // sessionID → SSE subscriber channels
+	msgState    map[string]*sessionMsgState   // sessionID → message-id assignment state
 	store       *store.Store
 	logStore    *logstore.Client
 }
@@ -38,9 +50,103 @@ func NewManager(st *store.Store, logStoreURL string) *Manager {
 	return &Manager{
 		processes:   make(map[string]*Process),
 		subscribers: make(map[string][]chan StoredEvent),
+		msgState:    make(map[string]*sessionMsgState),
 		store:       st,
 		logStore:    logstore.New(logStoreURL),
 	}
+}
+
+// loadMsgState rehydrates message-id state for a session from the DB. Called
+// when a process starts so that resume-replays from the harness can be mapped
+// back to their original bridge MessageIDs. Caller must hold m.mu.
+func (m *Manager) loadMsgState(bridgeID string) *sessionMsgState {
+	st := &sessionMsgState{harnessToBridge: make(map[string]string)}
+	if mp, err := m.store.HarnessToBridgeMap(bridgeID); err == nil {
+		st.harnessToBridge = mp
+	}
+	m.msgState[bridgeID] = st
+	return st
+}
+
+// AssignMessageID stamps an event with its canonical bridge MessageID,
+// extracts and records the harness-native id, and tracks turn boundaries.
+//
+// Rules:
+//   - user_message: mints a fresh id, stamps it, closes any open assistant turn.
+//   - assistant-side events (stream/thinking/tool_call/tool_result/plan/approval/result):
+//     reuse an existing bridge id when the harness id has been seen before
+//     (resume case); split when the harness id changes mid-turn; otherwise
+//     mint a new id on the first event of a turn.
+//   - result/error: stamp with the in-flight bridge id, then close the turn.
+//   - session_state leaving running: drop any in-flight turn state.
+//   - everything else (system, session_info, harness_id_set): no message id.
+func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
+	hid := msg.HarnessMessageIDOf(ev)
+	ev.HarnessMessageID = hid
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	st := m.msgState[bridgeID]
+	if st == nil {
+		st = m.loadMsgState(bridgeID)
+	}
+
+	switch ev.Type {
+	case msg.EventUserMessage:
+		if ev.MessageID == "" {
+			ev.MessageID = ids.NewMessageID()
+		}
+		st.bridgeMsgID = ""
+		st.harnessMsgID = ""
+
+	case msg.EventStream, msg.EventThinking, msg.EventToolCall,
+		msg.EventToolResult, msg.EventPlan, msg.EventApproval:
+		ev.MessageID = m.assignAssistantID(st, hid)
+
+	case msg.EventResult, msg.EventError:
+		ev.MessageID = m.assignAssistantID(st, hid)
+		st.bridgeMsgID = ""
+		st.harnessMsgID = ""
+
+	case msg.EventSessionState:
+		if ev.State != nil && ev.State.State != msg.SessionRunning {
+			st.bridgeMsgID = ""
+			st.harnessMsgID = ""
+		}
+
+	default:
+		// System / session_info / harness_id_set / unknown: not a message bubble.
+	}
+}
+
+// assignAssistantID picks the bridge MessageID for an assistant-side event.
+// Caller must hold m.mu.
+func (m *Manager) assignAssistantID(st *sessionMsgState, hid string) string {
+	// Resume reconciliation: if we've seen this harness id before in this
+	// session, reuse the bridge id we minted then. Re-emitted events thus
+	// land back in their original bubble.
+	if hid != "" {
+		if existing, ok := st.harnessToBridge[hid]; ok {
+			st.bridgeMsgID = existing
+			st.harnessMsgID = hid
+			return existing
+		}
+	}
+
+	// Split detection: harness moved to a new message inside the same turn.
+	if hid != "" && st.harnessMsgID != "" && st.harnessMsgID != hid {
+		st.bridgeMsgID = ""
+	}
+
+	if st.bridgeMsgID == "" {
+		st.bridgeMsgID = ids.NewMessageID()
+	}
+	if hid != "" {
+		st.harnessToBridge[hid] = st.bridgeMsgID
+		st.harnessMsgID = hid
+	}
+	return st.bridgeMsgID
 }
 
 // BinaryName returns the expected binary name for a harness.
@@ -220,7 +326,7 @@ func (m *Manager) readEvents(proc *Process) {
 					System:    &msg.SystemEvent{Subtype: "harness_id_set", Message: event.SessionID},
 				}
 				if data, err := json.Marshal(idEvent); err == nil {
-					rowID, _ := m.store.StoreEventReturningID(bridgeID, string(idEvent.Type), data)
+					rowID, _ := m.store.StoreEventReturningID(bridgeID, string(idEvent.Type), "", "", data)
 					stored := StoredEvent{Event: idEvent, RowID: rowID}
 					m.mu.RLock()
 					for _, ch := range m.subscribers[bridgeID] {
@@ -237,10 +343,13 @@ func (m *Manager) readEvents(proc *Process) {
 		// Stamp bridge_id so downstream stores can index by it.
 		event.BridgeID = bridgeID
 
+		// Assign canonical bridge MessageID and capture harness id.
+		m.AssignMessageID(bridgeID, &event)
+
 		// Persist event keyed by bridge_id (stable PK) and capture row ID.
 		var rowID int64
 		if data, err := json.Marshal(event); err == nil {
-			rowID, err = m.store.StoreEventReturningID(bridgeID, string(event.Type), data)
+			rowID, err = m.store.StoreEventReturningID(bridgeID, string(event.Type), event.MessageID, event.HarnessMessageID, data)
 			if err != nil {
 				log.Printf("[harness] failed to store event: %v", err)
 			}
@@ -269,17 +378,55 @@ func (m *Manager) readEvents(proc *Process) {
 			}
 		}
 
-		// Fan out to SSE subscribers with the actual row ID
+		// Fan out to SSE subscribers. Sends are parallel so one slow client
+		// can't starve the others, and each has a bounded timeout. On timeout
+		// the subscriber is evicted — its SSE stream closes, the client
+		// reconnects with Last-Event-ID, and the store replays missed events.
 		stored := StoredEvent{Event: event, RowID: rowID}
 		m.mu.RLock()
-		for _, ch := range m.subscribers[bridgeID] {
-			select {
-			case ch <- stored:
-			default:
-				// Subscriber too slow, drop event
+		subs := make([]chan StoredEvent, len(m.subscribers[bridgeID]))
+		copy(subs, m.subscribers[bridgeID])
+		m.mu.RUnlock()
+
+		if len(subs) > 0 {
+			const sendTimeout = 5 * time.Second
+			var evictMu sync.Mutex
+			var evicted []chan StoredEvent
+			var wg sync.WaitGroup
+			for _, ch := range subs {
+				wg.Add(1)
+				go func(c chan StoredEvent) {
+					defer wg.Done()
+					timer := time.NewTimer(sendTimeout)
+					defer timer.Stop()
+					select {
+					case c <- stored:
+					case <-timer.C:
+						evictMu.Lock()
+						evicted = append(evicted, c)
+						evictMu.Unlock()
+					}
+				}(ch)
+			}
+			wg.Wait()
+
+			if len(evicted) > 0 {
+				m.mu.Lock()
+				remaining := m.subscribers[bridgeID]
+				for _, dead := range evicted {
+					for i, s := range remaining {
+						if s == dead {
+							remaining = append(remaining[:i], remaining[i+1:]...)
+							close(dead)
+							break
+						}
+					}
+				}
+				m.subscribers[bridgeID] = remaining
+				m.mu.Unlock()
+				log.Printf("[harness] evicted %d slow SSE subscribers on session %s", len(evicted), bridgeID)
 			}
 		}
-		m.mu.RUnlock()
 	}
 
 	// Process exited — close all subscriber channels
@@ -289,9 +436,46 @@ func (m *Manager) readEvents(proc *Process) {
 	}
 	delete(m.subscribers, bridgeID)
 	delete(m.processes, bridgeID)
+	delete(m.msgState, bridgeID)
 	m.mu.Unlock()
 
 	m.store.UpdateSessionPID(bridgeID, 0)
+}
+
+// BroadcastEvent assigns a MessageID on ev (mutating it), persists, and fans
+// out an event that originates from the bridge server itself (not from
+// harness stdout). Used by the /send handler to publish user_message events
+// so other SSE subscribers see them without an extra round-trip.
+func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
+	bridgeID := ev.BridgeID
+	if bridgeID == "" {
+		bridgeID = ev.SessionID
+	}
+
+	m.AssignMessageID(bridgeID, ev)
+
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return 0, err
+	}
+	rowID, err := m.store.StoreEventReturningID(bridgeID, string(ev.Type), ev.MessageID, ev.HarnessMessageID, data)
+	if err != nil {
+		return 0, err
+	}
+
+	stored := StoredEvent{Event: *ev, RowID: rowID}
+	m.mu.RLock()
+	subs := make([]chan StoredEvent, len(m.subscribers[bridgeID]))
+	copy(subs, m.subscribers[bridgeID])
+	m.mu.RUnlock()
+	for _, ch := range subs {
+		select {
+		case ch <- stored:
+		default:
+			// Drop on a full subscriber channel — replay path covers reconnect.
+		}
+	}
+	return rowID, nil
 }
 
 // PushEvent sends an event directly to log-store.

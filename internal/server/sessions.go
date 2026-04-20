@@ -241,14 +241,16 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userEvent := msg.Event{
-		Type:      "user_message",
+		Type:      msg.EventUserMessage,
 		SessionID: bridgeID,
 		BridgeID:  bridgeID,
 		Timestamp: time.Now(),
 		Result:    &msg.ResultEvent{Text: req.Message},
 	}
-	if data, err := json.Marshal(userEvent); err == nil {
-		s.store.StoreEvent(bridgeID, "user_message", data)
+	// BroadcastEvent stamps userEvent.MessageID, persists, and fans out so
+	// other SSE subscribers see the user message immediately.
+	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
+		log.Printf("[session] failed to broadcast user_message: %v", err)
 	}
 	if err := s.harness.PushEvent(userEvent); err != nil {
 		log.Printf("[session] failed to push user_message to log-store: %v", err)
@@ -265,7 +267,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, map[string]string{"status": "sent"})
+	writeJSON(w, map[string]string{"status": "sent", "message_id": userEvent.MessageID})
 }
 
 func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {

@@ -70,11 +70,13 @@ func (s *Store) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_sessions_harness ON sessions(harness);
 
 		CREATE TABLE IF NOT EXISTS events (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_id TEXT NOT NULL,
-			type       TEXT NOT NULL,
-			data       TEXT NOT NULL,
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id         TEXT NOT NULL,
+			type               TEXT NOT NULL,
+			message_id         TEXT NOT NULL DEFAULT '',
+			harness_message_id TEXT NOT NULL DEFAULT '',
+			data               TEXT NOT NULL,
+			created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (session_id) REFERENCES sessions(bridge_id)
 		);
 		CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
@@ -82,6 +84,11 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
+	// Add message id columns to existing event tables created by older versions.
+	s.db.Exec(`ALTER TABLE events ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE events ADD COLUMN harness_message_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_message_id ON events(session_id, message_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_harness_msg_id ON events(session_id, harness_message_id)`)
 	// Migrations for existing DBs (old schema used 'id' as PK)
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''")
@@ -279,11 +286,13 @@ func (s *Store) UpdateSessionDisplayName(bridgeID, displayName string) error {
 }
 
 
-// StoreEvent persists a serialized event for a session.
-func (s *Store) StoreEvent(sessionID, eventType string, data []byte) error {
+// StoreEvent persists a serialized event for a session. messageID and
+// harnessMessageID may be empty for events that don't belong to a chat
+// message (system, session_state, session_info, etc).
+func (s *Store) StoreEvent(sessionID, eventType, messageID, harnessMessageID string, data []byte) error {
 	_, err := s.db.Exec(
-		`INSERT INTO events (session_id, type, data) VALUES (?,?,?)`,
-		sessionID, eventType, string(data),
+		`INSERT INTO events (session_id, type, message_id, harness_message_id, data) VALUES (?,?,?,?,?)`,
+		sessionID, eventType, messageID, harnessMessageID, string(data),
 	)
 	return err
 }
@@ -348,15 +357,41 @@ func (s *Store) ListEventsSinceID(sessionID string, afterID int) ([]EventWithID,
 }
 
 // StoreEventReturningID persists an event and returns its row ID.
-func (s *Store) StoreEventReturningID(sessionID, eventType string, data []byte) (int64, error) {
+func (s *Store) StoreEventReturningID(sessionID, eventType, messageID, harnessMessageID string, data []byte) (int64, error) {
 	result, err := s.db.Exec(
-		`INSERT INTO events (session_id, type, data) VALUES (?,?,?)`,
-		sessionID, eventType, string(data),
+		`INSERT INTO events (session_id, type, message_id, harness_message_id, data) VALUES (?,?,?,?,?)`,
+		sessionID, eventType, messageID, harnessMessageID, string(data),
 	)
 	if err != nil {
 		return 0, err
 	}
 	return result.LastInsertId()
+}
+
+// HarnessToBridgeMap returns the (harness_message_id → bridge message_id)
+// mapping for a session, used to rehydrate manager state after a process
+// restart so resume-replays from the harness can be reconciled back to
+// their original bridge messages.
+func (s *Store) HarnessToBridgeMap(sessionID string) (map[string]string, error) {
+	rows, err := s.db.Query(
+		`SELECT harness_message_id, message_id FROM events
+		 WHERE session_id=? AND harness_message_id != '' AND message_id != ''
+		 GROUP BY harness_message_id`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var h, b string
+		if err := rows.Scan(&h, &b); err != nil {
+			return nil, err
+		}
+		out[h] = b
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) DeleteSession(bridgeID string) error {
