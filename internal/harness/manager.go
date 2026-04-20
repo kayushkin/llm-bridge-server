@@ -27,6 +27,7 @@ type sessionMsgState struct {
 	bridgeMsgID     string            // currently-open assistant bridge id, "" between turns
 	harnessMsgID    string            // last-seen harness id for the open bridge message
 	harnessToBridge map[string]string // harness id → bridge id, for resume reconciliation
+	clientRequestID string            // caller's per-turn id from the latest user_message, "" between turns
 }
 
 // StoredEvent pairs an event with its database row ID, assigned at insert time.
@@ -99,20 +100,31 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 		}
 		st.bridgeMsgID = ""
 		st.harnessMsgID = ""
+		// Latch the caller's per-turn id so we can stamp it on downstream
+		// events coming back from the harness.
+		st.clientRequestID = ev.ClientRequestID
 
 	case msg.EventStream, msg.EventThinking, msg.EventToolCall,
 		msg.EventToolResult, msg.EventPlan, msg.EventApproval:
 		ev.MessageID = m.assignAssistantID(st, hid)
+		if ev.ClientRequestID == "" {
+			ev.ClientRequestID = st.clientRequestID
+		}
 
 	case msg.EventResult, msg.EventError:
 		ev.MessageID = m.assignAssistantID(st, hid)
+		if ev.ClientRequestID == "" {
+			ev.ClientRequestID = st.clientRequestID
+		}
 		st.bridgeMsgID = ""
 		st.harnessMsgID = ""
+		st.clientRequestID = ""
 
 	case msg.EventSessionState:
 		if ev.State != nil && ev.State.State != msg.SessionRunning {
 			st.bridgeMsgID = ""
 			st.harnessMsgID = ""
+			st.clientRequestID = ""
 		}
 
 	default:

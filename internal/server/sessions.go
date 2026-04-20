@@ -10,7 +10,6 @@ import (
 	"time"
 
 	harnessstore "github.com/kayushkin/harness-store"
-	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -71,52 +70,28 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ClientID == "" {
+		http.Error(w, "client_id is required", http.StatusBadRequest)
+		return
+	}
+
 	h := msg.Harness(req.Harness)
 	if !isValidHarness(h) {
 		http.Error(w, "invalid harness", http.StatusBadRequest)
 		return
 	}
 
-	// Resolve instance (requires harness-store)
-	var inst *msg.Instance
-	if req.InstanceID != "" && s.harnessStore != nil {
-		// Use specific instance
-		var err error
-		inst, err = s.harnessStore.GetInstance(req.InstanceID)
-		if err != nil {
-			http.Error(w, "instance not found", http.StatusNotFound)
-			return
-		}
-		if !inst.Enabled {
-			http.Error(w, "instance is disabled", http.StatusServiceUnavailable)
-			return
-		}
-		if inst.HarnessType != req.Harness {
-			http.Error(w, fmt.Sprintf("instance is for %s, not %s", inst.HarnessType, req.Harness), http.StatusBadRequest)
-			return
-		}
-	} else if req.AutoStart && s.harnessStore != nil {
-		// Find an available instance for this harness type
-		instances, err := s.harnessStore.ListInstancesByHarness(h)
-		if err == nil && len(instances) > 0 {
-			for _, candidate := range instances {
-				if candidate.Enabled {
-					inst = &candidate
-					break
-				}
-			}
-		}
-	}
-	// If no instance found/available, fall back to local execution
-	if inst == nil && req.AutoStart {
-		if _, ok := harness.Available(h); !ok {
-			http.Error(w, fmt.Sprintf("harness not available: %s", harness.BinaryName(h)), http.StatusServiceUnavailable)
-			return
-		}
+	// Every session must be bound to a harness instance — no local-spawn
+	// fallback. harness-store is the single source of truth for which
+	// instance runs a session.
+	if s.harnessStore == nil {
+		http.Error(w, "harness-store not configured", http.StatusServiceUnavailable)
+		return
 	}
 
-	if req.ClientID == "" {
-		http.Error(w, "client_id is required", http.StatusBadRequest)
+	inst, err := resolveInstance(s.harnessStore, req.InstanceID, h)
+	if err != nil {
+		http.Error(w, err.message, err.status)
 		return
 	}
 
@@ -125,14 +100,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		ClientID:      req.ClientID,
 		DisplayName:   req.DisplayName,
 		Harness:       req.Harness,
+		InstanceID:    inst.ID,
 		State:         string(msg.SessionIdle),
 		AgentID:       req.AgentID,
 		SpawnerID:     req.SpawnerID,
 		HarnessConfig: req.HarnessConfig,
-	}
-
-	if inst != nil {
-		sess.InstanceID = inst.ID
 	}
 
 	if err := s.store.CreateSession(sess); err != nil {
@@ -140,17 +112,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start harness subprocess if requested
 	if req.AutoStart {
-		var startErr error
-		if inst != nil && s.harnessStore != nil {
-			credID := resolveCredential(s.harnessStore, inst.ID)
-			_, startErr = s.harness.StartOnInstance(r.Context(), sess, inst, credID)
-		} else {
-			_, startErr = s.harness.Start(r.Context(), sess)
-		}
-
-		if startErr != nil {
+		credID := resolveCredential(s.harnessStore, inst.ID)
+		if _, startErr := s.harness.StartOnInstance(r.Context(), sess, inst, credID); startErr != nil {
 			s.store.UpdateSessionState(sess.BridgeID, string(msg.SessionError))
 			sess.State = string(msg.SessionError)
 		} else {
@@ -160,6 +124,43 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, sess)
+}
+
+// httpErr carries a message and the HTTP status to return.
+type httpErr struct {
+	status  int
+	message string
+}
+
+// resolveInstance picks the harness instance that a session should run on.
+// Callers pass an explicit instance_id or "" to auto-pick any enabled instance
+// for the given harness type. Returns an error suitable for http.Error when
+// no usable instance is found.
+func resolveInstance(hs *harnessstore.Store, instanceID string, h msg.Harness) (*msg.Instance, *httpErr) {
+	if instanceID != "" {
+		inst, err := hs.GetInstance(instanceID)
+		if err != nil {
+			return nil, &httpErr{http.StatusNotFound, "instance not found"}
+		}
+		if !inst.Enabled {
+			return nil, &httpErr{http.StatusServiceUnavailable, "instance is disabled"}
+		}
+		if inst.HarnessType != h {
+			return nil, &httpErr{http.StatusBadRequest, fmt.Sprintf("instance is for %s, not %s", inst.HarnessType, h)}
+		}
+		return inst, nil
+	}
+
+	instances, err := hs.ListInstancesByHarness(h)
+	if err != nil {
+		return nil, &httpErr{http.StatusInternalServerError, err.Error()}
+	}
+	for i := range instances {
+		if instances[i].Enabled {
+			return &instances[i], nil
+		}
+	}
+	return nil, &httpErr{http.StatusServiceUnavailable, fmt.Sprintf("no enabled instance for harness: %s", h)}
 }
 
 func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
@@ -222,30 +223,29 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.harness.Get(bridgeID) == nil {
-		var startErr error
-		if sess.InstanceID != "" && s.harnessStore != nil {
-			inst, err := s.harnessStore.GetInstance(sess.InstanceID)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
-				return
-			}
-			credID := resolveCredential(s.harnessStore, inst.ID)
-			_, startErr = s.harness.StartOnInstance(r.Context(), sess, inst, credID)
-		} else {
-			_, startErr = s.harness.Start(r.Context(), sess)
+		if sess.InstanceID == "" || s.harnessStore == nil {
+			http.Error(w, "session has no instance bound", http.StatusInternalServerError)
+			return
 		}
-		if startErr != nil {
+		inst, err := s.harnessStore.GetInstance(sess.InstanceID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
+			return
+		}
+		credID := resolveCredential(s.harnessStore, inst.ID)
+		if _, startErr := s.harness.StartOnInstance(r.Context(), sess, inst, credID); startErr != nil {
 			http.Error(w, fmt.Sprintf("failed to start harness: %v", startErr), http.StatusInternalServerError)
 			return
 		}
 	}
 
 	userEvent := msg.Event{
-		Type:      msg.EventUserMessage,
-		SessionID: bridgeID,
-		BridgeID:  bridgeID,
-		Timestamp: time.Now(),
-		Result:    &msg.ResultEvent{Text: req.Message},
+		Type:            msg.EventUserMessage,
+		SessionID:       bridgeID,
+		BridgeID:        bridgeID,
+		ClientRequestID: req.ClientRequestID,
+		Timestamp:       time.Now(),
+		Result:          &msg.ResultEvent{Text: req.Message},
 	}
 	// BroadcastEvent stamps userEvent.MessageID, persists, and fans out so
 	// other SSE subscribers see the user message immediately.
@@ -384,7 +384,17 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.harness.Start(r.Context(), sess); err != nil {
+	if sess.InstanceID == "" || s.harnessStore == nil {
+		http.Error(w, "session has no instance bound", http.StatusInternalServerError)
+		return
+	}
+	inst, err := s.harnessStore.GetInstance(sess.InstanceID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
+		return
+	}
+	credID := resolveCredential(s.harnessStore, inst.ID)
+	if _, err := s.harness.StartOnInstance(r.Context(), sess, inst, credID); err != nil {
 		http.Error(w, fmt.Sprintf("failed to resume: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -437,11 +447,22 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if parent.InstanceID == "" || s.harnessStore == nil {
+		http.Error(w, "parent session has no instance bound", http.StatusInternalServerError)
+		return
+	}
+	inst, err := s.harnessStore.GetInstance(parent.InstanceID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	forked := &store.Session{
 		BridgeID:    generateBridgeID(),
 		ClientID:    req.ClientID,
 		DisplayName: displayName,
 		Harness:     parent.Harness,
+		InstanceID:  parent.InstanceID,
 		State:       string(msg.SessionIdle),
 		AgentID:     parent.AgentID,
 		SpawnerID:   parent.SpawnerID,
@@ -453,7 +474,8 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.harness.Start(context.Background(), forked); err != nil {
+	credID := resolveCredential(s.harnessStore, inst.ID)
+	if _, err := s.harness.StartOnInstance(context.Background(), forked, inst, credID); err != nil {
 		s.store.UpdateSessionState(forked.BridgeID, string(msg.SessionError))
 		forked.State = string(msg.SessionError)
 	} else {

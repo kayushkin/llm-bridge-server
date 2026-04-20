@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	harnessstore "github.com/kayushkin/harness-store"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -33,6 +34,46 @@ func testServer(t *testing.T) (*Server, *store.Store) {
 
 	srv := New(st, nil, nil, nil, nil, cfg)
 	return srv, st
+}
+
+// testServerWithInstance returns a server wired to a harness-store that
+// already contains one enabled instance of the given harness type. The
+// instance id is returned so tests can reference it in create requests.
+func testServerWithInstance(t *testing.T, harness msg.Harness) (*Server, *store.Store, string) {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	hs, err := harnessstore.Open(filepath.Join(dir, "harness.db"))
+	if err != nil {
+		t.Fatalf("open harness-store: %v", err)
+	}
+	t.Cleanup(func() { hs.Close() })
+
+	inst := &msg.Instance{
+		ID:          "inst_test",
+		HarnessType: harness,
+		Name:        "test-instance",
+		Host:        "localhost",
+		Transport:   msg.TransportLocal,
+		Enabled:     true,
+	}
+	if err := hs.CreateInstance(inst); err != nil {
+		t.Fatalf("seed instance: %v", err)
+	}
+
+	cfg := &config.Config{
+		ImagesDir:       filepath.Join(dir, "images"),
+		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
+		LogStoreURL:     "http://localhost:0",
+	}
+
+	srv := New(st, nil, nil, hs, nil, cfg)
+	return srv, st, inst.ID
 }
 
 func doJSON(t *testing.T, srv http.Handler, method, path string, body any) *http.Response {
@@ -124,10 +165,11 @@ func TestHarnesses(t *testing.T) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 func TestCreateSession_NoAutoStart(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _, instID := testServerWithInstance(t, "claude_code")
 
 	req := msg.CreateSessionRequest{
 		Harness:     "claude_code",
+		InstanceID:  instID,
 		ClientID:    "fe_test_1",
 		DisplayName: "Test Task",
 	}
@@ -145,11 +187,29 @@ func TestCreateSession_NoAutoStart(t *testing.T) {
 	if sess.ClientID != "fe_test_1" {
 		t.Errorf("client_id = %q, want fe_test_1", sess.ClientID)
 	}
+	if sess.InstanceID != instID {
+		t.Errorf("instance_id = %q, want %q", sess.InstanceID, instID)
+	}
 	if sess.State != "idle" {
 		t.Errorf("state = %q, want idle (no auto_start)", sess.State)
 	}
 	if sess.Harness != "claude_code" {
 		t.Errorf("harness = %q, want claude_code", sess.Harness)
+	}
+}
+
+func TestCreateSession_RejectedWithoutInstance(t *testing.T) {
+	srv, _ := testServer(t)
+
+	req := msg.CreateSessionRequest{
+		Harness:  "claude_code",
+		ClientID: "fe_1",
+	}
+
+	resp := doJSON(t, srv, "POST", "/sessions", req)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("status = %d, want 503 (no instance): %s", resp.StatusCode, body)
 	}
 }
 
@@ -568,10 +628,11 @@ func TestCreateSession_AutoStart_HarnessUnavailable(t *testing.T) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 func TestCreateSession_WithHarnessConfig(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _, instID := testServerWithInstance(t, "claude_code")
 
 	req := msg.CreateSessionRequest{
 		Harness:       "claude_code",
+		InstanceID:    instID,
 		ClientID:      "fe_cfg",
 		DisplayName:   "Config Test",
 		HarnessConfig: json.RawMessage(`{"system_prompt":"test prompt","model":"opus"}`),
