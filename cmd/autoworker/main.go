@@ -1,0 +1,435 @@
+// autoworker decides whether to spawn a budgeted todo-worker agent based on
+// current subscription-limit utilisation relative to a time-until-reset curve.
+//
+// Registered as a scheduler shell job running every ~30 minutes. On each tick:
+//
+//  1. Pull /api/usage/limits from usage-store.
+//  2. For each provider (anthropic → claude_code, codex → codex):
+//     - Skip if the provider snapshot is stale (codex when no recent session).
+//     - Locate the weekly window (seven_day for anthropic, weekly for codex).
+//     - Compute elapsed fraction of the 7-day window from resets_at.
+//     - Interpolate the target utilisation curve against that fraction.
+//     - Skip unless local PT time is inside the provider's safe window.
+//     - Skip unless we're outside the cooldown since the last fire.
+//     - Skip unless actual used_percent < target − slack (default 15pp).
+//  3. When all gates pass, publish a ChatInbound message on NATS
+//     chat.inbound.bridge with Channel set to the target harness, so that
+//     llm-bridge-adapter spins up the matching session and the agent works a
+//     todo out of the noteboard.
+//
+// Cooldown state lives in ~/.config/autoworker/state.json (one map of provider
+// → last_fire_unix). Everything else is stateless.
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	natsbus "github.com/kayushkin/bus"
+	"github.com/kayushkin/bus/messages"
+)
+
+type limitWindow struct {
+	UsedPercent   float64 `json:"used_percent"`
+	WindowMinutes *int64  `json:"window_minutes,omitempty"`
+	ResetsAt      *int64  `json:"resets_at,omitempty"`
+}
+
+type providerLimits struct {
+	Provider   string                  `json:"provider"`
+	PlanType   string                  `json:"plan_type,omitempty"`
+	Tier       string                  `json:"tier,omitempty"`
+	Windows    map[string]*limitWindow `json:"windows"`
+	SnapshotAt int64                   `json:"snapshot_at"`
+	Source     string                  `json:"source"`
+	StaleAfter *int64                  `json:"stale_after,omitempty"`
+}
+
+type limitsResponse map[string]*providerLimits
+
+// providerSpec wires a usage-store provider to the NATS path that reaches its
+// corresponding harness session, plus the time window to gate against.
+//
+// Subjects reflect the listeners live today:
+//   - chat.inbound.claude-code → claude-code-adapter (legacy but running)
+//   - chat.inbound.bridge      → llm-bridge-adapter (dispatches by Channel → harness)
+//
+// If llm-bridge-adapter supersedes the legacy CC adapter, flip Subject to
+// chat.inbound.bridge + Channel=claude_code for anthropic.
+type providerSpec struct {
+	Name        string        // "anthropic" / "codex" — key in limitsResponse
+	Subject     string        // NATS subject to publish ChatInbound to
+	Channel     string        // ChatInbound.Channel (harness selector for bridge-adapter; any string for legacy)
+	Orchestrator string       // ChatInbound.Orchestrator (routes / metadata)
+	WindowKey   string        // "seven_day" or "weekly" in ProviderLimits.Windows
+	SafeStart   int           // minutes past local midnight, inclusive
+	SafeEnd     int           // minutes past local midnight, exclusive
+	WeekdayOnly bool          // if true, safe window only applies Mon–Fri
+	Cooldown    time.Duration // minimum time between fires
+}
+
+var providers = []providerSpec{
+	{
+		Name:         "anthropic",
+		Subject:      "chat.inbound.claude-code",
+		Channel:      "autoworker",
+		Orchestrator: "claude-code",
+		WindowKey:    "seven_day",
+		SafeStart:    0,         // 00:00 PT
+		SafeEnd:      4*60 + 30, // 04:30 PT (30min buffer before Anthropic peak at 05:00)
+		Cooldown:     2 * time.Hour,
+	},
+	{
+		Name:         "codex",
+		Subject:      "chat.inbound.bridge",
+		Channel:      "codex", // llm-bridge-adapter uses Channel to pick harness
+		Orchestrator: "bridge",
+		WindowKey:    "weekly",
+		SafeStart:    0,      // 00:00 PT
+		SafeEnd:      6 * 60, // 06:00 PT
+		Cooldown:     2 * time.Hour,
+	},
+}
+
+// targetCurve is the (fraction_elapsed, target_used_percent) anchor points.
+// Linear interpolation between anchors. Applied against the weekly window's
+// elapsed fraction so we ramp budget consumption toward ~100% by reset.
+//
+// Spec (from user): "first couple days leave it blank, then the last % of
+// the week we should aim to increase … near 100% as it ends".
+var targetCurve = []struct{ frac, pct float64 }{
+	{0.00, 0},    // day 0 of 7 → blank
+	{0.286, 0},   // ~day 2    → still blank
+	{0.429, 25},  // ~day 3    → start budgeting
+	{0.571, 50},  // ~day 4    → half
+	{0.714, 70},  // ~day 5
+	{0.857, 85},  // ~day 6
+	{1.00, 100},  // reset     → full
+}
+
+type decision struct {
+	provider string
+	target   float64
+	actual   float64
+	fraction float64
+	fire     bool
+	reason   string
+}
+
+type state struct {
+	LastFire map[string]int64 `json:"last_fire"` // provider → unix seconds
+}
+
+func main() {
+	var (
+		registerFlag = flag.Bool("register", false, "Register (upsert) this binary as a scheduler cron job and exit.")
+		dryRun       = flag.Bool("dry-run", false, "Report decisions; do not publish or update state.")
+		slackPP      = flag.Float64("slack", 15, "Percent points below target before firing.")
+		prompt       = flag.String("prompt", defaultPrompt, "Prompt text sent to the worker agent.")
+		tz           = flag.String("tz", "America/Los_Angeles", "IANA timezone for safe-window gating.")
+	)
+	flag.Parse()
+
+	if *registerFlag {
+		if err := registerSchedulerJob(); err != nil {
+			log.Fatalf("register: %v", err)
+		}
+		return
+	}
+
+	loc, err := time.LoadLocation(*tz)
+	if err != nil {
+		log.Fatalf("timezone %q: %v", *tz, err)
+	}
+
+	lim, err := fetchLimits()
+	if err != nil {
+		log.Fatalf("fetch limits: %v", err)
+	}
+
+	st, statePath, err := loadState()
+	if err != nil {
+		log.Fatalf("load state: %v", err)
+	}
+
+	now := time.Now()
+	nowLocal := now.In(loc)
+
+	var natsClient *natsbus.Client
+	if !*dryRun {
+		natsURL := envOr("NATS_URL", "nats://localhost:4222")
+		c, err := natsbus.Connect(natsbus.Options{URL: natsURL, Name: "autoworker"})
+		if err != nil {
+			log.Fatalf("nats connect: %v", err)
+		}
+		defer c.Close()
+		natsClient = c
+	}
+
+	for _, p := range providers {
+		d := evaluate(p, lim[p.Name], nowLocal, st, *slackPP)
+		log.Printf("[%s] %s", d.provider, d.reason)
+		if !d.fire || *dryRun {
+			continue
+		}
+		if err := publishWorker(natsClient, p, *prompt); err != nil {
+			log.Printf("[%s] publish failed: %v", d.provider, err)
+			continue
+		}
+		st.LastFire[p.Name] = now.Unix()
+		log.Printf("[%s] FIRED worker → %s (channel=%s target=%.0f%% actual=%.0f%%)",
+			d.provider, p.Subject, p.Channel, d.target, d.actual)
+	}
+
+	if !*dryRun {
+		if err := saveState(statePath, st); err != nil {
+			log.Printf("save state: %v", err)
+		}
+	}
+}
+
+func evaluate(p providerSpec, lim *providerLimits, nowLocal time.Time, st *state, slackPP float64) decision {
+	d := decision{provider: p.Name}
+
+	if lim == nil {
+		d.reason = "no snapshot available — skip"
+		return d
+	}
+	if lim.StaleAfter != nil && time.Now().Unix() > *lim.StaleAfter {
+		d.reason = fmt.Sprintf("snapshot stale (snapshot_at=%s) — skip",
+			time.Unix(lim.SnapshotAt, 0).Format(time.RFC3339))
+		return d
+	}
+
+	win, ok := lim.Windows[p.WindowKey]
+	if !ok || win == nil {
+		d.reason = fmt.Sprintf("weekly window %q not in snapshot — skip", p.WindowKey)
+		return d
+	}
+	if win.ResetsAt == nil {
+		d.reason = "weekly window has no resets_at — skip"
+		return d
+	}
+
+	d.actual = win.UsedPercent
+	d.fraction = elapsedFraction(*win.ResetsAt, time.Now().Unix())
+	d.target = interpolate(d.fraction)
+
+	if !inSafeWindow(p, nowLocal) {
+		d.reason = fmt.Sprintf("target=%.0f%% actual=%.0f%% — outside safe window (now=%s)",
+			d.target, d.actual, nowLocal.Format("Mon 15:04 MST"))
+		return d
+	}
+
+	if last := st.LastFire[p.Name]; last > 0 {
+		if time.Since(time.Unix(last, 0)) < p.Cooldown {
+			d.reason = fmt.Sprintf("target=%.0f%% actual=%.0f%% — cooldown active (last fire %s ago)",
+				d.target, d.actual, time.Since(time.Unix(last, 0)).Truncate(time.Minute))
+			return d
+		}
+	}
+
+	if d.actual >= d.target-slackPP {
+		d.reason = fmt.Sprintf("target=%.0f%% actual=%.0f%% — within slack (%0.fpp) of target, skip",
+			d.target, d.actual, slackPP)
+		return d
+	}
+
+	d.fire = true
+	d.reason = fmt.Sprintf("target=%.0f%% actual=%.0f%% (frac=%.2f) — fire",
+		d.target, d.actual, d.fraction)
+	return d
+}
+
+// elapsedFraction returns how far we are through the 7-day window, based on
+// resetsAt (unix seconds) and nowSec. Clamped to [0, 1).
+func elapsedFraction(resetsAt, nowSec int64) float64 {
+	const weekSec = int64(7 * 24 * 60 * 60)
+	windowStart := resetsAt - weekSec
+	elapsed := nowSec - windowStart
+	if elapsed < 0 {
+		return 0
+	}
+	if elapsed >= weekSec {
+		return 0.999
+	}
+	return float64(elapsed) / float64(weekSec)
+}
+
+// interpolate finds the target utilisation for a given elapsed fraction.
+func interpolate(frac float64) float64 {
+	if frac <= targetCurve[0].frac {
+		return targetCurve[0].pct
+	}
+	for i := 1; i < len(targetCurve); i++ {
+		if frac <= targetCurve[i].frac {
+			a, b := targetCurve[i-1], targetCurve[i]
+			span := b.frac - a.frac
+			if span == 0 {
+				return b.pct
+			}
+			t := (frac - a.frac) / span
+			return a.pct + t*(b.pct-a.pct)
+		}
+	}
+	return targetCurve[len(targetCurve)-1].pct
+}
+
+func inSafeWindow(p providerSpec, nowLocal time.Time) bool {
+	if p.WeekdayOnly {
+		wd := nowLocal.Weekday()
+		if wd == time.Saturday || wd == time.Sunday {
+			return false
+		}
+	}
+	minutesOfDay := nowLocal.Hour()*60 + nowLocal.Minute()
+	return minutesOfDay >= p.SafeStart && minutesOfDay < p.SafeEnd
+}
+
+func fetchLimits() (limitsResponse, error) {
+	url := envOr("USAGE_STORE_URL", "http://localhost:8185") + "/api/usage/limits"
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("usage-store returned %d: %s", resp.StatusCode, string(body))
+	}
+	var lim limitsResponse
+	if err := json.Unmarshal(body, &lim); err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
+	return lim, nil
+}
+
+func publishWorker(nc *natsbus.Client, p providerSpec, prompt string) error {
+	msg := messages.ChatInbound{
+		Text:         prompt,
+		Author:       "autoworker",
+		Agent:        "todo-worker",
+		Orchestrator: p.Orchestrator,
+		Channel:      p.Channel,
+		SessionID:    fmt.Sprintf("autoworker_%s_%d", p.Name, time.Now().Unix()),
+		Timestamp:    time.Now().UTC(),
+	}
+	return nc.Publish(p.Subject, msg)
+}
+
+func loadState() (*state, string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, "", err
+	}
+	path := filepath.Join(home, ".config", "autoworker", "state.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, path, err
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return &state{LastFire: map[string]int64{}}, path, nil
+	}
+	if err != nil {
+		return nil, path, err
+	}
+	var st state
+	if err := json.Unmarshal(data, &st); err != nil {
+		return nil, path, err
+	}
+	if st.LastFire == nil {
+		st.LastFire = map[string]int64{}
+	}
+	return &st, path, nil
+}
+
+func saveState(path string, st *state) error {
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// registerSchedulerJob upserts an autoworker-tick job in the scheduler.
+//
+// Creates a type=shell job running `autoworker` every 30 minutes. If a job
+// with the same name already exists, leaves it alone (the scheduler has no
+// PUT-by-name primitive; users edit via the API or UI).
+func registerSchedulerJob() error {
+	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
+	home, _ := os.UserHomeDir()
+	bin := filepath.Join(home, "bin", "autoworker")
+
+	// See if a job with this name already exists.
+	resp, err := http.Get(schedURL + "/api/jobs")
+	if err != nil {
+		return fmt.Errorf("list jobs: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var jobs []struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(body, &jobs)
+	for _, j := range jobs {
+		if j.Name == "autoworker-tick" {
+			fmt.Println("autoworker-tick already registered; no changes made")
+			return nil
+		}
+	}
+
+	payload := map[string]any{
+		"name":        "autoworker-tick",
+		"description": "Gated todo-worker dispatcher. Fires budgeted agents when usage is below the weekly-reset curve.",
+		"schedule":    "*/30 * * * *",
+		"type":        "shell",
+		"command":     bin,
+	}
+	data, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", schedURL+"/api/jobs", strings.NewReader(string(data)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST /api/jobs: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("scheduler returned %d: %s", resp.StatusCode, string(body))
+	}
+	fmt.Printf("registered autoworker-tick: %s\n", strings.TrimSpace(string(body)))
+	return nil
+}
+
+func envOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+const defaultPrompt = `You are the nightly todo-worker. The user is asleep; their subscription budget is under-utilised for this week and I am dispatching you to make useful progress on open todos without disturbing them.
+
+Steps:
+1. GET http://localhost:8191/api/items?type=todo&status=open&limit=50 to read the noteboard todo list.
+2. Pick the highest-priority open todo that you can make real progress on autonomously without needing clarifying questions from the user. Prefer codebase tasks that have clear scope.
+3. Do the work. Use your normal tools: explore repos under ~/repos/, edit, build, test, commit only if the task is a true "commit me" (match the user's normal guidance about explicit commit requests).
+4. When the task is complete, PATCH http://localhost:8191/api/items/<id> with {"status":"done"} and a note in the body describing what you did.
+5. If the top todo is ambiguous, needs user input, or looks too large for one session, leave it alone and try the next one. If every top todo is blocked, stop — better to do nothing than the wrong thing.
+
+Be self-contained. No chat; just work and close out the todo.`

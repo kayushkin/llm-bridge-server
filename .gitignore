@@ -1,6 +1,8 @@
-# Compiled binary
-scheduler
+# Compiled binaries
+/scheduler
+/autoworker
 /cmd/scheduler/scheduler
+/cmd/autoworker/autoworker
 
 # DB files
 *.db
