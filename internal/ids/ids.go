@@ -9,3 +9,10 @@ import "github.com/oklog/ulid/v2"
 func NewMessageID() string {
 	return "msg_" + ulid.Make().String()
 }
+
+// NewTurnID returns a fresh canonical turn id (turn_<ULID>). A turn spans
+// from a user_message through every event it produces until the terminating
+// result/error.
+func NewTurnID() string {
+	return "turn_" + ulid.Make().String()
+}

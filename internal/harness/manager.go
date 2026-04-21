@@ -28,6 +28,7 @@ type sessionMsgState struct {
 	harnessMsgID    string            // last-seen harness id for the open bridge message
 	harnessToBridge map[string]string // harness id → bridge id, for resume reconciliation
 	clientRequestID string            // caller's per-turn id from the latest user_message, "" between turns
+	turnID          string            // bridge-minted per-turn id, "" between turns
 }
 
 // StoredEvent pairs an event with its database row ID, assigned at insert time.
@@ -70,20 +71,26 @@ func (m *Manager) loadMsgState(bridgeID string) *sessionMsgState {
 }
 
 // AssignMessageID stamps an event with its canonical bridge MessageID,
-// extracts and records the harness-native id, and tracks turn boundaries.
+// extracts and records the harness-native id, stamps a bridge-minted TurnID
+// on every event in the turn, and tracks turn boundaries.
 //
 // Rules:
-//   - user_message: mints a fresh id, stamps it, closes any open assistant turn.
+//   - user_message: mints a fresh MessageID for the user bubble, mints a fresh
+//     TurnID for the turn, closes any open assistant bubble.
 //   - assistant-side events (stream/thinking/tool_call/tool_result/plan/approval/result):
-//     reuse an existing bridge id when the harness id has been seen before
-//     (resume case); split when the harness id changes mid-turn; otherwise
-//     mint a new id on the first event of a turn.
-//   - result/error: stamp with the in-flight bridge id, then close the turn.
+//     reuse an existing bridge MessageID when the harness id has been seen
+//     before (resume case); split when the harness id changes mid-turn;
+//     otherwise mint a new MessageID on the first event of a bubble.
+//   - result/error: stamp with the in-flight MessageID, then close the turn
+//     (clear MessageID, TurnID, ClientRequestID state).
 //   - session_state leaving running: drop any in-flight turn state.
-//   - system events mid-turn: stamp the in-flight MessageID and ClientRequestID
-//     so callers can correlate them with the turn that produced them. Still no
-//     MessageID between turns.
-//   - everything else (session_info, harness_id_set): no message id.
+//   - system events: no MessageID. TurnID is stamped when one is in-flight.
+//   - everything else (session_info, harness_id_set): no MessageID.
+//
+// TurnID is stamped on every event while a turn is open, including system
+// events that don't belong to a message bubble — that's the coarser
+// correlator for init/task_progress/retry alongside the bubble(s) they
+// accompany.
 func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 	hid := msg.HarnessMessageIDOf(ev)
 	ev.HarnessMessageID = hid
@@ -106,6 +113,8 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 		// Latch the caller's per-turn id so we can stamp it on downstream
 		// events coming back from the harness.
 		st.clientRequestID = ev.ClientRequestID
+		// Open a new turn.
+		st.turnID = ids.NewTurnID()
 
 	case msg.EventStream, msg.EventThinking, msg.EventToolCall,
 		msg.EventToolResult, msg.EventPlan, msg.EventApproval:
@@ -119,30 +128,30 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 		if ev.ClientRequestID == "" {
 			ev.ClientRequestID = st.clientRequestID
 		}
+		// Stamp TurnID before clearing state.
+		if ev.TurnID == "" {
+			ev.TurnID = st.turnID
+		}
 		st.bridgeMsgID = ""
 		st.harnessMsgID = ""
 		st.clientRequestID = ""
+		st.turnID = ""
+		return
 
 	case msg.EventSessionState:
 		if ev.State != nil && ev.State.State != msg.SessionRunning {
 			st.bridgeMsgID = ""
 			st.harnessMsgID = ""
 			st.clientRequestID = ""
-		}
-
-	case msg.EventSystem:
-		// System events aren't message bubbles, but when one fires inside a
-		// turn we stamp the in-flight MessageID and ClientRequestID so the UI
-		// can correlate it with the assistant response it belongs to.
-		if ev.MessageID == "" {
-			ev.MessageID = st.bridgeMsgID
-		}
-		if ev.ClientRequestID == "" {
-			ev.ClientRequestID = st.clientRequestID
+			st.turnID = ""
 		}
 
 	default:
-		// session_info / harness_id_set / unknown: not a message bubble.
+		// system / session_info / harness_id_set / unknown: no MessageID.
+	}
+
+	if ev.TurnID == "" {
+		ev.TurnID = st.turnID
 	}
 }
 
