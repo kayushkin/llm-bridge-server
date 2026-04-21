@@ -80,7 +80,10 @@ func (m *Manager) loadMsgState(bridgeID string) *sessionMsgState {
 //     mint a new id on the first event of a turn.
 //   - result/error: stamp with the in-flight bridge id, then close the turn.
 //   - session_state leaving running: drop any in-flight turn state.
-//   - everything else (system, session_info, harness_id_set): no message id.
+//   - system events mid-turn: stamp the in-flight MessageID and ClientRequestID
+//     so callers can correlate them with the turn that produced them. Still no
+//     MessageID between turns.
+//   - everything else (session_info, harness_id_set): no message id.
 func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 	hid := msg.HarnessMessageIDOf(ev)
 	ev.HarnessMessageID = hid
@@ -127,8 +130,19 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 			st.clientRequestID = ""
 		}
 
+	case msg.EventSystem:
+		// System events aren't message bubbles, but when one fires inside a
+		// turn we stamp the in-flight MessageID and ClientRequestID so the UI
+		// can correlate it with the assistant response it belongs to.
+		if ev.MessageID == "" {
+			ev.MessageID = st.bridgeMsgID
+		}
+		if ev.ClientRequestID == "" {
+			ev.ClientRequestID = st.clientRequestID
+		}
+
 	default:
-		// System / session_info / harness_id_set / unknown: not a message bubble.
+		// session_info / harness_id_set / unknown: not a message bubble.
 	}
 }
 
