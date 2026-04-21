@@ -394,6 +394,54 @@ func (s *Store) HarnessToBridgeMap(sessionID string) (map[string]string, error) 
 	return out, rows.Err()
 }
 
+// ToolUseBinding pairs a tool_use_id with the bridge and harness message ids
+// of the bubble that contained it. Used to resolve task_progress events (which
+// carry tool_use_id) back to their message bubble.
+type ToolUseBinding struct {
+	BridgeMessageID  string
+	HarnessMessageID string
+}
+
+// ToolUseToMessageMap returns the (tool_use_id → bubble message ids) mapping
+// for a session, used to rehydrate manager state so task_progress events
+// received after a process restart can still be correlated. Scans existing
+// tool_call/tool_result events in the DB; tool_use_id is pulled from the
+// stored event JSON.
+func (s *Store) ToolUseToMessageMap(sessionID string) (map[string]ToolUseBinding, error) {
+	rows, err := s.db.Query(
+		`SELECT
+			COALESCE(json_extract(data, '$.tool_call.tool_id'),
+			         json_extract(data, '$.tool_result.tool_id')) AS tool_use_id,
+			message_id,
+			harness_message_id
+		 FROM events
+		 WHERE session_id=?
+		   AND type IN ('tool_call', 'tool_result')
+		   AND message_id != ''`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]ToolUseBinding)
+	for rows.Next() {
+		var tid sql.NullString
+		var b, h string
+		if err := rows.Scan(&tid, &b, &h); err != nil {
+			return nil, err
+		}
+		if !tid.Valid || tid.String == "" {
+			continue
+		}
+		if _, seen := out[tid.String]; seen {
+			continue
+		}
+		out[tid.String] = ToolUseBinding{BridgeMessageID: b, HarnessMessageID: h}
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) DeleteSession(bridgeID string) error {
 	res, err := s.db.Exec(`DELETE FROM sessions WHERE bridge_id=?`, bridgeID)
 	if err != nil {

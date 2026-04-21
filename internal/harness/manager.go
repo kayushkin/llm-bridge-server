@@ -24,11 +24,12 @@ import (
 // is the right place to mint canonical bridge MessageIDs and reconcile them
 // against harness-native ids on resume/replay.
 type sessionMsgState struct {
-	bridgeMsgID     string            // currently-open assistant bridge id, "" between turns
-	harnessMsgID    string            // last-seen harness id for the open bridge message
-	harnessToBridge map[string]string // harness id → bridge id, for resume reconciliation
-	clientRequestID string            // caller's per-turn id from the latest user_message, "" between turns
-	turnID          string            // bridge-minted per-turn id, "" between turns
+	bridgeMsgID      string                            // currently-open assistant bridge id, "" between turns
+	harnessMsgID     string                            // last-seen harness id for the open bridge message
+	harnessToBridge  map[string]string                 // harness id → bridge id, for resume reconciliation
+	toolUseToMessage map[string]store.ToolUseBinding   // tool_use_id → bubble ids, for task_progress correlation
+	clientRequestID  string                            // caller's per-turn id from the latest user_message, "" between turns
+	turnID           string                            // bridge-minted per-turn id, "" between turns
 }
 
 // StoredEvent pairs an event with its database row ID, assigned at insert time.
@@ -62,9 +63,15 @@ func NewManager(st *store.Store, logStoreURL string) *Manager {
 // when a process starts so that resume-replays from the harness can be mapped
 // back to their original bridge MessageIDs. Caller must hold m.mu.
 func (m *Manager) loadMsgState(bridgeID string) *sessionMsgState {
-	st := &sessionMsgState{harnessToBridge: make(map[string]string)}
+	st := &sessionMsgState{
+		harnessToBridge:  make(map[string]string),
+		toolUseToMessage: make(map[string]store.ToolUseBinding),
+	}
 	if mp, err := m.store.HarnessToBridgeMap(bridgeID); err == nil {
 		st.harnessToBridge = mp
+	}
+	if mp, err := m.store.ToolUseToMessageMap(bridgeID); err == nil {
+		st.toolUseToMessage = mp
 	}
 	m.msgState[bridgeID] = st
 	return st
@@ -122,6 +129,23 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 		if ev.ClientRequestID == "" {
 			ev.ClientRequestID = st.clientRequestID
 		}
+		// Record tool_use_id → bubble so later task_progress events (which
+		// carry tool_use_id but no harness message id of their own) can be
+		// resolved back to the right message bubble.
+		if ev.ToolCall != nil && ev.ToolCall.ToolID != "" {
+			st.toolUseToMessage[ev.ToolCall.ToolID] = store.ToolUseBinding{
+				BridgeMessageID:  ev.MessageID,
+				HarnessMessageID: ev.HarnessMessageID,
+			}
+		}
+		if ev.ToolResult != nil && ev.ToolResult.ToolID != "" {
+			if _, exists := st.toolUseToMessage[ev.ToolResult.ToolID]; !exists {
+				st.toolUseToMessage[ev.ToolResult.ToolID] = store.ToolUseBinding{
+					BridgeMessageID:  ev.MessageID,
+					HarnessMessageID: ev.HarnessMessageID,
+				}
+			}
+		}
 
 	case msg.EventResult, msg.EventError:
 		ev.MessageID = m.assignAssistantID(st, hid)
@@ -146,8 +170,24 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 			st.turnID = ""
 		}
 
+	case msg.EventSystem:
+		// task_progress (and any future system event that carries a
+		// tool_use_id correlator) gets resolved back to the bubble it
+		// narrates. System events don't get their own MessageID minted,
+		// but inherited ones make them show up alongside the bubble.
+		if ev.System != nil && ev.System.ToolUseID != "" {
+			if bind, ok := st.toolUseToMessage[ev.System.ToolUseID]; ok {
+				if ev.MessageID == "" {
+					ev.MessageID = bind.BridgeMessageID
+				}
+				if ev.HarnessMessageID == "" {
+					ev.HarnessMessageID = bind.HarnessMessageID
+				}
+			}
+		}
+
 	default:
-		// system / session_info / harness_id_set / unknown: no MessageID.
+		// session_info / harness_id_set / unknown: no MessageID.
 	}
 
 	if ev.TurnID == "" {
