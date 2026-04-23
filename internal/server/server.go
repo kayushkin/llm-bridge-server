@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"path"
+	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
 	harnessstore "github.com/kayushkin/harness-store"
@@ -19,6 +20,11 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
+
+// autoResumeWindow caps how recently a session must have been active (by
+// updated_at) for startup reconciliation to auto-restart its harness. Sessions
+// older than this are left at idle for the user to resume manually.
+const autoResumeWindow = 5 * time.Minute
 
 type Server struct {
 	mux          *http.ServeMux
@@ -213,6 +219,79 @@ func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+// ReconcileAndResume clears stale 'running' state left over from the previous
+// server lifetime and auto-restarts the harness for sessions whose last
+// activity was inside autoResumeWindow. Sessions that went quiet before the
+// window are left idle — the user can resume them on demand.
+func (s *Server) ReconcileAndResume() {
+	sessions, err := s.store.ReconcileRunningSessions()
+	if err != nil {
+		log.Printf("[reconcile] %v", err)
+		return
+	}
+	if len(sessions) == 0 {
+		return
+	}
+	log.Printf("[reconcile] reset %d stale running→idle", len(sessions))
+
+	if s.harnessStore == nil {
+		return
+	}
+	cutoff := time.Now().Add(-autoResumeWindow)
+	var resumed int
+	for i := range sessions {
+		sess := sessions[i]
+		if sess.UpdatedAt.Before(cutoff) {
+			continue
+		}
+		resumed++
+		go s.autoResume(sess)
+	}
+	if resumed > 0 {
+		log.Printf("[reconcile] auto-resuming %d sessions active within %s", resumed, autoResumeWindow)
+	}
+}
+
+// autoResume restarts a single session's harness process. Mirrors the flow in
+// handleResumeSession minus the HTTP plumbing. If the previous turn was
+// killed mid-flight (a user_message with no following result), the message
+// text is re-sent once the harness is ready so the turn actually completes
+// instead of sitting idle waiting for new input.
+func (s *Server) autoResume(sess store.Session) {
+	if sess.InstanceID == "" {
+		return
+	}
+	inst, err := s.harnessStore.GetInstance(sess.InstanceID)
+	if err != nil {
+		log.Printf("[auto-resume] %s: instance %s not found: %v", sess.BridgeID, sess.InstanceID, err)
+		return
+	}
+	credID := resolveCredential(s.harnessStore, inst.ID)
+	if _, err := s.harness.StartOnInstance(context.Background(), &sess, inst, credID); err != nil {
+		log.Printf("[auto-resume] %s: start failed: %v", sess.BridgeID, err)
+		return
+	}
+	log.Printf("[auto-resume] %s: resumed", sess.BridgeID)
+
+	text, pending, err := s.store.PendingTurnMessage(sess.BridgeID)
+	if err != nil {
+		log.Printf("[auto-resume] %s: pending-turn check failed: %v", sess.BridgeID, err)
+		return
+	}
+	if !pending {
+		return
+	}
+	// Harness subprocess needs a moment to finish its start handshake before
+	// it will accept a message on stdin. 2s is enough for Claude Code's
+	// resume-load; shorter risks writing before the pipe is being drained.
+	time.Sleep(2 * time.Second)
+	if err := s.harness.Send(sess.BridgeID, text); err != nil {
+		log.Printf("[auto-resume] %s: replay send failed: %v", sess.BridgeID, err)
+		return
+	}
+	log.Printf("[auto-resume] %s: replayed interrupted turn", sess.BridgeID)
 }
 
 // AutoDiscover runs session discovery for all harness types and imports them to the store.

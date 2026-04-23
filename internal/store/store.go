@@ -264,6 +264,76 @@ func (s *Store) UpdateSessionPID(bridgeID string, pid int) error {
 	return nil
 }
 
+// PendingTurnMessage returns the text of the most recent user_message when
+// no 'result' event follows it — the signal of a turn killed mid-flight that
+// needs to be replayed. Returns ok=false when the last turn is balanced or
+// when no user_message exists.
+func (s *Store) PendingTurnMessage(bridgeID string) (string, bool, error) {
+	var userID int
+	var userData string
+	err := s.db.QueryRow(
+		`SELECT id, data FROM events WHERE session_id=? AND type='user_message' ORDER BY id DESC LIMIT 1`,
+		bridgeID,
+	).Scan(&userID, &userData)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	var resultID int
+	if err := s.db.QueryRow(
+		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id=? AND type IN ('result','error')`,
+		bridgeID,
+	).Scan(&resultID); err != nil {
+		return "", false, err
+	}
+	if resultID >= userID {
+		return "", false, nil
+	}
+	var ev msg.Event
+	if err := json.Unmarshal([]byte(userData), &ev); err != nil {
+		return "", false, err
+	}
+	if ev.Result == nil {
+		return "", false, nil
+	}
+	return ev.Result.Text, true, nil
+}
+
+// ReconcileRunningSessions resets every 'running' session to 'idle' with pid=0
+// and returns the sessions that were reconciled. Called at startup: running
+// processes can only exist in memory, so any row still marked running from a
+// previous server lifetime is stale. updated_at is intentionally NOT bumped —
+// callers use it to judge how recently the session was active (for auto-resume
+// heuristics), and FoldInactive relies on it for housekeeping.
+func (s *Store) ReconcileRunningSessions() ([]Session, error) {
+	rows, err := s.db.Query(`SELECT ` + sessionColumns + ` FROM sessions WHERE state='running'`)
+	if err != nil {
+		return nil, err
+	}
+	var sessions []Session
+	for rows.Next() {
+		sess, err := scanSession(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		sessions = append(sessions, *sess)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(sessions) == 0 {
+		return nil, nil
+	}
+	if _, err := s.db.Exec(`UPDATE sessions SET state='idle', pid=0 WHERE state='running'`); err != nil {
+		return nil, err
+	}
+	return sessions, nil
+}
+
 // SetHarnessID fills in the harness-reported session ID on a session.
 func (s *Store) SetHarnessID(bridgeID, harnessID string) error {
 	now := time.Now().UTC()
