@@ -32,7 +32,7 @@ func testServer(t *testing.T) (*Server, *store.Store) {
 		LogStoreURL:     "http://localhost:0", // unused in unit tests
 	}
 
-	srv := New(st, nil, nil, nil, nil, cfg)
+	srv := New(st, nil, nil, nil, nil, nil, cfg)
 	return srv, st
 }
 
@@ -72,7 +72,7 @@ func testServerWithInstance(t *testing.T, harness msg.Harness) (*Server, *store.
 		LogStoreURL:     "http://localhost:0",
 	}
 
-	srv := New(st, nil, nil, hs, nil, cfg)
+	srv := New(st, nil, nil, hs, nil, nil, cfg)
 	return srv, st, inst.ID
 }
 

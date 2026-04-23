@@ -11,6 +11,7 @@ import (
 
 	agentstore "github.com/kayushkin/agent-store"
 	harnessstore "github.com/kayushkin/harness-store"
+	hookstore "github.com/kayushkin/hook-store"
 	memorystore "github.com/kayushkin/memory-store"
 	modelstore "github.com/kayushkin/model-store"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -25,19 +26,21 @@ type Server struct {
 	agentStore   *agentstore.Store
 	memoryStore  *memorystore.Store
 	harnessStore *harnessstore.Store
+	hookStore    *hookstore.Store
 	modelStore   *modelstore.Store
 	harness      *harness.Manager
 	bridgePrefs  *bridgePrefsStore
 	cfg          *config.Config
 }
 
-func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, mds *modelstore.Store, cfg *config.Config) *Server {
+func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, cfg *config.Config) *Server {
 	srv := &Server{
 		mux:          http.NewServeMux(),
 		store:        st,
 		agentStore:   as,
 		memoryStore:  ms,
 		harnessStore: hs,
+		hookStore:    hks,
 		modelStore:   mds,
 		harness:      harness.NewManager(st, cfg.LogStoreURL),
 		bridgePrefs:  newBridgePrefsStore(cfg.BridgePrefsPath),
@@ -121,6 +124,18 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("GET /instances/{id}/credentials", s.handleListInstanceCredentials)
 		s.mux.HandleFunc("POST /instances/{id}/credentials", s.handleBindCredential)
 		s.mux.HandleFunc("DELETE /instances/{id}/credentials/{cred_id}", s.handleUnbindCredential)
+	}
+
+	// Hook registry routes (mounted only when hook-store is loaded).
+	// /hooks/exec/{id} is always registered because the hook-store is
+	// where registered hooks are resolved; without the store, exec 404s.
+	if s.hookStore != nil {
+		s.mux.HandleFunc("POST /hooks", s.handleCreateHook)
+		s.mux.HandleFunc("GET /hooks", s.handleListHooks)
+		s.mux.HandleFunc("GET /hooks/{id}", s.handleGetHook)
+		s.mux.HandleFunc("PATCH /hooks/{id}", s.handleUpdateHook)
+		s.mux.HandleFunc("DELETE /hooks/{id}", s.handleDeleteHook)
+		s.mux.HandleFunc("POST /hooks/exec/{id}", s.handleExecHook)
 	}
 
 	// Credential routes (aiauth)

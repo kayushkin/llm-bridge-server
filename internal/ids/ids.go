@@ -16,3 +16,8 @@ func NewMessageID() string {
 func NewTurnID() string {
 	return "turn_" + ulid.Make().String()
 }
+
+// NewHookID returns a fresh canonical hook registry id (hook_<ULID>).
+func NewHookID() string {
+	return "hook_" + ulid.Make().String()
+}

@@ -10,6 +10,7 @@ import (
 
 	agentstore "github.com/kayushkin/agent-store"
 	harnessstore "github.com/kayushkin/harness-store"
+	hookstore "github.com/kayushkin/hook-store"
 	memorystore "github.com/kayushkin/memory-store"
 	modelstore "github.com/kayushkin/model-store"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -65,6 +66,19 @@ func main() {
 		}
 	}
 
+	// Initialize hook-store (optional)
+	var hks *hookstore.Store
+	if cfg.HookStoreDB != "" {
+		hks, err = hookstore.Open(cfg.HookStoreDB)
+		if err != nil {
+			log.Printf("hook-store: %v (continuing without hook registry)", err)
+			hks = nil
+		} else {
+			defer hks.Close()
+			log.Printf("hook-store loaded from %s", cfg.HookStoreDB)
+		}
+	}
+
 	// Initialize model-store (optional)
 	var mds *modelstore.Store
 	if cfg.ModelStoreDB != "" {
@@ -78,7 +92,7 @@ func main() {
 		}
 	}
 
-	srv := server.New(st, as, ms, hs, mds, cfg)
+	srv := server.New(st, as, ms, hs, hks, mds, cfg)
 	srv.AutoDiscover() // Import on-disk sessions from harnesses
 
 	go func() {

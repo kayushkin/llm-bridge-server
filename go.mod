@@ -18,6 +18,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.35.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/kayushkin/hook-store v0.0.0-00010101000000-000000000000 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.37 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
@@ -48,3 +49,5 @@ replace github.com/kayushkin/memory-store => ../memory-store
 replace github.com/kayushkin/aiauth => ../aiauth
 
 replace github.com/kayushkin/model-store => ../model-store
+
+replace github.com/kayushkin/hook-store => ../hook-store

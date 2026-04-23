@@ -11,6 +11,7 @@ type Config struct {
 	AgentStoreDB    string
 	MemoryStoreDB   string
 	HarnessStoreDB  string
+	HookStoreDB     string
 	ModelStoreDB    string
 	ModelStoreURL   string
 	AgentStoreURL   string
@@ -27,6 +28,7 @@ func Load() *Config {
 		AgentStoreDB:   envOr("LLMBRIDGE_AGENT_DB", filepath.Join(os.Getenv("HOME"), ".config", "agent-store", "agents.db")),
 		MemoryStoreDB:  envOr("LLMBRIDGE_MEMORY_DB", filepath.Join(os.Getenv("HOME"), ".config", "memory-store", "memory.db")),
 		HarnessStoreDB: envOr("LLMBRIDGE_HARNESS_DB", filepath.Join(os.Getenv("HOME"), ".config", "harness-store", "harness.db")),
+		HookStoreDB:    envOr("LLMBRIDGE_HOOK_DB", filepath.Join(os.Getenv("HOME"), ".config", "hook-store", "hooks.db")),
 		ModelStoreDB:    envOr("LLMBRIDGE_MODEL_STORE_DB", filepath.Join(os.Getenv("HOME"), ".config", "model-store", "store.db")),
 		ModelStoreURL:   os.Getenv("LLMBRIDGE_MODEL_STORE_URL"),
 		AgentStoreURL:   os.Getenv("LLMBRIDGE_AGENT_STORE_URL"),
