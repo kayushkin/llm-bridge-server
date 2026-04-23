@@ -3,11 +3,13 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	cronpkg "github.com/slava/scheduler/internal/cron"
 	"github.com/slava/scheduler/internal/db"
 )
@@ -366,8 +368,90 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleCalendarEvents returns every scheduled occurrence of every enabled job
+// whose cron expression fires between ?from and ?to (both RFC3339). This is the
+// single source of truth for populating a calendar view with cron jobs — the
+// Job record holds only the cron expression, so we expand it here with the
+// same parser robfig/cron uses at runtime.
 func (s *Server) handleCalendarEvents(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented, "calendar integration not yet implemented", "")
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed", "")
+		return
+	}
+
+	now := time.Now()
+	from := now
+	to := now.Add(7 * 24 * time.Hour)
+
+	if v := r.URL.Query().Get("from"); v != "" {
+		parsed, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, 400, "invalid 'from' (use RFC3339)", err.Error())
+			return
+		}
+		from = parsed
+	}
+	if v := r.URL.Query().Get("to"); v != "" {
+		parsed, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, 400, "invalid 'to' (use RFC3339)", err.Error())
+			return
+		}
+		to = parsed
+	}
+	if !to.After(from) {
+		writeError(w, 400, "'to' must be after 'from'", "")
+		return
+	}
+
+	jobs, err := s.store.ListJobs()
+	if err != nil {
+		writeError(w, 500, "failed to list jobs", err.Error())
+		return
+	}
+
+	type occurrence struct {
+		ID          string    `json:"id"`
+		JobID       int64     `json:"job_id"`
+		Name        string    `json:"name"`
+		Description string    `json:"description,omitempty"`
+		Schedule    string    `json:"schedule"`
+		Type        string    `json:"type"`
+		Start       time.Time `json:"start"`
+	}
+
+	out := make([]occurrence, 0)
+	const maxPerJob = 500
+	for _, j := range jobs {
+		if !j.Enabled {
+			continue
+		}
+		sched, err := cron.ParseStandard(j.Schedule)
+		if err != nil {
+			continue
+		}
+		// Skip occurrences before the job's hold expires.
+		windowStart := from
+		if j.HoldUntil != nil && j.HoldUntil.After(windowStart) {
+			windowStart = *j.HoldUntil
+		}
+		// Next() returns the *next* activation strictly after its argument,
+		// so step back one second to include a fire at exactly windowStart.
+		next := sched.Next(windowStart.Add(-time.Second))
+		for i := 0; i < maxPerJob && !next.IsZero() && !next.After(to); i++ {
+			out = append(out, occurrence{
+				ID:          fmt.Sprintf("sched-%d-%d", j.ID, next.Unix()),
+				JobID:       j.ID,
+				Name:        j.Name,
+				Description: j.Description,
+				Schedule:    j.Schedule,
+				Type:        j.Type,
+				Start:       next,
+			})
+			next = sched.Next(next)
+		}
+	}
+	writeJSON(w, out)
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
