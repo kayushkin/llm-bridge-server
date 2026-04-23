@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -19,6 +20,11 @@ type Config struct {
 	ImagesDir       string
 	BridgePrefsPath string
 	LogStoreURL     string
+	// SourceFolders maps CreateSessionRequest.Source values to the folder a
+	// newly created session should be auto-filed into. Configured via
+	// LLMBRIDGE_SOURCE_FOLDERS (format: "source:folder,source:folder"). Any
+	// source not in the map results in no auto-filing.
+	SourceFolders map[string]string
 }
 
 func Load() *Config {
@@ -36,7 +42,28 @@ func Load() *Config {
 		ImagesDir:       envOr("LLMBRIDGE_IMAGES_DIR", "images"),
 		BridgePrefsPath: envOr("LLMBRIDGE_BRIDGE_PREFS", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "bridge-prefs.json")),
 		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", "http://localhost:8175"),
+		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled")),
 	}
+}
+
+// parseSourceFolders parses "source:folder,source:folder" into a map.
+// Malformed pairs are skipped. Whitespace around keys and values is trimmed.
+func parseSourceFolders(spec string) map[string]string {
+	out := make(map[string]string)
+	for _, pair := range strings.Split(spec, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(pair, ":")
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if !ok || k == "" || v == "" {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func envOr(key, fallback string) string {

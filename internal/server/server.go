@@ -155,6 +155,9 @@ func (s *Server) routes() {
 	// Bridge prefs
 	s.mux.HandleFunc("GET /bridge-prefs", s.handleBridgePrefs)
 	s.mux.HandleFunc("PUT /bridge-prefs", s.handleBridgePrefs)
+
+	// Admin housekeeping (called by scheduler cron)
+	s.mux.HandleFunc("POST /admin/fold-inactive", s.handleFoldInactive)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

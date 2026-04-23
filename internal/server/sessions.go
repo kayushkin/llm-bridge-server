@@ -14,6 +14,15 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
+// folderForSource returns the configured folder for a given source tag, or
+// "" if the source is unmapped (leaving the session unfiled).
+func (s *Server) folderForSource(source string) string {
+	if source == "" || s.cfg == nil {
+		return ""
+	}
+	return s.cfg.SourceFolders[source]
+}
+
 // displayNameFromMessage produces a compact session title from a user message:
 // first non-empty line, truncated to 80 runes with an ellipsis.
 func displayNameFromMessage(text string) string {
@@ -105,6 +114,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		AgentID:       req.AgentID,
 		SpawnerID:     req.SpawnerID,
 		HarnessConfig: req.HarnessConfig,
+		Source:        req.Source,
+		FolderName:    s.folderForSource(req.Source),
 	}
 
 	if err := s.store.CreateSession(sess); err != nil {

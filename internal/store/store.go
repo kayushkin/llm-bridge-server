@@ -101,9 +101,12 @@ func (s *Store) migrate() error {
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_config TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN info TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN folder_name TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT ''")
 	// Index on harness_id must be created after ALTER TABLE migration adds the column.
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_harness_id ON sessions(harness_id)")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_folder ON sessions(folder_name)")
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source)")
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)")
 
 	// Folder registry — tracks the ordered list of user-defined folders.
 	// Folders may exist with no sessions (created and not yet populated).
@@ -128,20 +131,35 @@ func (s *Store) CreateSession(sess *Session) error {
 	if sess.HarnessConfig != nil {
 		harnessConfig = string(sess.HarnessConfig)
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO sessions (bridge_id, harness_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, harness_config, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.BridgeID, sess.HarnessID, sess.ClientID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.CreatedAt, sess.UpdatedAt,
-	)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if sess.FolderName != "" {
+		if _, err := tx.Exec(
+			`INSERT INTO folders (name, position) VALUES (?, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
+			sess.FolderName,
+		); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO sessions (bridge_id, harness_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, harness_config, source, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sess.BridgeID, sess.HarnessID, sess.ClientID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.Source, sess.FolderName, sess.CreatedAt, sess.UpdatedAt,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-const sessionColumns = `bridge_id, COALESCE(harness_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), created_at, updated_at`
+const sessionColumns = `bridge_id, COALESCE(harness_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(source, ''), created_at, updated_at`
 
 func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var sess Session
 	var harnessConfig string
 	var info string
-	err := sc.Scan(&sess.BridgeID, &sess.HarnessID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.CreatedAt, &sess.UpdatedAt)
+	err := sc.Scan(&sess.BridgeID, &sess.HarnessID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Source, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -530,6 +548,64 @@ func (s *Store) RenameFolder(oldName, newName string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// FoldInactive moves every unfiled session whose updated_at is older than
+// cutoff into folder. Returns the bridge IDs that were moved. Auto-creates
+// the folder in the registry if it doesn't exist. A session with a non-empty
+// folder_name is left alone even if it is older than cutoff — explicit user
+// filing wins over automatic housekeeping.
+func (s *Store) FoldInactive(cutoff time.Time, folder string) ([]string, error) {
+	if folder == "" {
+		return nil, fmt.Errorf("folder is required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(
+		`INSERT INTO folders (name, position) VALUES (?, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
+		folder,
+	); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(
+		`SELECT bridge_id FROM sessions WHERE folder_name='' AND updated_at < ?`,
+		cutoff,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, tx.Commit()
+	}
+	// Intentionally do NOT bump updated_at — folding is housekeeping, not
+	// activity. Bumping it would make a freshly folded session look active
+	// and defeat the next sweep's cutoff.
+	if _, err := tx.Exec(
+		`UPDATE sessions SET folder_name=? WHERE folder_name='' AND updated_at < ?`,
+		folder, cutoff,
+	); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 // SetSessionFolder assigns a session to a folder. Empty folder clears the
