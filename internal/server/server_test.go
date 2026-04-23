@@ -161,6 +161,57 @@ func TestHarnesses(t *testing.T) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// GET /harnesses/{name}/capabilities
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestHarnessCapabilities_ClaudeCode(t *testing.T) {
+	srv, _ := testServer(t)
+
+	resp := doJSON(t, srv, "GET", "/harnesses/claude_code/capabilities", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	info := decodeJSON[msg.HarnessInfo](t, resp)
+	if info.Name != "claude_code" {
+		t.Errorf("name = %q, want claude_code", info.Name)
+	}
+	want := []string{
+		"PreToolUse", "PostToolUse", "UserPromptSubmit", "Notification",
+		"Stop", "SubagentStop", "PreCompact", "SessionStart", "SessionEnd",
+	}
+	if len(info.HookEvents) != len(want) {
+		t.Fatalf("hook_events = %v, want %v", info.HookEvents, want)
+	}
+	for i, ev := range want {
+		if info.HookEvents[i] != ev {
+			t.Errorf("hook_events[%d] = %q, want %q", i, info.HookEvents[i], ev)
+		}
+	}
+}
+
+func TestHarnessCapabilities_NoHooksHarness(t *testing.T) {
+	srv, _ := testServer(t)
+
+	resp := doJSON(t, srv, "GET", "/harnesses/hermes/capabilities", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	info := decodeJSON[msg.HarnessInfo](t, resp)
+	if len(info.HookEvents) != 0 {
+		t.Errorf("hermes hook_events = %v, want empty", info.HookEvents)
+	}
+}
+
+func TestHarnessCapabilities_UnknownHarness(t *testing.T) {
+	srv, _ := testServer(t)
+
+	resp := doJSON(t, srv, "GET", "/harnesses/does_not_exist/capabilities", nil)
+	if resp.StatusCode != 404 {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Session CRUD via HTTP
 // ──────────────────────────────────────────────────────────────────────────────
 

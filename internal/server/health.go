@@ -51,6 +51,25 @@ var harnessSupportedProviders = map[msg.Harness][]string{
 	msg.HarnessAutohand:   {"anthropic"},
 }
 
+// harnessHookEvents lists the hook lifecycle events each harness can register
+// handlers for via the bridge. Claude Code has the full lifecycle because its
+// native hook engine runs in-process and supports deny/modify. Harnesses that
+// only emit observation-style lifecycle notifications (e.g. Codex) or run
+// agents remotely without any local hook point are absent here.
+var harnessHookEvents = map[msg.Harness][]string{
+	msg.HarnessClaudeCode: {
+		"PreToolUse",
+		"PostToolUse",
+		"UserPromptSubmit",
+		"Notification",
+		"Stop",
+		"SubagentStop",
+		"PreCompact",
+		"SessionStart",
+		"SessionEnd",
+	},
+}
+
 // harnessCapabilities defines what features each harness supports.
 var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessClaudeCode: {"compact", "fork", "model", "effort", "tools", "budget", "system_prompt"},
@@ -120,6 +139,25 @@ func (s *Server) handleHarnesses(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.discoverHarnesses())
 }
 
+// handleHarnessCapabilities returns the capability summary for a single
+// harness: features, hook events, supported providers, plus the metadata
+// already on HarnessInfo. Kept as a dedicated endpoint so clients wiring the
+// hook UI don't have to filter the full /harnesses list themselves.
+func (s *Server) handleHarnessCapabilities(w http.ResponseWriter, r *http.Request) {
+	name := msg.Harness(r.PathValue("name"))
+	if !isValidHarness(name) {
+		http.Error(w, "unknown harness", http.StatusNotFound)
+		return
+	}
+	for _, info := range s.discoverHarnesses() {
+		if info.Name == string(name) {
+			writeJSON(w, info)
+			return
+		}
+	}
+	http.Error(w, "unknown harness", http.StatusNotFound)
+}
+
 func (s *Server) discoverHarnesses() []HarnessStatus {
 	var statuses []HarnessStatus
 	for _, h := range allHarnesses {
@@ -141,6 +179,7 @@ func (s *Server) discoverHarnesses() []HarnessStatus {
 			Available:          available,
 			Binary:             path,
 			Capabilities:       caps,
+			HookEvents:         harnessHookEvents[h],
 			SupportedProviders: harnessSupportedProviders[h],
 		})
 	}
