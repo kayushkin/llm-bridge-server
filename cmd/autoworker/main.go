@@ -12,10 +12,10 @@
 //     - Skip unless local PT time is inside the provider's safe window.
 //     - Skip unless we're outside the cooldown since the last fire.
 //     - Skip unless actual used_percent < target − slack (default 15pp).
-//  3. When all gates pass, publish a ChatInbound message on NATS
-//     chat.inbound.bridge with Channel set to the target harness, so that
-//     llm-bridge-adapter spins up the matching session and the agent works a
-//     todo out of the noteboard.
+//  3. When all gates pass, publish a BridgeInbound message on NATS
+//     bridge.inbound targeting the configured llm-bridge instance_id, so the
+//     fresh session shows up in the dash chat UI alongside the user's manual
+//     sessions for that harness instance.
 //
 // Cooldown state lives in ~/.config/autoworker/state.json (one map of provider
 // → last_fire_unix). Everything else is stateless.
@@ -35,6 +35,7 @@ import (
 
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/bus/messages"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 type limitWindow struct {
@@ -55,43 +56,44 @@ type providerLimits struct {
 
 type limitsResponse map[string]*providerLimits
 
-// providerSpec wires a usage-store provider to the NATS path that reaches its
-// corresponding harness session, plus the time window to gate against.
+// providerSpec wires a usage-store provider to the llm-bridge instance that
+// should host each fired session, plus the time window to gate against.
 //
-// Subjects reflect the listeners live today:
-//   - chat.inbound.claude-code → claude-code-adapter (legacy but running)
-//   - chat.inbound.bridge      → llm-bridge-adapter (dispatches by Channel → harness)
-//
-// If llm-bridge-adapter supersedes the legacy CC adapter, flip Subject to
-// chat.inbound.bridge + Channel=claude_code for anthropic.
+// All fires publish to messages.BridgeInboundSubject ("bridge.inbound"); the
+// llm-bridge-adapter creates a new bridge session per unique BusSessionID and
+// maps it to the configured Harness + InstanceID. The resulting session is
+// visible in the dash chat UI under the chosen instance.
 type providerSpec struct {
-	Name        string        // "anthropic" / "codex" — key in limitsResponse
-	Subject     string        // NATS subject to publish ChatInbound to
-	Channel     string        // ChatInbound.Channel (harness selector for bridge-adapter; any string for legacy)
-	Orchestrator string       // ChatInbound.Orchestrator (routes / metadata)
-	WindowKey   string        // "seven_day" or "weekly" in ProviderLimits.Windows
-	SafeStart   int           // minutes past local midnight, inclusive
-	SafeEnd     int           // minutes past local midnight, exclusive
-	WeekdayOnly bool          // if true, safe window only applies Mon–Fri
-	Cooldown    time.Duration // minimum time between fires
+	Name         string        // "anthropic" / "codex" — key in limitsResponse
+	Harness      msg.Harness   // llm-bridge harness kind (e.g. "claude_code")
+	InstanceID   string        // llm-bridge instance_id (row in harness-store)
+	Channel      string        // BridgeInbound.Channel metadata (unused for routing)
+	Orchestrator string        // BridgeInbound.Orchestrator metadata
+	WindowKey    string        // "seven_day" or "weekly" in ProviderLimits.Windows
+	SafeStart    int           // minutes past local midnight, inclusive
+	SafeEnd      int           // minutes past local midnight, exclusive
+	WeekdayOnly  bool          // if true, safe window only applies Mon–Fri
+	Cooldown     time.Duration // minimum time between fires
 }
 
 var providers = []providerSpec{
 	{
 		Name:         "anthropic",
-		Subject:      "chat.inbound.claude-code",
+		Harness:      msg.HarnessClaudeCode,
+		InstanceID:   "inst-cc-local", // "Clawd" — same instance the user chats in
 		Channel:      "autoworker",
 		Orchestrator: "claude-code",
 		WindowKey:    "seven_day",
-		SafeStart:    0,         // 00:00 PT
-		SafeEnd:      4*60 + 30, // 04:30 PT (30min buffer before Anthropic peak at 05:00)
-		Cooldown:     2 * time.Hour,
+		SafeStart:    0,       // 00:00 PT
+		SafeEnd:      24 * 60, // 24:00 PT — whole day (catch-up before reset)
+		Cooldown:     15 * time.Minute,
 	},
 	{
 		Name:         "codex",
-		Subject:      "chat.inbound.bridge",
-		Channel:      "codex", // llm-bridge-adapter uses Channel to pick harness
-		Orchestrator: "bridge",
+		Harness:      msg.HarnessCodex,
+		InstanceID:   "inst-codex-local", // "Jipitee"
+		Channel:      "autoworker",
+		Orchestrator: "codex",
 		WindowKey:    "weekly",
 		SafeStart:    0,      // 00:00 PT
 		SafeEnd:      6 * 60, // 06:00 PT
@@ -185,8 +187,8 @@ func main() {
 			continue
 		}
 		st.LastFire[p.Name] = now.Unix()
-		log.Printf("[%s] FIRED worker → %s (channel=%s target=%.0f%% actual=%.0f%%)",
-			d.provider, p.Subject, p.Channel, d.target, d.actual)
+		log.Printf("[%s] FIRED worker → bridge.inbound (harness=%s instance=%s target=%.0f%% actual=%.0f%%)",
+			d.provider, p.Harness, p.InstanceID, d.target, d.actual)
 	}
 
 	if !*dryRun {
@@ -316,16 +318,29 @@ func fetchLimits() (limitsResponse, error) {
 }
 
 func publishWorker(nc *natsbus.Client, p providerSpec, prompt string) error {
-	msg := messages.ChatInbound{
-		Text:         prompt,
-		Author:       "autoworker",
+	now := time.Now().UTC()
+	// Unique BusSessionID per fire so llm-bridge-adapter creates a new bridge
+	// session each time (mapped into ~/.llm-bridge-adapter/sessions.json).
+	busSessionID := fmt.Sprintf("autoworker-%s-%d", p.Name, now.UnixNano())
+	in := messages.BridgeInbound{
+		BusSessionID: busSessionID,
 		Agent:        "todo-worker",
 		Orchestrator: p.Orchestrator,
 		Channel:      p.Channel,
-		SessionID:    fmt.Sprintf("autoworker_%s_%d", p.Name, time.Now().Unix()),
-		Timestamp:    time.Now().UTC(),
+		Timestamp:    now,
+		Create: &msg.CreateSessionRequest{
+			Harness:     p.Harness,
+			InstanceID:  p.InstanceID,
+			DisplayName: fmt.Sprintf("autoworker %s %s", p.Name, now.Format("Jan 2 15:04")),
+			ClientID:    "autoworker",
+			Source:      "autoworker",
+			AutoStart:   true,
+		},
+		Send: &msg.SendMessageRequest{
+			Message: prompt,
+		},
 	}
-	return nc.Publish(p.Subject, msg)
+	return nc.Publish(messages.BridgeInboundSubject, in)
 }
 
 func loadState() (*state, string, error) {
@@ -430,6 +445,12 @@ Steps:
 2. Pick the highest-priority open todo that you can make real progress on autonomously without needing clarifying questions from the user. Prefer codebase tasks that have clear scope.
 3. Do the work. Use your normal tools: explore repos under ~/repos/, edit, build, test, commit only if the task is a true "commit me" (match the user's normal guidance about explicit commit requests).
 4. When the task is complete, PATCH http://localhost:8191/api/items/<id> with {"status":"done"} and a note in the body describing what you did.
-5. If the top todo is ambiguous, needs user input, or looks too large for one session, leave it alone and try the next one. If every top todo is blocked, stop — better to do nothing than the wrong thing.
+5. If the top todo is ambiguous in intent or needs user input, leave it alone and try the next one.
+6. If the top todo is clear in intent but too large to finish in one session, do NOT skip it. Split it instead:
+   - Break it into several smaller noteboard todos, each scoped to something an unattended session could plausibly finish. Preserve the parent's priority and tags on the children so its place in the queue is respected.
+   - POST a noteboard note (type "note") as a starting-point / onboarding doc for the parent: architecture pointers, open questions, first-steps checklist.
+   - Link children back to the parent (mention parent id in their bodies) and either keep the parent todo open with a body update pointing at the children + onboarding note, or mark it done once the split is in place — pick whichever keeps the work most discoverable.
+   Splitting + documenting IS the night's progress; treat it as completing a todo.
+7. If every top todo is blocked, stop — better to do nothing than the wrong thing.
 
 Be self-contained. No chat; just work and close out the todo.`

@@ -10,12 +10,14 @@ require (
 
 replace (
 	github.com/kayushkin/bus => ../bus
+	github.com/kayushkin/llm-bridge => ../llm-bridge
 	github.com/kayushkin/logstack => ../logstack
 )
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/kayushkin/llm-bridge v0.0.0-00010101000000-000000000000 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/nats-io/nats.go v1.49.0 // indirect
