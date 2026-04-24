@@ -2,6 +2,10 @@
 set -euo pipefail
 eval "$("$HOME/.local/bin/mise" activate bash)"
 
+# Required for systemctl --user to reach the session bus from non-login shells.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+
 BIN="$HOME/bin/mailstack"
 
 cd "$(dirname "$0")"
@@ -20,7 +24,10 @@ git push
 
 echo "==> Deploying..."
 systemctl --user stop mailstack.service 2>/dev/null || true
-cp /tmp/mailstack-build "$BIN"
+# Atomic install: cp then mv avoids ETXTBSY when the old binary is still
+# mmapped during the systemd stop grace window.
+cp /tmp/mailstack-build "$BIN.new"
+mv -f "$BIN.new" "$BIN"
 systemctl --user start mailstack.service
 
 echo "==> Verifying..."
