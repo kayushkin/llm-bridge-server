@@ -187,6 +187,12 @@ func findGitRoot(p string) string {
 
 	for {
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			// Resolve symlinks so two paths into the same repo (e.g. a
+			// node_modules symlink and the real checkout) collapse to one
+			// entry in the discovered set.
+			if real, err := filepath.EvalSymlinks(dir); err == nil {
+				return real
+			}
 			return dir
 		}
 		parent := filepath.Dir(dir)
