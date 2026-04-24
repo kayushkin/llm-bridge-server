@@ -16,4 +16,25 @@ CREATE TABLE IF NOT EXISTS accounts (
 	created_at       INTEGER NOT NULL,
 	updated_at       INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS imap_creds (
+	name       TEXT PRIMARY KEY,
+	address    TEXT NOT NULL,
+	imap_host  TEXT NOT NULL,
+	imap_port  INTEGER NOT NULL,
+	smtp_host  TEXT NOT NULL,
+	smtp_port  INTEGER NOT NULL,
+	username   TEXT NOT NULL,
+	password   TEXT NOT NULL,
+	tls_mode   TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS imap_folder_map (
+	account_id TEXT NOT NULL,
+	canonical  TEXT NOT NULL,
+	folder_id  TEXT NOT NULL,
+	PRIMARY KEY (account_id, canonical)
+);
 `

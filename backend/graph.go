@@ -1,0 +1,350 @@
+package backend
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const graphBase = "https://graph.microsoft.com/v1.0"
+
+// Graph implements Backend using Microsoft Graph REST API via direct HTTP.
+// Read-only for Phase 3; write methods return errNotImplemented.
+type Graph struct {
+	accountID       string
+	apiauthProvider string
+	apiauthAccount  string
+	tokens          TokenSource
+	http            *http.Client
+}
+
+func NewGraph(accountID, apiauthProvider, apiauthAccount string, tokens TokenSource) *Graph {
+	return &Graph{
+		accountID:       accountID,
+		apiauthProvider: apiauthProvider,
+		apiauthAccount:  apiauthAccount,
+		tokens:          tokens,
+		http:            &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// Graph well-known folder names → canonical kinds.
+// https://learn.microsoft.com/en-us/graph/api/resources/mailfolder
+var graphCanonical = map[string]CanonicalKind{
+	"inbox":        KindInbox,
+	"sentitems":    KindSent,
+	"drafts":       KindDrafts,
+	"deleteditems": KindTrash,
+	"junkemail":    KindSpam,
+	"archive":      KindArchive,
+}
+
+func (g *Graph) do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	token, err := g.tokens.Token(g.apiauthProvider, g.apiauthAccount)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, graphBase+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := g.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		g.tokens.Invalidate(g.apiauthProvider, g.apiauthAccount)
+		resp.Body.Close()
+		token, err = g.tokens.Token(g.apiauthProvider, g.apiauthAccount)
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, method, graphBase+path, body)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		return g.http.Do(req)
+	}
+	return resp, nil
+}
+
+type graphFolder struct {
+	ID               string `json:"id"`
+	DisplayName      string `json:"displayName"`
+	ParentFolderID   string `json:"parentFolderId"`
+	UnreadItemCount  int    `json:"unreadItemCount"`
+	WellKnownName    string `json:"wellKnownName,omitempty"`
+}
+
+type graphFolderList struct {
+	Value []graphFolder `json:"value"`
+}
+
+func (g *Graph) Folders(ctx context.Context) ([]Folder, error) {
+	resp, err := g.do(ctx, "GET",
+		"/me/mailFolders?$top=100&$select=id,displayName,parentFolderId,unreadItemCount,wellKnownName",
+		nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("graph mailFolders %d: %s", resp.StatusCode, string(b))
+	}
+	var list graphFolderList
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, err
+	}
+	out := make([]Folder, 0, len(list.Value))
+	for _, f := range list.Value {
+		folder := Folder{
+			ID:          f.ID,
+			AccountID:   g.accountID,
+			Name:        f.DisplayName,
+			Path:        f.DisplayName,
+			ParentID:    f.ParentFolderID,
+			UnreadCount: f.UnreadItemCount,
+		}
+		if f.WellKnownName != "" {
+			if k, ok := graphCanonical[strings.ToLower(f.WellKnownName)]; ok {
+				folder.Canonical = k
+			}
+		}
+		out = append(out, folder)
+	}
+	return out, nil
+}
+
+type graphRecipient struct {
+	EmailAddress struct {
+		Name    string `json:"name"`
+		Address string `json:"address"`
+	} `json:"emailAddress"`
+}
+
+type graphMessage struct {
+	ID               string           `json:"id"`
+	Subject          string           `json:"subject"`
+	BodyPreview      string           `json:"bodyPreview"`
+	ReceivedDateTime string           `json:"receivedDateTime"`
+	From             graphRecipient   `json:"from"`
+	ToRecipients     []graphRecipient `json:"toRecipients"`
+	CcRecipients     []graphRecipient `json:"ccRecipients"`
+	ParentFolderID   string           `json:"parentFolderId"`
+	IsRead           bool             `json:"isRead"`
+	Flag             struct {
+		FlagStatus string `json:"flagStatus"`
+	} `json:"flag"`
+	HasAttachments   bool `json:"hasAttachments"`
+	Body             struct {
+		ContentType string `json:"contentType"`
+		Content     string `json:"content"`
+	} `json:"body"`
+	InternetMessageHeaders []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	} `json:"internetMessageHeaders"`
+	InternetMessageID string `json:"internetMessageId"`
+	ConversationID    string `json:"conversationId"`
+}
+
+type graphMessageList struct {
+	Value    []graphMessage `json:"value"`
+	NextLink string         `json:"@odata.nextLink"`
+}
+
+func (g *Graph) List(ctx context.Context, folderID, cursor string, limit int) ([]MessageMeta, string, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	// Cursor is the full $skiptoken (we pass it back via $top+$skiptoken params).
+	var path string
+	if cursor != "" {
+		// Graph returns an absolute nextLink URL; we stored just the query portion.
+		path = cursor
+	} else {
+		q := url.Values{}
+		q.Set("$top", strconv.Itoa(limit))
+		q.Set("$select", "id,subject,bodyPreview,receivedDateTime,from,toRecipients,ccRecipients,parentFolderId,isRead,flag,hasAttachments")
+		q.Set("$orderby", "receivedDateTime desc")
+		if folderID != "" {
+			path = "/me/mailFolders/" + url.PathEscape(folderID) + "/messages?" + q.Encode()
+		} else {
+			path = "/me/messages?" + q.Encode()
+		}
+	}
+	resp, err := g.do(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, "", fmt.Errorf("graph messages.list %d: %s", resp.StatusCode, string(b))
+	}
+	var list graphMessageList
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, "", err
+	}
+	out := make([]MessageMeta, 0, len(list.Value))
+	for i := range list.Value {
+		out = append(out, g.toMeta(&list.Value[i]))
+	}
+	// Strip the absolute base so the cursor round-trips through our handler.
+	next := list.NextLink
+	if next != "" && strings.HasPrefix(next, graphBase) {
+		next = strings.TrimPrefix(next, graphBase)
+	}
+	return out, next, nil
+}
+
+func (g *Graph) toMeta(m *graphMessage) MessageMeta {
+	meta := MessageMeta{
+		ID:        m.ID,
+		AccountID: g.accountID,
+		FolderID:  m.ParentFolderID,
+		Subject:   m.Subject,
+		Snippet:   m.BodyPreview,
+		Unread:    !m.IsRead,
+		Flagged:   m.Flag.FlagStatus == "flagged",
+		HasAttach: m.HasAttachments,
+	}
+	if m.From.EmailAddress.Address != "" {
+		meta.From = Address{Name: m.From.EmailAddress.Name, Email: m.From.EmailAddress.Address}
+	}
+	for _, r := range m.ToRecipients {
+		meta.To = append(meta.To, Address{Name: r.EmailAddress.Name, Email: r.EmailAddress.Address})
+	}
+	for _, r := range m.CcRecipients {
+		meta.Cc = append(meta.Cc, Address{Name: r.EmailAddress.Name, Email: r.EmailAddress.Address})
+	}
+	if m.ReceivedDateTime != "" {
+		if t, err := time.Parse(time.RFC3339Nano, m.ReceivedDateTime); err == nil {
+			meta.Date = t
+		} else if t, err := time.Parse(time.RFC3339, m.ReceivedDateTime); err == nil {
+			meta.Date = t
+		}
+	}
+	return meta
+}
+
+func (g *Graph) Get(ctx context.Context, id string) (Message, error) {
+	q := url.Values{}
+	q.Set("$select",
+		"id,subject,bodyPreview,receivedDateTime,from,toRecipients,ccRecipients,"+
+			"parentFolderId,isRead,flag,hasAttachments,body,internetMessageHeaders,internetMessageId,conversationId")
+	path := "/me/messages/" + url.PathEscape(id) + "?" + q.Encode()
+	resp, err := g.do(ctx, "GET", path, nil)
+	if err != nil {
+		return Message{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return Message{}, fmt.Errorf("graph messages.get(%s) %d: %s", id, resp.StatusCode, string(b))
+	}
+	var m graphMessage
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return Message{}, err
+	}
+
+	out := Message{
+		Meta:    g.toMeta(&m),
+		Headers: map[string]string{},
+	}
+	for _, h := range m.InternetMessageHeaders {
+		out.Headers[h.Name] = h.Value
+	}
+	if m.InternetMessageID != "" {
+		out.Headers["Message-ID"] = m.InternetMessageID
+	}
+	if in, ok := out.Headers["In-Reply-To"]; ok {
+		out.InReplyTo = in
+	}
+	switch strings.ToLower(m.Body.ContentType) {
+	case "html":
+		out.BodyHTML = m.Body.Content
+	case "text":
+		out.BodyText = m.Body.Content
+	default:
+		out.BodyText = m.Body.Content
+	}
+
+	if m.HasAttachments {
+		atts, err := g.listAttachments(ctx, id)
+		if err == nil {
+			out.Attachments = atts
+		}
+	}
+	return out, nil
+}
+
+type graphAttachment struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	ContentType  string `json:"contentType"`
+	Size         int64  `json:"size"`
+	IsInline     bool   `json:"isInline"`
+	ContentID    string `json:"contentId"`
+}
+
+func (g *Graph) listAttachments(ctx context.Context, msgID string) ([]Attachment, error) {
+	path := "/me/messages/" + url.PathEscape(msgID) + "/attachments?$select=id,name,contentType,size,isInline,contentId"
+	resp, err := g.do(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("graph attachments.list %d: %s", resp.StatusCode, string(b))
+	}
+	var list struct {
+		Value []graphAttachment `json:"value"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, err
+	}
+	out := make([]Attachment, 0, len(list.Value))
+	for _, a := range list.Value {
+		out = append(out, Attachment{
+			ID:        a.ID,
+			Filename:  a.Name,
+			MimeType:  a.ContentType,
+			Size:      a.Size,
+			InlineCID: a.ContentID,
+		})
+	}
+	return out, nil
+}
+
+func (g *Graph) MarkRead(ctx context.Context, id string, read bool) error { return errNotImplemented }
+func (g *Graph) Flag(ctx context.Context, id string, flagged bool) error  { return errNotImplemented }
+func (g *Graph) Move(ctx context.Context, id, folderID string) error      { return errNotImplemented }
+func (g *Graph) Delete(ctx context.Context, id string) error              { return errNotImplemented }
+func (g *Graph) PermDelete(ctx context.Context, id string) error          { return errNotImplemented }
+func (g *Graph) Send(ctx context.Context, d Draft) (string, error)        { return "", errNotImplemented }
+func (g *Graph) SaveDraft(ctx context.Context, d Draft, existingID string) (string, error) {
+	return "", errNotImplemented
+}
+func (g *Graph) Attachment(ctx context.Context, msgID, attID string) (io.ReadCloser, string, error) {
+	return nil, "", errNotImplemented
+}
