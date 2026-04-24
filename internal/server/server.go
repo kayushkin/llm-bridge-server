@@ -15,6 +15,7 @@ import (
 	hookstore "github.com/kayushkin/hook-store"
 	memorystore "github.com/kayushkin/memory-store"
 	modelstore "github.com/kayushkin/model-store"
+	snapshotstore "github.com/kayushkin/snapshot-store"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -27,33 +28,36 @@ import (
 const autoResumeWindow = 5 * time.Minute
 
 type Server struct {
-	mux          *http.ServeMux
-	store        *store.Store
-	agentStore   *agentstore.Store
-	memoryStore  *memorystore.Store
-	harnessStore *harnessstore.Store
-	hookStore    *hookstore.Store
-	modelStore   *modelstore.Store
-	harness      *harness.Manager
-	bridgePrefs  *bridgePrefsStore
-	cfg          *config.Config
+	mux           *http.ServeMux
+	store         *store.Store
+	agentStore    *agentstore.Store
+	memoryStore   *memorystore.Store
+	harnessStore  *harnessstore.Store
+	hookStore     *hookstore.Store
+	modelStore    *modelstore.Store
+	snapshotStore *snapshotstore.Store
+	harness       *harness.Manager
+	bridgePrefs   *bridgePrefsStore
+	cfg           *config.Config
 }
 
-func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, cfg *config.Config) *Server {
+func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
 	srv := &Server{
-		mux:          http.NewServeMux(),
-		store:        st,
-		agentStore:   as,
-		memoryStore:  ms,
-		harnessStore: hs,
-		hookStore:    hks,
-		modelStore:   mds,
-		harness:      harness.NewManager(st, cfg.LogStoreURL),
-		bridgePrefs:  newBridgePrefsStore(cfg.BridgePrefsPath),
-		cfg:          cfg,
+		mux:           http.NewServeMux(),
+		store:         st,
+		agentStore:    as,
+		memoryStore:   ms,
+		harnessStore:  hs,
+		hookStore:     hks,
+		modelStore:    mds,
+		snapshotStore: ss,
+		harness:       harness.NewManager(st, cfg.LogStoreURL),
+		bridgePrefs:   newBridgePrefsStore(cfg.BridgePrefsPath),
+		cfg:           cfg,
 	}
 	srv.routes()
 	srv.syncHarnessTypes()
+	srv.startSnapshotGC()
 	return srv
 }
 
@@ -101,6 +105,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/rename", s.handleRenameSession)
 	s.mux.HandleFunc("POST /sessions/{id}/config", s.handleConfigSession)
 	s.mux.HandleFunc("PUT /sessions/{id}/folder", s.handleSetSessionFolder)
+	s.mux.HandleFunc("GET /sessions/{id}/git/repos", s.handleSessionGitRepos)
+	s.mux.HandleFunc("GET /sessions/{id}/git", s.handleSessionGit)
 
 	// Folder registry — sidebar organization for sessions
 	s.mux.HandleFunc("GET /folders", s.handleListFolders)
@@ -154,6 +160,13 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("GET /models", s.handleModels)
 	}
 
+	// Snapshot routes (snapshot-store). Metadata + blob retrieval for
+	// Edit/Write tool-call before/after diffs rendered by the UI.
+	if s.snapshotStore != nil {
+		s.mux.HandleFunc("GET /sessions/{id}/tools/{tool_use_id}/snapshots", s.handleGetSnapshots)
+		s.mux.HandleFunc("GET /snapshots/blob/{sha}", s.handleGetSnapshotBlob)
+	}
+
 	// Conformance
 	s.mux.HandleFunc("GET /conformance", s.handleConformanceGet)
 	s.mux.HandleFunc("POST /conformance/run", s.handleConformanceRun)
@@ -163,7 +176,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /bridge-prefs", s.handleBridgePrefs)
 
 	// Admin housekeeping (called by scheduler cron)
-	s.mux.HandleFunc("POST /admin/fold-inactive", s.handleFoldInactive)
+	s.mux.HandleFunc("POST /admin/file-inactive", s.handleFileInactive)
+	s.mux.HandleFunc("POST /admin/archive-old", s.handleArchiveOld)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -269,7 +283,7 @@ func (s *Server) autoResume(sess store.Session) {
 		return
 	}
 	credID := resolveCredential(s.harnessStore, inst.ID)
-	if _, err := s.harness.StartOnInstance(context.Background(), &sess, inst, credID); err != nil {
+	if _, err := s.startOnInstance(context.Background(), &sess, inst, credID); err != nil {
 		log.Printf("[auto-resume] %s: start failed: %v", sess.BridgeID, err)
 		return
 	}

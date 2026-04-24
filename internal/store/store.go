@@ -306,7 +306,7 @@ func (s *Store) PendingTurnMessage(bridgeID string) (string, bool, error) {
 // processes can only exist in memory, so any row still marked running from a
 // previous server lifetime is stale. updated_at is intentionally NOT bumped —
 // callers use it to judge how recently the session was active (for auto-resume
-// heuristics), and FoldInactive relies on it for housekeeping.
+// heuristics), and FileInactive / ArchiveOld rely on it for housekeeping.
 func (s *Store) ReconcileRunningSessions() ([]Session, error) {
 	rows, err := s.db.Query(`SELECT ` + sessionColumns + ` FROM sessions WHERE state='running'`)
 	if err != nil {
@@ -454,6 +454,34 @@ func (s *Store) StoreEventReturningID(sessionID, eventType, messageID, harnessMe
 		return 0, err
 	}
 	return result.LastInsertId()
+}
+
+// ListToolCallInputs returns the raw `input` JSON for every tool_call event
+// in the session, ordered oldest first. Used by the git endpoint to discover
+// which file paths (and therefore which repos) the session has touched.
+// Empty/null inputs are skipped.
+func (s *Store) ListToolCallInputs(sessionID string) ([]json.RawMessage, error) {
+	rows, err := s.db.Query(
+		`SELECT json_extract(data, '$.tool_call.input') FROM events
+		 WHERE session_id=? AND type='tool_call' ORDER BY id ASC`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []json.RawMessage
+	for rows.Next() {
+		var raw sql.NullString
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		if !raw.Valid || raw.String == "" {
+			continue
+		}
+		out = append(out, json.RawMessage(raw.String))
+	}
+	return out, rows.Err()
 }
 
 // HarnessToBridgeMap returns the (harness_message_id → bridge message_id)
@@ -620,12 +648,15 @@ func (s *Store) RenameFolder(oldName, newName string) error {
 	return tx.Commit()
 }
 
-// FoldInactive moves every unfiled session whose updated_at is older than
+// ArchiveFolder is the canonical destination folder for [Store.ArchiveOld].
+const ArchiveFolder = "Archive"
+
+// FileInactive moves every unfiled session whose updated_at is older than
 // cutoff into folder. Returns the bridge IDs that were moved. Auto-creates
 // the folder in the registry if it doesn't exist. A session with a non-empty
 // folder_name is left alone even if it is older than cutoff — explicit user
 // filing wins over automatic housekeeping.
-func (s *Store) FoldInactive(cutoff time.Time, folder string) ([]string, error) {
+func (s *Store) FileInactive(cutoff time.Time, folder string) ([]string, error) {
 	if folder == "" {
 		return nil, fmt.Errorf("folder is required")
 	}
@@ -663,12 +694,67 @@ func (s *Store) FoldInactive(cutoff time.Time, folder string) ([]string, error) 
 	if len(ids) == 0 {
 		return nil, tx.Commit()
 	}
-	// Intentionally do NOT bump updated_at — folding is housekeeping, not
-	// activity. Bumping it would make a freshly folded session look active
+	// Intentionally do NOT bump updated_at — filing is housekeeping, not
+	// activity. Bumping it would make a freshly filed session look active
 	// and defeat the next sweep's cutoff.
 	if _, err := tx.Exec(
 		`UPDATE sessions SET folder_name=? WHERE folder_name='' AND updated_at < ?`,
 		folder, cutoff,
+	); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// ArchiveOld moves every session whose updated_at is older than cutoff into
+// the Archive folder, regardless of the session's current folder assignment.
+// Running sessions and sessions already in the Archive folder are left alone.
+// Returns the bridge IDs that were moved. Auto-creates the Archive folder in
+// the registry if it doesn't exist.
+func (s *Store) ArchiveOld(cutoff time.Time) ([]string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(
+		`INSERT INTO folders (name, position) VALUES (?, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
+		ArchiveFolder,
+	); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(
+		`SELECT bridge_id FROM sessions WHERE folder_name != ? AND state != 'running' AND updated_at < ?`,
+		ArchiveFolder, cutoff,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, tx.Commit()
+	}
+	// Intentionally do NOT bump updated_at — archiving is housekeeping, not
+	// activity. Bumping it would make a freshly archived session look active
+	// and defeat the next sweep's cutoff.
+	if _, err := tx.Exec(
+		`UPDATE sessions SET folder_name=? WHERE folder_name != ? AND state != 'running' AND updated_at < ?`,
+		ArchiveFolder, ArchiveFolder, cutoff,
 	); err != nil {
 		return nil, err
 	}
