@@ -125,7 +125,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	if req.AutoStart {
 		credID := resolveCredential(s.harnessStore, inst.ID)
-		if _, startErr := s.harness.StartOnInstance(r.Context(), sess, inst, credID); startErr != nil {
+		if _, startErr := s.startOnInstance(r.Context(), sess, inst, credID); startErr != nil {
 			s.store.UpdateSessionState(sess.BridgeID, string(msg.SessionError))
 			sess.State = string(msg.SessionError)
 		} else {
@@ -244,7 +244,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		credID := resolveCredential(s.harnessStore, inst.ID)
-		if _, startErr := s.harness.StartOnInstance(r.Context(), sess, inst, credID); startErr != nil {
+		if _, startErr := s.startOnInstance(r.Context(), sess, inst, credID); startErr != nil {
 			http.Error(w, fmt.Sprintf("failed to start harness: %v", startErr), http.StatusInternalServerError)
 			return
 		}
@@ -405,7 +405,7 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	credID := resolveCredential(s.harnessStore, inst.ID)
-	if _, err := s.harness.StartOnInstance(r.Context(), sess, inst, credID); err != nil {
+	if _, err := s.startOnInstance(r.Context(), sess, inst, credID); err != nil {
 		http.Error(w, fmt.Sprintf("failed to resume: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -486,7 +486,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	credID := resolveCredential(s.harnessStore, inst.ID)
-	if _, err := s.harness.StartOnInstance(context.Background(), forked, inst, credID); err != nil {
+	if _, err := s.startOnInstance(context.Background(), forked, inst, credID); err != nil {
 		s.store.UpdateSessionState(forked.BridgeID, string(msg.SessionError))
 		forked.State = string(msg.SessionError)
 	} else {

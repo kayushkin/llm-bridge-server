@@ -204,6 +204,11 @@ func (s *Server) handleExecHook(w http.ResponseWriter, r *http.Request) {
 		Input:    json.RawMessage(body),
 	})
 
+	// Capture before/after file state for Edit/Write alongside the user's
+	// hook command. Runs concurrently so git-hash-object latency doesn't
+	// extend the exec response time.
+	go s.maybeCaptureSnapshot(hook.Event, meta.SessionID, body)
+
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), hookExecTimeout)
 	defer cancel()

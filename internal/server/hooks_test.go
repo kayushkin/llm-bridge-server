@@ -35,7 +35,7 @@ func testServerWithHookStore(t *testing.T) (*Server, *hookstore.Store) {
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 		LogStoreURL:     "http://localhost:0",
 	}
-	srv := New(st, nil, nil, nil, hks, nil, cfg)
+	srv := New(st, nil, nil, nil, hks, nil, nil, cfg)
 	return srv, hks
 }
 

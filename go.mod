@@ -10,6 +10,7 @@ require (
 	github.com/kayushkin/log-store v0.0.0
 	github.com/kayushkin/memory-store v0.0.0
 	github.com/kayushkin/model-store v0.0.0
+	github.com/kayushkin/snapshot-store v0.0.0
 	github.com/oklog/ulid/v2 v2.1.1
 	modernc.org/sqlite v1.48.2
 )
@@ -32,6 +33,7 @@ require (
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
+	mvdan.cc/sh/v3 v3.13.1 // indirect
 )
 
 replace github.com/kayushkin/llm-bridge => ../llm-bridge
@@ -51,3 +53,5 @@ replace github.com/kayushkin/aiauth => ../aiauth
 replace github.com/kayushkin/model-store => ../model-store
 
 replace github.com/kayushkin/hook-store => ../hook-store
+
+replace github.com/kayushkin/snapshot-store => ../snapshot-store

@@ -7,19 +7,21 @@ import (
 )
 
 type Config struct {
-	ListenAddr      string
-	DBPath          string
-	AgentStoreDB    string
-	MemoryStoreDB   string
-	HarnessStoreDB  string
-	HookStoreDB     string
-	ModelStoreDB    string
-	ModelStoreURL   string
-	AgentStoreURL   string
-	NatsURL         string
-	ImagesDir       string
-	BridgePrefsPath string
-	LogStoreURL     string
+	ListenAddr       string
+	DBPath           string
+	AgentStoreDB     string
+	MemoryStoreDB    string
+	HarnessStoreDB   string
+	HookStoreDB      string
+	ModelStoreDB     string
+	ModelStoreURL    string
+	AgentStoreURL    string
+	NatsURL          string
+	ImagesDir        string
+	BridgePrefsPath  string
+	LogStoreURL      string
+	SnapshotStoreDB  string
+	SnapshotStoreGit string
 	// SourceFolders maps CreateSessionRequest.Source values to the folder a
 	// newly created session should be auto-filed into. Configured via
 	// LLMBRIDGE_SOURCE_FOLDERS (format: "source:folder,source:folder"). Any
@@ -42,6 +44,8 @@ func Load() *Config {
 		ImagesDir:       envOr("LLMBRIDGE_IMAGES_DIR", "images"),
 		BridgePrefsPath: envOr("LLMBRIDGE_BRIDGE_PREFS", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "bridge-prefs.json")),
 		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", "http://localhost:8175"),
+		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.db")),
+		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.git")),
 		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled")),
 	}
 }

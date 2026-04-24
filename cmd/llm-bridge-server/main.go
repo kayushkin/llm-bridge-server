@@ -13,6 +13,7 @@ import (
 	hookstore "github.com/kayushkin/hook-store"
 	memorystore "github.com/kayushkin/memory-store"
 	modelstore "github.com/kayushkin/model-store"
+	snapshotstore "github.com/kayushkin/snapshot-store"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -92,7 +93,23 @@ func main() {
 		}
 	}
 
-	srv := server.New(st, as, ms, hs, hks, mds, cfg)
+	// Initialize snapshot-store (optional)
+	var ss *snapshotstore.Store
+	if cfg.SnapshotStoreDB != "" && cfg.SnapshotStoreGit != "" {
+		ss, err = snapshotstore.Open(snapshotstore.Config{
+			DBPath: cfg.SnapshotStoreDB,
+			GitDir: cfg.SnapshotStoreGit,
+		})
+		if err != nil {
+			log.Printf("snapshot-store: %v (continuing without tool-call snapshots)", err)
+			ss = nil
+		} else {
+			defer ss.Close()
+			log.Printf("snapshot-store loaded from %s (git %s)", cfg.SnapshotStoreDB, cfg.SnapshotStoreGit)
+		}
+	}
+
+	srv := server.New(st, as, ms, hs, hks, mds, ss, cfg)
 	srv.ReconcileAndResume() // Clean up stale running-state and resume recently-active sessions
 	srv.AutoDiscover()       // Import on-disk sessions from harnesses
 
