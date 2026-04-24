@@ -1,0 +1,6 @@
+/mailstack
+/tmp/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal

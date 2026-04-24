@@ -1,0 +1,407 @@
+package backend
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/mail"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const gmailBase = "https://gmail.googleapis.com/gmail/v1"
+
+type TokenSource interface {
+	Token(provider, account string) (string, error)
+	Invalidate(provider, account string)
+}
+
+// Gmail implements Backend using the Gmail REST API via direct HTTP.
+type Gmail struct {
+	accountID       string
+	apiauthProvider string
+	apiauthAccount  string
+	tokens          TokenSource
+	http            *http.Client
+}
+
+func NewGmail(accountID, apiauthProvider, apiauthAccount string, tokens TokenSource) *Gmail {
+	return &Gmail{
+		accountID:       accountID,
+		apiauthProvider: apiauthProvider,
+		apiauthAccount:  apiauthAccount,
+		tokens:          tokens,
+		http:            &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+var gmailCanonical = map[string]CanonicalKind{
+	"INBOX":  KindInbox,
+	"SENT":   KindSent,
+	"DRAFT":  KindDrafts,
+	"TRASH":  KindTrash,
+	"SPAM":   KindSpam,
+}
+
+func (g *Gmail) do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	token, err := g.tokens.Token(g.apiauthProvider, g.apiauthAccount)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, gmailBase+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := g.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		// Token may have been revoked/rotated; drop cache and retry once.
+		g.tokens.Invalidate(g.apiauthProvider, g.apiauthAccount)
+		resp.Body.Close()
+		token, err = g.tokens.Token(g.apiauthProvider, g.apiauthAccount)
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, method, gmailBase+path, body)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		return g.http.Do(req)
+	}
+	return resp, nil
+}
+
+type gmailLabel struct {
+	ID                    string `json:"id"`
+	Name                  string `json:"name"`
+	Type                  string `json:"type"`
+	MessagesUnread        int    `json:"messagesUnread"`
+	LabelListVisibility   string `json:"labelListVisibility"`
+	MessageListVisibility string `json:"messageListVisibility"`
+}
+
+func (g *Gmail) Folders(ctx context.Context) ([]Folder, error) {
+	resp, err := g.do(ctx, "GET", "/users/me/labels", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gmail labels %d: %s", resp.StatusCode, string(b))
+	}
+	var out struct {
+		Labels []gmailLabel `json:"labels"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+
+	// Gmail's labels.list returns per-label counts only when called with
+	// /labels/{id}. Fetch counts individually — Gmail caps at 15 ops/s, so
+	// this is fine for the label set we care about.
+	folders := make([]Folder, 0, len(out.Labels))
+	for _, l := range out.Labels {
+		if l.LabelListVisibility == "labelHide" {
+			continue
+		}
+		f := Folder{
+			ID:          l.ID,
+			AccountID:   g.accountID,
+			Name:        l.Name,
+			Path:        l.Name,
+			UnreadCount: l.MessagesUnread,
+		}
+		if k, ok := gmailCanonical[l.ID]; ok {
+			f.Canonical = k
+		}
+		folders = append(folders, f)
+	}
+	return folders, nil
+}
+
+type gmailMessageStub struct {
+	ID       string `json:"id"`
+	ThreadID string `json:"threadId"`
+}
+
+type gmailMessagesList struct {
+	Messages           []gmailMessageStub `json:"messages"`
+	NextPageToken      string             `json:"nextPageToken"`
+	ResultSizeEstimate int                `json:"resultSizeEstimate"`
+}
+
+func (g *Gmail) List(ctx context.Context, folderID, cursor string, limit int) ([]MessageMeta, string, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	q := url.Values{}
+	if folderID != "" {
+		q.Set("labelIds", folderID)
+	}
+	q.Set("maxResults", strconv.Itoa(limit))
+	if cursor != "" {
+		q.Set("pageToken", cursor)
+	}
+	resp, err := g.do(ctx, "GET", "/users/me/messages?"+q.Encode(), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, "", fmt.Errorf("gmail messages.list %d: %s", resp.StatusCode, string(b))
+	}
+	var list gmailMessagesList
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, "", err
+	}
+	if len(list.Messages) == 0 {
+		return nil, list.NextPageToken, nil
+	}
+
+	// Fetch each message's metadata in parallel. Cap concurrency at 8.
+	out := make([]MessageMeta, len(list.Messages))
+	errs := make([]error, len(list.Messages))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i, stub := range list.Messages {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			m, err := g.getMeta(ctx, id)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			out[i] = m
+		}(i, stub.ID)
+	}
+	wg.Wait()
+	for _, e := range errs {
+		if e != nil {
+			return nil, "", e
+		}
+	}
+	return out, list.NextPageToken, nil
+}
+
+// gmailMessage is the relevant slice of the Gmail messages.get response.
+type gmailMessage struct {
+	ID           string   `json:"id"`
+	ThreadID     string   `json:"threadId"`
+	LabelIDs     []string `json:"labelIds"`
+	Snippet      string   `json:"snippet"`
+	InternalDate string   `json:"internalDate"` // ms since epoch, as string
+	Payload      gmailPayload `json:"payload"`
+	SizeEstimate int      `json:"sizeEstimate"`
+}
+
+type gmailPayload struct {
+	PartID   string         `json:"partId"`
+	MimeType string         `json:"mimeType"`
+	Filename string         `json:"filename"`
+	Headers  []gmailHeader  `json:"headers"`
+	Body     gmailBody      `json:"body"`
+	Parts    []gmailPayload `json:"parts"`
+}
+
+type gmailHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type gmailBody struct {
+	Size         int    `json:"size"`
+	Data         string `json:"data"`
+	AttachmentID string `json:"attachmentId"`
+}
+
+func (g *Gmail) getMeta(ctx context.Context, id string) (MessageMeta, error) {
+	q := url.Values{}
+	q.Set("format", "metadata")
+	q.Add("metadataHeaders", "Subject")
+	q.Add("metadataHeaders", "From")
+	q.Add("metadataHeaders", "To")
+	q.Add("metadataHeaders", "Cc")
+	q.Add("metadataHeaders", "Date")
+	resp, err := g.do(ctx, "GET", "/users/me/messages/"+url.PathEscape(id)+"?"+q.Encode(), nil)
+	if err != nil {
+		return MessageMeta{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return MessageMeta{}, fmt.Errorf("gmail messages.get(%s) %d: %s", id, resp.StatusCode, string(b))
+	}
+	var m gmailMessage
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return MessageMeta{}, err
+	}
+	return g.toMeta(&m), nil
+}
+
+func (g *Gmail) toMeta(m *gmailMessage) MessageMeta {
+	meta := MessageMeta{
+		ID:        m.ID,
+		AccountID: g.accountID,
+		Snippet:   m.Snippet,
+	}
+	for _, h := range m.Payload.Headers {
+		switch strings.ToLower(h.Name) {
+		case "subject":
+			meta.Subject = h.Value
+		case "from":
+			if a, err := mail.ParseAddress(h.Value); err == nil {
+				meta.From = Address{Name: a.Name, Email: a.Address}
+			} else {
+				meta.From = Address{Email: h.Value}
+			}
+		case "to":
+			meta.To = parseAddressList(h.Value)
+		case "cc":
+			meta.Cc = parseAddressList(h.Value)
+		case "date":
+			if t, err := mail.ParseDate(h.Value); err == nil {
+				meta.Date = t
+			}
+		}
+	}
+	if meta.Date.IsZero() && m.InternalDate != "" {
+		if ms, err := strconv.ParseInt(m.InternalDate, 10, 64); err == nil {
+			meta.Date = time.UnixMilli(ms)
+		}
+	}
+	for _, lid := range m.LabelIDs {
+		if lid == "UNREAD" {
+			meta.Unread = true
+		}
+		if lid == "STARRED" {
+			meta.Flagged = true
+		}
+	}
+	// Gmail's messages.list is scoped to a single label; set the folder to
+	// the first non-category label we see, else INBOX.
+	for _, lid := range m.LabelIDs {
+		if strings.HasPrefix(lid, "CATEGORY_") {
+			continue
+		}
+		meta.FolderID = lid
+		break
+	}
+	return meta
+}
+
+func parseAddressList(raw string) []Address {
+	if raw == "" {
+		return nil
+	}
+	parsed, err := mail.ParseAddressList(raw)
+	if err != nil {
+		return []Address{{Email: raw}}
+	}
+	out := make([]Address, 0, len(parsed))
+	for _, a := range parsed {
+		out = append(out, Address{Name: a.Name, Email: a.Address})
+	}
+	return out
+}
+
+func (g *Gmail) Get(ctx context.Context, id string) (Message, error) {
+	q := url.Values{}
+	q.Set("format", "full")
+	resp, err := g.do(ctx, "GET", "/users/me/messages/"+url.PathEscape(id)+"?"+q.Encode(), nil)
+	if err != nil {
+		return Message{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return Message{}, fmt.Errorf("gmail messages.get(%s) %d: %s", id, resp.StatusCode, string(b))
+	}
+	var m gmailMessage
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return Message{}, err
+	}
+
+	out := Message{
+		Meta:    g.toMeta(&m),
+		Headers: map[string]string{},
+	}
+	for _, h := range m.Payload.Headers {
+		out.Headers[h.Name] = h.Value
+	}
+	out.InReplyTo = out.Headers["In-Reply-To"]
+
+	walkParts(&m.Payload, &out)
+	return out, nil
+}
+
+func walkParts(p *gmailPayload, out *Message) {
+	switch {
+	case strings.HasPrefix(p.MimeType, "multipart/"):
+		for i := range p.Parts {
+			walkParts(&p.Parts[i], out)
+		}
+	case p.MimeType == "text/html":
+		if data, err := base64.URLEncoding.DecodeString(p.Body.Data); err == nil {
+			out.BodyHTML = string(data)
+		}
+	case p.MimeType == "text/plain":
+		if data, err := base64.URLEncoding.DecodeString(p.Body.Data); err == nil {
+			out.BodyText = string(data)
+		}
+	case p.Filename != "" && p.Body.AttachmentID != "":
+		att := Attachment{
+			ID:       p.Body.AttachmentID,
+			Filename: p.Filename,
+			MimeType: p.MimeType,
+			Size:     int64(p.Body.Size),
+		}
+		for _, h := range p.Headers {
+			if strings.EqualFold(h.Name, "Content-ID") {
+				att.InlineCID = strings.Trim(h.Value, "<>")
+			}
+		}
+		out.Attachments = append(out.Attachments, att)
+		out.Meta.HasAttach = true
+	}
+}
+
+var errNotImplemented = errors.New("not implemented in phase 2")
+
+func (g *Gmail) MarkRead(ctx context.Context, id string, read bool) error   { return errNotImplemented }
+func (g *Gmail) Flag(ctx context.Context, id string, flagged bool) error    { return errNotImplemented }
+func (g *Gmail) Move(ctx context.Context, id, folderID string) error        { return errNotImplemented }
+func (g *Gmail) Delete(ctx context.Context, id string) error                { return errNotImplemented }
+func (g *Gmail) PermDelete(ctx context.Context, id string) error            { return errNotImplemented }
+func (g *Gmail) Send(ctx context.Context, d Draft) (string, error)          { return "", errNotImplemented }
+func (g *Gmail) SaveDraft(ctx context.Context, d Draft, existingID string) (string, error) {
+	return "", errNotImplemented
+}
+func (g *Gmail) Attachment(ctx context.Context, msgID, attID string) (io.ReadCloser, string, error) {
+	return nil, "", errNotImplemented
+}
