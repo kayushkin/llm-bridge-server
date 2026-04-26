@@ -64,6 +64,27 @@ sed -e "s|__USER__|$USER|g" -e "s|__HOME__|$HOME|g" \
     "$REPO_DIR/llm-bridge.service" > "$TMP_SVC"
 sudo cp "$TMP_SVC" /etc/systemd/system/"$SERVICE"
 rm -f "$TMP_SVC"
+
+echo "==> Installing host-local drop-in..."
+# The committed unit intentionally has no Environment=PATH/HOME so it stays
+# portable. Inject the deploying user's live PATH and HOME via a drop-in so
+# the service can exec tools managed by the local toolchain (e.g. mise shims
+# for `claude`, `node`). Without this systemd uses its default PATH and
+# harness spawning fails with "executable file not found".
+DROPIN_DIR="/etc/systemd/system/$SERVICE.d"
+sudo mkdir -p "$DROPIN_DIR"
+DEPLOY_PATH=$(echo "$PATH" | tr ':' '\n' | awk '!seen[$0]++' | paste -sd:)
+TMP_DROPIN=$(mktemp)
+cat > "$TMP_DROPIN" <<EOF
+[Service]
+Environment=PATH=$DEPLOY_PATH
+Environment=HOME=$HOME
+EOF
+sudo cp "$TMP_DROPIN" "$DROPIN_DIR/local.conf"
+rm -f "$TMP_DROPIN"
+# Remove the hand-rolled drop-in left over from before deploy.sh owned this.
+sudo rm -f "$DROPIN_DIR/path.conf"
+
 sudo systemctl daemon-reload
 
 echo "==> Starting $SERVICE..."
@@ -71,13 +92,44 @@ sudo systemctl start "$SERVICE"
 
 echo "==> Verifying..."
 sleep 2
-if systemctl is-active --quiet "$SERVICE"; then
-  echo "    $SERVICE is running"
-  journalctl -u "$SERVICE" -n 5 --no-pager 2>&1 | grep -v '^--'
-else
+if ! systemctl is-active --quiet "$SERVICE"; then
   echo "ERROR: $SERVICE failed to start"
   journalctl -u "$SERVICE" -n 15 --no-pager 2>&1
   exit 1
 fi
+echo "    $SERVICE is running"
+journalctl -u "$SERVICE" -n 5 --no-pager 2>&1 | grep -v '^--'
+
+echo "==> Smoke test..."
+# 1. HTTP up — the listener is bound and serving.
+if ! curl -fsS http://localhost:8160/sessions >/dev/null 2>&1; then
+  echo "ERROR: $SERVICE not responding on :8160/sessions"
+  journalctl -u "$SERVICE" -n 30 --no-pager
+  exit 1
+fi
+# 2. Every dir from the drop-in's PATH is present in the running service's
+# PATH. This is the exact regression that took out harness spawning when
+# the unit was first templatized — without mise shims reachable, the
+# service couldn't exec `claude`.
+SVC_PID=$(systemctl show -p MainPID --value "$SERVICE")
+if [ -n "$SVC_PID" ] && [ "$SVC_PID" != "0" ]; then
+  SVC_PATH=$(tr '\0' '\n' < /proc/"$SVC_PID"/environ 2>/dev/null \
+             | grep '^PATH=' | head -1 | cut -d= -f2-)
+  MISSING=""
+  IFS=':' read -ra DEP_DIRS <<< "$DEPLOY_PATH"
+  for dir in "${DEP_DIRS[@]}"; do
+    case ":$SVC_PATH:" in
+      *":$dir:"*) ;;
+      *) MISSING="$MISSING $dir" ;;
+    esac
+  done
+  if [ -n "$MISSING" ]; then
+    echo "ERROR: service PATH missing dirs from drop-in:$MISSING"
+    echo "  service PATH: $SVC_PATH"
+    echo "  drop-in PATH: $DEPLOY_PATH"
+    exit 1
+  fi
+fi
+echo "    smoke test OK"
 
 echo "==> Done."
