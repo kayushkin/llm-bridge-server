@@ -33,6 +33,10 @@ const (
 	// renamerStartDelay matches the autoResume wait — Claude Code needs a
 	// moment to finish its start handshake before stdin sends will land.
 	renamerStartDelay = 2 * time.Second
+	// maxAutoRenameRunes caps the rune length of an auto-generated title.
+	// Sized for the sidebar at 100% zoom (~18 average-width characters fit;
+	// allow a few more to accommodate narrow letters before truncating).
+	maxAutoRenameRunes = 24
 )
 
 // AutoRenameRequest is the body posted by a renamer session back to
@@ -60,8 +64,8 @@ func (s *Server) handleAutoRenameSession(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "renamer_session_id is required", http.StatusBadRequest)
 		return
 	}
-	if r := []rune(name); len(r) > 80 {
-		name = string(r[:80])
+	if r := []rune(name); len(r) > maxAutoRenameRunes {
+		name = string(r[:maxAutoRenameRunes])
 	}
 	turnCount, err := s.store.CountUserMessages(bridgeID)
 	if err != nil {
@@ -259,7 +263,7 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 // and gives the exact curl call the renamer should make on completion.
 func buildRenamerPrompt(target *store.Session, renamerID string, turns []store.TurnText, baseURL string) string {
 	var b strings.Builder
-	b.WriteString("You are an auto-rename helper for a chat session. Read the transcript below and produce a concise sidebar-friendly title for the SOURCE SESSION (not yourself). The title should describe what the session is actually about — the topic, task, or problem being worked on — not the literal first message. Aim for 30–50 characters; the hard limit is 80.\n\n")
+	b.WriteString("You are an auto-rename helper for a chat session. Read the transcript below and produce a very concise sidebar title for the SOURCE SESSION (not yourself). Describe what the session is about — topic, task, or problem — not the literal first message. The sidebar is narrow: aim for ~18 characters, hard limit 24. Prefer short noun phrases (\"auth bug fix\", \"deploy script\") over full sentences. Do not wrap in quotes.\n\n")
 	fmt.Fprintf(&b, "SOURCE SESSION bridge_id: %s\n", target.BridgeID)
 	fmt.Fprintf(&b, "Current display name: %q\n", target.DisplayName)
 	fmt.Fprintf(&b, "Your renamer bridge_id: %s\n\n", renamerID)
