@@ -115,27 +115,61 @@ func (g *Gmail) Folders(ctx context.Context) ([]Folder, error) {
 		return nil, err
 	}
 
-	// Gmail's labels.list returns per-label counts only when called with
-	// /labels/{id}. Fetch counts individually — Gmail caps at 15 ops/s, so
-	// this is fine for the label set we care about.
+	// Build the visible folder set first; labels.list returns 0 for unread
+	// counts, so we fan out labels.get below to fill them in.
 	folders := make([]Folder, 0, len(out.Labels))
 	for _, l := range out.Labels {
 		if l.LabelListVisibility == "labelHide" {
 			continue
 		}
 		f := Folder{
-			ID:          l.ID,
-			AccountID:   g.accountID,
-			Name:        l.Name,
-			Path:        l.Name,
-			UnreadCount: l.MessagesUnread,
+			ID:        l.ID,
+			AccountID: g.accountID,
+			Name:      l.Name,
+			Path:      l.Name,
 		}
 		if k, ok := gmailCanonical[l.ID]; ok {
 			f.Canonical = k
 		}
 		folders = append(folders, f)
 	}
+
+	// Fan out labels.get for accurate unread counts. Concurrency cap of 8
+	// keeps us well below Gmail's per-user 15 req/s soft limit.
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i := range folders {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if n, err := g.labelUnread(ctx, folders[i].ID); err == nil {
+				folders[i].UnreadCount = n
+			}
+		}(i)
+	}
+	wg.Wait()
 	return folders, nil
+}
+
+func (g *Gmail) labelUnread(ctx context.Context, id string) (int, error) {
+	resp, err := g.do(ctx, "GET", "/users/me/labels/"+url.PathEscape(id), nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("gmail labels.get(%s) %d: %s", id, resp.StatusCode, string(b))
+	}
+	var out struct {
+		MessagesUnread int `json:"messagesUnread"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, err
+	}
+	return out.MessagesUnread, nil
 }
 
 type gmailMessageStub struct {
