@@ -57,7 +57,13 @@ echo "==> Installing binary to $SYSTEM_BIN..."
 sudo cp "$BIN_NAME" "$SYSTEM_BIN"
 
 echo "==> Installing service file..."
-sudo cp "$REPO_DIR/llm-bridge.service" /etc/systemd/system/"$SERVICE"
+# The committed unit file uses __USER__ / __HOME__ placeholders so the repo
+# stays portable. Expand them for the local machine before installing.
+TMP_SVC=$(mktemp)
+sed -e "s|__USER__|$USER|g" -e "s|__HOME__|$HOME|g" \
+    "$REPO_DIR/llm-bridge.service" > "$TMP_SVC"
+sudo cp "$TMP_SVC" /etc/systemd/system/"$SERVICE"
+rm -f "$TMP_SVC"
 sudo systemctl daemon-reload
 
 echo "==> Starting $SERVICE..."
