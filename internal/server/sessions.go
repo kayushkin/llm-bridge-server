@@ -190,6 +190,11 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// User-set name wins. Drop any in-flight renamer reservation so its eventual
+	// /auto-rename callback no-ops (ApplyAutoRename will see the cleared slot).
+	if err := s.store.ClearRenamerSlot(bridgeID); err != nil {
+		log.Printf("[session] clear renamer slot on rename: %v", err)
+	}
 	sess, err := s.store.GetSession(bridgeID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
@@ -277,6 +282,8 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	go s.maybeAutoRename(bridgeID)
 
 	writeJSON(w, map[string]string{"status": "sent", "message_id": userEvent.MessageID})
 }

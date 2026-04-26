@@ -103,6 +103,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/compact", s.handleCompactSession)
 	s.mux.HandleFunc("POST /sessions/{id}/fork", s.handleForkSession)
 	s.mux.HandleFunc("POST /sessions/{id}/rename", s.handleRenameSession)
+	s.mux.HandleFunc("POST /sessions/{id}/auto-rename", s.handleAutoRenameSession)
 	s.mux.HandleFunc("POST /sessions/{id}/config", s.handleConfigSession)
 	s.mux.HandleFunc("PUT /sessions/{id}/folder", s.handleSetSessionFolder)
 	s.mux.HandleFunc("GET /sessions/{id}/git/repos", s.handleSessionGitRepos)

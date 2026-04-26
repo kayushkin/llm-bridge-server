@@ -46,7 +46,7 @@ func Load() *Config {
 		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", "http://localhost:8175"),
 		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.db")),
 		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.git")),
-		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled")),
+		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled,healthcheck:Scheduled,renamer:Auto-rename")),
 	}
 }
 
