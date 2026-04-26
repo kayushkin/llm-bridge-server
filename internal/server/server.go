@@ -38,6 +38,7 @@ type Server struct {
 	snapshotStore *snapshotstore.Store
 	harness       *harness.Manager
 	bridgePrefs   *bridgePrefsStore
+	cfState       *conformanceState
 	cfg           *config.Config
 }
 
@@ -53,6 +54,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		snapshotStore: ss,
 		harness:       harness.NewManager(st, cfg.LogStoreURL),
 		bridgePrefs:   newBridgePrefsStore(cfg.BridgePrefsPath),
+		cfState:       newConformanceState(cfg.ConformancePath),
 		cfg:           cfg,
 	}
 	srv.routes()
@@ -179,6 +181,11 @@ func (s *Server) routes() {
 	// Admin housekeeping (called by scheduler cron)
 	s.mux.HandleFunc("POST /admin/file-inactive", s.handleFileInactive)
 	s.mux.HandleFunc("POST /admin/archive-old", s.handleArchiveOld)
+
+	// Runner WebSocket — long-lived connection from llm-bridge-runner
+	// daemons on remote machines. Auth is bearer-token in the upgrade
+	// header (see LLMBRIDGE_RUNNER_TOKEN) and re-validated on Hello.
+	s.mux.HandleFunc("GET /api/runner/ws", s.handleRunnerWS)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -349,7 +356,8 @@ func (s *Server) AutoDiscover() {
 			}
 
 			instanceID := localInstances[ds.Harness]
-			inserted, err := s.store.UpsertDiscoveredSession(ds.ID, displayName, string(ds.Harness), instanceID, ds.CreatedAt, ds.UpdatedAt)
+			source, folder := s.discoverySourceFolder(ds.Prompt)
+			inserted, err := s.store.UpsertDiscoveredSession(ds.ID, displayName, string(ds.Harness), instanceID, source, folder, ds.CreatedAt, ds.UpdatedAt)
 			if err == nil && inserted {
 				imported++
 				// Import history to log-store for new sessions

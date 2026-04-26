@@ -10,6 +10,7 @@ import (
 	"time"
 
 	harnessstore "github.com/kayushkin/harness-store"
+	"github.com/kayushkin/llm-bridge-server/conformance"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -21,6 +22,19 @@ func (s *Server) folderForSource(source string) string {
 		return ""
 	}
 	return s.cfg.SourceFolders[source]
+}
+
+// discoverySourceFolder infers a (source, folder) pair for a freshly-discovered
+// on-disk session. Currently the only inferable source is conformance: when a
+// harness CLI persists a session whose first user message is one of the canon
+// conformance prompts, it's a leaked test session and gets filed accordingly.
+// All other discoveries return empty (unfiled) — the harness CLI is the source
+// of truth for the original prompt and we don't second-guess user sessions.
+func (s *Server) discoverySourceFolder(prompt string) (string, string) {
+	if conformance.IsConformancePrompt(prompt) {
+		return conformance.SourceTag, s.folderForSource(conformance.SourceTag)
+	}
+	return "", ""
 }
 
 // displayNameFromMessage produces a compact session title from a user message:
@@ -570,12 +584,15 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 
 		// Sessions discovered locally belong to the local instance
 		instanceID := localInstances[ds.Harness]
+		source, folder := s.discoverySourceFolder(ds.Prompt)
 
 		inserted, err := s.store.UpsertDiscoveredSession(
 			ds.ID,
 			displayName,
 			string(ds.Harness),
 			instanceID,
+			source,
+			folder,
 			ds.CreatedAt,
 			ds.UpdatedAt,
 		)

@@ -16,6 +16,20 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
+// HarnessProcess is the runtime handle for a spawned harness session,
+// abstracting over the underlying transport (local subprocess, SSH, or
+// remote runner over WebSocket). The Manager treats every active session
+// as a HarnessProcess so the read/dispatch path is transport-agnostic.
+type HarnessProcess interface {
+	PID() int
+	SessionID() string
+	Events() <-chan msg.Event
+	Send(message string) error
+	SendCommand(cmd string) error
+	Interrupt() error
+	Kill() error
+}
+
 // Request is sent to harness subprocess via stdin.
 type Request struct {
 	Method string          `json:"method"`

@@ -41,22 +41,30 @@ type StoredEvent struct {
 // Manager handles harness subprocess lifecycle.
 type Manager struct {
 	mu          sync.RWMutex
-	processes   map[string]*Process           // sessionID → process
-	subscribers map[string][]chan StoredEvent  // sessionID → SSE subscriber channels
+	processes   map[string]HarnessProcess     // sessionID → process
+	subscribers map[string][]chan StoredEvent // sessionID → SSE subscriber channels
 	msgState    map[string]*sessionMsgState   // sessionID → message-id assignment state
 	store       *store.Store
 	logStore    *logstore.Client
+	runners     *RunnerRegistry // optional; nil disables TransportRunner spawns
 }
 
 // NewManager creates a harness manager.
 func NewManager(st *store.Store, logStoreURL string) *Manager {
 	return &Manager{
-		processes:   make(map[string]*Process),
+		processes:   make(map[string]HarnessProcess),
 		subscribers: make(map[string][]chan StoredEvent),
 		msgState:    make(map[string]*sessionMsgState),
 		store:       st,
 		logStore:    logstore.New(logStoreURL),
+		runners:     NewRunnerRegistry(),
 	}
+}
+
+// Runners returns the runner registry so the HTTP layer can mount the
+// /api/runner/ws endpoint against it.
+func (m *Manager) Runners() *RunnerRegistry {
+	return m.runners
 }
 
 // loadMsgState rehydrates message-id state for a session from the DB. Called
@@ -224,47 +232,9 @@ func (m *Manager) assignAssistantID(st *sessionMsgState, hid string) string {
 	return st.bridgeMsgID
 }
 
-// BinaryName returns the expected binary name for a harness.
-func BinaryName(h msg.Harness) string {
-	switch h {
-	case msg.HarnessClaudeCode:
-		return "llm-bridge-claudecode"
-	case msg.HarnessCodex:
-		return "llm-bridge-codex"
-	case msg.HarnessOpenClaw:
-		return "llm-bridge-openclaw"
-	case msg.HarnessInber:
-		return "llm-bridge-inber"
-	case msg.HarnessHermes:
-		return "llm-bridge-hermes"
-	case msg.HarnessAider:
-		return "llm-bridge-aider"
-	case msg.HarnessGoose:
-		return "llm-bridge-goose"
-	case msg.HarnessAutohand:
-		return "llm-bridge-autohand"
-	case msg.HarnessJig:
-		return "llm-bridge-jig"
-	case msg.HarnessDexto:
-		return "llm-bridge-dexto"
-	case msg.HarnessCommander:
-		return "llm-bridge-commander"
-	case msg.HarnessNanoClaw:
-		return "llm-bridge-nanoclaw"
-	case msg.HarnessCline:
-		return "llm-bridge-cline"
-	case msg.HarnessRooCode:
-		return "llm-bridge-roocode"
-	case msg.HarnessKiloCode:
-		return "llm-bridge-kilocode"
-	default:
-		return ""
-	}
-}
-
 // Available checks if a harness binary is in PATH.
 func Available(h msg.Harness) (string, bool) {
-	bin := BinaryName(h)
+	bin := msg.HarnessBinaryName(h)
 	if bin == "" {
 		return "", false
 	}
@@ -277,7 +247,7 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 	h := msg.Harness(sess.Harness)
 	binPath, ok := Available(h)
 	if !ok {
-		return nil, fmt.Errorf("harness binary not found: %s", BinaryName(h))
+		return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 	}
 
 	proc, err := StartProcess(ctx, binPath, sess, "")
@@ -300,7 +270,7 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 }
 
 // Get returns a running process by session ID.
-func (m *Manager) Get(sessionID string) *Process {
+func (m *Manager) Get(sessionID string) HarnessProcess {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.processes[sessionID]
@@ -379,7 +349,7 @@ func (m *Manager) HasProcess(sessionID string) bool {
 
 // readEvents reads events from process, persists them, updates state,
 // and fans out to all SSE subscribers.
-func (m *Manager) readEvents(proc *Process) {
+func (m *Manager) readEvents(proc HarnessProcess) {
 	bridgeID := proc.SessionID()
 	harnessIDSet := false
 
@@ -567,19 +537,25 @@ func (m *Manager) ActiveCount() int {
 }
 
 // StartOnInstance spawns a harness session on a specific instance with credential binding.
-func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string) (*Process, error) {
+// Dispatches by Transport: TransportLocal forks a subprocess on this host;
+// TransportSSH wraps it in an ssh client; TransportRunner sends a Spawn
+// message over a registered runner WebSocket.
+func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string) (HarnessProcess, error) {
 	h := msg.Harness(sess.Harness)
 
-	var proc *Process
+	var proc HarnessProcess
 	var err error
 
-	if inst.Transport == msg.TransportSSH {
+	switch inst.Transport {
+	case msg.TransportSSH:
 		proc, err = m.startSSH(ctx, sess, inst, credentialID)
-	} else {
+	case msg.TransportRunner:
+		proc, err = m.startRunner(ctx, sess, inst, credentialID)
+	default:
 		// Local transport
 		binPath, ok := Available(h)
 		if !ok {
-			return nil, fmt.Errorf("harness binary not found: %s", BinaryName(h))
+			return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 		}
 		proc, err = StartProcess(ctx, binPath, sess, credentialID)
 	}
@@ -602,7 +578,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 
 // startSSH spawns a harness process on a remote machine via SSH.
 func (m *Manager) startSSH(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string) (*Process, error) {
-	binName := BinaryName(msg.Harness(sess.Harness))
+	binName := msg.HarnessBinaryName(msg.Harness(sess.Harness))
 	if binName == "" {
 		return nil, fmt.Errorf("unknown harness type: %s", sess.Harness)
 	}
@@ -705,7 +681,7 @@ func runDiscover(ctx context.Context, binPath string) ([]msg.StoredSession, erro
 func (m *Manager) ImportHistory(ctx context.Context, h msg.Harness, sessionID string) (int, error) {
 	binPath, ok := Available(h)
 	if !ok {
-		return 0, fmt.Errorf("harness binary not found: %s", BinaryName(h))
+		return 0, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 	}
 
 	cmd := exec.CommandContext(ctx, binPath, "-import-history", sessionID)

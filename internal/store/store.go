@@ -959,13 +959,16 @@ func (s *Store) SetSessionFolder(bridgeID, folder string) error {
 // UpsertDiscoveredSession inserts a discovered session if it doesn't already exist.
 // harnessID is the harness-native session ID (e.g. CC UUID).
 // instanceID is the instance that discovered this session.
+// source/folderName tag the session for sidebar grouping (see config.SourceFolders).
 // Returns true if a new row was inserted.
-func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanceID string, createdAt, updatedAt time.Time) (bool, error) {
+func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanceID, source, folderName string, createdAt, updatedAt time.Time) (bool, error) {
 	// Check if session already exists by harness_id
-	var existingBridgeID, existingInstanceID, existingDisplayName string
-	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, '') FROM sessions WHERE harness_id=?`, harnessID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName)
+	var existingBridgeID, existingInstanceID, existingDisplayName, existingSource, existingFolder string
+	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(source, ''), COALESCE(folder_name, '') FROM sessions WHERE harness_id=?`, harnessID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder)
 	if err == nil {
-		// Already exists - update timestamp, display_name, and instance_id if currently empty
+		// Already exists - update timestamp, display_name, instance_id, source,
+		// and folder where the existing values are empty. Existing non-empty
+		// values win (user may have moved the session manually).
 		newInstanceID := existingInstanceID
 		if existingInstanceID == "" && instanceID != "" {
 			newInstanceID = instanceID
@@ -974,7 +977,15 @@ func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanc
 		if displayName != "" && (existingDisplayName == "" || (strings.HasPrefix(existingDisplayName, "/") && !strings.HasPrefix(displayName, "/"))) {
 			newDisplayName = displayName
 		}
-		s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, existingBridgeID)
+		newSource := existingSource
+		if existingSource == "" && source != "" {
+			newSource = source
+		}
+		newFolder := existingFolder
+		if existingFolder == "" && folderName != "" {
+			newFolder = folderName
+		}
+		s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=?, source=?, folder_name=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, newSource, newFolder, existingBridgeID)
 		return false, nil
 	}
 	if err != sql.ErrNoRows {
@@ -984,8 +995,8 @@ func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanc
 	// Insert new discovered session with state "idle"
 	bridgeID := fmt.Sprintf("br_%d", time.Now().UnixNano())
 	_, err = s.db.Exec(
-		`INSERT INTO sessions (bridge_id, harness_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		bridgeID, harnessID, "", displayName, harness, instanceID, "idle", 0, "", "", "", createdAt, updatedAt,
+		`INSERT INTO sessions (bridge_id, harness_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, source, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		bridgeID, harnessID, "", displayName, harness, instanceID, "idle", 0, "", "", "", source, folderName, createdAt, updatedAt,
 	)
 	if err != nil {
 		return false, err

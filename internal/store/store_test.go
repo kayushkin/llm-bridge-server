@@ -356,7 +356,7 @@ func TestUpsertDiscoveredSession(t *testing.T) {
 	now := time.Now()
 
 	// First insert
-	inserted, err := s.UpsertDiscoveredSession("cc-uuid-1", "Test Task", "claude_code", "inst_1", now, now)
+	inserted, err := s.UpsertDiscoveredSession("cc-uuid-1", "Test Task", "claude_code", "inst_1", "", "", now, now)
 	if err != nil {
 		t.Fatalf("upsert 1: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestUpsertDiscoveredSession(t *testing.T) {
 	}
 
 	// Second upsert (same harness_id) should not insert
-	inserted, err = s.UpsertDiscoveredSession("cc-uuid-1", "Updated Name", "claude_code", "", now, now.Add(time.Minute))
+	inserted, err = s.UpsertDiscoveredSession("cc-uuid-1", "Updated Name", "claude_code", "", "", "", now, now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("upsert 2: %v", err)
 	}

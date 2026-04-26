@@ -19,6 +19,7 @@ type Config struct {
 	NatsURL          string
 	ImagesDir        string
 	BridgePrefsPath  string
+	ConformancePath  string
 	LogStoreURL      string
 	SnapshotStoreDB  string
 	SnapshotStoreGit string
@@ -43,10 +44,11 @@ func Load() *Config {
 		NatsURL:        os.Getenv("NATS_URL"),
 		ImagesDir:       envOr("LLMBRIDGE_IMAGES_DIR", "images"),
 		BridgePrefsPath: envOr("LLMBRIDGE_BRIDGE_PREFS", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "bridge-prefs.json")),
+		ConformancePath: envOr("LLMBRIDGE_CONFORMANCE_PATH", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "conformance.json")),
 		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", "http://localhost:8175"),
 		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.db")),
 		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.git")),
-		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled,healthcheck:Scheduled,renamer:Auto-rename")),
+		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled,healthcheck:Scheduled,renamer:Auto-rename,conformance:Conformance")),
 	}
 }
 

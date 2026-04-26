@@ -18,8 +18,9 @@ import (
 // settings before delegating to the harness manager. Every spawn path
 // (create, resume, auto-resume, fork) calls through here so hook wiring is
 // consistent across them.
-func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credID string) (*harness.Process, error) {
+func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credID string) (harness.HarnessProcess, error) {
 	s.injectHookSettings(sess)
+	s.injectAgentsContext(sess)
 	return s.harness.StartOnInstance(ctx, sess, inst, credID)
 }
 

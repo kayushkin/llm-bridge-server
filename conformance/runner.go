@@ -14,6 +14,35 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
+// SourceTag is the value placed in CreateSessionRequest.Source for any session
+// that originates from the conformance suite. Auto-discover uses it to file
+// leaked test sessions into the configured Conformance folder instead of the
+// unfiled list.
+const SourceTag = "conformance"
+
+// Prompt strings sent to harness subprocesses during conformance tests. They
+// are exported so the auto-discover path can recognise sessions left behind on
+// disk by the underlying harness CLI (e.g. ~/.codex/sessions/...) and tag them
+// with SourceTag.
+const (
+	PromptMessage     = "Hello, world!"  // testMessage
+	PromptStreaming   = "test streaming" // testStreaming
+	PromptErrors      = "trigger error"  // testErrors
+	PromptContextUsed = "count tokens"   // testContextUsed
+)
+
+// IsConformancePrompt reports whether s matches one of the canonical prompts
+// the conformance suite sends to harness subprocesses. Used by auto-discover
+// to detect and tag sessions that the underlying harness CLI persisted to
+// disk during a conformance run.
+func IsConformancePrompt(s string) bool {
+	switch s {
+	case PromptMessage, PromptStreaming, PromptErrors, PromptContextUsed:
+		return true
+	}
+	return false
+}
+
 // runProcess wraps a running harness subprocess for conformance testing.
 type runProcess struct {
 	cmd    *exec.Cmd
@@ -29,7 +58,10 @@ type rpcRequest struct {
 }
 
 func launchProcess(ctx context.Context, binary string, env ...string) (*runProcess, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Subprocess deadline must be wider than the longest per-feature timeout
+	// (currently llmTimeout=30s) so a slow LLM round-trip doesn't get killed
+	// before the test's wait can observe its result.
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	cmd := exec.CommandContext(ctx, binary)
 	if len(env) > 0 {
 		cmd.Env = append(cmd.Environ(), env...)
@@ -140,7 +172,12 @@ func (rp *runProcess) close() {
 // and returns the result. This is the non-test equivalent of TestConformance.
 func RunHarness(ctx context.Context, binary string) (*HarnessResult, error) {
 	name := runnerHarnessName(binary)
+	// Protocol-level events (state, system, error) arrive instantly;
+	// 10s is plenty. Features that wait for an EventResult after sending a
+	// message need a real LLM round-trip — which on a busy host can take
+	// 8-15s for short prompts — so they get a longer budget.
 	eventTimeout := 10 * time.Second
+	llmTimeout := 30 * time.Second
 
 	result := &HarnessResult{
 		Harness:  name,
@@ -152,10 +189,10 @@ func RunHarness(ctx context.Context, binary string) (*HarnessResult, error) {
 	result.AddResult(testStart(ctx, binary, eventTimeout))
 
 	// ── message ──
-	result.AddResult(testMessage(ctx, binary, eventTimeout))
+	result.AddResult(testMessage(ctx, binary, llmTimeout))
 
 	// ── streaming ──
-	result.AddResult(testStreaming(ctx, binary, eventTimeout))
+	result.AddResult(testStreaming(ctx, binary, llmTimeout))
 
 	// ── compact ──
 	result.AddResult(testCompact(ctx, binary, eventTimeout))
@@ -191,7 +228,7 @@ func RunHarness(ctx context.Context, binary string) (*HarnessResult, error) {
 	result.AddResult(testSystemPrompt(ctx, binary, eventTimeout))
 
 	// ── context_used ──
-	result.AddResult(testContextUsed(ctx, binary, eventTimeout))
+	result.AddResult(testContextUsed(ctx, binary, llmTimeout))
 
 	return result, nil
 }
@@ -260,7 +297,7 @@ func testContextUsed(ctx context.Context, binary string, timeout time.Duration) 
 		return e.Type == msg.EventSessionState
 	})
 
-	rp.send("message", map[string]any{"content": "count tokens"})
+	rp.send("message", map[string]any{"content": PromptContextUsed})
 
 	event, err := rp.waitForEventType(timeout, msg.EventResult)
 	if err != nil {
@@ -313,7 +350,7 @@ func testMessage(ctx context.Context, binary string, timeout time.Duration) Test
 		return e.Type == msg.EventSessionState && e.State != nil && e.State.State == msg.SessionRunning
 	})
 
-	if err := rp.send("message", map[string]any{"content": "Hello, world!"}); err != nil {
+	if err := rp.send("message", map[string]any{"content": PromptMessage}); err != nil {
 		return TestResult{Feature: FeatureMessage, Error: err.Error()}
 	}
 
@@ -343,7 +380,7 @@ func testStreaming(ctx context.Context, binary string, timeout time.Duration) Te
 		return e.Type == msg.EventSessionState
 	})
 
-	rp.send("message", map[string]any{"content": "test streaming"})
+	rp.send("message", map[string]any{"content": PromptStreaming})
 
 	hasStream := false
 	gotResult := false
@@ -485,7 +522,7 @@ func testErrors(ctx context.Context, binary string, timeout time.Duration) TestR
 		return e.Type == msg.EventSessionState
 	})
 
-	rp.send("message", map[string]any{"content": "trigger error"})
+	rp.send("message", map[string]any{"content": PromptErrors})
 
 	event, err := rp.waitForEventType(timeout, msg.EventError)
 	if err != nil {
