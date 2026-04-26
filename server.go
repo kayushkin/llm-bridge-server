@@ -48,6 +48,12 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, bearerToken string) 
 	s.mux.Handle("GET /api/folders", s.auth(s.handleFolders))
 	s.mux.Handle("GET /api/messages", s.auth(s.handleListMessages))
 	s.mux.Handle("GET /api/messages/{id}", s.auth(s.handleGetMessage))
+	s.mux.Handle("POST /api/messages/{id}/read", s.auth(s.handleMarkRead))
+	s.mux.Handle("POST /api/messages/{id}/flag", s.auth(s.handleFlag))
+	s.mux.Handle("POST /api/messages/{id}/move", s.auth(s.handleMove))
+	s.mux.Handle("DELETE /api/messages/{id}", s.auth(s.handleDelete))
+	s.mux.Handle("POST /api/messages/{id}/perm-delete", s.auth(s.handlePermDelete))
+	s.mux.Handle("POST /api/messages/bulk", s.auth(s.handleBulk))
 	return s
 }
 
@@ -400,6 +406,186 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, msg)
+}
+
+// ─── Write ops ─────────────────────────────────────────────────────────
+
+func (s *Server) backendForReq(w http.ResponseWriter, r *http.Request) (backend.Backend, string, bool) {
+	acct := r.URL.Query().Get("account")
+	if acct == "" {
+		writeError(w, http.StatusBadRequest, errors.New("account query param required"))
+		return nil, "", false
+	}
+	b, _, err := s.backendFor(acct)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return nil, "", false
+	}
+	return b, acct, true
+}
+
+func (s *Server) handleMarkRead(w http.ResponseWriter, r *http.Request) {
+	b, _, ok := s.backendForReq(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	var body struct {
+		Read bool `json:"read"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := b.MarkRead(r.Context(), id, body.Read); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleFlag(w http.ResponseWriter, r *http.Request) {
+	b, _, ok := s.backendForReq(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	var body struct {
+		Flagged bool `json:"flagged"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := b.Flag(r.Context(), id, body.Flagged); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleMove(w http.ResponseWriter, r *http.Request) {
+	b, _, ok := s.backendForReq(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	var body struct {
+		Folder string `json:"folder"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.Folder == "" {
+		writeError(w, http.StatusBadRequest, errors.New("folder is required"))
+		return
+	}
+	if err := b.Move(r.Context(), id, body.Folder); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	b, _, ok := s.backendForReq(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if err := b.Delete(r.Context(), id); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handlePermDelete(w http.ResponseWriter, r *http.Request) {
+	b, _, ok := s.backendForReq(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if err := b.PermDelete(r.Context(), id); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleBulk applies a single op to many messages on one account, fan-out
+// concurrently. Per-message failures are collected into errors[]; the whole
+// call does NOT fail unless the account/op is bad up front.
+func (s *Server) handleBulk(w http.ResponseWriter, r *http.Request) {
+	b, _, ok := s.backendForReq(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		IDs     []string `json:"ids"`
+		Op      string   `json:"op"` // read|unread|flag|unflag|move|delete|perm-delete
+		Folder  string   `json:"folder,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(body.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("ids is required"))
+		return
+	}
+	apply := bulkOpFunc(b, body.Op, body.Folder)
+	if apply == nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unknown op %q", body.Op))
+		return
+	}
+
+	type result struct {
+		ID    string `json:"id"`
+		Error string `json:"error,omitempty"`
+	}
+	out := make([]result, len(body.IDs))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i, id := range body.IDs {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			out[i].ID = id
+			if err := apply(r.Context(), id); err != nil {
+				out[i].Error = err.Error()
+			}
+		}(i, id)
+	}
+	wg.Wait()
+	writeJSON(w, http.StatusOK, map[string]any{"results": out})
+}
+
+func bulkOpFunc(b backend.Backend, op, folder string) func(context.Context, string) error {
+	switch op {
+	case "read":
+		return func(ctx context.Context, id string) error { return b.MarkRead(ctx, id, true) }
+	case "unread":
+		return func(ctx context.Context, id string) error { return b.MarkRead(ctx, id, false) }
+	case "flag":
+		return func(ctx context.Context, id string) error { return b.Flag(ctx, id, true) }
+	case "unflag":
+		return func(ctx context.Context, id string) error { return b.Flag(ctx, id, false) }
+	case "move":
+		if folder == "" {
+			return nil
+		}
+		return func(ctx context.Context, id string) error { return b.Move(ctx, id, folder) }
+	case "delete":
+		return func(ctx context.Context, id string) error { return b.Delete(ctx, id) }
+	case "perm-delete":
+		return func(ctx context.Context, id string) error { return b.PermDelete(ctx, id) }
+	default:
+		return nil
+	}
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────

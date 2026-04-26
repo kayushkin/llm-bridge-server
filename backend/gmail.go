@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -391,14 +392,82 @@ func walkParts(p *gmailPayload, out *Message) {
 	}
 }
 
-var errNotImplemented = errors.New("not implemented in phase 2")
+var errNotImplemented = errors.New("not implemented yet")
 
-func (g *Gmail) MarkRead(ctx context.Context, id string, read bool) error   { return errNotImplemented }
-func (g *Gmail) Flag(ctx context.Context, id string, flagged bool) error    { return errNotImplemented }
-func (g *Gmail) Move(ctx context.Context, id, folderID string) error        { return errNotImplemented }
-func (g *Gmail) Delete(ctx context.Context, id string) error                { return errNotImplemented }
-func (g *Gmail) PermDelete(ctx context.Context, id string) error            { return errNotImplemented }
-func (g *Gmail) Send(ctx context.Context, d Draft) (string, error)          { return "", errNotImplemented }
+type gmailModifyRequest struct {
+	AddLabelIDs    []string `json:"addLabelIds,omitempty"`
+	RemoveLabelIDs []string `json:"removeLabelIds,omitempty"`
+}
+
+func (g *Gmail) modify(ctx context.Context, id string, req gmailModifyRequest) error {
+	raw, _ := json.Marshal(req)
+	resp, err := g.do(ctx, "POST", "/users/me/messages/"+url.PathEscape(id)+"/modify", bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gmail modify(%s) %d: %s", id, resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+func (g *Gmail) MarkRead(ctx context.Context, id string, read bool) error {
+	if read {
+		return g.modify(ctx, id, gmailModifyRequest{RemoveLabelIDs: []string{"UNREAD"}})
+	}
+	return g.modify(ctx, id, gmailModifyRequest{AddLabelIDs: []string{"UNREAD"}})
+}
+
+func (g *Gmail) Flag(ctx context.Context, id string, flagged bool) error {
+	if flagged {
+		return g.modify(ctx, id, gmailModifyRequest{AddLabelIDs: []string{"STARRED"}})
+	}
+	return g.modify(ctx, id, gmailModifyRequest{RemoveLabelIDs: []string{"STARRED"}})
+}
+
+// Move semantics for Gmail: add the target label and (when target != INBOX)
+// remove INBOX so the message disappears from the inbox view. This matches
+// the behavior most users expect from "move to folder X" in mail UIs.
+func (g *Gmail) Move(ctx context.Context, id, folderID string) error {
+	if folderID == "" {
+		return fmt.Errorf("gmail Move: folder is required")
+	}
+	req := gmailModifyRequest{AddLabelIDs: []string{folderID}}
+	if folderID != "INBOX" {
+		req.RemoveLabelIDs = []string{"INBOX"}
+	}
+	return g.modify(ctx, id, req)
+}
+
+func (g *Gmail) Delete(ctx context.Context, id string) error {
+	resp, err := g.do(ctx, "POST", "/users/me/messages/"+url.PathEscape(id)+"/trash", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gmail trash(%s) %d: %s", id, resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+func (g *Gmail) PermDelete(ctx context.Context, id string) error {
+	resp, err := g.do(ctx, "DELETE", "/users/me/messages/"+url.PathEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gmail delete(%s) %d: %s", id, resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+func (g *Gmail) Send(ctx context.Context, d Draft) (string, error) { return "", errNotImplemented }
 func (g *Gmail) SaveDraft(ctx context.Context, d Draft, existingID string) (string, error) {
 	return "", errNotImplemented
 }
