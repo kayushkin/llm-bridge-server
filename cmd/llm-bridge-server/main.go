@@ -1,12 +1,14 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
 	harnessstore "github.com/kayushkin/harness-store"
@@ -20,6 +22,20 @@ import (
 )
 
 func main() {
+	// Subcommand dispatch — keep the default no-arg invocation as the
+	// long-running server. Subcommands let admins do quick one-shot
+	// operations against the local databases without going through HTTP.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "mint-enroll":
+			mintEnrollCmd(os.Args[2:])
+			return
+		case "-h", "--help":
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m]]")
+			os.Exit(0)
+		}
+	}
+
 	cfg := config.Load()
 
 	st, err := store.New(cfg.DBPath)
@@ -112,6 +128,7 @@ func main() {
 	srv := server.New(st, as, ms, hs, hks, mds, ss, cfg)
 	srv.ReconcileAndResume() // Clean up stale running-state and resume recently-active sessions
 	srv.AutoDiscover()       // Import on-disk sessions from harnesses
+	srv.StartWatchdog()      // Periodic check for sessions whose harness died mid-life
 
 	go func() {
 		log.Printf("llm-bridge-server listening on %s", cfg.ListenAddr)
@@ -124,4 +141,36 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	fmt.Println("\nshutting down")
+}
+
+// mintEnrollCmd creates a single-use runner enrollment passphrase and
+// prints it to stdout. The passphrase is the only output a user sees;
+// only its hash is stored in harness-store. Designed to be wrapped by
+// shell pipelines (e.g. piped into a registration QR code generator).
+func mintEnrollCmd(args []string) {
+	fs := flag.NewFlagSet("mint-enroll", flag.ExitOnError)
+	ttl := fs.Duration("ttl", 15*time.Minute, "how long the passphrase is valid")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	cfg := config.Load()
+	if cfg.HarnessStoreDB == "" {
+		fmt.Fprintln(os.Stderr, "error: harness-store database not configured (set LLMBRIDGE_HARNESS_STORE_DB)")
+		os.Exit(1)
+	}
+	hs, err := harnessstore.Open(cfg.HarnessStoreDB)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open harness-store: %v\n", err)
+		os.Exit(1)
+	}
+	defer hs.Close()
+
+	passphrase, enr, err := hs.MintEnrollment(*ttl)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mint enrollment: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("passphrase:  %s\n", passphrase)
+	fmt.Printf("expires at:  %s (in %s)\n", enr.ExpiresAt.Local().Format(time.RFC3339), time.Until(enr.ExpiresAt).Round(time.Second))
+	fmt.Printf("enrollment:  %s\n", enr.ID)
 }

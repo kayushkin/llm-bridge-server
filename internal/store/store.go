@@ -333,9 +333,10 @@ func (s *Store) PendingTurnMessage(bridgeID string) (string, bool, error) {
 // ReconcileRunningSessions resets every 'running' session to 'idle' with pid=0
 // and returns the sessions that were reconciled. Called at startup: running
 // processes can only exist in memory, so any row still marked running from a
-// previous server lifetime is stale. updated_at is intentionally NOT bumped —
-// callers use it to judge how recently the session was active (for auto-resume
-// heuristics), and FileInactive / ArchiveOld rely on it for housekeeping.
+// previous server lifetime is stale. updated_at is intentionally NOT bumped so
+// FileInactive / ArchiveOld can still see the original last-state-transition
+// time. Auto-resume uses LastActivityAt instead, which reflects real event
+// flow rather than just state changes.
 func (s *Store) ReconcileRunningSessions() ([]Session, error) {
 	rows, err := s.db.Query(`SELECT ` + sessionColumns + ` FROM sessions WHERE state='running'`)
 	if err != nil {
@@ -361,6 +362,25 @@ func (s *Store) ReconcileRunningSessions() ([]Session, error) {
 		return nil, err
 	}
 	return sessions, nil
+}
+
+// LastActivityAt returns the timestamp of the most recent event logged for the
+// session, falling back to the session's created_at if no events exist yet.
+// Auto-resume uses this rather than sessions.updated_at because updated_at
+// only bumps on state transitions and metadata writes — a long turn that
+// emits tool_calls and stream chunks for many minutes without a state flip
+// would otherwise look stale.
+func (s *Store) LastActivityAt(bridgeID string) (time.Time, error) {
+	var t time.Time
+	err := s.db.QueryRow(
+		`SELECT COALESCE(
+			(SELECT MAX(created_at) FROM events WHERE session_id = ?),
+			(SELECT created_at FROM sessions WHERE bridge_id = ?)
+		)`, bridgeID, bridgeID).Scan(&t)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t, nil
 }
 
 // SetHarnessID fills in the harness-reported session ID on a session.

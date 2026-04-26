@@ -537,16 +537,22 @@ func (m *Manager) ActiveCount() int {
 }
 
 // StartOnInstance spawns a harness session on a specific instance with credential binding.
-// Dispatches by Transport: TransportLocal forks a subprocess on this host;
-// TransportSSH wraps it in an ssh client; TransportRunner sends a Spawn
-// message over a registered runner WebSocket.
+// Dispatches by the bound machine's Transport: TransportLocal forks a
+// subprocess on this host; TransportSSH wraps it in an ssh client;
+// TransportRunner sends a Spawn message over a registered runner WS.
+//
+// inst.Machine must be populated by the caller (startOnInstance helper in
+// the server package handles this).
 func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string) (HarnessProcess, error) {
+	if inst.Machine == nil {
+		return nil, fmt.Errorf("instance %s missing Machine; caller must populate it before StartOnInstance", inst.ID)
+	}
 	h := msg.Harness(sess.Harness)
 
 	var proc HarnessProcess
 	var err error
 
-	switch inst.Transport {
+	switch inst.Machine.Transport {
 	case msg.TransportSSH:
 		proc, err = m.startSSH(ctx, sess, inst, credentialID)
 	case msg.TransportRunner:
@@ -576,23 +582,23 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	return proc, nil
 }
 
-// startSSH spawns a harness process on a remote machine via SSH.
+// startSSH spawns a harness process on a remote machine via SSH. Reads
+// the connection details from inst.Machine.
 func (m *Manager) startSSH(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string) (*Process, error) {
 	binName := msg.HarnessBinaryName(msg.Harness(sess.Harness))
 	if binName == "" {
 		return nil, fmt.Errorf("unknown harness type: %s", sess.Harness)
 	}
+	mach := inst.Machine
 
 	// Build SSH command
 	args := []string{}
 
-	// Add key if specified
-	if inst.SSHKeyPath != "" {
-		args = append(args, "-i", inst.SSHKeyPath)
+	if mach.SSHKeyPath != "" {
+		args = append(args, "-i", mach.SSHKeyPath)
 	}
 
-	// Add port if non-standard
-	port := inst.SSHPort
+	port := mach.SSHPort
 	if port == 0 {
 		port = 22
 	}
@@ -605,16 +611,20 @@ func (m *Manager) startSSH(ctx context.Context, sess *store.Session, inst *msg.I
 	args = append(args, "-o", "BatchMode=yes")
 
 	// Add user@host
-	target := inst.Host
-	if inst.SSHUser != "" {
-		target = inst.SSHUser + "@" + inst.Host
+	target := mach.Hostname
+	if mach.SSHUser != "" {
+		target = mach.SSHUser + "@" + mach.Hostname
 	}
 	args = append(args, target)
 
-	// Remote command: cd to working dir and run harness
+	// Remote command: cd to working dir (instance override > machine default) and run harness
+	workDir := inst.WorkingDir
+	if workDir == "" {
+		workDir = mach.DefaultWorkingDir
+	}
 	remoteCmd := binName
-	if inst.WorkingDir != "" {
-		remoteCmd = fmt.Sprintf("cd %s && %s", inst.WorkingDir, binName)
+	if workDir != "" {
+		remoteCmd = fmt.Sprintf("cd %s && %s", workDir, binName)
 	}
 	args = append(args, remoteCmd)
 
@@ -718,17 +728,29 @@ func (m *Manager) ImportHistory(ctx context.Context, h msg.Harness, sessionID st
 	return imported, scanner.Err()
 }
 
-// CheckSSHReachability tests if an SSH instance is reachable.
-func (m *Manager) CheckSSHReachability(inst *msg.Instance) bool {
-	if inst.Transport != msg.TransportSSH {
-		return true // Local is always reachable
+// CheckSSHReachability tests if a machine is reachable. Local machines
+// are trivially reachable; runner machines are reachable iff a runner is
+// currently registered for them; SSH machines run a quick login probe.
+func (m *Manager) CheckSSHReachability(mach *msg.Machine) bool {
+	if mach == nil {
+		return false
+	}
+	switch mach.Transport {
+	case msg.TransportLocal:
+		return true
+	case msg.TransportRunner:
+		return m.runners != nil && m.runners.Get(mach.Name) != nil
+	case msg.TransportSSH:
+		// fall through
+	default:
+		return false
 	}
 
 	args := []string{}
-	if inst.SSHKeyPath != "" {
-		args = append(args, "-i", inst.SSHKeyPath)
+	if mach.SSHKeyPath != "" {
+		args = append(args, "-i", mach.SSHKeyPath)
 	}
-	port := inst.SSHPort
+	port := mach.SSHPort
 	if port == 0 {
 		port = 22
 	}
@@ -739,9 +761,9 @@ func (m *Manager) CheckSSHReachability(inst *msg.Instance) bool {
 	args = append(args, "-o", "BatchMode=yes")
 	args = append(args, "-o", "ConnectTimeout=5")
 
-	target := inst.Host
-	if inst.SSHUser != "" {
-		target = inst.SSHUser + "@" + inst.Host
+	target := mach.Hostname
+	if mach.SSHUser != "" {
+		target = mach.SSHUser + "@" + mach.Hostname
 	}
 	args = append(args, target, "echo", "ok")
 

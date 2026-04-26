@@ -1,7 +1,10 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -16,31 +19,35 @@ type (
 	SessionCounts  = msg.SessionCounts
 )
 
-// harnessMeta holds display metadata for each harness type.
+// harnessMeta holds display metadata for each harness type. Tint is the
+// canonical sRGB hex UIs key chrome to (header washes, chips). Add a brand
+// color when the harness has one; otherwise leave empty and the UI falls
+// through to its theme accent.
 type harnessMeta struct {
 	Label string
 	Emoji string
 	Image string // filename in images/harnesses/, empty if none
+	Tint  string // sRGB hex like "#d97757", empty if none
 }
 
 var harnessMetadata = map[msg.Harness]harnessMeta{
-	msg.HarnessClaudeCode: {Label: "Claude Code", Emoji: "💻", Image: "claude_code.png"},
-	msg.HarnessCodex:      {Label: "Codex", Emoji: "📖", Image: "codex.png"},
-	msg.HarnessOpenClaw:   {Label: "OpenClaw", Emoji: "🦀"},
-	msg.HarnessInber:      {Label: "Inber", Emoji: "🌿"},
-	msg.HarnessHermes:     {Label: "Hermes", Emoji: "📨"},
-	msg.HarnessAider:      {Label: "Aider", Emoji: "🛠️", Image: "aider.png"},
-	msg.HarnessGoose:      {Label: "Goose", Emoji: "🪿", Image: "goose.png"},
-	msg.HarnessAutohand:   {Label: "Autohand", Emoji: "🤖"},
-	msg.HarnessJig:        {Label: "Jig", Emoji: "🧩"},
-	msg.HarnessDexto:      {Label: "Dexto", Emoji: "🎯"},
-	msg.HarnessCommander:  {Label: "Commander", Emoji: "🎖️"},
-	msg.HarnessNanoClaw:   {Label: "NanoClaw", Emoji: "🔬"},
-	msg.HarnessCline:      {Label: "Cline", Emoji: "📝", Image: "cline.png"},
-	msg.HarnessRooCode:    {Label: "Roo Code", Emoji: "🦘", Image: "roo_code.svg"},
-	msg.HarnessKiloCode:   {Label: "Kilo Code", Emoji: "⚡", Image: "kilo_code.png"},
-	msg.HarnessOpenCode:   {Label: "OpenCode", Emoji: "🔓"},
-	msg.HarnessForgecode:  {Label: "ForgeCode", Emoji: "🔥"},
+	msg.HarnessClaudeCode: {Label: "Claude Code", Emoji: "💻", Image: "claude_code.png", Tint: "#d97757"},
+	msg.HarnessCodex:      {Label: "Codex", Emoji: "📖", Image: "codex.svg", Tint: "#10a37f"},
+	msg.HarnessOpenClaw:   {Label: "OpenClaw", Emoji: "🦀", Tint: "#dc2626"},
+	msg.HarnessInber:      {Label: "Inber", Emoji: "🌿", Tint: "#22c55e"},
+	msg.HarnessHermes:     {Label: "Hermes", Emoji: "📨", Tint: "#eab308"},
+	msg.HarnessAider:      {Label: "Aider", Emoji: "🛠️", Image: "aider.png", Tint: "#f97316"},
+	msg.HarnessGoose:      {Label: "Goose", Emoji: "🪿", Image: "goose.png", Tint: "#84cc16"},
+	msg.HarnessAutohand:   {Label: "Autohand", Emoji: "🤖", Tint: "#94a3b8"},
+	msg.HarnessJig:        {Label: "Jig", Emoji: "🧩", Tint: "#a855f7"},
+	msg.HarnessDexto:      {Label: "Dexto", Emoji: "🎯", Tint: "#ec4899"},
+	msg.HarnessCommander:  {Label: "Commander", Emoji: "🎖️", Tint: "#64748b"},
+	msg.HarnessNanoClaw:   {Label: "NanoClaw", Emoji: "🔬", Tint: "#06b6d4"},
+	msg.HarnessCline:      {Label: "Cline", Emoji: "📝", Image: "cline.png", Tint: "#3b82f6"},
+	msg.HarnessRooCode:    {Label: "Roo Code", Emoji: "🦘", Image: "roo_code.svg", Tint: "#fb7185"},
+	msg.HarnessKiloCode:   {Label: "Kilo Code", Emoji: "⚡", Image: "kilo_code.png", Tint: "#f59e0b"},
+	msg.HarnessOpenCode:   {Label: "OpenCode", Emoji: "🔓", Image: "opencode.svg", Tint: "#8b5cf6"},
+	msg.HarnessForgecode:  {Label: "ForgeCode", Emoji: "🔥", Image: "forgecode.png", Tint: "#ef4444"},
 }
 
 // harnessSupportedProviders defines which model providers each harness accepts.
@@ -161,6 +168,42 @@ func (s *Server) handleHarnessCapabilities(w http.ResponseWriter, r *http.Reques
 	http.Error(w, "unknown harness", http.StatusNotFound)
 }
 
+// handleHarnessAgents returns the agents registered for a harness, sourced
+// from agent-store filtered by orchestrator id == harness name. Empty array
+// when no agents are configured (or agent-store is unavailable) — that's a
+// valid state for harnesses without a named-agent concept.
+func (s *Server) handleHarnessAgents(w http.ResponseWriter, r *http.Request) {
+	name := msg.Harness(r.PathValue("name"))
+	if !isValidHarness(name) {
+		http.Error(w, "unknown harness", http.StatusNotFound)
+		return
+	}
+	agents := []msg.HarnessAgent{}
+	if s.agentStore != nil {
+		expanded, err := s.agentStore.ListAgentsExpanded()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, a := range expanded {
+			if a.Orchestrator != string(name) || !a.Enabled {
+				continue
+			}
+			id := a.OrchestratorName
+			if id == "" {
+				id = a.Slug
+			}
+			agents = append(agents, msg.HarnessAgent{
+				Name:        id,
+				DisplayName: a.DisplayName,
+				Description: a.Description,
+				IsDefault:   a.IsDefault,
+			})
+		}
+	}
+	writeJSON(w, agents)
+}
+
 func (s *Server) discoverHarnesses() []HarnessStatus {
 	var statuses []HarnessStatus
 	for _, h := range allHarnesses {
@@ -173,12 +216,16 @@ func (s *Server) discoverHarnesses() []HarnessStatus {
 		var imageURL string
 		if meta.Image != "" {
 			imageURL = "/images/harnesses/" + meta.Image
+			if st, err := os.Stat(filepath.Join(s.cfg.ImagesDir, "harnesses", meta.Image)); err == nil {
+				imageURL += fmt.Sprintf("?v=%d", st.ModTime().Unix())
+			}
 		}
 		statuses = append(statuses, HarnessStatus{
 			Name:               string(h),
 			Label:              meta.Label,
 			Emoji:              meta.Emoji,
 			Image:              imageURL,
+			Tint:               meta.Tint,
 			Available:          available,
 			Binary:             path,
 			Capabilities:       caps,

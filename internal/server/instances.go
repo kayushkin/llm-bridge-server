@@ -9,29 +9,50 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// Request types are canonical — defined in llm-bridge/msg/server.go.
-// DO NOT define new request/response types here. Add them to msg/ instead,
-// then run generate-ts.sh so the TypeScript frontend stays in sync.
+// CreateInstanceRequest is re-exported from msg so package consumers
+// don't need a separate import.
 type (
 	CreateInstanceRequest = msg.CreateInstanceRequest
 	BindCredentialRequest = msg.BindCredentialRequest
 )
 
+// listInstancesWithMachines populates each instance's Machine field by
+// joining against the machines table. Used by every list/get response so
+// the client gets host/transport/SSH details for display.
+func (s *Server) listInstancesWithMachines() ([]msg.Instance, error) {
+	insts, err := s.harnessStore.ListInstances()
+	if err != nil {
+		return nil, err
+	}
+	if len(insts) == 0 {
+		return []msg.Instance{}, nil
+	}
+	machines, err := s.harnessStore.ListMachines()
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]*msg.Machine, len(machines))
+	for i := range machines {
+		byID[machines[i].ID] = &machines[i]
+	}
+	for i := range insts {
+		insts[i].Machine = byID[insts[i].MachineID]
+	}
+	return insts, nil
+}
+
 func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
-	instances, err := s.harnessStore.ListInstances()
+	instances, err := s.listInstancesWithMachines()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-	if instances == nil {
-		instances = []msg.Instance{}
 	}
 	writeJSON(w, instances)
 }
 
 func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	inst, err := s.harnessStore.GetInstance(id)
+	inst, err := s.harnessStore.GetInstanceWithMachine(id)
 	if err != nil {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
@@ -45,7 +66,6 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-
 	if req.Name == "" {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
@@ -54,14 +74,14 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "harness_type is required", http.StatusBadRequest)
 		return
 	}
-
-	transport := msg.TransportLocal
-	if req.Transport == "ssh" {
-		transport = msg.TransportSSH
+	if req.MachineID == "" {
+		http.Error(w, "machine_id is required", http.StatusBadRequest)
+		return
 	}
-	host := req.Host
-	if host == "" {
-		host = "localhost"
+	machine, err := s.harnessStore.GetMachine(req.MachineID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("machine_id not found: %s", req.MachineID), http.StatusBadRequest)
+		return
 	}
 	maxSessions := req.MaxConcurrentSessions
 	if maxSessions == 0 {
@@ -72,20 +92,16 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		ID:                    fmt.Sprintf("inst_%d", time.Now().UnixNano()),
 		HarnessType:           msg.Harness(req.HarnessType),
 		Name:                  req.Name,
-		Host:                  host,
-		Transport:             transport,
-		SSHUser:               req.SSHUser,
-		SSHKeyPath:            req.SSHKeyPath,
-		SSHPort:               req.SSHPort,
+		MachineID:             req.MachineID,
 		WorkingDir:            req.WorkingDir,
 		MaxConcurrentSessions: maxSessions,
 		Enabled:               true,
 	}
-
 	if err := s.harnessStore.CreateInstance(inst); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	inst.Machine = machine
 
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, inst)
@@ -105,31 +121,18 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Merge fields
 	if req.Name != "" {
 		existing.Name = req.Name
 	}
 	if req.HarnessType != "" {
 		existing.HarnessType = msg.Harness(req.HarnessType)
 	}
-	if req.Host != "" {
-		existing.Host = req.Host
-	}
-	if req.Transport != "" {
-		if req.Transport == "ssh" {
-			existing.Transport = msg.TransportSSH
-		} else {
-			existing.Transport = msg.TransportLocal
+	if req.MachineID != "" {
+		if _, err := s.harnessStore.GetMachine(req.MachineID); err != nil {
+			http.Error(w, fmt.Sprintf("machine_id not found: %s", req.MachineID), http.StatusBadRequest)
+			return
 		}
-	}
-	if req.SSHUser != "" {
-		existing.SSHUser = req.SSHUser
-	}
-	if req.SSHKeyPath != "" {
-		existing.SSHKeyPath = req.SSHKeyPath
-	}
-	if req.SSHPort != 0 {
-		existing.SSHPort = req.SSHPort
+		existing.MachineID = req.MachineID
 	}
 	if req.WorkingDir != "" {
 		existing.WorkingDir = req.WorkingDir
@@ -142,7 +145,9 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
+	if m, err := s.harnessStore.GetMachine(existing.MachineID); err == nil {
+		existing.Machine = m
+	}
 	writeJSON(w, existing)
 }
 
@@ -185,7 +190,6 @@ func (s *Server) handleBindCredential(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-
 	if req.CredentialID == "" {
 		http.Error(w, "credential_id is required", http.StatusBadRequest)
 		return
@@ -197,12 +201,10 @@ func (s *Server) handleBindCredential(w http.ResponseWriter, r *http.Request) {
 		Priority:     req.Priority,
 		Enabled:      true,
 	}
-
 	if err := s.harnessStore.BindCredential(ic); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, ic)
 }
@@ -220,23 +222,18 @@ func (s *Server) handleUnbindCredential(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	inst, err := s.harnessStore.GetInstance(id)
+	inst, err := s.harnessStore.GetInstanceWithMachine(id)
 	if err != nil {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
 	}
 
-	// Get credential bindings from harness-store
 	credBindings, _ := s.harnessStore.ListInstanceCredentials(id)
 	if credBindings == nil {
 		credBindings = []msg.InstanceCredential{}
 	}
 
-	// SSH reachability check for remote instances
-	reachable := true
-	if inst.Transport == msg.TransportSSH {
-		reachable = s.harness.CheckSSHReachability(inst)
-	}
+	reachable := s.harness.CheckSSHReachability(inst.Machine)
 
 	status := msg.InstanceStatus{
 		Instance:    *inst,
@@ -244,7 +241,6 @@ func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 		Reachable:   reachable,
 		LastChecked: time.Now(),
 	}
-
 	writeJSON(w, status)
 }
 
@@ -255,7 +251,6 @@ func (s *Server) handleListInstanceSessions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Get all sessions and filter by instance
 	sessions, err := s.store.ListSessions()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

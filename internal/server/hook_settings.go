@@ -15,10 +15,21 @@ import (
 
 // startOnInstance is the single chokepoint for spawning a Claude Code
 // harness process — it synthesizes the registered hooks into the session's
-// settings before delegating to the harness manager. Every spawn path
-// (create, resume, auto-resume, fork) calls through here so hook wiring is
-// consistent across them.
+// settings, populates the instance's Machine for transport routing, and
+// delegates to the harness manager. Every spawn path (create, resume,
+// auto-resume, fork) calls through here so hook wiring and machine
+// resolution stay consistent.
 func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credID string) (harness.HarnessProcess, error) {
+	if inst.Machine == nil {
+		if inst.MachineID == "" {
+			return nil, fmt.Errorf("instance %s has no machine_id", inst.ID)
+		}
+		m, err := s.harnessStore.GetMachine(inst.MachineID)
+		if err != nil {
+			return nil, fmt.Errorf("load machine %s for instance %s: %w", inst.MachineID, inst.ID, err)
+		}
+		inst.Machine = m
+	}
 	s.injectHookSettings(sess)
 	s.injectAgentsContext(sess)
 	return s.harness.StartOnInstance(ctx, sess, inst, credID)

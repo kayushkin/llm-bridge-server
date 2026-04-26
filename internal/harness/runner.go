@@ -85,9 +85,10 @@ func (r *RunnerRegistry) deregister(c *RunnerConnection) {
 // its WS conn, runs a single writer goroutine, and dispatches incoming
 // per-session messages to RunnerProcess instances.
 type RunnerConnection struct {
-	MachineName        string
-	Hello              *msg.RunnerHello // received at handshake
-	ConnectedAt        time.Time
+	MachineName string
+	MachineID   string           // resolved at accept time from the bearer token
+	Hello       *msg.RunnerHello // received at handshake
+	ConnectedAt time.Time
 
 	conn     *websocket.Conn
 	registry *RunnerRegistry
@@ -162,13 +163,11 @@ func (c *RunnerConnection) close() {
 	c.registry.deregister(c)
 }
 
-// AcceptRunner wraps a freshly-upgraded WebSocket: reads Hello, validates
-// the token, sends Welcome, and starts the read+write goroutines. Blocks
-// until the connection closes. Caller is responsible for the WS upgrade.
-//
-// authToken is the expected bearer token. If empty, no token check is
-// performed (suitable only for trusted-network deployments).
-func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn, authToken, serverVersion string) error {
+// AcceptRunner wraps a freshly-upgraded WebSocket. The caller has already
+// authenticated the bearer token against a Machine row; this method reads
+// the Hello, sanity-checks it against the resolved machine, sends Welcome,
+// and runs the read+write loop until the connection closes.
+func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn, machine *msg.Machine, serverVersion string) error {
 	conn.SetReadLimit(8 * 1024 * 1024) // 8MB per frame max
 
 	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
@@ -180,17 +179,15 @@ func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn,
 		_ = sendError(conn, "bad_hello", "expected hello message")
 		return fmt.Errorf("expected hello, got %s", hello.Type)
 	}
-	if authToken != "" && hello.Hello.Token != authToken {
-		_ = sendError(conn, "auth_failed", "invalid token")
-		return fmt.Errorf("hello rejected: invalid token from %s", hello.Hello.MachineName)
-	}
-	if hello.Hello.MachineName == "" {
-		_ = sendError(conn, "bad_hello", "machine_name is required")
-		return fmt.Errorf("hello missing machine_name")
+	if hello.Hello.MachineName != "" && hello.Hello.MachineName != machine.Name {
+		_ = sendError(conn, "machine_mismatch",
+			fmt.Sprintf("token issued for %q but Hello says %q", machine.Name, hello.Hello.MachineName))
+		return fmt.Errorf("machine mismatch: token=%s hello=%s", machine.Name, hello.Hello.MachineName)
 	}
 
 	rc := &RunnerConnection{
-		MachineName: hello.Hello.MachineName,
+		MachineName: machine.Name,
+		MachineID:   machine.ID,
 		Hello:       hello.Hello,
 		ConnectedAt: time.Now(),
 		conn:        conn,
@@ -207,7 +204,7 @@ func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn,
 	welcome := &msg.RunnerMessage{
 		Type: msg.RunnerMsgWelcome,
 		Welcome: &msg.RunnerWelcome{
-			MachineID:        rc.MachineName, // TODO: stable per-machine ID once schema split lands
+			MachineID:        machine.ID,
 			ServerVersion:    serverVersion,
 			PingIntervalSecs: RunnerPingIntervalSecs,
 			AcceptedAt:       time.Now(),
@@ -420,19 +417,26 @@ func (p *RunnerProcess) closeEvents() {
 	p.closeOnce.Do(func() { close(p.events) })
 }
 
-// startRunner asks the registered runner for inst.Host to spawn the
-// session's harness binary. Returns a HarnessProcess wired into the
+// startRunner asks the runner registered for inst.Machine.Name to spawn
+// the session's harness binary. Returns a HarnessProcess wired into the
 // connection so subsequent Send/Kill calls flow through the WS.
 func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string) (HarnessProcess, error) {
 	if m.runners == nil {
 		return nil, fmt.Errorf("runner registry not configured")
 	}
-	conn := m.runners.Get(inst.Host)
+	if inst.Machine == nil {
+		return nil, fmt.Errorf("instance %s missing Machine for runner spawn", inst.ID)
+	}
+	conn := m.runners.Get(inst.Machine.Name)
 	if conn == nil {
-		return nil, fmt.Errorf("no runner connected for machine %q", inst.Host)
+		return nil, fmt.Errorf("no runner connected for machine %q", inst.Machine.Name)
 	}
 
 	params := buildStartParams(sess, credentialID)
+	workDir := inst.WorkingDir
+	if workDir == "" {
+		workDir = inst.Machine.DefaultWorkingDir
+	}
 
 	rp := &RunnerProcess{
 		sessionID: sess.BridgeID,
@@ -446,7 +450,7 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 		SessionID: sess.BridgeID,
 		Spawn: &msg.RunnerSpawn{
 			Harness:     msg.Harness(sess.Harness),
-			WorkingDir:  inst.WorkingDir,
+			WorkingDir:  workDir,
 			StartParams: params,
 		},
 	}

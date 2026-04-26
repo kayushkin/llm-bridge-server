@@ -54,12 +54,20 @@ func testServerWithInstance(t *testing.T, harness msg.Harness) (*Server, *store.
 	}
 	t.Cleanup(func() { hs.Close() })
 
+	mach := &msg.Machine{
+		ID:        "m_test",
+		Name:      "test-machine",
+		Hostname:  "localhost",
+		Transport: msg.TransportLocal,
+	}
+	if err := hs.CreateMachine(mach); err != nil {
+		t.Fatalf("seed machine: %v", err)
+	}
 	inst := &msg.Instance{
 		ID:          "inst_test",
 		HarnessType: harness,
 		Name:        "test-instance",
-		Host:        "localhost",
-		Transport:   msg.TransportLocal,
+		MachineID:   mach.ID,
 		Enabled:     true,
 	}
 	if err := hs.CreateInstance(inst); err != nil {

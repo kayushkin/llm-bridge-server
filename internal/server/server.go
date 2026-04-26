@@ -23,9 +23,17 @@ import (
 )
 
 // autoResumeWindow caps how recently a session must have been active (by
-// updated_at) for startup reconciliation to auto-restart its harness. Sessions
-// older than this are left at idle for the user to resume manually.
-const autoResumeWindow = 5 * time.Minute
+// LastActivityAt) for startup reconciliation to auto-restart its harness.
+// Sessions older than this are left at idle for the user to resume manually.
+// Tuned for Claude Code: turns regularly go quiet for tens of minutes (long
+// thinking, user reading, etc.) — anything shorter drops still-active sessions
+// across deploys.
+const autoResumeWindow = 2 * time.Hour
+
+// watchdogInterval is how often startWatchdog scans for `running` sessions
+// whose harness process has died without emitting a terminal event (crash,
+// OOM, harness binary panic). Each tick reconciles via autoResume.
+const watchdogInterval = 60 * time.Second
 
 type Server struct {
 	mux           *http.ServeMux
@@ -85,6 +93,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /harnesses", s.handleHarnesses)
 	s.mux.HandleFunc("GET /harnesses/{name}/capabilities", s.handleHarnessCapabilities)
+	s.mux.HandleFunc("GET /harnesses/{name}/agents", s.handleHarnessAgents)
 
 	// Static harness images
 	s.mux.Handle("/images/", http.StripPrefix("/images/", http.FileServer(http.Dir(s.cfg.ImagesDir))))
@@ -187,10 +196,60 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /admin/file-inactive", s.handleFileInactive)
 	s.mux.HandleFunc("POST /admin/archive-old", s.handleArchiveOld)
 
+	// Machine routes — host-level configuration. Instances bind to a
+	// machine; the machine carries transport/SSH/runner details.
+	if s.harnessStore != nil {
+		s.mux.HandleFunc("GET /machines", s.handleListMachines)
+		s.mux.HandleFunc("POST /machines", s.handleCreateMachine)
+		s.mux.HandleFunc("GET /machines/{id}", s.handleGetMachine)
+		s.mux.HandleFunc("PUT /machines/{id}", s.handleUpdateMachine)
+		s.mux.HandleFunc("DELETE /machines/{id}", s.handleDeleteMachine)
+	}
+
 	// Runner WebSocket — long-lived connection from llm-bridge-runner
-	// daemons on remote machines. Auth is bearer-token in the upgrade
-	// header (see LLMBRIDGE_RUNNER_TOKEN) and re-validated on Hello.
+	// daemons on remote machines. Auth is per-machine bearer token in
+	// the Authorization header, validated against machines.runner_token_hash.
 	s.mux.HandleFunc("GET /api/runner/ws", s.handleRunnerWS)
+	// Runner enrollment — single-use passphrase exchanged for a
+	// durable per-machine token. Mint passphrases via the
+	// `llm-bridge mint-enroll` CLI subcommand.
+	s.mux.HandleFunc("POST /api/runner/enroll", s.handleEnrollRunner)
+
+	// Runner asset distribution — install script + prebuilt binaries.
+	// The server hosts these so a freshly-cloned WSL/laptop can bootstrap
+	// from a single curl command, without depending on a public
+	// download infrastructure (GitHub Releases, etc.).
+	s.mux.HandleFunc("GET /api/runner/install.sh", s.handleRunnerInstallScript)
+	s.mux.HandleFunc("GET /api/runner/binary", s.handleRunnerBinary)
+}
+
+// localInstancesByHarness returns a {harness: instance_id} map of the
+// first enabled local-transport instance for each requested harness type.
+// Used by session discovery / auto-resume to land orphaned sessions on
+// the local-host instance when one exists.
+func (s *Server) localInstancesByHarness(types []msg.Harness) map[msg.Harness]string {
+	out := make(map[msg.Harness]string)
+	if s.harnessStore == nil {
+		return out
+	}
+	for _, h := range types {
+		instances, err := s.harnessStore.ListInstancesByHarness(h)
+		if err != nil {
+			continue
+		}
+		for _, inst := range instances {
+			if !inst.Enabled {
+				continue
+			}
+			m, err := s.harnessStore.GetMachine(inst.MachineID)
+			if err != nil || m.Transport != msg.TransportLocal {
+				continue
+			}
+			out[h] = inst.ID
+			break
+		}
+	}
+	return out
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -270,7 +329,12 @@ func (s *Server) ReconcileAndResume() {
 	var resumed int
 	for i := range sessions {
 		sess := sessions[i]
-		if sess.UpdatedAt.Before(cutoff) {
+		lastAt, err := s.store.LastActivityAt(sess.BridgeID)
+		if err != nil {
+			log.Printf("[reconcile] %s: last-activity lookup failed: %v", sess.BridgeID, err)
+			continue
+		}
+		if lastAt.Before(cutoff) {
 			continue
 		}
 		resumed++
@@ -281,6 +345,52 @@ func (s *Server) ReconcileAndResume() {
 	}
 }
 
+// StartWatchdog launches a goroutine that periodically scans for sessions
+// the database still marks `running` but for which no harness subprocess is
+// registered with the manager. That gap opens when a harness crashes (OOM,
+// panic, network drop on SSH-runner) without emitting a terminal `result` or
+// `error` event — readEvents removes the process from the manager map, but
+// state stays `running` because no terminal event arrived. Without this
+// watchdog the session sits hung until the user touches it.
+//
+// Startup-only ReconcileAndResume covers the cross-restart case; this loop
+// covers in-lifetime crashes.
+func (s *Server) StartWatchdog() {
+	go func() {
+		ticker := time.NewTicker(watchdogInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.watchdogTick()
+		}
+	}()
+}
+
+func (s *Server) watchdogTick() {
+	if s.harnessStore == nil {
+		return
+	}
+	sessions, err := s.store.ListSessionsByState(string(msg.SessionRunning))
+	if err != nil {
+		log.Printf("[watchdog] list running sessions: %v", err)
+		return
+	}
+	for i := range sessions {
+		sess := sessions[i]
+		if s.harness.HasProcess(sess.BridgeID) {
+			continue
+		}
+		log.Printf("[watchdog] %s: state=running but no harness process; resuming", sess.BridgeID)
+		// Drop back to idle so autoResume's startOnInstance path takes a
+		// clean state transition. Skip the auto-resume on failure to flip
+		// state — leaving it `running` would just refire next tick.
+		if err := s.store.UpdateSessionState(sess.BridgeID, string(msg.SessionIdle)); err != nil {
+			log.Printf("[watchdog] %s: state reset failed: %v", sess.BridgeID, err)
+			continue
+		}
+		go s.autoResume(sess)
+	}
+}
+
 // autoResume restarts a single session's harness process. Mirrors the flow in
 // handleResumeSession minus the HTTP plumbing. If the previous turn was
 // killed mid-flight (a user_message with no following result), the message
@@ -288,6 +398,12 @@ func (s *Server) ReconcileAndResume() {
 // instead of sitting idle waiting for new input.
 func (s *Server) autoResume(sess store.Session) {
 	if sess.InstanceID == "" {
+		// Every code path that creates a session populates instance_id (see
+		// handleCreateSession; resolveInstance fails the request otherwise).
+		// Discovered sessions can land with instance_id="" if no local instance
+		// is enabled for their harness — those should never reach `running`,
+		// so getting here means a real invariant break we want to see.
+		log.Printf("[auto-resume] %s: ERROR instance_id empty — session cannot be resumed; skipping", sess.BridgeID)
 		return
 	}
 	inst, err := s.harnessStore.GetInstance(sess.InstanceID)
@@ -334,20 +450,7 @@ func (s *Server) AutoDiscover() {
 
 		// Build map of harness type → local instance ID.
 		// Discovery runs the harness binary locally, so sessions belong to the local instance.
-		localInstances := make(map[msg.Harness]string)
-		if s.harnessStore != nil {
-			for _, h := range []msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex} {
-				instances, err := s.harnessStore.ListInstancesByHarness(h)
-				if err == nil {
-					for _, inst := range instances {
-						if inst.Enabled && inst.Transport == msg.TransportLocal {
-							localInstances[h] = inst.ID
-							break
-						}
-					}
-				}
-			}
-		}
+		localInstances := s.localInstancesByHarness([]msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex})
 
 		var imported int
 		for _, ds := range sessions {
