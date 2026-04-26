@@ -289,13 +289,18 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		Timestamp:       time.Now(),
 		Result:          &msg.ResultEvent{Text: req.Message},
 	}
-	// BroadcastEvent stamps userEvent.MessageID, persists, and fans out so
-	// other SSE subscribers see the user message immediately.
+	// Persist before forwarding to the harness. If either store can't take
+	// the user_message, refuse the send — otherwise the assistant runs against
+	// a prompt that's missing from the durable log (log-store is what the
+	// /messages endpoint reads). Caller can retry safely; the harness has not
+	// seen the message yet.
 	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
-		log.Printf("[session] failed to broadcast user_message: %v", err)
+		http.Error(w, fmt.Sprintf("persist user_message: %v", err), http.StatusInternalServerError)
+		return
 	}
 	if err := s.harness.PushEvent(userEvent); err != nil {
-		log.Printf("[session] failed to push user_message to log-store: %v", err)
+		http.Error(w, fmt.Sprintf("push user_message to log-store: %v", err), http.StatusInternalServerError)
+		return
 	}
 
 	if name := displayNameFromMessage(req.Message); name != "" {
