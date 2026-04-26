@@ -50,6 +50,15 @@ func New(dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := d.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("sqlite pragmas: %w", err)
+	}
+	// Single connection serializes writes through Go's sql pool. Without this,
+	// modernc.org/sqlite hits SQLITE_BUSY (5) when the cron tick races user
+	// API writes (create run / clear holds), failing job-run inserts silently.
+	d.SetMaxOpenConns(1)
+
 	s := &Store{db: d}
 	if err := s.migrate(); err != nil {
 		d.Close()
