@@ -40,6 +40,7 @@ var harnessMetadata = map[msg.Harness]harnessMeta{
 	msg.HarnessRooCode:    {Label: "Roo Code", Emoji: "🦘", Image: "roo_code.svg"},
 	msg.HarnessKiloCode:   {Label: "Kilo Code", Emoji: "⚡", Image: "kilo_code.png"},
 	msg.HarnessOpenCode:   {Label: "OpenCode", Emoji: "🔓"},
+	msg.HarnessForgecode:  {Label: "ForgeCode", Emoji: "🔥"},
 }
 
 // harnessSupportedProviders defines which model providers each harness accepts.
@@ -88,6 +89,7 @@ var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessRooCode:    {"model"},
 	msg.HarnessKiloCode:   {"model"},
 	msg.HarnessOpenCode:   {"model"},
+	msg.HarnessForgecode:  {"model"},
 }
 
 var allHarnesses = []msg.Harness{
@@ -107,6 +109,7 @@ var allHarnesses = []msg.Harness{
 	msg.HarnessRooCode,
 	msg.HarnessKiloCode,
 	msg.HarnessOpenCode,
+	msg.HarnessForgecode,
 }
 
 // isValidHarness checks whether a harness type is in the known set.
