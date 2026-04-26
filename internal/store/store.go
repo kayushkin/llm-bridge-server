@@ -364,23 +364,29 @@ func (s *Store) ReconcileRunningSessions() ([]Session, error) {
 	return sessions, nil
 }
 
-// LastActivityAt returns the timestamp of the most recent event logged for the
-// session, falling back to the session's created_at if no events exist yet.
-// Auto-resume uses this rather than sessions.updated_at because updated_at
-// only bumps on state transitions and metadata writes — a long turn that
-// emits tool_calls and stream chunks for many minutes without a state flip
-// would otherwise look stale.
+// LastActivityAt returns the timestamp of the most recent event logged for
+// the session, or the zero time if the session has no events yet (which the
+// auto-resume cutoff check correctly treats as "stale, skip"). Auto-resume
+// uses this rather than sessions.updated_at because updated_at only bumps on
+// state transitions and metadata writes — a long turn that emits tool_calls
+// and stream chunks for many minutes without a state flip would otherwise
+// look stale.
+//
+// We scan into a string and parse explicitly: COALESCE / aggregate columns
+// in modernc.org/sqlite lose their declared DATETIME affinity and come back
+// as raw strings, which won't scan into time.Time. events.created_at is
+// always written by CURRENT_TIMESTAMP DEFAULT so the format is fixed.
 func (s *Store) LastActivityAt(bridgeID string) (time.Time, error) {
-	var t time.Time
-	err := s.db.QueryRow(
-		`SELECT COALESCE(
-			(SELECT MAX(created_at) FROM events WHERE session_id = ?),
-			(SELECT created_at FROM sessions WHERE bridge_id = ?)
-		)`, bridgeID, bridgeID).Scan(&t)
-	if err != nil {
+	var raw sql.NullString
+	if err := s.db.QueryRow(
+		`SELECT MAX(created_at) FROM events WHERE session_id = ?`, bridgeID,
+	).Scan(&raw); err != nil {
 		return time.Time{}, err
 	}
-	return t, nil
+	if !raw.Valid {
+		return time.Time{}, nil
+	}
+	return time.ParseInLocation("2006-01-02 15:04:05", raw.String, time.UTC)
 }
 
 // SetHarnessID fills in the harness-reported session ID on a session.
