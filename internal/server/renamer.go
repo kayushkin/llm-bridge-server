@@ -186,6 +186,11 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 		return fmt.Errorf("instance %s disabled", inst.ID)
 	}
 
+	// Intentionally NOT setting ParentID: in this codebase parent_id is
+	// CC-fork plumbing (process.go maps it to params.Fork → "--resume <id>
+	// --fork-session"), and the renamer must be a brand-new conversation,
+	// not a fork of the target. The forward link (target → renamer) lives
+	// on target.renamer_session_id, which is enough to trace the relationship.
 	renamer := &store.Session{
 		BridgeID:    generateBridgeID(),
 		ClientID:    "renamer",
@@ -194,7 +199,6 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 		InstanceID:  inst.ID,
 		State:       string(msg.SessionIdle),
 		AgentID:     "session-renamer",
-		ParentID:    target.BridgeID,
 		Source:      renamerSourceTag,
 		FolderName:  s.folderForSource(renamerSourceTag),
 	}
