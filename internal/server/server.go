@@ -117,6 +117,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /folders/{name}", s.handleDeleteFolder)
 	s.mux.HandleFunc("PUT /folders/{name}", s.handleRenameFolder)
 
+	// Source-folder mapping — runtime overrides for env-var defaults
+	s.mux.HandleFunc("GET /source-folders", s.handleListSourceFolders)
+	s.mux.HandleFunc("PUT /source-folders/{source}", s.handlePutSourceFolder)
+	s.mux.HandleFunc("DELETE /source-folders/{source}", s.handleDeleteSourceFolder)
+
 	// Agent-store routes (mounted from agent-store library)
 	if s.agentStore != nil {
 		agentstore.RegisterHandlers(s.mux, s.agentStore)

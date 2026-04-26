@@ -128,6 +128,22 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
+
+	// Source-folder mapping — runtime overrides for the env-var defaults
+	// (config.SourceFolders). The effective mapping is the env defaults
+	// merged with this table; a row here for "scheduler" wins over the
+	// env's "scheduler:Scheduled" entry. Deleting a row falls back to the
+	// env default. updated_at is wall-clock for audit.
+	_, err = s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS source_folders (
+			source      TEXT PRIMARY KEY,
+			folder_name TEXT NOT NULL,
+			updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1002,4 +1018,73 @@ func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanc
 		return false, err
 	}
 	return true, nil
+}
+
+// ListSourceFolders returns every runtime override row, keyed by source.
+// The caller is responsible for merging these on top of env-var defaults.
+func (s *Store) ListSourceFolders() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT source, folder_name FROM source_folders`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var src, folder string
+		if err := rows.Scan(&src, &folder); err != nil {
+			return nil, err
+		}
+		out[src] = folder
+	}
+	return out, rows.Err()
+}
+
+// SourceFolderTimestamps returns updated_at for each row, keyed by source.
+func (s *Store) SourceFolderTimestamps() (map[string]time.Time, error) {
+	rows, err := s.db.Query(`SELECT source, updated_at FROM source_folders`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]time.Time)
+	for rows.Next() {
+		var src string
+		var ts time.Time
+		if err := rows.Scan(&src, &ts); err != nil {
+			return nil, err
+		}
+		out[src] = ts
+	}
+	return out, rows.Err()
+}
+
+// UpsertSourceFolder writes (or replaces) a runtime override.
+func (s *Store) UpsertSourceFolder(source, folderName string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO source_folders (source, folder_name, updated_at) VALUES (?,?,?)
+		 ON CONFLICT(source) DO UPDATE SET folder_name=excluded.folder_name, updated_at=excluded.updated_at`,
+		source, folderName, time.Now().UTC(),
+	)
+	return err
+}
+
+// DeleteSourceFolder removes a runtime override; the env default (if any)
+// becomes effective again for this source.
+func (s *Store) DeleteSourceFolder(source string) error {
+	_, err := s.db.Exec(`DELETE FROM source_folders WHERE source=?`, source)
+	return err
+}
+
+// ApplySourceFolder rebuckets sessions tagged with `source` whose folder_name
+// is currently empty or equal to oldFolder, setting it to newFolder. Manual
+// moves to any other folder are preserved. Returns the number of rows updated.
+func (s *Store) ApplySourceFolder(source, oldFolder, newFolder string) (int64, error) {
+	res, err := s.db.Exec(
+		`UPDATE sessions SET folder_name=?, updated_at=? WHERE source=? AND (folder_name='' OR folder_name=?)`,
+		newFolder, time.Now().UTC(), source, oldFolder,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

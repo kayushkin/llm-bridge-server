@@ -15,11 +15,23 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// folderForSource returns the configured folder for a given source tag, or
-// "" if the source is unmapped (leaving the session unfiled).
+// folderForSource returns the effective folder for a given source tag, or
+// "" if the source is unmapped (leaving the session unfiled). The effective
+// map is the env-var defaults (config.SourceFolders) overlaid with runtime
+// overrides from the source_folders table. DB errors fall back to defaults
+// — failing closed (returning "") would silently un-file new sessions.
 func (s *Server) folderForSource(source string) string {
 	if source == "" || s.cfg == nil {
 		return ""
+	}
+	if s.store != nil {
+		if overrides, err := s.store.ListSourceFolders(); err == nil {
+			if v, ok := overrides[source]; ok {
+				return v
+			}
+		} else {
+			log.Printf("[source-folders] failed to load overrides: %v", err)
+		}
 	}
 	return s.cfg.SourceFolders[source]
 }
