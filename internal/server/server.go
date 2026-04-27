@@ -221,6 +221,13 @@ func (s *Server) routes() {
 	// download infrastructure (GitHub Releases, etc.).
 	s.mux.HandleFunc("GET /api/runner/install.sh", s.handleRunnerInstallScript)
 	s.mux.HandleFunc("GET /api/runner/binary", s.handleRunnerBinary)
+
+	// Harness backend proxy — service-style harnesses (inber, hermes…)
+	// run their backend once on the bridge host. Wrappers on remote
+	// runners hit /api/harness-proxy/{harness}/<rest> instead of
+	// localhost:<backend-port>, eliminating the need to replicate
+	// state and credentials on every machine.
+	s.mux.HandleFunc("/api/harness-proxy/{harness}/{rest...}", s.handleHarnessProxy)
 }
 
 // localInstancesByHarness returns a {harness: instance_id} map of the

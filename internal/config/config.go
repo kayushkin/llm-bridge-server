@@ -21,6 +21,7 @@ type Config struct {
 	BridgePrefsPath  string
 	ConformancePath  string
 	LogStoreURL      string
+	ToolStoreURL     string
 	SnapshotStoreDB  string
 	SnapshotStoreGit string
 	// SourceFolders maps CreateSessionRequest.Source values to the folder a
@@ -46,6 +47,7 @@ func Load() *Config {
 		BridgePrefsPath: envOr("LLMBRIDGE_BRIDGE_PREFS", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "bridge-prefs.json")),
 		ConformancePath: envOr("LLMBRIDGE_CONFORMANCE_PATH", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "conformance.json")),
 		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", "http://localhost:8175"),
+		ToolStoreURL:    envOr("LLMBRIDGE_TOOL_STORE_URL", "http://localhost:8302"),
 		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.db")),
 		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.git")),
 		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled,healthcheck:Scheduled,renamer:Auto-rename,conformance:Conformance")),
