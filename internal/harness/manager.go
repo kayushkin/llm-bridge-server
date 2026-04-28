@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"bufio"
 	"bytes"
 	"context"
@@ -40,25 +41,50 @@ type StoredEvent struct {
 
 // Manager handles harness subprocess lifecycle.
 type Manager struct {
-	mu          sync.RWMutex
-	processes   map[string]HarnessProcess     // sessionID → process
-	subscribers map[string][]chan StoredEvent // sessionID → SSE subscriber channels
-	msgState    map[string]*sessionMsgState   // sessionID → message-id assignment state
-	store       *store.Store
-	logStore    *logstore.Client
-	runners     *RunnerRegistry // optional; nil disables TransportRunner spawns
+	mu              sync.RWMutex
+	processes       map[string]HarnessProcess     // sessionID → process
+	subscribers     map[string][]chan StoredEvent // sessionID → SSE subscriber channels
+	msgState        map[string]*sessionMsgState   // sessionID → message-id assignment state
+	attachHubs      map[string]*AttachHub         // sessionID → fan-out hub for pty sessions
+	derivation      map[string]*derivationState   // sessionID → convenience-event derivation state
+	store           *store.Store
+	logStore        *logstore.Client
+	runners         *RunnerRegistry // optional; nil disables TransportRunner spawns
+	authClient      *authstoreclient.Client
+	publicServerURL string          // public bridge URL runners use for /api/runner/binary fetches
+	ptyRingBytes    int             // configured ring buffer size for pty late-attach replay
 }
 
-// NewManager creates a harness manager.
-func NewManager(st *store.Store, logStoreURL string) *Manager {
+// NewManager creates a harness manager. publicServerURL is the URL
+// runners use to fetch backend binaries (manifest BinaryURL); should
+// be the same URL the runner is already connected to via WS.
+//
+// ptyRingBytes is the per-session ring buffer size used for late-attach
+// replay on pty sessions. <=0 falls back to the package default.
+func NewManager(st *store.Store, logStoreURL, publicServerURL string, ptyRingBytes int, authClient *authstoreclient.Client) *Manager {
 	return &Manager{
-		processes:   make(map[string]HarnessProcess),
-		subscribers: make(map[string][]chan StoredEvent),
-		msgState:    make(map[string]*sessionMsgState),
-		store:       st,
-		logStore:    logstore.New(logStoreURL),
-		runners:     NewRunnerRegistry(),
+		processes:       make(map[string]HarnessProcess),
+		subscribers:     make(map[string][]chan StoredEvent),
+		msgState:        make(map[string]*sessionMsgState),
+		attachHubs:      make(map[string]*AttachHub),
+		derivation:      make(map[string]*derivationState),
+		store:           st,
+		logStore:        logstore.New(logStoreURL),
+		runners:         NewRunnerRegistry(),
+		authClient:      authClient,
+		publicServerURL: publicServerURL,
+		ptyRingBytes:    ptyRingBytes,
 	}
+}
+
+// AttachHubFor returns the per-session attach hub for a pty session, or
+// nil if no pty hub is registered (events-mode session, or pty session
+// whose process has already exited). Hubs are created in lockstep with
+// pty processes by StartOnInstance and torn down by watchPTYExit.
+func (m *Manager) AttachHubFor(sessionID string) *AttachHub {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.attachHubs[sessionID]
 }
 
 // Runners returns the runner registry so the HTTP layer can mount the
@@ -354,21 +380,32 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 	harnessIDSet := false
 
 	for event := range proc.Events() {
-		// On first event with a harness session ID, store it on the session row.
-		// The bridge_id stays stable — we just fill in harness_id.
-		if !harnessIDSet && event.SessionID != "" && event.SessionID != bridgeID {
-			if err := m.store.SetHarnessID(bridgeID, event.SessionID); err != nil {
-				log.Printf("[harness] failed to set harness_id on %s: %v", bridgeID, err)
+		// Resolve harness id from the new field, falling back to the legacy
+		// SessionID emitted by older bridges. Skip if it equals the bridge id —
+		// older bridges sometimes set SessionID = bridge_id, which is meaningless
+		// here (it's not a harness id).
+		harnessID := event.EffectiveHarnessSessionID()
+		if harnessID == bridgeID {
+			harnessID = ""
+		}
+
+		// On first event with a harness_session_id, persist it on the session row.
+		// bridge_session_id stays stable across the conversation.
+		if !harnessIDSet && harnessID != "" {
+			if err := m.store.SetHarnessID(bridgeID, harnessID); err != nil {
+				log.Printf("[harness] failed to set harness_session_id on %s: %v", bridgeID, err)
 			} else {
 				harnessIDSet = true
 
-				// Notify SSE subscribers so frontends learn the harness ID.
+				// Notify SSE subscribers so frontends learn the harness id.
 				idEvent := msg.Event{
-					Type:      msg.EventSystem,
-					SessionID: bridgeID,
-					ClientID:  event.SessionID, // carry harness_id in client_id for now
-					Timestamp: time.Now(),
-					System:    &msg.SystemEvent{Subtype: "harness_id_set", Message: event.SessionID},
+					Type:             msg.EventSystem,
+					BridgeSessionID:  bridgeID,
+					BridgeID:         bridgeID, // legacy mirror
+					HarnessSessionID: harnessID,
+					SessionID:        harnessID, // legacy mirror; old consumers expect harness id here
+					Timestamp:        time.Now(),
+					System:           &msg.SystemEvent{Subtype: "harness_id_set", Message: harnessID},
 				}
 				if data, err := json.Marshal(idEvent); err == nil {
 					rowID, _ := m.store.StoreEventReturningID(bridgeID, string(idEvent.Type), "", "", data)
@@ -385,8 +422,17 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 			}
 		}
 
-		// Stamp bridge_id so downstream stores can index by it.
+		// Force bridge_session_id to the canonical value on both the new and the
+		// legacy field. Bridges should already be setting it correctly; defend
+		// against drift and keep the legacy field populated for old consumers.
+		event.BridgeSessionID = bridgeID
 		event.BridgeID = bridgeID
+		// Mirror the resolved harness id onto both fields so any consumer
+		// (whether reading old or new) sees a consistent value.
+		if harnessID != "" {
+			event.HarnessSessionID = harnessID
+			event.SessionID = harnessID
+		}
 
 		// Assign canonical bridge MessageID and capture harness id.
 		m.AssignMessageID(bridgeID, &event)
@@ -472,6 +518,11 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 				log.Printf("[harness] evicted %d slow SSE subscribers on session %s", len(evicted), bridgeID)
 			}
 		}
+
+		// Convenience-event derivation runs AFTER the raw event has
+		// been fanned out so subscribers see cause before effect on
+		// Last-Event-ID replay. See msg/CONVENIENCE-EVENTS.md.
+		m.deriveAndBroadcast(bridgeID, &event)
 	}
 
 	// Process exited — close all subscriber channels
@@ -482,9 +533,62 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 	delete(m.subscribers, bridgeID)
 	delete(m.processes, bridgeID)
 	delete(m.msgState, bridgeID)
+	delete(m.derivation, bridgeID)
 	m.mu.Unlock()
 
 	m.store.UpdateSessionPID(bridgeID, 0)
+}
+
+// deriveAndBroadcast runs the convenience-event derivation against
+// src, persists any derived events, and fans them out to the same
+// subscriber set as the raw stream. Mirrors the persistence + fan-out
+// tail of readEvents but bypasses AssignMessageID (derived events
+// don't belong to a message bubble — they're bookkeeping like
+// session_state).
+func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
+	m.mu.Lock()
+	d := m.derivation[bridgeID]
+	if d == nil {
+		d = newDerivationState()
+		m.derivation[bridgeID] = d
+	}
+	m.mu.Unlock()
+
+	derived := d.derive(src)
+	if len(derived) == 0 {
+		return
+	}
+
+	for i := range derived {
+		ev := &derived[i]
+		ev.BridgeSessionID = bridgeID
+		ev.BridgeID = bridgeID
+
+		var rowID int64
+		if data, err := json.Marshal(ev); err == nil {
+			var storeErr error
+			rowID, storeErr = m.store.StoreEventReturningID(bridgeID, string(ev.Type), "", "", data)
+			if storeErr != nil {
+				log.Printf("[harness] failed to store derived event: %v", storeErr)
+			}
+		}
+		if _, err := m.logStore.PushEvent(*ev); err != nil {
+			log.Printf("[harness] failed to push derived event to log-store: %v", err)
+		}
+
+		stored := StoredEvent{Event: *ev, RowID: rowID}
+		m.mu.RLock()
+		subs := make([]chan StoredEvent, len(m.subscribers[bridgeID]))
+		copy(subs, m.subscribers[bridgeID])
+		m.mu.RUnlock()
+		for _, ch := range subs {
+			select {
+			case ch <- stored:
+			default:
+				// Drop on a full channel — replay path covers it.
+			}
+		}
+	}
 }
 
 // BroadcastEvent assigns a MessageID on ev (mutating it), persists, and fans
@@ -492,10 +596,14 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 // harness stdout). Used by the /send handler to publish user_message events
 // so other SSE subscribers see them without an extra round-trip.
 func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
-	bridgeID := ev.BridgeID
+	bridgeID := ev.EffectiveBridgeSessionID()
 	if bridgeID == "" {
-		bridgeID = ev.SessionID
+		return 0, fmt.Errorf("BroadcastEvent: bridge_session_id is required")
 	}
+	// Mirror onto both fields so downstream consumers (old and new) see a
+	// consistent value.
+	ev.BridgeSessionID = bridgeID
+	ev.BridgeID = bridgeID
 
 	m.AssignMessageID(bridgeID, ev)
 
@@ -552,18 +660,32 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	var proc HarnessProcess
 	var err error
 
-	switch inst.Machine.Transport {
-	case msg.TransportSSH:
-		proc, err = m.startSSH(ctx, sess, inst, credentialID)
-	case msg.TransportRunner:
-		proc, err = m.startRunner(ctx, sess, inst, credentialID)
-	default:
-		// Local transport
+	if sess.Mode == msg.SessionModePTY {
+		// PTY mode: only TransportLocal in v1. SSH/runner pty forwarding
+		// is in scope but adds an extra hop and protocol layer; defer
+		// until child 5+ once local pty has bedded in.
+		if inst.Machine.Transport != msg.TransportLocal {
+			return nil, fmt.Errorf("pty mode requires local transport; instance %s is %s", inst.ID, inst.Machine.Transport)
+		}
 		binPath, ok := Available(h)
 		if !ok {
 			return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 		}
-		proc, err = StartProcess(ctx, binPath, sess, credentialID)
+		proc, err = StartProcessPTY(ctx, binPath, sess, credentialID)
+	} else {
+		switch inst.Machine.Transport {
+		case msg.TransportSSH:
+			proc, err = m.startSSH(ctx, sess, inst, credentialID)
+		case msg.TransportRunner:
+			proc, err = m.startRunner(ctx, sess, inst, credentialID)
+		default:
+			// Local transport
+			binPath, ok := Available(h)
+			if !ok {
+				return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
+			}
+			proc, err = StartProcess(ctx, binPath, sess, credentialID)
+		}
 	}
 
 	if err != nil {
@@ -577,9 +699,46 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	m.store.UpdateSessionPID(sess.BridgeID, proc.PID())
 	m.store.UpdateSessionState(sess.BridgeID, string(msg.SessionRunning))
 
-	go m.readEvents(proc)
+	if sess.Mode == msg.SessionModePTY {
+		// PTY processes have no event channel to drain; readEvents would
+		// see the pre-closed Events() channel and immediately tear the
+		// process out of the manager map, breaking the attach hub. Watch
+		// for child exit instead so we still clean up state when the pty
+		// dies.
+		if pp, ok := proc.(*PTYProcess); ok {
+			hub := NewAttachHub(pp, m.ptyRingBytes)
+			m.mu.Lock()
+			m.attachHubs[sess.BridgeID] = hub
+			m.mu.Unlock()
+			go m.watchPTYExit(pp)
+		}
+	} else {
+		go m.readEvents(proc)
+	}
 
 	return proc, nil
+}
+
+// watchPTYExit waits for a pty session's child to exit, then drops it
+// from the manager map and resets the session row's state. Mirrors the
+// cleanup tail of readEvents, minus the SSE subscriber fan-out (pty
+// sessions don't broadcast msg.Events).
+//
+// The attach hub's own watchExit goroutine handles client teardown; we
+// just unregister it here so attempts to attach after the pty died fall
+// through to a clean 404/closed-hub error.
+func (m *Manager) watchPTYExit(p *PTYProcess) {
+	<-p.Done()
+	bridgeID := p.SessionID()
+
+	m.mu.Lock()
+	delete(m.processes, bridgeID)
+	delete(m.msgState, bridgeID)
+	delete(m.attachHubs, bridgeID)
+	m.mu.Unlock()
+
+	m.store.UpdateSessionPID(bridgeID, 0)
+	m.store.UpdateSessionState(bridgeID, string(msg.SessionCompleted))
 }
 
 // startSSH spawns a harness process on a remote machine via SSH. Reads

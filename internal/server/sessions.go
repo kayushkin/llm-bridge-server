@@ -116,6 +116,24 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mode validation. Empty defaults to events for backward compat.
+	mode := req.Mode
+	if mode == "" {
+		mode = msg.SessionModeEvents
+	}
+	switch mode {
+	case msg.SessionModeEvents:
+		// always allowed
+	case msg.SessionModePTY:
+		if !harnessSupportsPTY[h] {
+			http.Error(w, `{"error":{"code":"pty_unsupported","message":"harness does not support pty mode"}}`, http.StatusBadRequest)
+			return
+		}
+	default:
+		http.Error(w, fmt.Sprintf("invalid mode: %q", mode), http.StatusBadRequest)
+		return
+	}
+
 	// Every session must be bound to a harness instance — no local-spawn
 	// fallback. harness-store is the single source of truth for which
 	// instance runs a session.
@@ -142,6 +160,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		HarnessConfig: req.HarnessConfig,
 		Source:        req.Source,
 		FolderName:    s.folderForSource(req.Source),
+		Mode:          mode,
 	}
 
 	if err := s.store.CreateSession(sess); err != nil {
@@ -283,8 +302,8 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	userEvent := msg.Event{
 		Type:            msg.EventUserMessage,
-		SessionID:       bridgeID,
-		BridgeID:        bridgeID,
+		BridgeSessionID: bridgeID,
+		BridgeID:        bridgeID, // legacy mirror
 		ClientRequestID: req.ClientRequestID,
 		Timestamp:       time.Now(),
 		Result:          &msg.ResultEvent{Text: req.Message},

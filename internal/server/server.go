@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	memorystore "github.com/kayushkin/memory-store"
 	modelstore "github.com/kayushkin/model-store"
 	snapshotstore "github.com/kayushkin/snapshot-store"
+	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -45,12 +47,14 @@ type Server struct {
 	modelStore    *modelstore.Store
 	snapshotStore *snapshotstore.Store
 	harness       *harness.Manager
+	authClient    *authstoreclient.Client
 	bridgePrefs   *bridgePrefsStore
 	cfState       *conformanceState
 	cfg           *config.Config
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
+	authClient := authstoreclient.New("", "", "llm-bridge-server")
 	srv := &Server{
 		mux:           http.NewServeMux(),
 		store:         st,
@@ -60,7 +64,8 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		hookStore:     hks,
 		modelStore:    mds,
 		snapshotStore: ss,
-		harness:       harness.NewManager(st, cfg.LogStoreURL),
+		harness:       harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, cfg.PTYRingBufferBytes, authClient),
+		authClient:    authClient,
 		bridgePrefs:   newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfState:       newConformanceState(cfg.ConformancePath),
 		cfg:           cfg,
@@ -106,6 +111,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
 	s.mux.HandleFunc("POST /sessions/{id}/send", s.handleSendMessage)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleSessionEvents)
+	// Pty-mode session attach. Bidirectional WebSocket bound to the
+	// session's pseudoterminal fd; rejected for sessions started in
+	// events mode. Single-writer in v1 (child 2); resize / multi-reader
+	// land in child 3.
+	s.mux.HandleFunc("GET /sessions/{id}/attach", s.handleAttachSession)
 	s.mux.HandleFunc("GET /sessions/{id}/messages", s.proxyToLogStore)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.proxyToLogStore)
 	s.mux.HandleFunc("POST /sessions/{id}/interrupt", s.handleInterruptSession)
@@ -131,9 +141,20 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /source-folders/{source}", s.handlePutSourceFolder)
 	s.mux.HandleFunc("DELETE /source-folders/{source}", s.handleDeleteSourceFolder)
 
-	// Agent-store routes (mounted from agent-store library)
+	// Agent-store routes (mounted from agent-store library). The hook
+	// callbacks let agent-store nudge connected runners to reconcile when
+	// the canonical context files change.
 	if s.agentStore != nil {
-		agentstore.RegisterHandlers(s.mux, s.agentStore)
+		agentstore.RegisterHandlersWithHooks(
+			s.mux,
+			s.agentStore,
+			func(f *agentstore.TrackedFile, v *agentstore.TrackedFileVersion) {
+				s.broadcastSeedSnapshot(msg.SeedSourceAgentStore, "save")
+			},
+			func(_ *agentstore.ScanResult) {
+				s.broadcastSeedSnapshot(msg.SeedSourceAgentStore, "scan")
+			},
+		)
 	}
 
 	// Memory-store routes (mounted from memory-store library)
@@ -167,7 +188,7 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("POST /hooks/exec/{id}", s.handleExecHook)
 	}
 
-	// Credential routes (aiauth)
+	// Credential routes (auth-store)
 	s.mux.HandleFunc("GET /credentials", s.handleCredentialsList)
 	s.mux.HandleFunc("POST /credentials", s.handleCredentialCreate)
 	s.mux.HandleFunc("DELETE /credentials/{id}", s.handleCredentialDelete)
@@ -221,6 +242,21 @@ func (s *Server) routes() {
 	// download infrastructure (GitHub Releases, etc.).
 	s.mux.HandleFunc("GET /api/runner/install.sh", s.handleRunnerInstallScript)
 	s.mux.HandleFunc("GET /api/runner/binary", s.handleRunnerBinary)
+
+	// Seed-broadcast trigger. Anything that mutates a seed source's content
+	// (the standalone agent-store on :8300 reached via dash, a CLI editing
+	// a file directly, an out-of-band sync) can POST here to nudge every
+	// connected runner to reconcile. The bridge-server's own embedded
+	// agent-store already broadcasts via its hook callbacks; this is the
+	// fallback for actors outside this process.
+	s.mux.HandleFunc("POST /api/runner/seed/broadcast", s.handleSeedBroadcast)
+
+	// Seed source proxies. Runners hit bridge-server with their bearer
+	// token; bridge-server forwards to the standalone agent-store/skill-store
+	// services. This way the runner has a single base URL and a single
+	// auth credential for all bridge-side data.
+	s.mux.Handle("/api/agent-store/", http.HandlerFunc(s.proxyAgentStore))
+	s.mux.Handle("/api/skill-store/", http.HandlerFunc(s.proxySkillStore))
 
 	// Harness backend proxy — service-style harnesses (inber, hermes…)
 	// run their backend once on the bridge host. Wrappers on remote
@@ -490,4 +526,130 @@ func (s *Server) AutoDiscover() {
 			log.Printf("[auto-discover] imported %d sessions", imported)
 		}
 	}()
+}
+
+// handleSeedBroadcast is the explicit "tell every runner to reconcile" trigger.
+// Query params:
+//   source — "agent-store" (default) or "skill-store"
+//   reason — free-text label included in logs and the runner's snapshot event
+func (s *Server) handleSeedBroadcast(w http.ResponseWriter, r *http.Request) {
+	source := msg.SeedSource(r.URL.Query().Get("source"))
+	if source == "" {
+		source = msg.SeedSourceAgentStore
+	}
+	switch source {
+	case msg.SeedSourceAgentStore, msg.SeedSourceSkillStore:
+	default:
+		http.Error(w, "unknown source", http.StatusBadRequest)
+		return
+	}
+	reason := r.URL.Query().Get("reason")
+	if reason == "" {
+		reason = "manual"
+	}
+	s.broadcastSeedSnapshot(source, reason)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// proxyAgentStore and proxySkillStore forward seed-related GET/POSTs from
+// runners to the standalone services on the bridge host. Runner auth
+// (bearer token vs. machine row) is validated by checking the Authorization
+// header against harness-store; if it doesn't match a known machine the
+// request is rejected. Cookies/sessions are not forwarded — only seed
+// endpoints accept this path.
+func (s *Server) proxyAgentStore(w http.ResponseWriter, r *http.Request) {
+	s.proxyToStore(w, r, "/api/agent-store", envOrDefault("AGENT_STORE_URL", "http://localhost:8300"))
+}
+
+func (s *Server) proxySkillStore(w http.ResponseWriter, r *http.Request) {
+	s.proxyToStore(w, r, "/api/skill-store", envOrDefault("SKILL_STORE_URL", "http://localhost:8301"))
+}
+
+func (s *Server) proxyToStore(w http.ResponseWriter, r *http.Request, prefix, target string) {
+	if !s.authorizeRunnerRequest(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	rest := path.Clean("/" + r.URL.Path[len(prefix):])
+	target = target + rest
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("[seed-proxy] %s: %v", target, err)
+		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+// authorizeRunnerRequest accepts only requests carrying a known runner's
+// bearer token. The runner's existing per-machine token (validated against
+// machines.runner_token_hash) is what gets sent.
+func (s *Server) authorizeRunnerRequest(r *http.Request) bool {
+	if s.harnessStore == nil {
+		return false
+	}
+	auth := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(auth) <= len(prefix) || auth[:len(prefix)] != prefix {
+		return false
+	}
+	token := auth[len(prefix):]
+	if token == "" {
+		return false
+	}
+	_, err := s.harnessStore.GetMachineByRunnerTokenHash(harnessstore.HashRunnerToken(token))
+	return err == nil
+}
+
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// broadcastSeedSnapshot pokes every connected runner to do a full seed
+// reconcile against the named source. Used after a UI save or scan: rather
+// than computing per-runner deltas server-side, we ride on the runner's
+// existing pull-based reconciler — the snapshot trigger is just the prompt.
+//
+// Send failures (closed conns, full outgoing buffers) are logged and
+// swallowed; the runner will reconcile on its next periodic tick or
+// reconnect anyway.
+func (s *Server) broadcastSeedSnapshot(source msg.SeedSource, reason string) {
+	if s.harness == nil {
+		return
+	}
+	conns := s.harness.Runners().List()
+	if len(conns) == 0 {
+		return
+	}
+	m := &msg.RunnerMessage{
+		Type: msg.RunnerMsgSeedSnapshot,
+		SeedSnapshot: &msg.RunnerSeedSnapshot{
+			Source: source,
+			Reason: reason,
+		},
+	}
+	for _, rc := range conns {
+		if err := rc.Send(m); err != nil {
+			log.Printf("[seed] broadcast %s/%s to %s: %v", source, reason, rc.Name(), err)
+		}
+	}
 }

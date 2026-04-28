@@ -28,9 +28,10 @@ const runnerWriteTimeout = 10 * time.Second
 const runnerOutgoingBuffer = 256
 
 // RunnerRegistry tracks every llm-bridge-runner currently dialed in to
-// this server. Indexed by machine name (the Hello.MachineName from the
-// runner) so the harness manager can route Spawn requests to the right
-// connection. Methods are safe for concurrent use.
+// this server. Indexed by Machine.Name (the canonical name resolved
+// from the bearer token at handshake) so the harness manager can route
+// Spawn requests to the right connection. Methods are safe for
+// concurrent use.
 type RunnerRegistry struct {
 	mu    sync.RWMutex
 	conns map[string]*RunnerConnection // machineName → connection
@@ -179,11 +180,6 @@ func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn,
 		_ = sendError(conn, "bad_hello", "expected hello message")
 		return fmt.Errorf("expected hello, got %s", hello.Type)
 	}
-	if hello.Hello.MachineName != "" && hello.Hello.MachineName != machine.Name {
-		_ = sendError(conn, "machine_mismatch",
-			fmt.Sprintf("token issued for %q but Hello says %q", machine.Name, hello.Hello.MachineName))
-		return fmt.Errorf("machine mismatch: token=%s hello=%s", machine.Name, hello.Hello.MachineName)
-	}
 
 	rc := &RunnerConnection{
 		MachineName: machine.Name,
@@ -205,6 +201,7 @@ func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn,
 		Type: msg.RunnerMsgWelcome,
 		Welcome: &msg.RunnerWelcome{
 			MachineID:        machine.ID,
+			MachineName:      machine.Name,
 			ServerVersion:    serverVersion,
 			PingIntervalSecs: RunnerPingIntervalSecs,
 			AcceptedAt:       time.Now(),
@@ -215,9 +212,24 @@ func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn,
 		return fmt.Errorf("send welcome: %w", err)
 	}
 
-	conn.SetReadDeadline(time.Now().Add(time.Duration(RunnerPingIntervalSecs*3) * time.Second))
+	deadline := time.Duration(RunnerPingIntervalSecs*3) * time.Second
+	conn.SetReadDeadline(time.Now().Add(deadline))
+	// Runner sends WS pings every PingIntervalSecs; server (this side)
+	// auto-replies pong via the default control-frame handler. The
+	// gorilla default Ping handler does NOT extend the read deadline,
+	// so we override it: every incoming ping is also our liveness
+	// signal. Without this, the server read times out 90s after
+	// connection regardless of how many pings the runner sends.
+	conn.SetPingHandler(func(message string) error {
+		conn.SetReadDeadline(time.Now().Add(deadline))
+		return conn.WriteControl(
+			websocket.PongMessage,
+			[]byte(message),
+			time.Now().Add(runnerWriteTimeout),
+		)
+	})
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(time.Duration(RunnerPingIntervalSecs*3) * time.Second))
+		conn.SetReadDeadline(time.Now().Add(deadline))
 		return nil
 	})
 
@@ -420,6 +432,12 @@ func (p *RunnerProcess) closeEvents() {
 // startRunner asks the runner registered for inst.Machine.Name to spawn
 // the session's harness binary. Returns a HarnessProcess wired into the
 // connection so subsequent Send/Kill calls flow through the WS.
+//
+// Spawn carries Provision — the deployment manifest for service-style
+// harnesses (e.g. inber-server). The runner ensures every Provision
+// service is installed and running before forking the wrapper, so an
+// instance on a remote machine actually deploys the harness's stack
+// there rather than expecting it to already exist.
 func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string) (HarnessProcess, error) {
 	if m.runners == nil {
 		return nil, fmt.Errorf("runner registry not configured")
@@ -438,6 +456,33 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 		workDir = inst.Machine.DefaultWorkingDir
 	}
 
+	publicURL := m.publicServerURL
+	if publicURL == "" {
+		// Empty PublicURL falls back to whatever the runner connected
+		// to. For SSH-tunneled deployments the runner's server_url is
+		// http://localhost:<port>, which is reachable from the runner
+		// (it's the same tunnel) but not from anywhere else — fine
+		// here since the runner is the only consumer of these URLs.
+		publicURL = "http://localhost:8160"
+	}
+	reason := "session:" + sess.BridgeID
+	mctx := ManifestContext{
+		ServerURL:  publicURL,
+		OS:         conn.Hello.OS,
+		Arch:       conn.Hello.Arch,
+		Credential: resolveAuthCredential(m.authClient, credentialID, reason),
+		AuthClient: m.authClient,
+		Reason:     reason,
+	}
+	provision, err := BuildProvision(msg.Harness(sess.Harness), mctx)
+	if err != nil {
+		// Fail fast — an instance whose harness needs deployment but
+		// can't produce a valid manifest (missing credential, etc.)
+		// would silently fall back to "wrapper crashes on connect"
+		// otherwise.
+		return nil, fmt.Errorf("build provision manifest: %w", err)
+	}
+
 	rp := &RunnerProcess{
 		sessionID: sess.BridgeID,
 		conn:      conn,
@@ -452,6 +497,7 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 			Harness:     msg.Harness(sess.Harness),
 			WorkingDir:  workDir,
 			StartParams: params,
+			Provision:   provision,
 		},
 	}
 	if err := conn.Send(spawn); err != nil {

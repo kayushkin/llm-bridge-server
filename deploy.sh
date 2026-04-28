@@ -74,11 +74,18 @@ echo "==> Installing host-local drop-in..."
 DROPIN_DIR="/etc/systemd/system/$SERVICE.d"
 sudo mkdir -p "$DROPIN_DIR"
 DEPLOY_PATH=$(echo "$PATH" | tr ':' '\n' | awk '!seen[$0]++' | paste -sd:)
+DEPLOY_AUTH_STORE_URL="${AUTH_STORE_URL:-http://127.0.0.1:8303}"
+DEPLOY_AUTH_STORE_TOKEN="${AUTH_STORE_TOKEN:-}"
+if [ -z "$DEPLOY_AUTH_STORE_TOKEN" ]; then
+  echo "WARNING: AUTH_STORE_TOKEN not set in deploy env; service will be unauthed against auth-store"
+fi
 TMP_DROPIN=$(mktemp)
 cat > "$TMP_DROPIN" <<EOF
 [Service]
 Environment=PATH=$DEPLOY_PATH
 Environment=HOME=$HOME
+Environment=AUTH_STORE_URL=$DEPLOY_AUTH_STORE_URL
+Environment=AUTH_STORE_TOKEN=$DEPLOY_AUTH_STORE_TOKEN
 EOF
 sudo cp "$TMP_DROPIN" "$DROPIN_DIR/local.conf"
 rm -f "$TMP_DROPIN"

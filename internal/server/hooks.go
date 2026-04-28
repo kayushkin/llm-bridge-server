@@ -276,11 +276,12 @@ func (s *Server) broadcastHookEvent(hook *msg.Hook, sessionID, toolName string, 
 		return
 	}
 	_, _ = s.harness.BroadcastEvent(&msg.Event{
-		Type:      msg.EventHook,
-		Harness:   hook.Harness,
-		SessionID: sessionID,
-		Timestamp: time.Now().UTC(),
-		Hook:      h,
+		Type:            msg.EventHook,
+		Harness:         hook.Harness,
+		BridgeSessionID: sessionID,
+		BridgeID:        sessionID, // legacy mirror
+		Timestamp:       time.Now().UTC(),
+		Hook:            h,
 	})
 }
 

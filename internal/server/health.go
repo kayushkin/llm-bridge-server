@@ -78,6 +78,26 @@ var harnessHookEvents = map[msg.Harness][]string{
 	},
 }
 
+// harnessSupportsPTY reports whether each harness can run inside a
+// pseudoterminal (pty session mode). Mirrors the bridge.PTYCapableHarness
+// optional interface declared in llm-bridge — actual subprocess plumbing
+// lands per-harness in later children of the pty-mode roadmap. Until a
+// harness flips its entry here AND implements SupportsPTY() on its bridge,
+// the server keeps reporting false.
+//
+// claude_code lit up in pty-mode child 2 (this commit): the harness binary
+// detects LLMBRIDGE_PTY_MODE in env at startup and execs into the upstream
+// `claude` CLI so the pty fd is wired straight through to its TUI.
+//
+// codex lit up in pty-mode child 5: the codex harness binary follows the
+// same env-var hand-off and execs into the upstream `codex` CLI's
+// interactive mode. The existing AppServer/WebSocket path coexists for
+// events-mode sessions; pty mode opts out at spawn time.
+var harnessSupportsPTY = map[msg.Harness]bool{
+	msg.HarnessClaudeCode: true,
+	msg.HarnessCodex:      true,
+}
+
 // harnessCapabilities defines what features each harness supports.
 var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessClaudeCode: {"compact", "fork", "model", "effort", "tools", "budget", "system_prompt"},
@@ -231,6 +251,7 @@ func (s *Server) discoverHarnesses() []HarnessStatus {
 			Capabilities:       caps,
 			HookEvents:         harnessHookEvents[h],
 			SupportedProviders: harnessSupportedProviders[h],
+			PTY:                harnessSupportsPTY[h],
 		})
 	}
 	return statuses

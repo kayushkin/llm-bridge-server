@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -21,6 +22,12 @@ type Config struct {
 	BridgePrefsPath  string
 	ConformancePath  string
 	LogStoreURL      string
+	// PublicURL is the externally-reachable bridge URL that runners use
+	// to fetch backend binaries listed in HarnessService.BinaryURL. Empty
+	// → manifests fall back to the runner's own server_url, which works
+	// when the runner is reaching the bridge over a tunnel on
+	// localhost:port (the WSL-via-SSH-tunnel case).
+	PublicURL        string
 	ToolStoreURL     string
 	SnapshotStoreDB  string
 	SnapshotStoreGit string
@@ -29,6 +36,12 @@ type Config struct {
 	// LLMBRIDGE_SOURCE_FOLDERS (format: "source:folder,source:folder"). Any
 	// source not in the map results in no auto-filing.
 	SourceFolders map[string]string
+	// PTYRingBufferBytes is the per-session ring buffer size (in bytes)
+	// of recent pty output. Late attachers receive a replay of this
+	// buffer on connect so xterm.js can paint the current screen state
+	// without a full clear-and-redraw. Configured via
+	// LLMBRIDGE_PTY_RING_BUFFER_BYTES; defaults to 65536 (64 KiB).
+	PTYRingBufferBytes int
 }
 
 func Load() *Config {
@@ -47,11 +60,27 @@ func Load() *Config {
 		BridgePrefsPath: envOr("LLMBRIDGE_BRIDGE_PREFS", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "bridge-prefs.json")),
 		ConformancePath: envOr("LLMBRIDGE_CONFORMANCE_PATH", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "conformance.json")),
 		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", "http://localhost:8175"),
+		PublicURL:       os.Getenv("LLMBRIDGE_PUBLIC_URL"),
 		ToolStoreURL:    envOr("LLMBRIDGE_TOOL_STORE_URL", "http://localhost:8302"),
 		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.db")),
 		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.git")),
 		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled,healthcheck:Scheduled,renamer:Auto-rename,conformance:Conformance")),
+		PTYRingBufferBytes: envInt("LLMBRIDGE_PTY_RING_BUFFER_BYTES", 64*1024),
 	}
+}
+
+// envInt reads an int from an env var, falling back to def if unset or
+// unparseable.
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
 
 // parseSourceFolders parses "source:folder,source:folder" into a map.

@@ -195,6 +195,13 @@ func TestHarnessCapabilities_ClaudeCode(t *testing.T) {
 			t.Errorf("hook_events[%d] = %q, want %q", i, info.HookEvents[i], ev)
 		}
 	}
+	// pty went live for claude_code in pty-mode child 2: server-side pty
+	// spawn + attach hub + harness-side LLMBRIDGE_PTY_MODE handoff. Other
+	// harnesses still report false; their dedicated test (NoHooksHarness
+	// for hermes) implicitly covers the off case via the zero value.
+	if !info.PTY {
+		t.Errorf("pty = false; want true now that pty-mode child 2 has landed")
+	}
 }
 
 func TestHarnessCapabilities_NoHooksHarness(t *testing.T) {
@@ -296,6 +303,58 @@ func TestCreateSession_InvalidHarness(t *testing.T) {
 	resp := doJSON(t, srv, "POST", "/sessions", req)
 	if resp.StatusCode != 400 {
 		t.Errorf("status = %d, want 400 (invalid harness)", resp.StatusCode)
+	}
+}
+
+// TestCreateSession_PtyMode_ClaudeCode covers the happy path for
+// pty-mode child 2: claude_code now advertises pty support, so creating
+// a session with mode=pty should succeed and round-trip the mode in the
+// response body.
+func TestCreateSession_PtyMode_ClaudeCode(t *testing.T) {
+	srv, _, instID := testServerWithInstance(t, "claude_code")
+
+	req := msg.CreateSessionRequest{
+		Harness:    "claude_code",
+		InstanceID: instID,
+		ClientID:   "fe_pty_ok",
+		Mode:       msg.SessionModePTY,
+	}
+
+	resp := doJSON(t, srv, "POST", "/sessions", req)
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 201: %s", resp.StatusCode, body)
+	}
+
+	sess := decodeJSON[msg.ManagedSession](t, resp)
+	if sess.Mode != msg.SessionModePTY {
+		t.Errorf("mode = %q, want pty", sess.Mode)
+	}
+}
+
+// TestCreateSession_PtyMode_Unsupported asserts that asking for pty
+// mode on a harness without pty support comes back as 400 with the
+// pty_unsupported error code, not as a generic invalid-mode error.
+// Hermes is HTTP-only so it stays in the false column of
+// harnessSupportsPTY indefinitely.
+func TestCreateSession_PtyMode_Unsupported(t *testing.T) {
+	srv, _, instID := testServerWithInstance(t, "hermes")
+
+	req := msg.CreateSessionRequest{
+		Harness:    "hermes",
+		InstanceID: instID,
+		ClientID:   "fe_pty_no",
+		Mode:       msg.SessionModePTY,
+	}
+
+	resp := doJSON(t, srv, "POST", "/sessions", req)
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400: %s", resp.StatusCode, body)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte("pty_unsupported")) {
+		t.Errorf("body = %q, want pty_unsupported error code", body)
 	}
 }
 

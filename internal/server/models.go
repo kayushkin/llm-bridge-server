@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"net/http"
+	"time"
 
-	"github.com/kayushkin/aiauth"
+	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	modelstore "github.com/kayushkin/model-store"
 )
 
@@ -14,33 +16,18 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Load credentials from aiauth, index by provider
-	authStore := aiauth.DefaultStore()
-	profiles := authStore.Profiles()
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	creds, err := s.authClient.List(ctx, authstoreclient.ListFilter{})
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
 
 	credsByProvider := make(map[string][]credResponse)
-	priority := 0
-	for name, c := range profiles {
-		cr := credResponse{
-			ID:        name,
-			Provider:  c.Provider,
-			Label:     name,
-			AuthType:  c.Type,
-			Priority:  priority,
-			Enabled:   true,
-			ExpiresAt: c.Expires,
-		}
-		if c.Key != "" {
-			cr.APIKeyMasked = maskKey(c.Key)
-		}
-		if c.Token != "" {
-			cr.TokenMasked = maskKey(c.Token)
-		}
-		if c.Access != "" {
-			cr.TokenMasked = maskKey(c.Access)
-		}
-		credsByProvider[c.Provider] = append(credsByProvider[c.Provider], cr)
-		priority++
+	for i := range creds {
+		c := &creds[i]
+		credsByProvider[c.Provider] = append(credsByProvider[c.Provider], toCredResponse(c))
 	}
 
 	type modelWithCreds struct {

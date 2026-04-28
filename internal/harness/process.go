@@ -12,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/creack/pty"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -37,42 +38,65 @@ type Request struct {
 }
 
 
-// StartParams for the "start" method.
+// StartParams for the "start" method. BridgeSessionID is the routing identifier
+// on the wire — the bridge consults its own state.db to find the current
+// harness_session_id when Resume is set. SessionID is kept for backward
+// compatibility with harness binaries that haven't been rebuilt against the
+// new field; once all bridges read BridgeSessionID it will be removed.
 type StartParams struct {
-	SessionID    string `json:"session_id"`
+	BridgeSessionID string `json:"bridge_session_id,omitempty"`
+	// Deprecated: use BridgeSessionID. Populated alongside BridgeSessionID
+	// during the transition so older bridge binaries still work.
+	SessionID    string `json:"session_id,omitempty"`
 	DisplayName  string `json:"display_name,omitempty"`
 	AgentID      string `json:"agent_id,omitempty"`
 	CredentialID string `json:"credential_id,omitempty"`
 	Prompt       string `json:"prompt,omitempty"`
 	Resume       bool   `json:"resume,omitempty"`
-	Fork         string `json:"fork,omitempty"` // parent session ID
+	Fork         string `json:"fork,omitempty"` // parent BridgeSessionID
 	WorkDir      string `json:"work_dir,omitempty"`
 }
 
-// MessageParams for the "message" method.
+// MessageParams for the "message" method. BridgeSessionID is added so a single
+// bridge process can host multiple sessions; old bridges (which assume one
+// session per process) ignore it harmlessly.
 type MessageParams struct {
-	Content string `json:"content"`
+	BridgeSessionID string `json:"bridge_session_id,omitempty"`
+	Content         string `json:"content"`
+}
+
+// InterruptParams for the "interrupt" method.
+type InterruptParams struct {
+	BridgeSessionID string `json:"bridge_session_id,omitempty"`
+}
+
+// CommandParams for generic commands like "compact" / "resume".
+type CommandParams struct {
+	BridgeSessionID string `json:"bridge_session_id,omitempty"`
 }
 
 // buildStartParams creates the start request params for a harness subprocess.
-// If the session already has a harness_id (discovered/resumed), it's used as
-// the session_id and Resume is set. Otherwise the bridge_id is passed and
-// the harness will generate its own session ID.
+// Always passes BridgeSessionID = sess.BridgeID. SessionID is dual-written for
+// backward compatibility: older harness binaries still read params.SessionID
+// (which they used to expect to be the harness_id on resume, or the bridge_id
+// on fresh start). Replicating that legacy semantic — sess.HarnessID if known,
+// else sess.BridgeID — keeps them functioning until they rebuild against the
+// new BridgeSessionID field.
 // Returns merged JSON: base start params + any harness-specific config from the session.
 func buildStartParams(sess *store.Session, credentialID string) json.RawMessage {
-	hasHarnessID := sess.HarnessID != ""
-	sid := sess.HarnessID
-	if sid == "" {
-		sid = sess.BridgeID
+	legacySID := sess.HarnessID
+	if legacySID == "" {
+		legacySID = sess.BridgeID
 	}
 	params := StartParams{
-		SessionID:    sid,
-		DisplayName:  sess.DisplayName,
-		AgentID:      sess.AgentID,
-		CredentialID: credentialID,
-		Resume:       hasHarnessID,
+		BridgeSessionID: sess.BridgeID,
+		SessionID:       legacySID,
+		DisplayName:     sess.DisplayName,
+		AgentID:         sess.AgentID,
+		CredentialID:    credentialID,
+		Resume:          sess.HarnessID != "",
 	}
-	if hasHarnessID && sess.DisplayName != "" && sess.DisplayName[0] == '/' {
+	if params.Resume && sess.DisplayName != "" && sess.DisplayName[0] == '/' {
 		params.WorkDir = sess.DisplayName
 	}
 	if sess.ParentID != "" {
@@ -177,12 +201,15 @@ func (p *Process) Events() <-chan msg.Event {
 
 // Send writes a user message to the harness.
 func (p *Process) Send(message string) error {
-	return p.sendRequest("message", MessageParams{Content: message})
+	return p.sendRequest("message", MessageParams{
+		BridgeSessionID: p.sessionID,
+		Content:         message,
+	})
 }
 
 // SendCommand sends a command (compact, resume, etc.).
 func (p *Process) SendCommand(cmd string) error {
-	return p.sendRequest(cmd, nil)
+	return p.sendRequest(cmd, CommandParams{BridgeSessionID: p.sessionID})
 }
 
 // Interrupt sends SIGINT to pause the harness.
@@ -269,6 +296,132 @@ func (p *Process) readLoop() {
 		log.Printf("[harness] scanner error: %v", err)
 	}
 }
+
+// PTYProcess is a HarnessProcess for sessions started in pty mode. It
+// wraps a harness binary running inside a pseudoterminal so a remote
+// attacher can read raw bytes and inject keystrokes via the WebSocket
+// /sessions/{id}/attach endpoint. There are no msg.Events to translate
+// — the upstream CLI's TUI is what's on the wire — so Events() returns
+// a closed channel and the existing readEvents() loop is a no-op for
+// these processes.
+type PTYProcess struct {
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	tty       *os.File // server side of the pty (read+write)
+	sessionID string
+	events    chan msg.Event
+	done      chan struct{}
+	exitErr   error
+	exitOnce  sync.Once
+}
+
+// StartProcessPTY spawns a harness bridge subprocess inside a pty. The
+// child sees LLMBRIDGE_PTY_MODE=1 in its environment; pty-capable
+// harnesses are expected to detect that and exec into their upstream
+// CLI so the pty fd is wired straight through to the user's TUI.
+//
+// On TransportLocal only — SSH/runner paths reject pty mode upstream.
+func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, credentialID string) (*PTYProcess, error) {
+	cmd := exec.Command(binPath)
+	cmd.Env = append(os.Environ(), "LLMBRIDGE_PTY_MODE=1")
+	if credentialID != "" {
+		cmd.Env = append(cmd.Env, "LLMBRIDGE_CREDENTIAL_ID="+credentialID)
+	}
+	if hid := sess.HarnessID; hid != "" {
+		// Resume hint passed via env so the pty-mode harness can pick
+		// the right session without us shoehorning a JSON-RPC handshake
+		// across the tty (where the user is going to be typing).
+		cmd.Env = append(cmd.Env, "LLMBRIDGE_PTY_RESUME_ID="+hid)
+	}
+
+	tty, err := pty.Start(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("pty start: %w", err)
+	}
+
+	// Default initial size — child 3 wires resize control messages.
+	_ = pty.Setsize(tty, &pty.Winsize{Rows: 24, Cols: 80})
+
+	closed := make(chan msg.Event)
+	close(closed)
+
+	p := &PTYProcess{
+		cmd:       cmd,
+		tty:       tty,
+		sessionID: sess.BridgeID,
+		events:    closed,
+		done:      make(chan struct{}),
+	}
+
+	go func() {
+		err := cmd.Wait()
+		p.exitOnce.Do(func() {
+			p.exitErr = err
+			tty.Close()
+			close(p.done)
+		})
+	}()
+
+	return p, nil
+}
+
+// PID returns the child process ID.
+func (p *PTYProcess) PID() int {
+	if p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
+}
+
+// SessionID returns the bridge session ID.
+func (p *PTYProcess) SessionID() string { return p.sessionID }
+
+// Events satisfies HarnessProcess. PTY mode emits no canonical events;
+// the channel is pre-closed so callers that range over it return
+// immediately without blocking.
+func (p *PTYProcess) Events() <-chan msg.Event { return p.events }
+
+// Send is a no-op for pty sessions. Input flows through the attach
+// WebSocket directly to the pty fd; there is no JSON-RPC channel.
+func (p *PTYProcess) Send(message string) error {
+	return fmt.Errorf("send not supported in pty mode; write to attach WebSocket instead")
+}
+
+// SendCommand is a no-op for pty sessions for the same reason as Send.
+func (p *PTYProcess) SendCommand(cmd string) error {
+	return fmt.Errorf("command %q not supported in pty mode", cmd)
+}
+
+// Interrupt sends SIGINT to the foreground process group of the pty,
+// mirroring what Ctrl-C in a terminal would do.
+func (p *PTYProcess) Interrupt() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.cmd.Process == nil {
+		return fmt.Errorf("process not running")
+	}
+	return p.cmd.Process.Signal(syscall.SIGINT)
+}
+
+// Kill terminates the pty session: closes the tty fd and SIGKILLs the
+// child. Blocks until cmd.Wait completes (via the goroutine started in
+// StartProcessPTY) so callers can rely on resources being released.
+func (p *PTYProcess) Kill() error {
+	p.mu.Lock()
+	if p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
+	p.mu.Unlock()
+	<-p.done
+	return p.exitErr
+}
+
+// PTY returns the server-side pseudoterminal fd for read/write by the
+// attach hub. Owned by the PTYProcess — do not close from the caller.
+func (p *PTYProcess) PTY() *os.File { return p.tty }
+
+// Done is closed when the underlying process exits.
+func (p *PTYProcess) Done() <-chan struct{} { return p.done }
 
 // StartSSHProcess spawns a harness bridge subprocess via SSH.
 // args should be the full SSH arguments including target and remote command.

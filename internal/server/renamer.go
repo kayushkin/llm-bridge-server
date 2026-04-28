@@ -235,11 +235,11 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 	// shows up in the renamer's UI/SSE stream, push to log-store, then write
 	// the prompt onto the harness stdin.
 	userEvent := msg.Event{
-		Type:      msg.EventUserMessage,
-		SessionID: renamer.BridgeID,
-		BridgeID:  renamer.BridgeID,
-		Timestamp: time.Now(),
-		Result:    &msg.ResultEvent{Text: prompt},
+		Type:            msg.EventUserMessage,
+		BridgeSessionID: renamer.BridgeID,
+		BridgeID:        renamer.BridgeID, // legacy mirror
+		Timestamp:       time.Now(),
+		Result:          &msg.ResultEvent{Text: prompt},
 	}
 	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
 		log.Printf("[renamer] %s: broadcast user_message: %v", renamer.BridgeID, err)
