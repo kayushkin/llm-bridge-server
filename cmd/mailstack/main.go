@@ -25,8 +25,8 @@ func main() {
 		*dbPath = accounts.DefaultDBPath()
 	}
 
-	apiauthURL := envOr("APIAUTH_URL", "http://localhost:8190")
-	apiauthToken := os.Getenv("APIAUTH_TOKEN")
+	authStoreURL := envOr("AUTH_STORE_URL", "http://127.0.0.1:8303")
+	authStoreToken := os.Getenv("AUTH_STORE_TOKEN")
 	mailstackToken := os.Getenv("MAILSTACK_TOKEN")
 	if mailstackToken == "" {
 		log.Println("WARNING: MAILSTACK_TOKEN not set — API is unauthenticated")
@@ -38,7 +38,7 @@ func main() {
 	}
 	defer store.Close()
 
-	auth := apiauth.New(apiauthURL, apiauthToken)
+	auth := apiauth.New(authStoreURL, authStoreToken)
 	srv := mailstack.NewServer(store, auth, mailstackToken)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
@@ -59,7 +59,7 @@ func main() {
 		httpSrv.Shutdown(ctx)
 	}()
 
-	log.Printf("mailstack listening on %s (db=%s, apiauth=%s)", addr, *dbPath, apiauthURL)
+	log.Printf("mailstack listening on %s (db=%s, auth-store=%s)", addr, *dbPath, authStoreURL)
 	if err := httpSrv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}

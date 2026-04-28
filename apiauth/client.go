@@ -1,3 +1,6 @@
+// Package apiauth keeps its name for compatibility with existing imports, but
+// now talks to auth-store on :8303 instead of the legacy apiauth service.
+// auth-store is the canonical credential vault.
 package apiauth
 
 import (
@@ -26,6 +29,8 @@ type cached struct {
 
 const cacheTTL = 55 * time.Second
 
+// New constructs a token-source client. baseURL should be auth-store's API
+// root (e.g. http://127.0.0.1:8303). token is the AUTHSTORE_TOKEN bearer.
 func New(baseURL, token string) *Client {
 	return &Client{
 		baseURL: baseURL,
@@ -35,6 +40,9 @@ func New(baseURL, token string) *Client {
 	}
 }
 
+// Token returns a valid access token for (provider, account). It calls
+// auth-store's /api/resolve/{provider}?account=... endpoint, which will
+// transparently refresh expired server-mode OAuth tokens before returning.
 func (c *Client) Token(provider, account string) (string, error) {
 	key := provider + "|" + account
 	c.mu.Lock()
@@ -44,34 +52,47 @@ func (c *Client) Token(provider, account string) (string, error) {
 	}
 	c.mu.Unlock()
 
-	path := "/api/token/" + url.PathEscape(provider)
-	if account != "" && account != "default" {
-		path += "/" + url.PathEscape(account)
+	u, err := url.Parse(c.baseURL + "/api/resolve/" + url.PathEscape(provider))
+	if err != nil {
+		return "", fmt.Errorf("auth-store: build url: %w", err)
 	}
-	req, err := http.NewRequest("GET", c.baseURL+path, nil)
+	q := u.Query()
+	if account != "" && account != "default" {
+		q.Set("account", account)
+	} else if account == "default" {
+		// auth-store stores apiauth tokens with account="default"; pass it
+		// through so the row matches.
+		q.Set("account", "default")
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
 		return "", err
 	}
+	req.Header.Set("X-Auth-App", "mailstack")
+	req.Header.Set("X-Auth-Reason", "mail:"+provider+":"+account)
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
+
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("apiauth unavailable: %w", err)
+		return "", fmt.Errorf("auth-store unavailable: %w", err)
 	}
 	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("apiauth %s: %d %s", path, resp.StatusCode, string(body))
+		return "", fmt.Errorf("auth-store /resolve/%s?account=%s: %d %s", provider, account, resp.StatusCode, string(body))
 	}
 	var out struct {
 		AccessToken string `json:"access_token"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(body, &out); err != nil {
 		return "", err
 	}
 	if out.AccessToken == "" {
-		return "", fmt.Errorf("apiauth returned empty access_token for %s/%s", provider, account)
+		return "", fmt.Errorf("auth-store returned empty access_token for %s/%s", provider, account)
 	}
 
 	c.mu.Lock()
@@ -80,6 +101,8 @@ func (c *Client) Token(provider, account string) (string, error) {
 	return out.AccessToken, nil
 }
 
+// Invalidate drops the cached token for (provider, account), forcing the next
+// Token() call to re-fetch from auth-store.
 func (c *Client) Invalidate(provider, account string) {
 	c.mu.Lock()
 	delete(c.cache, provider+"|"+account)
