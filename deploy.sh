@@ -26,6 +26,8 @@ if [ -z "${DEPLOY_DETACHED:-}" ]; then
     --setenv=DEPLOY_DETACHED=1 \
     --setenv=HOME="$HOME" \
     --setenv=PATH="$PATH" \
+    --setenv=AUTH_STORE_URL="${AUTH_STORE_URL:-}" \
+    --setenv=AUTH_STORE_TOKEN="${AUTH_STORE_TOKEN:-}" \
     --property=StandardOutput=append:"$LOG" \
     --property=StandardError=append:"$LOG" \
     bash "$SCRIPT" "$@" >/dev/null
