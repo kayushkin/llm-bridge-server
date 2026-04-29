@@ -81,7 +81,27 @@ func (s *Server) handleAutoRenameSession(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+	s.broadcastDisplayNameChanged(bridgeID, sess.DisplayName)
 	writeJSON(w, sess)
+}
+
+// broadcastDisplayNameChanged emits a system event on the target session's
+// SSE stream so connected clients can refresh their session list without
+// waiting for the next turn or page reload. Best-effort; logs and continues
+// on failure.
+func (s *Server) broadcastDisplayNameChanged(bridgeID, displayName string) {
+	ev := msg.Event{
+		Type:            msg.EventSystem,
+		BridgeSessionID: bridgeID,
+		Timestamp:       time.Now(),
+		System: &msg.SystemEvent{
+			Subtype: "display_name_changed",
+			Message: displayName,
+		},
+	}
+	if _, err := s.harness.BroadcastEvent(&ev); err != nil {
+		log.Printf("[rename] %s: broadcast display_name_changed: %v", bridgeID, err)
+	}
 }
 
 // maybeAutoRename inspects the target session and, when conditions are met,
@@ -237,7 +257,6 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 	userEvent := msg.Event{
 		Type:            msg.EventUserMessage,
 		BridgeSessionID: renamer.BridgeID,
-		BridgeID:        renamer.BridgeID, // legacy mirror
 		Timestamp:       time.Now(),
 		Result:          &msg.ResultEvent{Text: prompt},
 	}

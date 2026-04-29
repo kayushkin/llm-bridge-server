@@ -199,9 +199,9 @@ func TestDerivation_StreamEventsAreNotTransitions(t *testing.T) {
 	d := newDerivationState()
 	d.derive(&msg.Event{Type: msg.EventUserMessage})
 
-	// EventStream / EventThinking / EventSystem should all be
+	// EventStream / EventBlock / EventThinking / EventSystem should all be
 	// no-ops — they don't appear in the transition table.
-	for _, t2 := range []msg.EventType{msg.EventStream, msg.EventThinking, msg.EventSystem, msg.EventPlan, msg.EventSessionInfo, msg.EventHook} {
+	for _, t2 := range []msg.EventType{msg.EventStream, msg.EventBlock, msg.EventThinking, msg.EventSystem, msg.EventPlan, msg.EventSessionInfo, msg.EventHook} {
 		if got := d.derive(&msg.Event{Type: t2}); len(got) != 0 {
 			t.Errorf("%s: got transition %+v; want none", t2, got)
 		}
@@ -529,13 +529,13 @@ func TestDerivation_UsageTotal_CarriesCauseCorrelation(t *testing.T) {
 	d := newDerivationState()
 	d.derive(&msg.Event{Type: msg.EventUserMessage})
 	got := d.derive(&msg.Event{
-		Type:            msg.EventResult,
-		Harness:         msg.HarnessClaudeCode,
-		SessionID:       "sess-2",
-		BridgeID:        "br-2",
-		TurnID:          "turn-1",
-		ClientRequestID: "cr-2",
-		Result:          &msg.ResultEvent{Usage: msg.TokenUsage{InputTokens: 5}},
+		Type:             msg.EventResult,
+		Harness:          msg.HarnessClaudeCode,
+		BridgeSessionID:  "sess-2",
+		HarnessSessionID: "br-2",
+		TurnID:           "turn-1",
+		ClientRequestID:  "cr-2",
+		Result:           &msg.ResultEvent{Usage: msg.TokenUsage{InputTokens: 5}},
 	})
 	// Should be agent_state + usage_total. (No turn_complete: this
 	// Result's turn_id never appeared on a prior event, so no
@@ -548,7 +548,7 @@ func TestDerivation_UsageTotal_CarriesCauseCorrelation(t *testing.T) {
 	if ut.Type != msg.EventUsageTotal {
 		t.Fatalf("second derived = %q; want usage_total", ut.Type)
 	}
-	if ut.SessionID != "sess-2" || ut.BridgeID != "br-2" || ut.TurnID != "turn-1" || ut.ClientRequestID != "cr-2" || ut.Harness != msg.HarnessClaudeCode {
+	if ut.BridgeSessionID != "sess-2" || ut.HarnessSessionID != "br-2" || ut.TurnID != "turn-1" || ut.ClientRequestID != "cr-2" || ut.Harness != msg.HarnessClaudeCode {
 		t.Fatalf("usage_total lost cause correlation: %+v", ut)
 	}
 	if ut.Timestamp.IsZero() {
@@ -785,13 +785,13 @@ func TestDerivation_TurnComplete_CarriesCauseCorrelation(t *testing.T) {
 	d := newDerivationState()
 	d.derive(&msg.Event{Type: msg.EventUserMessage, TurnID: "turn-1"})
 	got := d.derive(&msg.Event{
-		Type:            msg.EventResult,
-		Harness:         msg.HarnessClaudeCode,
-		SessionID:       "sess-1",
-		BridgeID:        "br-1",
-		TurnID:          "turn-1",
-		ClientRequestID: "cr-1",
-		Result:          &msg.ResultEvent{},
+		Type:             msg.EventResult,
+		Harness:          msg.HarnessClaudeCode,
+		BridgeSessionID:  "sess-1",
+		HarnessSessionID: "br-1",
+		TurnID:           "turn-1",
+		ClientRequestID:  "cr-1",
+		Result:           &msg.ResultEvent{},
 	})
 	tcs := turnCompleteEvents(got)
 	if len(tcs) != 1 {
@@ -805,7 +805,7 @@ func TestDerivation_TurnComplete_CarriesCauseCorrelation(t *testing.T) {
 			break
 		}
 	}
-	if tcEvent.SessionID != "sess-1" || tcEvent.BridgeID != "br-1" || tcEvent.TurnID != "turn-1" || tcEvent.ClientRequestID != "cr-1" || tcEvent.Harness != msg.HarnessClaudeCode {
+	if tcEvent.BridgeSessionID != "sess-1" || tcEvent.HarnessSessionID != "br-1" || tcEvent.TurnID != "turn-1" || tcEvent.ClientRequestID != "cr-1" || tcEvent.Harness != msg.HarnessClaudeCode {
 		t.Fatalf("turn_complete lost cause correlation: %+v", tcEvent)
 	}
 	if tcEvent.Timestamp.IsZero() {

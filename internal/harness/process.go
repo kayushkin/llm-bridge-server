@@ -39,22 +39,21 @@ type Request struct {
 
 
 // StartParams for the "start" method. BridgeSessionID is the routing identifier
-// on the wire — the bridge consults its own state.db to find the current
-// harness_session_id when Resume is set. SessionID is kept for backward
-// compatibility with harness binaries that haven't been rebuilt against the
-// new field; once all bridges read BridgeSessionID it will be removed.
+// on the wire. HarnessSessionID is the harness-internal id (e.g. Claude Code
+// session UUID) the bridge should use when resuming — bridges with their own
+// state.db (codex) ignore this and consult their local chain instead;
+// state.db-less bridges (jig, aider, openclaw, nanoclaw) use it directly for
+// their --resume / equivalent arg.
 type StartParams struct {
-	BridgeSessionID string `json:"bridge_session_id,omitempty"`
-	// Deprecated: use BridgeSessionID. Populated alongside BridgeSessionID
-	// during the transition so older bridge binaries still work.
-	SessionID    string `json:"session_id,omitempty"`
-	DisplayName  string `json:"display_name,omitempty"`
-	AgentID      string `json:"agent_id,omitempty"`
-	CredentialID string `json:"credential_id,omitempty"`
-	Prompt       string `json:"prompt,omitempty"`
-	Resume       bool   `json:"resume,omitempty"`
-	Fork         string `json:"fork,omitempty"` // parent BridgeSessionID
-	WorkDir      string `json:"work_dir,omitempty"`
+	BridgeSessionID  string `json:"bridge_session_id"`
+	HarnessSessionID string `json:"harness_session_id,omitempty"`
+	DisplayName      string `json:"display_name,omitempty"`
+	AgentID          string `json:"agent_id,omitempty"`
+	CredentialID     string `json:"credential_id,omitempty"`
+	Prompt           string `json:"prompt,omitempty"`
+	Resume           bool   `json:"resume,omitempty"`
+	Fork             string `json:"fork,omitempty"` // parent BridgeSessionID
+	WorkDir          string `json:"work_dir,omitempty"`
 }
 
 // MessageParams for the "message" method. BridgeSessionID is added so a single
@@ -76,25 +75,18 @@ type CommandParams struct {
 }
 
 // buildStartParams creates the start request params for a harness subprocess.
-// Always passes BridgeSessionID = sess.BridgeID. SessionID is dual-written for
-// backward compatibility: older harness binaries still read params.SessionID
-// (which they used to expect to be the harness_id on resume, or the bridge_id
-// on fresh start). Replicating that legacy semantic — sess.HarnessID if known,
-// else sess.BridgeID — keeps them functioning until they rebuild against the
-// new BridgeSessionID field.
+// BridgeSessionID is the stable routing key. HarnessSessionID is the
+// harness-internal id (e.g. Claude Code session UUID) when known — bridges
+// without state.db use it for their --resume arg.
 // Returns merged JSON: base start params + any harness-specific config from the session.
 func buildStartParams(sess *store.Session, credentialID string) json.RawMessage {
-	legacySID := sess.HarnessID
-	if legacySID == "" {
-		legacySID = sess.BridgeID
-	}
 	params := StartParams{
-		BridgeSessionID: sess.BridgeID,
-		SessionID:       legacySID,
-		DisplayName:     sess.DisplayName,
-		AgentID:         sess.AgentID,
-		CredentialID:    credentialID,
-		Resume:          sess.HarnessID != "",
+		BridgeSessionID:  sess.BridgeID,
+		HarnessSessionID: sess.HarnessID,
+		DisplayName:      sess.DisplayName,
+		AgentID:          sess.AgentID,
+		CredentialID:     credentialID,
+		Resume:           sess.HarnessID != "",
 	}
 	if params.Resume && sess.DisplayName != "" && sess.DisplayName[0] == '/' {
 		params.WorkDir = sess.DisplayName

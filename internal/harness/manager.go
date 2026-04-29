@@ -157,7 +157,7 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 		// Open a new turn.
 		st.turnID = ids.NewTurnID()
 
-	case msg.EventStream, msg.EventThinking, msg.EventToolCall,
+	case msg.EventStream, msg.EventBlock, msg.EventThinking, msg.EventToolCall,
 		msg.EventToolResult, msg.EventPlan, msg.EventApproval:
 		ev.MessageID = m.assignAssistantID(st, hid)
 		if ev.ClientRequestID == "" {
@@ -380,11 +380,11 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 	harnessIDSet := false
 
 	for event := range proc.Events() {
-		// Resolve harness id from the new field, falling back to the legacy
-		// SessionID emitted by older bridges. Skip if it equals the bridge id —
-		// older bridges sometimes set SessionID = bridge_id, which is meaningless
-		// here (it's not a harness id).
-		harnessID := event.EffectiveHarnessSessionID()
+		// Read the harness id directly from the canonical field. Skip if it
+		// equals the bridge id — some bridges set HarnessSessionID = bridge_id
+		// before the harness has minted its own internal id, which is
+		// meaningless here.
+		harnessID := event.HarnessSessionID
 		if harnessID == bridgeID {
 			harnessID = ""
 		}
@@ -401,9 +401,7 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 				idEvent := msg.Event{
 					Type:             msg.EventSystem,
 					BridgeSessionID:  bridgeID,
-					BridgeID:         bridgeID, // legacy mirror
 					HarnessSessionID: harnessID,
-					SessionID:        harnessID, // legacy mirror; old consumers expect harness id here
 					Timestamp:        time.Now(),
 					System:           &msg.SystemEvent{Subtype: "harness_id_set", Message: harnessID},
 				}
@@ -422,17 +420,9 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 			}
 		}
 
-		// Force bridge_session_id to the canonical value on both the new and the
-		// legacy field. Bridges should already be setting it correctly; defend
-		// against drift and keep the legacy field populated for old consumers.
+		// Force bridge_session_id to the canonical value. Bridges should
+		// already be setting it correctly; defend against drift.
 		event.BridgeSessionID = bridgeID
-		event.BridgeID = bridgeID
-		// Mirror the resolved harness id onto both fields so any consumer
-		// (whether reading old or new) sees a consistent value.
-		if harnessID != "" {
-			event.HarnessSessionID = harnessID
-			event.SessionID = harnessID
-		}
 
 		// Assign canonical bridge MessageID and capture harness id.
 		m.AssignMessageID(bridgeID, &event)
@@ -562,7 +552,6 @@ func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 	for i := range derived {
 		ev := &derived[i]
 		ev.BridgeSessionID = bridgeID
-		ev.BridgeID = bridgeID
 
 		var rowID int64
 		if data, err := json.Marshal(ev); err == nil {
@@ -596,14 +585,10 @@ func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 // harness stdout). Used by the /send handler to publish user_message events
 // so other SSE subscribers see them without an extra round-trip.
 func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
-	bridgeID := ev.EffectiveBridgeSessionID()
+	bridgeID := ev.BridgeSessionID
 	if bridgeID == "" {
 		return 0, fmt.Errorf("BroadcastEvent: bridge_session_id is required")
 	}
-	// Mirror onto both fields so downstream consumers (old and new) see a
-	// consistent value.
-	ev.BridgeSessionID = bridgeID
-	ev.BridgeID = bridgeID
 
 	m.AssignMessageID(bridgeID, ev)
 

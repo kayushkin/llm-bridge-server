@@ -245,6 +245,7 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+	s.broadcastDisplayNameChanged(bridgeID, sess.DisplayName)
 	writeJSON(w, sess)
 }
 
@@ -303,7 +304,6 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	userEvent := msg.Event{
 		Type:            msg.EventUserMessage,
 		BridgeSessionID: bridgeID,
-		BridgeID:        bridgeID, // legacy mirror
 		ClientRequestID: req.ClientRequestID,
 		Timestamp:       time.Now(),
 		Result:          &msg.ResultEvent{Text: req.Message},

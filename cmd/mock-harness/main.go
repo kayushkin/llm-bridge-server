@@ -82,7 +82,7 @@ func main() {
 		emit(msg.Event{
 			Type:      msg.EventSessionState,
 			Harness:   msg.Harness(harnessName),
-			SessionID: sessionID,
+			BridgeSessionID: sessionID,
 			Timestamp: time.Now(),
 			State:     &msg.StateEvent{State: state},
 		})
@@ -129,7 +129,7 @@ func main() {
 			emit(msg.Event{
 				Type:      msg.EventSystem,
 				Harness:   msg.Harness(harnessName),
-				SessionID: sessionID,
+				BridgeSessionID: sessionID,
 				Timestamp: time.Now(),
 				System:    &msg.SystemEvent{Subtype: "compact_complete", Message: "Context compacted"},
 			})
@@ -143,7 +143,7 @@ func main() {
 				emit(msg.Event{
 					Type:      msg.EventSystem,
 					Harness:   msg.Harness(harnessName),
-					SessionID: sessionID,
+					BridgeSessionID: sessionID,
 					Timestamp: time.Now(),
 					System:    &msg.SystemEvent{Subtype: "compact_complete", Message: "Context compacted with summary"},
 				})
@@ -151,7 +151,7 @@ func main() {
 				emit(msg.Event{
 					Type:      msg.EventSystem,
 					Harness:   msg.Harness(harnessName),
-					SessionID: sessionID,
+					BridgeSessionID: sessionID,
 					Timestamp: time.Now(),
 					System:    &msg.SystemEvent{Subtype: "config_updated", Message: "Configuration updated"},
 				})
@@ -165,7 +165,7 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 		emit(msg.Event{
 			Type:      msg.EventError,
 			Harness:   msg.Harness(harnessName),
-			SessionID: sessionID,
+			BridgeSessionID: sessionID,
 			Timestamp: time.Now(),
 			Error:     &msg.ErrorEvent{Message: "simulated error"},
 		})
@@ -176,7 +176,7 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 	emit(msg.Event{
 		Type:      msg.EventStream,
 		Harness:   msg.Harness(harnessName),
-		SessionID: sessionID,
+		BridgeSessionID: sessionID,
 		Timestamp: time.Now(),
 		Stream: &msg.HarnessStream{Delta: &msg.BlockDelta{
 			Type: msg.DeltaText,
@@ -188,7 +188,7 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 	emit(msg.Event{
 		Type:      msg.EventResult,
 		Harness:   msg.Harness(harnessName),
-		SessionID: sessionID,
+		BridgeSessionID: sessionID,
 		Timestamp: time.Now(),
 		Result:    &msg.ResultEvent{Text: "Mock response to: " + userMessage},
 	})
@@ -197,7 +197,7 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 	emit(msg.Event{
 		Type:      msg.EventSessionState,
 		Harness:   msg.Harness(harnessName),
-		SessionID: sessionID,
+		BridgeSessionID: sessionID,
 		Timestamp: time.Now(),
 		State:     &msg.StateEvent{State: msg.SessionIdle},
 	})

@@ -239,9 +239,9 @@ func TestConformance(t *testing.T) {
 			t.Fatalf("wait for running state: %v", err)
 		}
 
-		if event.SessionID == "" {
-			result.AddResult(TestResult{Feature: FeatureStart, Error: "session_id empty in event"})
-			t.Error("session_id should be set in events")
+		if event.BridgeSessionID == "" {
+			result.AddResult(TestResult{Feature: FeatureStart, Error: "bridge_session_id empty in event"})
+			t.Error("bridge_session_id should be set in events")
 		}
 
 		result.AddResult(TestResult{Feature: FeatureStart, Passed: true, Duration: time.Since(start).String()})

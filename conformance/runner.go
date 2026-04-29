@@ -331,8 +331,8 @@ func testStart(ctx context.Context, binary string, timeout time.Duration) TestRe
 	if err != nil {
 		return TestResult{Feature: FeatureStart, Error: err.Error()}
 	}
-	if event.SessionID == "" {
-		return TestResult{Feature: FeatureStart, Error: "session_id empty in event"}
+	if event.BridgeSessionID == "" {
+		return TestResult{Feature: FeatureStart, Error: "bridge_session_id empty in event"}
 	}
 	return TestResult{Feature: FeatureStart, Passed: true, Duration: time.Since(start).String()}
 }

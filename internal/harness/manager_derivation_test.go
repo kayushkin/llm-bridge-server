@@ -37,7 +37,7 @@ func newTestManager(t *testing.T) *Manager {
 		t.Fatalf("new store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return NewManager(st, "http://127.0.0.1:0", "http://127.0.0.1:0", 0)
+	return NewManager(st, "http://127.0.0.1:0", "http://127.0.0.1:0", 0, nil)
 }
 
 // recvWithin reads up to want events from ch, failing the test if
@@ -90,12 +90,12 @@ func TestManager_DerivesAgentStateAfterRawEvent(t *testing.T) {
 	go m.readEvents(proc)
 
 	feed := []msg.Event{
-		{Type: msg.EventUserMessage, SessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1"},
-		{Type: msg.EventToolCall, SessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1",
+		{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1"},
+		{Type: msg.EventToolCall, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1",
 			ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}},
-		{Type: msg.EventToolResult, SessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1",
+		{Type: msg.EventToolResult, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1",
 			ToolResult: &msg.ToolResultEvent{ToolID: "t1"}},
-		{Type: msg.EventResult, SessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1",
+		{Type: msg.EventResult, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1",
 			Result: &msg.ResultEvent{Text: "done"}},
 	}
 	for _, ev := range feed {
@@ -139,8 +139,8 @@ func TestManager_DerivesAgentStateAfterRawEvent(t *testing.T) {
 	if first.RowID == 0 {
 		t.Fatalf("first derived event has zero RowID — not persisted")
 	}
-	if first.BridgeID != bridgeID {
-		t.Fatalf("derived event missing bridge_id stamp: %+v", first.Event)
+	if first.BridgeSessionID != bridgeID {
+		t.Fatalf("derived event missing bridge_session_id stamp: %+v", first.Event)
 	}
 
 	idleTransition := got[5]
@@ -158,8 +158,8 @@ func TestManager_DerivesAgentStateAfterRawEvent(t *testing.T) {
 	if usageTotal.RowID == 0 {
 		t.Fatalf("usage_total derived event has zero RowID — not persisted")
 	}
-	if usageTotal.BridgeID != bridgeID {
-		t.Fatalf("usage_total missing bridge_id stamp: %+v", usageTotal.Event)
+	if usageTotal.BridgeSessionID != bridgeID {
+		t.Fatalf("usage_total missing bridge_session_id stamp: %+v", usageTotal.Event)
 	}
 
 	turnComplete := got[7]
@@ -175,8 +175,8 @@ func TestManager_DerivesAgentStateAfterRawEvent(t *testing.T) {
 	if turnComplete.RowID == 0 {
 		t.Fatalf("turn_complete derived event has zero RowID — not persisted")
 	}
-	if turnComplete.BridgeID != bridgeID {
-		t.Fatalf("turn_complete missing bridge_id stamp: %+v", turnComplete.Event)
+	if turnComplete.BridgeSessionID != bridgeID {
+		t.Fatalf("turn_complete missing bridge_session_id stamp: %+v", turnComplete.Event)
 	}
 }
 
@@ -213,22 +213,22 @@ func TestManager_UsageTotalSnapshotsAcrossTurns(t *testing.T) {
 	// Turn 2: unpriced (cost stays at the turn-1 priced subtotal).
 	// Turn 3: priced (cost grows; context_tokens drops, last-value-wins).
 	feed := []msg.Event{
-		{Type: msg.EventUserMessage, SessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1"},
-		{Type: msg.EventResult, SessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1",
+		{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1"},
+		{Type: msg.EventResult, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1",
 			Result: &msg.ResultEvent{
 				Text:  "ok",
 				Usage: msg.TokenUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, ContextTokens: 1000, ContextLimit: 200000},
 				Cost:  &msg.Cost{TotalUSD: 0.10, InputUSD: 0.04, OutputUSD: 0.06},
 			}},
-		{Type: msg.EventUserMessage, SessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-2"},
-		{Type: msg.EventResult, SessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-2",
+		{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-2"},
+		{Type: msg.EventResult, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-2",
 			Result: &msg.ResultEvent{
 				Text:  "ok",
 				Usage: msg.TokenUsage{InputTokens: 30, OutputTokens: 15, TotalTokens: 45},
 				// Unpriced.
 			}},
-		{Type: msg.EventUserMessage, SessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-3"},
-		{Type: msg.EventResult, SessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-3",
+		{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-3"},
+		{Type: msg.EventResult, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-3",
 			Result: &msg.ResultEvent{
 				Text:  "ok",
 				Usage: msg.TokenUsage{InputTokens: 40, OutputTokens: 20, TotalTokens: 60, ContextTokens: 800, ContextLimit: 200000},
@@ -369,7 +369,7 @@ func TestManager_DerivationStateTornDownOnProcessExit(t *testing.T) {
 		close(done)
 	}()
 
-	proc.ch <- msg.Event{Type: msg.EventUserMessage, SessionID: bridgeID, Harness: msg.HarnessClaudeCode}
+	proc.ch <- msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode}
 
 	// Drain the subscriber-less fan-out by waiting briefly for
 	// readEvents to process the event, then close.

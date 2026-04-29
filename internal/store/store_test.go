@@ -275,8 +275,8 @@ func TestStoreAndListEvents(t *testing.T) {
 	sess := &Session{BridgeID: "br_ev", ClientID: "fe_x", Harness: "mock", State: "idle"}
 	s.CreateSession(sess)
 
-	event1 := msg.Event{Type: msg.EventStream, SessionID: "br_ev", Timestamp: time.Now()}
-	event2 := msg.Event{Type: msg.EventResult, SessionID: "br_ev", Timestamp: time.Now()}
+	event1 := msg.Event{Type: msg.EventStream, BridgeSessionID: "br_ev", Timestamp: time.Now()}
+	event2 := msg.Event{Type: msg.EventResult, BridgeSessionID: "br_ev", Timestamp: time.Now()}
 
 	data1, _ := json.Marshal(event1)
 	data2, _ := json.Marshal(event2)
@@ -396,7 +396,7 @@ func TestConcurrentWrites(t *testing.T) {
 
 	// Sequential writes (the production code serializes via Manager.mu)
 	for i := range 20 {
-		data, _ := json.Marshal(msg.Event{Type: msg.EventStream, SessionID: "br_conc"})
+		data, _ := json.Marshal(msg.Event{Type: msg.EventStream, BridgeSessionID: "br_conc"})
 		if err := s.StoreEvent("br_conc", "stream", "", "", data); err != nil {
 			t.Errorf("write %d: %v", i, err)
 		}

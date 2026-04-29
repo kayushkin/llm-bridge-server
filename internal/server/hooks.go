@@ -279,7 +279,6 @@ func (s *Server) broadcastHookEvent(hook *msg.Hook, sessionID, toolName string, 
 		Type:            msg.EventHook,
 		Harness:         hook.Harness,
 		BridgeSessionID: sessionID,
-		BridgeID:        sessionID, // legacy mirror
 		Timestamp:       time.Now().UTC(),
 		Hook:            h,
 	})
