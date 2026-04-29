@@ -831,14 +831,19 @@ func runDiscover(ctx context.Context, binPath string) ([]msg.StoredSession, erro
 }
 
 // ImportHistory runs a harness with -import-history and pushes events to log-store.
-// Used to import conversation history for discovered sessions.
-func (m *Manager) ImportHistory(ctx context.Context, h msg.Harness, sessionID string) (int, error) {
+// Used to import conversation history for discovered sessions. The harness has no
+// concept of bridge sessions, so each emitted event leaves bridge_session_id empty;
+// the manager owns that mapping and stamps it here before pushing to log-store.
+func (m *Manager) ImportHistory(ctx context.Context, bridgeSessionID string, h msg.Harness, harnessSessionID string) (int, error) {
+	if bridgeSessionID == "" {
+		return 0, fmt.Errorf("ImportHistory: bridge_session_id is required")
+	}
 	binPath, ok := Available(h)
 	if !ok {
 		return 0, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 	}
 
-	cmd := exec.CommandContext(ctx, binPath, "-import-history", sessionID)
+	cmd := exec.CommandContext(ctx, binPath, "-import-history", harnessSessionID)
 	cmd.Stderr = os.Stderr
 
 	out, err := cmd.Output()
@@ -861,6 +866,8 @@ func (m *Manager) ImportHistory(ctx context.Context, h msg.Harness, sessionID st
 		if err := json.Unmarshal(line, &event); err != nil {
 			continue
 		}
+
+		event.BridgeSessionID = bridgeSessionID
 
 		if _, err := m.logStore.PushEvent(event); err != nil {
 			log.Printf("[import-history] failed to push event: %v", err)

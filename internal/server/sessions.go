@@ -609,7 +609,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		instanceID := localInstances[ds.Harness]
 		source, folder := s.discoverySourceFolder(ds.Prompt)
 
-		inserted, err := s.store.UpsertDiscoveredSession(
+		bridgeID, inserted, err := s.store.UpsertDiscoveredSession(
 			ds.ID,
 			displayName,
 			string(ds.Harness),
@@ -626,14 +626,14 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		if inserted {
 			imported++
 			// Import history to log-store for new sessions
-			go func(h msg.Harness, sid string) {
-				n, err := s.harness.ImportHistory(context.Background(), h, sid)
+			go func(h msg.Harness, brID, sid string) {
+				n, err := s.harness.ImportHistory(context.Background(), brID, h, sid)
 				if err != nil {
 					log.Printf("[discover] failed to import history for %s: %v", sid, err)
 				} else if n > 0 {
 					log.Printf("[discover] imported %d events for session %s", n, sid)
 				}
-			}(ds.Harness, ds.ID)
+			}(ds.Harness, bridgeID, ds.ID)
 		}
 	}
 	if imported > 0 {

@@ -356,21 +356,27 @@ func TestUpsertDiscoveredSession(t *testing.T) {
 	now := time.Now()
 
 	// First insert
-	inserted, err := s.UpsertDiscoveredSession("cc-uuid-1", "Test Task", "claude_code", "inst_1", "", "", now, now)
+	bridgeID, inserted, err := s.UpsertDiscoveredSession("cc-uuid-1", "Test Task", "claude_code", "inst_1", "", "", now, now)
 	if err != nil {
 		t.Fatalf("upsert 1: %v", err)
 	}
 	if !inserted {
 		t.Error("expected inserted=true for new session")
 	}
+	if bridgeID == "" {
+		t.Error("expected bridge_id to be returned for new session")
+	}
 
-	// Second upsert (same harness_id) should not insert
-	inserted, err = s.UpsertDiscoveredSession("cc-uuid-1", "Updated Name", "claude_code", "", "", "", now, now.Add(time.Minute))
+	// Second upsert (same harness_id) should not insert and should return the existing bridge_id
+	bridgeID2, inserted, err := s.UpsertDiscoveredSession("cc-uuid-1", "Updated Name", "claude_code", "", "", "", now, now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("upsert 2: %v", err)
 	}
 	if inserted {
 		t.Error("expected inserted=false for existing session")
+	}
+	if bridgeID2 != bridgeID {
+		t.Errorf("existing bridge_id = %q, want %q (should be stable)", bridgeID2, bridgeID)
 	}
 
 	// Verify the session exists and has instance_id preserved

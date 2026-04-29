@@ -1014,8 +1014,8 @@ func (s *Store) SetSessionFolder(bridgeID, folder string) error {
 // harnessID is the harness-native session ID (e.g. CC UUID).
 // instanceID is the instance that discovered this session.
 // source/folderName tag the session for sidebar grouping (see config.SourceFolders).
-// Returns true if a new row was inserted.
-func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanceID, source, folderName string, createdAt, updatedAt time.Time) (bool, error) {
+// Returns the canonical bridge_id (newly generated or existing) and whether a new row was inserted.
+func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanceID, source, folderName string, createdAt, updatedAt time.Time) (string, bool, error) {
 	// Check if session already exists by harness_id
 	var existingBridgeID, existingInstanceID, existingDisplayName, existingSource, existingFolder string
 	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(source, ''), COALESCE(folder_name, '') FROM sessions WHERE harness_id=?`, harnessID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder)
@@ -1040,10 +1040,10 @@ func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanc
 			newFolder = folderName
 		}
 		s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=?, source=?, folder_name=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, newSource, newFolder, existingBridgeID)
-		return false, nil
+		return existingBridgeID, false, nil
 	}
 	if err != sql.ErrNoRows {
-		return false, err
+		return "", false, err
 	}
 
 	// Insert new discovered session with state "idle"
@@ -1053,9 +1053,9 @@ func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanc
 		bridgeID, harnessID, "", displayName, harness, instanceID, "idle", 0, "", "", "", source, folderName, createdAt, updatedAt,
 	)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
-	return true, nil
+	return bridgeID, true, nil
 }
 
 // ListSourceFolders returns every runtime override row, keyed by source.
