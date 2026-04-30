@@ -392,7 +392,7 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 		// On first event with a harness_session_id, persist it on the session row.
 		// bridge_session_id stays stable across the conversation.
 		if !harnessIDSet && harnessID != "" {
-			if err := m.store.SetHarnessID(bridgeID, harnessID); err != nil {
+			if err := m.store.SetHarnessSessionID(bridgeID, harnessID); err != nil {
 				log.Printf("[harness] failed to set harness_session_id on %s: %v", bridgeID, err)
 			} else {
 				harnessIDSet = true

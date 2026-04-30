@@ -82,11 +82,11 @@ type CommandParams struct {
 func buildStartParams(sess *store.Session, credentialID string) json.RawMessage {
 	params := StartParams{
 		BridgeSessionID:  sess.BridgeID,
-		HarnessSessionID: sess.HarnessID,
+		HarnessSessionID: sess.HarnessSessionID,
 		DisplayName:      sess.DisplayName,
 		AgentID:          sess.AgentID,
 		CredentialID:     credentialID,
-		Resume:           sess.HarnessID != "",
+		Resume:           sess.HarnessSessionID != "",
 	}
 	if params.Resume && sess.DisplayName != "" && sess.DisplayName[0] == '/' {
 		params.WorkDir = sess.DisplayName
@@ -319,7 +319,7 @@ func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, c
 	if credentialID != "" {
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_CREDENTIAL_ID="+credentialID)
 	}
-	if hid := sess.HarnessID; hid != "" {
+	if hid := sess.HarnessSessionID; hid != "" {
 		// Resume hint passed via env so the pty-mode harness can pick
 		// the right session without us shoehorning a JSON-RPC handshake
 		// across the tty (where the user is going to be typing).

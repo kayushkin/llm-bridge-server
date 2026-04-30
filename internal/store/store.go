@@ -57,19 +57,19 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) migrate() error {
 	_, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS sessions (
-			bridge_id    TEXT PRIMARY KEY,
-			harness_id   TEXT NOT NULL DEFAULT '',
-			client_id    TEXT NOT NULL DEFAULT '',
-			display_name TEXT NOT NULL DEFAULT '',
-			harness      TEXT NOT NULL,
-			state        TEXT NOT NULL,
-			pid          INTEGER NOT NULL DEFAULT 0,
-			agent_id     TEXT NOT NULL DEFAULT '',
-			spawner_id   TEXT NOT NULL DEFAULT '',
-			parent_id    TEXT NOT NULL DEFAULT '',
-			instance_id  TEXT NOT NULL DEFAULT '',
-			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			bridge_id          TEXT PRIMARY KEY,
+			harness_session_id TEXT NOT NULL DEFAULT '',
+			client_id          TEXT NOT NULL DEFAULT '',
+			display_name       TEXT NOT NULL DEFAULT '',
+			harness            TEXT NOT NULL,
+			state              TEXT NOT NULL,
+			pid                INTEGER NOT NULL DEFAULT 0,
+			agent_id           TEXT NOT NULL DEFAULT '',
+			spawner_id         TEXT NOT NULL DEFAULT '',
+			parent_id          TEXT NOT NULL DEFAULT '',
+			instance_id        TEXT NOT NULL DEFAULT '',
+			created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);
 		CREATE INDEX IF NOT EXISTS idx_sessions_harness ON sessions(harness);
@@ -97,12 +97,51 @@ func (s *Store) migrate() error {
 	// Migrations for existing DBs (old schema used 'id' as PK)
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_id TEXT NOT NULL DEFAULT ''")
+	// harness_session_id was introduced in this column under the older name
+	// `harness_id`. The rename block below handles the rename for DBs that
+	// already added the old column. Fresh DBs get harness_session_id from the
+	// CREATE TABLE above. We still ADD COLUMN here (idempotent) so a DB that
+	// pre-dates harness_id entirely still gets the column under the new name.
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_session_id TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN client_id TEXT NOT NULL DEFAULT ''")
 	// Backfill: old rows have 'id' but no bridge_id — handled by the rename below.
 	// If upgrading from old schema where PK was 'id', rename it to bridge_id.
 	s.db.Exec("ALTER TABLE sessions RENAME COLUMN id TO bridge_id")
 	s.db.Exec("ALTER TABLE sessions RENAME COLUMN client_request_id TO client_id")
+	// session-chain rename: harness_id -> harness_session_id. Detect and run only
+	// on DBs that still have the old column. Fresh DBs and already-migrated DBs
+	// no-op cleanly. (RENAME COLUMN was added in SQLite 3.25.)
+	if rows, err := s.db.Query("PRAGMA table_info(sessions)"); err == nil {
+		hasOld := false
+		hasNew := false
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err == nil {
+				switch name {
+				case "harness_id":
+					hasOld = true
+				case "harness_session_id":
+					hasNew = true
+				}
+			}
+		}
+		rows.Close()
+		if hasOld && !hasNew {
+			s.db.Exec("ALTER TABLE sessions RENAME COLUMN harness_id TO harness_session_id")
+			s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_id")
+		} else if hasOld && hasNew {
+			// Both columns coexist (interrupted migration or extra ADD COLUMN
+			// landed after rename). Coalesce into harness_session_id and drop
+			// the duplicate. Use UPDATE+SELECT since SQLite has no merge.
+			s.db.Exec("UPDATE sessions SET harness_session_id = harness_id WHERE COALESCE(harness_session_id, '') = '' AND COALESCE(harness_id, '') != ''")
+			s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_id")
+			// SQLite supports DROP COLUMN since 3.35.
+			s.db.Exec("ALTER TABLE sessions DROP COLUMN harness_id")
+		}
+	}
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_config TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN info TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN folder_name TEXT NOT NULL DEFAULT ''")
@@ -118,8 +157,8 @@ func (s *Store) migrate() error {
 	// pty-mode child 2: per-session I/O mode. Empty / "events" = legacy
 	// structured-events flow; "pty" = pseudoterminal attached over WS.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT ''")
-	// Index on harness_id must be created after ALTER TABLE migration adds the column.
-	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_harness_id ON sessions(harness_id)")
+	// Index on harness_session_id must be created after ALTER TABLE migration adds/renames the column.
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_harness_session_id ON sessions(harness_session_id)")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_folder ON sessions(folder_name)")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source)")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)")
@@ -177,22 +216,22 @@ func (s *Store) CreateSession(sess *Session) error {
 		}
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO sessions (bridge_id, harness_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, harness_config, source, folder_name, mode, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.BridgeID, sess.HarnessID, sess.ClientID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.Source, sess.FolderName, string(sess.Mode), sess.CreatedAt, sess.UpdatedAt,
+		`INSERT INTO sessions (bridge_id, harness_session_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, harness_config, source, folder_name, mode, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sess.BridgeID, sess.HarnessSessionID, sess.ClientID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.Source, sess.FolderName, string(sess.Mode), sess.CreatedAt, sess.UpdatedAt,
 	); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-const sessionColumns = `bridge_id, COALESCE(harness_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(source, ''), COALESCE(mode, ''), created_at, updated_at`
+const sessionColumns = `bridge_id, COALESCE(harness_session_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(source, ''), COALESCE(mode, ''), created_at, updated_at`
 
 func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var sess Session
 	var harnessConfig string
 	var info string
 	var mode string
-	err := sc.Scan(&sess.BridgeID, &sess.HarnessID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Source, &mode, &sess.CreatedAt, &sess.UpdatedAt)
+	err := sc.Scan(&sess.BridgeID, &sess.HarnessSessionID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Source, &mode, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -233,10 +272,10 @@ func (s *Store) GetSession(bridgeID string) (*Session, error) {
 	))
 }
 
-// GetSessionByHarnessID looks up a session by its harness-reported session ID.
-func (s *Store) GetSessionByHarnessID(harnessID string) (*Session, error) {
+// GetSessionByHarnessSessionID looks up a session by its harness-reported session ID.
+func (s *Store) GetSessionByHarnessSessionID(harnessSessionID string) (*Session, error) {
 	return scanSession(s.db.QueryRow(
-		`SELECT `+sessionColumns+` FROM sessions WHERE harness_id=?`, harnessID,
+		`SELECT `+sessionColumns+` FROM sessions WHERE harness_session_id=?`, harnessSessionID,
 	))
 }
 
@@ -396,10 +435,10 @@ func (s *Store) LastActivityAt(bridgeID string) (time.Time, error) {
 	return time.ParseInLocation("2006-01-02 15:04:05", raw.String, time.UTC)
 }
 
-// SetHarnessID fills in the harness-reported session ID on a session.
-func (s *Store) SetHarnessID(bridgeID, harnessID string) error {
+// SetHarnessSessionID fills in the harness-reported session ID on a session.
+func (s *Store) SetHarnessSessionID(bridgeID, harnessSessionID string) error {
 	now := time.Now().UTC()
-	_, err := s.db.Exec(`UPDATE sessions SET harness_id=?, updated_at=? WHERE bridge_id=?`, harnessID, now, bridgeID)
+	_, err := s.db.Exec(`UPDATE sessions SET harness_session_id=?, updated_at=? WHERE bridge_id=?`, harnessSessionID, now, bridgeID)
 	return err
 }
 
@@ -1011,14 +1050,14 @@ func (s *Store) SetSessionFolder(bridgeID, folder string) error {
 }
 
 // UpsertDiscoveredSession inserts a discovered session if it doesn't already exist.
-// harnessID is the harness-native session ID (e.g. CC UUID).
+// harnessSessionID is the harness-native session ID (e.g. CC UUID).
 // instanceID is the instance that discovered this session.
 // source/folderName tag the session for sidebar grouping (see config.SourceFolders).
 // Returns the canonical bridge_id (newly generated or existing) and whether a new row was inserted.
-func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanceID, source, folderName string, createdAt, updatedAt time.Time) (string, bool, error) {
-	// Check if session already exists by harness_id
+func (s *Store) UpsertDiscoveredSession(harnessSessionID, displayName, harness, instanceID, source, folderName string, createdAt, updatedAt time.Time) (string, bool, error) {
+	// Check if session already exists by harness_session_id
 	var existingBridgeID, existingInstanceID, existingDisplayName, existingSource, existingFolder string
-	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(source, ''), COALESCE(folder_name, '') FROM sessions WHERE harness_id=?`, harnessID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder)
+	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(source, ''), COALESCE(folder_name, '') FROM sessions WHERE harness_session_id=?`, harnessSessionID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder)
 	if err == nil {
 		// Already exists - update timestamp, display_name, instance_id, source,
 		// and folder where the existing values are empty. Existing non-empty
@@ -1049,8 +1088,8 @@ func (s *Store) UpsertDiscoveredSession(harnessID, displayName, harness, instanc
 	// Insert new discovered session with state "idle"
 	bridgeID := fmt.Sprintf("br_%d", time.Now().UnixNano())
 	_, err = s.db.Exec(
-		`INSERT INTO sessions (bridge_id, harness_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, source, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		bridgeID, harnessID, "", displayName, harness, instanceID, "idle", 0, "", "", "", source, folderName, createdAt, updatedAt,
+		`INSERT INTO sessions (bridge_id, harness_session_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, source, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		bridgeID, harnessSessionID, "", displayName, harness, instanceID, "idle", 0, "", "", "", source, folderName, createdAt, updatedAt,
 	)
 	if err != nil {
 		return "", false, err

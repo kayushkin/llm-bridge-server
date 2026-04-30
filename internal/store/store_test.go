@@ -215,28 +215,28 @@ func TestUpdateSessionPID(t *testing.T) {
 	}
 }
 
-func TestSetHarnessID(t *testing.T) {
+func TestSetHarnessSessionID(t *testing.T) {
 	s := testStore(t)
 
 	sess := &Session{BridgeID: "br_hid", ClientID: "fe_x", Harness: "mock", State: "idle"}
 	s.CreateSession(sess)
 
-	if err := s.SetHarnessID("br_hid", "cc-uuid-abc123"); err != nil {
-		t.Fatalf("set harness id: %v", err)
+	if err := s.SetHarnessSessionID("br_hid", "cc-uuid-abc123"); err != nil {
+		t.Fatalf("set harness session id: %v", err)
 	}
 
 	got, _ := s.GetSession("br_hid")
-	if got.HarnessID != "cc-uuid-abc123" {
-		t.Errorf("harness_id = %q, want cc-uuid-abc123", got.HarnessID)
+	if got.HarnessSessionID != "cc-uuid-abc123" {
+		t.Errorf("harness_session_id = %q, want cc-uuid-abc123", got.HarnessSessionID)
 	}
 
-	// Also verify GetSessionByHarnessID
-	got2, err := s.GetSessionByHarnessID("cc-uuid-abc123")
+	// Also verify GetSessionByHarnessSessionID
+	got2, err := s.GetSessionByHarnessSessionID("cc-uuid-abc123")
 	if err != nil {
-		t.Fatalf("get by harness id: %v", err)
+		t.Fatalf("get by harness session id: %v", err)
 	}
 	if got2.BridgeID != "br_hid" {
-		t.Errorf("bridge_id from harness_id lookup = %q, want br_hid", got2.BridgeID)
+		t.Errorf("bridge_id from harness_session_id lookup = %q, want br_hid", got2.BridgeID)
 	}
 }
 
@@ -367,7 +367,7 @@ func TestUpsertDiscoveredSession(t *testing.T) {
 		t.Error("expected bridge_id to be returned for new session")
 	}
 
-	// Second upsert (same harness_id) should not insert and should return the existing bridge_id
+	// Second upsert (same harness_session_id) should not insert and should return the existing bridge_id
 	bridgeID2, inserted, err := s.UpsertDiscoveredSession("cc-uuid-1", "Updated Name", "claude_code", "", "", "", now, now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("upsert 2: %v", err)
@@ -380,7 +380,7 @@ func TestUpsertDiscoveredSession(t *testing.T) {
 	}
 
 	// Verify the session exists and has instance_id preserved
-	sess, err := s.GetSessionByHarnessID("cc-uuid-1")
+	sess, err := s.GetSessionByHarnessSessionID("cc-uuid-1")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
