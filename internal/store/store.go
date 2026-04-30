@@ -813,6 +813,92 @@ func (s *Store) ToolUseToMessageMap(sessionID string) (map[string]ToolUseBinding
 	return out, rows.Err()
 }
 
+// InFlightTurnState captures the per-session turn-level state that the harness
+// manager keeps in memory for stamping events. Returned by RecoverInFlightTurn
+// when a session's process restarts mid-turn so the manager can resume
+// stamping the same TurnID/MessageID instead of leaving subsequent events
+// unstamped.
+type InFlightTurnState struct {
+	TurnID           string
+	ClientRequestID  string
+	BridgeMessageID  string
+	HarnessMessageID string
+}
+
+// RecoverInFlightTurn inspects the events table to recover turn-level state
+// for a session whose process is restarting. A turn is "in flight" when the
+// most recent user_message has no result/error event after it. When in flight,
+// the returned state carries the user_message's turn_id (and client_request_id),
+// plus the most recent assistant bubble's bridge/harness message ids — so
+// post-restart events for the same turn get stamped with the original ids.
+//
+// Returns (nil, nil) when no user_message has been recorded yet, or when the
+// most recent turn already has a terminator. Errors propagate.
+func (s *Store) RecoverInFlightTurn(sessionID string) (*InFlightTurnState, error) {
+	var lastUserID int
+	var lastUserData string
+	err := s.db.QueryRow(
+		`SELECT id, data FROM events
+		 WHERE session_id=? AND type='user_message'
+		 ORDER BY id DESC LIMIT 1`,
+		sessionID,
+	).Scan(&lastUserID, &lastUserData)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var terminatorID int
+	err = s.db.QueryRow(
+		`SELECT COALESCE(MAX(id), 0) FROM events
+		 WHERE session_id=? AND id > ? AND type IN ('result','error')`,
+		sessionID, lastUserID,
+	).Scan(&terminatorID)
+	if err != nil {
+		return nil, err
+	}
+	if terminatorID > 0 {
+		return nil, nil
+	}
+
+	var userEv msg.Event
+	if err := json.Unmarshal([]byte(lastUserData), &userEv); err != nil {
+		return nil, fmt.Errorf("recover turn: unmarshal user_message: %w", err)
+	}
+	if userEv.TurnID == "" {
+		return nil, nil
+	}
+
+	st := &InFlightTurnState{
+		TurnID:          userEv.TurnID,
+		ClientRequestID: userEv.ClientRequestID,
+	}
+
+	// Most recent assistant-side bubble in the in-flight turn — used so a
+	// post-restart event arriving without a fresh harness id falls back into
+	// the still-open bubble rather than minting a new one.
+	rows, err := s.db.Query(
+		`SELECT message_id, harness_message_id FROM events
+		 WHERE session_id=? AND id > ?
+		   AND type IN ('block','stream','thinking','tool_call','tool_result','plan','approval','result')
+		   AND message_id != ''
+		 ORDER BY id DESC LIMIT 1`,
+		sessionID, lastUserID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		if err := rows.Scan(&st.BridgeMessageID, &st.HarnessMessageID); err != nil {
+			return nil, err
+		}
+	}
+	return st, rows.Err()
+}
+
 func (s *Store) DeleteSession(bridgeID string) error {
 	res, err := s.db.Exec(`DELETE FROM sessions WHERE bridge_id=?`, bridgeID)
 	if err != nil {

@@ -346,6 +346,84 @@ func TestListCurrentTurnEvents(t *testing.T) {
 	}
 }
 
+func TestRecoverInFlightTurn(t *testing.T) {
+	s := testStore(t)
+
+	sess := &Session{BridgeID: "br_recov", ClientID: "fe_x", Harness: "mock", State: "idle"}
+	s.CreateSession(sess)
+
+	// No user_message yet — nothing to recover.
+	got, err := s.RecoverInFlightTurn("br_recov")
+	if err != nil {
+		t.Fatalf("recover empty: %v", err)
+	}
+	if got != nil {
+		t.Errorf("recover empty = %+v, want nil", got)
+	}
+
+	storeEv := func(typ msg.EventType, ev msg.Event) {
+		t.Helper()
+		ev.Type = typ
+		data, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if _, err := s.StoreEventReturningID("br_recov", string(typ), ev.MessageID, ev.HarnessMessageID, data); err != nil {
+			t.Fatalf("store: %v", err)
+		}
+	}
+
+	// Closed turn: user_message → block → result. Nothing in flight.
+	storeEv(msg.EventUserMessage, msg.Event{TurnID: "turn_a", ClientRequestID: "req_a", MessageID: "msg_user_a"})
+	storeEv(msg.EventBlock, msg.Event{TurnID: "turn_a", MessageID: "msg_assist_a", HarnessMessageID: "h_a"})
+	storeEv(msg.EventResult, msg.Event{TurnID: "turn_a", MessageID: "msg_assist_a", HarnessMessageID: "h_a"})
+
+	got, err = s.RecoverInFlightTurn("br_recov")
+	if err != nil {
+		t.Fatalf("recover after closed: %v", err)
+	}
+	if got != nil {
+		t.Errorf("recover after closed = %+v, want nil", got)
+	}
+
+	// Open a new turn that the harness restart interrupts before any
+	// result/error lands. Recovery must surface the in-flight state.
+	storeEv(msg.EventUserMessage, msg.Event{TurnID: "turn_b", ClientRequestID: "req_b", MessageID: "msg_user_b"})
+	storeEv(msg.EventBlock, msg.Event{TurnID: "turn_b", MessageID: "msg_assist_b1", HarnessMessageID: "h_b1"})
+	storeEv(msg.EventToolCall, msg.Event{TurnID: "turn_b", MessageID: "msg_assist_b2", HarnessMessageID: "h_b2"})
+
+	got, err = s.RecoverInFlightTurn("br_recov")
+	if err != nil {
+		t.Fatalf("recover in-flight: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("recover in-flight = nil, want state")
+	}
+	if got.TurnID != "turn_b" {
+		t.Errorf("TurnID = %q, want turn_b", got.TurnID)
+	}
+	if got.ClientRequestID != "req_b" {
+		t.Errorf("ClientRequestID = %q, want req_b", got.ClientRequestID)
+	}
+	if got.BridgeMessageID != "msg_assist_b2" {
+		t.Errorf("BridgeMessageID = %q, want msg_assist_b2 (most recent bubble)", got.BridgeMessageID)
+	}
+	if got.HarnessMessageID != "h_b2" {
+		t.Errorf("HarnessMessageID = %q, want h_b2", got.HarnessMessageID)
+	}
+
+	// Closing the turn with a result clears the recovery state.
+	storeEv(msg.EventResult, msg.Event{TurnID: "turn_b", MessageID: "msg_assist_b2", HarnessMessageID: "h_b2"})
+
+	got, err = s.RecoverInFlightTurn("br_recov")
+	if err != nil {
+		t.Fatalf("recover after terminator: %v", err)
+	}
+	if got != nil {
+		t.Errorf("recover after terminator = %+v, want nil", got)
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Discovered sessions
 // ──────────────────────────────────────────────────────────────────────────────

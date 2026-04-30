@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -394,5 +395,102 @@ func TestManager_DerivationStateTornDownOnProcessExit(t *testing.T) {
 	m.mu.RUnlock()
 	if leaked {
 		t.Fatalf("derivation entry leaked after process exit")
+	}
+}
+
+// TestManager_RecoversTurnIDAfterProcessRestart simulates a process exit
+// mid-turn (which deletes the in-memory msgState) and asserts that the
+// next event arriving after a "restart" is stamped with the original
+// TurnID/MessageID instead of being left blank until the next
+// user_message. Regression for bridge-ui's TurnsView grouping breaking
+// after Claude Code resumes a long-running turn.
+func TestManager_RecoversTurnIDAfterProcessRestart(t *testing.T) {
+	m := newTestManager(t)
+	const bridgeID = "br-recover-test"
+
+	if err := m.store.CreateSession(&store.Session{
+		BridgeID: bridgeID,
+		Harness:  msg.HarnessClaudeCode,
+		State:    string(msg.SessionRunning),
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	// First process: user_message + one block → channel closes
+	// without a result, mirroring a harness restart mid-turn.
+	proc1 := &fakeProcess{sid: bridgeID, ch: make(chan msg.Event, 4)}
+	done1 := make(chan struct{})
+	go func() {
+		m.readEvents(proc1)
+		close(done1)
+	}()
+
+	proc1.ch <- msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode}
+	proc1.ch <- msg.Event{
+		Type: msg.EventBlock, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode,
+		Block: &msg.BlockEvent{MessageID: "h_pre"},
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(proc1.ch)
+	select {
+	case <-done1:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("readEvents 1 did not return")
+	}
+
+	// In-memory state is gone now (manager.go:525 deletes msgState
+	// on process exit). Second process feeds another block as if the
+	// harness resumed the same turn.
+	m.mu.RLock()
+	_, stillThere := m.msgState[bridgeID]
+	m.mu.RUnlock()
+	if stillThere {
+		t.Fatalf("msgState should be cleared after process exit")
+	}
+
+	proc2 := &fakeProcess{sid: bridgeID, ch: make(chan msg.Event, 4)}
+	sub := m.Subscribe(bridgeID)
+	done2 := make(chan struct{})
+	go func() {
+		m.readEvents(proc2)
+		close(done2)
+	}()
+
+	proc2.ch <- msg.Event{
+		Type: msg.EventBlock, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode,
+		Block: &msg.BlockEvent{MessageID: "h_post"},
+	}
+
+	got := recvWithin(t, sub, 1, 2*time.Second)
+	close(proc2.ch)
+	<-done2
+
+	post := got[0].Event
+	if post.TurnID == "" {
+		t.Fatalf("post-restart block has empty TurnID; recovery did not run")
+	}
+
+	// The recovered TurnID must match the one stamped on the
+	// pre-restart block — same logical turn, same id.
+	pre, err := m.store.ListEventsSinceID(bridgeID, 0)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var preTurnID string
+	for _, ev := range pre {
+		var parsed msg.Event
+		if err := json.Unmarshal(ev.Data, &parsed); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if parsed.Type == msg.EventBlock && parsed.HarnessMessageID == "h_pre" {
+			preTurnID = parsed.TurnID
+			break
+		}
+	}
+	if preTurnID == "" {
+		t.Fatalf("pre-restart block missing from store")
+	}
+	if post.TurnID != preTurnID {
+		t.Errorf("post-restart TurnID = %q, want %q (same turn)", post.TurnID, preTurnID)
 	}
 }

@@ -107,6 +107,15 @@ func (m *Manager) loadMsgState(bridgeID string) *sessionMsgState {
 	if mp, err := m.store.ToolUseToMessageMap(bridgeID); err == nil {
 		st.toolUseToMessage = mp
 	}
+	// Recover in-flight turn state so events emitted after a process restart
+	// get stamped with the same TurnID/MessageID as events from before the
+	// restart, instead of being left unstamped until the next user_message.
+	if turn, err := m.store.RecoverInFlightTurn(bridgeID); err == nil && turn != nil {
+		st.turnID = turn.TurnID
+		st.clientRequestID = turn.ClientRequestID
+		st.bridgeMsgID = turn.BridgeMessageID
+		st.harnessMsgID = turn.HarnessMessageID
+	}
 	m.msgState[bridgeID] = st
 	return st
 }
