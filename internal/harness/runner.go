@@ -377,6 +377,13 @@ func (p *RunnerProcess) SendCommand(cmd string) error {
 	return p.sendRequest(cmd, nil)
 }
 
+// SendJSONRPC routes a generic JSON-RPC request through the runner WS to
+// the remote harness's stdin. params is preserved byte-for-byte by
+// json.RawMessage's marshaller.
+func (p *RunnerProcess) SendJSONRPC(method string, params json.RawMessage) error {
+	return p.sendRequest(method, params)
+}
+
 // Interrupt asks the runner to deliver SIGINT to the subprocess.
 func (p *RunnerProcess) Interrupt() error {
 	return p.conn.Send(&msg.RunnerMessage{

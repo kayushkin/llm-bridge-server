@@ -18,13 +18,14 @@ type fakeProcess struct {
 	ch  chan msg.Event
 }
 
-func (f *fakeProcess) PID() int                      { return 0 }
-func (f *fakeProcess) SessionID() string             { return f.sid }
-func (f *fakeProcess) Events() <-chan msg.Event      { return f.ch }
-func (f *fakeProcess) Send(message string) error     { return nil }
-func (f *fakeProcess) SendCommand(cmd string) error  { return nil }
-func (f *fakeProcess) Interrupt() error              { return nil }
-func (f *fakeProcess) Kill() error                   { return nil }
+func (f *fakeProcess) PID() int                                                  { return 0 }
+func (f *fakeProcess) SessionID() string                                         { return f.sid }
+func (f *fakeProcess) Events() <-chan msg.Event                                  { return f.ch }
+func (f *fakeProcess) Send(message string) error                                 { return nil }
+func (f *fakeProcess) SendCommand(cmd string) error                              { return nil }
+func (f *fakeProcess) SendJSONRPC(method string, params json.RawMessage) error   { return nil }
+func (f *fakeProcess) Interrupt() error                                          { return nil }
+func (f *fakeProcess) Kill() error                                               { return nil }
 
 // newTestManager returns a Manager backed by a temp SQLite store and
 // a non-routable log-store URL. The log-store push fails silently

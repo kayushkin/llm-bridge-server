@@ -135,6 +135,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/git/repos", s.handleSessionGitRepos)
 	s.mux.HandleFunc("GET /sessions/{id}/git", s.handleSessionGit)
 
+	// Hook resolution — surface awaiting_resolution HookEvents and accept
+	// a decision back. Used by bridge-ui to render permission prompts and
+	// human-resolved hooks. Pending list lets a freshly-connected client
+	// recover banner state without replaying the full event stream.
+	s.mux.HandleFunc("GET /sessions/{id}/hooks/pending", s.handleListPendingHooks)
+	s.mux.HandleFunc("POST /sessions/{id}/hooks/{request_id}/resolve", s.handleResolveHook)
+
 	// Folder registry — sidebar organization for sessions
 	s.mux.HandleFunc("GET /folders", s.handleListFolders)
 	s.mux.HandleFunc("POST /folders", s.handleCreateFolder)

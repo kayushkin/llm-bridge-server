@@ -47,6 +47,7 @@ type Manager struct {
 	msgState        map[string]*sessionMsgState   // sessionID → message-id assignment state
 	attachHubs      map[string]*AttachHub         // sessionID → fan-out hub for pty sessions
 	derivation      map[string]*derivationState   // sessionID → convenience-event derivation state
+	pending         *pendingHooks                 // awaiting_resolution hooks indexed by sessionID, request_id
 	store           *store.Store
 	logStore        *logstore.Client
 	runners         *RunnerRegistry // optional; nil disables TransportRunner spawns
@@ -68,6 +69,7 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL string, ptyRingByt
 		msgState:        make(map[string]*sessionMsgState),
 		attachHubs:      make(map[string]*AttachHub),
 		derivation:      make(map[string]*derivationState),
+		pending:         newPendingHooks(),
 		store:           st,
 		logStore:        logstore.New(logStoreURL),
 		runners:         NewRunnerRegistry(),
@@ -75,6 +77,14 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL string, ptyRingByt
 		publicServerURL: publicServerURL,
 		ptyRingBytes:    ptyRingBytes,
 	}
+}
+
+// PendingHooks returns the awaiting_resolution HookEvents currently
+// outstanding for the session. Returns nil for sessions with none.
+// Used by the /sessions/:id/hooks/pending HTTP endpoint so the UI can
+// recover the banner state on a fresh connection.
+func (m *Manager) PendingHooks(sessionID string) []msg.Event {
+	return m.pending.list(sessionID)
 }
 
 // AttachHubFor returns the per-session attach hub for a pty session, or
@@ -352,6 +362,17 @@ func (m *Manager) SendCommand(sessionID string, cmd string) error {
 	return proc.SendCommand(cmd)
 }
 
+// SendJSONRPC forwards a generic JSON-RPC request to the harness's stdin.
+// Used for methods that take parameters and aren't covered by Send /
+// SendCommand (e.g. resolve_hook).
+func (m *Manager) SendJSONRPC(sessionID, method string, params json.RawMessage) error {
+	proc := m.Get(sessionID)
+	if proc == nil {
+		return fmt.Errorf("session not running: %s", sessionID)
+	}
+	return proc.SendJSONRPC(method, params)
+}
+
 // Subscribe creates a new event channel for SSE consumers.
 // The returned channel receives all events for the session.
 // Call Unsubscribe when done.
@@ -466,6 +487,11 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 					log.Printf("[harness] failed to persist session info: %v", err)
 				}
 			}
+		case msg.EventHook:
+			// Track awaiting_resolution → completed transitions so a freshly
+			// connected client can recover the pending set without a full
+			// event-stream replay (see /sessions/:id/hooks/pending).
+			m.pending.record(bridgeID, &event)
 		}
 
 		// Fan out to SSE subscribers. Sends are parallel so one slow client
@@ -534,6 +560,7 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 	delete(m.msgState, bridgeID)
 	delete(m.derivation, bridgeID)
 	m.mu.Unlock()
+	m.pending.drop(bridgeID)
 
 	m.store.UpdateSessionPID(bridgeID, 0)
 }

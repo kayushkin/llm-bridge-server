@@ -27,6 +27,10 @@ type HarnessProcess interface {
 	Events() <-chan msg.Event
 	Send(message string) error
 	SendCommand(cmd string) error
+	// SendJSONRPC writes a generic JSON-RPC request to the harness's stdin.
+	// Used for methods that take params (e.g. resolve_hook). PTY-mode
+	// processes return an error; runner-backed processes route via WS.
+	SendJSONRPC(method string, params json.RawMessage) error
 	Interrupt() error
 	Kill() error
 }
@@ -202,6 +206,13 @@ func (p *Process) Send(message string) error {
 // SendCommand sends a command (compact, resume, etc.).
 func (p *Process) SendCommand(cmd string) error {
 	return p.sendRequest(cmd, CommandParams{BridgeSessionID: p.sessionID})
+}
+
+// SendJSONRPC writes a JSON-RPC request with arbitrary params to the
+// harness's stdin. params is a pre-marshalled JSON document; passing it as
+// json.RawMessage to the marshaller preserves it byte-for-byte.
+func (p *Process) SendJSONRPC(method string, params json.RawMessage) error {
+	return p.sendRequest(method, params)
 }
 
 // Interrupt sends SIGINT to pause the harness.
@@ -387,6 +398,12 @@ func (p *PTYProcess) Send(message string) error {
 // SendCommand is a no-op for pty sessions for the same reason as Send.
 func (p *PTYProcess) SendCommand(cmd string) error {
 	return fmt.Errorf("command %q not supported in pty mode", cmd)
+}
+
+// SendJSONRPC is unsupported in pty mode — the harness has no JSON-RPC
+// stdin channel.
+func (p *PTYProcess) SendJSONRPC(method string, params json.RawMessage) error {
+	return fmt.Errorf("method %q not supported in pty mode", method)
 }
 
 // Interrupt sends SIGINT to the foreground process group of the pty,
