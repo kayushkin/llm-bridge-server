@@ -129,6 +129,8 @@ events.onmessage = (e) => {
 | `PUT` | `/sessions/{id}/folder` | Move the session into a folder |
 | `GET` | `/sessions/{id}/git/repos` | List git repos discovered for the session |
 | `GET` | `/sessions/{id}/git` | Git status/diff for a repo (`?repo=<absolute-path>`; defaults to first discovered) |
+| `GET` | `/sessions/{id}/hooks/pending` | List awaiting_resolution `HookEvent`s currently outstanding (used by UIs to hydrate the pending-hook banner without replaying the full SSE stream) |
+| `POST` | `/sessions/{id}/hooks/{request_id}/resolve` | Deliver a decision for an awaiting_resolution hook. Body: `{behavior: "allow"\|"deny", updated_input?, message?, resolved_by?}`. Forwarded to the harness as a `resolve_hook` JSON-RPC request; the harness is responsible for closing the parked permission-prompt MCP call and emitting the matching `phase:"completed"` HookEvent |
 
 ### Folders
 
