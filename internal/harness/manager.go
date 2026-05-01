@@ -818,6 +818,7 @@ func discoverableHarnesses() []msg.Harness {
 	return []msg.Harness{
 		msg.HarnessClaudeCode,
 		msg.HarnessCodex,
+		msg.HarnessHermes,
 	}
 }
 
