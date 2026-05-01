@@ -264,7 +264,7 @@ When running sessions on instances (via harness-store), each credential binding 
 
 ### Auto-discovery
 
-On startup, the server runs harness binaries with `-discover` to find existing on-disk sessions (e.g., Claude Code sessions from `~/.claude/projects/`). Discovered sessions are imported and their history is loaded into log-store.
+On startup, the server runs the discoverable harness binaries (`claudecode`, `codex`, `hermes`) with `-discover` to find existing on-disk sessions (e.g., Claude Code sessions from `~/.claude/projects/`). Discovered sessions are imported and their history is loaded into log-store.
 
 ## Configuration
 
