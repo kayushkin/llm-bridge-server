@@ -39,7 +39,22 @@ func testServer(t *testing.T) (*Server, *store.Store) {
 // testServerWithInstance returns a server wired to a harness-store that
 // already contains one enabled instance of the given harness type. The
 // instance id is returned so tests can reference it in create requests.
+//
+// LogStoreURL is set to a deliberately broken `http://localhost:0` — fine
+// for unit tests that never exercise the /send path. Build-tagged
+// integration tests that DO go through /send (which pushes user_message
+// to log-store before broadcasting) should call
+// testServerWithInstanceAndLogStore instead.
 func testServerWithInstance(t *testing.T, harness msg.Harness) (*Server, *store.Store, string) {
+	return testServerWithInstanceAndLogStore(t, harness, "http://localhost:0")
+}
+
+// testServerWithInstanceAndLogStore is the same as testServerWithInstance
+// but lets the caller supply a log-store base URL. Integration tests
+// typically pass an httptest server URL whose handler 200s on
+// `POST /api/v1/events`, so the production /send path can push the
+// user_message without erroring out.
+func testServerWithInstanceAndLogStore(t *testing.T, harness msg.Harness, logStoreURL string) (*Server, *store.Store, string) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := store.New(filepath.Join(dir, "test.db"))
@@ -77,7 +92,7 @@ func testServerWithInstance(t *testing.T, harness msg.Harness) (*Server, *store.
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		LogStoreURL:     "http://localhost:0",
+		LogStoreURL:     logStoreURL,
 	}
 
 	srv := New(st, nil, nil, hs, nil, nil, nil, cfg)

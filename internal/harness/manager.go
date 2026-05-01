@@ -622,6 +622,14 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 			// Drop on a full subscriber channel — replay path covers reconnect.
 		}
 	}
+
+	// Drive convenience-event derivation off bridge-originated events too.
+	// /send's user_message is the canonical case: without this, the
+	// state machine never sees turn_started, so the closing →idle
+	// transition on EventResult is suppressed (prev==next==idle) and
+	// agent_state events disappear for the whole turn.
+	m.deriveAndBroadcast(bridgeID, ev)
+
 	return rowID, nil
 }
 
