@@ -19,8 +19,34 @@ import (
 // Kept as a type alias so existing store code compiles unchanged.
 type Session = msg.ManagedSession
 
+// Notifier receives session-row mutation signals from the store. Set via
+// SetNotifier; nil-safe. Implementations must be non-blocking (drop, don't
+// stall the writer).
+type Notifier interface {
+	OnSessionChanged(bridgeID string)
+	OnSessionDeleted(bridgeID string)
+}
+
 type Store struct {
-	db *sql.DB
+	db       *sql.DB // writer pool, pinned to 1 connection
+	dbRO     *sql.DB // reader pool, concurrent readers under WAL
+	notifier Notifier
+}
+
+// SetNotifier registers a callback fired after successful session-row
+// mutations. Pass nil to clear. Replays the new state on UpsertDiscovered too.
+func (s *Store) SetNotifier(n Notifier) { s.notifier = n }
+
+func (s *Store) notifyChanged(bridgeID string) {
+	if s.notifier != nil && bridgeID != "" {
+		s.notifier.OnSessionChanged(bridgeID)
+	}
+}
+
+func (s *Store) notifyDeleted(bridgeID string) {
+	if s.notifier != nil && bridgeID != "" {
+		s.notifier.OnSessionDeleted(bridgeID)
+	}
 }
 
 func New(dbPath string) (*Store, error) {
@@ -44,15 +70,33 @@ func New(dbPath string) (*Store, error) {
 	// from multiple harness streams + /send handlers, despite WAL+busy_timeout.
 	d.SetMaxOpenConns(1)
 
-	s := &Store{db: d}
+	// Reader pool — separate sql.DB so reads don't queue behind the single
+	// writer connection. WAL allows many concurrent readers alongside one
+	// writer; the SetMaxOpenConns(1) limit applies only to the writer.
+	// busy_timeout via DSN so each connection in the pool gets it on open.
+	dbRO, err := sql.Open("sqlite", dbPath+"?_busy_timeout=5000")
+	if err != nil {
+		d.Close()
+		return nil, fmt.Errorf("sqlite open ro: %w", err)
+	}
+	dbRO.SetMaxOpenConns(8)
+	dbRO.SetMaxIdleConns(4)
+
+	s := &Store{db: d, dbRO: dbRO}
 	if err := s.migrate(); err != nil {
 		d.Close()
+		dbRO.Close()
 		return nil, err
 	}
 	return s, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s.dbRO != nil {
+		s.dbRO.Close()
+	}
+	return s.db.Close()
+}
 
 func (s *Store) migrate() error {
 	_, err := s.db.Exec(`
@@ -221,7 +265,11 @@ func (s *Store) CreateSession(sess *Session) error {
 	); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.notifyChanged(sess.BridgeID)
+	return nil
 }
 
 const sessionColumns = `bridge_id, COALESCE(harness_session_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(source, ''), COALESCE(mode, ''), created_at, updated_at`
@@ -267,20 +315,20 @@ func (s *Store) SetSessionInfo(bridgeID string, info *msg.SessionInfo) error {
 
 // GetSession looks up a session by bridge_id.
 func (s *Store) GetSession(bridgeID string) (*Session, error) {
-	return scanSession(s.db.QueryRow(
+	return scanSession(s.dbRO.QueryRow(
 		`SELECT `+sessionColumns+` FROM sessions WHERE bridge_id=?`, bridgeID,
 	))
 }
 
 // GetSessionByHarnessSessionID looks up a session by its harness-reported session ID.
 func (s *Store) GetSessionByHarnessSessionID(harnessSessionID string) (*Session, error) {
-	return scanSession(s.db.QueryRow(
+	return scanSession(s.dbRO.QueryRow(
 		`SELECT `+sessionColumns+` FROM sessions WHERE harness_session_id=?`, harnessSessionID,
 	))
 }
 
 func (s *Store) ListSessions() ([]Session, error) {
-	rows, err := s.db.Query(`SELECT ` + sessionColumns + ` FROM sessions ORDER BY created_at DESC`)
+	rows, err := s.dbRO.Query(`SELECT ` + sessionColumns + ` FROM sessions ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +345,7 @@ func (s *Store) ListSessions() ([]Session, error) {
 }
 
 func (s *Store) ListSessionsByState(state string) ([]Session, error) {
-	rows, err := s.db.Query(`SELECT `+sessionColumns+` FROM sessions WHERE state=? ORDER BY created_at DESC`, state)
+	rows, err := s.dbRO.Query(`SELECT `+sessionColumns+` FROM sessions WHERE state=? ORDER BY created_at DESC`, state)
 	if err != nil {
 		return nil, err
 	}
@@ -323,6 +371,7 @@ func (s *Store) UpdateSessionState(bridgeID, state string) error {
 	if n == 0 {
 		return sql.ErrNoRows
 	}
+	s.notifyChanged(bridgeID)
 	return nil
 }
 
@@ -472,6 +521,7 @@ func (s *Store) UpdateSessionDisplayName(bridgeID, displayName string) error {
 	if n == 0 {
 		return sql.ErrNoRows
 	}
+	s.notifyChanged(bridgeID)
 	return nil
 }
 
@@ -550,6 +600,7 @@ func (s *Store) ApplyAutoRename(bridgeID, renamerSessionID, displayName string, 
 	if n == 0 {
 		return sql.ErrNoRows
 	}
+	s.notifyChanged(bridgeID)
 	return nil
 }
 
@@ -650,12 +701,12 @@ type EventWithID struct {
 // ListCurrentTurnEventsWithIDs returns current-turn events with row IDs.
 func (s *Store) ListCurrentTurnEventsWithIDs(sessionID string) ([]EventWithID, error) {
 	var lastUserID int
-	_ = s.db.QueryRow(
+	_ = s.dbRO.QueryRow(
 		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id=? AND type='user_message'`,
 		sessionID,
 	).Scan(&lastUserID)
 
-	rows, err := s.db.Query(
+	rows, err := s.dbRO.Query(
 		`SELECT id, data FROM events WHERE session_id=? AND id > ? AND type != 'user_message' ORDER BY id ASC`,
 		sessionID, lastUserID,
 	)
@@ -678,7 +729,7 @@ func (s *Store) ListCurrentTurnEventsWithIDs(sessionID string) ([]EventWithID, e
 
 // ListEventsSinceID returns events after a specific row ID (for SSE reconnection).
 func (s *Store) ListEventsSinceID(sessionID string, afterID int) ([]EventWithID, error) {
-	rows, err := s.db.Query(
+	rows, err := s.dbRO.Query(
 		`SELECT id, data FROM events WHERE session_id=? AND id > ? ORDER BY id ASC`,
 		sessionID, afterID,
 	)
@@ -908,6 +959,7 @@ func (s *Store) DeleteSession(bridgeID string) error {
 	if n == 0 {
 		return sql.ErrNoRows
 	}
+	s.notifyDeleted(bridgeID)
 	return nil
 }
 
@@ -915,7 +967,7 @@ func (s *Store) DeleteSession(bridgeID string) error {
 
 // ListFolders returns all folder names ordered by their stored position.
 func (s *Store) ListFolders() ([]string, error) {
-	rows, err := s.db.Query(`SELECT name FROM folders ORDER BY position ASC, name ASC`)
+	rows, err := s.dbRO.Query(`SELECT name FROM folders ORDER BY position ASC, name ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1132,7 +1184,11 @@ func (s *Store) SetSessionFolder(bridgeID, folder string) error {
 	if n == 0 {
 		return sql.ErrNoRows
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.notifyChanged(bridgeID)
+	return nil
 }
 
 // UpsertDiscoveredSession inserts a discovered session if it doesn't already exist.
@@ -1165,6 +1221,7 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, displayName, harness, 
 			newFolder = folderName
 		}
 		s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=?, source=?, folder_name=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, newSource, newFolder, existingBridgeID)
+		s.notifyChanged(existingBridgeID)
 		return existingBridgeID, false, nil
 	}
 	if err != sql.ErrNoRows {
@@ -1180,13 +1237,14 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, displayName, harness, 
 	if err != nil {
 		return "", false, err
 	}
+	s.notifyChanged(bridgeID)
 	return bridgeID, true, nil
 }
 
 // ListSourceFolders returns every runtime override row, keyed by source.
 // The caller is responsible for merging these on top of env-var defaults.
 func (s *Store) ListSourceFolders() (map[string]string, error) {
-	rows, err := s.db.Query(`SELECT source, folder_name FROM source_folders`)
+	rows, err := s.dbRO.Query(`SELECT source, folder_name FROM source_folders`)
 	if err != nil {
 		return nil, err
 	}
@@ -1204,7 +1262,7 @@ func (s *Store) ListSourceFolders() (map[string]string, error) {
 
 // SourceFolderTimestamps returns updated_at for each row, keyed by source.
 func (s *Store) SourceFolderTimestamps() (map[string]time.Time, error) {
-	rows, err := s.db.Query(`SELECT source, updated_at FROM source_folders`)
+	rows, err := s.dbRO.Query(`SELECT source, updated_at FROM source_folders`)
 	if err != nil {
 		return nil, err
 	}

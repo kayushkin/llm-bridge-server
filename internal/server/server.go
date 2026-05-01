@@ -50,11 +50,14 @@ type Server struct {
 	authClient    *authstoreclient.Client
 	bridgePrefs   *bridgePrefsStore
 	cfState       *conformanceState
+	sessionHub    *sessionHub
 	cfg           *config.Config
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
 	authClient := authstoreclient.New("", "", "llm-bridge-server")
+	hub := newSessionHub(st)
+	st.SetNotifier(hub)
 	srv := &Server{
 		mux:           http.NewServeMux(),
 		store:         st,
@@ -68,6 +71,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		authClient:    authClient,
 		bridgePrefs:   newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfState:       newConformanceState(cfg.ConformancePath),
+		sessionHub:    hub,
 		cfg:           cfg,
 	}
 	srv.routes()
@@ -105,6 +109,7 @@ func (s *Server) routes() {
 
 	// Session routes
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
+	s.mux.HandleFunc("GET /session-events", s.handleSessionListEvents)
 	s.mux.HandleFunc("GET /sessions/search", s.handleSearchSessions)
 	s.mux.HandleFunc("GET /sessions/discover", s.handleDiscoverSessions)
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
