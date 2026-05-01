@@ -626,6 +626,18 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 		return 0, fmt.Errorf("BroadcastEvent: bridge_session_id is required")
 	}
 
+	// Stamp Harness from the session row when the caller didn't set it.
+	// Bridge-originated events (user_message from /send, derived state
+	// transitions, system bookkeeping) all flow through here without a
+	// harness adapter to fill this field, but the session row carries
+	// the canonical harness — copy it so downstream consumers can route
+	// per-harness UI without re-querying the session.
+	if ev.Harness == "" {
+		if sess, err := m.store.GetSession(bridgeID); err == nil && sess != nil {
+			ev.Harness = sess.Harness
+		}
+	}
+
 	m.AssignMessageID(bridgeID, ev)
 
 	data, err := json.Marshal(ev)
