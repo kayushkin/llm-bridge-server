@@ -71,15 +71,29 @@ func TestPTYIntegration_ClaudeCode_RoundTrip(t *testing.T) {
 		t.Fatalf("write input: %v", err)
 	}
 
-	// Wait up to 60s for any pty bytes to flow back through the WS. 60s
-	// is generous because `claude` sometimes spends 10–20s on first-run
-	// initialization (asar load, JS warmup) before painting anything.
-	// readPtyBytes also surfaces the server's text-frame exit control
-	// as a fail diagnostic — if the pty died on startup (missing creds,
-	// bad config), we want to see that, not a generic timeout.
-	echo := readPtyBytes(t, conn, 60*time.Second)
-	if len(echo) == 0 {
-		t.Fatalf("no pty output after input; round-trip broken")
+	// Wait until we've seen output that proves the *upstream claude TUI*
+	// is actually running, not just pty echo of "?\n". The previous bar
+	// — first non-empty binary frame — was met by the kernel's canonical-
+	// mode echo of the keystroke, so the test fake-passed in 60ms even
+	// when claude never finished booting. ANSI CSI sequences (`ESC [`)
+	// are the cheapest robust signal that a TUI is repainting; the test
+	// keystroke contains no escape bytes, so any ESC `[` we observe came
+	// from claude itself (or from claude's terminal queries). 60s
+	// headroom for first-run init (asar load, JS warmup).
+	awaitClaudeTUI(t, conn, 60*time.Second)
+
+	// Pin a minimum elapsed time before /stop so a regression that lets
+	// claude die mid-startup (e.g. missing-creds path that prints an
+	// error and exits in ~1s) gets caught here. Session state must
+	// remain "running" — if claude exited and watchPTYExit fired, the
+	// state will be "completed" and the assertion below trips.
+	time.Sleep(5 * time.Second)
+	finalDuringRun, err := st.GetSession(bridgeID)
+	if err != nil {
+		t.Fatalf("get session mid-run: %v", err)
+	}
+	if msg.SessionState(finalDuringRun.State) != msg.SessionRunning {
+		t.Fatalf("session state mid-run = %q, want running (claude exited prematurely?)", finalDuringRun.State)
 	}
 
 	// Stop the session — exercises the writer-side teardown path the way
@@ -186,25 +200,37 @@ func dialAttach(t *testing.T, baseURL, bridgeID string) *websocket.Conn {
 	return conn
 }
 
-// readPtyBytes reads message frames until it gets a non-empty binary
-// one, or the deadline passes. A text "exit" control frame from the
-// server is surfaced as a t.Fatalf so a pty that dies during startup
-// (missing creds, bad config) yields a clear diagnostic rather than
-// the generic i/o timeout you'd get from waiting for binary bytes that
-// never come.
-func readPtyBytes(t *testing.T, conn *websocket.Conn, timeout time.Duration) []byte {
+// awaitClaudeTUI reads message frames until cumulative pty output
+// contains at least one ANSI CSI sequence (ESC `[`) — the cheapest
+// robust signal that a TUI is actually rendering — or the deadline
+// passes. The accumulated buffer is also size-checked so a single
+// stray ESC byte from a kernel response doesn't satisfy the contract.
+//
+// A text "exit" control frame from the server is surfaced as a
+// t.Fatalf so a pty that dies during startup (missing creds, bad
+// config) yields a clear diagnostic rather than the generic i/o
+// timeout. The previous helper accepted the first non-empty binary
+// frame, which kernel pty echo of the test's "?\n" satisfied in 60ms
+// regardless of whether claude ever booted — see
+// `5a22797d-6b03-4094-a26a-50824fa6974a` for the original write-up.
+func awaitClaudeTUI(t *testing.T, conn *websocket.Conn, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	if err := conn.SetReadDeadline(deadline); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
+	const minBytes = 64 // raise the bar above kernel-echo of "?\n" (~3 bytes)
+	var buf []byte
 	for {
 		mt, payload, err := conn.ReadMessage()
 		if err != nil {
-			t.Fatalf("read frame: %v", err)
+			t.Fatalf("read frame: %v (got %d bytes so far: %q)", err, len(buf), truncate(buf, 200))
 		}
-		if mt == websocket.BinaryMessage && len(payload) > 0 {
-			return payload
+		if mt == websocket.BinaryMessage {
+			buf = append(buf, payload...)
+			if len(buf) >= minBytes && bytes.Contains(buf, []byte{0x1b, '['}) {
+				return
+			}
 		}
 		if mt == websocket.TextMessage {
 			var ctrl struct {
@@ -212,13 +238,22 @@ func readPtyBytes(t *testing.T, conn *websocket.Conn, timeout time.Duration) []b
 				Code int    `json:"code"`
 			}
 			if err := json.Unmarshal(payload, &ctrl); err == nil && ctrl.Type == "exit" {
-				t.Fatalf("pty exited before producing output: %s", string(payload))
+				t.Fatalf("pty exited before claude TUI produced output: ctrl=%s, got %d bytes: %q",
+					string(payload), len(buf), truncate(buf, 200))
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no non-empty binary frame within %s", timeout)
+			t.Fatalf("no claude TUI output within %s; got %d bytes: %q",
+				timeout, len(buf), truncate(buf, 200))
 		}
 	}
+}
+
+func truncate(b []byte, n int) []byte {
+	if len(b) <= n {
+		return b
+	}
+	return b[:n]
 }
 
 // awaitExitOrClose drains the WS until either:

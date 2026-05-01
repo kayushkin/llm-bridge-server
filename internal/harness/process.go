@@ -326,13 +326,18 @@ func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, c
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_PTY_RESUME_ID="+hid)
 	}
 
-	tty, err := pty.Start(cmd)
+	// StartWithSize sets the pty dimensions before exec, so the child sees
+	// a 24x80 terminal from byte zero. With the previous Start+Setsize
+	// sequence the pty was 0x0 at exec time; TUIs like `claude` query
+	// their tty size during startup and bail out immediately on a 0x0
+	// terminal, which made the integration test flash green in 60ms with
+	// "pty read: input/output error" and never actually run claude. The
+	// follow-up resize control messages from attach (child 3) still work
+	// the same way.
+	tty, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		return nil, fmt.Errorf("pty start: %w", err)
 	}
-
-	// Default initial size — child 3 wires resize control messages.
-	_ = pty.Setsize(tty, &pty.Winsize{Rows: 24, Cols: 80})
 
 	closed := make(chan msg.Event)
 	close(closed)
