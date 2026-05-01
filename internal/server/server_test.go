@@ -790,6 +790,59 @@ func TestCreateSession_WithHarnessConfig(t *testing.T) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Discovery source classification
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Sessions ingested via auto-discover don't carry the original
+// CreateSessionRequest.Source, so the bridge classifies them by prompt prefix.
+// This test pins the recognized prefixes against the live producer prompts —
+// if either side drifts, the recognizer should be updated in lockstep.
+func TestDiscoverySourceFolder(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.cfg.SourceFolders = map[string]string{
+		"autoworker":    "Scheduled",
+		"harness-watch": "Scheduled",
+	}
+
+	cases := []struct {
+		name       string
+		prompt     string
+		wantSource string
+		wantFolder string
+	}{
+		{
+			name:       "autoworker nightly prompt",
+			prompt:     "You are the nightly todo-worker. The user is asleep; their subscription budget is under-utilised for this week and I am dispatching you to make useful progress on open todos without disturbing them.\n\nSteps:\n1. ...",
+			wantSource: "autoworker",
+			wantFolder: "Scheduled",
+		},
+		{
+			name:       "harness-watch scheduled prompt",
+			prompt:     "You are running as a scheduled harness-watch job inside the inber repo.\n\nTwo tasks: ...",
+			wantSource: "harness-watch",
+			wantFolder: "Scheduled",
+		},
+		{
+			name:       "user prompt is left unfiled",
+			prompt:     "fix the bug in sessions.go where folder isn't set on discovery",
+			wantSource: "",
+			wantFolder: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source, folder := srv.discoverySourceFolder(tc.prompt)
+			if source != tc.wantSource {
+				t.Errorf("source = %q, want %q", source, tc.wantSource)
+			}
+			if folder != tc.wantFolder {
+				t.Errorf("folder = %q, want %q", folder, tc.wantFolder)
+			}
+		})
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Discover sessions (no harness available)
 // ──────────────────────────────────────────────────────────────────────────────
 

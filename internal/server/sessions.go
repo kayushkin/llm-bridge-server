@@ -36,15 +36,37 @@ func (s *Server) folderForSource(source string) string {
 	return s.cfg.SourceFolders[source]
 }
 
+// discoveryPromptPrefixes maps stable prompt prefixes to a source tag for
+// sessions ingested via auto-discover. The live spawn path tags sessions via
+// CreateSessionRequest.Source, but discovery only sees the on-disk session
+// (prompt + harness id) — prefix recognition is the only signal that classifies
+// these as scheduled jobs rather than user sessions. Producers own their
+// prompts; if a prefix here drifts from the live prompt, new sessions land
+// unfiled and the regression is immediately visible in /sessions.
+var discoveryPromptPrefixes = []struct {
+	prefix string
+	source string
+}{
+	// scheduler/cmd/autoworker/main.go defaultPrompt
+	{"You are the nightly todo-worker.", "autoworker"},
+	// inber/scripts/harness-watch.sh
+	{"You are running as a scheduled harness-watch job", "harness-watch"},
+}
+
 // discoverySourceFolder infers a (source, folder) pair for a freshly-discovered
-// on-disk session. Currently the only inferable source is conformance: when a
-// harness CLI persists a session whose first user message is one of the canon
-// conformance prompts, it's a leaked test session and gets filed accordingly.
-// All other discoveries return empty (unfiled) — the harness CLI is the source
-// of truth for the original prompt and we don't second-guess user sessions.
+// on-disk session. Conformance prompts are recognised by exact match; other
+// scheduled sources are recognised by stable prompt prefixes registered in
+// discoveryPromptPrefixes. Anything else is left unfiled — the harness CLI is
+// the source of truth for the original prompt and we don't second-guess user
+// sessions.
 func (s *Server) discoverySourceFolder(prompt string) (string, string) {
 	if conformance.IsConformancePrompt(prompt) {
 		return conformance.SourceTag, s.folderForSource(conformance.SourceTag)
+	}
+	for _, p := range discoveryPromptPrefixes {
+		if strings.HasPrefix(prompt, p.prefix) {
+			return p.source, s.folderForSource(p.source)
+		}
 	}
 	return "", ""
 }
