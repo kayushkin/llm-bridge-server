@@ -90,3 +90,41 @@ func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]string{"status": "resolved"})
 }
+
+// permissionModeRequest is the body of POST /sessions/{id}/permission-mode.
+// Mirrors the harness's set_permission_mode JSON-RPC params.
+type permissionModeRequest struct {
+	Mode string `json:"mode"`
+}
+
+// handleSetPermissionMode forwards a runtime permission-mode change to the
+// harness via the existing set_permission_mode JSON-RPC method. For Claude
+// Code the meaningful values are "default" (consult the permission-prompt
+// tool / bridge-ui) and "bypassPermissions" (auto-approve everything);
+// "acceptEdits" and "plan" are passthroughs.
+func (s *Server) handleSetPermissionMode(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	if _, err := s.store.GetSession(bridgeID); err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	var req permissionModeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Mode == "" {
+		http.Error(w, "mode is required", http.StatusBadRequest)
+		return
+	}
+	params, err := json.Marshal(req)
+	if err != nil {
+		http.Error(w, "marshal set_permission_mode params: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.harness.SendJSONRPC(bridgeID, "set_permission_mode", params); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "set", "mode": req.Mode})
+}

@@ -142,6 +142,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/hooks/pending", s.handleListPendingHooks)
 	s.mux.HandleFunc("POST /sessions/{id}/hooks/{request_id}/resolve", s.handleResolveHook)
 
+	// Permission-mode toggle — flips the harness's runtime permission mode
+	// (e.g. CC's bypassPermissions ↔ default) so the chat surface can
+	// switch between auto-approve and human-review without a respawn.
+	s.mux.HandleFunc("POST /sessions/{id}/permission-mode", s.handleSetPermissionMode)
+
 	// Folder registry — sidebar organization for sessions
 	s.mux.HandleFunc("GET /folders", s.handleListFolders)
 	s.mux.HandleFunc("POST /folders", s.handleCreateFolder)

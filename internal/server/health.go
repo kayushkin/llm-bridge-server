@@ -100,7 +100,7 @@ var harnessSupportsPTY = map[msg.Harness]bool{
 
 // harnessCapabilities defines what features each harness supports.
 var harnessCapabilities = map[msg.Harness][]string{
-	msg.HarnessClaudeCode: {"compact", "fork", "model", "effort", "tools", "budget", "system_prompt"},
+	msg.HarnessClaudeCode: {"compact", "fork", "model", "effort", "tools", "budget", "system_prompt", "permission_mode"},
 	msg.HarnessCodex:      {"compact", "fork", "model", "effort", "system_prompt"},
 	msg.HarnessOpenClaw:   {"compact", "model", "effort"},
 	msg.HarnessInber:      {"compact", "fork", "model", "effort", "tools", "budget"},
