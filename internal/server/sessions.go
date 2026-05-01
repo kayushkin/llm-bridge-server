@@ -519,12 +519,21 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "parent session has no instance bound", http.StatusInternalServerError)
 		return
 	}
+	if parent.HarnessSessionID == "" {
+		http.Error(w, "parent session has no harness_session_id yet (not initialized)", http.StatusConflict)
+		return
+	}
 	inst, err := s.harnessStore.GetInstance(parent.InstanceID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	// ParentID feeds buildStartParams' params.Fork, which the harness uses
+	// as the --resume / thread-fork target. Harnesses need the parent's
+	// harness UUID, not the bridge_session_id (cf. renamer.go's note that
+	// parent_id is "CC-fork plumbing"). The forward link to the parent's
+	// stable bridge_id is implied by the chain in the harness's state.db.
 	forked := &store.Session{
 		BridgeID:    generateBridgeID(),
 		ClientID:    req.ClientID,
@@ -534,7 +543,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		State:       string(msg.SessionIdle),
 		AgentID:     parent.AgentID,
 		SpawnerID:   parent.SpawnerID,
-		ParentID:    parent.BridgeID,
+		ParentID:    parent.HarnessSessionID,
 	}
 
 	if err := s.store.CreateSession(forked); err != nil {

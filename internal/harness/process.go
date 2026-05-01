@@ -52,7 +52,7 @@ type StartParams struct {
 	CredentialID     string `json:"credential_id,omitempty"`
 	Prompt           string `json:"prompt,omitempty"`
 	Resume           bool   `json:"resume,omitempty"`
-	Fork             string `json:"fork,omitempty"` // parent BridgeSessionID
+	Fork             string `json:"fork,omitempty"` // parent harness_session_id (the harness UUID to fork from)
 	WorkDir          string `json:"work_dir,omitempty"`
 }
 
