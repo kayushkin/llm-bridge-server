@@ -67,7 +67,7 @@ Builds the binary, installs to `/usr/local/bin/llm-bridge`, and restarts the `ll
 # Create and auto-start a session
 curl -X POST http://localhost:8160/sessions \
   -H 'Content-Type: application/json' \
-  -d '{"harness": "claudecode", "prompt": "Fix the tests", "autoStart": true}'
+  -d '{"harness": "claudecode", "prompt": "Fix the tests", "auto_start": true}'
 
 # Stream events
 curl -N http://localhost:8160/sessions/{id}/events
@@ -250,7 +250,7 @@ When agent-store and memory-store are loaded, their HTTP handlers are also mount
 
 ### Session lifecycle
 
-1. **Create** — `POST /sessions` creates a session record. With `autoStart: true`, the server spawns the harness binary as a subprocess.
+1. **Create** — `POST /sessions` creates a session record. With `auto_start: true`, the server spawns the harness binary as a subprocess.
 2. **Running** — The harness reads user messages from stdin (JSON) and writes `msg.Event` NDJSON to stdout. The server persists events and fans them out to SSE subscribers.
 3. **Streaming** — `GET /sessions/{id}/events` opens an SSE connection. Replays current-turn events on connect, then streams live. Supports `Last-Event-ID` for reconnection.
 4. **Interrupt** — `POST /sessions/{id}/interrupt` sends SIGINT. The session pauses and can be resumed.
