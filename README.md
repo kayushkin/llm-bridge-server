@@ -260,9 +260,9 @@ When agent-store and memory-store are loaded, their HTTP handlers are also mount
 6. **Fork** — `POST /sessions/{id}/fork` creates a child session branching from a parent. The harness clones its state.
 7. **Stop** — `POST /sessions/{id}/stop` terminates the subprocess.
 
-### Credential slots
+### Instance concurrency cap
 
-When running sessions on instances (via harness-store), each credential binding has a `maxConcurrent` limit. The server acquires a slot on session start and releases it on stop, preventing credential overuse.
+Each instance has a `max_concurrent_sessions` field on harness-store (default 1). Currently informational — server-side enforcement is not yet wired up.
 
 ### Auto-discovery
 
