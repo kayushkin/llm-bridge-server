@@ -155,7 +155,7 @@ func mintEnrollCmd(args []string) {
 	}
 	cfg := config.Load()
 	if cfg.HarnessStoreDB == "" {
-		fmt.Fprintln(os.Stderr, "error: harness-store database not configured (set LLMBRIDGE_HARNESS_STORE_DB)")
+		fmt.Fprintln(os.Stderr, "error: harness-store database not configured (set LLMBRIDGE_HARNESS_DB)")
 		os.Exit(1)
 	}
 	hs, err := harnessstore.Open(cfg.HarnessStoreDB)
