@@ -137,6 +137,7 @@ func (s *Store) migrate() error {
 	}
 	migrations := []func() error{
 		s.migrateV1,
+		s.migrateV2,
 	}
 	for i := current; i < len(migrations); i++ {
 		if err := migrations[i](); err != nil {
@@ -144,6 +145,29 @@ func (s *Store) migrate() error {
 		}
 		if _, err := s.db.Exec(`INSERT INTO schema_version (version) VALUES (?)`, i+1); err != nil {
 			return fmt.Errorf("record schema_version v%d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+// migrateV2 inserts the default seed rules. Runs once per database (once
+// schema_version records v2, this never fires again — user-deleted seeds
+// stay deleted, edits stay edited). Use the future /seed endpoint or
+// explicit DB reset to re-apply.
+func (s *Store) migrateV2() error {
+	now := nowTS()
+	for _, r := range SeedV1Rules() {
+		enabled := 0
+		if r.Enabled {
+			enabled = 1
+		}
+		_, err := s.db.Exec(
+			`INSERT INTO rules (id, scope, priority, tool, pattern, outcome, message, enabled, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.Scope, r.Priority, r.Tool, r.Pattern, r.Outcome, r.Message, enabled, now, now,
+		)
+		if err != nil {
+			return fmt.Errorf("insert seed %q: %w", r.ID, err)
 		}
 	}
 	return nil

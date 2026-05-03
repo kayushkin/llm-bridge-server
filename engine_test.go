@@ -6,8 +6,22 @@ import (
 	"testing"
 )
 
-// newTestStore opens a fresh DB in a temp dir.
+// newTestStore opens a fresh DB in a temp dir and wipes the seed rules so
+// engine unit tests start from a clean slate. Use newSeededTestStore when
+// the seed defaults are what's under test.
 func newTestStore(t *testing.T) *Store {
+	t.Helper()
+	s := newSeededTestStore(t)
+	if _, err := s.DB().Exec(`DELETE FROM rules`); err != nil {
+		t.Fatalf("wipe rules: %v", err)
+	}
+	return s
+}
+
+// newSeededTestStore opens a fresh DB with migrateV2 applied — i.e. the
+// default seed rules are present. Used by tests that exercise seed
+// behavior end-to-end.
+func newSeededTestStore(t *testing.T) *Store {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := Open(filepath.Join(dir, "permission-store.db"))
