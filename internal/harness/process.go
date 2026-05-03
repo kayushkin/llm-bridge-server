@@ -25,7 +25,11 @@ type HarnessProcess interface {
 	PID() int
 	SessionID() string
 	Events() <-chan msg.Event
-	Send(message string) error
+	// Send writes a user message to the harness. Exactly one of message or
+	// blocks should be non-empty: message for text-only input, blocks for
+	// multimodal input (text/image/document/audio/video). Setting both is
+	// rejected at the HTTP boundary so this layer can stay pass-through.
+	Send(message string, blocks []msg.ContentBlock) error
 	SendCommand(cmd string) error
 	// SendJSONRPC writes a generic JSON-RPC request to the harness's stdin.
 	// Used for methods that take params (e.g. resolve_hook). PTY-mode
@@ -62,10 +66,13 @@ type StartParams struct {
 
 // MessageParams for the "message" method. BridgeSessionID is added so a single
 // bridge process can host multiple sessions; old bridges (which assume one
-// session per process) ignore it harmlessly.
+// session per process) ignore it harmlessly. Either Content or Blocks carries
+// the user's turn — bridges that don't yet support multimodal input ignore
+// Blocks and process Content as before.
 type MessageParams struct {
-	BridgeSessionID string `json:"bridge_session_id,omitempty"`
-	Content         string `json:"content"`
+	BridgeSessionID string             `json:"bridge_session_id,omitempty"`
+	Content         string             `json:"content"`
+	Blocks          []msg.ContentBlock `json:"blocks,omitempty"`
 }
 
 // InterruptParams for the "interrupt" method.
@@ -195,11 +202,13 @@ func (p *Process) Events() <-chan msg.Event {
 	return p.events
 }
 
-// Send writes a user message to the harness.
-func (p *Process) Send(message string) error {
+// Send writes a user message to the harness. Pass blocks=nil for text-only
+// input; pass message="" with blocks for multimodal input.
+func (p *Process) Send(message string, blocks []msg.ContentBlock) error {
 	return p.sendRequest("message", MessageParams{
 		BridgeSessionID: p.sessionID,
 		Content:         message,
+		Blocks:          blocks,
 	})
 }
 
@@ -391,7 +400,7 @@ func (p *PTYProcess) Events() <-chan msg.Event { return p.events }
 
 // Send is a no-op for pty sessions. Input flows through the attach
 // WebSocket directly to the pty fd; there is no JSON-RPC channel.
-func (p *PTYProcess) Send(message string) error {
+func (p *PTYProcess) Send(message string, blocks []msg.ContentBlock) error {
 	return fmt.Errorf("send not supported in pty mode; write to attach WebSocket instead")
 }
 

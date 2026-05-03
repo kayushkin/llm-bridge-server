@@ -21,7 +21,7 @@ type fakeProcess struct {
 func (f *fakeProcess) PID() int                                                  { return 0 }
 func (f *fakeProcess) SessionID() string                                         { return f.sid }
 func (f *fakeProcess) Events() <-chan msg.Event                                  { return f.ch }
-func (f *fakeProcess) Send(message string) error                                 { return nil }
+func (f *fakeProcess) Send(message string, blocks []msg.ContentBlock) error     { return nil }
 func (f *fakeProcess) SendCommand(cmd string) error                              { return nil }
 func (f *fakeProcess) SendJSONRPC(method string, params json.RawMessage) error   { return nil }
 func (f *fakeProcess) Interrupt() error                                          { return nil }

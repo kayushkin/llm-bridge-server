@@ -268,7 +268,7 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 	}
 
 	time.Sleep(renamerStartDelay)
-	if err := s.harness.Send(renamer.BridgeID, prompt); err != nil {
+	if err := s.harness.Send(renamer.BridgeID, prompt, nil); err != nil {
 		s.store.ClearRenamerSlot(target.BridgeID)
 		return fmt.Errorf("send prompt: %w", err)
 	}

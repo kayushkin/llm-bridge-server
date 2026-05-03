@@ -367,9 +367,11 @@ func (p *RunnerProcess) SessionID() string { return p.sessionID }
 // disconnects.
 func (p *RunnerProcess) Events() <-chan msg.Event { return p.events }
 
-// Send writes a user message to the remote harness via the runner.
-func (p *RunnerProcess) Send(message string) error {
-	return p.sendRequest("message", MessageParams{Content: message})
+// Send writes a user message to the remote harness via the runner. Pass
+// blocks=nil for text-only input; pass message="" with blocks for multimodal
+// input.
+func (p *RunnerProcess) Send(message string, blocks []msg.ContentBlock) error {
+	return p.sendRequest("message", MessageParams{Content: message, Blocks: blocks})
 }
 
 // SendCommand sends a control command (compact, resume, etc.).

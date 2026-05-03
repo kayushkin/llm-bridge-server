@@ -492,7 +492,7 @@ func (s *Server) autoResume(sess store.Session) {
 	// it will accept a message on stdin. 2s is enough for Claude Code's
 	// resume-load; shorter risks writing before the pipe is being drained.
 	time.Sleep(2 * time.Second)
-	if err := s.harness.Send(sess.BridgeID, text); err != nil {
+	if err := s.harness.Send(sess.BridgeID, text, nil); err != nil {
 		log.Printf("[auto-resume] %s: replay send failed: %v", sess.BridgeID, err)
 		return
 	}

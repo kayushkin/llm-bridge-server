@@ -344,13 +344,14 @@ func (m *Manager) Kill(sessionID string) error {
 	return proc.Kill()
 }
 
-// Send writes a message to the harness stdin.
-func (m *Manager) Send(sessionID string, message string) error {
+// Send writes a message to the harness stdin. Pass blocks=nil for text-only
+// input; pass message="" with blocks for multimodal input.
+func (m *Manager) Send(sessionID string, message string, blocks []msg.ContentBlock) error {
 	proc := m.Get(sessionID)
 	if proc == nil {
 		return fmt.Errorf("session not running: %s", sessionID)
 	}
-	return proc.Send(message)
+	return proc.Send(message, blocks)
 }
 
 // SendCommand sends a command (compact, resume, etc.) to the harness.

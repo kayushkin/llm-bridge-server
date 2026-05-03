@@ -555,6 +555,73 @@ func TestSendMessage_InvalidBody(t *testing.T) {
 	}
 }
 
+func TestSendMessage_RejectsBothMessageAndBlocks(t *testing.T) {
+	srv, st := testServer(t)
+	st.CreateSession(&store.Session{
+		BridgeID: "br_both", ClientID: "fe_x", Harness: "mock", State: "idle",
+	})
+
+	body := msg.SendMessageRequest{
+		Message: "hello",
+		Blocks: []msg.ContentBlock{
+			{Type: msg.BlockText, Text: &msg.TextBlock{Text: "hello"}},
+		},
+	}
+	resp := doJSON(t, srv, "POST", "/sessions/br_both/send", body)
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(b, []byte("mutually exclusive")) {
+		t.Errorf("body = %q, want mention of 'mutually exclusive'", string(b))
+	}
+}
+
+func TestSendMessage_RejectsNeitherMessageNorBlocks(t *testing.T) {
+	srv, st := testServer(t)
+	st.CreateSession(&store.Session{
+		BridgeID: "br_neither", ClientID: "fe_x", Harness: "mock", State: "idle",
+	})
+
+	resp := doJSON(t, srv, "POST", "/sessions/br_neither/send", msg.SendMessageRequest{})
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(b, []byte("must be set")) {
+		t.Errorf("body = %q, want mention of 'must be set'", string(b))
+	}
+}
+
+func TestSendMessageRequest_DecodesBlocks(t *testing.T) {
+	raw := []byte(`{
+		"blocks": [
+			{"type":"text","text_block":{"text":"describe:"}},
+			{"type":"image","image_block":{"source":{"kind":"base64","media_type":"image/png","data":"AAAA"}}}
+		]
+	}`)
+	var req msg.SendMessageRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(req.Blocks) != 2 {
+		t.Fatalf("len(Blocks) = %d, want 2", len(req.Blocks))
+	}
+	if req.Blocks[0].Type != msg.BlockText || req.Blocks[0].Text == nil {
+		t.Errorf("block[0] = %+v, want text", req.Blocks[0])
+	}
+	if req.Blocks[1].Type != msg.BlockImage || req.Blocks[1].Image == nil {
+		t.Fatalf("block[1] = %+v, want image", req.Blocks[1])
+	}
+	src := req.Blocks[1].Image.Source
+	if src.Kind != msg.MediaBase64 || src.MediaType != "image/png" || src.Data != "AAAA" {
+		t.Errorf("image source = %+v, want base64 image/png AAAA", src)
+	}
+	if req.Message != "" {
+		t.Errorf("Message = %q, want empty", req.Message)
+	}
+}
+
 func TestForkSession_NotFound(t *testing.T) {
 	srv, _ := testServer(t)
 

@@ -306,6 +306,17 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Message and Blocks are mutually exclusive — fail fast at the boundary
+	// so harnesses never see both populated.
+	if req.Message != "" && len(req.Blocks) > 0 {
+		http.Error(w, "message and blocks are mutually exclusive", http.StatusBadRequest)
+		return
+	}
+	if req.Message == "" && len(req.Blocks) == 0 {
+		http.Error(w, "message or blocks must be set", http.StatusBadRequest)
+		return
+	}
+
 	if s.harness.Get(bridgeID) == nil {
 		if sess.InstanceID == "" || s.harnessStore == nil {
 			http.Error(w, "session has no instance bound", http.StatusInternalServerError)
@@ -328,7 +339,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		BridgeSessionID: bridgeID,
 		ClientRequestID: req.ClientRequestID,
 		Timestamp:       time.Now(),
-		Result:          &msg.ResultEvent{Text: req.Message},
+		Result:          &msg.ResultEvent{Text: req.Message, Blocks: req.Blocks},
 	}
 	// Persist before forwarding to the harness. If either store can't take
 	// the user_message, refuse the send — otherwise the assistant runs against
@@ -350,7 +361,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.harness.Send(bridgeID, req.Message); err != nil {
+	if err := s.harness.Send(bridgeID, req.Message, req.Blocks); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
