@@ -641,7 +641,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		source, folder := s.discoverySourceFolder(ds.Prompt)
 
 		bridgeID, inserted, err := s.store.UpsertDiscoveredSession(
-			ds.ID,
+			ds.HarnessSessionID,
 			displayName,
 			string(ds.Harness),
 			instanceID,
@@ -651,7 +651,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			ds.UpdatedAt,
 		)
 		if err != nil {
-			log.Printf("[discover] failed to upsert session %s: %v", ds.ID, err)
+			log.Printf("[discover] failed to upsert session %s: %v", ds.HarnessSessionID, err)
 			continue
 		}
 		if inserted {
@@ -664,7 +664,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 				} else if n > 0 {
 					log.Printf("[discover] imported %d events for session %s", n, sid)
 				}
-			}(ds.Harness, bridgeID, ds.ID)
+			}(ds.Harness, bridgeID, ds.HarnessSessionID)
 		}
 	}
 	if imported > 0 {

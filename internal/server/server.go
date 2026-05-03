@@ -142,10 +142,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/hooks/pending", s.handleListPendingHooks)
 	s.mux.HandleFunc("POST /sessions/{id}/hooks/{request_id}/resolve", s.handleResolveHook)
 
-	// Permission-mode toggle — flips the harness's runtime permission mode
-	// (e.g. CC's bypassPermissions ↔ default) so the chat surface can
-	// switch between auto-approve and human-review without a respawn.
-	s.mux.HandleFunc("POST /sessions/{id}/permission-mode", s.handleSetPermissionMode)
+	// Global bypass toggle — fans out set_bypass_permissions to every
+	// active harness so the embedded permission MCP returns allow for every
+	// tool call without consulting permission-store. New sessions started
+	// after this also need --permission-mode bypassPermissions, which is
+	// the bridge-ui side's responsibility.
+	s.mux.HandleFunc("POST /bridge/bypass-permissions", s.handleSetBypassPermissions)
 
 	// Folder registry — sidebar organization for sessions
 	s.mux.HandleFunc("GET /folders", s.handleListFolders)
@@ -525,7 +527,7 @@ func (s *Server) AutoDiscover() {
 
 			instanceID := localInstances[ds.Harness]
 			source, folder := s.discoverySourceFolder(ds.Prompt)
-			bridgeID, inserted, err := s.store.UpsertDiscoveredSession(ds.ID, displayName, string(ds.Harness), instanceID, source, folder, ds.CreatedAt, ds.UpdatedAt)
+			bridgeID, inserted, err := s.store.UpsertDiscoveredSession(ds.HarnessSessionID, displayName, string(ds.Harness), instanceID, source, folder, ds.CreatedAt, ds.UpdatedAt)
 			if err == nil && inserted {
 				imported++
 				// Import history to log-store for new sessions
@@ -536,7 +538,7 @@ func (s *Server) AutoDiscover() {
 					} else if n > 0 {
 						log.Printf("[auto-discover] imported %d events for session %s", n, sid)
 					}
-				}(ds.Harness, bridgeID, ds.ID)
+				}(ds.Harness, bridgeID, ds.HarnessSessionID)
 			}
 		}
 		if imported > 0 {

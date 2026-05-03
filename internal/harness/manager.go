@@ -403,6 +403,20 @@ func (m *Manager) HasProcess(sessionID string) bool {
 	return m.Get(sessionID) != nil
 }
 
+// ListActiveSessions returns the bridge_session_id of every harness process
+// currently running. Used for fan-out broadcasts (e.g. set_bypass_permissions
+// when the global toggle flips). Snapshot semantics — the returned slice is
+// a copy and may be stale by the time the caller acts on it.
+func (m *Manager) ListActiveSessions() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]string, 0, len(m.processes))
+	for id := range m.processes {
+		out = append(out, id)
+	}
+	return out
+}
+
 // readEvents reads events from process, persists them, updates state,
 // and fans out to all SSE subscribers.
 func (m *Manager) readEvents(proc HarnessProcess) {
