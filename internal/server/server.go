@@ -527,7 +527,7 @@ func (s *Server) AutoDiscover() {
 
 			instanceID := localInstances[ds.Harness]
 			source, folder := s.discoverySourceFolder(ds.Prompt)
-			bridgeID, inserted, err := s.store.UpsertDiscoveredSession(ds.HarnessSessionID, displayName, string(ds.Harness), instanceID, source, folder, ds.CreatedAt, ds.UpdatedAt)
+			bridgeID, inserted, err := s.store.UpsertDiscoveredSession(ds.HarnessSessionID, ds.BridgeSessionID, displayName, string(ds.Harness), instanceID, source, folder, ds.CreatedAt, ds.UpdatedAt)
 			if err == nil && inserted {
 				imported++
 				// Import history to log-store for new sessions

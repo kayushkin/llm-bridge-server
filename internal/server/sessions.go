@@ -642,6 +642,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 
 		bridgeID, inserted, err := s.store.UpsertDiscoveredSession(
 			ds.HarnessSessionID,
+			ds.BridgeSessionID,
 			displayName,
 			string(ds.Harness),
 			instanceID,

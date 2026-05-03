@@ -66,6 +66,17 @@ func (s *bridgePrefsStore) get() BridgePrefs {
 	return s.data
 }
 
+// setBypassPermissions writes the bypass flag unambiguously (no merge
+// semantics — every call overwrites). Used by the dedicated
+// /bridge/bypass-permissions endpoint, which needs to set false explicitly
+// without the partial-update logic in set() ignoring it.
+func (s *bridgePrefsStore) setBypassPermissions(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.BypassPermissions = enabled
+	s.save()
+}
+
 func (s *bridgePrefsStore) set(prefs BridgePrefs) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -101,17 +101,27 @@ type bypassPermissionsRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
-// handleSetBypassPermissions broadcasts set_bypass_permissions to every
-// running harness. Harnesses that don't recognize the method (anything
-// other than claudecode today) respond with "unknown method"; we collect
-// those errors and surface them in the response without failing the call,
-// since the broadcast is intentionally best-effort.
+// handleSetBypassPermissions persists the bypass flag in bridge-prefs AND
+// broadcasts set_bypass_permissions to every running harness. The pref is
+// what BridgeChat reads on session create (to launch CC with
+// --permission-mode bypassPermissions vs. default); the broadcast is what
+// flips already-running sessions' embedded MCPs without a respawn.
+//
+// Harnesses that don't recognize the method (anything other than claudecode
+// today) respond with "unknown method"; failures are surfaced in the
+// response without failing the call, since the broadcast is best-effort.
 func (s *Server) handleSetBypassPermissions(w http.ResponseWriter, r *http.Request) {
 	var req bypassPermissionsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+
+	// Persist the pref. We write directly to the prefs store rather than
+	// going through the bridgePrefsStore.set() merge, because that merge
+	// can't distinguish "user set false" from "field not present".
+	s.bridgePrefs.setBypassPermissions(req.Enabled)
+
 	params, err := json.Marshal(map[string]bool{"enabled": req.Enabled})
 	if err != nil {
 		http.Error(w, "marshal set_bypass_permissions params: "+err.Error(), http.StatusInternalServerError)

@@ -424,12 +424,13 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 	harnessIDSet := false
 
 	for event := range proc.Events() {
-		// Read the harness id directly from the canonical field. Skip if it
-		// equals the bridge id — some bridges set HarnessSessionID = bridge_id
-		// before the harness has minted its own internal id, which is
-		// meaningless here.
+		// Per the event contract, HarnessSessionID is the harness-native id and
+		// must never equal BridgeSessionID. If it does, the harness bridge is
+		// emitting bridge_id in the harness slot — surface loudly and discard
+		// the value rather than persisting a poisoned harness_session_id.
 		harnessID := event.HarnessSessionID
-		if harnessID == bridgeID {
+		if harnessID != "" && harnessID == bridgeID {
+			log.Printf("[harness] CONTRACT VIOLATION: %s emitted event.HarnessSessionID == BridgeSessionID (%s); discarding", event.Harness, bridgeID)
 			harnessID = ""
 		}
 

@@ -202,7 +202,19 @@ func (s *Store) migrate() error {
 	// structured-events flow; "pty" = pseudoterminal attached over WS.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT ''")
 	// Index on harness_session_id must be created after ALTER TABLE migration adds/renames the column.
-	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_harness_session_id ON sessions(harness_session_id)")
+	// Drop the legacy non-unique index in favor of a partial UNIQUE one below.
+	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_session_id")
+	// Self-heal phantom rows from the StoredSession.ID-polymorphism bug:
+	// any row whose harness_session_id collides with another row's bridge_id
+	// is the phantom side, never the canonical session. Delete before adding
+	// the UNIQUE constraint so the migration doesn't fail on legitimately
+	// pre-bug data.
+	s.db.Exec("DELETE FROM sessions WHERE harness_session_id != '' AND harness_session_id IN (SELECT bridge_id FROM sessions)")
+	// Partial UNIQUE: harness_session_id is empty for fresh sessions before
+	// the harness reports its first event, and we cannot allow those empty
+	// strings to collide. Once populated it must be unique — the phantom-row
+	// bug existed precisely because the column wasn't constrained.
+	s.db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_harness_session_id ON sessions(harness_session_id) WHERE harness_session_id != ''")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_folder ON sessions(folder_name)")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source)")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)")
@@ -1192,11 +1204,41 @@ func (s *Store) SetSessionFolder(bridgeID, folder string) error {
 }
 
 // UpsertDiscoveredSession inserts a discovered session if it doesn't already exist.
-// harnessSessionID is the harness-native session ID (e.g. CC UUID).
+//
+// harnessSessionID is the harness-native session ID (e.g. CC UUID, Codex thread_id,
+// Hermes session id) — the dedupe key. Must NOT carry a `br_*` bridge_id; that
+// indicates a contract violation in the calling harness bridge and is rejected
+// loudly.
+//
+// bridgeSessionID is the chain head reported by the harness bridge when its own
+// state.db has already adopted this session into a bridge_session_id chain. When
+// non-empty AND we already have a session row for that bridge_id, this is a
+// no-op — bridge-server already knows the session. Cold-imported synthetic
+// chains where bridge_session_id == harness_session_id won't match (no `br_*`
+// row exists) and fall through to the harness_session_id dedupe path.
+//
 // instanceID is the instance that discovered this session.
 // source/folderName tag the session for sidebar grouping (see config.SourceFolders).
 // Returns the canonical bridge_id (newly generated or existing) and whether a new row was inserted.
-func (s *Store) UpsertDiscoveredSession(harnessSessionID, displayName, harness, instanceID, source, folderName string, createdAt, updatedAt time.Time) (string, bool, error) {
+func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displayName, harness, instanceID, source, folderName string, createdAt, updatedAt time.Time) (string, bool, error) {
+	if strings.HasPrefix(harnessSessionID, "br_") {
+		return "", false, fmt.Errorf("UpsertDiscoveredSession: harness_session_id %q has bridge_id prefix — harness bridge is emitting a bridge_session_id in the harness slot (contract violation)", harnessSessionID)
+	}
+
+	// Short-circuit: if the harness bridge reports a bridge_session_id that
+	// bridge-server already owns, the session is already adopted; don't
+	// re-discover it.
+	if bridgeSessionID != "" {
+		var bridgeID string
+		err := s.db.QueryRow(`SELECT bridge_id FROM sessions WHERE bridge_id=?`, bridgeSessionID).Scan(&bridgeID)
+		if err == nil {
+			return bridgeID, false, nil
+		}
+		if err != sql.ErrNoRows {
+			return "", false, err
+		}
+	}
+
 	// Check if session already exists by harness_session_id
 	var existingBridgeID, existingInstanceID, existingDisplayName, existingSource, existingFolder string
 	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(source, ''), COALESCE(folder_name, '') FROM sessions WHERE harness_session_id=?`, harnessSessionID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder)
