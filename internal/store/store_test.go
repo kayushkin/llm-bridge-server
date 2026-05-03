@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -433,8 +434,8 @@ func TestUpsertDiscoveredSession(t *testing.T) {
 
 	now := time.Now()
 
-	// First insert
-	bridgeID, inserted, err := s.UpsertDiscoveredSession("cc-uuid-1", "Test Task", "claude_code", "inst_1", "", "", now, now)
+	// First insert (cold-import shape: harness bridge has no separate bridge_id mapping yet)
+	bridgeID, inserted, err := s.UpsertDiscoveredSession("cc-uuid-1", "", "Test Task", "claude_code", "inst_1", "", "", now, now)
 	if err != nil {
 		t.Fatalf("upsert 1: %v", err)
 	}
@@ -446,7 +447,7 @@ func TestUpsertDiscoveredSession(t *testing.T) {
 	}
 
 	// Second upsert (same harness_session_id) should not insert and should return the existing bridge_id
-	bridgeID2, inserted, err := s.UpsertDiscoveredSession("cc-uuid-1", "Updated Name", "claude_code", "", "", "", now, now.Add(time.Minute))
+	bridgeID2, inserted, err := s.UpsertDiscoveredSession("cc-uuid-1", "", "Updated Name", "claude_code", "", "", "", now, now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("upsert 2: %v", err)
 	}
@@ -464,6 +465,94 @@ func TestUpsertDiscoveredSession(t *testing.T) {
 	}
 	if sess.InstanceID != "inst_1" {
 		t.Errorf("instance_id = %q, want inst_1 (should be preserved)", sess.InstanceID)
+	}
+}
+
+// TestUpsertDiscoveredSession_RejectsBridgeIDInHarnessSlot guards the
+// contract violation that produced phantom rows: a harness bridge stuffing
+// its bridge_session_id into the harness_session_id slot.
+func TestUpsertDiscoveredSession_RejectsBridgeIDInHarnessSlot(t *testing.T) {
+	s := testStore(t)
+	now := time.Now()
+
+	_, _, err := s.UpsertDiscoveredSession("br_1234567890", "", "x", "claude_code", "", "", "", now, now)
+	if err == nil {
+		t.Fatal("expected contract-violation error for br_*-prefixed harness_session_id")
+	}
+	if !strings.Contains(err.Error(), "contract violation") {
+		t.Errorf("error message should mention contract violation, got: %v", err)
+	}
+}
+
+// TestUpsertDiscoveredSession_KnownBridgeIDIsNoOp confirms that when a
+// harness reports a bridge_session_id we already own, discovery is a no-op
+// — the session is already adopted.
+func TestUpsertDiscoveredSession_KnownBridgeIDIsNoOp(t *testing.T) {
+	s := testStore(t)
+	now := time.Now()
+
+	// Pre-create a real bridge-spawned session.
+	if err := s.CreateSession(&Session{BridgeID: "br_existing", HarnessSessionID: "uuid-real", Harness: "claude_code", State: "idle"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Discovery reports the same bridge_id (e.g. claudecode emits
+	// BridgeSessionID=br_existing for a session bridge-server already runs).
+	// Even with a different harness_session_id, this must be a no-op.
+	bridgeID, inserted, err := s.UpsertDiscoveredSession("uuid-different", "br_existing", "x", "claude_code", "", "", "", now, now)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if inserted {
+		t.Error("expected inserted=false when bridge_id is already known")
+	}
+	if bridgeID != "br_existing" {
+		t.Errorf("bridge_id = %q, want br_existing", bridgeID)
+	}
+
+	// Confirm no second row was created.
+	all, err := s.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("got %d sessions, want 1 (known bridge_id must not produce a phantom row)", len(all))
+	}
+}
+
+// TestUpsertDiscoveredSession_ColdImportFallthrough confirms cold-imported
+// sessions where bridge_session_id == harness_session_id (because the
+// harness bridge never adopted the session into a `br_*` chain) fall
+// through to harness_session_id dedupe — the bridge_id check finds nothing.
+func TestUpsertDiscoveredSession_ColdImportFallthrough(t *testing.T) {
+	s := testStore(t)
+	now := time.Now()
+
+	// First call: both ids equal "uuid-cold". No row exists. Inserts new.
+	bridgeID1, inserted, err := s.UpsertDiscoveredSession("uuid-cold", "uuid-cold", "x", "claude_code", "", "", "", now, now)
+	if err != nil {
+		t.Fatalf("upsert 1: %v", err)
+	}
+	if !inserted {
+		t.Error("expected inserted=true on first call")
+	}
+	if !strings.HasPrefix(bridgeID1, "br_") {
+		t.Errorf("expected new bridge_id with br_ prefix, got %q", bridgeID1)
+	}
+
+	// Second call: same shape. Bridge-id check looks up "uuid-cold" in the
+	// bridge_id column — no match (the row's bridge_id is the freshly minted
+	// br_*). Falls through to harness_session_id dedupe and returns the
+	// existing row.
+	bridgeID2, inserted, err := s.UpsertDiscoveredSession("uuid-cold", "uuid-cold", "x", "claude_code", "", "", "", now, now)
+	if err != nil {
+		t.Fatalf("upsert 2: %v", err)
+	}
+	if inserted {
+		t.Error("expected inserted=false on idempotent call")
+	}
+	if bridgeID2 != bridgeID1 {
+		t.Errorf("bridge_id should be stable across calls: got %q want %q", bridgeID2, bridgeID1)
 	}
 }
 

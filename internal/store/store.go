@@ -205,11 +205,18 @@ func (s *Store) migrate() error {
 	// Drop the legacy non-unique index in favor of a partial UNIQUE one below.
 	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_session_id")
 	// Self-heal phantom rows from the StoredSession.ID-polymorphism bug:
-	// any row whose harness_session_id collides with another row's bridge_id
-	// is the phantom side, never the canonical session. Delete before adding
-	// the UNIQUE constraint so the migration doesn't fail on legitimately
-	// pre-bug data.
-	s.db.Exec("DELETE FROM sessions WHERE harness_session_id != '' AND harness_session_id IN (SELECT bridge_id FROM sessions)")
+	// the harness bridge had been stuffing bridge_session_id values into the
+	// harness_session_id slot. Two phantom signatures, both invalid under
+	// the post-fix contract:
+	//   1. harness_session_id matches another row's bridge_id — same-table
+	//      collision (rare; only when the original session still exists).
+	//   2. harness_session_id has the `br_*` prefix — by definition a
+	//      bridge_session_id, never a harness-native id (CC UUID, Codex
+	//      thread_id, Hermes id).
+	// Either way the row is a phantom; the canonical session lives elsewhere
+	// (or has since been deleted). Clear them before adding the UNIQUE
+	// constraint so the migration doesn't trip on legitimate pre-bug data.
+	s.db.Exec("DELETE FROM sessions WHERE harness_session_id != '' AND (harness_session_id LIKE 'br_%' OR harness_session_id IN (SELECT bridge_id FROM sessions))")
 	// Partial UNIQUE: harness_session_id is empty for fresh sessions before
 	// the harness reports its first event, and we cannot allow those empty
 	// strings to collide. Once populated it must be unique — the phantom-row
