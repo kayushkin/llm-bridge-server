@@ -515,6 +515,10 @@ func TestConformance(t *testing.T) {
 	})
 
 	// ── Feature: import ─────────────────────────────────────────────────
+	// Tri-state contract (matches conformance/runner.go testImport):
+	//   exit 2 → SKIP (binary signals "not implemented")
+	//   exit 0 → PASS (binary handled missing session as a no-op)
+	//   else  → FAIL (binary either errored or silently ignored the flag)
 	t.Run("import", func(t *testing.T) {
 		start := time.Now()
 
@@ -522,13 +526,18 @@ func TestConformance(t *testing.T) {
 		cmd.Env = os.Environ()
 		err := cmd.Run()
 		if err != nil {
-			// -import-history may fail for nonexistent session, but the flag being recognized is enough
 			exitErr, ok := err.(*exec.ExitError)
 			if ok && exitErr.ExitCode() == 2 {
-				// Flag not recognized
 				result.AddResult(TestResult{Feature: FeatureImport, Skipped: true, Error: "binary does not support -import-history"})
 				t.Skip("binary does not support -import-history")
 			}
+			code := -1
+			if ok {
+				code = exitErr.ExitCode()
+			}
+			msg := fmt.Sprintf("binary -import-history exited %d (expected 0 for pass or 2 for skip): %v", code, err)
+			result.AddResult(TestResult{Feature: FeatureImport, Error: msg})
+			t.Fatal(msg)
 		}
 
 		result.AddResult(TestResult{Feature: FeatureImport, Passed: true, Duration: time.Since(start).String()})

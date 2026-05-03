@@ -552,6 +552,21 @@ func testDiscover(ctx context.Context, binary string) TestResult {
 	return TestResult{Feature: FeatureDiscover, Passed: true, Duration: time.Since(start).String()}
 }
 
+// testImport invokes the harness with `-import-history nonexistent-session`
+// and interprets the exit code as a tri-state contract:
+//
+//   exit 2 → SKIP: binary explicitly signals "import not implemented"
+//   exit 0 → PASS: binary recognised the flag and treated a missing session
+//                  as an idempotent no-op (analogous to -discover returning
+//                  an empty array)
+//   any other exit → FAIL: binary either errored mid-import or — more
+//                  commonly — silently ignored the flag and fell through to
+//                  its main JSON-RPC loop, which exits non-zero / non-2
+//                  when the test closes stdin without writing
+//
+// Harnesses that *don't* implement import must explicitly exit 2 (not just
+// ignore the flag); harnesses that *do* implement import must treat a
+// missing session id as a no-op and exit 0.
 func testImport(ctx context.Context, binary string) TestResult {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -560,9 +575,15 @@ func testImport(ctx context.Context, binary string) TestResult {
 	cmd := exec.CommandContext(ctx, binary, "-import-history", "nonexistent-session")
 	err := cmd.Run()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
+		exitErr, ok := err.(*exec.ExitError)
+		if ok && exitErr.ExitCode() == 2 {
 			return TestResult{Feature: FeatureImport, Skipped: true, Error: "binary does not support -import-history"}
 		}
+		code := -1
+		if ok {
+			code = exitErr.ExitCode()
+		}
+		return TestResult{Feature: FeatureImport, Error: fmt.Sprintf("binary -import-history exited %d (expected 0 for pass or 2 for skip): %v", code, err)}
 	}
 	return TestResult{Feature: FeatureImport, Passed: true, Duration: time.Since(start).String()}
 }
