@@ -263,8 +263,20 @@ func (s *Server) handleExecHook(w http.ResponseWriter, r *http.Request) {
 		Error:      hookErr,
 	})
 
+	// CC's PreToolUse/PostToolUse hook output is parsed as JSON when the
+	// HTTP response advertises Content-Type: application/json. An empty
+	// body (the common case — most observation hooks have no decision
+	// to deliver) fails CC's JSON validator with a "validation error
+	// from a hook" reported back to the model. Replace empty stdout
+	// with `{}` (a valid empty JSON object that CC interprets as "no
+	// decision, continue") so harmless no-op hooks don't surface as
+	// errors. Non-empty stdout passes through unchanged.
 	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.Write(stdout.Bytes()); err != nil {
+	respBody := stdout.Bytes()
+	if len(bytes.TrimSpace(respBody)) == 0 {
+		respBody = []byte("{}")
+	}
+	if _, err := w.Write(respBody); err != nil {
 		return
 	}
 }
