@@ -44,11 +44,24 @@ func (s *Server) handleListPendingHooks(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, pending)
 }
 
-// handleResolveHook accepts a decision for an awaiting_resolution hook
-// and forwards it to the harness via the resolve_hook JSON-RPC method.
-// The harness is responsible for both replying to the parked tool/call
-// (closing CC's permission prompt) and emitting the matching
-// phase="completed" HookEvent.
+// handleResolveHook accepts a decision for an awaiting_resolution hook.
+//
+// During the MCP→PreToolUse-hook migration two delivery paths coexist:
+//
+//   1. The legacy MCP path: forward as a resolve_hook JSON-RPC to the
+//      harness, which replies to the parked tool/call inside its embedded
+//      permission MCP and emits the matching phase=completed HookEvent.
+//
+//   2. The new PreToolUse-hook path: deliver the decision to the parked
+//      ask in the bridge-server-local parkedAsks map. The handleCCPermissionPrehook
+//      handler that's blocked on the channel emits the completed HookEvent
+//      and returns the response to CC.
+//
+// We attempt both: the JSONRPC path is a no-op when the harness has no
+// matching parked request (post-step-3, when the harness drops the MCP
+// entirely, this becomes "unknown method" which we ignore); the parkedAsks
+// delivery is a no-op when no entry is parked. The dual-path design lets
+// step 1 ship without forcing every session onto either side.
 func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 	bridgeID := r.PathValue("id")
 	requestID := r.PathValue("request_id")
@@ -71,6 +84,13 @@ func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	delivered := s.parkedAsks.deliver(bridgeID, requestID, permissionDecision{
+		Behavior:     req.Behavior,
+		UpdatedInput: req.UpdatedInput,
+		Message:      req.Message,
+		ResolvedBy:   req.ResolvedBy,
+	})
+
 	params, err := json.Marshal(resolveHookParams{
 		RequestID:    requestID,
 		Behavior:     req.Behavior,
@@ -83,12 +103,20 @@ func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.harness.SendJSONRPC(bridgeID, "resolve_hook", params); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	jsonrpcErr := s.harness.SendJSONRPC(bridgeID, "resolve_hook", params)
+	// Failures from the JSONRPC path are only fatal when nothing else
+	// delivered the decision. With parkedAsks delivery the harness is
+	// either gone (post-step-3) or never had the parked request — either
+	// way the resolve has been served and the caller should see success.
+	if jsonrpcErr != nil && !delivered {
+		http.Error(w, jsonrpcErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	writeJSON(w, map[string]string{"status": "resolved"})
+	writeJSON(w, map[string]any{
+		"status":          "resolved",
+		"parked_delivery": delivered,
+	})
 }
 
 // bypassPermissionsRequest is the body of POST /bridge/bypass-permissions.

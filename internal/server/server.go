@@ -20,6 +20,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -48,9 +49,11 @@ type Server struct {
 	snapshotStore *snapshotstore.Store
 	harness       *harness.Manager
 	authClient    *authstoreclient.Client
+	permClient    *permclient.Client
 	bridgePrefs   *bridgePrefsStore
 	cfState       *conformanceState
 	sessionHub    *sessionHub
+	parkedAsks    *parkedAsks
 	cfg           *config.Config
 }
 
@@ -69,9 +72,11 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		snapshotStore: ss,
 		harness:       harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, cfg.PTYRingBufferBytes, authClient),
 		authClient:    authClient,
+		permClient:    permclient.New(cfg.PermissionStoreURL),
 		bridgePrefs:   newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfState:       newConformanceState(cfg.ConformancePath),
 		sessionHub:    hub,
+		parkedAsks:    newParkedAsks(),
 		cfg:           cfg,
 	}
 	srv.routes()
@@ -141,6 +146,12 @@ func (s *Server) routes() {
 	// recover banner state without replaying the full event stream.
 	s.mux.HandleFunc("GET /sessions/{id}/hooks/pending", s.handleListPendingHooks)
 	s.mux.HandleFunc("POST /sessions/{id}/hooks/{request_id}/resolve", s.handleResolveHook)
+
+	// PreToolUse permission gate for Claude Code. Step 1 of the MCP→hook
+	// migration ships the endpoint dark; Step 2 prepends a curl-to-this
+	// command in buildClaudeCodeSettings so CC actually invokes it. Until
+	// then this is reachable only via direct curl (probes / smoke tests).
+	s.mux.HandleFunc("POST /permission/cc-prehook/{bridge_id}", s.handleCCPermissionPrehook)
 
 	// Global bypass toggle — fans out set_bypass_permissions to every
 	// active harness so the embedded permission MCP returns allow for every

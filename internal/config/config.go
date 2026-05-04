@@ -29,6 +29,10 @@ type Config struct {
 	// localhost:port (the WSL-via-SSH-tunnel case).
 	PublicURL        string
 	ToolStoreURL     string
+	// PermissionStoreURL is the base URL of the permission-store service
+	// consulted by the PreToolUse permission-prehook handler. Defaults to
+	// localhost:8304.
+	PermissionStoreURL string
 	SnapshotStoreDB  string
 	SnapshotStoreGit string
 	// SourceFolders maps CreateSessionRequest.Source values to the folder a
@@ -62,6 +66,7 @@ func Load() *Config {
 		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", "http://localhost:8175"),
 		PublicURL:       os.Getenv("LLMBRIDGE_PUBLIC_URL"),
 		ToolStoreURL:    envOr("LLMBRIDGE_TOOL_STORE_URL", "http://localhost:8302"),
+		PermissionStoreURL: envOr("LLMBRIDGE_PERMISSION_STORE_URL", "http://localhost:8304"),
 		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.db")),
 		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.git")),
 		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled,harness-watch:Scheduled,healthcheck:Scheduled,renamer:Auto-rename,conformance:Conformance")),

@@ -665,6 +665,15 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 		return 0, err
 	}
 
+	// Mirror readEvents: hook events drive the awaiting_resolution →
+	// completed pending map so a freshly-connected client can hydrate the
+	// banner via /sessions/:id/hooks/pending. Required for bridge-emitted
+	// hook events (e.g. the PreToolUse permission-prehook handler) since
+	// those don't pass through the harness stdout reader.
+	if ev.Type == msg.EventHook {
+		m.pending.record(bridgeID, ev)
+	}
+
 	stored := StoredEvent{Event: *ev, RowID: rowID}
 	m.mu.RLock()
 	subs := make([]chan StoredEvent, len(m.subscribers[bridgeID]))
