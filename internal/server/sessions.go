@@ -99,7 +99,16 @@ type (
 )
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	sessions, err := s.store.ListSessions()
+	state := r.URL.Query().Get("state")
+	var (
+		sessions []store.Session
+		err      error
+	)
+	if state != "" {
+		sessions, err = s.store.ListSessionsByState(state)
+	} else {
+		sessions, err = s.store.ListSessions()
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
