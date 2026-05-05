@@ -147,17 +147,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/hooks/pending", s.handleListPendingHooks)
 	s.mux.HandleFunc("POST /sessions/{id}/hooks/{request_id}/resolve", s.handleResolveHook)
 
-	// PreToolUse permission gate for Claude Code. Step 1 of the MCP→hook
-	// migration ships the endpoint dark; Step 2 prepends a curl-to-this
-	// command in buildClaudeCodeSettings so CC actually invokes it. Until
-	// then this is reachable only via direct curl (probes / smoke tests).
+	// PreToolUse permission gate for Claude Code. Wired into every CC
+	// session via buildClaudeCodeSettings's --settings injection so CC
+	// posts here on every tool call. Sole permission gate now that the
+	// embedded bridge_perm MCP is gone.
 	s.mux.HandleFunc("POST /permission/cc-prehook/{bridge_id}", s.handleCCPermissionPrehook)
 
-	// Global bypass toggle — fans out set_bypass_permissions to every
-	// active harness so the embedded permission MCP returns allow for every
-	// tool call without consulting permission-store. New sessions started
-	// after this also need --permission-mode bypassPermissions, which is
-	// the bridge-ui side's responsibility.
+	// Global bypass toggle — persisted in bridge-prefs and consulted by
+	// the prehook handler on every request, so the toggle takes effect
+	// immediately for every active and future session.
 	s.mux.HandleFunc("POST /bridge/bypass-permissions", s.handleSetBypassPermissions)
 
 	// Folder registry — sidebar organization for sessions

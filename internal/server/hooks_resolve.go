@@ -2,29 +2,19 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // hookResolveRequest is the body of POST /sessions/{id}/hooks/{request_id}/resolve.
-// Mirrors the shape the harness's resolve_hook JSON-RPC method consumes.
 type hookResolveRequest struct {
 	Behavior     string          `json:"behavior"` // "allow" | "deny"
 	UpdatedInput json.RawMessage `json:"updated_input,omitempty"`
 	Message      string          `json:"message,omitempty"`
 	ResolvedBy   string          `json:"resolved_by,omitempty"` // "user" / "auto" / "allow_always" / ...
-}
-
-// resolveHookParams is what the harness expects on stdin. Identical layout
-// to llm-bridge-claudecode's ResolveHookParams; we keep our own copy so
-// bridge-server never imports a harness package.
-type resolveHookParams struct {
-	RequestID    string          `json:"request_id"`
-	Behavior     string          `json:"behavior"`
-	UpdatedInput json.RawMessage `json:"updated_input,omitempty"`
-	Message      string          `json:"message,omitempty"`
-	ResolvedBy   string          `json:"resolved_by,omitempty"`
 }
 
 // handleListPendingHooks returns the awaiting_resolution HookEvents
@@ -44,24 +34,15 @@ func (s *Server) handleListPendingHooks(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, pending)
 }
 
-// handleResolveHook accepts a decision for an awaiting_resolution hook.
+// handleResolveHook delivers a decision for an awaiting_resolution hook to
+// the parked PreToolUse handler. The prehook handler that's blocked on the
+// channel emits the matching phase=completed HookEvent and returns the
+// hookSpecificOutput response to Claude Code.
 //
-// During the MCP→PreToolUse-hook migration two delivery paths coexist:
-//
-//   1. The legacy MCP path: forward as a resolve_hook JSON-RPC to the
-//      harness, which replies to the parked tool/call inside its embedded
-//      permission MCP and emits the matching phase=completed HookEvent.
-//
-//   2. The new PreToolUse-hook path: deliver the decision to the parked
-//      ask in the bridge-server-local parkedAsks map. The handleCCPermissionPrehook
-//      handler that's blocked on the channel emits the completed HookEvent
-//      and returns the response to CC.
-//
-// We attempt both: the JSONRPC path is a no-op when the harness has no
-// matching parked request (post-step-3, when the harness drops the MCP
-// entirely, this becomes "unknown method" which we ignore); the parkedAsks
-// delivery is a no-op when no entry is parked. The dual-path design lets
-// step 1 ship without forcing every session onto either side.
+// If no parked entry exists (stale resolve after harness restart, the parked
+// request was already canceled, or a duplicate click), we still emit a
+// completed HookEvent so the UI banner clears — the underlying tool call is
+// dead but the user's decision is recorded for audit.
 func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 	bridgeID := r.PathValue("id")
 	requestID := r.PathValue("request_id")
@@ -84,33 +65,20 @@ func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	delivered := s.parkedAsks.deliver(bridgeID, requestID, permissionDecision{
+	decision := permissionDecision{
 		Behavior:     req.Behavior,
 		UpdatedInput: req.UpdatedInput,
 		Message:      req.Message,
 		ResolvedBy:   req.ResolvedBy,
-	})
-
-	params, err := json.Marshal(resolveHookParams{
-		RequestID:    requestID,
-		Behavior:     req.Behavior,
-		UpdatedInput: req.UpdatedInput,
-		Message:      req.Message,
-		ResolvedBy:   req.ResolvedBy,
-	})
-	if err != nil {
-		http.Error(w, "marshal resolve_hook params: "+err.Error(), http.StatusInternalServerError)
-		return
 	}
-
-	jsonrpcErr := s.harness.SendJSONRPC(bridgeID, "resolve_hook", params)
-	// Failures from the JSONRPC path are only fatal when nothing else
-	// delivered the decision. With parkedAsks delivery the harness is
-	// either gone (post-step-3) or never had the parked request — either
-	// way the resolve has been served and the caller should see success.
-	if jsonrpcErr != nil && !delivered {
-		http.Error(w, jsonrpcErr.Error(), http.StatusInternalServerError)
-		return
+	delivered := s.parkedAsks.deliver(bridgeID, requestID, decision)
+	if !delivered {
+		// Stale: emit a completed event ourselves so bridge-ui's banner clears.
+		// The prehook handler that originally parked this request is gone, so
+		// no one else will broadcast.
+		stale := decision
+		stale.Message = "stale request — no parked prehook (harness restart or duplicate resolve). Decision recorded for audit; tool call is dead."
+		s.broadcastStaleResolution(bridgeID, requestID, stale)
 	}
 
 	writeJSON(w, map[string]any{
@@ -119,25 +87,46 @@ func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// broadcastStaleResolution emits phase=completed for a resolve that found
+// no parked entry. Mirrors broadcastPermissionResolved but stamps the message
+// to explain the no-op so the audit log is self-describing.
+func (s *Server) broadcastStaleResolution(bridgeID, requestID string, d permissionDecision) {
+	resolution := &msg.HookResolution{
+		Behavior:     d.Behavior,
+		UpdatedInput: d.UpdatedInput,
+		Message:      d.Message,
+		ResolvedBy:   d.ResolvedBy,
+	}
+	if _, err := s.harness.BroadcastEvent(&msg.Event{
+		Type:            msg.EventHook,
+		Timestamp:       time.Now(),
+		BridgeSessionID: bridgeID,
+		Hook: &msg.HookEvent{
+			Source:     "permission_prompt",
+			Event:      "PreToolUse",
+			Phase:      "completed",
+			RequestID:  requestID,
+			Decision:   d.Behavior,
+			Resolution: resolution,
+		},
+	}); err != nil {
+		log.Printf("[resolve] broadcast stale completed for %s/%s: %v", bridgeID, requestID, err)
+	}
+}
+
 // bypassPermissionsRequest is the body of POST /bridge/bypass-permissions.
-// When Enabled is true, every active claudecode harness flips its embedded
-// permission MCP into bypass mode (every tool call resolves to allow without
-// consulting permission-store). The caller is also expected to update
-// bridge-prefs so newly created sessions launch with --permission-mode
-// bypassPermissions for the same effect.
+// Persists the global bypass flag in bridge-prefs. The PreToolUse prehook
+// handler reads bridge-prefs on every request, so the toggle takes effect
+// immediately for every session — no harness broadcast needed.
 type bypassPermissionsRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
-// handleSetBypassPermissions persists the bypass flag in bridge-prefs AND
-// broadcasts set_bypass_permissions to every running harness. The pref is
-// what BridgeChat reads on session create (to launch CC with
-// --permission-mode bypassPermissions vs. default); the broadcast is what
-// flips already-running sessions' embedded MCPs without a respawn.
-//
-// Harnesses that don't recognize the method (anything other than claudecode
-// today) respond with "unknown method"; failures are surfaced in the
-// response without failing the call, since the broadcast is best-effort.
+// handleSetBypassPermissions persists the bypass flag in bridge-prefs.
+// Pre-migration this also broadcast set_bypass_permissions to every running
+// harness so the embedded permission MCP would flip into bypass mode. The
+// MCP is gone now; the prehook handler reads bridge-prefs on every call,
+// so persistence is the entire effect.
 func (s *Server) handleSetBypassPermissions(w http.ResponseWriter, r *http.Request) {
 	var req bypassPermissionsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -145,27 +134,10 @@ func (s *Server) handleSetBypassPermissions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Persist the pref. We write directly to the prefs store rather than
-	// going through the bridgePrefsStore.set() merge, because that merge
-	// can't distinguish "user set false" from "field not present".
 	s.bridgePrefs.setBypassPermissions(req.Enabled)
 
-	params, err := json.Marshal(map[string]bool{"enabled": req.Enabled})
-	if err != nil {
-		http.Error(w, "marshal set_bypass_permissions params: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	sessions := s.harness.ListActiveSessions()
-	failures := map[string]string{}
-	for _, sid := range sessions {
-		if err := s.harness.SendJSONRPC(sid, "set_bypass_permissions", params); err != nil {
-			failures[sid] = err.Error()
-		}
-	}
 	writeJSON(w, map[string]any{
-		"status":          "broadcast",
-		"enabled":         req.Enabled,
-		"active_sessions": len(sessions),
-		"failures":        failures,
+		"status":  "ok",
+		"enabled": req.Enabled,
 	})
 }
