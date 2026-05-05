@@ -107,32 +107,61 @@ func (s *Server) injectHookSettings(sess *store.Session) {
 // shell command and returns its stdout. From CC's perspective the exec
 // response is indistinguishable from a local shell hook.
 func (s *Server) buildClaudeCodeSettings(sess *store.Session) (string, error) {
-	if s.hookStore == nil {
-		return "", nil
-	}
-
-	applicable, err := s.collectApplicableHooks(sess)
-	if err != nil {
-		return "", err
-	}
-	if len(applicable) == 0 {
-		return "", nil
-	}
-
 	base := publicBaseURL(s.cfg.ListenAddr)
 	byEvent := make(map[string][]any, 4)
-	for _, h := range applicable {
-		cmd := fmt.Sprintf(
-			"curl -sfS -X POST -H 'Content-Type: application/json' --data-binary @- %s/hooks/exec/%s",
-			base, h.ID,
-		)
-		entry := map[string]any{
-			"matcher": h.Matcher,
+
+	// Permission gate: a PreToolUse HTTP hook routed to bridge-server's
+	// /permission/cc-prehook endpoint. Replaces the embedded bridge_perm
+	// MCP path (see permission-store/docs/cc-mcp-retrospective.md). CC
+	// supports type:"http" natively and honors the per-hook timeout
+	// field, so no curl wrapper or env-var clamp logic is needed.
+	//
+	// matcher "*" → fires on every tool call. Prepended to PreToolUse
+	// so the permission decision lands before any snapshot hooks run;
+	// CC's hook executor processes entries in the order we declare.
+	//
+	// Timeout: 86400s = 1 day. Long enough that no human-driven approval
+	// flow will hit it; far below the 24-day Node-side TIMEOUT_MAX
+	// trap that bit the MCP path.
+	if sess.BridgeID != "" {
+		permEntry := map[string]any{
+			"matcher": "*",
 			"hooks": []map[string]any{
-				{"type": "command", "command": cmd},
+				{
+					"type":    "http",
+					"url":     fmt.Sprintf("%s/permission/cc-prehook/%s", base, sess.BridgeID),
+					"timeout": 86400,
+				},
 			},
 		}
-		byEvent[h.Event] = append(byEvent[h.Event], entry)
+		byEvent["PreToolUse"] = append(byEvent["PreToolUse"], permEntry)
+	}
+
+	// User-registered hooks from hook-store. These sit AFTER the
+	// permission hook in PreToolUse so they only run when the call
+	// was allowed.
+	if s.hookStore != nil {
+		applicable, err := s.collectApplicableHooks(sess)
+		if err != nil {
+			return "", err
+		}
+		for _, h := range applicable {
+			cmd := fmt.Sprintf(
+				"curl -sfS -X POST -H 'Content-Type: application/json' --data-binary @- %s/hooks/exec/%s",
+				base, h.ID,
+			)
+			entry := map[string]any{
+				"matcher": h.Matcher,
+				"hooks": []map[string]any{
+					{"type": "command", "command": cmd},
+				},
+			}
+			byEvent[h.Event] = append(byEvent[h.Event], entry)
+		}
+	}
+
+	if len(byEvent) == 0 {
+		return "", nil
 	}
 
 	out, err := json.Marshal(map[string]any{"hooks": byEvent})

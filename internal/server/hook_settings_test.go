@@ -43,14 +43,57 @@ func parseSettings(t *testing.T, raw string) map[string]any {
 	return out
 }
 
-func TestBuildCCSettings_EmptyWhenNoHooks(t *testing.T) {
+func TestBuildCCSettings_PermissionHookAlwaysPresent(t *testing.T) {
+	// Even with no hook-store entries, the permission gate must be wired
+	// so every CC tool call routes through /permission/cc-prehook.
 	srv, _ := testServerWithHookStore(t)
 	got, err := srv.buildClaudeCodeSettings(&store.Session{BridgeID: "b1", Harness: msg.HarnessClaudeCode})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
+	if got == "" {
+		t.Fatalf("expected permission hook in settings, got empty")
+	}
+	parsed := parseSettings(t, got)
+	hooks, ok := parsed["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("hooks key missing: %v", parsed)
+	}
+	pre, ok := hooks["PreToolUse"].([]any)
+	if !ok || len(pre) != 1 {
+		t.Fatalf("expected one PreToolUse entry (the permission hook), got %v", hooks["PreToolUse"])
+	}
+	entry := pre[0].(map[string]any)
+	if entry["matcher"] != "*" {
+		t.Errorf("permission hook matcher = %v, want \"*\"", entry["matcher"])
+	}
+	inner := entry["hooks"].([]any)[0].(map[string]any)
+	if inner["type"] != "http" {
+		t.Errorf("permission hook type = %v, want \"http\"", inner["type"])
+	}
+	url, _ := inner["url"].(string)
+	if !strings.Contains(url, "/permission/cc-prehook/b1") {
+		t.Errorf("permission hook url = %q, want containing /permission/cc-prehook/b1", url)
+	}
+	// timeout must be present and large enough that human approval flows
+	// can complete; the JSON number type round-trips as float64.
+	if to, ok := inner["timeout"].(float64); !ok || to < 3600 {
+		t.Errorf("permission hook timeout = %v, want >= 3600s", inner["timeout"])
+	}
+}
+
+func TestBuildCCSettings_EmptyWhenNoBridgeID(t *testing.T) {
+	// Defensive: a session without a BridgeID can't be permission-gated
+	// (we'd have no id to put in the URL). Fall back to the previous
+	// "empty when no user hooks" behavior so tests / utilities calling
+	// this helper without a real session don't crash.
+	srv, _ := testServerWithHookStore(t)
+	got, err := srv.buildClaudeCodeSettings(&store.Session{Harness: msg.HarnessClaudeCode})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	if got != "" {
-		t.Fatalf("expected empty, got %q", got)
+		t.Fatalf("expected empty when BridgeID missing, got %q", got)
 	}
 }
 
