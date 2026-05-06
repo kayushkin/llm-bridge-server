@@ -371,6 +371,91 @@ func (c *Client) PatchCardBody(cardID, body string) error {
 	return nil
 }
 
+// ============================ Entity tags ============================
+
+// EntityTag is one (entity_type, entity_ref, tag) row.
+type EntityTag struct {
+	EntityType string `json:"entity_type"`
+	EntityRef  string `json:"entity_ref"`
+	Tag        string `json:"tag"`
+}
+
+// ListEntityTags returns all tags on a single (entity_type, entity_ref) pair.
+func (c *Client) ListEntityTags(entityType, entityRef string) ([]EntityTag, error) {
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/entities/%s/%s/tags",
+		c.BaseURL, entityType, entityRef))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusErr("list entity tags", resp)
+	}
+	var tags []EntityTag
+	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+		return nil, err
+	}
+	return tags, nil
+}
+
+// AddEntityTag attaches a tag to (entity_type, entity_ref). Idempotent.
+func (c *Client) AddEntityTag(entityType, entityRef, tag string) error {
+	body, _ := json.Marshal(map[string]any{"tag": tag})
+	resp, err := c.HTTP.Post(
+		fmt.Sprintf("%s/api/entities/%s/%s/tags", c.BaseURL, entityType, entityRef),
+		"application/json", bytes.NewReader(body),
+	)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return statusErr("add entity tag", resp)
+	}
+	return nil
+}
+
+// DeleteEntityTag removes a single tag from (entity_type, entity_ref).
+func (c *Client) DeleteEntityTag(entityType, entityRef, tag string) error {
+	req, _ := http.NewRequest("DELETE",
+		fmt.Sprintf("%s/api/entities/%s/%s/tags/%s", c.BaseURL, entityType, entityRef, tag), nil)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return statusErr("delete entity tag", resp)
+	}
+	return nil
+}
+
+// ============================ Reverse lookups ============================
+
+// EntityCardEntry is one row from /api/entities/:type/:ref/cards.
+type EntityCardEntry struct {
+	CardID string         `json:"card_id"`
+	Item   map[string]any `json:"item"`
+}
+
+// ListCardsForEntity returns the cards linked to (entity_type, entity_ref).
+func (c *Client) ListCardsForEntity(entityType, entityRef string) ([]EntityCardEntry, error) {
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/entities/%s/%s/cards",
+		c.BaseURL, entityType, entityRef))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusErr("list entity cards", resp)
+	}
+	var entries []EntityCardEntry
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 // ============================ helpers ============================
 
 func statusErr(op string, resp *http.Response) error {
