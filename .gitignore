@@ -1,8 +1,12 @@
 # Compiled binaries
 /scheduler
 /autoworker
+/kanban-curator
+/kanban-classifier
 /cmd/scheduler/scheduler
 /cmd/autoworker/autoworker
+/cmd/kanban-curator/kanban-curator
+/cmd/kanban-classifier/kanban-classifier
 
 # DB files
 *.db
