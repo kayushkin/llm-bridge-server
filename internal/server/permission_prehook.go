@@ -66,10 +66,12 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Bypass short-circuit: live-toggleable via bridge-prefs. The toggle is
-	// fanned out to every prehook caller on the next request — no harness
-	// broadcast required since bridge-server is the gating point.
-	if s.bridgePrefs.get().BypassPermissions {
+	// Bypass short-circuit: per-session override (set via PATCH
+	// /sessions/{id}/bypass-permissions) wins over the global toggle.
+	// Both are read live on every prehook request — no harness broadcast
+	// required since bridge-server is the gating point.
+	sess, _ := s.store.GetSession(bridgeID)
+	if s.bypassEnabledForSession(sess) {
 		writeHookAllow(w, "bypass-mode")
 		return
 	}

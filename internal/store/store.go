@@ -407,6 +407,27 @@ func (s *Store) UpdateSessionPID(bridgeID string, pid int) error {
 	return nil
 }
 
+// UpdateSessionHarnessConfig replaces the harness_config blob for a session.
+// Pass an empty/nil cfg to clear it. Used by per-session settings endpoints
+// (e.g. /sessions/{id}/bypass-permissions) so changes survive harness restart.
+func (s *Store) UpdateSessionHarnessConfig(bridgeID string, cfg json.RawMessage) error {
+	now := time.Now().UTC()
+	var payload string
+	if len(cfg) > 0 {
+		payload = string(cfg)
+	}
+	res, err := s.db.Exec(`UPDATE sessions SET harness_config=?, updated_at=? WHERE bridge_id=?`, payload, now, bridgeID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	s.notifyChanged(bridgeID)
+	return nil
+}
+
 // PendingTurnMessage returns the text of the most recent user_message when
 // no 'result' event follows it — the signal of a turn killed mid-flight that
 // needs to be replayed. Returns ok=false when the last turn is balanced or

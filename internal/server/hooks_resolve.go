@@ -141,3 +141,52 @@ func (s *Server) handleSetBypassPermissions(w http.ResponseWriter, r *http.Reque
 		"enabled": req.Enabled,
 	})
 }
+
+// handleSetSessionBypass persists the per-session bypass override into the
+// session's harness_config. Survives harness restart and beats the global
+// toggle. The CC PreToolUse prehook reads this live, so the override takes
+// effect on the next tool call without restarting the harness; the harness
+// itself picks up the change on its next spawn/resume (start params are
+// rebuilt from harness_config on every startOnInstance).
+func (s *Server) handleSetSessionBypass(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	sess, err := s.store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	var req bypassPermissionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	cfg := make(map[string]json.RawMessage)
+	if len(sess.HarnessConfig) > 0 {
+		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
+			http.Error(w, "harness_config unparseable: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if req.Enabled {
+		cfg["bypass_permissions"] = json.RawMessage(`true`)
+	} else {
+		cfg["bypass_permissions"] = json.RawMessage(`false`)
+	}
+	merged, err := json.Marshal(cfg)
+	if err != nil {
+		http.Error(w, "marshal harness_config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.store.UpdateSessionHarnessConfig(bridgeID, merged); err != nil {
+		http.Error(w, "persist harness_config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"status":             "ok",
+		"bridge_id":          bridgeID,
+		"bypass_permissions": req.Enabled,
+	})
+}

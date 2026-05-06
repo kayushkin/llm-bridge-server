@@ -194,6 +194,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Mode:          mode,
 	}
 
+	// Snapshot the global Bypass Permissions toggle into the session so the
+	// per-session value is durable from creation onward. Skipped if the
+	// caller already set bypass_permissions in req.HarnessConfig.
+	s.snapshotBypassIntoSession(sess)
+
 	if err := s.store.CreateSession(sess); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
