@@ -36,7 +36,16 @@ import (
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/slava/scheduler/internal/kanbanclient"
 )
+
+const (
+	kanbanBoardName    = "Agent runs"
+	kanbanColumnTarget = "In Progress"
+	kanbanCardOrigin   = "autoworker"
+)
+
+var kanbanDefaultColumns = []string{"Queued", "In Progress", "Blocked", "Done", "Failed"}
 
 type limitWindow struct {
 	UsedPercent   float64 `json:"used_percent"`
@@ -178,7 +187,7 @@ func main() {
 
 	// Lazy kanban-store client; only initialised on first fire so dry-run
 	// passes (and skip-everything ticks) don't hit kanban-store at all.
-	var kc *kanbanClient
+	var kc *kanbanclient.Client
 
 	for _, p := range providers {
 		d := evaluate(p, lim[p.Name], nowLocal, st, *slackPP)
@@ -196,7 +205,7 @@ func main() {
 			d.provider, p.Harness, p.InstanceID, d.target, d.actual)
 
 		if kc == nil {
-			kc = newKanbanClient(envOr("KANBAN_STORE_URL", "http://localhost:8305"))
+			kc = kanbanclient.New(envOr("KANBAN_STORE_URL", "http://localhost:8305"))
 			if err := kc.EnsureBoard(kanbanBoardName, kanbanDefaultColumns); err != nil {
 				log.Printf("kanban: bootstrap %q failed: %v (continuing)", kanbanBoardName, err)
 				kc = nil // disable for the rest of this tick
@@ -208,8 +217,15 @@ func main() {
 				"Dispatched by autoworker.\n\n- provider: %s\n- harness: %s\n- instance: %s\n- bus_session_id: `%s`\n- target/actual: %.0f%% / %.0f%%\n",
 				p.Name, p.Harness, p.InstanceID, busSessionID, d.target, d.actual,
 			)
-			tags := []string{kanbanCardOrigin, p.Name}
-			if cardID, err := kc.CreateCard(kanbanColumnTarget, title, body, tags, busSessionID, p.Name); err != nil {
+			cardID, err := kc.CreateCard(kanbanclient.CreateCardArgs{
+				ColumnName:   kanbanColumnTarget,
+				Title:        title,
+				Body:         body,
+				Tags:         []string{kanbanCardOrigin, p.Name},
+				BusSessionID: busSessionID,
+				Provider:     p.Name,
+			})
+			if err != nil {
 				log.Printf("[%s] kanban: create card failed: %v", d.provider, err)
 			} else {
 				log.Printf("[%s] kanban: card %s in %q on %q", d.provider, cardID, kanbanColumnTarget, kanbanBoardName)

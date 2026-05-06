@@ -28,6 +28,10 @@ echo "==> Building autoworker..."
 go build -o autoworker ./cmd/autoworker
 echo "    built: $(ls -lh autoworker | awk '{print $5}')"
 
+echo "==> Building kanban-curator..."
+go build -o kanban-curator ./cmd/kanban-curator
+echo "    built: $(ls -lh kanban-curator | awk '{print $5}')"
+
 echo "==> Stopping $SERVICE..."
 systemctl --user stop "$SERVICE" 2>/dev/null || true
 sleep 1
@@ -35,6 +39,7 @@ sleep 1
 echo "==> Installing binaries to $BIN_DIR..."
 cp "$BINARY" "$BIN_DIR/$BINARY"
 cp autoworker "$BIN_DIR/autoworker"
+cp kanban-curator "$BIN_DIR/kanban-curator"
 
 echo "==> Starting $SERVICE..."
 systemctl --user daemon-reload
