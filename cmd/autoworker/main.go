@@ -176,19 +176,45 @@ func main() {
 		natsClient = c
 	}
 
+	// Lazy kanban-store client; only initialised on first fire so dry-run
+	// passes (and skip-everything ticks) don't hit kanban-store at all.
+	var kc *kanbanClient
+
 	for _, p := range providers {
 		d := evaluate(p, lim[p.Name], nowLocal, st, *slackPP)
 		log.Printf("[%s] %s", d.provider, d.reason)
 		if !d.fire || *dryRun {
 			continue
 		}
-		if err := publishWorker(natsClient, p, *prompt); err != nil {
+		busSessionID, err := publishWorker(natsClient, p, *prompt)
+		if err != nil {
 			log.Printf("[%s] publish failed: %v", d.provider, err)
 			continue
 		}
 		st.LastFire[p.Name] = now.Unix()
 		log.Printf("[%s] FIRED worker → bridge.inbound (harness=%s instance=%s target=%.0f%% actual=%.0f%%)",
 			d.provider, p.Harness, p.InstanceID, d.target, d.actual)
+
+		if kc == nil {
+			kc = newKanbanClient(envOr("KANBAN_STORE_URL", "http://localhost:8305"))
+			if err := kc.EnsureBoard(kanbanBoardName, kanbanDefaultColumns); err != nil {
+				log.Printf("kanban: bootstrap %q failed: %v (continuing)", kanbanBoardName, err)
+				kc = nil // disable for the rest of this tick
+			}
+		}
+		if kc != nil {
+			title := fmt.Sprintf("autoworker · %s · %s", p.Name, now.Format("Jan 2 15:04"))
+			body := fmt.Sprintf(
+				"Dispatched by autoworker.\n\n- provider: %s\n- harness: %s\n- instance: %s\n- bus_session_id: `%s`\n- target/actual: %.0f%% / %.0f%%\n",
+				p.Name, p.Harness, p.InstanceID, busSessionID, d.target, d.actual,
+			)
+			tags := []string{kanbanCardOrigin, p.Name}
+			if cardID, err := kc.CreateCard(kanbanColumnTarget, title, body, tags, busSessionID, p.Name); err != nil {
+				log.Printf("[%s] kanban: create card failed: %v", d.provider, err)
+			} else {
+				log.Printf("[%s] kanban: card %s in %q on %q", d.provider, cardID, kanbanColumnTarget, kanbanBoardName)
+			}
+		}
 	}
 
 	if !*dryRun {
@@ -317,7 +343,7 @@ func fetchLimits() (limitsResponse, error) {
 	return lim, nil
 }
 
-func publishWorker(nc *natsbus.Client, p providerSpec, prompt string) error {
+func publishWorker(nc *natsbus.Client, p providerSpec, prompt string) (string, error) {
 	now := time.Now().UTC()
 	// Unique BusSessionID per fire so llm-bridge-adapter creates a new bridge
 	// session each time (mapped into ~/.llm-bridge-adapter/sessions.json).
@@ -340,7 +366,10 @@ func publishWorker(nc *natsbus.Client, p providerSpec, prompt string) error {
 			Message: prompt,
 		},
 	}
-	return nc.Publish(messages.BridgeInboundSubject, in)
+	if err := nc.Publish(messages.BridgeInboundSubject, in); err != nil {
+		return "", err
+	}
+	return busSessionID, nil
 }
 
 func loadState() (*state, string, error) {
