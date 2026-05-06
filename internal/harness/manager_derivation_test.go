@@ -62,15 +62,15 @@ func recvWithin(t *testing.T, ch chan StoredEvent, want int, timeout time.Durati
 	return got
 }
 
-// TestManager_DerivesAgentStateAfterRawEvent walks one full turn
+// TestManager_DerivesSessionStateAfterRawEvent walks one full turn
 // (user_message → tool_call → tool_result → result) through the
 // real readEvents path and asserts that:
 //   1. raw events arrive at subscribers in order
-//   2. each raw event that triggers a transition is followed by an
-//      agent_state derived event whose Previous matches the prior
+//   2. each raw event that triggers a transition is followed by a
+//      session_state derived event whose Previous matches the prior
 //      state and whose State matches the new one
 //   3. the derived event is persisted (has a non-zero RowID)
-func TestManager_DerivesAgentStateAfterRawEvent(t *testing.T) {
+func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 	m := newTestManager(t)
 
 	const bridgeID = "br-derivation-test"
@@ -118,11 +118,11 @@ func TestManager_DerivesAgentStateAfterRawEvent(t *testing.T) {
 
 	wantOrder := []msg.EventType{
 		msg.EventUserMessage,
-		msg.EventAgentState,
+		msg.EventSessionState,
 		msg.EventToolCall,
 		msg.EventToolResult,
 		msg.EventResult,
-		msg.EventAgentState,
+		msg.EventSessionState,
 		msg.EventUsageTotal,
 		msg.EventTurnComplete,
 	}
@@ -135,8 +135,8 @@ func TestManager_DerivesAgentStateAfterRawEvent(t *testing.T) {
 	// The two agent_state derived events should reflect
 	// idle→tool_running and tool_running→idle in that order.
 	first := got[1]
-	if first.AgentState == nil || first.AgentState.Previous != msg.AgentStateIdle || first.AgentState.State != msg.AgentStateToolRunning {
-		t.Fatalf("first agent_state body = %+v; want idle→tool_running", first.AgentState)
+	if first.State == nil || first.State.Previous != msg.SessionIdle || first.State.State != msg.SessionToolRunning {
+		t.Fatalf("first session_state body = %+v; want idle→tool_running", first.State)
 	}
 	if first.RowID == 0 {
 		t.Fatalf("first derived event has zero RowID — not persisted")
@@ -146,11 +146,11 @@ func TestManager_DerivesAgentStateAfterRawEvent(t *testing.T) {
 	}
 
 	idleTransition := got[5]
-	if idleTransition.AgentState == nil || idleTransition.AgentState.Previous != msg.AgentStateToolRunning || idleTransition.AgentState.State != msg.AgentStateIdle {
-		t.Fatalf("idle agent_state body = %+v; want tool_running→idle", idleTransition.AgentState)
+	if idleTransition.State == nil || idleTransition.State.Previous != msg.SessionToolRunning || idleTransition.State.State != msg.SessionIdle {
+		t.Fatalf("idle session_state body = %+v; want tool_running→idle", idleTransition.State)
 	}
 	if idleTransition.RowID == 0 {
-		t.Fatalf("idle agent_state derived event has zero RowID — not persisted")
+		t.Fatalf("idle session_state derived event has zero RowID — not persisted")
 	}
 
 	usageTotal := got[6]

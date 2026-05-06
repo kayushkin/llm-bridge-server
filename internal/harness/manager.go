@@ -425,6 +425,24 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 	harnessIDSet := false
 
 	for event := range proc.Events() {
+		// Drop harness-emitted EventSessionState entirely. SessionState
+		// is derived centrally from the raw event stream + server-only
+		// context (pause/abort calls, permission-store hook state,
+		// subprocess lifecycle, provider rate-limit signals). Harnesses
+		// don't have that context — letting them write SessionState
+		// produces drift between what the harness thinks and what the
+		// server knows. Logged once per occurrence so a misbehaving
+		// harness is visible without spamming.
+		if event.Type == msg.EventSessionState {
+			log.Printf("[harness] dropping harness-emitted EventSessionState from %s (state=%q): SessionState is derived centrally", event.Harness, func() string {
+				if event.State != nil {
+					return string(event.State.State)
+				}
+				return ""
+			}())
+			continue
+		}
+
 		// Per the event contract, HarnessSessionID is the harness-native id and
 		// must never equal BridgeSessionID. If it does, the harness bridge is
 		// emitting bridge_id in the harness slot — surface loudly and discard
@@ -487,16 +505,11 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 			log.Printf("[harness] failed to push event to log-store: %v", err)
 		}
 
-		// Update session state based on event type
+		// Update bookkeeping based on event type. SessionState row
+		// updates are owned by the derivation path (deriveAndBroadcast
+		// → UpdateSessionState) — readEvents no longer flips state on
+		// EventResult/EventError directly.
 		switch event.Type {
-		case msg.EventSessionState:
-			if event.State != nil {
-				m.store.UpdateSessionState(bridgeID, string(event.State.State))
-			}
-		case msg.EventResult:
-			m.store.UpdateSessionState(bridgeID, string(msg.SessionCompleted))
-		case msg.EventError:
-			m.store.UpdateSessionState(bridgeID, string(msg.SessionError))
 		case msg.EventSessionInfo:
 			if event.Info != nil {
 				if err := m.store.SetSessionInfo(bridgeID, event.Info); err != nil {
@@ -604,6 +617,14 @@ func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 	for i := range derived {
 		ev := &derived[i]
 		ev.BridgeSessionID = bridgeID
+
+		// SessionState transitions also update the persistent session
+		// row — derivation owns the authoritative state. readEvents no
+		// longer flips state on EventResult/EventError directly; this
+		// is the single point where session.state is written.
+		if ev.Type == msg.EventSessionState && ev.State != nil {
+			m.store.UpdateSessionState(bridgeID, string(ev.State.State))
+		}
 
 		var rowID int64
 		if data, err := json.Marshal(ev); err == nil {

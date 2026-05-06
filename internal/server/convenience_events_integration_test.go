@@ -99,7 +99,7 @@ func TestConvenienceEventsIntegration_ClaudeCode_TurnSequence(t *testing.T) {
 	// tool_running, at least one back to idle, exactly one usage_total
 	// for the turn, and one turn_complete carrying the same turn_id.
 	var (
-		agentStates    []*msg.AgentStateEvent
+		sessionStates    []*msg.StateEvent
 		usageTotals    []*msg.UsageTotalEvent
 		turnCompletes  []*msg.TurnCompleteEvent
 		seenTurnIDs    = map[string]bool{}
@@ -110,14 +110,14 @@ func TestConvenienceEventsIntegration_ClaudeCode_TurnSequence(t *testing.T) {
 	for {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out after %s waiting for full convenience-event triple; got agent_state=%d usage_total=%d turn_complete=%d sawUserMessage=%v",
-				convDeriveTimeout, len(agentStates), len(usageTotals), len(turnCompletes), sawUserMessage)
+				convDeriveTimeout, len(sessionStates), len(usageTotals), len(turnCompletes), sawUserMessage)
 		}
 
 		select {
 		case ev, ok := <-events:
 			if !ok {
 				t.Fatalf("SSE stream closed before convenience-event triple landed; got agent_state=%d usage_total=%d turn_complete=%d",
-					len(agentStates), len(usageTotals), len(turnCompletes))
+					len(sessionStates), len(usageTotals), len(turnCompletes))
 			}
 			parsed, err := parseEventBody(ev)
 			if err != nil {
@@ -129,11 +129,11 @@ func TestConvenienceEventsIntegration_ClaudeCode_TurnSequence(t *testing.T) {
 				if parsed.TurnID != "" {
 					seenTurnIDs[parsed.TurnID] = true
 				}
-			case msg.EventAgentState:
-				if parsed.AgentState == nil {
+			case msg.EventSessionState:
+				if parsed.State == nil {
 					t.Fatalf("agent_state event with nil body: %+v", parsed)
 				}
-				agentStates = append(agentStates, parsed.AgentState)
+				sessionStates = append(sessionStates, parsed.State)
 				if parsed.TurnID != "" {
 					seenTurnIDs[parsed.TurnID] = true
 				}
@@ -155,12 +155,12 @@ func TestConvenienceEventsIntegration_ClaudeCode_TurnSequence(t *testing.T) {
 				}
 			}
 
-			if haveTurnTriple(agentStates, usageTotals, turnCompletes) {
+			if haveTurnTriple(sessionStates, usageTotals, turnCompletes) {
 				goto done
 			}
 		case <-time.After(time.Until(deadline)):
 			t.Fatalf("timed out after %s waiting for events; got agent_state=%d usage_total=%d turn_complete=%d",
-				convDeriveTimeout, len(agentStates), len(usageTotals), len(turnCompletes))
+				convDeriveTimeout, len(sessionStates), len(usageTotals), len(turnCompletes))
 		}
 	}
 
@@ -180,19 +180,19 @@ done:
 	}
 
 	var startTransition, endTransition bool
-	for _, st := range agentStates {
-		if st.Previous == msg.AgentStateIdle && st.State == msg.AgentStateToolRunning {
+	for _, st := range sessionStates {
+		if st.Previous == msg.SessionIdle && st.State == msg.SessionToolRunning {
 			startTransition = true
 		}
-		if st.State == msg.AgentStateIdle && st.Previous != "" && st.Previous != msg.AgentStateIdle {
+		if st.State == msg.SessionIdle && st.Previous != "" && st.Previous != msg.SessionIdle {
 			endTransition = true
 		}
 	}
 	if !startTransition {
-		t.Errorf("missing agent_state idle→tool_running transition; got %+v", agentStates)
+		t.Errorf("missing agent_state idle→tool_running transition; got %+v", sessionStates)
 	}
 	if !endTransition {
-		t.Errorf("missing agent_state →idle transition (turn never closed); got %+v", agentStates)
+		t.Errorf("missing agent_state →idle transition (turn never closed); got %+v", sessionStates)
 	}
 
 	if len(usageTotals) != 1 {
@@ -241,12 +241,12 @@ done:
 // usage_total, and one turn_complete. Used to short-circuit the read
 // loop so the test doesn't burn its full timeout once the relevant
 // events have landed.
-func haveTurnTriple(states []*msg.AgentStateEvent, totals []*msg.UsageTotalEvent, completes []*msg.TurnCompleteEvent) bool {
+func haveTurnTriple(states []*msg.StateEvent, totals []*msg.UsageTotalEvent, completes []*msg.TurnCompleteEvent) bool {
 	if len(totals) == 0 || len(completes) == 0 {
 		return false
 	}
 	for _, st := range states {
-		if st.State == msg.AgentStateIdle && st.Previous != "" && st.Previous != msg.AgentStateIdle {
+		if st.State == msg.SessionIdle && st.Previous != "" && st.Previous != msg.SessionIdle {
 			return true
 		}
 	}

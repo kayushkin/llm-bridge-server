@@ -7,34 +7,34 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// agentStateOf is a small helper that drives ev through the state
-// machine and returns the (possibly empty) sequence of agent_state
-// values the derivation emitted. Non-agent_state derived events
+// sessionStateOf is a small helper that drives ev through the state
+// machine and returns the (possibly empty) sequence of session_state
+// values the derivation emitted. Non-session_state derived events
 // (usage_total, turn_complete) are filtered out so this helper stays
 // focused on the state-machine projection.
-func agentStateOf(t *testing.T, d *derivationState, evs []msg.Event) []msg.AgentState {
+func sessionStateOf(t *testing.T, d *derivationState, evs []msg.Event) []msg.SessionState {
 	t.Helper()
-	var emitted []msg.AgentState
+	var emitted []msg.SessionState
 	for i := range evs {
 		for _, derived := range d.derive(&evs[i]) {
-			if derived.Type != msg.EventAgentState {
+			if derived.Type != msg.EventSessionState {
 				continue
 			}
-			if derived.AgentState == nil {
-				t.Fatalf("derive: agent_state event with nil body: %+v", derived)
+			if derived.State == nil {
+				t.Fatalf("derive: session_state event with nil body: %+v", derived)
 			}
-			emitted = append(emitted, derived.AgentState.State)
+			emitted = append(emitted, derived.State.State)
 		}
 	}
 	return emitted
 }
 
-// firstAgentState returns the first agent_state event in a derived
+// firstSessionState returns the first session_state event in a derived
 // sequence, or nil if none is present. Mirrors how callers used to
 // read got[0] back when derive() produced at most one event.
-func firstAgentState(out []msg.Event) *msg.Event {
+func firstSessionState(out []msg.Event) *msg.Event {
 	for i := range out {
-		if out[i].Type == msg.EventAgentState {
+		if out[i].Type == msg.EventSessionState {
 			return &out[i]
 		}
 	}
@@ -43,22 +43,22 @@ func firstAgentState(out []msg.Event) *msg.Event {
 
 func TestDerivation_InitialState(t *testing.T) {
 	d := newDerivationState()
-	if d.agentState != msg.AgentStateIdle {
-		t.Fatalf("initial state = %q; want %q", d.agentState, msg.AgentStateIdle)
+	if d.sessionState != msg.SessionIdle {
+		t.Fatalf("initial state = %q; want %q", d.sessionState, msg.SessionIdle)
 	}
 }
 
 func TestDerivation_SimpleHappyPath(t *testing.T) {
 	d := newDerivationState()
-	got := agentStateOf(t, d, []msg.Event{
+	got := sessionStateOf(t, d, []msg.Event{
 		{Type: msg.EventUserMessage},
 		{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}},
 		{Type: msg.EventToolResult, ToolResult: &msg.ToolResultEvent{ToolID: "t1"}},
 		{Type: msg.EventResult, Result: &msg.ResultEvent{}},
 	})
-	want := []msg.AgentState{
-		msg.AgentStateToolRunning, // user_message starts the turn
-		msg.AgentStateIdle,        // result closes the turn
+	want := []msg.SessionState{
+		msg.SessionToolRunning, // user_message starts the turn
+		msg.SessionIdle,        // result closes the turn
 	}
 	if !equalStates(got, want) {
 		t.Fatalf("transitions = %v; want %v", got, want)
@@ -90,8 +90,8 @@ func TestDerivation_MultipleConcurrentTools(t *testing.T) {
 	if got := d.derive(&msg.Event{Type: msg.EventToolResult, ToolResult: &msg.ToolResultEvent{ToolID: "t1"}}); len(got) != 0 {
 		t.Fatalf("first tool_result with another in flight: got %v; want no transition", got)
 	}
-	if d.agentState != msg.AgentStateToolRunning {
-		t.Fatalf("state mid-flight = %q; want %q", d.agentState, msg.AgentStateToolRunning)
+	if d.sessionState != msg.SessionToolRunning {
+		t.Fatalf("state mid-flight = %q; want %q", d.sessionState, msg.SessionToolRunning)
 	}
 
 	// Second tool returns; turn isn't done until result lands.
@@ -101,8 +101,8 @@ func TestDerivation_MultipleConcurrentTools(t *testing.T) {
 
 	// Result closes the turn.
 	got := d.derive(&msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{}})
-	as := firstAgentState(got)
-	if as == nil || as.AgentState.State != msg.AgentStateIdle {
+	as := firstSessionState(got)
+	if as == nil || as.State.State != msg.SessionIdle {
 		t.Fatalf("result transition = %+v; want idle agent_state", got)
 	}
 	if len(d.activeTools) != 0 {
@@ -117,7 +117,7 @@ func TestDerivation_ApprovalOverridesToolRunning(t *testing.T) {
 
 	// Approval requested — overrides tool_running.
 	got := d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "pending"}})
-	if len(got) != 1 || got[0].AgentState.State != msg.AgentStateAwaitingInput {
+	if len(got) != 1 || got[0].State.State != msg.SessionAwaitingPermission {
 		t.Fatalf("pending approval: got %+v; want awaiting_input", got)
 	}
 	if !d.awaitingApproval {
@@ -126,7 +126,7 @@ func TestDerivation_ApprovalOverridesToolRunning(t *testing.T) {
 
 	// Approved — should restore tool_running (the pre-approval state).
 	got = d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "approved"}})
-	if len(got) != 1 || got[0].AgentState.State != msg.AgentStateToolRunning {
+	if len(got) != 1 || got[0].State.State != msg.SessionToolRunning {
 		t.Fatalf("approved: got %+v; want tool_running", got)
 	}
 	if d.awaitingApproval {
@@ -136,8 +136,8 @@ func TestDerivation_ApprovalOverridesToolRunning(t *testing.T) {
 	// Tool result + result close the turn cleanly.
 	d.derive(&msg.Event{Type: msg.EventToolResult, ToolResult: &msg.ToolResultEvent{ToolID: "t1"}})
 	got = d.derive(&msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{}})
-	as := firstAgentState(got)
-	if as == nil || as.AgentState.State != msg.AgentStateIdle {
+	as := firstSessionState(got)
+	if as == nil || as.State.State != msg.SessionIdle {
 		t.Fatalf("final result: got %+v; want idle agent_state", got)
 	}
 }
@@ -148,7 +148,7 @@ func TestDerivation_ApprovalDeniedRestoresToolRunning(t *testing.T) {
 	d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "pending"}})
 
 	got := d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "denied"}})
-	if len(got) != 1 || got[0].AgentState.State != msg.AgentStateToolRunning {
+	if len(got) != 1 || got[0].State.State != msg.SessionToolRunning {
 		t.Fatalf("denied: got %+v; want tool_running (turn continues)", got)
 	}
 }
@@ -162,8 +162,8 @@ func TestDerivation_AutoApprovedNoPriorPendingIsNoop(t *testing.T) {
 	if got := d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "auto_approved"}}); len(got) != 0 {
 		t.Fatalf("auto_approved with no prior pending: got %+v; want no transition", got)
 	}
-	if d.agentState != msg.AgentStateToolRunning {
-		t.Fatalf("state after auto_approved noop = %q; want %q", d.agentState, msg.AgentStateToolRunning)
+	if d.sessionState != msg.SessionToolRunning {
+		t.Fatalf("state after auto_approved noop = %q; want %q", d.sessionState, msg.SessionToolRunning)
 	}
 }
 
@@ -173,7 +173,7 @@ func TestDerivation_ErrorTermination(t *testing.T) {
 	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 
 	got := d.derive(&msg.Event{Type: msg.EventError, Error: &msg.ErrorEvent{Code: "boom"}})
-	if len(got) != 1 || got[0].AgentState.State != msg.AgentStateError {
+	if len(got) != 1 || got[0].State.State != msg.SessionError {
 		t.Fatalf("error: got %+v; want error", got)
 	}
 	if len(d.activeTools) != 0 {
@@ -181,7 +181,7 @@ func TestDerivation_ErrorTermination(t *testing.T) {
 	}
 }
 
-func TestDerivation_AbortedSessionReturnsToIdle(t *testing.T) {
+func TestDerivation_AbortedSessionEmitsAborted(t *testing.T) {
 	d := newDerivationState()
 	d.derive(&msg.Event{Type: msg.EventUserMessage})
 	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
@@ -190,8 +190,160 @@ func TestDerivation_AbortedSessionReturnsToIdle(t *testing.T) {
 		Type:  msg.EventSessionState,
 		State: &msg.StateEvent{State: msg.SessionAborted},
 	})
-	if len(got) != 1 || got[0].AgentState.State != msg.AgentStateIdle {
-		t.Fatalf("aborted: got %+v; want idle", got)
+	if len(got) != 1 || got[0].State.State != msg.SessionAborted {
+		t.Fatalf("aborted: got %+v; want aborted", got)
+	}
+	if len(d.activeTools) != 0 {
+		t.Fatalf("activeTools after abort = %v; want empty", d.activeTools)
+	}
+}
+
+func TestDerivation_HookAwaitingResolutionEntersAwaitingPermission(t *testing.T) {
+	d := newDerivationState()
+	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+
+	got := d.derive(&msg.Event{
+		Type: msg.EventHook,
+		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-1", Source: "permission_prompt"},
+	})
+	if len(got) != 1 || got[0].State.State != msg.SessionAwaitingPermission {
+		t.Fatalf("hook awaiting_resolution: got %+v; want awaiting_permission", got)
+	}
+	if !d.awaitingApproval {
+		t.Fatalf("awaitingApproval flag not set after hook awaiting_resolution")
+	}
+	if _, ok := d.pendingApprovals["req-1"]; !ok {
+		t.Fatalf("pendingApprovals missing req-1: %+v", d.pendingApprovals)
+	}
+}
+
+func TestDerivation_HookCompletedRestoresPriorState(t *testing.T) {
+	d := newDerivationState()
+	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	d.derive(&msg.Event{
+		Type: msg.EventHook,
+		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-1", Source: "permission_prompt"},
+	})
+
+	got := d.derive(&msg.Event{
+		Type: msg.EventHook,
+		Hook: &msg.HookEvent{Phase: "completed", RequestID: "req-1"},
+	})
+	if len(got) != 1 || got[0].State.State != msg.SessionToolRunning {
+		t.Fatalf("hook completed: got %+v; want tool_running (restored)", got)
+	}
+	if d.awaitingApproval {
+		t.Fatalf("awaitingApproval flag still set after hook resolution")
+	}
+	if len(d.pendingApprovals) != 0 {
+		t.Fatalf("pendingApprovals not drained: %+v", d.pendingApprovals)
+	}
+}
+
+func TestDerivation_HookMultipleConcurrentDrainOrderIndependent(t *testing.T) {
+	d := newDerivationState()
+	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+
+	// Two pending hooks. The second should NOT re-emit awaiting_permission
+	// (already there); resolving one of them should NOT restore (one still pending).
+	d.derive(&msg.Event{
+		Type: msg.EventHook,
+		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-1"},
+	})
+	got := d.derive(&msg.Event{
+		Type: msg.EventHook,
+		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-2"},
+	})
+	if len(got) != 0 {
+		t.Fatalf("second hook awaiting_resolution: got transition %+v; want no transition (already awaiting)", got)
+	}
+
+	got = d.derive(&msg.Event{
+		Type: msg.EventHook,
+		Hook: &msg.HookEvent{Phase: "completed", RequestID: "req-1"},
+	})
+	if len(got) != 0 {
+		t.Fatalf("first resolution while another pending: got %+v; want no transition", got)
+	}
+
+	got = d.derive(&msg.Event{
+		Type: msg.EventHook,
+		Hook: &msg.HookEvent{Phase: "completed", RequestID: "req-2"},
+	})
+	if len(got) != 1 || got[0].State.State != msg.SessionToolRunning {
+		t.Fatalf("last resolution: got %+v; want tool_running", got)
+	}
+}
+
+func TestDerivation_HookEmptyBodyIsNoop(t *testing.T) {
+	// Defensive: a hook event with no body or empty request_id should
+	// not crash and should not transition.
+	d := newDerivationState()
+	d.derive(&msg.Event{Type: msg.EventUserMessage})
+
+	for _, ev := range []msg.Event{
+		{Type: msg.EventHook},
+		{Type: msg.EventHook, Hook: &msg.HookEvent{Phase: "awaiting_resolution"}}, // no RequestID
+	} {
+		if got := d.derive(&ev); len(got) != 0 {
+			t.Errorf("hook %+v: got transition %+v; want none", ev, got)
+		}
+	}
+}
+
+func TestDerivation_ResultWithQuestionEmitsAwaitingUser(t *testing.T) {
+	d := newDerivationState()
+	d.derive(&msg.Event{Type: msg.EventUserMessage})
+
+	got := d.derive(&msg.Event{
+		Type:   msg.EventResult,
+		Result: &msg.ResultEvent{Text: "All set. Want me to ship it?"},
+	})
+	first := firstSessionState(got)
+	if first == nil || first.State.State != msg.SessionAwaitingUser {
+		t.Fatalf("result with question: got %+v; want awaiting_user", got)
+	}
+}
+
+func TestDerivation_ResultWithoutQuestionEmitsIdle(t *testing.T) {
+	d := newDerivationState()
+	d.derive(&msg.Event{Type: msg.EventUserMessage})
+
+	got := d.derive(&msg.Event{
+		Type:   msg.EventResult,
+		Result: &msg.ResultEvent{Text: "Done — committed and pushed."},
+	})
+	first := firstSessionState(got)
+	if first == nil || first.State.State != msg.SessionIdle {
+		t.Fatalf("result without question: got %+v; want idle", got)
+	}
+}
+
+func TestDerivation_LooksLikeQuestion(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"empty", "", false},
+		{"plain done", "Done.", false},
+		{"question mark", "Should I do that?", true},
+		{"trailing newline question", "Should I do that?\n", true},
+		{"multiline ending in question", "First line.\n\nSecond line.\nWhat next?", true},
+		{"multiline trailing horizontal rule", "What next?\n\n---\n", true},
+		{"want me to phrase", "I can apply this. Want me to proceed?", true},
+		{"shall i proceed phrase", "Looks good. Shall I proceed with the rebase", true},
+		{"sign-off mentioning questions", "Let me know if you have any questions.", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := looksLikeQuestion(c.text); got != c.want {
+				t.Errorf("looksLikeQuestion(%q) = %v; want %v", c.text, got, c.want)
+			}
+		})
 	}
 }
 
@@ -225,15 +377,15 @@ func TestDerivation_TransitionEventsCarryCauseCorrelation(t *testing.T) {
 	if ev.BridgeSessionID != "br-1" || ev.HarnessSessionID != "sess-1" || ev.TurnID != "turn-9" || ev.ClientRequestID != "cr-1" || ev.Harness != msg.HarnessClaudeCode {
 		t.Fatalf("derived event lost cause correlation: %+v", ev)
 	}
-	if ev.AgentState.Previous != msg.AgentStateIdle || ev.AgentState.State != msg.AgentStateToolRunning {
-		t.Fatalf("agent_state body = %+v; want idle→tool_running", ev.AgentState)
+	if ev.State.Previous != msg.SessionIdle || ev.State.State != msg.SessionToolRunning {
+		t.Fatalf("session_state body = %+v; want idle→tool_running", ev.State)
 	}
 	if ev.Timestamp.IsZero() {
 		t.Fatalf("derived event has zero Timestamp")
 	}
 }
 
-func equalStates(a, b []msg.AgentState) bool {
+func equalStates(a, b []msg.SessionState) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -343,10 +495,10 @@ func TestDerivation_UsageTotal_OrderingAfterAgentState(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("derived count = %d; want 3 (got %+v)", len(got), got)
 	}
-	if got[0].Type != msg.EventAgentState {
+	if got[0].Type != msg.EventSessionState {
 		t.Fatalf("got[0].Type = %q; want agent_state", got[0].Type)
 	}
-	if got[1].Type != msg.EventAgentState {
+	if got[1].Type != msg.EventSessionState {
 		t.Fatalf("got[1].Type = %q; want agent_state (idle transition)", got[1].Type)
 	}
 	if got[2].Type != msg.EventUsageTotal {
