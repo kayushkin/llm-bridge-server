@@ -113,6 +113,24 @@ func main() {
 			// Emit running state
 			emitState(msg.SessionRunning)
 
+			// Emit a session_info event with mock metadata so consumers
+			// have a chance to render system_prompt, working_dir, tools,
+			// etc. without having to wait for a message round-trip.
+			emit(msg.Event{
+				Type:            msg.EventSessionInfo,
+				Harness:         msg.Harness(harnessName),
+				BridgeSessionID: sessionID,
+				Timestamp:       time.Now(),
+				Info: &msg.SessionInfo{
+					SystemPrompt: "mock-harness reference system prompt",
+					WorkingDir:   "/tmp",
+					Model:        "mock-model",
+					Tools: []msg.ToolInfo{
+						{Name: "echo", Description: "echoes its input"},
+					},
+				},
+			})
+
 			// If there was an initial prompt, process it
 			if sp.Prompt != "" {
 				emitResult(emit, harnessName, sessionID, sp.Prompt)
@@ -123,6 +141,19 @@ func main() {
 			json.Unmarshal(req.Params, &mp)
 
 			emitState(msg.SessionRunning)
+
+			// Echo the user's message as an EventUserMessage so consumers
+			// that want a single source of truth for "what did the user
+			// send?" can listen on the event stream rather than tracking
+			// stdin separately.
+			emit(msg.Event{
+				Type:            msg.EventUserMessage,
+				Harness:         msg.Harness(harnessName),
+				BridgeSessionID: sessionID,
+				Timestamp:       time.Now(),
+				Result:          &msg.ResultEvent{Text: mp.Content},
+			})
+
 			emitResult(emit, harnessName, sessionID, mp.Content)
 
 		case "compact", "compact:":
@@ -172,6 +203,8 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 		return
 	}
 
+	responseText := "Mock response to: " + userMessage
+
 	// Emit a stream event
 	emit(msg.Event{
 		Type:      msg.EventStream,
@@ -180,9 +213,52 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 		Timestamp: time.Now(),
 		Stream: &msg.HarnessStream{Delta: &msg.BlockDelta{
 			Type: msg.DeltaText,
-			Text: "Mock response to: " + userMessage,
+			Text: responseText,
 		}},
 	})
+
+	// Emit a finished content block alongside the stream — distinct from
+	// EventStream (incremental delta) because EventBlock carries one
+	// finished block. Consumers that prefer post-finalized content over
+	// streaming deltas listen on EventBlock.
+	emit(msg.Event{
+		Type:            msg.EventBlock,
+		Harness:         msg.Harness(harnessName),
+		BridgeSessionID: sessionID,
+		Timestamp:       time.Now(),
+		Block: &msg.BlockEvent{
+			Index: 0,
+			Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: responseText}},
+		},
+	})
+
+	// Scenario-specific events the conformance suite probes for via
+	// dedicated trigger prompts. Real harnesses emit these only when the
+	// underlying agent's behavior surfaces them — mock-harness emits them
+	// here so the reference implementation passes every conformance test.
+	if strings.Contains(strings.ToLower(userMessage), "plan") {
+		emit(msg.Event{
+			Type:            msg.EventPlan,
+			Harness:         msg.Harness(harnessName),
+			BridgeSessionID: sessionID,
+			Timestamp:       time.Now(),
+			Plan:            &msg.PlanEvent{Text: "1. step one\n2. step two\n3. step three"},
+		})
+	}
+	if strings.Contains(strings.ToLower(userMessage), "hook") {
+		emit(msg.Event{
+			Type:            msg.EventHook,
+			Harness:         msg.Harness(harnessName),
+			BridgeSessionID: sessionID,
+			Timestamp:       time.Now(),
+			Hook: &msg.HookEvent{
+				Event:    "PreToolUse",
+				ToolName: "echo",
+				Phase:    "completed",
+				Decision: "allow",
+			},
+		})
+	}
 
 	// Emit result
 	emit(msg.Event{
@@ -190,7 +266,7 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 		Harness:   msg.Harness(harnessName),
 		BridgeSessionID: sessionID,
 		Timestamp: time.Now(),
-		Result:    &msg.ResultEvent{Text: "Mock response to: " + userMessage},
+		Result:    &msg.ResultEvent{Text: responseText},
 	})
 
 	// Emit idle state

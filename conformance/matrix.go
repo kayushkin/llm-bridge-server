@@ -14,40 +14,76 @@ import (
 type Feature string
 
 const (
-	FeatureStart     Feature = "start"      // Can start a new session
-	FeatureMessage   Feature = "message"    // Can receive and respond to messages
-	FeatureResume    Feature = "resume"     // Can resume an existing session
-	FeatureFork      Feature = "fork"       // Can fork from a parent session
-	FeatureCompact   Feature = "compact"    // Can compact context
-	FeatureConfig    Feature = "config"     // Can update runtime config (model, effort, etc.)
-	FeatureDiscover  Feature = "discover"   // Can discover on-disk sessions via -discover
-	FeatureImport    Feature = "import"     // Can import history via -import-history
-	FeatureStreaming    Feature = "streaming"     // Emits stream events (not just result)
-	FeatureToolCalls    Feature = "tool_calls"    // Emits tool_call/tool_result events
-	FeatureThinking     Feature = "thinking"      // Emits thinking events
-	FeatureErrors       Feature = "errors"        // Properly emits error events on failure
-	FeatureReasoning    Feature = "reasoning"     // Accepts reasoning effort config
-	FeatureSystemPrompt Feature = "system_prompt" // Accepts a custom system_prompt at start
+	// ── Lifecycle (control plane) ────────────────────────────────────────
+	FeatureStart    Feature = "start"    // Can start a new session
+	FeatureResume   Feature = "resume"   // Can resume an existing session
+	FeatureFork     Feature = "fork"     // Can fork from a parent session
+	FeatureCompact  Feature = "compact"  // Can compact context
+	FeatureConfig   Feature = "config"   // Can update runtime config (model, effort, etc.)
+	FeatureDiscover Feature = "discover" // Can discover on-disk sessions via -discover
+	FeatureImport   Feature = "import"   // Can import history via -import-history
+
+	// ── Message round-trip (the EventResult and EventStream pair) ────────
+	FeatureMessage   Feature = "message"   // Can receive a message and emit an EventResult
+	FeatureStreaming Feature = "streaming" // Emits EventStream deltas (not just result)
+
+	// ── Content blocks emitted alongside the message round-trip ──────────
+	FeatureBlock     Feature = "block"      // Emits EventBlock (whole finished content blocks)
+	FeatureToolCalls Feature = "tool_calls" // Emits EventToolCall / EventToolResult
+	FeatureThinking  Feature = "thinking"   // Emits EventThinking
+	FeaturePlan      Feature = "plan"       // Emits EventPlan (structured task-planning)
+
+	// ── Session metadata / observation ───────────────────────────────────
+	FeatureSessionInfo  Feature = "session_info"  // Emits EventSessionInfo at start (system prompt, tools, MCP, …)
+	FeatureUserMessage  Feature = "user_message"  // Emits EventUserMessage echo of the caller's input
 	FeatureContextUsed  Feature = "context_used"  // Reports token usage in result events
+	FeatureSystemPrompt Feature = "system_prompt" // Accepts a custom system_prompt at start
+	FeatureReasoning    Feature = "reasoning"     // Accepts reasoning effort config
+
+	// ── Hook / approval signalling ───────────────────────────────────────
+	FeatureHook   Feature = "hook"   // Emits EventHook lifecycle events (PreToolUse, PostToolUse, …)
+	FeatureErrors Feature = "errors" // Properly emits EventError on failure
+
+	// ── Convenience events (derived centrally by llm-bridge-server) ──────
+	// These are not emitted by harnesses directly — the conformance runner
+	// spawns harnesses as direct subprocesses, so these always Skip with a
+	// "server-derived" reason. They appear in the matrix purely so the UI
+	// can document every event type in the protocol.
+	FeatureUsageTotal   Feature = "usage_total"   // EventUsageTotal — cumulative session usage
+	FeatureTurnComplete Feature = "turn_complete" // EventTurnComplete — coalesced turn summary
 )
 
-// AllFeatures lists every testable feature.
+// AllFeatures lists every testable feature, ordered by category for stable UI
+// presentation (see the FEATURE_GROUPS map in BridgeConformance.tsx).
 var AllFeatures = []Feature{
+	// Lifecycle
 	FeatureStart,
-	FeatureMessage,
 	FeatureResume,
 	FeatureFork,
 	FeatureCompact,
 	FeatureConfig,
 	FeatureDiscover,
 	FeatureImport,
+	// Message round-trip
+	FeatureMessage,
 	FeatureStreaming,
+	// Content blocks
+	FeatureBlock,
 	FeatureToolCalls,
 	FeatureThinking,
-	FeatureErrors,
-	FeatureReasoning,
-	FeatureSystemPrompt,
+	FeaturePlan,
+	// Session metadata
+	FeatureSessionInfo,
+	FeatureUserMessage,
 	FeatureContextUsed,
+	FeatureSystemPrompt,
+	FeatureReasoning,
+	// Hooks / errors
+	FeatureHook,
+	FeatureErrors,
+	// Server-derived convenience events
+	FeatureUsageTotal,
+	FeatureTurnComplete,
 }
 
 // TestResult records the outcome of a single feature test.

@@ -514,6 +514,243 @@ func TestConformance(t *testing.T) {
 		t.Skip("thinking requires real LLM interaction")
 	})
 
+	// ── Feature: block ──────────────────────────────────────────────────
+	// Watch a normal message round-trip for any EventBlock (whole finished
+	// content blocks). Distinct from EventStream (incremental delta) and
+	// EventResult (the terminator).
+	t.Run("block", func(t *testing.T) {
+		start := time.Now()
+		hp := startHarness(t, binary)
+		defer hp.close()
+
+		hp.send("start", map[string]any{"session_id": "test-block"})
+		hp.waitForEvent(eventTimeout, func(e msg.Event) bool {
+			return e.Type == msg.EventSessionState
+		})
+
+		hp.send("message", map[string]any{"content": PromptBlock})
+
+		hasBlock := false
+		gotResult := false
+		timer := time.NewTimer(eventTimeout)
+		defer timer.Stop()
+	blockLoop:
+		for {
+			select {
+			case event, ok := <-hp.events:
+				if !ok {
+					break blockLoop
+				}
+				if event.Type == msg.EventBlock {
+					hasBlock = true
+				}
+				if event.Type == msg.EventResult {
+					gotResult = true
+					break blockLoop
+				}
+			case <-timer.C:
+				break blockLoop
+			}
+		}
+
+		if !gotResult {
+			result.AddResult(TestResult{Feature: FeatureBlock, Error: "no result event received"})
+			t.Fatal("no result event received")
+		}
+		if !hasBlock {
+			result.AddResult(TestResult{Feature: FeatureBlock, Skipped: true, Error: "no block events emitted"})
+			t.Skip("harness does not emit block events")
+		}
+		result.AddResult(TestResult{Feature: FeatureBlock, Passed: true, Duration: time.Since(start).String()})
+	})
+
+	// ── Feature: session_info ───────────────────────────────────────────
+	t.Run("session_info", func(t *testing.T) {
+		start := time.Now()
+		hp := startHarness(t, binary)
+		defer hp.close()
+
+		if err := hp.send("start", map[string]any{"session_id": "test-session-info"}); err != nil {
+			result.AddResult(TestResult{Feature: FeatureSessionInfo, Error: err.Error()})
+			t.Fatalf("send start: %v", err)
+		}
+
+		event, err := hp.waitForEventType(eventTimeout, msg.EventSessionInfo)
+		if err != nil {
+			result.AddResult(TestResult{Feature: FeatureSessionInfo, Skipped: true, Error: "no session_info event emitted"})
+			t.Skip("harness does not emit session_info")
+		}
+		if event.Info == nil {
+			result.AddResult(TestResult{Feature: FeatureSessionInfo, Error: "session_info event had nil Info"})
+			t.Fatal("session_info event missing Info")
+		}
+		result.AddResult(TestResult{Feature: FeatureSessionInfo, Passed: true, Duration: time.Since(start).String()})
+	})
+
+	// ── Feature: user_message ───────────────────────────────────────────
+	t.Run("user_message", func(t *testing.T) {
+		start := time.Now()
+		hp := startHarness(t, binary)
+		defer hp.close()
+
+		hp.send("start", map[string]any{"session_id": "test-user-message"})
+		hp.waitForEvent(eventTimeout, func(e msg.Event) bool {
+			return e.Type == msg.EventSessionState
+		})
+
+		if err := hp.send("message", map[string]any{"content": PromptUserMessage}); err != nil {
+			result.AddResult(TestResult{Feature: FeatureUserMessage, Error: err.Error()})
+			t.Fatalf("send message: %v", err)
+		}
+
+		hasUserMessage := false
+		gotResult := false
+		timer := time.NewTimer(eventTimeout)
+		defer timer.Stop()
+	userMsgLoop:
+		for {
+			select {
+			case event, ok := <-hp.events:
+				if !ok {
+					break userMsgLoop
+				}
+				if event.Type == msg.EventUserMessage {
+					hasUserMessage = true
+				}
+				if event.Type == msg.EventResult {
+					gotResult = true
+					break userMsgLoop
+				}
+			case <-timer.C:
+				break userMsgLoop
+			}
+		}
+
+		if !gotResult {
+			result.AddResult(TestResult{Feature: FeatureUserMessage, Error: "no result event received"})
+			t.Fatal("no result event received")
+		}
+		if !hasUserMessage {
+			result.AddResult(TestResult{Feature: FeatureUserMessage, Skipped: true, Error: "no user_message events emitted"})
+			t.Skip("harness does not emit user_message")
+		}
+		result.AddResult(TestResult{Feature: FeatureUserMessage, Passed: true, Duration: time.Since(start).String()})
+	})
+
+	// ── Feature: plan ───────────────────────────────────────────────────
+	t.Run("plan", func(t *testing.T) {
+		start := time.Now()
+		hp := startHarness(t, binary)
+		defer hp.close()
+
+		hp.send("start", map[string]any{"session_id": "test-plan"})
+		hp.waitForEvent(eventTimeout, func(e msg.Event) bool {
+			return e.Type == msg.EventSessionState
+		})
+
+		hp.send("message", map[string]any{"content": PromptPlan})
+
+		hasPlan := false
+		gotTerminator := false
+		timer := time.NewTimer(eventTimeout)
+		defer timer.Stop()
+	planLoop:
+		for {
+			select {
+			case event, ok := <-hp.events:
+				if !ok {
+					break planLoop
+				}
+				if event.Type == msg.EventPlan {
+					hasPlan = true
+				}
+				if event.Type == msg.EventResult || event.Type == msg.EventError {
+					gotTerminator = true
+					break planLoop
+				}
+			case <-timer.C:
+				break planLoop
+			}
+		}
+
+		if !gotTerminator {
+			result.AddResult(TestResult{Feature: FeaturePlan, Skipped: true, Error: "no terminating result/error event"})
+			t.Skip("plan: no terminator")
+		}
+		if !hasPlan {
+			result.AddResult(TestResult{Feature: FeaturePlan, Skipped: true, Error: "no plan events emitted (scenario-specific)"})
+			t.Skip("harness does not emit plan events")
+		}
+		result.AddResult(TestResult{Feature: FeaturePlan, Passed: true, Duration: time.Since(start).String()})
+	})
+
+	// ── Feature: hook ───────────────────────────────────────────────────
+	t.Run("hook", func(t *testing.T) {
+		start := time.Now()
+		hp := startHarness(t, binary)
+		defer hp.close()
+
+		hp.send("start", map[string]any{"session_id": "test-hook"})
+		hp.waitForEvent(eventTimeout, func(e msg.Event) bool {
+			return e.Type == msg.EventSessionState
+		})
+
+		hp.send("message", map[string]any{"content": PromptHook})
+
+		hasHook := false
+		gotTerminator := false
+		timer := time.NewTimer(eventTimeout)
+		defer timer.Stop()
+	hookLoop:
+		for {
+			select {
+			case event, ok := <-hp.events:
+				if !ok {
+					break hookLoop
+				}
+				if event.Type == msg.EventHook {
+					hasHook = true
+				}
+				if event.Type == msg.EventResult || event.Type == msg.EventError {
+					gotTerminator = true
+					break hookLoop
+				}
+			case <-timer.C:
+				break hookLoop
+			}
+		}
+
+		if !gotTerminator {
+			result.AddResult(TestResult{Feature: FeatureHook, Skipped: true, Error: "no terminating result/error event"})
+			t.Skip("hook: no terminator")
+		}
+		if !hasHook {
+			result.AddResult(TestResult{Feature: FeatureHook, Skipped: true, Error: "no hook events emitted (scenario-specific)"})
+			t.Skip("harness does not emit hook events")
+		}
+		result.AddResult(TestResult{Feature: FeatureHook, Passed: true, Duration: time.Since(start).String()})
+	})
+
+	// ── Feature: usage_total (server-derived) ───────────────────────────
+	t.Run("usage_total", func(t *testing.T) {
+		result.AddResult(TestResult{
+			Feature: FeatureUsageTotal,
+			Skipped: true,
+			Error:   "server-derived: emitted by llm-bridge-server, not the harness subprocess",
+		})
+		t.Skip("usage_total is server-derived")
+	})
+
+	// ── Feature: turn_complete (server-derived) ─────────────────────────
+	t.Run("turn_complete", func(t *testing.T) {
+		result.AddResult(TestResult{
+			Feature: FeatureTurnComplete,
+			Skipped: true,
+			Error:   "server-derived: emitted by llm-bridge-server, not the harness subprocess",
+		})
+		t.Skip("turn_complete is server-derived")
+	})
+
 	// ── Feature: import ─────────────────────────────────────────────────
 	// Tri-state contract (matches conformance/runner.go testImport):
 	//   exit 2 → SKIP (binary signals "not implemented")

@@ -29,6 +29,10 @@ const (
 	PromptStreaming   = "test streaming" // testStreaming
 	PromptErrors      = "trigger error"  // testErrors
 	PromptContextUsed = "count tokens"   // testContextUsed
+	PromptBlock       = "emit block"     // testBlock
+	PromptUserMessage = "echo me"        // testUserMessage
+	PromptPlan        = "make a plan"    // testPlan
+	PromptHook        = "trigger hook"   // testHook
 )
 
 // IsConformancePrompt reports whether s matches one of the canonical prompts
@@ -37,7 +41,8 @@ const (
 // disk during a conformance run.
 func IsConformancePrompt(s string) bool {
 	switch s {
-	case PromptMessage, PromptStreaming, PromptErrors, PromptContextUsed:
+	case PromptMessage, PromptStreaming, PromptErrors, PromptContextUsed,
+		PromptBlock, PromptUserMessage, PromptPlan, PromptHook:
 		return true
 	}
 	return false
@@ -230,7 +235,265 @@ func RunHarness(ctx context.Context, binary string) (*HarnessResult, error) {
 	// ── context_used ──
 	result.AddResult(testContextUsed(ctx, binary, llmTimeout))
 
+	// ── block (EventBlock — whole finished content blocks) ──
+	result.AddResult(testBlock(ctx, binary, llmTimeout))
+
+	// ── session_info (EventSessionInfo at start) ──
+	result.AddResult(testSessionInfo(ctx, binary, eventTimeout))
+
+	// ── user_message (EventUserMessage echo) ──
+	result.AddResult(testUserMessage(ctx, binary, llmTimeout))
+
+	// ── plan (EventPlan — structured task-planning) ──
+	result.AddResult(testPlan(ctx, binary, llmTimeout))
+
+	// ── hook (EventHook — lifecycle events) ──
+	result.AddResult(testHook(ctx, binary, llmTimeout))
+
+	// ── usage_total (server-derived; not emitted by harness subprocesses) ──
+	result.AddResult(TestResult{
+		Feature: FeatureUsageTotal,
+		Skipped: true,
+		Error:   "server-derived: emitted by llm-bridge-server, not the harness subprocess",
+	})
+
+	// ── turn_complete (server-derived; not emitted by harness subprocesses) ──
+	result.AddResult(TestResult{
+		Feature: FeatureTurnComplete,
+		Skipped: true,
+		Error:   "server-derived: emitted by llm-bridge-server, not the harness subprocess",
+	})
+
 	return result, nil
+}
+
+// testBlock sends a normal message and observes whether the harness emits any
+// EventBlock alongside the EventResult. EventBlock carries one finished content
+// block (text, thinking, tool_use, …) — distinct from EventStream (incremental
+// deltas) and EventResult (the terminator).
+func testBlock(ctx context.Context, binary string, timeout time.Duration) TestResult {
+	start := time.Now()
+	rp, err := launchProcess(ctx, binary)
+	if err != nil {
+		return TestResult{Feature: FeatureBlock, Error: err.Error()}
+	}
+	defer rp.close()
+
+	rp.send("start", map[string]any{"session_id": "conformance-block"})
+	rp.waitForEvent(timeout, func(e msg.Event) bool {
+		return e.Type == msg.EventSessionState
+	})
+
+	rp.send("message", map[string]any{"content": PromptBlock})
+
+	hasBlock := false
+	gotResult := false
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+loop:
+	for {
+		select {
+		case event, ok := <-rp.events:
+			if !ok {
+				break loop
+			}
+			if event.Type == msg.EventBlock {
+				hasBlock = true
+			}
+			if event.Type == msg.EventResult {
+				gotResult = true
+				break loop
+			}
+		case <-timer.C:
+			break loop
+		}
+	}
+
+	if !gotResult {
+		return TestResult{Feature: FeatureBlock, Error: "no result event received"}
+	}
+	if !hasBlock {
+		return TestResult{Feature: FeatureBlock, Skipped: true, Error: "no block events emitted"}
+	}
+	return TestResult{Feature: FeatureBlock, Passed: true, Duration: time.Since(start).String()}
+}
+
+// testSessionInfo starts a session and watches for an EventSessionInfo carrying
+// the harness's initial metadata (system prompt, working dir, tools, MCP
+// servers). Harnesses that don't surface this skip with a clear reason.
+func testSessionInfo(ctx context.Context, binary string, timeout time.Duration) TestResult {
+	start := time.Now()
+	rp, err := launchProcess(ctx, binary)
+	if err != nil {
+		return TestResult{Feature: FeatureSessionInfo, Error: err.Error()}
+	}
+	defer rp.close()
+
+	if err := rp.send("start", map[string]any{"session_id": "conformance-session-info"}); err != nil {
+		return TestResult{Feature: FeatureSessionInfo, Error: err.Error()}
+	}
+
+	event, err := rp.waitForEventType(timeout, msg.EventSessionInfo)
+	if err != nil {
+		return TestResult{Feature: FeatureSessionInfo, Skipped: true, Error: "no session_info event emitted"}
+	}
+	if event.Info == nil {
+		return TestResult{Feature: FeatureSessionInfo, Error: "session_info event had nil Info"}
+	}
+	return TestResult{Feature: FeatureSessionInfo, Passed: true, Duration: time.Since(start).String()}
+}
+
+// testUserMessage sends a message and watches for an EventUserMessage echoing
+// the caller's input. Harnesses that don't surface user messages back through
+// the event stream skip.
+func testUserMessage(ctx context.Context, binary string, timeout time.Duration) TestResult {
+	start := time.Now()
+	rp, err := launchProcess(ctx, binary)
+	if err != nil {
+		return TestResult{Feature: FeatureUserMessage, Error: err.Error()}
+	}
+	defer rp.close()
+
+	rp.send("start", map[string]any{"session_id": "conformance-user-message"})
+	rp.waitForEvent(timeout, func(e msg.Event) bool {
+		return e.Type == msg.EventSessionState
+	})
+
+	if err := rp.send("message", map[string]any{"content": PromptUserMessage}); err != nil {
+		return TestResult{Feature: FeatureUserMessage, Error: err.Error()}
+	}
+
+	hasUserMessage := false
+	gotResult := false
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+loop:
+	for {
+		select {
+		case event, ok := <-rp.events:
+			if !ok {
+				break loop
+			}
+			if event.Type == msg.EventUserMessage {
+				hasUserMessage = true
+			}
+			if event.Type == msg.EventResult {
+				gotResult = true
+				break loop
+			}
+		case <-timer.C:
+			break loop
+		}
+	}
+
+	if !gotResult {
+		return TestResult{Feature: FeatureUserMessage, Error: "no result event received"}
+	}
+	if !hasUserMessage {
+		return TestResult{Feature: FeatureUserMessage, Skipped: true, Error: "no user_message events emitted"}
+	}
+	return TestResult{Feature: FeatureUserMessage, Passed: true, Duration: time.Since(start).String()}
+}
+
+// testPlan sends a planning-style prompt and watches for EventPlan. Real
+// harnesses emit this only when the underlying agent invokes a plan tool; for
+// most harnesses this will skip, which is the honest signal.
+func testPlan(ctx context.Context, binary string, timeout time.Duration) TestResult {
+	start := time.Now()
+	rp, err := launchProcess(ctx, binary)
+	if err != nil {
+		return TestResult{Feature: FeaturePlan, Error: err.Error()}
+	}
+	defer rp.close()
+
+	rp.send("start", map[string]any{"session_id": "conformance-plan"})
+	rp.waitForEvent(timeout, func(e msg.Event) bool {
+		return e.Type == msg.EventSessionState
+	})
+
+	rp.send("message", map[string]any{"content": PromptPlan})
+
+	hasPlan := false
+	gotTerminator := false
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+loop:
+	for {
+		select {
+		case event, ok := <-rp.events:
+			if !ok {
+				break loop
+			}
+			if event.Type == msg.EventPlan {
+				hasPlan = true
+			}
+			if event.Type == msg.EventResult || event.Type == msg.EventError {
+				gotTerminator = true
+				break loop
+			}
+		case <-timer.C:
+			break loop
+		}
+	}
+
+	if !gotTerminator {
+		return TestResult{Feature: FeaturePlan, Skipped: true, Error: "no terminating result/error event"}
+	}
+	if !hasPlan {
+		return TestResult{Feature: FeaturePlan, Skipped: true, Error: "no plan events emitted (scenario-specific)"}
+	}
+	return TestResult{Feature: FeaturePlan, Passed: true, Duration: time.Since(start).String()}
+}
+
+// testHook sends a hook-trigger prompt and watches for EventHook. Real
+// harnesses emit hook events only when configured to (e.g. claudecode with
+// --include-hook-events) and when the underlying agent fires a hook; for most
+// harnesses this skips.
+func testHook(ctx context.Context, binary string, timeout time.Duration) TestResult {
+	start := time.Now()
+	rp, err := launchProcess(ctx, binary)
+	if err != nil {
+		return TestResult{Feature: FeatureHook, Error: err.Error()}
+	}
+	defer rp.close()
+
+	rp.send("start", map[string]any{"session_id": "conformance-hook"})
+	rp.waitForEvent(timeout, func(e msg.Event) bool {
+		return e.Type == msg.EventSessionState
+	})
+
+	rp.send("message", map[string]any{"content": PromptHook})
+
+	hasHook := false
+	gotTerminator := false
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+loop:
+	for {
+		select {
+		case event, ok := <-rp.events:
+			if !ok {
+				break loop
+			}
+			if event.Type == msg.EventHook {
+				hasHook = true
+			}
+			if event.Type == msg.EventResult || event.Type == msg.EventError {
+				gotTerminator = true
+				break loop
+			}
+		case <-timer.C:
+			break loop
+		}
+	}
+
+	if !gotTerminator {
+		return TestResult{Feature: FeatureHook, Skipped: true, Error: "no terminating result/error event"}
+	}
+	if !hasHook {
+		return TestResult{Feature: FeatureHook, Skipped: true, Error: "no hook events emitted (scenario-specific)"}
+	}
+	return TestResult{Feature: FeatureHook, Passed: true, Duration: time.Since(start).String()}
 }
 
 func testReasoning(ctx context.Context, binary string, timeout time.Duration) TestResult {
