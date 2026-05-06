@@ -663,7 +663,15 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 
 		// Sessions discovered locally belong to the local instance
 		instanceID := localInstances[ds.Harness]
-		source, folder := s.discoverySourceFolder(ds.Prompt)
+		// Prefer the adapter's structural source tag (e.g. codex marks
+		// conformance-leaked chains by bridge_session_id prefix; claudecode
+		// marks Task()-spawned subagents from the on-disk layout) over our
+		// prompt-prefix heuristic. Fall back to prefix inference only when
+		// the adapter has no structural signal. Mirrors AutoDiscover.
+		source, folder := ds.Source, s.folderForSource(ds.Source)
+		if source == "" {
+			source, folder = s.discoverySourceFolder(ds.Prompt)
+		}
 
 		bridgeID, inserted, err := s.store.UpsertDiscoveredSession(
 			ds.HarnessSessionID,
