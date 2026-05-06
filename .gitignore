@@ -3,10 +3,14 @@
 /autoworker
 /kanban-curator
 /kanban-classifier
+/kanban-scoper
+/kanban-dispatcher
 /cmd/scheduler/scheduler
 /cmd/autoworker/autoworker
 /cmd/kanban-curator/kanban-curator
 /cmd/kanban-classifier/kanban-classifier
+/cmd/kanban-scoper/kanban-scoper
+/cmd/kanban-dispatcher/kanban-dispatcher
 
 # DB files
 *.db
