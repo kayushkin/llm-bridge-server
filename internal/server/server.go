@@ -387,7 +387,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 // activity was inside autoResumeWindow. Sessions that went quiet before the
 // window are left idle — the user can resume them on demand.
 func (s *Server) ReconcileAndResume() {
-	sessions, err := s.store.ReconcileRunningSessions()
+	sessions, err := s.store.ReconcileSessions(msg.ActiveSessionStates()...)
 	if err != nil {
 		log.Printf("[reconcile] %v", err)
 		return
@@ -444,25 +444,27 @@ func (s *Server) watchdogTick() {
 	if s.harnessStore == nil {
 		return
 	}
-	sessions, err := s.store.ListSessionsByState(string(msg.SessionRunning))
-	if err != nil {
-		log.Printf("[watchdog] list running sessions: %v", err)
-		return
-	}
-	for i := range sessions {
-		sess := sessions[i]
-		if s.harness.HasProcess(sess.BridgeID) {
+	for _, st := range msg.ActiveSessionStates() {
+		sessions, err := s.store.ListSessionsByState(string(st))
+		if err != nil {
+			log.Printf("[watchdog] list %s sessions: %v", st, err)
 			continue
 		}
-		log.Printf("[watchdog] %s: state=running but no harness process; resuming", sess.BridgeID)
-		// Drop back to idle so autoResume's startOnInstance path takes a
-		// clean state transition. Skip the auto-resume on failure to flip
-		// state — leaving it `running` would just refire next tick.
-		if err := s.store.UpdateSessionState(sess.BridgeID, string(msg.SessionIdle)); err != nil {
-			log.Printf("[watchdog] %s: state reset failed: %v", sess.BridgeID, err)
-			continue
+		for i := range sessions {
+			sess := sessions[i]
+			if s.harness.HasProcess(sess.BridgeID) {
+				continue
+			}
+			log.Printf("[watchdog] %s: state=%s but no harness process; resuming", sess.BridgeID, st)
+			// Drop back to idle so autoResume's startOnInstance path takes a
+			// clean state transition. Skip the auto-resume on failure to flip
+			// state — leaving it active would just refire next tick.
+			if err := s.store.UpdateSessionState(sess.BridgeID, string(msg.SessionIdle)); err != nil {
+				log.Printf("[watchdog] %s: state reset failed: %v", sess.BridgeID, err)
+				continue
+			}
+			go s.autoResume(sess)
 		}
-		go s.autoResume(sess)
 	}
 }
 

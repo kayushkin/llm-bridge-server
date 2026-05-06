@@ -465,15 +465,28 @@ func (s *Store) PendingTurnMessage(bridgeID string) (string, bool, error) {
 	return ev.Result.Text, true, nil
 }
 
-// ReconcileRunningSessions resets every 'running' session to 'idle' with pid=0
-// and returns the sessions that were reconciled. Called at startup: running
-// processes can only exist in memory, so any row still marked running from a
-// previous server lifetime is stale. updated_at is intentionally NOT bumped so
-// FileInactive / ArchiveOld can still see the original last-state-transition
-// time. Auto-resume uses LastActivityAt instead, which reflects real event
-// flow rather than just state changes.
-func (s *Store) ReconcileRunningSessions() ([]Session, error) {
-	rows, err := s.db.Query(`SELECT ` + sessionColumns + ` FROM sessions WHERE state='running'`)
+// ReconcileSessions resets every session in any of the given states to 'idle'
+// with pid=0 and returns the sessions that were reconciled. Called at startup:
+// the harness subprocess can only exist in memory, so any row marked with an
+// active state from a previous server lifetime is stale. updated_at is
+// intentionally NOT bumped so FileInactive / ArchiveOld can still see the
+// original last-state-transition time. Auto-resume uses LastActivityAt
+// instead, which reflects real event flow rather than just state changes.
+//
+// Pass msg.ActiveSessionStates() to cover every state implying a live
+// subprocess. The variadic shape lets tests target a subset.
+func (s *Store) ReconcileSessions(states ...msg.SessionState) ([]Session, error) {
+	if len(states) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(states))
+	args := make([]any, len(states))
+	for i, st := range states {
+		placeholders[i] = "?"
+		args[i] = string(st)
+	}
+	in := strings.Join(placeholders, ",")
+	rows, err := s.db.Query(`SELECT `+sessionColumns+` FROM sessions WHERE state IN (`+in+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -493,7 +506,7 @@ func (s *Store) ReconcileRunningSessions() ([]Session, error) {
 	if len(sessions) == 0 {
 		return nil, nil
 	}
-	if _, err := s.db.Exec(`UPDATE sessions SET state='idle', pid=0 WHERE state='running'`); err != nil {
+	if _, err := s.db.Exec(`UPDATE sessions SET state='idle', pid=0 WHERE state IN (`+in+`)`, args...); err != nil {
 		return nil, err
 	}
 	return sessions, nil
