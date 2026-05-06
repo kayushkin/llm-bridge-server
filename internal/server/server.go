@@ -126,6 +126,7 @@ func (s *Server) routes() {
 	// events mode. Single-writer in v1 (child 2); resize / multi-reader
 	// land in child 3.
 	s.mux.HandleFunc("GET /sessions/{id}/attach", s.handleAttachSession)
+	s.mux.HandleFunc("GET /sessions/aggregates", s.handleSessionAggregates)
 	s.mux.HandleFunc("GET /sessions/{id}/messages", s.proxyToLogStore)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.proxyToLogStore)
 	s.mux.HandleFunc("POST /sessions/{id}/interrupt", s.handleInterruptSession)
@@ -137,6 +138,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/auto-rename", s.handleAutoRenameSession)
 	s.mux.HandleFunc("POST /sessions/{id}/config", s.handleConfigSession)
 	s.mux.HandleFunc("PUT /sessions/{id}/folder", s.handleSetSessionFolder)
+	s.mux.HandleFunc("POST /sessions/{id}/mark-done", s.handleMarkSessionDone)
 	s.mux.HandleFunc("GET /sessions/{id}/git/repos", s.handleSessionGitRepos)
 	s.mux.HandleFunc("GET /sessions/{id}/git", s.handleSessionGit)
 
@@ -334,6 +336,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handleSearchSessions proxies /sessions/search to log-store's /api/v1/sessions/search.
 func (s *Server) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
 	target := fmt.Sprintf("%s/api/v1/sessions/search", s.cfg.LogStoreURL)
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	resp, err := http.Get(target)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("log-store unreachable: %v", err), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	for key, vals := range resp.Header {
+		for _, v := range vals {
+			w.Header().Add(key, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// handleSessionAggregates proxies /sessions/aggregates to log-store. Kept
+// separate from proxyToLogStore because that handler infers the log-store
+// path from the URL's {id}/{endpoint} shape, which doesn't apply here.
+func (s *Server) handleSessionAggregates(w http.ResponseWriter, r *http.Request) {
+	target := s.cfg.LogStoreURL + "/api/v1/sessions/aggregates"
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
