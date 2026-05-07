@@ -112,7 +112,10 @@ func (s *Server) handleConformanceRun(w http.ResponseWriter, r *http.Request) {
 			}
 
 			log.Printf("[conformance] testing %s (%s)", h, binPath)
-			hctx, hcancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			// 22 features at up to 30s each = 11 min worst case; budget
+			// 15 min so a slow LLM round-trip near the end of the suite
+			// doesn't abort the harness mid-run with a context deadline.
+			hctx, hcancel := context.WithTimeout(context.Background(), 15*time.Minute)
 			result, err := conformance.RunHarness(hctx, binPath)
 			hcancel()
 			if err != nil {
