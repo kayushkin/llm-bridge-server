@@ -50,7 +50,8 @@ const (
 
 func main() {
 	var (
-		registerFlag  = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
+		registerFlag  = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit. Honors -board and -job-name.")
+		jobName       = flag.String("job-name", "", "Scheduler job name for -register. Defaults to kanban-curator-tick for the default board, kanban-curator-<slug>-tick otherwise.")
 		dryRun        = flag.Bool("dry-run", false, "Report decisions; do not write to kanban-store.")
 		kanbanURL     = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
 		bridgeURL     = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
@@ -60,7 +61,7 @@ func main() {
 	flag.Parse()
 
 	if *registerFlag {
-		if err := registerSchedulerJob(); err != nil {
+		if err := registerSchedulerJob(*boardName, *jobName); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
@@ -236,10 +237,30 @@ func getSessionState(bridgeURL, sessionID string) (state string, updatedAt strin
 
 // ============================ scheduler self-registration ============================
 
-func registerSchedulerJob() error {
+// registerSchedulerJob registers (idempotently) a kanban-curator cron job for
+// the given board. The job name defaults to "kanban-curator-tick" for the
+// default "Agent runs" board, or "kanban-curator-<slug>-tick" for any other
+// board, where slug is the board name lowercased with non-alphanumerics
+// collapsed to '-'. Pass jobName explicitly to override.
+//
+// The registered command preserves a -board="..." flag when the curator is
+// targeted at a non-default board so each cron tick curates the right board.
+func registerSchedulerJob(boardName, jobName string) error {
 	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
 	home, _ := os.UserHomeDir()
 	bin := filepath.Join(home, "bin", "kanban-curator")
+
+	if jobName == "" {
+		if boardName == defaultBoardName {
+			jobName = "kanban-curator-tick"
+		} else {
+			jobName = "kanban-curator-" + slugify(boardName) + "-tick"
+		}
+	}
+	command := bin
+	if boardName != defaultBoardName {
+		command = fmt.Sprintf("%s -board=%q", bin, boardName)
+	}
 
 	resp, err := http.Get(schedURL + "/api/jobs")
 	if err != nil {
@@ -252,17 +273,17 @@ func registerSchedulerJob() error {
 	}
 	_ = json.Unmarshal(body, &jobs)
 	for _, j := range jobs {
-		if j.Name == "kanban-curator-tick" {
-			fmt.Println("kanban-curator-tick already registered; no changes made")
+		if j.Name == jobName {
+			fmt.Printf("%s already registered; no changes made\n", jobName)
 			return nil
 		}
 	}
 	payload := map[string]any{
-		"name":        "kanban-curator-tick",
-		"description": "Closes autoworker kanban cards when their bridge sessions reach a terminal state.",
+		"name":        jobName,
+		"description": fmt.Sprintf("Closes autoworker kanban cards on board %q when their bridge sessions reach a terminal state.", boardName),
 		"schedule":    "*/5 * * * *",
 		"type":        "shell",
-		"command":     bin,
+		"command":     command,
 	}
 	data, _ := json.Marshal(payload)
 	req, err := http.NewRequest("POST", schedURL+"/api/jobs", strings.NewReader(string(data)))
@@ -279,6 +300,28 @@ func registerSchedulerJob() error {
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("scheduler returned %d: %s", resp.StatusCode, string(body))
 	}
-	fmt.Printf("registered kanban-curator-tick: %s\n", strings.TrimSpace(string(body)))
+	fmt.Printf("registered %s: %s\n", jobName, strings.TrimSpace(string(body)))
 	return nil
+}
+
+// slugify lowercases s and collapses runs of non-alphanumeric characters to a
+// single '-', trimming leading/trailing dashes. Used to derive a stable job
+// name from a kanban board name.
+func slugify(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevDash := true
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
