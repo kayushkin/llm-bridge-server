@@ -43,6 +43,13 @@ const (
 	kanbanBoardName    = "Agent runs"
 	kanbanColumnTarget = "In Progress"
 	kanbanCardOrigin   = "autoworker"
+
+	// Queue-backed dispatch source: human (or curator) drops cards into the
+	// Queued column; the worker picks the top eligible card on each tick.
+	// This child only adds bootstrap + selection visibility; actual dispatch
+	// from this board is handled by a follow-up todo.
+	autoworkerQueueBoard      = "Autoworker queue"
+	autoworkerQueueColumnFrom = "Queued"
 )
 
 var kanbanDefaultColumns = []string{"Queued", "In Progress", "Blocked", "Done", "Failed"}
@@ -233,11 +240,125 @@ func main() {
 		}
 	}
 
+	// Queue-backed dispatch source: bootstrap the Autoworker queue board and
+	// log the head of the Queued column. Bootstrap (EnsureBoard) is idempotent;
+	// in dry-run we keep it read-only via FindBoard so a dry-run on a fresh
+	// install doesn't quietly create the board.
+	if err := pollAutoworkerQueue(*dryRun); err != nil {
+		log.Printf("queue: %v", err)
+	}
+
 	if !*dryRun {
 		if err := saveState(statePath, st); err != nil {
 			log.Printf("save state: %v", err)
 		}
 	}
+}
+
+// pollAutoworkerQueue resolves the Autoworker queue board (creating it on
+// real runs, read-only on dry-run) and logs the top eligible Queued card.
+// Selection result is intentionally only logged for now; child todo
+// `8c1528f2` will turn this into an actual dispatch path.
+func pollAutoworkerQueue(dryRun bool) error {
+	qc := kanbanclient.New(envOr("KANBAN_STORE_URL", "http://localhost:8305"))
+
+	if dryRun {
+		board, err := qc.FindBoard(autoworkerQueueBoard)
+		if err != nil {
+			return fmt.Errorf("find board %q: %w", autoworkerQueueBoard, err)
+		}
+		if board == nil {
+			log.Printf("queue: board %q does not exist yet — first non-dry-run will bootstrap it", autoworkerQueueBoard)
+			return nil
+		}
+		qc.BoardID = board.ID
+		cols, err := qc.ListColumns(board.ID)
+		if err != nil {
+			return fmt.Errorf("list columns: %w", err)
+		}
+		qc.ColumnsByName = map[string]string{}
+		for _, col := range cols {
+			qc.ColumnsByName[col.Name] = col.ID
+		}
+	} else {
+		if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanDefaultColumns); err != nil {
+			return fmt.Errorf("bootstrap %q: %w", autoworkerQueueBoard, err)
+		}
+	}
+
+	cand, err := selectQueuedCard(qc)
+	if err != nil {
+		return fmt.Errorf("select: %w", err)
+	}
+	if cand == nil {
+		return nil
+	}
+	log.Printf("queue: head card=%s title=%q tags=%v body_len=%d",
+		cand.cardID, cand.title, cand.tags, len(cand.body))
+	return nil
+}
+
+// queueCandidate is one eligible card resolved from the Autoworker queue's
+// Queued column. The actual dispatch path (build prompt, publish, link, move)
+// is added in a follow-up todo; this struct just carries enough payload for
+// that next step plus current-tick logging.
+type queueCandidate struct {
+	cardID string
+	title  string
+	body   string
+	tags   []string
+	item   map[string]any
+}
+
+// selectQueuedCard returns the top eligible card in the Queued column, in
+// placement order. Eligibility: non-nil noteboard item with a non-empty title.
+// Skip reasons are logged so dry-run output explains the choice. Returns
+// (nil, nil) when the column is empty or no card is eligible.
+func selectQueuedCard(qc *kanbanclient.Client) (*queueCandidate, error) {
+	view, err := qc.GetBoardView(qc.BoardID)
+	if err != nil {
+		return nil, err
+	}
+	var queued []kanbanclient.CardView
+	for _, cv := range view.Columns {
+		if cv.Column.Name == autoworkerQueueColumnFrom {
+			queued = cv.Cards
+			break
+		}
+	}
+	if len(queued) == 0 {
+		log.Printf("queue: %q column empty", autoworkerQueueColumnFrom)
+		return nil, nil
+	}
+	for _, c := range queued {
+		if c.Item == nil {
+			log.Printf("queue: skip card %s — no noteboard item", c.Placement.CardID)
+			continue
+		}
+		title, _ := c.Item["title"].(string)
+		if strings.TrimSpace(title) == "" {
+			log.Printf("queue: skip card %s — empty title", c.Placement.CardID)
+			continue
+		}
+		body, _ := c.Item["body"].(string)
+		var tags []string
+		if rawTags, ok := c.Item["tags"].([]any); ok {
+			for _, t := range rawTags {
+				if s, ok := t.(string); ok {
+					tags = append(tags, s)
+				}
+			}
+		}
+		return &queueCandidate{
+			cardID: c.Placement.CardID,
+			title:  title,
+			body:   body,
+			tags:   tags,
+			item:   c.Item,
+		}, nil
+	}
+	log.Printf("queue: no eligible cards in %q (n=%d)", autoworkerQueueColumnFrom, len(queued))
+	return nil, nil
 }
 
 func evaluate(p providerSpec, lim *providerLimits, nowLocal time.Time, st *state, slackPP float64) decision {
