@@ -45,11 +45,11 @@ const (
 	kanbanCardOrigin   = "autoworker"
 
 	// Queue-backed dispatch source: human (or curator) drops cards into the
-	// Queued column; the worker picks the top eligible card on each tick.
-	// This child only adds bootstrap + selection visibility; actual dispatch
-	// from this board is handled by a follow-up todo.
-	autoworkerQueueBoard      = "Autoworker queue"
-	autoworkerQueueColumnFrom = "Queued"
+	// Queued column; the worker picks the top eligible card on each fire and
+	// uses its title/body as the worker prompt.
+	autoworkerQueueBoard            = "Autoworker queue"
+	autoworkerQueueColumnFrom       = "Queued"
+	autoworkerQueueColumnInProgress = "In Progress"
 )
 
 var kanbanDefaultColumns = []string{"Queued", "In Progress", "Blocked", "Done", "Failed"}
@@ -192,9 +192,13 @@ func main() {
 		natsClient = c
 	}
 
-	// Lazy kanban-store client; only initialised on first fire so dry-run
-	// passes (and skip-everything ticks) don't hit kanban-store at all.
-	var kc *kanbanclient.Client
+	// Lazy kanban-store clients; only initialised when actually needed so
+	// dry-run passes and skip-everything ticks don't hit kanban-store.
+	var (
+		kc          *kanbanclient.Client // "Agent runs" telemetry board
+		queueClient *kanbanclient.Client // "Autoworker queue" dispatch source
+		queueTried  bool                 // avoid re-attempting bootstrap each provider
+	)
 
 	for _, p := range providers {
 		d := evaluate(p, lim[p.Name], nowLocal, st, *slackPP)
@@ -202,14 +206,42 @@ func main() {
 		if !d.fire || *dryRun {
 			continue
 		}
-		busSessionID, err := publishWorker(natsClient, p, *prompt)
+
+		// Pick the prompt: queue head card if available, else fall back to
+		// the noteboard-discovery default so an empty queue doesn't waste
+		// the fire decision.
+		if !queueTried {
+			queueClient = initQueueClient(false)
+			queueTried = true
+		}
+		var queueCard *queueCandidate
+		if queueClient != nil {
+			cand, err := selectQueuedCard(queueClient)
+			if err != nil {
+				log.Printf("queue: select: %v (using default prompt)", err)
+			} else {
+				queueCard = cand
+			}
+		}
+		workerPrompt := *prompt
+		if queueCard != nil {
+			workerPrompt = buildQueuePrompt(queueCard)
+		}
+
+		busSessionID, err := publishWorker(natsClient, p, workerPrompt)
 		if err != nil {
 			log.Printf("[%s] publish failed: %v", d.provider, err)
 			continue
 		}
 		st.LastFire[p.Name] = now.Unix()
-		log.Printf("[%s] FIRED worker → bridge.inbound (harness=%s instance=%s target=%.0f%% actual=%.0f%%)",
-			d.provider, p.Harness, p.InstanceID, d.target, d.actual)
+		log.Printf("[%s] FIRED worker → bridge.inbound (harness=%s instance=%s target=%.0f%% actual=%.0f%% queue_card=%s)",
+			d.provider, p.Harness, p.InstanceID, d.target, d.actual, queueCardLogID(queueCard))
+
+		if queueCard != nil && queueClient != nil {
+			if err := markQueueCardDispatched(queueClient, queueCard, p, busSessionID, now); err != nil {
+				log.Printf("[%s] queue: dispatch side-effects failed: %v", d.provider, err)
+			}
+		}
 
 		if kc == nil {
 			kc = kanbanclient.New(envOr("KANBAN_STORE_URL", "http://localhost:8305"))
@@ -224,6 +256,9 @@ func main() {
 				"Dispatched by autoworker.\n\n- provider: %s\n- harness: %s\n- instance: %s\n- bus_session_id: `%s`\n- target/actual: %.0f%% / %.0f%%\n",
 				p.Name, p.Harness, p.InstanceID, busSessionID, d.target, d.actual,
 			)
+			if queueCard != nil {
+				body += fmt.Sprintf("- queue_card: `%s` — %s\n", queueCard.cardID, queueCard.title)
+			}
 			cardID, err := kc.CreateCard(kanbanclient.CreateCardArgs{
 				ColumnName:   kanbanColumnTarget,
 				Title:        title,
@@ -240,12 +275,19 @@ func main() {
 		}
 	}
 
-	// Queue-backed dispatch source: bootstrap the Autoworker queue board and
-	// log the head of the Queued column. Bootstrap (EnsureBoard) is idempotent;
-	// in dry-run we keep it read-only via FindBoard so a dry-run on a fresh
-	// install doesn't quietly create the board.
-	if err := pollAutoworkerQueue(*dryRun); err != nil {
-		log.Printf("queue: %v", err)
+	// Observability: if no provider fired (queue never bootstrapped above),
+	// still surface the head of the Queued column so dry-run / quiet ticks
+	// show what would dispatch next. Bootstrap is read-only on dry-run so a
+	// fresh install doesn't quietly create the board.
+	if !queueTried {
+		if qc := initQueueClient(*dryRun); qc != nil {
+			if cand, err := selectQueuedCard(qc); err != nil {
+				log.Printf("queue: %v", err)
+			} else if cand != nil {
+				log.Printf("queue: head card=%s title=%q tags=%v body_len=%d",
+					cand.cardID, cand.title, cand.tags, len(cand.body))
+			}
+		}
 	}
 
 	if !*dryRun {
@@ -255,17 +297,22 @@ func main() {
 	}
 }
 
-// pollAutoworkerQueue resolves the Autoworker queue board (creating it on
-// real runs, read-only on dry-run) and logs the top eligible Queued card.
-// Selection result is intentionally only logged for now; child todo
-// `8c1528f2` will turn this into an actual dispatch path.
-func pollAutoworkerQueue(dryRun bool) error {
+// initQueueClient resolves the Autoworker queue board into a kanbanclient
+// configured with BoardID + ColumnsByName ready for selection / move /
+// link calls. On real runs the board is created lazily via EnsureBoard.
+// On dry-run the bootstrap is read-only via FindBoard so a fresh install
+// doesn't quietly create the board.
+//
+// Returns nil (with logging) when the board is unavailable; callers are
+// expected to fall back to default behavior so kanban-store outages don't
+// break the fire path.
+func initQueueClient(dryRun bool) *kanbanclient.Client {
 	qc := kanbanclient.New(envOr("KANBAN_STORE_URL", "http://localhost:8305"))
-
 	if dryRun {
 		board, err := qc.FindBoard(autoworkerQueueBoard)
 		if err != nil {
-			return fmt.Errorf("find board %q: %w", autoworkerQueueBoard, err)
+			log.Printf("queue: find board %q: %v", autoworkerQueueBoard, err)
+			return nil
 		}
 		if board == nil {
 			log.Printf("queue: board %q does not exist yet — first non-dry-run will bootstrap it", autoworkerQueueBoard)
@@ -274,40 +321,87 @@ func pollAutoworkerQueue(dryRun bool) error {
 		qc.BoardID = board.ID
 		cols, err := qc.ListColumns(board.ID)
 		if err != nil {
-			return fmt.Errorf("list columns: %w", err)
+			log.Printf("queue: list columns: %v", err)
+			return nil
 		}
 		qc.ColumnsByName = map[string]string{}
 		for _, col := range cols {
 			qc.ColumnsByName[col.Name] = col.ID
 		}
-	} else {
-		if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanDefaultColumns); err != nil {
-			return fmt.Errorf("bootstrap %q: %w", autoworkerQueueBoard, err)
-		}
+		return qc
 	}
-
-	cand, err := selectQueuedCard(qc)
-	if err != nil {
-		return fmt.Errorf("select: %w", err)
-	}
-	if cand == nil {
+	if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanDefaultColumns); err != nil {
+		log.Printf("queue: bootstrap %q: %v (using default prompt)", autoworkerQueueBoard, err)
 		return nil
 	}
-	log.Printf("queue: head card=%s title=%q tags=%v body_len=%d",
-		cand.cardID, cand.title, cand.tags, len(cand.body))
-	return nil
+	return qc
 }
 
 // queueCandidate is one eligible card resolved from the Autoworker queue's
-// Queued column. The actual dispatch path (build prompt, publish, link, move)
-// is added in a follow-up todo; this struct just carries enough payload for
-// that next step plus current-tick logging.
+// Queued column.
 type queueCandidate struct {
 	cardID string
 	title  string
 	body   string
 	tags   []string
 	item   map[string]any
+}
+
+func queueCardLogID(c *queueCandidate) string {
+	if c == nil {
+		return "(none)"
+	}
+	return c.cardID
+}
+
+// markQueueCardDispatched performs the post-publish side-effects: attach a
+// bus_session card link, move the card to In Progress, and append a short
+// dispatch note to the noteboard body so the card carries its own audit trail.
+func markQueueCardDispatched(qc *kanbanclient.Client, cand *queueCandidate, p providerSpec, busSessionID string, now time.Time) error {
+	inProgressID, ok := qc.ColumnsByName[autoworkerQueueColumnInProgress]
+	if !ok {
+		return fmt.Errorf("column %q missing on queue board", autoworkerQueueColumnInProgress)
+	}
+	if err := qc.AddCardLink(cand.cardID, "bus_session", busSessionID, kanbanCardOrigin); err != nil {
+		return fmt.Errorf("add bus_session link: %w", err)
+	}
+	if err := qc.MoveCard(cand.cardID, qc.BoardID, inProgressID, 0); err != nil {
+		return fmt.Errorf("move to In Progress: %w", err)
+	}
+	note := fmt.Sprintf(
+		"\n\n---\n_Dispatched by autoworker at %s — provider=%s harness=%s instance=%s bus_session=`%s`_\n",
+		now.UTC().Format(time.RFC3339), p.Name, p.Harness, p.InstanceID, busSessionID,
+	)
+	if err := qc.PatchCardBody(cand.cardID, cand.body+note); err != nil {
+		return fmt.Errorf("patch body: %w", err)
+	}
+	return nil
+}
+
+// buildQueuePrompt renders the worker prompt from a queued card. The card id
+// is the noteboard item id (kanban cards are noteboard items), so closing the
+// noteboard item also closes the card via the column's auto_status mapping.
+func buildQueuePrompt(c *queueCandidate) string {
+	body := strings.TrimSpace(c.body)
+	if body == "" {
+		body = "(no body — see title)"
+	}
+	return fmt.Sprintf(`You are picking up a queued task from the autoworker queue. The user is asleep; their subscription budget is under-utilised this week and I am dispatching you to make progress on this specific task without disturbing them.
+
+## Task
+**Card ID:** %s
+**Title:** %s
+
+%s
+
+## Instructions
+1. Do the work described above.
+2. When done, PATCH http://localhost:8191/api/items/%s with {"status":"done"} and a body update describing what you did. Kanban cards mirror noteboard items, so closing the noteboard item also closes the card.
+3. If the task is ambiguous in intent or needs user input, leave a body update explaining why and exit; the card stays In Progress and a human will intervene.
+4. If the task is clear in intent but too large to finish in one session, split it into smaller queue cards rather than skipping it — preserve the parent's tags so children stay queued.
+
+Be self-contained. No chat; just work and close out the task.`,
+		c.cardID, c.title, body, c.cardID)
 }
 
 // selectQueuedCard returns the top eligible card in the Queued column, in
