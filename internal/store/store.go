@@ -1326,11 +1326,13 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 		return "", false, err
 	}
 
-	// Insert new discovered session with state "idle"
+	// Insert new discovered session with state "idle". session_id mirrors
+	// bridge_id during the dual-write window; session_type is empty for
+	// discovery-imported sessions (no caller declared one).
 	bridgeID := fmt.Sprintf("br_%d", time.Now().UnixNano())
 	_, err = s.db.Exec(
-		`INSERT INTO sessions (bridge_id, harness_session_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, source, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		bridgeID, harnessSessionID, "", displayName, harness, instanceID, "idle", 0, "", "", "", source, folderName, createdAt, updatedAt,
+		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, source, session_type, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		bridgeID, bridgeID, harnessSessionID, "", displayName, harness, instanceID, "idle", 0, "", "", "", source, "", folderName, createdAt, updatedAt,
 	)
 	if err != nil {
 		return "", false, err
