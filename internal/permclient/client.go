@@ -47,10 +47,10 @@ type Result struct {
 	UpdatedInput  json.RawMessage `json:"updated_input,omitempty"`
 }
 
-// Request is the body of POST /evaluate. BridgeID and InstanceID provide
+// Request is the body of POST /evaluate. SessionID and InstanceID provide
 // scope; Tool is the harness-native tool name; Input is the raw tool input.
 type Request struct {
-	BridgeID   string          `json:"bridge_id,omitempty"`
+	SessionID  string          `json:"session_id,omitempty"`
 	InstanceID string          `json:"instance_id,omitempty"`
 	Tool       string          `json:"tool"`
 	Input      json.RawMessage `json:"input,omitempty"`

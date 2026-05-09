@@ -47,7 +47,7 @@ func TestBuildCCSettings_PermissionHookAlwaysPresent(t *testing.T) {
 	// Even with no hook-store entries, the permission gate must be wired
 	// so every CC tool call routes through /permission/cc-prehook.
 	srv, _ := testServerWithHookStore(t)
-	got, err := srv.buildClaudeCodeSettings(&store.Session{BridgeID: "b1", Harness: msg.HarnessClaudeCode})
+	got, err := srv.buildClaudeCodeSettings(&store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestBuildCCSettings_GlobalAndInstanceMerged(t *testing.T) {
 	// Not applicable — different instance.
 	seedHook(t, hks, "i2", "PreToolUse", "Bash", msg.HookScopeInstance, "inst_y")
 
-	sess := &store.Session{BridgeID: "b1", InstanceID: "inst_x", Harness: msg.HarnessClaudeCode}
+	sess := &store.Session{SessionID: "b1", InstanceID: "inst_x", Harness: msg.HarnessClaudeCode}
 	raw, err := srv.buildClaudeCodeSettings(sess)
 	if err != nil {
 		t.Fatalf("build: %v", err)
@@ -139,7 +139,7 @@ func TestBuildCCSettings_CommandPointsAtExecEndpoint(t *testing.T) {
 	srv, hks := testServerWithHookStore(t)
 	seedHook(t, hks, "abc123", "PreToolUse", "Edit|Write", msg.HookScopeGlobal, "")
 
-	raw, err := srv.buildClaudeCodeSettings(&store.Session{BridgeID: "b1", Harness: msg.HarnessClaudeCode})
+	raw, err := srv.buildClaudeCodeSettings(&store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestInjectHookSettings_RespectsUserOverride(t *testing.T) {
 	seedHook(t, hks, "g1", "PreToolUse", "Edit|Write", msg.HookScopeGlobal, "")
 
 	sess := &store.Session{
-		BridgeID:      "b1",
+		SessionID:      "b1",
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: []byte(`{"settings":"/path/to/user.json"}`),
 	}
@@ -175,7 +175,7 @@ func TestInjectHookSettings_WritesSettingsStringForStartParams(t *testing.T) {
 	srv, hks := testServerWithHookStore(t)
 	seedHook(t, hks, "g1", "PreToolUse", "Edit|Write", msg.HookScopeGlobal, "")
 
-	sess := &store.Session{BridgeID: "b1", Harness: msg.HarnessClaudeCode}
+	sess := &store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode}
 	srv.injectHookSettings(sess)
 
 	var cfg map[string]any

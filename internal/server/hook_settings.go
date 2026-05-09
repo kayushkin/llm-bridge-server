@@ -55,7 +55,7 @@ func (s *Server) injectHookSettings(sess *store.Session) {
 	var cfg map[string]json.RawMessage
 	if len(sess.HarnessConfig) > 0 {
 		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
-			log.Printf("[hooks] HarnessConfig unparseable for %s: %v", sess.BridgeID, err)
+			log.Printf("[hooks] HarnessConfig unparseable for %s: %v", sess.SessionID, err)
 			return
 		}
 	}
@@ -69,7 +69,7 @@ func (s *Server) injectHookSettings(sess *store.Session) {
 
 	settings, err := s.buildClaudeCodeSettings(sess)
 	if err != nil {
-		log.Printf("[hooks] synthesize settings for %s: %v", sess.BridgeID, err)
+		log.Printf("[hooks] synthesize settings for %s: %v", sess.SessionID, err)
 		return
 	}
 	if settings == "" {
@@ -77,14 +77,14 @@ func (s *Server) injectHookSettings(sess *store.Session) {
 	}
 	encoded, err := json.Marshal(settings)
 	if err != nil {
-		log.Printf("[hooks] encode settings for %s: %v", sess.BridgeID, err)
+		log.Printf("[hooks] encode settings for %s: %v", sess.SessionID, err)
 		return
 	}
 	cfg["settings"] = encoded
 
 	merged, err := json.Marshal(cfg)
 	if err != nil {
-		log.Printf("[hooks] re-marshal HarnessConfig for %s: %v", sess.BridgeID, err)
+		log.Printf("[hooks] re-marshal HarnessConfig for %s: %v", sess.SessionID, err)
 		return
 	}
 	sess.HarnessConfig = merged
@@ -124,13 +124,13 @@ func (s *Server) buildClaudeCodeSettings(sess *store.Session) (string, error) {
 	// Timeout: 86400s = 1 day. Long enough that no human-driven approval
 	// flow will hit it; far below the 24-day Node-side TIMEOUT_MAX
 	// trap that bit the MCP path.
-	if sess.BridgeID != "" {
+	if sess.SessionID != "" {
 		permEntry := map[string]any{
 			"matcher": "*",
 			"hooks": []map[string]any{
 				{
 					"type":    "http",
-					"url":     fmt.Sprintf("%s/permission/cc-prehook/%s", base, sess.BridgeID),
+					"url":     fmt.Sprintf("%s/permission/cc-prehook/%s", base, sess.SessionID),
 					"timeout": 86400,
 				},
 			},
@@ -185,10 +185,10 @@ func (s *Server) collectApplicableHooks(sess *store.Session) ([]msg.Hook, error)
 			ScopeID: sess.InstanceID, EnabledSet: true, Enabled: true,
 		})
 	}
-	if sess.BridgeID != "" {
+	if sess.SessionID != "" {
 		filters = append(filters, hookstore.ListFilter{
 			Harness: msg.HarnessClaudeCode, ScopeKind: msg.HookScopeSession,
-			ScopeID: sess.BridgeID, EnabledSet: true, Enabled: true,
+			ScopeID: sess.SessionID, EnabledSet: true, Enabled: true,
 		})
 	}
 

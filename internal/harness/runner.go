@@ -474,7 +474,7 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 		// here since the runner is the only consumer of these URLs.
 		publicURL = "http://localhost:8160"
 	}
-	reason := "session:" + sess.BridgeID
+	reason := "session:" + sess.SessionID
 	mctx := ManifestContext{
 		ServerURL:  publicURL,
 		OS:         conn.Hello.OS,
@@ -493,7 +493,7 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 	}
 
 	rp := &RunnerProcess{
-		sessionID: sess.BridgeID,
+		sessionID: sess.SessionID,
 		conn:      conn,
 		events:    make(chan msg.Event, 100),
 	}
@@ -501,7 +501,7 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 
 	spawn := &msg.RunnerMessage{
 		Type:      msg.RunnerMsgSpawn,
-		SessionID: sess.BridgeID,
+		SessionID: sess.SessionID,
 		Spawn: &msg.RunnerSpawn{
 			Harness:     msg.Harness(sess.Harness),
 			WorkingDir:  workDir,
@@ -510,7 +510,7 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 		},
 	}
 	if err := conn.Send(spawn); err != nil {
-		conn.deregisterSession(sess.BridgeID)
+		conn.deregisterSession(sess.SessionID)
 		return nil, fmt.Errorf("send spawn: %w", err)
 	}
 

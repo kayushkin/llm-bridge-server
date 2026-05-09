@@ -251,7 +251,6 @@ func TestCreateSession_NoAutoStart(t *testing.T) {
 	req := msg.CreateSessionRequest{
 		Harness:     "claude_code",
 		InstanceID:  instID,
-		ClientID:    "fe_test_1",
 		DisplayName: "Test Task",
 	}
 
@@ -262,11 +261,11 @@ func TestCreateSession_NoAutoStart(t *testing.T) {
 	}
 
 	sess := decodeJSON[msg.ManagedSession](t, resp)
-	if sess.BridgeID == "" {
+	if sess.SessionID == "" {
 		t.Error("bridge_id is empty")
 	}
-	if sess.SessionID != sess.BridgeID {
-		t.Errorf("session_id = %q, want %q (alias of bridge_id)", sess.SessionID, sess.BridgeID)
+	if sess.SessionID != sess.SessionID {
+		t.Errorf("session_id = %q, want %q (alias of bridge_id)", sess.SessionID, sess.SessionID)
 	}
 	if sess.InstanceID != instID {
 		t.Errorf("instance_id = %q, want %q", sess.InstanceID, instID)
@@ -284,7 +283,6 @@ func TestCreateSession_RejectedWithoutInstance(t *testing.T) {
 
 	req := msg.CreateSessionRequest{
 		Harness:  "claude_code",
-		ClientID: "fe_1",
 	}
 
 	resp := doJSON(t, srv, "POST", "/sessions", req)
@@ -299,7 +297,6 @@ func TestCreateSession_InvalidHarness(t *testing.T) {
 
 	req := msg.CreateSessionRequest{
 		Harness:  "nonexistent_harness",
-		ClientID: "fe_1",
 	}
 
 	resp := doJSON(t, srv, "POST", "/sessions", req)
@@ -318,7 +315,6 @@ func TestCreateSession_PtyMode_ClaudeCode(t *testing.T) {
 	req := msg.CreateSessionRequest{
 		Harness:    "claude_code",
 		InstanceID: instID,
-		ClientID:   "fe_pty_ok",
 		Mode:       msg.SessionModePTY,
 	}
 
@@ -345,7 +341,6 @@ func TestCreateSession_PtyMode_Unsupported(t *testing.T) {
 	req := msg.CreateSessionRequest{
 		Harness:    "hermes",
 		InstanceID: instID,
-		ClientID:   "fe_pty_no",
 		Mode:       msg.SessionModePTY,
 	}
 
@@ -379,7 +374,7 @@ func TestListSessions(t *testing.T) {
 	// Create some sessions directly in store
 	for _, id := range []string{"br_a", "br_b"} {
 		st.CreateSession(&store.Session{
-			BridgeID: id, ClientID: "fe_x", Harness: "mock", State: "idle",
+			SessionID: id, Harness: "mock", State: "idle",
 		})
 	}
 
@@ -412,7 +407,7 @@ func TestGetSession(t *testing.T) {
 	srv, st := testServer(t)
 
 	st.CreateSession(&store.Session{
-		BridgeID: "br_get", ClientID: "fe_x", DisplayName: "Get Test",
+		SessionID: "br_get", DisplayName: "Get Test",
 		Harness: "mock", State: "idle",
 	})
 
@@ -453,7 +448,7 @@ func TestInterruptSession_NotRunning(t *testing.T) {
 	srv, st := testServer(t)
 
 	st.CreateSession(&store.Session{
-		BridgeID: "br_int", ClientID: "fe_x", Harness: "mock", State: "idle",
+		SessionID: "br_int", Harness: "mock", State: "idle",
 	})
 
 	resp := doJSON(t, srv, "POST", "/sessions/br_int/interrupt", nil)
@@ -475,7 +470,7 @@ func TestResumeSession_NotIdle(t *testing.T) {
 	srv, st := testServer(t)
 
 	st.CreateSession(&store.Session{
-		BridgeID: "br_res", ClientID: "fe_x", Harness: "mock", State: "running",
+		SessionID: "br_res", Harness: "mock", State: "running",
 	})
 
 	resp := doJSON(t, srv, "POST", "/sessions/br_res/resume", nil)
@@ -488,7 +483,7 @@ func TestStopSession(t *testing.T) {
 	srv, st := testServer(t)
 
 	st.CreateSession(&store.Session{
-		BridgeID: "br_stop", ClientID: "fe_x", Harness: "mock", State: "running",
+		SessionID: "br_stop", Harness: "mock", State: "running",
 	})
 
 	resp := doJSON(t, srv, "POST", "/sessions/br_stop/stop", nil)
@@ -530,7 +525,7 @@ func TestSendMessage_InvalidBody(t *testing.T) {
 	srv, st := testServer(t)
 
 	st.CreateSession(&store.Session{
-		BridgeID: "br_msg", ClientID: "fe_x", Harness: "mock", State: "idle",
+		SessionID: "br_msg", Harness: "mock", State: "idle",
 	})
 
 	req := httptest.NewRequest("POST", "/sessions/br_msg/send", bytes.NewReader([]byte("not json")))
@@ -545,7 +540,7 @@ func TestSendMessage_InvalidBody(t *testing.T) {
 func TestSendMessage_RejectsBothMessageAndBlocks(t *testing.T) {
 	srv, st := testServer(t)
 	st.CreateSession(&store.Session{
-		BridgeID: "br_both", ClientID: "fe_x", Harness: "mock", State: "idle",
+		SessionID: "br_both", Harness: "mock", State: "idle",
 	})
 
 	body := msg.SendMessageRequest{
@@ -567,7 +562,7 @@ func TestSendMessage_RejectsBothMessageAndBlocks(t *testing.T) {
 func TestSendMessage_RejectsNeitherMessageNorBlocks(t *testing.T) {
 	srv, st := testServer(t)
 	st.CreateSession(&store.Session{
-		BridgeID: "br_neither", ClientID: "fe_x", Harness: "mock", State: "idle",
+		SessionID: "br_neither", Harness: "mock", State: "idle",
 	})
 
 	resp := doJSON(t, srv, "POST", "/sessions/br_neither/send", msg.SendMessageRequest{})
@@ -612,7 +607,7 @@ func TestSendMessageRequest_DecodesBlocks(t *testing.T) {
 func TestForkSession_NotFound(t *testing.T) {
 	srv, _ := testServer(t)
 
-	resp := doJSON(t, srv, "POST", "/sessions/nonexistent/fork", msg.ForkSessionRequest{ClientID: "fe_1"})
+	resp := doJSON(t, srv, "POST", "/sessions/nonexistent/fork", msg.ForkSessionRequest{})
 	if resp.StatusCode != 404 {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -640,7 +635,7 @@ func TestConfigSession_InvalidBody(t *testing.T) {
 	srv, st := testServer(t)
 
 	st.CreateSession(&store.Session{
-		BridgeID: "br_cfg", ClientID: "fe_x", Harness: "mock", State: "idle",
+		SessionID: "br_cfg", Harness: "mock", State: "idle",
 	})
 
 	req := httptest.NewRequest("POST", "/sessions/br_cfg/config", bytes.NewReader([]byte("not json")))
@@ -783,7 +778,6 @@ func TestCreateSession_AutoStart_HarnessUnavailable(t *testing.T) {
 	// Use a harness type whose binary is not in PATH
 	req := msg.CreateSessionRequest{
 		Harness:   "dexto", // stub, not installed
-		ClientID:  "fe_1",
 		AutoStart: true,
 	}
 
@@ -806,7 +800,6 @@ func TestCreateSession_WithHarnessConfig(t *testing.T) {
 	req := msg.CreateSessionRequest{
 		Harness:       "claude_code",
 		InstanceID:    instID,
-		ClientID:      "fe_cfg",
 		DisplayName:   "Config Test",
 		HarnessConfig: json.RawMessage(`{"system_prompt":"test prompt","model":"opus"}`),
 	}

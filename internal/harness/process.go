@@ -92,7 +92,7 @@ type CommandParams struct {
 // Returns merged JSON: base start params + any harness-specific config from the session.
 func buildStartParams(sess *store.Session, credentialID string) json.RawMessage {
 	params := StartParams{
-		BridgeSessionID:  sess.BridgeID,
+		BridgeSessionID:  sess.SessionID,
 		HarnessSessionID: sess.HarnessSessionID,
 		DisplayName:      sess.DisplayName,
 		AgentID:          sess.AgentID,
@@ -167,7 +167,7 @@ func StartProcess(ctx context.Context, binPath string, sess *store.Session, cred
 		cmd:       cmd,
 		stdin:     stdin,
 		stdout:    stdout,
-		sessionID: sess.BridgeID,
+		sessionID: sess.SessionID,
 		events:    make(chan msg.Event, 100),
 		done:      make(chan struct{}),
 	}
@@ -365,7 +365,7 @@ func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, c
 	p := &PTYProcess{
 		cmd:       cmd,
 		tty:       tty,
-		sessionID: sess.BridgeID,
+		sessionID: sess.SessionID,
 		events:    closed,
 		done:      make(chan struct{}),
 	}
@@ -475,7 +475,7 @@ func StartSSHProcess(ctx context.Context, args []string, sess *store.Session, cr
 		cmd:       cmd,
 		stdin:     stdin,
 		stdout:    stdout,
-		sessionID: sess.BridgeID,
+		sessionID: sess.SessionID,
 		events:    make(chan msg.Event, 100),
 		done:      make(chan struct{}),
 	}

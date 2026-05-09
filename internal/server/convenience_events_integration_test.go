@@ -261,7 +261,6 @@ func createEventsSession(t *testing.T, baseURL, instID string) string {
 	body := msg.CreateSessionRequest{
 		Harness:    msg.HarnessClaudeCode,
 		InstanceID: instID,
-		ClientID:   "fe_convevents_integration",
 		AutoStart:  true,
 		// Mode left empty → defaults to events at the server.
 	}
@@ -285,7 +284,7 @@ func createEventsSession(t *testing.T, baseURL, instID string) string {
 	if sess.State != string(msg.SessionRunning) {
 		t.Fatalf("session state = %q, want running (auto_start)", sess.State)
 	}
-	return sess.BridgeID
+	return sess.SessionID
 }
 
 // sendUserMessage POSTs a /send with the given prompt. Fails the test

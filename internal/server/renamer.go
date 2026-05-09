@@ -217,9 +217,8 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 	// on target.renamer_session_id, which is enough to trace the relationship.
 	renamerID := generateBridgeID()
 	renamer := &store.Session{
-		BridgeID:    renamerID,
 		SessionID:   renamerID,
-		DisplayName: fmt.Sprintf("rename %s", target.BridgeID),
+		DisplayName: fmt.Sprintf("rename %s", target.SessionID),
 		Harness:     msg.HarnessClaudeCode,
 		InstanceID:  inst.ID,
 		State:       string(msg.SessionIdle),
@@ -232,50 +231,50 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 		return fmt.Errorf("create session: %w", err)
 	}
 
-	ok, err := s.store.ReserveRenamerSlot(target.BridgeID, renamer.BridgeID)
+	ok, err := s.store.ReserveRenamerSlot(target.SessionID, renamer.SessionID)
 	if err != nil {
-		s.store.DeleteSession(renamer.BridgeID)
+		s.store.DeleteSession(renamer.SessionID)
 		return fmt.Errorf("reserve slot: %w", err)
 	}
 	if !ok {
 		// Lost the race to another goroutine; drop the just-created session
 		// so we don't leak an empty CC process.
-		s.store.DeleteSession(renamer.BridgeID)
+		s.store.DeleteSession(renamer.SessionID)
 		return nil
 	}
 
 	credID := resolveCredential(s.harnessStore, inst.ID)
 	if _, err := s.startOnInstance(context.Background(), renamer, inst, credID); err != nil {
-		s.store.ClearRenamerSlot(target.BridgeID)
-		s.store.DeleteSession(renamer.BridgeID)
+		s.store.ClearRenamerSlot(target.SessionID)
+		s.store.DeleteSession(renamer.SessionID)
 		return fmt.Errorf("start: %w", err)
 	}
 
-	prompt := buildRenamerPrompt(target, renamer.BridgeID, turns, publicBaseURL(s.cfg.ListenAddr))
+	prompt := buildRenamerPrompt(target, renamer.SessionID, turns, publicBaseURL(s.cfg.ListenAddr))
 
 	// Mirror handleSendMessage: broadcast the user_message so the bubble
 	// shows up in the renamer's UI/SSE stream, push to log-store, then write
 	// the prompt onto the harness stdin.
 	userEvent := msg.Event{
 		Type:            msg.EventUserMessage,
-		BridgeSessionID: renamer.BridgeID,
+		BridgeSessionID: renamer.SessionID,
 		Timestamp:       time.Now(),
 		Result:          &msg.ResultEvent{Text: prompt},
 	}
 	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
-		log.Printf("[renamer] %s: broadcast user_message: %v", renamer.BridgeID, err)
+		log.Printf("[renamer] %s: broadcast user_message: %v", renamer.SessionID, err)
 	}
 	if err := s.harness.PushEvent(userEvent); err != nil {
-		log.Printf("[renamer] %s: push to log-store: %v", renamer.BridgeID, err)
+		log.Printf("[renamer] %s: push to log-store: %v", renamer.SessionID, err)
 	}
 
 	time.Sleep(renamerStartDelay)
-	if err := s.harness.Send(renamer.BridgeID, prompt, nil); err != nil {
-		s.store.ClearRenamerSlot(target.BridgeID)
+	if err := s.harness.Send(renamer.SessionID, prompt, nil); err != nil {
+		s.store.ClearRenamerSlot(target.SessionID)
 		return fmt.Errorf("send prompt: %w", err)
 	}
 
-	log.Printf("[renamer] %s: spawned %s (turns=%d)", target.BridgeID, renamer.BridgeID, len(turns))
+	log.Printf("[renamer] %s: spawned %s (turns=%d)", target.SessionID, renamer.SessionID, len(turns))
 	return nil
 }
 
@@ -285,7 +284,7 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 func buildRenamerPrompt(target *store.Session, renamerID string, turns []store.TurnText, baseURL string) string {
 	var b strings.Builder
 	b.WriteString("You are an auto-rename helper for a chat session. Read the transcript below and produce a very concise sidebar title for the SOURCE SESSION (not yourself). Describe what the session is about — topic, task, or problem — not the literal first message. The sidebar is narrow: aim for ~18 characters, hard limit 24. Prefer short noun phrases (\"auth bug fix\", \"deploy script\") over full sentences. Do not wrap in quotes.\n\n")
-	fmt.Fprintf(&b, "SOURCE SESSION bridge_id: %s\n", target.BridgeID)
+	fmt.Fprintf(&b, "SOURCE SESSION bridge_id: %s\n", target.SessionID)
 	fmt.Fprintf(&b, "Current display name: %q\n", target.DisplayName)
 	fmt.Fprintf(&b, "Your renamer bridge_id: %s\n\n", renamerID)
 	b.WriteString("Transcript (oldest first):\n---\n")
@@ -303,7 +302,7 @@ func buildRenamerPrompt(target *store.Session, renamerID string, turns []store.T
 	b.WriteString("When you have decided on a title, post it back via curl:\n\n")
 	fmt.Fprintf(&b,
 		"curl -sfS -X POST %s/sessions/%s/auto-rename -H 'Content-Type: application/json' -d '{\"display_name\":\"<TITLE>\",\"renamer_session_id\":\"%s\"}'\n\n",
-		baseURL, target.BridgeID, renamerID,
+		baseURL, target.SessionID, renamerID,
 	)
 	b.WriteString("After the curl returns 200 you are completely done — do not do any further work, do not summarize, do not produce any extra output. Just give a single short confirmation and stop.")
 	return b.String()

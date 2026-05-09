@@ -13,7 +13,7 @@ import (
 func TestSnapshotBypass_GlobalOn_PinsTrue(t *testing.T) {
 	srv, _ := testServerWithHookStore(t)
 	srv.bridgePrefs.setBypassPermissions(true)
-	sess := &store.Session{BridgeID: "b1", Harness: msg.HarnessCodex}
+	sess := &store.Session{SessionID: "b1", Harness: msg.HarnessCodex}
 
 	srv.snapshotBypassIntoSession(sess)
 
@@ -31,7 +31,7 @@ func TestSnapshotBypass_GlobalOff_PinsFalse(t *testing.T) {
 	// independent — flipping the global later must not silently turn
 	// bypass on for an existing session.
 	srv, _ := testServerWithHookStore(t)
-	sess := &store.Session{BridgeID: "b1", Harness: msg.HarnessCodex}
+	sess := &store.Session{SessionID: "b1", Harness: msg.HarnessCodex}
 
 	srv.snapshotBypassIntoSession(sess)
 
@@ -48,7 +48,7 @@ func TestSnapshotBypass_CallerValueWins(t *testing.T) {
 	srv, _ := testServerWithHookStore(t)
 	srv.bridgePrefs.setBypassPermissions(true)
 	sess := &store.Session{
-		BridgeID:      "b1",
+		SessionID:      "b1",
 		Harness:       msg.HarnessCodex,
 		HarnessConfig: json.RawMessage(`{"bypass_permissions":false}`),
 	}
@@ -69,7 +69,7 @@ func TestBypassEnabled_PerSessionWins(t *testing.T) {
 	// Global ON, session OFF — session value must win.
 	srv.bridgePrefs.setBypassPermissions(true)
 	sess := &store.Session{
-		BridgeID:      "b1",
+		SessionID:      "b1",
 		Harness:       msg.HarnessCodex,
 		HarnessConfig: json.RawMessage(`{"bypass_permissions":false}`),
 	}
@@ -90,7 +90,7 @@ func TestBypassEnabled_LegacyFallsBackToGlobal(t *testing.T) {
 	// from before the snapshot existed). Effective value comes from global.
 	srv, _ := testServerWithHookStore(t)
 	srv.bridgePrefs.setBypassPermissions(true)
-	sess := &store.Session{BridgeID: "b1", Harness: msg.HarnessCodex}
+	sess := &store.Session{SessionID: "b1", Harness: msg.HarnessCodex}
 
 	if !srv.bypassEnabledForSession(sess) {
 		t.Error("legacy session must inherit global=true")
@@ -110,7 +110,7 @@ func TestInjectBypassFlag_Snapshotted_NoOp(t *testing.T) {
 	srv, _ := testServerWithHookStore(t)
 	srv.bridgePrefs.setBypassPermissions(true) // would clobber if inject misbehaved
 	sess := &store.Session{
-		BridgeID:      "b1",
+		SessionID:      "b1",
 		Harness:       msg.HarnessCodex,
 		HarnessConfig: json.RawMessage(`{"bypass_permissions":false}`),
 	}
@@ -128,7 +128,7 @@ func TestInjectBypassFlag_Legacy_GlobalOn_InjectsTrue(t *testing.T) {
 	// harness still gets a definite signal at start.
 	srv, _ := testServerWithHookStore(t)
 	srv.bridgePrefs.setBypassPermissions(true)
-	sess := &store.Session{BridgeID: "b1", Harness: msg.HarnessCodex}
+	sess := &store.Session{SessionID: "b1", Harness: msg.HarnessCodex}
 
 	srv.injectBypassFlag(sess)
 
@@ -146,7 +146,7 @@ func TestInjectBypassFlag_Legacy_GlobalOff_LeavesEmpty(t *testing.T) {
 	// receives no flag, which is the default behavior we want for old
 	// sessions when bypass is genuinely off.
 	srv, _ := testServerWithHookStore(t)
-	sess := &store.Session{BridgeID: "b1", Harness: msg.HarnessCodex}
+	sess := &store.Session{SessionID: "b1", Harness: msg.HarnessCodex}
 
 	srv.injectBypassFlag(sess)
 

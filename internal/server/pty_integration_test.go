@@ -141,7 +141,6 @@ func createPTYSession(t *testing.T, baseURL, instID string) string {
 	body := msg.CreateSessionRequest{
 		Harness:    msg.HarnessClaudeCode,
 		InstanceID: instID,
-		ClientID:   "fe_pty_integration",
 		Mode:       msg.SessionModePTY,
 		AutoStart:  true,
 	}
@@ -168,7 +167,7 @@ func createPTYSession(t *testing.T, baseURL, instID string) string {
 	if sess.State != string(msg.SessionRunning) {
 		t.Fatalf("session state = %q, want running (auto_start)", sess.State)
 	}
-	return sess.BridgeID
+	return sess.SessionID
 }
 
 // dialAttach upgrades a fresh WebSocket against /sessions/{id}/attach,

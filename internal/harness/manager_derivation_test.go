@@ -80,7 +80,7 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 	// methods are tolerant of unknown ids (they no-op), but
 	// seeding keeps the test honest.
 	if err := m.store.CreateSession(&store.Session{
-		BridgeID: bridgeID,
+		SessionID: bridgeID,
 		Harness:  msg.HarnessClaudeCode,
 		State:    string(msg.SessionRunning),
 	}); err != nil {
@@ -200,7 +200,7 @@ func TestManager_UsageTotalSnapshotsAcrossTurns(t *testing.T) {
 	const bridgeID = "br-usage-total-test"
 
 	if err := m.store.CreateSession(&store.Session{
-		BridgeID: bridgeID,
+		SessionID: bridgeID,
 		Harness:  msg.HarnessClaudeCode,
 		State:    string(msg.SessionRunning),
 	}); err != nil {
@@ -357,7 +357,7 @@ func TestManager_DerivationStateTornDownOnProcessExit(t *testing.T) {
 	const bridgeID = "br-cleanup-test"
 
 	if err := m.store.CreateSession(&store.Session{
-		BridgeID: bridgeID,
+		SessionID: bridgeID,
 		Harness:  msg.HarnessClaudeCode,
 		State:    string(msg.SessionRunning),
 	}); err != nil {
@@ -410,7 +410,7 @@ func TestManager_RecoversTurnIDAfterProcessRestart(t *testing.T) {
 	const bridgeID = "br-recover-test"
 
 	if err := m.store.CreateSession(&store.Session{
-		BridgeID: bridgeID,
+		SessionID: bridgeID,
 		Harness:  msg.HarnessClaudeCode,
 		State:    string(msg.SessionRunning),
 	}); err != nil {

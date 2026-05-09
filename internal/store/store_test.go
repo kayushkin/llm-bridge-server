@@ -32,7 +32,7 @@ func TestCreateAndGetSession(t *testing.T) {
 	s := testStore(t)
 
 	sess := &Session{
-		BridgeID:    "br_100",
+		SessionID:    "br_100",
 		DisplayName: "Test Session",
 		Harness:     "claude_code",
 		State:       "idle",
@@ -49,11 +49,8 @@ func TestCreateAndGetSession(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 
-	if got.BridgeID != "br_100" {
-		t.Errorf("bridge_id = %q, want br_100", got.BridgeID)
-	}
 	if got.SessionID != "br_100" {
-		t.Errorf("session_id = %q, want br_100 (alias of bridge_id)", got.SessionID)
+		t.Errorf("session_id = %q, want br_100", got.SessionID)
 	}
 	if got.DisplayName != "Test Session" {
 		t.Errorf("display_name = %q, want Test Session", got.DisplayName)
@@ -79,8 +76,7 @@ func TestListSessions(t *testing.T) {
 
 	for i, name := range []string{"first", "second", "third"} {
 		sess := &Session{
-			BridgeID:    "br_" + name,
-			ClientID:    "fe_" + name,
+			SessionID:   "br_" + name,
 			DisplayName: name,
 			Harness:     "claude_code",
 			State:       "idle",
@@ -118,8 +114,7 @@ func TestListSessionsByState(t *testing.T) {
 		{"br_4", "completed"},
 	} {
 		sess := &Session{
-			BridgeID: tc.id,
-			ClientID: "fe_x",
+			SessionID: tc.id,
 			Harness:  "mock",
 			State:    tc.state,
 		}
@@ -148,7 +143,7 @@ func TestListSessionsByState(t *testing.T) {
 func TestDeleteSession(t *testing.T) {
 	s := testStore(t)
 
-	sess := &Session{BridgeID: "br_del", ClientID: "fe_x", Harness: "mock", State: "idle"}
+	sess := &Session{SessionID: "br_del", Harness: "mock", State: "idle"}
 	if err := s.CreateSession(sess); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -178,7 +173,7 @@ func TestDeleteSession_NotFound(t *testing.T) {
 func TestUpdateSessionState(t *testing.T) {
 	s := testStore(t)
 
-	sess := &Session{BridgeID: "br_state", ClientID: "fe_x", Harness: "mock", State: "idle"}
+	sess := &Session{SessionID: "br_state", Harness: "mock", State: "idle"}
 	s.CreateSession(sess)
 
 	if err := s.UpdateSessionState("br_state", "running"); err != nil {
@@ -202,7 +197,7 @@ func TestUpdateSessionState_NotFound(t *testing.T) {
 func TestUpdateSessionPID(t *testing.T) {
 	s := testStore(t)
 
-	sess := &Session{BridgeID: "br_pid", ClientID: "fe_x", Harness: "mock", State: "idle"}
+	sess := &Session{SessionID: "br_pid", Harness: "mock", State: "idle"}
 	s.CreateSession(sess)
 
 	if err := s.UpdateSessionPID("br_pid", 12345); err != nil {
@@ -218,7 +213,7 @@ func TestUpdateSessionPID(t *testing.T) {
 func TestSetHarnessSessionID(t *testing.T) {
 	s := testStore(t)
 
-	sess := &Session{BridgeID: "br_hid", ClientID: "fe_x", Harness: "mock", State: "idle"}
+	sess := &Session{SessionID: "br_hid", Harness: "mock", State: "idle"}
 	s.CreateSession(sess)
 
 	if err := s.SetHarnessSessionID("br_hid", "cc-uuid-abc123"); err != nil {
@@ -235,8 +230,8 @@ func TestSetHarnessSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get by harness session id: %v", err)
 	}
-	if got2.BridgeID != "br_hid" {
-		t.Errorf("bridge_id from harness_session_id lookup = %q, want br_hid", got2.BridgeID)
+	if got2.SessionID != "br_hid" {
+		t.Errorf("bridge_id from harness_session_id lookup = %q, want br_hid", got2.SessionID)
 	}
 }
 
@@ -249,8 +244,7 @@ func TestHarnessConfig(t *testing.T) {
 
 	cfg := json.RawMessage(`{"system_prompt":"you are a test","model":"opus"}`)
 	sess := &Session{
-		BridgeID:      "br_cfg",
-		ClientID:      "fe_x",
+		SessionID:      "br_cfg",
 		Harness:       "mock",
 		State:         "idle",
 		HarnessConfig: cfg,
@@ -272,7 +266,7 @@ func TestHarnessConfig(t *testing.T) {
 func TestStoreAndListEvents(t *testing.T) {
 	s := testStore(t)
 
-	sess := &Session{BridgeID: "br_ev", ClientID: "fe_x", Harness: "mock", State: "idle"}
+	sess := &Session{SessionID: "br_ev", Harness: "mock", State: "idle"}
 	s.CreateSession(sess)
 
 	event1 := msg.Event{Type: msg.EventStream, BridgeSessionID: "br_ev", Timestamp: time.Now()}
@@ -310,7 +304,7 @@ func TestStoreAndListEvents(t *testing.T) {
 func TestStoreEventReturningID(t *testing.T) {
 	s := testStore(t)
 
-	sess := &Session{BridgeID: "br_eid", ClientID: "fe_x", Harness: "mock", State: "idle"}
+	sess := &Session{SessionID: "br_eid", Harness: "mock", State: "idle"}
 	s.CreateSession(sess)
 
 	data, _ := json.Marshal(msg.Event{Type: msg.EventStream})
@@ -326,7 +320,7 @@ func TestStoreEventReturningID(t *testing.T) {
 func TestListCurrentTurnEvents(t *testing.T) {
 	s := testStore(t)
 
-	sess := &Session{BridgeID: "br_turn", ClientID: "fe_x", Harness: "mock", State: "idle"}
+	sess := &Session{SessionID: "br_turn", Harness: "mock", State: "idle"}
 	s.CreateSession(sess)
 
 	// Store events: stream, result, user_message, stream, result
@@ -349,7 +343,7 @@ func TestListCurrentTurnEvents(t *testing.T) {
 func TestRecoverInFlightTurn(t *testing.T) {
 	s := testStore(t)
 
-	sess := &Session{BridgeID: "br_recov", ClientID: "fe_x", Harness: "mock", State: "idle"}
+	sess := &Session{SessionID: "br_recov", Harness: "mock", State: "idle"}
 	s.CreateSession(sess)
 
 	// No user_message yet — nothing to recover.
@@ -491,7 +485,7 @@ func TestUpsertDiscoveredSession_KnownBridgeIDIsNoOp(t *testing.T) {
 	now := time.Now()
 
 	// Pre-create a real bridge-spawned session.
-	if err := s.CreateSession(&Session{BridgeID: "br_existing", HarnessSessionID: "uuid-real", Harness: "claude_code", State: "idle"}); err != nil {
+	if err := s.CreateSession(&Session{SessionID: "br_existing", HarnessSessionID: "uuid-real", Harness: "claude_code", State: "idle"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
@@ -563,7 +557,7 @@ func TestConcurrentWrites(t *testing.T) {
 	s := testStore(t)
 
 	// Create a session for event writes
-	sess := &Session{BridgeID: "br_conc", ClientID: "fe_x", Harness: "mock", State: "idle"}
+	sess := &Session{SessionID: "br_conc", Harness: "mock", State: "idle"}
 	s.CreateSession(sess)
 
 	// Sequential writes (the production code serializes via Manager.mu)

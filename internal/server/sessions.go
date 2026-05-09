@@ -187,7 +187,6 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sess := &store.Session{
-		BridgeID:      bridgeID,
 		SessionID:     bridgeID,
 		DisplayName:   req.DisplayName,
 		Harness:       req.Harness,
@@ -215,7 +214,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.AutoStart {
 		credID := resolveCredential(s.harnessStore, inst.ID)
 		if _, startErr := s.startOnInstance(r.Context(), sess, inst, credID); startErr != nil {
-			s.store.UpdateSessionState(sess.BridgeID, string(msg.SessionError))
+			s.store.UpdateSessionState(sess.SessionID, string(msg.SessionError))
 			sess.State = string(msg.SessionError)
 		} else {
 			sess.State = string(msg.SessionRunning)
@@ -593,7 +592,6 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	}
 	forkedID := generateBridgeID()
 	forked := &store.Session{
-		BridgeID:    forkedID,
 		SessionID:   forkedID,
 		DisplayName: displayName,
 		Harness:     parent.Harness,
@@ -613,7 +611,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 
 	credID := resolveCredential(s.harnessStore, inst.ID)
 	if _, err := s.startOnInstance(context.Background(), forked, inst, credID); err != nil {
-		s.store.UpdateSessionState(forked.BridgeID, string(msg.SessionError))
+		s.store.UpdateSessionState(forked.SessionID, string(msg.SessionError))
 		forked.State = string(msg.SessionError)
 	} else {
 		forked.State = string(msg.SessionRunning)

@@ -116,6 +116,6 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 		return fmt.Errorf("re-marshal HarnessConfig: %w", err)
 	}
 	sess.HarnessConfig = merged
-	log.Printf("[tool-store] provisioned %d tools for session %s → %s", len(tools), sess.BridgeID, f.Name())
+	log.Printf("[tool-store] provisioned %d tools for session %s → %s", len(tools), sess.SessionID, f.Name())
 	return nil
 }

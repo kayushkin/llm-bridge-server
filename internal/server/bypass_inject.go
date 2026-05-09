@@ -37,7 +37,7 @@ func (s *Server) snapshotBypassIntoSession(sess *store.Session) {
 	cfg := make(map[string]json.RawMessage)
 	if len(sess.HarnessConfig) > 0 {
 		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
-			log.Printf("[bypass] HarnessConfig unparseable for %s: %v", sess.BridgeID, err)
+			log.Printf("[bypass] HarnessConfig unparseable for %s: %v", sess.SessionID, err)
 			return
 		}
 	}
@@ -54,7 +54,7 @@ func (s *Server) snapshotBypassIntoSession(sess *store.Session) {
 
 	merged, err := json.Marshal(cfg)
 	if err != nil {
-		log.Printf("[bypass] re-marshal HarnessConfig for %s: %v", sess.BridgeID, err)
+		log.Printf("[bypass] re-marshal HarnessConfig for %s: %v", sess.SessionID, err)
 		return
 	}
 	sess.HarnessConfig = merged
@@ -100,7 +100,7 @@ func (s *Server) injectBypassFlag(sess *store.Session) {
 	cfg := make(map[string]json.RawMessage)
 	if len(sess.HarnessConfig) > 0 {
 		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
-			log.Printf("[bypass] HarnessConfig unparseable for %s: %v", sess.BridgeID, err)
+			log.Printf("[bypass] HarnessConfig unparseable for %s: %v", sess.SessionID, err)
 			return
 		}
 	}
@@ -113,7 +113,7 @@ func (s *Server) injectBypassFlag(sess *store.Session) {
 	cfg["bypass_permissions"] = json.RawMessage(`true`)
 	merged, err := json.Marshal(cfg)
 	if err != nil {
-		log.Printf("[bypass] re-marshal HarnessConfig for %s: %v", sess.BridgeID, err)
+		log.Printf("[bypass] re-marshal HarnessConfig for %s: %v", sess.SessionID, err)
 		return
 	}
 	sess.HarnessConfig = merged

@@ -83,7 +83,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 
 	resolveCtx := r.Context()
 	res, err := s.permClient.Evaluate(resolveCtx, permclient.Request{
-		BridgeID: bridgeID,
+		SessionID: bridgeID,
 		Tool:     payload.ToolName,
 		Input:    payload.ToolInput,
 	})

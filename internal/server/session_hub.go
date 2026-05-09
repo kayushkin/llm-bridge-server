@@ -12,11 +12,11 @@ import (
 )
 
 // sessionListEvent is one frame on the global session-list SSE stream.
-// Type is either "upsert" (Session populated) or "delete" (BridgeID populated).
+// Type is either "upsert" (Session populated) or "delete" (SessionID populated).
 type sessionListEvent struct {
-	Type     string         `json:"type"`
-	Session  *store.Session `json:"session,omitempty"`
-	BridgeID string         `json:"bridge_id,omitempty"`
+	Type      string         `json:"type"`
+	Session   *store.Session `json:"session,omitempty"`
+	SessionID string         `json:"session_id,omitempty"`
 }
 
 // sessionHub fans out session-row mutation signals to all SSE subscribers.
@@ -52,7 +52,7 @@ func (h *sessionHub) OnSessionDeleted(bridgeID string) {
 	if h == nil {
 		return
 	}
-	h.publish(sessionListEvent{Type: "delete", BridgeID: bridgeID})
+	h.publish(sessionListEvent{Type: "delete", SessionID: bridgeID})
 }
 
 func (h *sessionHub) publish(ev sessionListEvent) {

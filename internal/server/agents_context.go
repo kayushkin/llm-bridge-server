@@ -26,7 +26,7 @@ func (s *Server) injectAgentsContext(sess *store.Session) {
 
 	res, err := s.agentStore.ResolveContext(string(sess.Harness), workDirForSession(sess))
 	if err != nil {
-		log.Printf("[context] resolve for %s: %v", sess.BridgeID, err)
+		log.Printf("[context] resolve for %s: %v", sess.SessionID, err)
 		return
 	}
 	if res.SkipReason != "" || res.Content == "" {
@@ -36,7 +36,7 @@ func (s *Server) injectAgentsContext(sess *store.Session) {
 	var cfg map[string]json.RawMessage
 	if len(sess.HarnessConfig) > 0 {
 		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
-			log.Printf("[context] HarnessConfig unparseable for %s: %v", sess.BridgeID, err)
+			log.Printf("[context] HarnessConfig unparseable for %s: %v", sess.SessionID, err)
 			return
 		}
 	}
@@ -49,14 +49,14 @@ func (s *Server) injectAgentsContext(sess *store.Session) {
 
 	encoded, err := json.Marshal(res.Content)
 	if err != nil {
-		log.Printf("[context] encode system_prompt for %s: %v", sess.BridgeID, err)
+		log.Printf("[context] encode system_prompt for %s: %v", sess.SessionID, err)
 		return
 	}
 	cfg["system_prompt"] = encoded
 
 	merged, err := json.Marshal(cfg)
 	if err != nil {
-		log.Printf("[context] re-marshal HarnessConfig for %s: %v", sess.BridgeID, err)
+		log.Printf("[context] re-marshal HarnessConfig for %s: %v", sess.SessionID, err)
 		return
 	}
 	sess.HarnessConfig = merged

@@ -48,7 +48,7 @@ func (s *Server) handleSessionGitRepos(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	repos, err := s.discoverGitRepos(sess.BridgeID, sess.Info)
+	repos, err := s.discoverGitRepos(sess.SessionID, sess.Info)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -73,7 +73,7 @@ func (s *Server) handleSessionGit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	repos, err := s.discoverGitRepos(sess.BridgeID, sess.Info)
+	repos, err := s.discoverGitRepos(sess.SessionID, sess.Info)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

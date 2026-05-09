@@ -430,9 +430,9 @@ func (s *Server) ReconcileAndResume() {
 	var resumed int
 	for i := range sessions {
 		sess := sessions[i]
-		lastAt, err := s.store.LastActivityAt(sess.BridgeID)
+		lastAt, err := s.store.LastActivityAt(sess.SessionID)
 		if err != nil {
-			log.Printf("[reconcile] %s: last-activity lookup failed: %v", sess.BridgeID, err)
+			log.Printf("[reconcile] %s: last-activity lookup failed: %v", sess.SessionID, err)
 			continue
 		}
 		if lastAt.Before(cutoff) {
@@ -478,15 +478,15 @@ func (s *Server) watchdogTick() {
 		}
 		for i := range sessions {
 			sess := sessions[i]
-			if s.harness.HasProcess(sess.BridgeID) {
+			if s.harness.HasProcess(sess.SessionID) {
 				continue
 			}
-			log.Printf("[watchdog] %s: state=%s but no harness process; resuming", sess.BridgeID, st)
+			log.Printf("[watchdog] %s: state=%s but no harness process; resuming", sess.SessionID, st)
 			// Drop back to idle so autoResume's startOnInstance path takes a
 			// clean state transition. Skip the auto-resume on failure to flip
 			// state — leaving it active would just refire next tick.
-			if err := s.store.UpdateSessionState(sess.BridgeID, string(msg.SessionIdle)); err != nil {
-				log.Printf("[watchdog] %s: state reset failed: %v", sess.BridgeID, err)
+			if err := s.store.UpdateSessionState(sess.SessionID, string(msg.SessionIdle)); err != nil {
+				log.Printf("[watchdog] %s: state reset failed: %v", sess.SessionID, err)
 				continue
 			}
 			go s.autoResume(sess)
@@ -506,24 +506,24 @@ func (s *Server) autoResume(sess store.Session) {
 		// Discovered sessions can land with instance_id="" if no local instance
 		// is enabled for their harness — those should never reach `running`,
 		// so getting here means a real invariant break we want to see.
-		log.Printf("[auto-resume] %s: ERROR instance_id empty — session cannot be resumed; skipping", sess.BridgeID)
+		log.Printf("[auto-resume] %s: ERROR instance_id empty — session cannot be resumed; skipping", sess.SessionID)
 		return
 	}
 	inst, err := s.harnessStore.GetInstance(sess.InstanceID)
 	if err != nil {
-		log.Printf("[auto-resume] %s: instance %s not found: %v", sess.BridgeID, sess.InstanceID, err)
+		log.Printf("[auto-resume] %s: instance %s not found: %v", sess.SessionID, sess.InstanceID, err)
 		return
 	}
 	credID := resolveCredential(s.harnessStore, inst.ID)
 	if _, err := s.startOnInstance(context.Background(), &sess, inst, credID); err != nil {
-		log.Printf("[auto-resume] %s: start failed: %v", sess.BridgeID, err)
+		log.Printf("[auto-resume] %s: start failed: %v", sess.SessionID, err)
 		return
 	}
-	log.Printf("[auto-resume] %s: resumed", sess.BridgeID)
+	log.Printf("[auto-resume] %s: resumed", sess.SessionID)
 
-	text, pending, err := s.store.PendingTurnMessage(sess.BridgeID)
+	text, pending, err := s.store.PendingTurnMessage(sess.SessionID)
 	if err != nil {
-		log.Printf("[auto-resume] %s: pending-turn check failed: %v", sess.BridgeID, err)
+		log.Printf("[auto-resume] %s: pending-turn check failed: %v", sess.SessionID, err)
 		return
 	}
 	if !pending {
@@ -533,11 +533,11 @@ func (s *Server) autoResume(sess store.Session) {
 	// it will accept a message on stdin. 2s is enough for Claude Code's
 	// resume-load; shorter risks writing before the pipe is being drained.
 	time.Sleep(2 * time.Second)
-	if err := s.harness.Send(sess.BridgeID, text, nil); err != nil {
-		log.Printf("[auto-resume] %s: replay send failed: %v", sess.BridgeID, err)
+	if err := s.harness.Send(sess.SessionID, text, nil); err != nil {
+		log.Printf("[auto-resume] %s: replay send failed: %v", sess.SessionID, err)
 		return
 	}
-	log.Printf("[auto-resume] %s: replayed interrupted turn", sess.BridgeID)
+	log.Printf("[auto-resume] %s: replayed interrupted turn", sess.SessionID)
 }
 
 // AutoDiscover runs session discovery for all harness types and imports them to the store.

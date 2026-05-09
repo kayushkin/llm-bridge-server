@@ -297,14 +297,14 @@ func (s *Store) CreateSession(sess *Session) error {
 	}
 	if _, err := tx.Exec(
 		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, harness_config, source, session_type, folder_name, mode, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.BridgeID, sess.BridgeID, sess.HarnessSessionID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.Source, string(sess.SessionType), sess.FolderName, string(sess.Mode), sess.CreatedAt, sess.UpdatedAt,
+		sess.SessionID, sess.SessionID, sess.HarnessSessionID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.Source, string(sess.SessionType), sess.FolderName, string(sess.Mode), sess.CreatedAt, sess.UpdatedAt,
 	); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	s.notifyChanged(sess.BridgeID)
+	s.notifyChanged(sess.SessionID)
 	return nil
 }
 
@@ -316,7 +316,7 @@ func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var info string
 	var mode string
 	var sessionType string
-	err := sc.Scan(&sess.BridgeID, &sess.SessionID, &sess.HarnessSessionID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Source, &sessionType, &mode, &sess.CreatedAt, &sess.UpdatedAt)
+	err := sc.Scan(&sess.SessionID, &sess.SessionID, &sess.HarnessSessionID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Source, &sessionType, &mode, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

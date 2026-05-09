@@ -301,12 +301,12 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 	}
 
 	m.mu.Lock()
-	m.processes[sess.BridgeID] = proc
+	m.processes[sess.SessionID] = proc
 	m.mu.Unlock()
 
 	// Update session with PID
-	m.store.UpdateSessionPID(sess.BridgeID, proc.PID())
-	m.store.UpdateSessionState(sess.BridgeID, string(msg.SessionRunning))
+	m.store.UpdateSessionPID(sess.SessionID, proc.PID())
+	m.store.UpdateSessionState(sess.SessionID, string(msg.SessionRunning))
 
 	// Start event reader goroutine
 	go m.readEvents(proc)
@@ -780,11 +780,11 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	}
 
 	m.mu.Lock()
-	m.processes[sess.BridgeID] = proc
+	m.processes[sess.SessionID] = proc
 	m.mu.Unlock()
 
-	m.store.UpdateSessionPID(sess.BridgeID, proc.PID())
-	m.store.UpdateSessionState(sess.BridgeID, string(msg.SessionRunning))
+	m.store.UpdateSessionPID(sess.SessionID, proc.PID())
+	m.store.UpdateSessionState(sess.SessionID, string(msg.SessionRunning))
 
 	if sess.Mode == msg.SessionModePTY {
 		// PTY processes have no event channel to drain; readEvents would
@@ -795,7 +795,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 		if pp, ok := proc.(*PTYProcess); ok {
 			hub := NewAttachHub(pp, m.ptyRingBytes)
 			m.mu.Lock()
-			m.attachHubs[sess.BridgeID] = hub
+			m.attachHubs[sess.SessionID] = hub
 			m.mu.Unlock()
 			go m.watchPTYExit(pp)
 		}

@@ -20,7 +20,6 @@ func TestCreateSession_SnapshotsBypassFromGlobal(t *testing.T) {
 	req := msg.CreateSessionRequest{
 		Harness:    "claude_code",
 		InstanceID: instID,
-		ClientID:   "fe_test_snapshot",
 	}
 	resp := doJSON(t, srv, "POST", "/sessions", req)
 	if resp.StatusCode != 201 {
@@ -30,7 +29,7 @@ func TestCreateSession_SnapshotsBypassFromGlobal(t *testing.T) {
 	created := decodeJSON[msg.ManagedSession](t, resp)
 
 	// Read back from the store — snapshot must be persisted.
-	sess, err := st.GetSession(created.BridgeID)
+	sess, err := st.GetSession(created.SessionID)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -53,7 +52,6 @@ func TestCreateSession_SnapshotIsDurable_WhenGlobalChanges(t *testing.T) {
 	req := msg.CreateSessionRequest{
 		Harness:    "claude_code",
 		InstanceID: instID,
-		ClientID:   "fe_test_durable",
 	}
 	resp := doJSON(t, srv, "POST", "/sessions", req)
 	if resp.StatusCode != 201 {
@@ -64,7 +62,7 @@ func TestCreateSession_SnapshotIsDurable_WhenGlobalChanges(t *testing.T) {
 	// Flip global OFF after creation. The session's snapshot must hold.
 	srv.bridgePrefs.setBypassPermissions(false)
 
-	sess, _ := st.GetSession(created.BridgeID)
+	sess, _ := st.GetSession(created.SessionID)
 	if !srv.bypassEnabledForSession(sess) {
 		t.Error("session lost its snapshot when global flipped — should still be true")
 	}
@@ -79,14 +77,13 @@ func TestSetSessionBypass_OverridesGlobal(t *testing.T) {
 	req := msg.CreateSessionRequest{
 		Harness:    "claude_code",
 		InstanceID: instID,
-		ClientID:   "fe_test_override",
 	}
 	resp := doJSON(t, srv, "POST", "/sessions", req)
 	created := decodeJSON[msg.ManagedSession](t, resp)
 
 	// Toggle the per-session value to true.
 	body, _ := json.Marshal(map[string]any{"enabled": true})
-	patch := httptest.NewRequest("PUT", "/sessions/"+created.BridgeID+"/bypass-permissions", bytes.NewReader(body))
+	patch := httptest.NewRequest("PUT", "/sessions/"+created.SessionID+"/bypass-permissions", bytes.NewReader(body))
 	patch.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, patch)
@@ -95,7 +92,7 @@ func TestSetSessionBypass_OverridesGlobal(t *testing.T) {
 	}
 
 	// Persisted in store.
-	sess, _ := st.GetSession(created.BridgeID)
+	sess, _ := st.GetSession(created.SessionID)
 	if !srv.bypassEnabledForSession(sess) {
 		t.Error("PATCH true didn't take effect")
 	}
@@ -110,7 +107,7 @@ func TestSetSessionBypass_OverridesGlobal(t *testing.T) {
 
 	// Flip per-session back to false.
 	body2, _ := json.Marshal(map[string]any{"enabled": false})
-	patch2 := httptest.NewRequest("PUT", "/sessions/"+created.BridgeID+"/bypass-permissions", bytes.NewReader(body2))
+	patch2 := httptest.NewRequest("PUT", "/sessions/"+created.SessionID+"/bypass-permissions", bytes.NewReader(body2))
 	patch2.Header.Set("Content-Type", "application/json")
 	w2 := httptest.NewRecorder()
 	srv.ServeHTTP(w2, patch2)
@@ -120,7 +117,7 @@ func TestSetSessionBypass_OverridesGlobal(t *testing.T) {
 
 	// Even if global flips ON now, the session's explicit false wins.
 	srv.bridgePrefs.setBypassPermissions(true)
-	sess, _ = st.GetSession(created.BridgeID)
+	sess, _ = st.GetSession(created.SessionID)
 	if srv.bypassEnabledForSession(sess) {
 		t.Error("per-session false must win over global true")
 	}

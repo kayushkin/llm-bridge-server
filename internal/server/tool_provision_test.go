@@ -62,7 +62,7 @@ func TestInjectMCPConfigHappyPath(t *testing.T) {
 	s := newServerWithToolStoreURL(srv.URL)
 	sess := &store.Session{
 		Harness:       msg.HarnessClaudeCode,
-		BridgeID:      "test-bid",
+		SessionID:      "test-bid",
 		HarnessConfig: json.RawMessage(`{"tool_store_tools":["brave-search"]}`),
 	}
 	if err := s.injectMCPConfig(sess); err != nil {
