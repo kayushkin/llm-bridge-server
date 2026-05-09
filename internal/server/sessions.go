@@ -190,6 +190,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		SpawnerID:     req.SpawnerID,
 		HarnessConfig: req.HarnessConfig,
 		Source:        req.Source,
+		SessionType:   req.SessionType,
 		FolderName:    s.folderForSource(req.Source),
 		Mode:          mode,
 	}
@@ -581,6 +582,13 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	// harness UUID, not the bridge_session_id (cf. renamer.go's note that
 	// parent_id is "CC-fork plumbing"). The forward link to the parent's
 	// stable bridge_id is implied by the chain in the harness's state.db.
+	// Inherit SessionType from parent unless caller overrides — a fork of an
+	// interactive session is itself interactive; an autonomous worker forking
+	// off a sub-task stays autonomous.
+	sessionType := req.SessionType
+	if sessionType == "" {
+		sessionType = parent.SessionType
+	}
 	forked := &store.Session{
 		BridgeID:    generateBridgeID(),
 		ClientID:    req.ClientID,
@@ -591,6 +599,8 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		AgentID:     parent.AgentID,
 		SpawnerID:   parent.SpawnerID,
 		ParentID:    parent.HarnessSessionID,
+		SessionType: sessionType,
+		Source:      parent.Source,
 	}
 
 	if err := s.store.CreateSession(forked); err != nil {

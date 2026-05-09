@@ -201,6 +201,17 @@ func (s *Store) migrate() error {
 	// pty-mode child 2: per-session I/O mode. Empty / "events" = legacy
 	// structured-events flow; "pty" = pseudoterminal attached over WS.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT ''")
+	// Phase I sub-step 3 of the session-identity migration: add session_id
+	// (mirror of bridge_id during the dual-write window) and session_type
+	// (caller-declared category). bridge_id stays as the PK until the rename
+	// in sub-step 7. session_type is empty on legacy rows; backfill on read
+	// is unsafe (callers must declare), so older rows surface as "" type.
+	// See llm-bridge MIGRATION-session-identity.md.
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT ''")
+	// One-time backfill: populate session_id from bridge_id for any row that
+	// pre-dates this migration. New inserts write both columns directly.
+	s.db.Exec("UPDATE sessions SET session_id = bridge_id WHERE session_id = ''")
 	// Index on harness_session_id must be created after ALTER TABLE migration adds/renames the column.
 	// Drop the legacy non-unique index in favor of a partial UNIQUE one below.
 	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_session_id")
@@ -279,8 +290,8 @@ func (s *Store) CreateSession(sess *Session) error {
 		}
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO sessions (bridge_id, harness_session_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, harness_config, source, folder_name, mode, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.BridgeID, sess.HarnessSessionID, sess.ClientID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.Source, sess.FolderName, string(sess.Mode), sess.CreatedAt, sess.UpdatedAt,
+		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, harness_config, source, session_type, folder_name, mode, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sess.BridgeID, sess.BridgeID, sess.HarnessSessionID, sess.ClientID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.Source, string(sess.SessionType), sess.FolderName, string(sess.Mode), sess.CreatedAt, sess.UpdatedAt,
 	); err != nil {
 		return err
 	}
@@ -291,14 +302,15 @@ func (s *Store) CreateSession(sess *Session) error {
 	return nil
 }
 
-const sessionColumns = `bridge_id, COALESCE(harness_session_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(source, ''), COALESCE(mode, ''), created_at, updated_at`
+const sessionColumns = `bridge_id, COALESCE(harness_session_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(source, ''), COALESCE(session_type, ''), COALESCE(mode, ''), created_at, updated_at`
 
 func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var sess Session
 	var harnessConfig string
 	var info string
 	var mode string
-	err := sc.Scan(&sess.BridgeID, &sess.HarnessSessionID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Source, &mode, &sess.CreatedAt, &sess.UpdatedAt)
+	var sessionType string
+	err := sc.Scan(&sess.BridgeID, &sess.HarnessSessionID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Source, &sessionType, &mode, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -313,6 +325,9 @@ func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	}
 	if mode != "" {
 		sess.Mode = msg.SessionMode(mode)
+	}
+	if sessionType != "" {
+		sess.SessionType = msg.SessionType(sessionType)
 	}
 	return &sess, nil
 }

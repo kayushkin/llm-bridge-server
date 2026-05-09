@@ -224,6 +224,7 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 		State:       string(msg.SessionIdle),
 		AgentID:     "session-renamer",
 		Source:      renamerSourceTag,
+		SessionType: msg.SessionTypeSystem,
 		FolderName:  s.folderForSource(renamerSourceTag),
 	}
 	if err := s.store.CreateSession(renamer); err != nil {
