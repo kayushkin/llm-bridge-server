@@ -265,8 +265,8 @@ func TestCreateSession_NoAutoStart(t *testing.T) {
 	if sess.BridgeID == "" {
 		t.Error("bridge_id is empty")
 	}
-	if sess.ClientID != "fe_test_1" {
-		t.Errorf("client_id = %q, want fe_test_1", sess.ClientID)
+	if sess.SessionID != sess.BridgeID {
+		t.Errorf("session_id = %q, want %q (alias of bridge_id)", sess.SessionID, sess.BridgeID)
 	}
 	if sess.InstanceID != instID {
 		t.Errorf("instance_id = %q, want %q", sess.InstanceID, instID)
@@ -291,19 +291,6 @@ func TestCreateSession_RejectedWithoutInstance(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		body, _ := io.ReadAll(resp.Body)
 		t.Errorf("status = %d, want 503 (no instance): %s", resp.StatusCode, body)
-	}
-}
-
-func TestCreateSession_MissingClientID(t *testing.T) {
-	srv, _ := testServer(t)
-
-	req := msg.CreateSessionRequest{
-		Harness: "claude_code",
-	}
-
-	resp := doJSON(t, srv, "POST", "/sessions", req)
-	if resp.StatusCode != 400 {
-		t.Errorf("status = %d, want 400 (missing client_id)", resp.StatusCode)
 	}
 }
 
@@ -628,20 +615,6 @@ func TestForkSession_NotFound(t *testing.T) {
 	resp := doJSON(t, srv, "POST", "/sessions/nonexistent/fork", msg.ForkSessionRequest{ClientID: "fe_1"})
 	if resp.StatusCode != 404 {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
-	}
-}
-
-func TestForkSession_MissingClientID(t *testing.T) {
-	srv, st := testServer(t)
-
-	st.CreateSession(&store.Session{
-		BridgeID: "br_fork", ClientID: "fe_x", Harness: "mock", State: "idle",
-	})
-
-	resp := doJSON(t, srv, "POST", "/sessions/br_fork/fork", msg.ForkSessionRequest{})
-	if resp.StatusCode != 400 {
-		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("status = %d, want 400 (missing client_id): %s", resp.StatusCode, body)
 	}
 }
 

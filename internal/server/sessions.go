@@ -136,11 +136,6 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ClientID == "" {
-		http.Error(w, "client_id is required", http.StatusBadRequest)
-		return
-	}
-
 	h := msg.Harness(req.Harness)
 	if !isValidHarness(h) {
 		http.Error(w, "invalid harness", http.StatusBadRequest)
@@ -193,7 +188,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	sess := &store.Session{
 		BridgeID:      bridgeID,
-		ClientID:      req.ClientID,
+		SessionID:     bridgeID,
 		DisplayName:   req.DisplayName,
 		Harness:       req.Harness,
 		InstanceID:    inst.ID,
@@ -570,11 +565,6 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		displayName = parent.DisplayName + " (fork)"
 	}
 
-	if req.ClientID == "" {
-		http.Error(w, "client_id is required", http.StatusBadRequest)
-		return
-	}
-
 	if parent.InstanceID == "" || s.harnessStore == nil {
 		http.Error(w, "parent session has no instance bound", http.StatusInternalServerError)
 		return
@@ -601,9 +591,10 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	if sessionType == "" {
 		sessionType = parent.SessionType
 	}
+	forkedID := generateBridgeID()
 	forked := &store.Session{
-		BridgeID:    generateBridgeID(),
-		ClientID:    req.ClientID,
+		BridgeID:    forkedID,
+		SessionID:   forkedID,
 		DisplayName: displayName,
 		Harness:     parent.Harness,
 		InstanceID:  parent.InstanceID,

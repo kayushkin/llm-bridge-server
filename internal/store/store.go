@@ -103,7 +103,6 @@ func (s *Store) migrate() error {
 		CREATE TABLE IF NOT EXISTS sessions (
 			bridge_id          TEXT PRIMARY KEY,
 			harness_session_id TEXT NOT NULL DEFAULT '',
-			client_id          TEXT NOT NULL DEFAULT '',
 			display_name       TEXT NOT NULL DEFAULT '',
 			harness            TEXT NOT NULL,
 			state              TEXT NOT NULL,
@@ -147,7 +146,13 @@ func (s *Store) migrate() error {
 	// CREATE TABLE above. We still ADD COLUMN here (idempotent) so a DB that
 	// pre-dates harness_id entirely still gets the column under the new name.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_session_id TEXT NOT NULL DEFAULT ''")
+	// Phase I sub-step 6 of the session-identity migration: client_id is
+	// retired. Add then drop is a no-op on already-migrated DBs (DROP fails
+	// if the column is missing); the ADD line is kept so DBs that pre-date
+	// this rev still go through the same code path before the drop.
+	// See llm-bridge MIGRATION-session-identity.md.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN client_id TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions DROP COLUMN client_id")
 	// Backfill: old rows have 'id' but no bridge_id — handled by the rename below.
 	// If upgrading from old schema where PK was 'id', rename it to bridge_id.
 	s.db.Exec("ALTER TABLE sessions RENAME COLUMN id TO bridge_id")
@@ -290,8 +295,8 @@ func (s *Store) CreateSession(sess *Session) error {
 		}
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, harness_config, source, session_type, folder_name, mode, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.BridgeID, sess.BridgeID, sess.HarnessSessionID, sess.ClientID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.Source, string(sess.SessionType), sess.FolderName, string(sess.Mode), sess.CreatedAt, sess.UpdatedAt,
+		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, harness_config, source, session_type, folder_name, mode, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sess.BridgeID, sess.BridgeID, sess.HarnessSessionID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.Source, string(sess.SessionType), sess.FolderName, string(sess.Mode), sess.CreatedAt, sess.UpdatedAt,
 	); err != nil {
 		return err
 	}
@@ -302,7 +307,7 @@ func (s *Store) CreateSession(sess *Session) error {
 	return nil
 }
 
-const sessionColumns = `bridge_id, COALESCE(session_id, ''), COALESCE(harness_session_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(source, ''), COALESCE(session_type, ''), COALESCE(mode, ''), created_at, updated_at`
+const sessionColumns = `bridge_id, COALESCE(session_id, ''), COALESCE(harness_session_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(source, ''), COALESCE(session_type, ''), COALESCE(mode, ''), created_at, updated_at`
 
 func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var sess Session
@@ -310,7 +315,7 @@ func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var info string
 	var mode string
 	var sessionType string
-	err := sc.Scan(&sess.BridgeID, &sess.SessionID, &sess.HarnessSessionID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Source, &sessionType, &mode, &sess.CreatedAt, &sess.UpdatedAt)
+	err := sc.Scan(&sess.BridgeID, &sess.SessionID, &sess.HarnessSessionID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Source, &sessionType, &mode, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1331,8 +1336,8 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 	// discovery-imported sessions (no caller declared one).
 	bridgeID := fmt.Sprintf("br_%d", time.Now().UnixNano())
 	_, err = s.db.Exec(
-		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, client_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, source, session_type, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		bridgeID, bridgeID, harnessSessionID, "", displayName, harness, instanceID, "idle", 0, "", "", "", source, "", folderName, createdAt, updatedAt,
+		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, source, session_type, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		bridgeID, bridgeID, harnessSessionID, displayName, harness, instanceID, "idle", 0, "", "", "", source, "", folderName, createdAt, updatedAt,
 	)
 	if err != nil {
 		return "", false, err

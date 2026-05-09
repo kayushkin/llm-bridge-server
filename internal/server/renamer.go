@@ -215,9 +215,10 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 	// --fork-session"), and the renamer must be a brand-new conversation,
 	// not a fork of the target. The forward link (target → renamer) lives
 	// on target.renamer_session_id, which is enough to trace the relationship.
+	renamerID := generateBridgeID()
 	renamer := &store.Session{
-		BridgeID:    generateBridgeID(),
-		ClientID:    "renamer",
+		BridgeID:    renamerID,
+		SessionID:   renamerID,
 		DisplayName: fmt.Sprintf("rename %s", target.BridgeID),
 		Harness:     msg.HarnessClaudeCode,
 		InstanceID:  inst.ID,

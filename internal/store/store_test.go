@@ -33,7 +33,6 @@ func TestCreateAndGetSession(t *testing.T) {
 
 	sess := &Session{
 		BridgeID:    "br_100",
-		ClientID:    "fe_1",
 		DisplayName: "Test Session",
 		Harness:     "claude_code",
 		State:       "idle",
@@ -53,8 +52,8 @@ func TestCreateAndGetSession(t *testing.T) {
 	if got.BridgeID != "br_100" {
 		t.Errorf("bridge_id = %q, want br_100", got.BridgeID)
 	}
-	if got.ClientID != "fe_1" {
-		t.Errorf("client_id = %q, want fe_1", got.ClientID)
+	if got.SessionID != "br_100" {
+		t.Errorf("session_id = %q, want br_100 (alias of bridge_id)", got.SessionID)
 	}
 	if got.DisplayName != "Test Session" {
 		t.Errorf("display_name = %q, want Test Session", got.DisplayName)
