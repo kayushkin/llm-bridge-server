@@ -9,9 +9,9 @@
 //  2. Pull the "Agent runs" board view from kanban-store.
 //  3. For each card in the In Progress column with a bus_session card_link:
 //     - Look up the bridge session state via GET /sessions/{bridge_id}.
-//     - completed → move to Done   (column has auto_status=done   → noteboard status=done)
-//     - error     → move to Failed (column has auto_status=archived)
-//     - else      → leave it (idle / running stays In Progress; the watchdog
+//     - completed                          → move to Done   (column has auto_status=done   → noteboard status=done)
+//     - error / aborted / disconnected     → move to Failed (column has auto_status=archived)
+//     - else                               → leave it (idle / running stays In Progress; the watchdog
 //       will eventually move stalled ones to a Stalled column).
 //
 // Done/Failed transitions are append-only — once a card is in Done or Failed,
@@ -148,7 +148,7 @@ func main() {
 		switch state {
 		case "completed":
 			target, targetName = doneCol, columnDone
-		case "error":
+		case "error", "aborted", "disconnected":
 			target, targetName = failedCol, columnFailed
 		default:
 			continue // idle / running / unknown — leave alone
