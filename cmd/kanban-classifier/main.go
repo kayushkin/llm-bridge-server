@@ -174,7 +174,8 @@ type config struct {
 type session struct {
 	SessionID   string `json:"session_id"`
 	State       string `json:"state"`
-	Source      string `json:"source"`
+	Purpose     string `json:"purpose"`
+	Origin      string `json:"origin"`
 	DisplayName string `json:"display_name"`
 	Harness     string `json:"harness"`
 	CreatedAt   string `json:"created_at"`
@@ -383,7 +384,7 @@ func applyNew(kc *kanbanclient.Client, sess session, report *Report) {
 			ColumnName:   colName,
 			Title:        truncate(nt.Title, 80),
 			Body:         body,
-			Tags:         []string{cardSourceClassifier, sess.Harness, sess.Source},
+			Tags:         []string{cardSourceClassifier, sess.Harness, sess.Purpose},
 			BusSessionID: "",
 			Provider:     "",
 		}
@@ -496,7 +497,7 @@ func buildDigest(sess session, msgs []bridgeMessage, existingCards []kanbanclien
 	fmt.Fprintf(&b, "bridge_id: %s\n", sess.SessionID)
 	fmt.Fprintf(&b, "display_name: %s\n", sess.DisplayName)
 	fmt.Fprintf(&b, "harness: %s\n", sess.Harness)
-	fmt.Fprintf(&b, "source: %s\n", sess.Source)
+	fmt.Fprintf(&b, "source: %s\n", sess.Purpose)
 	fmt.Fprintf(&b, "state: %s\n", sess.State)
 	fmt.Fprintf(&b, "created: %s\n", sess.CreatedAt)
 	fmt.Fprintf(&b, "last_message: %s\n", sess.UpdatedAt)

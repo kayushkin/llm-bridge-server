@@ -110,8 +110,9 @@ func (e *AgentExecutor) Run(agent, prompt, orchestrator, sessionID string) Resul
 			Harness:     h,
 			InstanceID:  instanceID,
 			AgentID:     agent,
-			Source:      "scheduler",
-			SessionType: msg.SessionTypeAutonomous,
+			Purpose:     "scheduled-task",
+			Origin:      "scheduler",
+			Type:        msg.SessionTypeAutonomous,
 		}
 	}
 
