@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -51,6 +52,51 @@ func (s *Server) handleListSourceFolders(w http.ResponseWriter, r *http.Request)
 	sort.Slice(out, func(i, j int) bool { return out[i].Source < out[j].Source })
 
 	writeJSON(w, out)
+}
+
+// syncSourceFolderRegistry ensures every folder referenced by either the
+// env-backed source defaults or persisted source-folder overrides exists in
+// the folder registry. This keeps upgraded installs in sync when new
+// LLMBRIDGE_SOURCE_FOLDERS entries are introduced without waiting for the
+// first matching session to be created.
+func (s *Server) syncSourceFolderRegistry() {
+	if s.store == nil {
+		return
+	}
+
+	wanted := make(map[string]struct{})
+	if s.cfg != nil {
+		for _, folder := range s.cfg.SourceFolders {
+			folder = strings.TrimSpace(folder)
+			if folder != "" {
+				wanted[folder] = struct{}{}
+			}
+		}
+	}
+
+	overrides, err := s.store.ListSourceFolders()
+	if err != nil {
+		log.Printf("[source-folders] failed to load overrides for startup sync: %v", err)
+	} else {
+		for _, folder := range overrides {
+			folder = strings.TrimSpace(folder)
+			if folder != "" {
+				wanted[folder] = struct{}{}
+			}
+		}
+	}
+
+	folders := make([]string, 0, len(wanted))
+	for folder := range wanted {
+		folders = append(folders, folder)
+	}
+	sort.Strings(folders)
+
+	for _, folder := range folders {
+		if err := s.store.CreateFolder(folder); err != nil {
+			log.Printf("[source-folders] failed to ensure folder %q: %v", folder, err)
+		}
+	}
 }
 
 // handlePutSourceFolder upserts a runtime override for the given source.

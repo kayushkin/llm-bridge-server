@@ -909,6 +909,53 @@ func TestDiscoverySourceFolder(t *testing.T) {
 	}
 }
 
+func TestNew_ReconcilesFolderRegistryFromSourceMappings(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	if err := st.CreateFolder("Existing"); err != nil {
+		t.Fatalf("seed existing folder: %v", err)
+	}
+	if err := st.UpsertSourceFolder("review", "Review Queue"); err != nil {
+		t.Fatalf("seed source-folder override: %v", err)
+	}
+
+	cfg := &config.Config{
+		ImagesDir:       filepath.Join(dir, "images"),
+		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
+		LogStoreURL:     "http://localhost:0",
+		SourceFolders: map[string]string{
+			"autoworker": "Scheduled",
+			"scheduler":  "Scheduled",
+			"subagent":   "Subagents",
+		},
+	}
+
+	_ = New(st, nil, nil, nil, nil, nil, nil, cfg)
+
+	got, err := st.ListFolders()
+	if err != nil {
+		t.Fatalf("list folders: %v", err)
+	}
+
+	want := map[string]bool{
+		"Existing":     true,
+		"Review Queue": true,
+		"Scheduled":    true,
+		"Subagents":    true,
+	}
+	for _, folder := range got {
+		delete(want, folder)
+	}
+	for folder := range want {
+		t.Errorf("missing folder %q after startup reconcile", folder)
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Discover sessions (no harness available)
 // ──────────────────────────────────────────────────────────────────────────────

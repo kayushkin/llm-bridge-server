@@ -14,15 +14,15 @@ import (
 	agentstore "github.com/kayushkin/agent-store"
 	harnessstore "github.com/kayushkin/harness-store"
 	hookstore "github.com/kayushkin/hook-store"
-	memorystore "github.com/kayushkin/memory-store"
-	modelstore "github.com/kayushkin/model-store"
-	snapshotstore "github.com/kayushkin/snapshot-store"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
+	memorystore "github.com/kayushkin/memory-store"
+	modelstore "github.com/kayushkin/model-store"
+	snapshotstore "github.com/kayushkin/snapshot-store"
 )
 
 // autoResumeWindow caps how recently a session must have been active (by
@@ -81,6 +81,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	}
 	srv.routes()
 	srv.syncHarnessTypes()
+	srv.syncSourceFolderRegistry()
 	srv.startSnapshotGC()
 	return srv
 }
@@ -596,8 +597,9 @@ func (s *Server) AutoDiscover() {
 
 // handleSeedBroadcast is the explicit "tell every runner to reconcile" trigger.
 // Query params:
-//   source — "agent-store" (default) or "skill-store"
-//   reason — free-text label included in logs and the runner's snapshot event
+//
+//	source — "agent-store" (default) or "skill-store"
+//	reason — free-text label included in logs and the runner's snapshot event
 func (s *Server) handleSeedBroadcast(w http.ResponseWriter, r *http.Request) {
 	source := msg.SeedSource(r.URL.Query().Get("source"))
 	if source == "" {
