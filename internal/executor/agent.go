@@ -107,11 +107,12 @@ func (e *AgentExecutor) Run(agent, prompt, orchestrator, sessionID string) Resul
 		}
 		busSessionID = fmt.Sprintf("scheduler-%s-%d", orchestrator, now.UnixNano())
 		create = &msg.CreateSessionRequest{
-			Harness:    h,
-			InstanceID: instanceID,
-			ClientID:   "scheduler",
-			AgentID:    agent,
-			Source:     "scheduler",
+			Harness:     h,
+			InstanceID:  instanceID,
+			ClientID:    "scheduler",
+			AgentID:     agent,
+			Source:      "scheduler",
+			SessionType: msg.SessionTypeAutonomous,
 		}
 	}
 
