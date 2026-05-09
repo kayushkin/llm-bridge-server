@@ -179,8 +179,20 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Caller-minted session id: workers (autoworker, scheduler, dispatcher)
+	// pass their own session_id so they can persist a kanban link or queue
+	// row before the create round-trip returns. Empty = bridge mints
+	// br_<nanos> as before. Collisions return 409.
+	bridgeID := req.SessionID
+	if bridgeID == "" {
+		bridgeID = generateBridgeID()
+	} else if _, err := s.store.GetSession(bridgeID); err == nil {
+		http.Error(w, "session_id already exists", http.StatusConflict)
+		return
+	}
+
 	sess := &store.Session{
-		BridgeID:      generateBridgeID(),
+		BridgeID:      bridgeID,
 		ClientID:      req.ClientID,
 		DisplayName:   req.DisplayName,
 		Harness:       req.Harness,
