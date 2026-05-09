@@ -302,7 +302,7 @@ func (s *Store) CreateSession(sess *Session) error {
 	return nil
 }
 
-const sessionColumns = `bridge_id, COALESCE(harness_session_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(source, ''), COALESCE(session_type, ''), COALESCE(mode, ''), created_at, updated_at`
+const sessionColumns = `bridge_id, COALESCE(session_id, ''), COALESCE(harness_session_id, ''), COALESCE(client_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(source, ''), COALESCE(session_type, ''), COALESCE(mode, ''), created_at, updated_at`
 
 func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var sess Session
@@ -310,7 +310,7 @@ func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var info string
 	var mode string
 	var sessionType string
-	err := sc.Scan(&sess.BridgeID, &sess.HarnessSessionID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Source, &sessionType, &mode, &sess.CreatedAt, &sess.UpdatedAt)
+	err := sc.Scan(&sess.BridgeID, &sess.SessionID, &sess.HarnessSessionID, &sess.ClientID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Source, &sessionType, &mode, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
