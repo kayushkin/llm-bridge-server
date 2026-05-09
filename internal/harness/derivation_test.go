@@ -205,7 +205,7 @@ func TestDerivation_HookAwaitingResolutionEntersAwaitingPermission(t *testing.T)
 
 	got := d.derive(&msg.Event{
 		Type: msg.EventHook,
-		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-1", Source: "permission_prompt"},
+		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-1", Purpose: "permission_prompt"},
 	})
 	if len(got) != 1 || got[0].State.State != msg.SessionAwaitingPermission {
 		t.Fatalf("hook awaiting_resolution: got %+v; want awaiting_permission", got)
@@ -224,7 +224,7 @@ func TestDerivation_HookCompletedRestoresPriorState(t *testing.T) {
 	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 	d.derive(&msg.Event{
 		Type: msg.EventHook,
-		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-1", Source: "permission_prompt"},
+		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-1", Purpose: "permission_prompt"},
 	})
 
 	got := d.derive(&msg.Event{

@@ -14,7 +14,7 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// SourceTag is the value placed in CreateSessionRequest.Source for any session
+// SourceTag is the value placed in CreateSessionRequest.Purpose for any session
 // that originates from the conformance suite. Auto-discover uses it to file
 // leaked test sessions into the configured Conformance folder instead of the
 // unfiled list.

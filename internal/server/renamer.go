@@ -121,7 +121,7 @@ func (s *Server) maybeAutoRename(bridgeID string) {
 	if err != nil {
 		return
 	}
-	if target.Source == renamerSourceTag {
+	if target.Purpose == renamerSourceTag {
 		return
 	}
 	if target.InstanceID == "" || s.harnessStore == nil {
@@ -223,8 +223,9 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 		InstanceID:  inst.ID,
 		State:       string(msg.SessionIdle),
 		AgentID:     "session-renamer",
-		Source:      renamerSourceTag,
-		SessionType: msg.SessionTypeSystem,
+		Purpose:     renamerSourceTag,
+		Type:        msg.SessionTypeSystem,
+		Origin:      "llm-bridge-server",
 		FolderName:  s.folderForSource(renamerSourceTag),
 	}
 	if err := s.store.CreateSession(renamer); err != nil {

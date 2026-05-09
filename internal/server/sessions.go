@@ -38,7 +38,7 @@ func (s *Server) folderForSource(source string) string {
 
 // discoveryPromptPrefixes maps stable prompt prefixes to a source tag for
 // sessions ingested via auto-discover. The live spawn path tags sessions via
-// CreateSessionRequest.Source, but discovery only sees the on-disk session
+// CreateSessionRequest.Purpose, but discovery only sees the on-disk session
 // (prompt + harness id) — prefix recognition is the only signal that classifies
 // these as scheduled jobs rather than user sessions. Producers own their
 // prompts; if a prefix here drifts from the live prompt, new sessions land
@@ -195,9 +195,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		AgentID:       req.AgentID,
 		SpawnerID:     req.SpawnerID,
 		HarnessConfig: req.HarnessConfig,
-		Source:        req.Source,
-		SessionType:   req.SessionType,
-		FolderName:    s.folderForSource(req.Source),
+		Purpose:       req.Purpose,
+		Type:          req.Type,
+		Origin:        req.Origin,
+		FolderName:    s.folderForSource(req.Purpose),
 		Mode:          mode,
 	}
 
@@ -583,12 +584,21 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	// harness UUID, not the bridge_session_id (cf. renamer.go's note that
 	// parent_id is "CC-fork plumbing"). The forward link to the parent's
 	// stable bridge_id is implied by the chain in the harness's state.db.
-	// Inherit SessionType from parent unless caller overrides — a fork of an
-	// interactive session is itself interactive; an autonomous worker forking
-	// off a sub-task stays autonomous.
-	sessionType := req.SessionType
+	// Inherit Type / Purpose / Origin from parent unless caller overrides —
+	// a fork of an interactive session is itself interactive; an autonomous
+	// worker forking off a sub-task stays autonomous; the originator of the
+	// fork is the parent's originator unless an explicit override is given.
+	sessionType := req.Type
 	if sessionType == "" {
-		sessionType = parent.SessionType
+		sessionType = parent.Type
+	}
+	purpose := req.Purpose
+	if purpose == "" {
+		purpose = parent.Purpose
+	}
+	origin := req.Origin
+	if origin == "" {
+		origin = parent.Origin
 	}
 	forkedID := generateBridgeID()
 	forked := &store.Session{
@@ -600,8 +610,9 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		AgentID:     parent.AgentID,
 		SpawnerID:   parent.SpawnerID,
 		ParentID:    parent.HarnessSessionID,
-		SessionType: sessionType,
-		Source:      parent.Source,
+		Type:        sessionType,
+		Purpose:     purpose,
+		Origin:      origin,
 	}
 
 	if err := s.store.CreateSession(forked); err != nil {

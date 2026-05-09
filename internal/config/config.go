@@ -35,7 +35,7 @@ type Config struct {
 	PermissionStoreURL string
 	SnapshotStoreDB  string
 	SnapshotStoreGit string
-	// SourceFolders maps CreateSessionRequest.Source values to the folder a
+	// SourceFolders maps CreateSessionRequest.Purpose values to the folder a
 	// newly created session should be auto-filed into. Configured via
 	// LLMBRIDGE_SOURCE_FOLDERS (format: "source:folder,source:folder"). Any
 	// source not in the map results in no auto-filing.

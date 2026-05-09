@@ -827,7 +827,7 @@ func TestCreateSession_WithHarnessConfig(t *testing.T) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // Sessions ingested via auto-discover don't carry the original
-// CreateSessionRequest.Source, so the bridge classifies them by prompt prefix.
+// CreateSessionRequest.Purpose, so the bridge classifies them by prompt prefix.
 // This test pins the recognized prefixes against the live producer prompts —
 // if either side drifts, the recognizer should be updated in lockstep.
 func TestDiscoverySourceFolder(t *testing.T) {
