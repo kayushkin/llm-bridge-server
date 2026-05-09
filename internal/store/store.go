@@ -146,17 +146,18 @@ func (s *Store) migrate() error {
 	// CREATE TABLE above. We still ADD COLUMN here (idempotent) so a DB that
 	// pre-dates harness_id entirely still gets the column under the new name.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_session_id TEXT NOT NULL DEFAULT ''")
-	// Phase I sub-step 6 of the session-identity migration: client_id is
-	// retired. Add then drop is a no-op on already-migrated DBs (DROP fails
-	// if the column is missing); the ADD line is kept so DBs that pre-date
-	// this rev still go through the same code path before the drop.
-	// See llm-bridge MIGRATION-session-identity.md.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN client_id TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("ALTER TABLE sessions DROP COLUMN client_id")
 	// Backfill: old rows have 'id' but no bridge_id — handled by the rename below.
 	// If upgrading from old schema where PK was 'id', rename it to bridge_id.
 	s.db.Exec("ALTER TABLE sessions RENAME COLUMN id TO bridge_id")
 	s.db.Exec("ALTER TABLE sessions RENAME COLUMN client_request_id TO client_id")
+	// Phase I sub-step 6 of the session-identity migration: client_id is
+	// retired. DROP runs AFTER the legacy renames above so any DB whose
+	// migration ever resurrects client_id (via the client_request_id rename)
+	// still ends up without it. Idempotent: errors swallowed on already-
+	// migrated DBs that no longer have the column.
+	// See llm-bridge MIGRATION-session-identity.md.
+	s.db.Exec("ALTER TABLE sessions DROP COLUMN client_id")
 	// session-chain rename: harness_id -> harness_session_id. Detect and run only
 	// on DBs that still have the old column. Fresh DBs and already-migrated DBs
 	// no-op cleanly. (RENAME COLUMN was added in SQLite 3.25.)
