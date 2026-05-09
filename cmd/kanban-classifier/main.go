@@ -172,10 +172,9 @@ type config struct {
 // ============================ Candidate selection ============================
 
 type session struct {
-	BridgeID    string `json:"bridge_id"`
+	SessionID   string `json:"session_id"`
 	State       string `json:"state"`
 	Source      string `json:"source"`
-	ClientID    string `json:"client_id"`
 	DisplayName string `json:"display_name"`
 	Harness     string `json:"harness"`
 	CreatedAt   string `json:"created_at"`
@@ -211,9 +210,9 @@ func selectCandidates(cfg config) ([]session, error) {
 // processSession runs the full pipeline for one session. Returns true if a
 // classifier call was made (vs. dedupe-skipped or final-classified).
 func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, sess session) bool {
-	tags, err := kc.ListEntityTags(cardLinkSession, sess.BridgeID)
+	tags, err := kc.ListEntityTags(cardLinkSession, sess.SessionID)
 	if err != nil {
-		log.Printf("[%s] list tags: %v", sess.BridgeID, err)
+		log.Printf("[%s] list tags: %v", sess.SessionID, err)
 		return false
 	}
 	tagSet := tagSet(tags)
@@ -223,9 +222,9 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 		return false
 	}
 
-	msgs, err := getSessionMessages(cfg.BridgeURL, sess.BridgeID)
+	msgs, err := getSessionMessages(cfg.BridgeURL, sess.SessionID)
 	if err != nil {
-		log.Printf("[%s] get messages: %v", sess.BridgeID, err)
+		log.Printf("[%s] get messages: %v", sess.SessionID, err)
 		return false
 	}
 	msgCount := len(msgs)
@@ -237,7 +236,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 			return false
 		}
 		log.Printf("[%s] do-not-track but Δmsg=%d ≥ %d — re-evaluating",
-			sess.BridgeID, msgCount-priorN, doNotTrackReevalDelta)
+			sess.SessionID, msgCount-priorN, doNotTrackReevalDelta)
 	}
 
 	// Compute current signature; bail if unchanged.
@@ -248,20 +247,20 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	}
 
 	// Look up existing cards already linked to this session.
-	cards, err := kc.ListCardsForEntity(cardLinkSession, sess.BridgeID)
+	cards, err := kc.ListCardsForEntity(cardLinkSession, sess.SessionID)
 	if err != nil {
-		log.Printf("[%s] list cards: %v", sess.BridgeID, err)
+		log.Printf("[%s] list cards: %v", sess.SessionID, err)
 		return false
 	}
 
 	digest := buildDigest(sess, msgs, cards)
 	report, err := classify(ctx, cfg, digest)
 	if err != nil {
-		log.Printf("[%s] classifier failed: %v — leaving sig unchanged for retry", sess.BridgeID, err)
+		log.Printf("[%s] classifier failed: %v — leaving sig unchanged for retry", sess.SessionID, err)
 		return false
 	}
 	log.Printf("[%s] trackable=%v existing=%d new=%d summary=%q",
-		sess.BridgeID, report.Trackable, len(report.ExistingCards), len(report.NewTasks),
+		sess.SessionID, report.Trackable, len(report.ExistingCards), len(report.NewTasks),
 		truncate(report.SessionSummary, 100))
 
 	if cfg.DryRun {
@@ -281,7 +280,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 
 	// If bridge state is terminal, mark the session as final-classified.
 	if sess.State == terminalStateCompleted || sess.State == terminalStateError {
-		_ = kc.AddEntityTag(cardLinkSession, sess.BridgeID, tagFinalClassified)
+		_ = kc.AddEntityTag(cardLinkSession, sess.SessionID, tagFinalClassified)
 	}
 	return true
 }
@@ -332,17 +331,17 @@ func buildSig(msgCount int, state, updatedAt string) string {
 func writeSig(kc *kanbanclient.Client, sess session, oldTags map[string]bool, sig string) {
 	for tag := range oldTags {
 		if strings.HasPrefix(tag, tagCheckSigPrefix) && tag != sig {
-			_ = kc.DeleteEntityTag(cardLinkSession, sess.BridgeID, tag)
+			_ = kc.DeleteEntityTag(cardLinkSession, sess.SessionID, tag)
 		}
 	}
-	if err := kc.AddEntityTag(cardLinkSession, sess.BridgeID, sig); err != nil {
-		log.Printf("[%s] add check sig: %v", sess.BridgeID, err)
+	if err := kc.AddEntityTag(cardLinkSession, sess.SessionID, sig); err != nil {
+		log.Printf("[%s] add check sig: %v", sess.SessionID, err)
 	}
 }
 
 func applyDoNotTrack(kc *kanbanclient.Client, sess session, msgCount int) {
-	if err := kc.AddEntityTag(cardLinkSession, sess.BridgeID, tagDoNotTrack); err != nil {
-		log.Printf("[%s] add do-not-track: %v", sess.BridgeID, err)
+	if err := kc.AddEntityTag(cardLinkSession, sess.SessionID, tagDoNotTrack); err != nil {
+		log.Printf("[%s] add do-not-track: %v", sess.SessionID, err)
 	}
 }
 
@@ -353,11 +352,11 @@ func applyExisting(kc *kanbanclient.Client, sess session, report *Report) {
 		colName := stateToColumn(ec.State)
 		colID, ok := kc.ColumnsByName[colName]
 		if !ok {
-			log.Printf("[%s] column %q missing for existing card update; skipping", sess.BridgeID, colName)
+			log.Printf("[%s] column %q missing for existing card update; skipping", sess.SessionID, colName)
 			continue
 		}
 		if err := kc.MoveCard(ec.CardID, kc.BoardID, colID, 0); err != nil {
-			log.Printf("[%s] move card %s → %s: %v", sess.BridgeID, ec.CardID, colName, err)
+			log.Printf("[%s] move card %s → %s: %v", sess.SessionID, ec.CardID, colName, err)
 			continue
 		}
 		body := fmt.Sprintf("%s\n\n_classifier @ %s — state=%s_\n",
@@ -366,7 +365,7 @@ func applyExisting(kc *kanbanclient.Client, sess session, report *Report) {
 			body += "**Blocker:** " + ec.Blocker + "\n"
 		}
 		if err := kc.PatchCardBody(ec.CardID, body); err != nil {
-			log.Printf("[%s] patch existing card %s: %v", sess.BridgeID, ec.CardID, err)
+			log.Printf("[%s] patch existing card %s: %v", sess.SessionID, ec.CardID, err)
 		}
 	}
 }
@@ -379,7 +378,7 @@ func applyNew(kc *kanbanclient.Client, sess session, report *Report) {
 			body += "\n\n**Blocker:** " + nt.Blocker
 		}
 		body += fmt.Sprintf("\n\n_created by classifier @ %s · session=%s · state=%s_\n",
-			time.Now().UTC().Format(time.RFC3339), sess.BridgeID, nt.State)
+			time.Now().UTC().Format(time.RFC3339), sess.SessionID, nt.State)
 		args := kanbanclient.CreateCardArgs{
 			ColumnName:   colName,
 			Title:        truncate(nt.Title, 80),
@@ -390,14 +389,14 @@ func applyNew(kc *kanbanclient.Client, sess session, report *Report) {
 		}
 		cardID, err := kc.CreateCard(args)
 		if err != nil {
-			log.Printf("[%s] create new task card: %v", sess.BridgeID, err)
+			log.Printf("[%s] create new task card: %v", sess.SessionID, err)
 			continue
 		}
-		if err := kc.AddCardLink(cardID, cardLinkSession, sess.BridgeID, "classifier"); err != nil {
-			log.Printf("[%s] link new card to session: %v", sess.BridgeID, err)
+		if err := kc.AddCardLink(cardID, cardLinkSession, sess.SessionID, "classifier"); err != nil {
+			log.Printf("[%s] link new card to session: %v", sess.SessionID, err)
 		}
 		if err := kc.AddCardLink(cardID, cardLinkSource, cardSourceClassifier, ""); err != nil {
-			log.Printf("[%s] mark source on new card: %v", sess.BridgeID, err)
+			log.Printf("[%s] mark source on new card: %v", sess.SessionID, err)
 		}
 	}
 }
@@ -458,8 +457,8 @@ func getSession(bridgeURL, id string) (session, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
 		return s, err
 	}
-	if s.BridgeID == "" {
-		s.BridgeID = id
+	if s.SessionID == "" {
+		s.SessionID = id
 	}
 	return s, nil
 }
@@ -494,11 +493,10 @@ func buildDigest(sess session, msgs []bridgeMessage, existingCards []kanbanclien
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "[SESSION META]\n")
-	fmt.Fprintf(&b, "bridge_id: %s\n", sess.BridgeID)
+	fmt.Fprintf(&b, "bridge_id: %s\n", sess.SessionID)
 	fmt.Fprintf(&b, "display_name: %s\n", sess.DisplayName)
 	fmt.Fprintf(&b, "harness: %s\n", sess.Harness)
 	fmt.Fprintf(&b, "source: %s\n", sess.Source)
-	fmt.Fprintf(&b, "client_id: %s\n", sess.ClientID)
 	fmt.Fprintf(&b, "state: %s\n", sess.State)
 	fmt.Fprintf(&b, "created: %s\n", sess.CreatedAt)
 	fmt.Fprintf(&b, "last_message: %s\n", sess.UpdatedAt)

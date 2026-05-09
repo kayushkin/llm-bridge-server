@@ -537,7 +537,6 @@ func buildBridgeInbound(busSessionID, displayName, prompt string, fresh bool) me
 			Harness:     defaultHarness,
 			InstanceID:  defaultInstanceID,
 			DisplayName: displayName,
-			ClientID:    "kanban-dispatcher",
 			Source:      "kanban-dispatcher",
 			SessionType: msg.SessionTypeAutonomous,
 			AutoStart:   true,

@@ -109,7 +109,6 @@ func (e *AgentExecutor) Run(agent, prompt, orchestrator, sessionID string) Resul
 		create = &msg.CreateSessionRequest{
 			Harness:     h,
 			InstanceID:  instanceID,
-			ClientID:    "scheduler",
 			AgentID:     agent,
 			Source:      "scheduler",
 			SessionType: msg.SessionTypeAutonomous,
