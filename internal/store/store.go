@@ -249,6 +249,18 @@ func (s *Store) migrate() error {
 		('renamer','conformance','subagent','healthcheck','classifier','scoper')`)
 	s.db.Exec(`UPDATE sessions SET type = 'interactive'
 		WHERE type = '' AND (purpose = '' OR purpose = 'chat')`)
+	// Backfill origin for legacy rows where it was lazily defaulted to the
+	// purpose value. Origin is meant to be the SERVICE that hosts the
+	// spawning code, not the binary or the kind of session. WHERE origin =
+	// purpose AND purpose IN (...) limits the rewrite to the lazy-defaulted
+	// rows; explicit caller-supplied origins (e.g. healthcheck-set
+	// origin=healthcheck) are left alone.
+	s.db.Exec(`UPDATE sessions SET origin = 'scheduler' WHERE origin = purpose AND purpose IN
+		('autoworker','dispatcher','kanban-dispatcher','scheduled-task','classifier','scoper')`)
+	s.db.Exec(`UPDATE sessions SET origin = 'llm-bridge-server' WHERE origin = purpose AND purpose IN
+		('renamer','conformance')`)
+	s.db.Exec(`UPDATE sessions SET origin = 'inber' WHERE origin = purpose AND purpose = 'harness-watch'`)
+	s.db.Exec(`UPDATE sessions SET origin = 'llm-bridge-claudecode' WHERE origin = purpose AND purpose = 'subagent'`)
 	// Index on harness_session_id must be created after ALTER TABLE migration adds/renames the column.
 	// Drop the legacy non-unique index in favor of a partial UNIQUE one below.
 	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_session_id")
@@ -1376,13 +1388,16 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 
 	// Insert new discovered session with state "idle". session_id mirrors
 	// bridge_id during the dual-write window; type is empty for
-	// discovery-imported sessions (no caller declared one); origin defaults
-	// to the discovered source tag (e.g. "subagent") since the discovering
-	// adapter is acting on behalf of whatever produced the session on disk.
+	// discovery-imported sessions (no caller declared one); origin is the
+	// harness adapter that scanned the on-disk session (e.g. "claude_code"
+	// → "llm-bridge-claudecode"). The original spawner of the underlying
+	// harness session is lost to history — the discovering adapter is the
+	// closest meaningful attribution.
 	bridgeID := fmt.Sprintf("br_%d", time.Now().UnixNano())
+	origin := "llm-bridge-" + strings.ReplaceAll(harness, "_", "")
 	_, err = s.db.Exec(
 		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, purpose, type, origin, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		bridgeID, bridgeID, harnessSessionID, displayName, harness, instanceID, "idle", 0, "", "", "", source, "", source, folderName, createdAt, updatedAt,
+		bridgeID, bridgeID, harnessSessionID, displayName, harness, instanceID, "idle", 0, "", "", "", source, "", origin, folderName, createdAt, updatedAt,
 	)
 	if err != nil {
 		return "", false, err
