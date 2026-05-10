@@ -261,6 +261,12 @@ func (s *Store) migrate() error {
 		('renamer','conformance')`)
 	s.db.Exec(`UPDATE sessions SET origin = 'inber' WHERE origin = purpose AND purpose = 'harness-watch'`)
 	s.db.Exec(`UPDATE sessions SET origin = 'llm-bridge-claudecode' WHERE origin = purpose AND purpose = 'subagent'`)
+	// Legacy interactive sessions: bridge-ui defaults origin='frontend' for
+	// new ones, but pre-rename rows have empty origin. Backfill so the
+	// frontend's chat sessions all attribute to "frontend" (dash/llmux split
+	// is a separate followup if we want it).
+	s.db.Exec(`UPDATE sessions SET origin = 'frontend'
+		WHERE origin = '' AND (purpose = '' OR purpose = 'chat')`)
 	// Index on harness_session_id must be created after ALTER TABLE migration adds/renames the column.
 	// Drop the legacy non-unique index in favor of a partial UNIQUE one below.
 	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_session_id")
