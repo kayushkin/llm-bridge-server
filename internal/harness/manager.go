@@ -178,7 +178,7 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 
 	case msg.EventStream, msg.EventBlock, msg.EventThinking, msg.EventToolCall,
 		msg.EventToolResult, msg.EventPlan, msg.EventApproval:
-		ev.MessageID = m.assignAssistantID(st, hid)
+		ev.MessageID = m.assignAssistantID(st, hid, ev.MessageID)
 		if ev.ClientRequestID == "" {
 			ev.ClientRequestID = st.clientRequestID
 		}
@@ -201,7 +201,7 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 		}
 
 	case msg.EventResult, msg.EventError:
-		ev.MessageID = m.assignAssistantID(st, hid)
+		ev.MessageID = m.assignAssistantID(st, hid, ev.MessageID)
 		if ev.ClientRequestID == "" {
 			ev.ClientRequestID = st.clientRequestID
 		}
@@ -250,7 +250,23 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 
 // assignAssistantID picks the bridge MessageID for an assistant-side event.
 // Caller must hold m.mu.
-func (m *Manager) assignAssistantID(st *sessionMsgState, hid string) string {
+//
+// preStamped is the value already on ev.MessageID before assignment. When
+// non-empty, the adapter has already done the harness_id → bridge_id
+// mapping itself (Phase III.B); we honor its choice and update internal
+// state to match so split-detection and resume-reconciliation stay
+// consistent for any downstream events the adapter doesn't pre-stamp.
+// When empty, fall back to the legacy assign-here behavior.
+func (m *Manager) assignAssistantID(st *sessionMsgState, hid, preStamped string) string {
+	if preStamped != "" {
+		st.bridgeMsgID = preStamped
+		if hid != "" {
+			st.harnessToBridge[hid] = preStamped
+			st.harnessMsgID = hid
+		}
+		return preStamped
+	}
+
 	// Resume reconciliation: if we've seen this harness id before in this
 	// session, reuse the bridge id we minted then. Re-emitted events thus
 	// land back in their original bubble.
