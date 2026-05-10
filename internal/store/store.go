@@ -236,6 +236,19 @@ func (s *Store) migrate() error {
 	s.db.Exec("UPDATE sessions SET origin = purpose WHERE origin = '' AND purpose != ''")
 	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_source")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_purpose ON sessions(purpose)")
+	// Backfill type for legacy rows pre-dating sub-step 3 (when the column
+	// was added). Idempotent: WHERE type = '' guards against overwriting
+	// caller-declared values. The mapping mirrors the well-known purpose
+	// values documented on msg.SessionType. Unknown/new purposes left
+	// empty — graceful failure beats silent misclassification.
+	s.db.Exec(`UPDATE sessions SET type = 'autonomous'
+		WHERE type = '' AND purpose IN
+		('autoworker','dispatcher','kanban-dispatcher','scheduler','scheduled-task','harness-watch')`)
+	s.db.Exec(`UPDATE sessions SET type = 'system'
+		WHERE type = '' AND purpose IN
+		('renamer','conformance','subagent','healthcheck','classifier','scoper')`)
+	s.db.Exec(`UPDATE sessions SET type = 'interactive'
+		WHERE type = '' AND (purpose = '' OR purpose = 'chat')`)
 	// Index on harness_session_id must be created after ALTER TABLE migration adds/renames the column.
 	// Drop the legacy non-unique index in favor of a partial UNIQUE one below.
 	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_session_id")
