@@ -538,7 +538,7 @@ func buildBridgeInbound(busSessionID, displayName, prompt string, fresh bool) me
 			InstanceID:  defaultInstanceID,
 			DisplayName: displayName,
 			Purpose:    "dispatcher",
-			Origin:     "kanban-dispatcher",
+			Origin:     "scheduler",
 			Type:        msg.SessionTypeAutonomous,
 			AutoStart:   true,
 		}

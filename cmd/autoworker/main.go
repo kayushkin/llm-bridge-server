@@ -590,7 +590,7 @@ func publishWorker(nc *natsbus.Client, p providerSpec, prompt string) (string, e
 			InstanceID:  p.InstanceID,
 			DisplayName: fmt.Sprintf("autoworker %s %s", p.Name, now.Format("Jan 2 15:04")),
 			Purpose:    "autoworker",
-			Origin:     "autoworker",
+			Origin:     "scheduler",
 			Type:        msg.SessionTypeAutonomous,
 			AutoStart:   true,
 		},
