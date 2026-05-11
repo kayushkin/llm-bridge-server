@@ -367,13 +367,10 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// the user_message, refuse the send — otherwise the assistant runs against
 	// a prompt that's missing from the durable log (log-store is what the
 	// /messages endpoint reads). Caller can retry safely; the harness has not
-	// seen the message yet.
+	// seen the message yet. BroadcastEvent now writes both stores and returns
+	// the log-store error if it fails.
 	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
 		http.Error(w, fmt.Sprintf("persist user_message: %v", err), http.StatusInternalServerError)
-		return
-	}
-	if err := s.harness.PushEvent(userEvent); err != nil {
-		http.Error(w, fmt.Sprintf("push user_message to log-store: %v", err), http.StatusInternalServerError)
 		return
 	}
 

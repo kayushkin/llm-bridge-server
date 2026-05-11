@@ -254,8 +254,8 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 	prompt := buildRenamerPrompt(target, renamer.SessionID, turns, publicBaseURL(s.cfg.ListenAddr))
 
 	// Mirror handleSendMessage: broadcast the user_message so the bubble
-	// shows up in the renamer's UI/SSE stream, push to log-store, then write
-	// the prompt onto the harness stdin.
+	// shows up in the renamer's UI/SSE stream, then write the prompt onto
+	// the harness stdin. BroadcastEvent now forwards to log-store directly.
 	userEvent := msg.Event{
 		Type:            msg.EventUserMessage,
 		BridgeSessionID: renamer.SessionID,
@@ -264,9 +264,6 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 	}
 	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
 		log.Printf("[renamer] %s: broadcast user_message: %v", renamer.SessionID, err)
-	}
-	if err := s.harness.PushEvent(userEvent); err != nil {
-		log.Printf("[renamer] %s: push to log-store: %v", renamer.SessionID, err)
 	}
 
 	time.Sleep(renamerStartDelay)

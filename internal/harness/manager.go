@@ -702,6 +702,16 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 		return 0, err
 	}
 
+	// Mirror readEvents: bridge-originated events are also durable in
+	// log-store. Without this, hook events / session-state / display-name
+	// events landed in bridge-server's local table but never reached
+	// log-store, causing II.A dual-write parity drift (see audit
+	// 2026-05-11). Errors are returned — callers that don't care wrap and
+	// log; callers that do care (e.g. /send) propagate.
+	if _, err := m.logStore.PushEvent(*ev); err != nil {
+		return rowID, fmt.Errorf("push to log-store: %w", err)
+	}
+
 	// Mirror readEvents: hook events drive the awaiting_resolution →
 	// completed pending map so a freshly-connected client can hydrate the
 	// banner via /sessions/:id/hooks/pending. Required for bridge-emitted
@@ -732,12 +742,6 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 	m.deriveAndBroadcast(bridgeID, ev)
 
 	return rowID, nil
-}
-
-// PushEvent sends an event directly to log-store.
-func (m *Manager) PushEvent(ev msg.Event) error {
-	_, err := m.logStore.PushEvent(ev)
-	return err
 }
 
 // ActiveCount returns the number of running processes.
