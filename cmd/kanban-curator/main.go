@@ -3,12 +3,9 @@
 //
 // Registered as a scheduler shell job running every ~5 minutes. Each tick:
 //
-//  1. Read the adapter's session map (~/.llm-bridge-adapter/sessions.json)
-//     to translate the bus_session_id stored on each card into a bridge
-//     session id.
-//  2. Pull the "Agent runs" board view from kanban-store.
-//  3. For each card in the In Progress column with a bus_session card_link:
-//     - Look up the bridge session state via GET /sessions/{bridge_id}.
+//  1. Pull the "Agent runs" board view from kanban-store.
+//  2. For each card in the In Progress column with a session card_link:
+//     - Look up the bridge session state via GET /sessions/{session_id}.
 //     - completed                          → move to Done   (column has auto_status=done   → noteboard status=done)
 //     - error / aborted / disconnected     → move to Failed (column has auto_status=archived)
 //     - else                               → leave it (idle / running stays In Progress; the watchdog
@@ -21,7 +18,9 @@
 // edit), or if its session can't be located, the curator logs and continues.
 //
 // Fire-and-forget design (matches autoworker): no state file needed; the
-// kanban-store IS the state.
+// kanban-store IS the state. Post session-consolidation (2026-05-09) the
+// session card_link entity_ref is the canonical llm-bridge-server session_id,
+// so no adapter translation step is needed.
 package main
 
 import (
@@ -40,23 +39,22 @@ import (
 )
 
 const (
-	defaultBoardName    = "Agent runs"
-	columnInProgress    = "In Progress"
-	columnDone          = "Done"
-	columnFailed        = "Failed"
-	tagAutoworker       = "autoworker"
-	linkTypeBusSession  = "bus_session"
+	defaultBoardName = "Agent runs"
+	columnInProgress = "In Progress"
+	columnDone       = "Done"
+	columnFailed     = "Failed"
+	tagAutoworker    = "autoworker"
+	linkTypeSession  = "session"
 )
 
 func main() {
 	var (
-		registerFlag  = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit. Honors -board and -job-name.")
-		jobName       = flag.String("job-name", "", "Scheduler job name for -register. Defaults to kanban-curator-tick for the default board, kanban-curator-<slug>-tick otherwise.")
-		dryRun        = flag.Bool("dry-run", false, "Report decisions; do not write to kanban-store.")
-		kanbanURL     = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-		bridgeURL     = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
-		adapterFile   = flag.String("adapter-sessions", envOr("ADAPTER_SESSIONS_FILE", defaultAdapterSessionsPath()), "Path to llm-bridge-adapter sessions.json")
-		boardName     = flag.String("board", defaultBoardName, "Kanban board name to curate")
+		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit. Honors -board and -job-name.")
+		jobName      = flag.String("job-name", "", "Scheduler job name for -register. Defaults to kanban-curator-tick for the default board, kanban-curator-<slug>-tick otherwise.")
+		dryRun       = flag.Bool("dry-run", false, "Report decisions; do not write to kanban-store.")
+		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
+		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
+		boardName    = flag.String("board", defaultBoardName, "Kanban board name to curate")
 	)
 	flag.Parse()
 
@@ -65,11 +63,6 @@ func main() {
 			log.Fatalf("register: %v", err)
 		}
 		return
-	}
-
-	mapping, err := readAdapterSessions(*adapterFile)
-	if err != nil {
-		log.Fatalf("read adapter sessions %s: %v", *adapterFile, err)
 	}
 
 	kc := kanbanclient.New(*kanbanURL)
@@ -120,26 +113,20 @@ func main() {
 			errors++
 			continue
 		}
-		var busSessionID string
+		var sessionID string
 		for _, l := range links {
-			if l.EntityType == linkTypeBusSession {
-				busSessionID = l.EntityRef
+			if l.EntityType == linkTypeSession {
+				sessionID = l.EntityRef
 				break
 			}
 		}
-		if busSessionID == "" {
+		if sessionID == "" {
 			skipped++
 			continue
 		}
-		bridgeID, ok := mapping[busSessionID]
-		if !ok {
-			log.Printf("[%s] no adapter mapping for bus_session=%s — skip", title, busSessionID)
-			skipped++
-			continue
-		}
-		state, ended, err := getSessionState(*bridgeURL, bridgeID)
+		state, ended, err := getSessionState(*bridgeURL, sessionID)
 		if err != nil {
-			log.Printf("[%s] bridge GET /sessions/%s: %v — skip", title, bridgeID, err)
+			log.Printf("[%s] bridge GET /sessions/%s: %v — skip", title, sessionID, err)
 			errors++
 			continue
 		}
@@ -154,7 +141,7 @@ func main() {
 			continue // idle / running / unknown — leave alone
 		}
 
-		log.Printf("[%s] %s → %s (bridge_id=%s)", title, state, targetName, bridgeID)
+		log.Printf("[%s] %s → %s (session_id=%s)", title, state, targetName, sessionID)
 		if *dryRun {
 			continue
 		}
@@ -179,33 +166,11 @@ func main() {
 
 // ============================ helpers ============================
 
-func defaultAdapterSessionsPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".llm-bridge-adapter", "sessions.json")
-}
-
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
 	}
 	return def
-}
-
-// readAdapterSessions parses the adapter's bus_session_id → bridge_id map.
-// File format: a single JSON object {bus_session_id: bridge_id, ...}.
-func readAdapterSessions(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var m map[string]string
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	return m, nil
 }
 
 // getSessionState fetches one session from llm-bridge-server and returns

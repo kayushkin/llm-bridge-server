@@ -76,9 +76,10 @@ type limitsResponse map[string]*providerLimits
 // should host each fired session, plus the time window to gate against.
 //
 // All fires publish to messages.BridgeInboundSubject ("bridge.inbound"); the
-// llm-bridge-adapter creates a new bridge session per unique BusSessionID and
-// maps it to the configured Harness + InstanceID. The resulting session is
-// visible in the dash chat UI under the chosen instance.
+// llm-bridge-adapter passes BusSessionID through as the bridge session_id —
+// post session-consolidation (2026-05-09) the two are the same canonical id.
+// The resulting session is visible in the dash chat UI under the chosen
+// instance.
 type providerSpec struct {
 	Name         string        // "anthropic" / "codex" — key in limitsResponse
 	Harness      msg.Harness   // llm-bridge harness kind (e.g. "claude_code")
@@ -228,7 +229,7 @@ func main() {
 			workerPrompt = buildQueuePrompt(queueCard)
 		}
 
-		busSessionID, err := publishWorker(natsClient, p, workerPrompt)
+		sessionID, err := publishWorker(natsClient, p, workerPrompt)
 		if err != nil {
 			log.Printf("[%s] publish failed: %v", d.provider, err)
 			continue
@@ -238,7 +239,7 @@ func main() {
 			d.provider, p.Harness, p.InstanceID, d.target, d.actual, queueCardLogID(queueCard))
 
 		if queueCard != nil && queueClient != nil {
-			if err := markQueueCardDispatched(queueClient, queueCard, p, busSessionID, now); err != nil {
+			if err := markQueueCardDispatched(queueClient, queueCard, p, sessionID, now); err != nil {
 				log.Printf("[%s] queue: dispatch side-effects failed: %v", d.provider, err)
 			}
 		}
@@ -253,19 +254,19 @@ func main() {
 		if kc != nil {
 			title := fmt.Sprintf("autoworker · %s · %s", p.Name, now.Format("Jan 2 15:04"))
 			body := fmt.Sprintf(
-				"Dispatched by autoworker.\n\n- provider: %s\n- harness: %s\n- instance: %s\n- bus_session_id: `%s`\n- target/actual: %.0f%% / %.0f%%\n",
-				p.Name, p.Harness, p.InstanceID, busSessionID, d.target, d.actual,
+				"Dispatched by autoworker.\n\n- provider: %s\n- harness: %s\n- instance: %s\n- session_id: `%s`\n- target/actual: %.0f%% / %.0f%%\n",
+				p.Name, p.Harness, p.InstanceID, sessionID, d.target, d.actual,
 			)
 			if queueCard != nil {
 				body += fmt.Sprintf("- queue_card: `%s` — %s\n", queueCard.cardID, queueCard.title)
 			}
 			cardID, err := kc.CreateCard(kanbanclient.CreateCardArgs{
-				ColumnName:   kanbanColumnTarget,
-				Title:        title,
-				Body:         body,
-				Tags:         []string{kanbanCardOrigin, p.Name},
-				BusSessionID: busSessionID,
-				Provider:     p.Name,
+				ColumnName: kanbanColumnTarget,
+				Title:      title,
+				Body:       body,
+				Tags:       []string{kanbanCardOrigin, p.Name},
+				SessionID:  sessionID,
+				Provider:   p.Name,
 			})
 			if err != nil {
 				log.Printf("[%s] kanban: create card failed: %v", d.provider, err)
@@ -355,22 +356,22 @@ func queueCardLogID(c *queueCandidate) string {
 }
 
 // markQueueCardDispatched performs the post-publish side-effects: attach a
-// bus_session card link, move the card to In Progress, and append a short
-// dispatch note to the noteboard body so the card carries its own audit trail.
-func markQueueCardDispatched(qc *kanbanclient.Client, cand *queueCandidate, p providerSpec, busSessionID string, now time.Time) error {
+// session card link, move the card to In Progress, and append a short dispatch
+// note to the noteboard body so the card carries its own audit trail.
+func markQueueCardDispatched(qc *kanbanclient.Client, cand *queueCandidate, p providerSpec, sessionID string, now time.Time) error {
 	inProgressID, ok := qc.ColumnsByName[autoworkerQueueColumnInProgress]
 	if !ok {
 		return fmt.Errorf("column %q missing on queue board", autoworkerQueueColumnInProgress)
 	}
-	if err := qc.AddCardLink(cand.cardID, "bus_session", busSessionID, kanbanCardOrigin); err != nil {
-		return fmt.Errorf("add bus_session link: %w", err)
+	if err := qc.AddCardLink(cand.cardID, "session", sessionID, kanbanCardOrigin); err != nil {
+		return fmt.Errorf("add session link: %w", err)
 	}
 	if err := qc.MoveCard(cand.cardID, qc.BoardID, inProgressID, 0); err != nil {
 		return fmt.Errorf("move to In Progress: %w", err)
 	}
 	note := fmt.Sprintf(
-		"\n\n---\n_Dispatched by autoworker at %s — provider=%s harness=%s instance=%s bus_session=`%s`_\n",
-		now.UTC().Format(time.RFC3339), p.Name, p.Harness, p.InstanceID, busSessionID,
+		"\n\n---\n_Dispatched by autoworker at %s — provider=%s harness=%s instance=%s session=`%s`_\n",
+		now.UTC().Format(time.RFC3339), p.Name, p.Harness, p.InstanceID, sessionID,
 	)
 	if err := qc.PatchCardBody(cand.cardID, cand.body+note); err != nil {
 		return fmt.Errorf("patch body: %w", err)
@@ -576,11 +577,12 @@ func fetchLimits() (limitsResponse, error) {
 
 func publishWorker(nc *natsbus.Client, p providerSpec, prompt string) (string, error) {
 	now := time.Now().UTC()
-	// Unique BusSessionID per fire so llm-bridge-adapter creates a new bridge
-	// session each time (mapped into ~/.llm-bridge-adapter/sessions.json).
-	busSessionID := fmt.Sprintf("autoworker-%s-%d", p.Name, now.UnixNano())
+	// Mint the canonical session_id here. Adapter passes BusSessionID through
+	// as bridge-server session_id (see llm-bridge-adapter@73c7cb5), so this
+	// value is also the bridge session_id referenced by kanban session links.
+	sessionID := fmt.Sprintf("autoworker-%s-%d", p.Name, now.UnixNano())
 	in := messages.BridgeInbound{
-		BusSessionID: busSessionID,
+		BusSessionID: sessionID,
 		Agent:        "todo-worker",
 		Orchestrator: p.Orchestrator,
 		Channel:      p.Channel,
@@ -601,7 +603,7 @@ func publishWorker(nc *natsbus.Client, p providerSpec, prompt string) (string, e
 	if err := nc.Publish(messages.BridgeInboundSubject, in); err != nil {
 		return "", err
 	}
-	return busSessionID, nil
+	return sessionID, nil
 }
 
 func loadState() (*state, string, error) {

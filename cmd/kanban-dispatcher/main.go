@@ -7,20 +7,23 @@
 //
 //   Registered as a scheduler shell job running every ~5 minutes. Each tick:
 //
-//     1. Read llm-bridge-adapter's bus_session_id → bridge_id map.
-//     2. Walk the board.
-//     3. For each parent in Goals (with the "scoped" entity_tag):
-//        a. Find Backlog children for that parent (no bus_session link yet).
+//     1. Walk the board.
+//     2. For each parent in Goals (with the "scoped" entity_tag):
+//        a. Find Backlog children for that parent (no session link yet).
 //        b. Group them by their group:<key> tag.
 //        c. For each group, pick the first eligible child:
 //           - Look at sibling cards (same parent, same group) for an idle
 //             session whose last update was within the revive window. If one
-//             exists, REUSE its bus_session_id (publish Send only).
-//           - Otherwise mint a fresh bus_session_id and publish Create+Send.
-//        d. Add a bus_session card_link, move the child to In Progress.
-//     4. Final pass — for each scoped parent, if every child noteboard item
+//             exists, REUSE its session_id (publish Send only).
+//           - Otherwise mint a fresh session_id and publish Create+Send.
+//        d. Add a session card_link, move the child to In Progress.
+//     3. Final pass — for each scoped parent, if every child noteboard item
 //        has status "done" or "archived", move the parent to Done with a
 //        rollup body note.
+//
+// Session IDs are canonical post session-consolidation (2026-05-09): the
+// BridgeInbound.BusSessionID we publish becomes the llm-bridge-server
+// session_id verbatim, so the card_link entity_ref is the deeplink target.
 //
 // Closure of in-progress sub-cards is left to kanban-curator (run with
 // `-board="Task completion loop"` on its own scheduler tick), which moves
@@ -46,6 +49,10 @@ import (
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
+// linkTypeSession is the canonical session card-link entity_type. Pre-2026-05
+// dispatcher writes used "bus_session"; a one-shot migration rewrote those to
+// "session" once bus_session_id became the bridge session_id.
+
 const (
 	defaultBoardName  = "Task completion loop"
 	columnGoals       = "Goals"
@@ -57,7 +64,7 @@ const (
 	tagScoped         = "scoped"
 	tagGroupPrefix    = "group:"
 	linkTypeParent    = "parent_card"
-	linkTypeBusSess   = "bus_session"
+	linkTypeSession   = "session"
 	defaultHarness    = msg.HarnessClaudeCode
 	defaultInstanceID = "inst-cc-local"
 	reviveWindow      = time.Hour
@@ -68,11 +75,10 @@ func main() {
 	var (
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
 		dryRun       = flag.Bool("dry-run", false, "Decide but do not publish or move cards.")
-		boardName    = flag.String("board", defaultBoardName, "Kanban board name to dispatch on.")
-		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
-		adapterFile  = flag.String("adapter-sessions", envOr("ADAPTER_SESSIONS_FILE", defaultAdapterSessionsPath()), "Path to llm-bridge-adapter sessions.json")
-		maxDispatch  = flag.Int("max", maxDispatchPerTick, "Max sub-card dispatches per tick.")
+		boardName   = flag.String("board", defaultBoardName, "Kanban board name to dispatch on.")
+		kanbanURL   = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
+		bridgeURL   = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
+		maxDispatch = flag.Int("max", maxDispatchPerTick, "Max sub-card dispatches per tick.")
 	)
 	flag.Parse()
 
@@ -81,11 +87,6 @@ func main() {
 			log.Fatalf("register: %v", err)
 		}
 		return
-	}
-
-	mapping, err := readAdapterSessions(*adapterFile)
-	if err != nil {
-		log.Fatalf("read adapter sessions %s: %v", *adapterFile, err)
 	}
 
 	kc := kanbanclient.New(*kanbanURL)
@@ -139,28 +140,28 @@ func main() {
 				break
 			}
 			child := g.cards[0] // first in group
-			busSessionID, reused := decideReuse(g, view, mapping, *bridgeURL)
+			sessionID, reused := decideReuse(g, view, *bridgeURL)
 			prompt := buildPrompt(p, child, g.key, reused)
 			displayName := fmt.Sprintf("tcl %s · %s", g.key, time.Now().Format("Jan 2 15:04"))
 
 			if reused == "" {
-				busSessionID = mintBusSessionID(p.cardID, g.key)
+				sessionID = mintSessionID(p.cardID, g.key)
 			}
 
-			log.Printf("[%s] dispatching %q group=%s reuse=%v bus=%s",
-				p.title(), childTitle(child), g.key, reused != "", busSessionID)
+			log.Printf("[%s] dispatching %q group=%s reuse=%v session=%s",
+				p.title(), childTitle(child), g.key, reused != "", sessionID)
 			if *dryRun {
 				dispatched++
 				continue
 			}
 
-			in := buildBridgeInbound(busSessionID, displayName, prompt, reused == "")
+			in := buildBridgeInbound(sessionID, displayName, prompt, reused == "")
 			if err := natsClient.Publish(messages.BridgeInboundSubject, in); err != nil {
 				log.Printf("[%s] nats publish: %v", p.title(), err)
 				continue
 			}
-			if err := kc.AddCardLink(child.Placement.CardID, linkTypeBusSess, busSessionID, "tcl-dispatcher"); err != nil {
-				log.Printf("[%s] add bus_session link: %v", p.title(), err)
+			if err := kc.AddCardLink(child.Placement.CardID, linkTypeSession, sessionID, "tcl-dispatcher"); err != nil {
+				log.Printf("[%s] add session link: %v", p.title(), err)
 				continue
 			}
 			if err := kc.MoveCard(child.Placement.CardID, board.ID, colByName[columnInProgress], 0); err != nil {
@@ -406,10 +407,10 @@ func groupKey(item map[string]any) string {
 // ============================ Revive decision ============================
 
 // decideReuse looks at sibling sub-cards under the same parent (any column,
-// not just Backlog) that share this group's key and have a bus_session link.
+// not just Backlog) that share this group's key and have a session link.
 // If any such session is currently idle and updated within the revive window,
-// returns its bus_session_id; else returns "".
-func decideReuse(g backlogGroup, view *kanbanclient.BoardView, mapping map[string]string, bridgeURL string) (busSessionID string, reused string) {
+// returns its session_id; else returns "".
+func decideReuse(g backlogGroup, view *kanbanclient.BoardView, bridgeURL string) (sessionID string, reused string) {
 	siblings := groupSiblings(view, g.parentID, g.key)
 	now := time.Now()
 	for _, sibling := range siblings {
@@ -421,21 +422,17 @@ func decideReuse(g backlogGroup, view *kanbanclient.BoardView, mapping map[strin
 		if err != nil {
 			continue
 		}
-		var busID string
+		var sid string
 		for _, l := range links {
-			if l.EntityType == linkTypeBusSess {
-				busID = l.EntityRef
+			if l.EntityType == linkTypeSession {
+				sid = l.EntityRef
 				break
 			}
 		}
-		if busID == "" {
+		if sid == "" {
 			continue
 		}
-		bridgeID, ok := mapping[busID]
-		if !ok {
-			continue
-		}
-		state, updatedAt, err := getSessionState(bridgeURL, bridgeID)
+		state, updatedAt, err := getSessionState(bridgeURL, sid)
 		if err != nil {
 			continue
 		}
@@ -449,7 +446,7 @@ func decideReuse(g backlogGroup, view *kanbanclient.BoardView, mapping map[strin
 				}
 			}
 		}
-		return busID, busID
+		return sid, sid
 	}
 	return "", ""
 }
@@ -503,7 +500,7 @@ func fetchLinks(cardID string) ([]kanbanclient.CardLink, error) {
 
 // ============================ Bridge inbound ============================
 
-func mintBusSessionID(parentID, groupKey string) string {
+func mintSessionID(parentID, groupKey string) string {
 	now := time.Now().UTC().UnixNano()
 	safeGroup := strings.ReplaceAll(groupKey, " ", "-")
 	if safeGroup == "" {
@@ -521,9 +518,9 @@ func shortID(id string) string {
 	return id[:8]
 }
 
-func buildBridgeInbound(busSessionID, displayName, prompt string, fresh bool) messages.BridgeInbound {
+func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool) messages.BridgeInbound {
 	in := messages.BridgeInbound{
-		BusSessionID: busSessionID,
+		BusSessionID: sessionID,
 		Agent:        "tcl-worker",
 		Orchestrator: "task-completion-loop",
 		Channel:      "task-completion-loop",
@@ -546,7 +543,7 @@ func buildBridgeInbound(busSessionID, displayName, prompt string, fresh bool) me
 	return in
 }
 
-func buildPrompt(p scopedParent, child kanbanclient.CardView, group string, reusedBusSessionID string) string {
+func buildPrompt(p scopedParent, child kanbanclient.CardView, group string, reusedSessionID string) string {
 	childID := child.Placement.CardID
 	title := childTitle(child)
 	body, _ := child.Item["body"].(string)
@@ -554,7 +551,7 @@ func buildPrompt(p scopedParent, child kanbanclient.CardView, group string, reus
 		body = "(no body — see title)"
 	}
 	header := "You are picking up a sub-task in the **task-completion-loop** workflow."
-	if reusedBusSessionID != "" {
+	if reusedSessionID != "" {
 		header = "Picking up another sub-task in the same group — you already have context from a sibling task in this session."
 	}
 	return fmt.Sprintf(`%s
@@ -618,26 +615,6 @@ func childrenSettlement(kc *kanbanclient.Client, parentID string) (int, int, str
 }
 
 // ============================ HTTP / NATS helpers ============================
-
-func defaultAdapterSessionsPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".llm-bridge-adapter", "sessions.json")
-}
-
-func readAdapterSessions(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var m map[string]string
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	return m, nil
-}
 
 func getSessionState(bridgeURL, sessionID string) (state string, updatedAt string, err error) {
 	url := fmt.Sprintf("%s/sessions/%s", strings.TrimRight(bridgeURL, "/"), sessionID)

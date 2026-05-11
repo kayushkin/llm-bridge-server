@@ -381,12 +381,12 @@ func applyNew(kc *kanbanclient.Client, sess session, report *Report) {
 		body += fmt.Sprintf("\n\n_created by classifier @ %s · session=%s · state=%s_\n",
 			time.Now().UTC().Format(time.RFC3339), sess.SessionID, nt.State)
 		args := kanbanclient.CreateCardArgs{
-			ColumnName:   colName,
-			Title:        truncate(nt.Title, 80),
-			Body:         body,
-			Tags:         []string{cardSourceClassifier, sess.Harness, sess.Purpose},
-			BusSessionID: "",
-			Provider:     "",
+			ColumnName: colName,
+			Title:      truncate(nt.Title, 80),
+			Body:       body,
+			Tags:       []string{cardSourceClassifier, sess.Harness, sess.Purpose},
+			SessionID:  "", // classifier adds its own session link with label "classifier" below
+			Provider:   "",
 		}
 		cardID, err := kc.CreateCard(args)
 		if err != nil {

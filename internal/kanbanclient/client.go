@@ -221,12 +221,12 @@ func (c *Client) GetBoardView(boardID string) (*BoardView, error) {
 
 // CreateCardArgs is the input to CreateCard.
 type CreateCardArgs struct {
-	ColumnName   string
-	Title        string
-	Body         string
-	Tags         []string
-	BusSessionID string // becomes a card_link entity_type=bus_session
-	Provider     string // becomes a card_link entity_type=autoworker_provider
+	ColumnName string
+	Title      string
+	Body       string
+	Tags       []string
+	SessionID  string // becomes a card_link entity_type=session (canonical llm-bridge-server session_id)
+	Provider   string // becomes a card_link entity_type=autoworker_provider
 }
 
 // CreateCard creates a new card on the bound board+column and attaches the
@@ -269,7 +269,7 @@ func (c *Client) CreateCard(a CreateCardArgs) (cardID string, err error) {
 
 	type linkSpec struct{ entityType, entityRef, label string }
 	links := []linkSpec{
-		{"bus_session", a.BusSessionID, "autoworker"},
+		{"session", a.SessionID, "autoworker"},
 		{"autoworker_provider", a.Provider, ""},
 	}
 	for _, l := range links {
