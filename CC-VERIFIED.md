@@ -51,6 +51,39 @@ In a session with no custom agents and no special flags:
 - Subagent invocations get their own cache keys (different prompt prefix), confirmed: subagent's `cache_creation_input_tokens` and `cache_read_input_tokens` populated independently.
 - Verbose mode shows cache stats per turn — useful for debugging.
 
+## PreToolUse hook — updatedInput
+
+Verified 2026-05-11 (CC 2.1.138). The `hookSpecificOutput` response from a
+PreToolUse hook accepts an `updatedInput` field alongside
+`permissionDecision: "allow"`. CC merges that map into the tool input
+before `tool.call()` runs.
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow",
+    "permissionDecisionReason": "user picked Red",
+    "updatedInput": { "questions": [...], "answers": {"Q?": "Red"} }
+  }
+}
+```
+
+**AskUserQuestion contract** (`Oz` in the binary, ElH tool spec): its
+`inputSchema` already includes optional `answers: record(string, string)`,
+and `tool.call({questions, answers}) → {data: {questions, answers}}` —
+the tool *reads* answers from input rather than prompting. Combined with
+its own `checkPermissions` returning `behavior: "ask"`, this means a
+PreToolUse hook that resolves to `allow + updatedInput: {questions,
+answers}` short-circuits the interactive prompt entirely. Live contract
+test on `br_1778535286766174715` (2026-05-11): tool result returned
+"Got it: Red" from the agent in the same turn, no CLI prompt.
+
+This is how the bridge-ui AskUserQuestion banner card delivers human
+selections — the parked-ask `resolve` endpoint carries `updated_input`,
+the prehook handler forwards it inside `hookSpecificOutput`, and CC's
+AskUserQuestion call returns those answers as the tool result.
+
 ## Things to verify when needed (non-blocking)
 
 - Whether `--agents` `model` field is actually honored (test by spawning a subagent that introspects).
