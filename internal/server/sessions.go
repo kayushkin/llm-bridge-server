@@ -136,6 +136,19 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Forensic logging: capture who created this session so we can identify
+	// mystery clients (e.g. agent-driven Playwright runs against dash that
+	// leave behind purposeless "hi" / "say hi" / "test" chats). Logged at
+	// decode time so even rejected requests are visible.
+	log.Printf("[sessions.create] ua=%q referer=%q xff=%q remote=%s harness=%s type=%s purpose=%s origin=%s display_name=%q session_id=%q",
+		r.Header.Get("User-Agent"),
+		r.Header.Get("Referer"),
+		r.Header.Get("X-Forwarded-For"),
+		r.RemoteAddr,
+		req.Harness, req.Type, req.Purpose, req.Origin,
+		req.DisplayName, req.SessionID,
+	)
+
 	h := msg.Harness(req.Harness)
 	if !isValidHarness(h) {
 		http.Error(w, "invalid harness", http.StatusBadRequest)
