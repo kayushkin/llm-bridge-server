@@ -2,6 +2,37 @@
 
 Central HTTP gateway and session server for the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
 
+## Design docs (in this repo)
+
+The cross-cutting design for the harness layer, agent rendering, tool/skill routing, and CLI surface lives at the root of this repo. Read in this order on first contact:
+
+| Doc | Covers |
+|---|---|
+| [`HARNESS-LAYER.md`](./HARNESS-LAYER.md) | The abstraction: `HarnessBridge` interface (`EnsureAgent` / `PrepareSession` / `CleanupAgent`), per-harness implementations, subagent routing (CC `--agents` JSON inline, cross-harness via CLI delegation). |
+| [`TOOL-ROUTING.md`](./TOOL-ROUTING.md) | Routing rule (`native > MCP > CLI > omit`), per-harness native tool catalog, capability registry, skills routing, **end-to-end setup walkthroughs for tools, skills, and agents**. |
+| [`AGENT-MANAGEMENT.md`](./AGENT-MANAGEMENT.md) | Canonical agent shape, the rendering library (`llm-bridge/render`), per-harness rendering (CC: `--agents` JSON, no file), CRUD flows, `/agents` UI vs `/files` debug surface. |
+| [`CLI-SURFACE.md`](./CLI-SURFACE.md) | Model-facing CLI surface. Unified `bridge` binary for cross-cutting capabilities (agent ask, memory, notes, bus, tools, skills); `inber` binary for runtime-specific only. Permission allowlist patterns. |
+| [`CACHE-RULES.md`](./CACHE-RULES.md) | The seven cache-busting rules. What's allowed to bust, what's not, what's outside our control, and the diagnostic flow when caching regresses. |
+| [`CC-VERIFIED.md`](./CC-VERIFIED.md) | Empirical reference for Claude Code 2.1.138 behavior — `--agents`, `--system-prompt` vs `--append`, `--bare`, `--settings`, init event surface. Sources cited from elsewhere in the design. |
+| [`CONTEXT-MIGRATION.md`](./CONTEXT-MIGRATION.md) | Plan to extract inber's per-turn assembly (`engine/turn_*.go`, `conversation/`) into `llm-bridge/assembly/` shared library. Replaces this server's `agents_context.go`. |
+| [`IMPLEMENTATION-ROADMAP.md`](./IMPLEMENTATION-ROADMAP.md) | Sequenced PRs across all affected repos. Critical path P1→P2→P3→P4→P6 (~3-4 weeks for the first end-to-end CC vertical). |
+
+Operational docs:
+
+| Doc | Covers |
+|---|---|
+| [`PTY-MODE.md`](./PTY-MODE.md) | PTY-mode harness operation. |
+| [`TODO-jig-integration.md`](./TODO-jig-integration.md) | jig harness integration TODO list. |
+
+External pointers (not in this repo, referenced by the design):
+
+- `~/repos/inber/docs/cli-tool-surface.md` — `inber` CLI scope (runtime-only since the rescope; cross-harness lives in `CLI-SURFACE.md` here).
+- `~/repos/inber/docs/pro-max-auth.md` — Pro/Max OAuth dual-refresh issue affecting inber's API path. Not specific to the harness layer.
+- `~/repos/agent-store/AGENT-RENDER.md` — stub pointing at `AGENT-MANAGEMENT.md` here.
+
+---
+
+
 Spawns harness bridges as subprocesses, manages their lifecycle, and streams canonical `msg.Event` output to clients over SSE. Your application connects to this server and gets a uniform API regardless of which agent is running behind the harness.
 
 ```
