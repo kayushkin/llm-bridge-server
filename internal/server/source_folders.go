@@ -32,7 +32,7 @@ func (s *Server) handleListSourceFolders(w http.ResponseWriter, r *http.Request)
 	seen := make(map[string]bool)
 	for src, folder := range overrides {
 		out = append(out, msg.SourceFolderMapping{
-			Source:     src,
+			Purpose:    src,
 			FolderName: folder,
 			Default:    false,
 			UpdatedAt:  updatedAts[src],
@@ -44,12 +44,12 @@ func (s *Server) handleListSourceFolders(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		out = append(out, msg.SourceFolderMapping{
-			Source:     src,
+			Purpose:    src,
 			FolderName: folder,
 			Default:    true,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Source < out[j].Source })
+	sort.Slice(out, func(i, j int) bool { return out[i].Purpose < out[j].Purpose })
 
 	writeJSON(w, out)
 }
@@ -134,7 +134,7 @@ func (s *Server) handlePutSourceFolder(w http.ResponseWriter, r *http.Request) {
 
 	result := msg.SourceFolderApplyResult{
 		Mapping: msg.SourceFolderMapping{
-			Source:     source,
+			Purpose:    source,
 			FolderName: folder,
 			Default:    false,
 		},
