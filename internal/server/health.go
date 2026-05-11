@@ -209,10 +209,10 @@ func (s *Server) handleHarnessAgents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, a := range expanded {
-			if a.Orchestrator != string(name) || !a.Enabled {
+			if a.Harness != string(name) || !a.Enabled {
 				continue
 			}
-			id := a.OrchestratorName
+			id := a.HarnessName
 			if id == "" {
 				id = a.Slug
 			}
