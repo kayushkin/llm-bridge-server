@@ -23,7 +23,14 @@ func SeedV1Rules() []Rule {
 		seed("seed-v1-allow-Grep", "Grep", "", OutcomeAllow, 100, "default seed: read-only tool"),
 		seed("seed-v1-allow-LS", "LS", "", OutcomeAllow, 100, "default seed: read-only tool"),
 		seed("seed-v1-allow-TodoWrite", "TodoWrite", "", OutcomeAllow, 100, "default seed: in-process task list"),
-		seed("seed-v1-allow-AskUserQuestion", "AskUserQuestion", "", OutcomeAllow, 100, "default seed: prompts the user"),
+		// AskUserQuestion intentionally falls through to ask. CC's own
+		// checkPermissions returns ask for this tool, and bridge-ui parks
+		// the awaiting_resolution event so the human can pick answers
+		// directly in the UI. The resolve carries {questions, answers} as
+		// updatedInput; CC's tool.call() short-circuits on the prefilled
+		// answers without ever invoking the interactive prompt. An auto-
+		// allow here would deliver an empty input to CC and result in the
+		// CLI's no-TTY auto-decline ("User declined to answer questions").
 		seed("seed-v1-allow-WebSearch", "WebSearch", "", OutcomeAllow, 100, "default seed: read-only"),
 
 		// --- Bash atom safelist — common harmless commands ---
