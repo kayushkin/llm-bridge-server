@@ -156,7 +156,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 
 	switch decision.Behavior {
 	case "allow":
-		writeHookAllow(w, decision.Message)
+		writeHookAllowWithInput(w, decision.Message, decision.UpdatedInput)
 	default:
 		writeHookDeny(w, decision.Message)
 	}
@@ -194,23 +194,37 @@ func (s *Server) broadcastPermissionResolved(bridgeID, requestID string, d permi
 // permissionDecision and acts accordingly; permissionDecisionReason is
 // surfaced to the model on deny and shown in CC's output on allow.
 func writeHookAllow(w http.ResponseWriter, reason string) {
-	writeHookDecision(w, "allow", reason)
+	writeHookDecision(w, "allow", reason, nil)
+}
+
+// writeHookAllowWithInput is the variant the parked-ask resolve path uses
+// when the human selected updatedInput along with an allow verdict. CC's
+// PreToolUse hookSpecificOutput contract accepts an `updatedInput` field
+// alongside `permissionDecision: "allow"`; the tool's input is replaced
+// with the merged value before its call() executes. AskUserQuestion uses
+// this to receive prefilled answers without ever prompting the CLI user.
+func writeHookAllowWithInput(w http.ResponseWriter, reason string, updatedInput json.RawMessage) {
+	writeHookDecision(w, "allow", reason, updatedInput)
 }
 
 func writeHookDeny(w http.ResponseWriter, reason string) {
-	writeHookDecision(w, "deny", reason)
+	writeHookDecision(w, "deny", reason, nil)
 }
 
 func writeHookAsk(w http.ResponseWriter, reason string) {
-	writeHookDecision(w, "ask", reason)
+	writeHookDecision(w, "ask", reason, nil)
 }
 
-func writeHookDecision(w http.ResponseWriter, decision, reason string) {
+func writeHookDecision(w http.ResponseWriter, decision, reason string, updatedInput json.RawMessage) {
+	hookOut := map[string]any{
+		"hookEventName":            "PreToolUse",
+		"permissionDecision":       decision,
+		"permissionDecisionReason": reason,
+	}
+	if len(updatedInput) > 0 {
+		hookOut["updatedInput"] = updatedInput
+	}
 	writeJSON(w, map[string]any{
-		"hookSpecificOutput": map[string]any{
-			"hookEventName":            "PreToolUse",
-			"permissionDecision":       decision,
-			"permissionDecisionReason": reason,
-		},
+		"hookSpecificOutput": hookOut,
 	})
 }

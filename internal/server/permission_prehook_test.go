@@ -23,7 +23,7 @@ func TestWriteHookDecision(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			writeHookDecision(rec, tc.decision, tc.reason)
+			writeHookDecision(rec, tc.decision, tc.reason, nil)
 
 			if got := rec.Header().Get("Content-Type"); got != "application/json" {
 				t.Errorf("Content-Type = %q, want application/json", got)
@@ -31,9 +31,10 @@ func TestWriteHookDecision(t *testing.T) {
 
 			var got struct {
 				HookSpecificOutput struct {
-					HookEventName            string `json:"hookEventName"`
-					PermissionDecision       string `json:"permissionDecision"`
-					PermissionDecisionReason string `json:"permissionDecisionReason"`
+					HookEventName            string          `json:"hookEventName"`
+					PermissionDecision       string          `json:"permissionDecision"`
+					PermissionDecisionReason string          `json:"permissionDecisionReason"`
+					UpdatedInput             json.RawMessage `json:"updatedInput"`
 				} `json:"hookSpecificOutput"`
 			}
 			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
@@ -48,6 +49,48 @@ func TestWriteHookDecision(t *testing.T) {
 			if got.HookSpecificOutput.PermissionDecisionReason != tc.reason {
 				t.Errorf("permissionDecisionReason = %q, want %q", got.HookSpecificOutput.PermissionDecisionReason, tc.reason)
 			}
+			if len(got.HookSpecificOutput.UpdatedInput) != 0 {
+				t.Errorf("updatedInput = %s, want absent when not provided", string(got.HookSpecificOutput.UpdatedInput))
+			}
 		})
+	}
+}
+
+// TestWriteHookDecisionWithUpdatedInput verifies that a non-nil
+// updatedInput is forwarded inside hookSpecificOutput. AskUserQuestion's
+// answer flow depends on this: the parked-ask resolve carries {answers:…}
+// as updatedInput, CC merges it into the tool input, and the tool's call()
+// returns those answers without ever invoking the interactive prompt.
+func TestWriteHookDecisionWithUpdatedInput(t *testing.T) {
+	rec := httptest.NewRecorder()
+	updated := json.RawMessage(`{"questions":[{"question":"Which color?"}],"answers":{"Which color?":"Red"}}`)
+	writeHookDecision(rec, "allow", "user picked Red", updated)
+
+	var got struct {
+		HookSpecificOutput struct {
+			HookEventName            string          `json:"hookEventName"`
+			PermissionDecision       string          `json:"permissionDecision"`
+			PermissionDecisionReason string          `json:"permissionDecisionReason"`
+			UpdatedInput             json.RawMessage `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response body unmarshal: %v\nbody: %s", err, rec.Body.String())
+	}
+	if got.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Errorf("permissionDecision = %q, want allow", got.HookSpecificOutput.PermissionDecision)
+	}
+	// Compare as JSON values, not byte-equal — the encoding may reorder keys.
+	var want, have any
+	if err := json.Unmarshal(updated, &want); err != nil {
+		t.Fatalf("unmarshal expected updatedInput: %v", err)
+	}
+	if err := json.Unmarshal(got.HookSpecificOutput.UpdatedInput, &have); err != nil {
+		t.Fatalf("unmarshal received updatedInput: %v", err)
+	}
+	wantJSON, _ := json.Marshal(want)
+	haveJSON, _ := json.Marshal(have)
+	if string(wantJSON) != string(haveJSON) {
+		t.Errorf("updatedInput mismatch:\nwant: %s\nhave: %s", string(wantJSON), string(haveJSON))
 	}
 }
