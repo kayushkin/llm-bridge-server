@@ -1470,9 +1470,12 @@ func (s *Store) DeleteSourceFolder(source string) error {
 // ApplySourceFolder rebuckets sessions tagged with `source` whose folder_name
 // is currently empty or equal to oldFolder, setting it to newFolder. Manual
 // moves to any other folder are preserved. Returns the number of rows updated.
+// The `source` parameter matches against the sessions.purpose column — the
+// source_folders table and this API still use "source" naming (vestigial,
+// see migrate()), but the session column was renamed to purpose in f03b058.
 func (s *Store) ApplySourceFolder(source, oldFolder, newFolder string) (int64, error) {
 	res, err := s.db.Exec(
-		`UPDATE sessions SET folder_name=?, updated_at=? WHERE source=? AND (folder_name='' OR folder_name=?)`,
+		`UPDATE sessions SET folder_name=?, updated_at=? WHERE purpose=? AND (folder_name='' OR folder_name=?)`,
 		newFolder, time.Now().UTC(), source, oldFolder,
 	)
 	if err != nil {
