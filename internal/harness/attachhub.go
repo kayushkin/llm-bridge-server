@@ -1,6 +1,8 @@
 package harness
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log"
@@ -28,6 +30,14 @@ type AttachHub struct {
 	pp       *PTYProcess
 	bridgeID string
 	ringCap  int
+
+	// attachToken gates the WebSocket upgrade. Minted once at hub
+	// construction and immutable for the hub's lifetime; clients pass it
+	// as ?token=… on the attach URL. In-memory only — when the pty
+	// dies and the hub is dropped, the token is unreachable, so no
+	// further attaches are possible against a session whose process is
+	// gone. See PTY-MODE.md "Auth" for the chosen posture.
+	attachToken string
 
 	mu       sync.Mutex
 	ring     []byte // grows up to ringCap, then operates as circular
@@ -67,16 +77,35 @@ func NewAttachHub(pp *PTYProcess, ringBufferBytes int) *AttachHub {
 		ringBufferBytes = defaultPTYRingBufferBytes
 	}
 	hub := &AttachHub{
-		pp:       pp,
-		bridgeID: pp.SessionID(),
-		ringCap:  ringBufferBytes,
-		lastSize: pty.Winsize{Rows: 24, Cols: 80},
-		clients:  make(map[*AttachClient]struct{}),
-		closed:   make(chan struct{}),
+		pp:          pp,
+		bridgeID:    pp.SessionID(),
+		ringCap:     ringBufferBytes,
+		attachToken: mintAttachToken(),
+		lastSize:    pty.Winsize{Rows: 24, Cols: 80},
+		clients:     make(map[*AttachClient]struct{}),
+		closed:      make(chan struct{}),
 	}
 	go hub.readPump()
 	go hub.watchExit()
 	return hub
+}
+
+// mintAttachToken returns a 32-hex-char (128-bit) random token. Panics if
+// the crypto RNG fails — that's an unrecoverable environmental error and
+// silently falling back to a weaker source would defeat the auth posture.
+func mintAttachToken() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("harness: attach token rand.Read: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// Token returns the per-hub attach token. The handler compares this
+// against the ?token= query string using a constant-time compare before
+// upgrading. Empty only on hubs constructed for tests via reflection.
+func (h *AttachHub) Token() string {
+	return h.attachToken
 }
 
 // Closed reports whether the hub has shut down (pty exited or fd closed).

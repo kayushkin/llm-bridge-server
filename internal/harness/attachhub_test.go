@@ -119,6 +119,26 @@ func TestAttachHub_MultiReaderSingleWriter(t *testing.T) {
 	}
 }
 
+// TestAttachHub_Token verifies that NewAttachHub mints a non-empty,
+// 32-hex-char attach token and that two hubs get distinct tokens. The
+// token gates /sessions/{id}/attach upgrades; an empty or shared token
+// would let any client attach to any pty session.
+func TestAttachHub_Token(t *testing.T) {
+	th1 := newTestHarness(t)
+	th2 := newTestHarness(t)
+	hub1 := NewAttachHub(th1.pp, 4096)
+	hub2 := NewAttachHub(th2.pp, 4096)
+
+	tok1 := hub1.Token()
+	tok2 := hub2.Token()
+	if len(tok1) != 32 {
+		t.Errorf("hub1 token length = %d, want 32 hex chars", len(tok1))
+	}
+	if tok1 == tok2 {
+		t.Errorf("hubs share token %q — must be per-hub", tok1)
+	}
+}
+
 // TestAttachHub_WriterPromotion verifies that detaching the writer
 // promotes the next remaining reader to writer so the session stays
 // usable. Important for the "writer disconnects, reader stays attached"

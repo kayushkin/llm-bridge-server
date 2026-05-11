@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log"
@@ -43,6 +44,9 @@ type attachControl struct {
 	Signal string `json:"signal,omitempty"`
 	Rows   uint16 `json:"rows,omitempty"`
 	Cols   uint16 `json:"cols,omitempty"`
+	// Role is "writer" or "reader". Server-emitted on attach so the UI
+	// can show a "read-only" affordance for non-writer observers.
+	Role string `json:"role,omitempty"`
 }
 
 // handleAttachSession upgrades to a WebSocket and joins the session's
@@ -67,6 +71,18 @@ func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-hub attach token: minted in NewAttachHub, surfaced to the
+	// browser in the POST /sessions response. Constant-time compare so
+	// the validation path doesn't leak token prefix length via timing.
+	// Reject before upgrading so a bad token gets an HTTP 401, not a
+	// WebSocket close.
+	got := r.URL.Query().Get("token")
+	want := hub.Token()
+	if want == "" || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		http.Error(w, "invalid attach token", http.StatusUnauthorized)
+		return
+	}
+
 	conn, err := attachUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[attach %s] upgrade: %v", bridgeID, err)
@@ -87,6 +103,21 @@ func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer hub.Detach(client)
+
+	// Announce role before any other traffic. First attacher is the
+	// writer (owns stdin + resize); later attachers are readers whose
+	// input frames are silently dropped server-side. The UI uses this
+	// to show a "read-only" affordance and to skip wiring up keystroke
+	// forwarding for reader clients.
+	role := "reader"
+	if hub.IsWriter(client) {
+		role = "writer"
+	}
+	if data, err := json.Marshal(attachControl{Type: "role", Role: role}); err == nil {
+		if werr := conn.WriteMessage(websocket.TextMessage, data); werr != nil {
+			return
+		}
+	}
 
 	// Replay the ring buffer first so the client paints the current
 	// screen before any new output arrives. Sent as one binary frame —

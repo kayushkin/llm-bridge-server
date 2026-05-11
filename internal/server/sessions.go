@@ -223,7 +223,27 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusCreated)
+
+	// PTY sessions need an attach token so the browser can hand it to the
+	// /attach WS upgrade. The token lives only on the in-memory AttachHub
+	// (it dies with the pty), so we serialize it alongside the persisted
+	// session via an inline-embedded wrapper rather than adding a transient
+	// field to ManagedSession.
+	if sess.Mode == msg.SessionModePTY {
+		if hub := s.harness.AttachHubFor(sess.SessionID); hub != nil {
+			writeJSON(w, createSessionResponse{Session: sess, AttachToken: hub.Token()})
+			return
+		}
+	}
 	writeJSON(w, sess)
+}
+
+// createSessionResponse is the JSON shape returned by POST /sessions. It
+// embeds *store.Session so existing fields are unchanged for events-mode
+// callers; AttachToken is set only for pty sessions that started cleanly.
+type createSessionResponse struct {
+	*store.Session
+	AttachToken string `json:"attach_token,omitempty"`
 }
 
 // httpErr carries a message and the HTTP status to return.

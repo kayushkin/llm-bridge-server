@@ -61,11 +61,13 @@ This bit is also surfaced over HTTP at `GET /harnesses/{name}/capabilities` — 
 ### Attach endpoint
 
 ```
-GET /sessions/{id}/attach
+GET /sessions/{id}/attach?token=<attach_token>
 Upgrade: websocket
 ```
 
-Bidirectional binary WebSocket. Reuses the bearer-token auth pattern already established for `/api/runner/ws` (`runner_ws.go:45`).
+Bidirectional binary WebSocket. Auth is a per-session attach token (32 hex chars, 128 bits of entropy) minted at hub construction and returned in the `POST /sessions` response as `attach_token` for pty sessions. Comparison is constant-time; a missing or wrong token returns `401 Unauthorized` before the upgrade. The token lives only on the in-memory `AttachHub` — when the pty exits and the hub is dropped, the token is unreachable and no further attaches succeed against that session.
+
+Browser-facing path: dash/llmux fetch the token from the create-session response, hold it in memory, and pass it as the `?token=` query parameter on the WS URL (`Authorization` headers can't be set on WebSocket handshakes from `WebSocket` in browsers, hence the query string).
 
 **Wire format** — every WebSocket frame is a length-prefixed control envelope so we can interleave terminal bytes with control messages (resize, signal, etc.). Concrete shape `[OPEN]`:
 
@@ -80,13 +82,17 @@ Control messages (sent as text frames):
 ```json
 {"type":"resize","rows":40,"cols":120}
 {"type":"signal","signal":"SIGINT"}
+{"type":"close"}
 ```
 
 Server → client only:
 
 ```json
+{"type":"role","role":"writer"}    // or "reader" — sent once, immediately after attach, before the ring-buffer replay
 {"type":"exit","code":0,"signal":""}
 ```
+
+Clients should treat the `role` frame as the signal that the attach is live and decide whether to wire up keystroke forwarding (writers) or render a "read-only" affordance (readers).
 
 ### Multiplexing
 
@@ -157,7 +163,7 @@ Children are scoped so each can be finished by an unattended session. Order is r
 
 - `[OPEN]` Wire format — option C (text=JSON, binary=pty bytes) is the recommendation but not yet ratified. Can be revisited in child #2.
 - `[OPEN]` Should pty mode be allowed on remote/SSH harnesses? In principle yes (allocate pty on the remote side), but it adds a forwarding hop. Defer; treat as `false` from `SupportsPTY()` on remote-spawned sessions in v1.
-- `[OPEN]` Auth — current sessions have no per-session token. PTY attach handing someone full keystroke access is more sensitive than reading SSE. Either gate `/sessions/{id}/attach` behind the existing runner bearer token, or introduce per-session attach tokens. Lean: bearer token in v1, per-session token if/when this becomes user-facing.
+- ~~`[OPEN]` Auth — current sessions have no per-session token.~~ Resolved 2026-05-10: per-session attach token (128-bit hex, in-memory on the AttachHub, returned in the `POST /sessions` response, passed as `?token=` on the WS upgrade). Chosen over a shared admin secret because the token dies with the pty — leaking one session's token can't be replayed against a different session, and there's no env-var rotation step. See `internal/harness/attachhub.go` `mintAttachToken` and `internal/server/attach.go` token check.
 - ~~`[OPEN]` Buffer size for late-attach replay — 64KB is a guess. Make it configurable; tune later.~~ Resolved in child 3: `LLMBRIDGE_PTY_RING_BUFFER_BYTES` env var, defaults to 65536.
 
 ## Out of scope, but worth noting

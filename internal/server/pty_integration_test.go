@@ -56,10 +56,16 @@ func TestPTYIntegration_ClaudeCode_RoundTrip(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 
-	bridgeID := createPTYSession(t, ts.URL, instID)
+	bridgeID, attachToken := createPTYSession(t, ts.URL, instID)
 
-	conn := dialAttach(t, ts.URL, bridgeID)
+	conn := dialAttach(t, ts.URL, bridgeID, attachToken)
 	t.Cleanup(func() { _ = conn.Close() })
+
+	// First frame after attach MUST be the role announcement (server-emitted
+	// before the ring-buffer replay). On a fresh single-client attach this
+	// is always "writer"; the server-side promotion logic is exercised by
+	// attachhub_test.go.
+	expectRoleFrame(t, conn, "writer")
 
 	// Send a keystroke immediately. Claude's TUI takes several seconds
 	// to come up and may not paint a banner until something nudges it,
@@ -134,9 +140,9 @@ func TestPTYIntegration_ClaudeCode_RoundTrip(t *testing.T) {
 }
 
 // createPTYSession POSTs a pty-mode session with auto_start and returns
-// its bridge id. Fails the test on any non-201 response so callers can
-// treat the result as live.
-func createPTYSession(t *testing.T, baseURL, instID string) string {
+// its bridge id along with the per-session attach token. Fails the test
+// on any non-201 response so callers can treat the result as live.
+func createPTYSession(t *testing.T, baseURL, instID string) (string, string) {
 	t.Helper()
 	body := msg.CreateSessionRequest{
 		Harness:    msg.HarnessClaudeCode,
@@ -157,7 +163,13 @@ func createPTYSession(t *testing.T, baseURL, instID string) string {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("POST /sessions status = %d: %s", resp.StatusCode, b)
 	}
-	var sess msg.ManagedSession
+	// Decode into a flexible struct so we can read both the canonical
+	// ManagedSession fields and the pty-only attach_token sibling without
+	// adding a transient field to ManagedSession itself.
+	var sess struct {
+		msg.ManagedSession
+		AttachToken string `json:"attach_token"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&sess); err != nil {
 		t.Fatalf("decode session: %v", err)
 	}
@@ -167,12 +179,17 @@ func createPTYSession(t *testing.T, baseURL, instID string) string {
 	if sess.State != string(msg.SessionRunning) {
 		t.Fatalf("session state = %q, want running (auto_start)", sess.State)
 	}
-	return sess.SessionID
+	if sess.AttachToken == "" {
+		t.Fatalf("attach_token missing in pty create response")
+	}
+	return sess.SessionID, sess.AttachToken
 }
 
 // dialAttach upgrades a fresh WebSocket against /sessions/{id}/attach,
-// rewriting the http(s) test-server URL into ws(s).
-func dialAttach(t *testing.T, baseURL, bridgeID string) *websocket.Conn {
+// rewriting the http(s) test-server URL into ws(s). The attach token
+// goes on the query string — that's the only browser-compatible auth
+// channel for WebSockets and the only path the server accepts.
+func dialAttach(t *testing.T, baseURL, bridgeID, attachToken string) *websocket.Conn {
 	t.Helper()
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -187,6 +204,9 @@ func dialAttach(t *testing.T, baseURL, bridgeID string) *websocket.Conn {
 		t.Fatalf("unexpected scheme %q", u.Scheme)
 	}
 	u.Path = "/sessions/" + bridgeID + "/attach"
+	q := u.Query()
+	q.Set("token", attachToken)
+	u.RawQuery = q.Encode()
 
 	dialer := *websocket.DefaultDialer
 	dialer.HandshakeTimeout = 10 * time.Second
@@ -197,6 +217,37 @@ func dialAttach(t *testing.T, baseURL, bridgeID string) *websocket.Conn {
 		t.Fatalf("ws dial %s: %v", u.String(), err)
 	}
 	return conn
+}
+
+// expectRoleFrame reads the next WS frame and fails the test unless it's
+// the {"type":"role","role":wantRole} announcement. Run immediately after
+// attach so we don't accidentally consume the ring-buffer replay frame.
+func expectRoleFrame(t *testing.T, conn *websocket.Conn, wantRole string) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	mt, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read role frame: %v", err)
+	}
+	if mt != websocket.TextMessage {
+		t.Fatalf("first frame type = %d, want TextMessage (role announcement)", mt)
+	}
+	var ctrl struct {
+		Type string `json:"type"`
+		Role string `json:"role"`
+	}
+	if err := json.Unmarshal(payload, &ctrl); err != nil {
+		t.Fatalf("parse role frame %q: %v", payload, err)
+	}
+	if ctrl.Type != "role" || ctrl.Role != wantRole {
+		t.Fatalf("first frame = %s, want type=role role=%s", payload, wantRole)
+	}
+	// Clear the deadline so subsequent reads use the helpers' own deadlines.
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear read deadline: %v", err)
+	}
 }
 
 // awaitClaudeTUI reads message frames until cumulative pty output
