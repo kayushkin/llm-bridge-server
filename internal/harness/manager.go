@@ -120,11 +120,15 @@ func (m *Manager) loadMsgState(bridgeID string) *sessionMsgState {
 	// Recover in-flight turn state so events emitted after a process restart
 	// get stamped with the same TurnID/MessageID as events from before the
 	// restart, instead of being left unstamped until the next user_message.
-	if turn, err := m.store.RecoverInFlightTurn(bridgeID); err == nil && turn != nil {
+	// Reads log-store (Phase II.A cutover); bridge-server's local events
+	// table is still dual-written but no longer the source for this query.
+	if turn, err := m.RecoverInFlightTurn(bridgeID); err == nil && turn != nil {
 		st.turnID = turn.TurnID
 		st.clientRequestID = turn.ClientRequestID
 		st.bridgeMsgID = turn.BridgeMessageID
 		st.harnessMsgID = turn.HarnessMessageID
+	} else if err != nil {
+		log.Printf("[harness] RecoverInFlightTurn %s: %v", bridgeID, err)
 	}
 	m.msgState[bridgeID] = st
 	return st
@@ -742,6 +746,162 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 	m.deriveAndBroadcast(bridgeID, ev)
 
 	return rowID, nil
+}
+
+// RecoverInFlightTurn reads log-store to reconstruct turn-level state for a
+// session whose process is restarting. Replaces the legacy
+// store.RecoverInFlightTurn local-DB query as part of Phase II.A cutover.
+// Returns (nil, nil) when no turn is in flight; errors propagate.
+func (m *Manager) RecoverInFlightTurn(bridgeID string) (*store.InFlightTurnState, error) {
+	ts, err := m.logStore.GetTurnState(bridgeID)
+	if err != nil {
+		return nil, fmt.Errorf("turn-state: %w", err)
+	}
+	if !ts.InFlight || ts.LastUserMessageEventID == 0 {
+		return nil, nil
+	}
+
+	userEvents, err := m.logStore.ListEvents(bridgeID, 0, []string{"user_message"})
+	if err != nil {
+		return nil, fmt.Errorf("user_message events: %w", err)
+	}
+	if len(userEvents) == 0 {
+		return nil, nil
+	}
+	var userEv msg.Event
+	if err := json.Unmarshal(userEvents[len(userEvents)-1], &userEv); err != nil {
+		return nil, fmt.Errorf("decode user_message: %w", err)
+	}
+	if userEv.TurnID == "" {
+		return nil, nil
+	}
+	st := &store.InFlightTurnState{
+		TurnID:          userEv.TurnID,
+		ClientRequestID: userEv.ClientRequestID,
+	}
+
+	assistTypes := []string{"block", "stream", "thinking", "tool_call", "tool_result", "plan", "approval", "result"}
+	assistEvents, err := m.logStore.ListEvents(bridgeID, int64(ts.LastUserMessageEventID), assistTypes)
+	if err != nil {
+		return nil, fmt.Errorf("assistant events: %w", err)
+	}
+	for i := len(assistEvents) - 1; i >= 0; i-- {
+		var e msg.Event
+		if err := json.Unmarshal(assistEvents[i], &e); err != nil {
+			continue
+		}
+		if e.MessageID != "" {
+			st.BridgeMessageID = e.MessageID
+			st.HarnessMessageID = e.HarnessMessageID
+			break
+		}
+	}
+	return st, nil
+}
+
+// PendingTurnMessage returns the text of the most recent user_message when no
+// terminator follows it. Replaces store.PendingTurnMessage's local-DB query.
+func (m *Manager) PendingTurnMessage(bridgeID string) (string, bool, error) {
+	ts, err := m.logStore.GetTurnState(bridgeID)
+	if err != nil {
+		return "", false, fmt.Errorf("turn-state: %w", err)
+	}
+	if !ts.InFlight || ts.LastUserMessageEventID == 0 {
+		return "", false, nil
+	}
+	events, err := m.logStore.ListEvents(bridgeID, 0, []string{"user_message"})
+	if err != nil {
+		return "", false, fmt.Errorf("user_message events: %w", err)
+	}
+	if len(events) == 0 {
+		return "", false, nil
+	}
+	var ev msg.Event
+	if err := json.Unmarshal(events[len(events)-1], &ev); err != nil {
+		return "", false, fmt.Errorf("decode user_message: %w", err)
+	}
+	if ev.Result == nil {
+		return "", false, nil
+	}
+	return ev.Result.Text, true, nil
+}
+
+// RecentTurnTexts pairs user_message events with following result events to
+// produce up to limit recent (user, assistant) text pairs, oldest first.
+// Replaces store.RecentTurnTexts.
+func (m *Manager) RecentTurnTexts(bridgeID string, limit int) ([]store.TurnText, error) {
+	events, err := m.logStore.ListEvents(bridgeID, 0, []string{"user_message", "result"})
+	if err != nil {
+		return nil, fmt.Errorf("events: %w", err)
+	}
+	var turns []store.TurnText
+	var pending *store.TurnText
+	for _, raw := range events {
+		var ev msg.Event
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			continue
+		}
+		text := ""
+		if ev.Result != nil {
+			text = ev.Result.Text
+		}
+		text = truncateRunes(text, 2000)
+		if ev.Type == msg.EventUserMessage {
+			if pending != nil {
+				turns = append(turns, *pending)
+			}
+			pending = &store.TurnText{User: text}
+			continue
+		}
+		if pending == nil {
+			pending = &store.TurnText{Assistant: text}
+		} else {
+			pending.Assistant = text
+		}
+		turns = append(turns, *pending)
+		pending = nil
+	}
+	if pending != nil {
+		turns = append(turns, *pending)
+	}
+	if limit > 0 && len(turns) > limit {
+		turns = turns[len(turns)-limit:]
+	}
+	return turns, nil
+}
+
+// ListToolCallInputs returns the raw tool_call.input JSON for every tool_call
+// in the session, oldest first. Empty/null inputs are skipped. Replaces
+// store.ListToolCallInputs.
+func (m *Manager) ListToolCallInputs(bridgeID string) ([]json.RawMessage, error) {
+	events, err := m.logStore.ListEvents(bridgeID, 0, []string{"tool_call"})
+	if err != nil {
+		return nil, fmt.Errorf("tool_call events: %w", err)
+	}
+	out := make([]json.RawMessage, 0, len(events))
+	for _, raw := range events {
+		var holder struct {
+			ToolCall struct {
+				Input json.RawMessage `json:"input"`
+			} `json:"tool_call"`
+		}
+		if err := json.Unmarshal(raw, &holder); err != nil {
+			continue
+		}
+		if len(holder.ToolCall.Input) == 0 || string(holder.ToolCall.Input) == "null" {
+			continue
+		}
+		out = append(out, holder.ToolCall.Input)
+	}
+	return out, nil
+}
+
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
 
 // ActiveCount returns the number of running processes.

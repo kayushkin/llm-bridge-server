@@ -168,7 +168,7 @@ func (s *Server) maybeAutoRename(bridgeID string) {
 		return
 	}
 
-	turns, err := s.store.RecentTurnTexts(bridgeID, recentTurnsForRename)
+	turns, err := s.harness.RecentTurnTexts(bridgeID, recentTurnsForRename)
 	if err != nil {
 		log.Printf("[renamer] %s: load transcript: %v", bridgeID, err)
 		return

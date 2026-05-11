@@ -130,7 +130,7 @@ func (s *Server) discoverGitRepos(sessionID string, info *msg.SessionInfo) ([]st
 		add(info.WorkingDir)
 	}
 
-	inputs, err := s.store.ListToolCallInputs(sessionID)
+	inputs, err := s.harness.ListToolCallInputs(sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("list tool inputs: %w", err)
 	}

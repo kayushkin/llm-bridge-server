@@ -521,7 +521,7 @@ func (s *Server) autoResume(sess store.Session) {
 	}
 	log.Printf("[auto-resume] %s: resumed", sess.SessionID)
 
-	text, pending, err := s.store.PendingTurnMessage(sess.SessionID)
+	text, pending, err := s.harness.PendingTurnMessage(sess.SessionID)
 	if err != nil {
 		log.Printf("[auto-resume] %s: pending-turn check failed: %v", sess.SessionID, err)
 		return
