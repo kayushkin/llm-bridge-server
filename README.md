@@ -8,7 +8,7 @@ The cross-cutting design for the harness layer, agent rendering, tool/skill rout
 
 | Doc | Covers |
 |---|---|
-| [`HARNESS-LAYER.md`](./HARNESS-LAYER.md) | The abstraction: `HarnessBridge` interface (`EnsureAgent` / `PrepareSession` / `CleanupAgent`), per-harness implementations, subagent routing (CC `--agents` JSON inline, cross-harness via CLI delegation). |
+| [`HARNESS-LAYER.md`](./HARNESS-LAYER.md) | The abstraction: `AgentReconciler` interface (`EnsureAgent` / `PrepareSession` / `CleanupAgent`), per-harness implementations, subagent routing (CC `--agents` JSON inline, cross-harness via CLI delegation). |
 | [`TOOL-ROUTING.md`](./TOOL-ROUTING.md) | Routing rule (`native > MCP > CLI > omit`), per-harness native tool catalog, capability registry, skills routing, **end-to-end setup walkthroughs for tools, skills, and agents**. |
 | [`AGENT-MANAGEMENT.md`](./AGENT-MANAGEMENT.md) | Canonical agent shape, the rendering library (`llm-bridge/render`), per-harness rendering (CC: `--agents` JSON, no file), CRUD flows, `/agents` UI vs `/files` debug surface. |
 | [`CLI-SURFACE.md`](./CLI-SURFACE.md) | Model-facing CLI surface. Unified `bridge` binary for cross-cutting capabilities (agent ask, memory, notes, bus, tools, skills); `inber` binary for runtime-specific only. Permission allowlist patterns. |

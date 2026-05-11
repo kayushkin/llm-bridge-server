@@ -176,7 +176,7 @@ What happens when you set up a tool or a skill and an agent ends up using it.
    # Writes a row to agent_harness_tools.
 
 3. Next session.create for that agent on that harness:
-   - HarnessBridge.PrepareSession calls render.Registry["claudecode"]
+   - AgentReconciler.PrepareSession calls render.Registry["claudecode"]
    - Renderer pulls the agent's enrolled tools from tool-store
    - Routes per the table above:
      • If type=native and CC has it natively → adds to --allowed-tools
@@ -231,7 +231,7 @@ What happens when you set up a tool or a skill and an agent ends up using it.
 
 5. Done. session.create against this agent works automatically:
    - bridge-server resolves AgentDef from agent-store
-   - HarnessBridge.PrepareSession composes the SpawnSpec
+   - AgentReconciler.PrepareSession composes the SpawnSpec
    - Spawns CC with --append-system-prompt, --agents (subagents), --allowed-tools, --mcp-config, --settings
 ```
 

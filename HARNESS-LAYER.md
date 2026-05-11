@@ -13,7 +13,7 @@ The harness bridge (`llm-bridge-claudecode`, `llm-bridge-codex`, etc.) is where 
 │                ~/.claude/agents/, etc.       │
 └──────────────────┬───────────────────────────┘
                    │ canonical types: AgentDef, ToolRef, ...
-                   │ via HarnessBridge interface
+                   │ via AgentReconciler interface
 ┌──────────────────┴───────────────────────────┐
 │  llm-bridge-claudecode    llm-bridge-codex   │
 │  llm-bridge-inber         llm-bridge-...     │
@@ -25,15 +25,15 @@ The harness bridge (`llm-bridge-claudecode`, `llm-bridge-codex`, etc.) is where 
 
 ## The interface
 
-In `llm-bridge` (the canonical lib), define the contract every harness bridge implements:
+Lives in `~/repos/llm-bridge/bridge/reconcile.go` (added 2026-05-11 as part of P2). Named `AgentReconciler` rather than the original `HarnessBridge` working name because the existing `bridge.HarnessBridge` already covers session lifecycle (Start/Resume/Events/Stop); these are distinct concerns and a single wrapper typically implements both.
 
 ```go
 package bridge
 
-// HarnessBridge is the per-harness adapter that prepares an agent
+// AgentReconciler is the per-harness adapter that prepares an agent
 // session for execution and tears it down. Lives in each
 // llm-bridge-<harness> wrapper.
-type HarnessBridge interface {
+type AgentReconciler interface {
     // EnsureAgent reconciles the agent's static state with what
     // the harness expects. Idempotent. Called when an agent is
     // created or its definition changes — NOT on every session.
@@ -160,12 +160,12 @@ When Codex's custom tool dispatches back to bridge-server, that's a normal sessi
 ```
 [Agent created / edited]
     ├── agent-store: record updated
-    └── HarnessBridge.EnsureAgent for each registered harness
+    └── AgentReconciler.EnsureAgent for each registered harness
         └── per-agent files reconciled, tracked_files drift settles
 
 [session.create(agentID, harness)]
     ├── bridge-server: resolve AgentDef from agent-store
-    ├── bridge-server: HarnessBridge.PrepareSession(sessionRef)
+    ├── bridge-server: AgentReconciler.PrepareSession(sessionRef)
     │   └── returns SpawnSpec (args, env, CWD, BundleHash)
     ├── bridge-server: log session.start with BundleHash
     └── bridge-server: spawn the harness wrapper binary with SpawnSpec
@@ -179,10 +179,10 @@ When Codex's custom tool dispatches back to bridge-server, that's a normal sessi
 
 [session.end]
     ├── bridge-server: close session, persist final state
-    └── HarnessBridge keeps per-agent files; nothing per-session to clean
+    └── AgentReconciler keeps per-agent files; nothing per-session to clean
 
 [Agent deleted]
-    └── HarnessBridge.CleanupAgent
+    └── AgentReconciler.CleanupAgent
         └── per-agent files removed
 ```
 

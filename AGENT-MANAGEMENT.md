@@ -4,7 +4,7 @@
 
 How an agent's canonical definition (rows in agent-store) becomes the harness-side artifacts the runtime actually reads — `--agents <json>` for CC subagents (no file), `AGENTS.md` for Codex, equivalent for other harnesses. Plus the `/agents` UI scope and the rendering library shared between consumers.
 
-Companion to `HARNESS-LAYER.md` (the `HarnessBridge` contract) and `TOOL-ROUTING.md` (per-harness native vs. inject decisions).
+Companion to `HARNESS-LAYER.md` (the `AgentReconciler` contract) and `TOOL-ROUTING.md` (per-harness native vs. inject decisions).
 
 ## Current state (verified 2026-05-09)
 
@@ -210,7 +210,7 @@ llm-bridge/render  (NEW)
   └── inberRenderer (and others, scaffolded)
 
 llm-bridge-claudecode  (and other wrappers)
-  └── HarnessBridge.EnsureAgent:
+  └── AgentReconciler.EnsureAgent:
        - fetch AgentView from agent-store
        - call render.Registry["claudecode"].AgentFile(view)
        - atomic write to RenderedFile.Path
@@ -219,7 +219,7 @@ llm-bridge-claudecode  (and other wrappers)
 llm-bridge-server
   └── on session.create:
        - fetch AgentView from agent-store
-       - HarnessBridge.PrepareSession returns SpawnSpec
+       - AgentReconciler.PrepareSession returns SpawnSpec
        - spawn harness wrapper with SpawnSpec.Args/Env, CWD = user repo
 ```
 
@@ -267,8 +267,8 @@ This is mostly mechanical and can happen in one PR per step:
 
 ## What this enables
 
-- One source of truth for agent definitions (agent-store), one rendering library (`llm-bridge/render`), one materialization mechanism (`HarnessBridge.EnsureAgent`).
-- Adding a harness = implement `Renderer` + `HarnessBridge`, no agent-store changes.
+- One source of truth for agent definitions (agent-store), one rendering library (`llm-bridge/render`), one materialization mechanism (`AgentReconciler.EnsureAgent`).
+- Adding a harness = implement `Renderer` + `AgentReconciler`, no agent-store changes.
 - Adding a new agent = CRUD against agent-store, files appear automatically across all enrolled harnesses.
 - Editing identity = edit the typed natures via UI, OR edit the raw rendered .md, both flow back; renderer is the single arbiter of what the harness ends up reading.
 - Drift detection unified: tracked_files watches everything, sources distinguish ui-save / scan-import / runner-drift / harness-render.

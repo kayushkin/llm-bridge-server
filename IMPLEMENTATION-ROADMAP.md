@@ -19,7 +19,7 @@ Translates the design docs (see README.md design index — `HARNESS-LAYER`, `TOO
         + PrepareSession]
               │
        [P6 bridge-server 
-        wires HarnessBridge]
+        wires AgentReconciler]
               │
        [P7 BundleHash
         observability]
@@ -63,7 +63,7 @@ Critical path is **P1 → P2 → P3 → P4 → P6**. Everything else either gate
 **Scope:**
 - New package `render/`. Define `Renderer` interface, `AgentView`, `RenderedFile`, `Registry` map.
 - Stub renderers per known harness: `claudeCodeRenderer`, `codexRenderer`, `inberRenderer`. All return `errors.New("not implemented")` initially.
-- Define the `HarnessBridge` interface in `bridge/` (next to existing bridge interfaces). `EnsureAgent`, `PrepareSession`, `CleanupAgent` signatures from HARNESS-LAYER.md.
+- Define the `AgentReconciler` interface in `bridge/` (next to existing bridge interfaces). `EnsureAgent`, `PrepareSession`, `CleanupAgent` signatures from HARNESS-LAYER.md.
 
 **Why now:** establishes the import contract. Concrete renderers can land independently after.
 
@@ -80,12 +80,12 @@ Critical path is **P1 → P2 → P3 → P4 → P6**. Everything else either gate
 
 **Effort:** 2-3 days. Most of the work is figuring out the right tool-name mapping (per `TOOL-ROUTING.md` capability table) and skill-summary extraction.
 
-### P4 — `llm-bridge-claudecode` HarnessBridge implementation
+### P4 — `llm-bridge-claudecode` AgentReconciler implementation
 
 **Repo:** `~/repos/llm-bridge-claudecode`
 
 **Scope:**
-- Implement `HarnessBridge` interface from P2.
+- Implement `AgentReconciler` interface from P2.
 - `EnsureAgent`: write per-agent MCP config (if any tool-store entries are MCP-typed) and per-agent settings.json (if any non-default permission rules). Register both as `tracked_files` entries via agent-store API.
 - `PrepareSession`: call `render.Registry["claudecode"].PreviewBundle`, build `SpawnSpec` with all flags (`--agents`, `--append-system-prompt`, `--allowed-tools`, `--mcp-config`, `--settings`).
 - `CleanupAgent`: remove the per-agent MCP/settings files, mark tracked_files missing.
@@ -99,13 +99,13 @@ Critical path is **P1 → P2 → P3 → P4 → P6**. Everything else either gate
 
 ## Priority 3: Bridge-server orchestration
 
-### P6 — bridge-server invokes HarnessBridge
+### P6 — bridge-server invokes AgentReconciler
 
 **Repo:** `~/repos/llm-bridge-server`
 
 **Scope:**
-- On `agent.changed` event from agent-store: call `HarnessBridge[harness_id].EnsureAgent` for each registered harness.
-- On `session.create`: call `HarnessBridge[harness_id].PrepareSession`, use returned `SpawnSpec` to fork the harness wrapper.
+- On `agent.changed` event from agent-store: call `AgentReconciler[harness_id].EnsureAgent` for each registered harness.
+- On `session.create`: call `AgentReconciler[harness_id].PrepareSession`, use returned `SpawnSpec` to fork the harness wrapper.
 - Replace the existing scattered context-build logic in `internal/server/agents_context.go` with a call into `render.Registry`. (This is the first half of `CONTEXT-MIGRATION.md`'s step 3, but limited to the render path; the assembly extraction is separate.)
 - Keep `harness_proxy.go` and `manager.go` mostly unchanged — only the prep step in front of spawn changes.
 
@@ -253,8 +253,8 @@ Each port keeps inber's copy as a thin wrapper that calls into the new library, 
 If picking up this work cold tomorrow:
 
 1. **Week 1** — P1 (schema rename), P2 (render skeleton). Both small, mostly mechanical, unblock everything.
-2. **Week 2-3** — P3 (CC renderer), P4 (CC HarnessBridge), in parallel with P5 (inber-cli pass). End of this period: CC sessions can be spawned with the new layer working end-to-end.
-3. **Week 3-4** — P6 (bridge-server wires HarnessBridge), P7 (BundleHash). Cuts over actual session creation to the new path.
+2. **Week 2-3** — P3 (CC renderer), P4 (CC AgentReconciler), in parallel with P5 (inber-cli pass). End of this period: CC sessions can be spawned with the new layer working end-to-end.
+3. **Week 3-4** — P6 (bridge-server wires AgentReconciler), P7 (BundleHash). Cuts over actual session creation to the new path.
 4. **Anytime in parallel** — P9..P15 (context migration), P8 (/agents UI), P16 (Codex audit).
 5. **Week 5+** — P17 (Codex), other harnesses (Gemini, Aider, Goose) as their scaffolds get fleshed out.
 
