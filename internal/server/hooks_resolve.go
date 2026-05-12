@@ -88,8 +88,11 @@ func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 }
 
 // broadcastStaleResolution emits phase=completed for a resolve that found
-// no parked entry. Mirrors broadcastPermissionResolved but stamps the message
-// to explain the no-op so the audit log is self-describing.
+// no parked entry. Mirrors broadcastPrehookResolved but stamps the message
+// to explain the no-op so the audit log is self-describing. The original
+// Source is unrecoverable at this point (parked entry already gone), so
+// stale completions are stamped as permission_prompt — UI consumers only
+// pair on request_id, not source, so the mislabel is audit-only.
 func (s *Server) broadcastStaleResolution(bridgeID, requestID string, d permissionDecision) {
 	resolution := &msg.HookResolution{
 		Behavior:     d.Behavior,

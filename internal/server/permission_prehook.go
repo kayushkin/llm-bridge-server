@@ -31,22 +31,14 @@ type ccPrehookPayload struct {
 // invokes this endpoint as a hook command via curl on every tool call;
 // the response shape matches CC's PreToolUse hookSpecificOutput contract.
 //
-// Flow:
+// Two flavors of prehook ride this endpoint, distinguished by tool name:
 //
-//   1. Decode the hook payload.
-//   2. Short-circuit to allow if bridge-prefs has bypass_permissions=true.
-//   3. POST to permission-store /evaluate. Transport failure collapses to
-//      ask (engine default) so the human resolver sees the failure rather
-//      than a silent allow.
-//   4. allow/deny → respond immediately.
-//   5. ask → mint a request_id, park on parkedAsks, emit an
-//      awaiting_resolution HookEvent, block on the channel until
-//      handleResolveHook delivers a decision (or the request context
-//      cancels). Emit the matching completed HookEvent and respond.
-//
-// Not yet routed in mux — Step 1 ships the endpoint dark; Step 2
-// prepends a curl-to-this-endpoint entry in buildClaudeCodeSettings so
-// CC actually invokes it.
+//   - Permission gate (default): bypass short-circuit → permission-store
+//     evaluate → park-for-human on ask. Source="permission_prompt".
+//   - User-input solicitation (AskUserQuestion): always park for human.
+//     Bypass and permission-store rules do not apply, since the "allow"
+//     verdict's payload is the user's answer (delivered via updatedInput)
+//     rather than a binary permission grant. Source="user_input".
 func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Request) {
 	bridgeID := r.PathValue("bridge_id")
 	if bridgeID == "" {
@@ -66,6 +58,16 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// AskUserQuestion is a user-input solicitation, not a permission check
+	// (the model wants the human's answer, not approval to run). Both
+	// branches of the bypass toggle are wrong here: auto-allow strips the
+	// answer payload, auto-deny denies the question. Skip the gate entirely
+	// and route to the user_input parking flow.
+	if payload.ToolName == "AskUserQuestion" {
+		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourceUserInput)
+		return
+	}
+
 	// Bypass short-circuit: per-session override (set via PATCH
 	// /sessions/{id}/bypass-permissions) wins over the global toggle.
 	// Both are read live on every prehook request — no harness broadcast
@@ -81,8 +83,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	resolveCtx := r.Context()
-	res, err := s.permClient.Evaluate(resolveCtx, permclient.Request{
+	res, err := s.permClient.Evaluate(r.Context(), permclient.Request{
 		SessionID: bridgeID,
 		Tool:     payload.ToolName,
 		Input:    payload.ToolInput,
@@ -100,12 +101,19 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		writeHookDeny(w, res.Message)
 		return
 	case "ask":
-		// Fall through to park.
+		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourcePermission)
 	default:
 		writeHookAsk(w, "permission-store returned unknown outcome "+res.Outcome)
-		return
 	}
+}
 
+// parkPrehook implements the shared "mint request id, emit
+// awaiting_resolution, block on parkedAsks, emit completed, write response"
+// flow used by both the permission-prompt and user-input branches of the
+// prehook. Source picks which HookEvent.Source value identifies the parked
+// request to bridge-ui (so the banner picks the right card flavor).
+func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID string, payload ccPrehookPayload, source string) {
+	resolveCtx := r.Context()
 	requestID := ids.NewHookRequestID()
 	ch := s.parkedAsks.park(bridgeID, requestID)
 
@@ -116,7 +124,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		Timestamp:       time.Now(),
 		BridgeSessionID: bridgeID,
 		Hook: &msg.HookEvent{
-			Source:    "permission_prompt",
+			Source:    source,
 			Event:     "PreToolUse",
 			ToolName:  payload.ToolName,
 			Phase:     "awaiting_resolution",
@@ -145,14 +153,14 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 			Message:    "request canceled before resolution: " + resolveCtx.Err().Error(),
 			ResolvedBy: "auto:context-canceled",
 		}
-		s.broadcastPermissionResolved(bridgeID, requestID, decision)
+		s.broadcastPrehookResolved(bridgeID, requestID, source, decision)
 		// CC has already disconnected; writing a body here is harmless
 		// but won't be observed.
 		writeHookDeny(w, decision.Message)
 		return
 	}
 
-	s.broadcastPermissionResolved(bridgeID, requestID, decision)
+	s.broadcastPrehookResolved(bridgeID, requestID, source, decision)
 
 	switch decision.Behavior {
 	case "allow":
@@ -162,10 +170,10 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// broadcastPermissionResolved emits the phase=completed HookEvent that
-// closes a previously-emitted awaiting_resolution event. Symmetric with
-// the harness-side handleResolveHook in llm-bridge-claudecode.
-func (s *Server) broadcastPermissionResolved(bridgeID, requestID string, d permissionDecision) {
+// broadcastPrehookResolved emits the phase=completed HookEvent that
+// closes a previously-emitted awaiting_resolution event. Source must
+// match the value used at park time so consumers can pair the events.
+func (s *Server) broadcastPrehookResolved(bridgeID, requestID, source string, d permissionDecision) {
 	resolution := &msg.HookResolution{
 		Behavior:     d.Behavior,
 		UpdatedInput: d.UpdatedInput,
@@ -177,7 +185,7 @@ func (s *Server) broadcastPermissionResolved(bridgeID, requestID string, d permi
 		Timestamp:       time.Now(),
 		BridgeSessionID: bridgeID,
 		Hook: &msg.HookEvent{
-			Source:     "permission_prompt",
+			Source:     source,
 			Event:      "PreToolUse",
 			Phase:      "completed",
 			RequestID:  requestID,
