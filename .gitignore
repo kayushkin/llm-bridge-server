@@ -1,5 +1,6 @@
 llm-bridge
 llm-bridge-server
+mock-harness
 
 # Host-local config (machine-specific systemd drop-ins, dev secrets, etc.).
 # Put anything that should never leave this machine under ./.local/
@@ -8,6 +9,7 @@ llm-bridge-server
 # Defensive: never accidentally commit credentials.
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 id_rsa*

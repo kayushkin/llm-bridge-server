@@ -1,0 +1,54 @@
+# Spin up llm-bridge-server + log-store with persistent volumes.
+#
+# Prereq: run scripts/bootstrap.sh from the repo root so the sibling
+# checkouts live next to this directory. The build context for both
+# images is the parent dir, which `context: ..` and `dockerfile:
+# llm-bridge-server/Dockerfile` express.
+#
+# Quick start:
+#   ./scripts/bootstrap.sh
+#   docker compose up --build
+#   # server on http://localhost:8160, log-store on http://localhost:8175
+#
+# To run the mock smoke test against the running stack:
+#   E2E_PORT=8160 ./scripts/e2e-smoke.sh
+
+services:
+  llm-bridge-server:
+    build:
+      context: ..
+      dockerfile: llm-bridge-server/Dockerfile
+      target: server
+    image: llm-bridge-server:local
+    ports:
+      - "8160:8160"
+    environment:
+      LLMBRIDGE_LOG_STORE_URL: http://log-store:8175
+      # tool-store + permission-store + auth-store can be wired in here when
+      # those services are running in the same compose project. Unreachable
+      # URLs make their respective code paths degrade gracefully.
+      LLMBRIDGE_TOOL_STORE_URL: http://tool-store:8302
+      LLMBRIDGE_PERMISSION_STORE_URL: http://permission-store:8304
+    volumes:
+      - bridge-data:/data
+    depends_on:
+      - log-store
+
+  log-store:
+    build:
+      context: ..
+      dockerfile: llm-bridge-server/Dockerfile
+      target: log-store
+    image: log-store:local
+    ports:
+      - "8175:8175"
+    environment:
+      # logstack forwarding is fire-and-forget; an unreachable target just
+      # logs per-event warnings in the log-store log.
+      LOG_STORE_LOGSTACK_URL: http://logstack:8081
+    volumes:
+      - log-store-data:/data
+
+volumes:
+  bridge-data:
+  log-store-data:

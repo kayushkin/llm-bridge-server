@@ -75,6 +75,33 @@ Each harness bridge is a separate binary that the server spawns as a subprocess.
 
 ## Quick start
 
+### Bootstrap (first run only)
+
+`go.mod` uses `replace ../X` directives to pull a dozen sibling libraries
+out of the parent directory rather than from the Go module proxy, so a
+fresh `git clone` of this repo cannot build standalone. Run the
+bootstrap script once to clone every sibling next to this repo:
+
+```bash
+./scripts/bootstrap.sh
+```
+
+This produces the layout the build expects:
+
+```
+<parent>/
+  llm-bridge-server/   (this repo)
+  llm-bridge/
+  log-store/
+  logstack/
+  agent-store/
+  …
+```
+
+Existing checkouts are left alone, and siblings without a public remote
+(`snapshot-store`) are skipped — the server degrades gracefully without
+those optional stores.
+
 ### Build and run
 
 ```bash
@@ -82,7 +109,8 @@ go build -o llm-bridge ./cmd/llm-bridge-server
 ./llm-bridge
 ```
 
-The server listens on `:8160` by default.
+The server listens on `:8160` by default. See [`.env.example`](./.env.example)
+for every tunable.
 
 ### Deploy as a systemd service
 
@@ -90,7 +118,25 @@ The server listens on `:8160` by default.
 ./deploy.sh
 ```
 
-Builds the binary, installs to `/usr/local/bin/llm-bridge`, and restarts the `llm-bridge.service` unit.
+Builds the binary, installs to `/usr/local/bin/llm-bridge`, and restarts the `llm-bridge.service` unit. The script auto-detaches via `systemd-run` so the deploy survives `systemctl stop llm-bridge.service` (the unit it's replacing).
+
+### Run with Docker
+
+```bash
+./scripts/bootstrap.sh        # populate sibling repos
+docker compose up --build     # builds + runs llm-bridge-server + log-store
+```
+
+The compose file uses the parent directory as the build context so all
+sibling sources are visible to the multi-stage [`Dockerfile`](./Dockerfile).
+The server lands on `http://localhost:8160`, log-store on `:8175`. Data
+persists in named volumes (`bridge-data`, `log-store-data`).
+
+To build the server image directly:
+
+```bash
+docker build -f llm-bridge-server/Dockerfile --target server -t llm-bridge-server ..
+```
 
 ### Start a session
 
@@ -328,11 +374,26 @@ All configuration is via environment variables with sensible defaults.
 
 ## Testing
 
-Standard unit tests:
+Three tiers, in increasing strictness about the host environment:
+
+| Tier | Command | Needs | What it covers |
+|---|---|---|---|
+| **Unit + conformance** | `go test ./...` | nothing (auto-builds `cmd/mock-harness`) | Every package's unit tests + the full conformance feature matrix against mock-harness. |
+| **Mock E2E** | `./scripts/e2e-smoke.sh` | go, curl, jq | Builds server + mock-harness + log-store, launches them against a temp data dir, drives a real session through HTTP/SSE, asserts the expected event stream. No LLM credentials required. |
+| **Real-claude E2E** | `./scripts/e2e-claude.sh` | above + `claude` CLI + `llm-bridge-claudecode` on PATH | Same flow but bound to the live `claude_code` harness — exercises a real LLM round-trip end-to-end. Skips cleanly when either binary is missing, so it's safe in CI. |
+
+Run all three to verify a deploy from scratch:
 
 ```bash
-go test ./...
+./scripts/bootstrap.sh && go test ./... && ./scripts/e2e-smoke.sh && ./scripts/e2e-claude.sh
 ```
+
+The E2E scripts honor a couple of env knobs:
+
+- `E2E_PORT` — server listen port (defaults: 18160 mock, 18161 claude)
+- `E2E_LOG_STORE_PORT` — log-store listen port (defaults: 18175 / 18176)
+- `E2E_KEEP=1` — leave the temp data dir + logs around for post-mortem
+- `E2E_PROMPT` (claude-tier only) — override the prompt sent to claude
 
 ### Live pty-mode integration test
 
