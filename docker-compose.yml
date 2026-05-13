@@ -1,36 +1,57 @@
-# Spin up llm-bridge-server + log-store with persistent volumes.
+# Containerized llm-bridge stack: server-full + log-store + llmux UI.
 #
-# Prereq: run scripts/bootstrap.sh from the repo root so the sibling
-# checkouts live next to this directory. The build context for both
-# images is the parent dir, which `context: ..` and `dockerfile:
-# llm-bridge-server/Dockerfile` express.
+# Prereq: run scripts/bootstrap.sh from the repo root so every sibling
+# checkout llmux + bridge-ui + the harness wrappers references lives next
+# to this directory. The build context for every image is the parent dir
+# (context: ..) and the multi-stage Dockerfile picks targets via `target:`.
 #
 # Quick start:
 #   ./scripts/bootstrap.sh
+#   export LLMUX_TOKEN=$(openssl rand -hex 16)   # or pick anything
 #   docker compose up --build
-#   # server on http://localhost:8160, log-store on http://localhost:8175
+#   open http://localhost:18870                  # llmux UI, enter the token
 #
-# To run the mock smoke test against the running stack:
-#   E2E_PORT=8160 ./scripts/e2e-smoke.sh
+# Default host-ports (chosen to avoid the canonical 8160/8170/8175 ports
+# in case a host-side instance is already running):
+#   bridge   18860 → container 8160   (override LLM_BRIDGE_HOST_PORT)
+#   llmux    18870 → container 8170   (override LLMUX_HOST_PORT)
+#   log-st.  18875 → container 8175   (override LOG_STORE_HOST_PORT)
+# The llmux UI lets you mint a machine + instance, then start chat sessions.
+#
+# The `server-full` image bundles the upstream `claude` CLI + the
+# `llm-bridge-claudecode` wrapper. To authenticate against your existing
+# Claude account, bind-mount your host's ~/.claude credentials read-write
+# (uncomment the volume line under llm-bridge-server). Without that mount
+# the claude harness will spawn but every request will fail at auth — the
+# mock harness still works fully.
 
 services:
   llm-bridge-server:
     build:
       context: ..
       dockerfile: llm-bridge-server/Dockerfile
-      target: server
-    image: llm-bridge-server:local
+      target: server-full
+    image: llm-bridge-server:full
     ports:
-      - "8160:8160"
+      # Host-ports default to the 188xx range so the compose stack does
+      # not collide with a host-side llm-bridge / log-store / llmux
+      # already running on the canonical 8160/8175/8170 ports. Override
+      # via .env if you need different host bindings.
+      - "${LLM_BRIDGE_HOST_PORT:-18860}:8160"
     environment:
       LLMBRIDGE_LOG_STORE_URL: http://log-store:8175
-      # tool-store + permission-store + auth-store can be wired in here when
-      # those services are running in the same compose project. Unreachable
-      # URLs make their respective code paths degrade gracefully.
+      # tool-store + permission-store + auth-store unreachable here — the
+      # related code paths degrade gracefully.
       LLMBRIDGE_TOOL_STORE_URL: http://tool-store:8302
       LLMBRIDGE_PERMISSION_STORE_URL: http://permission-store:8304
     volumes:
       - bridge-data:/data
+      # Uncomment to share your host's claude OAuth/credentials with the
+      # container so the claude_code harness can talk to a real LLM. The
+      # container runs as uid 1000 — adjust the user: line below if your
+      # host uid differs.
+      # - ${HOME}/.claude:/data/home/.claude
+    # user: "${UID:-1000}:${GID:-1000}"
     depends_on:
       - log-store
 
@@ -41,13 +62,27 @@ services:
       target: log-store
     image: log-store:local
     ports:
-      - "8175:8175"
+      - "${LOG_STORE_HOST_PORT:-18875}:8175"
     environment:
-      # logstack forwarding is fire-and-forget; an unreachable target just
-      # logs per-event warnings in the log-store log.
       LOG_STORE_LOGSTACK_URL: http://logstack:8081
     volumes:
       - log-store-data:/data
+
+  llmux:
+    build:
+      context: ..
+      dockerfile: llm-bridge-server/Dockerfile
+      target: llmux
+    image: llmux:local
+    ports:
+      - "${LLMUX_HOST_PORT:-18870}:8170"
+    environment:
+      # LLMUX_TOKEN gates every authenticated API path. The frontend
+      # prompts for it on first visit and stores it in localStorage.
+      LLMUX_TOKEN: ${LLMUX_TOKEN:?LLMUX_TOKEN must be set in env or .env}
+      LLM_BRIDGE_URL: http://llm-bridge-server:8160
+    depends_on:
+      - llm-bridge-server
 
 volumes:
   bridge-data:

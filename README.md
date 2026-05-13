@@ -120,23 +120,64 @@ for every tunable.
 
 Builds the binary, installs to `/usr/local/bin/llm-bridge`, and restarts the `llm-bridge.service` unit. The script auto-detaches via `systemd-run` so the deploy survives `systemctl stop llm-bridge.service` (the unit it's replacing).
 
-### Run with Docker
+### Run with Docker (with UI)
+
+The compose stack ships a clickable end-to-end deploy: `llm-bridge-server` (full image with the upstream `claude` CLI baked in), `log-store`, and the `llmux` UI in front of it.
 
 ```bash
-./scripts/bootstrap.sh        # populate sibling repos
-docker compose up --build     # builds + runs llm-bridge-server + log-store
+./scripts/bootstrap.sh                              # clone every sibling
+echo "LLMUX_TOKEN=$(openssl rand -hex 16)" > .env   # token gates the UI
+docker compose up --build
 ```
 
-The compose file uses the parent directory as the build context so all
-sibling sources are visible to the multi-stage [`Dockerfile`](./Dockerfile).
-The server lands on `http://localhost:8160`, log-store on `:8175`. Data
-persists in named volumes (`bridge-data`, `log-store-data`).
+Default host-port mappings (deliberately offset from the canonical
+8160/8170/8175 so the stack doesn't collide with a host-side server
+that's already running):
 
-To build the server image directly:
+| Service | Host port | Override |
+|---|---|---|
+| `llm-bridge-server` | `:18860` | `LLM_BRIDGE_HOST_PORT` |
+| `llmux` (UI)        | `:18870` | `LLMUX_HOST_PORT` |
+| `log-store`         | `:18875` | `LOG_STORE_HOST_PORT` |
+
+Open `http://localhost:18870`, paste the `LLMUX_TOKEN` value from your `.env`, then use the UI to create a machine + instance + session. The image bakes in two `available:true` harnesses out of the box:
+
+- **`mock`** — fake responses for protocol verification, no auth needed
+- **`claude_code`** — real `claude` CLI bundled; needs your creds (next section)
+
+#### Wiring real `claude_code` auth
+
+The container ships with the upstream `claude` CLI installed, but credentials are user-specific. To share your host's existing Claude login, bind-mount `~/.claude` and override the container user so the mount lines up:
+
+```yaml
+# docker-compose.yml, llm-bridge-server service:
+    volumes:
+      - bridge-data:/data
+      - ${HOME}/.claude:/data/home/.claude        # uncomment
+    user: "${UID:-1000}:${GID:-1000}"             # uncomment + adjust if your uid ≠ 1000
+```
+
+Then `docker compose up --build` again. Without that mount the claude harness shows `available:true` (the binary is on PATH) but every actual request fails at auth — the mock harness still works fully, so the deploy is testable without any creds.
+
+#### Building images directly
+
+The multi-stage [`Dockerfile`](./Dockerfile) exposes four targets:
 
 ```bash
-docker build -f llm-bridge-server/Dockerfile --target server -t llm-bridge-server ..
+# distroless, mock-only (smallest)
+docker build -f llm-bridge-server/Dockerfile --target server      -t llm-bridge-server      ..
+
+# debian-slim + claude CLI + claudecode wrapper (used by compose default)
+docker build -f llm-bridge-server/Dockerfile --target server-full -t llm-bridge-server:full ..
+
+# durable event log sidecar
+docker build -f llm-bridge-server/Dockerfile --target log-store   -t log-store              ..
+
+# llmux UI (frontend dist + Go proxy with token auth)
+docker build -f llm-bridge-server/Dockerfile --target llmux       -t llmux                  ..
 ```
+
+Build context for every target is the *parent* directory, since the multi-stage build copies sibling repos in as `/src/<sibling>`.
 
 ### Start a session
 
