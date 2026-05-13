@@ -156,13 +156,19 @@ func (s *Server) routes() {
 	// embedded bridge_perm MCP is gone.
 	s.mux.HandleFunc("POST /permission/cc-prehook/{bridge_id}", s.handleCCPermissionPrehook)
 
-	// Global bypass toggle — persisted in bridge-prefs. Used as the
-	// snapshot source when new sessions are created and as a fallback for
-	// legacy sessions that pre-date the per-session snapshot.
+	// Global permission mode — persisted in bridge-prefs. Used as the
+	// snapshot source when new sessions are created and as the fallback
+	// for legacy sessions that pre-date the per-session snapshot. One of
+	// "ask" / "auto" / "bypass".
+	s.mux.HandleFunc("POST /bridge/permission-mode", s.handleSetGlobalPermissionMode)
+	// Per-session permission mode override — persisted in
+	// session.harness_config and read live by the PreToolUse prehook;
+	// also forwarded to the harness as a start param on next spawn/resume.
+	// Wins over the global.
+	s.mux.HandleFunc("PUT /sessions/{id}/permission-mode", s.handleSetSessionPermissionMode)
+	// Legacy boolean aliases — older bridge-ui builds keep working until
+	// they're rebuilt against the new endpoint. true → bypass, false → ask.
 	s.mux.HandleFunc("POST /bridge/bypass-permissions", s.handleSetBypassPermissions)
-	// Per-session bypass override — persisted in session.harness_config
-	// and read live by the CC PreToolUse prehook plus forwarded to the
-	// harness as a start param on next spawn/resume. Wins over the global.
 	s.mux.HandleFunc("PUT /sessions/{id}/bypass-permissions", s.handleSetSessionBypass)
 
 	// Folder registry — sidebar organization for sessions

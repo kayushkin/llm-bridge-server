@@ -41,7 +41,16 @@ func (s *bridgePrefsStore) load() {
 	}
 	if err := json.Unmarshal(data, &s.data); err != nil {
 		log.Printf("bridge-prefs parse error: %v", err)
+		return
 	}
+	// One-shot legacy migration: bypass_permissions=true → permission_mode=bypass.
+	// Only fires when permission_mode is unset; preserves the user's intent
+	// and stops writing the legacy field thereafter.
+	if s.data.PermissionMode == "" && s.data.BypassPermissions {
+		s.data.PermissionMode = msg.PermissionModeBypass
+	}
+	// Always drop the legacy field on save (next save will be without it).
+	s.data.BypassPermissions = false
 }
 
 func (s *bridgePrefsStore) save() {
@@ -66,14 +75,16 @@ func (s *bridgePrefsStore) get() BridgePrefs {
 	return s.data
 }
 
-// setBypassPermissions writes the bypass flag unambiguously (no merge
-// semantics — every call overwrites). Used by the dedicated
-// /bridge/bypass-permissions endpoint, which needs to set false explicitly
-// without the partial-update logic in set() ignoring it.
-func (s *bridgePrefsStore) setBypassPermissions(enabled bool) {
+// setPermissionMode writes the global permission_mode unambiguously (no
+// merge semantics — every call overwrites). Used by the dedicated
+// /bridge/permission-mode endpoint, which needs to set any of the three
+// values explicitly without the partial-update logic in set() blanking
+// the field when callers send an empty string.
+func (s *bridgePrefsStore) setPermissionMode(mode string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data.BypassPermissions = enabled
+	s.data.PermissionMode = mode
+	s.data.BypassPermissions = false // legacy field stops being written
 	s.save()
 }
 

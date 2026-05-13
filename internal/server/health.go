@@ -100,6 +100,28 @@ var harnessSupportsPTY = map[msg.Harness]bool{
 	msg.HarnessCodex:      true,
 }
 
+// harnessSupportedPermissionModes lists the permission modes each harness
+// knows how to express in its own start params. Every harness implicitly
+// supports "ask" and "bypass" via the universal prehook gate; "auto" is
+// listed only for harnesses whose start-param translation surfaces it to
+// the underlying agent (claudecode: --permission-mode auto; codex:
+// approvalPolicy=on-request).
+var harnessSupportedPermissionModes = map[msg.Harness][]string{
+	msg.HarnessClaudeCode: {msg.PermissionModeAsk, msg.PermissionModeAuto, msg.PermissionModeBypass},
+	msg.HarnessCodex:      {msg.PermissionModeAsk, msg.PermissionModeAuto, msg.PermissionModeBypass},
+}
+
+// supportedPermissionModesFor returns the modes for a harness, defaulting
+// to {ask, bypass} for any harness without an explicit entry — every
+// harness can rely on the prehook to enforce those two without any
+// per-harness translation.
+func supportedPermissionModesFor(h msg.Harness) []string {
+	if modes, ok := harnessSupportedPermissionModes[h]; ok {
+		return modes
+	}
+	return []string{msg.PermissionModeAsk, msg.PermissionModeBypass}
+}
+
 // harnessCapabilities defines what features each harness supports.
 var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessClaudeCode: {"compact", "fork", "model", "effort", "tools", "budget", "system_prompt"},
@@ -247,17 +269,18 @@ func (s *Server) discoverHarnesses() []HarnessStatus {
 			}
 		}
 		statuses = append(statuses, HarnessStatus{
-			Name:               string(h),
-			Label:              meta.Label,
-			Emoji:              meta.Emoji,
-			Image:              imageURL,
-			Tint:               meta.Tint,
-			Available:          available,
-			Binary:             path,
-			Capabilities:       caps,
-			HookEvents:         harnessHookEvents[h],
-			SupportedProviders: harnessSupportedProviders[h],
-			PTY:                harnessSupportsPTY[h],
+			Name:                     string(h),
+			Label:                    meta.Label,
+			Emoji:                    meta.Emoji,
+			Image:                    imageURL,
+			Tint:                     meta.Tint,
+			Available:                available,
+			Binary:                   path,
+			Capabilities:             caps,
+			HookEvents:               harnessHookEvents[h],
+			SupportedProviders:       harnessSupportedProviders[h],
+			SupportedPermissionModes: supportedPermissionModesFor(h),
+			PTY:                      harnessSupportsPTY[h],
 		})
 	}
 	return statuses

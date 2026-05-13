@@ -117,40 +117,120 @@ func (s *Server) broadcastStaleResolution(bridgeID, requestID string, d permissi
 	}
 }
 
-// bypassPermissionsRequest is the body of POST /bridge/bypass-permissions.
-// Persists the global bypass flag in bridge-prefs. The PreToolUse prehook
-// handler reads bridge-prefs on every request, so the toggle takes effect
-// immediately for every session — no harness broadcast needed.
+// permissionModeRequest is the body of POST /bridge/permission-mode and
+// PUT /sessions/{id}/permission-mode. The prehook reads the persisted
+// value on every request, so the new mode takes effect immediately for
+// every session — no harness broadcast needed.
+type permissionModeRequest struct {
+	Mode string `json:"mode"`
+}
+
+// bypassPermissionsRequest is the legacy body of POST /bridge/bypass-permissions
+// and PUT /sessions/{id}/bypass-permissions. Retained as a thin alias that
+// translates the boolean into the new mode enum so older bridge-ui builds
+// keep working during the transition.
 type bypassPermissionsRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
-// handleSetBypassPermissions persists the bypass flag in bridge-prefs.
-// Pre-migration this also broadcast set_bypass_permissions to every running
-// harness so the embedded permission MCP would flip into bypass mode. The
-// MCP is gone now; the prehook handler reads bridge-prefs on every call,
-// so persistence is the entire effect.
+func validPermissionMode(m string) bool {
+	switch m {
+	case msg.PermissionModeAsk, msg.PermissionModeAuto, msg.PermissionModeBypass:
+		return true
+	}
+	return false
+}
+
+// handleSetGlobalPermissionMode persists the global permission_mode in
+// bridge-prefs. The prehook reads bridge-prefs on every call so the
+// change takes effect immediately — no harness broadcast needed.
+func (s *Server) handleSetGlobalPermissionMode(w http.ResponseWriter, r *http.Request) {
+	var req permissionModeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if !validPermissionMode(req.Mode) {
+		http.Error(w, "mode must be one of ask|auto|bypass", http.StatusBadRequest)
+		return
+	}
+
+	s.bridgePrefs.setPermissionMode(req.Mode)
+
+	writeJSON(w, map[string]any{
+		"status": "ok",
+		"mode":   req.Mode,
+	})
+}
+
+// handleSetSessionPermissionMode persists the per-session permission_mode
+// into harness_config. Survives harness restart and beats the global.
+// The prehook reads this live, so the override takes effect on the next
+// tool call without restarting the harness; the harness picks up the
+// change on its next spawn/resume.
+func (s *Server) handleSetSessionPermissionMode(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	sess, err := s.store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	var req permissionModeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if !validPermissionMode(req.Mode) {
+		http.Error(w, "mode must be one of ask|auto|bypass", http.StatusBadRequest)
+		return
+	}
+
+	cfg := make(map[string]json.RawMessage)
+	if len(sess.HarnessConfig) > 0 {
+		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
+			http.Error(w, "harness_config unparseable: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	cfg["permission_mode"] = json.RawMessage(`"` + req.Mode + `"`)
+	delete(cfg, "bypass_permissions")
+	merged, err := json.Marshal(cfg)
+	if err != nil {
+		http.Error(w, "marshal harness_config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.store.UpdateSessionHarnessConfig(bridgeID, merged); err != nil {
+		http.Error(w, "persist harness_config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"status":          "ok",
+		"bridge_id":       bridgeID,
+		"permission_mode": req.Mode,
+	})
+}
+
+// handleSetBypassPermissions is the legacy alias for the global
+// permission-mode endpoint. Translates the boolean (true → bypass, false →
+// ask) and delegates. Retained so older bridge-ui builds keep working
+// until they're rebuilt against the new endpoint.
 func (s *Server) handleSetBypassPermissions(w http.ResponseWriter, r *http.Request) {
 	var req bypassPermissionsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-
-	s.bridgePrefs.setBypassPermissions(req.Enabled)
-
+	s.bridgePrefs.setPermissionMode(bypassBoolToMode(req.Enabled))
 	writeJSON(w, map[string]any{
 		"status":  "ok",
 		"enabled": req.Enabled,
 	})
 }
 
-// handleSetSessionBypass persists the per-session bypass override into the
-// session's harness_config. Survives harness restart and beats the global
-// toggle. The CC PreToolUse prehook reads this live, so the override takes
-// effect on the next tool call without restarting the harness; the harness
-// itself picks up the change on its next spawn/resume (start params are
-// rebuilt from harness_config on every startOnInstance).
+// handleSetSessionBypass is the legacy alias for the per-session
+// permission-mode endpoint.
 func (s *Server) handleSetSessionBypass(w http.ResponseWriter, r *http.Request) {
 	bridgeID := r.PathValue("id")
 	sess, err := s.store.GetSession(bridgeID)
@@ -172,11 +252,8 @@ func (s *Server) handleSetSessionBypass(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	if req.Enabled {
-		cfg["bypass_permissions"] = json.RawMessage(`true`)
-	} else {
-		cfg["bypass_permissions"] = json.RawMessage(`false`)
-	}
+	cfg["permission_mode"] = json.RawMessage(`"` + bypassBoolToMode(req.Enabled) + `"`)
+	delete(cfg, "bypass_permissions")
 	merged, err := json.Marshal(cfg)
 	if err != nil {
 		http.Error(w, "marshal harness_config: "+err.Error(), http.StatusInternalServerError)

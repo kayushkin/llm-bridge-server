@@ -59,23 +59,31 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	}
 
 	// AskUserQuestion is a user-input solicitation, not a permission check
-	// (the model wants the human's answer, not approval to run). Both
-	// branches of the bypass toggle are wrong here: auto-allow strips the
-	// answer payload, auto-deny denies the question. Skip the gate entirely
-	// and route to the user_input parking flow.
+	// (the model wants the human's answer, not approval to run). No
+	// permission mode applies: auto-allow would strip the answer payload,
+	// auto-deny would deny the question. Always park for the human.
 	if payload.ToolName == "AskUserQuestion" {
 		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourceUserInput)
 		return
 	}
 
-	// Bypass short-circuit: per-session override (set via PATCH
-	// /sessions/{id}/bypass-permissions) wins over the global toggle.
-	// Both are read live on every prehook request — no harness broadcast
-	// required since bridge-server is the gating point.
+	// Permission-mode short-circuit. Per-session override (set via PUT
+	// /sessions/{id}/permission-mode) wins over the global. Both are read
+	// live on every prehook request — no harness broadcast required since
+	// bridge-server is the gating point.
 	sess, _ := s.store.GetSession(bridgeID)
-	if s.bypassEnabledForSession(sess) {
-		writeHookAllow(w, "bypass-mode")
+	mode := s.permissionModeForSession(sess)
+
+	switch mode {
+	case msg.PermissionModeBypass:
+		writeHookAllow(w, "permission-mode=bypass")
 		return
+	case msg.PermissionModeAuto:
+		if isAutoModeSafeTool(payload.ToolName) {
+			writeHookAllow(w, "permission-mode=auto:"+payload.ToolName)
+			return
+		}
+		// Fall through to the normal gating flow for non-safe tools.
 	}
 
 	if s.permClient == nil {
@@ -105,6 +113,36 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	default:
 		writeHookAsk(w, "permission-store returned unknown outcome "+res.Outcome)
 	}
+}
+
+// autoModeSafeTools is the canonical bridge-defined set of tools the
+// permission-mode=auto flow auto-allows without consulting permission-store.
+// Scope: read-only inspection, file edits, and planning. Anything that
+// touches a shell, network, or spawns subagents stays gated.
+//
+// This is the single source of truth for what "auto" means at the prehook
+// level. Each harness binary chooses its own translation of the mode for
+// its native gate; the prehook decision here is the universal floor.
+var autoModeSafeTools = map[string]struct{}{
+	// Read-only inspection
+	"Read":         {},
+	"Glob":         {},
+	"Grep":         {},
+	"LS":           {},
+	"NotebookRead": {},
+	// File edits
+	"Edit":         {},
+	"Write":        {},
+	"MultiEdit":    {},
+	"NotebookEdit": {},
+	// Planning / harness-side state
+	"TodoWrite":    {},
+	"ExitPlanMode": {},
+}
+
+func isAutoModeSafeTool(name string) bool {
+	_, ok := autoModeSafeTools[name]
+	return ok
 }
 
 // parkPrehook implements the shared "mint request id, emit
