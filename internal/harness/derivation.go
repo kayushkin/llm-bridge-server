@@ -85,6 +85,19 @@ type derivationState struct {
 	// to usage and cost.
 	turns int
 
+	// apiSpendUSD is the running session-cumulative spend across every
+	// EventAPICall observed. Distinct from cost (above) which sums
+	// EventResult.Usage and excludes auxiliary API calls
+	// (session-title generation, prompt-suggestion). When the UI's
+	// top-line cost reads APISpendTotal (when Calls > 0), this is the
+	// number it displays; UsageTotal becomes the fallback for legacy
+	// or non-OTel-instrumented sessions.
+	apiSpendUSD     float64
+	apiSpendUsage   msg.TokenUsage
+	apiSpendCalls   int
+	apiSpendByModel  map[string]float64 // USD per model
+	apiSpendBySource map[string]float64 // USD per query_source
+
 	// turnAccums holds in-flight per-turn accumulators keyed by
 	// turn_id. Created on the first event seen for a turn_id, closed
 	// on the terminating EventResult / EventError, or evicted FIFO
@@ -102,6 +115,8 @@ func newDerivationState() *derivationState {
 		activeTools:      make(map[string]string),
 		pendingApprovals: make(map[string]struct{}),
 		turnAccums:       make(map[string]*turnAccumulator),
+		apiSpendByModel:  make(map[string]float64),
+		apiSpendBySource: make(map[string]float64),
 	}
 }
 
@@ -301,6 +316,27 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 				Usage: d.usage,
 				Cost:  copyCost(d.cost),
 				Turns: d.turns,
+			},
+		})
+	}
+
+	if ev.Type == msg.EventAPICall {
+		d.applyAPICall(ev.APICall)
+		out = append(out, msg.Event{
+			Type:             msg.EventAPISpendTotal,
+			Harness:          ev.Harness,
+			BridgeSessionID:  ev.BridgeSessionID,
+			HarnessSessionID: ev.HarnessSessionID,
+			ClientRequestID:  ev.ClientRequestID,
+			TurnID:           ev.TurnID,
+			Timestamp:        time.Now(),
+			DerivedFrom:      derivedFromIDs(ev),
+			APISpendTotal: &msg.APISpendTotalEvent{
+				TotalUSD:      d.apiSpendUSD,
+				Usage:         d.apiSpendUsage,
+				Calls:         d.apiSpendCalls,
+				ByModel:       copyFloatMap(d.apiSpendByModel),
+				ByQuerySource: copyFloatMap(d.apiSpendBySource),
 			},
 		})
 	}
@@ -591,4 +627,51 @@ func copyCost(c *msg.Cost) *msg.Cost {
 	}
 	v := *c
 	return &v
+}
+
+// applyAPICall folds one EventAPICall observation into the running
+// per-call spend totals. Caller must hold d.mu.
+//
+// Unlike applyResultUsage (which sums per-turn EventResult.Usage), this
+// sums per-call telemetry from the OTel pipeline — including auxiliary
+// calls (session-title, prompt-suggestion) that don't show up in turn
+// results. Total tokens are summed; context tokens / limit are not
+// reported per-call so we leave the existing ContextTokens/ContextLimit
+// on d.usage alone — they belong to the per-turn view, not this one.
+//
+// ByModel / ByQuerySource maps accumulate USD per dimension. Calls
+// with empty Model or QuerySource still count toward TotalUSD; only
+// their dimensional attribution is skipped (fail-fast: don't fabricate
+// a placeholder key like "unknown" that masks a producer bug).
+func (d *derivationState) applyAPICall(a *msg.APICallEvent) {
+	if a == nil {
+		return
+	}
+	d.apiSpendCalls++
+	d.apiSpendUSD += a.CostUSD
+	d.apiSpendUsage.InputTokens += a.InputTokens
+	d.apiSpendUsage.OutputTokens += a.OutputTokens
+	d.apiSpendUsage.CacheReadTokens += a.CacheReadTokens
+	d.apiSpendUsage.CacheWriteTokens += a.CacheCreationTokens
+	d.apiSpendUsage.TotalTokens += a.InputTokens + a.OutputTokens
+	if a.Model != "" {
+		d.apiSpendByModel[a.Model] += a.CostUSD
+	}
+	if a.QuerySource != "" {
+		d.apiSpendBySource[a.QuerySource] += a.CostUSD
+	}
+}
+
+// copyFloatMap returns a shallow copy so each emitted APISpendTotal
+// carries its own snapshot rather than sharing a map pointer with
+// future mutations of the derivation state.
+func copyFloatMap(m map[string]float64) map[string]float64 {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }

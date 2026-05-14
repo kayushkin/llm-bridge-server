@@ -856,6 +856,150 @@ func TestDerivation_TurnComplete_ErrorTermination(t *testing.T) {
 	}
 }
 
+// apiSpendEvents filters a derived stream down to just the
+// api_spend_total events, in order.
+func apiSpendEvents(out []msg.Event) []*msg.APISpendTotalEvent {
+	var got []*msg.APISpendTotalEvent
+	for i := range out {
+		if out[i].Type == msg.EventAPISpendTotal {
+			got = append(got, out[i].APISpendTotal)
+		}
+	}
+	return got
+}
+
+func absDiff(a, b float64) float64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+func TestDerivation_APISpendTotal_SingleCall(t *testing.T) {
+	d := newDerivationState()
+	got := derivedOf(d, []msg.Event{
+		{Type: msg.EventAPICall, APICall: &msg.APICallEvent{
+			Model: "claude-opus-4-7", InputTokens: 10, OutputTokens: 5,
+			CacheReadTokens: 100, CacheCreationTokens: 50,
+			CostUSD: 0.067, DurationMS: 2829,
+			QuerySource: "sdk",
+		}},
+	})
+	spends := apiSpendEvents(got)
+	if len(spends) != 1 {
+		t.Fatalf("api_spend_total count = %d; want 1 (got %+v)", len(spends), got)
+	}
+	s := spends[0]
+	if s.TotalUSD != 0.067 {
+		t.Errorf("total_usd = %v; want 0.067", s.TotalUSD)
+	}
+	if s.Calls != 1 {
+		t.Errorf("calls = %d; want 1", s.Calls)
+	}
+	if s.Usage.InputTokens != 10 || s.Usage.OutputTokens != 5 ||
+		s.Usage.CacheReadTokens != 100 || s.Usage.CacheWriteTokens != 50 ||
+		s.Usage.TotalTokens != 15 {
+		t.Errorf("usage = %+v; want in=10 out=5 cache_r=100 cache_w=50 total=15", s.Usage)
+	}
+	if s.ByModel["claude-opus-4-7"] != 0.067 {
+		t.Errorf("by_model = %+v; want claude-opus-4-7=0.067", s.ByModel)
+	}
+	if s.ByQuerySource["sdk"] != 0.067 {
+		t.Errorf("by_query_source = %+v; want sdk=0.067", s.ByQuerySource)
+	}
+}
+
+func TestDerivation_APISpendTotal_MultiCallAccumulationWithBreakdowns(t *testing.T) {
+	// Realistic claude-code session: one auxiliary Haiku call for the
+	// session title, then one main Opus call. The final APISpendTotal
+	// must reflect cumulative totals with per-model + per-source
+	// breakdowns so the UI drill-down can render "Opus $0.07 / Haiku
+	// $0.0004" alongside "sdk $0.07 / generate_session_title $0.0004".
+	d := newDerivationState()
+	got := derivedOf(d, []msg.Event{
+		{Type: msg.EventAPICall, APICall: &msg.APICallEvent{
+			Model: "claude-haiku-4-5", InputTokens: 346, OutputTokens: 11,
+			CostUSD: 0.000401, QuerySource: "generate_session_title",
+		}},
+		{Type: msg.EventAPICall, APICall: &msg.APICallEvent{
+			Model: "claude-opus-4-7", InputTokens: 6, OutputTokens: 6,
+			CacheReadTokens: 17913, CacheCreationTokens: 9268,
+			CostUSD: 0.0670615, QuerySource: "sdk",
+		}},
+	})
+	spends := apiSpendEvents(got)
+	if len(spends) != 2 {
+		t.Fatalf("api_spend_total count = %d; want 2", len(spends))
+	}
+	final := spends[1]
+
+	wantTotal := 0.000401 + 0.0670615
+	if absDiff(final.TotalUSD, wantTotal) > 1e-9 {
+		t.Errorf("total_usd = %v; want %v", final.TotalUSD, wantTotal)
+	}
+	if final.Calls != 2 {
+		t.Errorf("calls = %d; want 2", final.Calls)
+	}
+	if absDiff(final.ByModel["claude-haiku-4-5"], 0.000401) > 1e-9 {
+		t.Errorf("haiku spend = %v; want 0.000401", final.ByModel["claude-haiku-4-5"])
+	}
+	if absDiff(final.ByModel["claude-opus-4-7"], 0.0670615) > 1e-9 {
+		t.Errorf("opus spend = %v; want 0.0670615", final.ByModel["claude-opus-4-7"])
+	}
+	if absDiff(final.ByQuerySource["generate_session_title"], 0.000401) > 1e-9 {
+		t.Errorf("aux spend = %v; want 0.000401", final.ByQuerySource["generate_session_title"])
+	}
+	if absDiff(final.ByQuerySource["sdk"], 0.0670615) > 1e-9 {
+		t.Errorf("sdk spend = %v; want 0.0670615", final.ByQuerySource["sdk"])
+	}
+}
+
+func TestDerivation_APISpendTotal_EmittedSnapshotsAreIndependent(t *testing.T) {
+	// Each emitted APISpendTotal carries its own ByModel / ByQuerySource
+	// snapshot. Earlier emissions must not retroactively change when
+	// later calls land (defensive copy via copyFloatMap).
+	d := newDerivationState()
+	got := derivedOf(d, []msg.Event{
+		{Type: msg.EventAPICall, APICall: &msg.APICallEvent{Model: "m1", CostUSD: 1.0, QuerySource: "s1"}},
+		{Type: msg.EventAPICall, APICall: &msg.APICallEvent{Model: "m1", CostUSD: 2.0, QuerySource: "s1"}},
+	})
+	spends := apiSpendEvents(got)
+	if len(spends) != 2 {
+		t.Fatalf("api_spend_total count = %d; want 2", len(spends))
+	}
+	if spends[0].ByModel["m1"] != 1.0 {
+		t.Errorf("first snapshot ByModel[m1] = %v; want 1.0 (later mutation leaked back)", spends[0].ByModel["m1"])
+	}
+	if spends[1].ByModel["m1"] != 3.0 {
+		t.Errorf("second snapshot ByModel[m1] = %v; want 3.0", spends[1].ByModel["m1"])
+	}
+}
+
+func TestDerivation_APISpendTotal_EmptyDimensionsOmitted(t *testing.T) {
+	// An EventAPICall without Model or QuerySource still counts toward
+	// TotalUSD but doesn't fabricate dimensional keys. Fail-fast posture:
+	// an empty model/source surfaces a producer bug rather than getting
+	// silently bucketed as "unknown".
+	d := newDerivationState()
+	got := derivedOf(d, []msg.Event{
+		{Type: msg.EventAPICall, APICall: &msg.APICallEvent{CostUSD: 0.5}},
+	})
+	spends := apiSpendEvents(got)
+	if len(spends) != 1 {
+		t.Fatalf("count = %d; want 1", len(spends))
+	}
+	s := spends[0]
+	if s.TotalUSD != 0.5 || s.Calls != 1 {
+		t.Errorf("total/calls = %v/%d; want 0.5/1", s.TotalUSD, s.Calls)
+	}
+	if len(s.ByModel) != 0 {
+		t.Errorf("ByModel = %+v; want empty for empty-model call", s.ByModel)
+	}
+	if len(s.ByQuerySource) != 0 {
+		t.Errorf("ByQuerySource = %+v; want empty for empty-source call", s.ByQuerySource)
+	}
+}
+
 func TestDerivation_TurnComplete_ResultIsErrorFlag(t *testing.T) {
 	// EventResult.IsError (success-path with an error message body)
 	// should also flip turn_complete.IsError.
