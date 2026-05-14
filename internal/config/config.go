@@ -17,7 +17,6 @@ type Config struct {
 	ModelStoreDB     string
 	ModelStoreURL    string
 	AgentStoreURL    string
-	NatsURL          string
 	ImagesDir        string
 	BridgePrefsPath  string
 	ConformancePath  string
@@ -59,7 +58,6 @@ func Load() *Config {
 		ModelStoreDB:    envOr("LLMBRIDGE_MODEL_STORE_DB", filepath.Join(os.Getenv("HOME"), ".config", "model-store", "store.db")),
 		ModelStoreURL:   os.Getenv("LLMBRIDGE_MODEL_STORE_URL"),
 		AgentStoreURL:   os.Getenv("LLMBRIDGE_AGENT_STORE_URL"),
-		NatsURL:        os.Getenv("NATS_URL"),
 		ImagesDir:       envOr("LLMBRIDGE_IMAGES_DIR", "images"),
 		BridgePrefsPath: envOr("LLMBRIDGE_BRIDGE_PREFS", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "bridge-prefs.json")),
 		ConformancePath: envOr("LLMBRIDGE_CONFORMANCE_PATH", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "conformance.json")),
