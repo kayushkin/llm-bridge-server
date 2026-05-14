@@ -127,6 +127,7 @@ func (s *Server) routes() {
 	// events mode. Single-writer in v1 (child 2); resize / multi-reader
 	// land in child 3.
 	s.mux.HandleFunc("GET /sessions/{id}/attach", s.handleAttachSession)
+	s.mux.HandleFunc("GET /sessions/{id}/attach-token", s.handleGetAttachToken)
 	s.mux.HandleFunc("GET /sessions/aggregates", s.handleSessionAggregates)
 	s.mux.HandleFunc("GET /sessions/{id}/messages", s.proxyToLogStore)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.proxyToLogStore)

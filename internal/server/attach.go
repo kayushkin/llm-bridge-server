@@ -49,6 +49,25 @@ type attachControl struct {
 	Role string `json:"role,omitempty"`
 }
 
+// handleGetAttachToken returns the current per-hub attach token for a
+// pty session. Lets a client recover the token when their tab cache is
+// gone (page refresh) without having to mode-switch the session to mint
+// a new one. 404 if the session has no live pty hub — that's also the
+// signal that mode-switch is required to spin one up.
+func (s *Server) handleGetAttachToken(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	if _, err := s.store.GetSession(bridgeID); err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	hub := s.harness.AttachHubFor(bridgeID)
+	if hub == nil {
+		http.Error(w, "session has no live pty hub", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]string{"attach_token": hub.Token()})
+}
+
 // handleAttachSession upgrades to a WebSocket and joins the session's
 // attach hub. The hub fans pty output to every connected client and
 // arbitrates writer ownership; the handler is just glue between gorilla
