@@ -398,10 +398,34 @@ func (p *PTYProcess) SessionID() string { return p.sessionID }
 // immediately without blocking.
 func (p *PTYProcess) Events() <-chan msg.Event { return p.events }
 
-// Send is a no-op for pty sessions. Input flows through the attach
-// WebSocket directly to the pty fd; there is no JSON-RPC channel.
+// Send writes the user's typed message into the pseudoterminal as if
+// they had typed it themselves and pressed Enter. Used by the bridge
+// /sessions/{id}/send endpoint so the Composer (and any other client
+// that doesn't want to wire up a WebSocket) can still drive pty
+// sessions.
+//
+// Blocks (multimodal content) are rejected — there's no terminal
+// representation for an image attachment, and silently stripping them
+// would mislead the caller into thinking the send was complete.
+//
+// "\r" is the byte a real keyboard Enter press produces, which is
+// what claude's TUI (and most other interactive CLIs) expect. The
+// kernel pty handles line discipline; if upstream is in cooked mode
+// it will translate to \n on its own.
 func (p *PTYProcess) Send(message string, blocks []msg.ContentBlock) error {
-	return fmt.Errorf("send not supported in pty mode; write to attach WebSocket instead")
+	if len(blocks) > 0 {
+		return fmt.Errorf("multimodal blocks are not supported in pty mode")
+	}
+	if p.tty == nil {
+		return fmt.Errorf("pty fd not open")
+	}
+	if _, err := p.tty.Write([]byte(message)); err != nil {
+		return fmt.Errorf("pty write: %w", err)
+	}
+	if _, err := p.tty.Write([]byte("\r")); err != nil {
+		return fmt.Errorf("pty write enter: %w", err)
+	}
+	return nil
 }
 
 // SendCommand is a no-op for pty sessions for the same reason as Send.
