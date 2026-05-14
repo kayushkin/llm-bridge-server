@@ -22,6 +22,7 @@ Operational docs:
 | Doc | Covers |
 |---|---|
 | [`PTY-MODE.md`](./PTY-MODE.md) | PTY-mode harness operation. |
+| [`CODEX-PARITY.md`](./CODEX-PARITY.md) | Plan to bring codex sessions to feature parity with CC on permissions, hooks, and tool-store; plus codex-specific extras (`PermissionRequest`, `Stop`/`UserPromptSubmit`/`SessionStart` hooks, output-schema). |
 | [`TODO-jig-integration.md`](./TODO-jig-integration.md) | jig harness integration TODO list. |
 
 External pointers (not in this repo, referenced by the design):
