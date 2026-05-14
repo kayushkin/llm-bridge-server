@@ -472,6 +472,40 @@ Per-turn changes already work end-to-end:
 
 The mental model: **codex is configured to be maximally permissive within a workspace, hooks are how the bridge sees+gates everything, permission-store is the actual brain.** Codex's sandbox is the floor (defense-in-depth) not the ceiling.
 
+### 6.9 Host escape hatch: `CODEX_DISABLE_SANDBOX`
+
+Codex's `workspace-write` and `read-only` sandbox modes are implemented with **bubblewrap**. On hosts where bwrap can't initialize a user namespace with loopback networking, every codex tool call fails at sandbox setup with:
+
+```
+bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+```
+
+Common triggers:
+- Ubuntu 24.04+ with restricted user namespaces / AppArmor blocking unprivileged bwrap
+- Kernels without `CAP_NET_ADMIN` available in unprivileged user namespaces
+- Containerized hosts that drop `NET_ADMIN`
+
+**Critically, the failure happens BEFORE the model dispatches the tool**, so the bridge prehook never gets the chance to gate it. The user sees "auto-deny" with no banner because no permission check ever ran.
+
+**Workaround: `CODEX_DISABLE_SANDBOX=1`** (read by the codex bridge in `config.go`). When set, the bridge pins every session's `SandboxPolicy` to `danger-full-access` regardless of canonical mode (Plan/Read/Auto/Rules/Ask All/Block All all run sandbox-less at the codex layer). Implementation: last step of `applyStartConfig` in `handler.go` — runs after canonical mapping AND Custom-mode override so nothing can undo it.
+
+**This is not a security regression.** The bridge prehook + permission-store remain the security gate:
+- `Plan`/`Read` modes still deny non-whitelisted tools at the prehook BEFORE the call runs (bridge-side, not sandbox-side)
+- `Block All` still denies everything at the prehook
+- `Ask All` still parks every call for human approval
+- `Rules` still consults permission-store rules
+
+What's lost: defense-in-depth at the codex sandbox layer. If the bridge prehook is bypassed somehow (e.g. codex's PreToolUse doesn't fire for a tool — see [issue #20204](https://github.com/openai/codex/issues/20204)), the codex sandbox would no longer catch unsafe operations. Acceptable trade-off when the sandbox can't function at all on the host.
+
+**Set via systemd drop-in in `llm-bridge-server`'s `deploy.sh`:**
+
+```ini
+[Service]
+Environment=CODEX_DISABLE_SANDBOX=1
+```
+
+Remove the line once the host's user-namespace / `CAP_NET_ADMIN` config supports unprivileged bwrap loopback. The codex bridge code path stays — it's a permanent escape hatch for any future host with the same issue.
+
 ---
 
 ## 7. Expanding the permission-mode enum + UI

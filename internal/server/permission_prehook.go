@@ -58,6 +58,13 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Observability — log every prehook hit with the routing-critical fields
+	// so we can tell at a glance whether codex/CC sessions are actually
+	// reaching the gate. URL.Path distinguishes /permission/cc-prehook/
+	// from /permission/codex-prehook/.
+	log.Printf("[prehook] %s bridge=%s tool=%s tool_use_id=%s",
+		r.URL.Path, bridgeID, payload.ToolName, payload.ToolUseID)
+
 	// AskUserQuestion is a user-input solicitation, not a permission check
 	// (the model wants the human's answer, not approval to run). No
 	// permission mode applies: auto-allow would strip the answer payload,

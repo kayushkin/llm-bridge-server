@@ -82,12 +82,21 @@ if [ -z "$DEPLOY_AUTH_STORE_TOKEN" ]; then
   echo "WARNING: AUTH_STORE_TOKEN not set in deploy env; service will be unauthed against auth-store"
 fi
 TMP_DROPIN=$(mktemp)
+# CODEX_DISABLE_SANDBOX: this host's kernel rejects bwrap loopback setup
+# ("RTM_NEWADDR: Operation not permitted") so codex's workspace-write
+# sandbox can't initialize. Without disabling it, every codex tool call
+# fails at sandbox setup BEFORE the bridge prehook can gate it — the
+# user sees "auto-deny" with no banner. The bridge prehook +
+# permission-store remain the security gate; codex's sandbox was always
+# defense-in-depth. Remove this line once the host's user-namespace +
+# CAP_NET_ADMIN config supports unprivileged bwrap loopback.
 cat > "$TMP_DROPIN" <<EOF
 [Service]
 Environment=PATH=$DEPLOY_PATH
 Environment=HOME=$HOME
 Environment=AUTH_STORE_URL=$DEPLOY_AUTH_STORE_URL
 Environment=AUTH_STORE_TOKEN=$DEPLOY_AUTH_STORE_TOKEN
+Environment=CODEX_DISABLE_SANDBOX=1
 EOF
 sudo cp "$TMP_DROPIN" "$DROPIN_DIR/local.conf"
 rm -f "$TMP_DROPIN"
