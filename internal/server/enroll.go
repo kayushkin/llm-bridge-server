@@ -13,7 +13,9 @@ import (
 
 // handleEnrollRunner consumes a one-time enrollment passphrase, creates
 // (or updates) the machine row for the runner, mints a durable per-machine
-// runner token, and seeds a default claude_code instance pointing at it.
+// runner token, and seeds one default instance per harness type the runner
+// reports as available (claude_code, codex, jig, …). Older runners that
+// don't report AvailableHarnesses get the legacy claude_code-only default.
 //
 // Idempotency: re-enrollment with the same machine_name reuses the existing
 // machine row (refreshing its hostname/os/etc. from the runner's report)
@@ -112,18 +114,20 @@ func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
 	// Seed default instances based on what the runner reports as
 	// available. For each available harness type that doesn't already
 	// have an instance bound to this machine, create one.
+	//
+	// Older runners that don't report AvailableHarnesses get the legacy
+	// claude_code-only default. Modern runners get one instance per
+	// reported harness — codex, claudecode, jig, etc. all seeded.
 	defaultHarnesses := []msg.Harness{msg.HarnessClaudeCode}
 	if len(req.AvailableHarnesses) > 0 {
-		defaultHarnesses = nil
+		defaultHarnesses = defaultHarnesses[:0]
+		seen := make(map[msg.Harness]bool, len(req.AvailableHarnesses))
 		for _, ah := range req.AvailableHarnesses {
-			if ah.Harness == msg.HarnessClaudeCode {
-				defaultHarnesses = append(defaultHarnesses, ah.Harness)
+			if ah.Harness == "" || seen[ah.Harness] {
+				continue
 			}
-		}
-		// If the runner reports no claude_code, fall back to first
-		// available harness so the machine isn't useless.
-		if len(defaultHarnesses) == 0 && len(req.AvailableHarnesses) > 0 {
-			defaultHarnesses = []msg.Harness{req.AvailableHarnesses[0].Harness}
+			seen[ah.Harness] = true
+			defaultHarnesses = append(defaultHarnesses, ah.Harness)
 		}
 	}
 
