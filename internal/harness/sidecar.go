@@ -34,7 +34,7 @@ type otelSidecar struct {
 // Real errors (binary missing, sidecar crashed before printing URL)
 // surface to the caller, but the caller (manager) treats sidecar
 // failure as non-fatal and just logs.
-func startOTelSidecar(binPath, bridgeSessionID, bridgeServerURL string) (*otelSidecar, []string, error) {
+func startOTelSidecar(binPath, bridgeSessionID, bridgeServerURL, ptyCwd, ptyResumeID string) (*otelSidecar, []string, error) {
 	if binPath == "" {
 		return nil, nil, fmt.Errorf("sidecar bin path empty")
 	}
@@ -50,6 +50,15 @@ func startOTelSidecar(binPath, bridgeSessionID, bridgeServerURL string) (*otelSi
 		"LLMBRIDGE_BRIDGE_SESSION_ID="+bridgeSessionID,
 		"LLMBRIDGE_BRIDGE_SERVER_URL="+bridgeServerURL,
 	)
+	// Rollout-tailer inputs. Both optional from the sidecar's
+	// perspective (it falls back gracefully when unset); we forward
+	// whatever the manager knows.
+	if ptyCwd != "" {
+		cmd.Env = append(cmd.Env, "LLMBRIDGE_PTY_CWD="+ptyCwd)
+	}
+	if ptyResumeID != "" {
+		cmd.Env = append(cmd.Env, "LLMBRIDGE_PTY_RESUME_ID="+ptyResumeID)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, fmt.Errorf("sidecar stdout pipe: %w", err)

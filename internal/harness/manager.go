@@ -966,7 +966,14 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 			if m.localBridgeURL == "" {
 				log.Printf("[sidecar] localBridgeURL not configured; PTY session %s starts without OTel", sess.SessionID)
 			} else {
-				sc, env, err := startOTelSidecar(binPath, sess.SessionID, m.localBridgeURL)
+				// Cwd defaults to bridge-server's cwd (claude inherits it
+				// when StartProcessPTY doesn't set cmd.Dir). Resume only
+				// when the session row carries a known harness UUID.
+				ptyCwd := "/"
+				if wd, err := os.Getwd(); err == nil {
+					ptyCwd = wd
+				}
+				sc, env, err := startOTelSidecar(binPath, sess.SessionID, m.localBridgeURL, ptyCwd, sess.HarnessSessionID)
 				if err != nil {
 					log.Printf("[sidecar] start failed for %s (continuing without OTel): %v", sess.SessionID, err)
 				} else {
@@ -974,7 +981,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 					m.mu.Lock()
 					m.otelSidecars[sess.SessionID] = sc
 					m.mu.Unlock()
-					log.Printf("[sidecar] spawned for PTY session %s, endpoint=%s", sess.SessionID, sc.endpointURL)
+					log.Printf("[sidecar] spawned for PTY session %s, endpoint=%s, cwd=%s, resume=%s", sess.SessionID, sc.endpointURL, ptyCwd, sess.HarnessSessionID)
 				}
 			}
 		}
