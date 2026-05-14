@@ -121,8 +121,30 @@ func (s *Server) broadcastStaleResolution(bridgeID, requestID string, d permissi
 // PUT /sessions/{id}/permission-mode. The prehook reads the persisted
 // value on every request, so the new mode takes effect immediately for
 // every session — no harness broadcast needed.
+//
+// DisableNetwork is an orthogonal side-axis that lives alongside the mode
+// for atomicity (one HTTP roundtrip changes both). nil means "leave the
+// existing value alone"; pointer-bool lets the caller omit the field
+// without it defaulting to false.
+//
+// PermissionModeCustom carries the raw harness-specific knobs the user
+// picked in Custom mode (codex: approval + sandbox; other harnesses
+// surface their own subset). Only honored when Mode == "custom"; the
+// bridge writes the struct to HarnessConfig.permission_mode_custom and
+// the harness reads it on next spawn. nil leaves any existing value
+// alone; an empty struct clears it.
 type permissionModeRequest struct {
-	Mode string `json:"mode"`
+	Mode                 string                       `json:"mode"`
+	DisableNetwork       *bool                        `json:"disable_network,omitempty"`
+	PermissionModeCustom *permissionModeCustomConfig  `json:"permission_mode_custom,omitempty"`
+}
+
+// permissionModeCustomConfig is the raw-knob payload Custom mode carries
+// through to the harness. Codex consumes Approval + Sandbox; other
+// harnesses get to define their own subset later.
+type permissionModeCustomConfig struct {
+	Approval string `json:"approval,omitempty"`
+	Sandbox  string `json:"sandbox,omitempty"`
 }
 
 // bypassPermissionsRequest is the legacy body of POST /bridge/bypass-permissions
@@ -207,6 +229,28 @@ func (s *Server) handleSetSessionPermissionMode(w http.ResponseWriter, r *http.R
 	}
 	cfg["permission_mode"] = json.RawMessage(`"` + req.Mode + `"`)
 	delete(cfg, "bypass_permissions")
+	if req.DisableNetwork != nil {
+		if *req.DisableNetwork {
+			cfg["disable_network"] = json.RawMessage(`true`)
+		} else {
+			// Explicit false → delete the key so harness defaults apply.
+			// Distinguish from "omitted" (nil) where we leave it alone.
+			delete(cfg, "disable_network")
+		}
+	}
+	if req.PermissionModeCustom != nil {
+		if req.PermissionModeCustom.Approval == "" && req.PermissionModeCustom.Sandbox == "" {
+			// Empty struct → clear stored value.
+			delete(cfg, "permission_mode_custom")
+		} else {
+			raw, err := json.Marshal(req.PermissionModeCustom)
+			if err != nil {
+				http.Error(w, "marshal permission_mode_custom: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			cfg["permission_mode_custom"] = raw
+		}
+	}
 	merged, err := json.Marshal(cfg)
 	if err != nil {
 		http.Error(w, "marshal harness_config: "+err.Error(), http.StatusInternalServerError)
@@ -217,11 +261,15 @@ func (s *Server) handleSetSessionPermissionMode(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	writeJSON(w, map[string]any{
+	resp := map[string]any{
 		"status":          "ok",
 		"bridge_id":       bridgeID,
 		"permission_mode": req.Mode,
-	})
+	}
+	if req.DisableNetwork != nil {
+		resp["disable_network"] = *req.DisableNetwork
+	}
+	writeJSON(w, resp)
 }
 
 // handleSetBypassPermissions is the legacy alias for the global

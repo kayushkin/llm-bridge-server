@@ -100,6 +100,19 @@ var harnessSupportsPTY = map[msg.Harness]bool{
 	msg.HarnessCodex:      true,
 }
 
+// harnessSupportsDisableNetwork reports whether the harness can enforce
+// "no outbound network" at the sandbox layer. The bridge surfaces this
+// as a checkbox alongside the permission-mode dropdown; greyed out for
+// harnesses without sandbox-level network gating.
+//
+// codex maps to sandbox_workspace_write.network_access=false (passed as
+// a `-c` override on app-server spawn). claude_code has no sandbox-level
+// network knob today; a future hook-store rule could implement the same
+// gate, at which point we flip its entry to true.
+var harnessSupportsDisableNetwork = map[msg.Harness]bool{
+	msg.HarnessCodex: true,
+}
+
 // harnessSupportedPermissionModes lists the permission modes each harness
 // knows how to express in its own start params. Every harness implicitly
 // supports "ask" and "bypass" via the universal prehook gate; the
@@ -117,10 +130,8 @@ var harnessSupportedPermissionModes = map[msg.Harness][]string{
 		msg.PermissionModeAuto,
 		msg.PermissionModeBypass,
 	},
-	// Codex parity is a follow-up. Until the harness gets the new-mode
-	// translations + Custom panel, expose the same set bridge-side; the
-	// restrictive modes work via the universal prehook gate regardless of
-	// codex's native vocab.
+	// Codex supports all modes including Custom, which exposes the raw
+	// approval_policy + sandbox_mode pair through bridge-ui's Custom panel.
 	msg.HarnessCodex: {
 		msg.PermissionModeBlockAll,
 		msg.PermissionModePlan,
@@ -129,6 +140,7 @@ var harnessSupportedPermissionModes = map[msg.Harness][]string{
 		msg.PermissionModeAsk,
 		msg.PermissionModeAuto,
 		msg.PermissionModeBypass,
+		msg.PermissionModeCustom,
 	},
 }
 
@@ -311,6 +323,7 @@ func (s *Server) discoverHarnesses() []HarnessStatus {
 			SupportedProviders:       harnessSupportedProviders[h],
 			SupportedPermissionModes: supportedPermissionModesFor(h),
 			PTY:                      harnessSupportsPTY[h],
+			SupportsDisableNetwork:   harnessSupportsDisableNetwork[h],
 		})
 	}
 	return statuses
