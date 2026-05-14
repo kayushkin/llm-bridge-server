@@ -135,11 +135,23 @@ type bypassPermissionsRequest struct {
 
 func validPermissionMode(m string) bool {
 	switch m {
-	case msg.PermissionModeAsk, msg.PermissionModeAuto, msg.PermissionModeBypass:
+	case msg.PermissionModeBlockAll,
+		msg.PermissionModePlan,
+		msg.PermissionModeRead,
+		msg.PermissionModeAskAll,
+		msg.PermissionModeAsk,
+		msg.PermissionModeAuto,
+		msg.PermissionModeBypass,
+		msg.PermissionModeCustom:
 		return true
 	}
 	return false
 }
+
+// permissionModeAllowedValues is the human-readable enum for 400 responses.
+// Kept in lockstep with validPermissionMode so the error message stays
+// honest about what's accepted.
+const permissionModeAllowedValues = "block_all|plan|read|ask_all|ask|auto|bypass|custom"
 
 // handleSetGlobalPermissionMode persists the global permission_mode in
 // bridge-prefs. The prehook reads bridge-prefs on every call so the
@@ -151,7 +163,7 @@ func (s *Server) handleSetGlobalPermissionMode(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if !validPermissionMode(req.Mode) {
-		http.Error(w, "mode must be one of ask|auto|bypass", http.StatusBadRequest)
+		http.Error(w, "mode must be one of "+permissionModeAllowedValues, http.StatusBadRequest)
 		return
 	}
 
@@ -182,7 +194,7 @@ func (s *Server) handleSetSessionPermissionMode(w http.ResponseWriter, r *http.R
 		return
 	}
 	if !validPermissionMode(req.Mode) {
-		http.Error(w, "mode must be one of ask|auto|bypass", http.StatusBadRequest)
+		http.Error(w, "mode must be one of "+permissionModeAllowedValues, http.StatusBadRequest)
 		return
 	}
 
