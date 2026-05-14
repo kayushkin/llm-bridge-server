@@ -157,6 +157,13 @@ func (s *Server) routes() {
 	// embedded bridge_perm MCP is gone.
 	s.mux.HandleFunc("POST /permission/cc-prehook/{bridge_id}", s.handleCCPermissionPrehook)
 
+	// PreToolUse permission gate for codex. Wired in via
+	// buildCodexHookConfig — codex's hook config carries a curl command
+	// pointing here on every Bash/apply_patch/MCP tool call. Codex's
+	// PreToolUse payload + hookSpecificOutput.permissionDecision shapes
+	// are byte-identical to CC's, so the same handler serves both URLs.
+	s.mux.HandleFunc("POST /permission/codex-prehook/{bridge_id}", s.handleCCPermissionPrehook)
+
 	// Global permission mode — persisted in bridge-prefs. Used as the
 	// snapshot source when new sessions are created and as the fallback
 	// for legacy sessions that pre-date the per-session snapshot. One of
