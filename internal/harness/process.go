@@ -332,8 +332,13 @@ type PTYProcess struct {
 // harnesses are expected to detect that and exec into their upstream
 // CLI so the pty fd is wired straight through to the user's TUI.
 //
+// extraEnv is appended to the child's environment after the canonical
+// LLMBRIDGE_* and credential variables. Used by the manager to inject
+// OTel telemetry endpoints (set by the per-session sidecar) so the
+// upstream CLI's telemetry exporter has somewhere to land.
+//
 // On TransportLocal only — SSH/runner paths reject pty mode upstream.
-func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, credentialID string) (*PTYProcess, error) {
+func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, credentialID string, extraEnv []string) (*PTYProcess, error) {
 	cmd := exec.Command(binPath)
 	cmd.Env = append(os.Environ(), "LLMBRIDGE_PTY_MODE=1")
 	if credentialID != "" {
@@ -344,6 +349,9 @@ func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, c
 		// the right session without us shoehorning a JSON-RPC handshake
 		// across the tty (where the user is going to be typing).
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_PTY_RESUME_ID="+hid)
+	}
+	if len(extraEnv) > 0 {
+		cmd.Env = append(cmd.Env, extraEnv...)
 	}
 
 	// StartWithSize sets the pty dimensions before exec, so the child sees

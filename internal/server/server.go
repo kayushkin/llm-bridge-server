@@ -165,6 +165,14 @@ func (s *Server) routes() {
 	// are byte-identical to CC's, so the same handler serves both URLs.
 	s.mux.HandleFunc("POST /permission/codex-prehook/{bridge_id}", s.handleCCPermissionPrehook)
 
+	// Sidecar event ingest for PTY-mode sessions. llm-bridge-claudecode's
+	// -otel-sidecar process POSTs translated OTel events here so they flow
+	// through the normal store + SSE + derivation pipeline. PTY sessions
+	// have no in-process receiver because the harness exec's directly
+	// into claude. See internal/harness/process.go's StartProcessPTY for
+	// how the sidecar is spawned and the env wiring on the PTY child.
+	s.mux.HandleFunc("POST /sidecar/event/{bridge_id}", s.handleSidecarEvent)
+
 	// Global permission mode — persisted in bridge-prefs. Used as the
 	// snapshot source when new sessions are created and as the fallback
 	// for legacy sessions that pre-date the per-session snapshot. One of

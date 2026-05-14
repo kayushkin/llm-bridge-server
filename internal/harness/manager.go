@@ -47,6 +47,7 @@ type Manager struct {
 	msgState        map[string]*sessionMsgState   // sessionID → message-id assignment state
 	attachHubs      map[string]*AttachHub         // sessionID → fan-out hub for pty sessions
 	derivation      map[string]*derivationState   // sessionID → convenience-event derivation state
+	otelSidecars    map[string]*otelSidecar       // sessionID → per-PTY OTel sidecar (nil for non-PTY sessions)
 	pending         *pendingHooks                 // awaiting_resolution hooks indexed by sessionID, request_id
 	store           *store.Store
 	logStore        *logstore.Client
@@ -69,6 +70,7 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL string, ptyRingByt
 		msgState:        make(map[string]*sessionMsgState),
 		attachHubs:      make(map[string]*AttachHub),
 		derivation:      make(map[string]*derivationState),
+		otelSidecars:    make(map[string]*otelSidecar),
 		pending:         newPendingHooks(),
 		store:           st,
 		logStore:        logstore.New(logStoreURL),
@@ -938,7 +940,34 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 		if !ok {
 			return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 		}
-		proc, err = StartProcessPTY(ctx, binPath, sess, credentialID)
+
+		// Spawn the per-session OTel sidecar first so the PTY child sees
+		// OTEL_EXPORTER_OTLP_ENDPOINT etc. at spawn time. Sidecar failure
+		// is non-fatal — telemetry is observability, the user's chat
+		// session should still come up. Log loudly so the gap is visible.
+		var sidecarEnv []string
+		if h == msg.HarnessClaudeCode && m.publicServerURL != "" {
+			sc, env, err := startOTelSidecar(binPath, sess.SessionID, m.publicServerURL)
+			if err != nil {
+				log.Printf("[sidecar] start failed for %s (continuing without OTel): %v", sess.SessionID, err)
+			} else {
+				sidecarEnv = env
+				m.mu.Lock()
+				m.otelSidecars[sess.SessionID] = sc
+				m.mu.Unlock()
+			}
+		}
+
+		proc, err = StartProcessPTY(ctx, binPath, sess, credentialID, sidecarEnv)
+		if err != nil {
+			// PTY launch failed — sidecar is now orphaned. Stop it.
+			m.mu.Lock()
+			if sc := m.otelSidecars[sess.SessionID]; sc != nil {
+				sc.stop()
+				delete(m.otelSidecars, sess.SessionID)
+			}
+			m.mu.Unlock()
+		}
 	} else {
 		switch inst.Machine.Transport {
 		case msg.TransportSSH:
@@ -1002,7 +1031,16 @@ func (m *Manager) watchPTYExit(p *PTYProcess) {
 	delete(m.processes, bridgeID)
 	delete(m.msgState, bridgeID)
 	delete(m.attachHubs, bridgeID)
+	sidecar := m.otelSidecars[bridgeID]
+	delete(m.otelSidecars, bridgeID)
 	m.mu.Unlock()
+
+	// Stop the OTel sidecar after the PTY child exits. The sidecar's
+	// internal flush window (~2s) is honored by stop() so trailing
+	// telemetry batches still land before the receiver closes.
+	if sidecar != nil {
+		sidecar.stop()
+	}
 
 	m.store.UpdateSessionPID(bridgeID, 0)
 	m.store.UpdateSessionState(bridgeID, string(msg.SessionCompleted))
