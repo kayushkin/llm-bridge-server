@@ -70,7 +70,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		hookStore:     hks,
 		modelStore:    mds,
 		snapshotStore: ss,
-		harness:       harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, cfg.PTYRingBufferBytes, authClient),
+		harness:       harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
 		authClient:    authClient,
 		permClient:    permclient.New(cfg.PermissionStoreURL),
 		bridgePrefs:   newBridgePrefsStore(cfg.BridgePrefsPath),

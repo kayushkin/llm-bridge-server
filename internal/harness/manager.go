@@ -54,16 +54,25 @@ type Manager struct {
 	runners         *RunnerRegistry // optional; nil disables TransportRunner spawns
 	authClient      *authstoreclient.Client
 	publicServerURL string          // public bridge URL runners use for /api/runner/binary fetches
+	localBridgeURL  string          // localhost URL the per-session OTel sidecar POSTs translated events to; derived from ListenAddr at startup
 	ptyRingBytes    int             // configured ring buffer size for pty late-attach replay
 }
 
-// NewManager creates a harness manager. publicServerURL is the URL
-// runners use to fetch backend binaries (manifest BinaryURL); should
-// be the same URL the runner is already connected to via WS.
+// NewManager creates a harness manager.
+//
+// publicServerURL is the externally-reachable URL runners use to fetch
+// backend binaries (manifest BinaryURL) — same URL the runner is already
+// connected to via WS. May be empty when no remote runners are in play.
+//
+// localBridgeURL is the localhost-reachable URL bridge-server listens on,
+// used to point the per-PTY OTel sidecar at the /sidecar/event endpoint.
+// Distinct from publicServerURL: sidecar IPC is always loopback, and
+// publicServerURL may be a HTTPS hostname behind a reverse proxy that
+// the sidecar can't reach. Empty disables the PTY OTel sidecar.
 //
 // ptyRingBytes is the per-session ring buffer size used for late-attach
 // replay on pty sessions. <=0 falls back to the package default.
-func NewManager(st *store.Store, logStoreURL, publicServerURL string, ptyRingBytes int, authClient *authstoreclient.Client) *Manager {
+func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL string, ptyRingBytes int, authClient *authstoreclient.Client) *Manager {
 	return &Manager{
 		processes:       make(map[string]HarnessProcess),
 		subscribers:     make(map[string][]chan StoredEvent),
@@ -77,6 +86,7 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL string, ptyRingByt
 		runners:         NewRunnerRegistry(),
 		authClient:      authClient,
 		publicServerURL: publicServerURL,
+		localBridgeURL:  localBridgeURL,
 		ptyRingBytes:    ptyRingBytes,
 	}
 }
@@ -945,16 +955,27 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 		// OTEL_EXPORTER_OTLP_ENDPOINT etc. at spawn time. Sidecar failure
 		// is non-fatal — telemetry is observability, the user's chat
 		// session should still come up. Log loudly so the gap is visible.
+		//
+		// localBridgeURL is the loopback URL bridge-server listens on; the
+		// sidecar POSTs translated msg.Events to {localBridgeURL}/sidecar/event/{bridge_id}.
+		// When empty (misconfigured deployment), the sidecar is skipped
+		// and telemetry is silently disabled for PTY sessions — log once
+		// per session so the gap surfaces.
 		var sidecarEnv []string
-		if h == msg.HarnessClaudeCode && m.publicServerURL != "" {
-			sc, env, err := startOTelSidecar(binPath, sess.SessionID, m.publicServerURL)
-			if err != nil {
-				log.Printf("[sidecar] start failed for %s (continuing without OTel): %v", sess.SessionID, err)
+		if h == msg.HarnessClaudeCode {
+			if m.localBridgeURL == "" {
+				log.Printf("[sidecar] localBridgeURL not configured; PTY session %s starts without OTel", sess.SessionID)
 			} else {
-				sidecarEnv = env
-				m.mu.Lock()
-				m.otelSidecars[sess.SessionID] = sc
-				m.mu.Unlock()
+				sc, env, err := startOTelSidecar(binPath, sess.SessionID, m.localBridgeURL)
+				if err != nil {
+					log.Printf("[sidecar] start failed for %s (continuing without OTel): %v", sess.SessionID, err)
+				} else {
+					sidecarEnv = env
+					m.mu.Lock()
+					m.otelSidecars[sess.SessionID] = sc
+					m.mu.Unlock()
+					log.Printf("[sidecar] spawned for PTY session %s, endpoint=%s", sess.SessionID, sc.endpointURL)
+				}
 			}
 		}
 

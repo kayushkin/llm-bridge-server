@@ -54,7 +54,7 @@ func newTestManager(t *testing.T) *Manager {
 	ls := httptest.NewServer(newLogStoreStub())
 	t.Cleanup(ls.Close)
 
-	return NewManager(st, ls.URL, "http://127.0.0.1:0", 0, nil)
+	return NewManager(st, ls.URL, "http://127.0.0.1:0", "", 0, nil)
 }
 
 // logStoreStub is a minimal in-memory implementation of the log-store HTTP
