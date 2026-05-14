@@ -133,6 +133,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/interrupt", s.handleInterruptSession)
 	s.mux.HandleFunc("POST /sessions/{id}/resume", s.handleResumeSession)
 	s.mux.HandleFunc("POST /sessions/{id}/stop", s.handleStopSession)
+	s.mux.HandleFunc("POST /sessions/{id}/mode", s.handleSwitchMode)
 	s.mux.HandleFunc("POST /sessions/{id}/compact", s.handleCompactSession)
 	s.mux.HandleFunc("POST /sessions/{id}/fork", s.handleForkSession)
 	s.mux.HandleFunc("POST /sessions/{id}/rename", s.handleRenameSession)

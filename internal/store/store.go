@@ -488,6 +488,25 @@ func (s *Store) UpdateSessionPID(bridgeID string, pid int) error {
 	return nil
 }
 
+// UpdateSessionMode flips the I/O mode of a session. Used by the mode-
+// switch endpoint to flip an existing session between events and pty
+// modes; the caller is responsible for stopping the current process and
+// starting a fresh one in the new mode (this method only changes the
+// stored bit).
+func (s *Store) UpdateSessionMode(bridgeID string, mode msg.SessionMode) error {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`UPDATE sessions SET mode=?, updated_at=? WHERE bridge_id=?`, string(mode), now, bridgeID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	s.notifyChanged(bridgeID)
+	return nil
+}
+
 // UpdateSessionHarnessConfig replaces the harness_config blob for a session.
 // Pass an empty/nil cfg to clear it. Used by per-session settings endpoints
 // (e.g. /sessions/{id}/bypass-permissions) so changes survive harness restart.
