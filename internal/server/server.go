@@ -216,6 +216,7 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("GET /instances/{id}/credentials", s.handleListInstanceCredentials)
 		s.mux.HandleFunc("POST /instances/{id}/credentials", s.handleBindCredential)
 		s.mux.HandleFunc("DELETE /instances/{id}/credentials/{cred_id}", s.handleUnbindCredential)
+		s.mux.HandleFunc("POST /instances/{id}/oneshot", s.handleInstanceOneShot)
 	}
 
 	// Hook registry routes (mounted only when hook-store is loaded).
