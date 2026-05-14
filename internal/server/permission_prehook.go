@@ -75,6 +75,30 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	mode := s.permissionModeForSession(sess)
 
 	switch mode {
+	case msg.PermissionModeBlockAll:
+		// Soft pause — agent sees the deny in its tool result and can
+		// reason about it, ask the human, or stop. No rule consult.
+		writeHookDeny(w, "Tool blocked by user (Block All mode). Ask the user before retrying.")
+		return
+	case msg.PermissionModePlan:
+		if isPlanModeTool(payload.ToolName) {
+			writeHookAllow(w, "permission-mode=plan:"+payload.ToolName)
+			return
+		}
+		writeHookDeny(w, "Plan mode: only planning tools (Read/Glob/Grep/TodoWrite) are permitted.")
+		return
+	case msg.PermissionModeRead:
+		if isReadOnlyTool(payload.ToolName) {
+			writeHookAllow(w, "permission-mode=read:"+payload.ToolName)
+			return
+		}
+		writeHookDeny(w, "Read-only mode: writes and shell execution are blocked.")
+		return
+	case msg.PermissionModeAskAll:
+		// Skip permission-store entirely. Every tool call parks for the
+		// human, regardless of any prior "always allow" rule.
+		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourcePermission)
+		return
 	case msg.PermissionModeBypass:
 		writeHookAllow(w, "permission-mode=bypass")
 		return
@@ -85,6 +109,9 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		}
 		// Fall through to the normal gating flow for non-safe tools.
 	}
+	// PermissionModeAsk + PermissionModeCustom fall through to
+	// permission-store evaluation. Custom's raw approval/sandbox knobs
+	// are harness-side concerns; rule evaluation is unchanged.
 
 	if s.permClient == nil {
 		writeHookAsk(w, "permission-store client not configured")
@@ -142,6 +169,41 @@ var autoModeSafeTools = map[string]struct{}{
 
 func isAutoModeSafeTool(name string) bool {
 	_, ok := autoModeSafeTools[name]
+	return ok
+}
+
+// planModeTools is the strict whitelist for PermissionModePlan: read-only
+// inspection plus the planning state tools. No writes, no shell, no
+// subagent spawns. Matches CC's native "plan" mode tool surface.
+var planModeTools = map[string]struct{}{
+	"Read":         {},
+	"Glob":         {},
+	"Grep":         {},
+	"LS":           {},
+	"NotebookRead": {},
+	"TodoWrite":    {},
+	"ExitPlanMode": {},
+}
+
+func isPlanModeTool(name string) bool {
+	_, ok := planModeTools[name]
+	return ok
+}
+
+// readOnlyTools is the whitelist for PermissionModeRead: pure inspection.
+// Excludes TodoWrite/ExitPlanMode (planning state mutations) and all
+// shell/edit tools. Safe-Bash heuristics could be layered on top of this
+// later (e.g. allow `ls`/`cat`/`git log` while denying `rm`).
+var readOnlyTools = map[string]struct{}{
+	"Read":         {},
+	"Glob":         {},
+	"Grep":         {},
+	"LS":           {},
+	"NotebookRead": {},
+}
+
+func isReadOnlyTool(name string) bool {
+	_, ok := readOnlyTools[name]
 	return ok
 }
 
