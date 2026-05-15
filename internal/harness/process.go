@@ -9,8 +9,10 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -416,10 +418,22 @@ func (p *PTYProcess) Events() <-chan msg.Event { return p.events }
 // representation for an image attachment, and silently stripping them
 // would mislead the caller into thinking the send was complete.
 //
-// "\r" is the byte a real keyboard Enter press produces, which is
-// what claude's TUI (and most other interactive CLIs) expect. The
-// kernel pty handles line discipline; if upstream is in cooked mode
-// it will translate to \n on its own.
+// The Enter keypress ("\r") is written as a SEPARATE pty write after a
+// short settle delay. Writing "message\r" in one burst doesn't work:
+// claude's Ink-based TUI coalesces a fast multi-byte read into a paste,
+// where the trailing \r is treated as a literal newline in the input
+// box rather than a submit. A real terminal types the text then sends
+// Enter as a discrete later event — the delay reproduces that so the
+// TUI's input loop processes the text, settles, then sees Enter as a
+// distinct keypress and submits. (This is the same trick tmux
+// send-keys / expect use to drive interactive CLIs.)
+//
+// ptySubmitDelay is deliberately generous: the cost is one slow path
+// on an explicit user send, and an Ink re-render under load can take
+// tens of ms. Trailing CR/LF in the message is stripped so we don't
+// double-submit or leave a stray blank line.
+const ptySubmitDelay = 120 * time.Millisecond
+
 func (p *PTYProcess) Send(message string, blocks []msg.ContentBlock) error {
 	if len(blocks) > 0 {
 		return fmt.Errorf("multimodal blocks are not supported in pty mode")
@@ -427,9 +441,11 @@ func (p *PTYProcess) Send(message string, blocks []msg.ContentBlock) error {
 	if p.tty == nil {
 		return fmt.Errorf("pty fd not open")
 	}
-	if _, err := p.tty.Write([]byte(message)); err != nil {
+	body := strings.TrimRight(message, "\r\n")
+	if _, err := p.tty.Write([]byte(body)); err != nil {
 		return fmt.Errorf("pty write: %w", err)
 	}
+	time.Sleep(ptySubmitDelay)
 	if _, err := p.tty.Write([]byte("\r")); err != nil {
 		return fmt.Errorf("pty write enter: %w", err)
 	}
