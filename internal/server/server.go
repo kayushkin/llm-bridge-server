@@ -486,6 +486,7 @@ func (s *Server) StartWatchdog() {
 		defer ticker.Stop()
 		for range ticker.C {
 			s.watchdogTick()
+			s.reapIdleTick()
 		}
 	}()
 }
@@ -516,6 +517,86 @@ func (s *Server) watchdogTick() {
 			go s.autoResume(sess)
 		}
 	}
+}
+
+// reapIdleTick kills harness processes that have gone quiet past their
+// idle timeout and marks the session aborted. This is the source-level
+// fix for the warm-process leak: after a turn completes the claude
+// subprocess lingers (on stdin in events mode, on the pty fd in pty mode)
+// holding ~150MB while it waits for a follow-up turn that one-shot
+// autoworkers never send. Left unchecked these accumulate until OOM.
+//
+// "Quiet" is measured by the most recent event of ANY kind. Both stream
+// output and OTel telemetry land in the events table — pty telemetry via
+// /sidecar/event → BroadcastEvent → StoreEvent — so a single timestamp
+// (LastActivityAt) covers events mode and pty mode alike.
+func (s *Server) reapIdleTick() {
+	if s.harness == nil {
+		return
+	}
+	now := time.Now()
+	for _, id := range s.harness.ListActiveSessions() {
+		sess, err := s.store.GetSession(id)
+		if err != nil || sess == nil {
+			continue
+		}
+
+		// Last activity = most recent event of any kind. Zero means no
+		// events yet (just spawned); the decision falls back to the row's
+		// updated_at so a fresh process isn't reaped before its first event.
+		lastAt, err := s.store.LastActivityAt(id)
+		if err != nil {
+			log.Printf("[reaper] %s: last-activity lookup failed: %v", id, err)
+			continue
+		}
+
+		idle, reap := reapDecision(now, sess.Mode, msg.SessionState(sess.State), lastAt, sess.UpdatedAt, s.cfg.IdleTimeout, s.cfg.PTYIdleTimeout)
+		if !reap {
+			continue
+		}
+
+		log.Printf("[reaper] %s: idle %s (mode=%s state=%s) exceeds timeout; killing", id, idle.Round(time.Second), sess.Mode, sess.State)
+		// Kill may fail if the process already exited — flip state anyway so
+		// the row reflects reality and the watchdog won't try to resume it.
+		_ = s.harness.Kill(id)
+		if err := s.store.UpdateSessionState(id, string(msg.SessionAborted)); err != nil {
+			log.Printf("[reaper] %s: state transition failed: %v", id, err)
+		}
+	}
+}
+
+// reapDecision is the pure idle-reaper policy, split out so the gating
+// rules are unit-testable without a live harness. Returns how long the
+// session has been idle and whether it should be killed.
+//
+// Rules:
+//   - Pick the timeout by mode (pty uses the longer PTYIdleTimeout).
+//   - timeout <= 0 disables reaping for that mode.
+//   - Events-mode sessions in an active state (model_generating,
+//     tool_running, compacting, rate_limited, starting) are never reaped:
+//     a long tool call emits no events while it runs, so state — not the
+//     timestamp — is the guard. PTY state isn't derived from telemetry, so
+//     PTY is intentionally not state-gated; its longer timeout is the guard.
+//   - Idle is measured from the last event, falling back to updatedAt when
+//     no event has landed yet so freshly-spawned processes get a grace gap.
+func reapDecision(now time.Time, mode msg.SessionMode, state msg.SessionState, lastActivity, updatedAt time.Time, idleTimeout, ptyTimeout time.Duration) (time.Duration, bool) {
+	isPTY := mode == msg.SessionModePTY
+	timeout := idleTimeout
+	if isPTY {
+		timeout = ptyTimeout
+	}
+	if timeout <= 0 {
+		return 0, false
+	}
+	if !isPTY && state.IsActive() {
+		return 0, false
+	}
+	ref := lastActivity
+	if ref.IsZero() {
+		ref = updatedAt
+	}
+	idle := now.Sub(ref)
+	return idle, idle >= timeout
 }
 
 // autoResume restarts a single session's harness process. Mirrors the flow in

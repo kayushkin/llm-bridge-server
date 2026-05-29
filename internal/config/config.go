@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -45,6 +46,21 @@ type Config struct {
 	// without a full clear-and-redraw. Configured via
 	// LLMBRIDGE_PTY_RING_BUFFER_BYTES; defaults to 65536 (64 KiB).
 	PTYRingBufferBytes int
+	// IdleTimeout is how long an events-mode session may sit with no new
+	// events — stream output OR telemetry, both land in the events table —
+	// before the watchdog kills its harness process and marks it aborted.
+	// Reaping reclaims the ~150MB a warm claude subprocess holds while it
+	// waits on stdin for a follow-up turn that one-shot autoworkers never
+	// send. Configured via LLMBRIDGE_IDLE_TIMEOUT (Go duration, e.g.
+	// "15m"); <=0 disables reaping for events-mode sessions.
+	IdleTimeout time.Duration
+	// PTYIdleTimeout is the same cutoff for pty-mode (interactive)
+	// sessions. PTY session state is not derived from telemetry (it stays
+	// "running"), so the activity timestamp is the sole liveness signal —
+	// and a human reading output between prompts emits nothing — so this
+	// defaults much higher than IdleTimeout. Configured via
+	// LLMBRIDGE_PTY_IDLE_TIMEOUT; <=0 disables reaping for pty sessions.
+	PTYIdleTimeout time.Duration
 }
 
 func Load() *Config {
@@ -69,7 +85,24 @@ func Load() *Config {
 		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.git")),
 		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled,harness-watch:Scheduled,healthcheck:Scheduled,renamer:Auto-rename,conformance:Conformance,subagent:Subagents")),
 		PTYRingBufferBytes: envInt("LLMBRIDGE_PTY_RING_BUFFER_BYTES", 64*1024),
+		IdleTimeout:        envDuration("LLMBRIDGE_IDLE_TIMEOUT", 15*time.Minute),
+		PTYIdleTimeout:     envDuration("LLMBRIDGE_PTY_IDLE_TIMEOUT", 60*time.Minute),
 	}
+}
+
+// envDuration reads a Go duration string (e.g. "15m") from an env var,
+// falling back to def if unset or unparseable. A parsed zero or negative
+// duration is preserved — callers treat <=0 as "disabled".
+func envDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
 }
 
 // envInt reads an int from an env var, falling back to def if unset or
