@@ -4,7 +4,36 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
+
+// TestIsUnattendedSession pins the gate that decides whether a prehook ask
+// parks for a human or resolves deterministically. Only autonomous sessions
+// (autoworker and the like) are unattended: getting this wrong either hangs a
+// background worker forever (false negative) or silently auto-allows an
+// interactive user's tool calls (false positive).
+func TestIsUnattendedSession(t *testing.T) {
+	cases := []struct {
+		name string
+		sess *store.Session
+		want bool
+	}{
+		{"nil", nil, false},
+		{"interactive", &store.Session{Type: msg.SessionTypeInteractive}, false},
+		{"autonomous", &store.Session{Type: msg.SessionTypeAutonomous}, true},
+		{"system", &store.Session{Type: msg.SessionTypeSystem}, false},
+		{"empty-type", &store.Session{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isUnattendedSession(tc.sess); got != tc.want {
+				t.Errorf("isUnattendedSession(%+v) = %v, want %v", tc.sess, got, tc.want)
+			}
+		})
+	}
+}
 
 // TestWriteHookDecision verifies the response body matches CC's
 // hookSpecificOutput contract — wrong field names or shape silently

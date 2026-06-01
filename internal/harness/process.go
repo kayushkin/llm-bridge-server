@@ -147,6 +147,13 @@ func StartProcess(ctx context.Context, binPath string, sess *store.Session, cred
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_CREDENTIAL_ID="+credentialID)
 	}
 	cmd.Stderr = os.Stderr // Surface harness subprocess errors
+	// Put the wrapper in its own process group so Kill can reap the whole
+	// tree. The wrapper (e.g. llm-bridge-claudecode) forks the real agent
+	// (claude) as a child; without a dedicated group the wrapper inherits
+	// bridge-server's group and a child-only SIGKILL orphans claude (PPID→1)
+	// instead of killing it, leaking ~250MB per session. With Setpgid the new
+	// pgid equals the wrapper pid, so Kill can signal -pgid safely.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -247,9 +254,24 @@ func (p *Process) Kill() error {
 		p.stdin.Close()
 	}
 	if p.cmd.Process != nil {
-		p.cmd.Process.Kill()
+		killProcessTree(p.cmd.Process.Pid)
 	}
 	return p.cmd.Wait()
+}
+
+// killProcessTree SIGKILLs the whole process group led by pid. The harness
+// wrapper is spawned as a process-group leader (Setpgid in StartProcess), so
+// its pgid equals its pid and the negative-pgid signal reaps the wrapper, the
+// forked agent (claude), and any sidecar together. The pgid==pid guard means
+// we only ever group-kill a process we made a group leader — never
+// bridge-server's own group — and we fall back to a direct kill if the group
+// lookup fails (e.g. the process already exited).
+func killProcessTree(pid int) {
+	if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
 // sendRequest writes a JSON request to stdin.
@@ -480,7 +502,10 @@ func (p *PTYProcess) Interrupt() error {
 func (p *PTYProcess) Kill() error {
 	p.mu.Lock()
 	if p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
+		// pty.StartWithSize sets Setsid, so the child is its own session and
+		// group leader — reap the whole group so a forked agent child can't
+		// linger after the wrapper dies.
+		killProcessTree(p.cmd.Process.Pid)
 	}
 	p.mu.Unlock()
 	<-p.done

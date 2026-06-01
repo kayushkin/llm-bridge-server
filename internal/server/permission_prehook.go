@@ -9,8 +9,19 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/permclient"
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
+
+// isUnattendedSession reports whether a session runs with no human watching to
+// resolve permission prompts. Autonomous sessions (fire-and-forget agent runs
+// like autoworker) qualify; parking a prehook ask for them would block until
+// the idle reaper kills the process, so callers resolve asks deterministically
+// instead. System and interactive sessions return false — system sessions are
+// excluded deliberately so their asks aren't silently auto-allowed.
+func isUnattendedSession(sess *store.Session) bool {
+	return sess != nil && sess.Type == msg.SessionTypeAutonomous
+}
 
 // ccPrehookPayload is the stdin JSON Claude Code sends to PreToolUse hook
 // commands. We unmarshal only what we need to evaluate; ToolUseID is kept
@@ -65,11 +76,24 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	log.Printf("[prehook] %s bridge=%s tool=%s tool_use_id=%s",
 		r.URL.Path, bridgeID, payload.ToolName, payload.ToolUseID)
 
+	// Fetch the session once up front: both the AskUserQuestion branch and
+	// the permission-mode resolution below need it, and Type tells us whether
+	// any human is attached to resolve a parked request.
+	sess, _ := s.store.GetSession(bridgeID)
+	unattended := isUnattendedSession(sess)
+
 	// AskUserQuestion is a user-input solicitation, not a permission check
 	// (the model wants the human's answer, not approval to run). No
 	// permission mode applies: auto-allow would strip the answer payload,
-	// auto-deny would deny the question. Always park for the human.
+	// auto-deny would deny the question. Park for the human — but an
+	// unattended session has no human, so parking would hang the worker until
+	// the idle reaper kills it. Deny with a clear message so it proceeds or
+	// stops on its own instead of blocking.
 	if payload.ToolName == "AskUserQuestion" {
+		if unattended {
+			writeHookDeny(w, "No human is attached to this autonomous session to answer AskUserQuestion; proceed without human input or stop.")
+			return
+		}
 		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourceUserInput)
 		return
 	}
@@ -78,7 +102,6 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	// /sessions/{id}/permission-mode) wins over the global. Both are read
 	// live on every prehook request — no harness broadcast required since
 	// bridge-server is the gating point.
-	sess, _ := s.store.GetSession(bridgeID)
 	mode := s.permissionModeForSession(sess)
 
 	switch mode {
@@ -143,6 +166,16 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		writeHookDeny(w, res.Message)
 		return
 	case "ask":
+		// An unattended session has no human to resolve a parked ask, so it
+		// would hang until the idle reaper kills it — doing no work and
+		// burning tokens. Per operator policy, unmatched tool calls in
+		// autonomous sessions auto-allow. Deny rules already short-circuited
+		// above (case "deny"), so guardrails like rm -rf / curl-external still
+		// apply. Interactive sessions park for the human as before.
+		if unattended {
+			writeHookAllow(w, "auto-allow: unattended autonomous session, no permission rule matched")
+			return
+		}
 		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourcePermission)
 	default:
 		writeHookAsk(w, "permission-store returned unknown outcome "+res.Outcome)
