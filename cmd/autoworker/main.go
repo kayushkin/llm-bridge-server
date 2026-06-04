@@ -704,7 +704,7 @@ func envOr(k, def string) string {
 const defaultPrompt = `You are the nightly todo-worker. The user is asleep; their subscription budget is under-utilised for this week and I am dispatching you to make useful progress on open todos without disturbing them.
 
 Steps:
-1. GET http://localhost:8191/api/items?type=todo&status=open&limit=50 to read the noteboard todo list.
+1. GET http://localhost:8191/api/items?type=todo&status=open&exclude_tag=autoworker&limit=50 to read the noteboard todo list. (exclude_tag=autoworker drops machine-generated autoworker dispatch cards, which otherwise saturate the window and hide real todos.)
 2. Pick the highest-priority open todo that you can make real progress on autonomously without needing clarifying questions from the user. Prefer codebase tasks that have clear scope.
 3. Do the work. Use your normal tools: explore repos under ~/repos/, edit, build, test, commit only if the task is a true "commit me" (match the user's normal guidance about explicit commit requests).
 4. When the task is complete, PATCH http://localhost:8191/api/items/<id> with {"status":"done"} and a note in the body describing what you did.
