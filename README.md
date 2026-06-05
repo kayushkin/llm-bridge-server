@@ -186,7 +186,7 @@ Build context for every target is the *parent* directory, since the multi-stage 
 # Create and auto-start a session
 curl -X POST http://localhost:8160/sessions \
   -H 'Content-Type: application/json' \
-  -d '{"harness": "claudecode", "prompt": "Fix the tests", "auto_start": true}'
+  -d '{"harness": "claude_code", "prompt": "Fix the tests", "auto_start": true}'
 
 # Stream events
 curl -N http://localhost:8160/sessions/{id}/events
