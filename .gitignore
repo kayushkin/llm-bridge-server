@@ -5,12 +5,14 @@
 /kanban-classifier
 /kanban-scoper
 /kanban-dispatcher
+/autoworker-reviewer
 /cmd/scheduler/scheduler
 /cmd/autoworker/autoworker
 /cmd/kanban-curator/kanban-curator
 /cmd/kanban-classifier/kanban-classifier
 /cmd/kanban-scoper/kanban-scoper
 /cmd/kanban-dispatcher/kanban-dispatcher
+/cmd/autoworker-reviewer/autoworker-reviewer
 
 # DB files
 *.db
