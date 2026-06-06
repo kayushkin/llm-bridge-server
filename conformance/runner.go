@@ -177,11 +177,24 @@ func (rp *runProcess) close() {
 // and returns the result. This is the non-test equivalent of TestConformance.
 func RunHarness(ctx context.Context, binary string) (*HarnessResult, error) {
 	name := runnerHarnessName(binary)
-	// Protocol-level events (state, system, error) arrive instantly;
-	// 10s is plenty. Features that wait for an EventResult after sending a
-	// message need a real LLM round-trip — which on a busy host can take
-	// 8-15s for short prompts — so they get a longer budget.
+	// Most protocol-level events (system, error) and post-start control
+	// responses arrive quickly once the session is running; 10s is plenty.
+	// Features that wait for an EventResult after sending a message need a
+	// real LLM round-trip — which on a busy host can take 8-15s for short
+	// prompts — so they get a longer budget.
+	//
+	// The initial SessionRunning event is the exception: heavyweight
+	// harnesses (claudecode, codex, hermes, jig) cold-start a real CLI
+	// subprocess — spawning the agent, provisioning MCP servers, loading
+	// config — before reporting SessionRunning, which can exceed 10s on a
+	// busy host. testStart is the only test that hard-fails on this wait
+	// (the message-style tests pass the same generous budget and ignore the
+	// wait error), so a tight start budget there produced false negatives:
+	// the heaviest harnesses failed `start` while passing `message`, which
+	// internally tolerates the slower cold-start. Give the start handshake
+	// the same cold-start budget the message flow already grants it.
 	eventTimeout := 10 * time.Second
+	startTimeout := 30 * time.Second
 	llmTimeout := 30 * time.Second
 
 	result := &HarnessResult{
@@ -191,7 +204,7 @@ func RunHarness(ctx context.Context, binary string) (*HarnessResult, error) {
 	}
 
 	// ── start ──
-	result.AddResult(testStart(ctx, binary, eventTimeout))
+	result.AddResult(testStart(ctx, binary, startTimeout))
 
 	// ── message ──
 	result.AddResult(testMessage(ctx, binary, llmTimeout))
