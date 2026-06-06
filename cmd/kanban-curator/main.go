@@ -9,7 +9,7 @@
 //     - completed                          → move to Done   (column has auto_status=done   → noteboard status=done)
 //     - error / aborted / disconnected     → move to Failed (column has auto_status=archived)
 //     - else                               → leave it (idle / running stays In Progress; the watchdog
-//       will eventually move stalled ones to a Stalled column).
+//     will eventually move stalled ones to a Stalled column).
 //
 // Done/Failed transitions are append-only — once a card is in Done or Failed,
 // it isn't revisited.
@@ -45,6 +45,20 @@ const (
 	columnFailed     = "Failed"
 	tagAutoworker    = "autoworker"
 	linkTypeSession  = "session"
+
+	// autoworkerPrefix is the canonical session_id prefix minted by autoworker.
+	// Cards whose session matches it are held from closing to Done until the
+	// autoworker-reviewer marks the session review-settled (see reviewSettled).
+	autoworkerPrefix  = "autoworker-"
+	entityTypeSession = "session"
+	tagReviewSettled  = "review-settled"
+
+	// reviewGrace is how long a completed autoworker session may sit unsettled
+	// before the curator closes it anyway. Fail-safe against the reviewer being
+	// down/disabled — review must never permanently wedge a card. The reviewer
+	// bumps the session's updated_at on every nudge, so an actively-reviewed
+	// card keeps resetting this clock.
+	reviewGrace = 30 * time.Minute
 )
 
 func main() {
@@ -134,6 +148,15 @@ func main() {
 		var target, targetName string
 		switch state {
 		case "completed":
+			// Handshake with autoworker-reviewer: don't close an autoworker card
+			// to Done until the reviewer has signed off (review-settled tag), so
+			// the agent gets its self-review pass to finish obvious leftover work.
+			// Bounded by reviewGrace so a down reviewer can't wedge the card.
+			if strings.HasPrefix(sessionID, autoworkerPrefix) && !reviewSettled(kc, sessionID) && !staleCompleted(ended) {
+				log.Printf("[%s] completed; awaiting autoworker-reviewer sign-off — leaving In Progress (session_id=%s)", title, sessionID)
+				skipped++
+				continue
+			}
 			target, targetName = doneCol, columnDone
 		case "error", "aborted", "disconnected":
 			target, targetName = failedCol, columnFailed
@@ -198,6 +221,38 @@ func getSessionState(bridgeURL, sessionID string) (state string, updatedAt strin
 		return "", "", err
 	}
 	return s.State, s.UpdatedAt, nil
+}
+
+// reviewSettled reports whether the autoworker-reviewer has signed off on this
+// session (review-settled entity tag present). On a tag-lookup error it returns
+// false so the grace window — not a transient kanban-store hiccup — decides.
+func reviewSettled(kc *kanbanclient.Client, sessionID string) bool {
+	tags, err := kc.ListEntityTags(entityTypeSession, sessionID)
+	if err != nil {
+		log.Printf("[curator] list entity tags for %s: %v — treating as unsettled", sessionID, err)
+		return false
+	}
+	for _, t := range tags {
+		if t.Tag == tagReviewSettled {
+			return true
+		}
+	}
+	return false
+}
+
+// staleCompleted reports whether a session has been in its terminal state longer
+// than reviewGrace, based on the bridge updated_at hint. Used as the fail-safe
+// to close autoworker cards the reviewer never settled (e.g. reviewer down). An
+// unparseable/empty timestamp is treated as not-stale so we keep deferring.
+func staleCompleted(updatedAt string) bool {
+	if updatedAt == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(t) > reviewGrace
 }
 
 // ============================ scheduler self-registration ============================

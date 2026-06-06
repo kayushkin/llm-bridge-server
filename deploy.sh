@@ -44,6 +44,10 @@ echo "==> Building kanban-dispatcher..."
 go build -o kanban-dispatcher ./cmd/kanban-dispatcher
 echo "    built: $(ls -lh kanban-dispatcher | awk '{print $5}')"
 
+echo "==> Building autoworker-reviewer..."
+go build -o autoworker-reviewer ./cmd/autoworker-reviewer
+echo "    built: $(ls -lh autoworker-reviewer | awk '{print $5}')"
+
 echo "==> Stopping $SERVICE..."
 systemctl --user stop "$SERVICE" 2>/dev/null || true
 sleep 1
@@ -55,6 +59,7 @@ cp kanban-curator "$BIN_DIR/kanban-curator"
 cp kanban-classifier "$BIN_DIR/kanban-classifier"
 cp kanban-scoper "$BIN_DIR/kanban-scoper"
 cp kanban-dispatcher "$BIN_DIR/kanban-dispatcher"
+cp autoworker-reviewer "$BIN_DIR/autoworker-reviewer"
 
 echo "==> Starting $SERVICE..."
 systemctl --user daemon-reload
