@@ -182,8 +182,22 @@ Build context for every target is the *parent* directory, since the multi-stage 
 
 ### Start a session
 
+> **Prerequisite — enroll a harness instance first.** `POST /sessions` resolves
+> the session onto an *enabled instance* of the requested harness; with none
+> enrolled it returns `503 harness-store not configured` (no harness-store DB) or
+> `503 no enabled instance for harness: <name>`. The Docker/UI path above sets
+> this up for you — the llmux UI creates a machine + instance in a couple of
+> clicks. For the bare build/systemd path, enroll once via the API: `POST /machines`
+> then `POST /instances` (`{"name": "...", "harness_type": "claude_code",
+> "machine_id": "<id-from-POST-/machines>"}`; instances are enabled on create).
+> See the [Instances](#instances-requires-harness-store) and
+> [Machines](#machines-requires-harness-store) sections for the request shapes.
+> The harness-store DB lives at `LLMBRIDGE_HARNESS_DB`
+> (default `~/.config/harness-store/harness.db`; see [Configuration](#configuration)).
+
 ```bash
 # Create and auto-start a session (returns {"id": "...", ...})
+# Assumes an enabled instance of the harness is enrolled (see prerequisite above).
 curl -X POST http://localhost:8160/sessions \
   -H 'Content-Type: application/json' \
   -d '{"harness": "claude_code", "auto_start": true}'
