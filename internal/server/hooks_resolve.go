@@ -261,15 +261,67 @@ func (s *Server) handleSetSessionPermissionMode(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// Switching to Allow All (bypass) settles any ask already parked on the
+	// banner — the live prehook only governs the NEXT tool call, so without
+	// this the in-flight request would hang until manually resolved.
+	resolved := 0
+	if req.Mode == msg.PermissionModeBypass && s.harness != nil {
+		resolved = s.autoAllowParkedPermissionAsks(bridgeID, s.harness.PendingHooks(bridgeID))
+		if resolved > 0 {
+			log.Printf("[permission_mode] auto-allowed %d parked ask(s) for %s on Allow All switch", resolved, bridgeID)
+		}
+	}
+
 	resp := map[string]any{
 		"status":          "ok",
 		"bridge_id":       bridgeID,
 		"permission_mode": req.Mode,
 	}
+	if resolved > 0 {
+		resp["auto_allowed_pending"] = resolved
+	}
 	if req.DisableNetwork != nil {
 		resp["disable_network"] = *req.DisableNetwork
 	}
 	writeJSON(w, resp)
+}
+
+// autoAllowParkedPermissionAsks delivers an "allow" verdict to every
+// permission-prompt ask currently parked for the session, settling requests
+// that are already blocked on the banner. Called when a session switches to
+// Allow All (bypass) mode: the prehook reads the new mode live, but only on
+// the NEXT tool call, so an in-flight ask would otherwise hang on its
+// channel until the user clicked Allow/Deny by hand. Returns the number of
+// asks resolved.
+//
+// HookSourceUserInput asks (AskUserQuestion) are deliberately skipped.
+// Bypass auto-allows tool *calls*, but an AskUserQuestion still needs the
+// human's answer payload — an empty allow would strip it. This mirrors the
+// prehook, which never bypasses user-input solicitations (see
+// msg.PermissionModeBypass).
+//
+// `pending` is the caller's snapshot of awaiting_resolution events (from
+// harness.PendingHooks); taking it as a parameter keeps this unit-testable
+// without a live harness manager.
+func (s *Server) autoAllowParkedPermissionAsks(bridgeID string, pending []msg.Event) int {
+	resolved := 0
+	for _, ev := range pending {
+		if ev.Hook == nil || ev.Hook.RequestID == "" {
+			continue
+		}
+		if ev.Hook.Source == msg.HookSourceUserInput {
+			continue
+		}
+		decision := permissionDecision{
+			Behavior:   "allow",
+			Message:    "auto-allowed: session switched to Allow All (bypass) mode",
+			ResolvedBy: "auto:bypass-mode",
+		}
+		if s.parkedAsks.deliver(bridgeID, ev.Hook.RequestID, decision) {
+			resolved++
+		}
+	}
+	return resolved
 }
 
 // handleSetBypassPermissions is the legacy alias for the global

@@ -123,3 +123,45 @@ func TestWriteHookDecisionWithUpdatedInput(t *testing.T) {
 		t.Errorf("updatedInput mismatch:\nwant: %s\nhave: %s", string(wantJSON), string(haveJSON))
 	}
 }
+
+// TestAutoAllowParkedPermissionAsks pins the Allow All (bypass) settle path:
+// switching a session to bypass must deliver "allow" to permission-prompt
+// asks already parked on the banner, while leaving AskUserQuestion
+// (user_input) asks parked so their answer payload isn't stripped.
+func TestAutoAllowParkedPermissionAsks(t *testing.T) {
+	srv := &Server{parkedAsks: newParkedAsks()}
+	const bridgeID = "bridge-1"
+
+	permCh := srv.parkedAsks.park(bridgeID, "req-perm")
+	askCh := srv.parkedAsks.park(bridgeID, "req-ask")
+
+	pending := []msg.Event{
+		{Hook: &msg.HookEvent{Source: msg.HookSourcePermission, RequestID: "req-perm", Phase: "awaiting_resolution"}},
+		{Hook: &msg.HookEvent{Source: msg.HookSourceUserInput, RequestID: "req-ask", Phase: "awaiting_resolution"}},
+	}
+
+	n := srv.autoAllowParkedPermissionAsks(bridgeID, pending)
+	if n != 1 {
+		t.Fatalf("resolved = %d, want 1 (permission ask only)", n)
+	}
+
+	// The permission ask must have received an allow on its channel.
+	select {
+	case d := <-permCh:
+		if d.Behavior != "allow" {
+			t.Errorf("permission ask behavior = %q, want allow", d.Behavior)
+		}
+		if d.ResolvedBy != "auto:bypass-mode" {
+			t.Errorf("permission ask resolvedBy = %q, want auto:bypass-mode", d.ResolvedBy)
+		}
+	default:
+		t.Error("permission ask channel got no decision")
+	}
+
+	// The user_input ask must remain parked (no delivery).
+	select {
+	case d := <-askCh:
+		t.Errorf("user_input ask should not be auto-allowed, got %+v", d)
+	default:
+	}
+}
