@@ -69,6 +69,7 @@ func main() {
 		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
 		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
 		boardName    = flag.String("board", defaultBoardName, "Kanban board name to curate")
+		staleAfter   = flag.Duration("stale-after", 2*time.Hour, "Reap an In Progress card whose session is idle/gone and has had no activity for longer than this.")
 	)
 	flag.Parse()
 
@@ -138,16 +139,22 @@ func main() {
 			skipped++
 			continue
 		}
-		state, ended, err := getSessionState(*bridgeURL, sessionID)
-		if err != nil {
+		state, ended, notFound, err := getSessionState(*bridgeURL, sessionID)
+		if err != nil && !notFound {
 			log.Printf("[%s] bridge GET /sessions/%s: %v — skip", title, sessionID, err)
 			errors++
 			continue
 		}
 
-		var target, targetName string
-		switch state {
-		case "completed":
+		var target, targetName, reapNote string
+		switch {
+		case notFound:
+			// The bridge session no longer exists (archived/pruned). It can never
+			// reach a terminal state, so left alone the card wedges In Progress
+			// forever — reap it to Failed.
+			target, targetName = failedCol, columnFailed
+			reapNote = "reaped: bridge session not found (archived/pruned)"
+		case state == "completed":
 			// Handshake with autoworker-reviewer: don't close an autoworker card
 			// to Done until the reviewer has signed off (review-settled tag), so
 			// the agent gets its self-review pass to finish obvious leftover work.
@@ -158,23 +165,54 @@ func main() {
 				continue
 			}
 			target, targetName = doneCol, columnDone
-		case "error", "aborted", "disconnected":
+		case state == "error", state == "aborted", state == "disconnected":
 			target, targetName = failedCol, columnFailed
+		case state == "idle":
+			// An autoworker session that has gone idle and not advanced for longer
+			// than staleAfter is abandoned — typically blocked waiting on input that
+			// will never come in an unattended run. Reap it so it doesn't wedge In
+			// Progress forever. A still-fresh idle session is left alone in case the
+			// agent (or the reviewer) resumes it.
+			//
+			// Scoped to autoworker-origin sessions: on the Task-completion-loop board
+			// the dispatcher deliberately parks sessions idle to revive later, so we
+			// must not reap those out from under it. A vanished session (notFound) is
+			// still reaped on any board above, since it can't be revived anywhere.
+			if !strings.HasPrefix(sessionID, autoworkerPrefix) {
+				continue
+			}
+			if !staleSince(ended, *staleAfter) {
+				continue
+			}
+			target, targetName = failedCol, columnFailed
+			reapNote = fmt.Sprintf("reaped: idle with no activity since %s (> %s)", ended, *staleAfter)
 		default:
-			continue // idle / running / unknown — leave alone
+			continue // running / unknown — leave alone
 		}
 
-		log.Printf("[%s] %s → %s (session_id=%s)", title, state, targetName, sessionID)
+		if reapNote != "" {
+			log.Printf("[%s] %s → %s (%s) (session_id=%s)", title, stateLabel(state, notFound), targetName, reapNote, sessionID)
+		} else {
+			log.Printf("[%s] %s → %s (session_id=%s)", title, state, targetName, sessionID)
+		}
 		if *dryRun {
 			continue
 		}
 
-		if ended != "" {
+		{
 			body, _ := c.Item["body"].(string)
-			suffix := fmt.Sprintf("\n\n---\n_closed by kanban-curator at %s; bridge state=%s, ended_at=%s_\n",
-				time.Now().UTC().Format(time.RFC3339), state, ended)
-			if err := kc.PatchCardBody(c.Placement.CardID, body+suffix); err != nil {
-				log.Printf("[%s] patch body: %v (continuing to move)", title, err)
+			var suffix string
+			if reapNote != "" {
+				suffix = fmt.Sprintf("\n\n---\n_kanban-curator at %s: %s_\n",
+					time.Now().UTC().Format(time.RFC3339), reapNote)
+			} else if ended != "" {
+				suffix = fmt.Sprintf("\n\n---\n_closed by kanban-curator at %s; bridge state=%s, ended_at=%s_\n",
+					time.Now().UTC().Format(time.RFC3339), state, ended)
+			}
+			if suffix != "" {
+				if err := kc.PatchCardBody(c.Placement.CardID, body+suffix); err != nil {
+					log.Printf("[%s] patch body: %v (continuing to move)", title, err)
+				}
 			}
 		}
 		if err := kc.MoveCard(c.Placement.CardID, board.ID, target, 0); err != nil {
@@ -197,30 +235,56 @@ func envOr(k, def string) string {
 }
 
 // getSessionState fetches one session from llm-bridge-server and returns
-// (state, updated_at, err). updated_at is the most recent state transition we
-// can observe — used as an "ended at" hint when stamping the closed-card body.
-func getSessionState(bridgeURL, sessionID string) (state string, updatedAt string, err error) {
+// (state, updated_at, notFound, err). updated_at is the most recent state
+// transition we can observe — used as an "ended at" hint when stamping the
+// closed-card body. notFound is true (with a nil-equivalent error) when the
+// bridge has no such session, which the caller treats as a reapable terminal
+// condition rather than a transient error.
+func getSessionState(bridgeURL, sessionID string) (state string, updatedAt string, notFound bool, err error) {
 	url := fmt.Sprintf("%s/sessions/%s", strings.TrimRight(bridgeURL, "/"), sessionID)
 	resp, err := http.Get(url)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return "", "", fmt.Errorf("not found")
+		return "", "", true, fmt.Errorf("not found")
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", "", fmt.Errorf("HTTP %s — %s", resp.Status, strings.TrimSpace(string(body)))
+		return "", "", false, fmt.Errorf("HTTP %s — %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	var s struct {
 		State     string `json:"state"`
 		UpdatedAt string `json:"updated_at"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
-	return s.State, s.UpdatedAt, nil
+	return s.State, s.UpdatedAt, false, nil
+}
+
+// staleSince reports whether updatedAt (RFC3339) is older than d. An empty or
+// unparseable timestamp is treated as not-stale, so a card is never reaped on
+// the basis of a missing timestamp alone.
+func staleSince(updatedAt string, d time.Duration) bool {
+	if updatedAt == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(t) > d
+}
+
+// stateLabel renders the session state for logging, substituting a marker when
+// the session could not be found.
+func stateLabel(state string, notFound bool) string {
+	if notFound {
+		return "not-found"
+	}
+	return state
 }
 
 // reviewSettled reports whether the autoworker-reviewer has signed off on this
