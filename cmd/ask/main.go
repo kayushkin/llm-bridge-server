@@ -15,11 +15,11 @@
 //     type + local machine, or --instance by name). There is NO dedicated CC
 //     instance — one per machine is enough; "herald" is a role, marked by the
 //     herald- session-id prefix and Purpose="herald", not a separate instance.
-//   - Type=autonomous + HarnessConfig permission_mode=bypass: an interactive
-//     session parks the relay agent's first tool call awaiting approval and
-//     wedges; bypass short-circuits the prehook to allow so the relay (and the
-//     post-reply action turn) never hang. The herald- prefix keeps these out of
-//     the kanban-curator idle-reaper (scoped to autoworker-).
+//   - Type=herald: llm-bridge-server's isUnattendedSession treats herald like
+//     autonomous, so the relay agent's tool calls auto-allow (keeping deny
+//     guardrails) instead of parking on the prehook and wedging the turn — no
+//     permission_mode=bypass needed. The herald- prefix keeps these out of the
+//     kanban-curator idle-reaper (scoped to autoworker-).
 //   - Attribution is structured: --from sets the message's Agent tag (the
 //     sender shown in the UI). The prompt does not roleplay a persona.
 //
@@ -101,12 +101,13 @@ func main() {
 			InstanceID:  instanceID,
 			DisplayName: displayName,
 			Purpose:     "herald",
-			Origin:      "ask",
-			// Autonomous + bypass: see package doc. Without bypass the relay
-			// agent's first tool call parks on the prehook and wedges the turn.
-			HarnessConfig: json.RawMessage(`{"permission_mode":"bypass"}`),
-			Type:          msg.SessionTypeAutonomous,
-			AutoStart:     true,
+			// herald is unattended for the relay turn (no human resolves a tool
+			// prehook until the user replies), so llm-bridge-server's
+			// isUnattendedSession auto-allows tool calls while keeping deny
+			// guardrails — no permission_mode=bypass needed.
+			Type:      msg.SessionTypeHerald,
+			Origin:    "ask",
+			AutoStart: true,
 		},
 		Send: &msg.SendMessageRequest{
 			Message: prompt,
