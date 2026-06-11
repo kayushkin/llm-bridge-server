@@ -17,10 +17,13 @@ import (
 // resolve permission prompts. Autonomous sessions (fire-and-forget agent runs
 // like autoworker) qualify; parking a prehook ask for them would block until
 // the idle reaper kills the process, so callers resolve asks deterministically
-// instead. System and interactive sessions return false — system sessions are
-// excluded deliberately so their asks aren't silently auto-allowed.
+// instead. Herald sessions (agent-initiated question/alert relays — see the
+// `ask` CLI) also qualify: no human is attached during the relay turn, so a
+// parked tool ask would wedge it before it ever reaches the user. System and
+// interactive sessions return false — system sessions are excluded deliberately
+// so their asks aren't silently auto-allowed.
 func isUnattendedSession(sess *store.Session) bool {
-	return sess != nil && sess.Type == msg.SessionTypeAutonomous
+	return sess != nil && (sess.Type == msg.SessionTypeAutonomous || sess.Type == msg.SessionTypeHerald)
 }
 
 // ccPrehookPayload is the stdin JSON Claude Code sends to PreToolUse hook
