@@ -167,12 +167,14 @@ func main() {
 			target, targetName = doneCol, columnDone
 		case state == "error", state == "aborted", state == "disconnected":
 			target, targetName = failedCol, columnFailed
-		case state == "idle":
-			// An autoworker session that has gone idle and not advanced for longer
-			// than staleAfter is abandoned — typically blocked waiting on input that
-			// will never come in an unattended run. Reap it so it doesn't wedge In
-			// Progress forever. A still-fresh idle session is left alone in case the
-			// agent (or the reviewer) resumes it.
+		case state == "idle", state == "awaiting_permission", state == "awaiting_user":
+			// An autoworker session sitting in a non-terminal wait state past
+			// staleAfter is abandoned: idle = finished its turn and stopped;
+			// awaiting_permission/awaiting_user = parked on a prompt that no human
+			// will ever answer in an unattended run (normally auto-allow prevents
+			// this, but a permission-store blip can still strand one). Reap it so it
+			// doesn't wedge In Progress forever. A still-fresh waiter is left alone in
+			// case the agent (or the reviewer) resumes it.
 			//
 			// Scoped to autoworker-origin sessions: on the Task-completion-loop board
 			// the dispatcher deliberately parks sessions idle to revive later, so we
@@ -185,7 +187,7 @@ func main() {
 				continue
 			}
 			target, targetName = failedCol, columnFailed
-			reapNote = fmt.Sprintf("reaped: idle with no activity since %s (> %s)", ended, *staleAfter)
+			reapNote = fmt.Sprintf("reaped: %s with no activity since %s (> %s)", state, ended, *staleAfter)
 		default:
 			continue // running / unknown — leave alone
 		}
