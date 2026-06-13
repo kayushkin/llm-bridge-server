@@ -12,7 +12,8 @@
 //     3. Call Haiku to decompose the goal into sub-tasks grouped by context.
 //     4. For each sub-task, create a card in the "Backlog" column linked
 //        back to the parent (entity_type=parent_card) and tagged with the
-//        subtask + group:<key> markers.
+//        subtask + group:<key> + capability:<x> + role:<r> markers.
+//        (capability/role drive team-formation per TEAM-ORCHESTRATION.md §4/§15.)
 //     5. Stamp the parent with the "scoped" entity_tag so we don't re-decompose.
 //
 // Why entity_tag (and not a noteboard tag) for "scoped": kanban-store's
@@ -234,6 +235,12 @@ func scopeParent(ctx context.Context, cfg config, kc *kanbanclient.Client, p par
 		if g := strings.TrimSpace(st.GroupKey); g != "" {
 			tags = append(tags, "group:"+g)
 		}
+		if c := strings.TrimSpace(st.Capability); c != "" {
+			tags = append(tags, "capability:"+c)
+		}
+		if r := strings.TrimSpace(st.Role); r != "" {
+			tags = append(tags, "role:"+r)
+		}
 		// Persist parent linkage as a card_link, not a tag, so we can do
 		// reverse lookups via /api/entities/parent_card/<id>/cards.
 		childID, err := createSubcard(kc, backlogCol, title, body, tags, p.cardID)
@@ -319,9 +326,11 @@ type Plan struct {
 }
 
 type Subtask struct {
-	Title    string `json:"title"`
-	Body     string `json:"body,omitempty"`
-	GroupKey string `json:"group_key"`
+	Title      string `json:"title"`
+	Body       string `json:"body,omitempty"`
+	GroupKey   string `json:"group_key"`
+	Capability string `json:"capability"`
+	Role       string `json:"role"`
 }
 
 const systemPrompt = `You are a task decomposer for an autonomous AI agent infrastructure.
@@ -334,6 +343,8 @@ You receive a high-level goal card. Produce a small set of self-contained sub-ta
 - Title: short imperative, ≤80 chars (e.g. "Add migration for schema X", "Audit log-store retention").
 - Body: one or two paragraphs of concrete instructions — what to read, what to change, what success looks like.
 - group_key: short kebab-case identifier (e.g. "kanban-store-schema", "auth-store-tests"). Reuse the same key for sibling sub-tasks that should run together.
+- capability: short kebab-case identifier for the domain/skill the sub-task needs (e.g. "go-http", "sqlite-migration", "react-ui", "shell-ops"). Used to equip the working agent with the right tools.
+- role: which kind of agent should work this sub-task — exactly one of: "builder" (writes code; the default for implementation), "reviewer" (code review only), "tester" (writes/runs tests), "researcher" (investigation/discovery, no writes), "docs" (documentation). Most implementation sub-tasks are "builder".
 
 You MUST output by calling the decompose_task tool exactly once.
 
@@ -354,11 +365,13 @@ func decomposeToolSchema() map[string]any {
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"title":     map[string]any{"type": "string", "maxLength": 100},
-							"body":      map[string]any{"type": "string"},
-							"group_key": map[string]any{"type": "string", "maxLength": 60},
+							"title":      map[string]any{"type": "string", "maxLength": 100},
+							"body":       map[string]any{"type": "string"},
+							"group_key":  map[string]any{"type": "string", "maxLength": 60},
+							"capability": map[string]any{"type": "string", "maxLength": 60, "description": "kebab-case domain/skill this sub-task needs (e.g. go-http, sqlite-migration, react-ui)."},
+							"role":       map[string]any{"type": "string", "enum": []string{"builder", "reviewer", "tester", "researcher", "docs"}, "description": "Which archetype works this sub-task; builder is the default for code."},
 						},
-						"required": []string{"title", "group_key"},
+						"required": []string{"title", "group_key", "capability", "role"},
 					},
 				},
 			},
