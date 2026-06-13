@@ -3,18 +3,19 @@
 //
 // Cadence:
 //
-//   Registered as a scheduler shell job running every ~5 minutes. Each tick:
+//	Registered as a scheduler shell job running every ~5 minutes. Each tick:
 //
-//     1. Walk the "Task completion loop" board.
-//     2. Pick parent cards in the "Goals" column tagged with the trigger tag
-//        ("task-completion-loop") that don't already carry the "scoped"
-//        entity_tag.
-//     3. Call Haiku to decompose the goal into sub-tasks grouped by context.
-//     4. For each sub-task, create a card in the "Backlog" column linked
-//        back to the parent (entity_type=parent_card) and tagged with the
-//        subtask + group:<key> + capability:<x> + role:<r> markers.
-//        (capability/role drive team-formation per TEAM-ORCHESTRATION.md §4/§15.)
-//     5. Stamp the parent with the "scoped" entity_tag so we don't re-decompose.
+//	  1. Walk the "Task completion loop" board.
+//	  2. Pick parent cards in the "Goals" column tagged with the trigger tag
+//	     ("task-completion-loop") that don't already carry the "scoped"
+//	     entity_tag.
+//	  3. Call Haiku to decompose the goal into sub-tasks grouped by context.
+//	  4. For each sub-task, create a card in the "Backlog" column linked
+//	     back to the parent (entity_type=parent_card) and tagged with the
+//	     subtask + group:<key> markers, plus capability:<x> + role:<r>
+//	     markers ONLY when --role-tags is enabled (off by default).
+//	     (capability/role drive team-formation per TEAM-ORCHESTRATION.md §4/§15.)
+//	  5. Stamp the parent with the "scoped" entity_tag so we don't re-decompose.
 //
 // Why entity_tag (and not a noteboard tag) for "scoped": kanban-store's
 // entity_tags table is idempotent on (entity_type, entity_ref, tag), so we
@@ -43,18 +44,18 @@ import (
 )
 
 const (
-	defaultBoardName  = "Task completion loop"
-	columnGoals       = "Goals"
-	columnBacklog     = "Backlog"
-	columnInProgress  = "In Progress"
-	columnDone        = "Done"
-	columnFailed      = "Failed"
-	tagTrigger        = "task-completion-loop"
-	tagSubtask        = "task-completion-loop-subtask"
-	tagScoped         = "scoped"
-	linkTypeParent    = "parent_card"
-	defaultModel      = "claude-haiku-4-5-20251001"
-	maxScopePerTick   = 5
+	defaultBoardName = "Task completion loop"
+	columnGoals      = "Goals"
+	columnBacklog    = "Backlog"
+	columnInProgress = "In Progress"
+	columnDone       = "Done"
+	columnFailed     = "Failed"
+	tagTrigger       = "task-completion-loop"
+	tagSubtask       = "task-completion-loop-subtask"
+	tagScoped        = "scoped"
+	linkTypeParent   = "parent_card"
+	defaultModel     = "claude-haiku-4-5-20251001"
+	maxScopePerTick  = 5
 )
 
 var defaultColumns = []string{columnGoals, columnBacklog, columnInProgress, columnDone, columnFailed}
@@ -67,6 +68,7 @@ type config struct {
 	Model           string
 	BoardName       string
 	DryRun          bool
+	RoleTags        bool // TEAM-ORCHESTRATION step 1: emit capability:/role: tags. OFF by default.
 }
 
 func main() {
@@ -79,6 +81,7 @@ func main() {
 		authToken    = flag.String("auth-token", envOr("AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
 		model        = flag.String("model", envOr("KANBAN_SCOPER_MODEL", defaultModel), "Anthropic model id")
 		maxScope     = flag.Int("max", maxScopePerTick, "Max parents to decompose per tick.")
+		roleTags     = flag.Bool("role-tags", envBool("KANBAN_SCOPER_ROLE_TAGS", false), "TEAM-ORCHESTRATION step 1: require capability+role in decomposition and emit capability:/role: tags on sub-cards. OFF by default — when off, behavior is identical to the pre-team-orchestration scoper.")
 	)
 	flag.Parse()
 
@@ -97,6 +100,7 @@ func main() {
 		Model:        *model,
 		BoardName:    *boardName,
 		DryRun:       *dryRun,
+		RoleTags:     *roleTags,
 	}
 
 	kc := kanbanclient.New(cfg.KanbanURL)
@@ -235,11 +239,13 @@ func scopeParent(ctx context.Context, cfg config, kc *kanbanclient.Client, p par
 		if g := strings.TrimSpace(st.GroupKey); g != "" {
 			tags = append(tags, "group:"+g)
 		}
-		if c := strings.TrimSpace(st.Capability); c != "" {
-			tags = append(tags, "capability:"+c)
-		}
-		if r := strings.TrimSpace(st.Role); r != "" {
-			tags = append(tags, "role:"+r)
+		if cfg.RoleTags {
+			if c := strings.TrimSpace(st.Capability); c != "" {
+				tags = append(tags, "capability:"+c)
+			}
+			if r := strings.TrimSpace(st.Role); r != "" {
+				tags = append(tags, "role:"+r)
+			}
 		}
 		// Persist parent linkage as a card_link, not a tag, so we can do
 		// reverse lookups via /api/entities/parent_card/<id>/cards.
@@ -343,16 +349,31 @@ You receive a high-level goal card. Produce a small set of self-contained sub-ta
 - Title: short imperative, ≤80 chars (e.g. "Add migration for schema X", "Audit log-store retention").
 - Body: one or two paragraphs of concrete instructions — what to read, what to change, what success looks like.
 - group_key: short kebab-case identifier (e.g. "kanban-store-schema", "auth-store-tests"). Reuse the same key for sibling sub-tasks that should run together.
-- capability: short kebab-case identifier for the domain/skill the sub-task needs (e.g. "go-http", "sqlite-migration", "react-ui", "shell-ops"). Used to equip the working agent with the right tools.
-- role: which kind of agent should work this sub-task — exactly one of: "builder" (writes code; the default for implementation), "reviewer" (code review only), "tester" (writes/runs tests), "researcher" (investigation/discovery, no writes), "docs" (documentation). Most implementation sub-tasks are "builder".
 
 You MUST output by calling the decompose_task tool exactly once.
 
 If the goal is too vague or trivial to decompose, return a single sub-task that asks the user to clarify, with group_key="clarification".`
 
+// roleTagsInstructions is appended to systemPrompt only when --role-tags is on.
+const roleTagsInstructions = `Additionally, for EACH sub-task provide:
+
+- capability: short kebab-case identifier for the domain/skill the sub-task needs (e.g. "go-http", "sqlite-migration", "react-ui", "shell-ops"). Used to equip the working agent with the right tools.
+- role: which kind of agent should work this sub-task — exactly one of: "builder" (writes code; the default for implementation), "reviewer" (code review only), "tester" (writes/runs tests), "researcher" (investigation/discovery, no writes), "docs" (documentation). Most implementation sub-tasks are "builder".`
+
 const decomposeToolName = "decompose_task"
 
-func decomposeToolSchema() map[string]any {
+func decomposeToolSchema(roleTags bool) map[string]any {
+	props := map[string]any{
+		"title":     map[string]any{"type": "string", "maxLength": 100},
+		"body":      map[string]any{"type": "string"},
+		"group_key": map[string]any{"type": "string", "maxLength": 60},
+	}
+	required := []string{"title", "group_key"}
+	if roleTags {
+		props["capability"] = map[string]any{"type": "string", "maxLength": 60, "description": "kebab-case domain/skill this sub-task needs (e.g. go-http, sqlite-migration, react-ui)."}
+		props["role"] = map[string]any{"type": "string", "enum": []string{"builder", "reviewer", "tester", "researcher", "docs"}, "description": "Which archetype works this sub-task; builder is the default for code."}
+		required = append(required, "capability", "role")
+	}
 	return map[string]any{
 		"name":        decomposeToolName,
 		"description": "Decompose a goal into sub-tasks with context grouping. Call exactly once.",
@@ -363,15 +384,9 @@ func decomposeToolSchema() map[string]any {
 					"type":        "array",
 					"description": "Ordered sub-tasks. Group siblings via shared group_key.",
 					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"title":      map[string]any{"type": "string", "maxLength": 100},
-							"body":       map[string]any{"type": "string"},
-							"group_key":  map[string]any{"type": "string", "maxLength": 60},
-							"capability": map[string]any{"type": "string", "maxLength": 60, "description": "kebab-case domain/skill this sub-task needs (e.g. go-http, sqlite-migration, react-ui)."},
-							"role":       map[string]any{"type": "string", "enum": []string{"builder", "reviewer", "tester", "researcher", "docs"}, "description": "Which archetype works this sub-task; builder is the default for code."},
-						},
-						"required": []string{"title", "group_key", "capability", "role"},
+						"type":       "object",
+						"properties": props,
+						"required":   required,
 					},
 				},
 			},
@@ -381,11 +396,15 @@ func decomposeToolSchema() map[string]any {
 }
 
 func decompose(ctx context.Context, cfg config, digest string) (*Plan, error) {
+	sys := systemPrompt
+	if cfg.RoleTags {
+		sys += "\n\n" + roleTagsInstructions
+	}
 	body := map[string]any{
 		"model":      cfg.Model,
 		"max_tokens": 2048,
-		"system":     systemPrompt,
-		"tools":      []any{decomposeToolSchema()},
+		"system":     sys,
+		"tools":      []any{decomposeToolSchema(cfg.RoleTags)},
 		"tool_choice": map[string]any{
 			"type": "tool",
 			"name": decomposeToolName,
@@ -528,6 +547,17 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+func envBool(k string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(k))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return def
+	}
 }
 
 func stringSlice(v any) []string {
