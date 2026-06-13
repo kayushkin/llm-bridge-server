@@ -326,6 +326,11 @@ team-formation / skill-routing come later (they mostly equip verifier lenses).
 > **Depends on** the harness-layer critical path (`IMPLEMENTATION-ROADMAP.md` P1–P6, esp. the `bridge`
 > CLI at P5b and session-spawn tool/skill injection). Steps 1–2 below ride the *current* cron loop and
 > need none of it; steps 5–9 do.
+>
+> **Rollout discipline — every increment ships *off by default behind a toggle*** (flag / env), so
+> rebuilding or redeploying a live binary changes nothing until the toggle is flipped. Toggle-off must
+> be byte-identical to the prior behavior; each feature keeps a kill switch. (Step 1's scoper
+> `capability:`/`role:` tagging is gated by `--role-tags` / `KANBAN_SCOPER_ROLE_TAGS`, default off.)
 
 1. **Board-per-team + coarse planner tags (§4, §15.2).** Upgrade scoper to create a team board and tag
    tasks `capability:`/`role:`. No new session behavior — testable on the existing loop.
