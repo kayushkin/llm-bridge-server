@@ -31,6 +31,8 @@ For each capability the model needs, exactly one CLI command. Each command suppo
 | **Bus publish** | `bridge bus publish <topic> "<payload>"` | bus |
 | **Bus tail** | `bridge bus tail <topic> --since <t>` | bus |
 | **Skills get full body** | `bridge skills get <name>` | skill-store (model uses this when header injection wasn't enough) |
+| **Kanban blackboard** | `bridge kanban post / claim / list / done` | kanban-store (team coordination — see `TEAM-ORCHESTRATION.md` §6) |
+| **Verification** | `bridge verify task <card> / smoke` | tool-store runner + conformance (ground-truth — see `TEAM-ORCHESTRATION.md` §20) |
 | **Inber-runtime ops** (only for inber-hosted sessions) | `inber chat / run / btw / sessions / config` | inber's HTTP API |
 
 Two CLI binaries, two scopes:
