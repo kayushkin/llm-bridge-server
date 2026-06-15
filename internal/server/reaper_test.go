@@ -35,13 +35,22 @@ func TestReapDecision(t *testing.T) {
 			wantReap: true,
 		},
 		{
-			name:     "events awaiting_user past timeout is reaped",
+			name:     "events awaiting_user past timeout is kept (blocked on human reply)",
 			mode:     msg.SessionModeEvents,
 			state:    msg.SessionAwaitingUser,
 			lastAct:  ago(16 * time.Minute),
 			idleTO:   idleTimeout,
 			ptyTO:    ptyTimeout,
-			wantReap: true,
+			wantReap: false,
+		},
+		{
+			name:     "events awaiting_permission past timeout is kept (live prompt would be auto-denied)",
+			mode:     msg.SessionModeEvents,
+			state:    msg.SessionAwaitingPermission,
+			lastAct:  ago(45 * time.Minute), // human walked away from an AskUserQuestion / permission prompt
+			idleTO:   idleTimeout,
+			ptyTO:    ptyTimeout,
+			wantReap: false,
 		},
 		{
 			name:     "events idle within timeout is kept",

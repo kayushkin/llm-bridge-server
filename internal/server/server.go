@@ -577,6 +577,13 @@ func (s *Server) reapIdleTick() {
 //     a long tool call emits no events while it runs, so state — not the
 //     timestamp — is the guard. PTY state isn't derived from telemetry, so
 //     PTY is intentionally not state-gated; its longer timeout is the guard.
+//   - Events-mode sessions blocked on a human (awaiting_permission,
+//     awaiting_user) are likewise never reaped: a person deliberating over a
+//     prompt emits no events, so the quiet stretch is expected, not abandoned
+//     work. Reaping awaiting_permission would cancel the parked hook and
+//     auto-deny a live question; the warm-process leak this reaper targets
+//     lands in idle (a turn that finished without soliciting the user), which
+//     stays reapable.
 //   - Idle is measured from the last event, falling back to updatedAt when
 //     no event has landed yet so freshly-spawned processes get a grace gap.
 func reapDecision(now time.Time, mode msg.SessionMode, state msg.SessionState, lastActivity, updatedAt time.Time, idleTimeout, ptyTimeout time.Duration) (time.Duration, bool) {
@@ -588,7 +595,7 @@ func reapDecision(now time.Time, mode msg.SessionMode, state msg.SessionState, l
 	if timeout <= 0 {
 		return 0, false
 	}
-	if !isPTY && state.IsActive() {
+	if !isPTY && (state.IsActive() || state.IsBlockedOnUser()) {
 		return 0, false
 	}
 	ref := lastActivity
