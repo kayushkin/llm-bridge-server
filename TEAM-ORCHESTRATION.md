@@ -266,10 +266,10 @@ Add three columns (distinct from the existing `spawner_id` / `parent_id` / `purp
 - `role` — archetype/role this session is filling (`builder`, `reviewer`, …).
 
 **Consolidate these with the lineage fields from §14.2** (`root_session_id`, `depth`, a
-`parent_node_session_id` index) — one migration, not two. The board + `card_links` hold the *semantic*
+`manager_session_id` index) — one migration, not two. The board + `card_links` hold the *semantic*
 structure; these columns hold *lineage* for recursion (§13) and the in-flight trace (§14).
-**Canonical field names + the full parent taxonomy: §21** (`team_id`/`board_id`/`role` plus the
-provenance/content/control lineage set).
+**Canonical session-id names + the full model: §21** (`bridge_session_id` / `manager_session_id` /
+`forked_from_session_id` / `refreshed_from_session_id` / `root_session_id`, plus what is *not* a session id).
 
 ### 7.2 Spawn injection — `internal/server/hook_settings.go:22` (`startOnInstance`)
 The existing single chokepoint for every spawn. Extend it to:
@@ -547,8 +547,8 @@ Three nesting levels map onto a standard span tree:
    `ParentSpanID`. Stamped at `startOnInstance` so every managed spawn is causally linked to its
    parent across the session boundary — the link that's missing today.
 2. **Sessions tree fields** (`internal/store/store.go` sessions): add `root_session_id`, `depth`, and
-   a **partial index on `parent_node_session_id`** (where non-empty) for cheap children lookups.
-   (Joins the `team_id`/`board_id`/`role` from §7.1; canonical lineage field names in **§21**.)
+   a **partial index on `manager_session_id`** (where non-empty) for cheap children lookups.
+   (Joins the `team_id`/`board_id`/`role` from §7.1; canonical session-id names in **§21**.)
 3. **Tree queries + endpoints**: `GetSessionChildren` / `GetSessionTree` / `GetAncestry`; expose
    `GET /sessions/{id}/tree`, `/children`, `/ancestry`. None exist today.
 4. **A trace-scoped live stream**: an SSE that fans in events across a whole node subtree (the
@@ -1039,59 +1039,89 @@ hooks (chiefly the new **Stop** pre-return gate); tooling reaches the model via 
 MCP; triggers span two planes — in-session CC hooks (one wired today, five to add) and cross-session
 kanban triggers (cron today, hybrid cron + event under this plan).
 
-## 21. Session lineage — the parent taxonomy
+## 21. Session ids — identity, lineage, and the node tree
 
-"Parent" hides ≥4 distinct relationships; conflating them caused the fork-vs-team nesting bug. Organize
-by two axes: **what kind of lineage**, and **who manages it** (bridge-server L1 vs harness — the §12 seam).
+The word "parent" hid ≥4 different relationships; conflating them caused the fork-vs-team mixup, and the
+ground-truth audit found that one column (`parent_id`) wasn't even a session id. This is the canonical
+session-id model. **§7.1 and §14.2 defer to it.**
 
-**Naming convention (canonical):** every foreign-key column **names its target entity type as a
-suffix** — `_session_id` (a bridge session `bridge_id`), `_card_id`, `_board_id`, `_harness_id`. Plain
-actor labels and scalars take **no** `_id`. A reader never has to guess whether a column points at a session.
+**Naming convention:** every FK column **names its target entity type as a suffix** — `_session_id`
+(a `bridge_session_id`), `_card_id`, `_board_id`, `_harness_id`. Labels and scalars take **no** `_id`.
+So a reader never guesses whether a column points at a session — and a `_session_id` column **always
+holds a `bridge_session_id`, never a harness UUID.**
 
-### 21.1 The fields
+### 21.1 The session ids
 
-| Axis | Field | Kind | Points at | Managed by | Notes |
+| Field | Was | Holds | Created when | Why it exists | Status |
 |---|---|---|---|---|---|
-| **Provenance** — who made me | `spawned_by` | label | actor/service | — | `orchestrator` / `scheduler` / `autoworker` / `human-dash`. Not a session. |
-| | `spawned_by_session_id` | FK | a session | bridge | the session that *initiated* my spawn; **null when a non-session actor/engine spawned me** (the common case — the coordination engine issues spawns). |
-| | `origin` | label | entry surface | — | dash / api / cron. Optional; can fold into `spawned_by`. |
-| **Content** — where my context came from (≤1) | `forked_from_session_id` | FK | a session | harness | branched **with** history. |
-| | `fork_source_harness_id` | FK | harness UUID | harness | the `harness_session_id` actually passed to thread-fork. Edge detail, not the model link. |
-| | `refreshed_from_session_id` | FK | a session | bridge | fresh reseed, same node, **no** history (the §3.1/§18 refresh). |
-| | `resumed_from_session_id` | FK | a session | harness | *(future)* continuation; today implicit in `harness_session_id` rotation. |
-| **Control** — the management tree | `parent_node_session_id` | FK | a session | bridge (L1) | **the tree parent — what nesting/§14 use.** Independent of `spawned_by_session_id`. |
-| | `root_session_id` | FK | a session | bridge | top of the tree (the goal/root node). |
-| | `depth` | int | — | bridge | tree depth. |
-| | `team_id` / `board_id` | FK | goal-card / board | bridge | containing scopes (not session FKs). |
-| **Coordination** — runtime (mostly card-level) | `delegated_by_session_id` | FK | a session | bridge | *(future)* handoff predecessor (§6). |
-| | `escalated_from_session_id` | FK | a session | bridge | *(future)* escalation to human / higher-tier model (§10). |
-| | `blocked_by_card_id` | FK | a card | bridge | *(future)* blackboard dependency. |
+| **`bridge_session_id`** | `bridge_id` | our own id | create / fork / discover (NOT resume) | the stable anchor; routing key on every event; the target of every `_session_id` FK | rename |
+| **`harness_session_id`** | (same) | the harness's UUID | first harness event; **rotates** on resume & fork | drives `--resume`/`--fork`; harness-boundary only — never a lineage FK | keep |
+| **`manager_session_id`** | `spawner_id` | the **managing/parent session** (`bridge_session_id`) | at spawn, set to the parent node; **null** = top-level | the **management tree** — who owns me; nesting + `root`/`depth` derive from it | rename + re-type |
+| **`forked_from_session_id`** | `parent_id` | the fork source's **`bridge_session_id`** | on fork | conversation-branch lineage (with history) | rename + **re-key** |
+| **`refreshed_from_session_id`** | — | the refresh predecessor's `bridge_session_id` | on a §3.1 refresh (fresh reseed, no history) | reseed continuity across context resets | net-new |
+| **`root_session_id`** | — | top of my tree | at spawn (denorm from the `manager` chain) | cheap "whole team" queries without walking up | net-new |
 
-### 21.2 The independence rule
+Two invariants:
+- **A lineage field exists only where bridge-server mints a *new* `bridge_session_id`** — fork and
+  refresh. **Resume reuses the same `bridge_session_id`** (audit-confirmed: `handleResumeSession` /
+  `autoResume` UPDATE, no INSERT), so there is **no `resumed_from`**; the `harness_session_id` rotation
+  is a harness-adapter detail, not lineage.
+- **`forked_from_session_id` is a `bridge_session_id`**, not the harness UUID. The UUID needed for
+  `--fork` is read **live from the parent row at fork time**, so there is **no `fork_source_harness_id`** column.
 
-A session has **one provenance** (`spawned_by` [+ `_session_id`]), **at most one content-source**
-(`forked_from_session_id` *xor* `refreshed_from_session_id`), and **at most one control-parent**
-(`parent_node_session_id` + `root_session_id`/`depth`). They're orthogonal — a builder can be
-`spawned_by=orchestrator`, `refreshed_from_session_id=<prev section>`, `parent_node_session_id=<goal>`
-all at once, each true and each meaning something different.
+### 21.2 Not session ids (don't lump them in)
 
-**Why `parent_node_session_id` ≠ `spawned_by_session_id`** (the judgment call): the coordination engine
-(deterministic, §7.3/§16) is usually the *spawner*, so `spawned_by` = `orchestrator` and
-`spawned_by_session_id` is **null** — yet the session still has a tree parent. Collapse them and
-engine-spawned sessions have no recordable parent. So structure (`parent_node_session_id`) is its own
-field; `spawned_by_session_id` captures the rarer "a session directly requested this" (audit).
+- **`origin`** — entry surface / creating service (`frontend-dash`, `autoworker`, `scheduler`). A
+  label, completely distinct from `manager_session_id` (a session). **Both kept** — not interchangeable.
+- **`type`** (interactive / autonomous / system) · **`purpose`** (chat / subagent / conformance …) ·
+  **`role`** (builder / reviewer / …) — classification labels.
+- **`depth`** — scalar. **`agent_id`** / **`instance_id`** — FKs to *other* entities (an agent identity,
+  a harness instance), reused across many sessions. **`team_id`** / **`board_id`** — scope FKs.
+- Turn/message scope (never session ids): `turn_id`, `message_id`, `harness_message_id`, `client_request_id`.
 
-### 21.3 L1/L2 mapping
+### 21.3 The three node kinds (the folder structure)
 
-`parent_node_session_id` is **bridge-managed (L1)** — our FK, what the tree/nesting/§14 use.
-`forked_from_session_id` / `fork_source_harness_id` is **harness-managed** (UUIDs, the fork/resume
-machinery). **L2 subagents are not sessions** (§12) — if ever surfaced, they're *spans* with a
-`harness_task_id`, never a `parent_node_session_id`.
+The sidebar tree differentiates three kinds **structurally — no `is_subagent` flag needed**:
 
-### 21.4 Migration
+| Kind | What it is | Identified by | In the sidebar |
+|---|---|---|---|
+| **Top-level** (user goal / chat) | a session row | `manager_session_id IS NULL` | a folder root |
+| **Bridge-server subagent (L1)** — task-assigned | a session row | `manager_session_id IS NOT NULL` | nested under its manager; labelled by `role` + `type`/`purpose`; real → selectable, killable |
+| **Internal subagent (L2)** — spawned inside the harness | **not a session** — a `task_*` span | a `harness_task_id`; no session row | read-only pseudo-row under its L1 parent, badged "internal"; can't be killed alone (§12) |
 
-`parent_id` → `forked_from_session_id` (re-keyed from the harness UUID to `bridge_id`);
-`spawner_id` → `spawned_by` (+ new `spawned_by_session_id`). Touches bridge-server (store, fork plumbing
-`sessions.go:643`, `process.go` resume map), `ManagedSession` (Go + `llm-bridge/ts`), the UI details
-panel. Rides **§9 step 5**; keep `parent_id` / `spawner_id` as deprecated aliases for one release.
-**This table is the canonical lineage field set — §7.1 and §14.2 defer to it.**
+Nesting keys on `manager_session_id`; `role`/`type`/`purpose` give labels/icons. Forks are a *separate*
+lineage (`forked_from_session_id`), shown as a branch, not a managed child.
+
+### 21.4 ⚠️ L2 today: subagent events share the parent's id, and the distinguishing field is dropped
+
+Verified in `llm-bridge-claudecode` — **your suspicion was right.** A live CC Task subagent's events are
+emitted on the **parent's stream and stamped with the parent's `bridge_session_id`** (one CC process =
+one bridge session); they are *not* separate sessions live. The field that *would* attribute each event
+to its spawning `Task()` call — CC's **`parent_tool_use_id`** — is **dropped**: the bridge's
+`ccStreamEvent` struct (`translate.go:15`) has no such field, so even though recent CC emits it on
+subagent sub-messages, it's never read. Only `task_started`/`task_progress` carry a `task_id` (the
+boundary narration); the subagent's own assistant/tool events carry no linkage.
+
+**Consequence:** an **L2 span is not reconstructable today** beyond the coarse "all under this bridge
+session." The §14 `node ⊃ session ⊃ harness-task` nesting needs one small harness-adapter fix:
+1. add `parent_tool_use_id` to `ccStreamEvent` (verify top-level vs in `message` against a live capture);
+2. add **`parent_tool_use_id`** (and/or `harness_task_id`) to canonical `msg.Event`;
+3. stamp it through, so every subagent event is attributable to its `Task()` call.
+
+Until then L2 renders only as the `task_*` markers, not a full nested timeline. L2 stays event-spans —
+**never** a `bridge_session_id`.
+
+### 21.5 Migration
+
+- `bridge_id` → `bridge_session_id`; `parent_id` → `forked_from_session_id` (re-keyed to a
+  `bridge_session_id`, drop the stored harness UUID); `spawner_id` → `manager_session_id` (re-typed to a
+  real session FK; **null** for top-level). `origin` unchanged.
+- Net-new: `manager_session_id` semantics, `refreshed_from_session_id`, `root_session_id`, `depth`,
+  `team_id`/`board_id`, `role`.
+- Touches bridge-server (store, `sessions.go` fork plumbing, resume path), `ManagedSession` (Go +
+  `llm-bridge/ts`), the UI. Rides **§9 step 5**; keep `bridge_id`/`parent_id`/`spawner_id` as deprecated
+  aliases for one release.
+- **Open behavioral choice:** does `manager_session_id` **inherit on fork** (a fork of a managed session
+  stays under the same manager) or default **null** (a user fork is an unmanaged branch)? Recommend
+  **null on fork** — a fork is a user/content branch, not a management relationship; an
+  orchestration-driven sub-spawn sets `manager_session_id` explicitly.
