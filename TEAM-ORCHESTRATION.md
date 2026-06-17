@@ -421,64 +421,52 @@ Steps 1–4 ride the working cron loop and are low-risk; steps 9–10 are the ge
 
 ---
 
-## 12. Two spawn layers — managed vs unmanaged
+## 12. Two control layers — bridge-managed vs harness-coupled
 
-"Subagent" means two different things, with a hard boundary between them. The design must
-represent both *and the line between them*, because the server can only command one side.
+**Every subagent becomes a first-class bridge session** — including a harness's own (CC `Task`). Each
+gets its own `bridge_session_id` and a `manager_session_id` link to its parent (§21). What differs is
+**who owns its process lifecycle** — i.e. whether bridge-server can independently control it. The
+boundary is **control, not existence.**
 
-> **Terminology vs `AGENT-MANAGEMENT.md` / `HARNESS-LAYER.md`.** Those docs treat CC subagents as
-> first-class *managed* config — defined in agent-store (`parent_agent_id`, `subagent_allow`) and
-> rendered into `--agents <json>` at spawn. That's the **definition** layer, and it stays true. "L2
-> unmanaged" here means the **runtime instance**: once CC's `Task` tool spawns a defined subagent
-> inside its process, bridge-server can't pause/kill/observe *that instance* independently. **Managed
-> at definition, unmanaged at runtime.**
+- **L1 · bridge-managed** — bridge-server spawned the process; it can pause / kill / refresh / re-route
+  it directly.
+- **L2 · harness-coupled** — the harness spawned it *inside the parent's process* (CC `Task`). The
+  **harness adapter promotes it to a bridge session** (mints `bridge_session_id`, sets
+  `manager_session_id` = parent), so it's visible, nested, and attributable like any session — **but
+  its lifecycle is the parent's:** you can't pause/kill it alone, only by acting on the parent.
 
-```
-  ┌─ L1 · SERVER-MANAGED ─────────────────────────────────────────────┐
-  │  bridge-server spawns a session (assigner / refresh / verifier /   │
-  │  recursive sub-team). Owns the full lifecycle.                     │
-  │     • has bridge_id, parent (bridge), root, depth, team/board/role │
-  │     • can pause / kill / refresh / re-route / link to a card       │
-  │     • emits the full canonical event stream over SSE               │
-  │                                                                    │
-  │   ┌─ L2 · HARNESS-INTERNAL (UNMANAGED) ──────────────────────────┐ │
-  │   │  the session's harness spawns its OWN sub-agents inside its   │ │
-  │   │  process — CC Task tool, codex internal calls.                │ │
-  │   │     • NO bridge session, NO bridge_id, NO independent control │ │
-  │   │     • observable ONLY via what the harness emits:             │ │
-  │   │         – CC: task_started / task_progress system events      │ │
-  │   │           (task_id, tool_use_id, description) — flat, no tree │ │
-  │   │           (llm-bridge-claudecode/translate.go:174)            │ │
-  │   │         – codex / inber / goose: nothing                      │ │
-  │   │     • cannot be paused/killed alone — only by killing L1      │ │
-  │   └───────────────────────────────────────────────────────────────┘ │
-  └────────────────────────────────────────────────────────────────────┘
-```
+A session attribute records the difference: **`lifecycle_owner` ∈ {`bridge`, `harness`}** (derivable
+from "has its own OS process," but explicit is honest).
 
-| | L1 managed session | L2 harness-internal subagent |
+> **vs `AGENT-MANAGEMENT.md` / `HARNESS-LAYER.md`.** Those treat CC subagents as first-class *managed
+> config* — defined in agent-store (`parent_agent_id`, `subagent_allow`), rendered into `--agents`. That
+> *definition* layer stays true. This section is the *runtime instance*: a defined subagent, once `Task`
+> spawns it, is now a real (harness-coupled) bridge session, not an opaque span.
+
+| | L1 · bridge-managed | L2 · harness-coupled |
 |---|---|---|
-| Has a bridge `bridge_id` | yes | no |
-| Lifecycle owner | bridge-server | the harness process |
-| Independently pause/kill | yes | no (only via its L1 parent) |
-| Linked to a kanban card | yes | no |
-| Observability | full event stream | per-harness narration only (CC: `task_*`; others: none) |
-| Recursion controlled by | server (depth/breadth config) | the harness (opaque to us) |
+| Own `bridge_session_id` | yes | **yes (adapter-minted)** |
+| `manager_session_id` → parent | yes | **yes** |
+| Linked to a kanban card | yes | yes |
+| `lifecycle_owner` | `bridge` | `harness` |
+| Independently pause/kill | yes | **no — only via the parent process** |
+| Observability | full event stream | **full, once the adapter demuxes** (§21.4); CC-only until other harnesses expose subagents |
+| Recursion bounded by | server config | the harness (its own depth, still opaque) |
 
-**Implications for the rest of the design:**
+**Implications:**
 
-- **Prefer L1 for anything you need to see or steer.** A verifier lens, a refresh, a sub-team —
-  spawn it as a managed session, not by telling one agent "use your Task tool." You give up control
-  and visibility the moment work drops into L2. (`HARNESS-LAYER.md` says *prefer the native `Task`
-  dispatcher* — that's right for an agent's *internal* leaf fan-out; this is about *orchestration*
-  you must observe/steer. Different scopes, not a conflict.)
-- **L2 is fine for leaf, self-contained fan-out** (one CC session parallelizing a read it owns) — but
-  treat it as a black box that the parent session is accountable for. The monitor shows L2 as spans
-  *under* their L1 parent, marked "observed, not managed," at whatever fidelity the harness gives.
-- **Two depth meters.** Server-managed depth (bounded by our config) and harness-internal depth
-  (bounded by the harness, invisible). A runaway can hide entirely in L2 — see §14 alerts.
-- **The L1/L2 line is living.** As models gain native context management and sub-agents, work migrates
-  L1→L2. Keep at L1 what needs enforcement / observability / persistence / ground-truth; cede to L2
-  what needs the model's private knowledge of its own context. Design for the shift (§19.3).
+- **The tree is uniform.** §14 observability is just the `manager_session_id` session tree — no special
+  "span" reconstruction. The old "L2 = spans, not sessions" model is **superseded**: L2 is a session,
+  marked `lifecycle_owner=harness`.
+- **Promotion lives in the harness adapter** (§19 — the harness owns its own translation). For CC, the
+  adapter demuxes the subagent stream and mints a `bridge_session_id` per subagent; demux key in §21.4.
+- **Still prefer L1 for anything you must *steer*.** A `harness`-lifecycle session is observable but not
+  independently killable — for a verifier lens / refresh / sub-team you need to control, spawn it L1.
+  (`HARNESS-LAYER.md`'s "prefer the native `Task` dispatcher" stays right for an agent's internal leaf fan-out.)
+- **The runaway blind spot closes.** Harness-coupled depth was invisible; once promoted it's visible
+  (you still can't *kill* a deep L2 chain except via its root parent — control ≠ visibility).
+- **The line is living** (§19.3): as models gain native sub-agents, more work is harness-coupled —
+  promotion keeps it *visible* even when it isn't independently *controllable*.
 
 ## 13. Recursion — one node shape, with a write invariant
 
@@ -1074,7 +1062,8 @@ Two invariants:
 - **`origin`** — entry surface / creating service (`frontend-dash`, `autoworker`, `scheduler`). A
   label, completely distinct from `manager_session_id` (a session). **Both kept** — not interchangeable.
 - **`type`** (interactive / autonomous / system) · **`purpose`** (chat / subagent / conformance …) ·
-  **`role`** (builder / reviewer / …) — classification labels.
+  **`role`** (builder / reviewer / …) · **`lifecycle_owner`** (`bridge` / `harness` — who can
+  start/stop this session's process, §12) — classification labels.
 - **`depth`** — scalar. **`agent_id`** / **`instance_id`** — FKs to *other* entities (an agent identity,
   a harness instance), reused across many sessions. **`team_id`** / **`board_id`** — scope FKs.
 - Turn/message scope (never session ids): `turn_id`, `message_id`, `harness_message_id`, `client_request_id`.
@@ -1087,29 +1076,37 @@ The sidebar tree differentiates three kinds **structurally — no `is_subagent` 
 |---|---|---|---|
 | **Top-level** (user goal / chat) | a session row | `manager_session_id IS NULL` | a folder root |
 | **Bridge-server subagent (L1)** — task-assigned | a session row | `manager_session_id IS NOT NULL` | nested under its manager; labelled by `role` + `type`/`purpose`; real → selectable, killable |
-| **Internal subagent (L2)** — spawned inside the harness | **not a session** — a `task_*` span | a `harness_task_id`; no session row | read-only pseudo-row under its L1 parent, badged "internal"; can't be killed alone (§12) |
+| **Internal subagent (L2)** — spawned inside the harness | a session, **adapter-promoted** | own `bridge_session_id` + `manager_session_id`, `lifecycle_owner=harness` | nested under its manager like any subagent, badged "internal"; visible/attributable but **not independently killable** (§12) |
 
-Nesting keys on `manager_session_id`; `role`/`type`/`purpose` give labels/icons. Forks are a *separate*
-lineage (`forked_from_session_id`), shown as a branch, not a managed child.
+Nesting keys on `manager_session_id` — uniform for L1 and L2. `role`/`type`/`purpose`/`lifecycle_owner`
+give labels/icons. Forks are a *separate* lineage (`forked_from_session_id`), shown as a branch, not a
+managed child.
 
-### 21.4 ⚠️ L2 today: subagent events share the parent's id, and the distinguishing field is dropped
+### 21.4 Promoting harness subagents to sessions (the adapter's job)
 
-Verified in `llm-bridge-claudecode` — **your suspicion was right.** A live CC Task subagent's events are
-emitted on the **parent's stream and stamped with the parent's `bridge_session_id`** (one CC process =
-one bridge session); they are *not* separate sessions live. The field that *would* attribute each event
-to its spawning `Task()` call — CC's **`parent_tool_use_id`** — is **dropped**: the bridge's
-`ccStreamEvent` struct (`translate.go:15`) has no such field, so even though recent CC emits it on
-subagent sub-messages, it's never read. Only `task_started`/`task_progress` carry a `task_id` (the
-boundary narration); the subagent's own assistant/tool events carry no linkage.
+The harness adapter **mints a `bridge_session_id` per subagent and links it** (`manager_session_id` =
+parent) *before events reach bridge-server* — so a harness subagent arrives as a real session (§12),
+not a span. Verified gap in `llm-bridge-claudecode` today (your suspicion was right): a live CC Task
+subagent's events are stamped with the **parent's** `bridge_session_id` (one CC process = one bridge
+session), and the field that distinguishes them is dropped — `ccStreamEvent` (`translate.go:15`) parses
+only `type/subtype/session_id/message/result`, so CC's **`parent_tool_use_id`** is never read. So today
+subagents collapse onto the parent.
 
-**Consequence:** an **L2 span is not reconstructable today** beyond the coarse "all under this bridge
-session." The §14 `node ⊃ session ⊃ harness-task` nesting needs one small harness-adapter fix:
-1. add `parent_tool_use_id` to `ccStreamEvent` (verify top-level vs in `message` against a live capture);
-2. add **`parent_tool_use_id`** (and/or `harness_task_id`) to canonical `msg.Event`;
-3. stamp it through, so every subagent event is attributable to its `Task()` call.
+The fix, in the adapter:
+1. **Pick the demux key** — *verify against a live capture* whether CC stamps subagent stream lines with
+   the **subagent's own `session_id`** (demux by that) or the **parent's `session_id` + `parent_tool_use_id`**
+   (demux by that). The current code ignores per-line `session_id` variation *and* lacks `parent_tool_use_id`.
+2. **Mint + map** — on first sight of a new subagent (new demux key), mint a `bridge_session_id`, record
+   `key → bridge_session_id`, set `manager_session_id` = the parent's `bridge_session_id`,
+   `lifecycle_owner = harness`.
+3. **Re-stamp** every subsequent subagent event with the subagent's `bridge_session_id`.
+4. Add `parent_tool_use_id` (and/or `harness_task_id`) to `ccStreamEvent` + canonical `msg.Event` so the
+   key survives translation. bridge-server **auto-creates** the row on first-seen (live equivalent of the
+   discovery upsert).
 
-Until then L2 renders only as the `task_*` markers, not a full nested timeline. L2 stays event-spans —
-**never** a `bridge_session_id`.
+The parent's `task_started`/`task_progress` stay on the *parent* (it narrates "I spawned a task"); the
+subagent's own work goes to the subagent's session. Net: the §14 tree is uniform sessions — no special
+span path.
 
 ### 21.5 Migration
 
