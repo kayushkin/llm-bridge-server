@@ -82,9 +82,11 @@ capabilities/
   todo_track
   plan_mode
 
-  # inber-specific (no native equivalent on any harness)
+  # native on some harnesses, materialized elsewhere — routing TBD (see MEMORY-ROUTING.md, gated on memory-layer Q1/Q2)
   memory_search
   memory_save
+
+  # inber-specific (no native equivalent on any harness)
   agent_delegate
   bus_publish
   bus_tail
@@ -95,7 +97,9 @@ capabilities/
   tools_run       # meta: invoke a registered tool by name
 ```
 
-Anything in the second block routes to CLI/MCP regardless of harness — no harness has these natively, and that's the whole reason inber's CLI surface exists.
+The `agent_delegate` / `bus_*` / `notes_*` / `kanban_op` / `tools_*` block routes to CLI/MCP regardless of harness — no harness has these natively, and that's the whole reason inber's CLI surface exists.
+
+`memory_search` / `memory_save` are **not** in that no-native-equivalent set: several harnesses ship a real native memory surface — CC (`~/.claude/projects/<key>/memory/*.md` + auto-injected `MEMORY.md` index, the richest), Hermes (`~/.hermes/memories/MEMORY.md` + `USER.md`), and OpenClaw (`~/.openclaw/memory/main.sqlite` + workspace MD). Codex has an (unused) `~/.codex/memories/` dir; cline/aider/forgecode/jig/nanoclaw/kilocode have none. So memory follows the standard `native > MCP > CLI` rule per harness rather than always routing to inber's CLI. The per-harness native catalog and the read/write routing rules live in `MEMORY-ROUTING.md` (pending memory-layer decisions Q1/Q2); host audit verified 2026-05-09 (noteboard note `bfa7059e`).
 
 ## Discovery — how the harness server knows what's available
 
