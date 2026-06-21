@@ -38,6 +38,10 @@ declare -A SIBLINGS=(
   [snapshot-store]=""
   # --- harness wrappers built into server-full Docker target ---
   [llm-bridge-claudecode]="https://github.com/kayushkin/llm-bridge-claudecode.git"
+  # --- additional store services baked into docker-compose stack ---
+  [auth-store]="https://github.com/kayushkin/auth-store.git"
+  [kanban-store]="https://github.com/kayushkin/kanban-store.git"
+  [usage-store]="https://github.com/kayushkin/usage-store.git"
   # --- UI built into llmux Docker target ---
   [llmux]="https://github.com/kayushkin/llmux.git"
   [bridge-ui]="https://github.com/kayushkin/bridge-ui.git"
@@ -47,7 +51,7 @@ declare -A SIBLINGS=(
 ORDER=(
   llm-bridge log-store logstack agent-store bus harness-store memory-store
   aiauth model-store hook-store snapshot-store
-  llm-bridge-claudecode llmux bridge-ui
+  llm-bridge-claudecode auth-store kanban-store usage-store llmux bridge-ui
 )
 
 echo "==> Bootstrapping sibling repos into $PARENT_DIR"

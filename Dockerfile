@@ -35,6 +35,11 @@ COPY snapshot-store        /src/snapshot-store
 # Harness wrappers we want bakeable into server-full.
 COPY llm-bridge-claudecode /src/llm-bridge-claudecode
 
+# Sibling store services packaged into the compose stack.
+COPY auth-store            /src/auth-store
+COPY kanban-store          /src/kanban-store
+COPY usage-store           /src/usage-store
+
 # llmux Go server (no sibling replace deps of its own — uses module proxy).
 COPY llmux                 /src/llmux
 
@@ -49,6 +54,18 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/llm-bridge-claudec
 
 WORKDIR /src/log-store
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/log-store ./cmd/log-store
+
+WORKDIR /src/auth-store
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/auth-store ./cmd/auth-store
+
+WORKDIR /src/kanban-store
+# kanban-store uses mattn/go-sqlite3 which requires cgo; the other stores
+# use pure-Go modernc. Building it with CGO_ENABLED=1 means the final
+# kanban-store image needs a libc-bearing base instead of distroless.
+RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/kanban-store ./cmd/kanban-store
+
+WORKDIR /src/usage-store
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/usage-store ./cmd/usage-store-server
 
 WORKDIR /src/llmux
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/llmux-server ./server
@@ -69,8 +86,9 @@ COPY llm-bridge  /src/llm-bridge
 COPY bridge-ui   /src/bridge-ui
 COPY llmux       /src/llmux
 
-WORKDIR /src/bridge-ui
-RUN npm install --no-audit --no-fund && npm run build
+# bridge-ui ships a committed dist/ (it's the npm package's `main`), so
+# we skip rebuilding it inside the image and rely on what's checked in.
+# This also dodges any uncommitted-source tsc churn in the working tree.
 
 WORKDIR /src/llmux
 RUN npm install --no-audit --no-fund && npm run build
@@ -157,6 +175,52 @@ EXPOSE 8175
 VOLUME ["/data"]
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/log-store"]
+
+# --- auth-store target --------------------------------------------------
+
+FROM gcr.io/distroless/static-debian12:nonroot AS auth-store
+COPY --from=build /out/auth-store /usr/local/bin/auth-store
+COPY --from=build --chown=65532:65532 /out/data /data
+ENV HOME=/data
+EXPOSE 8303
+VOLUME ["/data"]
+USER nonroot:nonroot
+# --bind-all so other containers in the compose network can reach this.
+# Default flags target the in-container HOME=/data so the SQLite db lands
+# on the persistent volume.
+ENTRYPOINT ["/usr/local/bin/auth-store", "--bind-all", "--port=8303", "--db=/data/.config/auth-store/auth.db"]
+
+# --- kanban-store target ------------------------------------------------
+
+# debian-slim (not distroless) because mattn/go-sqlite3 needs libc at
+# runtime. We still chown a /data directory for the nonroot uid.
+FROM debian:bookworm-slim AS kanban-store
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd -g 65532 nonroot && useradd -u 65532 -g 65532 -m nonroot \
+ && mkdir -p /data && chown 65532:65532 /data
+COPY --from=build /out/kanban-store /usr/local/bin/kanban-store
+ENV KANBAN_PORT=8305 \
+    KANBAN_DB=/data/kanban.db \
+    HOME=/data
+EXPOSE 8305
+VOLUME ["/data"]
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/kanban-store"]
+
+# --- usage-store target -------------------------------------------------
+
+FROM gcr.io/distroless/static-debian12:nonroot AS usage-store
+COPY --from=build /out/usage-store /usr/local/bin/usage-store
+COPY --from=build --chown=65532:65532 /out/data /data
+ENV USAGE_STORE_LISTEN_ADDR=:8185 \
+    USAGE_STORE_DB=/data/usage.db \
+    USAGE_STORE_TOKENS_DB=/data/tokens.db \
+    HOME=/data
+EXPOSE 8185
+VOLUME ["/data"]
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/usage-store"]
 
 # --- llmux target (token-auth UI) ---------------------------------------
 

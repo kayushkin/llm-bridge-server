@@ -1,29 +1,32 @@
-# Containerized llm-bridge stack: server-full + log-store + llmux UI.
+# Fully self-contained llm-bridge stack. No host bind-mounts, no shared
+# state, no services expected on the host. `docker compose up` brings up:
 #
-# Prereq: run scripts/bootstrap.sh from the repo root so every sibling
-# checkout llmux + bridge-ui + the harness wrappers references lives next
-# to this directory. The build context for every image is the parent dir
-# (context: ..) and the multi-stage Dockerfile picks targets via `target:`.
+#   llm-bridge-server  bridge + mock-harness + claudecode wrapper + claude CLI
+#   log-store          durable event log + materialized message history
+#   auth-store         credential vault used by harness manifests
+#   kanban-store       boards/columns/cards used by the bridge-ui kanban page
+#   usage-store        token + spend tracking surfaced in the bridge-ui usage page
+#   llmux              token-auth UI in front of all of the above
 #
-# Quick start:
-#   ./scripts/bootstrap.sh
-#   export LLMUX_TOKEN=$(openssl rand -hex 16)   # or pick anything
+# Prereq:
+#   ./scripts/bootstrap.sh        # clone every sibling repo
+#   cp .env.docker.example .env   # set LLMUX_TOKEN, ANTHROPIC_API_KEY
 #   docker compose up --build
-#   open http://localhost:18870                  # llmux UI, enter the token
+#   open http://localhost:18870   # paste LLMUX_TOKEN
 #
-# Default host-ports (chosen to avoid the canonical 8160/8170/8175 ports
-# in case a host-side instance is already running):
-#   bridge   18860 → container 8160   (override LLM_BRIDGE_HOST_PORT)
-#   llmux    18870 → container 8170   (override LLMUX_HOST_PORT)
-#   log-st.  18875 → container 8175   (override LOG_STORE_HOST_PORT)
-# The llmux UI lets you mint a machine + instance, then start chat sessions.
+# Host-port mappings (offset to 18xxx so the stack doesn't collide with a
+# host-side server already running on canonical ports):
 #
-# The `server-full` image bundles the upstream `claude` CLI + the
-# `llm-bridge-claudecode` wrapper. To authenticate against your existing
-# Claude account, bind-mount your host's ~/.claude credentials read-write
-# (uncomment the volume line under llm-bridge-server). Without that mount
-# the claude harness will spawn but every request will fail at auth — the
-# mock harness still works fully.
+#   bridge       18860 → 8160        LLM_BRIDGE_HOST_PORT
+#   llmux UI     18870 → 8170        LLMUX_HOST_PORT
+#   log-store    18875 → 8175        LOG_STORE_HOST_PORT
+#   auth-store   18803 → 8303        AUTH_STORE_HOST_PORT
+#   kanban-store 18805 → 8305        KANBAN_STORE_HOST_PORT
+#   usage-store  18885 → 8185        USAGE_STORE_HOST_PORT
+#
+# Harnesses available in the container:
+#   mock          works out of the box, no creds
+#   claude_code   works when ANTHROPIC_API_KEY is set in .env
 
 services:
   llm-bridge-server:
@@ -33,27 +36,27 @@ services:
       target: server-full
     image: llm-bridge-server:full
     ports:
-      # Host-ports default to the 188xx range so the compose stack does
-      # not collide with a host-side llm-bridge / log-store / llmux
-      # already running on the canonical 8160/8175/8170 ports. Override
-      # via .env if you need different host bindings.
       - "${LLM_BRIDGE_HOST_PORT:-18860}:8160"
     environment:
       LLMBRIDGE_LOG_STORE_URL: http://log-store:8175
-      # tool-store + permission-store + auth-store unreachable here — the
-      # related code paths degrade gracefully.
+      AUTH_STORE_URL: http://auth-store:8303
+      AUTH_STORE_TOKEN: ${AUTHSTORE_TOKEN:-}
+      # tool-store + skill-store + permission-store are not yet packaged
+      # into this compose stack (tool-store + skill-store have no public
+      # remotes yet; permission-store hard-binds 127.0.0.1 and needs a
+      # sibling-repo fix to be container-reachable). The bridge logs a
+      # warning and degrades when these URLs are unreachable.
       LLMBRIDGE_TOOL_STORE_URL: http://tool-store:8302
       LLMBRIDGE_PERMISSION_STORE_URL: http://permission-store:8304
+      # Real claude_code sessions read this from env. Leave blank and the
+      # mock harness still works; chat against claude_code will fail at
+      # auth, which is the honest signal.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - bridge-data:/data
-      # Uncomment to share your host's claude OAuth/credentials with the
-      # container so the claude_code harness can talk to a real LLM. The
-      # container runs as uid 1000 — adjust the user: line below if your
-      # host uid differs.
-      # - ${HOME}/.claude:/data/home/.claude
-    # user: "${UID:-1000}:${GID:-1000}"
     depends_on:
       - log-store
+      - auth-store
 
   log-store:
     build:
@@ -68,6 +71,47 @@ services:
     volumes:
       - log-store-data:/data
 
+  auth-store:
+    build:
+      context: ..
+      dockerfile: llm-bridge-server/Dockerfile
+      target: auth-store
+    image: auth-store:local
+    ports:
+      - "${AUTH_STORE_HOST_PORT:-18803}:8303"
+    environment:
+      AUTHSTORE_TOKEN: ${AUTHSTORE_TOKEN:-}
+      AUTHSTORE_CALLBACK_URL: http://localhost:${AUTH_STORE_HOST_PORT:-18803}/oauth/callback
+    volumes:
+      - auth-store-data:/data
+
+  kanban-store:
+    build:
+      context: ..
+      dockerfile: llm-bridge-server/Dockerfile
+      target: kanban-store
+    image: kanban-store:local
+    ports:
+      - "${KANBAN_STORE_HOST_PORT:-18805}:8305"
+    volumes:
+      - kanban-store-data:/data
+
+  usage-store:
+    build:
+      context: ..
+      dockerfile: llm-bridge-server/Dockerfile
+      target: usage-store
+    image: usage-store:local
+    ports:
+      - "${USAGE_STORE_HOST_PORT:-18885}:8185"
+    environment:
+      AUTH_STORE_URL: http://auth-store:8303
+      AUTH_STORE_TOKEN: ${AUTHSTORE_TOKEN:-}
+    volumes:
+      - usage-store-data:/data
+    depends_on:
+      - auth-store
+
   llmux:
     build:
       context: ..
@@ -77,13 +121,24 @@ services:
     ports:
       - "${LLMUX_HOST_PORT:-18870}:8170"
     environment:
-      # LLMUX_TOKEN gates every authenticated API path. The frontend
-      # prompts for it on first visit and stores it in localStorage.
       LLMUX_TOKEN: ${LLMUX_TOKEN:?LLMUX_TOKEN must be set in env or .env}
       LLM_BRIDGE_URL: http://llm-bridge-server:8160
+      USAGE_STORE_URL: http://usage-store:8185
+      KANBAN_STORE_URL: http://kanban-store:8305
+      # llmux still routes /api/skill-store and /api/tool-store to these
+      # URLs; the proxy returns 502 to the UI when the upstream isn't
+      # there, which is the right signal until those services are OSS.
+      SKILL_STORE_URL: http://skill-store:8301
+      TOOL_STORE_URL: http://tool-store:8302
+      PERMISSION_STORE_URL: http://permission-store:8304
     depends_on:
       - llm-bridge-server
+      - usage-store
+      - kanban-store
 
 volumes:
   bridge-data:
   log-store-data:
+  auth-store-data:
+  kanban-store-data:
+  usage-store-data:
