@@ -33,6 +33,9 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 	s.injectHookSettings(sess)
 	s.injectAgentsContext(sess)
 	s.injectPermissionModeFlag(sess)
+	if err := s.injectBundleResolution(sess); err != nil {
+		return nil, fmt.Errorf("inject bundle resolution: %w", err)
+	}
 	if err := s.injectMCPConfig(sess); err != nil {
 		return nil, fmt.Errorf("inject mcp config: %w", err)
 	}

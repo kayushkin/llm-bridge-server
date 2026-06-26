@@ -29,6 +29,12 @@ type Config struct {
 	// localhost:port (the WSL-via-SSH-tunnel case).
 	PublicURL        string
 	ToolStoreURL     string
+	// RepoStoreURL and BundleStoreURL drive the opt-in session bundle resolver
+	// (injectBundleResolution): repo-store detects a repo's signature tags,
+	// bundle-store resolves those tags to a set of tool-store tools that feed
+	// the existing tool-store provisioning path. Default localhost:8306/:8307.
+	RepoStoreURL   string
+	BundleStoreURL string
 	// PermissionStoreURL is the base URL of the permission-store service
 	// consulted by the PreToolUse permission-prehook handler. Defaults to
 	// localhost:8304.
@@ -80,6 +86,8 @@ func Load() *Config {
 		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", "http://localhost:8175"),
 		PublicURL:       os.Getenv("LLMBRIDGE_PUBLIC_URL"),
 		ToolStoreURL:    envOr("LLMBRIDGE_TOOL_STORE_URL", "http://localhost:8302"),
+		RepoStoreURL:    envOr("LLMBRIDGE_REPO_STORE_URL", "http://localhost:8306"),
+		BundleStoreURL:  envOr("LLMBRIDGE_BUNDLE_STORE_URL", "http://localhost:8307"),
 		PermissionStoreURL: envOr("LLMBRIDGE_PERMISSION_STORE_URL", "http://localhost:8304"),
 		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.db")),
 		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.git")),
