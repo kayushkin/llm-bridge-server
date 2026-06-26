@@ -1092,17 +1092,23 @@ session), and the field that distinguishes them is dropped — `ccStreamEvent` (
 only `type/subtype/session_id/message/result`, so CC's **`parent_tool_use_id`** is never read. So today
 subagents collapse onto the parent.
 
+**Demux key — VERIFIED (CC 2.1.177, live `--output-format stream-json` capture):** subagent events
+*are* emitted inline on the parent's stdout (`user`/`assistant`/tool-result frames), they **all share
+the parent's `session_id`** (so `session_id` is *not* a discriminator), and each subagent frame carries
+a top-level **`parent_tool_use_id` = the `tool_use_id` of the `Task`/`Agent` call that spawned it** —
+the same id the `task_started`/`task_progress` narration carries. The parent's own frames have
+`parent_tool_use_id: null`. **→ `parent_tool_use_id` is the demux key.**
+
 The fix, in the adapter:
-1. **Pick the demux key** — *verify against a live capture* whether CC stamps subagent stream lines with
-   the **subagent's own `session_id`** (demux by that) or the **parent's `session_id` + `parent_tool_use_id`**
-   (demux by that). The current code ignores per-line `session_id` variation *and* lacks `parent_tool_use_id`.
-2. **Mint + map** — on first sight of a new subagent (new demux key), mint a `bridge_session_id`, record
-   `key → bridge_session_id`, set `manager_session_id` = the parent's `bridge_session_id`,
-   `lifecycle_owner = harness`.
-3. **Re-stamp** every subsequent subagent event with the subagent's `bridge_session_id`.
-4. Add `parent_tool_use_id` (and/or `harness_task_id`) to `ccStreamEvent` + canonical `msg.Event` so the
-   key survives translation. bridge-server **auto-creates** the row on first-seen (live equivalent of the
-   discovery upsert).
+1. Add `parent_tool_use_id` to `ccStreamEvent` (`translate.go:15`) and to canonical `msg.Event`.
+2. **Mint + map** — the first non-null `parent_tool_use_id` (or the `task_started` for that
+   `tool_use_id`) mints a `bridge_session_id`; record `parent_tool_use_id → bridge_session_id`, set
+   `manager_session_id` = the parent's `bridge_session_id`, `lifecycle_owner = harness`. Use the
+   `task_started` frame's `task_id` + `description` for the subagent's label.
+3. **Re-stamp** every frame whose `parent_tool_use_id` matches onto the subagent's `bridge_session_id`;
+   `null` → the parent. **Nested** subagents chain (each frame's `parent_tool_use_id` = its immediate
+   parent's `tool_use_id`), so the `manager_session_id` tree reconstructs depth automatically.
+4. bridge-server **auto-creates** the row on first-seen (live equivalent of the discovery upsert).
 
 The parent's `task_started`/`task_progress` stay on the *parent* (it narrates "I spawned a task"); the
 subagent's own work goes to the subagent's session. Net: the §14 tree is uniform sessions — no special
