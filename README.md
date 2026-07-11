@@ -16,6 +16,7 @@ The cross-cutting design for the harness layer, agent rendering, tool/skill rout
 | [`CC-VERIFIED.md`](./CC-VERIFIED.md) | Empirical reference for Claude Code 2.1.138 behavior — `--agents`, `--system-prompt` vs `--append`, `--bare`, `--settings`, init event surface. Sources cited from elsewhere in the design. |
 | [`CONTEXT-MIGRATION.md`](./CONTEXT-MIGRATION.md) | Plan to extract inber's per-turn assembly (`engine/turn_*.go`, `conversation/`) into `llm-bridge/assembly/` shared library. Replaces this server's `agents_context.go`. |
 | [`IMPLEMENTATION-ROADMAP.md`](./IMPLEMENTATION-ROADMAP.md) | Sequenced PRs across all affected repos. Critical path P1→P2→P3→P4→P6 (~3-4 weeks for the first end-to-end CC vertical). |
+| [`TEAM-ORCHESTRATION.md`](./TEAM-ORCHESTRATION.md) | Dynamic skill-formed agent **teams** coordinating over a kanban board as a blackboard. Generalizes the `scheduler/cmd/kanban-*` loop: planner → team-former → assigner (slow/cron) + an in-server coordination engine (fast/events). Board-per-team, `team_id`/`board_id`/`role` on sessions, `bridge kanban` agent CLI. |
 
 Operational docs:
 
