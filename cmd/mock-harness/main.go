@@ -245,6 +245,25 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 			Plan:            &msg.PlanEvent{Text: "1. step one\n2. step two\n3. step three"},
 		})
 	}
+	// A single event line far larger than any reader's working buffer. Real
+	// harnesses produce these routinely — a base64 screenshot from the
+	// Playwright MCP, a large file read — and the gateway must deliver the
+	// event whole and keep the session running. When the stdout reader was a
+	// bufio.Scanner capped at 1MB, this line ended the read loop, which the
+	// manager could not distinguish from the harness exiting.
+	if strings.Contains(strings.ToLower(userMessage), "oversized") {
+		emit(msg.Event{
+			Type:            msg.EventToolResult,
+			Harness:         msg.Harness(harnessName),
+			BridgeSessionID: sessionID,
+			Timestamp:       time.Now(),
+			ToolResult: &msg.ToolResultEvent{
+				ToolID: "oversized-1",
+				Name:   "Read",
+				Output: strings.Repeat("x", 2*1024*1024),
+			},
+		})
+	}
 	if strings.Contains(strings.ToLower(userMessage), "hook") {
 		emit(msg.Event{
 			Type:            msg.EventHook,

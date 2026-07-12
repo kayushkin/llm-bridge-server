@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/kayushkin/llm-bridge-server/internal/ndjson"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -46,7 +47,6 @@ type Request struct {
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params,omitempty"`
 }
-
 
 // StartParams for the "start" method. BridgeSessionID is the routing identifier
 // on the wire. HarnessSessionID is the harness-internal id (e.g. Claude Code
@@ -298,38 +298,48 @@ func (p *Process) sendRequest(method string, params any) error {
 	return err
 }
 
-// readLoop reads NDJSON events from stdout.
+// readLoop reads NDJSON events from stdout. It terminates only when stdout
+// reaches EOF or fails — closing p.events is how the manager learns the
+// process exited (see Manager.readEvents), so a malformed or oversized line
+// must never end the loop.
 func (p *Process) readLoop() {
 	defer close(p.events)
 
-	scanner := bufio.NewScanner(p.stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024) // 1MB buffer
+	reader := bufio.NewReaderSize(p.stdout, 1024*1024)
 
-	for scanner.Scan() {
+	for {
 		select {
 		case <-p.done:
 			return
 		default:
 		}
 
-		line := scanner.Bytes()
-		if len(line) == 0 {
+		line, err := ndjson.ReadLine(reader, ndjson.MaxLineBytes)
+
+		if err == ndjson.ErrLineTooLong {
+			log.Printf("[harness] session %s: dropping event line above the %d-byte ceiling; session continues", p.sessionID, ndjson.MaxLineBytes)
 			continue
 		}
 
-		var event msg.Event
-		if err := json.Unmarshal(line, &event); err != nil {
-			continue
+		if len(line) > 0 {
+			var event msg.Event
+			if jsonErr := json.Unmarshal(line, &event); jsonErr != nil {
+				log.Printf("[harness] session %s: unparseable event line (%d bytes): %v", p.sessionID, len(line), jsonErr)
+			} else {
+				select {
+				case p.events <- event:
+				case <-p.done:
+					return
+				}
+			}
 		}
 
-		select {
-		case p.events <- event:
-		case <-p.done:
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("[harness] session %s: stdout read error: %v", p.sessionID, err)
+			}
 			return
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		log.Printf("[harness] scanner error: %v", err)
 	}
 }
 
