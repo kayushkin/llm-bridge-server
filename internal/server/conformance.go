@@ -73,6 +73,19 @@ func (s *conformanceState) save() {
 	}
 }
 
+// runOutcome records the two ways a conformance run can cover less than the
+// enabled harness set. Both have to reach the caller: a run that tested nothing
+// and a run that tested everything cleanly are otherwise indistinguishable at
+// the API, which is exactly how an empty matrix once passed for a clean result.
+type runOutcome struct {
+	// missingBinaries names enabled harnesses whose wrapper binary was not on
+	// PATH, so the run never attempted them.
+	missingBinaries []msg.Harness
+	// harnessErrors holds "<harness>: <error>" for harnesses that were launched
+	// but failed to produce a result.
+	harnessErrors []string
+}
+
 // commitRun replaces the persisted matrix with the results of a finished run.
 //
 // A run that produced zero harness results is an execution failure (no harness
@@ -80,24 +93,73 @@ func (s *conformanceState) save() {
 // Overwriting the last-good matrix with it would destroy real results and
 // report a fabricated one, so the previous matrix is kept and the failure is
 // surfaced through lastRunError instead.
-func (s *conformanceState) commitRun(matrix *msg.ConformanceMatrix, harnessRunErrors []string) {
+func (s *conformanceState) commitRun(matrix *msg.ConformanceMatrix, outcome runOutcome) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.lastRunError = strings.Join(harnessRunErrors, "; ")
+	problems := append([]string(nil), outcome.harnessErrors...)
 
 	if len(matrix.Harnesses) == 0 {
+		if len(outcome.missingBinaries) > 0 {
+			problems = append(problems, fmt.Sprintf("no wrapper binary on PATH for any enabled harness (%s)",
+				joinHarnesses(outcome.missingBinaries)))
+		}
+		s.lastRunError = strings.Join(problems, "; ")
 		log.Printf("[conformance] run produced zero harness results — keeping the last-good matrix (errors: %s)",
 			orNone(s.lastRunError))
 		return
 	}
-	if len(harnessRunErrors) > 0 {
-		log.Printf("[conformance] run completed with %d harness error(s): %s",
-			len(harnessRunErrors), s.lastRunError)
+
+	if lost := s.resultsDiscardedBy(matrix, outcome.missingBinaries); len(lost) > 0 {
+		problems = append(problems, fmt.Sprintf("discarded last-good results for %s: wrapper binary not on PATH",
+			joinHarnesses(lost)))
+	}
+
+	s.lastRunError = strings.Join(problems, "; ")
+	if s.lastRunError != "" {
+		log.Printf("[conformance] run completed degraded: %s", s.lastRunError)
 	}
 
 	s.matrix = matrix
 	s.save()
+}
+
+// resultsDiscardedBy names the harnesses whose last-good results this run is
+// about to throw away: the previous matrix holds a row for them, this run never
+// tested them because their wrapper binary was missing, and committing the new
+// matrix drops the row. Not testing a harness says nothing about that harness,
+// so losing what it last reported must be visible rather than silent.
+func (s *conformanceState) resultsDiscardedBy(fresh *msg.ConformanceMatrix, missingBinaries []msg.Harness) []msg.Harness {
+	if s.matrix == nil || len(missingBinaries) == 0 {
+		return nil
+	}
+	tested := make(map[string]bool, len(fresh.Harnesses))
+	for _, h := range fresh.Harnesses {
+		tested[h.Harness] = true
+	}
+	hadResults := make(map[string]bool, len(s.matrix.Harnesses))
+	for _, h := range s.matrix.Harnesses {
+		hadResults[h.Harness] = true
+	}
+
+	var discarded []msg.Harness
+	for _, h := range missingBinaries {
+		// Matrix rows are keyed by the wrapper-binary suffix ("claudecode"),
+		// not the canonical harness id ("claude_code").
+		key := msg.HarnessShortName(h)
+		if hadResults[key] && !tested[key] {
+			discarded = append(discarded, h)
+		}
+	}
+	return discarded
+}
+
+func joinHarnesses(harnesses []msg.Harness) string {
+	names := make([]string, len(harnesses))
+	for i, h := range harnesses {
+		names[i] = string(h)
+	}
+	return strings.Join(names, ", ")
 }
 
 func orNone(s string) string {
@@ -144,13 +206,11 @@ func (s *Server) handleConformanceRun(w http.ResponseWriter, r *http.Request) {
 		matrix := &msg.ConformanceMatrix{
 			GeneratedAt: time.Now(),
 		}
-		var harnessRunErrors []string
 
-		for _, h := range allHarnesses {
-			binPath, available := harness.Available(h)
-			if !available {
-				continue
-			}
+		targets, outcome := planConformanceRun()
+
+		for _, target := range targets {
+			h, binPath := target.harness, target.binary
 
 			log.Printf("[conformance] testing %s (%s)", h, binPath)
 			// 22 features at up to 30s each = 11 min worst case; budget
@@ -164,20 +224,45 @@ func (s *Server) handleConformanceRun(w http.ResponseWriter, r *http.Request) {
 				// the error rather than dropping it — a run that quietly tested
 				// nothing must not read as a clean run.
 				log.Printf("[conformance] %s error: %v", h, err)
-				harnessRunErrors = append(harnessRunErrors, fmt.Sprintf("%s: %v", h, err))
+				outcome.harnessErrors = append(outcome.harnessErrors, fmt.Sprintf("%s: %v", h, err))
 				continue
 			}
 
 			matrix.Harnesses = append(matrix.Harnesses, toMsgResult(result))
 		}
 
-		s.cfState.commitRun(matrix, harnessRunErrors)
+		s.cfState.commitRun(matrix, outcome)
 
-		log.Printf("[conformance] run complete: %d harnesses tested, %d failed to run",
-			len(matrix.Harnesses), len(harnessRunErrors))
+		log.Printf("[conformance] run complete: %d harnesses tested, %d failed to run, %d had no wrapper binary on PATH",
+			len(matrix.Harnesses), len(outcome.harnessErrors), len(outcome.missingBinaries))
 	}()
 
 	writeJSON(w, map[string]any{"status": "started"})
+}
+
+// harnessTarget is an enabled harness whose wrapper binary was found on PATH.
+type harnessTarget struct {
+	harness msg.Harness
+	binary  string
+}
+
+// planConformanceRun splits the enabled harness set into the harnesses this run
+// can actually test and the ones whose wrapper binary is not on PATH.
+//
+// Wrapper binaries resolve through exec.LookPath, so PATH alone decides what a
+// run covers, and a wrong PATH silently reduces the run to nothing. Skipping a
+// harness is therefore reportable: it is the mechanism behind an empty run, and
+// callers cannot tell an empty run from a clean one unless it is recorded.
+func planConformanceRun() (targets []harnessTarget, outcome runOutcome) {
+	for _, h := range allHarnesses {
+		binPath, available := harness.Available(h)
+		if !available {
+			outcome.missingBinaries = append(outcome.missingBinaries, h)
+			continue
+		}
+		targets = append(targets, harnessTarget{harness: h, binary: binPath})
+	}
+	return targets, outcome
 }
 
 func toMsgResult(hr *conformance.HarnessResult) msg.ConformanceHarnessResult {
