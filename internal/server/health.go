@@ -187,27 +187,38 @@ var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessMock:       {"compact", "fork", "model", "effort"},
 }
 
-var allHarnesses = []msg.Harness{
-	msg.HarnessClaudeCode,
-	msg.HarnessCodex,
-	msg.HarnessOpenClaw,
-	msg.HarnessInber,
-	msg.HarnessHermes,
-	msg.HarnessAider,
-	msg.HarnessGoose,
-	msg.HarnessAutohand,
-	msg.HarnessJig,
-	msg.HarnessDexto,
-	msg.HarnessCommander,
-	msg.HarnessNanoClaw,
-	msg.HarnessCline,
-	msg.HarnessRooCode,
-	msg.HarnessKiloCode,
-	msg.HarnessOpenCode,
-	msg.HarnessForgecode,
-	msg.HarnessGemini,
-	msg.HarnessMock,
+// disabledHarnesses names canonical harnesses (msg.AllHarnesses) that this
+// gateway deliberately does not surface, validate, or spawn. The value is the
+// reason, so the omission stays an explicit decision rather than an oversight.
+//
+// Every canonical harness must be either listed here or fully described by the
+// tables above; TestHarnessTablesCoverCanonicalSet enforces that, so a harness
+// added to llm-bridge cannot silently go missing here again.
+var disabledHarnesses = map[msg.Harness]string{
+	// The llm-bridge-copilotcli repo is still an un-retargeted clone of
+	// llm-bridge-claudecode (its README says status: planning, and its code
+	// spawns `claude`), and the llm-bridge-copilotcli binary sitting on PATH is
+	// a stale 2026-05-08 build of an abandoned prototype that links the retired
+	// aiauth. Enabling this harness would spawn that binary. Whether to
+	// re-target, publish privately, or drop the scaffold is an open decision —
+	// noteboard todo 2d8b6d10.
+	msg.HarnessCopilotCLI: "scaffold not yet re-targeted from claudecode; see noteboard todo 2d8b6d10",
 }
+
+// allHarnesses is the set this gateway surfaces, validates and spawns: the
+// canonical list minus disabledHarnesses. Derived, never hand-maintained — a
+// hand-copied duplicate of msg.AllHarnesses is what let copilot_cli drift out
+// of this file unnoticed.
+var allHarnesses = func() []msg.Harness {
+	enabled := make([]msg.Harness, 0, len(msg.AllHarnesses))
+	for _, h := range msg.AllHarnesses {
+		if _, off := disabledHarnesses[h]; off {
+			continue
+		}
+		enabled = append(enabled, h)
+	}
+	return enabled
+}()
 
 // isValidHarness checks whether a harness type is in the known set.
 func isValidHarness(h msg.Harness) bool {
