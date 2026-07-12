@@ -1,6 +1,12 @@
-llm-bridge
-llm-bridge-server
-mock-harness
+# Built binaries, anchored to the repo root. Without the leading slash these
+# also matched the SOURCE directories cmd/llm-bridge-server/ and
+# cmd/mock-harness/, so a new .go file added to either was silently
+# unversionable — `git add` refused it and `git status` stayed clean. The !*.go
+# negation below cannot rescue those: git will not re-include a file inside an
+# excluded directory.
+/llm-bridge
+/llm-bridge-server
+/mock-harness
 
 # Host-local config (machine-specific systemd drop-ins, dev secrets, etc.).
 # Put anything that should never leave this machine under ./.local/
