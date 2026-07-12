@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/ndjson"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -52,7 +54,7 @@ func IsConformancePrompt(s string) bool {
 type runProcess struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
-	stdout *bufio.Scanner
+	stdout *bufio.Reader
 	events chan msg.Event
 	cancel context.CancelFunc
 }
@@ -91,30 +93,44 @@ func launchProcess(ctx context.Context, binary string, env ...string) (*runProce
 		return nil, fmt.Errorf("start %s: %w", binary, err)
 	}
 
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	reader := bufio.NewReaderSize(stdout, 1024*1024)
 
 	rp := &runProcess{
 		cmd:    cmd,
 		stdin:  stdin,
-		stdout: scanner,
+		stdout: reader,
 		events: make(chan msg.Event, 100),
 		cancel: cancel,
 	}
 
+	// Closing rp.events is how the tests learn the harness is gone, so — as in
+	// the gateway's read loop — only EOF may end this loop. An oversized or
+	// malformed line is a per-line failure: dropping it would otherwise fail
+	// every remaining feature with a bogus "timeout waiting for event".
 	go func() {
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
+		defer close(rp.events)
+		for {
+			line, err := ndjson.ReadLine(reader, ndjson.MaxLineBytes)
+
+			if err == ndjson.ErrLineTooLong {
+				log.Printf("[conformance] %s: dropping event line above the %d-byte ceiling", binary, ndjson.MaxLineBytes)
 				continue
 			}
-			var event msg.Event
-			if err := json.Unmarshal(line, &event); err != nil {
-				continue
+
+			if len(line) > 0 {
+				var event msg.Event
+				if jsonErr := json.Unmarshal(line, &event); jsonErr == nil {
+					rp.events <- event
+				}
 			}
-			rp.events <- event
+
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("[conformance] %s: stdout read error: %v", binary, err)
+				}
+				return
+			}
 		}
-		close(rp.events)
 	}()
 
 	return rp, nil
@@ -831,14 +847,14 @@ func testDiscover(ctx context.Context, binary string) TestResult {
 // testImport invokes the harness with `-import-history nonexistent-session`
 // and interprets the exit code as a tri-state contract:
 //
-//   exit 2 → SKIP: binary explicitly signals "import not implemented"
-//   exit 0 → PASS: binary recognised the flag and treated a missing session
-//                  as an idempotent no-op (analogous to -discover returning
-//                  an empty array)
-//   any other exit → FAIL: binary either errored mid-import or — more
-//                  commonly — silently ignored the flag and fell through to
-//                  its main JSON-RPC loop, which exits non-zero / non-2
-//                  when the test closes stdin without writing
+//	exit 2 → SKIP: binary explicitly signals "import not implemented"
+//	exit 0 → PASS: binary recognised the flag and treated a missing session
+//	               as an idempotent no-op (analogous to -discover returning
+//	               an empty array)
+//	any other exit → FAIL: binary either errored mid-import or — more
+//	               commonly — silently ignored the flag and fell through to
+//	               its main JSON-RPC loop, which exits non-zero / non-2
+//	               when the test closes stdin without writing
 //
 // Harnesses that *don't* implement import must explicitly exit 2 (not just
 // ignore the flag); harnesses that *do* implement import must treat a
