@@ -15,3 +15,10 @@ mock-harness
 id_rsa*
 credentials.*
 secrets.*
+
+# The globs above target secret *data* files, but they also match Go source
+# (credentials.* swallowed internal/harness/credentials.go, which left the
+# committed tree unbuildable while `git status` stayed clean). Source is never
+# a secret. Files under /.local/ stay ignored — git cannot re-include through
+# an excluded directory.
+!*.go

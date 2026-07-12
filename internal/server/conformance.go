@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,10 +20,11 @@ import (
 // conformanceState holds the last run results, prevents concurrent runs, and
 // persists the matrix to disk so it survives server restarts.
 type conformanceState struct {
-	mu      sync.Mutex
-	running bool
-	matrix  *msg.ConformanceMatrix
-	path    string
+	mu           sync.Mutex
+	running      bool
+	matrix       *msg.ConformanceMatrix
+	lastRunError string
+	path         string
 }
 
 func newConformanceState(path string) *conformanceState {
@@ -70,17 +73,54 @@ func (s *conformanceState) save() {
 	}
 }
 
+// commitRun replaces the persisted matrix with the results of a finished run.
+//
+// A run that produced zero harness results is an execution failure (no harness
+// binary was launchable), not a finding that every harness is non-conformant.
+// Overwriting the last-good matrix with it would destroy real results and
+// report a fabricated one, so the previous matrix is kept and the failure is
+// surfaced through lastRunError instead.
+func (s *conformanceState) commitRun(matrix *msg.ConformanceMatrix, harnessRunErrors []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.lastRunError = strings.Join(harnessRunErrors, "; ")
+
+	if len(matrix.Harnesses) == 0 {
+		log.Printf("[conformance] run produced zero harness results — keeping the last-good matrix (errors: %s)",
+			orNone(s.lastRunError))
+		return
+	}
+	if len(harnessRunErrors) > 0 {
+		log.Printf("[conformance] run completed with %d harness error(s): %s",
+			len(harnessRunErrors), s.lastRunError)
+	}
+
+	s.matrix = matrix
+	s.save()
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}
+
 func (s *Server) handleConformanceGet(w http.ResponseWriter, r *http.Request) {
 	s.cfState.mu.Lock()
 	matrix := s.cfState.matrix
 	running := s.cfState.running
+	lastRunError := s.cfState.lastRunError
 	s.cfState.mu.Unlock()
 
-	if matrix == nil {
-		writeJSON(w, map[string]any{"running": running, "matrix": nil})
-		return
-	}
-	writeJSON(w, map[string]any{"running": running, "matrix": matrix})
+	// matrix may be nil (never run, nothing persisted). last_run_error is what
+	// distinguishes that from a run that executed but failed outright.
+	writeJSON(w, map[string]any{
+		"running":        running,
+		"matrix":         matrix,
+		"last_run_error": lastRunError,
+	})
 }
 
 func (s *Server) handleConformanceRun(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +144,7 @@ func (s *Server) handleConformanceRun(w http.ResponseWriter, r *http.Request) {
 		matrix := &msg.ConformanceMatrix{
 			GeneratedAt: time.Now(),
 		}
+		var harnessRunErrors []string
 
 		for _, h := range allHarnesses {
 			binPath, available := harness.Available(h)
@@ -119,19 +160,21 @@ func (s *Server) handleConformanceRun(w http.ResponseWriter, r *http.Request) {
 			result, err := conformance.RunHarness(hctx, binPath)
 			hcancel()
 			if err != nil {
+				// The harness never ran, so it has no results to report. Keep
+				// the error rather than dropping it — a run that quietly tested
+				// nothing must not read as a clean run.
 				log.Printf("[conformance] %s error: %v", h, err)
+				harnessRunErrors = append(harnessRunErrors, fmt.Sprintf("%s: %v", h, err))
 				continue
 			}
 
 			matrix.Harnesses = append(matrix.Harnesses, toMsgResult(result))
 		}
 
-		s.cfState.mu.Lock()
-		s.cfState.matrix = matrix
-		s.cfState.save()
-		s.cfState.mu.Unlock()
+		s.cfState.commitRun(matrix, harnessRunErrors)
 
-		log.Printf("[conformance] run complete: %d harnesses tested", len(matrix.Harnesses))
+		log.Printf("[conformance] run complete: %d harnesses tested, %d failed to run",
+			len(matrix.Harnesses), len(harnessRunErrors))
 	}()
 
 	writeJSON(w, map[string]any{"status": "started"})
