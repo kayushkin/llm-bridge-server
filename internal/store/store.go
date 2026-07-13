@@ -246,9 +246,25 @@ func (s *Store) migrate() error {
 		('autoworker','dispatcher','kanban-dispatcher','scheduler','scheduled-task','harness-watch')`)
 	s.db.Exec(`UPDATE sessions SET type = 'system'
 		WHERE type = '' AND purpose IN
-		('renamer','conformance','subagent','healthcheck','classifier','scoper')`)
+		('renamer','conformance','subagent','workflow-subagent','healthcheck','classifier','scoper')`)
 	s.db.Exec(`UPDATE sessions SET type = 'interactive'
 		WHERE type = '' AND (purpose = '' OR purpose = 'chat')`)
+
+	// Repair the workflow subagents this backfill itself mislabelled.
+	//
+	// 'workflow-subagent' was missing from the system list above, so every
+	// Workflow-tool subagent fell through to the purpose='' rule and was typed
+	// INTERACTIVE — a fire-and-forget agent recorded as a human chat, and shown
+	// as one. 226 sessions on this host, against 734 correctly-typed Task()
+	// subagents; the only difference between them is which tool spawned them.
+	//
+	// Unlike the backfills above, this one overwrites a NON-empty type, which
+	// they deliberately refuse to do. That is safe here precisely because it is
+	// keyed on purpose: a workflow subagent is never interactive by
+	// construction — nobody is at a keyboard — so 'interactive' on such a row is
+	// not a caller's declaration to be preserved, it is this bug's fingerprint.
+	s.db.Exec(`UPDATE sessions SET type = 'system'
+		WHERE purpose = 'workflow-subagent' AND type = 'interactive'`)
 	// Backfill origin for legacy rows where it was lazily defaulted to the
 	// purpose value. Origin is meant to be the SERVICE that hosts the
 	// spawning code, not the binary or the kind of session. WHERE origin =
