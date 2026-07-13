@@ -109,6 +109,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			Model        string `json:"model"`
 			Orchestrator string `json:"orchestrator"`
 			SessionID    string `json:"session_id"`
+			WorkspaceID  string `json:"workspace_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, 400, "invalid request body", err.Error())
@@ -145,6 +146,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			Model:        req.Model,
 			Orchestrator: req.Orchestrator,
 			SessionID:    req.SessionID,
+			WorkspaceID:  req.WorkspaceID,
 		})
 		if err != nil {
 			writeError(w, 500, "failed to create job", err.Error())

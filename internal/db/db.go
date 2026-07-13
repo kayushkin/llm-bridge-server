@@ -22,6 +22,7 @@ type Job struct {
 	Model         string     `json:"model,omitempty"`          // model override (for type=agent)
 	Orchestrator  string     `json:"orchestrator,omitempty"`   // "claude-code", "inber", etc. (for type=agent)
 	SessionID     string     `json:"session_id,omitempty"`     // session to resume (for type=agent)
+	WorkspaceID   string     `json:"workspace_id,omitempty"`   // noteboard workspace holding this job's working memory (for type=agent)
 	Enabled       bool       `json:"enabled"`
 	HoldUntil     *time.Time `json:"hold_until,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
@@ -114,6 +115,11 @@ func (s *Store) migrate() error {
 		"ALTER TABLE jobs ADD COLUMN model TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE jobs ADD COLUMN orchestrator TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE jobs ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+		// A recurring agent job's DURABLE memory, as a noteboard workspace id.
+		// session_id above is its conversation, which compaction erodes and a
+		// reap discards; the workspace is what actually survives, so the
+		// workspace is the source of truth and the session is an optimisation.
+		"ALTER TABLE jobs ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE jobs ADD COLUMN hold_until DATETIME",
 		"ALTER TABLE jobs ADD COLUMN description TEXT NOT NULL DEFAULT ''",
 	} {
@@ -137,8 +143,8 @@ func (s *Store) CreateJobFull(j Job) (*Job, error) {
 		j.Type = "shell"
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO jobs (name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
-		j.Name, j.Description, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.Model, j.Orchestrator, j.SessionID, now, now,
+		`INSERT INTO jobs (name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+		j.Name, j.Description, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.Model, j.Orchestrator, j.SessionID, j.WorkspaceID, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -152,7 +158,7 @@ func (s *Store) CreateJobFull(j Job) (*Job, error) {
 }
 
 func (s *Store) ListJobs() ([]Job, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, enabled, hold_until, created_at, updated_at FROM jobs ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, enabled, hold_until, created_at, updated_at FROM jobs ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +167,7 @@ func (s *Store) ListJobs() ([]Job, error) {
 	for rows.Next() {
 		var j Job
 		var enabled int
-		if err := rows.Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		if err := rows.Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt); err != nil {
 			return nil, err
 		}
 		j.Enabled = enabled != 0
@@ -173,8 +179,8 @@ func (s *Store) ListJobs() ([]Job, error) {
 func (s *Store) GetJob(id int64) (*Job, error) {
 	var j Job
 	var enabled int
-	err := s.db.QueryRow(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, enabled, hold_until, created_at, updated_at FROM jobs WHERE id=?`, id).
-		Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, enabled, hold_until, created_at, updated_at FROM jobs WHERE id=?`, id).
+		Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

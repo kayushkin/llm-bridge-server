@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	natsbus "github.com/kayushkin/bus"
@@ -84,13 +85,81 @@ func (e *AgentExecutor) firstEnabledInstance(h msg.Harness) (string, error) {
 	return "", fmt.Errorf("no enabled instance found for harness %s", h)
 }
 
-func (e *AgentExecutor) Run(agent, prompt, orchestrator, sessionID string) Result {
+// AgentRun is one scheduled turn of an agent job.
+//
+// SessionID and WorkspaceID are the job's two kinds of memory, and they are not
+// redundant. SessionID is the conversation: rich, free, and LOSSY — compaction
+// erodes it and the bridge's reaper eventually discards the process. WorkspaceID
+// is a noteboard workspace: a markdown document the agent rewrites each run,
+// which survives compaction, reaping, and a fresh session entirely. So the
+// workspace is the source of truth and the session is only an optimisation — a
+// job with a workspace but no session still remembers everything that matters.
+type AgentRun struct {
+	Agent        string
+	Prompt       string
+	Orchestrator string
+	SessionID    string
+	WorkspaceID  string
+}
+
+// noteboardURL is where an agent reads and rewrites its working memory.
+func noteboardURL() string {
+	if u := os.Getenv("NOTEBOARD_URL"); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	return "http://localhost:8191"
+}
+
+// workingMemoryPreamble prepends the job's prompt with the location of its
+// durable memory and the contract for using it. Injected here rather than
+// written into every job's prompt by hand: a convention each job re-states is
+// one every job can quietly get wrong, and the whole point of the workspace is
+// that the agent cannot silently forget it has one.
+func workingMemoryPreamble(workspaceID string) string {
+	base := noteboardURL()
+	return fmt.Sprintf(`## Your working memory
+
+This job has a durable memory: noteboard workspace %[1]s. It is the only thing
+about you that survives between runs — your conversation context does not.
+
+READ IT FIRST, before you do anything else:
+    curl -sfS %[2]s/api/items/%[1]s
+
+REWRITE IT LAST, so the next run inherits what you learned:
+    curl -sfS -X PATCH %[2]s/api/items/%[1]s \
+      -H 'Content-Type: application/json' \
+      -d '{"body": "<the full updated markdown>"}'
+
+The body is timestamped markdown, newest section first. Record what you found,
+what you already escalated, and what the human decided — so you neither repeat
+work nor re-raise something that was already dismissed.
+
+Rewriting is safe: every prior version is kept, and you can read them back with
+GET %[2]s/api/items/%[1]s/revisions. So do not hoard: summarise aggressively and
+keep the workspace small enough for a human to read in one sitting. If it has
+grown past that, split the detail into child workspaces (create an item of type
+workspace with parent_id=%[1]s) and leave a short roll-up here.
+
+---
+
+`, workspaceID, base)
+}
+
+func (e *AgentExecutor) Run(run AgentRun) Result {
 	if e.client == nil {
 		return Result{Status: "error", Output: "NATS client not configured"}
 	}
 
+	agent := run.Agent
+	prompt := run.Prompt
+	orchestrator := run.Orchestrator
+	sessionID := run.SessionID
+
 	if orchestrator == "" {
 		orchestrator = "claude-code"
+	}
+	if run.WorkspaceID != "" {
+		prompt = workingMemoryPreamble(run.WorkspaceID) + prompt
 	}
 
 	now := time.Now().UTC()
