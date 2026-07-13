@@ -40,24 +40,25 @@ not the live one, except as listed here.
 
 **Landed:**
 - **This document** (on `main`).
-- **Type-only, and inert:** the §21 additive fields on `ManagedSession` (`manager_session_id`,
-  `root_session_id`, `depth`, `controlled_by`, `refreshed_from_session_id`) and `Event.harness_parent_id`
-  — in `llm-bridge` `main` (Go + TS + Py). ⚠️ **Nothing populates them.** The `sessions` **table has none
-  of these columns**, and the CC adapter does **not** read `parent_tool_use_id`, so `harness_parent_id`
-  is always empty. Do not assume these work.
+- **The session-lineage columns — these now actually persist** (pinned by a round-trip test):
+  `forked_from_session_id`, `manager_session_id`, `root_session_id`, `depth`, `controlled_by`,
+  `refreshed_from_session_id` on both `ManagedSession` and the `sessions` table. Fork populates
+  `forked_from_session_id`. Migration validated against a copy of the live DB.
+- **`spawner_id` is GONE.** It held service names (duplicating `origin`, which is *documented* as "who
+  spawned it"), was read by **no** consumer, and had **zero** non-empty rows. It was **dropped, not
+  renamed** — renaming it to `manager_session_id` would have moved the lie onto a field that must hold a
+  `bridge_session_id`.
 - **`kanban-scoper` emits `capability:` / `role:` tags** — behind `--role-tags`, **default OFF**
-  (`scheduler` `main`). This is the only §9 step-1 progress; board-per-team was never started.
+  (`scheduler` `main`). The only §9 step-1 progress; board-per-team was never started.
 
-**Not landed:** everything else — §4–§20 broadly, and specifically the §21.5 **renames**, the
-sessions-table columns, the CC adapter demux, subagent promotion (§12 / §21.4), the coordination engine,
-and verification/hooks (§20).
+**Still inert:** `Event.harness_parent_id` exists but the CC adapter does **not** read
+`parent_tool_use_id`, so it is always empty (§21.4 has the fix).
 
-⚠️ **Known transitional inconsistency — the renames are required, not optional.** The §21 renames were
-deferred and the new fields were added **alongside** the old ones. So the code today carries **both
-`spawner_id` and `manager_session_id`** (two fields that both read as "who spawned/manages me"), and
-still has `parent_id` (the harness fork UUID) with **no** `forked_from_session_id`. That is precisely the
-ambiguity §21 exists to eliminate, currently reintroduced. **§21.5 must be completed** before anything
-consumes these fields.
+**Not landed:** everything else — §4–§20 broadly: the CC adapter demux, subagent promotion (§12 /
+§21.4), the coordination engine, verification/hooks (§20), and the `session_id` → `bridge_session_id`
+rename (see §21.5 — it is wire-breaking).
+
+**Open bug:** the "MCP resume id error" (§21.6) is **live** and still accruing bad rows.
 
 **Open bug:** the "MCP resume id error" (§21.6) is **live** and still accruing bad rows.
 
@@ -1078,7 +1079,7 @@ holds a `bridge_session_id`, never a harness UUID.**
 |---|---|---|---|---|---|
 | **`bridge_session_id`** | `bridge_id` | our own id | create / fork / discover (NOT resume) | the stable anchor; routing key on every event; the target of every `_session_id` FK | rename |
 | **`harness_session_id`** | (same) | the harness's UUID | first harness event; **rotates** on resume & fork | drives `--resume`/`--fork`; harness-boundary only — never a lineage FK | keep |
-| **`manager_session_id`** | `spawner_id` | the **managing/parent session** (`bridge_session_id`) | at spawn, set to the parent node; **null** = top-level | the **management tree** — who owns me; nesting + `root`/`depth` derive from it | rename + re-type |
+| **`manager_session_id`** | — (net-new; `spawner_id` was **dropped**, not renamed — §21.5) | the **managing/parent session** (`bridge_session_id`) | at spawn, set to the parent node; **null** = top-level | the **management tree** — who owns me; nesting + `root`/`depth` derive from it | landed |
 | **`forked_from_session_id`** | `parent_id` | the fork source's **`bridge_session_id`** | on fork | conversation-branch lineage (with history) | rename + **re-key** |
 | **`refreshed_from_session_id`** | — | the refresh predecessor's `bridge_session_id` | on a §3.1 refresh (fresh reseed, no history) | reseed continuity across context resets | net-new |
 | **`root_session_id`** | — | top of my tree | at spawn (denorm from the `manager` chain) | cheap "whole team" queries without walking up | net-new |
@@ -1153,14 +1154,23 @@ span path.
 
 ### 21.5 Migration
 
-- `bridge_id` → `bridge_session_id`; `parent_id` → `forked_from_session_id` (re-keyed to a
-  `bridge_session_id`, drop the stored harness UUID); `spawner_id` → `manager_session_id` (re-typed to a
-  real session FK; **null** for top-level). `origin` unchanged.
-- Net-new: `manager_session_id` semantics, `refreshed_from_session_id`, `root_session_id`, `depth`,
-  `team_id`/`board_id`, `role`.
-- Touches bridge-server (store, `sessions.go` fork plumbing, resume path), `ManagedSession` (Go +
-  `llm-bridge/ts`), the UI. Rides **§9 step 5**; keep `bridge_id`/`parent_id`/`spawner_id` as deprecated
-  aliases for one release.
+An earlier draft of this section said "`spawner_id` → `manager_session_id`" and "rename `parent_id`".
+**Both were wrong**, and the audit that measured the blast radius proved it. The corrected plan:
+
+- ✅ **`spawner_id` — DROPPED, not renamed.** It held *service names* (duplicating `origin`, which is
+  documented as "who spawned it"), had **zero** consumers and **zero** non-empty rows. Renaming it to
+  `manager_session_id` would have moved the lie onto a field that must hold a `bridge_session_id`. Done.
+- ✅ **`forked_from_session_id` — ADDED alongside `parent_id`, not a rename.** `parent_id` holds the
+  parent's **harness UUID** (fed to `--fork`), so naming it `_session_id` would be a fresh lie. The new
+  field holds the parent's `bridge_session_id`; `parent_id` stays until the fork plumbing resolves the
+  harness id from the parent row, **then it is dropped**. Done (fork populates it).
+- ✅ **Lineage columns landed** (`manager_session_id`, `root_session_id`, `depth`, `controlled_by`,
+  `refreshed_from_session_id`) — they persist and round-trip; migration validated against a live-DB copy.
+- ⛔ **`bridge_id` / `session_id` → `bridge_session_id` — NOT done, and not a casual rename.** It is
+  **wire-breaking**: ~12 `bridge-ui` files, dash, llmux, and the kanban cron jobs all read `session_id`.
+  (`Event` already uses `bridge_session_id` for the same thing, so the inconsistency is real.) Requires
+  **dual-emit** — serve both keys, migrate consumers, then drop the old. Do not one-shot it.
+- Remaining net-new: `team_id`/`board_id`, `role`.
 - **Open behavioral choice:** does `manager_session_id` **inherit on fork** (a fork of a managed session
   stays under the same manager) or default **null** (a user fork is an unmanaged branch)? Recommend
   **null on fork** — a fork is a user/content branch, not a management relationship; an
