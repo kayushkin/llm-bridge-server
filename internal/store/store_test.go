@@ -32,12 +32,17 @@ func TestCreateAndGetSession(t *testing.T) {
 	s := testStore(t)
 
 	sess := &Session{
-		SessionID:    "br_100",
+		SessionID:   "br_100",
 		DisplayName: "Test Session",
 		Harness:     "claude_code",
 		State:       "idle",
 		AgentID:     "agent_1",
-		SpawnerID:   "spawner_1",
+		// Session lineage (§21) — round-trips through the new columns.
+		ForkedFromSessionID: "br_099",
+		ManagerSessionID:    "br_001",
+		RootSessionID:       "br_001",
+		Depth:               2,
+		ControlledBy:        "harness",
 	}
 
 	if err := s.CreateSession(sess); err != nil {
@@ -60,6 +65,24 @@ func TestCreateAndGetSession(t *testing.T) {
 	}
 	if got.State != "idle" {
 		t.Errorf("state = %q, want idle", got.State)
+	}
+
+	// Session lineage (§21) must actually persist — these fields were type-only
+	// and inert until the columns landed, so pin the round-trip.
+	if got.ForkedFromSessionID != "br_099" {
+		t.Errorf("forked_from_session_id = %q, want br_099", got.ForkedFromSessionID)
+	}
+	if got.ManagerSessionID != "br_001" {
+		t.Errorf("manager_session_id = %q, want br_001", got.ManagerSessionID)
+	}
+	if got.RootSessionID != "br_001" {
+		t.Errorf("root_session_id = %q, want br_001", got.RootSessionID)
+	}
+	if got.Depth != 2 {
+		t.Errorf("depth = %d, want 2", got.Depth)
+	}
+	if got.ControlledBy != "harness" {
+		t.Errorf("controlled_by = %q, want harness", got.ControlledBy)
 	}
 }
 
@@ -115,8 +138,8 @@ func TestListSessionsByState(t *testing.T) {
 	} {
 		sess := &Session{
 			SessionID: tc.id,
-			Harness:  "mock",
-			State:    tc.state,
+			Harness:   "mock",
+			State:     tc.state,
 		}
 		if err := s.CreateSession(sess); err != nil {
 			t.Fatalf("create %s: %v", tc.id, err)
@@ -244,7 +267,7 @@ func TestHarnessConfig(t *testing.T) {
 
 	cfg := json.RawMessage(`{"system_prompt":"you are a test","model":"opus"}`)
 	sess := &Session{
-		SessionID:      "br_cfg",
+		SessionID:     "br_cfg",
 		Harness:       "mock",
 		State:         "idle",
 		HarnessConfig: cfg,

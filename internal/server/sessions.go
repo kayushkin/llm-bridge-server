@@ -206,7 +206,6 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		InstanceID:    inst.ID,
 		State:         string(msg.SessionIdle),
 		AgentID:       req.AgentID,
-		SpawnerID:     req.SpawnerID,
 		HarnessConfig: req.HarnessConfig,
 		Purpose:       req.Purpose,
 		Type:          req.Type,
@@ -651,11 +650,15 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		InstanceID:  parent.InstanceID,
 		State:       string(msg.SessionIdle),
 		AgentID:     parent.AgentID,
-		SpawnerID:   parent.SpawnerID,
-		ParentID:    parent.HarnessSessionID,
-		Type:        sessionType,
-		Purpose:     purpose,
-		Origin:      origin,
+		// ParentID carries the parent's HARNESS uuid — the value `--fork` needs.
+		// ForkedFromSessionID is the honest lineage link: the parent's bridge id.
+		// Once the fork plumbing resolves the harness id from the parent row,
+		// ParentID goes away (§21).
+		ParentID:            parent.HarnessSessionID,
+		ForkedFromSessionID: parent.SessionID,
+		Type:                sessionType,
+		Purpose:             purpose,
+		Origin:              origin,
 	}
 
 	if err := s.store.CreateSession(forked); err != nil {
@@ -791,4 +794,3 @@ func resolveCredential(hs *harnessstore.Store, instanceID string) string {
 	}
 	return ""
 }
-

@@ -108,7 +108,6 @@ func (s *Store) migrate() error {
 			state              TEXT NOT NULL,
 			pid                INTEGER NOT NULL DEFAULT 0,
 			agent_id           TEXT NOT NULL DEFAULT '',
-			spawner_id         TEXT NOT NULL DEFAULT '',
 			parent_id          TEXT NOT NULL DEFAULT '',
 			instance_id        TEXT NOT NULL DEFAULT '',
 			created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -140,6 +139,18 @@ func (s *Store) migrate() error {
 	// Migrations for existing DBs (old schema used 'id' as PK)
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''")
+	// Session lineage (TEAM-ORCHESTRATION.md §21). Idempotent ADD COLUMNs.
+	// forked_from_session_id is the honest replacement for parent_id: it holds the
+	// FORK PARENT'S bridge_id, where parent_id holds the parent's harness UUID (fed
+	// to --fork). parent_id stays until the fork plumbing resolves the harness id
+	// from the parent row; then it is dropped.
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN forked_from_session_id TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN manager_session_id TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN root_session_id TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN depth INTEGER NOT NULL DEFAULT 0")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN controlled_by TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN refreshed_from_session_id TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_manager ON sessions(manager_session_id) WHERE manager_session_id != ''")
 	// harness_session_id was introduced in this column under the older name
 	// `harness_id`. The rename block below handles the rename for DBs that
 	// already added the old column. Fresh DBs get harness_session_id from the
@@ -363,8 +374,8 @@ func (s *Store) CreateSession(sess *Session) error {
 		}
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, harness_config, purpose, type, origin, folder_name, mode, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.SessionID, sess.SessionID, sess.HarnessSessionID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.SpawnerID, sess.ParentID, harnessConfig, sess.Purpose, string(sess.Type), sess.Origin, sess.FolderName, string(sess.Mode), sess.CreatedAt, sess.UpdatedAt,
+		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, parent_id, forked_from_session_id, manager_session_id, root_session_id, depth, controlled_by, refreshed_from_session_id, harness_config, purpose, type, origin, folder_name, mode, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sess.SessionID, sess.SessionID, sess.HarnessSessionID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.ParentID, sess.ForkedFromSessionID, sess.ManagerSessionID, sess.RootSessionID, sess.Depth, sess.ControlledBy, sess.RefreshedFromSessionID, harnessConfig, sess.Purpose, string(sess.Type), sess.Origin, sess.FolderName, string(sess.Mode), sess.CreatedAt, sess.UpdatedAt,
 	); err != nil {
 		return err
 	}
@@ -378,7 +389,7 @@ func (s *Store) CreateSession(sess *Session) error {
 // sessionColumns selects the fields scanSession reads, in the order it
 // expects them. session_id is the canonical id (COALESCE falls back to
 // bridge_id for legacy rows whose session_id may be unbackfilled).
-const sessionColumns = `COALESCE(NULLIF(session_id, ''), bridge_id), COALESCE(harness_session_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, spawner_id, parent_id, COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(purpose, ''), COALESCE(type, ''), COALESCE(origin, ''), COALESCE(mode, ''), created_at, updated_at`
+const sessionColumns = `COALESCE(NULLIF(session_id, ''), bridge_id), COALESCE(harness_session_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, parent_id, COALESCE(forked_from_session_id, ''), COALESCE(manager_session_id, ''), COALESCE(root_session_id, ''), COALESCE(depth, 0), COALESCE(controlled_by, ''), COALESCE(refreshed_from_session_id, ''), COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(purpose, ''), COALESCE(type, ''), COALESCE(origin, ''), COALESCE(mode, ''), created_at, updated_at`
 
 func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var sess Session
@@ -386,7 +397,7 @@ func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var info string
 	var mode string
 	var sessionType string
-	err := sc.Scan(&sess.SessionID, &sess.HarnessSessionID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.SpawnerID, &sess.ParentID, &harnessConfig, &info, &sess.FolderName, &sess.Purpose, &sessionType, &sess.Origin, &mode, &sess.CreatedAt, &sess.UpdatedAt)
+	err := sc.Scan(&sess.SessionID, &sess.HarnessSessionID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.ParentID, &sess.ForkedFromSessionID, &sess.ManagerSessionID, &sess.RootSessionID, &sess.Depth, &sess.ControlledBy, &sess.RefreshedFromSessionID, &harnessConfig, &info, &sess.FolderName, &sess.Purpose, &sessionType, &sess.Origin, &mode, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -848,7 +859,6 @@ func truncateRunes(s string, max int) string {
 	return string(r[:max]) + "…"
 }
 
-
 // StoreEvent persists a serialized event for a session. messageID and
 // harnessMessageID may be empty for events that don't belong to a chat
 // message (system, session_state, session_info, etc).
@@ -859,7 +869,6 @@ func (s *Store) StoreEvent(sessionID, eventType, messageID, harnessMessageID str
 	)
 	return err
 }
-
 
 // EventWithID is a raw event with its database row ID.
 type EventWithID struct {
@@ -1437,8 +1446,8 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 	bridgeID := fmt.Sprintf("br_%d", time.Now().UnixNano())
 	origin := "llm-bridge-" + strings.ReplaceAll(harness, "_", "")
 	_, err = s.db.Exec(
-		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, spawner_id, parent_id, purpose, type, origin, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		bridgeID, bridgeID, harnessSessionID, displayName, harness, instanceID, "idle", 0, "", "", "", source, "", origin, folderName, createdAt, updatedAt,
+		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, parent_id, purpose, type, origin, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		bridgeID, bridgeID, harnessSessionID, displayName, harness, instanceID, "idle", 0, "", "", source, "", origin, folderName, createdAt, updatedAt,
 	)
 	if err != nil {
 		return "", false, err
