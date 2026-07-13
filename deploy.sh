@@ -41,6 +41,41 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_NAME="llm-bridge"
 SYSTEM_BIN="/usr/local/bin/$BIN_NAME"
 SERVICE="llm-bridge.service"
+DROPIN_DIR="/etc/systemd/system/$SERVICE.d"
+DROPIN="$DROPIN_DIR/local.conf"
+# Backups are timestamped and never overwritten. A fixed-filename backup is
+# not a rollback point: verification necessarily runs *after* the new binary
+# is installed, so a re-run of a failed deploy would copy the NEW binary over
+# the backup and destroy the only good copy.
+STAMP="$(date +%Y%m%dT%H%M%S)"
+BACKUP_BIN="$SYSTEM_BIN.backup-$STAMP"
+BACKUP_DROPIN=""
+
+# rollback restores the binary and drop-in this run replaced, restarts, and
+# confirms the service actually answers again. Called from the failure paths
+# below, which are the only reason this deploy is safe to run against a
+# gateway with live sessions on it.
+rollback() {
+  echo "==> ROLLING BACK to $BACKUP_BIN"
+  if [ ! -f "$BACKUP_BIN" ]; then
+    echo "FATAL: no backup at $BACKUP_BIN — cannot roll back; service left down"
+    return 1
+  fi
+  sudo systemctl stop "$SERVICE" 2>/dev/null || true
+  sudo cp -p "$BACKUP_BIN" "$SYSTEM_BIN"
+  if [ -n "$BACKUP_DROPIN" ] && [ -f "$BACKUP_DROPIN" ]; then
+    sudo cp -p "$BACKUP_DROPIN" "$DROPIN"
+  fi
+  sudo systemctl daemon-reload
+  sudo systemctl start "$SERVICE"
+  sleep 2
+  if curl -fsS http://localhost:8160/sessions >/dev/null 2>&1; then
+    echo "    rollback OK — previous binary is serving again"
+  else
+    echo "FATAL: rollback restarted the service but it is not answering on :8160"
+  fi
+  return 1
+}
 
 cd "$REPO_DIR"
 
@@ -50,6 +85,19 @@ export PATH="$HOME/.local/share/mise/shims:$PATH"
 echo "==> Building $BIN_NAME..."
 go build -o "$BIN_NAME" ./cmd/llm-bridge-server
 echo "    built: $(ls -lh "$BIN_NAME" | awk '{print $5}')"
+
+echo "==> Backing up the binary and drop-in currently serving..."
+if [ -f "$SYSTEM_BIN" ]; then
+  sudo cp -p "$SYSTEM_BIN" "$BACKUP_BIN"
+  echo "    binary  -> $BACKUP_BIN"
+else
+  echo "    no existing binary at $SYSTEM_BIN (first install) — rollback unavailable"
+fi
+if [ -f "$DROPIN" ]; then
+  BACKUP_DROPIN="$DROPIN.backup-$STAMP"
+  sudo cp -p "$DROPIN" "$BACKUP_DROPIN"
+  echo "    drop-in -> $BACKUP_DROPIN"
+fi
 
 echo "==> Stopping $SERVICE..."
 sudo systemctl stop "$SERVICE" 2>/dev/null || true
@@ -73,12 +121,24 @@ echo "==> Installing host-local drop-in..."
 # the service can exec tools managed by the local toolchain (e.g. mise shims
 # for `claude`, `node`). Without this systemd uses its default PATH and
 # harness spawning fails with "executable file not found".
-DROPIN_DIR="/etc/systemd/system/$SERVICE.d"
 sudo mkdir -p "$DROPIN_DIR"
 DEPLOY_PATH=$(echo "$PATH" | tr ':' '\n' | awk '!seen[$0]++' | paste -sd:)
 DEPLOY_AUTH_STORE_URL="${AUTH_STORE_URL:-http://127.0.0.1:8303}"
 DEPLOY_AUTH_STORE_TOKEN="${AUTH_STORE_TOKEN:-}"
 if [ -z "$DEPLOY_AUTH_STORE_TOKEN" ]; then
+  # Writing an empty token here would silently de-auth the service against
+  # auth-store, and every harness spawn resolves its credential through it.
+  # If the drop-in we are about to replace already carries a token, this
+  # deploy is a downgrade, not a config change — refuse rather than warn.
+  if [ -n "$BACKUP_DROPIN" ] && sudo grep -q '^Environment=AUTH_STORE_TOKEN=.\+$' "$BACKUP_DROPIN"; then
+    echo "ERROR: AUTH_STORE_TOKEN is unset in the deploy environment, but the"
+    echo "       currently-deployed drop-in has one. Writing the drop-in now would"
+    echo "       blank it and leave the gateway unauthed against auth-store."
+    echo "       Re-run with AUTH_STORE_TOKEN exported. Rolling back to the"
+    echo "       previous binary and drop-in now."
+    rollback
+    exit 1
+  fi
   echo "WARNING: AUTH_STORE_TOKEN not set in deploy env; service will be unauthed against auth-store"
 fi
 TMP_DROPIN=$(mktemp)
@@ -109,22 +169,26 @@ echo "==> Starting $SERVICE..."
 sudo systemctl start "$SERVICE"
 
 echo "==> Verifying..."
-sleep 2
-if ! systemctl is-active --quiet "$SERVICE"; then
-  echo "ERROR: $SERVICE failed to start"
-  journalctl -u "$SERVICE" -n 15 --no-pager 2>&1
+# `is-active` proves a process exists, not that the binary answers: a
+# duplicate route registration compiles, vets, and then panics at boot. Poll
+# the HTTP surface itself, and give it a bounded window rather than a fixed
+# sleep that is either too short or wasted.
+READY=""
+for _ in $(seq 1 30); do
+  if curl -fsS http://localhost:8160/sessions >/dev/null 2>&1; then READY=1; break; fi
+  if ! systemctl is-active --quiet "$SERVICE"; then break; fi
+  sleep 1
+done
+if [ -z "$READY" ]; then
+  echo "ERROR: $SERVICE is not answering on :8160/sessions after 30s"
+  journalctl -u "$SERVICE" -n 30 --no-pager 2>&1
+  rollback
   exit 1
 fi
-echo "    $SERVICE is running"
+echo "    $SERVICE is running and answering on :8160"
 journalctl -u "$SERVICE" -n 5 --no-pager 2>&1 | grep -v '^--'
 
 echo "==> Smoke test..."
-# 1. HTTP up — the listener is bound and serving.
-if ! curl -fsS http://localhost:8160/sessions >/dev/null 2>&1; then
-  echo "ERROR: $SERVICE not responding on :8160/sessions"
-  journalctl -u "$SERVICE" -n 30 --no-pager
-  exit 1
-fi
 # 2. Every dir from the drop-in's PATH is present in the running service's
 # PATH. This is the exact regression that took out harness spawning when
 # the unit was first templatized — without mise shims reachable, the
@@ -145,9 +209,18 @@ if [ -n "$SVC_PID" ] && [ "$SVC_PID" != "0" ]; then
     echo "ERROR: service PATH missing dirs from drop-in:$MISSING"
     echo "  service PATH: $SVC_PATH"
     echo "  drop-in PATH: $DEPLOY_PATH"
+    rollback
     exit 1
   fi
 fi
 echo "    smoke test OK"
 
-echo "==> Done."
+# Keep the backups bounded, newest 5, oldest pruned. Never overwrite one in
+# place — a re-run of a failed deploy must not be able to clobber the last
+# known-good binary.
+sudo find /usr/local/bin -maxdepth 1 -name "$BIN_NAME.backup-*" -printf '%f\n' 2>/dev/null \
+  | sort -r | tail -n +6 | while read -r old; do sudo rm -f "/usr/local/bin/$old"; done
+sudo find "$DROPIN_DIR" -maxdepth 1 -name 'local.conf.backup-*' -printf '%f\n' 2>/dev/null \
+  | sort -r | tail -n +6 | while read -r old; do sudo rm -f "$DROPIN_DIR/$old"; done
+
+echo "==> Done. Rollback point: $BACKUP_BIN"
