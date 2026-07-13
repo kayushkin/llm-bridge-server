@@ -33,7 +33,22 @@ done
 TMP_DIR="$(mktemp -d -t llm-bridge-e2e.XXXXXX)"
 BIN_DIR="$TMP_DIR/bin"
 DATA_DIR="$TMP_DIR/data"
-mkdir -p "$BIN_DIR" "$DATA_DIR"
+SANDBOX_HOME="$TMP_DIR/home"
+mkdir -p "$BIN_DIR" "$DATA_DIR" "$SANDBOX_HOME"
+
+# The PATH we hand the *server* — our freshly built mock and the system dirs it
+# needs for git/ssh/sh, and nothing else. Deliberately excludes ~/bin.
+#
+# At boot the server runs auto-discovery, which execs every discoverable harness
+# wrapper with -discover. Wrappers resolve through exec.LookPath (see
+# planConformanceRun in internal/server/conformance.go: "PATH alone decides what
+# a run covers"), so with the ambient PATH that reaches the host's real
+# ~/bin/llm-bridge-claudecode and ~/bin/llm-bridge-codex — each of which opens
+# its OWN state DB. Those are the LIVE session DBs that every running Claude
+# Code session writes to. Curating PATH is what keeps this run off them, and it
+# also makes the run reproducible: what the smoke exercises no longer depends on
+# which harness wrappers happen to be installed on the host.
+SERVER_PATH="$BIN_DIR:/usr/bin:/bin"
 
 SERVER_PID=""
 LOG_STORE_PID=""
@@ -74,6 +89,7 @@ fi
 echo "    log-store: $(ls -lh "$BIN_DIR/log-store" | awk '{print $5}')"
 
 step "launch log-store on :$LOG_STORE_PORT"
+HOME="$SANDBOX_HOME" \
 LOG_STORE_LISTEN_ADDR=":$LOG_STORE_PORT" \
 LOG_STORE_DB_PATH="$DATA_DIR/log-store.db" \
 LOG_STORE_LOGSTACK_URL="http://127.0.0.1:1" \
@@ -87,9 +103,18 @@ for _ in $(seq 1 50); do
 done
 
 step "launch server on :$PORT (data dir: $DATA_DIR)"
-# Prepend BIN_DIR to PATH so the server's exec.LookPath("llm-bridge-mock")
-# resolves to our freshly built binary. Point every store at the temp dir
-# so the smoke run doesn't touch real ~/.config state.
+# PATH is $SERVER_PATH so exec.LookPath("llm-bridge-mock") resolves to our
+# freshly built binary and no host-installed harness wrapper resolves at all.
+#
+# Every store below is pointed at the temp dir. HOME is pointed there too, and
+# that is not redundant: internal/config defaults EVERY store path to somewhere
+# under $HOME, so a store added later without a matching override here would
+# silently open the LIVE database rather than an empty one. With HOME sandboxed
+# the worst that mistake can cost is a stray temp file.
+HOME="$SANDBOX_HOME" \
+XDG_CONFIG_HOME="$SANDBOX_HOME/.config" \
+XDG_DATA_HOME="$SANDBOX_HOME/.local/share" \
+XDG_STATE_HOME="$SANDBOX_HOME/.local/state" \
 LLMBRIDGE_LISTEN_ADDR=":$PORT" \
 LLMBRIDGE_DB_PATH="$DATA_DIR/bridge.db" \
 LLMBRIDGE_AGENT_DB="$DATA_DIR/agents.db" \
@@ -104,7 +129,7 @@ LLMBRIDGE_CONFORMANCE_PATH="$DATA_DIR/conformance.json" \
 LLMBRIDGE_LOG_STORE_URL="$LOG_STORE_BASE" \
 LLMBRIDGE_TOOL_STORE_URL="http://127.0.0.1:1" \
 LLMBRIDGE_PERMISSION_STORE_URL="http://127.0.0.1:1" \
-PATH="$BIN_DIR:$PATH" \
+PATH="$SERVER_PATH" \
   "$BIN_DIR/llm-bridge-server" >"$TMP_DIR/server.log" 2>&1 &
 SERVER_PID=$!
 echo "    pid: $SERVER_PID"
@@ -121,11 +146,22 @@ if ! curl -fsS "$BASE/health" >/dev/null 2>&1; then
 fi
 echo "    health OK"
 
-step "verify /harnesses lists mock"
-H=$(curl -fsS "$BASE/harnesses" | jq -r '.[] | select(.name=="mock") | "\(.name) available=\(.available)"')
+step "verify /harnesses lists mock — and ONLY mock — as available"
+HARNESSES=$(curl -fsS "$BASE/harnesses")
+H=$(jq -r '.[] | select(.name=="mock") | "\(.name) available=\(.available)"' <<<"$HARNESSES")
 [ -n "$H" ] || fail "/harnesses did not include mock"
 echo "    $H"
 echo "$H" | grep -q 'available=true' || fail "mock harness not marked available (binary not on PATH?)"
+
+# The available set is exactly the set of wrappers the server can exec, so it is
+# also the set auto-discovery will run at boot. Anything but "mock" here means
+# the run has reached off its curated PATH and onto a host-installed wrapper —
+# which would open that harness's live state DB. Assert the mechanism, not just
+# the symptom: this fails the moment someone restores the ambient PATH.
+AVAILABLE=$(jq -r '[.[] | select(.available) | .name] | sort | join(",")' <<<"$HARNESSES")
+echo "    available harnesses: $AVAILABLE"
+[ "$AVAILABLE" = "mock" ] \
+  || fail "expected mock to be the only available harness, got: $AVAILABLE — the server's PATH is reaching host-installed wrappers, and boot auto-discovery will exec them against their LIVE state DBs"
 
 step "POST /machines + /instances (local transport, harness=mock)"
 # Sessions in llm-bridge must be bound to a harness-store instance — there
@@ -202,6 +238,22 @@ case "$STATE" in
   aborted|completed|disconnected|error|idle) ;;
   *) fail "unexpected post-stop state: $STATE (want aborted|completed|disconnected|error|idle)" ;;
 esac
+
+step "assert the run was hermetic (nothing written under HOME)"
+# Both services ran with HOME inside TMP_DIR and every store path overridden, so
+# a hermetic run leaves that HOME empty. Anything in it was written by a process
+# that fell back to a $HOME default — with the real HOME that same write would
+# have landed on a live database. Checked last, so boot auto-discovery has long
+# since had its chance to run (it is a goroutine kicked off at startup).
+# `|| true` because find's exit status is lost to SIGPIPE when head closes early,
+# and under `set -o pipefail` that would abort the script instead of asserting.
+STRAYS="$(find "$SANDBOX_HOME" -mindepth 1 2>/dev/null | head -10 || true)"
+if [ -n "$STRAYS" ]; then
+  echo "----- wrote under HOME -----" >&2
+  echo "$STRAYS" >&2
+  fail "run is not hermetic: the above paths were written under HOME. With the real HOME these are live databases (e.g. .local/share/llm-bridge-claudecode/state.db is the session DB every running Claude Code session writes to)."
+fi
+echo "    HOME sandbox clean: $SANDBOX_HOME"
 
 step "SUCCESS"
 echo "    server log:  $TMP_DIR/server.log"
