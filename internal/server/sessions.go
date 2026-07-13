@@ -475,12 +475,24 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	keepalive := time.NewTicker(sseKeepaliveInterval)
+	defer keepalive.Stop()
+
 	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
 			s.harness.Unsubscribe(bridgeID, events)
 			return
+		case <-keepalive.C:
+			// An idle session emits nothing between turns, so keep the stream
+			// warm or an intermediary's idle read timeout will reap it. See
+			// handleSessionListEvents for the full rationale.
+			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+				s.harness.Unsubscribe(bridgeID, events)
+				return
+			}
+			flusher.Flush()
 		case stored, ok := <-events:
 			if !ok {
 				w.Write([]byte("event: close\ndata: {}\n\n"))

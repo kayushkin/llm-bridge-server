@@ -7,9 +7,16 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
+
+// sseKeepaliveInterval is how often an otherwise-silent SSE stream emits a
+// comment frame. It must stay comfortably below the idle read timeout of any
+// intermediary in front of the server — nginx's proxy_read_timeout defaults to
+// 60s, which is the shortest one this server is actually deployed behind.
+const sseKeepaliveInterval = 25 * time.Second
 
 // sessionListEvent is one frame on the global session-list SSE stream.
 // Type is either "upsert" (Session populated) or "delete" (SessionID populated).
@@ -116,11 +123,25 @@ func (s *Server) handleSessionListEvents(w http.ResponseWriter, r *http.Request)
 	id, ch := s.sessionHub.subscribe()
 	defer s.sessionHub.unsubscribe(id)
 
+	keepalive := time.NewTicker(sseKeepaliveInterval)
+	defer keepalive.Stop()
+
 	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-keepalive.C:
+			// This stream only emits on session mutation, so it can sit silent
+			// for minutes. Any intermediary with an idle read timeout (nginx's
+			// proxy_read_timeout defaults to 60s) will reap it, and over HTTP/2
+			// that surfaces in the browser as ERR_HTTP2_PROTOCOL_ERROR rather
+			// than a clean close. An SSE comment keeps the connection warm and
+			// is ignored by EventSource.
+			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
 		case ev, ok := <-ch:
 			if !ok {
 				// Hub dropped us as a slow subscriber.
