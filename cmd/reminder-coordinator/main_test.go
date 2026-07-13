@@ -603,6 +603,59 @@ func TestDigestSeparatesOverdueFromDueToday(t *testing.T) {
 	}
 }
 
+// The buckets must be TOTAL. This shipped broken: anything dated beyond the
+// 7-day horizon landed in no bucket and vanished from the board — the real
+// "Apply to jobs" todo, due exactly 7 days out, simply was not there. A board
+// that omits a todo you still have is worse than no board, because it reads as
+// "this is everything".
+func TestNoOpenTodoCanFallThroughTheBuckets(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 7, 13, 8, 0, 0, 0, loc)
+
+	items := []*model.Item{
+		{ID: "overdue", Type: "todo", Title: "overdue", Status: "open", Tags: []string{"personal"},
+			DueAt: ptr(time.Date(2026, 6, 30, 9, 0, 0, 0, loc))},
+		{ID: "today", Type: "todo", Title: "today", Status: "open", Tags: []string{"personal"},
+			DueAt: ptr(time.Date(2026, 7, 13, 15, 0, 0, 0, loc))},
+		{ID: "thisweek", Type: "todo", Title: "this week", Status: "open", Tags: []string{"personal"},
+			DueAt: ptr(time.Date(2026, 7, 16, 9, 0, 0, 0, loc))},
+		// Exactly on the 7-day horizon — the one that vanished.
+		{ID: "horizon", Type: "todo", Title: "on the horizon", Status: "open", Tags: []string{"personal"},
+			DueAt: ptr(time.Date(2026, 7, 20, 9, 0, 0, 0, loc))},
+		// Far future.
+		{ID: "faraway", Type: "todo", Title: "far away", Status: "open", Tags: []string{"personal"},
+			DueAt: ptr(time.Date(2027, 3, 1, 9, 0, 0, 0, loc))},
+		{ID: "undated", Type: "todo", Title: "undated", Status: "open", Tags: []string{"personal"}},
+	}
+
+	coordinator, _, _ := newTestCoordinator(t, now, newFakeNoteboard(items...))
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+
+	placed := map[string]bool{}
+	for _, item := range board.All() {
+		placed[item.ID] = true
+	}
+	for _, item := range items {
+		if !placed[item.ID] {
+			t.Errorf("open todo %q (due %v) landed in NO bucket — it is invisible on the board", item.Title, item.DueAt)
+		}
+	}
+	if len(board.All()) != len(items) {
+		t.Fatalf("board holds %d of %d open todos", len(board.All()), len(items))
+	}
+
+	// And it must actually be rendered, not merely bucketed.
+	rendered := coordinator.renderDigest(board)
+	for _, item := range items {
+		if !contains(rendered, item.Title) {
+			t.Errorf("todo %q is bucketed but missing from the rendered note:\n%s", item.Title, rendered)
+		}
+	}
+}
+
 func contains(haystack, needle string) bool {
 	return len(haystack) >= len(needle) && (func() bool {
 		for i := 0; i+len(needle) <= len(haystack); i++ {

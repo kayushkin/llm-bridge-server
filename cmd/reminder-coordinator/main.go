@@ -362,11 +362,29 @@ func (c *Coordinator) rollCompletedRollingItems() error {
 // note, the nudge — renders from this one structure, so the note and the nudge
 // can never disagree about what is due.
 type Board struct {
-	Overdue   []*model.Item
-	DueToday  []*model.Item
-	ThisWeek  []*model.Item
+	Overdue  []*model.Item
+	DueToday []*model.Item
+	ThisWeek []*model.Item
+	// Later catches everything dated beyond this week. It exists because the
+	// buckets must be TOTAL: an open todo that lands in no bucket vanishes from
+	// the board entirely, and a board that omits a todo you still have is worse
+	// than no board — it reads as "this is everything" while being a lie. That
+	// bug shipped and was caught only because a real item happened to sit exactly
+	// one day past the horizon.
+	Later     []*model.Item
 	Undated   []*model.Item
 	NagFiring []*model.Item // unfinished items whose nag rule fired since it last did
+}
+
+// All returns every item on the board. Used to assert the buckets are total.
+func (b *Board) All() []*model.Item {
+	all := []*model.Item{}
+	all = append(all, b.Overdue...)
+	all = append(all, b.DueToday...)
+	all = append(all, b.ThisWeek...)
+	all = append(all, b.Later...)
+	all = append(all, b.Undated...)
+	return all
 }
 
 func (b *Board) HasActionable() bool { return len(b.Overdue) > 0 || len(b.DueToday) > 0 }
@@ -402,12 +420,16 @@ func (c *Coordinator) buildBoard() (*Board, error) {
 			board.DueToday = append(board.DueToday, item)
 		case due.Before(weekEnd):
 			board.ThisWeek = append(board.ThisWeek, item)
+		default:
+			// Every remaining dated item. No item may fall through this switch.
+			board.Later = append(board.Later, item)
 		}
 	}
 
 	sortByDue(board.Overdue)
 	sortByDue(board.DueToday)
 	sortByDue(board.ThisWeek)
+	sortByDue(board.Later)
 
 	nagging, err := c.nagsFiringNow()
 	if err != nil {
@@ -524,7 +546,7 @@ func (c *Coordinator) renderDigest(board *Board) string {
 	fmt.Fprintf(&out, "_Rebuilt %s by reminder-coordinator. Edits here are overwritten — change the todos._\n",
 		now.Format("Mon 2 Jan, 15:04 MST"))
 
-	if !board.HasActionable() && len(board.ThisWeek) == 0 && len(board.Undated) == 0 {
+	if len(board.All()) == 0 {
 		out.WriteString("\nNothing open. 🎉\n")
 		return out.String()
 	}
@@ -547,6 +569,10 @@ func (c *Coordinator) renderDigest(board *Board) string {
 		return fmt.Sprintf("%s%s%s", priorityMark(item), item.Title, areaTags(item, c.ScopeTag))
 	})
 	section("🗓 Later this week", board.ThisWeek, func(item *model.Item) string {
+		return fmt.Sprintf("%s%s — %s%s", priorityMark(item), item.Title,
+			item.DueAt.In(c.Location).Format("Mon 2 Jan"), areaTags(item, c.ScopeTag))
+	})
+	section("🔭 Later", board.Later, func(item *model.Item) string {
 		return fmt.Sprintf("%s%s — %s%s", priorityMark(item), item.Title,
 			item.DueAt.In(c.Location).Format("Mon 2 Jan"), areaTags(item, c.ScopeTag))
 	})
