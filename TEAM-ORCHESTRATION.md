@@ -33,6 +33,36 @@ control flow proper is §15.
 
 ---
 
+## Implementation status — read this before trusting any section
+
+**This is a design spec. Almost none of it is built.** Every section describes the *intended* system,
+not the live one, except as listed here.
+
+**Landed:**
+- **This document** (on `main`).
+- **Type-only, and inert:** the §21 additive fields on `ManagedSession` (`manager_session_id`,
+  `root_session_id`, `depth`, `controlled_by`, `refreshed_from_session_id`) and `Event.harness_parent_id`
+  — in `llm-bridge` `main` (Go + TS + Py). ⚠️ **Nothing populates them.** The `sessions` **table has none
+  of these columns**, and the CC adapter does **not** read `parent_tool_use_id`, so `harness_parent_id`
+  is always empty. Do not assume these work.
+- **`kanban-scoper` emits `capability:` / `role:` tags** — behind `--role-tags`, **default OFF**
+  (`scheduler` `main`). This is the only §9 step-1 progress; board-per-team was never started.
+
+**Not landed:** everything else — §4–§20 broadly, and specifically the §21.5 **renames**, the
+sessions-table columns, the CC adapter demux, subagent promotion (§12 / §21.4), the coordination engine,
+and verification/hooks (§20).
+
+⚠️ **Known transitional inconsistency — the renames are required, not optional.** The §21 renames were
+deferred and the new fields were added **alongside** the old ones. So the code today carries **both
+`spawner_id` and `manager_session_id`** (two fields that both read as "who spawned/manages me"), and
+still has `parent_id` (the harness fork UUID) with **no** `forked_from_session_id`. That is precisely the
+ambiguity §21 exists to eliminate, currently reintroduced. **§21.5 must be completed** before anything
+consumes these fields.
+
+**Open bug:** the "MCP resume id error" (§21.6) is **live** and still accruing bad rows.
+
+---
+
 ## 1. What already exists (the primitive)
 
 | Piece | Lives in | Does today | Becomes |
@@ -321,6 +351,10 @@ Every moving part, grouped by *how* it fires (roles: §16; hooks: §20.4; verifi
 ---
 
 ## 9. Sequenced roadmap
+
+**Status:** see *Implementation status* near the top. Only step 1 is partially done — the scoper's
+`capability:`/`role:` tags shipped behind a default-off toggle; **board-per-team was never started**, and
+steps 2–10 are untouched.
 
 Low-risk-first. The write-path mechanism and ground-truth come early because they gate quality;
 team-formation / skill-routing come later (they mostly equip verifier lenses).
