@@ -3,6 +3,7 @@ package cron
 import (
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -17,6 +18,13 @@ type Scheduler struct {
 	agentExecutor *executor.AgentExecutor
 	logger        Logger
 	busHandler    BusHandler
+
+	// inFlight holds the jobs currently executing, so a tick that arrives while
+	// the previous run of the same job is still going is skipped rather than
+	// stacked on top of it. Deliberately in-memory: a run cannot survive the
+	// process, so a fresh process has nothing in flight by definition.
+	inFlightMu sync.Mutex
+	inFlight   map[int64]bool
 }
 
 // Logger interface for logging events
@@ -34,19 +42,38 @@ type BusHandler interface {
 
 func New(store *db.Store) *Scheduler {
 	return &Scheduler{
-		cron:  cron.New(),
-		store: store,
-		exec:  executor.Run,
+		cron:     cron.New(),
+		store:    store,
+		exec:     executor.Run,
+		inFlight: make(map[int64]bool),
 	}
 }
 
 // NewWithExecutor creates a scheduler with a custom executor (for testing).
 func NewWithExecutor(store *db.Store, execFn func(string, time.Duration) executor.Result) *Scheduler {
 	return &Scheduler{
-		cron:  cron.New(),
-		store: store,
-		exec:  execFn,
+		cron:     cron.New(),
+		store:    store,
+		exec:     execFn,
+		inFlight: make(map[int64]bool),
 	}
+}
+
+// tryAcquire marks a job as in flight, reporting false if it already was.
+func (s *Scheduler) tryAcquire(jobID int64) bool {
+	s.inFlightMu.Lock()
+	defer s.inFlightMu.Unlock()
+	if s.inFlight[jobID] {
+		return false
+	}
+	s.inFlight[jobID] = true
+	return true
+}
+
+func (s *Scheduler) release(jobID int64) {
+	s.inFlightMu.Lock()
+	defer s.inFlightMu.Unlock()
+	delete(s.inFlight, jobID)
 }
 
 // SetLogger sets the logger for the scheduler
@@ -123,7 +150,7 @@ func (s *Scheduler) addJob(j db.Job) (cron.EntryID, error) {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("panic in job %d (%s): %v", job.ID, job.Name, r)
-				
+
 				// Log the panic
 				if s.logger != nil {
 					s.logger.LogError("job_panic", fmt.Sprintf("Job %s panicked: %v", job.Name, r), map[string]interface{}{
@@ -133,7 +160,7 @@ func (s *Scheduler) addJob(j db.Job) (cron.EntryID, error) {
 						"panic":    fmt.Sprintf("%v", r),
 					})
 				}
-				
+
 				// Try to record the panic as a failed run
 				run, err := s.store.CreateRun(job.ID)
 				if err == nil {
@@ -154,8 +181,24 @@ func (s *Scheduler) executeJob(job db.Job) *db.Run {
 		return nil
 	}
 
+	// A tick that lands while the previous run of this job is still going is
+	// dropped, not stacked. Stacking is what let one slow job accumulate dozens
+	// of concurrent runs until the scheduler was OOM-killed.
+	if !s.tryAcquire(job.ID) {
+		log.Printf("skipping job %d (%s): previous run still in flight", job.ID, job.Name)
+		if s.logger != nil {
+			s.logger.LogError("job_overlap", fmt.Sprintf("Job %s skipped: previous run still in flight", job.Name), map[string]interface{}{
+				"job_id":   job.ID,
+				"job_name": job.Name,
+				"schedule": job.Schedule,
+			})
+		}
+		return nil
+	}
+	defer s.release(job.ID)
+
 	startTime := time.Now()
-	
+
 	run, err := s.store.CreateRun(job.ID)
 	if err != nil {
 		log.Printf("create run for job %d: %v", job.ID, err)
@@ -167,12 +210,12 @@ func (s *Scheduler) executeJob(job db.Job) *db.Run {
 		}
 		return nil
 	}
-	
+
 	// Log job start
 	if s.logger != nil {
 		s.logger.LogJobStart(job.ID, job.Name, job.Schedule, run.ID)
 	}
-	
+
 	var result executor.Result
 	if job.Type == "agent" {
 		if s.agentExecutor == nil {
@@ -187,10 +230,20 @@ func (s *Scheduler) executeJob(job db.Job) *db.Run {
 			})
 		}
 	} else {
-		result = s.exec(job.Command, 5*time.Minute)
+		// Prefer the freshly-read row so a timeout edited between ticks takes
+		// effect on this run rather than the next restart.
+		timeoutSecs := job.TimeoutSecs
+		if current != nil {
+			timeoutSecs = current.TimeoutSecs
+		}
+		timeout := executor.DefaultTimeout
+		if timeoutSecs > 0 {
+			timeout = time.Duration(timeoutSecs) * time.Second
+		}
+		result = s.exec(job.Command, timeout)
 	}
 	duration := time.Since(startTime)
-	
+
 	if err := s.store.FinishRun(run.ID, result.Status, result.Output); err != nil {
 		log.Printf("finish run %d: %v", run.ID, err)
 		if s.logger != nil {
@@ -201,23 +254,23 @@ func (s *Scheduler) executeJob(job db.Job) *db.Run {
 			})
 		}
 	}
-	
+
 	run.Status = result.Status
 	run.Output = result.Output
 	finishTime := time.Now()
 	run.FinishedAt = &finishTime
-	
+
 	// Log job finish
 	if s.logger != nil {
 		s.logger.LogJobFinish(job.ID, job.Name, job.Schedule, run.ID, result.Status, result.Output, duration)
 	}
-	
+
 	// Publish run result to bus
 	if s.busHandler != nil {
 		startedAt := startTime.UTC().Format(time.RFC3339)
 		finishedAt := finishTime.UTC().Format(time.RFC3339)
 		s.busHandler.PublishRunResult(run, &job, startedAt, finishedAt, duration.Milliseconds())
 	}
-	
+
 	return run
 }

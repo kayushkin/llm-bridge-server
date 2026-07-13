@@ -45,6 +45,17 @@ func main() {
 	}
 	defer store.Close()
 
+	// Any run still marked "running" belongs to a process that is now gone —
+	// this one has not started a job yet. Close them out here rather than in
+	// Scheduler.Start, which Reload also calls, and which would therefore kill
+	// live runs on every job edit.
+	if n, err := store.ReconcileOrphanedRuns(); err != nil {
+		logger.LogError("startup_error", fmt.Sprintf("Failed to reconcile orphaned runs: %v", err), nil)
+		log.Fatalf("reconcile orphaned runs: %v", err)
+	} else if n > 0 {
+		log.Printf("reconciled %d orphaned run(s) left behind by a previous process", n)
+	}
+
 	// Initialize scheduler
 	scheduler := cron.New(store)
 	scheduler.SetLogger(logger)

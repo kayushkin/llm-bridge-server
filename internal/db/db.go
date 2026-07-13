@@ -11,22 +11,23 @@ import (
 )
 
 type Job struct {
-	ID            int64      `json:"id"`
-	Name          string     `json:"name"`
-	Description   string     `json:"description,omitempty"`
-	Schedule      string     `json:"schedule"`
-	Command       string     `json:"command"`
-	Type          string     `json:"type"`                     // "shell" or "agent"
-	Agent         string     `json:"agent,omitempty"`          // agent name (for type=agent)
-	Prompt        string     `json:"prompt,omitempty"`         // prompt text (for type=agent)
-	Model         string     `json:"model,omitempty"`          // model override (for type=agent)
-	Orchestrator  string     `json:"orchestrator,omitempty"`   // "claude-code", "inber", etc. (for type=agent)
-	SessionID     string     `json:"session_id,omitempty"`     // session to resume (for type=agent)
-	WorkspaceID   string     `json:"workspace_id,omitempty"`   // noteboard workspace holding this job's working memory (for type=agent)
-	Enabled       bool       `json:"enabled"`
-	HoldUntil     *time.Time `json:"hold_until,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID           int64      `json:"id"`
+	Name         string     `json:"name"`
+	Description  string     `json:"description,omitempty"`
+	Schedule     string     `json:"schedule"`
+	Command      string     `json:"command"`
+	Type         string     `json:"type"`                   // "shell" or "agent"
+	Agent        string     `json:"agent,omitempty"`        // agent name (for type=agent)
+	Prompt       string     `json:"prompt,omitempty"`       // prompt text (for type=agent)
+	Model        string     `json:"model,omitempty"`        // model override (for type=agent)
+	Orchestrator string     `json:"orchestrator,omitempty"` // "claude-code", "inber", etc. (for type=agent)
+	SessionID    string     `json:"session_id,omitempty"`   // session to resume (for type=agent)
+	WorkspaceID  string     `json:"workspace_id,omitempty"` // noteboard workspace holding this job's working memory (for type=agent)
+	TimeoutSecs  int        `json:"timeout_seconds"`        // per-job wall-clock cap; 0 means executor.DefaultTimeout
+	Enabled      bool       `json:"enabled"`
+	HoldUntil    *time.Time `json:"hold_until,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 type Run struct {
@@ -122,10 +123,30 @@ func (s *Store) migrate() error {
 		"ALTER TABLE jobs ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE jobs ADD COLUMN hold_until DATETIME",
 		"ALTER TABLE jobs ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+		// Per-job wall-clock cap. 0 keeps the executor default; a long-running
+		// job (autoworker, the nightly guards) sets its own instead of being
+		// held to one global 5 minutes.
+		"ALTER TABLE jobs ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 0",
 	} {
 		s.db.Exec(col)
 	}
 	return nil
+}
+
+// ReconcileOrphanedRuns closes out runs left mid-flight by a process that died
+// (a crash, an OOM kill, a deploy restart). Nothing else ever clears them, so
+// without this they stay "running" forever and read as concurrent duplicates of
+// the job. Safe to call only at startup, before the cron loop can create runs.
+func (s *Store) ReconcileOrphanedRuns() (int64, error) {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(
+		`UPDATE runs SET status='interrupted', finished_at=?,
+		 output = CASE WHEN output='' THEN 'interrupted: scheduler exited while this run was in flight' ELSE output END
+		 WHERE status='running'`, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *Store) CreateJob(name, schedule, command string) (*Job, error) {
@@ -143,8 +164,8 @@ func (s *Store) CreateJobFull(j Job) (*Job, error) {
 		j.Type = "shell"
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO jobs (name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
-		j.Name, j.Description, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.Model, j.Orchestrator, j.SessionID, j.WorkspaceID, now, now,
+		`INSERT INTO jobs (name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, timeout_seconds, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+		j.Name, j.Description, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.Model, j.Orchestrator, j.SessionID, j.WorkspaceID, j.TimeoutSecs, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -158,7 +179,7 @@ func (s *Store) CreateJobFull(j Job) (*Job, error) {
 }
 
 func (s *Store) ListJobs() ([]Job, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, enabled, hold_until, created_at, updated_at FROM jobs ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, timeout_seconds, enabled, hold_until, created_at, updated_at FROM jobs ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +188,7 @@ func (s *Store) ListJobs() ([]Job, error) {
 	for rows.Next() {
 		var j Job
 		var enabled int
-		if err := rows.Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		if err := rows.Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &j.TimeoutSecs, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt); err != nil {
 			return nil, err
 		}
 		j.Enabled = enabled != 0
@@ -179,8 +200,8 @@ func (s *Store) ListJobs() ([]Job, error) {
 func (s *Store) GetJob(id int64) (*Job, error) {
 	var j Job
 	var enabled int
-	err := s.db.QueryRow(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, enabled, hold_until, created_at, updated_at FROM jobs WHERE id=?`, id).
-		Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, timeout_seconds, enabled, hold_until, created_at, updated_at FROM jobs WHERE id=?`, id).
+		Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &j.TimeoutSecs, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +229,21 @@ func (s *Store) UpdateJobEnabled(id int64, enabled bool) error {
 func (s *Store) UpdateJobDescription(id int64, description string) error {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(`UPDATE jobs SET description=?, updated_at=? WHERE id=?`, description, now, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// UpdateJobTimeout sets a job's wall-clock cap in seconds. 0 restores the
+// executor default.
+func (s *Store) UpdateJobTimeout(id int64, timeoutSecs int) error {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`UPDATE jobs SET timeout_seconds=?, updated_at=? WHERE id=?`, timeoutSecs, now, id)
 	if err != nil {
 		return err
 	}

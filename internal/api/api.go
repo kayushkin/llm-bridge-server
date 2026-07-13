@@ -79,8 +79,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]interface{}{
-		"status":    "ok",
-		"uptime_s":  time.Since(s.startedAt).Seconds(),
+		"status":     "ok",
+		"uptime_s":   time.Since(s.startedAt).Seconds(),
 		"started_at": s.startedAt.UTC(),
 	})
 }
@@ -110,9 +110,14 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			Orchestrator string `json:"orchestrator"`
 			SessionID    string `json:"session_id"`
 			WorkspaceID  string `json:"workspace_id"`
+			TimeoutSecs  int    `json:"timeout_seconds"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, 400, "invalid request body", err.Error())
+			return
+		}
+		if req.TimeoutSecs < 0 {
+			writeError(w, 400, "timeout_seconds must be >= 0 (0 means the default)", "")
 			return
 		}
 		if req.Name == "" || req.Schedule == "" {
@@ -147,13 +152,14 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			Orchestrator: req.Orchestrator,
 			SessionID:    req.SessionID,
 			WorkspaceID:  req.WorkspaceID,
+			TimeoutSecs:  req.TimeoutSecs,
 		})
 		if err != nil {
 			writeError(w, 500, "failed to create job", err.Error())
 			return
 		}
 		s.scheduler.Reload()
-		
+
 		// Log job creation
 		if s.logger != nil {
 			cmd := job.Command
@@ -162,7 +168,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			}
 			s.logger.LogJobCreated(job.ID, job.Name, job.Schedule, cmd)
 		}
-		
+
 		w.WriteHeader(http.StatusCreated)
 		writeJSON(w, job)
 	default:
@@ -197,10 +203,25 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 				Enabled     *bool   `json:"enabled"`
 				Name        *string `json:"name"`
 				Description *string `json:"description"`
+				TimeoutSecs *int    `json:"timeout_seconds"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				writeError(w, 400, "invalid request body", err.Error())
 				return
+			}
+			if req.TimeoutSecs != nil {
+				if *req.TimeoutSecs < 0 {
+					writeError(w, 400, "timeout_seconds must be >= 0 (0 means the default)", "")
+					return
+				}
+				if err := s.store.UpdateJobTimeout(id, *req.TimeoutSecs); err != nil {
+					if err == sql.ErrNoRows {
+						writeError(w, 404, "job not found", "")
+						return
+					}
+					writeError(w, 500, "failed to update job timeout", err.Error())
+					return
+				}
 			}
 			if req.Description != nil {
 				if err := s.store.UpdateJobDescription(id, *req.Description); err != nil {
@@ -223,7 +244,7 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 					writeError(w, 500, "failed to get job", err.Error())
 					return
 				}
-				
+
 				if err := s.store.UpdateJobEnabled(id, *req.Enabled); err != nil {
 					if err == sql.ErrNoRows {
 						writeError(w, 404, "job not found", "")
@@ -233,7 +254,7 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				s.scheduler.Reload()
-				
+
 				// Log job update
 				if s.logger != nil {
 					s.logger.LogJobUpdated(currentJob.ID, currentJob.Name, "enabled", *req.Enabled)
@@ -256,7 +277,7 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 				writeError(w, 500, "failed to get job", err.Error())
 				return
 			}
-			
+
 			if err := s.store.DeleteJob(id); err != nil {
 				if err == sql.ErrNoRows {
 					writeError(w, 404, "job not found", "")
@@ -266,12 +287,12 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.scheduler.Reload()
-			
+
 			// Log job deletion
 			if s.logger != nil {
 				s.logger.LogJobDeleted(jobToDelete.ID, jobToDelete.Name)
 			}
-			
+
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			writeError(w, 405, "method not allowed", "")
