@@ -200,19 +200,56 @@ func TestReapDecision(t *testing.T) {
 			wantReap:     false,
 		},
 		{
-			// The healthcheck orphans: llm-bridge-server created the session but
-			// the caller never sent a prompt, so no event ever landed and the
-			// process idled at ~300MB forever. updatedAt is the only clock here,
-			// which is why a reap-on-first-result policy would never catch these.
-			name:         "session that never got a prompt is reaped on updatedAt",
+			// The orphan, pinned against a live canary rather than an assumption.
+			//
+			// An earlier version of this case asserted state=idle and passed,
+			// while the real system leaked: a session created and never sent a
+			// prompt does NOT sit in idle. The server stamps it `running` at
+			// spawn and, with no events to move it, it stays there. `running` is
+			// in IsActive(), so a purely state-gated reaper skipped it forever —
+			// a canary planted on the deployed binary survived 22 minutes in
+			// `running` with 0 events and ~300MB held.
+			//
+			// State is only a claim on us when the session has emitted something
+			// to back it up. Zero events, ever, means the state row corroborates
+			// nothing, so we fall through to updatedAt.
+			name:         "never-prompted session stuck in running with no events is reaped",
 			mode:         msg.SessionModeEvents,
 			sessionType:  msg.SessionTypeAutonomous,
-			state:        msg.SessionIdle,
-			lastAct:      time.Time{},
+			state:        msg.SessionRunning,
+			lastAct:      time.Time{}, // zero: no event has EVER landed
 			updatedAt:    ago(20 * time.Minute),
 			unattendedTO: unattendedTimeout,
 			attendedTO:   attendedTimeout,
 			wantReap:     true,
+		},
+		{
+			// The other half of that rule: an active state DOES protect a session
+			// that has actually shown signs of life. A 45-minute bash call emits
+			// nothing while it runs, but the turn's own events sit behind it — so
+			// requiring corroboration must not cost it anything.
+			name:         "long tool call with events behind it is still never reaped",
+			mode:         msg.SessionModeEvents,
+			sessionType:  msg.SessionTypeAutonomous,
+			state:        msg.SessionToolRunning,
+			lastAct:      ago(45 * time.Minute), // quiet, but it has spoken before
+			updatedAt:    ago(45 * time.Minute),
+			unattendedTO: unattendedTimeout,
+			attendedTO:   attendedTimeout,
+			wantReap:     false,
+		},
+		{
+			// A never-prompted session is not reaped merely for being new — the
+			// updatedAt fallback still gives it the full timeout as a grace gap.
+			name:         "freshly spawned session with no events yet is kept",
+			mode:         msg.SessionModeEvents,
+			sessionType:  msg.SessionTypeAutonomous,
+			state:        msg.SessionRunning,
+			lastAct:      time.Time{},
+			updatedAt:    ago(2 * time.Minute),
+			unattendedTO: unattendedTimeout,
+			attendedTO:   attendedTimeout,
+			wantReap:     false,
 		},
 		{
 			name:         "unattended reaping disabled (timeout 0) keeps everything",

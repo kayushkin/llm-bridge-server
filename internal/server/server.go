@@ -582,13 +582,22 @@ func (s *Server) reapIdleTick() {
 //     thinking emits no events. Everything unattended — autoworker fires,
 //     healthcheck agents, the renamer, subagents — gets the short one.
 //   - timeout <= 0 disables reaping for that class.
-//   - Unattended sessions in an active state (model_generating, tool_running,
-//     compacting, rate_limited, starting) are never reaped: a long tool call
-//     emits no events while it runs, so state — not the timestamp — is the
-//     guard. Attended sessions are intentionally not state-gated (pty state
-//     never leaves "running"); their longer timeout is the guard.
-//   - Idle is measured from the last event, falling back to updatedAt when
-//     no event has landed yet so freshly-spawned processes get a grace gap.
+//   - An unattended session in an active state (model_generating, tool_running,
+//     compacting, rate_limited, running, starting) is never reaped — BUT only
+//     if it has actually emitted an event. A long tool call goes quiet while it
+//     runs, so for it, state and not the timestamp is the guard. A session that
+//     has emitted NOTHING, ever, has no such claim on us: its state row is
+//     uncorroborated. The server stamps a session `running` the moment the
+//     process spawns, so a session created and then never sent a prompt — a
+//     caller that crashed, or healthcheck's alert path before it was fixed —
+//     sits in `running` with zero events forever, and a purely state-gated
+//     reaper skips it for good. That orphan holds ~300MB, and it is exactly
+//     what a resource alert produces when the box is already in trouble.
+//     Requiring corroboration costs a genuine long tool call nothing: it has
+//     the turn's own events (the prompt, model_generating, the tool call)
+//     behind it long before it goes quiet.
+//   - Idle is measured from the last event, falling back to updatedAt when no
+//     event has landed so freshly-spawned processes still get a grace gap.
 func reapDecision(now time.Time, mode msg.SessionMode, sessionType msg.SessionType, state msg.SessionState, lastActivity, updatedAt time.Time, unattendedTimeout, attendedTimeout time.Duration) (time.Duration, bool) {
 	if state.IsBlockedOnUser() {
 		return 0, false
@@ -602,11 +611,12 @@ func reapDecision(now time.Time, mode msg.SessionMode, sessionType msg.SessionTy
 	if timeout <= 0 {
 		return 0, false
 	}
-	if !attended && state.IsActive() {
+	hasEmittedAnEvent := !lastActivity.IsZero()
+	if !attended && state.IsActive() && hasEmittedAnEvent {
 		return 0, false
 	}
 	ref := lastActivity
-	if ref.IsZero() {
+	if !hasEmittedAnEvent {
 		ref = updatedAt
 	}
 	idle := now.Sub(ref)
