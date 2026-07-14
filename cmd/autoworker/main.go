@@ -497,7 +497,10 @@ func selectQueuedCard(qc *kanbanclient.Client) (*queueCandidate, error) {
 		// and skipped, rather than dispatched: firing a session for it would
 		// either burn money past the ceiling or (worse) be handed a cap of 0,
 		// which the harness reads as unlimited.
-		budget, dispatchable := budgetForCard(qc, envOr("LLM_BRIDGE_URL", "http://localhost:8160"), cand)
+		budget, dispatchable := budgetForCard(qc,
+			envOr("LLM_BRIDGE_URL", "http://localhost:8160"),
+			envOr("NOTEBOARD_URL", "http://localhost:8191"),
+			cand)
 		if !dispatchable {
 			if err := qc.HoldCard(cand.cardID, "spend ceiling reached"); err != nil {
 				log.Printf("queue: card %s is over its spend ceiling but the hold FAILED (%v) — skipping it this tick, but it is not parked",
@@ -789,6 +792,7 @@ Steps:
 5. If the top todo is ambiguous in intent or needs user input, leave it alone and try the next one.
 6. If the top todo is clear in intent but too large to finish in one session, do NOT skip it. Split it instead:
    - Break it into several smaller noteboard todos, each scoped to something an unattended session could plausibly finish. Preserve the parent's priority and tags on the children so its place in the queue is respected.
+   - Set "parent_id" to the parent's id on every child. This is not bookkeeping: the hold gate and the spend ceiling both roll up over parent_id. A child created without it is a child that escapes the parent's hold and escapes the dollar limit the user put on that task, which is the one way an unattended worker can spend money the user explicitly capped. Do NOT copy the parent's auto_hold_at_usd onto the children — the ceiling is a shared pot for the whole tree, and copying it would give each child its own full budget.
    - POST a noteboard note (type "note") as a starting-point / onboarding doc for the parent: architecture pointers, open questions, first-steps checklist.
    - Link children back to the parent (mention parent id in their bodies) and either keep the parent todo open with a body update pointing at the children + onboarding note, or mark it done once the split is in place — pick whichever keeps the work most discoverable.
    Splitting + documenting IS the night's progress; treat it as completing a todo.

@@ -1,5 +1,5 @@
-// spend-ceiling-guard holds any kanban card whose cumulative agent spend has
-// reached the spend ceiling set on it (noteboard `auto_hold_at_usd`).
+// spend-ceiling-guard holds any task whose cumulative agent spend has reached the
+// spend ceiling set on it (noteboard `auto_hold_at_usd`).
 //
 // This is the CUMULATIVE half of the ceiling. The other half lives in the
 // autoworker, which caps each session it dispatches at (ceiling - already spent)
@@ -17,13 +17,21 @@
 //     case and ~$146 in the worst.
 //
 // Together they are correct: the per-session cap means a session can never push
-// a card past its ceiling, so this guard only ever has to notice a breach the
+// a task past its ceiling, so this guard only ever has to notice a breach the
 // harness already stopped at — never race one in progress.
 //
-// Registered as a scheduler shell job. Fire-and-forget, like the other curators:
-// no state file, kanban-store IS the state. Holding is idempotent (noteboard
-// will not move an existing hold's timestamp), so a card that is already held is
-// left alone.
+// The ceiling covers a TREE, not one item. The autoworker's prompt tells workers
+// to split a too-large todo into child todos, and kanban-scoper decomposes goals
+// into sub-cards; a ceiling that applied only to the row it was written on would
+// be walked around by exactly that decomposition. So spend rolls up from
+// descendants, a child inherits the nearest ancestor's ceiling, and a breach
+// holds the item that OWNS the ceiling — holding the child that happened to trip
+// it would leave the parent and its siblings spending against an empty pot.
+// Holding the owner withholds the whole subtree, because noteboard inherits a
+// hold down parent_id.
+//
+// Fire-and-forget, like the other curators: no state file, the stores ARE the
+// state. Holding is idempotent, so an already-held task is left alone.
 package main
 
 import (
@@ -33,10 +41,10 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/spendtree"
 )
 
 type sessionAggregate struct {
@@ -44,19 +52,23 @@ type sessionAggregate struct {
 	CostUSD   float64 `json:"cost_usd"`
 }
 
+type noteboardItem struct {
+	ID            string   `json:"id"`
+	Title         string   `json:"title"`
+	ParentID      *string  `json:"parent_id"`
+	HeldAt        *string  `json:"held_at"`
+	AutoHoldAtUSD *float64 `json:"auto_hold_at_usd"`
+}
+
 func main() {
-	var (
-		boardsFlag = flag.String("boards", "Autoworker queue,Agent runs,Task completion loop",
-			"Comma-separated kanban boards to guard.")
-		dryRun = flag.Bool("dry-run", false, "Report what would be held; change nothing.")
-	)
+	dryRun := flag.Bool("dry-run", false, "Report what would be held; change nothing.")
 	flag.Parse()
 
 	kanbanURL := envOr("KANBAN_STORE_URL", "http://localhost:8305")
 	bridgeURL := envOr("LLM_BRIDGE_URL", "http://localhost:8160")
+	noteboardURL := envOr("NOTEBOARD_URL", "http://localhost:8191")
 
-	// One fetch for every card on every board: cost is a whole-fleet table and
-	// re-fetching it per card would be an O(cards) hammering of the gateway.
+	// Cost is a whole-fleet table; fetch it once rather than per item.
 	aggregates, err := fetchSessionAggregates(bridgeURL)
 	if err != nil {
 		log.Fatalf("session aggregates: %v", err)
@@ -65,104 +77,119 @@ func main() {
 	for _, a := range aggregates {
 		cost[a.SessionID] = a.CostUSD
 	}
-	log.Printf("loaded cost for %d sessions", len(cost))
 
-	var held, checked int
-	for _, boardName := range strings.Split(*boardsFlag, ",") {
-		boardName = strings.TrimSpace(boardName)
-		if boardName == "" {
-			continue
-		}
-		qc := kanbanclient.New(kanbanURL)
-		board, err := qc.FindBoard(boardName)
-		if err != nil || board == nil {
-			log.Printf("board %q: unavailable (%v) — skipping", boardName, err)
-			continue
-		}
-		qc.BoardID = board.ID
+	// include_held=true: we must see parked items to build the tree. A held
+	// ancestor is exactly the thing whose descendants we need to reason about,
+	// and noteboard hides held items from discovery by default.
+	items, err := fetchItems(noteboardURL)
+	if err != nil {
+		log.Fatalf("noteboard items: %v", err)
+	}
+	log.Printf("loaded cost for %d sessions, %d items", len(cost), len(items))
 
-		view, err := qc.GetBoardView(board.ID)
+	tree := spendtree.NewTree(toTreeItems(items))
+	qc := kanbanclient.New(kanbanURL)
+
+	// A card's session links are how spend is attributed to an item. Cache per
+	// item: a subtree walk asks for the same parent's links once per descendant
+	// otherwise.
+	linkCache := map[string][]string{}
+	sessionsFor := func(itemID string) ([]string, error) {
+		if s, ok := linkCache[itemID]; ok {
+			return s, nil
+		}
+		links, err := qc.ListCardLinks(itemID)
 		if err != nil {
-			log.Printf("board %q: view: %v", boardName, err)
-			continue
+			return nil, err
 		}
-
-		for _, cv := range view.Columns {
-			for _, c := range cv.Cards {
-				if c.Item == nil {
-					continue
-				}
-				ceiling, ok := spendCeiling(c.Item)
-				if !ok {
-					continue // no ceiling on this card: nothing to enforce
-				}
-				// Already parked. Re-holding would be a no-op anyway, but there is
-				// no reason to price out a card whose gate is already shut.
-				if heldAt, _ := c.Item["held_at"].(string); heldAt != "" {
-					continue
-				}
-				checked++
-
-				cardID := c.Placement.CardID
-				spent, err := cardSpend(qc, cost, cardID)
-				if err != nil {
-					log.Printf("card %s: spend unreadable (%v) — NOT holding (a card is not parked on a guess)", cardID, err)
-					continue
-				}
-				if spent < ceiling {
-					continue
-				}
-
-				title, _ := c.Item["title"].(string)
-				if *dryRun {
-					log.Printf("WOULD HOLD %s — $%.2f spent of $%.2f ceiling — %q", cardID, spent, ceiling, title)
-					held++
-					continue
-				}
-
-				reason := fmt.Sprintf("spend ceiling reached: $%.2f of $%.2f", spent, ceiling)
-				if err := qc.HoldCard(cardID, reason); err != nil {
-					log.Printf("card %s: OVER CEILING ($%.2f of $%.2f) but the hold FAILED: %v — this card is still dispatchable",
-						cardID, spent, ceiling, err)
-					continue
-				}
-				log.Printf("HELD %s — $%.2f spent of $%.2f ceiling — %q", cardID, spent, ceiling, title)
-				held++
+		var sessions []string
+		for _, l := range links {
+			if l.EntityType == "session" {
+				sessions = append(sessions, l.EntityRef)
 			}
 		}
+		linkCache[itemID] = sessions
+		return sessions, nil
 	}
-	log.Printf("done: %d card(s) with a ceiling checked, %d held", checked, held)
-}
 
-// cardSpend totals what every session linked to the card has cost. A session
-// with no aggregate row contributes nothing — it has not billed a turn yet.
-func cardSpend(qc *kanbanclient.Client, cost map[string]float64, cardID string) (float64, error) {
-	links, err := qc.ListCardLinks(cardID)
-	if err != nil {
-		return 0, err
-	}
-	var total float64
-	for _, l := range links {
-		if l.EntityType == "session" {
-			total += cost[l.EntityRef]
+	// Only the ceiling OWNERS are candidates. A descendant cannot breach a
+	// ceiling its ancestor owns without the ancestor breaching it too — the
+	// subtree total is the same number — so evaluating owners covers every case
+	// and holds the right row.
+	var checked, held int
+	for _, it := range items {
+		if it.AutoHoldAtUSD == nil {
+			continue
 		}
+		if it.HeldAt != nil {
+			continue // already parked; no reason to price it out again
+		}
+		checked++
+
+		ceiling := *it.AutoHoldAtUSD
+		spent, err := tree.SubtreeSpendUSD(it.ID, sessionsFor, cost)
+		if err != nil {
+			// A task is not parked on a guess, and it is not let run on one either:
+			// this is loud, and the autoworker independently fails CLOSED when it
+			// cannot read a capped card's spend.
+			log.Printf("item %s: spend unreadable (%v) — NOT holding; the autoworker will refuse to dispatch it", it.ID, err)
+			continue
+		}
+		if spent < ceiling {
+			continue
+		}
+
+		n := len(tree.Subtree(it.ID))
+		if *dryRun {
+			log.Printf("WOULD HOLD %s — $%.2f spent of $%.2f ceiling across %d item(s) — %q", it.ID, spent, ceiling, n, it.Title)
+			held++
+			continue
+		}
+		reason := fmt.Sprintf("spend ceiling reached: $%.2f of $%.2f (across %d item(s) in this task tree)", spent, ceiling, n)
+		if err := qc.HoldCard(it.ID, reason); err != nil {
+			log.Printf("item %s: OVER CEILING ($%.2f of $%.2f) but the hold FAILED: %v — this task is still dispatchable",
+				it.ID, spent, ceiling, err)
+			continue
+		}
+		log.Printf("HELD %s — $%.2f spent of $%.2f ceiling across %d item(s) — %q", it.ID, spent, ceiling, n, it.Title)
+		held++
 	}
-	return total, nil
+	log.Printf("done: %d task(s) with a ceiling checked, %d held", checked, held)
 }
 
-// spendCeiling reads auto_hold_at_usd off the card's noteboard item. A missing
-// key and an explicit null both mean "no ceiling", which is the default — this
-// feature is opt-in and must never arm itself.
-func spendCeiling(item map[string]any) (float64, bool) {
-	raw, ok := item["auto_hold_at_usd"]
-	if !ok || raw == nil {
-		return 0, false
+func toTreeItems(items []noteboardItem) []spendtree.Item {
+	out := make([]spendtree.Item, 0, len(items))
+	for _, it := range items {
+		parent := ""
+		if it.ParentID != nil {
+			parent = *it.ParentID
+		}
+		out = append(out, spendtree.Item{
+			ID:            it.ID,
+			ParentID:      parent,
+			AutoHoldAtUSD: it.AutoHoldAtUSD,
+		})
 	}
-	v, ok := raw.(float64)
-	if !ok {
-		return 0, false
+	return out
+}
+
+func fetchItems(noteboardURL string) ([]noteboardItem, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	// include_held is required: the tree needs held ancestors in it, and a large
+	// limit because the whole tree must be present or a parent edge dangles.
+	resp, err := client.Get(noteboardURL + "/api/items?include_held=true&limit=10000")
+	if err != nil {
+		return nil, err
 	}
-	return v, true
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("noteboard items: %s", resp.Status)
+	}
+	var items []noteboardItem
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 func fetchSessionAggregates(bridgeURL string) ([]sessionAggregate, error) {

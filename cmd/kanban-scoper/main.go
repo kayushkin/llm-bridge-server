@@ -271,6 +271,15 @@ func createSubcard(kc *kanbanclient.Client, columnID, title, body string, tags [
 		"body":      body,
 		"tags":      tags,
 		"column_id": columnID,
+		// parent_id, not just the parent_card link below.
+		//
+		// These are two different edges and the gate rides on this one: noteboard
+		// inherits a hold down parent_id (a held parent withholds its children) and
+		// the spend ceiling rolls up over the same edge. A sub-card that carried
+		// ONLY the parent_card link would escape both — it would be a fresh,
+		// unheld, unmetered todo whose parent thinks it is capped. The parent_card
+		// link stays because kanban-dispatcher reads it for closure roll-up.
+		"parent_id": parentID,
 	}
 	bs, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/api/boards/%s/cards", kc.BaseURL, kc.BoardID)
