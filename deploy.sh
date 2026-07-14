@@ -48,6 +48,10 @@ echo "==> Building autoworker-reviewer..."
 go build -o autoworker-reviewer ./cmd/autoworker-reviewer
 echo "    built: $(ls -lh autoworker-reviewer | awk '{print $5}')"
 
+echo "==> Building spend-ceiling-guard..."
+go build -o spend-ceiling-guard ./cmd/spend-ceiling-guard
+echo "    built: $(ls -lh spend-ceiling-guard | awk '{print $5}')"
+
 echo "==> Building ask..."
 go build -o ask ./cmd/ask
 echo "    built: $(ls -lh ask | awk '{print $5}')"
@@ -64,6 +68,7 @@ cp kanban-classifier "$BIN_DIR/kanban-classifier"
 cp kanban-scoper "$BIN_DIR/kanban-scoper"
 cp kanban-dispatcher "$BIN_DIR/kanban-dispatcher"
 cp autoworker-reviewer "$BIN_DIR/autoworker-reviewer"
+cp spend-ceiling-guard "$BIN_DIR/spend-ceiling-guard"
 cp ask "$BIN_DIR/ask"
 
 echo "==> Starting $SERVICE..."

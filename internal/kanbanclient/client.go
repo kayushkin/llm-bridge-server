@@ -371,6 +371,24 @@ func (c *Client) PatchCardBody(cardID, body string) error {
 	return nil
 }
 
+// HoldCard parks the card's work: the hold lands on the underlying noteboard
+// item, so it withholds the work from every agent path — not just from whoever
+// reads this board's columns.
+func (c *Client) HoldCard(cardID, reason string) error {
+	payload, _ := json.Marshal(map[string]any{"reason": reason})
+	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/cards/%s/hold", c.BaseURL, cardID), bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return statusErr("hold card", resp)
+	}
+	return nil
+}
+
 // ============================ Entity tags ============================
 
 // EntityTag is one (entity_type, entity_ref, tag) row.

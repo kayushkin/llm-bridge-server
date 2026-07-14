@@ -125,13 +125,13 @@ var providers = []providerSpec{
 // Spec (from user): "first couple days leave it blank, then the last % of
 // the week we should aim to increase … near 100% as it ends".
 var targetCurve = []struct{ frac, pct float64 }{
-	{0.00, 0},    // day 0 of 7 → blank
-	{0.286, 0},   // ~day 2    → still blank
-	{0.429, 25},  // ~day 3    → start budgeting
-	{0.571, 50},  // ~day 4    → half
-	{0.714, 70},  // ~day 5
-	{0.857, 85},  // ~day 6
-	{1.00, 100},  // reset     → full
+	{0.00, 0},   // day 0 of 7 → blank
+	{0.286, 0},  // ~day 2    → still blank
+	{0.429, 25}, // ~day 3    → start budgeting
+	{0.571, 50}, // ~day 4    → half
+	{0.714, 70}, // ~day 5
+	{0.857, 85}, // ~day 6
+	{1.00, 100}, // reset     → full
 }
 
 type decision struct {
@@ -229,7 +229,11 @@ func main() {
 			workerPrompt = buildQueuePrompt(queueCard)
 		}
 
-		sessionID, err := publishWorker(natsClient, p, workerPrompt)
+		var maxBudgetUSD float64
+		if queueCard != nil {
+			maxBudgetUSD = queueCard.maxBudgetUSD
+		}
+		sessionID, err := publishWorker(natsClient, p, workerPrompt, maxBudgetUSD)
 		if err != nil {
 			log.Printf("[%s] publish failed: %v", d.provider, err)
 			continue
@@ -346,6 +350,12 @@ type queueCandidate struct {
 	body   string
 	tags   []string
 	item   map[string]any
+	// maxBudgetUSD is the per-session cost cap handed to the harness, derived
+	// from the card's spend ceiling minus what it has already cost. Zero means
+	// "no ceiling on this card" — NOT "no budget" — and is why the dispatch path
+	// only sets max_budget_usd when this is > 0 (the harness omits the flag at 0,
+	// which reads as unlimited).
+	maxBudgetUSD float64
 }
 
 func queueCardLogID(c *queueCandidate) string {
@@ -456,13 +466,28 @@ func selectQueuedCard(qc *kanbanclient.Client) (*queueCandidate, error) {
 				}
 			}
 		}
-		return &queueCandidate{
+		cand := &queueCandidate{
 			cardID: c.Placement.CardID,
 			title:  title,
 			body:   body,
 			tags:   tags,
 			item:   c.Item,
-		}, nil
+		}
+
+		// Spend ceiling. A card that has already spent its ceiling is held here
+		// and skipped, rather than dispatched: firing a session for it would
+		// either burn money past the ceiling or (worse) be handed a cap of 0,
+		// which the harness reads as unlimited.
+		budget, dispatchable := budgetForCard(qc, envOr("LLM_BRIDGE_URL", "http://localhost:8160"), cand)
+		if !dispatchable {
+			if err := qc.HoldCard(cand.cardID, "spend ceiling reached"); err != nil {
+				log.Printf("queue: card %s is over its spend ceiling but the hold FAILED (%v) — skipping it this tick, but it is not parked",
+					cand.cardID, err)
+			}
+			continue
+		}
+		cand.maxBudgetUSD = budget
+		return cand, nil
 	}
 	log.Printf("queue: no eligible cards in %q (n=%d)", autoworkerQueueColumnFrom, len(queued))
 	return nil, nil
@@ -587,27 +612,48 @@ func fetchLimits() (limitsResponse, error) {
 	return lim, nil
 }
 
-func publishWorker(nc *natsbus.Client, p providerSpec, prompt string) (string, error) {
+// publishWorker dispatches a worker session.
+//
+// maxBudgetUSD, when > 0, becomes the session's per-session cost cap. It rides
+// in HarnessConfig, which bridge-server treats as an opaque blob and merges
+// verbatim into the harness start params — so llm-bridge-claudecode receives
+// max_budget_usd and turns it into `claude --max-budget-usd N`, and Claude Code
+// enforces the cap on itself in real time. Nothing between here and the CLI has
+// to understand the field.
+//
+// A zero cap is NOT passed through: the harness omits the flag when the value is
+// zero, so "cap this at $0" would silently become "no cap at all".
+func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetUSD float64) (string, error) {
 	now := time.Now().UTC()
 	// Mint the canonical session_id here. Adapter passes BusSessionID through
 	// as bridge-server session_id (see llm-bridge-adapter@73c7cb5), so this
 	// value is also the bridge session_id referenced by kanban session links.
 	sessionID := fmt.Sprintf("autoworker-%s-%d", p.Name, now.UnixNano())
+
+	create := &msg.CreateSessionRequest{
+		Harness:     p.Harness,
+		InstanceID:  p.InstanceID,
+		DisplayName: fmt.Sprintf("autoworker %s %s", p.Name, now.Format("Jan 2 15:04")),
+		Purpose:     "autoworker",
+		Origin:      "scheduler",
+		Type:        msg.SessionTypeAutonomous,
+		AutoStart:   true,
+	}
+	if maxBudgetUSD > 0 {
+		hc, err := json.Marshal(map[string]any{"max_budget_usd": maxBudgetUSD})
+		if err != nil {
+			return "", fmt.Errorf("marshal harness config: %w", err)
+		}
+		create.HarnessConfig = hc
+	}
+
 	in := messages.BridgeInbound{
 		BusSessionID: sessionID,
 		Agent:        "todo-worker",
 		Orchestrator: p.Orchestrator,
 		Channel:      p.Channel,
 		Timestamp:    now,
-		Create: &msg.CreateSessionRequest{
-			Harness:     p.Harness,
-			InstanceID:  p.InstanceID,
-			DisplayName: fmt.Sprintf("autoworker %s %s", p.Name, now.Format("Jan 2 15:04")),
-			Purpose:    "autoworker",
-			Origin:     "scheduler",
-			Type:        msg.SessionTypeAutonomous,
-			AutoStart:   true,
-		},
+		Create:       create,
 		Send: &msg.SendMessageRequest{
 			Message: prompt,
 		},
