@@ -430,6 +430,18 @@ func selectQueuedCard(qc *kanbanclient.Client) (*queueCandidate, error) {
 			log.Printf("queue: skip card %s — no noteboard item", c.Placement.CardID)
 			continue
 		}
+		// The hold gate. The board view deliberately hydrates held cards — a card
+		// you cannot see is a card you cannot press play on — so the filter that
+		// noteboard applies to its own discovery path has to be applied again here,
+		// against the item the board handed us.
+		if heldAt, _ := c.Item["held_at"].(string); heldAt != "" {
+			reason, _ := c.Item["hold_reason"].(string)
+			if reason == "" {
+				reason = "no reason given"
+			}
+			log.Printf("queue: skip card %s — HELD since %s (%s)", c.Placement.CardID, heldAt, reason)
+			continue
+		}
 		title, _ := c.Item["title"].(string)
 		if strings.TrimSpace(title) == "" {
 			log.Printf("queue: skip card %s — empty title", c.Placement.CardID)
@@ -705,6 +717,7 @@ const defaultPrompt = `You are the nightly todo-worker. The user is asleep; thei
 
 Steps:
 1. GET http://localhost:8191/api/items?type=todo&status=open&exclude_tag=autoworker&exclude_tag=personal&limit=50 to read the noteboard todo list. (exclude_tag=autoworker drops machine-generated autoworker dispatch cards, which otherwise saturate the window and hide real todos. exclude_tag=personal drops the user's personal/life todos — those are theirs to do, never yours.)
+   Noteboard withholds HELD todos from this list automatically — those are tasks the user has parked behind the hold gate and has not cleared for unattended work. NEVER pass include_held=true, here or to /api/search: that parameter exists for the board and notes UIs, which need to show the user their own parked work so they can press play on it. Using it to widen your own search would walk straight through the one gate that is there to stop you.
 2. Pick the highest-priority open todo that you can make real progress on autonomously without needing clarifying questions from the user. Prefer codebase tasks that have clear scope. Never pick a todo tagged "personal" even if one slips through — those are the user's own life tasks, not engineering work.
 3. Do the work. Use your normal tools: explore repos under ~/repos/, edit, build, test, commit only if the task is a true "commit me" (match the user's normal guidance about explicit commit requests).
 4. When the task is complete, PATCH http://localhost:8191/api/items/<id> with {"status":"done"} and a note in the body describing what you did.
