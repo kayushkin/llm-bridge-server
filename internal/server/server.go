@@ -550,12 +550,12 @@ func (s *Server) reapIdleTick() {
 			continue
 		}
 
-		idle, reap := reapDecision(now, sess.Mode, msg.SessionState(sess.State), lastAt, sess.UpdatedAt, s.cfg.IdleTimeout, s.cfg.PTYIdleTimeout)
+		idle, reap := reapDecision(now, sess.Mode, msg.SessionType(sess.Type), msg.SessionState(sess.State), lastAt, sess.UpdatedAt, s.cfg.UnattendedIdleTimeout, s.cfg.AttendedIdleTimeout)
 		if !reap {
 			continue
 		}
 
-		log.Printf("[reaper] %s: idle %s (mode=%s state=%s) exceeds timeout; killing", id, idle.Round(time.Second), sess.Mode, sess.State)
+		log.Printf("[reaper] %s: idle %s (mode=%s type=%s state=%s) exceeds timeout; killing", id, idle.Round(time.Second), sess.Mode, sess.Type, sess.State)
 		// Kill may fail if the process already exited — flip state anyway so
 		// the row reflects reality and the watchdog won't try to resume it.
 		_ = s.harness.Kill(id)
@@ -570,25 +570,39 @@ func (s *Server) reapIdleTick() {
 // session has been idle and whether it should be killed.
 //
 // Rules:
-//   - Pick the timeout by mode (pty uses the longer PTYIdleTimeout).
-//   - timeout <= 0 disables reaping for that mode.
-//   - Events-mode sessions in an active state (model_generating,
-//     tool_running, compacting, rate_limited, starting) are never reaped:
-//     a long tool call emits no events while it runs, so state — not the
-//     timestamp — is the guard. PTY state isn't derived from telemetry, so
-//     PTY is intentionally not state-gated; its longer timeout is the guard.
+//   - A session parked on a human (awaiting_user, awaiting_permission) is
+//     NEVER reaped, at any age, in any mode. See msg.SessionState.
+//     IsBlockedOnUser: that silence is a person deliberating, not abandoned
+//     work. Reaping awaiting_permission would auto-deny a live question the
+//     user never got to answer; reaping awaiting_user would discard the warm
+//     process their reply was going to land in.
+//   - Pick the timeout by who is watching, not by I/O contract: attended
+//     sessions (pty, or events-mode SessionTypeInteractive like the dash
+//     chat) get the longer AttendedIdleTimeout, because a human reading or
+//     thinking emits no events. Everything unattended — autoworker fires,
+//     healthcheck agents, the renamer, subagents — gets the short one.
+//   - timeout <= 0 disables reaping for that class.
+//   - Unattended sessions in an active state (model_generating, tool_running,
+//     compacting, rate_limited, starting) are never reaped: a long tool call
+//     emits no events while it runs, so state — not the timestamp — is the
+//     guard. Attended sessions are intentionally not state-gated (pty state
+//     never leaves "running"); their longer timeout is the guard.
 //   - Idle is measured from the last event, falling back to updatedAt when
 //     no event has landed yet so freshly-spawned processes get a grace gap.
-func reapDecision(now time.Time, mode msg.SessionMode, state msg.SessionState, lastActivity, updatedAt time.Time, idleTimeout, ptyTimeout time.Duration) (time.Duration, bool) {
-	isPTY := mode == msg.SessionModePTY
-	timeout := idleTimeout
-	if isPTY {
-		timeout = ptyTimeout
+func reapDecision(now time.Time, mode msg.SessionMode, sessionType msg.SessionType, state msg.SessionState, lastActivity, updatedAt time.Time, unattendedTimeout, attendedTimeout time.Duration) (time.Duration, bool) {
+	if state.IsBlockedOnUser() {
+		return 0, false
+	}
+
+	attended := mode == msg.SessionModePTY || sessionType == msg.SessionTypeInteractive
+	timeout := unattendedTimeout
+	if attended {
+		timeout = attendedTimeout
 	}
 	if timeout <= 0 {
 		return 0, false
 	}
-	if !isPTY && state.IsActive() {
+	if !attended && state.IsActive() {
 		return 0, false
 	}
 	ref := lastActivity
