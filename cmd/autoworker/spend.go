@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/slava/scheduler/internal/kanbanclient"
@@ -139,4 +141,59 @@ func cardSpendCeiling(item map[string]any) (float64, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// envFloat reads a float from the environment, falling back to def when unset.
+// A malformed value is fatal rather than silently ignored: this configures a
+// SPEND CAP, and a typo that quietly became "uncapped" is the failure this whole
+// mechanism exists to prevent.
+func envFloat(key string, def float64) float64 {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		log.Fatalf("%s=%q is not a number — refusing to run uncapped on a typo", key, raw)
+	}
+	return v
+}
+
+// resolveSessionBudget decides the cost cap for one dispatched session, and says
+// why. This is the money decision, so it is a function rather than a few lines
+// inside the fire loop: it is the thing worth testing.
+//
+// Precedence:
+//
+//  1. The card's own ceiling. cand.maxBudgetUSD is already (ceiling - spent),
+//     the only number that keeps THAT card under THAT ceiling. A fleet default
+//     must never raise or lower it — not even when the default is tighter, since
+//     the ceiling is the promise the user actually made about that task.
+//
+//  2. The fleet default, for everything the card ceiling cannot reach. Chiefly
+//     the noteboard-discovery fallback, which runs whenever the Queued column is
+//     empty — most nights — and has no card at all to carry a ceiling. That path
+//     produced this host's most expensive unattended sessions, and it is
+//     dispatched uncapped without a default.
+//
+//  3. Uncapped, when neither is set. This is the historical behaviour and stays
+//     the default: arming a fleet-wide cap is the user's call, not ours.
+//
+// The returned reason is logged verbatim. An uncapped session should be able to
+// say out loud why it is uncapped — silence is how a cap that never armed goes
+// unnoticed for months.
+func resolveSessionBudget(cand *queueCandidate, fleetDefaultUSD float64) (float64, string) {
+	if cand != nil && cand.maxBudgetUSD > 0 {
+		return cand.maxBudgetUSD, "the card's own spend ceiling (minus what it has already cost)"
+	}
+	if fleetDefaultUSD > 0 {
+		if cand != nil {
+			return fleetDefaultUSD, "fleet default; this card sets no ceiling of its own"
+		}
+		return fleetDefaultUSD, "fleet default; noteboard-discovery session, which has no card to carry a ceiling"
+	}
+	if cand != nil {
+		return 0, "this card sets no ceiling and no fleet default is configured"
+	}
+	return 0, "noteboard-discovery session and no fleet default is configured (-default-max-budget-usd)"
 }

@@ -54,6 +54,19 @@ const (
 
 var kanbanDefaultColumns = []string{"Queued", "In Progress", "Blocked", "Done", "Failed"}
 
+// defaultMaxBudget is the fleet-wide per-session spend cap: the safety net for
+// sessions no per-card ceiling can cover.
+//
+// It is OFF by default (0), and 0 is the only safe "off" value here only because
+// this code never passes a zero cap through to the harness — llm-bridge-claudecode
+// omits --max-budget-usd when the value is zero, which the CLI reads as unlimited.
+// So "off" and "unlimited" genuinely are the same thing at this layer, which is
+// exactly why a spent-out CARD is held rather than dispatched with a cap of 0.
+//
+// A per-card ceiling always overrides this; the default only fills the gap.
+var defaultMaxBudget = flag.Float64("default-max-budget-usd", envFloat("AUTOWORKER_DEFAULT_MAX_BUDGET_USD", 0),
+	"Fleet-wide per-session spend cap in USD for sessions with no per-card ceiling (0 = off/uncapped). A card's own ceiling always wins.")
+
 type limitWindow struct {
 	UsedPercent   float64 `json:"used_percent"`
 	WindowMinutes *int64  `json:"window_minutes,omitempty"`
@@ -157,6 +170,10 @@ func main() {
 	)
 	flag.Parse()
 
+	if *defaultMaxBudget < 0 {
+		log.Fatalf("-default-max-budget-usd must not be negative (got %v)", *defaultMaxBudget)
+	}
+
 	if *registerFlag {
 		if err := registerSchedulerJob(); err != nil {
 			log.Fatalf("register: %v", err)
@@ -229,9 +246,11 @@ func main() {
 			workerPrompt = buildQueuePrompt(queueCard)
 		}
 
-		var maxBudgetUSD float64
-		if queueCard != nil {
-			maxBudgetUSD = queueCard.maxBudgetUSD
+		maxBudgetUSD, why := resolveSessionBudget(queueCard, *defaultMaxBudget)
+		if maxBudgetUSD > 0 {
+			log.Printf("[%s] session capped at $%.2f — %s", d.provider, maxBudgetUSD, why)
+		} else {
+			log.Printf("[%s] session is UNCAPPED — %s", d.provider, why)
 		}
 		sessionID, err := publishWorker(natsClient, p, workerPrompt, maxBudgetUSD)
 		if err != nil {
