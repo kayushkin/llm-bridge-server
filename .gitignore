@@ -6,6 +6,8 @@
 /kanban-scoper
 /kanban-dispatcher
 /autoworker-reviewer
+/ask
+/spend-ceiling-guard
 /cmd/scheduler/scheduler
 /cmd/autoworker/autoworker
 /cmd/kanban-curator/kanban-curator
@@ -13,6 +15,8 @@
 /cmd/kanban-scoper/kanban-scoper
 /cmd/kanban-dispatcher/kanban-dispatcher
 /cmd/autoworker-reviewer/autoworker-reviewer
+/cmd/ask/ask
+/cmd/spend-ceiling-guard/spend-ceiling-guard
 
 # DB files
 *.db
