@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -148,18 +149,65 @@ func TestPatchJobEnabled(t *testing.T) {
 	}
 }
 
-func TestCalendarStub(t *testing.T) {
+// TestCalendarEvents pins the real /api/calendar/events behaviour. This
+// endpoint used to be a 501 stub (see the old TestCalendarStub); commit
+// be7ad73 implemented it, expanding each enabled job's cron expression into
+// occurrences within [from, to].
+func TestCalendarEvents(t *testing.T) {
 	srv := setup(t, "")
-	req := httptest.NewRequest("GET", "/api/calendar/events", nil)
+
+	// A job that fires every minute produces occurrences in any window.
+	body, _ := json.Marshal(map[string]string{"name": "cal-job", "schedule": "* * * * *", "command": "echo hi"})
+	req := httptest.NewRequest("POST", "/api/jobs", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("expected 501, got %d", w.Code)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create job: %d %s", w.Code, w.Body.String())
+	}
+
+	from := time.Now().UTC()
+	to := from.Add(time.Hour)
+	url := "/api/calendar/events?from=" + from.Format(time.RFC3339) + "&to=" + to.Format(time.RFC3339)
+	req = httptest.NewRequest("GET", url, nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var events []struct {
+		ID       string `json:"id"`
+		JobID    int64  `json:"job_id"`
+		Name     string `json:"name"`
+		Schedule string `json:"schedule"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&events); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// A per-minute job over a one-hour window yields roughly 60 occurrences.
+	if len(events) == 0 {
+		t.Fatal("expected calendar occurrences for the enabled job, got none")
+	}
+	if events[0].JobID != 1 || events[0].Name != "cal-job" {
+		t.Fatalf("occurrence does not reference the created job: %+v", events[0])
+	}
+}
+
+// TestCalendarEventsBadRange pins the structured 400 when 'to' is not after
+// 'from' — the endpoint validates its window rather than returning a stub.
+func TestCalendarEventsBadRange(t *testing.T) {
+	srv := setup(t, "")
+	from := time.Now().UTC()
+	url := "/api/calendar/events?from=" + from.Format(time.RFC3339) + "&to=" + from.Add(-time.Hour).Format(time.RFC3339)
+	req := httptest.NewRequest("GET", url, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
 	var apiErr APIError
 	json.NewDecoder(w.Body).Decode(&apiErr)
-	if apiErr.Status != 501 {
-		t.Fatalf("expected structured 501 error")
+	if apiErr.Status != 400 {
+		t.Fatalf("expected structured 400 error, got %+v", apiErr)
 	}
 }
 
