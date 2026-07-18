@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strings"
 	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
@@ -355,6 +356,14 @@ func (s *Server) localInstancesByHarness(types []msg.Harness) map[msg.Harness]st
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Compress compressible responses when the client accepts gzip. The
+	// wrapper decides per-response from the Content-Type and passes SSE and
+	// hijacked WebSocket connections through untouched (see gzipResponseWriter).
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		gw := &gzipResponseWriter{ResponseWriter: w}
+		defer gw.close()
+		w = gw
+	}
 	s.mux.ServeHTTP(w, r)
 }
 

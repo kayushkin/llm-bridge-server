@@ -320,6 +320,9 @@ func (s *Store) migrate() error {
 	// the corresponding idx_sessions_purpose index is created in the
 	// purpose/origin block above.
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)")
+	// ListSessions and ListSessionsByState both ORDER BY created_at DESC; without
+	// this index that sort is a full scan + filesort over every session row.
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)")
 
 	// Folder registry — tracks the ordered list of user-defined folders.
 	// Folders may exist with no sessions (created and not yet populated).
@@ -454,8 +457,51 @@ func (s *Store) GetSessionByHarnessSessionID(harnessSessionID string) (*Session,
 	))
 }
 
-func (s *Store) ListSessions() ([]Session, error) {
-	rows, err := s.dbRO.Query(`SELECT ` + sessionColumns + ` FROM sessions ORDER BY created_at DESC`)
+// sessionColumnsNoInfo is sessionColumns with the info blob replaced by an
+// empty literal. Selecting '' in the info slot means scanSession reads an
+// empty string and leaves Session.Info nil — skipping both the ~11MB read and
+// the per-row JSON unmarshal for callers (the /sessions list) that never
+// render it. Derived from sessionColumns so the column order can't drift.
+var sessionColumnsNoInfo = strings.Replace(sessionColumns, "COALESCE(info, '')", "''", 1)
+
+// SessionListOptions controls what ListSessionsFiltered returns.
+type SessionListOptions struct {
+	// State, when non-empty, filters to sessions in that state.
+	State string
+	// IncludeInfo controls whether the per-session harness capability blob
+	// (tools, slash commands, skills, MCP servers) is loaded. The session
+	// list never renders it, so the list endpoint leaves it false.
+	IncludeInfo bool
+	// Limit caps the number of rows returned; <=0 means no limit.
+	Limit int
+	// Offset skips this many rows; only applied when Limit > 0.
+	Offset int
+}
+
+// ListSessionsFiltered returns sessions newest-first, honoring the given
+// options. It is the single implementation behind ListSessions and
+// ListSessionsByState.
+func (s *Store) ListSessionsFiltered(opts SessionListOptions) ([]Session, error) {
+	cols := sessionColumns
+	if !opts.IncludeInfo {
+		cols = sessionColumnsNoInfo
+	}
+	query := `SELECT ` + cols + ` FROM sessions`
+	var args []any
+	if opts.State != "" {
+		query += ` WHERE state=?`
+		args = append(args, opts.State)
+	}
+	query += ` ORDER BY created_at DESC`
+	if opts.Limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, opts.Limit)
+		if opts.Offset > 0 {
+			query += ` OFFSET ?`
+			args = append(args, opts.Offset)
+		}
+	}
+	rows, err := s.dbRO.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -471,21 +517,15 @@ func (s *Store) ListSessions() ([]Session, error) {
 	return sessions, rows.Err()
 }
 
+// ListSessions returns every session, newest first, with info included. Used
+// by internal callers (instance rollups, reconciliation) that want the full
+// record; the HTTP list endpoint uses ListSessionsFiltered to drop info.
+func (s *Store) ListSessions() ([]Session, error) {
+	return s.ListSessionsFiltered(SessionListOptions{IncludeInfo: true})
+}
+
 func (s *Store) ListSessionsByState(state string) ([]Session, error) {
-	rows, err := s.dbRO.Query(`SELECT `+sessionColumns+` FROM sessions WHERE state=? ORDER BY created_at DESC`, state)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var sessions []Session
-	for rows.Next() {
-		sess, err := scanSession(rows)
-		if err != nil {
-			return nil, err
-		}
-		sessions = append(sessions, *sess)
-	}
-	return sessions, rows.Err()
+	return s.ListSessionsFiltered(SessionListOptions{State: state, IncludeInfo: true})
 }
 
 func (s *Store) UpdateSessionState(bridgeID, state string) error {

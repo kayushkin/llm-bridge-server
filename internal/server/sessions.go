@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,16 +100,18 @@ type (
 )
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	state := r.URL.Query().Get("state")
-	var (
-		sessions []store.Session
-		err      error
-	)
-	if state != "" {
-		sessions, err = s.store.ListSessionsByState(state)
-	} else {
-		sessions, err = s.store.ListSessions()
+	q := r.URL.Query()
+	opts := store.SessionListOptions{
+		State: q.Get("state"),
+		// The list omits the per-session harness capability blob by default —
+		// it's ~83% of the payload and no list consumer renders it. A client
+		// that needs it (rare) opts in with ?include_info=1, or fetches the
+		// single session via GET /sessions/{id}, which always includes it.
+		IncludeInfo: q.Get("include_info") == "1" || q.Get("include_info") == "true",
+		Limit:       parseNonNegativeInt(q.Get("limit")),
+		Offset:      parseNonNegativeInt(q.Get("offset")),
 	}
+	sessions, err := s.store.ListSessionsFiltered(opts)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -117,6 +120,20 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		sessions = []store.Session{}
 	}
 	writeJSON(w, sessions)
+}
+
+// parseNonNegativeInt parses a query-param integer, returning 0 for empty,
+// malformed, or negative input so a bad ?limit= degrades to "no limit"
+// rather than erroring the whole list.
+func parseNonNegativeInt(s string) int {
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
