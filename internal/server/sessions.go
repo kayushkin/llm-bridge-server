@@ -418,6 +418,17 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Replying to a chat that was marked done reopens it: pull it back out of
+	// the Archive folder so it rejoins the active list. This mirrors, for the
+	// folder half of "done", the state half that re-engagement already undoes
+	// through derivation (see handleMarkSessionDone). State is owned by the
+	// derivation pipeline, so we deliberately touch only the folder here.
+	if sess.FolderName == store.ArchiveFolder {
+		if err := s.store.SetSessionFolder(bridgeID, ""); err != nil {
+			log.Printf("[session] failed to reopen archived session %s on reply: %v", bridgeID, err)
+		}
+	}
+
 	go s.maybeAutoRename(bridgeID)
 
 	writeJSON(w, map[string]string{"status": "sent", "message_id": userEvent.MessageID})
