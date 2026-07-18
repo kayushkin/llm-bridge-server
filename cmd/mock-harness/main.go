@@ -78,16 +78,6 @@ func main() {
 		enc.Encode(event)
 	}
 
-	emitState := func(state msg.SessionState) {
-		emit(msg.Event{
-			Type:      msg.EventSessionState,
-			Harness:   msg.Harness(harnessName),
-			BridgeSessionID: sessionID,
-			Timestamp: time.Now(),
-			State:     &msg.StateEvent{State: state},
-		})
-	}
-
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -109,9 +99,6 @@ func main() {
 
 			var sp startParams
 			json.Unmarshal(req.Params, &sp)
-
-			// Emit running state
-			emitState(msg.SessionRunning)
 
 			// Emit a session_info event with mock metadata so consumers
 			// have a chance to render system_prompt, working_dir, tools,
@@ -140,8 +127,6 @@ func main() {
 			var mp messageParams
 			json.Unmarshal(req.Params, &mp)
 
-			emitState(msg.SessionRunning)
-
 			// Echo the user's message as an EventUserMessage so consumers
 			// that want a single source of truth for "what did the user
 			// send?" can listen on the event stream rather than tracking
@@ -166,7 +151,11 @@ func main() {
 			})
 
 		case "resume":
-			emitState(msg.SessionRunning)
+			// Resume emits no events on its own: SessionState is derived
+			// centrally by the server from the raw event stream, and a bare
+			// resume produces no new content. (A harness-emitted
+			// EventSessionState would be dropped by the server anyway — see
+			// manager.go readEvents.)
 
 		default:
 			// Handle config: or other prefixed commands
@@ -286,14 +275,5 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 		BridgeSessionID: sessionID,
 		Timestamp: time.Now(),
 		Result:    &msg.ResultEvent{Text: responseText},
-	})
-
-	// Emit idle state
-	emit(msg.Event{
-		Type:      msg.EventSessionState,
-		Harness:   msg.Harness(harnessName),
-		BridgeSessionID: sessionID,
-		Timestamp: time.Now(),
-		State:     &msg.StateEvent{State: msg.SessionIdle},
 	})
 }
