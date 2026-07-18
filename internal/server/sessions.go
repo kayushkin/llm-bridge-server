@@ -518,7 +518,15 @@ func (s *Server) handleInterruptSession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if sess.State != string(msg.SessionRunning) {
+	// A session is interruptible when it has a live harness process, not when
+	// its denormalized State cache happens to read "running". The process
+	// registry is the source of truth for "is this session doing something
+	// right now"; State is a display cache that lags the harness, so a real
+	// (non-mock) harness that is mid-turn is not guaranteed to read exactly
+	// SessionRunning. Gating on the cache made the Stop button fail against
+	// genuinely-running sessions. handleSendMessage already uses this same
+	// registry check as the authoritative liveness gate.
+	if s.harness.Get(bridgeID) == nil {
 		http.Error(w, "session not running", http.StatusConflict)
 		return
 	}
