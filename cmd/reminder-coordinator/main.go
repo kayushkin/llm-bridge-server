@@ -40,7 +40,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"sort"
@@ -137,6 +139,7 @@ type noteboardAPI interface {
 
 type calendarMirror interface {
 	ResolveDashToken() (string, error)
+	ListEvents(token string, timeMin, timeMax time.Time) ([]CalendarEvent, error)
 	CreateEvent(token string, item *model.Item) (string, error)
 	UpdateEvent(token, eventID string, item *model.Item) error
 	DeleteEvent(token, eventID string) error
@@ -172,7 +175,17 @@ func (c *Coordinator) Run() error {
 		return fmt.Errorf("build board: %w", err)
 	}
 
-	if err := c.writeDigestNote(board); err != nil {
+	// Today's calendar is a secondary READ folded into the digest so you can see
+	// whether the day has room for a long task. A failure here is logged loudly and
+	// noted in the digest, but must NOT take down the primary board: the reminders
+	// matter more than the schedule annotation, and a Google hiccup should never
+	// leave you with no digest at all.
+	events, calErr := c.todaysCalendar()
+	if calErr != nil {
+		log.Printf("reminder-coordinator: calendar read failed, digest will note it: %v", calErr)
+	}
+
+	if err := c.writeDigestNote(board, events, calErr); err != nil {
 		return fmt.Errorf("write digest note: %w", err)
 	}
 	if err := c.syncCalendar(); err != nil {
@@ -502,8 +515,8 @@ func (c *Coordinator) nagsFiringNow() ([]*model.Item, error) {
 //
 // It is overwritten rather than appended. The todos are the durable record; a log
 // of past digests is a log of what was already true.
-func (c *Coordinator) writeDigestNote(board *Board) error {
-	body := c.renderDigest(board)
+func (c *Coordinator) writeDigestNote(board *Board, events []CalendarEvent, calErr error) error {
+	body := c.renderDigest(board, events, calErr)
 
 	existing, err := c.noteboard.FindByTag(model.TypeNote, digestTag)
 	if err != nil {
@@ -539,12 +552,17 @@ func (c *Coordinator) writeDigestNote(board *Board) error {
 	return c.noteboard.Patch(existing.ID, map[string]any{"body": body})
 }
 
-func (c *Coordinator) renderDigest(board *Board) string {
+func (c *Coordinator) renderDigest(board *Board, events []CalendarEvent, calErr error) string {
 	var out bytes.Buffer
 	now := c.Now.In(c.Location)
 
 	fmt.Fprintf(&out, "_Rebuilt %s by reminder-coordinator. Edits here are overwritten — change the todos._\n",
 		now.Format("Mon 2 Jan, 15:04 MST"))
+
+	// Today's schedule leads the digest: the day's shape frames whether its todos
+	// are even reachable today. Rendered before the empty-board check on purpose —
+	// a full calendar day with no open todos is still worth seeing.
+	c.renderSchedule(&out, events, calErr)
 
 	if len(board.All()) == 0 {
 		out.WriteString("\nNothing open. 🎉\n")
@@ -581,6 +599,160 @@ func (c *Coordinator) renderDigest(board *Board) string {
 	})
 
 	return out.String()
+}
+
+// renderSchedule folds today's calendar into the digest: the timed events in
+// order, any all-day markers, and one line reading how booked the day is. That
+// last line is the point — it is what lets you tell, without opening a calendar,
+// whether there is room today for a long task.
+func (c *Coordinator) renderSchedule(out *bytes.Buffer, events []CalendarEvent, calErr error) {
+	if calErr != nil {
+		out.WriteString("\n## 🗓 Today's schedule\n\n⚠️ Couldn't load your calendar this tick.\n")
+		return
+	}
+
+	dayStart := dateOf(c.Now.In(c.Location))
+	dayEnd := dayStart.AddDate(0, 0, 1)
+
+	timed := []CalendarEvent{}
+	allDay := []CalendarEvent{}
+	for _, event := range events {
+		if event.AllDay {
+			allDay = append(allDay, event)
+			continue
+		}
+		start := event.Start.In(c.Location)
+		if !start.Before(dayEnd) {
+			continue // starts tomorrow or later
+		}
+		if !event.End.IsZero() && !event.End.In(c.Location).After(dayStart) {
+			continue // ended before today began
+		}
+		timed = append(timed, event)
+	}
+	sort.SliceStable(timed, func(i, j int) bool { return timed[i].Start.Before(timed[j].Start) })
+
+	if len(timed) == 0 && len(allDay) == 0 {
+		out.WriteString("\n## 🗓 Today's schedule\n\nNothing on the calendar — the day is yours.\n")
+		return
+	}
+
+	fmt.Fprintf(out, "\n## 🗓 Today's schedule (%d)\n\n", len(timed)+len(allDay))
+	for _, event := range allDay {
+		fmt.Fprintf(out, "- all day — %s\n", event.Summary)
+	}
+	for _, event := range timed {
+		start := event.Start.In(c.Location)
+		if event.End.IsZero() {
+			fmt.Fprintf(out, "- %s — %s\n", clockTime(start), event.Summary)
+			continue
+		}
+		fmt.Fprintf(out, "- %s–%s — %s\n", clockTime(start), clockTime(event.End.In(c.Location)), event.Summary)
+	}
+	fmt.Fprintf(out, "\n%s\n", c.dayLoad(timed))
+}
+
+// dayLoad reads how much of a waking day (8am–10pm) today's timed events consume,
+// merging overlaps so a double-booked hour is not counted twice, and reports the
+// biggest open stretch — the number that actually answers "can I start something
+// long today?". A day can be only 4 hours "booked" and still have no 3-hour gap.
+func (c *Coordinator) dayLoad(events []CalendarEvent) string {
+	dayStart := dateOf(c.Now.In(c.Location))
+	windowStart := dayStart.Add(8 * time.Hour)
+	windowEnd := dayStart.Add(22 * time.Hour)
+	window := windowEnd.Sub(windowStart)
+
+	type interval struct{ start, end time.Time }
+	clipped := []interval{}
+	for _, event := range events {
+		if event.End.IsZero() {
+			continue
+		}
+		start := maxTime(event.Start.In(c.Location), windowStart)
+		end := minTime(event.End.In(c.Location), windowEnd)
+		if start.Before(end) {
+			clipped = append(clipped, interval{start, end})
+		}
+	}
+	if len(clipped) == 0 {
+		return "🟢 Wide open (8am–10pm) — plenty of room for a big task."
+	}
+	sort.Slice(clipped, func(i, j int) bool { return clipped[i].start.Before(clipped[j].start) })
+
+	merged := []interval{clipped[0]}
+	for _, v := range clipped[1:] {
+		last := &merged[len(merged)-1]
+		if !v.start.After(last.end) {
+			if v.end.After(last.end) {
+				last.end = v.end
+			}
+			continue
+		}
+		merged = append(merged, v)
+	}
+
+	var booked time.Duration
+	for _, m := range merged {
+		booked += m.end.Sub(m.start)
+	}
+	biggest := merged[0].start.Sub(windowStart)
+	for i := 1; i < len(merged); i++ {
+		if gap := merged[i].start.Sub(merged[i-1].end); gap > biggest {
+			biggest = gap
+		}
+	}
+	if tail := windowEnd.Sub(merged[len(merged)-1].end); tail > biggest {
+		biggest = tail
+	}
+	free := window - booked
+
+	icon, verdict := "🟢", "room for a long task"
+	switch {
+	case biggest < 90*time.Minute:
+		icon, verdict = "🔴", "no long open stretch — probably not the day for a big todo"
+	case biggest < 3*time.Hour:
+		icon, verdict = "🟡", "some room, but the biggest open block is modest"
+	}
+	return fmt.Sprintf("%s ~%s booked, ~%s free (8am–10pm); biggest open stretch ~%s — %s.",
+		icon, roundDuration(booked), roundDuration(free), roundDuration(biggest), verdict)
+}
+
+// clockTime renders a wall-clock time compactly: "6pm", "6:30pm".
+func clockTime(t time.Time) string {
+	if t.Minute() == 0 {
+		return t.Format("3pm")
+	}
+	return t.Format("3:04pm")
+}
+
+// roundDuration renders a duration to the nearest half hour ("5h", "1.5h"), or
+// minutes under an hour ("45m").
+func roundDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0h"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(math.Round(d.Minutes())))
+	}
+	half := math.Round(d.Hours()*2) / 2
+	if half == math.Trunc(half) {
+		return fmt.Sprintf("%dh", int(half))
+	}
+	return fmt.Sprintf("%.1fh", half)
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }
 
 func priorityMark(item *model.Item) string {
@@ -719,6 +891,20 @@ func digestSentMarker(day time.Time) string {
 }
 
 // ------------------------------------------------------------------ calendar
+
+// todaysCalendar reads today's events for the schedule section of the digest. It
+// resolves its own token: syncCalendar resolves one too, but a second resolve per
+// tick is cheap, and coupling the read to the mirror's token would be a false
+// economy the first time one path is refactored.
+func (c *Coordinator) todaysCalendar() ([]CalendarEvent, error) {
+	token, err := c.calendar.ResolveDashToken()
+	if err != nil {
+		return nil, err
+	}
+	dayStart := dateOf(c.Now.In(c.Location))
+	dayEnd := dayStart.AddDate(0, 0, 1)
+	return c.calendar.ListEvents(token, dayStart, dayEnd)
+}
 
 // syncCalendar keeps a Google Calendar event in step with each item that asked
 // for one, and tears down events for items that no longer want one.
@@ -1004,6 +1190,83 @@ func (g *GoogleCalendarMirror) ResolveDashToken() (string, error) {
 	// Loud: without this, every calendar call would 401 and the mirror would look
 	// like it simply had nothing to do.
 	return "", fmt.Errorf("dash-server.service declares no DASH_TOKEN — refusing to guess")
+}
+
+// CalendarEvent is one occurrence on the user's Google Calendar, already expanded
+// from any recurrence by the API (singleEvents=true). Timed events carry Start and
+// End; all-day events (holidays, trips) set AllDay and are shown but never counted
+// as booked time.
+type CalendarEvent struct {
+	Summary      string
+	CalendarName string
+	Start        time.Time
+	End          time.Time
+	AllDay       bool
+}
+
+// ListEvents returns events between timeMin and timeMax across every calendar the
+// user has, via the same authenticated dash proxy the mirror writes through. Work
+// and personal events come back together on purpose: for judging how booked a day
+// is, a work meeting blocks the day exactly like a dance class does.
+func (g *GoogleCalendarMirror) ListEvents(token string, timeMin, timeMax time.Time) ([]CalendarEvent, error) {
+	path := fmt.Sprintf("/api/calendar/google?timeMin=%s&timeMax=%s",
+		url.QueryEscape(timeMin.Format(time.RFC3339)),
+		url.QueryEscape(timeMax.Format(time.RFC3339)))
+
+	var resp struct {
+		Events []struct {
+			Summary      string `json:"summary"`
+			CalendarName string `json:"calendarName"`
+			Start        struct {
+				DateTime string `json:"dateTime"`
+				Date     string `json:"date"`
+			} `json:"start"`
+			End struct {
+				DateTime string `json:"dateTime"`
+				Date     string `json:"date"`
+			} `json:"end"`
+		} `json:"events"`
+		Error string `json:"error"`
+	}
+	if err := g.do(token, "GET", path, nil, &resp); err != nil {
+		return nil, err
+	}
+	// The proxy answers 200 with an {error, events:[]} body when a single calendar
+	// fails; treat that as loud, not as "no events today".
+	if resp.Error != "" {
+		return nil, fmt.Errorf("calendar list: %s", resp.Error)
+	}
+
+	events := make([]CalendarEvent, 0, len(resp.Events))
+	for _, e := range resp.Events {
+		event := CalendarEvent{Summary: e.Summary, CalendarName: e.CalendarName}
+		switch {
+		case e.Start.DateTime != "":
+			start, err := time.Parse(time.RFC3339, e.Start.DateTime)
+			if err != nil {
+				return nil, fmt.Errorf("event %q start %q: %w", e.Summary, e.Start.DateTime, err)
+			}
+			event.Start = start
+			if e.End.DateTime != "" {
+				end, err := time.Parse(time.RFC3339, e.End.DateTime)
+				if err != nil {
+					return nil, fmt.Errorf("event %q end %q: %w", e.Summary, e.End.DateTime, err)
+				}
+				event.End = end
+			}
+		case e.Start.Date != "":
+			event.AllDay = true
+			day, err := time.Parse("2006-01-02", e.Start.Date)
+			if err != nil {
+				return nil, fmt.Errorf("event %q date %q: %w", e.Summary, e.Start.Date, err)
+			}
+			event.Start = day
+		default:
+			continue // an event with no start is nothing we can place
+		}
+		events = append(events, event)
+	}
+	return events, nil
 }
 
 func (g *GoogleCalendarMirror) CreateEvent(token string, item *model.Item) (string, error) {

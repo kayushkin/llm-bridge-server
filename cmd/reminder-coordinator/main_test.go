@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,9 +93,16 @@ func (f *fakeNoteboard) SetSchedule(id string, schedule *model.Schedule, dryRun 
 	return nil
 }
 
-type fakeCalendar struct{ created, updated, deleted int }
+type fakeCalendar struct {
+	created, updated, deleted int
+	events                    []CalendarEvent
+	listErr                   error
+}
 
 func (f *fakeCalendar) ResolveDashToken() (string, error) { return "test-token", nil }
+func (f *fakeCalendar) ListEvents(string, time.Time, time.Time) ([]CalendarEvent, error) {
+	return f.events, f.listErr
+}
 func (f *fakeCalendar) CreateEvent(string, *model.Item) (string, error) {
 	f.created++
 	return "event-id", nil
@@ -595,7 +604,7 @@ func TestDigestSeparatesOverdueFromDueToday(t *testing.T) {
 			len(board.Overdue), len(board.DueToday), len(board.Undated))
 	}
 
-	rendered := coordinator.renderDigest(board)
+	rendered := coordinator.renderDigest(board, nil, nil)
 	for _, want := range []string{"Overdue", "Due today", "No due date", "❗Overdue thing", "`car`"} {
 		if !contains(rendered, want) {
 			t.Errorf("digest is missing %q:\n%s", want, rendered)
@@ -648,11 +657,93 @@ func TestNoOpenTodoCanFallThroughTheBuckets(t *testing.T) {
 	}
 
 	// And it must actually be rendered, not merely bucketed.
-	rendered := coordinator.renderDigest(board)
+	rendered := coordinator.renderDigest(board, nil, nil)
 	for _, item := range items {
 		if !contains(rendered, item.Title) {
 			t.Errorf("todo %q is bucketed but missing from the rendered note:\n%s", item.Title, rendered)
 		}
+	}
+}
+
+// The whole reason calendar events are in the digest: seeing the day's shape and
+// whether there is room for a long task. Events must be listed in start order and
+// the day-load line must appear.
+func TestDigestShowsTodaysScheduleInOrderWithDayLoad(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, loc)
+	nb := newFakeNoteboard(
+		&model.Item{ID: "t", Type: "todo", Title: "A todo", Status: "open",
+			Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 20, 15, 0, 0, 0, loc))},
+	)
+	coordinator, _, _ := newTestCoordinator(t, now, nb)
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+
+	events := []CalendarEvent{
+		{Summary: "Salsa", Start: time.Date(2026, 7, 20, 20, 0, 0, 0, loc), End: time.Date(2026, 7, 20, 21, 0, 0, 0, loc)},
+		{Summary: "Ice Skating", Start: time.Date(2026, 7, 20, 6, 0, 0, 0, loc), End: time.Date(2026, 7, 20, 7, 0, 0, 0, loc)},
+	}
+	rendered := coordinator.renderDigest(board, events, nil)
+
+	for _, want := range []string{"Today's schedule", "Salsa", "Ice Skating", "8pm", "booked", "free"} {
+		if !contains(rendered, want) {
+			t.Errorf("digest is missing %q:\n%s", want, rendered)
+		}
+	}
+	// The 6am event must render before the 8pm one, not in input order.
+	if strings.Index(rendered, "Ice Skating") > strings.Index(rendered, "Salsa") {
+		t.Errorf("schedule is not ordered by start time:\n%s", rendered)
+	}
+	// Two 1-hour events in a 14-hour window leave a long open stretch — green.
+	if !contains(rendered, "🟢") {
+		t.Errorf("a nearly-empty day should read as wide open:\n%s", rendered)
+	}
+}
+
+// A day wall-to-wall with meetings must warn that there is no long open stretch,
+// even if the raw free hours look plentiful.
+func TestDayLoadFlagsAFragmentedDay(t *testing.T) {
+	loc := pacific(t)
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeNoteboard())
+	// Hourly meetings every other hour from 9 to 9 — free hours exist but never
+	// more than one at a stretch.
+	events := []CalendarEvent{}
+	for h := 9; h <= 21; h += 2 {
+		events = append(events, CalendarEvent{
+			Summary: "Meeting",
+			Start:   time.Date(2026, 7, 20, h, 0, 0, 0, loc),
+			End:     time.Date(2026, 7, 20, h+1, 30, 0, 0, loc),
+		})
+	}
+	line := coordinator.dayLoad(events)
+	if !strings.Contains(line, "🔴") {
+		t.Errorf("a day with no >=90m gap should be flagged red, got: %s", line)
+	}
+}
+
+// A calendar read failure must degrade to a visible note, never take down the
+// digest — the reminders matter more than the schedule annotation.
+func TestDigestSurvivesCalendarReadFailure(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, loc)
+	nb := newFakeNoteboard(
+		&model.Item{ID: "t", Type: "todo", Title: "Still here", Status: "open",
+			Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 20, 15, 0, 0, 0, loc))},
+	)
+	coordinator, _, _ := newTestCoordinator(t, now, nb)
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+
+	rendered := coordinator.renderDigest(board, nil, fmt.Errorf("google timeout"))
+	if !contains(rendered, "Couldn't load your calendar") {
+		t.Errorf("a calendar failure should be surfaced in the digest:\n%s", rendered)
+	}
+	if !contains(rendered, "Still here") {
+		t.Errorf("the todos must still render when the calendar read fails:\n%s", rendered)
 	}
 }
 
