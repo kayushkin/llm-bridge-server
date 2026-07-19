@@ -228,6 +228,38 @@ echo "    result text:  $RESULT_TEXT"
 echo "$RESULT_TEXT" | grep -q "Mock response to: echo me" \
   || fail "result did not contain expected echo response"
 
+# A prompt containing "tool" makes the mock emit a matched tool_call →
+# tool_result pair. This is the only path that carries tool events end to
+# end — harness → manager intake/validation → SSE fan-out → central state
+# derivation. The derivation's own tool branches are unit-tested with
+# synthetic events (internal/harness/derivation_test.go), but nothing
+# proved the pipeline actually delivers a real harness's tool events until
+# this step; a regression that dropped or rejected them in transit would
+# otherwise pass every smoke run.
+step "subscribe to SSE then POST /sessions/$SID/send { message:'run a tool' }"
+EVENTS_FILE2="$TMP_DIR/events2.ndjson"
+curl -sN --max-time 5 "$BASE/sessions/$SID/events" >"$EVENTS_FILE2" 2>&1 &
+SSE_PID=$!
+sleep 0.3  # let the subscriber complete the SSE handshake before we send
+
+curl -fsS -X POST "$BASE/sessions/$SID/send" \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"run a tool"}' >/dev/null
+
+wait "$SSE_PID" 2>/dev/null || true
+TOOL_TYPES=" $(extract_types "$EVENTS_FILE2") "
+echo "    types seen:$TOOL_TYPES"
+for want in tool_call tool_result result; do
+  echo "$TOOL_TYPES" | grep -q " $want " || fail "expected $want event in tool stream"
+done
+
+TOOL_CALL_ID=$(extract_field "$EVENTS_FILE2" tool_call '.tool_call.tool_id' | head -1)
+TOOL_RESULT_ID=$(extract_field "$EVENTS_FILE2" tool_result '.tool_result.tool_id' | head -1)
+echo "    tool_call id:   $TOOL_CALL_ID"
+echo "    tool_result id: $TOOL_RESULT_ID"
+[ -n "$TOOL_CALL_ID" ] && [ "$TOOL_CALL_ID" = "$TOOL_RESULT_ID" ] \
+  || fail "tool_call/tool_result ids did not match ($TOOL_CALL_ID vs $TOOL_RESULT_ID)"
+
 step "POST /sessions/$SID/stop"
 curl -fsS -X POST "$BASE/sessions/$SID/stop" >/dev/null
 
