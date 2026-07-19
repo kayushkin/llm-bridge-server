@@ -278,6 +278,39 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 			},
 		})
 	}
+	// A matched tool_call → tool_result pair. Real harnesses emit these
+	// whenever the agent invokes a tool; without them the server's state
+	// derivation (internal/harness/derivation.go) never exercises its
+	// EventToolCall branch — the reference harness would only ever drive
+	// tool_running via the turn-open (EventUserMessage) path, so a
+	// regression in the tool_call → tool_running transition or the
+	// activeTools tracking would pass every smoke run. The ids match so
+	// the turn accumulator can pair the result back to its call.
+	if strings.Contains(strings.ToLower(userMessage), "tool") {
+		toolInput, _ := json.Marshal(map[string]string{"text": userMessage})
+		emit(msg.Event{
+			Type:            msg.EventToolCall,
+			Harness:         msg.Harness(harnessName),
+			BridgeSessionID: sessionID,
+			Timestamp:       time.Now(),
+			ToolCall: &msg.ToolCallEvent{
+				ToolID: "mock-tool-1",
+				Name:   "echo",
+				Input:  json.RawMessage(toolInput),
+			},
+		})
+		emit(msg.Event{
+			Type:            msg.EventToolResult,
+			Harness:         msg.Harness(harnessName),
+			BridgeSessionID: sessionID,
+			Timestamp:       time.Now(),
+			ToolResult: &msg.ToolResultEvent{
+				ToolID: "mock-tool-1",
+				Name:   "echo",
+				Output: userMessage,
+			},
+		})
+	}
 
 	// Emit result
 	emit(msg.Event{
