@@ -17,6 +17,7 @@ The cross-cutting design for the harness layer, agent rendering, tool/skill rout
 | [`CONTEXT-MIGRATION.md`](./CONTEXT-MIGRATION.md) | Plan to extract inber's per-turn assembly (`engine/turn_*.go`, `conversation/`) into `llm-bridge/assembly/` shared library. Replaces this server's `agents_context.go`. |
 | [`IMPLEMENTATION-ROADMAP.md`](./IMPLEMENTATION-ROADMAP.md) | Sequenced PRs across all affected repos. Critical path P1→P2→P3→P4→P6 (~3-4 weeks for the first end-to-end CC vertical). |
 | [`TEAM-ORCHESTRATION.md`](./TEAM-ORCHESTRATION.md) | Dynamic skill-formed agent **teams** coordinating over a kanban board as a blackboard. Generalizes the `scheduler/cmd/kanban-*` loop: planner → team-former → assigner (slow/cron) + an in-server coordination engine (fast/events). Board-per-team, `team_id`/`board_id`/`role` on sessions, `bridge kanban` agent CLI. |
+| [`QUESTION-SYSTEM.md`](./QUESTION-SYSTEM.md) | One canonical `question` record unifying `AskUserQuestion` tool calls (`source:"tool"`) and cheap-model-derived questions from free-text `awaiting_user` turns (`source:"derived"`), behind one frontend interface with option buttons + freeform answers. Answerable from the asking session, the "Needs you" inbox, or a chat reference chip in another session; propagates to linked todos. The chat reference-chip linker is the delivery surface (shipped). |
 
 Operational docs:
 
