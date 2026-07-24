@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,16 +99,39 @@ type (
 	RenameSessionRequest  = msg.RenameSessionRequest
 )
 
+// parseLimitOffset reads optional `limit` and `offset` query params. Both
+// default to 0, which the store treats as "no bound" so the endpoint's default
+// response is unchanged and non-breaking. A present-but-malformed or negative
+// value is a client error, surfaced loudly rather than silently ignored.
+func parseLimitOffset(r *http.Request) (limit, offset int, err error) {
+	q := r.URL.Query()
+	if raw := q.Get("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 0 {
+			return 0, 0, fmt.Errorf("invalid limit %q: must be a non-negative integer", raw)
+		}
+	}
+	if raw := q.Get("offset"); raw != "" {
+		offset, err = strconv.Atoi(raw)
+		if err != nil || offset < 0 {
+			return 0, 0, fmt.Errorf("invalid offset %q: must be a non-negative integer", raw)
+		}
+	}
+	return limit, offset, nil
+}
+
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
-	var (
-		sessions []store.Session
-		err      error
-	)
+	limit, offset, err := parseLimitOffset(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var sessions []store.Session
 	if state != "" {
-		sessions, err = s.store.ListSessionsByState(state)
+		sessions, err = s.store.ListSessionsByStatePaged(state, limit, offset)
 	} else {
-		sessions, err = s.store.ListSessions()
+		sessions, err = s.store.ListSessionsPaged(limit, offset)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -455,7 +455,21 @@ func (s *Store) GetSessionByHarnessSessionID(harnessSessionID string) (*Session,
 }
 
 func (s *Store) ListSessions() ([]Session, error) {
-	rows, err := s.dbRO.Query(`SELECT ` + sessionColumns + ` FROM sessions ORDER BY created_at DESC`)
+	return s.ListSessionsPaged(0, 0)
+}
+
+// ListSessionsPaged returns sessions ordered by created_at DESC. A limit <= 0
+// means no bound — the full table, matching the historical unbounded behavior
+// callers like the health snapshot and instance rollup still rely on. offset is
+// applied only when limit > 0 (a bare offset with no limit is meaningless).
+func (s *Store) ListSessionsPaged(limit, offset int) ([]Session, error) {
+	query := `SELECT ` + sessionColumns + ` FROM sessions ORDER BY created_at DESC`
+	var args []any
+	if limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	rows, err := s.dbRO.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -472,7 +486,19 @@ func (s *Store) ListSessions() ([]Session, error) {
 }
 
 func (s *Store) ListSessionsByState(state string) ([]Session, error) {
-	rows, err := s.dbRO.Query(`SELECT `+sessionColumns+` FROM sessions WHERE state=? ORDER BY created_at DESC`, state)
+	return s.ListSessionsByStatePaged(state, 0, 0)
+}
+
+// ListSessionsByStatePaged is ListSessionsByState with the same limit/offset
+// bounding semantics as ListSessionsPaged (limit <= 0 means unbounded).
+func (s *Store) ListSessionsByStatePaged(state string, limit, offset int) ([]Session, error) {
+	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE state=? ORDER BY created_at DESC`
+	args := []any{state}
+	if limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	rows, err := s.dbRO.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}

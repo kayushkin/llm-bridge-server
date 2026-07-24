@@ -163,6 +163,81 @@ func TestListSessionsByState(t *testing.T) {
 	}
 }
 
+func TestListSessionsPaged(t *testing.T) {
+	s := testStore(t)
+
+	// Five sessions, created oldest→newest so DESC order is e,d,c,b,a.
+	names := []string{"a", "b", "c", "d", "e"}
+	for i, name := range names {
+		sess := &Session{
+			SessionID:   "br_" + name,
+			DisplayName: name,
+			Harness:     "claude_code",
+			State:       "idle",
+		}
+		time.Sleep(time.Duration(i) * time.Millisecond)
+		if err := s.CreateSession(sess); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+
+	// limit <= 0 is unbounded — same result as the historical ListSessions.
+	all, err := s.ListSessionsPaged(0, 0)
+	if err != nil {
+		t.Fatalf("paged unbounded: %v", err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("unbounded count = %d, want 5", len(all))
+	}
+	if all[0].DisplayName != "e" {
+		t.Errorf("unbounded[0] = %q, want e (DESC)", all[0].DisplayName)
+	}
+
+	// First page of two: e, d.
+	page1, err := s.ListSessionsPaged(2, 0)
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1) != 2 || page1[0].DisplayName != "e" || page1[1].DisplayName != "d" {
+		t.Errorf("page1 = %v, want [e d]", names2(page1))
+	}
+
+	// Second page (offset 2): c, b.
+	page2, err := s.ListSessionsPaged(2, 2)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(page2) != 2 || page2[0].DisplayName != "c" || page2[1].DisplayName != "b" {
+		t.Errorf("page2 = %v, want [c b]", names2(page2))
+	}
+
+	// Offset past the end yields an empty (non-error) result.
+	empty, err := s.ListSessionsPaged(2, 10)
+	if err != nil {
+		t.Fatalf("empty page: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("empty page count = %d, want 0", len(empty))
+	}
+
+	// State-scoped paging honors the same bound.
+	statePage, err := s.ListSessionsByStatePaged("idle", 3, 0)
+	if err != nil {
+		t.Fatalf("state paged: %v", err)
+	}
+	if len(statePage) != 3 {
+		t.Errorf("state page count = %d, want 3", len(statePage))
+	}
+}
+
+func names2(sessions []Session) []string {
+	out := make([]string, len(sessions))
+	for i, s := range sessions {
+		out[i] = s.DisplayName
+	}
+	return out
+}
+
 func TestDeleteSession(t *testing.T) {
 	s := testStore(t)
 
