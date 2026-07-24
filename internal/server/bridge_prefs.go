@@ -94,6 +94,21 @@ func (s *bridgePrefsStore) set(prefs BridgePrefs) {
 	if prefs.LastHarness != "" {
 		s.data.LastHarness = prefs.LastHarness
 	}
+	if prefs.LastInstanceID != "" {
+		s.data.LastInstanceID = prefs.LastInstanceID
+	}
+	if prefs.LastInstance != nil {
+		if s.data.LastInstance == nil {
+			s.data.LastInstance = make(map[string]string)
+		}
+		for k, v := range prefs.LastInstance {
+			if v == "" {
+				delete(s.data.LastInstance, k)
+			} else {
+				s.data.LastInstance[k] = v
+			}
+		}
+	}
 	if prefs.LastSession != nil {
 		if s.data.LastSession == nil {
 			s.data.LastSession = make(map[string]string)
