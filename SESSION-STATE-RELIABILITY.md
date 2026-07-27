@@ -95,13 +95,18 @@ Three tracks, independently shippable, in priority order.
 
 ### B. A passive PTY-mode classifier — MEDIUM-HIGH, closes the blind spot
 
-PTY mode already keeps a ~64KB ring buffer of recent output for late-attach replay
-(`PTY-MODE.md`). Feed that same buffer through a Herdr-style rule table to synthesize
-`SessionState` for sessions that emit no structured events:
+PTY mode emits no structured events, so state must come from what's on screen. The build:
 
-- **Per-harness rule table** (TOML, versioned, hot-updatable), matching named regions of the rendered
-  screen against `contains`/`regex`/`priority`, producing `working | idle | blocked` — the design is
-  proven in Herdr's `detect/manifests/*.toml`; we adapt the *shape*, not the file.
+- **Reconstruct the screen, don't scrape bytes.** The existing ~64KB ring buffer (`attachhub.go`,
+  `PTY-MODE.md`) holds *raw* PTY bytes — cursor moves, redraws, alt-screen switches, scroll regions.
+  Region rules like `after_last_horizontal_rule` or `prompt_box_body` are meaningless against that
+  stream; they need the *rendered* cell grid. So the classifier runs against a **headless VT screen
+  model** fed the same byte stream — a server-side terminal emulator kept purely to answer "what is
+  on screen now," never rendered to a human. This is the one place Herdr is right that you need an
+  emulator server-side (see "Terminal emulation" below for *which* one).
+- **Per-harness rule table** (TOML, versioned, hot-updatable), matching named regions of that
+  reconstructed screen against `contains`/`regex`/`priority`, producing `working | idle | blocked` —
+  the design is proven in Herdr's `detect/manifests/*.toml`; we adapt the *shape*, not the file.
 - **Emit through the same `derive()` reliability layer** (rules 1–4, 6–7 apply identically) so PTY
   and structured sessions produce one consistent `SessionState`. The classifier is a *signal source*;
   the state machine stays the single arbiter.
@@ -112,6 +117,26 @@ Scope guard: a rule table is a maintenance tax (Herdr's CHANGELOG is largely per
 Ship it only for harnesses that actually run in PTY mode, and treat `unknown` as a first-class,
 non-acting state — never guess `idle`.
 
+#### Terminal emulation: two surfaces, two answers
+
+Herdr vendors `libghostty-vt` (Ghostty's Zig emulator core) and links it into its binary because it
+is a **native** multiplexer that *renders terminal cells directly* — kitty graphics, grapheme-cluster
+cells, DEC private modes. That informs a natural question: should we adopt it? Split it:
+
+- **Display (what the human sees): keep xterm.js. Don't adopt libghostty.** Our PTY path already
+  passes raw bytes through to xterm.js in the browser and never renders server-side — which is exactly
+  the "layers are transparent" rule. libghostty-vt is a native renderer with no browser target;
+  xterm.js is a mature, correct browser emulator and the right tool for a web gateway. Different
+  delivery surface, not a better option.
+- **Classifier (what track B reads): yes to a headless emulator, but a pure-Go one — not libghostty.**
+  The classifier genuinely needs a server-side screen model (above). But sourcing it from libghostty
+  drags a **Zig toolchain + cgo** into a pure-Go build, against the "Go is primary," clean-clone
+  build-guard, and OSS-prep constraints — and its rendering-grade features (kitty graphics,
+  grapheme cells) are far more than region matching needs. A **pure-Go headless VT parser**
+  (evaluate `github.com/hinshun/vt10x`, `github.com/charmbracelet/x/vt`, or equivalent) yields the
+  same cell grid the rules run against, with no non-Go build dependency. Adopt Herdr's *insight*
+  (rules match a reconstructed screen), not its emulator.
+
 ### C. inber native-emitter parity — MEDIUM
 
 inber's `server/events.go` publishes coarse endpoint states. Rather than grow a second, weaker state
@@ -121,7 +146,9 @@ bridge. This is the `CONTEXT-MIGRATION.md` shared-library pattern applied to sta
 
 ## Non-goals
 
-- Not reimplementing Herdr's terminal emulator or manifest format — only its reliability discipline.
+- Not adopting Herdr's `libghostty-vt` or rendering terminals server-side for display — xterm.js stays
+  the display emulator. Track B's headless VT screen model is a pure-Go parser used only to feed the
+  classifier, never rendered to a human.
 - Not a new state enum. The 13-value `SessionState` stays canonical; this hardens how we *reach* each
   value.
 - Not the signal-delivery UX — that's `SESSION-SIGNALS.md`. This doc produces the trustworthy state
