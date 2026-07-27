@@ -24,6 +24,7 @@ Operational docs:
 | Doc | Covers |
 |---|---|
 | [`PTY-MODE.md`](./PTY-MODE.md) | PTY-mode harness operation. |
+| [`SESSION-STATE-RELIABILITY.md`](./SESSION-STATE-RELIABILITY.md) | Hardening `SessionState` inference in `derivation.go` (seq guard, subagent-terminator suppression, settle window, suppress-only signals) + a passive terminal-scrape classifier to give PTY-mode sessions state. Adopts Herdr's reliability discipline; produces the trustworthy state `SESSION-SIGNALS.md`'s inbox renders. |
 | [`CODEX-PARITY.md`](./CODEX-PARITY.md) | Plan to bring codex sessions to feature parity with CC on permissions, hooks, and tool-store; plus codex-specific extras (`PermissionRequest`, `Stop`/`UserPromptSubmit`/`SessionStart` hooks, output-schema). |
 | [`TODO-jig-integration.md`](./TODO-jig-integration.md) | jig harness integration TODO list. |
 
