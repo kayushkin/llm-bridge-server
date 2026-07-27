@@ -152,6 +152,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/hooks/pending", s.handleListPendingHooks)
 	s.mux.HandleFunc("POST /sessions/{id}/hooks/{request_id}/resolve", s.handleResolveHook)
 
+	// Session signals — the canonical record of anything a session surfaces
+	// to a human (SESSION-SIGNALS.md). Read-only for now: rows are written
+	// by the tool path when an AskUserQuestion parks, and closed out when
+	// that request resolves. /signals?state=open is the cross-session inbox.
+	s.mux.HandleFunc("GET /sessions/{id}/signals", s.handleListSessionSignals)
+	s.mux.HandleFunc("GET /signals", s.handleListSignals)
+
 	// PreToolUse permission gate for Claude Code. Wired into every CC
 	// session via buildClaudeCodeSettings's --settings injection so CC
 	// posts here on every tool call. Sole permission gate now that the

@@ -184,9 +184,7 @@ through the same resolve verb.
 
 ## Sequenced implementation (when greenlit)
 
-- **P1 — record + read API.** `signal` table in the session store; `GET
-  /sessions/{id}/signals` and `GET /signals?state=open`. Backfill the tool path to write a
-  `signal` row when `AskUserQuestion` parks (source of truth, no behavior change yet).
+- **P1 — record + read API. SHIPPED.** See "P1 as built" below.
 - **P2 — unified frontend component.** One `SignalCard` in `bridge-ui` handling both kinds;
   mount in chat, inbox, and the RefChip session panel. Resolve via the verbs above.
 - **P3 — derived pass.** Kind-aware cheap-model classifier on turn-ends → `signal` row.
@@ -200,3 +198,60 @@ through the same resolve verb.
 
 The frontend surface (linker chips + badge slot) is already live, so P1–P2 are the shortest
 path to a visible unified inbox; P3–P5 layer on without reworking it.
+
+---
+
+## P1 as built
+
+The record and its read API are live in code. Nothing about existing behavior
+changed: a parked `AskUserQuestion` still parks, resolves and returns exactly as before,
+and the rows are written alongside it.
+
+**Type.** `msg.Signal` in `llm-bridge/msg/signal.go`, with `SignalKind`, `SignalSource`,
+`SignalSurface`, `SignalState`, `SignalSeverity`, `SignalOption` and `SignalAnswer`.
+TypeScript regenerated into `llm-bridge/ts/msg.ts`, so `bridge-ui` can build the P2
+`SignalCard` against the same shape with no hand-written interface.
+
+**Storage.** `signals` table in the session store (`internal/store/signals.go`), created by
+the same idempotent `migrate()` every other table uses. `CreateSignal`, `GetSignal`,
+`ListSignals(SignalFilter)`, `ListSignalsByRequestID`, `ResolveSignal`.
+
+`ResolveSignal` only moves a row out of `open` — a duplicate resolve (two clicks, or a
+stale resolve arriving after the real one) cannot overwrite the resolution that actually
+happened.
+
+**Read API.**
+
+- `GET /sessions/{id}/signals` — one session's signals, newest first.
+- `GET /signals` — the cross-session inbox. `?state=open` is what the "Needs you" inbox
+  wants.
+- Both take `state`, `kind`, `surface` and `limit`; `/signals` also takes `session_id`. An
+  unrecognized enum value is a **400, not an empty list** — a typo that silently returns
+  `[]` reads as "you have no signals", which is the one wrong answer this endpoint can give.
+
+**Tool-path backfill.** `parkPrehook` records the signals once the park is genuinely
+established (after the `awaiting_resolution` broadcast succeeds — recording earlier would
+strand open rows on the broadcast-failure path, where the park is cancelled and no human
+ever sees the question). `broadcastPrehookResolved` and `broadcastStaleResolution` close
+them out, so every way a parked request can end also ends its signals: answered on allow,
+dismissed on deny or on a park cancelled by a dead client, and dismissed on a stale resolve
+after a harness restart.
+
+Two details worth not re-deriving:
+
+- **One signal per question, not per request.** `AskUserQuestion` carries an *array* of
+  questions while the record holds a single title and option set. Flattening them into one
+  row would lose questions, so each question gets its own row and they share `request_id`.
+  That also makes the answer pairing trivial: the resolve payload is keyed by question text,
+  which is exactly what each row's `title` holds.
+- **`surface` is not `isUnattendedSession`.** They disagree on herald, deliberately.
+  `isUnattendedSession` asks "can a parked ask be resolved on this turn?" — no for herald,
+  since no human is attached during the relay. `signalSurfaceForSession` asks "where does
+  the human eventually read this?" — the chat inbox, since no herald session has a kanban
+  card. Only `autonomous` routes to kanban.
+
+**Not yet true, and P1 does not pretend otherwise.** No signal is written for anything but
+a parked `AskUserQuestion`: no derived pass (P3), no notification producer (P4), and no
+autonomous worker signal, because an autonomous `AskUserQuestion` is still denied before it
+can park. So `surface:"kanban"` is reachable in the type and the query but nothing mints one
+yet — P4 is what starts. `linked_todo_id` is likewise carried and never set (P5).

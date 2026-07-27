@@ -97,7 +97,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 			writeHookDeny(w, "No human is attached to this autonomous session to answer AskUserQuestion; proceed without human input or stop.")
 			return
 		}
-		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourceUserInput)
+		s.parkPrehook(w, r, bridgeID, sess, payload, msg.HookSourceUserInput)
 		return
 	}
 
@@ -130,7 +130,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	case msg.PermissionModeAskAll:
 		// Skip permission-store entirely. Every tool call parks for the
 		// human, regardless of any prior "always allow" rule.
-		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourcePermission)
+		s.parkPrehook(w, r, bridgeID, sess, payload, msg.HookSourcePermission)
 		return
 	case msg.PermissionModeBypass:
 		writeHookAllow(w, "permission-mode=bypass")
@@ -179,7 +179,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 			writeHookAllow(w, "auto-allow: unattended autonomous session, no permission rule matched")
 			return
 		}
-		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourcePermission)
+		s.parkPrehook(w, r, bridgeID, sess, payload, msg.HookSourcePermission)
 	default:
 		writeHookAsk(w, "permission-store returned unknown outcome "+res.Outcome)
 	}
@@ -255,7 +255,12 @@ func isReadOnlyTool(name string) bool {
 // flow used by both the permission-prompt and user-input branches of the
 // prehook. Source picks which HookEvent.Source value identifies the parked
 // request to bridge-ui (so the banner picks the right card flavor).
-func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID string, payload ccPrehookPayload, source string) {
+//
+// A user-input park also writes the canonical signal rows for the questions
+// it carries (SESSION-SIGNALS.md P1). sess supplies the session type the
+// signal's surface is derived from; it may be nil for a session the store
+// has no row for, in which case the signal surfaces to chat.
+func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID string, sess *store.Session, payload ccPrehookPayload, source string) {
 	resolveCtx := r.Context()
 	requestID := ids.NewHookRequestID()
 	ch := s.parkedAsks.park(bridgeID, requestID)
@@ -280,6 +285,14 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 		s.parkedAsks.cancel(bridgeID, requestID)
 		writeHookAsk(w, "broadcast awaiting_resolution: "+err.Error())
 		return
+	}
+
+	// Record the signal only once the request is genuinely parked. Doing it
+	// before the broadcast would leave an open signal row behind on the
+	// failure path above, where the park is cancelled and no human ever sees
+	// the question.
+	if source == msg.HookSourceUserInput {
+		s.recordAskUserQuestionSignals(bridgeID, sess, requestID, payload.ToolInput)
 	}
 
 	var decision permissionDecision
@@ -314,9 +327,12 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 }
 
 // broadcastPrehookResolved emits the phase=completed HookEvent that
-// closes a previously-emitted awaiting_resolution event. Source must
-// match the value used at park time so consumers can pair the events.
+// closes a previously-emitted awaiting_resolution event, and closes out any
+// signal rows the request minted. Source must match the value used at park
+// time so consumers can pair the events.
 func (s *Server) broadcastPrehookResolved(bridgeID, requestID, source string, d permissionDecision) {
+	s.resolveSignalsForRequest(bridgeID, requestID, d)
+
 	resolution := &msg.HookResolution{
 		Behavior:     d.Behavior,
 		UpdatedInput: d.UpdatedInput,
