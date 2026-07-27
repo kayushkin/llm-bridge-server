@@ -56,7 +56,18 @@ const (
 	cardLinkSource         = "kanban-source"
 	cardSourceClassifier   = "classifier"
 	maxClassifyPerTick     = 10
-	digestTokenBudget      = 4000 // approximate; very rough
+	// digestCharBudget is the size of one classifier prompt in characters
+	// (~4 chars/token, so ~4k tokens). Characters, not tokens, because that
+	// is what the builder can actually measure.
+	digestCharBudget = 16000
+	// Ceiling on the digest share the already-filed cards may take, and share
+	// of what is left after that for recent assistant turns. The rest goes to
+	// user prompts. The cards section only ever consumes what it needs, so a
+	// generous ceiling costs nothing on a session with few cards and buys
+	// complete card identity on one with many — which is exactly the session
+	// that duplicates.
+	existingCardsBudgetShare  = 0.55
+	assistantTurnsBudgetShare = 0.35
 	terminalStateCompleted = "completed"
 	terminalStateError     = "error"
 	defaultModel           = "claude-haiku-4-5-20251001"
@@ -76,6 +87,8 @@ func main() {
 		authToken    = flag.String("auth-token", envOr("AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
 		model        = flag.String("model", envOr("KANBAN_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
 		maxClassify  = flag.Int("max", maxClassifyPerTick, "Max classifications per tick.")
+		digestBudget = flag.Int("digest-budget", digestCharBudget, "Digest size in characters (~4 chars per token).")
+		dumpDigest   = flag.Bool("dump-digest", false, "With -session: print the digest that would be sent and exit, without calling the model.")
 	)
 	flag.Parse()
 
@@ -95,13 +108,18 @@ func main() {
 		Model:        *model,
 		BoardName:    *boardName,
 		DryRun:       *dryRun,
+		DigestBudget: *digestBudget,
+		DumpDigest:   *dumpDigest,
 	}
 
-	apiKey, err := resolveAnthropicKey(ctx, cfg)
-	if err != nil {
-		log.Fatalf("resolve anthropic key: %v", err)
+	// A digest dump never reaches the model, so it must not need its key.
+	if !cfg.DumpDigest {
+		apiKey, err := resolveAnthropicKey(ctx, cfg)
+		if err != nil {
+			log.Fatalf("resolve anthropic key: %v", err)
+		}
+		cfg.AnthropicAPIKey = apiKey
 	}
-	cfg.AnthropicAPIKey = apiKey
 
 	kc := kanbanclient.New(cfg.KanbanURL)
 	board, err := kc.FindBoard(cfg.BoardName)
@@ -167,6 +185,8 @@ type config struct {
 	Model           string
 	BoardName       string
 	DryRun          bool
+	DigestBudget    int
+	DumpDigest      bool
 }
 
 // ============================ Candidate selection ============================
@@ -254,7 +274,12 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 		return false
 	}
 
-	digest := buildDigest(sess, msgs, cards)
+	digest := buildDigest(sess, msgs, cards, cfg.DigestBudget)
+	if cfg.DumpDigest {
+		fmt.Printf("%s\n", digest)
+		log.Printf("[%s] dump-digest: %d chars, %d existing card(s)", sess.SessionID, len(digest), len(cards))
+		return false
+	}
 	report, err := classify(ctx, cfg, digest)
 	if err != nil {
 		log.Printf("[%s] classifier failed: %v — leaving sig unchanged for retry", sess.SessionID, err)
@@ -274,8 +299,17 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 		return true
 	}
 
+	// A session that already has cards but comes back with an opinion on none
+	// of them, while filing new ones, is the signature of the model not having
+	// seen its cards at all. That is a prompt-assembly failure, not a
+	// classification: say so where it can be grepped.
+	if len(cards) > 0 && len(report.ExistingCards) == 0 && len(report.NewTasks) > 0 {
+		log.Printf("[%s] WARNING: %d existing card(s) went unaddressed while filing %d new task(s) — check the digest carries [EXISTING CARDS] (-dump-digest -session %s)",
+			sess.SessionID, len(cards), len(report.NewTasks), sess.SessionID)
+	}
+
 	applyExisting(kc, sess, report)
-	applyNew(kc, sess, report)
+	applyNew(kc, sess, cards, report)
 
 	writeSig(kc, sess, tagSet, curSig)
 
@@ -371,8 +405,25 @@ func applyExisting(kc *kanbanclient.Client, sess session, report *Report) {
 	}
 }
 
-func applyNew(kc *kanbanclient.Client, sess session, report *Report) {
+func applyNew(kc *kanbanclient.Client, sess session, existingCards []kanbanclient.EntityCardEntry, report *Report) {
+	filed := map[string]bool{}
+	for _, ec := range existingCards {
+		if title, _ := ec.Item["title"].(string); title != "" {
+			filed[normalizeTitle(title)] = true
+		}
+	}
+
 	for _, nt := range report.NewTasks {
+		// Last line of defence against re-filing work that is already on the
+		// board. The digest is what actually prevents this; an exact title
+		// repeat means even that failed.
+		if filed[normalizeTitle(nt.Title)] {
+			log.Printf("[%s] skipping new task %q — a card with that title is already linked to this session",
+				sess.SessionID, truncate(nt.Title, 80))
+			continue
+		}
+		filed[normalizeTitle(nt.Title)] = true
+
 		colName := stateToColumn(nt.State)
 		body := nt.Summary
 		if nt.Blocker != "" {
@@ -400,6 +451,27 @@ func applyNew(kc *kanbanclient.Client, sess session, report *Report) {
 			log.Printf("[%s] mark source on new card: %v", sess.SessionID, err)
 		}
 	}
+}
+
+// normalizeTitle folds case and punctuation so two spellings of the same
+// title compare equal. It is deliberately exact on words: a fuzzy match here
+// would suppress genuinely new tasks that merely read alike.
+func normalizeTitle(title string) string {
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range strings.ToLower(strings.TrimSpace(title)) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevSpace = false
+		default:
+			if !prevSpace {
+				b.WriteRune(' ')
+				prevSpace = true
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func stateToColumn(state string) string {
@@ -490,9 +562,52 @@ func getSessionMessages(bridgeURL, id string) ([]bridgeMessage, error) {
 
 // ============================ Digest builder ============================
 
-func buildDigest(sess session, msgs []bridgeMessage, existingCards []kanbanclient.EntityCardEntry) string {
-	var b strings.Builder
+// buildDigest renders one session as the classifier's prompt input, within
+// digestCharBudget characters.
+//
+// Section ORDER IS LOAD-BEARING, and so is the per-section budgeting. The
+// digest used to be assembled in conversation order and then chopped at the
+// budget with a single slice, which put [EXISTING CARDS] last — so on any
+// long session the whole section fell off the end. The model was then told
+// "use new_tasks only for tasks not already represented by an existing card"
+// while being shown no cards at all, and duly re-filed every task it had
+// already filed, once per tick. One live session minted six near-identical
+// cards for one task in ninety minutes that way.
+//
+// So the dedupe-critical section is emitted FIRST and gets its own reserve,
+// and the conversational bulk is fitted into what remains — newest first,
+// because the recent turns carry the "is it done / is it blocked" signal.
+// Nothing is ever cut mid-section, and every drop is announced in the text
+// so the model (and a human reading a dump) can see what is missing.
+func buildDigest(sess session, msgs []bridgeMessage, existingCards []kanbanclient.EntityCardEntry, charBudget int) string {
+	if charBudget <= 0 {
+		charBudget = digestCharBudget
+	}
 
+	meta := buildMetaSection(sess, len(msgs))
+	cards := buildExistingCardsSection(existingCards, budgetShare(charBudget, existingCardsBudgetShare))
+	tools := buildToolActivitySection(msgs)
+
+	remaining := charBudget - len(meta) - len(cards) - len(tools)
+	if remaining < 0 {
+		remaining = 0
+	}
+	turns := buildAssistantTurnsSection(msgs, budgetShare(remaining, assistantTurnsBudgetShare))
+	prompts := buildUserPromptsSection(msgs, remaining-len(turns))
+
+	return meta + cards + prompts + turns + tools
+}
+
+// budgetShare is `fraction` of total, as a character count.
+func budgetShare(total int, fraction float64) int {
+	if total <= 0 {
+		return 0
+	}
+	return int(float64(total) * fraction)
+}
+
+func buildMetaSection(sess session, msgCount int) string {
+	var b strings.Builder
 	fmt.Fprintf(&b, "[SESSION META]\n")
 	fmt.Fprintf(&b, "bridge_id: %s\n", sess.SessionID)
 	fmt.Fprintf(&b, "display_name: %s\n", sess.DisplayName)
@@ -501,43 +616,77 @@ func buildDigest(sess session, msgs []bridgeMessage, existingCards []kanbanclien
 	fmt.Fprintf(&b, "state: %s\n", sess.State)
 	fmt.Fprintf(&b, "created: %s\n", sess.CreatedAt)
 	fmt.Fprintf(&b, "last_message: %s\n", sess.UpdatedAt)
-	fmt.Fprintf(&b, "turn_count: %d\n\n", len(msgs))
+	fmt.Fprintf(&b, "turn_count: %d\n\n", msgCount)
+	return b.String()
+}
 
-	// All user prompts verbatim — intent signal.
-	fmt.Fprintf(&b, "[USER PROMPTS — verbatim, all of them]\n")
-	userIdx := 0
+// buildExistingCardsSection renders the cards already linked to this session.
+// Card identity (card_id + title) is what stops the model re-filing work, so
+// it is never dropped to save space: bodies are shed first, and only if the
+// titles alone still overflow are the oldest cards omitted — loudly.
+func buildExistingCardsSection(existingCards []kanbanclient.EntityCardEntry, budget int) string {
+	const header = "[EXISTING CARDS — already on the kanban for this session]\n"
+	if len(existingCards) == 0 {
+		return header + "(none)\n\n"
+	}
+
+	withBodies := make([]string, 0, len(existingCards))
+	titlesOnly := make([]string, 0, len(existingCards))
+	for _, ec := range existingCards {
+		title, _ := ec.Item["title"].(string)
+		status, _ := ec.Item["status"].(string)
+		body, _ := ec.Item["body"].(string)
+		withBodies = append(withBodies, fmt.Sprintf("- card_id=%s title=%q status=%s\n  body=%q\n",
+			ec.CardID, truncate(title, 80), status, truncate(body, 400)))
+		titlesOnly = append(titlesOnly, fmt.Sprintf("- card_id=%s title=%q status=%s\n",
+			ec.CardID, truncate(title, 80), status))
+	}
+
+	entries := withBodies
+	if totalLen(entries) > budget-len(header) {
+		entries = titlesOnly
+	}
+	return header + fitKeepingNewest(entries, budget-len(header), "older card(s) omitted") + "\n"
+}
+
+func buildUserPromptsSection(msgs []bridgeMessage, budget int) string {
+	const header = "[USER PROMPTS — verbatim, newest last]\n"
+	entries := []string{}
 	for _, m := range msgs {
 		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
-			userIdx++
-			fmt.Fprintf(&b, "%d. %s\n", userIdx, truncate(m.Content, 1500))
+			entries = append(entries, fmt.Sprintf("%d. %s\n", len(entries)+1, truncate(m.Content, 1500)))
 		}
 	}
-	if userIdx == 0 {
-		fmt.Fprintf(&b, "(none)\n")
+	if len(entries) == 0 {
+		return header + "(none)\n\n"
 	}
-	b.WriteString("\n")
+	return header + fitKeepingNewest(entries, budget-len(header), "earlier prompt(s) omitted") + "\n"
+}
 
-	// Last K assistant turns with text content. Sized to fit budget.
-	fmt.Fprintf(&b, "[ASSISTANT TURNS — recent, with text content]\n")
+func buildAssistantTurnsSection(msgs []bridgeMessage, budget int) string {
+	const header = "[ASSISTANT TURNS — recent, with text content]\n"
 	withText := []bridgeMessage{}
 	for _, m := range msgs {
 		if m.Role == "assistant" && strings.TrimSpace(m.Content) != "" {
 			withText = append(withText, m)
 		}
 	}
-	// Take the last ~10 turns.
-	keep := withText
+	if len(withText) == 0 {
+		return header + "(no assistant text content)\n\n"
+	}
+	// Take the last ~10 turns, then fit whatever share of those the budget allows.
 	if len(withText) > 10 {
-		keep = withText[len(withText)-10:]
+		withText = withText[len(withText)-10:]
 	}
-	for i, m := range keep {
-		fmt.Fprintf(&b, "  turn %d (%s):\n  %s\n\n", i+1, m.Timestamp, truncate(m.Content, 600))
+	entries := make([]string, 0, len(withText))
+	for i, m := range withText {
+		entries = append(entries, fmt.Sprintf("  turn %d (%s):\n  %s\n\n", i+1, m.Timestamp, truncate(m.Content, 600)))
 	}
-	if len(keep) == 0 {
-		fmt.Fprintf(&b, "(no assistant text content)\n")
-	}
+	return header + fitKeepingNewest(entries, budget-len(header), "earlier turn(s) omitted") + "\n"
+}
 
-	// Recent tool activity.
+func buildToolActivitySection(msgs []bridgeMessage) string {
+	var b strings.Builder
 	fmt.Fprintf(&b, "[TOOL ACTIVITY — last ~15 tool calls]\n")
 	tools := []string{}
 	for _, m := range msgs {
@@ -567,26 +716,42 @@ func buildDigest(sess session, msgs []bridgeMessage, existingCards []kanbanclien
 		fmt.Fprintf(&b, "(none)\n")
 	}
 	b.WriteString("\n")
+	return b.String()
+}
 
-	// Existing cards — let the model reason about them.
-	fmt.Fprintf(&b, "[EXISTING CARDS — already on the kanban for this session]\n")
-	if len(existingCards) == 0 {
-		fmt.Fprintf(&b, "(none)\n")
+// fitKeepingNewest returns as many trailing entries as fit in budget, in
+// order, with a marker naming how many leading ones were dropped. It keeps at
+// least one entry even when that entry alone overflows — a section that
+// silently renders empty is how the truncation bug hid for so long.
+func fitKeepingNewest(entries []string, budget int, omittedNoun string) string {
+	if len(entries) == 0 {
+		return ""
 	}
-	for _, ec := range existingCards {
-		title, _ := ec.Item["title"].(string)
-		status, _ := ec.Item["status"].(string)
-		body, _ := ec.Item["body"].(string)
-		fmt.Fprintf(&b, "- card_id=%s title=%q status=%s\n  body=%q\n",
-			ec.CardID, truncate(title, 80), status, truncate(body, 400))
+	first := len(entries)
+	used := 0
+	for i := len(entries) - 1; i >= 0; i-- {
+		if used+len(entries[i]) > budget && i != len(entries)-1 {
+			break
+		}
+		used += len(entries[i])
+		first = i
 	}
+	var b strings.Builder
+	if first > 0 {
+		fmt.Fprintf(&b, "(… %d %s)\n", first, omittedNoun)
+	}
+	for _, e := range entries[first:] {
+		b.WriteString(e)
+	}
+	return b.String()
+}
 
-	// Hard cap: trim to budget. Crude but fail-safe.
-	out := b.String()
-	if len(out) > digestTokenBudget*4 { // ~4 chars/token rough heuristic
-		out = out[:digestTokenBudget*4] + "\n…[truncated]"
+func totalLen(entries []string) int {
+	n := 0
+	for _, e := range entries {
+		n += len(e)
 	}
-	return out
+	return n
 }
 
 func truncate(s string, n int) string {
