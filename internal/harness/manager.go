@@ -5,7 +5,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -636,53 +638,154 @@ func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 	m.mu.Lock()
 	d := m.derivation[bridgeID]
 	if d == nil {
-		d = newDerivationState()
+		// Seed the fresh derivation's prev from the canonical persisted
+		// sessions.state row. Without this, a derivation recreated after
+		// a bridge-server restart resets prev to idle and suppresses the
+		// closing transition on the next EventResult, leaving a row stuck
+		// at tool_running/running (the F1 settle bug).
+		d = newDerivationStateSeeded(m.persistedSessionState(bridgeID))
 		m.derivation[bridgeID] = d
 	}
 	m.mu.Unlock()
 
 	derived := d.derive(src)
-	if len(derived) == 0 {
-		return
-	}
 
+	// Track whether the derivation emitted a session_state transition for
+	// src. When it did, the persisted row is written below and no reconcile
+	// is needed. When it did NOT (next==prev), a terminal event may still
+	// leave the persisted row stale — reconciled after the loop.
+	emittedState := false
 	for i := range derived {
 		ev := &derived[i]
-		ev.BridgeSessionID = bridgeID
 
 		// SessionState transitions also update the persistent session
 		// row — derivation owns the authoritative state. readEvents no
 		// longer flips state on EventResult/EventError directly; this
 		// is the single point where session.state is written.
 		if ev.Type == msg.EventSessionState && ev.State != nil {
-			m.store.UpdateSessionState(bridgeID, string(ev.State.State))
-		}
-
-		var rowID int64
-		if data, err := json.Marshal(ev); err == nil {
-			var storeErr error
-			rowID, storeErr = m.store.StoreEventReturningID(bridgeID, string(ev.Type), "", "", data)
-			if storeErr != nil {
-				log.Printf("[harness] failed to store derived event: %v", storeErr)
+			emittedState = true
+			if err := m.store.UpdateSessionState(bridgeID, string(ev.State.State)); err != nil {
+				log.Printf("[harness] failed to update session state for %s: %v", bridgeID, err)
 			}
 		}
-		if _, err := m.logStore.PushEvent(*ev); err != nil {
-			log.Printf("[harness] failed to push derived event to log-store: %v", err)
-		}
+		m.broadcastDerived(bridgeID, ev)
+	}
 
-		stored := StoredEvent{Event: *ev, RowID: rowID}
-		m.mu.RLock()
-		subs := make([]chan StoredEvent, len(m.subscribers[bridgeID]))
-		copy(subs, m.subscribers[bridgeID])
-		m.mu.RUnlock()
-		for _, ch := range subs {
-			select {
-			case ch <- stored:
-			default:
-				// Drop on a full channel — replay path covers it.
-			}
+	// F1 server-side settle reconcile. A terminal event (EventResult/
+	// EventError) whose derived transition was suppressed (next==prev)
+	// can leave the persisted sessions.state row lying at a holding value
+	// — e.g. a direct write on send/resume (manager.go Start/Resume) or a
+	// pre-seed restart. Correct the row (and broadcast) ONLY when it
+	// actually disagrees with the settled truth, so no-ops don't spam.
+	//
+	// NOTE: the OTHER settle failure — a hung harness that never emits any
+	// terminator at all — is handled by the reaper and the
+	// TURN_IDLE_TIMEOUT watchdog in llm-bridge-claudecode, not here.
+	if (src.Type == msg.EventResult || src.Type == msg.EventError) && !emittedState {
+		m.reconcileSettledSessionState(bridgeID, d)
+	}
+}
+
+// broadcastDerived persists a derived (or reconcile) event to the local
+// store and log-store, then fans it out to the session's SSE
+// subscribers. It stamps BridgeSessionID but does NOT write
+// sessions.state — callers own the state write so the single-source-of-
+// truth update stays explicit at each call site.
+func (m *Manager) broadcastDerived(bridgeID string, ev *msg.Event) {
+	ev.BridgeSessionID = bridgeID
+
+	var rowID int64
+	if data, err := json.Marshal(ev); err == nil {
+		var storeErr error
+		rowID, storeErr = m.store.StoreEventReturningID(bridgeID, string(ev.Type), "", "", data)
+		if storeErr != nil {
+			log.Printf("[harness] failed to store derived event: %v", storeErr)
 		}
 	}
+	if _, err := m.logStore.PushEvent(*ev); err != nil {
+		log.Printf("[harness] failed to push derived event to log-store: %v", err)
+	}
+
+	stored := StoredEvent{Event: *ev, RowID: rowID}
+	m.mu.RLock()
+	subs := make([]chan StoredEvent, len(m.subscribers[bridgeID]))
+	copy(subs, m.subscribers[bridgeID])
+	m.mu.RUnlock()
+	for _, ch := range subs {
+		select {
+		case ch <- stored:
+		default:
+			// Drop on a full channel — replay path covers it.
+		}
+	}
+}
+
+// persistedSessionState reads the canonical sessions.state row for
+// bridgeID and returns it as a SessionState. Missing row (fresh session)
+// or empty state falls back to idle; a real read error is logged loudly
+// (fail-fast) and also falls back to idle so the event loop stays live.
+func (m *Manager) persistedSessionState(bridgeID string) msg.SessionState {
+	sess, err := m.store.GetSession(bridgeID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("[harness] persistedSessionState: read session %s: %v", bridgeID, err)
+		}
+		return msg.SessionIdle
+	}
+	if sess == nil || sess.State == "" {
+		return msg.SessionIdle
+	}
+	return msg.SessionState(sess.State)
+}
+
+// reconcileSettledSessionState corrects a persisted sessions.state row
+// that still reads a holding value (running / tool_running /
+// awaiting_permission / ...) after the turn has actually settled. Called
+// only on a terminal event whose derived transition was suppressed
+// (next==prev), so it fires exactly when the in-memory prev already
+// matched the settled state but the persisted row diverged.
+//
+// It gates on the persisted row (a) being a holding state — so a late
+// stray result cannot clobber a legitimate completed/aborted/paused row
+// — and (b) differing from the settled truth, so a row already correct
+// triggers no redundant write or broadcast. d.currentState() is the
+// settled target: derive() leaves d.sessionState at the terminal value
+// even when it suppressed the transition (prev already equalled next).
+func (m *Manager) reconcileSettledSessionState(bridgeID string, d *derivationState) {
+	settled := d.currentState()
+
+	sess, err := m.store.GetSession(bridgeID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("[harness] reconcileSettledSessionState: read session %s: %v", bridgeID, err)
+		}
+		return
+	}
+	if sess == nil {
+		return
+	}
+	stored := msg.SessionState(sess.State)
+	if stored == settled || !isHoldingSessionState(stored) {
+		return
+	}
+
+	if err := m.store.UpdateSessionState(bridgeID, string(settled)); err != nil {
+		log.Printf("[harness] reconcileSettledSessionState: update session %s: %v", bridgeID, err)
+		return
+	}
+	log.Printf("[harness] reconciled stale session state for %s: %s → %s (turn settled, transition was suppressed)", bridgeID, stored, settled)
+
+	m.broadcastDerived(bridgeID, &msg.Event{
+		Type:            msg.EventSessionState,
+		Harness:         sess.Harness,
+		BridgeSessionID: bridgeID,
+		Timestamp:       time.Now(),
+		State: &msg.StateEvent{
+			State:    settled,
+			Previous: stored,
+			Reason:   "turn_settled_reconcile",
+		},
+	})
 }
 
 // BroadcastEvent assigns a MessageID on ev (mutating it), persists, and fans

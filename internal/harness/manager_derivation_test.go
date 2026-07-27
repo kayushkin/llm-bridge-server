@@ -251,10 +251,13 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 	}
 
 	// The two agent_state derived events should reflect
-	// idle→tool_running and tool_running→idle in that order.
+	// running→tool_running and tool_running→idle in that order. Previous
+	// on the first transition is "running" (not idle) because the
+	// derivation seeds its prev from the persisted sessions.state row,
+	// which this test created as SessionRunning (F1 settle fix, Part 1).
 	first := got[1]
-	if first.State == nil || first.State.Previous != msg.SessionIdle || first.State.State != msg.SessionToolRunning {
-		t.Fatalf("first session_state body = %+v; want idle→tool_running", first.State)
+	if first.State == nil || first.State.Previous != msg.SessionRunning || first.State.State != msg.SessionToolRunning {
+		t.Fatalf("first session_state body = %+v; want running→tool_running", first.State)
 	}
 	if first.RowID == 0 {
 		t.Fatalf("first derived event has zero RowID — not persisted")
@@ -612,4 +615,175 @@ func TestManager_RecoversTurnIDAfterProcessRestart(t *testing.T) {
 	if post.TurnID != preTurnID {
 		t.Errorf("post-restart TurnID = %q, want %q (same turn)", post.TurnID, preTurnID)
 	}
+}
+
+// firstSessionState returns the first EventSessionState in got, or nil.
+func firstStoredSessionState(got []StoredEvent) *StoredEvent {
+	for i := range got {
+		if got[i].Type == msg.EventSessionState {
+			return &got[i]
+		}
+	}
+	return nil
+}
+
+// TestManager_SeedsDerivationPrevFromStateAfterRestart is the F1 settle
+// bug, Part 1. A fresh derivation (as after a bridge-server restart)
+// must seed its prev from the persisted sessions.state row, so the next
+// EventResult produces a real tool_running→idle transition that corrects
+// the persisted row — instead of resetting prev to idle, deriving
+// idle==idle, suppressing the transition, and leaving the row stuck at
+// tool_running forever.
+func TestManager_SeedsDerivationPrevFromStateAfterRestart(t *testing.T) {
+	m := newTestManager(t)
+	const bridgeID = "br-f1-seed"
+
+	if err := m.store.CreateSession(&store.Session{
+		SessionID: bridgeID,
+		Harness:   msg.HarnessClaudeCode,
+		State:     string(msg.SessionRunning),
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	// Persisted row is holding at tool_running (as a live turn would be)
+	// with NO in-memory derivation entry — the post-restart condition.
+	if err := m.store.UpdateSessionState(bridgeID, string(msg.SessionToolRunning)); err != nil {
+		t.Fatalf("set tool_running: %v", err)
+	}
+	m.mu.RLock()
+	_, exists := m.derivation[bridgeID]
+	m.mu.RUnlock()
+	if exists {
+		t.Fatalf("precondition: no derivation entry should exist yet")
+	}
+
+	sub := m.Subscribe(bridgeID)
+	m.deriveAndBroadcast(bridgeID, &msg.Event{
+		Type: msg.EventResult, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode,
+		TurnID: "turn-x", Result: &msg.ResultEvent{Text: "done"},
+	})
+
+	// Expect a session_state(tool_running→idle) transition — proving the
+	// derivation seeded prev from the persisted tool_running row.
+	got := recvWithin(t, sub, 2, 2*time.Second)
+	ss := firstStoredSessionState(got)
+	if ss == nil {
+		t.Fatalf("no session_state event emitted; got %+v", eventTypes(got))
+	}
+	if ss.State.Previous != msg.SessionToolRunning || ss.State.State != msg.SessionIdle {
+		t.Fatalf("session_state = %+v; want tool_running→idle", ss.State)
+	}
+
+	sess, err := m.store.GetSession(bridgeID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if sess.State != string(msg.SessionIdle) {
+		t.Fatalf("persisted state = %q; want idle (row must be corrected)", sess.State)
+	}
+}
+
+// TestManager_ReconcilesStaleSettledRowWhenTransitionSuppressed is the F1
+// settle bug, Part 2. Even when the in-memory prev already matches the
+// settled state (so derive() suppresses the transition), a persisted row
+// that was written directly to a holding value (a send/resume path, or a
+// pre-seed restart) must be reconciled to the settled truth on the
+// terminal event — with a broadcast so live consumers converge.
+func TestManager_ReconcilesStaleSettledRowWhenTransitionSuppressed(t *testing.T) {
+	m := newTestManager(t)
+	const bridgeID = "br-f1-reconcile"
+
+	if err := m.store.CreateSession(&store.Session{
+		SessionID: bridgeID,
+		Harness:   msg.HarnessClaudeCode,
+		State:     string(msg.SessionIdle),
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	// In-memory derivation already settled at idle...
+	m.mu.Lock()
+	m.derivation[bridgeID] = newDerivationStateSeeded(msg.SessionIdle)
+	m.mu.Unlock()
+	// ...but the persisted row was written directly to a holding value,
+	// bypassing derivation (as manager.Start/Resume do).
+	if err := m.store.UpdateSessionState(bridgeID, string(msg.SessionToolRunning)); err != nil {
+		t.Fatalf("set tool_running: %v", err)
+	}
+
+	sub := m.Subscribe(bridgeID)
+	m.deriveAndBroadcast(bridgeID, &msg.Event{
+		Type: msg.EventResult, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode,
+		TurnID: "turn-y", Result: &msg.ResultEvent{Text: "done"},
+	})
+
+	// usage_total (from the loop) + the reconcile session_state (after).
+	got := recvWithin(t, sub, 2, 2*time.Second)
+	ss := firstStoredSessionState(got)
+	if ss == nil {
+		t.Fatalf("reconcile did not broadcast a session_state; got %+v", eventTypes(got))
+	}
+	if ss.State.Previous != msg.SessionToolRunning || ss.State.State != msg.SessionIdle {
+		t.Fatalf("reconcile session_state = %+v; want tool_running→idle", ss.State)
+	}
+	if ss.State.Reason != "turn_settled_reconcile" {
+		t.Fatalf("reconcile reason = %q; want turn_settled_reconcile", ss.State.Reason)
+	}
+
+	sess, err := m.store.GetSession(bridgeID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if sess.State != string(msg.SessionIdle) {
+		t.Fatalf("persisted state = %q; want idle (stale holding row must be corrected)", sess.State)
+	}
+}
+
+// TestManager_NoReconcileWhenSettledRowAlreadyMatches is the F1 no-op
+// guard. When the persisted row already agrees with the settled state,
+// a terminal event whose transition is suppressed must NOT trigger a
+// redundant UpdateSessionState or a spurious session_state broadcast.
+func TestManager_NoReconcileWhenSettledRowAlreadyMatches(t *testing.T) {
+	m := newTestManager(t)
+	const bridgeID = "br-f1-noop"
+
+	if err := m.store.CreateSession(&store.Session{
+		SessionID: bridgeID,
+		Harness:   msg.HarnessClaudeCode,
+		State:     string(msg.SessionIdle),
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	m.mu.Lock()
+	m.derivation[bridgeID] = newDerivationStateSeeded(msg.SessionIdle)
+	m.mu.Unlock()
+
+	sub := m.Subscribe(bridgeID)
+	m.deriveAndBroadcast(bridgeID, &msg.Event{
+		Type: msg.EventResult, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode,
+		TurnID: "turn-z", Result: &msg.ResultEvent{Text: "done"},
+	})
+
+	// Only usage_total should arrive; assert no session_state follows.
+	first := recvWithin(t, sub, 1, 2*time.Second)
+	if first[0].Type != msg.EventUsageTotal {
+		t.Fatalf("first event = %q; want usage_total", first[0].Type)
+	}
+	select {
+	case ev := <-sub:
+		if ev.Type == msg.EventSessionState {
+			t.Fatalf("unexpected session_state broadcast on no-op settle: %+v", ev.State)
+		}
+	case <-time.After(200 * time.Millisecond):
+		// No further event — correct.
+	}
+}
+
+// eventTypes is a small helper for failure messages.
+func eventTypes(got []StoredEvent) []msg.EventType {
+	out := make([]msg.EventType, len(got))
+	for i := range got {
+		out[i] = got[i].Type
+	}
+	return out
 }

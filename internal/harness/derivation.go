@@ -109,14 +109,76 @@ type derivationState struct {
 	turnOrder []string
 }
 
+// newDerivationState builds an empty per-session derivation whose
+// initial (prev) SessionState is idle. Use this only where no prior
+// persisted state exists — brand-new sessions and pure state-machine
+// unit tests. Recreating a derivation for a session that already has a
+// persisted sessions.state row must go through newDerivationStateSeeded
+// so the first terminal event isn't suppressed by a stale idle prev
+// (the F1 server-side settle bug).
 func newDerivationState() *derivationState {
+	return newDerivationStateSeeded(msg.SessionIdle)
+}
+
+// newDerivationStateSeeded builds a derivation whose initial (prev)
+// SessionState is seeded from the caller-supplied value — the canonical
+// persisted sessions.state row read at derivation-creation time. After
+// a bridge-server restart the in-memory prev would otherwise reset to
+// idle, so a later EventResult deriving next==idle==prev is suppressed
+// (derive only emits on next!=prev) and a row still reading
+// tool_running/running is never corrected. Seeding prev from the
+// persisted row keeps the closing transition observable. An empty
+// initial falls back to idle (no persisted row yet).
+func newDerivationStateSeeded(initial msg.SessionState) *derivationState {
+	if initial == "" {
+		initial = msg.SessionIdle
+	}
 	return &derivationState{
-		sessionState:     msg.SessionIdle,
+		sessionState:     initial,
 		activeTools:      make(map[string]string),
 		pendingApprovals: make(map[string]struct{}),
 		turnAccums:       make(map[string]*turnAccumulator),
 		apiSpendByModel:  make(map[string]float64),
 		apiSpendBySource: make(map[string]float64),
+	}
+}
+
+// currentState returns the last-derived SessionState under lock. Used
+// by the manager's terminal-settle reconcile to learn the settled
+// target after derive() has run — d.sessionState holds the settled
+// value even when the transition was suppressed (next==prev), because
+// prev already equalled next.
+func (d *derivationState) currentState() msg.SessionState {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.sessionState
+}
+
+// isHoldingSessionState reports whether s is a "turn in flight" state —
+// one that a settled terminal event (EventResult/EventError) should
+// overwrite when it lingers in the persisted row. Per the live-DB
+// audit (docs/findings/2026-07-27-interrupt-dual-emit-turn-hijack.md
+// §5) the granular model_generating/compacting/starting states are
+// never actually emitted by Claude Code, but they remain valid holding
+// values in the enum, so they're included for completeness. Critically
+// this treats BOTH running AND tool_running AND awaiting_permission as
+// holding — the classic trap is comparing only against SessionRunning
+// and missing tool_running. Settled/terminal states (idle, awaiting_user,
+// completed, error, aborted, paused, disconnected) are NOT holding and
+// are left untouched so a late stray result can't clobber them.
+func isHoldingSessionState(s msg.SessionState) bool {
+	switch s {
+	case msg.SessionStarting,
+		msg.SessionRunning,
+		msg.SessionModelGenerating,
+		msg.SessionToolRunning,
+		msg.SessionCompacting,
+		msg.SessionAwaitingPermission,
+		msg.SessionWaitingApproval,
+		msg.SessionRateLimited:
+		return true
+	default:
+		return false
 	}
 }
 
