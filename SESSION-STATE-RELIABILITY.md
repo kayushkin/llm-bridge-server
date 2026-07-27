@@ -128,13 +128,14 @@ cells, DEC private modes. That informs a natural question: should we adopt it? S
   the "layers are transparent" rule. libghostty-vt is a native renderer with no browser target;
   xterm.js is a mature, correct browser emulator and the right tool for a web gateway. Different
   delivery surface, not a better option.
-- **Classifier (what track B reads): yes to a headless emulator, but a pure-Go one — not libghostty.**
-  The classifier genuinely needs a server-side screen model (above). But sourcing it from libghostty
-  drags a **Zig toolchain + cgo** into a pure-Go build, against the "Go is primary," clean-clone
-  build-guard, and OSS-prep constraints — and its rendering-grade features (kitty graphics,
-  grapheme cells) are far more than region matching needs. A **pure-Go headless VT parser** yields the
-  same cell grid the rules run against, with no non-Go build dependency. Adopt Herdr's *insight*
-  (rules match a reconstructed screen), not its emulator.
+- **Classifier (what track B reads): yes to a headless emulator.** The classifier genuinely needs a
+  server-side screen model (above). The objection to libghostty was never "Zig/Rust is bad" — it was
+  **build coupling**: linking it via cgo drags a foreign toolchain into the Go module's build, against
+  the "Go is primary," clean-clone build-guard, and OSS-prep constraints. That objection dissolves if
+  the emulator runs **out-of-process** rather than linked (see the sidecar option below), which also
+  reopens the far more reliable non-Go emulators. So the real axis is not "Go vs not-Go" but
+  **linked-into-the-Go-build vs isolated subprocess**. Adopt Herdr's *insight* (rules match a
+  reconstructed screen); the emulator choice is a separate, swappable decision.
 
 #### Prototype findings (spike, `~/dev-spikes/vt-state-classifier/`)
 
@@ -155,12 +156,52 @@ and redrawn to an idle prompt box). Results:
   2022) returned the title **correctly**. Since the working/idle title rules are literally braille /
   `✳` multibyte characters, that title bug is disqualifying *for the title-rule path* at x/vt's current
   commit.
-- **Recommendation: wrap the emulator behind a tiny internal interface** (`Screen() string`,
-  `Title() string`) and start on `hinshun/vt10x` — it is correct on every signal we need today and
-  pure-Go. Record the maintenance risk; the interface makes the emulator swappable, so moving to x/vt
-  (once its OSC-title multibyte handling is fixed, or by sourcing the title from a screen region
-  instead of the OSC callback) is a one-file change. Do **not** hardcode either library into the
-  classifier.
+#### Emulator options (maintenance + fit, verified against registries 2026-07-27)
+
+`hinshun/vt10x` is correct today but **unmaintained since 2022** — a liability for a service. The full
+field:
+
+| Emulator | Lang | Maintained | Downloads | Screen grid | OSC title | Fit / cost |
+|---|---|---|---|---|---|---|
+| `hinshun/vt10x` | Go | **No (2022)** | — | ✓ | ✓ (correct in spike) | zero-dep, in-process; abandonment risk |
+| `charmbracelet/x/vt` | Go | Yes (pub. today) | — | ✓ | ✗ **mangles multibyte** (spike) | in-process, pure-Go; untagged pre-release, self-flags typecheck issues |
+| `asciinema/avt` | Rust | **Yes (v0.18, 2026-05)** | 224k | ✓ (primary/alt) | ✗ (discards OSC) | **purpose-built** for headless screen reconstruction from a byte stream; lean |
+| `alacritty_terminal` | Rust | **Yes (v0.26, 2026-04)** | 899k | ✓ | ✓ (tracks `self.title`) | battle-tested (Alacritty/Zed); heavier, real-terminal-shaped API |
+| `wezterm termwiz` | Rust | Yes (2025-03) | 15M | ✓ (`Surface`) | ✓ | full-featured, heavy |
+| libghostty-vt | Zig | Yes (Ghostty) | — | ✓ | ✓ | rendering-grade; what Herdr uses; cgo/Zig build cost |
+
+Two facts from the spike, not reputation: x/vt (maintained) **broke** the multibyte OSC title
+(`"\xe2"` for `✳`); hinshun (abandoned) got it right. So "maintained" alone doesn't decide it — the
+title path specifically must be tested on whichever emulator wins.
+
+#### Recommendation: run the emulator as a subprocess sidecar, cored on `asciinema/avt`
+
+The architecture already fits. **Every harness bridge in this ecosystem is a subprocess speaking
+NDJSON on stdin/stdout** (`llm-bridge-claudecode` et al.). A **PTY-state sidecar** is the identical
+shape: it reads the PTY byte stream (tee'd off `attachhub.Broadcast`), maintains the emulator, and
+emits screen snapshots — `{screen, title, cursor, alt_screen, seq}` — as NDJSON. Consequences:
+
+- **Reliability goes up, build stays pure-Go.** The sidecar is a separately-built binary (like the
+  bridges), so the maintained-but-Rust `avt`/`alacritty_terminal` never touch the Go module's
+  clean-clone build. This is the whole reason "go outside Go" is nearly free here — no cgo.
+- **Core it on `avt`** — purpose-built for exactly this (reconstruct screen from a stream, headless),
+  maintained, lean. Its one gap, discarding the OSC title, is trivially closed *in the sidecar*: the
+  sidecar owns the byte stream, so it sniffs OSC 0/2 itself (a few lines) and attaches the title to
+  the snapshot — turning avt's limitation into a non-issue. If we'd rather not hand-roll that,
+  `alacritty_terminal` tracks the title natively at the cost of a heavier API.
+- **Emulator stays swappable** behind the NDJSON snapshot contract — avt ↔ alacritty_terminal ↔ even
+  libghostty-vt later — with zero change to the Go rule engine.
+- Go keeps everything that isn't emulation: the manifest rule tables, the `derive()` reliability layer,
+  and the `SessionState` arbitration.
+
+**Fallback if a sidecar isn't wanted:** stay pure-Go/in-process with `charmbracelet/x/vt` (maintained),
+and either file an upstream fix for the multibyte-title bug or read the title from a screen region
+instead of the OSC callback. Accept its pre-1.0 churn. `hinshun/vt10x` drops to a throwaway
+MVP-only choice given the abandonment risk — not the thing a service depends on.
+
+**Not yet spiked:** the Rust path is validated on maintenance/API/purpose-fit but **not** run here (no
+Rust toolchain on this host). Before committing, stand up a ~30-line `avt` sidecar and replay a real
+captured Claude/Codex PTY transcript through it — the same bar the Go libraries cleared above.
 
 ### C. inber native-emitter parity — MEDIUM
 
