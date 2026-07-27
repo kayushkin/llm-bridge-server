@@ -17,12 +17,14 @@ The cross-cutting design for the harness layer, agent rendering, tool/skill rout
 | [`CONTEXT-MIGRATION.md`](./CONTEXT-MIGRATION.md) | Plan to extract inber's per-turn assembly (`engine/turn_*.go`, `conversation/`) into `llm-bridge/assembly/` shared library. Replaces this server's `agents_context.go`. |
 | [`IMPLEMENTATION-ROADMAP.md`](./IMPLEMENTATION-ROADMAP.md) | Sequenced PRs across all affected repos. Critical path P1→P2→P3→P4→P6 (~3-4 weeks for the first end-to-end CC vertical). |
 | [`TEAM-ORCHESTRATION.md`](./TEAM-ORCHESTRATION.md) | Dynamic skill-formed agent **teams** coordinating over a kanban board as a blackboard. Generalizes the `scheduler/cmd/kanban-*` loop: planner → team-former → assigner (slow/cron) + an in-server coordination engine (fast/events). Board-per-team, `team_id`/`board_id`/`role` on sessions, `bridge kanban` agent CLI. |
+| [`SESSION-SIGNALS.md`](./SESSION-SIGNALS.md) | One canonical `signal` record for anything a session surfaces to the human — `kind:"question"` (needs an answer; blocks at `awaiting_user`) or `kind:"notification"` (FYI; non-blocking, just acknowledged) — orthogonal to session type (herald/interactive/autonomous all raise either). Producers: `source:"tool"` (`AskUserQuestion`/notify) and `source:"derived"` (kind-aware cheap-model pass on turn-ends). One frontend interface with option buttons + freeform, answerable from the raising session, the "Needs you" inbox, or a chat reference chip in another session; propagates to linked todos. The chat reference-chip linker is the delivery surface (shipped). |
 
 Operational docs:
 
 | Doc | Covers |
 |---|---|
 | [`PTY-MODE.md`](./PTY-MODE.md) | PTY-mode harness operation. |
+| [`SESSION-STATE-RELIABILITY.md`](./SESSION-STATE-RELIABILITY.md) | Hardening `SessionState` inference in `derivation.go` (seq guard, subagent-terminator suppression, settle window, suppress-only signals) + a passive terminal-scrape classifier to give PTY-mode sessions state. Adopts Herdr's reliability discipline; produces the trustworthy state `SESSION-SIGNALS.md`'s inbox renders. |
 | [`CODEX-PARITY.md`](./CODEX-PARITY.md) | Plan to bring codex sessions to feature parity with CC on permissions, hooks, and tool-store; plus codex-specific extras (`PermissionRequest`, `Stop`/`UserPromptSubmit`/`SessionStart` hooks, output-schema). |
 | [`TODO-jig-integration.md`](./TODO-jig-integration.md) | jig harness integration TODO list. |
 
