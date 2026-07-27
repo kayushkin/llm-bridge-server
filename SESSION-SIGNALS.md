@@ -164,12 +164,11 @@ through the same resolve verb.
 
 ## Open decisions (recommendation in **bold**)
 
-1. **Derived-pass trigger, scope & cost.** A Haiku classify call on turn-ends. **Recommend:
-   run it on every turn-end that isn't already a clean tool-driven resolution, classify into
-   question | notification | neither, and only emit a signal for the first two** — with a
-   per-harness opt-out. Note this widens the trigger beyond today's `looksLikeQuestion` (to
-   also catch notifications), so cost is per-turn, not per-question; if that's too broad,
-   fall back to: questions on `looksLikeQuestion` turns only, notifications opt-in.
+1. **Derived-pass trigger, scope & cost.** *Resolved: on by default.* A Haiku classify call
+   runs on every turn-end that isn't already a clean tool-driven resolution, classifying into
+   question | notification | neither and emitting a signal for the first two. Keep a
+   per-harness opt-out as an escape hatch. Cost is per-turn, not per-question (it now also
+   catches notifications) — acceptable at Haiku pricing.
 2. **Unattended sessions (autonomous workers).** *Resolved:* autonomous workers **do not ask
    interactive questions** — the `AskUserQuestion` auto-deny (`permission_prehook.go:95`)
    stays; a worker must not block on a human. Herald questions **park** (herald exists to
@@ -178,9 +177,8 @@ through the same resolve verb.
    async orchestrator/user/agent review, not a chat park. Remaining sub-question: on a real
    blocker, should the worker **stop** and post the blocker, or **continue** past it and post
    for later review? (Default: stop — a blocker by definition can't be worked around.)
-3. **Restart gate.** New table + endpoints + derivation and prehook changes are gateway
-   work. Standing rule: do all the code (branch/build/verify/push) but **do not restart the
-   live gateway unattended** — the user does that.
+3. **Restart gate.** *Resolved: user handles the gateway deploy/restart* (deploy coming
+   soon). I do all the code — branch/build/verify/push — and stop before the restart.
 
 ---
 
