@@ -6,11 +6,15 @@ single frontend interface. A signal is one of two **kinds**:
 - **`question`** — needs an answer (pick an option, type freeform, or both).
 - **`notification`** — an FYI that needs at most an acknowledgement (no answer expected).
 
-Kind is **orthogonal to session type**. Herald, interactive, and autonomous sessions can
-each raise either kind. Herald is a *delivery channel*, not a question — a herald relay may
-be "here's the daily summary" (notification) just as easily as "which option do you want?"
-(question). An ordinary interactive session mid-task can equally raise either: "should I
-proceed?" (question) or "heads up, the migration finished" (notification).
+Kind is **orthogonal to session type** — but *where a signal surfaces* is not. Herald and
+interactive sessions raise either kind into the chat inbox. Herald is a *delivery channel*,
+not a question — a herald relay may be "here's the daily summary" (notification) just as
+easily as "which option do you want?" (question); an interactive session mid-task raises
+either: "should I proceed?" (question) or "heads up, the migration finished" (notification).
+Autonomous workers **do not ask interactive questions** (nobody is watching their chat), but
+a genuine blocker or an FYI still needs to go somewhere — it surfaces on the worker's
+**kanban card** for async review. So the record is unified; the `surface` field (below)
+routes it. See "Where a signal surfaces."
 
 This is **not greenfield**. The pieces exist and are split:
 
@@ -59,6 +63,7 @@ signal {
   kind          "question"|"notification"
   source        "tool"|"derived"
   request_id    string?         // tool path only — the parked hook's id
+  surface       "chat"|"kanban" // where it renders — a projection of attended-ness
   title         string          // the question, or the notification headline
   body          string?         // optional detail for a notification
   options       []{ label, value }   // questions only; suggested/pre-baked answers
@@ -82,6 +87,26 @@ signal {
 This is why kind can't be inferred from session state alone — a notification leaves state
 untouched. The record carries the kind explicitly.
 
+### Where a signal surfaces — attended vs unattended
+
+`surface` is derived from whether a human is watching the session's chat, not from kind:
+
+- **Attended** (`interactive`, `herald`) → **`surface:"chat"`**: the "Needs you" inbox, the
+  raising session's chat, and reference chips. Questions block at `awaiting_user`.
+- **Unattended** (`autonomous` workers) → **`surface:"kanban"`**: no human is on that chat,
+  so nothing routes there. **Autonomous workers do not ask interactive questions — the
+  `AskUserQuestion` auto-deny stays.** A worker must not sit blocked waiting on a human. But
+  a genuine blocker isn't lost in the deny: it is recorded as a signal on the worker's
+  **kanban card** (the autoworker already opens an In-Progress card; kanban-curator manages
+  its state), moving the card to a blocked/needs-review state carrying the blocker text.
+  Resolution is **async and multi-party** — the orchestrator (task-completion-loop
+  dispatcher, most likely), the user, or another agent reviews the board and answers; the
+  dispatcher already revives sessions, so the answer routes back to a revived worker via
+  `/send`. Notifications from a worker likewise land on the card as activity, not a chat
+  park.
+
+The record stays single-source-of-truth; `surface` just says which consumer renders it.
+
 ### Two producers, one shape
 
 - **`source:"tool"`** — a structured tool call parks a signal.
@@ -104,13 +129,17 @@ A single `bridge-ui` component renders a `signal` by kind:
 - **notification** → the headline + optional body, a **Dismiss/Acknowledge** action, and an
   optional freeform reply (routes to `/send` if the user wants to respond, but not required).
 
-It mounts in **three** places, all reading the same record:
+For `surface:"chat"` it mounts in **three** places, all reading the same record:
 
 1. Inline in the raising session's own chat.
 2. The "Needs you" inbox (`SessionList`) — questions and unacknowledged notifications.
 3. **Inside the RefChip session panel** — open session A's chip while working in session B
    and answer/ack A's signal there. This is the cross-session answer, needing no new routing
    primitive beyond the record + the resolve verbs below.
+
+For `surface:"kanban"` the same `SignalCard` renders on the worker's card (the kanban board
+already mounts in dash + llmux via `BridgeKanban`), so the orchestrator/user/agent answers a
+blocker where they already triage worker state.
 
 ### Resolve — per kind and source
 
@@ -141,11 +170,14 @@ through the same resolve verb.
    per-harness opt-out. Note this widens the trigger beyond today's `looksLikeQuestion` (to
    also catch notifications), so cost is per-turn, not per-question; if that's too broad,
    fall back to: questions on `looksLikeQuestion` turns only, notifications opt-in.
-2. **Unattended sessions (autonomous/herald).** Today `AskUserQuestion` is auto-*denied* for
-   unattended sessions (`permission_prehook.go:95`). Split by kind: **notifications from any
-   session type always surface non-blocking (never denied)**; **questions from herald should
-   park (herald exists to relay a human ask)**; questions from fully-autonomous workers with
-   no human attached may still deny/continue — confirm which.
+2. **Unattended sessions (autonomous workers).** *Resolved:* autonomous workers **do not ask
+   interactive questions** — the `AskUserQuestion` auto-deny (`permission_prehook.go:95`)
+   stays; a worker must not block on a human. Herald questions **park** (herald exists to
+   relay a human ask). Notifications from any session type surface non-blocking, never
+   denied. A worker's genuine blocker becomes a **`surface:"kanban"` signal on its card** for
+   async orchestrator/user/agent review, not a chat park. Remaining sub-question: on a real
+   blocker, should the worker **stop** and post the blocker, or **continue** past it and post
+   for later review? (Default: stop — a blocker by definition can't be worked around.)
 3. **Restart gate.** New table + endpoints + derivation and prehook changes are gateway
    work. Standing rule: do all the code (branch/build/verify/push) but **do not restart the
    live gateway unattended** — the user does that.
@@ -161,8 +193,11 @@ through the same resolve verb.
   mount in chat, inbox, and the RefChip session panel. Resolve via the verbs above.
 - **P3 — derived pass.** Kind-aware cheap-model classifier on turn-ends → `signal` row.
   Decision 1.
-- **P4 — notify tool/hook + unattended handling.** A structured notification producer; split
-  park/deny/surface by kind. Decision 2.
+- **P4 — notify tool/hook + surface routing.** A structured notification producer; set
+  `surface` from attended-ness. Unattended blockers → `surface:"kanban"` signal on the
+  worker's card (move card to blocked/needs-review), resolvable by orchestrator/user/agent;
+  the dispatcher revives the worker with the answer. Keep the autonomous `AskUserQuestion`
+  deny. Decision 2.
 - **P5 — todo propagation.** `linked_todo_id` + todo-view badge + resolve.
 
 The frontend surface (linker chips + badge slot) is already live, so P1–P2 are the shortest
