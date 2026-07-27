@@ -132,10 +132,35 @@ cells, DEC private modes. That informs a natural question: should we adopt it? S
   The classifier genuinely needs a server-side screen model (above). But sourcing it from libghostty
   drags a **Zig toolchain + cgo** into a pure-Go build, against the "Go is primary," clean-clone
   build-guard, and OSS-prep constraints — and its rendering-grade features (kitty graphics,
-  grapheme cells) are far more than region matching needs. A **pure-Go headless VT parser**
-  (evaluate `github.com/hinshun/vt10x`, `github.com/charmbracelet/x/vt`, or equivalent) yields the
+  grapheme cells) are far more than region matching needs. A **pure-Go headless VT parser** yields the
   same cell grid the rules run against, with no non-Go build dependency. Adopt Herdr's *insight*
   (rules match a reconstructed screen), not its emulator.
+
+#### Prototype findings (spike, `~/dev-spikes/vt-state-classifier/`)
+
+A runnable spike validated the approach and compared the two candidate pure-Go emulators against a
+crafted Claude-style transcript (OSC title + cursor moves + a permission prompt that is later cleared
+and redrawn to an idle prompt box). Results:
+
+- **The correctness premise holds.** On the transcript that ends idle, **raw-byte scraping classifies
+  `blocked`** — the cleared "Do you want to proceed?" bytes are still in the buffer — while the
+  **reconstructed screen classifies `idle`**, correctly. This is the concrete reason track B must run
+  rules against a screen model, not the ring buffer.
+- **Priority rules work.** In the genuinely-blocked frame the permission-prompt rule (priority 900)
+  correctly wins over the working-spinner OSC title (priority 300) — blocker beats working, as intended.
+- **Library choice — test beat reputation.** Both reconstruct the screen grid correctly. But
+  `charmbracelet/x/vt` (actively maintained, richer callbacks, heavier deps) **mangled the multibyte
+  OSC title**, delivering `"\xe2"` — the first byte of `✳` — instead of `"✳ Claude"` through its
+  `Callbacks.Title`. `hinshun/vt10x` (zero extra deps, built-in `.Title()`, but unmaintained since
+  2022) returned the title **correctly**. Since the working/idle title rules are literally braille /
+  `✳` multibyte characters, that title bug is disqualifying *for the title-rule path* at x/vt's current
+  commit.
+- **Recommendation: wrap the emulator behind a tiny internal interface** (`Screen() string`,
+  `Title() string`) and start on `hinshun/vt10x` — it is correct on every signal we need today and
+  pure-Go. Record the maintenance risk; the interface makes the emulator swappable, so moving to x/vt
+  (once its OSC-title multibyte handling is fixed, or by sourcing the title from a screen region
+  instead of the OSC callback) is a one-file change. Do **not** hardcode either library into the
+  classifier.
 
 ### C. inber native-emitter parity — MEDIUM
 
