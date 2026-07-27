@@ -54,13 +54,18 @@ type Server struct {
 	cfState       *conformanceState
 	sessionHub    *sessionHub
 	parkedAsks    *parkedAsks
+	responseCache *responseCache
 	cfg           *config.Config
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
 	authClient := authstoreclient.New("", "", "llm-bridge-server")
 	hub := newSessionHub(st)
-	st.SetNotifier(hub)
+	// The dashv2 response cache and the SSE hub both need session-row mutation
+	// signals; the store takes a single Notifier, so fan out to both. The cache
+	// invalidates on any change/delete; the hub publishes list deltas as before.
+	respCache := newResponseCache()
+	st.SetNotifier(newNotifierFanout(hub, respCache))
 	srv := &Server{
 		mux:           http.NewServeMux(),
 		store:         st,
@@ -77,6 +82,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		cfState:       newConformanceState(cfg.ConformancePath),
 		sessionHub:    hub,
 		parkedAsks:    newParkedAsks(),
+		responseCache: respCache,
 		cfg:           cfg,
 	}
 	srv.routes()
@@ -116,6 +122,11 @@ func (s *Server) routes() {
 	// Session routes
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
 	s.mux.HandleFunc("GET /session-events", s.handleSessionListEvents)
+	// dashv2 additive endpoints — projected sidebar list, recent-bundle warmer,
+	// and the cheap validators staleness check. See dashv2-architecture.md §5.
+	s.mux.HandleFunc("GET /sessions/summary", s.handleSessionsSummary)
+	s.mux.HandleFunc("GET /sessions/recent-bundle", s.handleRecentBundle)
+	s.mux.HandleFunc("GET /sessions/validators", s.handleSessionsValidators)
 	s.mux.HandleFunc("GET /sessions/search", s.handleSearchSessions)
 	s.mux.HandleFunc("GET /sessions/discover", s.handleDiscoverSessions)
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
