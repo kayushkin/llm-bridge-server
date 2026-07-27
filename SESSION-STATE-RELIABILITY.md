@@ -199,9 +199,36 @@ and either file an upstream fix for the multibyte-title bug or read the title fr
 instead of the OSC callback. Accept its pre-1.0 churn. `hinshun/vt10x` drops to a throwaway
 MVP-only choice given the abandonment risk — not the thing a service depends on.
 
-**Not yet spiked:** the Rust path is validated on maintenance/API/purpose-fit but **not** run here (no
-Rust toolchain on this host). Before committing, stand up a ~30-line `avt` sidecar and replay a real
-captured Claude/Codex PTY transcript through it — the same bar the Go libraries cleared above.
+#### avt sidecar — spiked and validated (`~/dev-spikes/avt-sidecar/`)
+
+Built and ran a Rust `avt` spike against the same crafted transcript the Go libraries used. It passes
+end-to-end and confirms the recommendation:
+
+- **Screen reconstruction correct**, including the alternate-screen buffer: Scenario A →
+  `blocked` (permission_prompt, prio 900, beating the working title); Scenario B → `idle`
+  (prompt_box); raw-byte grep still wrong (`blocked`). Matches the Go result.
+- **The title gap is closed in the sidecar, and correctly.** avt discards the OSC title, so the spike
+  sniffs OSC 0/2 out of the raw stream itself (~15 lines) and recovered the **full multibyte** title —
+  `"⠋ Claude"` / `"✳ Claude"` — i.e. it fixes both avt's discard *and* the multibyte mangling that
+  disqualified x/vt. This is the concrete proof that "sidecar owns the byte stream → title is a
+  non-issue."
+
+**Two gotchas worth carrying into the real build:**
+
+1. **Read the active buffer with `view()`, not `text()`.** avt's `text()` returns the *primary*
+   buffer and is **blank while the app is on the alternate screen** — which is where coding-agent TUIs
+   run essentially always. `view()` (and `dump()`) reflect the active buffer including alt. Using
+   `text()` would silently blank every agent session; the spike hit exactly this and it cost a
+   debug cycle. avt itself tracks alt correctly (`switch_to_alternate_buffer` swaps active/other) — it
+   was purely an accessor choice.
+2. **Title sniffing belongs in the sidecar regardless of emulator**, since it's where the raw bytes
+   are and it sidesteps per-emulator OSC-title bugs entirely.
+
+Build cost was a non-event: `cargo run` pulled `avt` + `regex` and compiled a small binary in seconds;
+nothing touched the Go module. Net: the avt-cored sidecar is the recommended path, now tested to the
+same bar as the Go options. Remaining before implementation: replay a **real** captured Claude/Codex
+PTY transcript (the spike used a faithful synthetic one) and settle the snapshot cadence
+(debounce/settle window) on the sidecar side.
 
 ### C. inber native-emitter parity — MEDIUM
 
