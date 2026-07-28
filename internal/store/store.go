@@ -1369,6 +1369,75 @@ func (s *Store) SetSessionFolder(bridgeID, folder string) error {
 	return nil
 }
 
+// EnsureSubagentSession returns the bridge session id for a harness-internal
+// subagent, creating the row the first time that subagent is seen. It is the
+// live counterpart of UpsertDiscoveredSession: the adapter demuxes a subagent's
+// frames out of the parent process's stream while the run is still in flight,
+// so the session exists before any on-disk rollout scan finds it
+// (TEAM-ORCHESTRATION.md §21.4 step 4).
+//
+// harnessSessionID must be the SAME key the discovery scanner would derive for
+// this subagent — for Claude Code, "agent-<task_id>", matching the
+// `subagents/agent-<task_id>.jsonl` rollout filename. That is what makes the
+// two paths converge on one row instead of minting a duplicate when discovery
+// later walks the same subagent. It is required, not optional: an empty
+// harness_session_id would collapse every subagent onto the same dedupe key
+// (§21.6).
+//
+// The new row is linked to its parent through manager_session_id — the
+// management tree — and marked controlled_by="harness", which is the flag every
+// resume / message / kill caller gates on. That marking matters: the subagent's
+// harness_session_id is an internal agent id, NOT a resumable Claude UUID, so
+// anything that fed it to `claude --resume` would fail (§21.6).
+func (s *Store) EnsureSubagentSession(parent *Session, harnessSessionID, displayName, folderName string) (string, bool, error) {
+	if parent == nil || parent.SessionID == "" {
+		return "", false, fmt.Errorf("EnsureSubagentSession: parent session is required")
+	}
+	if harnessSessionID == "" {
+		return "", false, fmt.Errorf("EnsureSubagentSession: harness_session_id is required as the dedupe key")
+	}
+	if strings.HasPrefix(harnessSessionID, "br_") {
+		return "", false, fmt.Errorf("EnsureSubagentSession: harness_session_id %q has bridge_id prefix — harness bridge is emitting a bridge_session_id in the harness slot (contract violation)", harnessSessionID)
+	}
+
+	existing, err := s.GetSessionByHarnessSessionID(harnessSessionID)
+	if err == nil && existing != nil {
+		return existing.SessionID, false, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return "", false, err
+	}
+
+	// root_session_id denormalizes the top of the tree so "show me this whole
+	// team" is one query instead of a walk up the manager chain. A parent that
+	// is itself top-level has no root of its own and becomes the root here.
+	root := parent.RootSessionID
+	if root == "" {
+		root = parent.SessionID
+	}
+
+	sub := &Session{
+		SessionID:        fmt.Sprintf("br_%d", time.Now().UnixNano()),
+		HarnessSessionID: harnessSessionID,
+		DisplayName:      displayName,
+		Harness:          parent.Harness,
+		InstanceID:       parent.InstanceID,
+		State:            string(msg.SessionRunning),
+		ManagerSessionID: parent.SessionID,
+		RootSessionID:    root,
+		Depth:            parent.Depth + 1,
+		ControlledBy:     "harness",
+		Purpose:          "subagent",
+		Type:             msg.SessionTypeSystem,
+		Origin:           "llm-bridge-" + strings.ReplaceAll(string(parent.Harness), "_", ""),
+		FolderName:       folderName,
+	}
+	if err := s.CreateSession(sub); err != nil {
+		return "", false, err
+	}
+	return sub.SessionID, true, nil
+}
+
 // UpsertDiscoveredSession inserts a discovered session if it doesn't already exist.
 //
 // harnessSessionID is the harness-native session ID (e.g. CC UUID, Codex thread_id,
@@ -1440,9 +1509,22 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 	// bridge_id during the dual-write window; type is empty for
 	// discovery-imported sessions (no caller declared one); origin is the
 	// harness adapter that scanned the on-disk session (e.g. "claude_code"
-	// → "llm-bridge-claudecode"). The original spawner of the underlying
-	// harness session is lost to history — the discovering adapter is the
-	// closest meaningful attribution.
+	// → "llm-bridge-claudecode").
+	//
+	// parent_id is left empty because it is FORK plumbing — it holds a fork
+	// source's harness UUID, and a discovered session was not forked. It is not
+	// the "who spawned me" link; that is manager_session_id.
+	//
+	// This path writes no manager_session_id either, and for a cold-imported
+	// top-level session there is genuinely nothing to write. For a harness
+	// SUBAGENT there is: EnsureSubagentSession promotes it live, while the run
+	// is in flight, and links it to its parent then. Discovery converges onto
+	// that row through the harness_session_id dedupe key above, so a subagent
+	// that was promoted live keeps its lineage. A subagent whose run predates
+	// the live demux — or whose parent process bridge-server never hosted —
+	// still lands here unlinked; for Claude Code the parent's UUID is
+	// recoverable from the rollout path (<parent-uuid>/subagents/agent-*.jsonl),
+	// which is what a backfill would key on.
 	bridgeID := fmt.Sprintf("br_%d", time.Now().UnixNano())
 	origin := "llm-bridge-" + strings.ReplaceAll(harness, "_", "")
 	_, err = s.db.Exec(
