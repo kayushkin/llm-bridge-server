@@ -528,13 +528,16 @@ func (s *Server) handleInterruptSession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if sess.State != string(msg.SessionRunning) {
-		http.Error(w, "session not running", http.StatusConflict)
-		return
-	}
-
+	// The live process registry — not the denormalised state cache — is the
+	// authority on whether there is anything to interrupt. Stop() returns
+	// "session not running" when no live process exists; surface that as the
+	// 409. Interrupting a live-but-idle process is a harmless no-op. The old
+	// `sess.State != running` guard 409'd whenever the session was in
+	// tool_running (a tool in flight — the most common moment a user hits
+	// Stop), silently failing the interrupt. See
+	// docs/findings/2026-07-27-interrupt-dual-emit-turn-hijack.md §2/§5.
 	if err := s.harness.Stop(bridgeID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 
@@ -555,8 +558,16 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if sess.State != string(msg.SessionIdle) {
-		http.Error(w, "session not idle", http.StatusConflict)
+	// The live process registry is the authority on whether the session is
+	// resumable, not the denormalised state cache. A session with a live
+	// process is already running and has nothing to resume (409); one with
+	// no live process is resumable regardless of a stale state string — a
+	// crashed or interrupted session can read "running"/"error" yet have no
+	// process. The old `sess.State != idle` guard mis-classified both. Same
+	// cache-as-authority mistake as interrupt; see
+	// docs/findings/2026-07-27-interrupt-dual-emit-turn-hijack.md §2/§5.
+	if s.harness.Get(bridgeID) != nil {
+		http.Error(w, "session already running", http.StatusConflict)
 		return
 	}
 

@@ -33,6 +33,7 @@ type sessionMsgState struct {
 	toolUseToMessage map[string]store.ToolUseBinding   // tool_use_id → bubble ids, for task_progress correlation
 	clientRequestID  string                            // caller's per-turn id from the latest user_message, "" between turns
 	turnID           string                            // bridge-minted per-turn id, "" between turns
+	turnPromptText   string                            // text of the prompt that opened the current turn, "" between turns; used to recognise Claude Code's OTel echo of that prompt
 }
 
 // StoredEvent pairs an event with its database row ID, assigned at insert time.
@@ -153,15 +154,18 @@ func (m *Manager) loadMsgState(bridgeID string) *sessionMsgState {
 // on every event in the turn, and tracks turn boundaries.
 //
 // Rules:
-//   - user_message: mints a fresh MessageID for the user bubble, mints a fresh
-//     TurnID for the turn, closes any open assistant bubble.
+//   - user_message: mints a fresh MessageID for the user bubble and opens a new
+//     turn (fresh TurnID, closing any open assistant bubble) — UNLESS it is
+//     Claude Code's OTel echo of the prompt that opened the currently-open turn
+//     (source=otel + matching text), in which case it attaches to that turn
+//     instead of minting a second one (Bug 3). The echo is never dropped: in
+//     PTY mode the OTel copy is the only record of the user's input.
 //   - assistant-side events (stream/thinking/tool_call/tool_result/plan/approval/result):
 //     reuse an existing bridge MessageID when the harness id has been seen
 //     before (resume case); split when the harness id changes mid-turn;
 //     otherwise mint a new MessageID on the first event of a bubble.
 //   - result/error: stamp with the in-flight MessageID, then close the turn
-//     (clear MessageID, TurnID, ClientRequestID state).
-//   - session_state leaving running: drop any in-flight turn state.
+//     (clear MessageID, TurnID, ClientRequestID, turnPromptText state).
 //   - system events: no MessageID. TurnID is stamped when one is in-flight.
 //   - everything else (session_info, harness_id_set): no MessageID.
 //
@@ -186,13 +190,31 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 		if ev.MessageID == "" {
 			ev.MessageID = ids.NewMessageID()
 		}
+		// Bug-3 guard: Claude Code reports every prompt twice — once via the
+		// harness/rollout stream and again, ~1s later, via its OTel exporter
+		// tagged extensions.source=="otel". That echo is the SAME logical
+		// prompt, not a new turn, so it must attach to the currently-open
+		// turn instead of minting a second turn_id (which orphaned the real
+		// prompt's turn and split one prompt into two rendered turns). We do
+		// NOT drop the echo: in PTY mode keystrokes never pass through /send,
+		// so the OTel copy is the only record of what the user typed. Match
+		// on source=otel + text equal to the prompt that opened the open
+		// turn. See docs/findings/2026-07-27-interrupt-dual-emit-turn-hijack.md §3.
+		if st.turnID != "" && isOTelUserEcho(ev, st.turnPromptText) {
+			// Attach to the open turn: leave turn/bubble state untouched so
+			// the open assistant bubble isn't closed. ev.TurnID is stamped
+			// from st.turnID at the tail of this method.
+			break
+		}
 		st.bridgeMsgID = ""
 		st.harnessMsgID = ""
 		// Latch the caller's per-turn id so we can stamp it on downstream
 		// events coming back from the harness.
 		st.clientRequestID = ev.ClientRequestID
-		// Open a new turn.
+		// Open a new turn and remember its originating prompt so the OTel
+		// echo of it can be recognised above.
 		st.turnID = ids.NewTurnID()
+		st.turnPromptText = userMessageText(ev)
 
 	case msg.EventStream, msg.EventBlock, msg.EventThinking, msg.EventToolCall,
 		msg.EventToolResult, msg.EventPlan, msg.EventApproval:
@@ -231,15 +253,8 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 		st.harnessMsgID = ""
 		st.clientRequestID = ""
 		st.turnID = ""
+		st.turnPromptText = ""
 		return
-
-	case msg.EventSessionState:
-		if ev.State != nil && ev.State.State != msg.SessionRunning {
-			st.bridgeMsgID = ""
-			st.harnessMsgID = ""
-			st.clientRequestID = ""
-			st.turnID = ""
-		}
 
 	case msg.EventSystem:
 		// task_progress (and any future system event that carries a
@@ -264,6 +279,40 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 	if ev.TurnID == "" {
 		ev.TurnID = st.turnID
 	}
+}
+
+// isOTelUserEcho reports whether ev is Claude Code's OTel echo of the prompt
+// that opened the currently-open turn. Claude Code reports every prompt twice
+// — once via the harness/rollout stream and again, ~1s later, via its OTel
+// exporter tagged extensions.source=="otel". The echo carries the same prompt
+// text, so it must attach to the open turn rather than mint a second turn_id.
+// openPrompt is the text of the prompt that opened the current turn ("" when no
+// turn is open); an empty openPrompt never matches, so a content-less state can
+// never cause a false attach. Matching only against the OPEN turn's prompt is
+// deliberate: an echo arriving after the turn has already closed opens its own
+// (degenerate) turn, which the render edge dedupes by source — see the finding.
+func isOTelUserEcho(ev *msg.Event, openPrompt string) bool {
+	if openPrompt == "" || !isOTelSourced(ev) {
+		return false
+	}
+	return userMessageText(ev) == openPrompt
+}
+
+// isOTelSourced reports whether ev carries extensions.source=="otel", the tag
+// the claudecode harness/sidecar stamps on OTel-derived events so consumers can
+// dedupe them against the same logical signal arriving via the stream-json path.
+func isOTelSourced(ev *msg.Event) bool {
+	return ev != nil && string(ev.Extensions["source"]) == `"otel"`
+}
+
+// userMessageText returns the prompt text carried by a user_message event, or
+// "" when absent. Both the /send path and the OTel translator put the prompt in
+// Result.Text.
+func userMessageText(ev *msg.Event) string {
+	if ev == nil || ev.Result == nil {
+		return ""
+	}
+	return ev.Result.Text
 }
 
 // assignAssistantID picks the bridge MessageID for an assistant-side event.

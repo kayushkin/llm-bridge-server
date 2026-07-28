@@ -9,6 +9,16 @@
 //   MOCK_HARNESS_DELAY_MS    - delay before emitting events in ms (default: "0")
 //   MOCK_HARNESS_FAIL_START  - if "true", exit with error on start
 //   MOCK_HARNESS_EMIT_ERROR  - if "true", emit an error event instead of result
+//
+// Tool-execution phase: every message round-trip now passes through a
+// tool_running state (a tool_call, a session_state=tool_running, and a
+// tool_result) before the terminating result. Per the interrupt-bug
+// finding (docs/findings/2026-07-27-…§5) Claude Code reports tool_running
+// while a tool is in flight — the moment a user most often hits Stop — and
+// the mock previously never left "running", so that failing state was
+// unreachable in tests. A message whose content contains "hang" parks the
+// mock in tool_running until it receives SIGINT (the interrupt path), so a
+// test can deterministically catch the session mid-tool.
 package main
 
 import (
@@ -16,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"time"
@@ -202,6 +213,47 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 		})
 		return
 	}
+
+	// Tool-execution phase. Emit a tool_call, transition to tool_running,
+	// then a tool_result — so the tool-in-flight state is exercised
+	// end-to-end. When routed through bridge-server the harness-emitted
+	// session_state is dropped and tool_running is DERIVED from the
+	// tool_call; the explicit session_state here is for consumers that read
+	// the mock's raw stream directly (the conformance suite).
+	emit(msg.Event{
+		Type:            msg.EventToolCall,
+		Harness:         msg.Harness(harnessName),
+		BridgeSessionID: sessionID,
+		Timestamp:       time.Now(),
+		ToolCall:        &msg.ToolCallEvent{ToolID: "mock-tool-1", Name: "mock_tool", Input: json.RawMessage(`{}`)},
+	})
+	emit(msg.Event{
+		Type:            msg.EventSessionState,
+		Harness:         msg.Harness(harnessName),
+		BridgeSessionID: sessionID,
+		Timestamp:       time.Now(),
+		State:           &msg.StateEvent{State: msg.SessionToolRunning},
+	})
+
+	// Hang mode: park in tool_running until interrupted (SIGINT — the path
+	// Process.Interrupt drives). Block on a signal channel rather than a bare
+	// select{} so Go's deadlock detector doesn't reap the process; on SIGINT
+	// exit cleanly, which the manager observes as the harness exiting. No
+	// tool_result / result / idle is emitted — the interrupt is the terminator.
+	if strings.Contains(strings.ToLower(userMessage), "hang") {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt)
+		<-sigCh
+		os.Exit(0)
+	}
+
+	emit(msg.Event{
+		Type:            msg.EventToolResult,
+		Harness:         msg.Harness(harnessName),
+		BridgeSessionID: sessionID,
+		Timestamp:       time.Now(),
+		ToolResult:      &msg.ToolResultEvent{ToolID: "mock-tool-1", Name: "mock_tool", Output: "mock tool output"},
+	})
 
 	responseText := "Mock response to: " + userMessage
 

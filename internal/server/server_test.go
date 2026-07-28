@@ -444,16 +444,22 @@ func TestInterruptSession_NotFound(t *testing.T) {
 	}
 }
 
-func TestInterruptSession_NotRunning(t *testing.T) {
+// After the Bug-2 fix the interrupt gate keys off the live process registry,
+// not the state cache: with no registered process, Manager.Stop returns
+// "session not running" and the handler surfaces that as 409. The seeded state
+// is deliberately "tool_running" (not "idle") to prove the handler no longer
+// consults the state string — the old guard would have 409'd on tool_running
+// for the WRONG reason.
+func TestInterruptSession_NoLiveProcess(t *testing.T) {
 	srv, st := testServer(t)
 
 	st.CreateSession(&store.Session{
-		SessionID: "br_int", Harness: "mock", State: "idle",
+		SessionID: "br_int", Harness: "mock", State: "tool_running",
 	})
 
 	resp := doJSON(t, srv, "POST", "/sessions/br_int/interrupt", nil)
 	if resp.StatusCode != 409 {
-		t.Errorf("status = %d, want 409 (session not running)", resp.StatusCode)
+		t.Errorf("status = %d, want 409 (no live process)", resp.StatusCode)
 	}
 }
 
@@ -466,7 +472,14 @@ func TestResumeSession_NotFound(t *testing.T) {
 	}
 }
 
-func TestResumeSession_NotIdle(t *testing.T) {
+// After the Bug-2 fix the resume gate keys off the live process registry, not
+// the state cache. A "running"-state session with NO live process is a crashed/
+// interrupted session that IS resumable — the handler no longer 409s on the
+// state string; it falls through to the instance check. With no instance bound
+// this surfaces as 500, proving the stale-state guard is gone (the old guard
+// 409'd here purely because state != idle). The live-process "already running"
+// 409 and the resumable happy path are covered in interrupt_resume_live_test.go.
+func TestResumeSession_NoInstanceBound(t *testing.T) {
 	srv, st := testServer(t)
 
 	st.CreateSession(&store.Session{
@@ -474,8 +487,8 @@ func TestResumeSession_NotIdle(t *testing.T) {
 	})
 
 	resp := doJSON(t, srv, "POST", "/sessions/br_res/resume", nil)
-	if resp.StatusCode != 409 {
-		t.Errorf("status = %d, want 409 (session not idle)", resp.StatusCode)
+	if resp.StatusCode != 500 {
+		t.Errorf("status = %d, want 500 (no instance bound; state guard removed)", resp.StatusCode)
 	}
 }
 
