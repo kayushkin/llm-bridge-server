@@ -204,6 +204,38 @@ func harnessName(binary string) string {
 // Feature tests
 // ──────────────────────────────────────────────────────────────────────────────
 
+// TestMockHarnessEmitsToolRunning locks in the finding-§5 fix: the mock used to
+// emit only "running" at every transition, so the tool-in-flight state — the one
+// the interrupt bug hides in — was unreachable in tests. A message round-trip
+// must now pass through a session_state=tool_running in the raw stream. Scoped
+// to the reference mock (skipped for an override harness, which derives state
+// centrally rather than emitting it raw).
+func TestMockHarnessEmitsToolRunning(t *testing.T) {
+	if os.Getenv("CONFORMANCE_HARNESS") != "" {
+		t.Skip("raw-stream tool_running is a mock-harness guarantee; skipping for override harness")
+	}
+	binary := targetHarness(t)
+	hp := startHarness(t, binary)
+	defer hp.close()
+
+	if err := hp.send("start", map[string]any{"session_id": "test-tool-running"}); err != nil {
+		t.Fatalf("send start: %v", err)
+	}
+	if _, err := hp.waitForEvent(10*time.Second, func(e msg.Event) bool {
+		return e.Type == msg.EventSessionState && e.State != nil && e.State.State == msg.SessionRunning
+	}); err != nil {
+		t.Fatalf("wait for running: %v", err)
+	}
+	if err := hp.send("message", map[string]any{"content": "run a tool"}); err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if _, err := hp.waitForEvent(10*time.Second, func(e msg.Event) bool {
+		return e.Type == msg.EventSessionState && e.State != nil && e.State.State == msg.SessionToolRunning
+	}); err != nil {
+		t.Fatalf("mock-harness never emitted tool_running on a message round-trip: %v", err)
+	}
+}
+
 func TestConformance(t *testing.T) {
 	binary := targetHarness(t)
 	name := harnessName(binary)
