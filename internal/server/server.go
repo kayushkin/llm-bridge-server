@@ -417,6 +417,13 @@ func (s *Server) handleSessionAggregates(w http.ResponseWriter, r *http.Request)
 func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	endpoint := path.Base(r.URL.Path) // "messages" or "history"
+
+	// The harness pump writes to log-store through an ordered queue, so
+	// drain this session's queue first. Without it a client loading the
+	// conversation mid-turn can render history that stops short of what
+	// the pump has already streamed to it over SSE.
+	s.harness.FlushLogStoreWrites(id)
+
 	target := fmt.Sprintf("%s/api/v1/sessions/%s/%s", s.cfg.LogStoreURL, id, endpoint)
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery

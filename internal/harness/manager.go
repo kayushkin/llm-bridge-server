@@ -54,6 +54,7 @@ type Manager struct {
 	pending         *pendingHooks                 // awaiting_resolution hooks indexed by sessionID, request_id
 	store           *store.Store
 	logStore        *logstore.Client
+	logStoreWrites  *logStoreQueue  // ordered per-session writer; keeps the log-store POST off the SSE fan-out path
 	runners         *RunnerRegistry // optional; nil disables TransportRunner spawns
 	authClient      *authstoreclient.Client
 	publicServerURL string          // public bridge URL runners use for /api/runner/binary fetches
@@ -76,7 +77,8 @@ type Manager struct {
 // ptyRingBytes is the per-session ring buffer size used for late-attach
 // replay on pty sessions. <=0 falls back to the package default.
 func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL string, ptyRingBytes int, authClient *authstoreclient.Client) *Manager {
-	return &Manager{
+	ls := logstore.New(logStoreURL)
+	m := &Manager{
 		processes:       make(map[string]HarnessProcess),
 		subscribers:     make(map[string][]chan StoredEvent),
 		msgState:        make(map[string]*sessionMsgState),
@@ -85,13 +87,15 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL st
 		otelSidecars:    make(map[string]*otelSidecar),
 		pending:         newPendingHooks(),
 		store:           st,
-		logStore:        logstore.New(logStoreURL),
+		logStore:        ls,
 		runners:         NewRunnerRegistry(),
 		authClient:      authClient,
 		publicServerURL: publicServerURL,
 		localBridgeURL:  localBridgeURL,
 		ptyRingBytes:    ptyRingBytes,
 	}
+	m.logStoreWrites = newLogStoreQueue(ls.PushEvent)
+	return m
 }
 
 // PendingHooks returns the awaiting_resolution HookEvents currently
@@ -507,6 +511,12 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 	bridgeID := proc.SessionID()
 	harnessIDSet := false
 
+	// The session's log-store write queue lives exactly as long as this
+	// pump. Closed in the exit path below, which drains it, so a session
+	// whose process has gone is complete in log-store before its
+	// subscribers are told the stream ended.
+	m.logStoreWrites.Open(bridgeID)
+
 	for event := range proc.Events() {
 		// Drop harness-emitted EventSessionState entirely. SessionState
 		// is derived centrally from the raw event stream + server-only
@@ -583,10 +593,15 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 			}
 		}
 
-		// Push to log-store (durable source of truth)
-		if _, err := m.logStore.PushEvent(event); err != nil {
-			log.Printf("[harness] failed to push event to log-store: %v", err)
-		}
+		// Push to log-store (durable source of truth). Queued rather than
+		// written here: the POST used to sit in front of the fan-out
+		// below, so every token delta the browser was waiting on paid a
+		// round trip first. The queue keeps write order per session and
+		// blocks rather than drops when it fills; the read-back paths
+		// (RecoverInFlightTurn, PendingTurnMessage, RecentTurnTexts,
+		// ListToolCallInputs) and the synchronous /send push drain it
+		// first, so nothing observes a half-written session.
+		m.logStoreWrites.Enqueue(bridgeID, "event", event)
 
 		// Update bookkeeping based on event type. SessionState row
 		// updates are owned by the derivation path (deriveAndBroadcast
@@ -662,7 +677,11 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 		m.deriveAndBroadcast(bridgeID, &event)
 	}
 
-	// Process exited — close all subscriber channels
+	// Process exited — drain everything still queued for log-store before
+	// tearing the session down, so the durable history is complete.
+	m.logStoreWrites.Close(bridgeID)
+
+	// Close all subscriber channels
 	m.mu.Lock()
 	for _, ch := range m.subscribers[bridgeID] {
 		close(ch)
@@ -751,9 +770,7 @@ func (m *Manager) broadcastDerived(bridgeID string, ev *msg.Event) {
 			log.Printf("[harness] failed to store derived event: %v", storeErr)
 		}
 	}
-	if _, err := m.logStore.PushEvent(*ev); err != nil {
-		log.Printf("[harness] failed to push derived event to log-store: %v", err)
-	}
+	m.logStoreWrites.Enqueue(bridgeID, "derived event", *ev)
 
 	stored := StoredEvent{Event: *ev, RowID: rowID}
 	m.mu.RLock()
@@ -876,7 +893,11 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 	// log-store, causing II.A dual-write parity drift (see audit
 	// 2026-05-11). Errors are returned — callers that don't care wrap and
 	// log; callers that do care (e.g. /send) propagate.
-	if _, err := m.logStore.PushEvent(*ev); err != nil {
+	// This one stays on the caller's goroutine because the error is
+	// returned, not logged: PushSync drains the session's write queue
+	// first so the event still lands after everything the pump queued
+	// before it, then writes it here and hands back the real failure.
+	if _, err := m.logStoreWrites.PushSync(bridgeID, *ev); err != nil {
 		return rowID, fmt.Errorf("push to log-store: %w", err)
 	}
 
@@ -912,11 +933,26 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 	return rowID, nil
 }
 
+// FlushLogStoreWrites blocks until every event queued for bridgeID has
+// reached log-store. The manager's own read-backs call this internally;
+// it is exported for the HTTP layer, which proxies a session's message
+// history straight to log-store and would otherwise render a
+// conversation missing whatever the pump has queued but not yet written.
+func (m *Manager) FlushLogStoreWrites(bridgeID string) {
+	m.logStoreWrites.Flush(bridgeID)
+}
+
 // RecoverInFlightTurn reads log-store to reconstruct turn-level state for a
 // session whose process is restarting. Replaces the legacy
 // store.RecoverInFlightTurn local-DB query as part of Phase II.A cutover.
 // Returns (nil, nil) when no turn is in flight; errors propagate.
 func (m *Manager) RecoverInFlightTurn(bridgeID string) (*store.InFlightTurnState, error) {
+	// Read-after-write: the pump writes to log-store through an ordered
+	// queue, so drain it before reading back or this can miss the turn it
+	// is trying to recover. Cheap on the path that matters — loadMsgState
+	// reaches here holding the manager lock, but only on a session's first
+	// event, when the queue the pump just opened is still empty.
+	m.logStoreWrites.Flush(bridgeID)
 	ts, err := m.logStore.GetTurnState(bridgeID)
 	if err != nil {
 		return nil, fmt.Errorf("turn-state: %w", err)
@@ -966,6 +1002,7 @@ func (m *Manager) RecoverInFlightTurn(bridgeID string) (*store.InFlightTurnState
 // PendingTurnMessage returns the text of the most recent user_message when no
 // terminator follows it. Replaces store.PendingTurnMessage's local-DB query.
 func (m *Manager) PendingTurnMessage(bridgeID string) (string, bool, error) {
+	m.logStoreWrites.Flush(bridgeID)
 	ts, err := m.logStore.GetTurnState(bridgeID)
 	if err != nil {
 		return "", false, fmt.Errorf("turn-state: %w", err)
@@ -994,6 +1031,7 @@ func (m *Manager) PendingTurnMessage(bridgeID string) (string, bool, error) {
 // produce up to limit recent (user, assistant) text pairs, oldest first.
 // Replaces store.RecentTurnTexts.
 func (m *Manager) RecentTurnTexts(bridgeID string, limit int) ([]store.TurnText, error) {
+	m.logStoreWrites.Flush(bridgeID)
 	events, err := m.logStore.ListEvents(bridgeID, 0, []string{"user_message", "result"})
 	if err != nil {
 		return nil, fmt.Errorf("events: %w", err)
@@ -1038,6 +1076,7 @@ func (m *Manager) RecentTurnTexts(bridgeID string, limit int) ([]store.TurnText,
 // in the session, oldest first. Empty/null inputs are skipped. Replaces
 // store.ListToolCallInputs.
 func (m *Manager) ListToolCallInputs(bridgeID string) ([]json.RawMessage, error) {
+	m.logStoreWrites.Flush(bridgeID)
 	events, err := m.logStore.ListEvents(bridgeID, 0, []string{"tool_call"})
 	if err != nil {
 		return nil, fmt.Errorf("tool_call events: %w", err)
