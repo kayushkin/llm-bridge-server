@@ -188,26 +188,81 @@ func supportedPermissionModesFor(h msg.Harness) []string {
 //     here rather than left showing a button that does nothing; nanoclaw was
 //     already withheld. Fixing either needs its own protocol work — nanoclaw's
 //     container contract does not cover compaction and no image implements it.
+//
+// The remaining six columns were audited the same way on 2026-07-31, against
+// each harness's origin/main (not whatever branch its checkout happened to
+// have out). What the audit had to establish first is that only two things
+// reach a running harness from this server: the bare "compact" / "compact:
+// <summary>" method, and "config:<json>" carrying msg.ConfigSessionRequest —
+// its four fields model / effort / disabled_tools / max_budget are the entire
+// mid-session vocabulary. Manager.SendJSONRPC has no caller here, so every
+// harness's set_model, fork and interrupt JSON-RPC method is unreachable from
+// this gateway however well it is written, and POST /sessions/{id}/interrupt
+// is SIGINT (process.go Interrupt), not a request. "fork" is start-params
+// only: buildStartParams sets params.Fork from the parent's harness UUID.
+//
+// The grading rule, so a future entry is decidable rather than a matter of
+// taste: a capability is granted when the control it gates changes something
+// for a session that is already running. Storing a value and applying it at
+// the next spawn counts (jig) — the user's choice takes effect. Refusing it
+// and keeping the old value does not (claude_code effort / max_budget /
+// disabled_tools, which answer "spawn-time only, unchanged" and return an
+// error), and neither does parsing a field and never reading it (mock's fork,
+// nanoclaw's, aider's, forgecode's).
+//
+// Per column, with the implementation each claim names:
+//
+//   - model: claude_code (handleSessionConfig -> handleSetModel, live),
+//     codex (HandleConfig -> cfg.CodexModel, next turn), inber (POST
+//     /sessions/{id}/config -> Engine.SetModel), cline (-m on the next
+//     one-shot turn), jig (patches the profile, next spawn). Withheld from
+//     everything else, and the reasons differ: openclaw hardcodes the literal
+//     model "openclaw", kilo_code and nanoclaw plumb no model at all,
+//     forgecode's own README says the -m it passes is inert, aider fixes the
+//     model at start, hermes and the six scaffolds have no config: branch.
+//   - effort: codex, inber, jig. claude_code takes --effort at spawn and says
+//     so; cline refuses it by name.
+//   - tools: this one column gates two different controls, and no harness
+//     earns both halves — the chat pane's Tools button reads SessionInfo.Tools,
+//     the settings pane's grid writes disabled_tools. Granted where either
+//     half is real, and which half differs: claude_code and mock report a tool
+//     list and refuse to disable; inber and jig disable for real and report
+//     nothing. Splitting the column is noteboard todo f8035505's sibling.
+//   - budget: jig only. inber refuses it outright and explains why (the bridge
+//     sends dollars, inber's config takes input tokens); claude_code takes
+//     --max-budget-usd at spawn; nobody else parses the field.
+//   - fork: claude_code and jig (--resume <uuid> --fork-session), codex
+//     (thread/fork), inber (POST /sessions/{id}/fork, deep-copies messages),
+//     kilo_code (POST /session/{id}/fork). Withheld from hermes, which fails
+//     the start outright with FORK_UNSUPPORTED, and from cline, whose "fork"
+//     passes the parent id to the same -T flag resume uses, so both sessions
+//     write into one task and nothing branches.
+//   - system_prompt: claude_code and mock. It is a reporting capability — the
+//     button renders SessionInfo.SystemPrompt — and codex, hermes, inber and
+//     jig emit no SessionInfo event at all, so the button had nothing to show.
+//
+// "interrupt" is gone: it was on hermes alone, it named a JSON-RPC method this
+// server never sends, and no UI reads the column.
 var harnessCapabilities = map[msg.Harness][]string{
-	msg.HarnessClaudeCode: {"compact", "fork", "model", "effort", "tools", "budget", "system_prompt"},
-	msg.HarnessCodex:      {"compact", "fork", "model", "effort", "system_prompt"},
-	msg.HarnessOpenClaw:   {"model", "effort"},
-	msg.HarnessInber:      {"compact", "fork", "model", "effort", "tools", "budget"},
-	msg.HarnessHermes:     {"model", "fork", "effort", "tools", "system_prompt", "interrupt"},
-	msg.HarnessAider:      {"model"},
-	msg.HarnessGoose:      {"model"},
-	msg.HarnessAutohand:   {"model"},
-	msg.HarnessJig:        {"compact", "model"},
-	msg.HarnessDexto:      {"model"},
-	msg.HarnessCommander:  {"model"},
-	msg.HarnessNanoClaw:   {"model"},
+	msg.HarnessClaudeCode: {"compact", "fork", "model", "tools", "system_prompt"},
+	msg.HarnessCodex:      {"compact", "fork", "model", "effort"},
+	msg.HarnessOpenClaw:   {},
+	msg.HarnessInber:      {"compact", "fork", "model", "effort", "tools"},
+	msg.HarnessHermes:     {},
+	msg.HarnessAider:      {},
+	msg.HarnessGoose:      {},
+	msg.HarnessAutohand:   {},
+	msg.HarnessJig:        {"compact", "fork", "model", "effort", "tools", "budget"},
+	msg.HarnessDexto:      {},
+	msg.HarnessCommander:  {},
+	msg.HarnessNanoClaw:   {},
 	msg.HarnessCline:      {"model"},
-	msg.HarnessRooCode:    {"model"},
-	msg.HarnessKiloCode:   {"compact", "model"},
-	msg.HarnessOpenCode:   {"model"},
-	msg.HarnessForgecode:  {"model"},
-	msg.HarnessGemini:     {"model"},
-	msg.HarnessMock:       {"compact", "fork", "model", "effort"},
+	msg.HarnessRooCode:    {},
+	msg.HarnessKiloCode:   {"compact", "fork"},
+	msg.HarnessOpenCode:   {},
+	msg.HarnessForgecode:  {},
+	msg.HarnessGemini:     {},
+	msg.HarnessMock:       {"compact", "tools", "system_prompt"},
 }
 
 // disabledHarnesses names canonical harnesses (msg.AllHarnesses) that this
