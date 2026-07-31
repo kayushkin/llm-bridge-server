@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -78,6 +79,77 @@ type AuditEntry struct {
 
 // --- Store --------------------------------------------------------------
 
+// dsnParams configures every connection modernc.org/sqlite opens.
+//
+// _pragma=NAME(VALUE) is the ONLY pragma syntax this driver understands, and it
+// silently ignores DSN keys it does not recognise rather than rejecting them.
+// This store shipped with the mattn-style "?_journal_mode=WAL&_busy_timeout=5000",
+// which applied neither and said nothing: the live database at
+// ~/.config/permission-store/permission-store.db read byte 18 of its header as 1,
+// the rollback journal, and every contended statement failed on the spot instead
+// of waiting the 5 seconds this line claimed to ask for.
+//
+// journal_mode is deliberately not in here. It is a property of the file rather
+// than of a connection, and changing it needs a lock the driver cannot wait for
+// where it replays DSN pragmas. See switchJournalMode.
+const dsnParams = "_pragma=busy_timeout(5000)"
+
+// busyTimeoutMilliseconds is how long a contended statement waits for a lock. It
+// is the value spelled into dsnParams above, named here so the conversion below
+// can be given the same patience rather than a second number of its own.
+const busyTimeoutMilliseconds = 5000
+
+// journalMode is the journal this database ends up in. WAL lets readers run
+// while a writer holds the file, which is the whole reason to convert at all.
+const journalMode = "WAL"
+
+// switchJournalMode moves the database file into journalMode, waiting out
+// another process converting the same fresh file.
+//
+// Switching a rollback-journal database into WAL takes a brief exclusive lock,
+// and that one statement is the only part of opening a store that busy_timeout
+// cannot mediate. Measured in memory-store, four connections racing to convert
+// one fresh file, 160 opens per row:
+//
+//	journal_mode alone              120 failed
+//	busy_timeout + journal_mode       1 failed, after 2ms
+//	busy_timeout(30000) + same        2 failed, after 1ms
+//
+// The third row is the finding: six times the timeout changes nothing and the
+// failure still lands in a millisecond, so the wait is never being entered.
+// SQLite declines to run the busy handler when a connection has to upgrade a
+// lock it already holds, because waiting there is how two connections deadlock;
+// it returns SQLITE_BUSY on the spot instead. A longer timeout has nothing to
+// give, so the wait has to be ours.
+//
+// Retrying converges because the race is only ever over the first conversion:
+// once any process has won it the file is in WAL, and every later connection
+// reads the mode back instead of changing it.
+func switchJournalMode(db *sql.DB) error {
+	deadline := time.Now().Add(busyTimeoutMilliseconds * time.Millisecond)
+
+	var settled string
+	var err error
+	for backoff := time.Millisecond; ; backoff += time.Millisecond {
+		err = db.QueryRow("PRAGMA journal_mode(" + journalMode + ")").Scan(&settled)
+		if err == nil && strings.EqualFold(settled, journalMode) {
+			return nil
+		}
+		if !time.Now().Add(backoff).Before(deadline) {
+			break
+		}
+		time.Sleep(backoff)
+	}
+
+	if err != nil {
+		return fmt.Errorf("switch journal mode to %s: %w", journalMode, err)
+	}
+	// A lost race can also come back quietly, reporting the mode it stayed on
+	// rather than an error, and a database left on the rollback journal is the
+	// serialized queue WAL exists to prevent.
+	return fmt.Errorf("journal mode settled on %q, want %s", settled, journalMode)
+}
+
 // Store wraps the SQLite handle and exposes typed accessors. Concurrency:
 // modernc.org/sqlite + WAL still leaks SQLITE_BUSY under concurrent writers,
 // so the connection pool is pinned to 1.
@@ -102,11 +174,16 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
 
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	db, err := sql.Open("sqlite", path+"?"+dsnParams)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+
+	if err := switchJournalMode(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open db: %w", err)
+	}
 
 	s := &Store{db: db, path: path}
 	if err := s.migrate(); err != nil {
