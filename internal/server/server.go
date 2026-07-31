@@ -17,6 +17,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -50,10 +51,14 @@ type Server struct {
 	harness       *harness.Manager
 	authClient    *authstoreclient.Client
 	permClient    *permclient.Client
-	bridgePrefs   *bridgePrefsStore
-	cfState       *conformanceState
-	sessionHub    *sessionHub
-	parkedAsks    *parkedAsks
+	// kanbanClient answers "which noteboard todo is this session linked
+	// to?" when a signal is minted. Nil when kanban-store has no configured
+	// URL, which leaves every signal unlinked rather than guessing.
+	kanbanClient *kanbanclient.Client
+	bridgePrefs  *bridgePrefsStore
+	cfState      *conformanceState
+	sessionHub   *sessionHub
+	parkedAsks   *parkedAsks
 	// signalClassifier is the derived signal producer: a cheap-model pass
 	// over each turn-end. Nil only in tests that never exercise it.
 	signalClassifier *signalClassifier
@@ -76,6 +81,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		harness:       harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
 		authClient:    authClient,
 		permClient:    permclient.New(cfg.PermissionStoreURL),
+		kanbanClient:  newKanbanClient(cfg.KanbanStoreURL),
 		bridgePrefs:   newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfState:       newConformanceState(cfg.ConformancePath),
 		sessionHub:    hub,

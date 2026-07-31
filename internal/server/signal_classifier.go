@@ -472,15 +472,16 @@ func (s *Server) recordDerivedSignal(sess *store.Session, verdict *turnClassific
 	}
 
 	signal := &msg.Signal{
-		ID:          ids.NewSignalID(),
-		SessionID:   sess.SessionID,
-		SessionType: sess.Type,
-		Kind:        kind,
-		Source:      msg.SignalSourceDerived,
-		Surface:     signalSurfaceForSession(sess),
-		Title:       title,
-		Body:        strings.TrimSpace(verdict.Body),
-		State:       msg.SignalStateOpen,
+		ID:           ids.NewSignalID(),
+		SessionID:    sess.SessionID,
+		SessionType:  sess.Type,
+		Kind:         kind,
+		Source:       msg.SignalSourceDerived,
+		Surface:      signalSurfaceForSession(sess),
+		Title:        title,
+		Body:         strings.TrimSpace(verdict.Body),
+		State:        msg.SignalStateOpen,
+		LinkedTodoID: s.linkedTodoForSession(sess.SessionID),
 	}
 
 	if kind == msg.SignalKindQuestion {

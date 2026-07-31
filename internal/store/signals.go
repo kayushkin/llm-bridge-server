@@ -20,6 +20,11 @@ type SignalFilter struct {
 	State     msg.SignalState
 	Surface   msg.SignalSurface
 	Kind      msg.SignalKind
+	// LinkedTodoID narrows to the signals propagated to one noteboard todo.
+	// This is the query a todo surface makes to decide whether to show a
+	// badge, so it must never match the unlinked rows: an empty filter means
+	// "don't narrow", never "the ones with no link".
+	LinkedTodoID string
 	// Limit caps the returned rows. Zero means no cap.
 	Limit int
 }
@@ -49,6 +54,7 @@ func (s *Store) migrateSignals() error {
 		CREATE INDEX IF NOT EXISTS idx_signals_session ON signals(session_id);
 		CREATE INDEX IF NOT EXISTS idx_signals_state ON signals(state);
 		CREATE INDEX IF NOT EXISTS idx_signals_request ON signals(session_id, request_id) WHERE request_id != '';
+		CREATE INDEX IF NOT EXISTS idx_signals_todo ON signals(linked_todo_id) WHERE linked_todo_id != '';
 	`)
 	return err
 }
@@ -162,6 +168,10 @@ func (s *Store) ListSignals(filter SignalFilter) ([]Signal, error) {
 	if filter.Kind != "" {
 		query += ` AND kind=?`
 		args = append(args, string(filter.Kind))
+	}
+	if filter.LinkedTodoID != "" {
+		query += ` AND linked_todo_id=?`
+		args = append(args, filter.LinkedTodoID)
 	}
 	// created_at ties are common (one AskUserQuestion mints a row per
 	// question in the same millisecond), so id breaks the tie — without it

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -83,6 +84,9 @@ func (s *Server) recordAskUserQuestionSignals(bridgeID string, sess *store.Sessi
 		sessionType = sess.Type
 	}
 	surface := signalSurfaceForSession(sess)
+	// One lookup for the whole request: every question in it belongs to the
+	// same session, so they all propagate to the same todo.
+	linkedTodoID := s.linkedTodoForSession(bridgeID)
 
 	for _, question := range input.Questions {
 		options := make([]msg.SignalOption, 0, len(question.Options))
@@ -110,6 +114,7 @@ func (s *Server) recordAskUserQuestionSignals(bridgeID string, sess *store.Sessi
 			// answer is accepted whether or not the model offered options.
 			AllowFreeform: true,
 			State:         msg.SignalStateOpen,
+			LinkedTodoID:  linkedTodoID,
 		}
 		if err := s.store.CreateSignal(signal); err != nil {
 			log.Printf("[signals] %s/%s: persist signal: %v", bridgeID, requestID, err)
@@ -241,6 +246,17 @@ func signalFilterFromQuery(r *http.Request) (store.SignalFilter, error) {
 		default:
 			return filter, errBadEnum("surface", v, "chat|kanban")
 		}
+	}
+	// A todo surface asks "are any signals open against this todo?". Present
+	// but empty is a 400 rather than "don't narrow": a caller that meant to
+	// pass a todo id and passed nothing would otherwise get every signal in
+	// the store and badge itself on somebody else's question.
+	if q.Has("linked_todo_id") {
+		v := strings.TrimSpace(q.Get("linked_todo_id"))
+		if v == "" {
+			return filter, errBadEnum("linked_todo_id", q.Get("linked_todo_id"), "a noteboard todo id")
+		}
+		filter.LinkedTodoID = v
 	}
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)

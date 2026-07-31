@@ -400,3 +400,107 @@ failure path — timeout, transport error, unparseable verdict, no credential �
 session exactly as the heuristic left it and records nothing. A signal is an extra
 surface on top of a turn that already completed; no failure to produce one may change how
 the turn itself resolved.
+
+---
+
+## P5 as built (2026-07-31)
+
+`linked_todo_id` is filled in, and a todo carrying an open signal says so on its card.
+
+| Piece | File |
+|---|---|
+| The join, as a client | `internal/kanbanclient/client.go` (`LinkedTodoForSession`) |
+| Resolved once per signal mint | `internal/server/signal_todo_link.go` |
+| Stamped by the tool producer | `internal/server/signals.go` |
+| Stamped by the derived producer | `internal/server/signal_classifier.go` |
+| Read API: `?linked_todo_id=` | `internal/server/signals.go`, `internal/store/signals.go` |
+| Deterministic link order | `kanban-store` `internal/db/db.go` (`ListCardsByEntity`) |
+| The badge | `bridge-ui` `src/components/BridgeKanban.tsx` (`SignalBadge`) |
+
+Env: `LLMBRIDGE_KANBAN_STORE_URL` (default `http://localhost:8305`; **empty turns the
+lookup off** and every signal is minted unlinked).
+
+### The join already existed, in one place
+
+`card_links(card_id, entity_type='session', entity_ref=<bridge session id>)` in
+kanban-store, read back as `GET /api/entities/session/{id}/cards`. **A card id IS a
+noteboard item id** — kanban-store has no cards table, only placements and links against
+the noteboard item — so those card ids are todo ids directly, with no second join.
+
+Nothing else ties the two together. bridge-server's session record carries no todo field
+of any kind, noteboard's item carries no session field, and the `session=<id>` lines the
+autoworker and the classifier write into card bodies are prose, not a join. So the
+lookup goes to the service that owns the link and asks it, rather than growing a column
+somewhere to cache the answer.
+
+### The five things not to re-derive
+
+**1. Oldest link wins, and the ordering belongs to kanban-store.**
+One session is often linked to several cards: the autoworker links its dispatch todo at
+fire time, and the kanban classifier links a card per piece of work it later recognizes.
+The record holds one `linked_todo_id`, so something has to choose. The choice is the
+**oldest** link — a session's reason for existing is recorded before it does anything,
+so the first link is the todo the session is *for* and every later one describes work it
+has since done. That rule needs no label allowlist, and it reads the same for a chat
+session as for a worker.
+
+Making it reachable took a fix in kanban-store: `ListCardsByEntity` was
+`SELECT DISTINCT card_id` with **no ORDER BY**, so the order was whatever SQLite found
+convenient. It happens to be insertion order today and stops being it the moment the
+planner picks the `(entity_type, entity_ref)` index. A caller that reads row 0 was
+relying on unspecified behaviour. Now `GROUP BY card_id ORDER BY MIN(created_at),
+card_id`. The order cannot diverge from insertion order through the HTTP API (created_at
+is stamped at insert), which is why the curative test inserts rows directly with
+out-of-step timestamps — through the API the old code passes.
+
+**2. Resolved at mint time, and that has a consequence worth stating.**
+The record is the source of truth for what was true when the signal was raised, and a
+read-time join would call kanban-store once per inbox row. So the lookup runs once, when
+the signal is minted.
+
+The consequence: **a session that acquires its first link after raising a signal leaves
+that signal unlinked forever.** That is the autoworker case working and the chat case
+mostly not — the autoworker links its dispatch todo before the session starts, while the
+kanban classifier links a chat session's work up to fifteen minutes later. This is not a
+gap to paper over with a back-fill. An empty `linked_todo_id` is the truth about that
+moment; claiming a link the signal was not raised under would be worse than claiming
+none.
+
+**3. A failed lookup costs the pointer, never the signal.**
+kanban-store down, wedged, absent from config, or answering junk — every one logs and
+returns `""`. A signal is an extra surface on top of work that already happened; losing
+the todo pointer must not lose the signal. Verified curative: making the lookup fatal
+fails the "still recorded" test three ways (500, garbage body, unreachable host).
+
+**4. `?linked_todo_id=` with an empty value is a 400, not "everything".**
+Same reasoning as the enum params: a todo view that meant to name its todo and named
+nothing would otherwise receive every signal in the store and badge itself with another
+todo's question. Omitting the parameter still means "don't narrow" — the two are
+distinguished with `q.Has`, not `q.Get(…) != ""`.
+
+**5. The board fetches once; a single-todo view narrows server-side.**
+`useOpenSignalsByTodo` makes **one** `?state=open` request per board and groups the
+result by todo, because the open set is small by construction (at most one derived row
+per session, plus whatever tool asks are parked) and one request per card would be N
+requests for a list the server can hand over whole. `fetchOpenSignalsForTodo` is the
+other shape — `?linked_todo_id=` — for a view that already knows its one todo. Rows with
+an empty `linked_todo_id` are dropped from the grouping: an unlinked signal belongs to no
+todo, not to "the todo with the empty id".
+
+Surface is deliberately **not** filtered for the badge. A todo is worked by chat sessions
+and by autonomous workers alike, and the badge answers "does this work need me?", which
+is true of a signal on either surface.
+
+### What P5 does not do
+
+The badge states the problem and does not offer to solve it: it names the leading signal
+and its kind, and answering happens where a resolve verb exists — the chat, the inbox, or
+the RefChip panel. An answer box on a board card would promise a resolution the board
+cannot deliver, because **notifications still have no acknowledge verb** (P4's) and
+`surface:"kanban"` still has no full card mount (also P4's). When P4 lands, the mount
+goes in the card drawer and the badge stays what it is — the thing you can see without
+opening anything.
+
+dash's `/notes` page is a separate, dash-local React page that talks to noteboard
+directly; it is not a bridge-ui surface and gets no badge here. `?linked_todo_id=` is the
+query it would use.

@@ -35,6 +35,11 @@ type Config struct {
 	// consulted by the PreToolUse permission-prehook handler. Defaults to
 	// localhost:8304.
 	PermissionStoreURL string
+	// KanbanStoreURL is the base URL of the kanban-store service, which owns
+	// the session↔noteboard-todo link a signal propagates to. Configured via
+	// LLMBRIDGE_KANBAN_STORE_URL; empty switches the lookup off entirely and
+	// every signal is minted unlinked.
+	KanbanStoreURL   string
 	SnapshotStoreDB  string
 	SnapshotStoreGit string
 	// SourceFolders maps CreateSessionRequest.Purpose values to the folder a
@@ -104,6 +109,7 @@ func Load() *Config {
 		PublicURL:       os.Getenv("LLMBRIDGE_PUBLIC_URL"),
 		ToolStoreURL:    envOr("LLMBRIDGE_TOOL_STORE_URL", "http://localhost:8302"),
 		PermissionStoreURL: envOr("LLMBRIDGE_PERMISSION_STORE_URL", "http://localhost:8304"),
+		KanbanStoreURL:     envOr("LLMBRIDGE_KANBAN_STORE_URL", "http://localhost:8305"),
 		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.db")),
 		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.git")),
 		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled,harness-watch:Scheduled,healthcheck:Scheduled,renamer:Auto-rename,conformance:Conformance,subagent:Subagents,workflow-subagent:Subagents")),
