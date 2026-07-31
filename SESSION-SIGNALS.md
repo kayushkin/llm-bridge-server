@@ -255,3 +255,69 @@ a parked `AskUserQuestion`: no derived pass (P3), no notification producer (P4),
 autonomous worker signal, because an autonomous `AskUserQuestion` is still denied before it
 can park. So `surface:"kanban"` is reachable in the type and the query but nothing mints one
 yet — P4 is what starts. `linked_todo_id` is likewise carried and never set (P5).
+
+---
+
+## P2 as built (2026-07-31)
+
+The card exists and mounts in all three chat surfaces. Branch: `bridge-ui`
+`feat/session-signals-p2` (`a38e79c`, **pushed**). Nothing on the server changed.
+
+**Not mergeable to `bridge-ui` main yet.** `msg.Signal` lives on `llm-bridge`'s
+`feat/session-signal-record` branch, so a clean clone of bridge-ui main beside llm-bridge
+main would not build — and `repo-node-guard` audits exactly that pairing nightly. Merge
+after the record lands on llm-bridge main.
+
+**What is there.**
+
+| Piece | File |
+|---|---|
+| The card — one signal, by kind | `bridge-ui/src/components/chat/SignalCard.tsx` (`SignalCard`) |
+| The unit that resolves — one parked request | same file (`SignalRequestCard`) |
+| Read + resolve client, cross-surface refresh | `bridge-ui/src/components/chat/signalData.ts` |
+| The two self-fetching surfaces | `bridge-ui/src/components/chat/SessionSignals.tsx` (`SessionSignals`, `SignalsInbox`) |
+| Mount 1 — raising session's chat | `components/chat/Workspace.tsx`, beside `PendingPermissionsBanner` |
+| Mount 2 — "Needs you" inbox | `components/chat/SessionList.tsx`, under the harness filter bar |
+| Mount 3 — RefChip session panel | `components/chat/refChips/RefChip.tsx`, under the State row |
+
+**Five things not to re-derive.**
+
+1. **The card renders a signal; the REQUEST is what resolves.** One `AskUserQuestion` mints
+   several rows sharing a `request_id`, and resolving that request answers all of them at
+   once — so Submit stays disabled until every question in the request has an answer.
+   Answering one row in isolation would resolve the whole request with the rest blank.
+2. **Do not rebuild the tool input from the signal rows.** The resolve verb replaces the
+   tool input *wholesale*, and the record carries no `multiSelect` and no option previews, so
+   a rebuilt input silently downgrades the call. The client fetches the parked input from
+   `GET /sessions/{id}/hooks/pending` and posts it back untouched under `answers`. If the
+   request is no longer parked, that is an error the user sees — not a resolve posted into
+   the void.
+3. **The chat mount excludes request_ids the pending-hook banner is already showing.**
+   Both render the same parked question, and the banner renders it better (it has the live
+   tool input). What is left for the card in-session is what the banner cannot show: a
+   signal whose park died with a harness restart, and — once P3 lands — derived ones.
+4. **A 404 from the signals route hides every surface, silently.** It means this
+   bridge-server predates the API, which is the state of the live gateway until P1 deploys.
+   An error banner for that would be an error banner on every page, in three places.
+   Reads therefore use `/signals?session_id=…` rather than `/sessions/{id}/signals`: the
+   per-session route 404s for *both* "no signals route" and "no such session", and only the
+   first should hide the UI.
+5. **A resolve on one surface refetches every mounted surface.** There is no signal event
+   on the SSE stream, so the resolve helpers announce the change in-process and each
+   `useOpenChatSignals` refetches from the server. It is a refresh trigger, not a cache —
+   the server stays the source of truth for what is open. Without it, answering in the
+   sidebar inbox left an open RefChip panel offering a question that was already answered.
+
+**Verified in a headless browser** against a stub bridge-server, not reasoned about: a
+half-answered request keeps Submit disabled; a fully answered one posts the original
+questions array with `multiSelect:true` intact plus `answers` keyed by title; resolving in
+the inbox cleared the untouched panel too (checked curative — before the in-process
+announce it stayed on screen); and with the route 404ing, neither surface renders anything.
+
+**What P2 does not do.** Notifications render (headline, body, severity) but carry no
+acknowledge action, because no HTTP verb moves a signal out of `open` on its own — only the
+hook-resolve path does, and that is tool-question-only. `SignalCard` takes an
+`onAcknowledge` prop and no surface passes one, so no button appears rather than a button
+that does nothing. The verb arrives with P4. Likewise a signal with no `request_id`
+(derived, P3) renders read-only: its resolve path is `POST /sessions/{id}/send`, which P3
+adds. And `surface:"kanban"` has no mount yet — that is P4's, on the kanban card.
