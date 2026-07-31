@@ -23,7 +23,7 @@ BASE="http://127.0.0.1:$PORT"
 LOG_STORE_BASE="http://127.0.0.1:$LOG_STORE_PORT"
 LOG_STORE_REPO="$(dirname "$REPO_DIR")/log-store"
 
-for bin in go curl jq; do
+for bin in go curl jq sqlite3; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "ERROR: required tool '$bin' not found on PATH" >&2
     exit 2
@@ -238,6 +238,77 @@ case "$STATE" in
   aborted|completed|disconnected|error|idle) ;;
   *) fail "unexpected post-stop state: $STATE (want aborted|completed|disconnected|error|idle)" ;;
 esac
+
+step "spend ceiling: a session over its ceiling is refused, raising it revives it"
+# Exercises the halt gate against the real server binary rather than a test
+# harness. What is simulated is the spending, not the gate: the mock harness
+# emits no api_call events, so there is no way to make a mock session run up a
+# real bill, and the spend is written straight into the server's session row
+# instead. Everything downstream of that number is the shipped code path.
+
+BUDGET_SESSION=$(curl -fsS -X POST "$BASE/sessions" \
+  -H 'Content-Type: application/json' \
+  -d "{\"harness\":\"mock\",\"instance_id\":\"$IID\",\"auto_start\":false,\"max_budget\":2.50}")
+BSID=$(jq -r '.session_id' <<<"$BUDGET_SESSION")
+BCEIL=$(jq -r '.max_budget_usd' <<<"$BUDGET_SESSION")
+[ -n "$BSID" ] && [ "$BSID" != "null" ] || fail "budget session was not created: $BUDGET_SESSION"
+[ "$BCEIL" = "2.5" ] || fail "created session reported max_budget_usd=$BCEIL, want 2.5"
+echo "    session $BSID created with a \$2.50 ceiling"
+
+# A negative ceiling must be refused outright. Accepting one and reading it as
+# "unlimited" would turn an attempt to cap spending into the absence of a cap.
+NEG_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions" \
+  -H 'Content-Type: application/json' \
+  -d "{\"harness\":\"mock\",\"instance_id\":\"$IID\",\"auto_start\":false,\"max_budget\":-1}")
+[ "$NEG_STATUS" = "400" ] || fail "POST /sessions with max_budget=-1 returned $NEG_STATUS, want 400"
+echo "    negative ceiling rejected with 400"
+
+# Sending is allowed while the session is under its ceiling.
+UNDER_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/send" \
+  -H 'Content-Type: application/json' -d '{"message":"under budget"}')
+[ "$UNDER_STATUS" != "402" ] || fail "send refused as over budget before any spend was recorded"
+echo "    send under the ceiling: HTTP $UNDER_STATUS (not refused)"
+
+# Spend it. The server reads spend from this row on every send, so writing it
+# here is the same input a real turn's api_spend_total would have produced.
+#
+# The .timeout is not optional: the live server is writing events to this same
+# database throughout the run, and a second writer with no busy timeout gets
+# "database is locked" on the first contended attempt rather than waiting for
+# the lock. The server itself opens with busy_timeout=5000 for the same reason.
+sqlite3 -cmd ".timeout 10000" "$DATA_DIR/bridge.db" \
+  "UPDATE sessions SET spend_usd = 3.00 WHERE bridge_id = '$BSID';" \
+  || fail "could not record spend on $BSID"
+
+OVER_BODY=$(curl -sS -o "$TMP_DIR/over-budget.json" -w '%{http_code}' -X POST "$BASE/sessions/$BSID/send" \
+  -H 'Content-Type: application/json' -d '{"message":"over budget"}')
+[ "$OVER_BODY" = "402" ] || fail "send after spending \$3.00 of a \$2.50 ceiling returned $OVER_BODY, want 402"
+OVER_CODE=$(jq -r '.error.code' "$TMP_DIR/over-budget.json")
+[ "$OVER_CODE" = "budget_exceeded" ] || fail "refusal code = $OVER_CODE, want budget_exceeded"
+echo "    send over the ceiling: HTTP 402 budget_exceeded"
+
+# Resuming must not be a way around it either. Stop the process first: the
+# real gate interrupts the session it halts, so "over budget and not running"
+# is the state a resume would actually be attempted from. With a process still
+# alive, resume answers 409 (nothing to resume) before it ever reaches the
+# budget check — correct, and not what this assertion is about.
+curl -fsS -X POST "$BASE/sessions/$BSID/stop" >/dev/null
+RESUME_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/resume")
+[ "$RESUME_STATUS" = "402" ] || fail "resume of a halted over-budget session returned $RESUME_STATUS, want 402"
+echo "    resume over the ceiling: HTTP 402"
+
+# Raising the ceiling is the escape hatch, and it has to work on a session with
+# no live process — which is the state the gate leaves one in.
+RAISE_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/config" \
+  -H 'Content-Type: application/json' -d '{"max_budget":25}')
+[ "$RAISE_STATUS" = "200" ] || fail "raising the ceiling returned $RAISE_STATUS, want 200"
+RAISED=$(curl -fsS "$BASE/sessions/$BSID" | jq -r '.max_budget_usd')
+[ "$RAISED" = "25" ] || fail "ceiling after the raise = $RAISED, want 25"
+
+REVIVED_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/send" \
+  -H 'Content-Type: application/json' -d '{"message":"revived"}')
+[ "$REVIVED_STATUS" != "402" ] || fail "send still refused after the ceiling was raised above the spend"
+echo "    ceiling raised to \$25: send allowed again (HTTP $REVIVED_STATUS)"
 
 step "assert the run was hermetic (nothing written under HOME)"
 # Both services ran with HOME inside TMP_DIR and every store path overridden, so

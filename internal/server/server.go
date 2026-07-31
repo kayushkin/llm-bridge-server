@@ -632,6 +632,10 @@ func (s *Server) autoResume(sess store.Session) {
 		log.Printf("[auto-resume] %s: ERROR instance_id empty — session cannot be resumed; skipping", sess.SessionID)
 		return
 	}
+	if over, spendUSD, maxBudgetUSD := s.harness.SessionOverBudget(sess.SessionID); over {
+		log.Printf("[auto-resume] %s: not resuming — spent $%.2f of its $%.2f ceiling", sess.SessionID, spendUSD, maxBudgetUSD)
+		return
+	}
 	inst, err := s.harnessStore.GetInstance(sess.InstanceID)
 	if err != nil {
 		log.Printf("[auto-resume] %s: instance %s not found: %v", sess.SessionID, sess.InstanceID, err)

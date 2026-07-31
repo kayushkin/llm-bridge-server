@@ -75,6 +75,12 @@ func (s *Server) handleSwitchMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Switching mode respawns the session, so it is another way back onto
+	// the model's meter and is refused for the same reason a resume is.
+	if s.writeRefusalIfOverBudget(w, bridgeID) {
+		return
+	}
+
 	// Kill the current process if one is running. Kill is idempotent
 	// for already-dead processes — readEvents / watchPTYExit may have
 	// already torn it down — so we ignore its error and trust the

@@ -20,6 +20,17 @@ import (
 // auto-resume, fork) calls through here so hook wiring and machine
 // resolution stay consistent.
 func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credID string) (harness.HarnessProcess, error) {
+	// A session that has spent its ceiling does not get a process, whichever
+	// path asked for one. The individual handlers check this too, because
+	// only they can return a decent HTTP status for it — but the check
+	// belongs here as well, because two of the spawn paths have no handler
+	// to check anything. Auto-resume is the one that matters: it restarts a
+	// session and REPLAYS its interrupted turn, which is precisely the turn
+	// the gate just interrupted for costing too much. Without this the halt
+	// would undo itself a minute later.
+	if over, spendUSD, maxBudgetUSD := s.harness.SessionOverBudget(sess.SessionID); over {
+		return nil, fmt.Errorf("session %s has spent $%.2f of its $%.2f ceiling; raise max_budget to continue", sess.SessionID, spendUSD, maxBudgetUSD)
+	}
 	if inst.Machine == nil {
 		if inst.MachineID == "" {
 			return nil, fmt.Errorf("instance %s has no machine_id", inst.ID)

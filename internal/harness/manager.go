@@ -50,6 +50,7 @@ type Manager struct {
 	msgState        map[string]*sessionMsgState   // sessionID → message-id assignment state
 	attachHubs      map[string]*AttachHub         // sessionID → fan-out hub for pty sessions
 	derivation      map[string]*derivationState   // sessionID → convenience-event derivation state
+	budgetHalted    map[string]bool               // sessionID → already announced this session's spend-ceiling breach (see budget.go)
 	otelSidecars    map[string]*otelSidecar       // sessionID → per-PTY OTel sidecar (nil for non-PTY sessions)
 	pending         *pendingHooks                 // awaiting_resolution hooks indexed by sessionID, request_id
 	store           *store.Store
@@ -84,6 +85,7 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL st
 		msgState:        make(map[string]*sessionMsgState),
 		attachHubs:      make(map[string]*AttachHub),
 		derivation:      make(map[string]*derivationState),
+		budgetHalted:    make(map[string]bool),
 		otelSidecars:    make(map[string]*otelSidecar),
 		pending:         newPendingHooks(),
 		store:           st,
@@ -690,6 +692,11 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 	delete(m.processes, bridgeID)
 	delete(m.msgState, bridgeID)
 	delete(m.derivation, bridgeID)
+	// budgetHalted is per-process announcement bookkeeping, not the
+	// verdict: the verdict is the persisted spend against the persisted
+	// ceiling, which SessionOverBudget reads. Dropping it here means a
+	// session that comes back and breaches again says so again.
+	delete(m.budgetHalted, bridgeID)
 	m.mu.Unlock()
 	m.pending.drop(bridgeID)
 
@@ -737,6 +744,12 @@ func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 			}
 		}
 		m.broadcastDerived(bridgeID, ev)
+
+		// The spend ceiling is checked here because this is the only
+		// place the running per-session dollar total exists: the
+		// derivation produces api_spend_total, nothing upstream carries
+		// a cumulative figure, and no harness knows what its ceiling is.
+		m.enforceBudget(bridgeID, ev)
 	}
 
 	// F1 server-side settle reconcile. A terminal event (EventResult/

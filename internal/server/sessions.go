@@ -174,6 +174,21 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Spend ceiling. Absent and zero both mean "no ceiling" — see the
+	// warning on msg.ManagedSession.MaxBudgetUSD — so only a negative
+	// value is an error. It is rejected rather than clamped because a
+	// negative ceiling is always a caller bug, and silently reading it as
+	// "unlimited" would turn an attempt to cap spending into the absence
+	// of a cap, which is the one direction this gate must never fail in.
+	maxBudgetUSD := 0.0
+	if req.MaxBudget != nil {
+		if *req.MaxBudget < 0 {
+			http.Error(w, `{"error":{"code":"invalid_max_budget","message":"max_budget must not be negative; omit it or send 0 for no ceiling"}}`, http.StatusBadRequest)
+			return
+		}
+		maxBudgetUSD = *req.MaxBudget
+	}
+
 	// Every session must be bound to a harness instance — no local-spawn
 	// fallback. harness-store is the single source of truth for which
 	// instance runs a session.
@@ -213,6 +228,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Origin:        req.Origin,
 		FolderName:    s.folderForSource(req.Purpose),
 		Mode:          mode,
+		MaxBudgetUSD:  maxBudgetUSD,
 	}
 
 	// Snapshot the global permission mode into the session so the
@@ -373,6 +389,13 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refuse to spend past the session's ceiling. Checked before the
+	// harness is started below, so an over-budget session does not get a
+	// process spawned for a message it will not be allowed to send.
+	if s.writeRefusalIfOverBudget(w, bridgeID) {
+		return
+	}
+
 	if s.harness.Get(bridgeID) == nil {
 		if sess.InstanceID == "" || s.harnessStore == nil {
 			http.Error(w, "session has no instance bound", http.StatusInternalServerError)
@@ -433,6 +456,33 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	go s.maybeAutoRename(bridgeID)
 
 	writeJSON(w, map[string]string{"status": "sent", "message_id": userEvent.MessageID})
+}
+
+// writeRefusalIfOverBudget refuses the request when the session has spent its
+// spend ceiling, writing the refusal and reporting true so the caller
+// returns. Reports false — write nothing — for every session that is
+// under its ceiling or has none.
+//
+// 402 Payment Required is the honest status: the request is well formed
+// and the caller is permitted to make it, and the only thing standing in
+// the way is money. The body names both numbers so a client can say what
+// happened without a second round trip.
+func (s *Server) writeRefusalIfOverBudget(w http.ResponseWriter, bridgeID string) bool {
+	over, spendUSD, maxBudgetUSD := s.harness.SessionOverBudget(bridgeID)
+	if !over {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusPaymentRequired)
+	json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"code":           msg.ErrCodeBudgetExceeded,
+			"message":        fmt.Sprintf("session has spent $%.2f of its $%.2f ceiling; raise max_budget to continue", spendUSD, maxBudgetUSD),
+			"spend_usd":      spendUSD,
+			"max_budget_usd": maxBudgetUSD,
+		},
+	})
+	return true
 }
 
 func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
@@ -572,6 +622,12 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A session that spent its ceiling does not come back by being
+	// resumed. Raise the ceiling first (POST /sessions/{id}/config).
+	if s.writeRefusalIfOverBudget(w, bridgeID) {
+		return
+	}
+
 	if sess.InstanceID == "" || s.harnessStore == nil {
 		http.Error(w, "session has no instance bound", http.StatusInternalServerError)
 		return
@@ -683,6 +739,13 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		Type:                sessionType,
 		Purpose:             purpose,
 		Origin:              origin,
+		// Inherit the parent's spend ceiling. Not inheriting it would make
+		// forking the way to get an uncapped session out of a capped one,
+		// which is the whole gate defeated by one button. The fork does
+		// start its own spend at zero, so a capped session can still be
+		// forked into a second full allowance — a per-tree pot, rather
+		// than a per-session one, is the follow-up this does not attempt.
+		MaxBudgetUSD: parent.MaxBudgetUSD,
 	}
 
 	if err := s.store.CreateSession(forked); err != nil {
@@ -714,6 +777,35 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
+	}
+
+	// The spend ceiling is server state, not harness state, so it is
+	// persisted here as well as forwarded. This is also the only way to
+	// revive a session the gate has halted: raising the ceiling above the
+	// spend puts it back under, and the next send is allowed through.
+	// Setting it to 0 removes the ceiling entirely.
+	if req.MaxBudget != nil {
+		if *req.MaxBudget < 0 {
+			http.Error(w, `{"error":{"code":"invalid_max_budget","message":"max_budget must not be negative; send 0 to remove the ceiling"}}`, http.StatusBadRequest)
+			return
+		}
+		if err := s.store.SetSessionMaxBudgetUSD(bridgeID, *req.MaxBudget); err != nil {
+			http.Error(w, fmt.Sprintf("persist max_budget: %v", err), http.StatusInternalServerError)
+			return
+		}
+		sess.MaxBudgetUSD = *req.MaxBudget
+
+		// Raising the ceiling on a session with no live process is the
+		// normal shape of the escape hatch — the gate interrupted it, so
+		// there is nothing left to forward the config to. Forwarding
+		// anyway would fail with "session not running" and report the
+		// revival as an error even though the ceiling was saved. Only
+		// budget-only requests take this path; anything that also
+		// carries harness config still needs a harness to carry it to.
+		if req.Model == "" && req.Effort == "" && len(req.DisabledTools) == 0 && s.harness.Get(bridgeID) == nil {
+			writeJSON(w, sess)
+			return
+		}
 	}
 
 	params, _ := json.Marshal(req)

@@ -294,6 +294,14 @@ func (s *Store) migrate() error {
 	// is a separate followup if we want it).
 	s.db.Exec(`UPDATE sessions SET origin = 'frontend'
 		WHERE origin = '' AND (purpose = '' OR purpose = 'chat')`)
+	// Spend ceiling and spend high-water mark. Both REAL, both defaulting to
+	// 0, and 0 on max_budget_usd means NO CEILING — see the warning on
+	// msg.ManagedSession.MaxBudgetUSD. A default of 0 is therefore also the
+	// correct value for every pre-existing row: no session created before
+	// this column existed had a ceiling, and the backfill must not invent
+	// one for them.
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN max_budget_usd REAL NOT NULL DEFAULT 0")
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN spend_usd REAL NOT NULL DEFAULT 0")
 	// Index on harness_session_id must be created after ALTER TABLE migration adds/renames the column.
 	// Drop the legacy non-unique index in favor of a partial UNIQUE one below.
 	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_session_id")
@@ -374,8 +382,8 @@ func (s *Store) CreateSession(sess *Session) error {
 		}
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, parent_id, forked_from_session_id, manager_session_id, root_session_id, depth, controlled_by, refreshed_from_session_id, harness_config, purpose, type, origin, folder_name, mode, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.SessionID, sess.SessionID, sess.HarnessSessionID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.ParentID, sess.ForkedFromSessionID, sess.ManagerSessionID, sess.RootSessionID, sess.Depth, sess.ControlledBy, sess.RefreshedFromSessionID, harnessConfig, sess.Purpose, string(sess.Type), sess.Origin, sess.FolderName, string(sess.Mode), sess.CreatedAt, sess.UpdatedAt,
+		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, parent_id, forked_from_session_id, manager_session_id, root_session_id, depth, controlled_by, refreshed_from_session_id, harness_config, purpose, type, origin, folder_name, mode, max_budget_usd, spend_usd, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sess.SessionID, sess.SessionID, sess.HarnessSessionID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.ParentID, sess.ForkedFromSessionID, sess.ManagerSessionID, sess.RootSessionID, sess.Depth, sess.ControlledBy, sess.RefreshedFromSessionID, harnessConfig, sess.Purpose, string(sess.Type), sess.Origin, sess.FolderName, string(sess.Mode), sess.MaxBudgetUSD, sess.SpendUSD, sess.CreatedAt, sess.UpdatedAt,
 	); err != nil {
 		return err
 	}
@@ -389,7 +397,7 @@ func (s *Store) CreateSession(sess *Session) error {
 // sessionColumns selects the fields scanSession reads, in the order it
 // expects them. session_id is the canonical id (COALESCE falls back to
 // bridge_id for legacy rows whose session_id may be unbackfilled).
-const sessionColumns = `COALESCE(NULLIF(session_id, ''), bridge_id), COALESCE(harness_session_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, parent_id, COALESCE(forked_from_session_id, ''), COALESCE(manager_session_id, ''), COALESCE(root_session_id, ''), COALESCE(depth, 0), COALESCE(controlled_by, ''), COALESCE(refreshed_from_session_id, ''), COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(purpose, ''), COALESCE(type, ''), COALESCE(origin, ''), COALESCE(mode, ''), created_at, updated_at`
+const sessionColumns = `COALESCE(NULLIF(session_id, ''), bridge_id), COALESCE(harness_session_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, parent_id, COALESCE(forked_from_session_id, ''), COALESCE(manager_session_id, ''), COALESCE(root_session_id, ''), COALESCE(depth, 0), COALESCE(controlled_by, ''), COALESCE(refreshed_from_session_id, ''), COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(purpose, ''), COALESCE(type, ''), COALESCE(origin, ''), COALESCE(mode, ''), COALESCE(max_budget_usd, 0), COALESCE(spend_usd, 0), created_at, updated_at`
 
 func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var sess Session
@@ -397,7 +405,7 @@ func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var info string
 	var mode string
 	var sessionType string
-	err := sc.Scan(&sess.SessionID, &sess.HarnessSessionID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.ParentID, &sess.ForkedFromSessionID, &sess.ManagerSessionID, &sess.RootSessionID, &sess.Depth, &sess.ControlledBy, &sess.RefreshedFromSessionID, &harnessConfig, &info, &sess.FolderName, &sess.Purpose, &sessionType, &sess.Origin, &mode, &sess.CreatedAt, &sess.UpdatedAt)
+	err := sc.Scan(&sess.SessionID, &sess.HarnessSessionID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.ParentID, &sess.ForkedFromSessionID, &sess.ManagerSessionID, &sess.RootSessionID, &sess.Depth, &sess.ControlledBy, &sess.RefreshedFromSessionID, &harnessConfig, &info, &sess.FolderName, &sess.Purpose, &sessionType, &sess.Origin, &mode, &sess.MaxBudgetUSD, &sess.SpendUSD, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -500,6 +508,50 @@ func (s *Store) UpdateSessionState(bridgeID, state string) error {
 	}
 	s.notifyChanged(bridgeID)
 	return nil
+}
+
+// SetSessionMaxBudgetUSD writes the session's spend ceiling in US dollars.
+// Zero clears the ceiling (see the warning on msg.ManagedSession.MaxBudgetUSD
+// — zero is "unset", never "halt now"). Callers validate the sign; a
+// negative ceiling would halt every session on its first API call, so it is
+// rejected at the HTTP boundary rather than silently clamped here.
+func (s *Store) SetSessionMaxBudgetUSD(bridgeID string, maxBudgetUSD float64) error {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`UPDATE sessions SET max_budget_usd=?, updated_at=? WHERE bridge_id=?`, maxBudgetUSD, now, bridgeID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	s.notifyChanged(bridgeID)
+	return nil
+}
+
+// RecordSessionSpendUSD raises the session's recorded spend to spendUSD and
+// returns the value now stored, which is never lower than what was there.
+//
+// The MAX() is the whole point. The running total this is fed from is
+// derived in bridge-server's memory and starts again at zero every time the
+// process restarts, so a plain assignment would walk a session's spend
+// backwards on restart and hand a budget that was already exhausted a fresh
+// full allowance. Cumulative spend does not go down.
+func (s *Store) RecordSessionSpendUSD(bridgeID string, spendUSD float64) (float64, error) {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`UPDATE sessions SET spend_usd=MAX(spend_usd, ?), updated_at=? WHERE bridge_id=?`, spendUSD, now, bridgeID)
+	if err != nil {
+		return 0, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return 0, sql.ErrNoRows
+	}
+	var stored float64
+	if err := s.dbRO.QueryRow(`SELECT COALESCE(spend_usd, 0) FROM sessions WHERE bridge_id=?`, bridgeID).Scan(&stored); err != nil {
+		return 0, err
+	}
+	s.notifyChanged(bridgeID)
+	return stored, nil
 }
 
 func (s *Store) UpdateSessionPID(bridgeID string, pid int) error {
