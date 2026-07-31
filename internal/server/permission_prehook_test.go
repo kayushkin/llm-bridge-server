@@ -3,8 +3,10 @@ package server
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -163,5 +165,136 @@ func TestAutoAllowParkedPermissionAsks(t *testing.T) {
 	case d := <-askCh:
 		t.Errorf("user_input ask should not be auto-allowed, got %+v", d)
 	default:
+	}
+}
+
+// seedPrehookSession puts one session of the given type in the store so the
+// prehook handler can look up whether a human is attached.
+func seedPrehookSession(t *testing.T, st *store.Store, id string, typ msg.SessionType) {
+	t.Helper()
+	sess := &store.Session{
+		SessionID:   id,
+		DisplayName: "disp-" + id,
+		Harness:     "claude_code",
+		InstanceID:  "inst-1",
+		State:       "idle",
+		Purpose:     "chat",
+		Type:        typ,
+		Mode:        msg.SessionModeEvents,
+	}
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatalf("seed %s: %v", id, err)
+	}
+}
+
+// postPrehook drives the real handler the way Claude Code does and returns the
+// permissionDecision and its reason.
+func postPrehook(t *testing.T, srv *Server, bridgeID, body string) (decision, reason string) {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/permission/cc-prehook/"+bridgeID, strings.NewReader(body))
+	req.SetPathValue("bridge_id", bridgeID)
+	rec := httptest.NewRecorder()
+	srv.handleCCPermissionPrehook(rec, req)
+
+	var got struct {
+		HookSpecificOutput struct {
+			PermissionDecision       string `json:"permissionDecision"`
+			PermissionDecisionReason string `json:"permissionDecisionReason"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response body unmarshal: %v\nbody: %s", err, rec.Body.String())
+	}
+	return got.HookSpecificOutput.PermissionDecision, got.HookSpecificOutput.PermissionDecisionReason
+}
+
+// prehookServerWithDeadStore returns a server whose permission-store client
+// points at a port nothing listens on, so Evaluate fails for real rather than
+// through a stub. 127.0.0.1:1 is the same dead address the e2e scripts use.
+func prehookServerWithDeadStore(t *testing.T) (*Server, *store.Store) {
+	t.Helper()
+	srv, st := testServer(t)
+	srv.permClient = permclient.New("http://127.0.0.1:1")
+	return srv, st
+}
+
+// TestPrehookUnreachableStoreDeniesUnattendedSession is the defect this file's
+// writeHookNoVerdict exists for. An autonomous session has nobody to answer an
+// "ask", so when permission-store cannot be reached the gate must fail closed
+// with a reason the agent can act on. Measured before the fix on bridge session
+// br_1785306448183126697: the Task call got a raw "ask" carrying a dial error
+// and the turn gave up without a decision.
+func TestPrehookUnreachableStoreDeniesUnattendedSession(t *testing.T) {
+	srv, st := prehookServerWithDeadStore(t)
+	seedPrehookSession(t, st, "bridge-auto", msg.SessionTypeAutonomous)
+
+	decision, reason := postPrehook(t, srv, "bridge-auto",
+		`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)
+
+	if decision != "deny" {
+		t.Errorf("permissionDecision = %q, want deny (unattended session cannot answer an ask)", decision)
+	}
+	if !strings.Contains(reason, "permission-store evaluate failed") || !strings.Contains(reason, "connection refused") {
+		t.Errorf("reason = %q, want it to carry the store's own failure verbatim", reason)
+	}
+	if !strings.Contains(reason, "no human is attached") {
+		t.Errorf("reason = %q, want it to explain why the call was denied rather than parked", reason)
+	}
+}
+
+// TestPrehookUnreachableStoreAsksInteractiveSession is the other half: a human
+// IS attached, so the same failure must still reach them as an ask rather than
+// being decided for them. Denying here would break every interactive session
+// the moment permission-store restarts.
+func TestPrehookUnreachableStoreAsksInteractiveSession(t *testing.T) {
+	srv, st := prehookServerWithDeadStore(t)
+	seedPrehookSession(t, st, "bridge-human", msg.SessionTypeInteractive)
+
+	decision, reason := postPrehook(t, srv, "bridge-human",
+		`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)
+
+	if decision != "ask" {
+		t.Errorf("permissionDecision = %q, want ask (a human can still answer)", decision)
+	}
+	if !strings.Contains(reason, "permission-store evaluate failed") || !strings.Contains(reason, "connection refused") {
+		t.Errorf("reason = %q, want it to carry the store's own failure verbatim", reason)
+	}
+}
+
+// TestPrehookUndecodablePayloadDeniesUnattendedSession covers the two failures
+// that happen before the tool name is even known. They were reached before the
+// session lookup, so they could not tell an unattended session from an
+// interactive one; the lookup now happens first.
+func TestPrehookUndecodablePayloadDeniesUnattendedSession(t *testing.T) {
+	srv, st := prehookServerWithDeadStore(t)
+	seedPrehookSession(t, st, "bridge-auto", msg.SessionTypeAutonomous)
+	seedPrehookSession(t, st, "bridge-human", msg.SessionTypeInteractive)
+
+	decision, reason := postPrehook(t, srv, "bridge-auto", `{"tool_name":`)
+	if decision != "deny" {
+		t.Errorf("unattended: permissionDecision = %q, want deny", decision)
+	}
+	if !strings.Contains(reason, "decode prehook payload") {
+		t.Errorf("unattended: reason = %q, want it to name the decode failure", reason)
+	}
+
+	decision, _ = postPrehook(t, srv, "bridge-human", `{"tool_name":`)
+	if decision != "ask" {
+		t.Errorf("interactive: permissionDecision = %q, want ask", decision)
+	}
+}
+
+// TestPrehookUnknownSessionAsks pins the conservative reading of an absent
+// session. GetSession's error is deliberately dropped, so a session the store
+// has never heard of is not unattended — inventing a deny for an unknown id
+// would let a store hiccup silently block a real user's tools.
+func TestPrehookUnknownSessionAsks(t *testing.T) {
+	srv, _ := prehookServerWithDeadStore(t)
+
+	decision, _ := postPrehook(t, srv, "bridge-nobody",
+		`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)
+
+	if decision != "ask" {
+		t.Errorf("permissionDecision = %q, want ask for an unknown session", decision)
 	}
 }

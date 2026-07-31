@@ -30,9 +30,9 @@ func New(baseURL string) *Client {
 	return &Client{
 		url: baseURL,
 		// Loopback HTTP — typical evaluate is sub-millisecond. The timeout
-		// is a generous ceiling so a wedged store collapses to "ask" via
-		// the caller's error-handling path rather than holding the parent
-		// request forever.
+		// is a generous ceiling so a wedged store reaches the caller's
+		// error-handling path rather than holding the parent request
+		// forever.
 		http: &http.Client{Timeout: 3 * time.Second},
 	}
 }
@@ -57,8 +57,10 @@ type Request struct {
 }
 
 // Evaluate posts the request and parses the response. Any transport or
-// parse failure is returned as an error — callers fall back to "ask" with a
-// human-readable message rather than silently allowing.
+// parse failure is returned as an error, never a verdict: no rule has been
+// consulted, so there is nothing to report but the failure. The prehook
+// turns that into an "ask" for a session with a human attached and a deny
+// for one without (writeHookNoVerdict). Neither path silently allows.
 func (c *Client) Evaluate(ctx context.Context, req Request) (*Result, error) {
 	body, err := json.Marshal(req)
 	if err != nil {

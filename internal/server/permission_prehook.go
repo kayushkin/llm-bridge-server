@@ -60,15 +60,22 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Fetch the session before anything that can fail: the AskUserQuestion
+	// branch and the permission-mode resolution below both need it, Type tells
+	// us whether any human is attached to resolve a parked request, and the
+	// two decode failures below need the same answer to pick their verdict.
+	sess, _ := s.store.GetSession(bridgeID)
+	unattended := isUnattendedSession(sess)
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeHookAsk(w, "read prehook body: "+err.Error())
+		s.writeHookNoVerdict(w, unattended, "read prehook body: "+err.Error())
 		return
 	}
 
 	var payload ccPrehookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		writeHookAsk(w, "decode prehook payload: "+err.Error())
+		s.writeHookNoVerdict(w, unattended, "decode prehook payload: "+err.Error())
 		return
 	}
 
@@ -78,12 +85,6 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	// from /permission/codex-prehook/.
 	log.Printf("[prehook] %s bridge=%s tool=%s tool_use_id=%s",
 		r.URL.Path, bridgeID, payload.ToolName, payload.ToolUseID)
-
-	// Fetch the session once up front: both the AskUserQuestion branch and
-	// the permission-mode resolution below need it, and Type tells us whether
-	// any human is attached to resolve a parked request.
-	sess, _ := s.store.GetSession(bridgeID)
-	unattended := isUnattendedSession(sess)
 
 	// AskUserQuestion is a user-input solicitation, not a permission check
 	// (the model wants the human's answer, not approval to run). No
@@ -97,7 +98,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 			writeHookDeny(w, "No human is attached to this autonomous session to answer AskUserQuestion; proceed without human input or stop.")
 			return
 		}
-		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourceUserInput)
+		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourceUserInput, unattended)
 		return
 	}
 
@@ -130,7 +131,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	case msg.PermissionModeAskAll:
 		// Skip permission-store entirely. Every tool call parks for the
 		// human, regardless of any prior "always allow" rule.
-		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourcePermission)
+		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourcePermission, unattended)
 		return
 	case msg.PermissionModeBypass:
 		writeHookAllow(w, "permission-mode=bypass")
@@ -147,7 +148,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	// are harness-side concerns; rule evaluation is unchanged.
 
 	if s.permClient == nil {
-		writeHookAsk(w, "permission-store client not configured")
+		s.writeHookNoVerdict(w, unattended, "permission-store client not configured")
 		return
 	}
 
@@ -157,7 +158,12 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		Input:    payload.ToolInput,
 	})
 	if err != nil {
-		writeHookAsk(w, "permission-store unreachable: "+err.Error())
+		// Pass the client's error through rather than labelling it. Evaluate
+		// distinguishes five failures — unreachable, non-2xx, unreadable body,
+		// undecodable body, outcome outside the allowed set — and the fixed
+		// "unreachable" prefix this used to carry reported four of them as the
+		// one they were not.
+		s.writeHookNoVerdict(w, unattended, "permission-store evaluate failed: "+err.Error())
 		return
 	}
 
@@ -179,10 +185,41 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 			writeHookAllow(w, "auto-allow: unattended autonomous session, no permission rule matched")
 			return
 		}
-		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourcePermission)
+		s.parkPrehook(w, r, bridgeID, payload, msg.HookSourcePermission, unattended)
 	default:
-		writeHookAsk(w, "permission-store returned unknown outcome "+res.Outcome)
+		s.writeHookNoVerdict(w, unattended, "permission-store returned unknown outcome "+res.Outcome)
 	}
+}
+
+// writeHookNoVerdict answers a prehook that could not reach a verdict at all:
+// the payload would not decode, the permission-store client is missing, the
+// store did not answer, or it answered with an outcome this build does not
+// know. None of those is a permission decision, so the interactive answer is
+// "ask" — hand it to the human at the keyboard, reason attached.
+//
+// An unattended session has no such human. This file already establishes that
+// twice, and handles it in both branches that reach a verdict: AskUserQuestion
+// denies with an explanation rather than parking, and an "ask" outcome from
+// the store auto-allows. The error paths were left on the interactive default,
+// so an autonomous session met an "ask" nobody could answer and the tool call
+// died with a raw transport error instead of a decision it could act on
+// (measured: bridge session br_1785306448183126697, a Task call that reported
+// `permission-store unreachable: dial tcp 127.0.0.1:1` and gave up — the
+// prehook was pointed at a deliberately dead address by scripts/e2e-subagent.sh
+// at the time, which is exactly the outage this path has to answer for).
+//
+// Deny, not allow, and the asymmetry with the "ask" outcome above is the
+// point. That auto-allow is justified by a specific fact — deny rules already
+// ran and short-circuited, so the guardrails still applied. When the store
+// never answered, no rule ran at all, and there is nothing left holding the
+// floor. So the gate fails closed, and says why, so the agent can route around
+// the tool or stop rather than hang.
+func (s *Server) writeHookNoVerdict(w http.ResponseWriter, unattended bool, reason string) {
+	if unattended {
+		writeHookDeny(w, reason+" — no human is attached to this autonomous session to resolve it, and no permission rule was evaluated, so the call is denied. Proceed without this tool or stop.")
+		return
+	}
+	writeHookAsk(w, reason)
 }
 
 // autoModeSafeTools is the canonical bridge-defined set of tools the
@@ -255,7 +292,7 @@ func isReadOnlyTool(name string) bool {
 // flow used by both the permission-prompt and user-input branches of the
 // prehook. Source picks which HookEvent.Source value identifies the parked
 // request to bridge-ui (so the banner picks the right card flavor).
-func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID string, payload ccPrehookPayload, source string) {
+func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID string, payload ccPrehookPayload, source string, unattended bool) {
 	resolveCtx := r.Context()
 	requestID := ids.NewHookRequestID()
 	ch := s.parkedAsks.park(bridgeID, requestID)
@@ -278,7 +315,7 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 		// Broadcast failure leaves the parked entry unreferenced — drop
 		// it so a stale resolve doesn't deliver to a never-read channel.
 		s.parkedAsks.cancel(bridgeID, requestID)
-		writeHookAsk(w, "broadcast awaiting_resolution: "+err.Error())
+		s.writeHookNoVerdict(w, unattended, "broadcast awaiting_resolution: "+err.Error())
 		return
 	}
 
