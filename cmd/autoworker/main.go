@@ -634,17 +634,43 @@ func fetchLimits() (limitsResponse, error) {
 	return lim, nil
 }
 
+// applySessionSpendCeiling writes one resolved ceiling to both of the enforcers
+// a dispatched session has.
+//
+// They are not redundant, and neither one covers the other:
+//
+//   - CreateSessionRequest.MaxBudget is the server-side ceiling. llm-bridge-server
+//     stores it on the session row and halts the session when its derived spend
+//     reaches it, whichever harness the session runs on. It is what survives a
+//     resume, a fork, a mode switch and a bridge-server restart — and it is the
+//     ONLY ceiling the codex provider gets at all, because llm-bridge-codex has
+//     no max_budget handling of any kind.
+//
+//   - HarnessConfig.max_budget_usd is the harness-native ceiling. bridge-server
+//     treats HarnessConfig as an opaque blob and merges it verbatim into the
+//     harness start params, so llm-bridge-claudecode turns it into
+//     `claude --max-budget-usd N` and Claude Code stops itself mid-call, in real
+//     time, rather than at the next event bridge-server manages to account for.
+//
+// A zero ceiling reaches neither: 0 means "no ceiling" on both sides, so writing
+// it through would turn "cap this at $0" into "no cap at all".
+func applySessionSpendCeiling(create *msg.CreateSessionRequest, maxBudgetUSD float64) error {
+	if maxBudgetUSD <= 0 {
+		return nil
+	}
+	harnessConfig, err := json.Marshal(map[string]any{"max_budget_usd": maxBudgetUSD})
+	if err != nil {
+		return fmt.Errorf("marshal harness config: %w", err)
+	}
+	create.MaxBudget = &maxBudgetUSD
+	create.HarnessConfig = harnessConfig
+	return nil
+}
+
 // publishWorker dispatches a worker session.
 //
-// maxBudgetUSD, when > 0, becomes the session's per-session cost cap. It rides
-// in HarnessConfig, which bridge-server treats as an opaque blob and merges
-// verbatim into the harness start params — so llm-bridge-claudecode receives
-// max_budget_usd and turns it into `claude --max-budget-usd N`, and Claude Code
-// enforces the cap on itself in real time. Nothing between here and the CLI has
-// to understand the field.
-//
-// A zero cap is NOT passed through: the harness omits the flag when the value is
-// zero, so "cap this at $0" would silently become "no cap at all".
+// maxBudgetUSD, when > 0, becomes the session's per-session cost cap on both the
+// server-side and the harness-native enforcer — see applySessionSpendCeiling.
 func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetUSD float64) (string, error) {
 	now := time.Now().UTC()
 	// Mint the canonical session_id here. Adapter passes BusSessionID through
@@ -661,12 +687,8 @@ func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetU
 		Type:        msg.SessionTypeAutonomous,
 		AutoStart:   true,
 	}
-	if maxBudgetUSD > 0 {
-		hc, err := json.Marshal(map[string]any{"max_budget_usd": maxBudgetUSD})
-		if err != nil {
-			return "", fmt.Errorf("marshal harness config: %w", err)
-		}
-		create.HarnessConfig = hc
+	if err := applySessionSpendCeiling(create, maxBudgetUSD); err != nil {
+		return "", err
 	}
 
 	in := messages.BridgeInbound{
