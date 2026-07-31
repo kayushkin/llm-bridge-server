@@ -52,6 +52,13 @@ type messageParams struct {
 	Content string `json:"content"`
 }
 
+// compactParams mirrors what every real harness declares for the "compact"
+// method. The reference harness reads the summary from the params for the same
+// reason they do — see the compact case below.
+type compactParams struct {
+	Summary string `json:"summary"`
+}
+
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -167,29 +174,38 @@ func main() {
 
 			emitResult(emit, harnessName, sessionID, mp.Content)
 
-		case "compact", "compact:":
+		// The summary arrives in the params, exactly as every real harness
+		// reads it. This used to also accept a "compact:<summary>" method,
+		// which nothing but this file ever honoured — bridge-server sent that
+		// shape and the whole fleet answered "unknown method", so the one
+		// implementation that accepted it was the reason the contract looked
+		// alive. A reference harness that is more permissive than every real
+		// one hides the defect it exists to expose.
+		case "compact":
+			var cp compactParams
+			if len(req.Params) > 0 {
+				json.Unmarshal(req.Params, &cp)
+			}
+			message := "Context compacted"
+			if cp.Summary != "" {
+				message = "Context compacted with summary: " + cp.Summary
+			}
 			emit(msg.Event{
 				Type:      msg.EventSystem,
 				Harness:   msg.Harness(harnessName),
 				BridgeSessionID: sessionID,
 				Timestamp: time.Now(),
-				System:    &msg.SystemEvent{Subtype: "compact_complete", Message: "Context compacted"},
+				System:    &msg.SystemEvent{Subtype: "compact_complete", Message: message},
 			})
 
 		case "resume":
 			emitState(msg.SessionRunning)
 
 		default:
-			// Handle config: or other prefixed commands
-			if strings.HasPrefix(req.Method, "compact:") {
-				emit(msg.Event{
-					Type:      msg.EventSystem,
-					Harness:   msg.Harness(harnessName),
-					BridgeSessionID: sessionID,
-					Timestamp: time.Now(),
-					System:    &msg.SystemEvent{Subtype: "compact_complete", Message: "Context compacted with summary"},
-				})
-			} else if strings.HasPrefix(req.Method, "config:") {
+			// "config:<json>" is the one method whose payload really does ride
+			// in the name; the harnesses implement it that way and the
+			// conformance runner sends it that way.
+			if strings.HasPrefix(req.Method, "config:") {
 				emit(msg.Event{
 					Type:      msg.EventSystem,
 					Harness:   msg.Harness(harnessName),

@@ -11,6 +11,7 @@ import (
 
 	harnessstore "github.com/kayushkin/harness-store"
 	"github.com/kayushkin/llm-bridge-server/conformance"
+	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -601,11 +602,12 @@ func (s *Server) handleCompactSession(w http.ResponseWriter, r *http.Request) {
 	var req CompactSessionRequest
 	json.NewDecoder(r.Body).Decode(&req)
 
-	cmd := "compact"
-	if req.Summary != "" {
-		cmd = "compact:" + req.Summary
+	params, err := harness.BuildCompactParams(bridgeID, req.Summary)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	if err := s.harness.SendCommand(bridgeID, cmd); err != nil {
+	if err := s.harness.SendJSONRPC(bridgeID, "compact", params); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

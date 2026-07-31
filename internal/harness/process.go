@@ -87,6 +87,36 @@ type CommandParams struct {
 	BridgeSessionID string `json:"bridge_session_id,omitempty"`
 }
 
+// CompactParams for the "compact" method. Summary is the optional instruction
+// for what the compaction should keep; every harness that supports it declares
+// the same `summary` field and reads it out of the params (Claude Code turns it
+// into "/compact <summary>", the inber bridge forwards it to inber's own
+// compact endpoint).
+type CompactParams struct {
+	BridgeSessionID string `json:"bridge_session_id,omitempty"`
+	Summary         string `json:"summary,omitempty"`
+}
+
+// BuildCompactParams renders the params for a "compact" request.
+//
+// The summary belongs in the params and nowhere else. bridge-server used to
+// put it in the method name — it sent "compact:<summary>" — and no harness
+// matches that: every one of them switches on the exact string "compact", so a
+// compact request carrying a summary was answered with "unknown method" and the
+// session was never compacted at all. The one implementation that did accept
+// the prefixed form is cmd/mock-harness, which is why the conformance suite
+// never saw it fail. The `summary` field the harnesses do read had, in turn,
+// no producer: SendCommand only ever sent CommandParams.
+//
+// With no summary this is byte-identical to what SendCommand sent, so a compact
+// with no instruction reaches every harness exactly as it did before.
+func BuildCompactParams(bridgeSessionID, summary string) (json.RawMessage, error) {
+	return json.Marshal(CompactParams{
+		BridgeSessionID: bridgeSessionID,
+		Summary:         summary,
+	})
+}
+
 // buildStartParams creates the start request params for a harness subprocess.
 // BridgeSessionID is the stable routing key. HarnessSessionID is the
 // harness-internal id (e.g. Claude Code session UUID) when known — bridges
