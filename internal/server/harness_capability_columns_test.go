@@ -20,6 +20,14 @@ import (
 // its own repo. Deriving the table from the harnesses is noteboard todo
 // f8035505; until that lands this is a written-down measurement with its
 // evidence attached, not a measurement that re-runs.
+//
+// One cell has moved since, and it is the shape the paragraph above asks for
+// rather than an exception to it: hermes gained a config: branch in its own
+// repo (llm-bridge-hermes ba7beb4), so "model" was re-measured against that
+// code and hermes moved from lacks to has. Its effort and budget entries were
+// written at the same time — the same branch names both fields back to the
+// caller as unsupported, which is a measurement the audit could not make when
+// there was no branch at all.
 
 // capabilityColumn is one audited column: who earns it, who does not, and why
 // in both cases.
@@ -38,6 +46,7 @@ var auditedColumns = []capabilityColumn{
 			msg.HarnessInber:      "POST /sessions/{id}/config -> Engine.SetModel",
 			msg.HarnessCline:      "handleConfig sets h.model, passed as -m on the next one-shot turn",
 			msg.HarnessJig:        "handleConfig patches profile.Model, applied on the next spawn",
+			msg.HarnessHermes:     "handleConfig -> applyModel; sendMessageDirect reads h.cfg.Model on every /v1/responses turn (llm-bridge-hermes ba7beb4)",
 		},
 		lacks: map[msg.Harness]string{
 			msg.HarnessOpenClaw:  `hardcodes the literal model "openclaw" in its request body`,
@@ -45,7 +54,6 @@ var auditedColumns = []capabilityColumn{
 			msg.HarnessNanoClaw:  "no model is plumbed into the container at all",
 			msg.HarnessForgecode: "its own README says the -m it passes has no effect",
 			msg.HarnessAider:     "no config: branch; --model is fixed at session start",
-			msg.HarnessHermes:    "no config: branch; set_model is unreachable from this gateway",
 			msg.HarnessGoose:     "scaffold: no dispatcher, exits 2 on any real invocation",
 			msg.HarnessAutohand:  "scaffold: no dispatcher",
 			msg.HarnessDexto:     "scaffold: no dispatcher",
@@ -66,6 +74,7 @@ var auditedColumns = []capabilityColumn{
 		lacks: map[msg.Harness]string{
 			msg.HarnessClaudeCode: `--effort is a spawn flag; handleSessionConfig answers "spawn-time only, unchanged"`,
 			msg.HarnessCline:      "handleConfig names effort as unsupported and returns an error",
+			msg.HarnessHermes:     "handleConfig names effort as unsupported: responsesRequest carries no effort field",
 			msg.HarnessOpenClaw:   "no effort or reasoning field exists anywhere in the harness",
 			msg.HarnessMock:       "never unmarshals the config payload",
 		},
@@ -80,6 +89,7 @@ var auditedColumns = []capabilityColumn{
 			msg.HarnessClaudeCode: `--max-budget-usd is a spawn flag; answered "spawn-time only, unchanged"`,
 			msg.HarnessCline:      "names max_budget as unsupported and returns an error",
 			msg.HarnessCodex:      "HandleConfig parses only {model, effort}; the field is dropped in silence",
+			msg.HarnessHermes:     "handleConfig names max_budget as unsupported; hermes has no spend setting to reach",
 			msg.HarnessMock:       "never unmarshals the config payload",
 		},
 	},

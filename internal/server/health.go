@@ -215,11 +215,13 @@ func supportedPermissionModesFor(h msg.Harness) []string {
 //   - model: claude_code (handleSessionConfig -> handleSetModel, live),
 //     codex (HandleConfig -> cfg.CodexModel, next turn), inber (POST
 //     /sessions/{id}/config -> Engine.SetModel), cline (-m on the next
-//     one-shot turn), jig (patches the profile, next spawn). Withheld from
-//     everything else, and the reasons differ: openclaw hardcodes the literal
-//     model "openclaw", kilo_code and nanoclaw plumb no model at all,
-//     forgecode's own README says the -m it passes is inert, aider fixes the
-//     model at start, hermes and the six scaffolds have no config: branch.
+//     one-shot turn), jig (patches the profile, next spawn), hermes
+//     (handleConfig -> applyModel; sendMessageDirect reads h.cfg.Model when it
+//     builds every /v1/responses turn). Withheld from everything else, and the
+//     reasons differ: openclaw hardcodes the literal model "openclaw",
+//     kilo_code and nanoclaw plumb no model at all, forgecode's own README says
+//     the -m it passes is inert, aider fixes the model at start, and the six
+//     scaffolds have no config: branch.
 //   - effort: codex, inber, jig. claude_code takes --effort at spawn and says
 //     so; cline refuses it by name.
 //   - tools: this one column gates two different controls, and no harness
@@ -242,13 +244,28 @@ func supportedPermissionModesFor(h msg.Harness) []string {
 //     jig emit no SessionInfo event at all, so the button had nothing to show.
 //
 // "interrupt" is gone: it was on hermes alone, it named a JSON-RPC method this
-// server never sends, and no UI reads the column.
+// server never sends, and no UI reads the column. Re-checked on 2026-07-31
+// after llm-bridge-hermes ba7beb4 gave hermes a working SIGINT handler, which
+// is the obvious reason to want the cell back: the handler is real, but nothing
+// consumes the string. The four consumer surfaces branch on exactly compact,
+// fork, model, effort, tools, budget and system_prompt (TestCapabilityNamesAre
+// Consumed pins the list), so granting "interrupt" would add a badge no control
+// reads. It stays out until a consumer gates on it.
+//
+// hermes's "model" is the first cell to move since the audit, and it moved the
+// way the header above asks for: the harness changed in its own repo
+// (llm-bridge-hermes ba7beb4 added the config: branch the audit found missing),
+// it was re-measured against that code, and the binary was deployed to ~/bin
+// first. Order matters — bridge-server resolves a harness through exec.LookPath
+// and spawns a fresh process per session, so the binary is its own deployment;
+// granting the cell before it lands advertises a Model dropdown that drops
+// what the user picks.
 var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessClaudeCode: {"compact", "fork", "model", "tools", "system_prompt"},
 	msg.HarnessCodex:      {"compact", "fork", "model", "effort"},
 	msg.HarnessOpenClaw:   {},
 	msg.HarnessInber:      {"compact", "fork", "model", "effort", "tools"},
-	msg.HarnessHermes:     {},
+	msg.HarnessHermes:     {"model"},
 	msg.HarnessAider:      {},
 	msg.HarnessGoose:      {},
 	msg.HarnessAutohand:   {},
