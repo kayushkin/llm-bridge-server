@@ -54,7 +54,10 @@ type Server struct {
 	cfState       *conformanceState
 	sessionHub    *sessionHub
 	parkedAsks    *parkedAsks
-	cfg           *config.Config
+	// signalClassifier is the derived signal producer: a cheap-model pass
+	// over each turn-end. Nil only in tests that never exercise it.
+	signalClassifier *signalClassifier
+	cfg              *config.Config
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
@@ -77,8 +80,18 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		cfState:       newConformanceState(cfg.ConformancePath),
 		sessionHub:    hub,
 		parkedAsks:    newParkedAsks(),
-		cfg:           cfg,
+		signalClassifier: newSignalClassifier(
+			cfg.SignalClassifierModel,
+			cfg.SignalClassifierTimeout,
+			cfg.SignalClassifierMaxChars,
+			cfg.SignalClassifierOptOut,
+			authClient,
+		),
+		cfg: cfg,
 	}
+	// The classifier reacts to turn-ends, so it hangs off the manager's
+	// observer rather than reaching into the derivation state machine.
+	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
 	srv.routes()
 	srv.syncHarnessTypes()
 	srv.syncSourceFolderRegistry()

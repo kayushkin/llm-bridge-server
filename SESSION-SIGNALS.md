@@ -188,7 +188,7 @@ through the same resolve verb.
 - **P2 — unified frontend component.** One `SignalCard` in `bridge-ui` handling both kinds;
   mount in chat, inbox, and the RefChip session panel. Resolve via the verbs above.
 - **P3 — derived pass.** Kind-aware cheap-model classifier on turn-ends → `signal` row.
-  Decision 1.
+  Decision 1. **Shipped — see "P3 as built" below.**
 - **P4 — notify tool/hook + surface routing.** A structured notification producer; set
   `surface` from attended-ness. Unattended blockers → `surface:"kanban"` signal on the
   worker's card (move card to blocked/needs-review), resolvable by orchestrator/user/agent;
@@ -321,3 +321,82 @@ hook-resolve path does, and that is tool-question-only. `SignalCard` takes an
 that does nothing. The verb arrives with P4. Likewise a signal with no `request_id`
 (derived, P3) renders read-only: its resolve path is `POST /sessions/{id}/send`, which P3
 adds. And `surface:"kanban"` has no mount yet — that is P4's, on the kanban card.
+
+---
+
+## P3 as built (2026-07-31)
+
+The derived producer. A cheap-model pass over each turn-end sorts the assistant's final
+text into `question` | `notification` | `neither` and writes a `source:"derived"` signal
+for the first two. On by default (decision 1), with a per-harness opt-out.
+
+| Piece | File |
+|---|---|
+| Classifier, skip rules, signal write, state reconciliation | `internal/server/signal_classifier.go` |
+| Turn-end observer + bounded external state write | `internal/harness/manager.go` |
+| `applyExternalState` / `currentState` | `internal/harness/derivation.go` |
+| Answering a derived question | `internal/server/sessions.go` (`handleSendMessage`) |
+| Config + escape hatch | `internal/config/config.go` |
+| Client half | `bridge-ui` `feat/session-signals-p3` (`c35a7da`) |
+
+Env: `LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL` (default `claude-haiku-4-5`; **empty turns the
+classifier off everywhere**), `LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT` (comma-separated
+harness names — the escape hatch), `LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT` (20s),
+`LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS` (6000).
+
+### The five things not to re-derive
+
+**1. The classifier cannot live inside `derive()`, so `looksLikeQuestion` stays.**
+`derive()` runs on the hot event path holding the state mutex; a model call there parks
+the session's whole event stream behind an API round trip — the exact wedge the
+turn-completion watchdog exists to break. So the heuristic keeps its job as the
+*immediate provisional* answer (the 🔔 appears the instant the turn ends) and the
+classifier is the *authoritative later* one, promoting a question the string match
+missed and demoting one it called wrong. Demotion is the half that makes the feature
+worth its cost: today a turn ending "does that make sense?" parks a session with nothing
+to answer.
+
+**2. A late verdict must be bounded, or it corrupts state.**
+`applyExternalState` takes an `allowedFrom` set naming the states the verdict was formed
+about, and drops the write for anything else — so a classifier that answers after the
+user has already replied cannot flip a running turn back to `awaiting_user`. **An empty
+`allowedFrom` is rejected, not read as "any state"**: the failure mode of an unbounded
+default is silent state corruption, and a caller that forgets the bound should get no
+write rather than an unbounded one. Verified curative — removing the bound fails two
+tests.
+
+**3. Nothing else closes a derived row, so two paths close it here.**
+There is no signal-level resolve verb until P4. A derived **question** closes in the
+`/send` handler, because sending a message *is* its resolve verb — done server-side, not
+in the card, so a question answered from the CLI or by an orchestrator closes the same
+way. Anything still open is **superseded** at the next turn-end: the assistant has
+spoken again, so a free-text ask from a previous turn is answered or moot. Without
+supersession every turn would leave another stale row in the inbox forever. At most one
+derived row per session is ever open.
+
+**4. The turn's tail is what gets classified, and a parked tool ask wins.**
+Truncation keeps the **end** of a long turn — a question a human has to answer is always
+last, so a head-first cap would classify the file dump above it. And when a structured
+`AskUserQuestion` is already parked, the derived pass records nothing: that ask has a
+real resolve verb behind it, and a derived row alongside it is a second, weaker copy of
+the same demand on the user's attention. The store lookup **fails closed** — an
+unreadable store must not become a licence to mint duplicates on top of a park we could
+not see.
+
+**5. `surface` routes; state describes.**
+A derived question sets `awaiting_user` for every session type, autonomous included —
+the state is an honest description of a session that ended its turn with an unanswered
+question. Where that question *reaches a human* is `surface`'s job, and for an
+autonomous worker that is the kanban card (P4), not a chat nobody is reading. Collapsing
+the two would mean either lying about the session or losing the signal.
+
+### Cost and the off switch
+
+One Haiku call per turn-end, skipped for: an empty or under-12-character final message, a
+renamer session (our own helper — its sign-off looks enough like a notification to mint
+one every time), a turn that did not settle (errored, aborted, or already superseded by a
+new turn), an opted-out harness, and a session with a tool ask already parked. Every
+failure path — timeout, transport error, unparseable verdict, no credential — leaves the
+session exactly as the heuristic left it and records nothing. A signal is an extra
+surface on top of a turn that already completed; no failure to produce one may change how
+the turn itself resolved.

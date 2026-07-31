@@ -429,6 +429,13 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A derived question resolves by sending a message — that IS its resolve
+	// verb (SESSION-SIGNALS.md, "Resolve — per kind and source"), so this is
+	// where the record closes. Doing it here rather than in the client means
+	// a question answered from the CLI, from another surface, or by an
+	// orchestrator closes the same way as one answered from the card.
+	s.answerDerivedQuestions(bridgeID, req.Message)
+
 	go s.maybeAutoRename(bridgeID)
 
 	writeJSON(w, map[string]string{"status": "sent", "message_id": userEvent.MessageID})

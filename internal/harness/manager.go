@@ -56,6 +56,50 @@ type Manager struct {
 	publicServerURL string          // public bridge URL runners use for /api/runner/binary fetches
 	localBridgeURL  string          // localhost URL the per-session OTel sidecar POSTs translated events to; derived from ListenAddr at startup
 	ptyRingBytes    int             // configured ring buffer size for pty late-attach replay
+	turnEnd         TurnEndObserver // optional; notified after each turn-end event is derived and fanned out
+}
+
+// TurnEndObserver is called once per turn-end, after the terminating event
+// and everything derived from it have been broadcast. state is the session
+// state derivation settled on for that turn.
+//
+// Observers run on their own goroutine and must not assume the session is
+// still in state by the time they act — a new turn can open underneath them.
+// They are advisory: the derivation state machine stays authoritative, and
+// an observer that wants to change state goes through
+// Manager.ApplyDerivedSessionState, which bounds the write.
+type TurnEndObserver func(bridgeID string, ev *msg.Event, state msg.SessionState)
+
+// SetTurnEndObserver registers the turn-end observer. Passing nil clears it.
+// Called once at wiring time, before any session starts.
+func (m *Manager) SetTurnEndObserver(fn TurnEndObserver) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.turnEnd = fn
+}
+
+// ApplyDerivedSessionState writes a session state decided outside the raw
+// event stream — today only the turn-end signal classifier, whose verdict
+// arrives after a network round trip. It reports whether the state actually
+// changed.
+//
+// allowedFrom names the states the caller's decision was formed about; the
+// write is dropped when the session has since moved to anything else, so a
+// late verdict can never overwrite a fresher truth. Passing no allowedFrom
+// drops the write rather than treating it as unbounded.
+func (m *Manager) ApplyDerivedSessionState(bridgeID string, next msg.SessionState, reason string, allowedFrom ...msg.SessionState) bool {
+	m.mu.Lock()
+	d := m.derivation[bridgeID]
+	m.mu.Unlock()
+	if d == nil {
+		return false
+	}
+	ev := d.applyExternalState(next, reason, allowedFrom...)
+	if ev == nil {
+		return false
+	}
+	m.publishDerived(bridgeID, []msg.Event{*ev})
+	return true
 }
 
 // NewManager creates a harness manager.
@@ -642,10 +686,27 @@ func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 	m.mu.Unlock()
 
 	derived := d.derive(src)
-	if len(derived) == 0 {
-		return
-	}
+	m.publishDerived(bridgeID, derived)
 
+	// The turn-end observer runs after the derived events are out, so a
+	// consumer that reacts to a turn ending never races the state event that
+	// announced it. Async because observers do slow work (the signal
+	// classifier calls a model): readEvents owns the session's only event
+	// channel, and blocking it here would stall the whole stream.
+	if src.Type == msg.EventResult {
+		m.mu.RLock()
+		observer := m.turnEnd
+		m.mu.RUnlock()
+		if observer != nil {
+			go observer(bridgeID, src, d.currentState())
+		}
+	}
+}
+
+// publishDerived persists derived events, writes any session-state
+// transition through to the session row, and fans the events out to the
+// same subscriber set as the raw stream.
+func (m *Manager) publishDerived(bridgeID string, derived []msg.Event) {
 	for i := range derived {
 		ev := &derived[i]
 		ev.BridgeSessionID = bridgeID

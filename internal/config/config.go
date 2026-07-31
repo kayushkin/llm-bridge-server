@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 type Config struct {
@@ -61,6 +63,27 @@ type Config struct {
 	// defaults much higher than IdleTimeout. Configured via
 	// LLMBRIDGE_PTY_IDLE_TIMEOUT; <=0 disables reaping for pty sessions.
 	PTYIdleTimeout time.Duration
+	// SignalClassifierModel is the cheap model the turn-end signal
+	// classifier calls to sort a finished turn into question |
+	// notification | neither. Configured via
+	// LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL; empty turns the classifier off
+	// everywhere, leaving the looksLikeQuestion heuristic as the only
+	// awaiting_user signal and minting no derived signals.
+	SignalClassifierModel string
+	// SignalClassifierOptOut is the set of harnesses the classifier skips
+	// — the per-harness escape hatch the on-by-default decision was taken
+	// with. Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT as a
+	// comma-separated list of harness names.
+	SignalClassifierOptOut map[msg.Harness]bool
+	// SignalClassifierTimeout bounds one classify call. On timeout the turn
+	// keeps whatever state the heuristic gave it and no signal is written.
+	// Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT.
+	SignalClassifierTimeout time.Duration
+	// SignalClassifierMaxChars caps how much of a turn's final text is sent
+	// to the classifier. A turn ending in a huge dump is still classified
+	// from its tail, which is where a question or a sign-off lives.
+	// Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS.
+	SignalClassifierMaxChars int
 }
 
 func Load() *Config {
@@ -87,7 +110,26 @@ func Load() *Config {
 		PTYRingBufferBytes: envInt("LLMBRIDGE_PTY_RING_BUFFER_BYTES", 64*1024),
 		IdleTimeout:        envDuration("LLMBRIDGE_IDLE_TIMEOUT", 15*time.Minute),
 		PTYIdleTimeout:     envDuration("LLMBRIDGE_PTY_IDLE_TIMEOUT", 60*time.Minute),
+		SignalClassifierModel:    envOr("LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL", "claude-haiku-4-5"),
+		SignalClassifierOptOut:   parseHarnessSet(os.Getenv("LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT")),
+		SignalClassifierTimeout:  envDuration("LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", 20*time.Second),
+		SignalClassifierMaxChars: envInt("LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", 6000),
 	}
+}
+
+// parseHarnessSet parses a comma-separated harness list into a set. Empty
+// entries are skipped; names are trimmed but otherwise passed through
+// unchanged, so a name that matches no harness simply excludes nothing.
+func parseHarnessSet(spec string) map[msg.Harness]bool {
+	out := make(map[msg.Harness]bool)
+	for _, name := range strings.Split(spec, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		out[msg.Harness(name)] = true
+	}
+	return out
 }
 
 // envDuration reads a Go duration string (e.g. "15m") from an env var,
