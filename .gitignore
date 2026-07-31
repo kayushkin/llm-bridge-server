@@ -1,4 +1,10 @@
-# Compiled binaries
+# Where deploy.sh puts every command it builds. One entry, so adding a command
+# under cmd/ never again needs an edit here — the list below drifted from cmd/
+# and left reminder-coordinator untracked by both this file and deploy.sh.
+/build/
+
+# Compiled binaries, from hand builds in the repo root or in a command's own
+# directory. deploy.sh no longer writes these paths.
 /scheduler
 /autoworker
 /kanban-curator
@@ -8,6 +14,7 @@
 /autoworker-reviewer
 /ask
 /spend-ceiling-guard
+/reminder-coordinator
 /cmd/scheduler/scheduler
 /cmd/autoworker/autoworker
 /cmd/kanban-curator/kanban-curator
@@ -17,6 +24,7 @@
 /cmd/autoworker-reviewer/autoworker-reviewer
 /cmd/ask/ask
 /cmd/spend-ceiling-guard/spend-ceiling-guard
+/cmd/reminder-coordinator/reminder-coordinator
 
 # DB files
 *.db
