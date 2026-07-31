@@ -164,23 +164,46 @@ func supportedPermissionModesFor(h msg.Harness) []string {
 	}
 }
 
-// harnessCapabilities defines what features each harness supports.
+// harnessCapabilities defines what features each harness supports. The chat
+// UI reads it over GET /harnesses/{name}/capabilities and shows or hides its
+// Compact, Fork, Model, Effort, Tools and System-prompt controls accordingly
+// (bridge-ui Workspace.tsx), so a wrong entry here is directly visible to the
+// user in both directions: a granted capability the harness drops is a button
+// that silently does nothing, and a withheld one is a working feature the user
+// cannot reach.
+//
+// It is hand-maintained, which is the standing hazard — the harnesses live in
+// their own repos and nothing here re-reads them. The "compact" column was
+// audited against every harness's dispatcher on 2026-07-31 (noteboard todo
+// f8035505 tracks deriving this table instead of writing it down; 8fbaf27d
+// tracks the two harnesses that answer compact without compacting):
+//
+//   - real: claude_code (/compact), codex (HandleCompact), inber (POST
+//     /sessions/{id}/compact), kilo_code (server.Summarize), jig (/compact,
+//     llm-bridge-jig 9ac0b0e)
+//   - honest refusal, correctly withheld: hermes (UNSUPPORTED error), cline,
+//     aider, forgecode (no-op acks that say so)
+//   - claims a delegation that never happens: openclaw, nanoclaw. Both emit
+//     "compaction delegated to X" and write nothing. openclaw is withheld
+//     here rather than left showing a button that does nothing; nanoclaw was
+//     already withheld. Fixing either needs its own protocol work — nanoclaw's
+//     container contract does not cover compaction and no image implements it.
 var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessClaudeCode: {"compact", "fork", "model", "effort", "tools", "budget", "system_prompt"},
 	msg.HarnessCodex:      {"compact", "fork", "model", "effort", "system_prompt"},
-	msg.HarnessOpenClaw:   {"compact", "model", "effort"},
+	msg.HarnessOpenClaw:   {"model", "effort"},
 	msg.HarnessInber:      {"compact", "fork", "model", "effort", "tools", "budget"},
 	msg.HarnessHermes:     {"model", "fork", "effort", "tools", "system_prompt", "interrupt"},
 	msg.HarnessAider:      {"model"},
 	msg.HarnessGoose:      {"model"},
 	msg.HarnessAutohand:   {"model"},
-	msg.HarnessJig:        {"model"},
+	msg.HarnessJig:        {"compact", "model"},
 	msg.HarnessDexto:      {"model"},
 	msg.HarnessCommander:  {"model"},
 	msg.HarnessNanoClaw:   {"model"},
 	msg.HarnessCline:      {"model"},
 	msg.HarnessRooCode:    {"model"},
-	msg.HarnessKiloCode:   {"model"},
+	msg.HarnessKiloCode:   {"compact", "model"},
 	msg.HarnessOpenCode:   {"model"},
 	msg.HarnessForgecode:  {"model"},
 	msg.HarnessGemini:     {"model"},

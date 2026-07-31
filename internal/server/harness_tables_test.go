@@ -32,6 +32,58 @@ func TestHarnessTablesCoverCanonicalSet(t *testing.T) {
 	}
 }
 
+// TestCompactCapabilityMatchesTheHarnesses pins the "compact" column to what
+// each harness's dispatcher was measured to do on 2026-07-31. The chat UI
+// gates its Compact button on this column, so an entry that drifts from the
+// harness is a button that lies in one direction or the other — and nothing
+// else in this repo can notice, because the harnesses live in other repos.
+//
+// Each name below is a claim about a specific implementation. If one of them
+// changes, re-measure that harness and move it, rather than adjusting the
+// expectation to match whatever the table happens to say.
+func TestCompactCapabilityMatchesTheHarnesses(t *testing.T) {
+	// Harnesses that send a real compaction request to their backend.
+	compacts := map[msg.Harness]string{
+		msg.HarnessClaudeCode: "writes /compact to the CC process",
+		msg.HarnessCodex:      "HandleCompact on the codex app-server",
+		msg.HarnessInber:      "POST /sessions/{id}/compact",
+		msg.HarnessKiloCode:   "server.Summarize",
+		msg.HarnessJig:        "writes /compact to the CC process (llm-bridge-jig 9ac0b0e)",
+		msg.HarnessMock:       "reference harness, acknowledges with the summary",
+	}
+	// Harnesses that do not, whether they refuse honestly (hermes, cline,
+	// aider, forgecode) or claim a delegation that never happens (openclaw,
+	// nanoclaw). Either way the user must not be shown a Compact button.
+	doesNotCompact := map[msg.Harness]string{
+		msg.HarnessHermes:    "emits an UNSUPPORTED error event",
+		msg.HarnessCline:     "compact_unsupported ack; cline manages context internally",
+		msg.HarnessAider:     "compact_ack no-op",
+		msg.HarnessForgecode: "compact_ack no-op",
+		msg.HarnessOpenClaw:  `says "compaction delegated to OpenClaw" and writes nothing`,
+		msg.HarnessNanoClaw:  `says "compaction delegated to NanoClaw" and writes nothing`,
+	}
+
+	has := func(h msg.Harness) bool {
+		for _, c := range harnessCapabilities[h] {
+			if c == "compact" {
+				return true
+			}
+		}
+		return false
+	}
+
+	for h, impl := range compacts {
+		if !has(h) {
+			t.Errorf("harness %q compacts for real (%s) but the table withholds \"compact\"; the UI hides a working button", h, impl)
+		}
+	}
+	for h, why := range doesNotCompact {
+		if has(h) {
+			t.Errorf("harness %q does not compact (%s) but the table grants \"compact\"; the UI shows a button that does nothing", h, why)
+		}
+	}
+}
+
 // TestDisabledHarnessesAreCanonical catches a disable entry that outlives the
 // harness it names — e.g. one left behind after a harness is renamed or removed
 // upstream, which would otherwise sit here forever suppressing nothing.
