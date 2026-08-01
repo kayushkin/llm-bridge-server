@@ -178,7 +178,10 @@ func (s *Server) routes() {
 	// /signals?state=open is the cross-session inbox; /signals/{id}/resolve
 	// is the close verb for the answers that never reach a session — a
 	// notification acknowledgement and a dismissal.
+	// POST /sessions/{id}/signals is the structured notification producer:
+	// a session raising a notification about itself, deliberately, mid-turn.
 	s.mux.HandleFunc("GET /sessions/{id}/signals", s.handleListSessionSignals)
+	s.mux.HandleFunc("POST /sessions/{id}/signals", s.handleCreateSessionSignal)
 	s.mux.HandleFunc("GET /signals", s.handleListSignals)
 	s.mux.HandleFunc("POST /signals/{id}/resolve", s.handleResolveSignal)
 

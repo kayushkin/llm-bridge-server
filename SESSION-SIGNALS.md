@@ -599,3 +599,119 @@ check the filter before believing it.
 
 Deploy gate unchanged: the server half needs the user's gateway rebuild + restart
 (`c251f92c`). Code, build, verify, push — and stop there.
+
+---
+
+## P4 part 3 as built (2026-08-01) — the structured notification producer
+
+The second `source:"tool"` writer, and the last piece of P4 that was not gated on a user
+decision. Until now every notification in the store came from the turn-end classifier: a
+cheap model reading the assistant's closing text and guessing whether it was worth
+surfacing. That producer stays. What it cannot do is let a session say the thing on
+purpose, mid-turn, in the record's own shape — a headline, a body, and a severity it chose
+rather than one inferred from prose. `POST /sessions/{id}/signals` is that.
+
+| Piece | File |
+|---|---|
+| The verb | `internal/server/signal_notify.go` |
+| Route | `internal/server/server.go` |
+| The classifier-suppression fix it required | `internal/server/signal_classifier.go` (`hasOpenToolQuestion`) |
+| Tests | `internal/server/signal_notify_test.go` |
+
+Request: `{"title": …, "body": …, "severity": "info"|"warn", "kind": "notification"}` —
+only `title` is required. Response is `201` and the stored row.
+
+Everything else on the record is stamped by the server, not the caller: `source` is `tool`,
+`state` is `open`, `surface` comes from `signalSurfaceForSession`, `session_type` from the
+session, and `linked_todo_id` from the kanban lookup. A caller that could set those could
+claim to be the parked-hook producer, or route its own notification to a surface nobody
+watches.
+
+### The five rules, so nobody re-argues them
+
+- **It parks nothing and moves no session state.** That is the whole reason it is safe for
+  an unattended worker: the failure that makes an autonomous `AskUserQuestion` a deny — a
+  worker blocking on a human who is not there — cannot happen when nothing is being asked.
+  An empty `request_id` is the contract, not an omission: it is what lets
+  `POST /signals/{id}/resolve` acknowledge the row without tripping the parked-request
+  guard.
+- **A question is refused, with all three reasons named in the 400.** A `source:"tool"`
+  question minted here would be answerable by nothing — the hook resolve is keyed on a
+  `request_id` it would not have, `answerDerivedQuestions` skips anything that is not
+  `derived`, and the resolve verb refuses to acknowledge a question on purpose. It would
+  sit open until a human dismissed it unanswered. `AskUserQuestion` asks; this route tells.
+- **An unknown `severity` is a 400, not a fall back to `info`.** Same reasoning as the read
+  filters: a typo that silently grades a warning as routine is worse than a rejected call
+  the caller can fix.
+- **Over-long text is refused, not truncated,** and the limit is in the message (200 runes
+  of title, 4000 of body, counted in characters rather than bytes). The caller is a model:
+  it reads the 400 and retries. A silent trim puts half a message on the board and calls it
+  delivered.
+- **No deduplication.** A session that notifies in a loop writes a row each time. That is
+  visible in the inbox rather than hidden behind a silent cap; if it turns out to be a
+  problem it is a rate limit somebody chooses, not one this route smuggled in.
+
+### The defect this producer would have introduced, and the one-line fix
+
+`hasOpenToolSignal` — the guard that stops the classifier raising a derived row alongside
+a structured one — matched on **`source == tool` alone**. Every such row today is a parked
+`AskUserQuestion`, so that read was correct by accident.
+
+A tool notification breaks it. The row is open, it is `source:"tool"`, and it stays open
+until somebody clicks Acknowledge — which on an unattended worker's kanban card may be
+never. So **one notification would have switched the derived classifier off for the rest of
+that session's life**, and the genuine blocker the worker raised three turns later would
+never have been surfaced at all.
+
+The predicate is now `hasOpenToolQuestion`, matching `source == tool && kind == question`.
+That is what its own doc comment and every call-site comment already said it meant —
+"a parked tool question", "a structured ask with a real resolve verb behind it". A
+notification is not an ask. The rename makes the name say it too.
+
+*The general lesson, which is P236's caller sweep pointed the other way: before you mint a
+new shape of an existing record, grep every predicate that reads that record and ask which
+ones were true only because the new shape did not exist yet.*
+
+### The UI needs no change
+
+`SignalCard` branches on `kind` for the acknowledge button and on `request_id` for the
+answer path, so a tool notification with no `request_id` already renders with Acknowledge
+wired to `acknowledgeSignal`. Verified by reading `feat/session-signals-p4-kanban`; no
+bridge-ui commit accompanies this one.
+
+### Verified
+
+- 12 tests, each confirmed to have actually executed by name (P4 part 1's `-run` trap).
+- **12 sabotages, each run, all 12 caught:** accept `kind=question` · hardcode surface to
+  chat · claim `source=derived` · unknown severity falls back to `info` · truncate a long
+  title instead of 400 · bound the title by bytes instead of runes · drop the empty-title
+  check · echo the request instead of re-reading the stored row · 200 instead of 201 ·
+  mint on an unknown session · revert `hasOpenToolQuestion` to source-only · let a turn-end
+  supersede tool rows.
+- Full `internal/server` and `internal/store` packages green.
+- **33 checks against the real binary over HTTP** (`/tmp/notify-canary.sh` shape: boot on a
+  spare port with a seeded DB holding one interactive and one autonomous session, no
+  kanban-store, classifier off). Both surfaces, both severities, all nine refusals, "a
+  refused call writes no row", readability through all three existing read routes, and the
+  full acknowledge → idempotent second click → gone-from-inbox path.
+
+### What is left of P4
+
+**Only the two halves that were never this child's.**
+
+1. **An in-session caller.** The verb exists; nothing in a session calls it yet. This is a
+   real design choice and is deliberately NOT made here — see the child todo. The crux
+   measured tonight: **a session's own shell cannot name its bridge session id.**
+   `LLMBRIDGE_BRIDGE_SESSION_ID` is passed only to the OTel sidecar
+   (`internal/harness/sidecar.go:50`); `StartProcess` hands the harness plain
+   `os.Environ()` plus `LLMBRIDGE_CREDENTIAL_ID`, so a `curl` from a Bash tool call has
+   nothing to POST to. Three ways out, none obviously best: plumb the id into the harness
+   env and ship a small CLI; have the prehook recognise the call and rewrite its
+   `updated_input` (bridge-server already does this for `AskUserQuestion`); or provision a
+   tool-store MCP (`injectMCPConfig`), which costs a stdio process per session and runs
+   against the MCP-descoping decision.
+2. **Blocker routing to the worker's kanban card** — still gated on the user's
+   stop-vs-continue call. Unchanged, and untouched by anything above.
+
+Deploy gate unchanged: the server half needs the user's gateway rebuild + restart
+(`c251f92c`). Code, build, verify, push — and stop there.

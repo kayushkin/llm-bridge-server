@@ -330,8 +330,9 @@ func (s *Server) onTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionStat
 	// The session already has a parked tool question open. That is a
 	// structured ask with a real resolve verb behind it; a derived row
 	// alongside it would be a second, weaker copy of the same demand on the
-	// user's attention.
-	if s.hasOpenToolSignal(bridgeID) {
+	// user's attention. A tool NOTIFICATION does not count — it makes no
+	// demand, and letting it count would end classification for the session.
+	if s.hasOpenToolQuestion(bridgeID) {
 		return
 	}
 
@@ -396,9 +397,20 @@ func skipClassifyReason(sess *store.Session, text string, state msg.SessionState
 	}
 }
 
-// hasOpenToolSignal reports whether a structured tool ask is already open on
+// hasOpenToolQuestion reports whether a structured tool ask is already open on
 // this session.
-func (s *Server) hasOpenToolSignal(bridgeID string) bool {
+//
+// Kind matters, and narrowing to it is what keeps the notification producer
+// from switching the classifier off. The rule this guards is "do not raise a
+// weaker copy of a demand the user already has in front of them", and a demand
+// is a question: a parked AskUserQuestion holds the session at awaiting_user
+// with a resolve verb behind it. A tool notification (POST
+// /sessions/{id}/signals) asks for nothing and blocks nothing, but it stays
+// open until somebody clicks Acknowledge — which on an unattended worker's
+// kanban card may be never. Counting it here would mean one notification
+// silently ends classification for the rest of that session's life, so the
+// genuine blocker it raised three turns later would never be surfaced at all.
+func (s *Server) hasOpenToolQuestion(bridgeID string) bool {
 	open, err := s.store.ListSignals(store.SignalFilter{SessionID: bridgeID, State: msg.SignalStateOpen})
 	if err != nil {
 		log.Printf("[signals] %s: look up open signals: %v", bridgeID, err)
@@ -407,7 +419,7 @@ func (s *Server) hasOpenToolSignal(bridgeID string) bool {
 		return true
 	}
 	for _, sig := range open {
-		if sig.Source == msg.SignalSourceTool {
+		if sig.Source == msg.SignalSourceTool && sig.Kind == msg.SignalKindQuestion {
 			return true
 		}
 	}
