@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -21,6 +22,16 @@ import (
 // API-priced credit, the largest single session reached $83.77, and a
 // $10-per-session ceiling would have stopped $503 of that. Two of the
 // twelve largest spenders were unattended autoworker sessions.
+//
+// ⚠️ Those figures are all undercounts, and re-measuring them on
+// 2026-08-01 is what found the seeding bug this file now depends on. Every
+// one of them was read off api_spend_total, which restarted at zero each
+// time a session's harness process exited; 64 of the 3,691 sessions in
+// log-store show that reset, and their true spend is $1,174 above what the
+// high-water mark records. The "largest single session" is the clearest
+// case: $83.77 was the biggest of its SIXTEEN separate runs, and it
+// actually spent $201.76. The real largest reached $285.61. Fleet spend is
+// $6,446, not $5,272. Read the numbers above as the floor they are.
 //
 // The gate has two halves, and the second is the one that matters:
 //
@@ -48,7 +59,12 @@ func (m *Manager) enforceBudget(bridgeID string, ev *msg.Event) {
 		return
 	}
 
-	spendUSD, err := m.store.RecordSessionSpendUSD(bridgeID, ev.APISpendTotal.TotalUSD)
+	spendUSD, err := m.store.RecordSessionSpend(bridgeID, ev.APISpendTotal.TotalUSD, store.SessionSpendDetail{
+		Usage:         ev.APISpendTotal.Usage,
+		Calls:         ev.APISpendTotal.Calls,
+		ByModel:       ev.APISpendTotal.ByModel,
+		ByQuerySource: ev.APISpendTotal.ByQuerySource,
+	})
 	if err != nil {
 		log.Printf("[harness] budget: failed to record spend for %s: %v", bridgeID, err)
 		return

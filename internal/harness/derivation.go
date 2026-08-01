@@ -86,15 +86,21 @@ type derivationState struct {
 	turns int
 
 	// apiSpendUSD is the running session-cumulative spend across every
-	// EventAPICall observed. Distinct from cost (above) which sums
+	// EventAPICall observed — across every harness process the session has
+	// had, not just the current one. A derivation is discarded when its
+	// harness process exits, so on a resume these accumulators are seeded
+	// back from the persisted row (seedAPISpend); without that seeding the
+	// session would start a second, independent spend history and the
+	// ceiling that halted it would re-arm from zero. Distinct from cost
+	// (above) which sums
 	// EventResult.Usage and excludes auxiliary API calls
 	// (session-title generation, prompt-suggestion). When the UI's
 	// top-line cost reads APISpendTotal (when Calls > 0), this is the
 	// number it displays; UsageTotal becomes the fallback for legacy
 	// or non-OTel-instrumented sessions.
-	apiSpendUSD     float64
-	apiSpendUsage   msg.TokenUsage
-	apiSpendCalls   int
+	apiSpendUSD      float64
+	apiSpendUsage    msg.TokenUsage
+	apiSpendCalls    int
 	apiSpendByModel  map[string]float64 // USD per model
 	apiSpendBySource map[string]float64 // USD per query_source
 
@@ -140,6 +146,33 @@ func newDerivationStateSeeded(initial msg.SessionState) *derivationState {
 		turnAccums:       make(map[string]*turnAccumulator),
 		apiSpendByModel:  make(map[string]float64),
 		apiSpendBySource: make(map[string]float64),
+	}
+}
+
+// seedAPISpend starts the derivation's spend accumulators from what the
+// session has already been recorded as spending, so the api_spend_total it
+// emits continues that history rather than opening a second one.
+//
+// This is the spend counterpart of the prev-SessionState seeding above, and
+// it exists for the same reason: a derivation is per-process, a session is
+// not. It must be called before the derivation sees any event — it assigns
+// rather than adds, so calling it on a derivation that has already counted
+// an api_call would discard that call.
+//
+// The maps are copied. The caller's copy comes from a store read it may reuse,
+// and a derivation that shared it would mutate the caller's data on every
+// priced API call.
+func (d *derivationState) seedAPISpend(totalUSD float64, calls int, usage msg.TokenUsage, byModel, byQuerySource map[string]float64) {
+	d.apiSpendUSD = totalUSD
+	d.apiSpendCalls = calls
+	d.apiSpendUsage = usage
+	d.apiSpendByModel = make(map[string]float64, len(byModel))
+	for model, usd := range byModel {
+		d.apiSpendByModel[model] = usd
+	}
+	d.apiSpendBySource = make(map[string]float64, len(byQuerySource))
+	for source, usd := range byQuerySource {
+		d.apiSpendBySource[source] = usd
 	}
 }
 

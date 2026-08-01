@@ -306,6 +306,13 @@ func (s *Store) migrate() error {
 	// one for them.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN max_budget_usd REAL NOT NULL DEFAULT 0")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN spend_usd REAL NOT NULL DEFAULT 0")
+	// The rest of the cumulative api_spend_total aggregate — token usage,
+	// call count, per-model and per-query-source dollars — as JSON. See
+	// SessionSpendDetail for why the dollar total is not in here. Empty is
+	// the correct value for every pre-existing row: the breakdown for spend
+	// that predates this column was never persisted anywhere, and inventing
+	// one would attribute dollars to a model nobody measured.
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN api_spend_detail TEXT NOT NULL DEFAULT ''")
 	// Index on harness_session_id must be created after ALTER TABLE migration adds/renames the column.
 	// Drop the legacy non-unique index in favor of a partial UNIQUE one below.
 	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_session_id")
@@ -533,17 +540,51 @@ func (s *Store) SetSessionMaxBudgetUSD(bridgeID string, maxBudgetUSD float64) er
 	return nil
 }
 
-// RecordSessionSpendUSD raises the session's recorded spend to spendUSD and
-// returns the value now stored, which is never lower than what was there.
+// SessionSpendDetail is every field of the cumulative api_spend_total
+// aggregate except TotalUSD.
 //
-// The MAX() is the whole point. The running total this is fed from is
-// derived in bridge-server's memory and starts again at zero every time the
-// process restarts, so a plain assignment would walk a session's spend
-// backwards on restart and hand a budget that was already exhausted a fresh
-// full allowance. Cumulative spend does not go down.
-func (s *Store) RecordSessionSpendUSD(bridgeID string, spendUSD float64) (float64, error) {
+// TotalUSD is deliberately absent: it lives in the sessions.spend_usd REAL
+// column because the spend gate compares it in SQL and a figure inside a
+// JSON blob cannot be compared there. Splitting the aggregate this way
+// keeps exactly one home for the dollar total instead of two that can
+// disagree. Both halves are written by the same statement, so they cannot
+// drift apart.
+type SessionSpendDetail struct {
+	Usage         msg.TokenUsage     `json:"usage"`
+	Calls         int                `json:"calls"`
+	ByModel       map[string]float64 `json:"by_model,omitempty"`
+	ByQuerySource map[string]float64 `json:"by_query_source,omitempty"`
+}
+
+// RecordSessionSpend raises the session's recorded spend to spendUSD, stores
+// the matching breakdown, and returns the dollar value now stored, which is
+// never lower than what was there.
+//
+// The MAX() is a backstop, not the mechanism. The running total this is fed
+// from is derived in bridge-server's memory, and the derivation that holds it
+// is discarded when the harness process exits — so without the seeding in
+// harness.persistedSpend the total restarts at zero on every resume and a
+// plain assignment would walk a session's spend backwards, handing a budget
+// that was already exhausted a fresh full allowance. Cumulative spend does not
+// go down. The MAX() survives here for the case seeding cannot cover: a store
+// read that fails at derivation-creation time starts the total at zero, and
+// the recorded figure must not follow it down.
+//
+// The breakdown is written only when the total advances, for the same reason:
+// a per-run breakdown from a derivation that lost its history describes less
+// spending than the row already knows about, and overwriting with it would
+// lose the earlier runs' attribution.
+func (s *Store) RecordSessionSpend(bridgeID string, spendUSD float64, detail SessionSpendDetail) (float64, error) {
+	encoded, err := json.Marshal(detail)
+	if err != nil {
+		return 0, fmt.Errorf("marshal spend detail for %s: %w", bridgeID, err)
+	}
 	now := time.Now().UTC()
-	res, err := s.db.Exec(`UPDATE sessions SET spend_usd=MAX(spend_usd, ?), updated_at=? WHERE bridge_id=?`, spendUSD, now, bridgeID)
+	res, err := s.db.Exec(`UPDATE sessions
+		SET api_spend_detail = CASE WHEN ? > spend_usd THEN ? ELSE api_spend_detail END,
+		    spend_usd        = MAX(spend_usd, ?),
+		    updated_at       = ?
+		WHERE bridge_id = ?`, spendUSD, string(encoded), spendUSD, now, bridgeID)
 	if err != nil {
 		return 0, err
 	}
@@ -556,6 +597,32 @@ func (s *Store) RecordSessionSpendUSD(bridgeID string, spendUSD float64) (float6
 	}
 	s.notifyChanged(bridgeID)
 	return stored, nil
+}
+
+// SessionSpend reads back the cumulative spend a session has already been
+// recorded as making: the dollar total and the breakdown that produced it.
+//
+// This is what a freshly created derivation is seeded from, so that the
+// api_spend_total it goes on to emit continues the session's history instead
+// of starting a second one. A session with no row, or one that has never
+// spent, reads as zero — the correct starting point for both.
+func (s *Store) SessionSpend(bridgeID string) (float64, SessionSpendDetail, error) {
+	var (
+		totalUSD float64
+		encoded  string
+		detail   SessionSpendDetail
+	)
+	err := s.dbRO.QueryRow(`SELECT COALESCE(spend_usd, 0), COALESCE(api_spend_detail, '')
+		FROM sessions WHERE bridge_id=?`, bridgeID).Scan(&totalUSD, &encoded)
+	if err != nil {
+		return 0, detail, err
+	}
+	if encoded != "" {
+		if err := json.Unmarshal([]byte(encoded), &detail); err != nil {
+			return 0, SessionSpendDetail{}, fmt.Errorf("unmarshal spend detail for %s: %w", bridgeID, err)
+		}
+	}
+	return totalUSD, detail, nil
 }
 
 func (s *Store) UpdateSessionPID(bridgeID string, pid int) error {
