@@ -11,50 +11,86 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-func TestWorkingDirForInstanceAppliesTheInstanceOverMachineCascade(t *testing.T) {
-	machine := &msg.Machine{ID: "m1", DefaultWorkingDir: "/srv/machine-default"}
+func TestWorkingDirForSessionAppliesTheSessionOverInstanceOverMachineCascade(t *testing.T) {
+	machine := &msg.Machine{ID: "m1", Name: "localhost", DefaultWorkingDir: "/srv/machine-default"}
 
 	cases := []struct {
-		name string
-		inst *msg.Instance
-		want string
+		name      string
+		sess      *store.Session
+		inst      *msg.Instance
+		want      string
+		wantOwner string
 	}{
 		{
-			name: "instance override wins over the machine default",
-			inst: &msg.Instance{ID: "i1", WorkingDir: "/srv/instance", Machine: machine},
-			want: "/srv/instance",
+			name:      "the session's own directory wins over the instance and the machine",
+			sess:      &store.Session{SessionID: "br_1", WorkingDir: "/srv/session"},
+			inst:      &msg.Instance{ID: "i1", WorkingDir: "/srv/instance", Machine: machine},
+			want:      "/srv/session",
+			wantOwner: "session br_1",
 		},
 		{
-			name: "an empty instance dir inherits the machine default",
-			inst: &msg.Instance{ID: "i1", Machine: machine},
-			want: "/srv/machine-default",
+			name:      "an empty session dir inherits the instance override",
+			sess:      &store.Session{SessionID: "br_1"},
+			inst:      &msg.Instance{ID: "i1", WorkingDir: "/srv/instance", Machine: machine},
+			want:      "/srv/instance",
+			wantOwner: "instance i1",
 		},
 		{
-			name: "neither configured resolves to empty, meaning inherit",
+			name:      "an empty session and instance inherit the machine default",
+			sess:      &store.Session{SessionID: "br_1"},
+			inst:      &msg.Instance{ID: "i1", Machine: machine},
+			want:      "/srv/machine-default",
+			wantOwner: "machine localhost",
+		},
+		{
+			name: "none configured resolves to empty, meaning inherit",
+			sess: &store.Session{SessionID: "br_1"},
 			inst: &msg.Instance{ID: "i1", Machine: &msg.Machine{ID: "m2"}},
 			want: "",
 		},
 		{
-			name: "an instance dir still applies when the machine is absent",
-			inst: &msg.Instance{ID: "i1", WorkingDir: "/srv/instance"},
-			want: "/srv/instance",
+			name:      "an instance dir still applies when the machine is absent",
+			sess:      &store.Session{SessionID: "br_1"},
+			inst:      &msg.Instance{ID: "i1", WorkingDir: "/srv/instance"},
+			want:      "/srv/instance",
+			wantOwner: "instance i1",
 		},
 		{
 			name: "no machine and no instance dir is empty, not a panic",
+			sess: &store.Session{SessionID: "br_1"},
 			inst: &msg.Instance{ID: "i1"},
 			want: "",
 		},
 		{
 			name: "a nil instance is empty, not a panic",
+			sess: &store.Session{SessionID: "br_1"},
 			inst: nil,
 			want: "",
+		},
+		{
+			name:      "a session directory applies even with no instance at all",
+			sess:      &store.Session{SessionID: "br_1", WorkingDir: "/srv/session"},
+			inst:      nil,
+			want:      "/srv/session",
+			wantOwner: "session br_1",
+		},
+		{
+			name:      "a nil session falls through to the instance, not a panic",
+			sess:      nil,
+			inst:      &msg.Instance{ID: "i1", WorkingDir: "/srv/instance", Machine: machine},
+			want:      "/srv/instance",
+			wantOwner: "instance i1",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := workingDirForInstance(tc.inst); got != tc.want {
-				t.Errorf("workingDirForInstance() = %q, want %q", got, tc.want)
+			got, owner := workingDirForSession(tc.sess, tc.inst)
+			if got != tc.want {
+				t.Errorf("workingDirForSession() dir = %q, want %q", got, tc.want)
+			}
+			if owner != tc.wantOwner {
+				t.Errorf("workingDirForSession() owner = %q, want %q", owner, tc.wantOwner)
 			}
 		})
 	}
@@ -117,25 +153,26 @@ func TestVerifyLocalWorkingDirRefusesWhatCannotBeEntered(t *testing.T) {
 	}
 
 	t.Run("an existing directory is accepted", func(t *testing.T) {
-		if err := verifyLocalWorkingDir("inst-1", realDir); err != nil {
+		if err := verifyLocalWorkingDir("instance inst-1", realDir); err != nil {
 			t.Errorf("verifyLocalWorkingDir(%q) = %v, want nil", realDir, err)
 		}
 	})
 
 	t.Run("an empty directory is accepted, meaning inherit", func(t *testing.T) {
-		if err := verifyLocalWorkingDir("inst-1", ""); err != nil {
+		if err := verifyLocalWorkingDir("instance inst-1", ""); err != nil {
 			t.Errorf("verifyLocalWorkingDir(\"\") = %v, want nil", err)
 		}
 	})
 
-	t.Run("a missing directory is refused and the error names the instance", func(t *testing.T) {
+	t.Run("a missing directory is refused and the error names the record that set it", func(t *testing.T) {
 		missing := filepath.Join(realDir, "no-such-dir")
-		err := verifyLocalWorkingDir("inst-cc-local", missing)
+		err := verifyLocalWorkingDir("instance inst-cc-local", missing)
 		if err == nil {
 			t.Fatalf("verifyLocalWorkingDir(%q) = nil, want an error", missing)
 		}
-		// The operator has to edit the instance, so the instance is the thing
-		// the message must name; exec's own chdir error names only the path.
+		// The operator has to edit whichever record supplied the path, so that
+		// record is the thing the message must name; exec's own chdir error
+		// names only the path, and the path is on four records at once.
 		if !strings.Contains(err.Error(), "inst-cc-local") {
 			t.Errorf("error %q does not name the instance", err)
 		}
@@ -145,7 +182,7 @@ func TestVerifyLocalWorkingDirRefusesWhatCannotBeEntered(t *testing.T) {
 	})
 
 	t.Run("a regular file is refused", func(t *testing.T) {
-		err := verifyLocalWorkingDir("inst-1", aFile)
+		err := verifyLocalWorkingDir("instance inst-1", aFile)
 		if err == nil {
 			t.Fatalf("verifyLocalWorkingDir(%q) = nil, want an error", aFile)
 		}

@@ -86,6 +86,71 @@ func TestCreateAndGetSession(t *testing.T) {
 	}
 }
 
+// The working directory is read once, at spawn, from whatever the store hands
+// back — so a column that is written but not selected (or selected in the wrong
+// position) sends every session to the instance's directory instead of its own,
+// and nothing else in the suite would notice.
+func TestSessionWorkingDirectoryRoundTrips(t *testing.T) {
+	s := testStore(t)
+
+	sess := &Session{
+		SessionID:  "br_wd_1",
+		Harness:    "claude_code",
+		State:      "idle",
+		WorkingDir: "/srv/project",
+	}
+	if err := s.CreateSession(sess); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := s.GetSession("br_wd_1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.WorkingDir != "/srv/project" {
+		t.Errorf("working_dir = %q, want /srv/project", got.WorkingDir)
+	}
+	// The neighbouring scanned fields must not have shifted along with it.
+	if got.Harness != "claude_code" || got.State != "idle" {
+		t.Errorf("scan misaligned: harness = %q, state = %q", got.Harness, got.State)
+	}
+
+	listed, err := s.ListSessions()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var found bool
+	for _, l := range listed {
+		if l.SessionID == "br_wd_1" {
+			found = true
+			if l.WorkingDir != "/srv/project" {
+				t.Errorf("listed working_dir = %q, want /srv/project", l.WorkingDir)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("session br_wd_1 missing from ListSessions")
+	}
+}
+
+// An unset working directory must persist as the empty string, which is how the
+// cascade spells "inherit the instance". Every session created before this
+// column existed reads back this way, so it is the common case, not the corner.
+func TestSessionWithNoWorkingDirectoryReadsBackEmpty(t *testing.T) {
+	s := testStore(t)
+
+	if err := s.CreateSession(&Session{SessionID: "br_wd_2", Harness: "claude_code", State: "idle"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := s.GetSession("br_wd_2")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.WorkingDir != "" {
+		t.Errorf("working_dir = %q, want empty (inherit the instance)", got.WorkingDir)
+	}
+}
+
 func TestGetSession_NotFound(t *testing.T) {
 	s := testStore(t)
 	_, err := s.GetSession("nonexistent")

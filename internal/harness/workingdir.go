@@ -4,41 +4,53 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// workingDirForInstance resolves the directory a harness session runs in.
+// workingDirForSession resolves the directory a harness session runs in, and
+// names the record an operator would edit to change it.
 //
-// The cascade is two levels and it is the same rule on every transport: the
-// instance's own WorkingDir wins, and an empty one inherits the machine's
-// DefaultWorkingDir. An empty result means "inherit whatever the spawning
-// process already had", which is how a machine with no configured directory
-// has always behaved — so it stays spelled as the empty string rather than
-// being resolved here into a guess about anyone's current directory.
+// The cascade is four levels and it is the same rule on every transport: the
+// session's own WorkingDir wins, an empty one inherits the instance's
+// WorkingDir, an empty instance inherits the machine's DefaultWorkingDir, and
+// an empty result means "inherit whatever the spawning process already had".
+// That last level is how a machine with no configured directory has always
+// behaved, so it stays spelled as the empty string rather than being resolved
+// here into a guess about anyone's current directory.
+//
+// The owner is returned alongside the directory because it is the only part of
+// the answer a failure can act on. A path that cannot be entered is reported
+// back to whoever has to go and fix it, and with four levels feeding one string
+// the path alone no longer says which record that is.
 //
 // This rule used to be written out separately at each transport that applied
 // it, and the local transport was the one that never got a copy: it called
 // exec.Command and never set cmd.Dir, so a working directory configured on a
 // local instance was accepted by the API, stored, shown in the UI, and then
-// silently ignored at spawn while ssh and runner both honoured theirs.
-func workingDirForInstance(inst *msg.Instance) string {
+// silently ignored at spawn while ssh and runner both honoured theirs. Every
+// level added since is added here, to this one function, for that reason.
+func workingDirForSession(sess *store.Session, inst *msg.Instance) (dir, owner string) {
+	if sess != nil && sess.WorkingDir != "" {
+		return sess.WorkingDir, "session " + sess.SessionID
+	}
 	if inst == nil {
-		return ""
+		return "", ""
 	}
 	if inst.WorkingDir != "" {
-		return inst.WorkingDir
+		return inst.WorkingDir, "instance " + inst.ID
 	}
-	if inst.Machine != nil {
-		return inst.Machine.DefaultWorkingDir
+	if inst.Machine != nil && inst.Machine.DefaultWorkingDir != "" {
+		return inst.Machine.DefaultWorkingDir, "machine " + inst.Machine.Name
 	}
-	return ""
+	return "", ""
 }
 
 // ptyRolloutCwd returns the directory the OTel sidecar should tail a PTY
 // session's rollout file under.
 //
 // It must answer with the directory the PTY child is actually given, which is
-// the instance's resolved working directory whenever there is one. Only when
+// the session's resolved working directory whenever there is one. Only when
 // nothing is configured does the child inherit bridge-server's own directory,
 // and only then does the sidecar have to go and ask what that is.
 //
@@ -67,18 +79,19 @@ func ptyRolloutCwd(workingDir string) string {
 // that is. Those transports therefore pass their directory through unchecked
 // and let the remote side report its own failure.
 //
-// The error names the instance because that is the thing the operator has to
-// go and edit; exec's own chdir error names only the path.
-func verifyLocalWorkingDir(instanceID, dir string) error {
+// The error names the owner workingDirForSession returned, because that is the
+// record the operator has to go and edit; exec's own chdir error names only the
+// path, and the path is on four records at once.
+func verifyLocalWorkingDir(owner, dir string) error {
 	if dir == "" {
 		return nil
 	}
 	info, err := os.Stat(dir)
 	if err != nil {
-		return fmt.Errorf("instance %s working directory %q: %w", instanceID, dir, err)
+		return fmt.Errorf("%s working directory %q: %w", owner, dir, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("instance %s working directory %q is not a directory", instanceID, dir)
+		return fmt.Errorf("%s working directory %q is not a directory", owner, dir)
 	}
 	return nil
 }

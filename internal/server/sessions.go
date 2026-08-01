@@ -229,6 +229,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		FolderName:    s.folderForSource(req.Purpose),
 		Mode:          mode,
 		MaxBudgetUSD:  maxBudgetUSD,
+		WorkingDir:    req.WorkingDir,
 	}
 
 	// Snapshot the global permission mode into the session so the

@@ -1140,10 +1140,12 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	}
 	h := msg.Harness(sess.Harness)
 
-	// One reading of the instance's working directory, shared by every branch
+	// One reading of the session's working directory, shared by every branch
 	// below. The local branches also have to prove it exists before spawning;
 	// ssh and runner name a path on another host and must not be checked here.
-	workingDir := workingDirForInstance(inst)
+	// workingDirOwner names the record that supplied the path, so a refusal
+	// tells the operator which of session/instance/machine to go and edit.
+	workingDir, workingDirOwner := workingDirForSession(sess, inst)
 
 	var proc HarnessProcess
 	var err error
@@ -1159,7 +1161,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 		if !ok {
 			return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 		}
-		if err := verifyLocalWorkingDir(inst.ID, workingDir); err != nil {
+		if err := verifyLocalWorkingDir(workingDirOwner, workingDir); err != nil {
 			return nil, err
 		}
 
@@ -1217,7 +1219,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 			if !ok {
 				return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 			}
-			if err := verifyLocalWorkingDir(inst.ID, workingDir); err != nil {
+			if err := verifyLocalWorkingDir(workingDirOwner, workingDir); err != nil {
 				return nil, err
 			}
 			proc, err = StartProcess(ctx, binPath, sess, credentialID, workingDir)
@@ -1323,7 +1325,7 @@ func (m *Manager) startSSH(ctx context.Context, sess *store.Session, inst *msg.I
 
 	// Remote command: cd to the resolved working dir and run the harness.
 	// Not verified here — the path is on mach, not on this host.
-	workDir := workingDirForInstance(inst)
+	workDir, _ := workingDirForSession(sess, inst)
 	remoteCmd := binName
 	if workDir != "" {
 		remoteCmd = fmt.Sprintf("cd %s && %s", workDir, binName)

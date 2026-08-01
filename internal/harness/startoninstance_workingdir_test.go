@@ -45,6 +45,110 @@ func TestStartOnInstanceRunsALocalHarnessInTheInstanceWorkingDirectory(t *testin
 	}
 }
 
+// The session's own directory is the top of the cascade, so it has to beat a
+// configured instance — and it has to do so at the spawn, not merely in the
+// resolver. The instance here names a real directory too, so a test that only
+// checked "the harness started somewhere" would pass against code that ignored
+// the session entirely.
+func TestStartOnInstanceRunsALocalHarnessInTheSessionWorkingDirectory(t *testing.T) {
+	recordTo := filepath.Join(t.TempDir(), "cwd.txt")
+	installFakeHarnessOnPath(t, msg.HarnessClaudeCode, recordTo)
+	sessionDir := t.TempDir()
+	instanceDir := t.TempDir()
+
+	manager := newManagerForWorkingDirTest(t)
+	sess := &store.Session{SessionID: "sess-own-dir", Harness: msg.HarnessClaudeCode, WorkingDir: sessionDir}
+	inst := &msg.Instance{
+		ID:         "inst-cc-local",
+		WorkingDir: instanceDir,
+		Machine:    &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal, DefaultWorkingDir: t.TempDir()},
+	}
+
+	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "")
+	if err != nil {
+		t.Fatalf("StartOnInstance: %v", err)
+	}
+	defer proc.Kill()
+
+	got := waitForRecordedCwd(t, recordTo)
+	if want := resolvePath(t, sessionDir); got != want {
+		t.Errorf("harness ran in %q, want the session working directory %q", got, want)
+	}
+	if got == resolvePath(t, instanceDir) {
+		t.Errorf("harness ran in the instance directory %q — the session level was ignored", got)
+	}
+}
+
+// The pty branch resolves its directory through the same call but spawns
+// through a different function, and it also hands the directory to the OTel
+// sidecar. A session directory that reached the child but not the pty branch
+// would be a silent telemetry gap, so it gets its own end-to-end test.
+func TestStartOnInstanceRunsAPTYHarnessInTheSessionWorkingDirectory(t *testing.T) {
+	recordTo := filepath.Join(t.TempDir(), "cwd.txt")
+	installFakeHarnessOnPath(t, msg.HarnessClaudeCode, recordTo)
+	sessionDir := t.TempDir()
+	instanceDir := t.TempDir()
+
+	manager := newManagerForWorkingDirTest(t)
+	sess := &store.Session{
+		SessionID:  "sess-pty-own-dir",
+		Harness:    msg.HarnessClaudeCode,
+		Mode:       msg.SessionModePTY,
+		WorkingDir: sessionDir,
+	}
+	inst := &msg.Instance{
+		ID:         "inst-cc-local",
+		WorkingDir: instanceDir,
+		Machine:    &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal},
+	}
+
+	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "")
+	if err != nil {
+		t.Fatalf("StartOnInstance (pty): %v", err)
+	}
+	defer proc.Kill()
+
+	got := waitForRecordedCwd(t, recordTo)
+	if want := resolvePath(t, sessionDir); got != want {
+		t.Errorf("pty harness ran in %q, want the session working directory %q", got, want)
+	}
+	if got == resolvePath(t, instanceDir) {
+		t.Errorf("pty harness ran in the instance directory %q — the session level was ignored", got)
+	}
+}
+
+// A session directory that cannot be entered must be refused by the session's
+// own name. Naming the instance would send the operator to edit a record that
+// is configured correctly and would not change the outcome.
+func TestStartOnInstanceRefusesASessionWorkingDirectoryByNamingTheSession(t *testing.T) {
+	recordTo := filepath.Join(t.TempDir(), "cwd.txt")
+	installFakeHarnessOnPath(t, msg.HarnessClaudeCode, recordTo)
+	missing := filepath.Join(t.TempDir(), "no-such-dir")
+
+	manager := newManagerForWorkingDirTest(t)
+	sess := &store.Session{SessionID: "br_bad_session_dir", Harness: msg.HarnessClaudeCode, WorkingDir: missing}
+	inst := &msg.Instance{
+		ID:         "inst-cc-local",
+		WorkingDir: t.TempDir(),
+		Machine:    &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal},
+	}
+
+	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "")
+	if err == nil {
+		proc.Kill()
+		t.Fatalf("StartOnInstance started a session in a directory that does not exist")
+	}
+	if !strings.Contains(err.Error(), "br_bad_session_dir") {
+		t.Errorf("error %q does not name the session the operator has to fix", err)
+	}
+	if strings.Contains(err.Error(), "inst-cc-local") {
+		t.Errorf("error %q blames the instance for a directory the session set", err)
+	}
+	if _, statErr := os.Stat(recordTo); statErr == nil {
+		t.Errorf("a harness process was spawned despite the refused working directory")
+	}
+}
+
 func TestStartOnInstanceFallsBackToTheMachineDefaultWorkingDirectory(t *testing.T) {
 	recordTo := filepath.Join(t.TempDir(), "cwd.txt")
 	installFakeHarnessOnPath(t, msg.HarnessClaudeCode, recordTo)
