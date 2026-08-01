@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -375,6 +376,336 @@ func TestAskUserQuestionPrehookRecordsAndResolvesSignal(t *testing.T) {
 		}
 		if sig.Answer == nil {
 			t.Errorf("%s carries no answer after resolve", sig.Title)
+		}
+	}
+}
+
+// --- POST /signals/{id}/resolve (P4) ---
+
+// newSignalRow writes one signal straight to the store. Going through the
+// store rather than a producer keeps each resolve case to the two fields it
+// is actually about — kind and source — instead of staging a park or a
+// classifier verdict to reach them.
+func newSignalRow(t *testing.T, st *store.Store, sig *msg.Signal) *msg.Signal {
+	t.Helper()
+	if sig.ID == "" {
+		sig.ID = ids.NewSignalID()
+	}
+	if sig.Title == "" {
+		sig.Title = "a signal"
+	}
+	if err := st.CreateSignal(sig); err != nil {
+		t.Fatalf("create signal: %v", err)
+	}
+	return sig
+}
+
+func resolveSignal(t *testing.T, srv *Server, signalID, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(
+		http.MethodPost, "/signals/"+signalID+"/resolve", strings.NewReader(body)))
+	return rec
+}
+
+func TestResolveSignalAcknowledgesANotification(t *testing.T) {
+	srv, st := testServer(t)
+	newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
+	sig := newSignalRow(t, st, &msg.Signal{
+		SessionID: "br_1",
+		Kind:      msg.SignalKindNotification,
+		Source:    msg.SignalSourceDerived,
+		Surface:   msg.SignalSurfaceChat,
+		Title:     "The migration finished",
+		State:     msg.SignalStateOpen,
+	})
+
+	rec := resolveSignal(t, srv, sig.ID, `{"state":"acknowledged"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got msg.Signal
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode body: %v (%s)", err, rec.Body.String())
+	}
+	if got.State != msg.SignalStateAcknowledged {
+		t.Errorf("state = %q, want acknowledged", got.State)
+	}
+	// The response is the row, not an echo of the request: a surface that
+	// renders what it gets back must not show a resolved_at that is missing.
+	if got.ResolvedAt == nil {
+		t.Error("resolved_at is nil on an acknowledged signal")
+	}
+	if got.Answer != nil {
+		t.Errorf("an acknowledgement carries an answer %+v; it answers nothing", got.Answer)
+	}
+
+	stored, err := st.GetSignal(sig.ID)
+	if err != nil {
+		t.Fatalf("get signal: %v", err)
+	}
+	if stored.State != msg.SignalStateAcknowledged {
+		t.Errorf("stored state = %q, want acknowledged", stored.State)
+	}
+}
+
+// A duplicate click is ordinary — the same row renders in the chat, the
+// inbox, the RefChip panel and (P4) the kanban drawer — so a second resolve
+// reports what happened rather than overwriting it or erroring.
+func TestResolveSignalIsIdempotent(t *testing.T) {
+	srv, st := testServer(t)
+	newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
+	sig := newSignalRow(t, st, &msg.Signal{
+		SessionID: "br_1",
+		Kind:      msg.SignalKindNotification,
+		Source:    msg.SignalSourceDerived,
+		Surface:   msg.SignalSurfaceChat,
+		State:     msg.SignalStateOpen,
+	})
+
+	if rec := resolveSignal(t, srv, sig.ID, `{"state":"acknowledged"}`); rec.Code != http.StatusOK {
+		t.Fatalf("first resolve status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	first, err := st.GetSignal(sig.ID)
+	if err != nil {
+		t.Fatalf("get signal: %v", err)
+	}
+
+	// Dismiss the same row: a different state, so an overwrite would be
+	// visible rather than hidden behind an identical value.
+	rec := resolveSignal(t, srv, sig.ID, `{"state":"dismissed"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second resolve status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	second, err := st.GetSignal(sig.ID)
+	if err != nil {
+		t.Fatalf("get signal: %v", err)
+	}
+	if second.State != msg.SignalStateAcknowledged {
+		t.Errorf("state = %q after a second resolve, want the first one (acknowledged)", second.State)
+	}
+	if !second.ResolvedAt.Equal(*first.ResolvedAt) {
+		t.Errorf("resolved_at moved from %v to %v; the first resolution is the one that happened",
+			first.ResolvedAt, second.ResolvedAt)
+	}
+}
+
+// Acknowledging is the notification verb. A question nobody answered has not
+// been handled, and grading it the same as a read notification is the enum
+// collapse feedback_status_enum_granularity warns about.
+func TestResolveSignalRefusesToAcknowledgeAQuestion(t *testing.T) {
+	srv, st := testServer(t)
+	newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
+	sig := newSignalRow(t, st, &msg.Signal{
+		SessionID: "br_1",
+		Kind:      msg.SignalKindQuestion,
+		Source:    msg.SignalSourceDerived,
+		Surface:   msg.SignalSurfaceChat,
+		State:     msg.SignalStateOpen,
+	})
+
+	rec := resolveSignal(t, srv, sig.ID, `{"state":"acknowledged"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	stored, err := st.GetSignal(sig.ID)
+	if err != nil {
+		t.Fatalf("get signal: %v", err)
+	}
+	if stored.State != msg.SignalStateOpen {
+		t.Errorf("state = %q after a refused resolve, want it left open", stored.State)
+	}
+
+	// The same question dismisses fine — refusing the ack must not make the
+	// row unclosable.
+	if rec := resolveSignal(t, srv, sig.ID, `{"state":"dismissed"}`); rec.Code != http.StatusOK {
+		t.Errorf("dismiss status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// An answer has to reach the session. The two paths that carry one close
+// their own rows; recording `answered` here would claim an answer the
+// session never received.
+func TestResolveSignalRefusesAnswered(t *testing.T) {
+	srv, st := testServer(t)
+	newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
+	sig := newSignalRow(t, st, &msg.Signal{
+		SessionID: "br_1",
+		Kind:      msg.SignalKindQuestion,
+		Source:    msg.SignalSourceDerived,
+		Surface:   msg.SignalSurfaceChat,
+		State:     msg.SignalStateOpen,
+	})
+
+	rec := resolveSignal(t, srv, sig.ID, `{"state":"answered"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	// The refusal has to say where an answer does go, or the caller has no
+	// next move.
+	if body := rec.Body.String(); !strings.Contains(body, "/send") {
+		t.Errorf("refusal does not name the path that answers a derived question: %s", body)
+	}
+	stored, err := st.GetSignal(sig.ID)
+	if err != nil {
+		t.Fatalf("get signal: %v", err)
+	}
+	if stored.State != msg.SignalStateOpen {
+		t.Errorf("state = %q after a refused resolve, want it left open", stored.State)
+	}
+}
+
+func TestResolveSignalRejectsUnusableState(t *testing.T) {
+	srv, st := testServer(t)
+	newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
+	sig := newSignalRow(t, st, &msg.Signal{
+		SessionID: "br_1",
+		Kind:      msg.SignalKindNotification,
+		Source:    msg.SignalSourceDerived,
+		Surface:   msg.SignalSurfaceChat,
+		State:     msg.SignalStateOpen,
+	})
+
+	for _, body := range []string{
+		`{"state":"open"}`,     // not a resolution at all
+		`{"state":"resolved"}`, // not in the enum
+		`{"state":""}`,         // omitted
+		`{}`,                   // omitted, harder
+		`not json`,             // unparseable
+	} {
+		rec := resolveSignal(t, srv, sig.ID, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s → status %d, want 400; body = %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	stored, err := st.GetSignal(sig.ID)
+	if err != nil {
+		t.Fatalf("get signal: %v", err)
+	}
+	if stored.State != msg.SignalStateOpen {
+		t.Errorf("state = %q, want it left open by every rejected request", stored.State)
+	}
+}
+
+func TestResolveSignalUnknownSignalIs404(t *testing.T) {
+	srv, _ := testServer(t)
+	rec := resolveSignal(t, srv, "sig_missing", `{"state":"dismissed"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A tool signal is a surface on a parked hook. Closing it while the harness
+// still sits on the channel hides the ask and leaves the session blocked
+// with nothing on screen to unblock it.
+func TestResolveSignalRefusesWhileTheRequestIsStillParked(t *testing.T) {
+	srv, st := testServer(t)
+	newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
+	sig := newSignalRow(t, st, &msg.Signal{
+		SessionID: "br_1",
+		Kind:      msg.SignalKindQuestion,
+		Source:    msg.SignalSourceTool,
+		RequestID: "hreq_1",
+		Surface:   msg.SignalSurfaceChat,
+		State:     msg.SignalStateOpen,
+	})
+	srv.parkedAsks.park("br_1", "hreq_1")
+
+	rec := resolveSignal(t, srv, sig.ID, `{"state":"dismissed"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "hreq_1") {
+		t.Errorf("refusal does not name the parked request to resolve instead: %s", body)
+	}
+	stored, err := st.GetSignal(sig.ID)
+	if err != nil {
+		t.Fatalf("get signal: %v", err)
+	}
+	if stored.State != msg.SignalStateOpen {
+		t.Errorf("state = %q while its request is parked, want open", stored.State)
+	}
+
+	// Once the park is gone — harness restart, cancelled request — the row is
+	// a leftover with nothing behind it, and dismissing it is the only way to
+	// clear it.
+	srv.parkedAsks.cancel("br_1", "hreq_1")
+	if rec := resolveSignal(t, srv, sig.ID, `{"state":"dismissed"}`); rec.Code != http.StatusOK {
+		t.Fatalf("status after the park went away = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	stored, err = st.GetSignal(sig.ID)
+	if err != nil {
+		t.Fatalf("get signal: %v", err)
+	}
+	if stored.State != msg.SignalStateDismissed {
+		t.Errorf("state = %q, want dismissed", stored.State)
+	}
+}
+
+func TestResolutionUnparksSession(t *testing.T) {
+	cases := []struct {
+		name   string
+		source msg.SignalSource
+		kind   msg.SignalKind
+		state  msg.SignalState
+		want   bool
+	}{
+		// The one row type that parks its own session.
+		{"dismissed derived question", msg.SignalSourceDerived, msg.SignalKindQuestion, msg.SignalStateDismissed, true},
+		// A derived notification drove the session to idle at mint time.
+		{"dismissed derived notification", msg.SignalSourceDerived, msg.SignalKindNotification, msg.SignalStateDismissed, false},
+		{"acknowledged derived notification", msg.SignalSourceDerived, msg.SignalKindNotification, msg.SignalStateAcknowledged, false},
+		// A tool signal's session state belongs to its parked hook.
+		{"dismissed tool question", msg.SignalSourceTool, msg.SignalKindQuestion, msg.SignalStateDismissed, false},
+		{"dismissed tool notification", msg.SignalSourceTool, msg.SignalKindNotification, msg.SignalStateDismissed, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sig := &store.Signal{Source: tc.source, Kind: tc.kind, State: msg.SignalStateOpen}
+			if got := resolutionUnparksSession(sig, tc.state); got != tc.want {
+				t.Errorf("resolutionUnparksSession = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsParkedDoesNotConsumeTheEntry(t *testing.T) {
+	p := newParkedAsks()
+	if p.isParked("br_1", "hreq_1") {
+		t.Error("isParked is true for a request that was never parked")
+	}
+	ch := p.park("br_1", "hreq_1")
+	if !p.isParked("br_1", "hreq_1") {
+		t.Fatal("isParked is false for a live park")
+	}
+	// The read must leave the park deliverable — an isParked that removed
+	// the entry would turn every 409 check into a wedged session.
+	if !p.isParked("br_1", "hreq_1") {
+		t.Fatal("isParked went false on a second read; it consumed the entry")
+	}
+	if !p.deliver("br_1", "hreq_1", permissionDecision{Behavior: "deny"}) {
+		t.Fatal("deliver found no parked entry after isParked read it")
+	}
+	if p.isParked("br_1", "hreq_1") {
+		t.Error("isParked is still true after the decision was delivered")
+	}
+	<-ch
+}
+
+// A duplicate click must not write session state a second time. By the time
+// it lands the session may be back at awaiting_user on a NEW question, and
+// the allowedFrom bound cannot tell that apart from the one being dismissed.
+func TestAResolvedSignalUnparksNothing(t *testing.T) {
+	for _, state := range []msg.SignalState{
+		msg.SignalStateDismissed, msg.SignalStateAnswered, msg.SignalStateAcknowledged,
+	} {
+		sig := &store.Signal{
+			Source: msg.SignalSourceDerived,
+			Kind:   msg.SignalKindQuestion,
+			State:  state,
+		}
+		if resolutionUnparksSession(sig, msg.SignalStateDismissed) {
+			t.Errorf("an already-%s signal still unparks its session", state)
 		}
 	}
 }

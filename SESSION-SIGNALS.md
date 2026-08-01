@@ -504,3 +504,98 @@ opening anything.
 dash's `/notes` page is a separate, dash-local React page that talks to noteboard
 directly; it is not a bridge-ui surface and gets no badge here. `?linked_todo_id=` is the
 query it would use.
+
+---
+
+## P4 part 1 as built (2026-08-01) — the signal-level resolve verb
+
+`POST /signals/{id}/resolve`. The close verb for the resolutions that never reach the
+raising session, and the reason `SignalCard`'s `onAcknowledge` prop can finally be passed
+by a surface. Until it existed the only ways out of `open` were the parked-hook resolve
+(tool questions) and a `/send` (derived questions), so **a notification stayed open
+forever** — the gap P2, P3 and P5 each recorded and each left alone.
+
+| Piece | File |
+|---|---|
+| Handler + the pure unpark rule | `internal/server/signals.go` (`handleResolveSignal`, `resolutionUnparksSession`) |
+| Live-park lookup | `internal/server/parked_asks.go` (`isParked`) |
+| Route | `internal/server/server.go` |
+| Client half | `bridge-ui` `feat/session-signals-p4-ack` |
+
+Body is `{"state": "acknowledged" | "dismissed"}`. The response is the stored row, re-read
+after the write.
+
+### The five things not to re-derive
+
+**1. `answered` is refused, and that is the whole shape of the verb.**
+An answer has to *reach the session*. The two paths that carry one —
+`POST /sessions/{id}/hooks/{request_id}/resolve` and `POST /sessions/{id}/send` — already
+close their own rows. Accepting `answered` here would record an answer the session never
+received, which is worse than leaving the row open: a worker would read the todo as
+handled. The 400 names both paths, because a caller that is refused needs its next move.
+
+**2. Acknowledging is the notification verb, and a question cannot use it.**
+A question nobody answered has not been handled. Letting it grade `acknowledged` — "seen"
+— is exactly the collapse `feedback_status_enum_granularity` warns about, and the kanban
+surface is where it would cost most: a card whose blocker reads as read. A question closes
+by being answered, or by `dismissed`, which says out loud that no answer is coming.
+
+**3. A tool signal whose request is STILL PARKED is a 409, not a close.**
+The signal is a surface on top of the park; the park is the source of truth for whether
+the session is blocked. Closing the surface out from under a live park hides the ask while
+the harness keeps sitting on the channel — the session wedges with nothing on screen that
+explains why. So the verb asks `parkedAsks.isParked` first and refuses, naming the hook
+route, which closes both. Once the park is gone (harness restart, cancelled request) the
+row is a leftover with nothing behind it and dismissing it is the only way to clear it —
+that path stays open, and is tested.
+
+`isParked` is read-only on purpose. A version that consumed the entry would turn every
+409 check into a wedged session; there is a curative test for exactly that.
+
+**4. A duplicate resolve is ordinary, and the rule that makes the first one win lives in
+ONE place.** The same row renders in the chat, the inbox, the RefChip panel and the kanban
+drawer, so two clicks are expected. `store.ResolveSignal` already updates only
+`WHERE state='open'`, so the handler does **not** repeat that check — it writes, re-reads,
+and returns what is stored. An earlier draft had the guard in both, and a sabotage run
+showed the handler's copy changed no observable behaviour, so it was removed rather than
+kept as decoration.
+
+**5. The one thing a duplicate DOES cost is the unpark, so that check is where the
+open-state test went.** A derived question parks its own session at `awaiting_user` when
+the classifier mints it, so dismissing it walks the session back to idle via
+`ApplyDerivedSessionState` bounded to `awaiting_user`. A second click landing later must
+not write that state again: by then the session may be at `awaiting_user` on a **new**
+question, which the `allowedFrom` bound cannot tell apart from the old one. Hence
+`resolutionUnparksSession` requires the row to still be open. Nothing else needs the walk
+— a derived notification already drove the session to idle at mint time, and a tool
+signal's session state belongs to its parked hook.
+
+`resolutionUnparksSession` is a pure function, deliberately: the alternative was a seam
+for the harness manager, and the cross-product of source × kind × state is what actually
+needed covering. The bounded write itself is tested in the derivation package.
+
+### Verified
+
+Eight sabotages, each one run, all eight caught: accept `answered`; acknowledge a
+question; drop the parked-request guard; make `isParked` consume its entry; drop the
+open-state check from the unpark rule; unpark on every dismissal; echo the request back
+instead of re-reading the row; 200 instead of 404 on an unknown signal. Full
+`internal/server` package green.
+
+⚠️ **A `-run` filter is part of the sabotage, not a detail.** Two sabotages first read as
+*uncaught* because `-run 'Signal|IsParked'` does not match `TestResolutionUnparksSession`.
+A sabotage that appears to survive is a claim about a test that may never have executed —
+check the filter before believing it.
+
+### What P4 part 1 does NOT do
+
+- **The kanban card-drawer mount.** Still P4's, unchanged, and `SignalBadge` still stays as
+  it is (P5's rule).
+- **The structured notification producer.** No tool mints a notification yet; every
+  notification row today comes from the turn-end classifier.
+- **Routing a worker's blocker to its card** (move to blocked/needs-review). Still gated on
+  the user's open sub-question — does a worker on a real blocker **stop** and post, or
+  continue past it and post for later review.
+
+Deploy gate unchanged: the server half needs the user's gateway rebuild + restart
+(`c251f92c`). Code, build, verify, push — and stop there.
