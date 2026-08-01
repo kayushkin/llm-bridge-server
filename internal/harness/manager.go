@@ -384,7 +384,7 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 		return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 	}
 
-	proc, err := StartProcess(ctx, binPath, sess, "")
+	proc, err := StartProcess(ctx, binPath, sess, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -1140,6 +1140,11 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	}
 	h := msg.Harness(sess.Harness)
 
+	// One reading of the instance's working directory, shared by every branch
+	// below. The local branches also have to prove it exists before spawning;
+	// ssh and runner name a path on another host and must not be checked here.
+	workingDir := workingDirForInstance(inst)
+
 	var proc HarnessProcess
 	var err error
 
@@ -1153,6 +1158,9 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 		binPath, ok := Available(h)
 		if !ok {
 			return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
+		}
+		if err := verifyLocalWorkingDir(inst.ID, workingDir); err != nil {
+			return nil, err
 		}
 
 		// Spawn the per-session OTel sidecar first so the PTY child sees
@@ -1170,13 +1178,10 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 			if m.localBridgeURL == "" {
 				log.Printf("[sidecar] localBridgeURL not configured; PTY session %s starts without OTel", sess.SessionID)
 			} else {
-				// Cwd defaults to bridge-server's cwd (claude inherits it
-				// when StartProcessPTY doesn't set cmd.Dir). Resume only
-				// when the session row carries a known harness UUID.
-				ptyCwd := "/"
-				if wd, err := os.Getwd(); err == nil {
-					ptyCwd = wd
-				}
+				// The sidecar tails the rollout file under
+				// ~/.claude/projects/<encoded cwd>/, so this has to be the
+				// directory the child actually gets — see ptyRolloutCwd.
+				ptyCwd := ptyRolloutCwd(workingDir)
 				sc, env, err := startOTelSidecar(binPath, sess.SessionID, m.localBridgeURL, ptyCwd, sess.HarnessSessionID)
 				if err != nil {
 					log.Printf("[sidecar] start failed for %s (continuing without OTel): %v", sess.SessionID, err)
@@ -1190,7 +1195,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 			}
 		}
 
-		proc, err = StartProcessPTY(ctx, binPath, sess, credentialID, sidecarEnv)
+		proc, err = StartProcessPTY(ctx, binPath, sess, credentialID, sidecarEnv, workingDir)
 		if err != nil {
 			// PTY launch failed — sidecar is now orphaned. Stop it.
 			m.mu.Lock()
@@ -1212,7 +1217,10 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 			if !ok {
 				return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 			}
-			proc, err = StartProcess(ctx, binPath, sess, credentialID)
+			if err := verifyLocalWorkingDir(inst.ID, workingDir); err != nil {
+				return nil, err
+			}
+			proc, err = StartProcess(ctx, binPath, sess, credentialID, workingDir)
 		}
 	}
 
@@ -1313,11 +1321,9 @@ func (m *Manager) startSSH(ctx context.Context, sess *store.Session, inst *msg.I
 	}
 	args = append(args, target)
 
-	// Remote command: cd to working dir (instance override > machine default) and run harness
-	workDir := inst.WorkingDir
-	if workDir == "" {
-		workDir = mach.DefaultWorkingDir
-	}
+	// Remote command: cd to the resolved working dir and run the harness.
+	// Not verified here — the path is on mach, not on this host.
+	workDir := workingDirForInstance(inst)
 	remoteCmd := binName
 	if workDir != "" {
 		remoteCmd = fmt.Sprintf("cd %s && %s", workDir, binName)

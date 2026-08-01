@@ -170,8 +170,16 @@ type Process struct {
 
 // StartProcess spawns a harness bridge subprocess.
 // If credentialID is non-empty, it's passed to the subprocess via LLMBRIDGE_CREDENTIAL_ID env var.
-func StartProcess(ctx context.Context, binPath string, sess *store.Session, credentialID string) (*Process, error) {
+//
+// workingDir is the directory the wrapper runs in; empty inherits
+// bridge-server's own. It is the wrapper that moves, not just the agent it
+// forks, because that is what the ssh transport's "cd <dir> && <bin>" and the
+// runner's WorkingDir have always meant — and because the wrapper resolves
+// paths of its own against its current directory (llm-bridge-claudecode reads
+// its rollout file out of ~/.claude/projects/<encoded cwd>/).
+func StartProcess(ctx context.Context, binPath string, sess *store.Session, credentialID, workingDir string) (*Process, error) {
 	cmd := exec.Command(binPath)
+	cmd.Dir = workingDir
 	cmd.Env = os.Environ()
 	if credentialID != "" {
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_CREDENTIAL_ID="+credentialID)
@@ -401,9 +409,17 @@ type PTYProcess struct {
 // OTel telemetry endpoints (set by the per-session sidecar) so the
 // upstream CLI's telemetry exporter has somewhere to land.
 //
+// workingDir is the directory the child runs in; empty inherits
+// bridge-server's own. The caller must pass the same directory it gave the
+// OTel sidecar as LLMBRIDGE_PTY_CWD: the sidecar tails the rollout file under
+// ~/.claude/projects/<encoded cwd>/, so a child and a sidecar that disagree
+// about the working directory leave the session's telemetry being read out of
+// a directory nothing is writing to.
+//
 // On TransportLocal only — SSH/runner paths reject pty mode upstream.
-func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, credentialID string, extraEnv []string) (*PTYProcess, error) {
+func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, credentialID string, extraEnv []string, workingDir string) (*PTYProcess, error) {
 	cmd := exec.Command(binPath)
+	cmd.Dir = workingDir
 	cmd.Env = append(os.Environ(), "LLMBRIDGE_PTY_MODE=1")
 	if credentialID != "" {
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_CREDENTIAL_ID="+credentialID)
