@@ -32,6 +32,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -110,6 +111,8 @@ func main() {
 		DryRun:       *dryRun,
 		DigestBudget: *digestBudget,
 		DumpDigest:   *dumpDigest,
+
+		ExplicitSession: *oneSession != "",
 	}
 
 	// A digest dump never reaches the model, so it must not need its key.
@@ -187,6 +190,12 @@ type config struct {
 	DryRun          bool
 	DigestBudget    int
 	DumpDigest      bool
+
+	// ExplicitSession is set when an operator named a single session on the
+	// command line. The dedupe gates below exist to ration the cron sweep, not
+	// to overrule a human who asked for this exact session by id, so they are
+	// bypassed — loudly — when this is set.
+	ExplicitSession bool
 }
 
 // ============================ Candidate selection ============================
@@ -240,7 +249,11 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 
 	// Permanent skip: previously classified as terminal.
 	if tagSet[tagFinalClassified] {
-		return false
+		if !cfg.ExplicitSession {
+			return false
+		}
+		log.Printf("[%s] already final-classified — proceeding anyway because this session was named explicitly",
+			sess.SessionID)
 	}
 
 	msgs, err := getSessionMessages(cfg.BridgeURL, sess.SessionID)
@@ -254,17 +267,26 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	if tagSet[tagDoNotTrack] {
 		priorN := priorMsgCount(tagSet)
 		if msgCount-priorN < doNotTrackReevalDelta {
-			return false
+			if !cfg.ExplicitSession {
+				return false
+			}
+			log.Printf("[%s] do-not-track and Δmsg=%d < %d — proceeding anyway because this session was named explicitly",
+				sess.SessionID, msgCount-priorN, doNotTrackReevalDelta)
+		} else {
+			log.Printf("[%s] do-not-track but Δmsg=%d ≥ %d — re-evaluating",
+				sess.SessionID, msgCount-priorN, doNotTrackReevalDelta)
 		}
-		log.Printf("[%s] do-not-track but Δmsg=%d ≥ %d — re-evaluating",
-			sess.SessionID, msgCount-priorN, doNotTrackReevalDelta)
 	}
 
 	// Compute current signature; bail if unchanged.
 	curSig := buildSig(msgCount, sess.State, sess.UpdatedAt)
 	priorSig := priorSigTag(tagSet)
 	if priorSig == curSig {
-		return false
+		if !cfg.ExplicitSession {
+			return false
+		}
+		log.Printf("[%s] signature unchanged (%s) — proceeding anyway because this session was named explicitly",
+			sess.SessionID, curSig)
 	}
 
 	// Look up existing cards already linked to this session.
@@ -281,6 +303,25 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 		return false
 	}
 	report, err := classify(ctx, cfg, digest)
+	if errors.Is(err, errTruncatedReport) {
+		// Acting on a truncated report is worse than not acting: its missing
+		// existing_cards look like "no opinion" (so cards silently stay in the
+		// column they were first filed in) and any new_tasks it did manage to
+		// emit get filed against a list of existing cards we know is short, so
+		// the dedupe in applyNew is running blind. Refuse the whole report.
+		//
+		// The signature is still written. The input is deterministic, so a
+		// retry would truncate identically and bill for it every tick; the
+		// session is instead left alone until it actually changes.
+		log.Printf("[%s] WARNING: %d existing card(s) NOT updated — %v. "+
+			"This session needs more than max_tokens=%d to classify; raise it or narrow what the model must report "+
+			"(see noteboard todo 55aab37a). Re-run: kanban-classifier -session %s -dry-run",
+			sess.SessionID, len(cards), err, maxOutputTokens, sess.SessionID)
+		if !cfg.DryRun {
+			writeSig(kc, sess, tagSet, curSig)
+		}
+		return true
+	}
 	if err != nil {
 		log.Printf("[%s] classifier failed: %v — leaving sig unchanged for retry", sess.SessionID, err)
 		return false
@@ -299,12 +340,17 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 		return true
 	}
 
-	// A session that already has cards but comes back with an opinion on none
-	// of them, while filing new ones, is the signature of the model not having
-	// seen its cards at all. That is a prompt-assembly failure, not a
-	// classification: say so where it can be grepped.
-	if len(cards) > 0 && len(report.ExistingCards) == 0 && len(report.NewTasks) > 0 {
-		log.Printf("[%s] WARNING: %d existing card(s) went unaddressed while filing %d new task(s) — check the digest carries [EXISTING CARDS] (-dump-digest -session %s)",
+	// A session that has cards but comes back with an opinion on none of them
+	// has had none of them updated, whether or not it also filed new work — the
+	// original form of this check only fired when new_tasks was non-empty, so
+	// the commonest case (existing=0, new=0) passed in silence.
+	//
+	// Truncation is handled above and cannot reach here, so the remaining
+	// causes are a digest that does not carry [EXISTING CARDS] or a model that
+	// read them and declined to answer. -dump-digest distinguishes the two.
+	if len(cards) > 0 && len(report.ExistingCards) == 0 {
+		log.Printf("[%s] WARNING: %d existing card(s) went unaddressed (filed %d new task(s)) — "+
+			"confirm the digest carries [EXISTING CARDS] with: kanban-classifier -session %s -dump-digest",
 			sess.SessionID, len(cards), len(report.NewTasks), sess.SessionID)
 	}
 
@@ -855,10 +901,27 @@ func reportToolSchema() map[string]any {
 	}
 }
 
+// maxOutputTokens bounds the classifier's reply. A full sweep costs roughly 69
+// output tokens per existing card, so this ceiling is also a cap on how many
+// cards one session can have its state refreshed in a single call; past it the
+// reply is truncated and rejected (see errTruncatedReport).
+const maxOutputTokens = 1024
+
+const stopReasonMaxTokens = "max_tokens"
+
+// errTruncatedReport marks a classification that the model did not finish
+// writing. It is deliberately distinct from a transport or decode failure: the
+// call succeeded and cost money, so it must not be retried on identical input.
+var errTruncatedReport = errors.New("classification truncated")
+
+// anthropicMessagesURL is a package var rather than a constant so tests can
+// point classify at an httptest server; nothing else reassigns it.
+var anthropicMessagesURL = "https://api.anthropic.com/v1/messages"
+
 func classify(ctx context.Context, cfg config, digest string) (*Report, error) {
 	body := map[string]any{
 		"model":      cfg.Model,
-		"max_tokens": 1024,
+		"max_tokens": maxOutputTokens,
 		"system":     systemPrompt,
 		"tools":      []any{reportToolSchema()},
 		"tool_choice": map[string]any{
@@ -873,7 +936,7 @@ func classify(ctx context.Context, cfg config, digest string) (*Report, error) {
 		},
 	}
 	bs, _ := json.Marshal(body)
-	req, _ := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(bs))
+	req, _ := http.NewRequestWithContext(ctx, "POST", anthropicMessagesURL, bytes.NewReader(bs))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", cfg.AnthropicAPIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
@@ -889,6 +952,10 @@ func classify(ctx context.Context, cfg config, digest string) (*Report, error) {
 		return nil, fmt.Errorf("anthropic %s: %s", resp.Status, string(rb))
 	}
 	var apiResp struct {
+		StopReason string `json:"stop_reason"`
+		Usage      struct {
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 		Content []struct {
 			Type  string         `json:"type"`
 			Name  string         `json:"name,omitempty"`
@@ -897,6 +964,19 @@ func classify(ctx context.Context, cfg config, digest string) (*Report, error) {
 	}
 	if err := json.Unmarshal(rb, &apiResp); err != nil {
 		return nil, fmt.Errorf("decode anthropic response: %w", err)
+	}
+	// A response cut off at max_tokens still carries a tool_use block, and its
+	// partial input still parses as valid JSON — the API drops the unfinished
+	// array rather than emitting broken JSON. So there is no decode error to
+	// catch here: stop_reason is the ONLY evidence that the classification is
+	// incomplete, and a truncated report reads exactly like a model that had no
+	// opinion on any card. Measured on session br_1784416900461396845 (69
+	// cards): at max_tokens=1024 the report comes back existing=0 new=0 and
+	// parses cleanly; the same digest at 8192 returns all 69 in 4,771 tokens.
+	if apiResp.StopReason == stopReasonMaxTokens {
+		return nil, fmt.Errorf("%w: model hit max_tokens=%d after %d output tokens; "+
+			"the report is incomplete and its missing cards are indistinguishable from 'no opinion'",
+			errTruncatedReport, maxOutputTokens, apiResp.Usage.OutputTokens)
 	}
 	for _, blk := range apiResp.Content {
 		if blk.Type != "tool_use" || blk.Name != reportToolName {
