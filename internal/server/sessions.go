@@ -834,6 +834,14 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	// Discovery runs the harness binary locally, so sessions belong to the local instance.
 	localInstances := s.localInstancesByHarness([]msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex})
 
+	// Same announcement, and the same reason, as AutoDiscover's — this route
+	// runs the identical import loop, so one HTTP call against an instance
+	// with an empty DB writes just as many permanent rows into log-store.
+	if len(sessions) > 0 {
+		log.Printf("[discover] %d sessions on disk; any not already in this instance's DB will have their transcripts imported into log-store at %s",
+			len(sessions), s.cfg.LogStoreURL)
+	}
+
 	// Persist discovered sessions to the store so they appear in GET /sessions
 	var imported int
 	for _, ds := range sessions {

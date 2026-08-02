@@ -682,6 +682,28 @@ func (s *Server) AutoDiscover() {
 		// Discovery runs the harness binary locally, so sessions belong to the local instance.
 		localInstances := s.localInstancesByHarness([]msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex})
 
+		// Announce the blast radius BEFORE writing any of it.
+		//
+		// Whether a discovered session is "new" is decided by this instance's
+		// own DB, but the import it triggers writes into log-store, which this
+		// instance does not own and cannot clean up. So the guard against
+		// re-importing a transcript lives in a database log-store cannot see:
+		// point the binary at a fresh DB and every session on disk is new
+		// again, and every one of their transcripts is written into the shared
+		// event log a second time under a fresh bridge id.
+		//
+		// That happened on 2026-08-01: a canary booted against an empty
+		// /tmp DB re-imported 2,863 sessions into the production log-store in
+		// two minutes, and the throwaway DB that would have identified them
+		// was deleted minutes later. The per-session lines below arrive after
+		// the fact and 2,510 times over, and none of them names log-store —
+		// so this one line, before the loop, is the only warning an operator
+		// polling for readiness can actually catch.
+		if len(sessions) > 0 {
+			log.Printf("[auto-discover] %d sessions on disk; any not already in this instance's DB will have their transcripts imported into log-store at %s",
+				len(sessions), s.cfg.LogStoreURL)
+		}
+
 		var imported int
 		for _, ds := range sessions {
 			// Use prompt as display name - it's more useful for identifying sessions
