@@ -766,6 +766,19 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, forked)
 }
 
+// carriesHarnessConfig reports whether a config request asks the harness to
+// change anything, as opposed to only moving the spend ceiling, which is server
+// state and never leaves this process.
+//
+// DisabledTools is tested for nil, not for length. It is the whole set of names
+// to exclude, so an empty list is the request that re-enables every tool — the
+// loudest thing this endpoint can say about a tool set, and a length test reads
+// it as silence. A budget-only fast path that swallowed it would drop the tool
+// change on exactly the sessions the escape hatch exists to revive.
+func carriesHarnessConfig(req ConfigSessionRequest) bool {
+	return req.Model != "" || req.Effort != "" || req.DisabledTools != nil
+}
+
 func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 	bridgeID := r.PathValue("id")
 	sess, err := s.store.GetSession(bridgeID)
@@ -803,7 +816,7 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 		// revival as an error even though the ceiling was saved. Only
 		// budget-only requests take this path; anything that also
 		// carries harness config still needs a harness to carry it to.
-		if req.Model == "" && req.Effort == "" && len(req.DisabledTools) == 0 && s.harness.Get(bridgeID) == nil {
+		if !carriesHarnessConfig(req) && s.harness.Get(bridgeID) == nil {
 			writeJSON(w, sess)
 			return
 		}
