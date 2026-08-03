@@ -249,8 +249,16 @@ func newManagerForWorkingDirTest(t *testing.T) *Manager {
 }
 
 // installFakeHarnessOnPath puts a stand-in wrapper binary under the name the
-// server looks up for this harness type, and points PATH at it, so Available()
-// resolves to something this test controls.
+// server looks up for this harness type, and puts its directory FIRST on PATH,
+// so Available() resolves to something this test controls.
+//
+// The rest of PATH has to stay. The script below runs `sleep`, and replacing
+// PATH outright made that unresolvable — so the fake harness died at once
+// instead of holding the process open, and whether the test passed came down
+// to whether StartOnInstance finished writing the start message before the pipe
+// closed. Under load it lost that race about a third of the time, failing with
+// "send start: write |1: broken pipe" while the real cause read as an
+// unrelated "exec: sleep: not found" a few lines earlier.
 func installFakeHarnessOnPath(t *testing.T, h msg.Harness, recordTo string) {
 	t.Helper()
 	binDir := t.TempDir()
@@ -258,5 +266,5 @@ func installFakeHarnessOnPath(t *testing.T, h msg.Harness, recordTo string) {
 	if err := os.WriteFile(filepath.Join(binDir, msg.HarnessBinaryName(h)), []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake harness: %v", err)
 	}
-	t.Setenv("PATH", binDir)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
