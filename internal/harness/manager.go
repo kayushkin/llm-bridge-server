@@ -1421,9 +1421,21 @@ func runDiscover(ctx context.Context, binPath string) ([]msg.StoredSession, erro
 // Used to import conversation history for discovered sessions. The harness has no
 // concept of bridge sessions, so each emitted event leaves bridge_session_id empty;
 // the manager owns that mapping and stamps it here before pushing to log-store.
+//
+// It declines to import a transcript log-store already holds — see
+// logStoreAlreadyHoldsTranscript for why the question goes to log-store and
+// not to this process's own database. A declined import returns (0, nil):
+// nothing was written and nothing went wrong.
 func (m *Manager) ImportHistory(ctx context.Context, bridgeSessionID string, h msg.Harness, harnessSessionID string) (int, error) {
 	if bridgeSessionID == "" {
 		return 0, fmt.Errorf("ImportHistory: bridge_session_id is required")
+	}
+	if holder, held := m.logStoreAlreadyHoldsTranscript(harnessSessionID); held {
+		log.Printf(
+			"[import-history] %s: log-store already holds this transcript as session %s (%d events); not importing it again under %s",
+			harnessSessionID, holder.SessionID, holder.EventCount, bridgeSessionID,
+		)
+		return 0, nil
 	}
 	binPath, ok := Available(h)
 	if !ok {
@@ -1464,6 +1476,54 @@ func (m *Manager) ImportHistory(ctx context.Context, bridgeSessionID string, h m
 	}
 
 	return imported, scanner.Err()
+}
+
+// logStoreAlreadyHoldsTranscript asks log-store whether a harness session's
+// transcript is already durable there, and names the log-store session that
+// holds it.
+//
+// The dedupe key has to live in the store that receives the write. Discovery
+// asks THIS process's database whether a session is new and then writes the
+// consequence into log-store, so a gateway booted with a fresh database and
+// the default log-store URL re-imports every transcript on disk. That is not
+// hypothetical: on 2026-08-01 a canary booted out of a worktree with an
+// isolated LLMBRIDGE_DB_PATH but no LLMBRIDGE_LOG_STORE_URL pushed 2,863
+// duplicate sessions into the production store in two minutes. Discovery
+// finds 7,815 sessions on this host today.
+//
+// Bridge ids cannot answer the question — discovery mints a fresh one on every
+// import, which is the whole mechanism. The harness-native id is the only id
+// both services record, and log-store keys an index on it.
+//
+// It FAILS OPEN, deliberately, in all three of these cases:
+//
+//   - the session names no harness id, so there is nothing to ask about;
+//   - log-store is unreachable or errors;
+//   - log-store holds a session row for the id but no events behind it.
+//
+// Failing open means importing, which is exactly today's behaviour, so an
+// outage costs duplicates rather than a transcript. Failing closed would drop
+// history on the floor whenever log-store hiccuped, and nothing would ever
+// go back for it.
+func (m *Manager) logStoreAlreadyHoldsTranscript(harnessSessionID string) (logstore.HeldSession, bool) {
+	if harnessSessionID == "" {
+		return logstore.HeldSession{}, false
+	}
+	held, err := m.logStore.SessionsHoldingHarnessSessionID(harnessSessionID)
+	if err != nil {
+		log.Printf(
+			"[import-history] %s: could not ask log-store whether it already holds this transcript (%v); importing, which may duplicate it",
+			harnessSessionID, err,
+		)
+		return logstore.HeldSession{}, false
+	}
+	for _, h := range held {
+		// A projection row with no events behind it is not a transcript.
+		if h.EventCount > 0 {
+			return h, true
+		}
+	}
+	return logstore.HeldSession{}, false
 }
 
 // CheckSSHReachability tests if a machine is reachable. Local machines
