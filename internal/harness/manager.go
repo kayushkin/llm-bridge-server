@@ -18,6 +18,7 @@ import (
 
 	logstore "github.com/kayushkin/log-store/client"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
+	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -78,6 +79,12 @@ type Manager struct {
 // ptyRingBytes is the per-session ring buffer size used for late-attach
 // replay on pty sessions. <=0 falls back to the package default.
 func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL string, ptyRingBytes int, authClient *authstoreclient.Client) *Manager {
+	// This is the only place in the repo a log-store client is built, so it
+	// is the last point at which a test can be stopped before it writes to
+	// the live event log. config.Load makes the same check, but a test that
+	// builds a config.Config literal by hand never goes through Load.
+	productiondefaults.PanicIfUsedUnderTest(map[string]string{"LogStoreURL": logStoreURL})
+
 	ls := logstore.New(logStoreURL)
 	m := &Manager{
 		processes:       make(map[string]HarnessProcess),

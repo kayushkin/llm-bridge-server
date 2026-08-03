@@ -2,10 +2,11 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 )
 
 type Config struct {
@@ -63,30 +64,66 @@ type Config struct {
 	PTYIdleTimeout time.Duration
 }
 
+// Load reads the process environment, falling back to the addresses in
+// internal/productiondefaults for anything unset.
+//
+// Those fallbacks are what make the ordinary case work with no configuration,
+// and they are also what would let a test open the live databases and write to
+// the live event log. Load therefore ends by asking productiondefaults whether
+// any of them survived, and panics if one did inside a `go test` binary. The
+// check is inert in a real gateway process.
 func Load() *Config {
-	return &Config{
-		ListenAddr:     envOr("LLMBRIDGE_LISTEN_ADDR", ":8160"),
-		DBPath:         envOr("LLMBRIDGE_DB_PATH", filepath.Join(os.Getenv("HOME"), ".llm-bridge", "bridge.db")),
-		AgentStoreDB:   envOr("LLMBRIDGE_AGENT_DB", filepath.Join(os.Getenv("HOME"), ".config", "agent-store", "agents.db")),
-		MemoryStoreDB:  envOr("LLMBRIDGE_MEMORY_DB", filepath.Join(os.Getenv("HOME"), ".config", "memory-store", "memory.db")),
-		HarnessStoreDB: envOr("LLMBRIDGE_HARNESS_DB", filepath.Join(os.Getenv("HOME"), ".config", "harness-store", "harness.db")),
-		HookStoreDB:    envOr("LLMBRIDGE_HOOK_DB", filepath.Join(os.Getenv("HOME"), ".config", "hook-store", "hooks.db")),
-		ModelStoreDB:    envOr("LLMBRIDGE_MODEL_STORE_DB", filepath.Join(os.Getenv("HOME"), ".config", "model-store", "store.db")),
+	cfg := &Config{
+		ListenAddr:     envOr("LLMBRIDGE_LISTEN_ADDR", productiondefaults.ListenAddr),
+		DBPath:         envOr("LLMBRIDGE_DB_PATH", productiondefaults.BridgeDatabasePath()),
+		AgentStoreDB:   envOr("LLMBRIDGE_AGENT_DB", productiondefaults.AgentStoreDatabasePath()),
+		MemoryStoreDB:  envOr("LLMBRIDGE_MEMORY_DB", productiondefaults.MemoryStoreDatabasePath()),
+		HarnessStoreDB: envOr("LLMBRIDGE_HARNESS_DB", productiondefaults.HarnessStoreDatabasePath()),
+		HookStoreDB:    envOr("LLMBRIDGE_HOOK_DB", productiondefaults.HookStoreDatabasePath()),
+		ModelStoreDB:    envOr("LLMBRIDGE_MODEL_STORE_DB", productiondefaults.ModelStoreDatabasePath()),
 		ModelStoreURL:   os.Getenv("LLMBRIDGE_MODEL_STORE_URL"),
 		AgentStoreURL:   os.Getenv("LLMBRIDGE_AGENT_STORE_URL"),
 		ImagesDir:       envOr("LLMBRIDGE_IMAGES_DIR", "images"),
-		BridgePrefsPath: envOr("LLMBRIDGE_BRIDGE_PREFS", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "bridge-prefs.json")),
-		ConformancePath: envOr("LLMBRIDGE_CONFORMANCE_PATH", filepath.Join(os.Getenv("HOME"), ".config", "llm-bridge", "conformance.json")),
-		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", "http://localhost:8175"),
+		BridgePrefsPath: envOr("LLMBRIDGE_BRIDGE_PREFS", productiondefaults.BridgePreferencesPath()),
+		ConformancePath: envOr("LLMBRIDGE_CONFORMANCE_PATH", productiondefaults.ConformancePath()),
+		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", productiondefaults.LogStoreURL),
 		PublicURL:       os.Getenv("LLMBRIDGE_PUBLIC_URL"),
-		ToolStoreURL:    envOr("LLMBRIDGE_TOOL_STORE_URL", "http://localhost:8302"),
-		PermissionStoreURL: envOr("LLMBRIDGE_PERMISSION_STORE_URL", "http://localhost:8304"),
-		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.db")),
-		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", filepath.Join(os.Getenv("HOME"), ".config", "snapshot-store", "snapshots.git")),
+		ToolStoreURL:    envOr("LLMBRIDGE_TOOL_STORE_URL", productiondefaults.ToolStoreURL),
+		PermissionStoreURL: envOr("LLMBRIDGE_PERMISSION_STORE_URL", productiondefaults.PermissionStoreURL),
+		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", productiondefaults.SnapshotStoreDatabasePath()),
+		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", productiondefaults.SnapshotStoreGitPath()),
 		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled,harness-watch:Scheduled,healthcheck:Scheduled,renamer:Auto-rename,conformance:Conformance,subagent:Subagents,workflow-subagent:Subagents")),
 		PTYRingBufferBytes: envInt("LLMBRIDGE_PTY_RING_BUFFER_BYTES", 64*1024),
 		IdleTimeout:        envDuration("LLMBRIDGE_IDLE_TIMEOUT", 15*time.Minute),
 		PTYIdleTimeout:     envDuration("LLMBRIDGE_PTY_IDLE_TIMEOUT", 60*time.Minute),
+	}
+	productiondefaults.PanicIfUsedUnderTest(cfg.GuardedAddresses())
+	return cfg
+}
+
+// GuardedAddresses reports the value this config holds for every field
+// internal/productiondefaults knows a production address for, keyed by field
+// name. Callers hand it to productiondefaults.PanicIfUsedUnderTest.
+//
+// A Config built as a literal — which is how every test in this repo builds
+// one — never passes through Load, so this is also the way such a test can opt
+// itself into the same check.
+func (c *Config) GuardedAddresses() map[string]string {
+	return map[string]string{
+		"ListenAddr":         c.ListenAddr,
+		"DBPath":             c.DBPath,
+		"AgentStoreDB":       c.AgentStoreDB,
+		"MemoryStoreDB":      c.MemoryStoreDB,
+		"HarnessStoreDB":     c.HarnessStoreDB,
+		"HookStoreDB":        c.HookStoreDB,
+		"ModelStoreDB":       c.ModelStoreDB,
+		"BridgePrefsPath":    c.BridgePrefsPath,
+		"ConformancePath":    c.ConformancePath,
+		"LogStoreURL":        c.LogStoreURL,
+		"ToolStoreURL":       c.ToolStoreURL,
+		"PermissionStoreURL": c.PermissionStoreURL,
+		"SnapshotStoreDB":    c.SnapshotStoreDB,
+		"SnapshotStoreGit":   c.SnapshotStoreGit,
 	}
 }
 
