@@ -131,7 +131,10 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cache key = the scope's newest updated_at (rows are sorted desc) + shape.
+	// Cache key = the scope's newest row's cursor (rows are sorted desc) + shape.
+	// The cursor is updated_at plus that row's session id, so it moves whenever
+	// the newest row's timestamp OR identity changes — strictly finer-grained
+	// than the timestamp alone, and never coarser.
 	scopeRev := ""
 	if len(rows) > 0 {
 		scopeRev = rows[0].Cursor
