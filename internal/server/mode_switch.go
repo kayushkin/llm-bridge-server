@@ -69,8 +69,11 @@ func (s *Server) handleSwitchMode(w http.ResponseWriter, r *http.Request) {
 	// Refuse switching mid-generation. The harness's pause/resume hasn't
 	// been hardened against partial-turn loss yet; switching during a
 	// model_generating turn would drop the in-flight assistant message.
-	switch msg.SessionState(sess.State) {
-	case msg.SessionModelGenerating, msg.SessionToolRunning:
+	// IsActive, not a two-value list. The list missed `compacting`, `starting`
+	// and the legacy `running` that older rows still carry — and `running` was
+	// what nearly every live row said, so the gate it describes was open on
+	// most of them.
+	if msg.SessionState(sess.State).IsActive() {
 		http.Error(w, `{"error":{"code":"session_busy","message":"cannot switch mode while a turn is in flight"}}`, http.StatusConflict)
 		return
 	}
@@ -115,7 +118,7 @@ func (s *Server) handleSwitchMode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("spawn in %s mode: %v", req.Mode, startErr), http.StatusInternalServerError)
 		return
 	}
-	sess.State = string(msg.SessionRunning)
+	sess.State = string(msg.SessionStarting)
 
 	// For pty switches, surface the new hub's attach token alongside
 	// the session JSON — matches the create-session response shape.

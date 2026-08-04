@@ -57,8 +57,10 @@ func TestDerivation_SimpleHappyPath(t *testing.T) {
 		{Type: msg.EventResult, Result: &msg.ResultEvent{}},
 	})
 	want := []msg.SessionState{
-		msg.SessionToolRunning, // user_message starts the turn
-		msg.SessionIdle,        // result closes the turn
+		msg.SessionModelGenerating, // user_message starts the turn: the model generates
+		msg.SessionToolRunning,     // it calls a tool
+		msg.SessionModelGenerating, // the tool returns and the model reads the result
+		msg.SessionIdle,            // result closes the turn
 	}
 	if !equalStates(got, want) {
 		t.Fatalf("transitions = %v; want %v", got, want)
@@ -67,13 +69,14 @@ func TestDerivation_SimpleHappyPath(t *testing.T) {
 
 func TestDerivation_NoTransitionEmitsNoEvent(t *testing.T) {
 	d := newDerivationState()
-	// Two tool_calls back to back — second one should not emit, since
-	// state is already tool_running.
+	// The FIRST tool_call is a real transition now — the turn opened in
+	// model_generating, so this is where the tool actually takes over. The
+	// second must be silent: state is already tool_running.
 	d.derive(&msg.Event{Type: msg.EventUserMessage})
 	first := d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 	second := d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t2", Name: "Read"}})
-	if len(first) != 0 {
-		t.Fatalf("tool_call after user_message should not transition (already tool_running); got %v", first)
+	if st := firstSessionState(first); st == nil || st.State.State != msg.SessionToolRunning {
+		t.Fatalf("first tool_call should transition model_generating→tool_running; got %v", first)
 	}
 	if len(second) != 0 {
 		t.Fatalf("second tool_call should not transition; got %v", second)
@@ -94,9 +97,12 @@ func TestDerivation_MultipleConcurrentTools(t *testing.T) {
 		t.Fatalf("state mid-flight = %q; want %q", d.sessionState, msg.SessionToolRunning)
 	}
 
-	// Second tool returns; turn isn't done until result lands.
-	if got := d.derive(&msg.Event{Type: msg.EventToolResult, ToolResult: &msg.ToolResultEvent{ToolID: "t2"}}); len(got) != 0 {
-		t.Fatalf("last tool_result before result: got %v; want no transition (waits for result)", got)
+	// Second tool returns — the LAST one, so the tools have drained and the
+	// model picks back up. The turn is still not done; that is what the
+	// result below is for.
+	got2 := d.derive(&msg.Event{Type: msg.EventToolResult, ToolResult: &msg.ToolResultEvent{ToolID: "t2"}})
+	if st := firstSessionState(got2); st == nil || st.State.State != msg.SessionModelGenerating {
+		t.Fatalf("last tool_result should transition tool_running→model_generating; got %v", got2)
 	}
 
 	// Result closes the turn.
@@ -142,14 +148,17 @@ func TestDerivation_ApprovalOverridesToolRunning(t *testing.T) {
 	}
 }
 
-func TestDerivation_ApprovalDeniedRestoresToolRunning(t *testing.T) {
+func TestDerivation_ApprovalDeniedRestoresModelGenerating(t *testing.T) {
 	d := newDerivationState()
 	d.derive(&msg.Event{Type: msg.EventUserMessage})
 	d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "pending"}})
 
+	// The turn continues, but not as a tool: a denied tool never runs, and
+	// what resumes is the model reading the refusal. The prompt arrived
+	// while the turn was in model_generating, and that is what is restored.
 	got := d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "denied"}})
-	if len(got) != 1 || got[0].State.State != msg.SessionToolRunning {
-		t.Fatalf("denied: got %+v; want tool_running (turn continues)", got)
+	if len(got) != 1 || got[0].State.State != msg.SessionModelGenerating {
+		t.Fatalf("denied: got %+v; want model_generating (turn continues, no tool ran)", got)
 	}
 }
 
@@ -162,8 +171,8 @@ func TestDerivation_AutoApprovedNoPriorPendingIsNoop(t *testing.T) {
 	if got := d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "auto_approved"}}); len(got) != 0 {
 		t.Fatalf("auto_approved with no prior pending: got %+v; want no transition", got)
 	}
-	if d.sessionState != msg.SessionToolRunning {
-		t.Fatalf("state after auto_approved noop = %q; want %q", d.sessionState, msg.SessionToolRunning)
+	if d.sessionState != msg.SessionModelGenerating {
+		t.Fatalf("state after auto_approved noop = %q; want %q", d.sessionState, msg.SessionModelGenerating)
 	}
 }
 
@@ -363,7 +372,7 @@ func TestDerivation_StreamEventsAreNotTransitions(t *testing.T) {
 func TestDerivation_TransitionEventsCarryCauseCorrelation(t *testing.T) {
 	d := newDerivationState()
 	got := d.derive(&msg.Event{
-		Type:            msg.EventUserMessage,
+		Type:             msg.EventUserMessage,
 		Harness:          msg.HarnessClaudeCode,
 		BridgeSessionID:  "br-1",
 		HarnessSessionID: "sess-1",
@@ -377,8 +386,8 @@ func TestDerivation_TransitionEventsCarryCauseCorrelation(t *testing.T) {
 	if ev.BridgeSessionID != "br-1" || ev.HarnessSessionID != "sess-1" || ev.TurnID != "turn-9" || ev.ClientRequestID != "cr-1" || ev.Harness != msg.HarnessClaudeCode {
 		t.Fatalf("derived event lost cause correlation: %+v", ev)
 	}
-	if ev.State.Previous != msg.SessionIdle || ev.State.State != msg.SessionToolRunning {
-		t.Fatalf("session_state body = %+v; want idle→tool_running", ev.State)
+	if ev.State.Previous != msg.SessionIdle || ev.State.State != msg.SessionModelGenerating {
+		t.Fatalf("session_state body = %+v; want idle→model_generating", ev.State)
 	}
 	if ev.Timestamp.IsZero() {
 		t.Fatalf("derived event has zero Timestamp")
@@ -1160,5 +1169,83 @@ func TestDerivation_TurnComplete_ToolResultWithoutCallStillRecorded(t *testing.T
 	}
 	if len(tcs[0].ToolCalls) != 1 || tcs[0].ToolCalls[0].Output != "stranded" {
 		t.Fatalf("orphan tool_result = %+v; want one entry with output=stranded", tcs[0].ToolCalls)
+	}
+}
+
+// A manual compaction announces itself with compact_ack and finishes with
+// compact_boundary. `compacting` was one of the states the live table had
+// never once recorded (finding §5); these two pin the path that produces it.
+func TestDerivation_ManualCompactionOpensAndRestores(t *testing.T) {
+	d := newDerivationState()
+	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+
+	got := d.derive(&msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "compact_ack"}})
+	if st := firstSessionState(got); st == nil || st.State.State != msg.SessionCompacting {
+		t.Fatalf("compact_ack: got %v; want compacting", got)
+	}
+
+	// Restores what the turn was doing, not idle — a compaction interrupts a
+	// turn, it does not end one. The tool was in flight when it started.
+	got = d.derive(&msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "compact_boundary"}})
+	if st := firstSessionState(got); st == nil || st.State.State != msg.SessionToolRunning {
+		t.Fatalf("compact_boundary: got %v; want tool_running restored", got)
+	}
+}
+
+// Claude Code compacts on its own too, and an automatic compaction emits only
+// the boundary — there is no ack to open the state. The boundary must not
+// invent a transition out of a state the session was never in.
+func TestDerivation_AutomaticCompactionBoundaryWithoutAckIsNoop(t *testing.T) {
+	d := newDerivationState()
+	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	// A TOOL is in flight when the automatic boundary lands. This detail is
+	// the whole test: with the turn merely in model_generating, a boundary
+	// that wrongly restored would compute model_generating anyway and the
+	// bug would hide behind next==prev. From tool_running the wrong answer
+	// is observable.
+	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+
+	if got := d.derive(&msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "compact_boundary"}}); len(got) != 0 {
+		t.Fatalf("boundary with no preceding ack: got %v; want no transition", got)
+	}
+	if d.sessionState != msg.SessionToolRunning {
+		t.Fatalf("state after unmatched boundary = %q; want tool_running (untouched)", d.sessionState)
+	}
+}
+
+// An unrelated system event must not touch the state machine. Claude Code
+// forwards many system subtypes (task_*, status, …) down the same channel.
+func TestDerivation_UnrelatedSystemEventDoesNotTransition(t *testing.T) {
+	d := newDerivationState()
+	d.derive(&msg.Event{Type: msg.EventUserMessage})
+
+	if got := d.derive(&msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "status"}}); len(got) != 0 {
+		t.Fatalf("unrelated system subtype: got %v; want no transition", got)
+	}
+}
+
+// forceState is how the server records a decision no harness event implies.
+// It must report what it replaced, refuse to claim a change that did not
+// happen, and clear the in-flight bookkeeping — a stopped turn's tools are
+// not coming back.
+func TestDerivation_ForceStateReportsPreviousAndClearsInflight(t *testing.T) {
+	d := newDerivationState()
+	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+
+	prev, changed := d.forceState(msg.SessionPaused)
+	if !changed {
+		t.Fatal("forceState reported no change; want changed")
+	}
+	if prev != msg.SessionToolRunning {
+		t.Fatalf("forceState previous = %q; want tool_running", prev)
+	}
+	if len(d.activeTools) != 0 {
+		t.Fatalf("activeTools after force = %v; want empty", d.activeTools)
+	}
+
+	if _, changed := d.forceState(msg.SessionPaused); changed {
+		t.Fatal("forcing the state it already holds reported a change; want none")
 	}
 }

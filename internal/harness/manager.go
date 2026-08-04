@@ -716,6 +716,62 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 // tail of readEvents but bypasses AssignMessageID (derived events
 // don't belong to a message bubble — they're bookkeeping like
 // session_state).
+// ForceSessionState records a state the SERVER decided on rather than one
+// an event implied, then persists and broadcasts it exactly as a derived
+// transition. Returns false when the session already held that state, so
+// the caller can answer without claiming a change that did not happen.
+//
+// The interrupt handler is the caller this exists for. The user pressing
+// Stop produces no harness event, so before this the handler wrote the
+// session row behind the derivation's back: the derivation kept holding
+// tool_running, the next event computed its transition from a state the
+// session had left, and no SSE subscriber ever heard the interrupt — only
+// derive() broadcasts. Every client learned about it by refetching, which
+// is why bridge-ui carried a localStorage set of interrupted ids instead.
+func (m *Manager) ForceSessionState(bridgeID string, state msg.SessionState, reason string) bool {
+	m.mu.Lock()
+	d := m.derivation[bridgeID]
+	m.mu.Unlock()
+	if d == nil {
+		// No live derivation — the process is gone, so there is no state
+		// machine to keep honest. Write the row and say so; the next
+		// derivation seeds itself from exactly this value.
+		if err := m.store.UpdateSessionState(bridgeID, string(state)); err != nil {
+			log.Printf("[harness] ForceSessionState: update session %s: %v", bridgeID, err)
+			return false
+		}
+		return true
+	}
+
+	prev, changed := d.forceState(state)
+	if !changed {
+		return false
+	}
+
+	if err := m.store.UpdateSessionState(bridgeID, string(state)); err != nil {
+		log.Printf("[harness] ForceSessionState: update session %s: %v", bridgeID, err)
+		return false
+	}
+
+	var harnessName msg.Harness
+	if sess, err := m.store.GetSession(bridgeID); err == nil && sess != nil {
+		harnessName = sess.Harness
+	}
+
+	m.broadcastDerived(bridgeID, &msg.Event{
+		Type:            msg.EventSessionState,
+		Harness:         harnessName,
+		BridgeSessionID: bridgeID,
+		Timestamp:       time.Now(),
+		State: &msg.StateEvent{
+			State:    state,
+			Previous: prev,
+			Reason:   reason,
+		},
+	})
+	return true
+}
+
 func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 	m.mu.Lock()
 	d := m.derivation[bridgeID]

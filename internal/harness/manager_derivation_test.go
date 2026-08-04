@@ -25,14 +25,14 @@ type fakeProcess struct {
 	ch  chan msg.Event
 }
 
-func (f *fakeProcess) PID() int                                                  { return 0 }
-func (f *fakeProcess) SessionID() string                                         { return f.sid }
-func (f *fakeProcess) Events() <-chan msg.Event                                  { return f.ch }
-func (f *fakeProcess) Send(message string, blocks []msg.ContentBlock) error     { return nil }
-func (f *fakeProcess) SendCommand(cmd string) error                              { return nil }
-func (f *fakeProcess) SendJSONRPC(method string, params json.RawMessage) error   { return nil }
-func (f *fakeProcess) Interrupt() error                                          { return nil }
-func (f *fakeProcess) Kill() error                                               { return nil }
+func (f *fakeProcess) PID() int                                                { return 0 }
+func (f *fakeProcess) SessionID() string                                       { return f.sid }
+func (f *fakeProcess) Events() <-chan msg.Event                                { return f.ch }
+func (f *fakeProcess) Send(message string, blocks []msg.ContentBlock) error    { return nil }
+func (f *fakeProcess) SendCommand(cmd string) error                            { return nil }
+func (f *fakeProcess) SendJSONRPC(method string, params json.RawMessage) error { return nil }
+func (f *fakeProcess) Interrupt() error                                        { return nil }
+func (f *fakeProcess) Kill() error                                             { return nil }
 
 // newTestManager returns a Manager backed by a temp SQLite store and an
 // in-process log-store stub served via httptest. RecoverInFlightTurn /
@@ -183,11 +183,11 @@ func recvWithin(t *testing.T, ch chan StoredEvent, want int, timeout time.Durati
 // TestManager_DerivesSessionStateAfterRawEvent walks one full turn
 // (user_message → tool_call → tool_result → result) through the
 // real readEvents path and asserts that:
-//   1. raw events arrive at subscribers in order
-//   2. each raw event that triggers a transition is followed by a
-//      session_state derived event whose Previous matches the prior
-//      state and whose State matches the new one
-//   3. the derived event is persisted (has a non-zero RowID)
+//  1. raw events arrive at subscribers in order
+//  2. each raw event that triggers a transition is followed by a
+//     session_state derived event whose Previous matches the prior
+//     state and whose State matches the new one
+//  3. the derived event is persisted (has a non-zero RowID)
 func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 	m := newTestManager(t)
 
@@ -199,8 +199,8 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 	// seeding keeps the test honest.
 	if err := m.store.CreateSession(&store.Session{
 		SessionID: bridgeID,
-		Harness:  msg.HarnessClaudeCode,
-		State:    string(msg.SessionRunning),
+		Harness:   msg.HarnessClaudeCode,
+		State:     string(msg.SessionRunning),
 	}); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
@@ -223,22 +223,20 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 	}
 	close(proc.ch)
 
-	// Expected ordering on the subscriber channel:
-	//   user_message
-	//   agent_state(idle → tool_running)
-	//   tool_call           (no transition)
-	//   tool_result         (no transition)
-	//   result
-	//   agent_state(tool_running → idle)
-	//   usage_total          (emitted on every result; child 3)
-	//   turn_complete        (emitted after usage_total on terminator; child 4)
-	got := recvWithin(t, sub, 8, 2*time.Second)
+	got := recvWithin(t, sub, 10, 2*time.Second)
 
+	// Every raw event that moves the state machine is now followed by its
+	// own session_state. The turn opens in model_generating, the tool_call
+	// takes it to tool_running, the tool_result hands it back to
+	// model_generating, and the result settles it to idle — four
+	// transitions where the single-state machine emitted two.
 	wantOrder := []msg.EventType{
 		msg.EventUserMessage,
 		msg.EventSessionState,
 		msg.EventToolCall,
+		msg.EventSessionState,
 		msg.EventToolResult,
+		msg.EventSessionState,
 		msg.EventResult,
 		msg.EventSessionState,
 		msg.EventUsageTotal,
@@ -250,14 +248,12 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 		}
 	}
 
-	// The two agent_state derived events should reflect
-	// running→tool_running and tool_running→idle in that order. Previous
-	// on the first transition is "running" (not idle) because the
+	// Previous on the first transition is "running" (not idle) because the
 	// derivation seeds its prev from the persisted sessions.state row,
 	// which this test created as SessionRunning (F1 settle fix, Part 1).
 	first := got[1]
-	if first.State == nil || first.State.Previous != msg.SessionRunning || first.State.State != msg.SessionToolRunning {
-		t.Fatalf("first session_state body = %+v; want running→tool_running", first.State)
+	if first.State == nil || first.State.Previous != msg.SessionRunning || first.State.State != msg.SessionModelGenerating {
+		t.Fatalf("first session_state body = %+v; want running→model_generating", first.State)
 	}
 	if first.RowID == 0 {
 		t.Fatalf("first derived event has zero RowID — not persisted")
@@ -266,15 +262,25 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 		t.Fatalf("derived event missing bridge_session_id stamp: %+v", first.Event)
 	}
 
-	idleTransition := got[5]
-	if idleTransition.State == nil || idleTransition.State.Previous != msg.SessionToolRunning || idleTransition.State.State != msg.SessionIdle {
-		t.Fatalf("idle session_state body = %+v; want tool_running→idle", idleTransition.State)
+	toolTransition := got[3]
+	if toolTransition.State == nil || toolTransition.State.Previous != msg.SessionModelGenerating || toolTransition.State.State != msg.SessionToolRunning {
+		t.Fatalf("tool session_state body = %+v; want model_generating→tool_running", toolTransition.State)
+	}
+
+	drainTransition := got[5]
+	if drainTransition.State == nil || drainTransition.State.Previous != msg.SessionToolRunning || drainTransition.State.State != msg.SessionModelGenerating {
+		t.Fatalf("drain session_state body = %+v; want tool_running→model_generating", drainTransition.State)
+	}
+
+	idleTransition := got[7]
+	if idleTransition.State == nil || idleTransition.State.Previous != msg.SessionModelGenerating || idleTransition.State.State != msg.SessionIdle {
+		t.Fatalf("idle session_state body = %+v; want model_generating→idle", idleTransition.State)
 	}
 	if idleTransition.RowID == 0 {
 		t.Fatalf("idle session_state derived event has zero RowID — not persisted")
 	}
 
-	usageTotal := got[6]
+	usageTotal := got[8]
 	if usageTotal.UsageTotal == nil || usageTotal.UsageTotal.Turns != 1 {
 		t.Fatalf("usage_total body = %+v; want turns=1", usageTotal.UsageTotal)
 	}
@@ -285,7 +291,7 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 		t.Fatalf("usage_total missing bridge_session_id stamp: %+v", usageTotal.Event)
 	}
 
-	turnComplete := got[7]
+	turnComplete := got[9]
 	if turnComplete.TurnComplete == nil || turnComplete.TurnComplete.TurnID != "turn-1" {
 		t.Fatalf("turn_complete body = %+v; want turn_id=turn-1", turnComplete.TurnComplete)
 	}
@@ -322,8 +328,8 @@ func TestManager_UsageTotalSnapshotsAcrossTurns(t *testing.T) {
 
 	if err := m.store.CreateSession(&store.Session{
 		SessionID: bridgeID,
-		Harness:  msg.HarnessClaudeCode,
-		State:    string(msg.SessionRunning),
+		Harness:   msg.HarnessClaudeCode,
+		State:     string(msg.SessionRunning),
 	}); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
@@ -479,8 +485,8 @@ func TestManager_DerivationStateTornDownOnProcessExit(t *testing.T) {
 
 	if err := m.store.CreateSession(&store.Session{
 		SessionID: bridgeID,
-		Harness:  msg.HarnessClaudeCode,
-		State:    string(msg.SessionRunning),
+		Harness:   msg.HarnessClaudeCode,
+		State:     string(msg.SessionRunning),
 	}); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
@@ -532,8 +538,8 @@ func TestManager_RecoversTurnIDAfterProcessRestart(t *testing.T) {
 
 	if err := m.store.CreateSession(&store.Session{
 		SessionID: bridgeID,
-		Harness:  msg.HarnessClaudeCode,
-		State:    string(msg.SessionRunning),
+		Harness:   msg.HarnessClaudeCode,
+		State:     string(msg.SessionRunning),
 	}); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
@@ -786,4 +792,67 @@ func eventTypes(got []StoredEvent) []msg.EventType {
 		out[i] = got[i].Type
 	}
 	return out
+}
+
+// ForceSessionState is the path an interrupt takes. The point of routing it
+// through the manager rather than writing the session row directly is that
+// SSE subscribers hear it: only derive() broadcasts, and a user pressing Stop
+// produces no harness event to derive from. Before this, every client learned
+// about an interrupt by refetching — which is why bridge-ui kept its own
+// localStorage set of interrupted session ids.
+func TestManager_ForceSessionStateBroadcastsAndPersists(t *testing.T) {
+	m := newTestManager(t)
+
+	const bridgeID = "br_force_state"
+	if err := m.store.CreateSession(&store.Session{
+		SessionID: bridgeID,
+		Harness:   msg.HarnessClaudeCode,
+		State:     string(msg.SessionRunning),
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	proc := &fakeProcess{sid: bridgeID, ch: make(chan msg.Event, 4)}
+	sub := m.Subscribe(bridgeID)
+	go m.readEvents(proc)
+
+	// Open a turn so there is a live derivation holding a real state.
+	proc.ch <- msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1"}
+	got := recvWithin(t, sub, 2, 2*time.Second)
+	if got[1].State == nil || got[1].State.State != msg.SessionModelGenerating {
+		t.Fatalf("turn open = %+v; want model_generating", got[1].State)
+	}
+
+	if !m.ForceSessionState(bridgeID, msg.SessionPaused, "user_interrupt") {
+		t.Fatal("ForceSessionState reported no change; want changed")
+	}
+
+	forced := recvWithin(t, sub, 1, 2*time.Second)
+	if forced[0].Type != msg.EventSessionState || forced[0].State == nil {
+		t.Fatalf("broadcast event = %+v; want session_state", forced[0].Event)
+	}
+	if forced[0].State.State != msg.SessionPaused || forced[0].State.Previous != msg.SessionModelGenerating {
+		t.Fatalf("broadcast body = %+v; want model_generating→paused", forced[0].State)
+	}
+	if forced[0].State.Reason != "user_interrupt" {
+		t.Fatalf("broadcast reason = %q; want user_interrupt", forced[0].State.Reason)
+	}
+	if forced[0].RowID == 0 {
+		t.Fatal("forced session_state has zero RowID — not persisted")
+	}
+
+	sess, err := m.store.GetSession(bridgeID)
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if sess.State != string(msg.SessionPaused) {
+		t.Fatalf("persisted state = %q; want paused", sess.State)
+	}
+
+	// Forcing the state it already holds must not emit a second event.
+	if m.ForceSessionState(bridgeID, msg.SessionPaused, "user_interrupt") {
+		t.Fatal("re-forcing the held state reported a change; want none")
+	}
+
+	close(proc.ch)
 }

@@ -83,10 +83,19 @@ func TestInterruptSession_LiveProcessDuringToolRunning(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("interrupt during tool_running: status = %d, want 200", resp.StatusCode)
 	}
+	// `paused`, not `idle`: a turn a person stopped is a different fact from
+	// a turn that ended on its own, and writing idle threw that away. See
+	// docs/findings/2026-07-27-interrupt-dual-emit-turn-hijack.md §7.
 	got := decodeJSON[msg.ManagedSession](t, resp)
-	if got.State != string(msg.SessionIdle) {
-		t.Errorf("post-interrupt state = %q, want idle", got.State)
+	if got.State != string(msg.SessionPaused) {
+		t.Errorf("post-interrupt state = %q, want paused", got.State)
 	}
+
+	// The response is not the only place it lands. The handler drives the
+	// state through the manager so the persisted row moves with it — a
+	// response that said paused over a row still reading tool_running would
+	// be undone by the next refetch.
+	waitForSessionState(t, st, bridgeID, string(msg.SessionPaused), 5*time.Second)
 }
 
 // TestResumeSession_AlreadyRunning proves the Bug-2 resume gate keys off the

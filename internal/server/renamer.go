@@ -190,12 +190,13 @@ func (s *Server) renamerStillAlive(renamerID string) bool {
 	if err != nil {
 		return false
 	}
-	switch sess.State {
-	case string(msg.SessionRunning), string(msg.SessionIdle):
-		return true
-	default:
-		return false
-	}
+	// Active OR idle. Listing the two literal strings read a renamer that had
+	// reached tool_running — the normal state for one actually doing its job —
+	// as dead, and killed it. IsActive covers every in-flight state including
+	// the legacy `running` still on older rows, so this stops needing an edit
+	// each time the enum gains a value.
+	st := msg.SessionState(sess.State)
+	return st.IsActive() || st == msg.SessionIdle
 }
 
 // spawnRenamerSession creates a fresh Claude Code session bound to the same

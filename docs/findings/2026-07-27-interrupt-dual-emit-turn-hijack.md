@@ -267,6 +267,38 @@ migration (every harness emits granular states, touches all bridge repos +
 conformance) or un-deprecate `running` and delete the states nothing emits. Keep
 this OUT of the fix branches; flag for a separate decision.
 
+### DECIDED 2026-08-04: finish the migration, Claude Code first. SHIPPED.
+
+The decision landed on finishing it, and the shape turned out cheaper than this
+section feared — because by then the server derived state centrally
+(`internal/harness/derivation.go`), so no harness had to change at all. Harness-
+emitted `EventSessionState` is dropped at intake; the derivation is the only
+writer. "Migrating Claude Code" meant teaching that one state machine the
+distinctions it was collapsing:
+
+- **`model_generating` vs `tool_running`.** `EventUserMessage` answered
+  `tool_running` for the whole turn, which is why `model_generating` was emitted
+  zero times. A turn now opens in `model_generating` (no tool has been called and
+  none may ever be), `EventToolCall` moves it to `tool_running`, and the LAST
+  `EventToolResult` draining `activeTools` moves it back — the model reads the
+  result and keeps going.
+- **`compacting`.** Derived from Claude Code's own signals: `compact_ack` opens
+  it, `compact_boundary` closes it back to whatever the turn was doing
+  (`preCompactState`). An AUTOMATIC compaction emits only the boundary, so the
+  boundary tolerates never having seen an ack and does not transition.
+- **`starting`.** The spawn sites wrote `running` directly
+  (`manager.go` ×2, `sessions.go` ×3, `mode_switch.go`). They now write
+  `starting`, which is what the enum says that moment is.
+
+**Consumers fixed in the same pass**, all three named in this doc:
+`health.go` counted one string and now sums `msg.ActiveSessionStates()`;
+`renamer.go` listed `running`/`idle` literally and now asks `IsActive()`;
+`mode_switch.go`'s busy gate listed two states and missed `compacting`,
+`starting` and the legacy `running` that nearly every live row carried.
+
+`running` is NOT deleted. 2,665 historical rows hold it, `IsActive()` and
+`projectServerSessionState` still read it, and nothing writes it any more.
+
 ---
 
 ## Secondary observations (same cache-as-authority class)
@@ -317,14 +349,30 @@ carry into a new chat surface:
 - **Turn-hijack rule (bug 3):** confirm the "otel echo of the currently-open
   prompt attaches instead of opening a turn" semantics before it goes in the
   manager.
-- **`SessionPaused` on interrupt:** after a successful Stop, the handler writes
-  `SessionIdle`. Writing `SessionPaused` ("user-interrupted, can be resumed",
-  already in the enum) would let the client's localStorage "interrupted sessions"
-  hack (`useBridgeSession.ts:313-352`, marked stopgap "until manager-side
-  SessionPaused emission") be deleted, and forces `handleResumeSession` to accept
-  `paused`. Wider diff, needs UI state handling checked.
-- **Enum migration (§5):** finish it vs. un-deprecate `running`. Out of scope for
-  the fix branches; flagged only.
+- **`SessionPaused` on interrupt:** ✅ **DECIDED 2026-08-04 — yes. SHIPPED.**
+  `handleInterruptSession` writes `SessionPaused`, and writes it through
+  `Manager.ForceSessionState` rather than straight to the store. That routing is
+  the substance of the change: only `derive()` broadcasts, so a store write left
+  the derivation still holding the pre-interrupt state AND left every SSE
+  subscriber unaware. Learning about an interrupt by refetching is exactly why
+  the client kept its own copy.
+
+  bridge-ui's localStorage hack is **deleted** — `INTERRUPTED_KEY`,
+  `loadInterruptedIds`/`saveInterruptedIds`, the `interruptedIds` state and ref,
+  `markInterrupted`/`unmarkInterrupted`, the pruning effect and all nine call
+  sites. `deriveSessionUIState` went with them: with no client layer left it was
+  a wrapper around `projectServerSessionState`.
+
+  ⚠️ **One clause of this bullet was wrong and did not ship: "forces
+  `handleResumeSession` to accept `paused`".** It does not, and must not.
+  `Manager.Stop` calls `proc.Interrupt()` and leaves the process REGISTERED, so a
+  paused session has a live harness and resume 409s on the process registry —
+  correctly. Paused means the user stopped the turn, not that the harness is
+  gone. A paused session needs no resume: sending the next message continues it.
+  `chat-core`'s `RESUMABLE_STATES` carried a note predicting `paused` would join
+  it; that note has been corrected in place rather than acted on.
+- **Enum migration (§5):** ✅ **DECIDED 2026-08-04 — finish it, Claude Code
+  first. SHIPPED.** See the DECIDED block in §5.
 
 ---
 

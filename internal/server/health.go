@@ -438,8 +438,15 @@ func (s *Server) discoverHarnesses() []HarnessStatus {
 func (s *Server) sessionCounts() SessionCounts {
 	var counts SessionCounts
 
-	if sessions, err := s.store.ListSessionsByState(string(msg.SessionRunning)); err == nil {
-		counts.Running = len(sessions)
+	// Every ACTIVE state, not just `running`. Counting one string
+	// under-reported by whatever was mid-tool at the time, and now that the
+	// derivation emits model_generating and tool_running it would report
+	// almost nothing at all. ActiveSessionStates is the enum's own answer to
+	// "which of these means work is in flight", so this cannot drift from it.
+	for _, st := range msg.ActiveSessionStates() {
+		if sessions, err := s.store.ListSessionsByState(string(st)); err == nil {
+			counts.Running += len(sessions)
+		}
 	}
 	if sessions, err := s.store.ListSessionsByState(string(msg.SessionIdle)); err == nil {
 		counts.Idle = len(sessions)

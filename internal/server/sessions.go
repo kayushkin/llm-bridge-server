@@ -249,7 +249,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			s.store.UpdateSessionState(sess.SessionID, string(msg.SessionError))
 			sess.State = string(msg.SessionError)
 		} else {
-			sess.State = string(msg.SessionRunning)
+			sess.State = string(msg.SessionStarting)
 		}
 	}
 
@@ -593,12 +593,25 @@ func (s *Server) handleInterruptSession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.store.UpdateSessionState(bridgeID, string(msg.SessionIdle)); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// `paused` — "user-interrupted, can be resumed" — not `idle`. The two
+	// are different facts: idle is a turn that finished on its own terms,
+	// paused is one a person stopped. Writing idle threw that away, so
+	// every client that wanted to show it had to remember locally what it
+	// had asked for; bridge-ui kept a localStorage set of interrupted ids
+	// for exactly this reason.
+	//
+	// Through the manager rather than straight to the store, so the
+	// derivation moves with the row and SSE subscribers hear it live.
+	// See docs/findings/2026-07-27-interrupt-dual-emit-turn-hijack.md §7.
+	//
+	// NOTE: paused here means the TURN was stopped, not that the process
+	// died. `Manager.Stop` calls `proc.Interrupt()` and leaves the process
+	// registered, so a paused session still has a live harness and is NOT
+	// resumable — resume 409s on the process registry, and sending the
+	// next message is what continues it.
+	s.harness.ForceSessionState(bridgeID, msg.SessionPaused, "user_interrupt")
 
-	sess.State = string(msg.SessionIdle)
+	sess.State = string(msg.SessionPaused)
 	writeJSON(w, sess)
 }
 
@@ -644,7 +657,7 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess.State = string(msg.SessionRunning)
+	sess.State = string(msg.SessionStarting)
 	writeJSON(w, sess)
 }
 
@@ -759,7 +772,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		s.store.UpdateSessionState(forked.SessionID, string(msg.SessionError))
 		forked.State = string(msg.SessionError)
 	} else {
-		forked.State = string(msg.SessionRunning)
+		forked.State = string(msg.SessionStarting)
 	}
 
 	w.WriteHeader(http.StatusCreated)

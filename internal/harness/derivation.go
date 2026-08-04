@@ -68,6 +68,12 @@ type derivationState struct {
 	// drain. Captured the first time we go awaitingApproval=true.
 	preApprovalState msg.SessionState
 
+	// preCompactState is the SessionState we restore to when a
+	// compaction finishes. Captured on the `compact_ack` that opens
+	// SessionCompacting. A compaction interrupts a turn rather than
+	// ending it, so restoring beats assuming idle.
+	preCompactState msg.SessionState
+
 	// usage is the running session-cumulative TokenUsage, summed
 	// field-by-field on every EventResult. ContextTokens and
 	// ContextLimit are last-value-wins (current-context state, not
@@ -187,6 +193,35 @@ func (d *derivationState) currentState() msg.SessionState {
 	return d.sessionState
 }
 
+// forceState moves the derivation to next because the SERVER decided so,
+// not because an event implied it, and reports the state it replaced.
+// The second return is false when the derivation already held next, so
+// the caller can skip a no-op write and broadcast.
+//
+// This exists for decisions only the server can make. An interrupt is the
+// case it was written for: the user pressed Stop, and no event the harness
+// emits says that happened. Writing the session row directly instead would
+// leave the derivation still holding the pre-interrupt state, so the very
+// next event would compute its transition from a state the session is no
+// longer in — and the SSE subscribers would never hear about the interrupt
+// at all, since only derive() broadcasts.
+//
+// Clears the in-flight bookkeeping for the same reason EventResult does:
+// whatever tools or prompts were outstanding are not coming back.
+func (d *derivationState) forceState(next msg.SessionState) (msg.SessionState, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	prev := d.sessionState
+	if prev == next {
+		return prev, false
+	}
+	d.sessionState = next
+	d.activeTools = map[string]string{}
+	d.awaitingApproval = false
+	d.pendingApprovals = make(map[string]struct{})
+	return prev, true
+}
+
 // isHoldingSessionState reports whether s is a "turn in flight" state —
 // one that a settled terminal event (EventResult/EventError) should
 // overwrite when it lingers in the persisted row. Per the live-DB
@@ -245,12 +280,12 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 
 	switch ev.Type {
 	case msg.EventUserMessage:
-		// Turn opens — idle → tool_running. The "tool_running" label
-		// covers model generation as well as actual tool invocation
-		// for now; splitting model_generating from tool_running is
-		// deferred until we have a clean signal for "model is
-		// streaming tokens vs model is waiting on a tool".
-		next = msg.SessionToolRunning
+		// A turn opens with the model generating, not with a tool
+		// running: no tool has been called yet and none may ever be.
+		// This used to answer tool_running for the whole turn, which
+		// made the two states indistinguishable in practice and left
+		// model_generating emitted zero times across the live table.
+		next = msg.SessionModelGenerating
 		reason = "turn_started"
 
 	case msg.EventToolCall:
@@ -266,10 +301,50 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 		if ev.ToolResult != nil && ev.ToolResult.ToolID != "" {
 			delete(d.activeTools, ev.ToolResult.ToolID)
 		}
-		// No transition purely on tool_result. The terminating
-		// EventResult / EventError decides whether the turn ends or
-		// another tool keeps running. While intermediate tool results
-		// land we stay in whatever state we were in.
+		// The turn does not end here — the model reads the result and
+		// keeps generating — so drop back to model_generating once the
+		// LAST in-flight tool reports. While other tools are still out
+		// the session stays tool_running, which is why this is gated on
+		// activeTools draining rather than firing on every result.
+		//
+		// An open permission prompt outranks both (see the override rule
+		// on awaitingApproval): resolving it is what releases the tool,
+		// so answering model_generating here would erase a prompt the
+		// user still has on screen.
+		if len(d.activeTools) == 0 && !d.awaitingApproval && prev == msg.SessionToolRunning {
+			next = msg.SessionModelGenerating
+			reason = "tools_drained"
+		}
+
+	case msg.EventSystem:
+		// Compaction. Claude Code emits `compact_ack` when it accepts a
+		// manual /compact and `compact_boundary` when any compaction —
+		// manual OR automatic — finishes. Only the ack opens the state;
+		// an automatic compaction is invisible until its boundary lands,
+		// so the boundary must tolerate never having seen an ack and
+		// simply not transition in that case.
+		//
+		// preCompactState restores whatever the turn was doing rather
+		// than assuming idle: a compaction runs mid-turn and the model
+		// carries on generating afterwards.
+		if ev.System != nil {
+			switch ev.System.Subtype {
+			case "compact_ack":
+				if prev != msg.SessionCompacting {
+					d.preCompactState = prev
+				}
+				next = msg.SessionCompacting
+				reason = "compact_requested"
+			case "compact_boundary":
+				if prev == msg.SessionCompacting {
+					next = d.preCompactState
+					if next == "" || next == msg.SessionCompacting {
+						next = msg.SessionModelGenerating
+					}
+					reason = "compact_complete"
+				}
+			}
+		}
 
 	case msg.EventHook:
 		// Authoritative path for permission prompts. permission-store
@@ -294,7 +369,12 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 						d.awaitingApproval = false
 						next = d.preApprovalState
 						if next == "" || next == msg.SessionAwaitingPermission {
-							next = msg.SessionToolRunning
+							// The model is what resumes when a prompt resolves — an
+							// allowed tool announces itself with its own tool_call,
+							// and a denied one hands the model a refusal to read.
+							// Falling back to tool_running claimed a tool was in
+							// flight on the very path where none is.
+							next = msg.SessionModelGenerating
 						}
 						reason = "hook_resolved"
 					}
@@ -321,7 +401,12 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 					d.awaitingApproval = false
 					next = d.preApprovalState
 					if next == "" || next == msg.SessionAwaitingPermission {
-						next = msg.SessionToolRunning
+						// The model is what resumes when a prompt resolves — an
+						// allowed tool announces itself with its own tool_call,
+						// and a denied one hands the model a refusal to read.
+						// Falling back to tool_running claimed a tool was in
+						// flight on the very path where none is.
+						next = msg.SessionModelGenerating
 					}
 					reason = "approval_" + ev.Approval.Status
 				}
