@@ -400,9 +400,11 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 	m.processes[sess.SessionID] = proc
 	m.mu.Unlock()
 
-	// Update session with PID
+	// Update session with PID. `starting` — the subprocess exists and has not
+	// emitted its first event yet, which is exactly what the enum says that
+	// moment is. The derivation moves it on from here.
 	m.store.UpdateSessionPID(sess.SessionID, proc.PID())
-	m.store.UpdateSessionState(sess.SessionID, string(msg.SessionRunning))
+	m.store.UpdateSessionState(sess.SessionID, string(msg.SessionStarting))
 
 	// Start event reader goroutine
 	go m.readEvents(proc)
@@ -1325,7 +1327,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	m.mu.Unlock()
 
 	m.store.UpdateSessionPID(sess.SessionID, proc.PID())
-	m.store.UpdateSessionState(sess.SessionID, string(msg.SessionRunning))
+	m.store.UpdateSessionState(sess.SessionID, string(msg.SessionStarting))
 
 	if sess.Mode == msg.SessionModePTY {
 		// PTY processes have no event channel to drain; readEvents would
