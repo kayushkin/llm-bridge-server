@@ -46,20 +46,18 @@ func workingDirForSession(sess *store.Session, inst *msg.Instance) (dir, owner s
 	return "", ""
 }
 
-// ptyRolloutCwd returns the directory the OTel sidecar should tail a PTY
-// session's rollout file under.
+// ptyChildWorkingDir returns the directory a PTY child will actually run in:
+// the session's resolved working directory, or bridge-server's own when
+// nothing is configured and the child therefore inherits it.
 //
-// It must answer with the directory the PTY child is actually given, which is
-// the session's resolved working directory whenever there is one. Only when
-// nothing is configured does the child inherit bridge-server's own directory,
-// and only then does the sidecar have to go and ask what that is.
-//
-// The two are one fact reached by two routes, and they used to disagree: the
-// child's directory came from the instance (or, before this was fixed, from
-// nowhere at all) while the sidecar always got os.Getwd(). A sidecar pointed
-// at a directory the child is not writing in tails a rollout file that never
-// appears, and the session simply produces no telemetry.
-func ptyRolloutCwd(workingDir string) string {
+// Its one job is to let the manager tell the telemetry sidecar the same
+// directory it gives the child. What the sidecar DOES with that directory is
+// the harness's business — this layer only has to make sure the two are told
+// the same thing, because they used to disagree: the child's directory came
+// from the instance (or, before that was fixed, from nowhere at all) while the
+// sidecar always got os.Getwd(), and a sidecar looking in a directory the
+// child is not writing in produces no telemetry at all.
+func ptyChildWorkingDir(workingDir string) string {
 	if workingDir != "" {
 		return workingDir
 	}

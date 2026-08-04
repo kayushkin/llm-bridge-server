@@ -175,8 +175,8 @@ type Process struct {
 // bridge-server's own. It is the wrapper that moves, not just the agent it
 // forks, because that is what the ssh transport's "cd <dir> && <bin>" and the
 // runner's WorkingDir have always meant — and because the wrapper resolves
-// paths of its own against its current directory (llm-bridge-claudecode reads
-// its rollout file out of ~/.claude/projects/<encoded cwd>/).
+// paths of its own against its current directory, and a harness that keeps
+// per-directory state finds none of it from somewhere else.
 func StartProcess(ctx context.Context, binPath string, sess *store.Session, credentialID, workingDir string) (*Process, error) {
 	cmd := exec.Command(binPath)
 	cmd.Dir = workingDir
@@ -411,10 +411,10 @@ type PTYProcess struct {
 //
 // workingDir is the directory the child runs in; empty inherits
 // bridge-server's own. The caller must pass the same directory it gave the
-// OTel sidecar as LLMBRIDGE_PTY_CWD: the sidecar tails the rollout file under
-// ~/.claude/projects/<encoded cwd>/, so a child and a sidecar that disagree
-// about the working directory leave the session's telemetry being read out of
-// a directory nothing is writing to.
+// OTel sidecar as LLMBRIDGE_PTY_CWD. A child and a sidecar that disagree about
+// the working directory leave the session's telemetry being read out of a
+// directory nothing is writing to — the harness resolves the rest, but it can
+// only do so from a directory that matches the child's.
 //
 // On TransportLocal only — SSH/runner paths reject pty mode upstream.
 func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, credentialID string, extraEnv []string, workingDir string) (*PTYProcess, error) {

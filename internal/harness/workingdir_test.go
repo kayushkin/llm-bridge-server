@@ -197,15 +197,15 @@ func TestVerifyLocalWorkingDirRefusesWhatCannotBeEntered(t *testing.T) {
 // child's directory, so the two must not be resolved independently.
 func TestThePTYSidecarIsToldTheSameDirectoryTheChildGets(t *testing.T) {
 	t.Run("a configured working directory is handed straight to the sidecar", func(t *testing.T) {
-		if got := ptyRolloutCwd("/srv/project"); got != "/srv/project" {
-			t.Errorf("ptyRolloutCwd = %q, want the child's own working directory %q", got, "/srv/project")
+		if got := ptyChildWorkingDir("/srv/project"); got != "/srv/project" {
+			t.Errorf("ptyChildWorkingDir = %q, want the child's own working directory %q", got, "/srv/project")
 		}
 	})
 
 	t.Run("with nothing configured the sidecar follows the inherited directory", func(t *testing.T) {
 		want := mustGetwd(t)
-		if got := ptyRolloutCwd(""); got != want {
-			t.Errorf("ptyRolloutCwd = %q, want bridge-server's own directory %q", got, want)
+		if got := ptyChildWorkingDir(""); got != want {
+			t.Errorf("ptyChildWorkingDir = %q, want bridge-server's own directory %q", got, want)
 		}
 	})
 }

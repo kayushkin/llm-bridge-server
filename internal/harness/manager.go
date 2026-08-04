@@ -1269,10 +1269,11 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 			if m.localBridgeURL == "" {
 				log.Printf("[sidecar] localBridgeURL not configured; PTY session %s starts without OTel", sess.SessionID)
 			} else {
-				// The sidecar tails the rollout file under
-				// ~/.claude/projects/<encoded cwd>/, so this has to be the
-				// directory the child actually gets — see ptyRolloutCwd.
-				ptyCwd := ptyRolloutCwd(workingDir)
+				// Tell the sidecar the same directory the child gets.
+				// How the harness uses it to find the session's telemetry is
+				// the harness's own business; the contract this layer owes is
+				// only that the two agree.
+				ptyCwd := ptyChildWorkingDir(workingDir)
 				sc, env, err := startOTelSidecar(binPath, sess.SessionID, m.localBridgeURL, ptyCwd, sess.HarnessSessionID)
 				if err != nil {
 					log.Printf("[sidecar] start failed for %s (continuing without OTel): %v", sess.SessionID, err)

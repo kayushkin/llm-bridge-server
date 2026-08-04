@@ -98,7 +98,7 @@ func TestARunnerSpawnCarriesTheSessionWorkingDirectory(t *testing.T) {
 }
 
 // TestThePTYSidecarIsToldTheSessionWorkingDirectory closes the gap between
-// ptyRolloutCwd being correct and being called with the right argument. The
+// ptyChildWorkingDir being correct and being called with the right argument. The
 // sidecar tails the rollout file under the directory it is given, so a sidecar
 // told bridge-server's own directory while the child runs elsewhere produces a
 // session with no telemetry at all and nothing logged to say so.
