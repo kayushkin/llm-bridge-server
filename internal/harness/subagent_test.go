@@ -53,8 +53,20 @@ func taskStarted(bridgeID, toolUseID, taskID, description string) msg.Event {
 	})
 	return msg.Event{
 		Type: msg.EventSystem, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, Raw: raw,
-		System: &msg.SystemEvent{Subtype: "task_started", ToolUseID: toolUseID, TaskID: taskID, Description: description},
+		System: &msg.SystemEvent{
+			Subtype: "task_started", ToolUseID: toolUseID, TaskID: taskID, Description: description,
+			TaskType: msg.TaskTypeLocalAgent, SubagentType: "Explore",
+		},
 	}
+}
+
+// taskStartedOfType builds the same narration for a task kind that is not an
+// agent — a backgrounded shell command, say.
+func taskStartedOfType(bridgeID, toolUseID, taskID, description, taskType string) msg.Event {
+	ev := taskStarted(bridgeID, toolUseID, taskID, description)
+	ev.System.TaskType = taskType
+	ev.System.SubagentType = ""
+	return ev
 }
 
 // taskUpdated models what llm-bridge-claudecode emits for a task_updated
@@ -373,6 +385,75 @@ func TestManager_SubagentIgnoresRawStatusAndUnknownStatuses(t *testing.T) {
 			// distinguishable from the idle a real completion produces.
 			if got := findSubagent(t, m, parentID).State; got != string(msg.SessionError) {
 				t.Fatalf("subagent state = %q, want %q: settle() accepted a status it should have refused", got, msg.SessionError)
+			}
+		})
+	}
+}
+
+// TestManager_OnlyAgentTasksBecomeSessions is the regression for a defect that
+// reached production: Claude Code backgrounds a shell command through the same
+// task_started / task_notification frames it uses for a subagent, so promoting
+// every task minted a linked "subagent" session for `sleep 2` — really observed,
+// as agent-bhrfxpye5, display name "Trigger on-demand discovery and watch for
+// links".
+//
+// An unrecognized kind must also decline. Promoting one invents a session and
+// links it into the management tree; declining only omits a session that the
+// harness's own on-disk record can still supply.
+func TestManager_OnlyAgentTasksBecomeSessions(t *testing.T) {
+	cases := []struct {
+		taskType string
+		promote  bool
+	}{
+		{msg.TaskTypeLocalAgent, true},
+		{msg.TaskTypeLocalWorkflow, true},
+		{msg.TaskTypeRemoteAgent, true},
+		{msg.TaskTypeLocalBash, false},
+		{"a_kind_this_build_has_never_seen", false},
+		{"", false},
+	}
+
+	for _, tc := range cases {
+		name := tc.taskType
+		if name == "" {
+			name = "empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := newTestManager(t)
+			parentID := "br-parent-" + name
+			const toolUseID = "toolu_kind"
+			const taskID = "task_kind"
+			seedParent(t, m, parentID)
+
+			proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
+			go m.readEvents(proc)
+
+			proc.ch <- taskStartedOfType(parentID, toolUseID, taskID, "probe", tc.taskType)
+			proc.ch <- msg.Event{Type: msg.EventBlock, BridgeSessionID: parentID, Harness: msg.HarnessClaudeCode, HarnessParentID: toolUseID,
+				Block: &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "work"}}}}
+			proc.ch <- taskUpdated(parentID, taskID, msg.TaskStatusCompleted)
+			close(proc.ch)
+			waitForProcessTeardown(t, m, parentID)
+
+			sessions, err := m.store.ListSessions()
+			if err != nil {
+				t.Fatalf("list sessions: %v", err)
+			}
+			var promoted int
+			for _, s := range sessions {
+				if s.ManagerSessionID == parentID {
+					promoted++
+				}
+			}
+			if tc.promote && promoted != 1 {
+				t.Fatalf("task_type %q produced %d sessions, want 1", tc.taskType, promoted)
+			}
+			if !tc.promote {
+				if promoted != 0 {
+					t.Fatalf("task_type %q produced %d sessions; only an agent gets one", tc.taskType, promoted)
+				}
+				// Its frames must still reach the parent rather than vanish.
+				assertHasBlockText(t, m, parentID, "work")
 			}
 		})
 	}

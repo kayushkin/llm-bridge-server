@@ -75,6 +75,22 @@ func (r *subagentRouter) observe(ev *msg.Event) {
 		if ev.System.ToolUseID == "" || ev.System.TaskID == "" {
 			return
 		}
+		// Only an agent gets a session. Claude Code backgrounds a shell command
+		// through these same frames, so tracking every task promoted `sleep 2`
+		// to a linked subagent session — 'agent-bhrfxpye5', display name
+		// "Trigger on-demand discovery and watch for links", observed live.
+		//
+		// An unrecognized kind is logged rather than passed over quietly: it is
+		// either a task kind we should be promoting and are not, or one we
+		// should keep ignoring, and only the log makes that visible.
+		if !msg.TaskTypeIsAgent(ev.System.TaskType) {
+			if ev.System.TaskType != msg.TaskTypeLocalBash && !r.warned[ev.System.TaskType] {
+				r.warned[ev.System.TaskType] = true
+				log.Printf("[subagent] %s: not promoting task_type=%q to a session (task=%s, %q); if that is an agent kind, add it to msg.TaskTypeIsAgent",
+					r.parentID, ev.System.TaskType, ev.System.TaskID, ev.System.Description)
+			}
+			return
+		}
 		if _, ok := r.byToolUse[ev.System.ToolUseID]; ok {
 			return
 		}
