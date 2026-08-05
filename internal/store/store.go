@@ -1607,7 +1607,7 @@ func (s *Store) EnsureSubagentSession(parent *Session, harnessSessionID, display
 		ManagerSessionID: parent.SessionID,
 		RootSessionID:    root,
 		Depth:            parent.Depth + 1,
-		ControlledBy:     "harness",
+		ControlledBy:     msg.ControlledByHarness,
 		Purpose:          "subagent",
 		Type:             msg.SessionTypeSystem,
 		Origin:           "llm-bridge-" + strings.ReplaceAll(string(parent.Harness), "_", ""),

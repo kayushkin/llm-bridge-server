@@ -645,6 +645,25 @@ func reapDecision(now time.Time, mode msg.SessionMode, state msg.SessionState, l
 // text is re-sent once the harness is ready so the turn actually completes
 // instead of sitting idle waiting for new input.
 func (s *Server) autoResume(sess store.Session) {
+	// A session the bridge does not control must never be started by the
+	// bridge. A harness subagent has no process of its own to reconcile — it
+	// lives inside its parent's — so "running but no process" is its NORMAL
+	// state between the parent's frames, not a fault to repair.
+	//
+	// Resuming one is not a no-op, it is destructive: observed in production,
+	// the watchdog resumed a promoted subagent, the adapter refused to
+	// `--resume agent-<task_id>` because that is not a Claude Code UUID and
+	// started a FRESH agent instead, that agent replayed the turn and began
+	// running tools unsupervised, and the new session's UUID overwrote the
+	// row's harness_session_id — destroying the dedupe key discovery uses to
+	// converge on the same row.
+	//
+	// TEAM-ORCHESTRATION §21.6 called this out: controlled_by was written by
+	// the promotion path and read by nothing, and became load-bearing the
+	// moment something tried to resume a subagent. This is that gate.
+	if sess.ControlledBy == msg.ControlledByHarness {
+		return
+	}
 	if sess.InstanceID == "" {
 		// Every code path that creates a session populates instance_id (see
 		// handleCreateSession; resolveInstance fails the request otherwise).

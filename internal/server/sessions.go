@@ -426,6 +426,15 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sending to a harness subagent would spawn a fresh agent rather than
+	// reach the one that ran, for the same reason resume does — see the gate
+	// in handleResumeSession. The parent is the addressable session.
+	if sess.ControlledBy == msg.ControlledByHarness {
+		writeJSONError(w, http.StatusConflict, "not_bridge_controlled",
+			"this session is controlled by its parent harness process and cannot be messaged directly; message the session that spawned it")
+		return
+	}
+
 	var req SendMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -686,6 +695,19 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 	// docs/findings/2026-07-27-interrupt-dual-emit-turn-hijack.md §2/§5.
 	if s.harness.Get(bridgeID) != nil {
 		http.Error(w, "session already running", http.StatusConflict)
+		return
+	}
+
+	// A harness subagent has no process of its own to resume — it ran inside
+	// its parent. Starting one does not continue it: bridge-server cannot
+	// resume what it did not spawn, so the harness starts a FRESH agent that
+	// replays the turn and runs tools unsupervised, and the new session id
+	// overwrites the row's harness_session_id, destroying the dedupe key
+	// discovery converges on. Observed in production via the watchdog, which is
+	// gated in autoResume for the same reason.
+	if sess.ControlledBy == msg.ControlledByHarness {
+		writeJSONError(w, http.StatusConflict, "not_bridge_controlled",
+			"this session is controlled by its parent harness process and cannot be resumed directly; resume the session that spawned it")
 		return
 	}
 

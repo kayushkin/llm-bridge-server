@@ -458,3 +458,46 @@ func TestManager_OnlyAgentTasksBecomeSessions(t *testing.T) {
 		})
 	}
 }
+
+// TestSubagentIsMarkedNotBridgeControlled pins the marking the resume gate reads.
+//
+// A promoted subagent has no process of its own — it ran inside its parent — so
+// "running with no process" is its normal state, not a fault. The watchdog read
+// it as a fault and resumed it, and because bridge-server cannot resume what it
+// did not spawn, the harness refused `--resume agent-<task_id>` (not a Claude
+// Code UUID) and started a FRESH agent, which replayed the turn, ran tools
+// unsupervised, and overwrote the row's harness_session_id with its own new
+// UUID — destroying the dedupe key discovery uses to converge on that row.
+//
+// TEAM-ORCHESTRATION §21.6 predicted exactly this: controlled_by was written
+// and read by nothing, "load-bearing the moment one does". The gate lives in
+// server.autoResume / handleResumeSession / handleSendMessage; this test pins
+// the marking those gates depend on, and that the dedupe key survives.
+func TestSubagentIsMarkedNotBridgeControlled(t *testing.T) {
+	m := newTestManager(t)
+	const parentID = "br-parent-controlled"
+	const toolUseID = "toolu_controlled"
+	const taskID = "a565f4c108cbf251c"
+	seedParent(t, m, parentID)
+
+	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
+	go m.readEvents(proc)
+
+	proc.ch <- taskStarted(parentID, toolUseID, taskID, "probe")
+	proc.ch <- msg.Event{Type: msg.EventBlock, BridgeSessionID: parentID, Harness: msg.HarnessClaudeCode, HarnessParentID: toolUseID,
+		Block: &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "work"}}}}
+	proc.ch <- taskUpdated(parentID, taskID, msg.TaskStatusCompleted)
+	close(proc.ch)
+	waitForProcessTeardown(t, m, parentID)
+
+	sub := findSubagent(t, m, parentID)
+	if sub.ControlledBy != msg.ControlledByHarness {
+		t.Fatalf("controlled_by = %q, want %q — every resume/message/kill path gates on this, and without it the watchdog starts a rogue agent",
+			sub.ControlledBy, msg.ControlledByHarness)
+	}
+	// The dedupe key is what a resume destroyed. It must be the rollout name.
+	if want := "agent-" + taskID; sub.HarnessSessionID != want {
+		t.Fatalf("harness_session_id = %q, want %q — discovery converges on this key, and a resume overwrites it with a fresh Claude UUID",
+			sub.HarnessSessionID, want)
+	}
+}
