@@ -85,6 +85,11 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		responseCache: respCache,
 		cfg:           cfg,
 	}
+	// The manager promotes harness subagents to sessions below the HTTP layer,
+	// so it needs the same purpose→folder mapping the HTTP layer files
+	// sessions with. Wired here because folderForPurpose reads both the config
+	// defaults and the source_folders overrides the manager has no access to.
+	srv.harness.SetFolderResolver(srv.folderForPurpose)
 	srv.routes()
 	srv.syncHarnessTypes()
 	srv.syncSourceFolderRegistry()

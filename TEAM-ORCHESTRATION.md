@@ -51,12 +51,20 @@ not the live one, except as listed here.
 - **`kanban-scoper` emits `capability:` / `role:` tags** — behind `--role-tags`, **default OFF**
   (`scheduler` `main`). The only §9 step-1 progress; board-per-team was never started.
 
-**Still inert:** `Event.harness_parent_id` exists but the CC adapter does **not** read
-`parent_tool_use_id`, so it is always empty (§21.4 has the fix).
+- **The CC adapter demux + subagent promotion (§21.4) — landed.** `llm-bridge-claudecode` reads
+  `parent_tool_use_id` and carries it as `Event.harness_parent_id`; bridge-server's `readEvents` routes
+  each frame to the session it belongs to and promotes a subagent to its own row on first sight, linked
+  through `manager_session_id`. Covered by unit tests on both sides **and** by
+  `scripts/e2e-subagent.sh`, which drives a real `claude` Task spawn — a unit test can only prove the
+  demux handles frames we hand it, not that CC still emits the field it keys on.
 
-**Not landed:** everything else — §4–§20 broadly: the CC adapter demux, subagent promotion (§12 /
-§21.4), the coordination engine, verification/hooks (§20), and the `session_id` → `bridge_session_id`
-rename (see §21.5 — it is wire-breaking).
+**Still inert:** `controlled_by` is now *written* (`harness` on every promoted subagent) but still read
+by **nothing**. The §21.6 gate — "all resume / message / kill callers gate on `controlled_by==bridge`"
+— is not implemented. Nothing currently resumes or kills a subagent session, so no caller is relying on
+a gate that isn't there; it becomes load-bearing the moment one does.
+
+**Not landed:** everything else — §4–§20 broadly: the coordination engine, verification/hooks (§20),
+and the `session_id` → `bridge_session_id` rename (see §21.5 — it is wire-breaking).
 
 **Open bug:** the "MCP resume id error" (§21.6) is **live** and still accruing bad rows.
 
@@ -1119,20 +1127,34 @@ managed child.
 
 ### 21.4 Promoting harness subagents to sessions (the adapter's job)
 
-The harness adapter **mints a `bridge_session_id` per subagent and links it** (`manager_session_id` =
-parent) *before events reach bridge-server* — so a harness subagent arrives as a real session (§12),
-not a span. Verified gap in `llm-bridge-claudecode` today (your suspicion was right): a live CC Task
-subagent's events are stamped with the **parent's** `bridge_session_id` (one CC process = one bridge
-session), and the field that distinguishes them is dropped — `ccStreamEvent` (`translate.go:15`) parses
-only `type/subtype/session_id/message/result`, so CC's **`parent_tool_use_id`** is never read. So today
-subagents collapse onto the parent.
+A harness subagent must arrive as a real session (§12), not a span: the adapter surfaces the
+discriminator and bridge-server mints the `bridge_session_id` and links it (`manager_session_id` =
+parent). **Landed** — see the status block at the top.
 
-**Demux key — VERIFIED (CC 2.1.177, live `--output-format stream-json` capture):** subagent events
-*are* emitted inline on the parent's stdout (`user`/`assistant`/tool-result frames), they **all share
-the parent's `session_id`** (so `session_id` is *not* a discriminator), and each subagent frame carries
-a top-level **`parent_tool_use_id` = the `tool_use_id` of the `Task`/`Agent` call that spawned it** —
-the same id the `task_started`/`task_progress` narration carries. The parent's own frames have
-`parent_tool_use_id: null`. **→ `parent_tool_use_id` is the demux key.**
+**Demux key — `parent_tool_use_id`.** Subagent frames are emitted inline on the parent's stdout and
+**all share the parent's `session_id`**, so `session_id` is *not* a discriminator. Each subagent frame
+carries a top-level **`parent_tool_use_id` = the `tool_use_id` of the `Task`/`Agent` call that spawned
+it** — the same id the `task_started` narration carries. The parent's own frames have
+`parent_tool_use_id: null`.
+
+**How much arrives depends on the flags, and an earlier draft of this section got that wrong.** The
+original capture behind it used plain `-p` with a text prompt, which inlines the subagent's `user` AND
+`assistant` turns. **The bridge does not run claude that way.** Under its actual flags —
+`-p --input-format stream-json --output-format stream-json --verbose` (`process.go:93`) — a live
+capture shows exactly **one** subagent frame reaches the parent's stream: a `type:"user"` frame
+carrying the subagent's prompt. The subagent's assistant turns are **not** inlined in this mode; they
+reach only its own `subagents/agent-<task_id>.jsonl` rollout.
+
+That has two consequences worth keeping straight:
+
+- The adapter's blanket `case "user": return nil` (dismissed as "echo of user messages") was throwing
+  away the *only* live subagent frame. The demux upstream can be perfectly correct and still never
+  fire. Unit tests fed hand-built `assistant` frames and passed throughout; `scripts/e2e-subagent.sh`
+  is what caught it. **A capture taken under different flags is not evidence about this code path.**
+- A live-promoted subagent session holds its **prompt**, not its transcript. The transcript arrives
+  when the rollout scanner reaches the subagent's file — and converges onto the same row, because the
+  live path writes `harness_session_id = "agent-<task_id>"`, the exact key discovery derives from the
+  rollout filename. Live demux owns *lineage*; discovery owns *content*.
 
 The fix, in the adapter:
 1. Add `parent_tool_use_id` to `ccStreamEvent` (`translate.go:15`); surface it on canonical `msg.Event`
@@ -1151,6 +1173,26 @@ The fix, in the adapter:
 The parent's `task_started`/`task_progress` stay on the *parent* (it narrates "I spawned a task"); the
 subagent's own work goes to the subagent's session. Net: the §14 tree is uniform sessions — no special
 span path.
+
+**As built** (`llm-bridge-claudecode/translate.go`, `internal/harness/subagent.go`,
+`internal/store/store.go`), with three departures from the sketch above worth recording:
+
+- **bridge-server mints the id, not the adapter.** Step 2 said the adapter mints. It does not: id
+  minting stays where every other `br_*` is minted, and the adapter only surfaces `harness_parent_id`.
+  `subagentRouter` (one per harness process, driven by that process's `readEvents` goroutine, so it
+  needs no locks) resolves it to a session and `EnsureSubagentSession` creates the row.
+- **The dedupe key is load-bearing.** The row is written with
+  `harness_session_id = "agent-<task_id>"` — exactly what the rollout scanner derives from
+  `subagents/agent-<task_id>.jsonl`. Without that the two paths mint two rows per subagent. Pinned by
+  `TestEnsureSubagentSessionConvergesWithDiscovery`. This does mean §21.6's non-resumable-id hazard now
+  arrives via the live path too; `controlled_by=harness` is the marking that contains it, and the §21.6
+  cleanup (move dedup off `harness_session_id`) is still the durable fix.
+- **Subagents need explicit settling.** A subagent emits no `result` event, so nothing in the normal
+  derivation path ever moves it off `running`. `task_updated`'s `patch.status` settles it; a process
+  that exits with a task still open settles the leftovers to `error`. Getting there also required
+  surfacing `task_id` on `task_updated`/`task_notification`, which had been falling through to the
+  catch-all system branch that sets only `Subtype` — the frames announcing a subagent had finished did
+  not say *which*.
 
 ### 21.5 Migration
 

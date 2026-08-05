@@ -62,6 +62,29 @@ type Manager struct {
 	publicServerURL string          // public bridge URL runners use for /api/runner/binary fetches
 	localBridgeURL  string          // localhost URL the per-session OTel sidecar POSTs translated events to; derived from ListenAddr at startup
 	ptyRingBytes    int             // configured ring buffer size for pty late-attach replay
+
+	// folderResolver maps a session purpose to its sidebar folder, using the
+	// same env-defaults-plus-DB-overrides mapping the HTTP layer uses. Owned by
+	// the server (the manager has no config of its own) and installed at
+	// startup; nil leaves promoted sessions unfiled rather than guessing a
+	// folder name the user never configured.
+	folderResolver func(purpose string) string
+}
+
+// SetFolderResolver installs the purpose→sidebar-folder mapping. The manager
+// needs it to file sessions it promotes out of a harness process (subagents),
+// which are created below the HTTP layer that normally owns folder placement.
+func (m *Manager) SetFolderResolver(resolve func(purpose string) string) {
+	m.folderResolver = resolve
+}
+
+// folderForPurpose resolves the sidebar folder for a session purpose, or "" if
+// no resolver is installed or the purpose is unmapped.
+func (m *Manager) folderForPurpose(purpose string) string {
+	if m.folderResolver == nil {
+		return ""
+	}
+	return m.folderResolver(purpose)
 }
 
 // NewManager creates a harness manager.
@@ -521,6 +544,7 @@ func (m *Manager) ListActiveSessions() []string {
 func (m *Manager) readEvents(proc HarnessProcess) {
 	bridgeID := proc.SessionID()
 	harnessIDSet := false
+	subagents := newSubagentRouter(m, bridgeID)
 
 	// The session's log-store write queue lives exactly as long as this
 	// pump. Closed in the exit path below, which drains it, so a session
@@ -547,6 +571,14 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 			continue
 		}
 
+		// A harness may run subagents inside the parent's process and emit their
+		// frames on the same stream. routeID is the session the event actually
+		// belongs to — the parent for its own frames, a promoted subagent
+		// session for a subagent's. It equals bridgeID for every harness that
+		// doesn't do this, which is the whole existing fleet.
+		subagents.observe(&event)
+		routeID := subagents.route(&event)
+
 		// Per the event contract, HarnessSessionID is the harness-native id and
 		// must never equal BridgeSessionID. If it does, the harness bridge is
 		// emitting bridge_id in the harness slot — surface loudly and discard
@@ -558,8 +590,12 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 		}
 
 		// On first event with a harness_session_id, persist it on the session row.
-		// bridge_session_id stays stable across the conversation.
-		if !harnessIDSet && harnessID != "" {
+		// bridge_session_id stays stable across the conversation. Only the
+		// parent's own frames carry the process's harness id — a subagent frame
+		// carries it too (CC stamps every frame with the parent's session_id),
+		// but writing it onto the subagent's row would overwrite the row's own
+		// dedupe key with the parent's UUID and collide the two sessions.
+		if routeID == bridgeID && !harnessIDSet && harnessID != "" {
 			if err := m.store.SetHarnessSessionID(bridgeID, harnessID); err != nil {
 				log.Printf("[harness] failed to set harness_session_id on %s: %v", bridgeID, err)
 			} else {
@@ -588,17 +624,19 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 			}
 		}
 
-		// Force bridge_session_id to the canonical value. Bridges should
-		// already be setting it correctly; defend against drift.
-		event.BridgeSessionID = bridgeID
+		// Force bridge_session_id to the routed value. Bridges should already be
+		// setting it correctly for their own frames; defend against drift.
+		event.BridgeSessionID = routeID
 
-		// Assign canonical bridge MessageID and capture harness id.
-		m.AssignMessageID(bridgeID, &event)
+		// Assign canonical bridge MessageID and capture harness id. Message
+		// numbering is per-session, so a subagent's messages number within its
+		// own session rather than punching holes in the parent's sequence.
+		m.AssignMessageID(routeID, &event)
 
 		// Persist event keyed by bridge_id (stable PK) and capture row ID.
 		var rowID int64
 		if data, err := json.Marshal(event); err == nil {
-			rowID, err = m.store.StoreEventReturningID(bridgeID, string(event.Type), event.MessageID, event.HarnessMessageID, data)
+			rowID, err = m.store.StoreEventReturningID(routeID, string(event.Type), event.MessageID, event.HarnessMessageID, data)
 			if err != nil {
 				log.Printf("[harness] failed to store event: %v", err)
 			}
@@ -621,7 +659,7 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 		switch event.Type {
 		case msg.EventSessionInfo:
 			if event.Info != nil {
-				if err := m.store.SetSessionInfo(bridgeID, event.Info); err != nil {
+				if err := m.store.SetSessionInfo(routeID, event.Info); err != nil {
 					log.Printf("[harness] failed to persist session info: %v", err)
 				}
 			}
@@ -629,7 +667,7 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 			// Track awaiting_resolution → completed transitions so a freshly
 			// connected client can recover the pending set without a full
 			// event-stream replay (see /sessions/:id/hooks/pending).
-			m.pending.record(bridgeID, &event)
+			m.pending.record(routeID, &event)
 		}
 
 		// Fan out to SSE subscribers. Sends are parallel so one slow client
@@ -638,8 +676,8 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 		// reconnects with Last-Event-ID, and the store replays missed events.
 		stored := StoredEvent{Event: event, RowID: rowID}
 		m.mu.RLock()
-		subs := make([]chan StoredEvent, len(m.subscribers[bridgeID]))
-		copy(subs, m.subscribers[bridgeID])
+		subs := make([]chan StoredEvent, len(m.subscribers[routeID]))
+		copy(subs, m.subscribers[routeID])
 		m.mu.RUnlock()
 
 		if len(subs) > 0 {
@@ -666,7 +704,7 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 
 			if len(evicted) > 0 {
 				m.mu.Lock()
-				remaining := m.subscribers[bridgeID]
+				remaining := m.subscribers[routeID]
 				for _, dead := range evicted {
 					for i, s := range remaining {
 						if s == dead {
@@ -676,38 +714,48 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 						}
 					}
 				}
-				m.subscribers[bridgeID] = remaining
+				m.subscribers[routeID] = remaining
 				m.mu.Unlock()
-				log.Printf("[harness] evicted %d slow SSE subscribers on session %s", len(evicted), bridgeID)
+				log.Printf("[harness] evicted %d slow SSE subscribers on session %s", len(evicted), routeID)
 			}
 		}
 
 		// Convenience-event derivation runs AFTER the raw event has
 		// been fanned out so subscribers see cause before effect on
 		// Last-Event-ID replay. See msg/CONVENIENCE-EVENTS.md.
-		m.deriveAndBroadcast(bridgeID, &event)
+		m.deriveAndBroadcast(routeID, &event)
 	}
 
 	// Process exited — drain everything still queued for log-store before
 	// tearing the session down, so the durable history is complete.
 	m.logStoreWrites.Close(bridgeID)
 
-	// Close all subscriber channels
+	// Close all subscriber channels. Subagent sessions live and die with the
+	// process that hosts them, so they are torn down here too: their
+	// per-session maps would otherwise leak for the lifetime of the server,
+	// and any subagent still marked running (the process died before its task
+	// reported a terminal status) would sit at "running" forever.
 	m.mu.Lock()
-	for _, ch := range m.subscribers[bridgeID] {
-		close(ch)
+	for _, id := range append(subagents.sessionIDs(), bridgeID) {
+		for _, ch := range m.subscribers[id] {
+			close(ch)
+		}
+		delete(m.subscribers, id)
+		delete(m.processes, id)
+		delete(m.msgState, id)
+		delete(m.derivation, id)
 	}
-	delete(m.subscribers, bridgeID)
-	delete(m.processes, bridgeID)
-	delete(m.msgState, bridgeID)
-	delete(m.derivation, bridgeID)
-	// budgetHalted is per-process announcement bookkeeping, not the
-	// verdict: the verdict is the persisted spend against the persisted
-	// ceiling, which SessionOverBudget reads. Dropping it here means a
-	// session that comes back and breaches again says so again.
+	// The loop above already cleared the per-session maps for bridgeID and
+	// every subagent it hosted. budgetHalted is not one of them: it is
+	// per-process announcement bookkeeping, not the verdict — the verdict is
+	// the persisted spend against the persisted ceiling, which
+	// SessionOverBudget reads. Dropping it here means a session that comes
+	// back and breaches again says so again. Only the parent can hold one; a
+	// subagent has no ceiling of its own.
 	delete(m.budgetHalted, bridgeID)
 	m.mu.Unlock()
 	m.pending.drop(bridgeID)
+	subagents.settleUnfinished()
 
 	m.store.UpdateSessionPID(bridgeID, 0)
 }
