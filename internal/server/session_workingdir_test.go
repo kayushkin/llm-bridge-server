@@ -16,6 +16,9 @@ func TestCreateSession_StoresTheWorkingDirectory(t *testing.T) {
 	resp := doJSON(t, srv, "POST", "/sessions", msg.CreateSessionRequest{
 		Harness:    "claude_code",
 		InstanceID: instID,
+		Type:       msg.SessionTypeInteractive,
+		Purpose:    msg.PurposeChat,
+		Origin:     "test",
 		WorkingDir: "/srv/project",
 	})
 	if resp.StatusCode != 201 {
@@ -46,6 +49,9 @@ func TestCreateSession_NoWorkingDirectoryInheritsTheInstance(t *testing.T) {
 	resp := doJSON(t, srv, "POST", "/sessions", msg.CreateSessionRequest{
 		Harness:    "claude_code",
 		InstanceID: instID,
+		Type:       msg.SessionTypeInteractive,
+		Purpose:    msg.PurposeChat,
+		Origin:     "test",
 	})
 	sess := decodeJSON[msg.ManagedSession](t, resp)
 	stored, err := st.GetSession(sess.SessionID)

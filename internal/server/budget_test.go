@@ -18,6 +18,9 @@ func TestCreateSession_StoresTheSpendCeiling(t *testing.T) {
 	srv, st, instID := testServerWithInstance(t, "claude_code")
 
 	resp := doJSON(t, srv, "POST", "/sessions", msg.CreateSessionRequest{
+		Type:       msg.SessionTypeInteractive,
+		Purpose:    msg.PurposeChat,
+		Origin:     "test",
 		Harness:    "claude_code",
 		InstanceID: instID,
 		MaxBudget:  float64Ptr(12.50),
@@ -46,6 +49,9 @@ func TestCreateSession_AbsentCeilingMeansNoCeiling(t *testing.T) {
 	srv, st, instID := testServerWithInstance(t, "claude_code")
 
 	resp := doJSON(t, srv, "POST", "/sessions", msg.CreateSessionRequest{
+		Type:       msg.SessionTypeInteractive,
+		Purpose:    msg.PurposeChat,
+		Origin:     "test",
 		Harness:    "claude_code",
 		InstanceID: instID,
 	})
@@ -65,6 +71,9 @@ func TestCreateSession_RejectsNegativeCeiling(t *testing.T) {
 	srv, _, instID := testServerWithInstance(t, "claude_code")
 
 	resp := doJSON(t, srv, "POST", "/sessions", msg.CreateSessionRequest{
+		Type:       msg.SessionTypeInteractive,
+		Purpose:    msg.PurposeChat,
+		Origin:     "test",
 		Harness:    "claude_code",
 		InstanceID: instID,
 		MaxBudget:  float64Ptr(-1),

@@ -143,7 +143,7 @@ echo "    instance id: $IID"
 step "POST /sessions (auto_start:false) then subscribe to SSE then /send"
 CREATE=$(curl -fsS -X POST "$BASE/sessions" \
   -H 'Content-Type: application/json' \
-  -d "{\"harness\":\"claude_code\",\"instance_id\":\"$IID\",\"auto_start\":false,\"source\":\"e2e-claude\"}")
+  -d "{\"harness\":\"claude_code\",\"instance_id\":\"$IID\",\"auto_start\":false,\"type\":\"system\",\"purpose\":\"e2e\",\"origin\":\"e2e-claude\"}")
 SID=$(jq -r '.session_id' <<<"$CREATE")
 [ -n "$SID" ] && [ "$SID" != "null" ] || fail "POST /sessions returned no session id: $CREATE"
 echo "    session id: $SID"

@@ -28,7 +28,7 @@ func (s *Server) handleListSourceFolders(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	out := make([]msg.SourceFolderMapping, 0, len(overrides)+len(s.cfg.SourceFolders))
+	out := make([]msg.SourceFolderMapping, 0, len(overrides)+len(s.cfg.PurposeFolders))
 	seen := make(map[string]bool)
 	for src, folder := range overrides {
 		out = append(out, msg.SourceFolderMapping{
@@ -39,7 +39,7 @@ func (s *Server) handleListSourceFolders(w http.ResponseWriter, r *http.Request)
 		})
 		seen[src] = true
 	}
-	for src, folder := range s.cfg.SourceFolders {
+	for src, folder := range s.cfg.PurposeFolders {
 		if seen[src] {
 			continue
 		}
@@ -66,7 +66,7 @@ func (s *Server) syncSourceFolderRegistry() {
 
 	wanted := make(map[string]struct{})
 	if s.cfg != nil {
-		for _, folder := range s.cfg.SourceFolders {
+		for _, folder := range s.cfg.PurposeFolders {
 			folder = strings.TrimSpace(folder)
 			if folder != "" {
 				wanted[folder] = struct{}{}
@@ -125,7 +125,7 @@ func (s *Server) handlePutSourceFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prevFolder := s.folderForSource(source)
+	prevFolder := s.folderForPurpose(source)
 
 	if err := s.store.UpsertSourceFolder(source, folder); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

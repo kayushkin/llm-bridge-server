@@ -156,7 +156,7 @@ func TestInjectHookSettings_RespectsUserOverride(t *testing.T) {
 	seedHook(t, hks, "g1", "PreToolUse", "Edit|Write", msg.HookScopeGlobal, "")
 
 	sess := &store.Session{
-		SessionID:      "b1",
+		SessionID:     "b1",
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: []byte(`{"settings":"/path/to/user.json"}`),
 	}

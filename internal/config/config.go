@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 type Config struct {
@@ -36,11 +37,12 @@ type Config struct {
 	PermissionStoreURL string
 	SnapshotStoreDB  string
 	SnapshotStoreGit string
-	// SourceFolders maps CreateSessionRequest.Purpose values to the folder a
-	// newly created session should be auto-filed into. Configured via
-	// LLMBRIDGE_SOURCE_FOLDERS (format: "source:folder,source:folder"). Any
-	// source not in the map results in no auto-filing.
-	SourceFolders map[string]string
+	// PurposeFolders maps CreateSessionRequest.Purpose values to the folder a
+	// newly created session should be auto-filed into. Defaults come from the
+	// purpose registry (msg.KnownPurposes); LLMBRIDGE_PURPOSE_FOLDERS overlays
+	// them (format: "purpose:folder,purpose:folder"). Any purpose not in the
+	// map results in no auto-filing.
+	PurposeFolders map[string]string
 	// PTYRingBufferBytes is the per-session ring buffer size (in bytes)
 	// of recent pty output. Late attachers receive a replay of this
 	// buffer on connect so xterm.js can paint the current screen state
@@ -92,7 +94,7 @@ func Load() *Config {
 		PermissionStoreURL: envOr("LLMBRIDGE_PERMISSION_STORE_URL", productiondefaults.PermissionStoreURL),
 		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", productiondefaults.SnapshotStoreDatabasePath()),
 		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", productiondefaults.SnapshotStoreGitPath()),
-		SourceFolders:   parseSourceFolders(envOr("LLMBRIDGE_SOURCE_FOLDERS", "scheduler:Scheduled,autoworker:Scheduled,harness-watch:Scheduled,healthcheck:Scheduled,renamer:Auto-rename,conformance:Conformance,subagent:Subagents,workflow-subagent:Subagents")),
+		PurposeFolders:  parsePurposeFolders(os.Getenv("LLMBRIDGE_PURPOSE_FOLDERS")),
 		PTYRingBufferBytes: envInt("LLMBRIDGE_PTY_RING_BUFFER_BYTES", 64*1024),
 		IdleTimeout:        envDuration("LLMBRIDGE_IDLE_TIMEOUT", 15*time.Minute),
 		PTYIdleTimeout:     envDuration("LLMBRIDGE_PTY_IDLE_TIMEOUT", 60*time.Minute),
@@ -156,10 +158,31 @@ func envInt(key string, def int) int {
 	return n
 }
 
-// parseSourceFolders parses "source:folder,source:folder" into a map.
-// Malformed pairs are skipped. Whitespace around keys and values is trimmed.
-func parseSourceFolders(spec string) map[string]string {
+// purposeFolderDefaults returns the purpose→folder map built from the purpose
+// registry in llm-bridge/msg.
+//
+// This used to be a hardcoded default string listing eight purposes, which is
+// how it drifted: `scheduled-task`, `dispatcher` and `herald` were all live
+// purposes that never appeared in it, so those sessions silently never filed,
+// while its `healthcheck` key mapped a purpose no caller ever sent. Two places
+// held the vocabulary and only one of them was maintained.
+//
+// Reading it off the registry means adding a purpose files it by construction.
+func purposeFolderDefaults() map[string]string {
 	out := make(map[string]string)
+	for _, p := range msg.KnownPurposes() {
+		if p.Folder != "" {
+			out[p.Name] = p.Folder
+		}
+	}
+	return out
+}
+
+// parsePurposeFolders parses "purpose:folder,purpose:folder" into a map,
+// overlaid on the registry defaults. Malformed pairs are skipped. Whitespace
+// around keys and values is trimmed. An empty spec leaves the defaults alone.
+func parsePurposeFolders(spec string) map[string]string {
+	out := purposeFolderDefaults()
 	for _, pair := range strings.Split(spec, ",") {
 		pair = strings.TrimSpace(pair)
 		if pair == "" {

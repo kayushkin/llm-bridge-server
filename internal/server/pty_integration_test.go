@@ -145,6 +145,9 @@ func TestPTYIntegration_ClaudeCode_RoundTrip(t *testing.T) {
 func createPTYSession(t *testing.T, baseURL, instID string) (string, string) {
 	t.Helper()
 	body := msg.CreateSessionRequest{
+		Type:       msg.SessionTypeInteractive,
+		Purpose:    msg.PurposeChat,
+		Origin:     "test",
 		Harness:    msg.HarnessClaudeCode,
 		InstanceID: instID,
 		Mode:       msg.SessionModePTY,

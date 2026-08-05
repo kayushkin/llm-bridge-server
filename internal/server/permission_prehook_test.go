@@ -26,6 +26,8 @@ func TestIsUnattendedSession(t *testing.T) {
 		{"interactive", &store.Session{Type: msg.SessionTypeInteractive}, false},
 		{"autonomous", &store.Session{Type: msg.SessionTypeAutonomous}, true},
 		{"system", &store.Session{Type: msg.SessionTypeSystem}, false},
+		{"herald", &store.Session{Type: msg.SessionTypeHerald}, true},
+		{"external", &store.Session{Type: msg.SessionTypeExternal}, false},
 		{"empty-type", &store.Session{}, false},
 	}
 	for _, tc := range cases {

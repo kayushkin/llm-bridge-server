@@ -249,6 +249,9 @@ func TestCreateSession_NoAutoStart(t *testing.T) {
 	srv, _, instID := testServerWithInstance(t, "claude_code")
 
 	req := msg.CreateSessionRequest{
+		Type:        msg.SessionTypeInteractive,
+		Purpose:     msg.PurposeChat,
+		Origin:      "test",
 		Harness:     "claude_code",
 		InstanceID:  instID,
 		DisplayName: "Test Task",
@@ -282,7 +285,10 @@ func TestCreateSession_RejectedWithoutInstance(t *testing.T) {
 	srv, _ := testServer(t)
 
 	req := msg.CreateSessionRequest{
-		Harness:  "claude_code",
+		Type:    msg.SessionTypeInteractive,
+		Purpose: msg.PurposeChat,
+		Origin:  "test",
+		Harness: "claude_code",
 	}
 
 	resp := doJSON(t, srv, "POST", "/sessions", req)
@@ -296,7 +302,10 @@ func TestCreateSession_InvalidHarness(t *testing.T) {
 	srv, _ := testServer(t)
 
 	req := msg.CreateSessionRequest{
-		Harness:  "nonexistent_harness",
+		Type:    msg.SessionTypeInteractive,
+		Purpose: msg.PurposeChat,
+		Origin:  "test",
+		Harness: "nonexistent_harness",
 	}
 
 	resp := doJSON(t, srv, "POST", "/sessions", req)
@@ -313,6 +322,9 @@ func TestCreateSession_PtyMode_ClaudeCode(t *testing.T) {
 	srv, _, instID := testServerWithInstance(t, "claude_code")
 
 	req := msg.CreateSessionRequest{
+		Type:       msg.SessionTypeInteractive,
+		Purpose:    msg.PurposeChat,
+		Origin:     "test",
 		Harness:    "claude_code",
 		InstanceID: instID,
 		Mode:       msg.SessionModePTY,
@@ -339,6 +351,9 @@ func TestCreateSession_PtyMode_Unsupported(t *testing.T) {
 	srv, _, instID := testServerWithInstance(t, "hermes")
 
 	req := msg.CreateSessionRequest{
+		Type:       msg.SessionTypeInteractive,
+		Purpose:    msg.PurposeChat,
+		Origin:     "test",
 		Harness:    "hermes",
 		InstanceID: instID,
 		Mode:       msg.SessionModePTY,
@@ -790,6 +805,9 @@ func TestCreateSession_AutoStart_HarnessUnavailable(t *testing.T) {
 
 	// Use a harness type whose binary is not in PATH
 	req := msg.CreateSessionRequest{
+		Type:      msg.SessionTypeInteractive,
+		Purpose:   msg.PurposeChat,
+		Origin:    "test",
 		Harness:   "dexto", // stub, not installed
 		AutoStart: true,
 	}
@@ -811,6 +829,9 @@ func TestCreateSession_WithHarnessConfig(t *testing.T) {
 	srv, _, instID := testServerWithInstance(t, "claude_code")
 
 	req := msg.CreateSessionRequest{
+		Type:          msg.SessionTypeInteractive,
+		Purpose:       msg.PurposeChat,
+		Origin:        "test",
 		Harness:       "claude_code",
 		InstanceID:    instID,
 		DisplayName:   "Config Test",
@@ -845,7 +866,7 @@ func TestCreateSession_WithHarnessConfig(t *testing.T) {
 // if either side drifts, the recognizer should be updated in lockstep.
 func TestDiscoverySourceFolder(t *testing.T) {
 	srv, _ := testServer(t)
-	srv.cfg.SourceFolders = map[string]string{
+	srv.cfg.PurposeFolders = map[string]string{
 		"autoworker":    "Scheduled",
 		"harness-watch": "Scheduled",
 	}
@@ -907,7 +928,7 @@ func TestNew_ReconcilesFolderRegistryFromSourceMappings(t *testing.T) {
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 		LogStoreURL:     "http://localhost:0",
-		SourceFolders: map[string]string{
+		PurposeFolders: map[string]string{
 			"autoworker": "Scheduled",
 			"scheduler":  "Scheduled",
 			"subagent":   "Subagents",

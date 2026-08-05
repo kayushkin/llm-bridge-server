@@ -227,7 +227,7 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 		Purpose:     renamerSourceTag,
 		Type:        msg.SessionTypeSystem,
 		Origin:      "llm-bridge-server",
-		FolderName:  s.folderForSource(renamerSourceTag),
+		FolderName:  s.folderForPurpose(renamerSourceTag),
 	}
 	if err := s.store.CreateSession(renamer); err != nil {
 		return fmt.Errorf("create session: %w", err)

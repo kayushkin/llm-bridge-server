@@ -207,6 +207,11 @@ func (s *Server) routes() {
 
 	// Source-folder mapping — runtime overrides for env-var defaults
 	s.mux.HandleFunc("GET /source-folders", s.handleListSourceFolders)
+
+	// Session classification vocabulary, and the sessions that disagree with
+	// it. Read by session-taxonomy-guard; see internal/server/taxonomy.go.
+	s.mux.HandleFunc("GET /session-taxonomy", s.handleSessionTaxonomy)
+	s.mux.HandleFunc("GET /session-taxonomy/report", s.handleSessionTaxonomyReport)
 	s.mux.HandleFunc("PUT /source-folders/{source}", s.handlePutSourceFolder)
 	s.mux.HandleFunc("DELETE /source-folders/{source}", s.handleDeleteSourceFolder)
 
@@ -448,6 +453,18 @@ func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+// writeJSONError writes the {"error":{"code":…,"message":…}} envelope the
+// pty_unsupported and invalid_max_budget rejections already use, so a client
+// can branch on a stable code instead of matching prose. The message is for
+// a human reading a log and should say how to fix the request.
+func writeJSONError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]string{"code": code, "message": message},
+	})
 }
 
 // ReconcileAndResume clears stale 'running' state left over from the previous
@@ -698,7 +715,7 @@ func (s *Server) AutoDiscover() {
 			// Task()-spawned subagents from the on-disk layout) over our prompt-
 			// prefix heuristic. Fall back to prefix inference only when the
 			// adapter has no structural signal.
-			source, folder := ds.Source, s.folderForSource(ds.Source)
+			source, folder := ds.Source, s.folderForPurpose(ds.Source)
 			if source == "" {
 				source, folder = s.discoverySourceFolder(ds.Prompt)
 			}

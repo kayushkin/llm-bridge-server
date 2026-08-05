@@ -22,6 +22,15 @@ import (
 // parked tool ask would wedge it before it ever reaches the user. System and
 // interactive sessions return false — system sessions are excluded deliberately
 // so their asks aren't silently auto-allowed.
+//
+// External sessions also return false, and that is a decision rather than a
+// fallthrough. An external session ran outside the bridge, so ordinarily no
+// prehook fires for it at all; one can only fire if somebody resumed the
+// session through the bridge, and the overwhelmingly likely somebody is a
+// person who clicked resume. Between the two ways to be wrong here — parking
+// an ask nobody answers until the reaper collects it, or auto-allowing a tool
+// call on a session a human is driving — the first is loud and recoverable and
+// the second is silent. Prefer the loud one.
 func isUnattendedSession(sess *store.Session) bool {
 	return sess != nil && (sess.Type == msg.SessionTypeAutonomous || sess.Type == msg.SessionTypeHerald)
 }

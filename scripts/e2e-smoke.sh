@@ -186,7 +186,7 @@ step "POST /sessions { harness:mock, instance_id:$IID, auto_start:false }"
 # so subscribing after a finished turn yields a stale snapshot.
 CREATE=$(curl -fsS -X POST "$BASE/sessions" \
   -H 'Content-Type: application/json' \
-  -d "{\"harness\":\"mock\",\"instance_id\":\"$IID\",\"auto_start\":false,\"source\":\"e2e-smoke\"}")
+  -d "{\"harness\":\"mock\",\"instance_id\":\"$IID\",\"auto_start\":false,\"type\":\"system\",\"purpose\":\"e2e\",\"origin\":\"e2e-smoke\"}")
 SID=$(jq -r '.session_id' <<<"$CREATE")
 [ -n "$SID" ] && [ "$SID" != "null" ] || fail "POST /sessions returned no session id: $CREATE"
 echo "    session id: $SID"
@@ -248,7 +248,7 @@ step "spend ceiling: a session over its ceiling is refused, raising it revives i
 
 BUDGET_SESSION=$(curl -fsS -X POST "$BASE/sessions" \
   -H 'Content-Type: application/json' \
-  -d "{\"harness\":\"mock\",\"instance_id\":\"$IID\",\"auto_start\":false,\"max_budget\":2.50}")
+  -d "{\"harness\":\"mock\",\"instance_id\":\"$IID\",\"auto_start\":false,\"type\":\"system\",\"purpose\":\"e2e\",\"origin\":\"e2e-smoke\",\"max_budget\":2.50}")
 BSID=$(jq -r '.session_id' <<<"$BUDGET_SESSION")
 BCEIL=$(jq -r '.max_budget_usd' <<<"$BUDGET_SESSION")
 [ -n "$BSID" ] && [ "$BSID" != "null" ] || fail "budget session was not created: $BUDGET_SESSION"
@@ -259,7 +259,7 @@ echo "    session $BSID created with a \$2.50 ceiling"
 # "unlimited" would turn an attempt to cap spending into the absence of a cap.
 NEG_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions" \
   -H 'Content-Type: application/json' \
-  -d "{\"harness\":\"mock\",\"instance_id\":\"$IID\",\"auto_start\":false,\"max_budget\":-1}")
+  -d "{\"harness\":\"mock\",\"instance_id\":\"$IID\",\"auto_start\":false,\"type\":\"system\",\"purpose\":\"e2e\",\"origin\":\"e2e-smoke\",\"max_budget\":-1}")
 [ "$NEG_STATUS" = "400" ] || fail "POST /sessions with max_budget=-1 returned $NEG_STATUS, want 400"
 echo "    negative ceiling rejected with 400"
 

@@ -99,7 +99,7 @@ func TestConvenienceEventsIntegration_ClaudeCode_TurnSequence(t *testing.T) {
 	// tool_running, at least one back to idle, exactly one usage_total
 	// for the turn, and one turn_complete carrying the same turn_id.
 	var (
-		sessionStates    []*msg.StateEvent
+		sessionStates  []*msg.StateEvent
 		usageTotals    []*msg.UsageTotalEvent
 		turnCompletes  []*msg.TurnCompleteEvent
 		seenTurnIDs    = map[string]bool{}
@@ -259,6 +259,9 @@ func haveTurnTriple(states []*msg.StateEvent, totals []*msg.UsageTotalEvent, com
 func createEventsSession(t *testing.T, baseURL, instID string) string {
 	t.Helper()
 	body := msg.CreateSessionRequest{
+		Type:       msg.SessionTypeInteractive,
+		Purpose:    msg.PurposeChat,
+		Origin:     "test",
 		Harness:    msg.HarnessClaudeCode,
 		InstanceID: instID,
 		AutoStart:  true,

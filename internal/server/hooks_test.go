@@ -212,7 +212,7 @@ func TestExecHook_JSONDecisionExtracted(t *testing.T) {
 	// Register a hook that ignores stdin and outputs a deny decision.
 	h := &msg.Hook{
 		ID: "deny", Harness: msg.HarnessClaudeCode, Event: "PreToolUse",
-		Command: `cat >/dev/null; printf '{"decision":"deny","reason":"no"}'`,
+		Command:   `cat >/dev/null; printf '{"decision":"deny","reason":"no"}'`,
 		ScopeKind: msg.HookScopeGlobal, Enabled: true,
 	}
 	if err := hks.CreateHook(h); err != nil {

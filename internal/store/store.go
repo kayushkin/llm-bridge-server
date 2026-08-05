@@ -261,9 +261,31 @@ func (s *Store) migrate() error {
 		('autoworker','dispatcher','kanban-dispatcher','scheduler','scheduled-task','harness-watch')`)
 	s.db.Exec(`UPDATE sessions SET type = 'system'
 		WHERE type = '' AND purpose IN
-		('renamer','conformance','subagent','workflow-subagent','healthcheck','classifier','scoper')`)
+		('renamer','conformance','subagent','workflow-subagent','classifier','scoper')`)
+	// 'healthcheck' used to be in the list above, which typed its remediation
+	// agents as system. They are not: healthcheck spawns them to go clean up a
+	// full disk with nobody watching, which is what autonomous means. The
+	// caller was sending no type at all when that guess was made, and now
+	// sends 'autonomous' explicitly, so the guess loses to the declaration.
+	s.db.Exec(`UPDATE sessions SET type = 'autonomous'
+		WHERE purpose = 'healthcheck' AND type = 'system'`)
 	s.db.Exec(`UPDATE sessions SET type = 'interactive'
-		WHERE type = '' AND (purpose = '' OR purpose = 'chat')`)
+		WHERE type = '' AND purpose = 'chat'`)
+	// The rule above used to also match purpose = '', which made it a standing
+	// mislabeller rather than a backfill.
+	//
+	// migrate() runs on every open, not once, so every session that arrived
+	// with no type got relabelled "interactive" at the next restart. Discovery
+	// imports arrive exactly that way — a `claude -p` one-shot from a shell
+	// became a human chat on the next deploy, indistinguishable in the UI from
+	// a session someone actually opened. The same rule had already done this to
+	// 226 workflow subagents, which is what the repair below cleans up; that
+	// repair fixed the rows and left the rule that produced them.
+	//
+	// Empty purpose is now what it looks like: unclassified. Nothing infers a
+	// type from it, discovery declares its own (external), and
+	// session-taxonomy-guard reports whatever is left rather than papering
+	// over it.
 
 	// Repair the workflow subagents this backfill itself mislabelled.
 	//
@@ -296,8 +318,44 @@ func (s *Store) migrate() error {
 	// new ones, but pre-rename rows have empty origin. Backfill so the
 	// frontend's chat sessions all attribute to "frontend" (dash/llmux split
 	// is a separate followup if we want it).
+	//
+	// Keyed on purpose='chat' only. It used to also match purpose='', which
+	// credited every unclassified session to the frontend on the same faulty
+	// reasoning as the type rule above: absence of a declaration is not a
+	// declaration of chat.
 	s.db.Exec(`UPDATE sessions SET origin = 'frontend'
-		WHERE origin = '' AND (purpose = '' OR purpose = 'chat')`)
+		WHERE origin = '' AND purpose = 'chat'`)
+
+	// Repair the discovery imports that the purpose='' rules above mislabelled.
+	//
+	// Discovery wrote type='' and origin='llm-bridge-<harness>' for sessions it
+	// found on disk; the type rule then read the empty type as interactive. The
+	// result is a session that reports it was a human chat originating from a
+	// harness adapter — two false statements about a `claude -p` one-shot that
+	// the bridge never ran.
+	//
+	// Keyed on origin: only discovery ever wrote an origin of llm-bridge-<x>,
+	// and a genuine subagent from the same adapter carries purpose='subagent',
+	// so restricting to purpose='' selects exactly the cold imports. Like the
+	// workflow-subagent repair above, this overwrites a non-empty type, and for
+	// the same reason — 'interactive' here is the bug's fingerprint, not a
+	// caller's declaration, because no caller ever spoke for these rows.
+	s.db.Exec(`UPDATE sessions SET type = 'external', purpose = 'discovered', origin = 'discovery'
+		WHERE purpose = '' AND origin LIKE 'llm-bridge-%' AND type IN ('', 'interactive')`)
+	// Discovered subagents that predate the live promotion path: purpose was
+	// recognised from the on-disk layout but type was left empty, and no rule
+	// above covers purpose='subagent' with an empty type.
+	s.db.Exec(`UPDATE sessions SET type = 'system'
+		WHERE type = '' AND purpose IN ('subagent','workflow-subagent')`)
+
+	// Legacy frontend chats created before the frontends sent a purpose at
+	// all. The rows already say type='interactive' and origin='frontend', and
+	// the frontends create nothing but chats, so 'chat' is the only purpose
+	// these can have — this names what the row already says rather than
+	// inferring something new from silence, which is the mistake the rules
+	// above made.
+	s.db.Exec(`UPDATE sessions SET purpose = 'chat'
+		WHERE purpose = '' AND type = 'interactive' AND origin = 'frontend'`)
 	// Spend ceiling and spend high-water mark. Both REAL, both defaulting to
 	// 0, and 0 on max_budget_usd means NO CEILING — see the warning on
 	// msg.ManagedSession.MaxBudgetUSD. A default of 0 is therefore also the
@@ -1560,17 +1618,40 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 	}
 
 	// Insert new discovered session with state "idle". session_id mirrors
-	// bridge_id during the dual-write window; type is empty for
-	// discovery-imported sessions (no caller declared one); origin is the
-	// harness adapter that scanned the on-disk session (e.g. "claude_code"
-	// → "llm-bridge-claudecode"). The original spawner of the underlying
-	// harness session is lost to history — the discovering adapter is the
-	// closest meaningful attribution.
+	// bridge_id during the dual-write window.
 	bridgeID := fmt.Sprintf("br_%d", time.Now().UnixNano())
-	origin := "llm-bridge-" + strings.ReplaceAll(harness, "_", "")
+
+	// Classify the import honestly.
+	//
+	// This used to write type="" and origin="llm-bridge-<harness>". Both were
+	// wrong, and they compounded: the empty type was filled in later by a
+	// startup backfill that read "no type" as "interactive", so a `claude -p`
+	// smoke test run from a shell was recorded — and displayed — as a human
+	// chat. The origin named the adapter that *found* the session, but origin
+	// means the service that *created* it, and the adapter created nothing.
+	//
+	// A discovered session is external: it ran outside the bridge, no caller
+	// declared anything about it, and the honest origin is "discovery".
+	// Where the adapter or a prompt prefix did recognise a purpose — a
+	// conformance probe, a subagent, a scheduled job — that is a real signal
+	// rather than a guess, so its registered type and origin win instead.
+	sessionType := msg.SessionTypeExternal
+	origin := msg.OriginDiscovery
+	if source == "" {
+		source = msg.PurposeDiscovered
+		if folderName == "" {
+			folderName = msg.FolderForPurpose(msg.PurposeDiscovered)
+		}
+	} else if spec, ok := msg.LookupPurpose(source); ok {
+		sessionType = spec.Type
+		if len(spec.Origins) == 1 {
+			origin = spec.Origins[0]
+		}
+	}
+
 	_, err = s.db.Exec(
 		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, parent_id, purpose, type, origin, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		bridgeID, bridgeID, harnessSessionID, displayName, harness, instanceID, "idle", 0, "", "", source, "", origin, folderName, createdAt, updatedAt,
+		bridgeID, bridgeID, harnessSessionID, displayName, harness, instanceID, "idle", 0, "", "", source, string(sessionType), origin, folderName, createdAt, updatedAt,
 	)
 	if err != nil {
 		return "", false, err

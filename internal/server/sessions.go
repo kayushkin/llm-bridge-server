@@ -16,25 +16,46 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// folderForSource returns the effective folder for a given source tag, or
-// "" if the source is unmapped (leaving the session unfiled). The effective
-// map is the env-var defaults (config.SourceFolders) overlaid with runtime
-// overrides from the source_folders table. DB errors fall back to defaults
-// — failing closed (returning "") would silently un-file new sessions.
-func (s *Server) folderForSource(source string) string {
-	if source == "" || s.cfg == nil {
+// folderForPurpose returns the effective folder for a purpose, or "" if the
+// purpose is unmapped (leaving the session unfiled).
+//
+// Three layers, most specific first: the user's runtime overrides in the
+// source_folders table, then LLMBRIDGE_PURPOSE_FOLDERS, then the folder the
+// purpose registry declares. DB errors fall back to the lower layers — failing
+// closed (returning "") would silently un-file new sessions.
+//
+// A superseded purpose resolves through to its current spelling, so sessions
+// created under an old slug land in the same folder as new ones instead of
+// splitting the folder in two.
+func (s *Server) folderForPurpose(purpose string) string {
+	if purpose == "" || s.cfg == nil {
 		return ""
 	}
+	canonical := msg.CanonicalPurpose(purpose)
 	if s.store != nil {
 		if overrides, err := s.store.ListSourceFolders(); err == nil {
-			if v, ok := overrides[source]; ok {
+			if v, ok := overrides[purpose]; ok {
+				return v
+			}
+			if v, ok := overrides[canonical]; ok {
 				return v
 			}
 		} else {
-			log.Printf("[source-folders] failed to load overrides: %v", err)
+			log.Printf("[purpose-folders] failed to load overrides: %v", err)
 		}
 	}
-	return s.cfg.SourceFolders[source]
+	if v, ok := s.cfg.PurposeFolders[purpose]; ok {
+		return v
+	}
+	if v, ok := s.cfg.PurposeFolders[canonical]; ok {
+		return v
+	}
+	// The registry is the floor, consulted directly rather than only through
+	// the config map. config.Load() seeds that map from the registry, but a
+	// Config built any other way — a test, an embedder — would otherwise file
+	// nothing at all, and silently: every session would come back unfiled with
+	// no error to explain it.
+	return msg.FolderForPurpose(canonical)
 }
 
 // discoveryPromptPrefixes maps stable prompt prefixes to a source tag for
@@ -62,11 +83,11 @@ var discoveryPromptPrefixes = []struct {
 // sessions.
 func (s *Server) discoverySourceFolder(prompt string) (string, string) {
 	if conformance.IsConformancePrompt(prompt) {
-		return conformance.SourceTag, s.folderForSource(conformance.SourceTag)
+		return conformance.SourceTag, s.folderForPurpose(conformance.SourceTag)
 	}
 	for _, p := range discoveryPromptPrefixes {
 		if strings.HasPrefix(prompt, p.prefix) {
-			return p.source, s.folderForSource(p.source)
+			return p.source, s.folderForPurpose(p.source)
 		}
 	}
 	return "", ""
@@ -156,6 +177,38 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Classification. Type and Origin are rejected when absent or unknown;
+	// Purpose is checked against the registry but never rejected.
+	//
+	// The split is deliberate. A type outside the enum cannot be stored
+	// honestly — permission gating, folder routing and every frontend branch
+	// on it — and an empty origin loses the only record of who asked for the
+	// session, which is unrecoverable after the fact. Both are cheap for a
+	// caller to get right and were already documented as required.
+	//
+	// Purpose is different: the registry is a list of slugs we happen to know
+	// about, and a caller inventing a new one is how the list grows. Refusing
+	// those would make adding a feature require a change to this repo first.
+	// So an unknown purpose is stored and logged, and session-taxonomy-guard
+	// reports it — visible, not fatal.
+	if !msg.ValidSessionType(req.Type) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_session_type", fmt.Sprintf(
+			"type must be one of %v, got %q — see SessionType in llm-bridge/msg/server.go",
+			msg.SessionTypes(), req.Type))
+		return
+	}
+	if strings.TrimSpace(req.Origin) == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_origin",
+			"origin is required: name the service or script creating this session (e.g. \"scheduler\", \"healthcheck\", \"frontend-dash\")")
+		return
+	}
+	if problems := msg.ClassifyPurpose(req.Type, req.Purpose, req.Origin); len(problems) > 0 {
+		for _, p := range problems {
+			log.Printf("[sessions.create] taxonomy %s: %s (want=%q got=%q) type=%s purpose=%s origin=%s",
+				p.Kind, p.Detail, p.Want, p.Got, req.Type, req.Purpose, req.Origin)
+		}
+	}
+
 	// Mode validation. Empty defaults to events for backward compat.
 	mode := req.Mode
 	if mode == "" {
@@ -226,7 +279,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Purpose:       req.Purpose,
 		Type:          req.Type,
 		Origin:        req.Origin,
-		FolderName:    s.folderForSource(req.Purpose),
+		FolderName:    s.folderForPurpose(req.Purpose),
 		Mode:          mode,
 		MaxBudgetUSD:  maxBudgetUSD,
 		WorkingDir:    req.WorkingDir,
@@ -879,7 +932,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		// marks Task()-spawned subagents from the on-disk layout) over our
 		// prompt-prefix heuristic. Fall back to prefix inference only when
 		// the adapter has no structural signal. Mirrors AutoDiscover.
-		source, folder := ds.Source, s.folderForSource(ds.Source)
+		source, folder := ds.Source, s.folderForPurpose(ds.Source)
 		if source == "" {
 			source, folder = s.discoverySourceFolder(ds.Prompt)
 		}
