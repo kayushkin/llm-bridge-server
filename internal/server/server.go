@@ -705,6 +705,7 @@ func (s *Server) AutoDiscover() {
 		localInstances := s.localInstancesByHarness([]msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex})
 
 		var imported, linkedCount int
+		var pendingLinks []discoveredLink
 		for _, ds := range sessions {
 			// Use prompt as display name - it's more useful for identifying sessions
 			displayName := ds.Prompt
@@ -725,15 +726,12 @@ func (s *Server) AutoDiscover() {
 				source, folder = s.discoverySourceFolder(ds.Prompt)
 			}
 			bridgeID, inserted, err := s.store.UpsertDiscoveredSession(ds.HarnessSessionID, ds.BridgeSessionID, displayName, string(ds.Harness), instanceID, source, folder, ds.CreatedAt, ds.UpdatedAt)
-			// Runs for every discovered session, not just newly inserted ones,
-			// so a pass also repairs rows imported before the adapter reported
-			// a parent. It only ever fills an absent link.
-			if err == nil {
-				if linked, lerr := s.store.LinkDiscoveredSessionParent(bridgeID, ds.ParentHarnessSessionID); lerr != nil {
-					log.Printf("[auto-discover] failed to link %s to parent %s: %v", bridgeID, ds.ParentHarnessSessionID, lerr)
-				} else if linked {
-					linkedCount++
-				}
+			// Lineage is resolved after every row exists, not here: discovery
+			// has no parent-before-child ordering, so linking inline drops
+			// every subagent that happened to be walked before its parent —
+			// 497 of 1,292 on the first real run.
+			if err == nil && ds.ParentHarnessSessionID != "" {
+				pendingLinks = append(pendingLinks, discoveredLink{bridgeID: bridgeID, parentHarnessID: ds.ParentHarnessSessionID})
 			}
 			if err == nil && inserted {
 				imported++
@@ -750,6 +748,14 @@ func (s *Server) AutoDiscover() {
 		}
 		if imported > 0 {
 			log.Printf("[auto-discover] imported %d sessions", imported)
+		}
+		for _, l := range pendingLinks {
+			linked, err := s.store.LinkDiscoveredSessionParent(l.bridgeID, l.parentHarnessID)
+			if err != nil {
+				log.Printf("[auto-discover] failed to link %s to parent %s: %v", l.bridgeID, l.parentHarnessID, err)
+			} else if linked {
+				linkedCount++
+			}
 		}
 		if linkedCount > 0 {
 			log.Printf("[auto-discover] linked %d sessions to the parent that spawned them", linkedCount)
@@ -882,4 +888,16 @@ func (s *Server) broadcastSeedSnapshot(source msg.SeedSource, reason string) {
 			log.Printf("[seed] broadcast %s/%s to %s: %v", source, reason, rc.Name(), err)
 		}
 	}
+}
+
+// discoveredLink is a lineage link waiting for its parent row to exist.
+//
+// Discovery walks harness storage in whatever order the filesystem yields, so a
+// subagent is routinely seen before the session that spawned it. Linking inline
+// therefore silently drops every such child — 497 of 1,292 on the first real
+// run. Collecting the links and resolving them once the pass has upserted every
+// row removes the ordering dependency entirely.
+type discoveredLink struct {
+	bridgeID        string
+	parentHarnessID string
 }

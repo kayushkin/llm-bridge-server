@@ -914,7 +914,8 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	localInstances := s.localInstancesByHarness([]msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex})
 
 	// Persist discovered sessions to the store so they appear in GET /sessions
-	var imported int
+	var imported, linkedCount int
+	var pendingLinks []discoveredLink
 	for _, ds := range sessions {
 		// Use prompt as display name - it's more useful for identifying sessions
 		displayName := ds.Prompt
@@ -952,11 +953,11 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			log.Printf("[discover] failed to upsert session %s: %v", ds.HarnessSessionID, err)
 			continue
 		}
-		// Runs for every discovered session, not just newly inserted ones, so a
-		// pass also repairs rows imported before the adapter reported a parent.
-		// It only ever fills an absent link. Mirrors AutoDiscover.
-		if _, lerr := s.store.LinkDiscoveredSessionParent(bridgeID, ds.ParentHarnessSessionID); lerr != nil {
-			log.Printf("[discover] failed to link %s to parent %s: %v", bridgeID, ds.ParentHarnessSessionID, lerr)
+		// Lineage is resolved after every row exists — discovery has no
+		// parent-before-child ordering, so linking inline drops every subagent
+		// walked before its parent. Mirrors AutoDiscover.
+		if ds.ParentHarnessSessionID != "" {
+			pendingLinks = append(pendingLinks, discoveredLink{bridgeID: bridgeID, parentHarnessID: ds.ParentHarnessSessionID})
 		}
 		if inserted {
 			imported++
@@ -973,6 +974,17 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	}
 	if imported > 0 {
 		log.Printf("[discover] imported %d new sessions", imported)
+	}
+	for _, l := range pendingLinks {
+		linked, err := s.store.LinkDiscoveredSessionParent(l.bridgeID, l.parentHarnessID)
+		if err != nil {
+			log.Printf("[discover] failed to link %s to parent %s: %v", l.bridgeID, l.parentHarnessID, err)
+		} else if linked {
+			linkedCount++
+		}
+	}
+	if linkedCount > 0 {
+		log.Printf("[discover] linked %d sessions to the parent that spawned them", linkedCount)
 	}
 
 	writeJSON(w, sessions)
