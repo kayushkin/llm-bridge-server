@@ -952,6 +952,12 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			log.Printf("[discover] failed to upsert session %s: %v", ds.HarnessSessionID, err)
 			continue
 		}
+		// Runs for every discovered session, not just newly inserted ones, so a
+		// pass also repairs rows imported before the adapter reported a parent.
+		// It only ever fills an absent link. Mirrors AutoDiscover.
+		if _, lerr := s.store.LinkDiscoveredSessionParent(bridgeID, ds.ParentHarnessSessionID); lerr != nil {
+			log.Printf("[discover] failed to link %s to parent %s: %v", bridgeID, ds.ParentHarnessSessionID, lerr)
+		}
 		if inserted {
 			imported++
 			// Import history to log-store for new sessions

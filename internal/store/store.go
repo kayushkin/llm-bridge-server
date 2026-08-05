@@ -1619,6 +1619,83 @@ func (s *Store) EnsureSubagentSession(parent *Session, harnessSessionID, display
 	return sub.SessionID, true, nil
 }
 
+// LinkDiscoveredSessionParent records the lineage of a session that discovery
+// imported, resolving the harness-native parent id the adapter reported to the
+// bridge session that actually holds it.
+//
+// This is the cold-import counterpart to the link EnsureSubagentSession writes
+// live. It exists because the live path only ever sees subagents of processes
+// bridge-server is currently hosting: a subagent whose run predates the demux,
+// or whose parent ran outside the bridge, reaches the store only through
+// discovery — and arrived with no parent at all. On this host that was every
+// discovered subagent, 1,259 rows.
+//
+// parentHarnessSessionID is a HARNESS id (for Claude Code, the parent's session
+// UUID, which it writes into the subagent's rollout path). It is resolved to a
+// bridge_session_id here and stored as one. The harness id is never written
+// into a lineage column: those hold bridge ids, and mixing the two would make
+// the tree unwalkable. Nothing is matched by display name.
+//
+// Three things it deliberately does not do:
+//
+//   - It does not invent a parent. An unresolvable parent id — the parent has
+//     not been imported yet, or never will be — leaves the row unlinked, and a
+//     later discovery pass links it once the parent exists. Empty stays empty.
+//   - It does not overwrite an existing manager_session_id. A row promoted live
+//     already has the authoritative link; discovery converges onto that row and
+//     must not disturb it.
+//   - It does not link a session to itself, which a malformed or truncated path
+//     could otherwise ask for.
+//
+// Returns whether it wrote a link, so a caller can report how many rows a
+// discovery pass repaired.
+func (s *Store) LinkDiscoveredSessionParent(bridgeID, parentHarnessSessionID string) (bool, error) {
+	if bridgeID == "" || parentHarnessSessionID == "" {
+		return false, nil
+	}
+	if strings.HasPrefix(parentHarnessSessionID, "br_") {
+		return false, fmt.Errorf("LinkDiscoveredSessionParent: parent_harness_session_id %q has bridge_id prefix — the adapter is reporting a bridge id in the harness slot (contract violation)", parentHarnessSessionID)
+	}
+
+	parent, err := s.GetSessionByHarnessSessionID(parentHarnessSessionID)
+	if err == sql.ErrNoRows || (err == nil && parent == nil) {
+		// The parent is not (yet) known. Not an error: cold import has no
+		// ordering guarantee, and the next pass will find it.
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if parent.SessionID == bridgeID {
+		return false, nil
+	}
+
+	root := parent.RootSessionID
+	if root == "" {
+		root = parent.SessionID
+	}
+
+	// The WHERE clause is what makes this idempotent and safe to re-run on
+	// every discovery pass: it only fills a link that is absent.
+	res, err := s.db.Exec(`
+		UPDATE sessions
+		   SET manager_session_id=?, root_session_id=?, depth=?
+		 WHERE bridge_id=?
+		   AND COALESCE(manager_session_id, '')=''`,
+		parent.SessionID, root, parent.Depth+1, bridgeID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n > 0 {
+		s.notifyChanged(bridgeID)
+	}
+	return n > 0, nil
+}
+
 // UpsertDiscoveredSession inserts a discovered session if it doesn't already exist.
 //
 // harnessSessionID is the harness-native session ID (e.g. CC UUID, Codex thread_id,

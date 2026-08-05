@@ -189,3 +189,135 @@ func TestEnsureSubagentSessionRejectsUnusableKeys(t *testing.T) {
 		t.Error("nil parent accepted")
 	}
 }
+
+// TestLinkDiscoveredSessionParent covers the cold-import lineage link and the
+// three things it must refuse to do. Before it existed, every subagent that
+// reached the store through discovery rather than the live demux landed with no
+// parent — 1,259 such rows on the host this was written on.
+func TestLinkDiscoveredSessionParent(t *testing.T) {
+	newStore := func(t *testing.T) *Store {
+		t.Helper()
+		s := testStore(t)
+		return s
+	}
+	now := time.Now()
+
+	mkParent := func(t *testing.T, s *Store, harnessID string) string {
+		t.Helper()
+		id, _, err := s.UpsertDiscoveredSession(harnessID, "", "parent", "claude_code", "", "", "", now, now)
+		if err != nil {
+			t.Fatalf("seed parent: %v", err)
+		}
+		return id
+	}
+	mkChild := func(t *testing.T, s *Store, harnessID string) string {
+		t.Helper()
+		id, _, err := s.UpsertDiscoveredSession(harnessID, "", "child", "claude_code", "", "subagent", "Subagents", now, now)
+		if err != nil {
+			t.Fatalf("seed child: %v", err)
+		}
+		return id
+	}
+
+	t.Run("links a discovered subagent to its parent", func(t *testing.T) {
+		s := newStore(t)
+		parentID := mkParent(t, s, "parent-uuid")
+		childID := mkChild(t, s, "agent-a369d3bc")
+
+		linked, err := s.LinkDiscoveredSessionParent(childID, "parent-uuid")
+		if err != nil || !linked {
+			t.Fatalf("linked = %v, err = %v; want true, nil", linked, err)
+		}
+		child, err := s.GetSession(childID)
+		if err != nil {
+			t.Fatalf("get child: %v", err)
+		}
+		if child.ManagerSessionID != parentID {
+			t.Errorf("manager_session_id = %q, want %q (the parent's BRIDGE id, not its harness id)", child.ManagerSessionID, parentID)
+		}
+		if child.RootSessionID != parentID {
+			t.Errorf("root_session_id = %q, want %q", child.RootSessionID, parentID)
+		}
+		if child.Depth != 1 {
+			t.Errorf("depth = %d, want 1", child.Depth)
+		}
+	})
+
+	t.Run("is idempotent, so every discovery pass may run it", func(t *testing.T) {
+		s := newStore(t)
+		mkParent(t, s, "parent-uuid")
+		childID := mkChild(t, s, "agent-a369d3bc")
+
+		if _, err := s.LinkDiscoveredSessionParent(childID, "parent-uuid"); err != nil {
+			t.Fatalf("first link: %v", err)
+		}
+		linked, err := s.LinkDiscoveredSessionParent(childID, "parent-uuid")
+		if err != nil {
+			t.Fatalf("second link: %v", err)
+		}
+		if linked {
+			t.Error("reported a second write; the link already existed and must not be rewritten")
+		}
+	})
+
+	t.Run("does not overwrite a link the live path already wrote", func(t *testing.T) {
+		s := newStore(t)
+		mkParent(t, s, "parent-uuid")
+		realParent := mkParent(t, s, "the-real-parent")
+		childID := mkChild(t, s, "agent-a369d3bc")
+
+		if _, err := s.db.Exec(`UPDATE sessions SET manager_session_id=? WHERE bridge_id=?`, realParent, childID); err != nil {
+			t.Fatalf("seed live link: %v", err)
+		}
+		linked, err := s.LinkDiscoveredSessionParent(childID, "parent-uuid")
+		if err != nil {
+			t.Fatalf("link: %v", err)
+		}
+		if linked {
+			t.Error("overwrote an existing manager_session_id; the live promotion is authoritative")
+		}
+		child, _ := s.GetSession(childID)
+		if child.ManagerSessionID != realParent {
+			t.Errorf("manager_session_id = %q, want %q untouched", child.ManagerSessionID, realParent)
+		}
+	})
+
+	t.Run("leaves the row alone when the parent is not imported", func(t *testing.T) {
+		s := newStore(t)
+		childID := mkChild(t, s, "agent-a369d3bc")
+
+		linked, err := s.LinkDiscoveredSessionParent(childID, "a-parent-nobody-imported")
+		if err != nil {
+			t.Fatalf("an unknown parent is not an error, it is a later pass: %v", err)
+		}
+		if linked {
+			t.Error("invented a parent")
+		}
+		child, _ := s.GetSession(childID)
+		if child.ManagerSessionID != "" {
+			t.Errorf("manager_session_id = %q, want empty — empty means no parent, not a guess", child.ManagerSessionID)
+		}
+	})
+
+	t.Run("refuses a bridge id in the harness slot", func(t *testing.T) {
+		s := newStore(t)
+		childID := mkChild(t, s, "agent-a369d3bc")
+
+		if _, err := s.LinkDiscoveredSessionParent(childID, "br_1785954582792515821"); err == nil {
+			t.Error("accepted a bridge id as a harness parent id; that contract violation must be loud")
+		}
+	})
+
+	t.Run("will not link a session to itself", func(t *testing.T) {
+		s := newStore(t)
+		selfID := mkChild(t, s, "agent-self")
+
+		linked, err := s.LinkDiscoveredSessionParent(selfID, "agent-self")
+		if err != nil {
+			t.Fatalf("link: %v", err)
+		}
+		if linked {
+			t.Error("linked a session to itself")
+		}
+	})
+}

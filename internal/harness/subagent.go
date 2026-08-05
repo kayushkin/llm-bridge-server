@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"encoding/json"
 	"log"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -93,7 +92,7 @@ func (r *subagentRouter) observe(ev *msg.Event) {
 // own frames carry no result event, so without this its session row would sit
 // at "running" forever.
 func (r *subagentRouter) settle(ev *msg.Event) {
-	if ev.System.TaskID == "" || len(ev.Raw) == 0 {
+	if ev.System.TaskID == "" {
 		return
 	}
 	task := r.byTaskID[ev.System.TaskID]
@@ -101,32 +100,21 @@ func (r *subagentRouter) settle(ev *msg.Event) {
 		return
 	}
 
-	// Status lives in the raw frame: task_updated carries {"patch":{"status":…}}
-	// and task_notification carries a top-level "status". Neither is surfaced on
-	// the canonical SystemEvent, so read the frame the adapter preserved.
-	var frame struct {
-		Status string `json:"status"`
-		Patch  struct {
-			Status string `json:"status"`
-		} `json:"patch"`
-	}
-	if err := json.Unmarshal(ev.Raw, &frame); err != nil {
+	// The adapter normalizes the status onto TaskStatus. This used to
+	// json.Unmarshal ev.Raw to recover it, because the canonical type could
+	// not carry it — a second parser of Claude Code's wire format living in a
+	// layer that should not know that format at all, and one that would have
+	// gone quietly wrong the day CC renamed the field.
+	if !msg.TaskStatusIsTerminal(ev.System.TaskStatus) {
+		// in_progress, empty, and any status a harness adds later: not
+		// terminal, so the subagent keeps running. Settling on an unknown
+		// status would park a session that is still working.
 		return
-	}
-	status := frame.Patch.Status
-	if status == "" {
-		status = frame.Status
 	}
 
-	var state msg.SessionState
-	switch status {
-	case "completed":
-		state = msg.SessionIdle
-	case "failed", "cancelled":
+	state := msg.SessionIdle
+	if ev.System.TaskStatus != msg.TaskStatusCompleted {
 		state = msg.SessionError
-	default:
-		// in_progress and any status CC adds later: not terminal, leave it running.
-		return
 	}
 
 	task.settled = true

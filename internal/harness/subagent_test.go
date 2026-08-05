@@ -57,8 +57,10 @@ func taskStarted(bridgeID, toolUseID, taskID, description string) msg.Event {
 	}
 }
 
-// taskUpdated builds the terminal frame. CC reports the status inside a patch
-// object, not on any field the canonical SystemEvent carries.
+// taskUpdated models what llm-bridge-claudecode emits for a task_updated
+// frame. Raw stays verbatim (CC nests the status under "patch"), but the
+// router must not read it: TaskStatus is the normalized field the adapter
+// populates and the only one this layer is entitled to look at.
 func taskUpdated(bridgeID, taskID, status string) msg.Event {
 	raw, _ := json.Marshal(map[string]any{
 		"type": "system", "subtype": "task_updated",
@@ -66,7 +68,7 @@ func taskUpdated(bridgeID, taskID, status string) msg.Event {
 	})
 	return msg.Event{
 		Type: msg.EventSystem, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, Raw: raw,
-		System: &msg.SystemEvent{Subtype: "task_updated", TaskID: taskID},
+		System: &msg.SystemEvent{Subtype: "task_updated", TaskID: taskID, TaskStatus: status},
 	}
 }
 
@@ -308,5 +310,70 @@ func assertLacksBlockText(t *testing.T, m *Manager, sessionID, unwanted string) 
 		if got == unwanted {
 			t.Errorf("session %s wrongly holds block text %q", sessionID, unwanted)
 		}
+	}
+}
+
+// TestManager_SubagentIgnoresRawStatusAndUnknownStatuses pins two properties of
+// settling that are easy to lose.
+//
+// First: this layer must not parse the harness's wire format. It used to
+// json.Unmarshal ev.Raw to find the status, which made bridge-server a second
+// reader of Claude Code's frame shape and would have broken silently the day CC
+// renamed the field. A frame whose Raw says "completed" but whose normalized
+// TaskStatus is empty must NOT settle anything — if it does, the re-parse is
+// back.
+//
+// Second: an unrecognized status must be treated as non-terminal. A harness
+// that adds a status later must not be able to park a subagent that is still
+// working.
+func TestManager_SubagentIgnoresRawStatusAndUnknownStatuses(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*msg.Event)
+	}{
+		{
+			name: "status only in Raw, not normalized",
+			// Exactly the shape the old re-parse keyed on.
+			mutate: func(e *msg.Event) { e.System.TaskStatus = "" },
+		},
+		{
+			name:   "a status this build has never seen",
+			mutate: func(e *msg.Event) { e.System.TaskStatus = "quiesced" },
+		},
+		{
+			name:   "in_progress is explicitly not terminal",
+			mutate: func(e *msg.Event) { e.System.TaskStatus = msg.TaskStatusInProgress },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestManager(t)
+			parentID := "br-parent-" + t.Name()
+			const toolUseID = "toolu_noraw"
+			const taskID = "task_noraw"
+			seedParent(t, m, parentID)
+
+			proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
+			go m.readEvents(proc)
+
+			proc.ch <- taskStarted(parentID, toolUseID, taskID, "probe")
+			proc.ch <- msg.Event{Type: msg.EventBlock, BridgeSessionID: parentID, Harness: msg.HarnessClaudeCode, HarnessParentID: toolUseID,
+				Block: &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "work"}}}}
+
+			ev := taskUpdated(parentID, taskID, msg.TaskStatusCompleted)
+			tc.mutate(&ev)
+			proc.ch <- ev
+			close(proc.ch)
+			waitForProcessTeardown(t, m, parentID)
+
+			// settle() must have declined. The process then exits with the task
+			// still open, so settleUnfinished closes it out as error — which is
+			// the honest record of "nobody ever said this finished", and is
+			// distinguishable from the idle a real completion produces.
+			if got := findSubagent(t, m, parentID).State; got != string(msg.SessionError) {
+				t.Fatalf("subagent state = %q, want %q: settle() accepted a status it should have refused", got, msg.SessionError)
+			}
+		})
 	}
 }

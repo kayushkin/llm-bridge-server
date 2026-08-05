@@ -704,7 +704,7 @@ func (s *Server) AutoDiscover() {
 		// Discovery runs the harness binary locally, so sessions belong to the local instance.
 		localInstances := s.localInstancesByHarness([]msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex})
 
-		var imported int
+		var imported, linkedCount int
 		for _, ds := range sessions {
 			// Use prompt as display name - it's more useful for identifying sessions
 			displayName := ds.Prompt
@@ -725,6 +725,16 @@ func (s *Server) AutoDiscover() {
 				source, folder = s.discoverySourceFolder(ds.Prompt)
 			}
 			bridgeID, inserted, err := s.store.UpsertDiscoveredSession(ds.HarnessSessionID, ds.BridgeSessionID, displayName, string(ds.Harness), instanceID, source, folder, ds.CreatedAt, ds.UpdatedAt)
+			// Runs for every discovered session, not just newly inserted ones,
+			// so a pass also repairs rows imported before the adapter reported
+			// a parent. It only ever fills an absent link.
+			if err == nil {
+				if linked, lerr := s.store.LinkDiscoveredSessionParent(bridgeID, ds.ParentHarnessSessionID); lerr != nil {
+					log.Printf("[auto-discover] failed to link %s to parent %s: %v", bridgeID, ds.ParentHarnessSessionID, lerr)
+				} else if linked {
+					linkedCount++
+				}
+			}
 			if err == nil && inserted {
 				imported++
 				// Import history to log-store for new sessions
@@ -740,6 +750,9 @@ func (s *Server) AutoDiscover() {
 		}
 		if imported > 0 {
 			log.Printf("[auto-discover] imported %d sessions", imported)
+		}
+		if linkedCount > 0 {
+			log.Printf("[auto-discover] linked %d sessions to the parent that spawned them", linkedCount)
 		}
 	}()
 }
