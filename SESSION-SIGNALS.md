@@ -184,13 +184,11 @@ through the same resolve verb.
 
 ## Sequenced implementation (when greenlit)
 
-- **P1 — record + read API.** `signal` table in the session store; `GET
-  /sessions/{id}/signals` and `GET /signals?state=open`. Backfill the tool path to write a
-  `signal` row when `AskUserQuestion` parks (source of truth, no behavior change yet).
+- **P1 — record + read API. SHIPPED.** See "P1 as built" below.
 - **P2 — unified frontend component.** One `SignalCard` in `bridge-ui` handling both kinds;
   mount in chat, inbox, and the RefChip session panel. Resolve via the verbs above.
 - **P3 — derived pass.** Kind-aware cheap-model classifier on turn-ends → `signal` row.
-  Decision 1.
+  Decision 1. **Shipped — see "P3 as built" below.**
 - **P4 — notify tool/hook + surface routing.** A structured notification producer; set
   `surface` from attended-ness. Unattended blockers → `surface:"kanban"` signal on the
   worker's card (move card to blocked/needs-review), resolvable by orchestrator/user/agent;
@@ -200,3 +198,309 @@ through the same resolve verb.
 
 The frontend surface (linker chips + badge slot) is already live, so P1–P2 are the shortest
 path to a visible unified inbox; P3–P5 layer on without reworking it.
+
+---
+
+## P1 as built
+
+The record and its read API are live in code. Nothing about existing behavior
+changed: a parked `AskUserQuestion` still parks, resolves and returns exactly as before,
+and the rows are written alongside it.
+
+**Type.** `msg.Signal` in `llm-bridge/msg/signal.go`, with `SignalKind`, `SignalSource`,
+`SignalSurface`, `SignalState`, `SignalSeverity`, `SignalOption` and `SignalAnswer`.
+TypeScript regenerated into `llm-bridge/ts/msg.ts`, so `bridge-ui` can build the P2
+`SignalCard` against the same shape with no hand-written interface.
+
+**Storage.** `signals` table in the session store (`internal/store/signals.go`), created by
+the same idempotent `migrate()` every other table uses. `CreateSignal`, `GetSignal`,
+`ListSignals(SignalFilter)`, `ListSignalsByRequestID`, `ResolveSignal`.
+
+`ResolveSignal` only moves a row out of `open` — a duplicate resolve (two clicks, or a
+stale resolve arriving after the real one) cannot overwrite the resolution that actually
+happened.
+
+**Read API.**
+
+- `GET /sessions/{id}/signals` — one session's signals, newest first.
+- `GET /signals` — the cross-session inbox. `?state=open` is what the "Needs you" inbox
+  wants.
+- Both take `state`, `kind`, `surface` and `limit`; `/signals` also takes `session_id`. An
+  unrecognized enum value is a **400, not an empty list** — a typo that silently returns
+  `[]` reads as "you have no signals", which is the one wrong answer this endpoint can give.
+
+**Tool-path backfill.** `parkPrehook` records the signals once the park is genuinely
+established (after the `awaiting_resolution` broadcast succeeds — recording earlier would
+strand open rows on the broadcast-failure path, where the park is cancelled and no human
+ever sees the question). `broadcastPrehookResolved` and `broadcastStaleResolution` close
+them out, so every way a parked request can end also ends its signals: answered on allow,
+dismissed on deny or on a park cancelled by a dead client, and dismissed on a stale resolve
+after a harness restart.
+
+Two details worth not re-deriving:
+
+- **One signal per question, not per request.** `AskUserQuestion` carries an *array* of
+  questions while the record holds a single title and option set. Flattening them into one
+  row would lose questions, so each question gets its own row and they share `request_id`.
+  That also makes the answer pairing trivial: the resolve payload is keyed by question text,
+  which is exactly what each row's `title` holds.
+- **`surface` is not `isUnattendedSession`.** They disagree on herald, deliberately.
+  `isUnattendedSession` asks "can a parked ask be resolved on this turn?" — no for herald,
+  since no human is attached during the relay. `signalSurfaceForSession` asks "where does
+  the human eventually read this?" — the chat inbox, since no herald session has a kanban
+  card. Only `autonomous` routes to kanban.
+
+**Not yet true, and P1 does not pretend otherwise.** No signal is written for anything but
+a parked `AskUserQuestion`: no derived pass (P3), no notification producer (P4), and no
+autonomous worker signal, because an autonomous `AskUserQuestion` is still denied before it
+can park. So `surface:"kanban"` is reachable in the type and the query but nothing mints one
+yet — P4 is what starts. `linked_todo_id` is likewise carried and never set (P5).
+
+---
+
+## P2 as built (2026-07-31)
+
+The card exists and mounts in all three chat surfaces. Branch: `bridge-ui`
+`feat/session-signals-p2` (`a38e79c`, **pushed**). Nothing on the server changed.
+
+**Not mergeable to `bridge-ui` main yet.** `msg.Signal` lives on `llm-bridge`'s
+`feat/session-signal-record` branch, so a clean clone of bridge-ui main beside llm-bridge
+main would not build — and `repo-node-guard` audits exactly that pairing nightly. Merge
+after the record lands on llm-bridge main.
+
+**What is there.**
+
+| Piece | File |
+|---|---|
+| The card — one signal, by kind | `bridge-ui/src/components/chat/SignalCard.tsx` (`SignalCard`) |
+| The unit that resolves — one parked request | same file (`SignalRequestCard`) |
+| Read + resolve client, cross-surface refresh | `bridge-ui/src/components/chat/signalData.ts` |
+| The two self-fetching surfaces | `bridge-ui/src/components/chat/SessionSignals.tsx` (`SessionSignals`, `SignalsInbox`) |
+| Mount 1 — raising session's chat | `components/chat/Workspace.tsx`, beside `PendingPermissionsBanner` |
+| Mount 2 — "Needs you" inbox | `components/chat/SessionList.tsx`, under the harness filter bar |
+| Mount 3 — RefChip session panel | `components/chat/refChips/RefChip.tsx`, under the State row |
+
+**Five things not to re-derive.**
+
+1. **The card renders a signal; the REQUEST is what resolves.** One `AskUserQuestion` mints
+   several rows sharing a `request_id`, and resolving that request answers all of them at
+   once — so Submit stays disabled until every question in the request has an answer.
+   Answering one row in isolation would resolve the whole request with the rest blank.
+2. **Do not rebuild the tool input from the signal rows.** The resolve verb replaces the
+   tool input *wholesale*, and the record carries no `multiSelect` and no option previews, so
+   a rebuilt input silently downgrades the call. The client fetches the parked input from
+   `GET /sessions/{id}/hooks/pending` and posts it back untouched under `answers`. If the
+   request is no longer parked, that is an error the user sees — not a resolve posted into
+   the void.
+3. **The chat mount excludes request_ids the pending-hook banner is already showing.**
+   Both render the same parked question, and the banner renders it better (it has the live
+   tool input). What is left for the card in-session is what the banner cannot show: a
+   signal whose park died with a harness restart, and — once P3 lands — derived ones.
+4. **A 404 from the signals route hides every surface, silently.** It means this
+   bridge-server predates the API, which is the state of the live gateway until P1 deploys.
+   An error banner for that would be an error banner on every page, in three places.
+   Reads therefore use `/signals?session_id=…` rather than `/sessions/{id}/signals`: the
+   per-session route 404s for *both* "no signals route" and "no such session", and only the
+   first should hide the UI.
+5. **A resolve on one surface refetches every mounted surface.** There is no signal event
+   on the SSE stream, so the resolve helpers announce the change in-process and each
+   `useOpenChatSignals` refetches from the server. It is a refresh trigger, not a cache —
+   the server stays the source of truth for what is open. Without it, answering in the
+   sidebar inbox left an open RefChip panel offering a question that was already answered.
+
+**Verified in a headless browser** against a stub bridge-server, not reasoned about: a
+half-answered request keeps Submit disabled; a fully answered one posts the original
+questions array with `multiSelect:true` intact plus `answers` keyed by title; resolving in
+the inbox cleared the untouched panel too (checked curative — before the in-process
+announce it stayed on screen); and with the route 404ing, neither surface renders anything.
+
+**What P2 does not do.** Notifications render (headline, body, severity) but carry no
+acknowledge action, because no HTTP verb moves a signal out of `open` on its own — only the
+hook-resolve path does, and that is tool-question-only. `SignalCard` takes an
+`onAcknowledge` prop and no surface passes one, so no button appears rather than a button
+that does nothing. The verb arrives with P4. Likewise a signal with no `request_id`
+(derived, P3) renders read-only: its resolve path is `POST /sessions/{id}/send`, which P3
+adds. And `surface:"kanban"` has no mount yet — that is P4's, on the kanban card.
+
+---
+
+## P3 as built (2026-07-31)
+
+The derived producer. A cheap-model pass over each turn-end sorts the assistant's final
+text into `question` | `notification` | `neither` and writes a `source:"derived"` signal
+for the first two. On by default (decision 1), with a per-harness opt-out.
+
+| Piece | File |
+|---|---|
+| Classifier, skip rules, signal write, state reconciliation | `internal/server/signal_classifier.go` |
+| Turn-end observer + bounded external state write | `internal/harness/manager.go` |
+| `applyExternalState` / `currentState` | `internal/harness/derivation.go` |
+| Answering a derived question | `internal/server/sessions.go` (`handleSendMessage`) |
+| Config + escape hatch | `internal/config/config.go` |
+| Client half | `bridge-ui` `feat/session-signals-p3` (`c35a7da`) |
+
+Env: `LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL` (default `claude-haiku-4-5`; **empty turns the
+classifier off everywhere**), `LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT` (comma-separated
+harness names — the escape hatch), `LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT` (20s),
+`LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS` (6000).
+
+### The five things not to re-derive
+
+**1. The classifier cannot live inside `derive()`, so `looksLikeQuestion` stays.**
+`derive()` runs on the hot event path holding the state mutex; a model call there parks
+the session's whole event stream behind an API round trip — the exact wedge the
+turn-completion watchdog exists to break. So the heuristic keeps its job as the
+*immediate provisional* answer (the 🔔 appears the instant the turn ends) and the
+classifier is the *authoritative later* one, promoting a question the string match
+missed and demoting one it called wrong. Demotion is the half that makes the feature
+worth its cost: today a turn ending "does that make sense?" parks a session with nothing
+to answer.
+
+**2. A late verdict must be bounded, or it corrupts state.**
+`applyExternalState` takes an `allowedFrom` set naming the states the verdict was formed
+about, and drops the write for anything else — so a classifier that answers after the
+user has already replied cannot flip a running turn back to `awaiting_user`. **An empty
+`allowedFrom` is rejected, not read as "any state"**: the failure mode of an unbounded
+default is silent state corruption, and a caller that forgets the bound should get no
+write rather than an unbounded one. Verified curative — removing the bound fails two
+tests.
+
+**3. Nothing else closes a derived row, so two paths close it here.**
+There is no signal-level resolve verb until P4. A derived **question** closes in the
+`/send` handler, because sending a message *is* its resolve verb — done server-side, not
+in the card, so a question answered from the CLI or by an orchestrator closes the same
+way. Anything still open is **superseded** at the next turn-end: the assistant has
+spoken again, so a free-text ask from a previous turn is answered or moot. Without
+supersession every turn would leave another stale row in the inbox forever. At most one
+derived row per session is ever open.
+
+**4. The turn's tail is what gets classified, and a parked tool ask wins.**
+Truncation keeps the **end** of a long turn — a question a human has to answer is always
+last, so a head-first cap would classify the file dump above it. And when a structured
+`AskUserQuestion` is already parked, the derived pass records nothing: that ask has a
+real resolve verb behind it, and a derived row alongside it is a second, weaker copy of
+the same demand on the user's attention. The store lookup **fails closed** — an
+unreadable store must not become a licence to mint duplicates on top of a park we could
+not see.
+
+**5. `surface` routes; state describes.**
+A derived question sets `awaiting_user` for every session type, autonomous included —
+the state is an honest description of a session that ended its turn with an unanswered
+question. Where that question *reaches a human* is `surface`'s job, and for an
+autonomous worker that is the kanban card (P4), not a chat nobody is reading. Collapsing
+the two would mean either lying about the session or losing the signal.
+
+### Cost and the off switch
+
+One Haiku call per turn-end, skipped for: an empty or under-12-character final message, a
+renamer session (our own helper — its sign-off looks enough like a notification to mint
+one every time), a turn that did not settle (errored, aborted, or already superseded by a
+new turn), an opted-out harness, and a session with a tool ask already parked. Every
+failure path — timeout, transport error, unparseable verdict, no credential — leaves the
+session exactly as the heuristic left it and records nothing. A signal is an extra
+surface on top of a turn that already completed; no failure to produce one may change how
+the turn itself resolved.
+
+---
+
+## P5 as built (2026-07-31)
+
+`linked_todo_id` is filled in, and a todo carrying an open signal says so on its card.
+
+| Piece | File |
+|---|---|
+| The join, as a client | `internal/kanbanclient/client.go` (`LinkedTodoForSession`) |
+| Resolved once per signal mint | `internal/server/signal_todo_link.go` |
+| Stamped by the tool producer | `internal/server/signals.go` |
+| Stamped by the derived producer | `internal/server/signal_classifier.go` |
+| Read API: `?linked_todo_id=` | `internal/server/signals.go`, `internal/store/signals.go` |
+| Deterministic link order | `kanban-store` `internal/db/db.go` (`ListCardsByEntity`) |
+| The badge | `bridge-ui` `src/components/BridgeKanban.tsx` (`SignalBadge`) |
+
+Env: `LLMBRIDGE_KANBAN_STORE_URL` (default `http://localhost:8305`; **empty turns the
+lookup off** and every signal is minted unlinked).
+
+### The join already existed, in one place
+
+`card_links(card_id, entity_type='session', entity_ref=<bridge session id>)` in
+kanban-store, read back as `GET /api/entities/session/{id}/cards`. **A card id IS a
+noteboard item id** — kanban-store has no cards table, only placements and links against
+the noteboard item — so those card ids are todo ids directly, with no second join.
+
+Nothing else ties the two together. bridge-server's session record carries no todo field
+of any kind, noteboard's item carries no session field, and the `session=<id>` lines the
+autoworker and the classifier write into card bodies are prose, not a join. So the
+lookup goes to the service that owns the link and asks it, rather than growing a column
+somewhere to cache the answer.
+
+### The five things not to re-derive
+
+**1. Oldest link wins, and the ordering belongs to kanban-store.**
+One session is often linked to several cards: the autoworker links its dispatch todo at
+fire time, and the kanban classifier links a card per piece of work it later recognizes.
+The record holds one `linked_todo_id`, so something has to choose. The choice is the
+**oldest** link — a session's reason for existing is recorded before it does anything,
+so the first link is the todo the session is *for* and every later one describes work it
+has since done. That rule needs no label allowlist, and it reads the same for a chat
+session as for a worker.
+
+Making it reachable took a fix in kanban-store: `ListCardsByEntity` was
+`SELECT DISTINCT card_id` with **no ORDER BY**, so the order was whatever SQLite found
+convenient. It happens to be insertion order today and stops being it the moment the
+planner picks the `(entity_type, entity_ref)` index. A caller that reads row 0 was
+relying on unspecified behaviour. Now `GROUP BY card_id ORDER BY MIN(created_at),
+card_id`. The order cannot diverge from insertion order through the HTTP API (created_at
+is stamped at insert), which is why the curative test inserts rows directly with
+out-of-step timestamps — through the API the old code passes.
+
+**2. Resolved at mint time, and that has a consequence worth stating.**
+The record is the source of truth for what was true when the signal was raised, and a
+read-time join would call kanban-store once per inbox row. So the lookup runs once, when
+the signal is minted.
+
+The consequence: **a session that acquires its first link after raising a signal leaves
+that signal unlinked forever.** That is the autoworker case working and the chat case
+mostly not — the autoworker links its dispatch todo before the session starts, while the
+kanban classifier links a chat session's work up to fifteen minutes later. This is not a
+gap to paper over with a back-fill. An empty `linked_todo_id` is the truth about that
+moment; claiming a link the signal was not raised under would be worse than claiming
+none.
+
+**3. A failed lookup costs the pointer, never the signal.**
+kanban-store down, wedged, absent from config, or answering junk — every one logs and
+returns `""`. A signal is an extra surface on top of work that already happened; losing
+the todo pointer must not lose the signal. Verified curative: making the lookup fatal
+fails the "still recorded" test three ways (500, garbage body, unreachable host).
+
+**4. `?linked_todo_id=` with an empty value is a 400, not "everything".**
+Same reasoning as the enum params: a todo view that meant to name its todo and named
+nothing would otherwise receive every signal in the store and badge itself with another
+todo's question. Omitting the parameter still means "don't narrow" — the two are
+distinguished with `q.Has`, not `q.Get(…) != ""`.
+
+**5. The board fetches once; a single-todo view narrows server-side.**
+`useOpenSignalsByTodo` makes **one** `?state=open` request per board and groups the
+result by todo, because the open set is small by construction (at most one derived row
+per session, plus whatever tool asks are parked) and one request per card would be N
+requests for a list the server can hand over whole. `fetchOpenSignalsForTodo` is the
+other shape — `?linked_todo_id=` — for a view that already knows its one todo. Rows with
+an empty `linked_todo_id` are dropped from the grouping: an unlinked signal belongs to no
+todo, not to "the todo with the empty id".
+
+Surface is deliberately **not** filtered for the badge. A todo is worked by chat sessions
+and by autonomous workers alike, and the badge answers "does this work need me?", which
+is true of a signal on either surface.
+
+### What P5 does not do
+
+The badge states the problem and does not offer to solve it: it names the leading signal
+and its kind, and answering happens where a resolve verb exists — the chat, the inbox, or
+the RefChip panel. An answer box on a board card would promise a resolution the board
+cannot deliver, because **notifications still have no acknowledge verb** (P4's) and
+`surface:"kanban"` still has no full card mount (also P4's). When P4 lands, the mount
+goes in the card drawer and the badge stays what it is — the thing you can see without
+opening anything.
+
+dash's `/notes` page is a separate, dash-local React page that talks to noteboard
+directly; it is not a bridge-ui surface and gets no badge here. `?linked_todo_id=` is the
+query it would use.

@@ -27,6 +27,13 @@ func NewHookID() string {
 	return "hook_" + ulid.Make().String()
 }
 
+// NewSignalID returns a fresh canonical signal id (sig_<ULID>). ULIDs sort
+// lexicographically by mint time, so the signals a single AskUserQuestion
+// mints keep their question order when ordered by id.
+func NewSignalID() string {
+	return "sig_" + ulid.Make().String()
+}
+
 // NewHookRequestID returns a fresh per-invocation hook request id
 // (hreq_<hex16>). Used to correlate awaiting_resolution → completed
 // HookEvents and to key parked permission asks.

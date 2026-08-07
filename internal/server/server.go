@@ -17,6 +17,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -50,12 +51,19 @@ type Server struct {
 	harness       *harness.Manager
 	authClient    *authstoreclient.Client
 	permClient    *permclient.Client
+	// kanbanClient answers "which noteboard todo is this session linked
+	// to?" when a signal is minted. Nil when kanban-store has no configured
+	// URL, which leaves every signal unlinked rather than guessing.
+	kanbanClient  *kanbanclient.Client
 	bridgePrefs   *bridgePrefsStore
 	cfState       *conformanceState
 	sessionHub    *sessionHub
 	parkedAsks    *parkedAsks
 	responseCache *responseCache
-	cfg           *config.Config
+	// signalClassifier is the derived signal producer: a cheap-model pass
+	// over each turn-end. Nil only in tests that never exercise it.
+	signalClassifier *signalClassifier
+	cfg              *config.Config
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
@@ -78,18 +86,29 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		harness:       harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
 		authClient:    authClient,
 		permClient:    permclient.New(cfg.PermissionStoreURL),
+		kanbanClient:  newKanbanClient(cfg.KanbanStoreURL),
 		bridgePrefs:   newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfState:       newConformanceState(cfg.ConformancePath),
 		sessionHub:    hub,
 		parkedAsks:    newParkedAsks(),
 		responseCache: respCache,
-		cfg:           cfg,
+		signalClassifier: newSignalClassifier(
+			cfg.SignalClassifierModel,
+			cfg.SignalClassifierTimeout,
+			cfg.SignalClassifierMaxChars,
+			cfg.SignalClassifierOptOut,
+			authClient,
+		),
+		cfg: cfg,
 	}
 	// The manager promotes harness subagents to sessions below the HTTP layer,
 	// so it needs the same purpose→folder mapping the HTTP layer files
 	// sessions with. Wired here because folderForPurpose reads both the config
 	// defaults and the source_folders overrides the manager has no access to.
 	srv.harness.SetFolderResolver(srv.folderForPurpose)
+	// The classifier reacts to turn-ends, so it hangs off the manager's
+	// observer rather than reaching into the derivation state machine.
+	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
 	srv.routes()
 	srv.syncHarnessTypes()
 	srv.syncSourceFolderRegistry()
@@ -167,6 +186,13 @@ func (s *Server) routes() {
 	// recover banner state without replaying the full event stream.
 	s.mux.HandleFunc("GET /sessions/{id}/hooks/pending", s.handleListPendingHooks)
 	s.mux.HandleFunc("POST /sessions/{id}/hooks/{request_id}/resolve", s.handleResolveHook)
+
+	// Session signals — the canonical record of anything a session surfaces
+	// to a human (SESSION-SIGNALS.md). Read-only for now: rows are written
+	// by the tool path when an AskUserQuestion parks, and closed out when
+	// that request resolves. /signals?state=open is the cross-session inbox.
+	s.mux.HandleFunc("GET /sessions/{id}/signals", s.handleListSessionSignals)
+	s.mux.HandleFunc("GET /signals", s.handleListSignals)
 
 	// PreToolUse permission gate for Claude Code. Wired into every CC
 	// session via buildClaudeCodeSettings's --settings injection so CC

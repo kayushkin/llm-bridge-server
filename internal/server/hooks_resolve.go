@@ -93,7 +93,13 @@ func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 // Source is unrecoverable at this point (parked entry already gone), so
 // stale completions are stamped as permission_prompt — UI consumers only
 // pair on request_id, not source, so the mislabel is audit-only.
+//
+// Signal rows are closed out here too: the parked entry is gone but the
+// signals it minted survive the harness restart that killed it, and leaving
+// them open would keep a dead question in the inbox forever.
 func (s *Server) broadcastStaleResolution(bridgeID, requestID string, d permissionDecision) {
+	s.resolveSignalsForRequest(bridgeID, requestID, d)
+
 	resolution := &msg.HookResolution{
 		Behavior:     d.Behavior,
 		UpdatedInput: d.UpdatedInput,

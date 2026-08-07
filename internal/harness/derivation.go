@@ -182,11 +182,14 @@ func (d *derivationState) seedAPISpend(totalUSD float64, calls int, usage msg.To
 	}
 }
 
-// currentState returns the last-derived SessionState under lock. Used
-// by the manager's terminal-settle reconcile to learn the settled
-// target after derive() has run — d.sessionState holds the settled
-// value even when the transition was suppressed (next==prev), because
-// prev already equalled next.
+// currentState returns the last-derived SessionState under lock —
+// d.sessionState holds the settled value even when the transition was
+// suppressed (next==prev), because prev already equalled next.
+//
+// Two callers want that settled target after derive() has run: the
+// manager's terminal-settle reconcile, and the turn-end observer, which
+// hands the state to the signal classifier as the state its verdict is
+// formed about.
 func (d *derivationState) currentState() msg.SessionState {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -530,13 +533,68 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 	return out
 }
 
-// looksLikeQuestion is the awaiting_user heuristic. Best-effort: a
-// final message ending with a question mark or with common handoff
-// phrasing is treated as expecting a user reply. False positives are
-// fine — the worst case is a session that says "awaiting_user" when
-// it really meant "idle", and the user moves on. See the
-// CONVENIENCE-EVENTS.md migration note for the planned upgrade to a
-// classifier model.
+// applyExternalState records a session state decided outside the raw event
+// stream, and returns the transition event when the state actually changes
+// (nil otherwise, so an unchanged state broadcasts nothing).
+//
+// The only caller today is the turn-end signal classifier, which cannot run
+// inside derive(): it makes a network call, and derive() holds the state
+// mutex on the hot event path. So the classifier answers late and writes its
+// verdict back through here.
+//
+// allowedFrom bounds that write. The caller names the states its verdict was
+// formed about; a session that has since moved on — a new turn opened, an
+// error landed, the user interrupted — is left alone. Without the bound a
+// slow classifier could flip a session that is mid-turn back to
+// awaiting_user, which is the one way an advisory pass could corrupt
+// authoritative state. An empty allowedFrom is rejected rather than read as
+// "any state", so a caller that forgets the bound gets no write instead of an
+// unbounded one.
+func (d *derivationState) applyExternalState(next msg.SessionState, reason string, allowedFrom ...msg.SessionState) *msg.Event {
+	if len(allowedFrom) == 0 {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	prev := d.sessionState
+	permitted := false
+	for _, s := range allowedFrom {
+		if prev == s {
+			permitted = true
+			break
+		}
+	}
+	if !permitted || next == prev {
+		return nil
+	}
+	d.sessionState = next
+	return &msg.Event{
+		Type:      msg.EventSessionState,
+		Timestamp: time.Now(),
+		State: &msg.StateEvent{
+			State:    next,
+			Previous: prev,
+			Reason:   reason,
+		},
+	}
+}
+
+// looksLikeQuestion is the immediate awaiting_user heuristic, and stays the
+// provisional answer even where the turn-end classifier is enabled.
+//
+// The split is deliberate. This runs in-process on the terminating event, so
+// the 🔔 appears the instant the turn ends; the classifier runs afterwards
+// over the network and is authoritative, promoting a turn this missed or
+// demoting one it called wrong (see signalClassifier in internal/server).
+// Blocking the state transition on the classify call instead would park the
+// session's whole event stream behind an API round trip — the exact wedge the
+// turn-completion watchdog exists to break.
+//
+// Best-effort by design: a final message ending with a question mark or with
+// common handoff phrasing is treated as expecting a user reply. False
+// positives are cheap — the worst case is a session that says awaiting_user
+// when it meant idle, for the second or so until the classifier corrects it.
 func looksLikeQuestion(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {

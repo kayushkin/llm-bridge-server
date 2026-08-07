@@ -35,6 +35,11 @@ type Config struct {
 	// consulted by the PreToolUse permission-prehook handler. Defaults to
 	// localhost:8304.
 	PermissionStoreURL string
+	// KanbanStoreURL is the base URL of the kanban-store service, which owns
+	// the session↔noteboard-todo link a signal propagates to. Configured via
+	// LLMBRIDGE_KANBAN_STORE_URL; empty switches the lookup off entirely and
+	// every signal is minted unlinked.
+	KanbanStoreURL   string
 	SnapshotStoreDB  string
 	SnapshotStoreGit string
 	// PurposeFolders maps CreateSessionRequest.Purpose values to the folder a
@@ -64,6 +69,27 @@ type Config struct {
 	// defaults much higher than IdleTimeout. Configured via
 	// LLMBRIDGE_PTY_IDLE_TIMEOUT; <=0 disables reaping for pty sessions.
 	PTYIdleTimeout time.Duration
+	// SignalClassifierModel is the cheap model the turn-end signal
+	// classifier calls to sort a finished turn into question |
+	// notification | neither. Configured via
+	// LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL; empty turns the classifier off
+	// everywhere, leaving the looksLikeQuestion heuristic as the only
+	// awaiting_user signal and minting no derived signals.
+	SignalClassifierModel string
+	// SignalClassifierOptOut is the set of harnesses the classifier skips
+	// — the per-harness escape hatch the on-by-default decision was taken
+	// with. Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT as a
+	// comma-separated list of harness names.
+	SignalClassifierOptOut map[msg.Harness]bool
+	// SignalClassifierTimeout bounds one classify call. On timeout the turn
+	// keeps whatever state the heuristic gave it and no signal is written.
+	// Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT.
+	SignalClassifierTimeout time.Duration
+	// SignalClassifierMaxChars caps how much of a turn's final text is sent
+	// to the classifier. A turn ending in a huge dump is still classified
+	// from its tail, which is where a question or a sign-off lives.
+	// Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS.
+	SignalClassifierMaxChars int
 }
 
 // Load reads the process environment, falling back to the addresses in
@@ -92,12 +118,17 @@ func Load() *Config {
 		PublicURL:       os.Getenv("LLMBRIDGE_PUBLIC_URL"),
 		ToolStoreURL:    envOr("LLMBRIDGE_TOOL_STORE_URL", productiondefaults.ToolStoreURL),
 		PermissionStoreURL: envOr("LLMBRIDGE_PERMISSION_STORE_URL", productiondefaults.PermissionStoreURL),
+		KanbanStoreURL:     envOr("LLMBRIDGE_KANBAN_STORE_URL", productiondefaults.KanbanStoreURL),
 		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", productiondefaults.SnapshotStoreDatabasePath()),
 		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", productiondefaults.SnapshotStoreGitPath()),
 		PurposeFolders:  parsePurposeFolders(os.Getenv("LLMBRIDGE_PURPOSE_FOLDERS")),
 		PTYRingBufferBytes: envInt("LLMBRIDGE_PTY_RING_BUFFER_BYTES", 64*1024),
 		IdleTimeout:        envDuration("LLMBRIDGE_IDLE_TIMEOUT", 15*time.Minute),
 		PTYIdleTimeout:     envDuration("LLMBRIDGE_PTY_IDLE_TIMEOUT", 60*time.Minute),
+		SignalClassifierModel:    envOr("LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL", "claude-haiku-4-5"),
+		SignalClassifierOptOut:   parseHarnessSet(os.Getenv("LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT")),
+		SignalClassifierTimeout:  envDuration("LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", 20*time.Second),
+		SignalClassifierMaxChars: envInt("LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", 6000),
 	}
 	productiondefaults.PanicIfUsedUnderTest(cfg.GuardedAddresses())
 	return cfg
@@ -124,9 +155,25 @@ func (c *Config) GuardedAddresses() map[string]string {
 		"LogStoreURL":        c.LogStoreURL,
 		"ToolStoreURL":       c.ToolStoreURL,
 		"PermissionStoreURL": c.PermissionStoreURL,
+		"KanbanStoreURL":     c.KanbanStoreURL,
 		"SnapshotStoreDB":    c.SnapshotStoreDB,
 		"SnapshotStoreGit":   c.SnapshotStoreGit,
 	}
+}
+
+// parseHarnessSet parses a comma-separated harness list into a set. Empty
+// entries are skipped; names are trimmed but otherwise passed through
+// unchanged, so a name that matches no harness simply excludes nothing.
+func parseHarnessSet(spec string) map[msg.Harness]bool {
+	out := make(map[msg.Harness]bool)
+	for _, name := range strings.Split(spec, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		out[msg.Harness(name)] = true
+	}
+	return out
 }
 
 // envDuration reads a Go duration string (e.g. "15m") from an env var,
