@@ -456,7 +456,15 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 				reason = "aborted"
 			case msg.SessionStarting,
 				msg.SessionCompacting, msg.SessionPaused, msg.SessionRateLimited,
-				msg.SessionCompleted, msg.SessionDisconnected:
+				msg.SessionCompleted, msg.SessionDisconnected,
+				// SessionIdle is the reverse of SessionCompleted, and it
+				// arrives from the same caller: handleMarkSessionDone
+				// sends completed for done=true and idle for done=false.
+				// Leaving it out of this list made the mark one-way — the
+				// folder moved back out of Archive and the state stayed
+				// completed, because next==prev suppressed the transition
+				// that writes the session row.
+				msg.SessionIdle:
 				next = ev.State.State
 				reason = "lifecycle"
 			}
