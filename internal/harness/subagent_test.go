@@ -98,7 +98,7 @@ func TestManager_SubagentFramesPromoteToOwnSession(t *testing.T) {
 	seedParent(t, m, parentID)
 
 	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
-	go m.readEvents(proc)
+	waitForPumpExit := startEventPump(t, m, proc)
 
 	feed := []msg.Event{
 		// The parent's own work.
@@ -114,7 +114,7 @@ func TestManager_SubagentFramesPromoteToOwnSession(t *testing.T) {
 		proc.ch <- ev
 	}
 	close(proc.ch)
-	waitForProcessTeardown(t, m, parentID)
+	waitForPumpExit()
 
 	sub := findSubagent(t, m, parentID)
 
@@ -161,14 +161,14 @@ func TestManager_SubagentSettlesOnTerminalTask(t *testing.T) {
 	seedParent(t, m, parentID)
 
 	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
-	go m.readEvents(proc)
+	waitForPumpExit := startEventPump(t, m, proc)
 
 	proc.ch <- taskStarted(parentID, toolUseID, taskID, "probe")
 	proc.ch <- msg.Event{Type: msg.EventBlock, BridgeSessionID: parentID, Harness: msg.HarnessClaudeCode, HarnessParentID: toolUseID,
 		Block: &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "work"}}}}
 	proc.ch <- taskUpdated(parentID, taskID, "completed")
 	close(proc.ch)
-	waitForProcessTeardown(t, m, parentID)
+	waitForPumpExit()
 
 	if got := findSubagent(t, m, parentID).State; got != string(msg.SessionIdle) {
 		t.Fatalf("subagent state = %q, want idle after task_updated status=completed", got)
@@ -186,13 +186,13 @@ func TestManager_AbandonedSubagentSettlesOnProcessExit(t *testing.T) {
 	seedParent(t, m, parentID)
 
 	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
-	go m.readEvents(proc)
+	waitForPumpExit := startEventPump(t, m, proc)
 
 	proc.ch <- taskStarted(parentID, toolUseID, taskID, "probe")
 	proc.ch <- msg.Event{Type: msg.EventBlock, BridgeSessionID: parentID, Harness: msg.HarnessClaudeCode, HarnessParentID: toolUseID,
 		Block: &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "work"}}}}
 	close(proc.ch) // process exits with the task still open
-	waitForProcessTeardown(t, m, parentID)
+	waitForPumpExit()
 
 	if got := findSubagent(t, m, parentID).State; got != string(msg.SessionError) {
 		t.Fatalf("abandoned subagent state = %q, want error", got)
@@ -209,13 +209,13 @@ func TestManager_UnknownParentToolUseFallsBackToParent(t *testing.T) {
 	seedParent(t, m, parentID)
 
 	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
-	go m.readEvents(proc)
+	waitForPumpExit := startEventPump(t, m, proc)
 
 	proc.ch <- msg.Event{Type: msg.EventBlock, BridgeSessionID: parentID, Harness: msg.HarnessClaudeCode,
 		HarnessParentID: "toolu_never_announced",
 		Block:           &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "orphan frame"}}}}
 	close(proc.ch)
-	waitForProcessTeardown(t, m, parentID)
+	waitForPumpExit()
 
 	sessions, err := m.store.ListSessions()
 	if err != nil {
@@ -240,7 +240,7 @@ func TestManager_ParentHarnessIDNotWrittenToSubagent(t *testing.T) {
 	seedParent(t, m, parentID)
 
 	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
-	go m.readEvents(proc)
+	waitForPumpExit := startEventPump(t, m, proc)
 
 	// The subagent's frame arrives FIRST carrying the parent's harness UUID —
 	// the ordering that would poison the subagent row if routing were ignored.
@@ -251,7 +251,7 @@ func TestManager_ParentHarnessIDNotWrittenToSubagent(t *testing.T) {
 		HarnessParentID: toolUseID, HarnessSessionID: parentUUID,
 		Block: &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "work"}}}}
 	close(proc.ch)
-	waitForProcessTeardown(t, m, parentID)
+	waitForPumpExit()
 
 	sub := findSubagent(t, m, parentID)
 	if sub.HarnessSessionID == parentUUID {
@@ -266,24 +266,58 @@ func TestManager_ParentHarnessIDNotWrittenToSubagent(t *testing.T) {
 	}
 }
 
-// waitForProcessTeardown blocks until readEvents has finished draining and torn
-// down the process, which is when subagent rows reach their final state.
-func waitForProcessTeardown(t *testing.T, m *Manager, parentID string) {
+// startEventPump runs the manager's event pump for proc and returns the
+// function that blocks until readEvents has RETURNED. Every test here feeds
+// proc, closes its channel, then waits — because a subagent row only reaches
+// its final state once the pump has run its exit path to the end.
+//
+// It replaces a helper called waitForProcessTeardown that waited for nothing.
+// That helper polled m.processes until the entry for the parent was absent and
+// then slept 20ms, with a comment explaining that readEvents deletes from that
+// map just before its final store writes. The explanation was about real code
+// — the exit path does delete the entry, then run pending.drop,
+// subagents.settleUnfinished (which writes the very rows these assertions
+// read) and UpdateSessionPID. But the poll never observed any of it: only
+// StartProcess populates m.processes (manager.go:423), and no test in this
+// file calls it — they run readEvents directly. So the entry was never there,
+// the first read always found it absent, and the loop body ran zero times.
+// Measured, not inferred: instrumented to count iterations, it reported 0 on
+// every run.
+//
+// So the old helper was a flat 20ms sleep wearing the name of a
+// synchronization primitive, and 20ms is a guess about how long the pump takes
+// rather than a signal that it finished. Under -race, where the binary runs
+// several times slower, the guess lost often enough to fail six tests
+// intermittently — while a plain `go test ./...` stayed green, which is the
+// part that made it invisible.
+//
+// The losses came in two shapes. Assertions read rows settleUnfinished had not
+// written yet ("subagent state = running, want error"). And the test body
+// ended while those writes were still in flight, so t.Cleanup closed the store
+// underneath them — the "sql: database is closed" and SQLITE_BUSY lines that
+// accompanied the failures.
+//
+// Waiting on the goroutine is the honest signal and needs no production
+// change. Nothing outside these tests waits on the process map to conclude a
+// session has settled — its only non-test reader is the liveness getter at
+// manager.go:442 — so there is no ordering guarantee here for readEvents to
+// announce. There is just a goroutine the test itself starts, which the test
+// can wait for.
+func startEventPump(t *testing.T, m *Manager, proc HarnessProcess) (waitForPumpExit func()) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		m.mu.RLock()
-		_, running := m.processes[parentID]
-		m.mu.RUnlock()
-		if !running {
-			// readEvents deletes from m.processes as its last map operation
-			// before the final store writes; give those a moment to land.
-			time.Sleep(20 * time.Millisecond)
-			return
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.readEvents(proc)
+	}()
+	return func() {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("readEvents did not return for %s", proc.SessionID())
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("readEvents did not tear down process for %s", parentID)
 }
 
 // blockTexts returns every text block persisted against a session.
@@ -367,7 +401,7 @@ func TestManager_SubagentIgnoresRawStatusAndUnknownStatuses(t *testing.T) {
 			seedParent(t, m, parentID)
 
 			proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
-			go m.readEvents(proc)
+			waitForPumpExit := startEventPump(t, m, proc)
 
 			proc.ch <- taskStarted(parentID, toolUseID, taskID, "probe")
 			proc.ch <- msg.Event{Type: msg.EventBlock, BridgeSessionID: parentID, Harness: msg.HarnessClaudeCode, HarnessParentID: toolUseID,
@@ -377,7 +411,7 @@ func TestManager_SubagentIgnoresRawStatusAndUnknownStatuses(t *testing.T) {
 			tc.mutate(&ev)
 			proc.ch <- ev
 			close(proc.ch)
-			waitForProcessTeardown(t, m, parentID)
+			waitForPumpExit()
 
 			// settle() must have declined. The process then exits with the task
 			// still open, so settleUnfinished closes it out as error — which is
@@ -426,14 +460,14 @@ func TestManager_OnlyAgentTasksBecomeSessions(t *testing.T) {
 			seedParent(t, m, parentID)
 
 			proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
-			go m.readEvents(proc)
+			waitForPumpExit := startEventPump(t, m, proc)
 
 			proc.ch <- taskStartedOfType(parentID, toolUseID, taskID, "probe", tc.taskType)
 			proc.ch <- msg.Event{Type: msg.EventBlock, BridgeSessionID: parentID, Harness: msg.HarnessClaudeCode, HarnessParentID: toolUseID,
 				Block: &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "work"}}}}
 			proc.ch <- taskUpdated(parentID, taskID, msg.TaskStatusCompleted)
 			close(proc.ch)
-			waitForProcessTeardown(t, m, parentID)
+			waitForPumpExit()
 
 			sessions, err := m.store.ListSessions()
 			if err != nil {
@@ -481,14 +515,14 @@ func TestSubagentIsMarkedNotBridgeControlled(t *testing.T) {
 	seedParent(t, m, parentID)
 
 	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
-	go m.readEvents(proc)
+	waitForPumpExit := startEventPump(t, m, proc)
 
 	proc.ch <- taskStarted(parentID, toolUseID, taskID, "probe")
 	proc.ch <- msg.Event{Type: msg.EventBlock, BridgeSessionID: parentID, Harness: msg.HarnessClaudeCode, HarnessParentID: toolUseID,
 		Block: &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "work"}}}}
 	proc.ch <- taskUpdated(parentID, taskID, msg.TaskStatusCompleted)
 	close(proc.ch)
-	waitForProcessTeardown(t, m, parentID)
+	waitForPumpExit()
 
 	sub := findSubagent(t, m, parentID)
 	if sub.ControlledBy != msg.ControlledByHarness {
