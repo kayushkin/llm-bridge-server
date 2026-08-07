@@ -834,12 +834,18 @@ func testDiscover(ctx context.Context, binary string) TestResult {
 	cmd := exec.CommandContext(ctx, binary, "-discover")
 	out, err := cmd.Output()
 	if err != nil {
+		// A non-zero exit means the flag is not implemented. That is a
+		// legitimate "not applicable", so it skips.
 		return TestResult{Feature: FeatureDiscover, Skipped: true, Error: fmt.Sprintf("binary does not support -discover: %v", err)}
 	}
 
+	// A zero exit means the binary accepted -discover and answered. From here
+	// on it has implemented the feature, so a bad answer is a failure, not a
+	// skip — grading it Skipped would file a broken implementation as an
+	// absent one.
 	var sessions []msg.StoredSession
 	if err := json.Unmarshal(out, &sessions); err != nil {
-		return TestResult{Feature: FeatureDiscover, Skipped: true, Error: fmt.Sprintf("invalid JSON output: %v", err)}
+		return TestResult{Feature: FeatureDiscover, Error: fmt.Sprintf("-discover exited 0 but its output does not decode as a JSON array of stored sessions: %v", err)}
 	}
 	return TestResult{Feature: FeatureDiscover, Passed: true, Duration: time.Since(start).String()}
 }

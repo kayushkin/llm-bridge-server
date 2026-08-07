@@ -6,10 +6,10 @@ every feature in `AllFeatures`:
 > **Can a harness ever be marked failed for the contract this feature names?**
 
 The question matters because the matrix is read as capability coverage. For most of its rows it
-is not. Only three of twenty-two features can fail a harness for the thing they name. On the
-other nineteen, a harness that simply does not implement the feature is filed as "not
-applicable" and the row goes grey forever — the same verdict it would get if the feature did
-not apply to it.
+is not. At `2d60e11` only three of twenty-two features could fail a harness for the thing they
+name; `discover` has since joined them (finding 3). On the other eighteen, a harness that simply
+does not implement the feature is filed as "not applicable" and the row goes grey forever — the
+same verdict it would get if the feature did not apply to it.
 
 This document is measurement, not a proposal. The choice of what to do about it is open —
 see "What this settles" at the end.
@@ -54,7 +54,7 @@ counted five times.
 | `resume` | `testResume` | **no** | — |
 | `reasoning` | `testReasoning` | **no** | — |
 | `system_prompt` | `testSystemPrompt` | **no** | — |
-| `discover` | `testDiscover` | **no** | — |
+| `discover` | `testDiscover` | **yes**, since 2026-08-07 (finding 3, fixed) | accepts `-discover`, exits 0, writes output that does not decode as `[]msg.StoredSession` |
 | `plan` | `testPlan` | **no** | — |
 | `hook` | `testHook` | **no** | — |
 | `tool_calls` | none | **no** | unconditional skip, "requires real LLM interaction" |
@@ -62,9 +62,10 @@ counted five times.
 | `usage_total` | none | **no** | unconditional skip, "server-derived" — honest, see below |
 | `turn_complete` | none | **no** | unconditional skip, same reason |
 
-Three of twenty-two are gradeable. Two more catch a malformed payload but never an absent one.
-Four have a failing path that belongs to `message`. Nine cannot fail on any input. Four have no
-test body at all.
+Four of twenty-two are gradeable — three when this audit was taken at `2d60e11`, plus `discover`
+once finding 3 was fixed. Two more catch a malformed payload but never an absent one. Four have
+a failing path that belongs to `message`. Eight cannot fail on any input. Four have no test body
+at all.
 
 `usage_total` and `turn_complete` are the honest members of that last group: the runner spawns
 harnesses as direct subprocesses and llm-bridge-server derives those two events itself, so no
@@ -116,9 +117,23 @@ Forty-eight skips that are one start failure wearing "not applicable".
 event"` for the identical condition. A harness that emits nothing and never terminates is
 failed by three of those tests and excused by two.
 
-**3. `discover` files a broken implementation as an absent one.** `testDiscover:842` skips when
-the binary supports `-discover` and returns invalid JSON. Supporting the flag and emitting
-garbage is a violation; supporting nothing is not. They get the same verdict.
+**3. `discover` filed a broken implementation as an absent one — FIXED 2026-08-07.**
+`testDiscover` skipped when the binary supported `-discover` and returned invalid JSON.
+Supporting the flag and emitting garbage is a violation; supporting nothing is not. They got the
+same verdict.
+
+The malformed-output path now returns a plain `Error`. The non-zero-exit path still skips, and
+rightly: that one really does mean the flag is not implemented. This needed none of the A/B/C
+below — the existing `Error` verdict already means "this is wrong", and malformed output from a
+supported flag is exactly that. `conformance/discover_test.go` drives `testDiscover` against
+stub binaries covering all three answers and asserts the verdict through `AddResult`'s summary,
+because `AddResult` tests `Skipped` before `Passed` and a Skipped result can never be counted
+red however its `Error` field reads. The duplicate copy of the subtest in `conformance_test.go`
+was changed with it.
+
+This moves no current grade: `discover` is 17/17 pass in the stored matrix, because it runs as a
+separate process invocation and never touches the JSON-RPC loop. It closes a hole before
+something falls in it.
 
 **4. `system_prompt` never checks the system prompt.** `testSystemPrompt` passes when the
 session reaches `SessionRunning` — which is precisely what `testStart` asserts. Its Pass
@@ -156,7 +171,8 @@ speaks to the choice without making it:
   `system_prompt` skip on a condition `start` already grades as a failure. Making them read
   `start`'s verdict rather than re-deriving it is not a grading policy, it is the removal of a
   second answer to a question already answered.
-- Findings 2, 3 and 4 and the drifted duplicate are likewise independent of the A/B/C.
+- Findings 2, 3 and 4 and the drifted duplicate are likewise independent of the A/B/C. Finding 3
+  has since been fixed on that basis, and needed no new verdict to do it.
 
 Nothing above changes any harness's grade on its own. Re-run the suite before quoting the
 numbers.

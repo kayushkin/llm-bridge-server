@@ -10,6 +10,9 @@
 //   MOCK_HARNESS_FAIL_START  - if "true", exit with error on start
 //   MOCK_HARNESS_EMIT_ERROR  - if "true", emit an error event instead of result
 //
+// Invoked with -discover it does not read stdin at all: it writes its on-disk
+// sessions to stdout as a JSON array and exits. See runDiscover.
+//
 // Tool-execution phase: every message round-trip now passes through a
 // tool_running state (a tool_call, a session_state=tool_running, and a
 // tool_result) before the terminating result. Per the interrupt-bug
@@ -25,6 +28,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strconv"
@@ -80,7 +84,34 @@ func envInt(key string, fallback int) int {
 	return fallback
 }
 
+// runDiscover answers the `-discover` flag: it writes the harness's on-disk
+// sessions to stdout as a JSON array of msg.StoredSession and exits 0.
+//
+// The mock keeps no sessions on disk, so the honest answer is an empty array —
+// the same answer a real harness gives on a machine it has never run on, and
+// the no-op that `-import-history` on a missing session is documented against
+// (conformance/runner.go, testImport).
+//
+// It has to be answered explicitly. Falling through to the JSON-RPC loop on an
+// unrecognised flag reads, from outside, as a harness that accepted -discover
+// and then wrote nothing: exit 0 with empty stdout, which decodes as neither an
+// array nor anything else.
+func runDiscover(w io.Writer) error {
+	sessions := []msg.StoredSession{}
+	return json.NewEncoder(w).Encode(sessions)
+}
+
 func main() {
+	for _, arg := range os.Args[1:] {
+		if arg == "-discover" || arg == "--discover" {
+			if err := runDiscover(os.Stdout); err != nil {
+				fmt.Fprintf(os.Stderr, "mock-harness: write discover output: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
 	harnessName := env("MOCK_HARNESS_NAME", "mock")
 	sessionID := env("MOCK_HARNESS_SESSION_ID", "mock-session-001")
 	delayMS := envInt("MOCK_HARNESS_DELAY_MS", 0)

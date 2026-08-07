@@ -520,14 +520,16 @@ func TestConformance(t *testing.T) {
 		cmd.Env = os.Environ()
 		out, err := cmd.Output()
 		if err != nil {
+			// Non-zero exit: the flag is not implemented. Not applicable.
 			result.AddResult(TestResult{Feature: FeatureDiscover, Skipped: true, Error: fmt.Sprintf("binary does not support -discover: %v", err)})
 			t.Skipf("binary does not support -discover: %v", err)
 		}
 
+		// Zero exit: the binary answered, so a bad answer is a failure.
 		var sessions []msg.StoredSession
 		if err := json.Unmarshal(out, &sessions); err != nil {
-			result.AddResult(TestResult{Feature: FeatureDiscover, Skipped: true, Error: fmt.Sprintf("invalid JSON output: %v", err)})
-			t.Skipf("invalid discover JSON output: %v", err)
+			result.AddResult(TestResult{Feature: FeatureDiscover, Error: fmt.Sprintf("-discover exited 0 but its output does not decode as a JSON array of stored sessions: %v", err)})
+			t.Fatalf("-discover exited 0 but its output does not decode as a JSON array of stored sessions: %v", err)
 		}
 
 		result.AddResult(TestResult{Feature: FeatureDiscover, Passed: true, Duration: time.Since(start).String()})
