@@ -2,9 +2,11 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -209,41 +211,128 @@ func (s *Store) GetJob(id int64) (*Job, error) {
 	return &j, nil
 }
 
-func (s *Store) UpdateJobEnabled(id int64, enabled bool) error {
-	enabledInt := 0
+// ErrEmptyJobPatch means the caller asked to update a job but named no column.
+// It is an error rather than a silent no-op because the only way to send one is
+// to have meant something the store could not see — the exact failure that let
+// `PATCH {"prompt": "..."}` return success while changing nothing.
+var ErrEmptyJobPatch = errors.New("job patch names no field to update")
+
+// JobPatch is a partial update to a job: a nil field leaves that column alone.
+// It carries every column a caller may change. The ones it deliberately omits:
+// id, created_at and updated_at belong to the store, and hold_until has its own
+// SetHold/ClearHold pair because a hold is a state with its own lifecycle, not
+// an ordinary field edit.
+type JobPatch struct {
+	Name         *string
+	Description  *string
+	Schedule     *string
+	Command      *string
+	Type         *string
+	Agent        *string
+	Prompt       *string
+	Model        *string
+	Orchestrator *string
+	SessionID    *string
+	WorkspaceID  *string
+	TimeoutSecs  *int
+	Enabled      *bool
+}
+
+// patchColumns is the patchable column set, paired with the reader that pulls
+// each column's new value out of a JobPatch. It is the single place that maps a
+// JobPatch field to its column: a field missing from here is a field UpdateJob
+// silently declines to write, which is the bug this type replaced. The api
+// package's TestJobPatchRequestCoversEveryPatchableColumn holds this list and
+// the HTTP request shape in step.
+var patchColumns = []struct {
+	Name string
+	Read func(JobPatch) (any, bool)
+}{
+	{"name", func(p JobPatch) (any, bool) { return patchValue(p.Name) }},
+	{"description", func(p JobPatch) (any, bool) { return patchValue(p.Description) }},
+	{"schedule", func(p JobPatch) (any, bool) { return patchValue(p.Schedule) }},
+	{"command", func(p JobPatch) (any, bool) { return patchValue(p.Command) }},
+	{"type", func(p JobPatch) (any, bool) { return patchValue(p.Type) }},
+	{"agent", func(p JobPatch) (any, bool) { return patchValue(p.Agent) }},
+	{"prompt", func(p JobPatch) (any, bool) { return patchValue(p.Prompt) }},
+	{"model", func(p JobPatch) (any, bool) { return patchValue(p.Model) }},
+	{"orchestrator", func(p JobPatch) (any, bool) { return patchValue(p.Orchestrator) }},
+	{"session_id", func(p JobPatch) (any, bool) { return patchValue(p.SessionID) }},
+	{"workspace_id", func(p JobPatch) (any, bool) { return patchValue(p.WorkspaceID) }},
+	{"timeout_seconds", func(p JobPatch) (any, bool) { return patchValue(p.TimeoutSecs) }},
+	{"enabled", func(p JobPatch) (any, bool) { return patchValue(p.Enabled) }},
+}
+
+func patchValue[T any](field *T) (any, bool) {
+	if field == nil {
+		return nil, false
+	}
+	return *field, true
+}
+
+// sqlValue converts a patch value to what the column stores. SQLite has no
+// boolean type — jobs.enabled is INTEGER 0/1 — so a Go bool has to become an
+// int on the way in. Everything else already matches its column.
+func sqlValue(value any) any {
+	enabled, isBool := value.(bool)
+	if !isBool {
+		return value
+	}
 	if enabled {
-		enabledInt = 1
+		return 1
 	}
-	now := time.Now().UTC()
-	res, err := s.db.Exec(`UPDATE jobs SET enabled=?, updated_at=? WHERE id=?`, enabledInt, now, id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return 0
 }
 
-func (s *Store) UpdateJobDescription(id int64, description string) error {
-	now := time.Now().UTC()
-	res, err := s.db.Exec(`UPDATE jobs SET description=?, updated_at=? WHERE id=?`, description, now, id)
-	if err != nil {
-		return err
+// PatchableColumns names every column UpdateJob can write, in statement order.
+// Exported so callers can assert their own request shape covers all of them.
+func PatchableColumns() []string {
+	names := make([]string, 0, len(patchColumns))
+	for _, col := range patchColumns {
+		names = append(names, col.Name)
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return names
 }
 
-// UpdateJobTimeout sets a job's wall-clock cap in seconds. 0 restores the
-// executor default.
-func (s *Store) UpdateJobTimeout(id int64, timeoutSecs int) error {
-	now := time.Now().UTC()
-	res, err := s.db.Exec(`UPDATE jobs SET timeout_seconds=?, updated_at=? WHERE id=?`, timeoutSecs, now, id)
+// JobFieldChange is one column a patch writes, with the value it writes.
+type JobFieldChange struct {
+	Column string
+	Value  any
+}
+
+// Changes lists the columns this patch would write, with their new values, in
+// statement order. Callers use it to log what actually moved rather than
+// guessing.
+func (p JobPatch) Changes() []JobFieldChange {
+	var changes []JobFieldChange
+	for _, col := range patchColumns {
+		value, set := col.Read(p)
+		if !set {
+			continue
+		}
+		changes = append(changes, JobFieldChange{Column: col.Name, Value: value})
+	}
+	return changes
+}
+
+// UpdateJob writes every field the patch sets and leaves the rest alone.
+// Returns ErrEmptyJobPatch if the patch names nothing, sql.ErrNoRows if the job
+// does not exist.
+func (s *Store) UpdateJob(id int64, patch JobPatch) error {
+	changes := patch.Changes()
+	assignments := make([]string, 0, len(changes)+1)
+	values := make([]any, 0, len(changes)+2)
+	for _, change := range changes {
+		assignments = append(assignments, change.Column+"=?")
+		values = append(values, sqlValue(change.Value))
+	}
+	if len(assignments) == 0 {
+		return ErrEmptyJobPatch
+	}
+	assignments = append(assignments, "updated_at=?")
+	values = append(values, time.Now().UTC(), id)
+
+	res, err := s.db.Exec(`UPDATE jobs SET `+strings.Join(assignments, ", ")+` WHERE id=?`, values...)
 	if err != nil {
 		return err
 	}

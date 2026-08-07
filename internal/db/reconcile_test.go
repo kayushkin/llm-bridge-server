@@ -95,7 +95,8 @@ func TestJobTimeoutRoundTrip(t *testing.T) {
 		t.Fatalf("unset timeout is %d, want 0", got.TimeoutSecs)
 	}
 
-	if err := s.UpdateJobTimeout(plain.ID, 900); err != nil {
+	timeoutSeconds := 900
+	if err := s.UpdateJob(plain.ID, JobPatch{TimeoutSecs: &timeoutSeconds}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.GetJob(plain.ID); got.TimeoutSecs != 900 {

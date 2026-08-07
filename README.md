@@ -11,6 +11,15 @@ Centralized job scheduler for the inber ecosystem.
 ## API
 - `GET /api/jobs` — list jobs
 - `POST /api/jobs` — create job
+- `GET /api/jobs/:id` — one job
+- `PATCH /api/jobs/:id` — edit any job field. Send only the fields you are
+  changing; the rest are left alone. A field the API does not recognise, an
+  unparseable cron expression, or an edit that would leave the job unrunnable
+  (a shell job with no command, an agent job with no prompt) is a 400 — nothing
+  is accepted and then quietly dropped. A successful edit reloads the cron
+  schedule, so it takes effect on the next tick rather than the next restart.
+- `POST /api/jobs/:id/hold` / `DELETE /api/jobs/:id/hold` — pause a job until a
+  future time, or clear the hold
 - `DELETE /api/jobs/:id` — delete job
 - `GET /api/jobs/:id/runs` — run history
 - `POST /api/jobs/:id/run` — trigger now

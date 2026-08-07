@@ -264,6 +264,26 @@ echo "    held until: $HOLD_UNTIL"
 CLEARED=$(curl -fsS --max-time 10 -X DELETE "$BASE/api/jobs/$JOB_ID/hold")
 [ "$(jq -r '.hold_until // "null"' <<<"$CLEARED")" = "null" ] || fail "hold was not cleared: $CLEARED"
 
+step "PATCH /api/jobs/$JOB_ID — a non-enabled field really lands"
+# PATCH used to decode into a struct carrying four fields and drop the rest
+# behind a 200, so an edited command or prompt reported success and changed
+# nothing. Assert on a re-read, not on the PATCH response.
+curl -fsS --max-time 10 -X PATCH "$BASE/api/jobs/$JOB_ID" \
+  -H 'Content-Type: application/json' -d '{"command":"echo patched-through"}' >/dev/null
+REREAD=$(curl -fsS --max-time 10 "$BASE/api/jobs/$JOB_ID")
+[ "$(jq -r '.command' <<<"$REREAD")" = "echo patched-through" ] \
+  || fail "PATCHed command did not persist: $REREAD"
+echo "    command edit persisted"
+
+step "PATCH /api/jobs/$JOB_ID — an unrecognised field is rejected, not swallowed"
+CODE=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X PATCH "$BASE/api/jobs/$JOB_ID" \
+  -H 'Content-Type: application/json' -d '{"promt":"typo"}')
+[ "$CODE" = "400" ] || fail "PATCH with unknown field returned $CODE, want 400"
+CODE=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X PATCH "$BASE/api/jobs/$JOB_ID" \
+  -H 'Content-Type: application/json' -d '{"schedule":"every tuesday"}')
+[ "$CODE" = "400" ] || fail "PATCH with unparseable cron returned $CODE, want 400"
+echo "    unknown field and bad cron both 400"
+
 step "PATCH /api/jobs/$JOB_ID — disable"
 PATCHED=$(curl -fsS --max-time 10 -X PATCH "$BASE/api/jobs/$JOB_ID" \
   -H 'Content-Type: application/json' -d '{"enabled":false}')

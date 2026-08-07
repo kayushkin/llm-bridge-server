@@ -112,32 +112,24 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			WorkspaceID  string `json:"workspace_id"`
 			TimeoutSecs  int    `json:"timeout_seconds"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeStrict(r, &req); err != nil {
 			writeError(w, 400, "invalid request body", err.Error())
-			return
-		}
-		if req.TimeoutSecs < 0 {
-			writeError(w, 400, "timeout_seconds must be >= 0 (0 means the default)", "")
-			return
-		}
-		if req.Name == "" || req.Schedule == "" {
-			writeError(w, 400, "name and schedule are required", "")
 			return
 		}
 		jobType := req.Type
 		if jobType == "" {
 			jobType = "shell"
 		}
-		if jobType == "shell" && req.Command == "" {
-			writeError(w, 400, "command is required for shell jobs", "")
-			return
-		}
-		if jobType == "agent" && (req.Agent == "" || req.Prompt == "") {
-			writeError(w, 400, "agent and prompt are required for agent jobs", "")
-			return
-		}
-		if jobType != "shell" && jobType != "agent" {
-			writeError(w, 400, "type must be 'shell' or 'agent'", "")
+		if problem := validateJob(db.Job{
+			Name:        req.Name,
+			Schedule:    req.Schedule,
+			Command:     req.Command,
+			Type:        jobType,
+			Agent:       req.Agent,
+			Prompt:      req.Prompt,
+			TimeoutSecs: req.TimeoutSecs,
+		}); problem != "" {
+			writeError(w, 400, problem, "")
 			return
 		}
 		job, err := s.store.CreateJobFull(db.Job{
@@ -199,32 +191,31 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, job)
 		case http.MethodPatch:
-			var req struct {
-				Enabled     *bool   `json:"enabled"`
-				Name        *string `json:"name"`
-				Description *string `json:"description"`
-				TimeoutSecs *int    `json:"timeout_seconds"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			var req jobPatchRequest
+			if err := decodeStrict(r, &req); err != nil {
 				writeError(w, 400, "invalid request body", err.Error())
 				return
 			}
-			if req.TimeoutSecs != nil {
-				if *req.TimeoutSecs < 0 {
-					writeError(w, 400, "timeout_seconds must be >= 0 (0 means the default)", "")
+			currentJob, err := s.store.GetJob(id)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					writeError(w, 404, "job not found", "")
 					return
 				}
-				if err := s.store.UpdateJobTimeout(id, *req.TimeoutSecs); err != nil {
-					if err == sql.ErrNoRows {
-						writeError(w, 404, "job not found", "")
-						return
-					}
-					writeError(w, 500, "failed to update job timeout", err.Error())
-					return
-				}
+				writeError(w, 500, "failed to get job", err.Error())
+				return
 			}
-			if req.Description != nil {
-				if err := s.store.UpdateJobDescription(id, *req.Description); err != nil {
+			patch := req.toJobPatch()
+			// Validate the job the patch would PRODUCE, not the patch itself.
+			// Clearing a shell job's command is only invalid in combination with
+			// the type it already has, and a patch read on its own cannot see that.
+			if problem := validateJob(applyJobPatch(*currentJob, patch)); problem != "" {
+				writeError(w, 400, problem, "")
+				return
+			}
+			changes := patch.Changes()
+			if len(changes) > 0 {
+				if err := s.store.UpdateJob(id, patch); err != nil {
 					if err == sql.ErrNoRows {
 						writeError(w, 404, "job not found", "")
 						return
@@ -232,32 +223,16 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 					writeError(w, 500, "failed to update job", err.Error())
 					return
 				}
-			}
-			if req.Enabled != nil {
-				// Get job info for logging before update
-				currentJob, err := s.store.GetJob(id)
-				if err != nil {
-					if err == sql.ErrNoRows {
-						writeError(w, 404, "job not found", "")
-						return
-					}
-					writeError(w, 500, "failed to get job", err.Error())
-					return
-				}
-
-				if err := s.store.UpdateJobEnabled(id, *req.Enabled); err != nil {
-					if err == sql.ErrNoRows {
-						writeError(w, 404, "job not found", "")
-						return
-					}
-					writeError(w, 500, "failed to update job", err.Error())
-					return
-				}
+				// Every field is reachable now, and the cron closures hold a copy
+				// of the job taken at load time — so reload after ANY change, not
+				// just after enabled. Reloading only on enabled is what made a
+				// written-through prompt sit unused until the next restart.
 				s.scheduler.Reload()
 
-				// Log job update
 				if s.logger != nil {
-					s.logger.LogJobUpdated(currentJob.ID, currentJob.Name, "enabled", *req.Enabled)
+					for _, change := range changes {
+						s.logger.LogJobUpdated(currentJob.ID, currentJob.Name, change.Column, change.Value)
+					}
 				}
 			}
 			job, err := s.store.GetJob(id)

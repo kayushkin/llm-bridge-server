@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"sync"
@@ -174,10 +175,33 @@ func (s *Scheduler) addJob(j db.Job) (cron.EntryID, error) {
 }
 
 func (s *Scheduler) executeJob(job db.Job) *db.Run {
-	// Re-fetch job to check current hold status
+	// The cron entry closes over the job as it looked when the schedule was
+	// loaded, and every field of it is editable through the API. Run the row as
+	// it stands NOW: reading it only for the hold check, then executing the
+	// stale copy, is what made an edited command or prompt take effect no
+	// earlier than the next reload.
 	current, err := s.store.GetJob(job.ID)
-	if err == nil && current.IsOnHold() {
-		log.Printf("skipping job %d (%s): on hold until %s", job.ID, job.Name, current.HoldUntil.Format(time.RFC3339))
+	if err == sql.ErrNoRows {
+		// Deleted between the tick and this read. Reload will drop the entry.
+		log.Printf("skipping job %d (%s): job no longer exists", job.ID, job.Name)
+		return nil
+	}
+	if err != nil {
+		// Refuse rather than fall back to the stale copy — a definition we
+		// cannot read is a definition we cannot claim to be running.
+		log.Printf("skipping job %d (%s): cannot read current definition: %v", job.ID, job.Name, err)
+		if s.logger != nil {
+			s.logger.LogError("db_error", fmt.Sprintf("Failed to read job %d before running it: %v", job.ID, err), map[string]interface{}{
+				"job_id":   job.ID,
+				"job_name": job.Name,
+			})
+		}
+		return nil
+	}
+	job = *current
+
+	if job.IsOnHold() {
+		log.Printf("skipping job %d (%s): on hold until %s", job.ID, job.Name, job.HoldUntil.Format(time.RFC3339))
 		return nil
 	}
 
@@ -230,15 +254,9 @@ func (s *Scheduler) executeJob(job db.Job) *db.Run {
 			})
 		}
 	} else {
-		// Prefer the freshly-read row so a timeout edited between ticks takes
-		// effect on this run rather than the next restart.
-		timeoutSecs := job.TimeoutSecs
-		if current != nil {
-			timeoutSecs = current.TimeoutSecs
-		}
 		timeout := executor.DefaultTimeout
-		if timeoutSecs > 0 {
-			timeout = time.Duration(timeoutSecs) * time.Second
+		if job.TimeoutSecs > 0 {
+			timeout = time.Duration(job.TimeoutSecs) * time.Second
 		}
 		result = s.exec(job.Command, timeout)
 	}

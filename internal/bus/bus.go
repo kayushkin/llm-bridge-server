@@ -245,7 +245,7 @@ func (h *Handler) handleToggleJob(cmd Command) (any, error) {
 		return nil, fmt.Errorf("job not found: %w", err)
 	}
 
-	if err := h.store.UpdateJobEnabled(cmd.ID, *cmd.Enabled); err != nil {
+	if err := h.store.UpdateJob(cmd.ID, db.JobPatch{Enabled: cmd.Enabled}); err != nil {
 		return nil, fmt.Errorf("failed to update job: %w", err)
 	}
 

@@ -68,7 +68,8 @@ func TestDisabledJobsNotScheduled(t *testing.T) {
 	})
 
 	job, _ := store.CreateJob("disabled", "* * * * *", "echo")
-	store.UpdateJobEnabled(job.ID, false)
+	disabled := false
+	store.UpdateJob(job.ID, db.JobPatch{Enabled: &disabled})
 
 	if err := sched.Start(); err != nil {
 		t.Fatal(err)
