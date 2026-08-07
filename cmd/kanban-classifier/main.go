@@ -428,6 +428,22 @@ func applyDoNotTrack(kc *kanbanclient.Client, sess session, msgCount int) {
 
 // ============================ Apply classifier output ============================
 
+// provenanceTrailer renders the line every classifier-written card body ends
+// with. It exists once because both write paths need it and the update path
+// rebuilds the body from scratch: while only applyNew stamped the session id,
+// every state update erased it. Measured 2026-08-07 — 19 of the 21 open
+// classifier todos whose body named no session had one until an update
+// overwrote it, recoverable from their noteboard revisions.
+//
+// The authoritative link is the id-keyed `session` card_link this same code
+// writes to kanban-store, and nothing joins on this line. It is the
+// human-readable echo of that link, for a reader of the board — which is
+// exactly why it has to survive an update rather than only a create.
+func provenanceTrailer(action, sessionID, state string) string {
+	return fmt.Sprintf("_%s classifier @ %s · session=%s · state=%s_",
+		action, time.Now().UTC().Format(time.RFC3339), sessionID, state)
+}
+
 func applyExisting(kc *kanbanclient.Client, sess session, report *Report) {
 	for _, ec := range report.ExistingCards {
 		colName := stateToColumn(ec.State)
@@ -440,11 +456,11 @@ func applyExisting(kc *kanbanclient.Client, sess session, report *Report) {
 			log.Printf("[%s] move card %s → %s: %v", sess.SessionID, ec.CardID, colName, err)
 			continue
 		}
-		body := fmt.Sprintf("%s\n\n_classifier @ %s — state=%s_\n",
-			ec.Summary, time.Now().UTC().Format(time.RFC3339), ec.State)
+		body := ec.Summary
 		if ec.Blocker != "" {
-			body += "**Blocker:** " + ec.Blocker + "\n"
+			body += "\n\n**Blocker:** " + ec.Blocker
 		}
+		body += "\n\n" + provenanceTrailer("updated by", sess.SessionID, ec.State) + "\n"
 		if err := kc.PatchCardBody(ec.CardID, body); err != nil {
 			log.Printf("[%s] patch existing card %s: %v", sess.SessionID, ec.CardID, err)
 		}
@@ -475,8 +491,7 @@ func applyNew(kc *kanbanclient.Client, sess session, existingCards []kanbanclien
 		if nt.Blocker != "" {
 			body += "\n\n**Blocker:** " + nt.Blocker
 		}
-		body += fmt.Sprintf("\n\n_created by classifier @ %s · session=%s · state=%s_\n",
-			time.Now().UTC().Format(time.RFC3339), sess.SessionID, nt.State)
+		body += "\n\n" + provenanceTrailer("created by", sess.SessionID, nt.State) + "\n"
 		args := kanbanclient.CreateCardArgs{
 			ColumnName: colName,
 			Title:      truncate(nt.Title, 80),
