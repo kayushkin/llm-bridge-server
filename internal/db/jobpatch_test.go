@@ -25,6 +25,7 @@ func TestUpdateJobWritesOnlyTheFieldsThePatchSets(t *testing.T) {
 	created, err := store.CreateJobFull(Job{
 		Name: "agent-job", Schedule: "0 5 * * *", Type: "agent",
 		Agent: "claude-code", Prompt: "old", Model: "sonnet", TimeoutSecs: 60,
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +77,10 @@ func TestUpdateJobClearsAFieldSetToItsZeroValue(t *testing.T) {
 
 func TestUpdateJobWritesEveryPatchableColumn(t *testing.T) {
 	store := patchTestStore(t)
-	created, _ := store.CreateJobFull(Job{Name: "j", Schedule: "* * * * *", Command: "echo"})
+	// Enabled: true so that patching it to false below is an observable
+	// change. Created disabled, the enabled assertion would hold whether or
+	// not UpdateJob wrote that column.
+	created, _ := store.CreateJobFull(Job{Name: "j", Schedule: "* * * * *", Command: "echo", Enabled: true})
 
 	name, description, schedule, command := "renamed", "desc", "0 1 * * *", "echo two"
 	jobType, agent, prompt, model := "agent", "claude-code", "p", "opus"
@@ -130,7 +134,8 @@ func TestUpdateJobOnMissingRowIsErrNoRows(t *testing.T) {
 // has to be converted on the way in. Both directions have to survive it.
 func TestEnabledRoundTripsThroughSQLite(t *testing.T) {
 	store := patchTestStore(t)
-	created, _ := store.CreateJobFull(Job{Name: "j", Schedule: "* * * * *", Command: "echo"})
+	// Enabled: true so the first step of the loop is a real transition.
+	created, _ := store.CreateJobFull(Job{Name: "j", Schedule: "* * * * *", Command: "echo", Enabled: true})
 
 	for _, want := range []bool{false, true, false} {
 		if err := store.UpdateJob(created.ID, JobPatch{Enabled: &want}); err != nil {

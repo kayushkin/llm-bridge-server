@@ -124,3 +124,34 @@ func TestInvalidScheduleLogsWarning(t *testing.T) {
 		t.Fatalf("expected 1 entry (hold-clearer only) for invalid schedule, got %d", len(sched.cron.Entries()))
 	}
 }
+
+// TestAJobCreatedDisabledIsNeverScheduled — the point of being able to create
+// a job in the off position. TestDisabledJobsNotScheduled above reaches the
+// same end state by create-then-PATCH, which leaves the job armed in between;
+// on a "* * * * *" schedule that window is long enough to fire. This asserts
+// the job is never added to cron at all, so there is no window.
+func TestAJobCreatedDisabledIsNeverScheduled(t *testing.T) {
+	store := testStore(t)
+	ran := 0
+	sched := NewWithExecutor(store, func(string, time.Duration) executor.Result {
+		ran++
+		return executor.Result{Status: "success"}
+	})
+
+	if _, err := store.CreateJobFull(db.Job{
+		Name: "born-off", Schedule: "* * * * *", Command: "echo",
+		Type: "shell", Enabled: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sched.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer sched.Stop()
+
+	// 1 entry = the hold-clearing periodic task, and nothing else.
+	if got := len(sched.cron.Entries()); got != 1 {
+		t.Fatalf("cron has %d entries, want 1 (the hold-clearer alone)", got)
+	}
+}

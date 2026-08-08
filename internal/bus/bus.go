@@ -182,6 +182,10 @@ func (h *Handler) handleCreateJob(cmd Command) (any, error) {
 		Model:        cmd.Model,
 		Orchestrator: cmd.Orchestrator,
 		SessionID:    cmd.SessionID,
+		// Command.Enabled already existed for toggle_job, and create_job read
+		// it and threw it away — so a caller could ask for a disabled job over
+		// the bus, be told "success", and get an armed one.
+		Enabled: db.EnabledOnCreate(cmd.Enabled),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create job: %w", err)

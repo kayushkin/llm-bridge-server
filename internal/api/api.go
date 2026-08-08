@@ -121,6 +121,11 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			SessionID    string `json:"session_id"`
 			WorkspaceID  string `json:"workspace_id"`
 			TimeoutSecs  int    `json:"timeout_seconds"`
+			// Pointer, for the same reason jobPatchRequest.Enabled is one: a
+			// plain bool cannot tell "enabled: false" from "field absent", and
+			// those must mean different things here. Absent means true, so no
+			// existing caller changes behaviour; false means create it off.
+			Enabled *bool `json:"enabled"`
 		}
 		if err := decodeStrict(r, &req); err != nil {
 			writeError(w, 400, "invalid request body", err.Error())
@@ -155,6 +160,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			SessionID:    req.SessionID,
 			WorkspaceID:  req.WorkspaceID,
 			TimeoutSecs:  req.TimeoutSecs,
+			Enabled:      db.EnabledOnCreate(req.Enabled),
 		})
 		if err != nil {
 			writeError(w, 500, "failed to create job", err.Error())

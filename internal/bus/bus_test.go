@@ -163,3 +163,43 @@ func TestHandleRequest_UnknownAction(t *testing.T) {
 		t.Fatal("expected error for unknown action")
 	}
 }
+
+// TestHandleCreateJobHonoursEnabled — Command.Enabled already existed for
+// toggle_job, and create_job read it and threw it away, so a caller could ask
+// for a disabled job over the bus, be told "success", and get an armed one.
+func TestHandleCreateJobHonoursEnabled(t *testing.T) {
+	disabled := false
+	enabled := true
+	for _, tc := range []struct {
+		name      string
+		requested *bool
+		want      bool
+	}{
+		{"absent means armed", nil, true},
+		{"false means off", &disabled, false},
+		{"true means armed", &enabled, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbStore, scheduler, logger, handler, err := setupTest()
+			if err != nil {
+				t.Fatalf("setup failed: %v", err)
+			}
+			scheduler.SetLogger(logger)
+
+			if _, err := handler.handleCreateJob(Command{
+				Action: "create_job", Name: "j", Schedule: "0 0 * * *",
+				Command: "echo test", Enabled: tc.requested,
+			}); err != nil {
+				t.Fatalf("handleCreateJob failed: %v", err)
+			}
+
+			jobs, _ := dbStore.ListJobs()
+			if len(jobs) != 1 {
+				t.Fatalf("expected 1 job, got %d", len(jobs))
+			}
+			if jobs[0].Enabled != tc.want {
+				t.Fatalf("enabled = %t, want %t", jobs[0].Enabled, tc.want)
+			}
+		})
+	}
+}

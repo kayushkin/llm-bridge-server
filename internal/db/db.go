@@ -290,24 +290,50 @@ func (s *Store) CreateJob(name, schedule, command string) (*Job, error) {
 		Schedule: schedule,
 		Command:  command,
 		Type:     "shell",
+		Enabled:  true,
 	})
 }
 
+// EnabledOnCreate resolves the optional "enabled" field of a job-creation
+// request. Absent means true, so every caller written before the field existed
+// keeps creating armed jobs; false means create it in the off position.
+//
+// Both creation edges — POST /api/jobs and the bus create_job command — share
+// this so the two cannot drift apart on what an omitted field means.
+func EnabledOnCreate(requested *bool) bool {
+	if requested == nil {
+		return true
+	}
+	return *requested
+}
+
+// CreateJobFull writes every field of j, Enabled included.
+//
+// It used to bind a literal 1 for enabled and then overwrite j.Enabled with
+// true on the way out, so there was no way to create a job in the off
+// position: the only path was create-then-PATCH, which arms the job for the
+// window between the two calls. On a */5 schedule that window is long enough
+// to fire.
+//
+// The default now lives at the edge — the HTTP handler and the bus handler
+// each read an absent "enabled" as true — because that is where a caller's
+// intent is known. This function has no default and no opinion; it stores
+// what it is handed. A caller that builds a Job literal and forgets Enabled
+// therefore gets a DISABLED job, which is the safe direction to be wrong in.
 func (s *Store) CreateJobFull(j Job) (*Job, error) {
 	now := time.Now().UTC()
 	if j.Type == "" {
 		j.Type = "shell"
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO jobs (name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, timeout_seconds, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
-		j.Name, j.Description, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.Model, j.Orchestrator, j.SessionID, j.WorkspaceID, j.TimeoutSecs, now, now,
+		`INSERT INTO jobs (name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, timeout_seconds, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		j.Name, j.Description, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.Model, j.Orchestrator, j.SessionID, j.WorkspaceID, j.TimeoutSecs, j.Enabled, now, now,
 	)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
 	j.ID = id
-	j.Enabled = true
 	j.CreatedAt = now
 	j.UpdatedAt = now
 	return &j, nil
