@@ -218,6 +218,51 @@ func TestDiscoveredSessionKeepsARecognisedPurpose(t *testing.T) {
 	}
 }
 
+// A session discovery imported must not be flagged by the taxonomy guard.
+//
+// The test above pins two of the three classification fields. The third is
+// origin, and leaving it unpinned is what let the guard go red: discovery
+// writes origin="discovery" — the honest answer, since discovery is what
+// created the row — but the subagent registry entry listed only the two
+// adapters, so every discovered subagent came back "unexpected-origin". 64
+// sessions on this host, and the guard had no way to go green while a caller
+// doing the right thing was reported as a fault.
+//
+// Checking the whole triple through the guard's own classifier, rather than
+// field by field, is the point: the guard fails on the combination, so that
+// is what a test has to assert.
+func TestDiscoveredSubagentPassesTheTaxonomyGuard(t *testing.T) {
+	_, st, _ := testServerWithInstance(t, "claude_code")
+
+	bridgeID, _, err := st.UpsertDiscoveredSession(
+		"11111111-2222-3333-4444-555555555555",
+		"",
+		"go find the thing",
+		"claude_code",
+		"inst-cc-local",
+		msg.PurposeSubagent,
+		"Subagents",
+		discoveredAt, discoveredAt,
+	)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	sess, err := st.GetSession(bridgeID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+
+	problems := msg.ClassifyPurpose(msg.SessionType(sess.Type), sess.Purpose, sess.Origin)
+	for _, p := range problems {
+		t.Errorf("taxonomy guard flags a session discovery classified correctly: %s (%s) want=%q got=%q",
+			p.Kind, p.Detail, p.Want, p.Got)
+	}
+	if sess.Origin != msg.OriginDiscovery {
+		t.Errorf("origin = %q, want %q — discovery created this row; naming an adapter that only found it is the bug this replaced",
+			sess.Origin, msg.OriginDiscovery)
+	}
+}
+
 // discoveredAt is a fixed timestamp for discovery fixtures. Sessions imported
 // off disk carry the harness's own created/updated times, so the value only
 // has to be stable, not current.

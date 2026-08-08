@@ -1798,7 +1798,20 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 	// declared anything about it, and the honest origin is "discovery".
 	// Where the adapter or a prompt prefix did recognise a purpose — a
 	// conformance probe, a subagent, a scheduled job — that is a real signal
-	// rather than a guess, so its registered type and origin win instead.
+	// rather than a guess, so its registered type wins instead.
+	//
+	// The type is adopted; the origin never is. Origin answers who created
+	// the row, and that is discovery no matter what the session turned out
+	// to be — which is the whole correction described above.
+	//
+	// This used to also adopt spec.Origins[0] whenever the registry listed
+	// exactly one origin. That is the replaced bug, narrowed rather than
+	// removed: a discovered workflow-subagent would have been stamped
+	// "llm-bridge-claudecode" and a discovered autoworker "scheduler",
+	// naming services that created nothing. Narrowing a wrong rule to the
+	// case where its guess is unambiguous does not make the guess true, it
+	// makes it rare and hard to see. A registry entry discovery can assign
+	// lists OriginDiscovery among its origins instead.
 	sessionType := msg.SessionTypeExternal
 	origin := msg.OriginDiscovery
 	if source == "" {
@@ -1808,9 +1821,6 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 		}
 	} else if spec, ok := msg.LookupPurpose(source); ok {
 		sessionType = spec.Type
-		if len(spec.Origins) == 1 {
-			origin = spec.Origins[0]
-		}
 	}
 
 	_, err = s.db.Exec(
