@@ -29,6 +29,10 @@
 //
 // Review is best-effort: if a nudge send fails, we settle the session anyway so
 // the curator closes the card normally. Review must never wedge a card.
+//
+// One ordering is load-bearing rather than incidental: the review-pass-N tag is
+// written BEFORE the nudge is sent, and the nudge is sent only if that write
+// succeeded. See reviewCompletedSession.
 package main
 
 import (
@@ -177,52 +181,26 @@ func main() {
 			continue
 		}
 
-		tags, err := kc.ListEntityTags(entityTypeSession, sessionID)
-		if err != nil {
-			log.Printf("[%s] list entity tags: %v — skip", title, err)
-			errors++
-			continue
-		}
-		if hasTag(tags, tagSettled) {
-			counts.alreadySettled++ // awaiting curator close
-			continue
-		}
-		passes := passCount(tags)
-
-		if passes >= maxPasses {
-			log.Printf("[%s] %d/%d passes done → settle (session_id=%s)", title, passes, maxPasses, sessionID)
-			if *dryRun {
-				continue
-			}
-			if err := settle(kc, c, sessionID, fmt.Sprintf("review loop guard hit (%d passes)", passes)); err != nil {
-				log.Printf("[%s] settle: %v", title, err)
-				errors++
-				continue
-			}
+		action := reviewCompletedSession(
+			kc, sessionID, *dryRun,
+			func(message string) error { return sendMessage(*bridgeURL, sessionID, message) },
+			func(note string) { stampBody(kc, c, note) },
+			func(format string, args ...any) {
+				log.Printf("[%s] "+format, append([]any{title}, args...)...)
+			},
+		)
+		switch action {
+		case actionAlreadySettled:
+			counts.alreadySettled++
+		case actionNudged:
+			nudged++
+		case actionSettled:
 			settled++
-			continue
-		}
-
-		pass := passes + 1
-		log.Printf("[%s] completed, sending self-review nudge %d/%d (session_id=%s)", title, pass, maxPasses, sessionID)
-		if *dryRun {
-			continue
-		}
-		if err := sendMessage(*bridgeURL, sessionID, reviewNudge(pass, maxPasses)); err != nil {
-			// Best-effort: never wedge the card on a send failure. Settle so the
-			// curator closes it as it would have without review.
-			log.Printf("[%s] nudge send failed: %v — settling so curator can close", title, err)
-			if serr := settle(kc, c, sessionID, fmt.Sprintf("review nudge send failed: %v", err)); serr != nil {
-				log.Printf("[%s] settle after send failure: %v", title, serr)
-			}
+		case actionError:
 			errors++
-			continue
+		case actionDryRun:
+			// Reported by the logger; counted nowhere, as before.
 		}
-		if err := kc.AddEntityTag(entityTypeSession, sessionID, fmt.Sprintf("%s%d", tagPassPrefix, pass)); err != nil {
-			log.Printf("[%s] tag review-pass-%d: %v", title, pass, err)
-		}
-		stampBody(kc, c, fmt.Sprintf("self-review nudge %d/%d sent", pass, maxPasses))
-		nudged++
 	}
 	log.Printf("[reviewer] done: nudged=%d settled=%d skipped=%d (%s) errors=%d",
 		nudged, settled, counts.total(), counts.breakdown(), errors)
@@ -270,6 +248,128 @@ func (s skipCounts) breakdown() string {
 	return strings.Join(parts, " ")
 }
 
+// ============================ the review decision ============================
+
+// reviewAction names what one tick did with one completed autoworker session.
+type reviewAction int
+
+const (
+	actionError reviewAction = iota
+	actionAlreadySettled
+	actionNudged
+	actionSettled
+	actionDryRun
+)
+
+// reviewStore is the slice of kanban-store the review decision needs. Narrow so
+// a test can supply a store whose writes fail while its reads succeed — which is
+// the exact failure mode this function is shaped around.
+type reviewStore interface {
+	ListEntityTags(entityType, entityRef string) ([]kanbanclient.EntityTag, error)
+	AddEntityTag(entityType, entityRef, tag string) error
+}
+
+// reviewCompletedSession runs one review tick against one completed autoworker
+// session: settle it if the pass budget is spent, otherwise send the next
+// self-review nudge.
+//
+// # The ordering is the loop guard
+//
+// The review-pass-N tag is written BEFORE the nudge is sent, and the nudge is
+// sent only if that write succeeded. This is not bookkeeping. maxPasses is
+// enforced by counting review-pass-N tags on the session, so a nudge sent
+// without its tag durably stored is a nudge the next tick cannot see: passes
+// never advances, nudge 1 goes out again, and again every five minutes. Each
+// send respawns the agent with `claude --resume`, so an uncounted nudge is an
+// unbounded agent-spawn loop — precisely the budget burn maxPasses exists to
+// cap. Writing the tag first means the money is never spent ahead of the record
+// of spending it.
+//
+// # Why settling on a failed tag write is not enough on its own
+//
+// The obvious remedy — send, and if the tag write fails, settle instead — does
+// not close this. settle() writes review-settled through the same
+// POST /api/entities/{type}/{ref}/tags call that just failed, against the same
+// store. In the one failure mode that produces the defect (kanban-store
+// answering reads and refusing writes) the remedy fails too, and it fails with
+// the nudge already sent. The loop is left uncapped exactly as before. Only
+// refusing to SEND until the counter is durable closes it.
+//
+// That ordering also makes the cap hold under a failing settle, which the old
+// order did not: a send failure now advances the counter on its way past, so
+// maxPasses bounds the number of sends whichever store write is broken.
+//
+// # It must still never wedge a card
+//
+// A card whose tag write fails is settled so the curator can close it, matching
+// the precedent for a failed send. If that settle write fails too, nothing is
+// sent and the tick reports an error — the card waits for the curator's idle
+// grace window rather than being nudged again.
+func reviewCompletedSession(
+	store reviewStore,
+	sessionID string,
+	dryRun bool,
+	send func(message string) error,
+	stamp func(note string),
+	logf func(format string, args ...any),
+) reviewAction {
+	tags, err := store.ListEntityTags(entityTypeSession, sessionID)
+	if err != nil {
+		logf("list entity tags: %v — skip", err)
+		return actionError
+	}
+	if hasTag(tags, tagSettled) {
+		return actionAlreadySettled // awaiting curator close
+	}
+	passes := passCount(tags)
+
+	if passes >= maxPasses {
+		logf("%d/%d passes done → settle (session_id=%s)", passes, maxPasses, sessionID)
+		if dryRun {
+			return actionDryRun
+		}
+		if err := settleSession(store, stamp, sessionID,
+			fmt.Sprintf("review loop guard hit (%d passes)", passes)); err != nil {
+			logf("settle: %v", err)
+			return actionError
+		}
+		return actionSettled
+	}
+
+	pass := passes + 1
+	logf("completed, sending self-review nudge %d/%d (session_id=%s)", pass, maxPasses, sessionID)
+	if dryRun {
+		return actionDryRun
+	}
+
+	// Count the pass before spending it. A nudge whose tag did not land is
+	// invisible to the next tick's budget check, so we must not send one.
+	if err := store.AddEntityTag(entityTypeSession, sessionID,
+		fmt.Sprintf("%s%d", tagPassPrefix, pass)); err != nil {
+		logf("tag review-pass-%d: %v — not sending nudge %d, settling so curator can close",
+			pass, err, pass)
+		if serr := settleSession(store, stamp, sessionID,
+			fmt.Sprintf("review pass tag unwritable: %v", err)); serr != nil {
+			logf("settle after tag failure: %v", serr)
+		}
+		return actionError
+	}
+
+	if err := send(reviewNudge(pass, maxPasses)); err != nil {
+		// Best-effort: never wedge the card on a send failure. Settle so the
+		// curator closes it as it would have without review. The pass tag is
+		// already stored, so the cap holds even if this settle fails.
+		logf("nudge send failed: %v — settling so curator can close", err)
+		if serr := settleSession(store, stamp, sessionID,
+			fmt.Sprintf("review nudge send failed: %v", err)); serr != nil {
+			logf("settle after send failure: %v", serr)
+		}
+		return actionError
+	}
+	stamp(fmt.Sprintf("self-review nudge %d/%d sent", pass, maxPasses))
+	return actionNudged
+}
+
 // ============================ review logic helpers ============================
 
 // reviewNudge is the self-review prompt sent to a completed autoworker session.
@@ -286,13 +386,18 @@ You earlier finished a turn on this autoworker task and your process exited, so 
 Do not invent or pad scope — only finish work that clearly belongs to this exact task. No chat; just work or sign off.`, pass, max)
 }
 
-// settle tags the session review-settled (so the curator may close the card)
-// and stamps a short audit note on the card body.
-func settle(kc *kanbanclient.Client, c kanbanclient.CardView, sessionID, reason string) error {
-	if err := kc.AddEntityTag(entityTypeSession, sessionID, tagSettled); err != nil {
+// settleSession tags the session review-settled (so the curator may close the
+// card) and stamps a short audit note on the card body.
+//
+// The tag write is the part that matters and the part that can fail; the stamp
+// is cosmetic and is only reached once the tag has landed. Callers must treat a
+// returned error as "this session is NOT settled" — it is the same
+// POST .../tags call every other write here uses, so it fails whenever they do.
+func settleSession(store reviewStore, stamp func(note string), sessionID, reason string) error {
+	if err := store.AddEntityTag(entityTypeSession, sessionID, tagSettled); err != nil {
 		return err
 	}
-	stampBody(kc, c, "review settled — "+reason)
+	stamp("review settled — " + reason)
 	return nil
 }
 
