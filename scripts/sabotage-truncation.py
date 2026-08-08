@@ -76,10 +76,18 @@ TARGETS = [
 
         # "Valid UTF-8 within budget" is satisfied by giving up entirely. This
         # is the case the exact-value assertions exist for.
-        Case("helper trims to nothing", [("return text[:byteOffset]", 'return ""')]),
+        #
+        # Written as `byteOffset*0` rather than `""`. The plain empty string is
+        # a deletion of byteOffset's only use, so it orphans the variable and
+        # the case reports `compile error` instead of a score -- which hides
+        # whether any test would have caught the behaviour. Multiplying by zero
+        # is the same value with every identifier still live.
+        Case("helper trims to nothing", [("return text[:byteOffset]", "return text[:byteOffset*0]")]),
 
+        # Replacing the whole walk removes byteOffset and runeCount together,
+        # so nothing is orphaned. Unused parameters are legal in Go.
         Case("CONTROL known-positive: the helper returns a fixed string",
-             [("return text[:byteOffset]", 'return "SABOTAGE"')]),
+             [(RUNE_WALK, '\treturn "SABOTAGE"')]),
         Case("CONTROL known-negative: <= 0 rewritten as < 1, identical for ints",
              [("if maxRunes <= 0 {", "if maxRunes < 1 {")],
              expected_unnoticed="a behavioural no-op; it must NOT be caught"),
