@@ -133,9 +133,9 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		jobType := req.Type
 		if jobType == "" {
-			jobType = "shell"
+			jobType = db.DefaultJobType
 		}
-		if problem := validateJob(db.Job{
+		if problem := db.ValidateJob(db.Job{
 			Name:        req.Name,
 			Schedule:    req.Schedule,
 			Command:     req.Command,
@@ -225,7 +225,7 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 			// Validate the job the patch would PRODUCE, not the patch itself.
 			// Clearing a shell job's command is only invalid in combination with
 			// the type it already has, and a patch read on its own cannot see that.
-			if problem := validateJob(applyJobPatch(*currentJob, patch)); problem != "" {
+			if problem := db.ValidateJob(applyJobPatch(*currentJob, patch)); problem != "" {
 				writeError(w, 400, problem, "")
 				return
 			}

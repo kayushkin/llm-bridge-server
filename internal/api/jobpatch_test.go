@@ -257,3 +257,24 @@ func TestJobPatchRequestCoversEveryPatchableColumn(t *testing.T) {
 		t.Fatalf("jobPatchRequest fields %v do not match patchable columns %v", requestFields, patchable)
 	}
 }
+
+// TestCreateRejectsUnknownJobType existed nowhere until db.ValidateJob was
+// shared with the bus, and the gap showed up the only way it could: deleting
+// the unknown-type refusal reddened the bus suite and left this one green. The
+// HTTP edge has always run the check — it simply had no test saying so, which
+// makes the refusal one careless edit from vanishing on this side while the bus
+// kept it. The rule is one function now, so pin it at both callers.
+func TestCreateRejectsUnknownJobType(t *testing.T) {
+	srv := setup(t, "")
+	body, _ := json.Marshal(map[string]any{
+		"name": "j", "schedule": "* * * * *", "type": "banana", "command": "echo",
+	})
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/jobs", bytes.NewReader(body)))
+	if w.Code != 400 {
+		t.Fatalf("expected 400 for an unknown job type, got %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "type must be one of") {
+		t.Errorf("refused for the wrong reason: %s", w.Body.String())
+	}
+}

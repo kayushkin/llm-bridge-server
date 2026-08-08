@@ -160,19 +160,9 @@ func (h *Handler) handleListJobs() (any, error) {
 func (h *Handler) handleCreateJob(cmd Command) (any, error) {
 	jobType := cmd.Type
 	if jobType == "" {
-		jobType = "shell"
+		jobType = db.DefaultJobType
 	}
-	if cmd.Name == "" || cmd.Schedule == "" {
-		return nil, fmt.Errorf("name and schedule are required")
-	}
-	if jobType == "shell" && cmd.Command == "" {
-		return nil, fmt.Errorf("command is required for shell jobs")
-	}
-	if jobType == "agent" && (cmd.Agent == "" || cmd.Prompt == "") {
-		return nil, fmt.Errorf("agent and prompt are required for agent jobs")
-	}
-
-	job, err := h.store.CreateJobFull(db.Job{
+	job := db.Job{
 		Name:         cmd.Name,
 		Schedule:     cmd.Schedule,
 		Command:      cmd.Command,
@@ -186,7 +176,17 @@ func (h *Handler) handleCreateJob(cmd Command) (any, error) {
 		// it and threw it away — so a caller could ask for a disabled job over
 		// the bus, be told "success", and get an armed one.
 		Enabled: db.EnabledOnCreate(cmd.Enabled),
-	})
+	}
+	// This used to be a hand-rolled subset of db.ValidateJob that checked the
+	// same four names and skipped the two checks with teeth — it never parsed
+	// the cron expression, and it branched on "shell" and "agent" rather than
+	// rejecting anything else, so an unknown type fell through into the
+	// database. Both edges share the rule now; a check added there reaches here.
+	if problem := db.ValidateJob(job); problem != "" {
+		return nil, fmt.Errorf("%s", problem)
+	}
+
+	created, err := h.store.CreateJobFull(job)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create job: %w", err)
 	}
@@ -195,8 +195,10 @@ func (h *Handler) handleCreateJob(cmd Command) (any, error) {
 		log.Printf("bus: failed to reload scheduler after job creation: %v", err)
 	}
 
-	h.logger.LogJobCreated(job.ID, job.Name, job.Schedule, job.Command)
-	return map[string]any{"success": true, "data": job}, nil
+	// created, not job: the id and the timestamps only exist on the row the
+	// store handed back, and job is the request as it arrived.
+	h.logger.LogJobCreated(created.ID, created.Name, created.Schedule, created.Command)
+	return map[string]any{"success": true, "data": created}, nil
 }
 
 func (h *Handler) handleDeleteJob(cmd Command) (any, error) {

@@ -2,12 +2,8 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"sort"
-	"strings"
 
-	"github.com/robfig/cron/v3"
 	"github.com/slava/scheduler/internal/db"
 )
 
@@ -77,71 +73,6 @@ func assign[T any](target *T, value *T) {
 	if value != nil {
 		*target = *value
 	}
-}
-
-// requiredField is a field a job type cannot run without, paired with the
-// reader that pulls it off a job.
-type requiredField struct {
-	Name string
-	Read func(db.Job) string
-}
-
-// jobTypeRequirements is the closed set of job types, each mapped to the fields
-// that type cannot run without.
-var jobTypeRequirements = map[string][]requiredField{
-	"shell": {{"command", func(j db.Job) string { return j.Command }}},
-	"agent": {
-		{"agent", func(j db.Job) string { return j.Agent }},
-		{"prompt", func(j db.Job) string { return j.Prompt }},
-	},
-}
-
-// validateJob reports why a job is unrunnable, or "" if it is fine. Both POST
-// and PATCH run it, so a job cannot be created invalid nor edited into an
-// invalid state — PATCH validates the merged result, not the patch.
-func validateJob(job db.Job) string {
-	if job.Name == "" {
-		return "name is required"
-	}
-	if job.Schedule == "" {
-		return "schedule is required"
-	}
-	// The cron expression used to go unchecked, so a job with an unparseable
-	// schedule was accepted, then skipped with a log line at load time and never
-	// ran again. Reject it at the edge instead.
-	if _, err := cron.ParseStandard(job.Schedule); err != nil {
-		return fmt.Sprintf("invalid schedule %q: %s", job.Schedule, err)
-	}
-	if job.TimeoutSecs < 0 {
-		return "timeout_seconds must be >= 0 (0 means the default)"
-	}
-	required, known := jobTypeRequirements[job.Type]
-	if !known {
-		return fmt.Sprintf("type must be one of %s", strings.Join(knownJobTypes(), ", "))
-	}
-	names := make([]string, 0, len(required))
-	missing := false
-	for _, field := range required {
-		names = append(names, field.Name)
-		if field.Read(job) == "" {
-			missing = true
-		}
-	}
-	if missing {
-		return fmt.Sprintf("%s is required for %s jobs", strings.Join(names, " and "), job.Type)
-	}
-	return ""
-}
-
-// knownJobTypes lists the accepted types, sorted — map iteration order is
-// random and an error message that reshuffles itself is not worth debugging.
-func knownJobTypes() []string {
-	types := make([]string, 0, len(jobTypeRequirements))
-	for jobType := range jobTypeRequirements {
-		types = append(types, "'"+jobType+"'")
-	}
-	sort.Strings(types)
-	return types
 }
 
 // decodeStrict rejects a body carrying a field the request type does not have,
