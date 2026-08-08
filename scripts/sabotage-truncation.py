@@ -18,6 +18,18 @@ dropped them would score higher and measure less.
 
 Run with --diffs at least once and read each applied edit against its label. A
 row prints the name it was given, not the edit it made.
+
+⚠️ The internal/server cases run under `-run DisplayName|AutoRename` rather
+than the whole package. The full server suite takes 128s, so eleven cases
+against it is half an hour, and the narrow set is the honest scope anyway:
+CAUGHT then means "caught by the tests that claim this mechanism" rather than
+"caught by something, somewhere". It is the stronger reading, not the weaker
+one.
+
+It does make one claim cheaper than it should be. A KNOWN GAP asserts that
+NOTHING catches the mutation, and under a filter that only proves the filtered
+tests miss it. Both gap cases were therefore also run against the unfiltered
+package once, and both were UNNOTICED there too.
 """
 
 import sys
@@ -26,7 +38,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sabotage import Case, REPO, score  # noqa: E402
 
-SERVER_PKG = ["./internal/server/"]
+# See the note in the docstring: scoped to the tests that claim these
+# mechanisms, because the unfiltered package takes 128s per case.
+SERVER_PKG = ["-run", "DisplayName|AutoRename", "./internal/server/"]
 
 HELPER = REPO / "internal" / "textutil" / "runelimit.go"
 SESSIONS = REPO / "internal" / "server" / "sessions.go"
