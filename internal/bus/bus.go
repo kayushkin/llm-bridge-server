@@ -11,10 +11,18 @@ import (
 	"github.com/slava/scheduler/internal/logging"
 )
 
-// Command represents a bus command
+// Command represents a bus command.
+//
+// The job-shaped fields here have to stay in step with the POST /api/jobs
+// request struct in internal/api, because both build the same db.Job. They fell
+// out of step once already: description, workspace_id and timeout_seconds
+// existed on the HTTP edge only, and handleRequest decodes with a plain
+// json.Unmarshal, so a publisher that sent them got success and a row with all
+// three empty. Adding a creation field to one edge means adding it to both.
 type Command struct {
 	Action       string `json:"action"`
 	Name         string `json:"name,omitempty"`
+	Description  string `json:"description,omitempty"`
 	Schedule     string `json:"schedule,omitempty"`
 	Command      string `json:"command,omitempty"`
 	Type         string `json:"type,omitempty"`
@@ -23,6 +31,8 @@ type Command struct {
 	Model        string `json:"model,omitempty"`
 	Orchestrator string `json:"orchestrator,omitempty"`
 	SessionID    string `json:"session_id,omitempty"`
+	WorkspaceID  string `json:"workspace_id,omitempty"`
+	TimeoutSecs  int    `json:"timeout_seconds,omitempty"`
 	ID           int64  `json:"id,omitempty"`
 	Enabled      *bool  `json:"enabled,omitempty"`
 	JobID        int64  `json:"job_id,omitempty"`
@@ -164,6 +174,7 @@ func (h *Handler) handleCreateJob(cmd Command) (any, error) {
 	}
 	job := db.Job{
 		Name:         cmd.Name,
+		Description:  cmd.Description,
 		Schedule:     cmd.Schedule,
 		Command:      cmd.Command,
 		Type:         jobType,
@@ -172,6 +183,8 @@ func (h *Handler) handleCreateJob(cmd Command) (any, error) {
 		Model:        cmd.Model,
 		Orchestrator: cmd.Orchestrator,
 		SessionID:    cmd.SessionID,
+		WorkspaceID:  cmd.WorkspaceID,
+		TimeoutSecs:  cmd.TimeoutSecs,
 		// Command.Enabled already existed for toggle_job, and create_job read
 		// it and threw it away — so a caller could ask for a disabled job over
 		// the bus, be told "success", and get an armed one.
