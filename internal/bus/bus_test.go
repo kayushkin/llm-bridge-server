@@ -3,6 +3,8 @@ package bus
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,6 +151,39 @@ func TestHandleRequest_InvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
+	// handleRequest returns an error from eight places, so "it returned an error"
+	// says nothing about which one. Delete the unmarshal check and this input still
+	// errors -- an empty Action falls through to the default branch. Name the reason.
+	if !strings.Contains(err.Error(), "invalid command format") {
+		t.Fatalf("error should name the malformed command, got: %v", err)
+	}
+}
+
+// TestAMalformedCommandIsNeverDispatched pins the property the error message only
+// describes: a command that fails to unmarshal must not reach the switch. A type
+// error on a later field is the case that can tell the two apart -- encoding/json
+// fills the fields it did decode and reports the failure afterwards, so Action and
+// ID arrive populated and the dispatch would go through if nothing stopped it.
+func TestAMalformedCommandIsNeverDispatched(t *testing.T) {
+	dbStore, _, _, handler, err := setupTest()
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	job, err := dbStore.CreateJob("must-survive", "0 0 * * *", "echo hi")
+	if err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+
+	// Valid action, valid id, and an "enabled" that is a string where a bool belongs.
+	raw := []byte(fmt.Sprintf(`{"action":"delete_job","id":%d,"enabled":"yes"}`, job.ID))
+	if _, err := handler.handleRequest(raw); err == nil {
+		t.Fatal("expected error for a command that does not unmarshal")
+	}
+
+	if _, err := dbStore.GetJob(job.ID); err != nil {
+		t.Fatalf("job %d was deleted by a command that never parsed: %v", job.ID, err)
+	}
 }
 
 func TestHandleRequest_UnknownAction(t *testing.T) {
@@ -161,6 +196,12 @@ func TestHandleRequest_UnknownAction(t *testing.T) {
 	_, err = handler.handleRequest(cmd)
 	if err == nil {
 		t.Fatal("expected error for unknown action")
+	}
+	// Same reason as above: pin which of the eight producers fired, so that a future
+	// failure earlier in handleRequest cannot keep this green with the default branch
+	// broken.
+	if !strings.Contains(err.Error(), "unknown action") {
+		t.Fatalf("error should name the unknown action, got: %v", err)
 	}
 }
 
