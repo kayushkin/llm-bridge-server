@@ -129,6 +129,71 @@ func TestFitKeepingNewest_KeepsOneEntryEvenWhenOversized(t *testing.T) {
 	}
 }
 
+// TestFitKeepingNewest_NeverExceedsTheBudgetItWasHanded pins the marker
+// accounting directly, because the call-site assertion in
+// TestBuildDigestOverBudgetIsStillValidUTF8 detects it only by luck of
+// arithmetic: on that fixture it reddens at four of eight pads, and at the
+// other four the section had enough slack to absorb the marker. A detector
+// that depends on the fixture's spare room is one resize away from silence.
+//
+// So sweep every budget instead of picking one. The interesting range is
+// narrow and the marker's length changes with the count it announces, so a
+// hand-chosen budget can sit either side of a digit boundary and prove
+// nothing.
+func TestFitKeepingNewest_NeverExceedsTheBudgetItWasHanded(t *testing.T) {
+	entries := make([]string, 12)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("%02d %s\n", i, strings.Repeat("x", 40))
+	}
+	newest := entries[len(entries)-1]
+
+	// The documented exception, pinned rather than stepped around: handed less
+	// than the newest entry and the marker announcing everything else need,
+	// fitKeepingNewest emits both anyway and goes over. Rendering the section
+	// empty, or keeping the entry while hiding the drop, would each be worse —
+	// the digest's rule is that every drop is announced in the text.
+	//
+	// 26 is that marker at its longest here, "(… 11 thing(s) omitted)\n",
+	// written as a literal so a change to the marker's wording fails this test
+	// instead of silently moving the boundary it is supposed to fix.
+	const longestMarker = 26
+	if got := fitKeepingNewest(entries, len(newest), "thing(s) omitted"); len(got) != len(newest)+longestMarker {
+		t.Fatalf("at a budget of exactly the newest entry, want it plus the %d-character marker, got %d characters: %q",
+			longestMarker, len(got), got)
+	}
+
+	markerSeen, wholeSeen := 0, 0
+	for budget := len(newest) + longestMarker; budget <= totalLen(entries)+40; budget++ {
+		got := fitKeepingNewest(entries, budget, "thing(s) omitted")
+
+		if len(got) > budget {
+			t.Fatalf("budget=%d: returned %d characters, over by %d: %q",
+				budget, len(got), len(got)-budget, got)
+		}
+		if !strings.HasSuffix(got, newest) {
+			t.Fatalf("budget=%d: the newest entry was dropped", budget)
+		}
+		// The marker is only worth charging for if it tells the truth about
+		// how many entries it stands in for.
+		if kept := strings.Count(got, "\n") - strings.Count(got, "omitted)"); kept != len(entries) {
+			if !strings.Contains(got, fmt.Sprintf("(… %d thing(s) omitted)", len(entries)-kept)) {
+				t.Fatalf("budget=%d: kept %d of %d entries and announced none of the drop: %q",
+					budget, kept, len(entries), got)
+			}
+			markerSeen++
+		} else {
+			wholeSeen++
+		}
+	}
+
+	// Without both, the sweep above is satisfied by a helper that always drops
+	// everything or never drops anything, and the marker is never charged at all.
+	if markerSeen == 0 || wholeSeen == 0 {
+		t.Fatalf("sweep covered %d budgets that dropped entries and %d that fit them whole; both must be non-zero",
+			markerSeen, wholeSeen)
+	}
+}
+
 func TestNormalizeTitle(t *testing.T) {
 	same := []([2]string){
 		{"Build orchestrator task summary split view", "build  orchestrator, task summary — split view!"},

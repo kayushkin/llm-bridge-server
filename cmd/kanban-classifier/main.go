@@ -1189,10 +1189,10 @@ func buildExistingCardsSection(existingCards []kanbanclient.EntityCardEntry, bud
 	}
 
 	entries := withBodies
-	if totalLen(entries) > budget-len(header) {
+	if totalLen(entries) > budgetForEntries(header, budget) {
 		entries = titlesOnly
 	}
-	return header + fitKeepingNewest(entries, budget-len(header), "older card(s) omitted") + "\n"
+	return renderSectionKeepingNewest(header, entries, budget, "older card(s) omitted")
 }
 
 func buildUserPromptsSection(msgs []bridgeMessage, budget int) string {
@@ -1206,7 +1206,7 @@ func buildUserPromptsSection(msgs []bridgeMessage, budget int) string {
 	if len(entries) == 0 {
 		return header + "(none)\n\n"
 	}
-	return header + fitKeepingNewest(entries, budget-len(header), "earlier prompt(s) omitted") + "\n"
+	return renderSectionKeepingNewest(header, entries, budget, "earlier prompt(s) omitted")
 }
 
 func buildAssistantTurnsSection(msgs []bridgeMessage, budget int) string {
@@ -1228,7 +1228,7 @@ func buildAssistantTurnsSection(msgs []bridgeMessage, budget int) string {
 	for i, m := range withText {
 		entries = append(entries, fmt.Sprintf("  turn %d (%s):\n  %s\n\n", i+1, m.Timestamp, textcut.TruncateToByteBudgetOnRuneBoundary(m.Content, 600)))
 	}
-	return header + fitKeepingNewest(entries, budget-len(header), "earlier turn(s) omitted") + "\n"
+	return renderSectionKeepingNewest(header, entries, budget, "earlier turn(s) omitted")
 }
 
 func buildToolActivitySection(msgs []bridgeMessage) string {
@@ -1265,10 +1265,36 @@ func buildToolActivitySection(msgs []bridgeMessage) string {
 	return b.String()
 }
 
+// omissionMarker announces that the oldest omittedCount entries were dropped
+// from a section, and is empty when nothing was dropped. Its length varies with
+// the count it carries, which is why fitKeepingNewest recomputes it per
+// candidate cut rather than reserving one worst case up front.
+func omissionMarker(omittedCount int, omittedNoun string) string {
+	if omittedCount <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("(… %d %s)\n", omittedCount, omittedNoun)
+}
+
 // fitKeepingNewest returns as many trailing entries as fit in budget, in
 // order, with a marker naming how many leading ones were dropped. It keeps at
-// least one entry even when that entry alone overflows — a section that
-// silently renders empty is how the truncation bug hid for so long.
+// least one entry even when that entry and its marker overflow — a section
+// that silently renders empty is how the truncation bug hid for so long, and
+// announcing the drop is worth the same again. That pair is the only way this
+// returns more than budget, and it is reachable only on a budget smaller than
+// one entry, which digestCharBudget is nowhere near.
+//
+// THE MARKER IS CHARGED TO THE BUDGET, and it has to be. It used not to be, so
+// every section that dropped anything overran its share by the marker's length
+// (~34 characters — the ellipsis is U+2026, three of them). Widening
+// digestCharBudget does not fix that: the overrun is one marker per section
+// that drops anything, so it scales with the number of sections, which is a
+// property of the builder and not of the budget.
+//
+// It hid because a second bug cancelled it out. Under the old raw byte cut
+// every truncated prompt came out at exactly 1503 bytes and the arithmetic
+// happened to land inside the budget; the rune-safe walk-back makes them 1500,
+// one more entry fits, and the unbudgeted marker no longer has slack to hide in.
 func fitKeepingNewest(entries []string, budget int, omittedNoun string) string {
 	if len(entries) == 0 {
 		return ""
@@ -1276,20 +1302,51 @@ func fitKeepingNewest(entries []string, budget int, omittedNoun string) string {
 	first := len(entries)
 	used := 0
 	for i := len(entries) - 1; i >= 0; i-- {
-		if used+len(entries[i]) > budget && i != len(entries)-1 {
+		// Keeping entries[i:] costs those entries plus the marker announcing
+		// the i still dropped — which is nothing at all once i reaches 0, so
+		// the last entry taken pays the marker back.
+		costOfKeeping := used + len(entries[i]) + len(omissionMarker(i, omittedNoun))
+		if costOfKeeping > budget && i != len(entries)-1 {
 			break
 		}
 		used += len(entries[i])
 		first = i
 	}
 	var b strings.Builder
-	if first > 0 {
-		fmt.Fprintf(&b, "(… %d %s)\n", first, omittedNoun)
-	}
+	b.WriteString(omissionMarker(first, omittedNoun))
 	for _, e := range entries[first:] {
 		b.WriteString(e)
 	}
 	return b.String()
+}
+
+// sectionTrailer ends every fitted digest section, so the next section's
+// header starts after a blank line. It is part of what the section returns, so
+// it is charged to the section's budget like anything else it emits.
+const sectionTrailer = "\n"
+
+// budgetForEntries is how much of a section's budget its entries may use, once
+// the header and trailer the section always emits are paid for. Every caller
+// goes through this rather than subtracting for itself: the header was already
+// subtracted at all three call sites and the trailer at none of them, and one
+// unbudgeted character per section is exactly the shape of defect this whole
+// arithmetic exists to prevent.
+func budgetForEntries(header string, sectionBudget int) int {
+	return sectionBudget - len(header) - len(sectionTrailer)
+}
+
+// renderSectionKeepingNewest renders one fitted digest section — header, then
+// as many of the newest entries as fit, then the trailer — in at most
+// sectionBudget characters.
+//
+// buildDigest's whole-digest guarantee is only as strong as this one. It hands
+// each section a share of the budget and then concatenates what comes back, so
+// a section returning more than it was handed overruns the assembled digest by
+// exactly that much, with nothing downstream to catch it. The lone exception is
+// fitKeepingNewest's deliberate one: an entry too big to fit is emitted anyway
+// rather than rendering the section empty.
+func renderSectionKeepingNewest(header string, entries []string, sectionBudget int, omittedNoun string) string {
+	return header + fitKeepingNewest(entries, budgetForEntries(header, sectionBudget), omittedNoun) + sectionTrailer
 }
 
 func totalLen(entries []string) int {
