@@ -13,6 +13,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/conformance"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/textutil"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -101,11 +102,29 @@ func displayNameFromMessage(text string) string {
 		text = strings.TrimSpace(text[:i])
 	}
 	const maxRunes = 80
-	runes := []rune(text)
-	if len(runes) > maxRunes {
-		return string(runes[:maxRunes]) + "…"
+	if truncated := textutil.TruncateToRuneLimit(text, maxRunes); truncated != text {
+		return truncated + "…"
 	}
 	return text
+}
+
+// maxDiscoveredDisplayNameRunes bounds the title derived for a session that
+// discovery found on disk.
+const maxDiscoveredDisplayNameRunes = 100
+
+// displayNameForDiscoveredSession derives the title shown for a discovered
+// session. The prompt identifies a session better than its project directory
+// does, so the prompt wins wherever there is one.
+//
+// The limit counts runes, not bytes. The name is stored and then served as
+// JSON to the dash, so a byte cut would survive the request and reach the
+// browser as a replacement character.
+func displayNameForDiscoveredSession(prompt, project string) string {
+	displayName := prompt
+	if displayName == "" {
+		displayName = project
+	}
+	return textutil.TruncateToRuneLimit(displayName, maxDiscoveredDisplayNameRunes)
 }
 
 // Request types are canonical — defined in llm-bridge/msg/server.go.
@@ -946,14 +965,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	var imported, linkedCount int
 	var pendingLinks []discoveredLink
 	for _, ds := range sessions {
-		// Use prompt as display name - it's more useful for identifying sessions
-		displayName := ds.Prompt
-		if displayName == "" {
-			displayName = ds.Project
-		}
-		if len(displayName) > 100 {
-			displayName = displayName[:100]
-		}
+		displayName := displayNameForDiscoveredSession(ds.Prompt, ds.Project)
 
 		// Sessions discovered locally belong to the local instance
 		instanceID := localInstances[ds.Harness]

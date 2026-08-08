@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/textutil"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -64,9 +65,7 @@ func (s *Server) handleAutoRenameSession(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "renamer_session_id is required", http.StatusBadRequest)
 		return
 	}
-	if r := []rune(name); len(r) > maxAutoRenameRunes {
-		name = string(r[:maxAutoRenameRunes])
-	}
+	name = textutil.TruncateToRuneLimit(name, maxAutoRenameRunes)
 	turnCount, err := s.store.CountUserMessages(bridgeID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

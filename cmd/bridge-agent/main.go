@@ -39,6 +39,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/textutil"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -343,10 +344,10 @@ func errorText(ev msg.Event) string {
 }
 
 func displayName(prompt string) string {
-	const limit = 80
+	const maxRunes = 80
 	name := strings.Join(strings.Fields(prompt), " ")
-	if len(name) > limit {
-		name = name[:limit] + "…"
+	if truncated := textutil.TruncateToRuneLimit(name, maxRunes); truncated != name {
+		name = truncated + "…"
 	}
 	return "delegate: " + name
 }
