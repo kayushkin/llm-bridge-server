@@ -56,8 +56,13 @@ const (
 	tagTrigger       = "task-completion-loop"
 	tagSubtask       = "task-completion-loop-subtask"
 	tagScoped        = "scoped"
-	linkTypeParent   = "parent_card"
-	maxScopePerTick  = 5
+	// tagGroupPrefix must stay identical to kanban-dispatcher's constant of the
+	// same name — this is the wire format between the two binaries. It is spelled
+	// out in both rather than shared, along with every other constant in this
+	// block; see the residual filed alongside this change.
+	tagGroupPrefix  = "group:"
+	linkTypeParent  = "parent_card"
+	maxScopePerTick = 5
 )
 
 var defaultColumns = []string{columnGoals, columnBacklog, columnInProgress, columnDone, columnFailed}
@@ -239,42 +244,107 @@ func scopeParent(ctx context.Context, cfg config, kc *kanbanclient.Client, p par
 	}
 
 	for i, st := range plan.Subtasks {
-		title := strings.TrimSpace(st.Title)
-		if title == "" {
+		draft := buildSubcardDraft(p, st, cfg.RoleTags)
+		if draft.Title == "" {
 			log.Printf("[%s] subtask %d has empty title — skip", p.title(), i)
 			continue
 		}
-		body := st.Body
-		if body == "" {
-			body = "(no body)"
-		}
-		body = fmt.Sprintf("%s\n\n---\n_Sub-task of [%s](kanban://%s) — group: `%s`_\n",
-			body, p.title(), p.cardID, st.GroupKey)
-		tags := []string{tagSubtask}
-		if g := strings.TrimSpace(st.GroupKey); g != "" {
-			tags = append(tags, "group:"+g)
-		}
-		if cfg.RoleTags {
-			if c := strings.TrimSpace(st.Capability); c != "" {
-				tags = append(tags, "capability:"+c)
-			}
-			if r := strings.TrimSpace(st.Role); r != "" {
-				tags = append(tags, "role:"+r)
-			}
+		// The decomposer's output can lose information without being invalid.
+		// Say so per sub-task rather than dropping it in silence.
+		for _, note := range draft.Notes {
+			log.Printf("[%s] subtask %d %q: %s", p.title(), i, draft.Title, note)
 		}
 		// Persist parent linkage as a card_link, not a tag, so we can do
 		// reverse lookups via /api/entities/parent_card/<id>/cards.
-		childID, err := createSubcard(kc, backlogCol, title, body, tags, p.cardID)
+		childID, err := createSubcard(kc, backlogCol, draft.Title, draft.Body, draft.Tags, p.cardID)
 		if err != nil {
-			return fmt.Errorf("create subcard %q: %w", title, err)
+			return fmt.Errorf("create subcard %q: %w", draft.Title, err)
 		}
-		log.Printf("[%s] subcard %s → %q", p.title(), childID, title)
+		log.Printf("[%s] subcard %s → %q", p.title(), childID, draft.Title)
 	}
 
 	if err := kc.AddEntityTag("note", p.cardID, tagScoped); err != nil {
 		return fmt.Errorf("mark scoped: %w", err)
 	}
 	return nil
+}
+
+// groupKeyUnsetLabel is what a blank group_key renders as in log lines and in
+// the sub-task body. It is a LABEL and never an identity: when the key is blank
+// no tagGroupPrefix tag is emitted at all, so nothing keys, groups, compares or
+// routes on this string, and it must never be read back to find a card.
+//
+// It is deliberately NOT kebab-case and deliberately NOT backticked. The prompt
+// asks the decomposer for kebab-case keys and displayGroupKey wraps a real key
+// in backticks, so a reader can always tell a key the decomposer returned from
+// this marker standing in for one it did not. Rendering the raw key here was
+// the defect: a blank one printed as an empty pair of backticks and read as a
+// group whose name was the empty string.
+//
+// kanban-dispatcher names its own substitution the same way on the consumer
+// side; the two are independent and must not be compared to each other.
+const groupKeyUnsetLabel = "(unset)"
+
+// displayGroupKey renders an already-trimmed group_key for humans. The result
+// MUST NOT be compared, keyed or grouped on — use the trimmed key itself for
+// that, and treat "" as "this sub-task groups with nobody".
+func displayGroupKey(trimmed string) string {
+	if trimmed == "" {
+		return groupKeyUnsetLabel
+	}
+	return "`" + trimmed + "`"
+}
+
+// subcardDraft is one sub-task card, built from the decomposer's output without
+// touching the network so the rendering and tagging rules can be tested directly.
+type subcardDraft struct {
+	Title string
+	Body  string
+	Tags  []string
+	// Notes records information the decomposer's output lost that would
+	// otherwise vanish silently — a sub-task the model declined to group, say.
+	// scopeParent logs these. They are prose for a human; nothing parses them.
+	Notes []string
+}
+
+// buildSubcardDraft turns one decomposed sub-task into the card we will create.
+// A blank Title means "skip this sub-task"; the caller decides that, because
+// only it knows the sub-task's index for the log line.
+//
+// This deliberately does NOT invent a group_key for a sub-task that arrived
+// without one. Which sub-tasks may share a session is a scoping decision that
+// belongs to the decomposer, and kanban-dispatcher is correct for an untagged
+// card without help from here.
+func buildSubcardDraft(p parentCard, st Subtask, roleTags bool) subcardDraft {
+	d := subcardDraft{Title: strings.TrimSpace(st.Title)}
+
+	body := st.Body
+	if body == "" {
+		body = "(no body)"
+	}
+	group := strings.TrimSpace(st.GroupKey)
+	d.Body = fmt.Sprintf("%s\n\n---\n_Sub-task of [%s](kanban://%s) — group: %s_\n",
+		body, p.title(), p.cardID, displayGroupKey(group))
+
+	d.Tags = []string{tagSubtask}
+	if group != "" {
+		d.Tags = append(d.Tags, tagGroupPrefix+group)
+	} else {
+		// The schema marks group_key required and the prompt names a fallback
+		// key for the degenerate case, so arriving here is a decomposer failure
+		// this binary is equipped to notice. It used to notice it silently.
+		d.Notes = append(d.Notes, "no group_key returned — filed with no group, will not share a session with any sibling")
+	}
+
+	if roleTags {
+		if c := strings.TrimSpace(st.Capability); c != "" {
+			d.Tags = append(d.Tags, "capability:"+c)
+		}
+		if r := strings.TrimSpace(st.Role); r != "" {
+			d.Tags = append(d.Tags, "role:"+r)
+		}
+	}
+	return d
 }
 
 // createSubcard creates a card in the given column and attaches a parent_card
@@ -344,7 +414,9 @@ func buildDigest(p parentCard) string {
 func summarizePlan(plan *Plan) string {
 	titles := make([]string, 0, len(plan.Subtasks))
 	for _, st := range plan.Subtasks {
-		titles = append(titles, fmt.Sprintf("%s[%s]", st.Title, st.GroupKey))
+		// Same blank-key trap as the card body had: the raw key rendered a
+		// missing group as "Title[]", which reads as a group named "".
+		titles = append(titles, fmt.Sprintf("%s[%s]", st.Title, displayGroupKey(strings.TrimSpace(st.GroupKey))))
 	}
 	return strings.Join(titles, " | ")
 }
@@ -389,9 +461,14 @@ const roleTagsInstructions = `Additionally, for EACH sub-task provide:
 // api.anthropic.com directly; the oneshot bridge path takes the bare schema.
 func decomposeSchema(roleTags bool) map[string]any {
 	props := map[string]any{
-		"title":     map[string]any{"type": "string", "maxLength": 100},
-		"body":      map[string]any{"type": "string"},
-		"group_key": map[string]any{"type": "string", "maxLength": 60},
+		"title": map[string]any{"type": "string", "maxLength": 100},
+		"body":  map[string]any{"type": "string"},
+		// minLength 1 because listing group_key in "required" does not reject "" —
+		// an empty string satisfies {"type":"string"}, so the requirement bought
+		// nothing on its own. This is advisory: the schema is a hint to the model,
+		// nothing validates the tool result on this side, so buildSubcardDraft
+		// still has to handle a blank key and say so. Both halves are needed.
+		"group_key": map[string]any{"type": "string", "minLength": 1, "maxLength": 60},
 	}
 	required := []string{"title", "group_key"}
 	if roleTags {
