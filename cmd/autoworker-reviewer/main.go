@@ -9,8 +9,8 @@
 //
 // Registered as a scheduler shell job running every ~5 minutes (alongside
 // kanban-curator). Each tick, for every In Progress card on the "Agent runs"
-// board whose session_id is an autoworker session (prefix "autoworker-") and is
-// in state "completed":
+// board whose session llm-bridge-server reports with purpose="autoworker" and
+// state "completed":
 //
 //   - passes < maxPasses → POST /sessions/{id}/send a self-review nudge. The
 //     bridge transparently respawns the harness with `claude --resume <native
@@ -56,10 +56,20 @@ const (
 	linkTypeSession   = "session"
 	entityTypeSession = "session"
 
-	// autoworkerPrefix is the canonical session_id prefix minted by autoworker's
-	// publishWorker ("autoworker-<name>-<ns>"). Used as the origin gate so we
-	// never nudge dispatcher ("tcl-") or attended sessions.
-	autoworkerPrefix = "autoworker-"
+	// purposeAutoworker is the value llm-bridge-server stores in a session's
+	// "purpose" field for a session autoworker created. It is the origin gate:
+	// we never nudge dispatcher or attended sessions.
+	//
+	// This gate used to prefix-match the session_id against "autoworker-".
+	// llm-bridge-server owns the answer to "what created this session" and
+	// publishes it as a field, so matching a naming convention embedded in the
+	// id was a name-based join onto a record that has an authoritative one.
+	// Measured 2026-08-08 across all 8,669 live sessions: 4,988 carry
+	// purpose="autoworker" and 613 of them (12.3%) have a session_id that does
+	// NOT start with "autoworker-" — they are "br_"-prefixed, created between
+	// 2026-04-23 and 2026-06-03, and the prefix gate silently classed every one
+	// of them as somebody else's session.
+	purposeAutoworker = "autoworker"
 
 	// maxPasses caps self-review continuations per session before we force
 	// settle. Two nudges is the agreed budget/flap tradeoff.
@@ -122,10 +132,16 @@ func main() {
 	}
 	log.Printf("[reviewer] board=%q in-progress=%d", *boardName, len(inProgress))
 
-	var nudged, settled, skipped, errors int
+	// Every skip is counted under the reason it happened. A single "skipped"
+	// total is what let this binary report success for eleven days while doing
+	// nothing: "skipped=139" is identical whether the board holds 139 attended
+	// cards or the origin gate is broken and rejecting every autoworker card on
+	// it. The counters below are the difference between those two readings.
+	var counts skipCounts
+	var nudged, settled, errors int
 	for _, c := range inProgress {
 		if c.Item == nil {
-			skipped++
+			counts.noItem++
 			continue
 		}
 		title, _ := c.Item["title"].(string)
@@ -136,22 +152,28 @@ func main() {
 			errors++
 			continue
 		}
-		// Origin gate: only autoworker sessions; skip dispatcher/attended cards.
-		if sessionID == "" || !strings.HasPrefix(sessionID, autoworkerPrefix) {
-			skipped++
+		if sessionID == "" {
+			counts.noSessionLink++
 			continue
 		}
 
-		state, _, err := getSessionState(*bridgeURL, sessionID)
+		sess, err := getSession(*bridgeURL, sessionID)
 		if err != nil {
 			log.Printf("[%s] bridge GET /sessions/%s: %v — skip", title, sessionID, err)
 			errors++
 			continue
 		}
+		// Origin gate: only autoworker sessions; skip dispatcher/attended cards.
+		// Asks llm-bridge-server what made the session rather than reading a
+		// naming convention out of its id — see purposeAutoworker.
+		if !createdByAutoworker(sess) {
+			counts.notAutoworker++
+			continue
+		}
 		// Only completed sessions get reviewed. error/aborted/disconnected are the
 		// curator's to fail; idle/running mean the agent is mid-flight.
-		if state != "completed" {
-			skipped++
+		if sess.State != "completed" {
+			counts.notCompleted++
 			continue
 		}
 
@@ -162,7 +184,7 @@ func main() {
 			continue
 		}
 		if hasTag(tags, tagSettled) {
-			skipped++ // already settled; awaiting curator close
+			counts.alreadySettled++ // awaiting curator close
 			continue
 		}
 		passes := passCount(tags)
@@ -202,7 +224,50 @@ func main() {
 		stampBody(kc, c, fmt.Sprintf("self-review nudge %d/%d sent", pass, maxPasses))
 		nudged++
 	}
-	log.Printf("[reviewer] done: nudged=%d settled=%d skipped=%d errors=%d", nudged, settled, skipped, errors)
+	log.Printf("[reviewer] done: nudged=%d settled=%d skipped=%d (%s) errors=%d",
+		nudged, settled, counts.total(), counts.breakdown(), errors)
+}
+
+// ============================ skip accounting ============================
+
+// skipCounts records why each In Progress card was passed over. Five different
+// exits used to share one "skipped" counter, so the tick line could not tell a
+// board of attended cards apart from an origin gate rejecting everything.
+type skipCounts struct {
+	noItem         int // card carries no noteboard item
+	noSessionLink  int // card has no session link to review
+	notAutoworker  int // session exists but something else created it
+	notCompleted   int // autoworker session still mid-flight, or already failed
+	alreadySettled int // reviewed to settlement; waiting on the curator to close
+}
+
+func (s skipCounts) total() int {
+	return s.noItem + s.noSessionLink + s.notAutoworker + s.notCompleted + s.alreadySettled
+}
+
+// breakdown renders every non-zero reason. Reasons that did not fire are left
+// out so the common case stays short, and "skipped=N ()" with an empty
+// breakdown is impossible by construction: total() sums these same fields.
+func (s skipCounts) breakdown() string {
+	parts := make([]string, 0, 5)
+	for _, r := range []struct {
+		name string
+		n    int
+	}{
+		{"no-item", s.noItem},
+		{"no-session-link", s.noSessionLink},
+		{"not-autoworker", s.notAutoworker},
+		{"not-completed", s.notCompleted},
+		{"already-settled", s.alreadySettled},
+	} {
+		if r.n > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", r.name, r.n))
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, " ")
 }
 
 // ============================ review logic helpers ============================
@@ -278,28 +343,58 @@ func passCount(tags []kanbanclient.EntityTag) int {
 
 // ============================ bridge client ============================
 
-func getSessionState(bridgeURL, sessionID string) (state string, updatedAt string, err error) {
+// bridgeSession is the part of an llm-bridge-server session this binary reads.
+// Purpose is what created the session; it is the origin gate (purposeAutoworker).
+type bridgeSession struct {
+	SessionID string `json:"session_id"`
+	State     string `json:"state"`
+	UpdatedAt string `json:"updated_at"`
+	Purpose   string `json:"purpose"`
+}
+
+// createdByAutoworker reports whether autoworker created this session.
+//
+// It reads Purpose and deliberately ignores SessionID. The id is carried on the
+// struct anyway because this gate used to match it against an "autoworker-"
+// prefix, and 613 live sessions carry purpose="autoworker" without that prefix;
+// TestCreatedByAutoworkerIgnoresTheSessionID pins the distinction, so putting a
+// prefix check back in here turns that test red rather than silently dropping
+// an eighth of the population again.
+func createdByAutoworker(s bridgeSession) bool {
+	return s.Purpose == purposeAutoworker
+}
+
+// getSession fetches one session from llm-bridge-server. It replaced
+// getSessionState when the origin gate stopped reading the session_id and
+// started reading the field the bridge owns, so the name no longer described
+// what came back.
+func getSession(bridgeURL, sessionID string) (bridgeSession, error) {
 	url := fmt.Sprintf("%s/sessions/%s", strings.TrimRight(bridgeURL, "/"), sessionID)
 	resp, err := http.Get(url)
 	if err != nil {
-		return "", "", err
+		return bridgeSession{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return "", "", fmt.Errorf("not found")
+		return bridgeSession{}, fmt.Errorf("not found")
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", "", fmt.Errorf("HTTP %s — %s", resp.Status, strings.TrimSpace(string(body)))
+		return bridgeSession{}, fmt.Errorf("HTTP %s — %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	var s struct {
-		State     string `json:"state"`
-		UpdatedAt string `json:"updated_at"`
-	}
+	var s bridgeSession
 	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
-		return "", "", err
+		return bridgeSession{}, err
 	}
-	return s.State, s.UpdatedAt, nil
+	// A session with no purpose cannot be gated on. Refuse rather than let an
+	// empty string fall through to a comparison it can only lose: the caller
+	// would silently read "not an autoworker session" from a field the bridge
+	// simply did not send, which is the exact failure this gate was changed to
+	// remove.
+	if s.Purpose == "" {
+		return bridgeSession{}, fmt.Errorf("session %s: llm-bridge-server returned no purpose field", sessionID)
+	}
+	return s, nil
 }
 
 // sendMessage posts a follow-up message to a session. For a completed session

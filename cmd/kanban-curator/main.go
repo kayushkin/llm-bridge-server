@@ -56,10 +56,22 @@ const (
 	tagAutoworker      = "autoworker"
 	linkTypeSession    = "session"
 
-	// autoworkerPrefix is the canonical session_id prefix minted by autoworker.
-	// Cards whose session matches it are held from closing to Done until the
-	// autoworker-reviewer marks the session review-settled (see reviewSettled).
-	autoworkerPrefix  = "autoworker-"
+	// purposeAutoworker is the value llm-bridge-server stores in a session's
+	// "purpose" field for a session autoworker created. Cards whose session
+	// carries it are held from closing to Done until the autoworker-reviewer
+	// marks the session review-settled (see reviewSettled), and are the only
+	// cards this binary reaps out of a non-terminal wait state.
+	//
+	// Both gates used to prefix-match the session_id against "autoworker-".
+	// llm-bridge-server owns the answer to "what created this session" and
+	// publishes it as a field, so matching a naming convention embedded in the
+	// id was a name-based join onto a record that has an authoritative one.
+	// Measured 2026-08-08 across all 8,669 live sessions: 4,988 carry
+	// purpose="autoworker" and 613 of them (12.3%) have a session_id that does
+	// NOT start with "autoworker-". Every one of those 613 was created between
+	// 2026-04-23 and 2026-06-03, so the id convention changed under the gate
+	// once already and nothing here could see it happen.
+	purposeAutoworker = "autoworker"
 	entityTypeSession = "session"
 	tagReviewSettled  = "review-settled"
 
@@ -163,7 +175,8 @@ func main() {
 			skipped++
 			continue
 		}
-		state, ended, notFound, err := getSessionState(*bridgeURL, sessionID)
+		sess, notFound, err := getSession(*bridgeURL, sessionID)
+		state, ended := sess.State, sess.UpdatedAt
 		if err != nil && !notFound {
 			log.Printf("[%s] bridge GET /sessions/%s: %v — skip", title, sessionID, err)
 			errors++
@@ -183,7 +196,7 @@ func main() {
 			// to Done until the reviewer has signed off (review-settled tag), so
 			// the agent gets its self-review pass to finish obvious leftover work.
 			// Bounded by reviewGrace so a down reviewer can't wedge the card.
-			if strings.HasPrefix(sessionID, autoworkerPrefix) && !reviewSettled(kc, sessionID) && !staleCompleted(ended) {
+			if createdByAutoworker(sess) && !reviewSettled(kc, sessionID) && !staleCompleted(ended) {
 				log.Printf("[%s] completed; awaiting autoworker-reviewer sign-off — leaving In Progress (session_id=%s)", title, sessionID)
 				skipped++
 				continue
@@ -204,7 +217,12 @@ func main() {
 			// the dispatcher deliberately parks sessions idle to revive later, so we
 			// must not reap those out from under it. A vanished session (notFound) is
 			// still reaped on any board above, since it can't be revived anywhere.
-			if !strings.HasPrefix(sessionID, autoworkerPrefix) {
+			//
+			// This exit used to be the one `continue` in the loop that incremented
+			// no counter at all, so a card left through it without appearing in any
+			// number the tick line prints.
+			if !createdByAutoworker(sess) {
+				skipped++
 				continue
 			}
 			if !staleSince(ended, *staleAfter) {
@@ -257,34 +275,57 @@ func main() {
 
 // ============================ helpers ============================
 
-// getSessionState fetches one session from llm-bridge-server and returns
-// (state, updated_at, notFound, err). updated_at is the most recent state
-// transition we can observe — used as an "ended at" hint when stamping the
-// closed-card body. notFound is true (with a nil-equivalent error) when the
+// bridgeSession is the part of an llm-bridge-server session this binary reads.
+type bridgeSession struct {
+	SessionID string `json:"session_id"`
+	State     string `json:"state"`
+	UpdatedAt string `json:"updated_at"`
+	Purpose   string `json:"purpose"`
+}
+
+// createdByAutoworker reports whether autoworker created this session. It reads
+// Purpose and deliberately ignores SessionID — see purposeAutoworker for the
+// measurement, and TestCreatedByAutoworkerIgnoresTheSessionID for the pin.
+func createdByAutoworker(s bridgeSession) bool {
+	return s.Purpose == purposeAutoworker
+}
+
+// getSession fetches one session from llm-bridge-server and returns
+// (session, notFound, err). UpdatedAt is the most recent state transition we
+// can observe — used as an "ended at" hint when stamping the closed-card body.
+// Purpose is what created the session and drives both autoworker gates (see
+// purposeAutoworker). notFound is true (with a nil-equivalent error) when the
 // bridge has no such session, which the caller treats as a reapable terminal
 // condition rather than a transient error.
-func getSessionState(bridgeURL, sessionID string) (state string, updatedAt string, notFound bool, err error) {
+//
+// Named getSessionState until it started returning purpose, at which point the
+// old name described only half of what came back.
+func getSession(bridgeURL, sessionID string) (sess bridgeSession, notFound bool, err error) {
 	url := fmt.Sprintf("%s/sessions/%s", strings.TrimRight(bridgeURL, "/"), sessionID)
 	resp, err := http.Get(url)
 	if err != nil {
-		return "", "", false, err
+		return bridgeSession{}, false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return "", "", true, fmt.Errorf("not found")
+		return bridgeSession{}, true, fmt.Errorf("not found")
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", "", false, fmt.Errorf("HTTP %s — %s", resp.Status, strings.TrimSpace(string(body)))
+		return bridgeSession{}, false, fmt.Errorf("HTTP %s — %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	var s struct {
-		State     string `json:"state"`
-		UpdatedAt string `json:"updated_at"`
-	}
+	var s bridgeSession
 	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
-		return "", "", false, err
+		return bridgeSession{}, false, err
 	}
-	return s.State, s.UpdatedAt, false, nil
+	// A session the bridge found but reports with no purpose cannot be gated on.
+	// Refuse rather than hand the caller an empty string: it would compare
+	// unequal to purposeAutoworker and silently read as "somebody else's
+	// session", which is the exact failure the purpose gate replaced.
+	if s.Purpose == "" {
+		return bridgeSession{}, false, fmt.Errorf("session %s: llm-bridge-server returned no purpose field", sessionID)
+	}
+	return s, false, nil
 }
 
 // staleSince reports whether updatedAt (RFC3339) is older than d. An empty or
