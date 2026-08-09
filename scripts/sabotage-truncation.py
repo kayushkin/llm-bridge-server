@@ -36,11 +36,26 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sabotage import Case, REPO, problems, score  # noqa: E402
+from sabotage import Case, REPO, counts_as_coverage, problems, score  # noqa: E402
 
 # See the note in the docstring: scoped to the tests that claim these
 # mechanisms, because the unfiltered package takes 128s per case.
 SERVER_PKG = ["-run", "DisplayName|AutoRename", "./internal/server/"]
+
+# The fixture guards in the suites above, by message. A guard fires when a
+# mutation stops the test input reaching the code under test; `go test` exits
+# non-zero for that exactly as it does for a real assertion, so without these
+# the engine counts the test falling over as coverage. See
+# sabotage.classify_caught().
+#
+# All four sites in scope share one sentence — internal/textutil/runelimit_test.go:60,
+# internal/server/displayname_runes_test.go:57 and :79, and
+# cmd/bridge-agent/displayname_test.go:46 — so one marker covers them. The repo's
+# other guards (manager_derivation_test.go, interrupt_resume_live_test.go,
+# tool_provision_test.go) are in packages no target here runs.
+GUARD_MARKERS = (
+    "the test no longer reaches the defect",
+)
 
 HELPER = REPO / "internal" / "textutil" / "runelimit.go"
 SESSIONS = REPO / "internal" / "server" / "sessions.go"
@@ -187,16 +202,19 @@ def main():
     found = []
     for target, packages, cases in TARGETS:
         print("\n########## %s ##########" % target.relative_to(REPO))
-        results = score(target, packages, cases)
+        results = score(target, packages, cases, GUARD_MARKERS)
         found += problems(results)
-        for case, verdict, _ in results:
+        for case, verdict, _, _ in results:
             if case.name.startswith("CONTROL"):
                 continue
             if case.expected_unnoticed:
                 gaps += 1
                 continue
             real += 1
-            if verdict == "CAUGHT":
+            # counts_as_coverage, not `verdict == "CAUGHT"`: a row that went red
+            # because a fixture guard fired is not a mechanism this suite pins,
+            # and adding it in here is the inflation the split exists to stop.
+            if counts_as_coverage(verdict):
                 caught += 1
 
     print("\n================ total ================")
