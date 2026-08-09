@@ -29,6 +29,8 @@ have been the eleventh. A per-binary file supplies TARGET, PACKAGES and CASES
 and calls score() — nothing else needs restating.
 """
 
+import os
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -87,31 +89,71 @@ def score(target: Path, packages, cases):
 
     original = target.read_text()
     results = []
-    for case in cases:
-        text = original
-        for find, replace in case.edits:
-            if find not in text:
-                restore()
-                sys.exit("ABORT [%s]: needle not found in %s.\n"
-                         "A case whose needle is missing changes nothing and scores "
-                         "UNNOTICED, which reads as a coverage hole that is not there.\n"
-                         "Needle was:\n%s" % (case.name, target.name, find))
-            text = text.replace(find, replace, 1)
-        if text == original:
-            restore()
-            sys.exit("ABORT [%s]: the edit produced an identical file." % case.name)
-        target.write_text(text)
-        verdict, _ = _run_tests(packages)
-        # Read the diff the harness actually applied, not the label it was given.
-        diff_cmd = ["git", "diff"] + ([] if show_diffs else ["--stat"]) + ["--", rel]
-        diff = subprocess.run(diff_cmd, cwd=REPO, capture_output=True, text=True).stdout.strip()
+    # The target is a deliberately broken file from the write below until the
+    # restore after the suite runs, so every way out of this loop has to restore
+    # — including the ways this engine does not choose to take. A killed run used
+    # to leave the broken file in the tree as ordinary-looking uncommitted work:
+    # a semantic edit to a tracked source file, which `git status` reports the
+    # same way it reports real work in progress, and which this box's standing
+    # rule tells the next agent not to throw away. The next run then refuses to
+    # start, because of the mess the last one made.
+    #
+    # A try/finally alone does NOT close this, and measuring it is how you find
+    # that out. Python raises KeyboardInterrupt for SIGINT, so a finally is on
+    # the way out for that one and for nothing else. SIGTERM and SIGHUP kill the
+    # process between the write and the restore — and those are exactly what a
+    # wall-clock cap, systemd and a process-group kill send. So the one signal a
+    # finally covers is the one you press by hand while watching, and the ones it
+    # misses are the ones an unattended run actually receives. Measured by kill
+    # on this engine before these handlers existed: SIGTERM and SIGHUP each left
+    # the mutated file behind.
+    #
+    # The handler restores, reinstates the disposition it replaced and re-raises,
+    # so the process dies BY the signal (rc 128+signum). A handler that restores
+    # and exits 0 tells every caller a killed run succeeded.
+    #
+    # SIGKILL cannot be caught by the process that receives it. It is the one gap
+    # left here, and it is named rather than papered over.
+    previous_handlers = {}
+
+    def restore_and_reraise(signum, frame):
         restore()
-        results.append((case, verdict, diff))
-        print("%-14s %s" % (verdict, case.name))
-        if show_diffs:
-            body = "\n".join(l for l in diff.split("\n")
-                             if l.startswith(("+", "-")) and not l.startswith(("+++", "---")))
-            print("\n".join("        " + l for l in body.split("\n")) + "\n")
+        signal.signal(signum, previous_handlers[signum])
+        os.kill(os.getpid(), signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        previous_handlers[sig] = signal.signal(sig, restore_and_reraise)
+
+    try:
+        for case in cases:
+            text = original
+            for find, replace in case.edits:
+                if find not in text:
+                    restore()
+                    sys.exit("ABORT [%s]: needle not found in %s.\n"
+                             "A case whose needle is missing changes nothing and scores "
+                             "UNNOTICED, which reads as a coverage hole that is not there.\n"
+                             "Needle was:\n%s" % (case.name, target.name, find))
+                text = text.replace(find, replace, 1)
+            if text == original:
+                restore()
+                sys.exit("ABORT [%s]: the edit produced an identical file." % case.name)
+            target.write_text(text)
+            verdict, _ = _run_tests(packages)
+            # Read the diff the harness actually applied, not the label it was given.
+            diff_cmd = ["git", "diff"] + ([] if show_diffs else ["--stat"]) + ["--", rel]
+            diff = subprocess.run(diff_cmd, cwd=REPO, capture_output=True, text=True).stdout.strip()
+            restore()
+            results.append((case, verdict, diff))
+            print("%-14s %s" % (verdict, case.name))
+            if show_diffs:
+                body = "\n".join(l for l in diff.split("\n")
+                                 if l.startswith(("+", "-")) and not l.startswith(("+++", "---")))
+                print("\n".join("        " + l for l in body.split("\n")) + "\n")
+    finally:
+        restore()
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
 
     print("\n================ score ================")
     caught = sum(1 for c, v, _ in results
