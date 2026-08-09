@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sabotage import Case, REPO, score  # noqa: E402
+from sabotage import Case, REPO, problems, score  # noqa: E402
 
 # See the note in the docstring: scoped to the tests that claim these
 # mechanisms, because the unfiltered package takes 128s per case.
@@ -184,9 +184,11 @@ TARGETS = [
 
 def main():
     caught = real = gaps = 0
+    found = []
     for target, packages, cases in TARGETS:
         print("\n########## %s ##########" % target.relative_to(REPO))
         results = score(target, packages, cases)
+        found += problems(results)
         for case, verdict, _ in results:
             if case.name.startswith("CONTROL"):
                 continue
@@ -200,7 +202,20 @@ def main():
     print("\n================ total ================")
     print("%d/%d real mechanisms caught across %d files" % (caught, real, len(TARGETS)))
     print("%d KNOWN GAP cases, reported rather than omitted" % gaps)
+    if found:
+        print("%d problem(s) across the tables above" % len(found))
+
+    # The status has to carry the finding. This printed its totals and returned,
+    # so the process exited 0 with every mechanism unpinned and both controls
+    # misbehaving — and anything running it from a guard read that as success.
+    #
+    # The engine is asked what went wrong rather than inferring it from the
+    # counters above: `caught < real` would miss a known-negative control that
+    # WAS caught, which means the suite is red for a reason unrelated to
+    # behaviour and every CAUGHT in the table is suspect. That run scores a
+    # perfect caught == real and is worth nothing.
+    return 1 if found else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -62,6 +62,28 @@ def _run_tests(packages):
     return "CAUGHT", out
 
 
+def problems(results):
+    """Everything wrong with a scored run, as printable lines. Empty means sound.
+
+    This is the one definition of "wrong". score() prints it, and a caller that
+    needs an exit status asks the same question rather than re-deriving it: a
+    caller's own copy of these rules drifts silently, and always toward green,
+    because the copy is the half nobody re-reads when a rule is added here.
+    """
+    found = []
+    for case, verdict, _ in results:
+        if case.name.startswith("CONTROL known-positive") and verdict != "CAUGHT":
+            found.append("the known-positive control was NOT caught — the suite is not running")
+        if case.name.startswith("CONTROL known-negative") and verdict == "CAUGHT":
+            found.append("the known-negative control WAS caught — the suite is red for a "
+                         "reason unrelated to behaviour, so every CAUGHT above is suspect")
+        if verdict == "compile error" and not case.expected_unnoticed:
+            found.append("compile error, not a score: %s" % case.name)
+        if verdict == "UNNOTICED" and not case.expected_unnoticed:
+            found.append("UNNOTICED: %s" % case.name)
+    return found
+
+
 def score(target: Path, packages, cases):
     """Apply each case to target, run packages, and print a scored table.
 
@@ -161,19 +183,9 @@ def score(target: Path, packages, cases):
     real = [c for c, _, _ in results if not c.name.startswith("CONTROL")]
     print("%d/%d real mechanisms caught" % (caught, len(real)))
 
-    problems = []
-    for case, verdict, _ in results:
-        if case.name.startswith("CONTROL known-positive") and verdict != "CAUGHT":
-            problems.append("the known-positive control was NOT caught — the suite is not running")
-        if case.name.startswith("CONTROL known-negative") and verdict == "CAUGHT":
-            problems.append("the known-negative control WAS caught — the suite is red for a "
-                            "reason unrelated to behaviour, so every CAUGHT above is suspect")
-        if verdict == "compile error" and not case.expected_unnoticed:
-            problems.append("compile error, not a score: %s" % case.name)
-        if verdict == "UNNOTICED" and not case.expected_unnoticed:
-            problems.append("UNNOTICED: %s" % case.name)
-    for p in problems:
+    found = problems(results)
+    for p in found:
         print("  ⚠️  " + p)
-    if not problems:
+    if not found:
         print("  both controls behaved; every real mechanism is pinned")
     return results
