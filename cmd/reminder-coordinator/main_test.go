@@ -76,8 +76,23 @@ func (f *fakeNoteboard) CreateItem(req *model.CreateItemRequest) (*model.Item, e
 	f.items = append(f.items, created)
 	return created, nil
 }
+
+// Patch MERGES, because a real noteboard PATCH merges the fields it is given
+// into the row and leaves the rest alone. Replacing instead meant the last patch
+// of a tick silently erased every earlier one: a full Run() writes the digest
+// body and then stamps the sent-marker on the same note, so the body vanished
+// from the record and a test asserting on it saw an empty string. That is a fake
+// disagreeing with the service it stands in for, which reads as a coverage hole
+// in the code under test.
 func (f *fakeNoteboard) Patch(id string, fields map[string]any) error {
-	f.patched[id] = fields
+	merged := f.patched[id]
+	if merged == nil {
+		merged = map[string]any{}
+		f.patched[id] = merged
+	}
+	for key, value := range fields {
+		merged[key] = value
+	}
 	return nil
 }
 func (f *fakeNoteboard) SetSchedule(id string, schedule *model.Schedule, dryRun bool) error {
@@ -108,7 +123,7 @@ func (f *fakeCalendar) CreateEvent(string, *model.Item) (string, error) {
 	return "event-id", nil
 }
 func (f *fakeCalendar) UpdateEvent(string, string, *model.Item) error { f.updated++; return nil }
-func (f *fakeCalendar) DeleteEvent(string, string) error             { f.deleted++; return nil }
+func (f *fakeCalendar) DeleteEvent(string, string) error              { f.deleted++; return nil }
 
 type fakeHerald struct{ sessions []string }
 
@@ -744,6 +759,543 @@ func TestDigestSurvivesCalendarReadFailure(t *testing.T) {
 	}
 	if !contains(rendered, "Still here") {
 		t.Errorf("the todos must still render when the calendar read fails:\n%s", rendered)
+	}
+}
+
+// ------------------------------------------------- what sabotage scoring found
+//
+// Everything below was written because a mutation of the mechanism it names came
+// back UNNOTICED under scripts/sabotage-reminder-coordinator.py. Three of them
+// sat behind a test whose NAME already claimed the mechanism; the assertion was
+// being satisfied by something else in the fixture. Run the scorer, not the test
+// names.
+
+// The digest tag is the only thing tying this program to the note the user
+// actually reads. Every other test seeds its fixture with the digestTag CONSTANT,
+// so drifting that constant moves the fixture and the production code together
+// and no assertion can ever separate them — the gate reproduced in the fixture.
+// This test writes the wire literal instead, which is the only way the value is
+// pinned at all.
+func TestTheDigestNoteIsFoundByTheLiteralTagWrittenOnIt(t *testing.T) {
+	loc := pacific(t)
+	digestNote := &model.Item{
+		ID: "digest", Type: "note", Title: "📆 Today — personal",
+		Tags: []string{"personal", "reminder-digest"},
+	}
+	nb := newFakeNoteboard(digestNote)
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 13, 9, 0, 0, 0, loc), nb)
+
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+	if err := coordinator.writeDigestNote(board, nil, nil); err != nil {
+		t.Fatalf("writeDigestNote: %v", err)
+	}
+	if len(nb.created) != 0 {
+		t.Fatalf("created %d new notes; the standing note tagged \"reminder-digest\" was not found, "+
+			"so every tick would leave another duplicate behind", len(nb.created))
+	}
+	if _, patched := nb.patched["digest"]; !patched {
+		t.Fatal("the standing note was never rewritten")
+	}
+}
+
+// The comment on Run() insists a Google hiccup must never leave you with no
+// digest at all — the reminders matter more than the schedule annotation.
+// TestDigestSurvivesCalendarReadFailure calls renderDigest directly, so it pins
+// the RENDERER and not that decision; turning the log-and-continue into a
+// `return` scored UNNOTICED. This is also the only test that runs Run() end to
+// end, which is why several other holes existed at all.
+func TestARunSurvivesACalendarFailureAndStillWritesTheDigest(t *testing.T) {
+	loc := pacific(t)
+	digestNote := &model.Item{
+		ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag},
+	}
+	todo := &model.Item{
+		ID: "todo", Type: "todo", Title: "Still here", Status: "open",
+		Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 20, 15, 0, 0, 0, loc)),
+	}
+	nb := newFakeNoteboard(todo, digestNote)
+	coordinator, _, calendar := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), nb)
+	calendar.listErr = fmt.Errorf("google timeout")
+
+	if err := coordinator.Run(); err != nil {
+		t.Fatalf("a calendar read failure took the whole run down: %v", err)
+	}
+
+	fields, patched := nb.patched["digest"]
+	if !patched {
+		t.Fatal("the calendar failed and the digest note was never written; the user gets nothing")
+	}
+	body, _ := fields["body"].(string)
+	if !contains(body, "Still here") {
+		t.Errorf("the todos must still reach the note when the calendar read fails:\n%s", body)
+	}
+	if !contains(body, "Couldn't load your calendar") {
+		t.Errorf("the failure must be visible in the note, not only in the log:\n%s", body)
+	}
+}
+
+// materializeDueOccurrences carries TWO independent idempotence guards, and the
+// source comment says so: last_materialized_at, and a scan of the template's
+// existing children. TestMaterializationIsIdempotentAcrossTicks pins only the
+// first — disabling the child scan scored UNNOTICED, because the stamp alone
+// covers that fixture. The child scan exists precisely for the case the stamp
+// cannot cover: a child created before the field existed, on a template whose
+// stamp is therefore nil. That is this test, and it makes the scan a sole
+// detector.
+func TestAChildFromBeforeLastMaterializedAtExistedIsNotDuplicated(t *testing.T) {
+	loc := pacific(t)
+	anchor := time.Date(2026, 7, 21, 9, 0, 0, 0, loc)
+	occurrence := time.Date(2026, 7, 21, 9, 0, 0, 0, loc)
+	template := &model.Item{
+		ID: "template", Type: "todo", Title: "Water the plants", Status: "open",
+		Tags: []string{"personal"},
+		Schedule: &model.Schedule{
+			DTStart: &anchor, TZID: "America/Los_Angeles",
+			RRule: "FREQ=MONTHLY;BYDAY=3TU", Mode: model.ScheduleModeInstance,
+			// Deliberately nil: this template predates the field, which is the
+			// whole situation the second guard was written for.
+			LastMaterializedAt: nil,
+		},
+	}
+	existingChild := &model.Item{
+		ID: "child", Type: "todo", Title: "Water the plants", Status: "open",
+		Tags: []string{"personal"}, ParentID: ptr("template"), DueAt: &occurrence,
+	}
+	nb := newFakeNoteboard(template, existingChild)
+
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 21, 9, 15, 0, 0, loc), nb)
+	if err := coordinator.materializeDueOccurrences(); err != nil {
+		t.Fatalf("materializeDueOccurrences: %v", err)
+	}
+
+	if len(nb.created) != 0 {
+		t.Fatalf("created %d duplicates of a chore that already had its child for that date; "+
+			"with no last_materialized_at to lean on, the child scan is the only guard left", len(nb.created))
+	}
+}
+
+// TestCalendarIsOptInPerItem looks like it pins the opt-in and does not: its
+// not-opted-in fixture has NO schedule at all, so it is excluded by the
+// `item.Schedule != nil` check earlier in the same chain. Deleting the opt-in
+// check scored UNNOTICED. An item that HAS a schedule and asked only for the
+// digest is the case that separates them.
+func TestAnItemThatAskedOnlyForTheDigestGetsNoCalendarEvent(t *testing.T) {
+	loc := pacific(t)
+	soon := time.Date(2026, 7, 20, 9, 0, 0, 0, loc)
+	digestOnly := &model.Item{
+		ID: "digest-only", Type: "todo", Title: "Buy milk", Status: "open",
+		Tags: []string{"personal"}, DueAt: &soon,
+		Schedule: &model.Schedule{
+			TZID:   "America/Los_Angeles",
+			Remind: &model.Remind{Channels: []string{model.ChannelDigest}},
+		},
+	}
+	nb := newFakeNoteboard(digestOnly)
+	coordinator, _, calendar := newTestCoordinator(t, time.Date(2026, 7, 13, 10, 0, 0, 0, loc), nb)
+
+	if err := coordinator.syncCalendar(); err != nil {
+		t.Fatalf("syncCalendar: %v", err)
+	}
+	if calendar.created != 0 {
+		t.Fatalf("created %d events for an item whose channels are digest-only; the calendar "+
+			"stops being usable the moment every todo lands on it", calendar.created)
+	}
+	if _, patched := nb.patched["digest-only"]; patched {
+		t.Error("an item that never asked for a calendar event had gcal links written to it")
+	}
+}
+
+// An archived template stops producing. `done` deliberately does not — marking
+// one occurrence done must not retire the series — so the two statuses have to be
+// told apart, and nothing was telling them apart.
+func TestAnArchivedTemplateStopsProducingOccurrences(t *testing.T) {
+	loc := pacific(t)
+	anchor := time.Date(2026, 7, 21, 9, 0, 0, 0, loc)
+	schedule := func() *model.Schedule {
+		return &model.Schedule{
+			DTStart: &anchor, TZID: "America/Los_Angeles",
+			RRule: "FREQ=MONTHLY;BYDAY=3TU", Mode: model.ScheduleModeInstance,
+		}
+	}
+
+	archived := &model.Item{
+		ID: "archived", Type: "todo", Title: "Retired chore", Status: "archived",
+		Tags: []string{"personal"}, Schedule: schedule(),
+	}
+	nb := newFakeNoteboard(archived)
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 21, 9, 15, 0, 0, loc), nb)
+	if err := coordinator.materializeDueOccurrences(); err != nil {
+		t.Fatalf("materializeDueOccurrences: %v", err)
+	}
+	if len(nb.created) != 0 {
+		t.Fatalf("an archived template produced %d occurrences; archiving is how a series is "+
+			"retired and it did nothing", len(nb.created))
+	}
+
+	// The known-negative half: `done` must NOT retire the series, or completing
+	// this month's chore silently cancels every future one.
+	done := &model.Item{
+		ID: "done", Type: "todo", Title: "Live chore", Status: "done",
+		Tags: []string{"personal"}, Schedule: schedule(),
+	}
+	nbDone := newFakeNoteboard(done)
+	coordinatorDone, _, _ := newTestCoordinator(t, time.Date(2026, 7, 21, 9, 15, 0, 0, loc), nbDone)
+	if err := coordinatorDone.materializeDueOccurrences(); err != nil {
+		t.Fatalf("materializeDueOccurrences: %v", err)
+	}
+	if len(nbDone.created) != 1 {
+		t.Fatalf("a template marked done produced %d occurrences, want 1 — a series must outlive "+
+			"one completed occurrence", len(nbDone.created))
+	}
+}
+
+// Rolling mode advances one row in place. Instance mode spawns children. Applying
+// the roll to an instance-mode template would mutate the series itself, moving
+// the anchor every time one occurrence was completed.
+func TestARecurringTemplateIsNeverRolledInPlace(t *testing.T) {
+	loc := pacific(t)
+	anchor := time.Date(2026, 7, 21, 9, 0, 0, 0, loc)
+	template := &model.Item{
+		ID: "template", Type: "todo", Title: "Water the plants", Status: "done",
+		Tags: []string{"personal"}, DueAt: &anchor,
+		Schedule: &model.Schedule{
+			DTStart: &anchor, TZID: "America/Los_Angeles",
+			RRule: "FREQ=MONTHLY;BYDAY=3TU", Mode: model.ScheduleModeInstance,
+		},
+	}
+	nb := newFakeNoteboard(template)
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 22, 9, 0, 0, 0, loc), nb)
+
+	if err := coordinator.rollCompletedRollingItems(); err != nil {
+		t.Fatalf("rollCompletedRollingItems: %v", err)
+	}
+	if fields, patched := nb.patched["template"]; patched {
+		t.Fatalf("an instance-mode template was rolled in place (%v); its occurrences are the "+
+			"work, and moving the series is how you lose the anchor", fields)
+	}
+}
+
+// markDailyDigestSent rewrites the note's links to carry exactly one day marker.
+// It must drop the PREVIOUS day's marker and keep everything else — inverting
+// that test drops every non-marker link on the note instead, which is silent
+// data loss on the one note the user reads.
+func TestMarkingTheDigestSentReplacesOnlyTheDayMarker(t *testing.T) {
+	loc := pacific(t)
+	digestNote := &model.Item{
+		ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag},
+		Links: []string{"digest-sent:2026-07-12", "https://example.com/keep-me"},
+	}
+	nb := newFakeNoteboard(digestNote)
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 13, 8, 0, 0, 0, loc), nb)
+
+	if err := coordinator.markDailyDigestSent(); err != nil {
+		t.Fatalf("markDailyDigestSent: %v", err)
+	}
+	links, _ := nb.patched["digest"]["links"].([]string)
+
+	want := map[string]bool{"digest-sent:2026-07-13": false, "https://example.com/keep-me": false}
+	for _, link := range links {
+		if _, ok := want[link]; !ok {
+			t.Errorf("unexpected link left on the note: %q", link)
+			continue
+		}
+		want[link] = true
+	}
+	for link, seen := range want {
+		if !seen {
+			t.Errorf("link %q was dropped from the digest note", link)
+		}
+	}
+	if len(links) != 2 {
+		t.Fatalf("note carries %d links (%v), want exactly today's marker and the unrelated one — "+
+			"a growing log of every day the digest went out is not state, it is a leak", len(links), links)
+	}
+}
+
+// Every fixture above anchors its template at DTStart == roughly `now`, so a rule
+// cannot produce an occurrence before the tick that reads it and the backfill floor
+// has nothing to hold back. Widening the floor to a year therefore scored UNNOTICED
+// — not because the floor does nothing, but because no fixture had any history for
+// it to refuse. A template anchored months ago, with no last_materialized_at, is the
+// only shape that separates them: it is what a chore looks like the first tick after
+// this field was added, or after the coordinator has been down for a while.
+func TestALongIdleTemplateBackfillsOneDay(t *testing.T) {
+	loc := pacific(t)
+	anchor := time.Date(2026, 5, 1, 9, 0, 0, 0, loc)
+	template := &model.Item{
+		ID: "template", Type: "todo", Title: "Water the plants", Status: "open",
+		Tags: []string{"personal"},
+		Schedule: &model.Schedule{
+			DTStart: &anchor, TZID: "America/Los_Angeles",
+			RRule: "FREQ=DAILY", Mode: model.ScheduleModeInstance,
+			// Nil is the whole point: with no stamp the floor is the only thing
+			// standing between this tick and eighty-one days of missed chores.
+			LastMaterializedAt: nil,
+		},
+	}
+	nb := newFakeNoteboard(template)
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, loc)
+	coordinator, _, _ := newTestCoordinator(t, now, nb)
+
+	if err := coordinator.materializeDueOccurrences(); err != nil {
+		t.Fatalf("materializeDueOccurrences: %v", err)
+	}
+	if len(nb.created) == 0 {
+		t.Fatal("nothing was materialized at all, so this fixture cannot say anything about the floor")
+	}
+
+	// The floor is `now - 24h`. Stated as the earliest due date allowed rather than
+	// as a count, because the count also depends on Lookahead and would move for a
+	// reason that has nothing to do with backfill.
+	floor := now.Add(-24 * time.Hour)
+	for _, child := range nb.created {
+		if child.DueAt == nil {
+			t.Fatalf("materialized %q with no due date", child.Title)
+		}
+		if child.DueAt.Before(floor) {
+			t.Errorf("materialized an occurrence due %s, before the %s floor — a long-idle tick "+
+				"is dumping months of missed chores into the digest at once",
+				child.DueAt.Format(time.RFC3339), floor.Format(time.RFC3339))
+		}
+	}
+
+	// Eight: the daily occurrences at 9am inside [now-24h, now+7d], which is
+	// 21 July through 28 July inclusive. Written as a literal so that widening the
+	// window fails here instead of quietly moving the expectation with it.
+	if len(nb.created) != 8 {
+		t.Errorf("materialized %d occurrences, want 8 — the window is one day back plus the lookahead",
+			len(nb.created))
+	}
+}
+
+// The roll anchor is `max(now, item.DueAt)`, and both halves of that max are load
+// bearing. TestRollingItemAdvancesToItsNextOccurrenceWhenDone cannot see either:
+// its item is due 9am, the tick is 10am the same day, and the rule is monthly — so
+// anchoring at `now` and anchoring at the due date both land on the same next
+// occurrence a month out. Inverting the comparison scored UNNOTICED against it.
+// A daily rule is what makes the two anchors disagree.
+//
+// This half: an OVERDUE item. Anchoring at its due date instead of now walks the
+// series to an occurrence that has already passed, so completing the chore reopens
+// it in the past and it is overdue again the instant it comes back.
+func TestARollingItemNeverRollsBackwardsIntoThePast(t *testing.T) {
+	loc := pacific(t)
+	dtstart := time.Date(2026, 7, 1, 9, 0, 0, 0, loc)
+	overdue := time.Date(2026, 7, 19, 9, 0, 0, 0, loc)
+	item := &model.Item{
+		ID: "rolling", Type: "todo", Title: "Renew registration", Status: "done",
+		Tags: []string{"personal"}, DueAt: &overdue,
+		Schedule: &model.Schedule{
+			DTStart: &dtstart, TZID: "America/Los_Angeles",
+			RRule: "FREQ=DAILY", Mode: model.ScheduleModeRolling,
+		},
+	}
+	nb := newFakeNoteboard(item)
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, loc)
+	coordinator, _, _ := newTestCoordinator(t, now, nb)
+
+	if err := coordinator.rollCompletedRollingItems(); err != nil {
+		t.Fatalf("rollCompletedRollingItems: %v", err)
+	}
+	fields, patched := nb.patched["rolling"]
+	if !patched {
+		t.Fatal("a completed rolling item was not advanced at all")
+	}
+
+	rolled, err := time.ParseInLocation(time.RFC3339, fields["due_at"].(string), loc)
+	if err != nil {
+		t.Fatalf("due_at is not a timestamp: %v", err)
+	}
+	if !rolled.After(now) {
+		t.Errorf("rolled to %s, which is not after the %s tick — a two-day-overdue chore was "+
+			"reopened already overdue, and it will be reopened in the past on every tick after this one",
+			rolled.Format(time.RFC3339), now.Format(time.RFC3339))
+	}
+	want := time.Date(2026, 7, 22, 9, 0, 0, 0, loc)
+	if !rolled.Equal(want) {
+		t.Errorf("rolled to %s, want the next occurrence after the tick, %s",
+			rolled.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
+// The other half of the same max, and it fails in the opposite direction: an item
+// completed EARLY. Anchoring at `now` rather than at its own due date rolls it to an
+// occurrence that is still before the one just finished, so the series goes round the
+// same date twice and the early completion is thrown away.
+func TestARollingItemCompletedEarlyAdvancesPastTheOccurrenceItFinished(t *testing.T) {
+	loc := pacific(t)
+	dtstart := time.Date(2026, 7, 1, 9, 0, 0, 0, loc)
+	future := time.Date(2026, 7, 25, 9, 0, 0, 0, loc)
+	item := &model.Item{
+		ID: "rolling", Type: "todo", Title: "Renew registration", Status: "done",
+		Tags: []string{"personal"}, DueAt: &future,
+		Schedule: &model.Schedule{
+			DTStart: &dtstart, TZID: "America/Los_Angeles",
+			RRule: "FREQ=DAILY", Mode: model.ScheduleModeRolling,
+		},
+	}
+	nb := newFakeNoteboard(item)
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 21, 10, 0, 0, 0, loc), nb)
+
+	if err := coordinator.rollCompletedRollingItems(); err != nil {
+		t.Fatalf("rollCompletedRollingItems: %v", err)
+	}
+	fields, patched := nb.patched["rolling"]
+	if !patched {
+		t.Fatal("a completed rolling item was not advanced at all")
+	}
+
+	rolled, err := time.ParseInLocation(time.RFC3339, fields["due_at"].(string), loc)
+	if err != nil {
+		t.Fatalf("due_at is not a timestamp: %v", err)
+	}
+	if !rolled.After(future) {
+		t.Errorf("rolled to %s, which is not after the %s occurrence that was just completed — "+
+			"finishing a chore early hands you back a date you have already dealt with",
+			rolled.Format(time.RFC3339), future.Format(time.RFC3339))
+	}
+	want := time.Date(2026, 7, 26, 9, 0, 0, 0, loc)
+	if !rolled.Equal(want) {
+		t.Errorf("rolled to %s, want the occurrence after the completed one, %s",
+			rolled.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
+// syncCalendar's update arm is guarded on the synced due date having MOVED. No
+// fixture above ever reaches that arm: the opt-in tests have no event yet (the
+// create arm) and the teardown test is not open (the remove arm), so inverting the
+// guard scored UNNOTICED. It needs an item already in the steady state — an event,
+// a gcalsync stamp, and a due date that agrees with it.
+//
+// This half is the quiet one. Inverted, the coordinator rewrites an event that has
+// not moved on every 15-minute tick: 96 Google Calendar writes a day per item,
+// costing nothing visible and losing no reminder, which is exactly why it would sit
+// unfixed.
+func TestAnUnmovedCalendarEventIsNotRewrittenOnEveryTick(t *testing.T) {
+	loc := pacific(t)
+	due := time.Date(2026, 7, 20, 9, 0, 0, 0, loc)
+	settled := &model.Item{
+		ID: "settled", Type: "todo", Title: "Dentist", Status: "open",
+		Tags: []string{"personal"}, DueAt: &due,
+		Links: []string{"gcal:event-123", "gcalsync:" + due.Format(time.RFC3339)},
+		Schedule: &model.Schedule{
+			TZID:   "America/Los_Angeles",
+			Remind: &model.Remind{Channels: []string{model.ChannelCalendar}},
+		},
+	}
+	nb := newFakeNoteboard(settled)
+	coordinator, _, calendar := newTestCoordinator(t, time.Date(2026, 7, 13, 10, 0, 0, 0, loc), nb)
+
+	if err := coordinator.syncCalendar(); err != nil {
+		t.Fatalf("syncCalendar: %v", err)
+	}
+	if calendar.updated != 0 {
+		t.Errorf("rewrote %d events for an item whose due date has not moved; the tick runs every "+
+			"15 minutes, so this is 96 writes a day for an event nobody changed", calendar.updated)
+	}
+	if calendar.created != 0 || calendar.deleted != 0 {
+		t.Errorf("created %d and deleted %d events for a settled item; it should be left alone entirely",
+			calendar.created, calendar.deleted)
+	}
+	if _, patched := nb.patched["settled"]; patched {
+		t.Error("a settled item's links were rewritten, so noteboard is being written to on every tick as well")
+	}
+}
+
+// The other side of the same guard, and the one that loses information rather than
+// spending it: a due date that moved must reach the calendar, or the event stays at
+// the old time and the reminder arrives for a slot that no longer exists.
+func TestAMovedDueDatePushesTheCalendarEventToTheNewTime(t *testing.T) {
+	loc := pacific(t)
+	was := time.Date(2026, 7, 20, 9, 0, 0, 0, loc)
+	now := time.Date(2026, 7, 22, 14, 0, 0, 0, loc)
+	moved := &model.Item{
+		ID: "moved", Type: "todo", Title: "Dentist", Status: "open",
+		Tags: []string{"personal"}, DueAt: &now,
+		Links: []string{"gcal:event-123", "gcalsync:" + was.Format(time.RFC3339)},
+		Schedule: &model.Schedule{
+			TZID:   "America/Los_Angeles",
+			Remind: &model.Remind{Channels: []string{model.ChannelCalendar}},
+		},
+	}
+	nb := newFakeNoteboard(moved)
+	coordinator, _, calendar := newTestCoordinator(t, time.Date(2026, 7, 13, 10, 0, 0, 0, loc), nb)
+
+	if err := coordinator.syncCalendar(); err != nil {
+		t.Fatalf("syncCalendar: %v", err)
+	}
+	if calendar.updated != 1 {
+		t.Fatalf("updated %d events, want 1 — the appointment moved and the calendar still says the old time",
+			calendar.updated)
+	}
+	if calendar.created != 0 {
+		t.Errorf("created %d events; the item already had one and it should have been moved, not duplicated",
+			calendar.created)
+	}
+
+	// The stamp has to move too, or the next tick reads the same stale value and
+	// updates again forever.
+	links, ok := nb.patched["moved"]["links"].([]string)
+	if !ok {
+		t.Fatal("the event was updated but the item's gcalsync stamp was never rewritten")
+	}
+	wantStamp := "gcalsync:" + now.Format(time.RFC3339)
+	found := false
+	for _, link := range links {
+		if link == wantStamp {
+			found = true
+		}
+		if link == "gcalsync:"+was.Format(time.RFC3339) {
+			t.Errorf("the old gcalsync stamp %q is still on the item, so it will be updated again next tick", link)
+		}
+	}
+	if !found {
+		t.Errorf("links = %v, want the new stamp %q", links, wantStamp)
+	}
+}
+
+// renderSchedule does not trust its input to be today's events only — it re-filters
+// against the day boundary, because the section is titled "Today's schedule" and an
+// event from tomorrow under that heading is a meeting you will believe you have in
+// the next few hours. No fixture ever handed it an event outside today, so pushing
+// the boundary out by a day scored UNNOTICED.
+//
+// Both sides of the boundary are here on purpose. An assertion that only tomorrow's
+// event is absent is equally satisfied by a filter that drops everything.
+func TestTomorrowsEventsAreNotFoldedIntoTodaysSchedule(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, loc)
+	coordinator, _, _ := newTestCoordinator(t, now, newFakeNoteboard())
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+
+	events := []CalendarEvent{
+		{
+			Summary: "Late tonight",
+			Start:   time.Date(2026, 7, 20, 23, 30, 0, 0, loc),
+			End:     time.Date(2026, 7, 21, 0, 30, 0, 0, loc),
+		},
+		{
+			Summary: "Tomorrow morning",
+			Start:   time.Date(2026, 7, 21, 0, 15, 0, 0, loc),
+			End:     time.Date(2026, 7, 21, 1, 15, 0, 0, loc),
+		},
+	}
+	rendered := coordinator.renderDigest(board, events, nil)
+
+	if contains(rendered, "Tomorrow morning") {
+		t.Errorf("an event starting tomorrow is listed under Today's schedule:\n%s", rendered)
+	}
+	if !contains(rendered, "Late tonight") {
+		t.Errorf("an event starting tonight at 11:30 is missing from Today's schedule:\n%s", rendered)
+	}
+	if !contains(rendered, "Today's schedule (1)") {
+		t.Errorf("the schedule count should read 1, the single event that starts today:\n%s", rendered)
 	}
 }
 
