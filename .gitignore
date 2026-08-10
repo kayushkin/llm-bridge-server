@@ -36,3 +36,9 @@
 .idea/
 .vscode/
 *.swp
+
+# Python bytecode. The sabotage scripts import scripts/sabotage.py, so running
+# one writes scripts/__pycache__/ into the tree. Untracked build noise, and it
+# blocks `git worktree remove` if left behind.
+__pycache__/
+*.pyc
