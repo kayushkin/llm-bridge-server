@@ -1532,10 +1532,19 @@ func allDayEnd(event CalendarEvent) time.Time {
 	return civilDate(event.End)
 }
 
+// sortByDue orders items soonest-due first and puts undated items last.
+//
+// Two undated items must compare EQUAL, not each less than the other. The
+// earlier `return items[j].DueAt == nil` said true in both directions for a
+// pair of undated items, which is not a strict weak ordering: SliceStable can
+// only keep the input order of elements it is told are equal, so the stability
+// it was chosen for was defeated for exactly the group that has nothing else to
+// order it. The digest note is rewritten every fifteen minutes, so undated
+// items changed places between runs with nothing changing underneath them.
 func sortByDue(items []*model.Item) {
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].DueAt == nil || items[j].DueAt == nil {
-			return items[j].DueAt == nil
+			return items[i].DueAt != nil && items[j].DueAt == nil
 		}
 		return items[i].DueAt.Before(*items[j].DueAt)
 	})
