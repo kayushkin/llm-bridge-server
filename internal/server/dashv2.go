@@ -7,24 +7,43 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
 // handleSessionsSummary serves the projected sidebar list, newest-first and
-// cursor-paginated: GET /sessions/summary?limit=100&before=<cursor>.
+// cursor-paginated:
+// GET /sessions/summary?limit=100&before=<cursor>&type=interactive&type=herald.
+//
+// The six filter axes (`harness`, `status`, `type`, `purpose`, `mode`,
+// `machine`) are the sidebar's own, spelled the same way, and each is REPEATED
+// rather than comma-separated: a purpose on this box can read
+// "dashv2 browser verification + A/B perf", and nothing stops one containing a
+// comma, so splitting on one would silently cut a value in half. Omitting an
+// axis filters nothing on it, which keeps every existing caller unchanged.
 //
 // The response carries a `revision` (max updated_at across the table) that is
 // also emitted as the ETag header; an If-None-Match that equals the current
-// revision short-circuits to 304. The serialized body is response-cached (L3),
-// invalidated by the store Notifier. Everything here is additive — no existing
-// endpoint changes.
+// revision short-circuits to 304. The revision is table-wide, so it is unaffected
+// by the filter — conservative, never wrong. The serialized body is
+// response-cached (L3), invalidated by the store Notifier.
 func (s *Server) handleSessionsSummary(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
 	limit := 100
-	if l := r.URL.Query().Get("limit"); l != "" {
+	if l := query.Get("limit"); l != "" {
 		if n, err := strconv.Atoi(l); err == nil && n > 0 {
 			limit = n
 		}
 	}
-	before := r.URL.Query().Get("before")
+	before := query.Get("before")
+	filter := store.SessionSummaryFilter{
+		Harnesses:   query["harness"],
+		States:      query["status"],
+		Types:       query["type"],
+		Purposes:    query["purpose"],
+		Modes:       query["mode"],
+		InstanceIDs: query["machine"],
+	}
 
 	revision, err := s.store.MaxSessionUpdatedAt()
 	if err != nil {
@@ -42,7 +61,12 @@ func (s *Server) handleSessionsSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheKey := fmt.Sprintf("summary|rev=%s|limit=%d|before=%s", revision, limit, before)
+	// The filter is part of the key, not decoration beside it. Two requests that
+	// differ only by filter share a revision, a limit and a cursor, so without
+	// this the first one to land would have its page served to the other — a
+	// wrong answer indistinguishable from a right one.
+	cacheKey := fmt.Sprintf("summary|rev=%s|limit=%d|before=%s|filter=%s",
+		revision, limit, before, filter.CacheKey())
 	if body, ok := s.responseCache.get(cacheKey); ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("ETag", etag)
@@ -50,7 +74,7 @@ func (s *Server) handleSessionsSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.store.ListSessionSummaries(limit, before)
+	rows, err := s.store.ListSessionSummaries(limit, before, filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -125,7 +149,10 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rows, err := s.store.ListSessionSummaries(n, "")
+	// Unfiltered on purpose: the recent-bundle warms whatever the user is most
+	// likely to open next, and narrowing it to the sidebar's current chips would
+	// leave a session cold the moment they cleared a filter.
+	rows, err := s.store.ListSessionSummaries(n, "", store.SessionSummaryFilter{})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
