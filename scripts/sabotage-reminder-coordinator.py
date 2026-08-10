@@ -25,10 +25,54 @@ Case-writing rules learned the expensive way, and re-earned here:
     behavioural no-op, or a fake in the test file that swallows the value the
     mutation moved. Both appear below, named, with expected_unnoticed set.
 
-Score: 35/35, exit 0. Cross-table re-taken 2026-08-08 after the four below were
-closed (`--crosstable`): every one of the 30 tests is reddened by at least one
-case, so this binary has no silent column and needs no `unreddened` declaration.
-Do not re-derive it; re-run the mode instead.
+Score: 50/57, exit 0 — 50 real mechanisms caught and seven cases carrying an
+`expected_unnoticed`. Cross-table re-taken 2026-08-10 (`--crosstable`): every one
+of the 32 tests is reddened by at least one case, so this binary has no silent
+column and needs no `unreddened` declaration. Do not re-derive it; re-run the
+mode instead.
+
+## The source side, closed 2026-08-10 — the 37 functions this plan never named
+
+`healthcheck/scripts/sabotage-scorer-unmutated-function-scan.py` asks the twin of
+the cross-table's question: not which TESTS no case reddens, but which FUNCTIONS
+no case breaks. It found this plan the worst on the box — **15 of 52 functions
+named, 37 silent**, the largest absolute region of any per-binary scorer. A 35/35
+and a file two-thirds unnamed are the same number, which is the whole point.
+
+The 37 split cleanly in two, and only one half was a coverage hole:
+
+  - **Nineteen were real mechanisms** the plan simply had not reached: the digest
+    hour's zone, the totality of Board.All, the note write-back guard, dateOf,
+    the clock and duration renderers, the two clipping helpers under day-load,
+    the priority mark, the area tags, the bucket sort, the calendar read's own
+    error path, and both halves of the gcalsync link scheme. Seventeen were
+    CAUGHT on the first run — the suite already watched them and the instrument
+    was blind to that, which is the flattering direction this scan exists to
+    catch. **Two were genuine holes** and are now pinned by new fixtures:
+    `roundDuration` (every prior day-load fixture used whole-hour events, so
+    rounding to the nearest quarter-DAY still read as "booked … free" and still
+    went green) and `sortByDue` (no fixture had ever put two dated items in ONE
+    bucket, so with one item per bucket every sort is correct).
+  - **Eighteen cannot be observed by this suite at all**, and are declared rather
+    than deleted. `main` is flag parsing; `envOr` is reached only from it and
+    from ResolveDashToken; `dryPrefix` only ever reaches a log line. The other
+    fifteen are the CONCRETE clients — NoteboardClient, GoogleCalendarMirror,
+    Herald — which the coordinator holds behind interfaces and the suite replaces
+    with fakes wholesale. Those three are declared as **one case each covering
+    the whole client**, not one case per method: the claim is about the client,
+    and fifteen identical declarations would read as fifteen measurements.
+
+`Board.HasActionable` is the odd one out and is worth naming separately: it has
+**no caller anywhere** — not in main.go, not in the suite. No mutation of dead
+code can be observed by anything, so it is declared, and the declaration says
+what falsifies it. It wants wiring or deleting; that is a decision, not this
+plan's job.
+
+⚠️ The three client declarations are the ones most likely to expire. They say
+"nothing constructs the concrete client in a test", and branch
+`test/concrete-clients-speak-the-real-protocol` exists to make that false. The
+engine checks a declaration in BOTH directions, so a case that starts being
+CAUGHT will say so — do not pre-emptively soften the wording to survive it.
 
 That column was not empty when it was first measured. Five tests were reddened
 by nothing, and all five turned out to carry a failure DIRECTION the case list
@@ -260,6 +304,185 @@ CASES = [
         "a calendar read failure renders as an EMPTY calendar, so a failed load reads as a free day",
         [('out.WriteString("\\n## 🗓 Today\'s schedule\\n\\n⚠️ Couldn\'t load your calendar this tick.\\n")',
           'out.WriteString("\\n## 🗓 Today\'s schedule\\n\\nNothing on the calendar — the day is yours.\\n")')],
+    ),
+
+    # ---- the digest hour, the board's totality, and the note write-back ----
+    Case(
+        "the digest hour is read in UTC instead of the day's own zone, so it lands "
+        "seven hours early — at 00:30 Pacific rather than 07:30",
+        [("return time.Date(day.Year(), day.Month(), day.Day(), d.Hour, d.Minute, 0, 0, day.Location())",
+          "return time.Date(day.Year(), day.Month(), day.Day(), d.Hour, d.Minute, 0, 0, time.UTC)")],
+    ),
+    Case(
+        "Board.All forgets the undated bucket, so a board of nothing but undated "
+        "todos renders as \"Nothing open. 🎉\"",
+        [("all = append(all, b.Undated...)", "_ = b.Undated")],
+    ),
+    Case(
+        "the digest note is only rewritten when nothing changed, so every real "
+        "change to the board is dropped and the note freezes",
+        [("if existing.Body == body {", "if existing.Body != body {")],
+    ),
+    Case(
+        "the Overdue heading is rendered from the due-today bucket, so today's work "
+        "reads as late and the genuinely overdue items are never shown",
+        [('section("⏰ Overdue", board.Overdue, func(item *model.Item) string {',
+          'section("⏰ Overdue", board.DueToday, func(item *model.Item) string {')],
+    ),
+    Case(
+        "dateOf rolls the day forward, so \"today\" is tomorrow everywhere at once — "
+        "the overdue boundary, the schedule window and the day-load window",
+        [("return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())",
+          "return time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, t.Location())")],
+    ),
+
+    # ---- how the day is rendered and measured ----
+    Case(
+        "wall-clock times render on a 24-hour clock, so the digest reads 20:00 "
+        "where every other line of it says 8pm",
+        [('return t.Format("3pm")', 'return t.Format("15:04")')],
+    ),
+    Case(
+        "durations round to the nearest quarter-day instead of the nearest half "
+        "hour, so a 90-minute meeting reports as 6h booked",
+        [("half := math.Round(d.Hours()*2) / 2", "half := math.Round(d.Hours()*4) / 2")],
+    ),
+    Case(
+        "an event that starts before the waking day is no longer clipped to it, so "
+        "a 6am gym class is counted as two hours of the day already booked",
+        [("if a.After(b) {", "if a.Before(b) {")],
+    ),
+    Case(
+        "an event that runs past the waking day is no longer clipped to it, so an "
+        "evening that ends at 11:30pm eats an hour and a half of day-load that is "
+        "not in the window at all",
+        [("if a.Before(b) {\n\t\treturn a\n\t}\n\treturn b\n}\n\nfunc priorityMark",
+          "if a.After(b) {\n\t\treturn a\n\t}\n\treturn b\n}\n\nfunc priorityMark")],
+    ),
+    Case(
+        "the priority mark never fires, so an important overdue todo reads exactly "
+        "like the rest of the list",
+        [("if item.Priority >= 3 {", "if item.Priority >= 300 {")],
+    ),
+    Case(
+        "the scope tag is printed on every line, so the one tag every item shares "
+        "drowns the sub-tags that say what KIND of personal it is",
+        [("if tag != scopeTag && tag != digestTag {", "if tag != digestTag {")],
+    ),
+    Case(
+        "a bucket is rendered in noteboard's order rather than by due date, so the "
+        "furthest-away item leads the section",
+        [("return items[i].DueAt.Before(*items[j].DueAt)", "return items[i].DueAt.After(*items[j].DueAt)")],
+    ),
+
+    # ---- the calendar read and the link scheme ----
+    Case(
+        "today's calendar read swallows its own failure and reports an empty day, "
+        "so a Google outage is indistinguishable from a free afternoon",
+        [("return c.calendar.ListEvents(token, dayStart, dayEnd)", "events, _ := c.calendar.ListEvents(token, dayStart, dayEnd)\n\treturn events, nil")],
+    ),
+    Case(
+        "the gcalsync stamp is read with its prefix still attached, so it never "
+        "equals the due date and every tick rewrites an event that has not moved",
+        [("syncedDueAt = strings.TrimPrefix(link, linkGoogleCalendarSyncedDueAt)", "syncedDueAt = link")],
+    ),
+    Case(
+        "the gcalsync stamp is written without the due date it is a stamp OF, so "
+        "the next tick reads it as absent and updates the event again forever",
+        [("links = append(links, linkGoogleCalendarSyncedDueAt+dueAt.Format(time.RFC3339))",
+          "links = append(links, linkGoogleCalendarSyncedDueAt)")],
+    ),
+
+    # ---- declared unnoticeable: nothing in this suite executes these ----
+    Case(
+        "Board.HasActionable inverts",
+        [("return len(b.Overdue) > 0 || len(b.DueToday) > 0", "return len(b.Overdue) > 0 && len(b.DueToday) > 0")],
+        expected_unnoticed="HasActionable has NO caller — not in main.go, not in the suite. It is dead "
+                           "code, so no mutation of it can be observed by anything. Falsified the "
+                           "moment something calls it; `grep -rn HasActionable` finding a second site "
+                           "is the check.",
+    ),
+    Case(
+        "main's default digest hour moves to 3am",
+        [('digestHour   = flag.Int("digest-hour", 7, "local hour to send the daily digest nudge.")',
+          'digestHour   = flag.Int("digest-hour", 3, "local hour to send the daily digest nudge.")')],
+        expected_unnoticed="main is flag parsing and constructor wiring; no test runs it, and the "
+                           "coordinator the suite builds sets every one of these fields itself. "
+                           "Falsified by a test that execs the built binary, or one that calls main.",
+    ),
+    Case(
+        "envOr prefers its fallback over the environment",
+        [('if v := os.Getenv(key); v != "" {', 'if v := os.Getenv(key); v == "" {')],
+        expected_unnoticed="envOr is reached only from main and from ResolveDashToken, neither of "
+                           "which any test executes. Falsified by a test that sets NOTEBOARD_URL or "
+                           "XDG_RUNTIME_DIR and asserts what the binary read.",
+    ),
+    Case(
+        "the dry-run log prefix is reworded",
+        [('return "[dry-run] "', 'return "[DRY RUN] "')],
+        expected_unnoticed="the string only ever reaches log.Printf and the dry-run fmt.Println. No "
+                           "test reads the log and nothing downstream parses it — the same standing "
+                           "reason as the known-negative control. Falsified by a test that captures "
+                           "log output, or by anything that greps journalctl for the prefix.",
+    ),
+    Case(
+        "the whole Herald process launch is scrambled — the -from and -title flags swap",
+        [('command := exec.Command(h.AskPath, "-from", from, "-title", title, message)',
+          'command := exec.Command(h.AskPath, "-title", from, "-from", title, message)')],
+        expected_unnoticed="the suite injects fakeHerald through the heraldRelay interface; the "
+                           "concrete Herald never runs, so it cannot spawn `ask` wrongly in a test. "
+                           "Falsified by a test that points AskPath at a script and reads its argv.",
+    ),
+    Case(
+        "the ENTIRE concrete NoteboardClient is broken at once — every list path, "
+        "every write verb, and the request builder under them",
+        [
+            ('"/api/items?type=todo&status=open&tag=%s&limit=500"', '"/api/items?type=todo&status=open&tag=%s&limit=5"'),
+            ('for _, status := range []string{"open", "done", "archived"} {', 'for _, status := range []string{"open"} {'),
+            ("\t\tif item.Schedule != nil {\n\t\t\tscheduled = append(scheduled, item)",
+             "\t\tif item.Schedule == nil {\n\t\t\tscheduled = append(scheduled, item)"),
+            ('return n.list("/api/items?parent_id=" + parentID + "&limit=500")',
+             'return n.list("/api/items?parent_id=" + parentID + "&limit=1")'),
+            ("return items[0], nil", "return items[len(items)-1], nil"),
+            ('if err := n.do("POST", "/api/items", req, &created); err != nil {',
+             'if err := n.do("PUT", "/api/items", req, &created); err != nil {'),
+            ('return n.do("PATCH", "/api/items/"+id, fields, nil)', 'return n.do("POST", "/api/items/"+id, fields, nil)'),
+            ('return n.Patch(id, map[string]any{"schedule": schedule})', 'return n.Patch(id, map[string]any{"schedules": schedule})'),
+            ('if err := n.do("GET", path, nil, &items); err != nil {', 'if err := n.do("HEAD", path, nil, &items); err != nil {'),
+            ("request, err := http.NewRequest(method, n.BaseURL+path, payload)",
+             'request, err := http.NewRequest(method, n.BaseURL+path+"&broken=1", payload)'),
+        ],
+        expected_unnoticed="every one of these ten methods reaches the coordinator through the "
+                           "noteboardAPI interface, and the suite passes fakeNoteboard. The concrete "
+                           "client is never constructed in a test, so nothing here can go red — "
+                           "including the SetSchedule key `schedules`, which noteboard would decode "
+                           "non-strictly and answer 200 to. This is deliberately ONE case rather than "
+                           "ten: the claim is about the whole client, and ten identical declarations "
+                           "would read as ten separate measurements. Falsified by any test that builds "
+                           "a NoteboardClient against an httptest server — which is exactly what card "
+                           "d80db401 and branch test/concrete-clients-speak-the-real-protocol are for.",
+    ),
+    Case(
+        "the ENTIRE concrete GoogleCalendarMirror is broken at once — token resolution, "
+        "the list decoder, both write verbs, the payload and the authorization header",
+        [
+            ('if token, found := strings.CutPrefix(field, "DASH_TOKEN="); found {',
+             'if token, found := strings.CutPrefix(field, "DASH_TOKENS="); found {'),
+            ('if resp.Error != "" {', 'if resp.Error == "" {'),
+            ('if created.ID == "" {', 'if created.ID != "" {'),
+            ('return g.do(token, "PUT", "/api/calendar/google/"+eventID, eventPayload(item), nil)',
+             'return g.do(token, "POST", "/api/calendar/google/"+eventID, eventPayload(item), nil)'),
+            ('strings.Contains(err.Error(), "410")', 'strings.Contains(err.Error(), "400")'),
+            ('"summary": "📋 " + item.Title,', '"summary": item.Title,'),
+            ('request.Header.Set("Authorization", "Bearer "+token)', 'request.Header.Set("Authorization", "Bearer"+token)'),
+        ],
+        expected_unnoticed="same shape as the NoteboardClient case: the coordinator holds a "
+                           "calendarMirror interface and the suite passes fakeCalendar, whose "
+                           "ResolveDashToken returns a constant and whose ListEvents ignores its "
+                           "window. The concrete mirror never runs, so a missing Bearer space and a "
+                           "410 that is no longer treated as already-deleted are both invisible. "
+                           "Falsified by a test that drives GoogleCalendarMirror at an httptest "
+                           "server standing in for the dash proxy.",
     ),
 ]
 

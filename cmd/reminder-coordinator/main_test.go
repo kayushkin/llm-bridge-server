@@ -1299,6 +1299,95 @@ func TestTomorrowsEventsAreNotFoldedIntoTodaysSchedule(t *testing.T) {
 	}
 }
 
+// The day-load line is read for its NUMBERS, not only for its colour: "~1.5h
+// booked, ~12.5h free" is the sentence that answers "is there room today?".
+// Every fixture before this one used whole-hour events and asserted only the
+// icon, so rounding a duration to the nearest quarter-DAY instead of the nearest
+// half hour scored UNNOTICED — the line still said "booked", still said "free",
+// and still went green.
+func TestDayLoadReportsItsHoursToTheNearestHalfHour(t *testing.T) {
+	loc := pacific(t)
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeNoteboard())
+
+	// 90 minutes booked inside a 14-hour window (8am–10pm): 1.5h booked, 12.5h
+	// free, and the tail from 10:30 to 10pm is the biggest open stretch at 11.5h.
+	// All three are half-hours on purpose — a whole-hour fixture cannot tell
+	// half-hour rounding from any coarser rounding.
+	line := coordinator.dayLoad([]CalendarEvent{{
+		Summary: "Standup and a long review",
+		Start:   time.Date(2026, 7, 20, 9, 0, 0, 0, loc),
+		End:     time.Date(2026, 7, 20, 10, 30, 0, 0, loc),
+	}})
+	for _, want := range []string{"~1.5h booked", "~12.5h free", "~11.5h"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("day-load line is missing %q:\n%s", want, line)
+		}
+	}
+
+	// Under an hour renders as minutes. "0h booked" on a day with a real meeting
+	// on it reads as a free morning.
+	short := coordinator.dayLoad([]CalendarEvent{{
+		Summary: "Quick call",
+		Start:   time.Date(2026, 7, 20, 9, 0, 0, 0, loc),
+		End:     time.Date(2026, 7, 20, 9, 45, 0, 0, loc),
+	}})
+	if !strings.Contains(short, "~45m booked") {
+		t.Errorf("a 45-minute meeting should read as minutes, not as a rounded hour:\n%s", short)
+	}
+}
+
+// Each bucket is sorted by due date before it is rendered, so a section reads in
+// the order you will actually meet it. noteboard hands items back newest-created
+// first, which is not that order and is not any order the reader can use.
+//
+// No fixture had ever put two dated items in one bucket, so reversing the
+// comparison scored UNNOTICED: with one item per bucket, every sort is correct.
+func TestABucketIsRenderedInDueDateOrderNotInTheOrderNoteboardReturned(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 7, 13, 8, 0, 0, 0, loc)
+
+	// Handed over latest-due first, which is the wrong order and is also the
+	// order a real noteboard listing arrives in.
+	nb := newFakeNoteboard(
+		&model.Item{ID: "friday", Type: "todo", Title: "Friday thing", Status: "open",
+			Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 17, 9, 0, 0, 0, loc))},
+		&model.Item{ID: "wednesday", Type: "todo", Title: "Wednesday thing", Status: "open",
+			Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 15, 9, 0, 0, 0, loc))},
+		&model.Item{ID: "tuesday", Type: "todo", Title: "Tuesday thing", Status: "open",
+			Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 14, 9, 0, 0, 0, loc))},
+	)
+	coordinator, _, _ := newTestCoordinator(t, now, nb)
+
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+	if len(board.ThisWeek) != 3 {
+		t.Fatalf("this-week bucket holds %d items, want all 3", len(board.ThisWeek))
+	}
+	wantOrder := []string{"Tuesday thing", "Wednesday thing", "Friday thing"}
+	for i, want := range wantOrder {
+		if board.ThisWeek[i].Title != want {
+			t.Fatalf("bucket order = %q at %d, want %q", board.ThisWeek[i].Title, i, want)
+		}
+	}
+
+	// And the sort has to survive into the note, which is the only place the
+	// user ever sees it.
+	rendered := coordinator.renderDigest(board, nil, nil)
+	previous := -1
+	for _, title := range wantOrder {
+		at := strings.Index(rendered, title)
+		if at < 0 {
+			t.Fatalf("rendered digest is missing %q:\n%s", title, rendered)
+		}
+		if at < previous {
+			t.Errorf("the digest lists %q out of due order:\n%s", title, rendered)
+		}
+		previous = at
+	}
+}
+
 func contains(haystack, needle string) bool {
 	return len(haystack) >= len(needle) && (func() bool {
 		for i := 0; i+len(needle) <= len(haystack); i++ {
