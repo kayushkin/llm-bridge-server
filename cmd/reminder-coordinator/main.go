@@ -21,11 +21,11 @@
 //
 // Each tick:
 //
-//	1. materialize  due occurrences of recurring templates into real todos
-//	2. roll         completed rolling-mode items forward to their next occurrence
-//	3. digest       rewrite the standing "Today" note — the always-available board
-//	4. calendar     mirror opted-in items to Google Calendar (secondary, opt-in)
-//	5. nudge        at most ONE herald session, and only when something new fired
+//  1. materialize  due occurrences of recurring templates into real todos
+//  2. roll         completed rolling-mode items forward to their next occurrence
+//  3. digest       rewrite the standing "Today" note — the always-available board
+//  4. calendar     mirror opted-in items to Google Calendar (secondary, opt-in)
+//  5. nudge        at most ONE herald session, and only when something new fired
 //
 // The digest note is the primary surface and is rewritten every tick, so it is
 // always current and always in one place. Chat is the exception channel, not the
