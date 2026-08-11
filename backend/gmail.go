@@ -275,21 +275,26 @@ type gmailBody struct {
 	AttachmentID string `json:"attachmentId"`
 }
 
+// gmailMetadataHeaders is the header set requested on the list path.
+//
+// A set rather than a sequence of q.Add calls so it can be asserted on: toMeta
+// can only parse what this asked Gmail to return, and those two live in
+// different functions. A correct parser paired with an unrequested header
+// produces empty values and no error anywhere, which is a silent failure.
+//
+// The threading three ride along in the SAME messages.get call that already
+// happens per message, so they cost nothing beyond a slightly larger response.
+var gmailMetadataHeaders = map[string]bool{
+	"Subject": true, "From": true, "To": true, "Cc": true, "Date": true,
+	"Message-ID": true, "References": true, "In-Reply-To": true,
+}
+
 func (g *Gmail) getMeta(ctx context.Context, id string) (MessageMeta, error) {
 	q := url.Values{}
 	q.Set("format", "metadata")
-	q.Add("metadataHeaders", "Subject")
-	q.Add("metadataHeaders", "From")
-	q.Add("metadataHeaders", "To")
-	q.Add("metadataHeaders", "Cc")
-	q.Add("metadataHeaders", "Date")
-	// Threading identity. These ride along in the SAME messages.get call, so
-	// they cost nothing beyond a slightly larger response — and without them the
-	// list path cannot tell whether two messages are the same mail or whether
-	// one is a reply to another.
-	q.Add("metadataHeaders", "Message-ID")
-	q.Add("metadataHeaders", "References")
-	q.Add("metadataHeaders", "In-Reply-To")
+	for h := range gmailMetadataHeaders {
+		q.Add("metadataHeaders", h)
+	}
 	resp, err := g.do(ctx, "GET", "/users/me/messages/"+url.PathEscape(id)+"?"+q.Encode(), nil)
 	if err != nil {
 		return MessageMeta{}, err

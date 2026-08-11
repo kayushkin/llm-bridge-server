@@ -245,6 +245,17 @@ func (b *Imap) List(ctx context.Context, folderID, cursor string, limit int) ([]
 		Flags:        true,
 		InternalDate: true,
 		UID:          true,
+		// References is the one threading header IMAP's ENVELOPE does not carry
+		// — it holds Message-ID and In-Reply-To but not the ancestor chain, and
+		// the chain is what identifies a conversation rather than just a parent.
+		//
+		// This asks for one header rather than the message: a HEADER.FIELDS
+		// section is a few dozen bytes per message against a body that is
+		// routinely tens of kilobytes.
+		BodySection: []*imap.FetchItemBodySection{{
+			Specifier:    imap.PartSpecifierHeader,
+			HeaderFields: []string{"References"},
+		}},
 	}
 	msgs, err := c.Fetch(seqSet, fetchOpts).Collect()
 	if err != nil {
@@ -280,11 +291,8 @@ func (b *Imap) toMeta(folderID string, m *imapclient.FetchMessageBuffer) Message
 		// convention) and the whole list is kept as the ancestor chain, so
 		// nothing is dropped just because our field is singular.
 		for _, ref := range m.Envelope.InReplyTo {
-			if id := StripAngleBrackets(ref); id != "" {
-				if meta.InReplyTo == "" {
-					meta.InReplyTo = id
-				}
-				meta.References = append(meta.References, id)
+			if id := StripAngleBrackets(ref); id != "" && meta.InReplyTo == "" {
+				meta.InReplyTo = id
 			}
 		}
 		if len(m.Envelope.From) > 0 {
@@ -310,7 +318,44 @@ func (b *Imap) toMeta(folderID string, m *imapclient.FetchMessageBuffer) Message
 		}
 	}
 	meta.Unread = !containsFlag(m.Flags, imap.FlagSeen)
+
+	// The References header, when the caller asked for it. Preferred over
+	// In-Reply-To because it is the whole chain; In-Reply-To is the fallback so
+	// a message whose server omitted References still reports its one ancestor.
+	for _, body := range m.BodySection {
+		if refs := parseReferencesHeader(string(body.Bytes)); len(refs) > 0 {
+			meta.References = refs
+			break
+		}
+	}
+	if len(meta.References) == 0 && meta.InReplyTo != "" {
+		meta.References = []string{meta.InReplyTo}
+	}
 	return meta
+}
+
+// parseReferencesHeader pulls the ids out of a raw HEADER.FIELDS (REFERENCES)
+// response, which arrives as header lines rather than a bare value and may be
+// folded across continuation lines.
+func parseReferencesHeader(raw string) []string {
+	var value strings.Builder
+	for _, line := range strings.Split(raw, "\n") {
+		trimmed := strings.TrimRight(line, "\r")
+		if trimmed == "" {
+			continue
+		}
+		if lower := strings.ToLower(trimmed); strings.HasPrefix(lower, "references:") {
+			value.WriteString(trimmed[len("references:"):])
+			continue
+		}
+		// A folded continuation line starts with whitespace and belongs to the
+		// header above it.
+		if value.Len() > 0 && (strings.HasPrefix(trimmed, " ") || strings.HasPrefix(trimmed, "\t")) {
+			value.WriteString(" ")
+			value.WriteString(trimmed)
+		}
+	}
+	return SplitReferences(value.String())
 }
 
 func containsFlag(flags []imap.Flag, want imap.Flag) bool {
