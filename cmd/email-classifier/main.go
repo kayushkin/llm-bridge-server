@@ -779,6 +779,19 @@ func registerSchedulerJob() error {
 	bin := filepath.Join(home, "bin", "email-classifier")
 	const jobName = "email-classifier-tick"
 
+	// The board id is baked into the command rather than left to the
+	// environment: scheduler runs jobs as `sh -c` with only its own thin env, so
+	// EMAIL_BOARD_ID would not reach the process. It has to be right at creation
+	// too — the scheduler binary serving :8092 accepts only enabled, description
+	// and timeout_seconds on PATCH and silently drops `command` with a 200, so
+	// there is no second chance to correct it through the API.
+	if boardID := envOr("EMAIL_BOARD_ID", ""); boardID != "" {
+		bin += " -board-id " + boardID
+	} else {
+		log.Printf("WARNING: registering without a pinned board id. Set EMAIL_BOARD_ID and re-register, " +
+			"or the job resolves the board by name and a rename will fork it.")
+	}
+
 	resp, err := http.Get(schedURL + "/api/jobs")
 	if err != nil {
 		return fmt.Errorf("list jobs: %w", err)
