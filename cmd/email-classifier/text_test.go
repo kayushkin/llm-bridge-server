@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestCleanBodyTextHonoursBothFormsOfOutlookConditionalComment(t *testing.T) {
 	// The two forms mean opposite things, and treating them alike loses real
@@ -113,5 +116,48 @@ func TestColumnForActionSendsUnknownActionsToActionNeeded(t *testing.T) {
 	}
 	if got := columnForAction("pay"); got != columnActionNeeded {
 		t.Fatalf("action pay landed in %q, want %q", got, columnActionNeeded)
+	}
+}
+
+func TestFilingReportAcceptsArraysReturnedAsEncodedStrings(t *testing.T) {
+	// Observed live: two of three consecutive batches came back with `filings`
+	// as a JSON-encoded string instead of an array. A strict decode rejected the
+	// whole report, and because the same input reproduces the same reply, that
+	// batch could never drain.
+	raw := `{
+	  "filings": "[{\"email_ref\":\"gmail-personal:abc\",\"new_card\":{\"title\":\"UNIQLO promotions\",\"category\":\"promotions\",\"action\":\"none\",\"urgency\":\"low\",\"summary\":\"s\"}}]"
+	}`
+	var rep filingReport
+	if err := json.Unmarshal([]byte(raw), &rep); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(rep.Filings) != 1 || rep.Filings[0].EmailRef != "gmail-personal:abc" {
+		t.Fatalf("filings did not decode: %+v", rep.Filings)
+	}
+	if rep.Filings[0].NewCard == nil || rep.Filings[0].NewCard.Title != "UNIQLO promotions" {
+		t.Fatalf("inline new_card did not decode: %+v", rep.Filings[0].NewCard)
+	}
+}
+
+func TestFilingReportStillAcceptsTheShapeTheSchemaAsksFor(t *testing.T) {
+	raw := `{"filings":[{"email_ref":"gmail-personal:abc","card_ids":["c1"]}],"card_updates":[{"card_id":"c1","action":"file"}]}`
+	var rep filingReport
+	if err := json.Unmarshal([]byte(raw), &rep); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(rep.Filings) != 1 || rep.Filings[0].CardIDs[0] != "c1" {
+		t.Fatalf("filings did not decode: %+v", rep.Filings)
+	}
+	if len(rep.CardUpdates) != 1 || rep.CardUpdates[0].Action != "file" {
+		t.Fatalf("card_updates did not decode: %+v", rep.CardUpdates)
+	}
+}
+
+func TestFilingReportRejectsAValueThatIsNeitherShape(t *testing.T) {
+	// A number is not a recoverable mistake, and quietly treating it as an empty
+	// list would drop every email in the batch while reporting success.
+	var rep filingReport
+	if err := json.Unmarshal([]byte(`{"filings": 42}`), &rep); err == nil {
+		t.Fatal("expected an error for a filings value that is neither an array nor an encoded array")
 	}
 }

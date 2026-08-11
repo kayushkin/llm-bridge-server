@@ -97,9 +97,14 @@ const (
 	defaultModel = "claude-haiku-4-5-20251001"
 
 	// emailsPerModelCall bounds one batch. Emails are small, so batching is far
-	// cheaper than a call each; the ceiling exists so one report stays inside
-	// maxOutputTokens with room to spare.
-	emailsPerModelCall = 25
+	// cheaper than a call each.
+	//
+	// Lowered from 25 after live runs: the batches that came back undecodable
+	// were consistently the ones producing the most new cards — 25 filings plus
+	// 14 new cards — and one reply degraded far enough to leak the model's own
+	// `<parameter name=...>` markup into a string field. Reply size is the
+	// pressure, and this is the knob that controls it.
+	emailsPerModelCall = 10
 
 	// maxEmailsPerTick bounds a tick's provider fetches and model spend. The
 	// backlog drains across ticks rather than in one long run.
@@ -236,24 +241,11 @@ func main() {
 			end = len(remaining)
 		}
 		batch := remaining[start:end]
-		digest := buildDigest(state, batch)
-
 		if cfg.DumpDigest {
-			fmt.Println(digest)
+			fmt.Println(buildDigest(state, batch))
 			continue
 		}
-		report, err := classifyBatch(ctx, cfg, digest)
-		if err != nil {
-			// One bad batch must not abort the tick, and it must not be recorded
-			// as filed — leaving these emails unlinked is precisely what makes
-			// the next tick retry them.
-			log.Printf("[email] classify batch %d-%d failed: %v — leaving %d emails unfiled for the next tick",
-				start, end, err, len(batch))
-			continue
-		}
-		if err := applier.applyReport(batch, report); err != nil {
-			log.Printf("[email] apply batch %d-%d failed: %v", start, end, err)
-		}
+		classifyAndApply(ctx, cfg, applier, state, batch)
 	}
 
 	if cfg.DumpDigest {
@@ -264,6 +256,41 @@ func main() {
 	}
 	log.Printf("[email] done: filed=%d cards_created=%d cards_updated=%d",
 		applier.filed, applier.cardsCreated, applier.cardsUpdated)
+}
+
+// classifyAndApply classifies one batch and applies it, halving the batch and
+// retrying whichever half fails when the model returns something undecodable.
+//
+// A plain retry would not work: a decode failure here is deterministic, since
+// the same digest reproduces the same malformed reply, so repeating the request
+// only spends money to fail identically. What varies is the size of the reply —
+// the batches that failed on live mail were the ones with the most new cards to
+// describe — so the retry shrinks the reply rather than repeating the request.
+//
+// Recursion bottoms out at a single email, which is then left unfiled. That is
+// the safe end state: an email with no card link is exactly what the next tick
+// looks for, so nothing is lost, it is only deferred.
+func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *boardState, batch []pendingEmail) {
+	if len(batch) == 0 {
+		return
+	}
+	report, err := classifyBatch(ctx, cfg, buildDigest(state, batch))
+	if err == nil {
+		if applyErr := ap.applyReport(batch, report); applyErr != nil {
+			log.Printf("[email] apply batch of %d failed: %v", len(batch), applyErr)
+		}
+		return
+	}
+	if len(batch) == 1 {
+		log.Printf("[email] classify failed for %s (%q): %v — leaving it unfiled for the next tick",
+			batch[0].Locator, batch[0].Meta.Subject, err)
+		return
+	}
+	mid := len(batch) / 2
+	log.Printf("[email] classify failed for a batch of %d, splitting into %d + %d and retrying: %v",
+		len(batch), mid, len(batch)-mid, err)
+	classifyAndApply(ctx, cfg, ap, state, batch[:mid])
+	classifyAndApply(ctx, cfg, ap, state, batch[mid:])
 }
 
 type config struct {

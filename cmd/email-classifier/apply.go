@@ -125,32 +125,15 @@ func (a *applier) applyDirectRoutes(routes []directRoute) error {
 // applyReport creates the cards the model asked for, files every email in the
 // batch, and applies state changes to cards the new mail moved.
 func (a *applier) applyReport(batch []pendingEmail, report *filingReport) error {
-	// Create new cards first so filings can reference them by id. A new card
-	// whose title matches one already on the board is folded into the existing
-	// card instead: duplicating a card splits one thread of work across two
-	// places, which is the most expensive mistake available here.
-	cardIDByKey := map[string]string{}
-	existingByTitle := map[string]string{}
+	// Titles of every card already on the board, so a card the model proposes
+	// that already exists is reused rather than duplicated. Duplicating a card
+	// splits one thread of work across two places, which is the most expensive
+	// mistake available here. The same index absorbs cards created during this
+	// batch, which is what makes two filings proposing the same new card
+	// converge on one.
+	cardIDByTitle := map[string]string{}
 	for id, c := range a.state.Cards {
-		existingByTitle[normalizeTitle(c.Title)] = id
-	}
-	for _, spec := range report.NewCards {
-		if spec.Key == "" {
-			log.Printf("[email] WARNING: new card %q has no key and cannot be referenced by a filing; skipping", spec.Title)
-			continue
-		}
-		if existingID, ok := existingByTitle[normalizeTitle(spec.Title)]; ok {
-			log.Printf("[email] reusing existing card %q rather than creating a duplicate", spec.Title)
-			cardIDByKey[spec.Key] = existingID
-			continue
-		}
-		id, err := a.createCard(spec)
-		if err != nil {
-			log.Printf("[email] create card %q: %v", spec.Title, err)
-			continue
-		}
-		cardIDByKey[spec.Key] = id
-		existingByTitle[normalizeTitle(spec.Title)] = id
+		cardIDByTitle[normalizeTitle(c.Title)] = id
 	}
 
 	filingByRef := map[string]emailFiling{}
@@ -172,7 +155,7 @@ func (a *applier) applyReport(batch []pendingEmail, report *filingReport) error 
 			continue
 		}
 
-		cardIDs := a.resolveFilingCards(filing, cardIDByKey)
+		cardIDs := a.resolveFilingCards(filing, cardIDByTitle)
 		if len(cardIDs) == 0 {
 			log.Printf("[email] WARNING: filing for %s (%q) named no resolvable card; sending to triage",
 				em.Locator, em.Meta.Subject)
@@ -194,10 +177,13 @@ func (a *applier) applyReport(batch []pendingEmail, report *filingReport) error 
 	return nil
 }
 
-// resolveFilingCards turns a filing's card references into card ids, dropping
-// any the model invented. Both reference kinds are honoured together — that is
-// the many-to-many case, an email that belongs on an existing card and a new one.
-func (a *applier) resolveFilingCards(filing emailFiling, cardIDByKey map[string]string) []string {
+// resolveFilingCards turns a filing's card references into card ids, creating the
+// inline new card if it names one. Both kinds are honoured together — that is the
+// many-to-many case, an email that belongs on an existing card and a new one.
+//
+// cardIDByTitle is mutated as cards are created, so a later filing in the same
+// batch proposing the same title reuses the card rather than making a second one.
+func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[string]string) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(id string) {
@@ -215,14 +201,16 @@ func (a *applier) resolveFilingCards(filing emailFiling, cardIDByKey map[string]
 	for _, id := range filing.CardIDs {
 		add(id)
 	}
-	for _, key := range filing.NewCardKeys {
-		id, ok := cardIDByKey[key]
-		if !ok {
-			log.Printf("[email] WARNING: filing for %s references new card key %q that was never created; ignoring",
-				filing.EmailRef, key)
-			continue
+	if spec := filing.NewCard; spec != nil && strings.TrimSpace(spec.Title) != "" {
+		key := normalizeTitle(spec.Title)
+		if existing, ok := cardIDByTitle[key]; ok {
+			add(existing)
+		} else if id, err := a.createCard(*spec); err != nil {
+			log.Printf("[email] create card %q: %v", spec.Title, err)
+		} else {
+			cardIDByTitle[key] = id
+			add(id)
 		}
-		add(id)
 	}
 	return out
 }
@@ -361,7 +349,6 @@ func (a *applier) ensureTriageCard() (string, error) {
 		}
 	}
 	id, err := a.createCard(newCardSpec{
-		Key:      "triage",
 		Title:    triageCardTitle,
 		Category: "personal",
 		Action:   "decide",
