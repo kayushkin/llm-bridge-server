@@ -40,7 +40,7 @@ type Imap struct {
 
 	mu        sync.Mutex
 	client    *imapclient.Client
-	selected  string // currently selected mailbox, if any
+	selected  string            // currently selected mailbox, if any
 	canonical map[string]string // canonical kind → mailbox name
 }
 
@@ -271,6 +271,22 @@ func (b *Imap) toMeta(folderID string, m *imapclient.FetchMessageBuffer) Message
 	}
 	if m.Envelope != nil {
 		meta.Subject = m.Envelope.Subject
+		// Already on the wire: List fetches Envelope, which carries both of
+		// these. They were simply never read. IMAP has no provider thread id, so
+		// these are the only threading signal this backend can offer.
+		meta.MessageID = StripAngleBrackets(m.Envelope.MessageID)
+		// go-imap models In-Reply-To as a list, because the header may name more
+		// than one parent. InReplyTo keeps the first (the direct parent, by
+		// convention) and the whole list is kept as the ancestor chain, so
+		// nothing is dropped just because our field is singular.
+		for _, ref := range m.Envelope.InReplyTo {
+			if id := StripAngleBrackets(ref); id != "" {
+				if meta.InReplyTo == "" {
+					meta.InReplyTo = id
+				}
+				meta.References = append(meta.References, id)
+			}
+		}
 		if len(m.Envelope.From) > 0 {
 			a := m.Envelope.From[0]
 			meta.From = Address{Name: a.Name, Email: a.Addr()}

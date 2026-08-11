@@ -44,11 +44,11 @@ func NewGmail(accountID, apiauthProvider, apiauthAccount string, tokens TokenSou
 }
 
 var gmailCanonical = map[string]CanonicalKind{
-	"INBOX":  KindInbox,
-	"SENT":   KindSent,
-	"DRAFT":  KindDrafts,
-	"TRASH":  KindTrash,
-	"SPAM":   KindSpam,
+	"INBOX": KindInbox,
+	"SENT":  KindSent,
+	"DRAFT": KindDrafts,
+	"TRASH": KindTrash,
+	"SPAM":  KindSpam,
 }
 
 func (g *Gmail) do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
@@ -246,13 +246,13 @@ func (g *Gmail) List(ctx context.Context, folderID, cursor string, limit int) ([
 
 // gmailMessage is the relevant slice of the Gmail messages.get response.
 type gmailMessage struct {
-	ID           string   `json:"id"`
-	ThreadID     string   `json:"threadId"`
-	LabelIDs     []string `json:"labelIds"`
-	Snippet      string   `json:"snippet"`
-	InternalDate string   `json:"internalDate"` // ms since epoch, as string
+	ID           string       `json:"id"`
+	ThreadID     string       `json:"threadId"`
+	LabelIDs     []string     `json:"labelIds"`
+	Snippet      string       `json:"snippet"`
+	InternalDate string       `json:"internalDate"` // ms since epoch, as string
 	Payload      gmailPayload `json:"payload"`
-	SizeEstimate int      `json:"sizeEstimate"`
+	SizeEstimate int          `json:"sizeEstimate"`
 }
 
 type gmailPayload struct {
@@ -283,6 +283,13 @@ func (g *Gmail) getMeta(ctx context.Context, id string) (MessageMeta, error) {
 	q.Add("metadataHeaders", "To")
 	q.Add("metadataHeaders", "Cc")
 	q.Add("metadataHeaders", "Date")
+	// Threading identity. These ride along in the SAME messages.get call, so
+	// they cost nothing beyond a slightly larger response — and without them the
+	// list path cannot tell whether two messages are the same mail or whether
+	// one is a reply to another.
+	q.Add("metadataHeaders", "Message-ID")
+	q.Add("metadataHeaders", "References")
+	q.Add("metadataHeaders", "In-Reply-To")
 	resp, err := g.do(ctx, "GET", "/users/me/messages/"+url.PathEscape(id)+"?"+q.Encode(), nil)
 	if err != nil {
 		return MessageMeta{}, err
@@ -304,6 +311,9 @@ func (g *Gmail) toMeta(m *gmailMessage) MessageMeta {
 		ID:        m.ID,
 		AccountID: g.accountID,
 		Snippet:   m.Snippet,
+		// Present on every message resource, including format=metadata, so this
+		// is free on the list path — it was simply never read.
+		ThreadID: m.ThreadID,
 	}
 	for _, h := range m.Payload.Headers {
 		switch strings.ToLower(h.Name) {
@@ -323,6 +333,12 @@ func (g *Gmail) toMeta(m *gmailMessage) MessageMeta {
 			if t, err := mail.ParseDate(h.Value); err == nil {
 				meta.Date = t
 			}
+		case "message-id":
+			meta.MessageID = StripAngleBrackets(h.Value)
+		case "in-reply-to":
+			meta.InReplyTo = StripAngleBrackets(h.Value)
+		case "references":
+			meta.References = SplitReferences(h.Value)
 		}
 	}
 	if meta.Date.IsZero() && m.InternalDate != "" {

@@ -50,13 +50,24 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
+	// WAL plus a busy timeout. The index is written on every message list, so
+	// readers and that writer now overlap routinely; the previous bare-path DSN
+	// left the default rollback journal and NO busy timeout, which turns any
+	// overlap straight into SQLITE_BUSY instead of a short wait.
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
+	}
+	// Everything added after the original three tables goes through migrate, so
+	// that a later column change has somewhere to live. CREATE TABLE IF NOT
+	// EXISTS cannot alter a table that already exists.
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	_ = os.Chmod(path, 0600)
 	return &Store{db: db}, nil

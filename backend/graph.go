@@ -83,11 +83,11 @@ func (g *Graph) do(ctx context.Context, method, path string, body io.Reader) (*h
 }
 
 type graphFolder struct {
-	ID               string `json:"id"`
-	DisplayName      string `json:"displayName"`
-	ParentFolderID   string `json:"parentFolderId"`
-	UnreadItemCount  int    `json:"unreadItemCount"`
-	WellKnownName    string `json:"wellKnownName,omitempty"`
+	ID              string `json:"id"`
+	DisplayName     string `json:"displayName"`
+	ParentFolderID  string `json:"parentFolderId"`
+	UnreadItemCount int    `json:"unreadItemCount"`
+	WellKnownName   string `json:"wellKnownName,omitempty"`
 }
 
 type graphFolderList struct {
@@ -150,8 +150,8 @@ type graphMessage struct {
 	Flag             struct {
 		FlagStatus string `json:"flagStatus"`
 	} `json:"flag"`
-	HasAttachments   bool `json:"hasAttachments"`
-	Body             struct {
+	HasAttachments bool `json:"hasAttachments"`
+	Body           struct {
 		ContentType string `json:"contentType"`
 		Content     string `json:"content"`
 	} `json:"body"`
@@ -183,7 +183,10 @@ func (g *Graph) List(ctx context.Context, folderID, cursor string, limit int) ([
 	} else {
 		q := url.Values{}
 		q.Set("$top", strconv.Itoa(limit))
-		q.Set("$select", "id,subject,bodyPreview,receivedDateTime,from,toRecipients,ccRecipients,parentFolderId,isRead,flag,hasAttachments")
+		// conversationId and internetMessageId are selected here too, not only on the
+		// Get path: without them the list path yields no threading data at all, and
+		// Graph charges nothing extra for two more projected fields.
+		q.Set("$select", "id,subject,bodyPreview,receivedDateTime,from,toRecipients,ccRecipients,parentFolderId,isRead,flag,hasAttachments,conversationId,internetMessageId")
 		q.Set("$orderby", "receivedDateTime desc")
 		if folderID != "" {
 			path = "/me/mailFolders/" + url.PathEscape(folderID) + "/messages?" + q.Encode()
@@ -226,6 +229,8 @@ func (g *Graph) toMeta(m *graphMessage) MessageMeta {
 		Unread:    !m.IsRead,
 		Flagged:   m.Flag.FlagStatus == "flagged",
 		HasAttach: m.HasAttachments,
+		MessageID: StripAngleBrackets(m.InternetMessageID),
+		ThreadID:  m.ConversationID,
 	}
 	if m.From.EmailAddress.Address != "" {
 		meta.From = Address{Name: m.From.EmailAddress.Name, Email: m.From.EmailAddress.Address}
@@ -298,12 +303,12 @@ func (g *Graph) Get(ctx context.Context, id string) (Message, error) {
 }
 
 type graphAttachment struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	ContentType  string `json:"contentType"`
-	Size         int64  `json:"size"`
-	IsInline     bool   `json:"isInline"`
-	ContentID    string `json:"contentId"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	ContentType string `json:"contentType"`
+	Size        int64  `json:"size"`
+	IsInline    bool   `json:"isInline"`
+	ContentID   string `json:"contentId"`
 }
 
 func (g *Graph) listAttachments(ctx context.Context, msgID string) ([]Attachment, error) {

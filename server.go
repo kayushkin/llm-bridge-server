@@ -47,6 +47,15 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, bearerToken string) 
 	s.mux.Handle("DELETE /api/imap/creds/{name}", s.auth(s.handleDeleteImapCred))
 	s.mux.Handle("GET /api/folders", s.auth(s.handleFolders))
 	s.mux.Handle("GET /api/messages", s.auth(s.handleListMessages))
+	// Resolution lives under its own /api/lookup/ namespace rather than under
+	// /api/messages/. Both spellings are four segments, so
+	// "/api/messages/by-message-id/{messageID}" and "/api/messages/{id}/thread"
+	// are genuinely ambiguous for the path "/api/messages/by-message-id/thread"
+	// and Go's mux panics at registration rather than guessing. Caught by the
+	// e2e smoke, which exists for precisely this.
+	s.mux.Handle("GET /api/lookup/message-id/{messageID}", s.auth(s.handleLocatorsForMessageID))
+	s.mux.Handle("GET /api/messages/{id}/thread", s.auth(s.handleMessageThread))
+	s.mux.Handle("GET /api/index/stats", s.auth(s.handleIndexStats))
 	s.mux.Handle("GET /api/messages/{id}", s.auth(s.handleGetMessage))
 	s.mux.Handle("POST /api/messages/{id}/read", s.auth(s.handleMarkRead))
 	s.mux.Handle("POST /api/messages/{id}/flag", s.auth(s.handleFlag))
@@ -385,6 +394,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	s.indexMessages(acct, msgs)
 	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "next_cursor": next})
 }
 
@@ -405,6 +415,9 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	// The get path carries headers the list path does not, so this is where a
+	// message's References chain usually first becomes known.
+	s.indexFullMessage(acct, msg)
 	writeJSON(w, http.StatusOK, msg)
 }
 
@@ -523,9 +536,9 @@ func (s *Server) handleBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		IDs     []string `json:"ids"`
-		Op      string   `json:"op"` // read|unread|flag|unflag|move|delete|perm-delete
-		Folder  string   `json:"folder,omitempty"`
+		IDs    []string `json:"ids"`
+		Op     string   `json:"op"` // read|unread|flag|unflag|move|delete|perm-delete
+		Folder string   `json:"folder,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -615,4 +628,176 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		delete(s.imapBackends, id)
 	}
 	return nil
+}
+
+// ============================ message index ============================
+
+// providerIDScope reports the folder a provider's message ids are scoped to.
+//
+// Gmail and Graph ids identify a message across the whole account, so they get
+// an empty scope and one row per message. An IMAP UID is unique only within one
+// mailbox and is invalidated by a UIDVALIDITY change, so its rows are keyed per
+// folder. Getting this wrong would silently merge two different IMAP messages
+// that happen to share a UID in different folders.
+func providerIDScope(provider accounts.Provider, folderID string) string {
+	if provider == accounts.ProviderIMAP {
+		return folderID
+	}
+	return ""
+}
+
+// indexMessages records a page of list results.
+//
+// Index failures are logged and swallowed rather than returned. This is a
+// deliberate exception to failing loudly, and the reason is narrow: the index is
+// derived data that this request did not need in order to succeed. The caller
+// asked for their mail and their mail is in hand; failing the read because a
+// bookkeeping write went wrong would turn a degraded index into an outage. The
+// log line is the alarm, and /api/index/stats is how coverage stays visible.
+func (s *Server) indexMessages(accountID string, msgs []backend.MessageMeta) {
+	if len(msgs) == 0 {
+		return
+	}
+	a, err := s.accounts.Get(accountID)
+	if err != nil {
+		log.Printf("index: account %s: %v — page not indexed", accountID, err)
+		return
+	}
+	rows := make([]accounts.IndexedMessage, 0, len(msgs))
+	for _, m := range msgs {
+		rows = append(rows, indexRow(a, m, nil))
+	}
+	if err := s.accounts.UpsertMessages(rows); err != nil {
+		log.Printf("index: upsert %d message(s) for %s: %v", len(rows), accountID, err)
+	}
+}
+
+func (s *Server) indexFullMessage(accountID string, msg backend.Message) {
+	a, err := s.accounts.Get(accountID)
+	if err != nil {
+		log.Printf("index: account %s: %v — message not indexed", accountID, err)
+		return
+	}
+	if err := s.accounts.UpsertMessages([]accounts.IndexedMessage{indexRow(a, msg.Meta, msg.Headers)}); err != nil {
+		log.Printf("index: upsert message %s for %s: %v", msg.Meta.ID, accountID, err)
+	}
+}
+
+// indexRow converts one message into an index row, preferring header values
+// when they are available because the get path carries more than the list path.
+func indexRow(a *accounts.Account, m backend.MessageMeta, headers map[string]string) accounts.IndexedMessage {
+	messageID := m.MessageID
+	inReplyTo := m.InReplyTo
+	refs := m.References
+	if headers != nil {
+		if v := backend.HeaderLookup(headers, "Message-ID"); v != "" {
+			messageID = backend.StripAngleBrackets(v)
+		}
+		if v := backend.HeaderLookup(headers, "In-Reply-To"); v != "" {
+			inReplyTo = backend.StripAngleBrackets(v)
+		}
+		if v := backend.HeaderLookup(headers, "References"); v != "" {
+			refs = backend.SplitReferences(v)
+		}
+	}
+	var dateMs int64
+	if !m.Date.IsZero() {
+		dateMs = m.Date.UnixMilli()
+	}
+	return accounts.IndexedMessage{
+		AccountID:   a.ID,
+		FolderScope: providerIDScope(a.Provider, m.FolderID),
+		ProviderID:  m.ID,
+		MessageID:   messageID,
+		ThreadID:    m.ThreadID,
+		RootID:      rootMessageID(messageID, inReplyTo, refs),
+		InReplyTo:   inReplyTo,
+		References:  refs,
+		Subject:     m.Subject,
+		FromName:    m.From.Name,
+		FromEmail:   m.From.Email,
+		DateMs:      dateMs,
+		FolderID:    m.FolderID,
+	}
+}
+
+// rootMessageID is the conversation's universal key: the oldest ancestor this
+// message knows about.
+//
+// References is ordered oldest first per RFC 5322 §3.6.4, so its first entry is
+// the thread root. A message with no ancestors is its own root, which is what
+// makes a single message and a two-message thread answerable by the same query.
+func rootMessageID(messageID, inReplyTo string, refs []string) string {
+	if len(refs) > 0 {
+		return refs[0]
+	}
+	if inReplyTo != "" {
+		return inReplyTo
+	}
+	return messageID
+}
+
+func (s *Server) handleLocatorsForMessageID(w http.ResponseWriter, r *http.Request) {
+	id := backend.StripAngleBrackets(r.PathValue("messageID"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, errors.New("message id required"))
+		return
+	}
+	locs, err := s.accounts.LocatorsForMessageID(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	// An empty list is not the same claim as "no such message": this index is
+	// filled by reads, so a message nobody has listed yet is simply absent. The
+	// response says which it is rather than leaving the caller to guess.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message_id": id,
+		"locators":   locs,
+		"indexed":    len(locs) > 0,
+	})
+}
+
+func (s *Server) handleMessageThread(w http.ResponseWriter, r *http.Request) {
+	acct := r.URL.Query().Get("account")
+	id := r.PathValue("id")
+	folder := r.URL.Query().Get("folder")
+	if acct == "" {
+		writeError(w, http.StatusBadRequest, errors.New("account query param required"))
+		return
+	}
+	a, err := s.accounts.Get(acct)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	seed, err := s.accounts.MessageByLocator(acct, providerIDScope(a.Provider, folder), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if seed == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"indexed": false, "messages": []any{}})
+		return
+	}
+	msgs, err := s.accounts.ThreadMessages(acct, seed.ThreadID, seed.RootID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"indexed":         true,
+		"thread_id":       seed.ThreadID,
+		"root_message_id": seed.RootID,
+		"messages":        msgs,
+	})
+}
+
+func (s *Server) handleIndexStats(w http.ResponseWriter, r *http.Request) {
+	st, err := s.accounts.IndexStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
 }
