@@ -97,7 +97,14 @@ func (c *Client) FindBoard(name string) (*Board, error) {
 	return c.findBoardByName(name)
 }
 
-func (c *Client) findBoardByName(name string) (*Board, error) {
+// ListBoards returns every board kanban-store knows about.
+//
+// Exported because resolving a board by name is unsafe for a writer that must
+// keep hitting the same board: kanban-store has no unique constraint on board
+// name and creates on miss, so a rename in the UI forks a second board and the
+// writer silently follows the new one. A caller that pins a board id needs this
+// to confirm the id still resolves.
+func (c *Client) ListBoards() ([]Board, error) {
 	resp, err := c.HTTP.Get(c.BaseURL + "/api/boards")
 	if err != nil {
 		return nil, err
@@ -108,6 +115,14 @@ func (c *Client) findBoardByName(name string) (*Board, error) {
 	}
 	var boards []Board
 	if err := json.NewDecoder(resp.Body).Decode(&boards); err != nil {
+		return nil, err
+	}
+	return boards, nil
+}
+
+func (c *Client) findBoardByName(name string) (*Board, error) {
+	boards, err := c.ListBoards()
+	if err != nil {
 		return nil, err
 	}
 	for i := range boards {
@@ -188,6 +203,12 @@ type CardView struct {
 		Position float64 `json:"position"`
 	} `json:"placement"`
 	Item map[string]any `json:"item"`
+	// Links is the card's entity links. kanban-store has always sent these in
+	// the board view; decoding them here saves a caller one ListCardLinks round
+	// trip per card, which on a board whose links ARE the payload (email-
+	// classifier attaches every message as a link) is the difference between
+	// one request and hundreds.
+	Links []CardLink `json:"links"`
 }
 
 // ColumnView holds a column and its cards (in placement order).
@@ -354,10 +375,17 @@ func (c *Client) MoveCard(cardID, boardID, columnID string, position float64) er
 	return nil
 }
 
-// PatchCardBody updates the noteboard item's body via the kanban-store proxy.
-// Used by closure curator to append final-state notes.
-func (c *Client) PatchCardBody(cardID, body string) error {
-	payload, _ := json.Marshal(map[string]any{"body": body})
+// PatchCard updates fields on the noteboard item behind a card. kanban-store
+// forwards the body verbatim to noteboard's PATCH /api/items/:id, so the
+// accepted field names are noteboard's: title, body, tags, status, priority,
+// due_at, parent_id, links.
+//
+// Callers should send only the fields they are changing. noteboard's revision
+// snapshot covers title, body, tags, status, priority, list_id, parent_id and
+// links — but NOT rank, due_at or schedule, so overwriting one of those three
+// destroys the old value with no recoverable history.
+func (c *Client) PatchCard(cardID string, fields map[string]any) error {
+	payload, _ := json.Marshal(fields)
 	req, _ := http.NewRequest("PATCH", fmt.Sprintf("%s/api/cards/%s", c.BaseURL, cardID), bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
@@ -369,6 +397,12 @@ func (c *Client) PatchCardBody(cardID, body string) error {
 		return statusErr("patch card", resp)
 	}
 	return nil
+}
+
+// PatchCardBody updates the noteboard item's body via the kanban-store proxy.
+// Used by closure curator to append final-state notes.
+func (c *Client) PatchCardBody(cardID, body string) error {
+	return c.PatchCard(cardID, map[string]any{"body": body})
 }
 
 // HoldCard parks the card's work: the hold lands on the underlying noteboard
