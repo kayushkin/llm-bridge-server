@@ -514,3 +514,42 @@ func statusErr(op string, resp *http.Response) error {
 	raw, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("kanban %s: %s — %s", op, resp.Status, strings.TrimSpace(string(raw)))
 }
+
+// DeleteCardLink removes one entity link by its link id.
+//
+// Needed by the merge pass, which must MOVE a card's evidence rather than copy
+// it: a link left on a card that has been taken off the board would leave its
+// email attached to nothing visible, and the filing pass — which reads the board
+// to learn what is already filed — would then see that email as unfiled and file
+// it a second time.
+func (c *Client) DeleteCardLink(linkID string) error {
+	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/api/links/%s", c.BaseURL, linkID), nil)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return statusErr("delete card link", resp)
+	}
+	return nil
+}
+
+// DetachCardFromBoard removes a card's placement from one board, leaving the
+// underlying noteboard item intact.
+//
+// Distinct from deleting the card: the item is what a human may have edited, and
+// taking a card off a board is a presentation decision, not a decision to
+// destroy the work it describes.
+func (c *Client) DetachCardFromBoard(boardID, cardID string) error {
+	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/api/boards/%s/cards/%s", c.BaseURL, boardID, cardID), nil)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return statusErr("detach card from board", resp)
+	}
+	return nil
+}

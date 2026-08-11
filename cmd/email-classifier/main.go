@@ -94,7 +94,16 @@ const (
 	// verbatim on every pass.
 	evidenceMarker = "<!-- email-classifier:evidence -->"
 
-	defaultModel = "claude-haiku-4-5-20251001"
+	// A better model than the sibling classifiers use, deliberately. The cheap
+	// affinity layer already routes bulk mail with no model at all, so what
+	// reaches the model is the novel mail — and measured across runs, 44-50% of
+	// it results in a NEW card. Card creation is therefore the median case here,
+	// not a rare one, and it is a judgement call: telling a task ("pay this
+	// rent") from a record ("another receipt") is exactly what the cheap model
+	// got wrong, naming six receipt cards after their amounts so no two could
+	// ever merge. At ~20 batch calls a month the cost difference is not the
+	// deciding factor.
+	defaultModel = "claude-sonnet-4-6"
 
 	// emailsPerModelCall bounds one batch. Emails are small, so batching is far
 	// cheaper than a call each.
@@ -151,6 +160,7 @@ func main() {
 		maxEmails    = flag.Int("max", maxEmailsPerTick, "Max emails to file per tick.")
 		account      = flag.String("account", "", "Restrict to one mailstack account id.")
 		backfill     = flag.Bool("backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
+		mergeFlag    = flag.Bool("merge", false, "Run the card-merge pass over the board and exit, filing no new mail.")
 	)
 	flag.Parse()
 
@@ -205,6 +215,14 @@ func main() {
 	state, err := loadBoardState(kc, board.ID)
 	if err != nil {
 		log.Fatalf("load board state: %v", err)
+	}
+	if *mergeFlag {
+		// Housekeeping over the board, not over the mail — so it exits here
+		// rather than going on to file. It reads no mailbox at all.
+		if err := runMergePass(ctx, cfg, kc, state); err != nil {
+			log.Fatalf("merge pass: %v", err)
+		}
+		return
 	}
 	log.Printf("[email] board state: cards=%d filed_emails=%d known_message_ids=%d sender_rules=%d",
 		len(state.Cards), len(state.FiledLocators), len(state.CardsByMessageID), state.routableSenderCount())
@@ -368,6 +386,14 @@ type cardState struct {
 	Urgency    string
 	// EmailLinks is every email attached to this card, in link order.
 	EmailLinks []kanbanclient.CardLink
+	// AllLinks is every link of every type. The merge pass needs these to move
+	// a card's evidence onto its survivor, and they are already in the board
+	// view, so keeping them costs nothing.
+	AllLinks []kanbanclient.CardLink
+	// Senders is the distinct addresses whose mail lands here, from the learned
+	// sender-affinity links. The strongest signal for "these two cards are the
+	// same bucket".
+	Senders []string
 }
 
 // boardState is the whole board read once per tick. The card links are the
@@ -448,6 +474,7 @@ func loadBoardState(kc *kanbanclient.Client, boardID string) (*boardState, error
 			card.Action = tagValue(card.Tags, tagPrefixAction)
 			card.Urgency = tagValue(card.Tags, tagPrefixUrgent)
 
+			card.AllLinks = append(card.AllLinks, cv.Links...)
 			for _, link := range cv.Links {
 				switch link.EntityType {
 				case linkTypeEmail:
@@ -457,6 +484,7 @@ func loadBoardState(kc *kanbanclient.Client, boardID string) (*boardState, error
 					st.CardsByMessageID[link.EntityRef] = append(st.CardsByMessageID[link.EntityRef], card.ID)
 				case linkTypeEmailSender:
 					st.CardsBySender[link.EntityRef] = append(st.CardsBySender[link.EntityRef], card.ID)
+					card.Senders = append(card.Senders, link.EntityRef)
 				}
 			}
 			st.Cards[card.ID] = card

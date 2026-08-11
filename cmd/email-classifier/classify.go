@@ -298,37 +298,49 @@ var errTruncatedReport = errors.New("filing report truncated")
 var anthropicMessagesURL = "https://api.anthropic.com/v1/messages"
 
 func classifyBatch(ctx context.Context, cfg config, digest string) (*filingReport, error) {
+	var rep filingReport
+	if err := invokeTool(ctx, cfg, systemPrompt, reportToolSchema(), reportToolName, digest, &rep); err != nil {
+		return nil, err
+	}
+	return &rep, nil
+}
+
+// invokeTool runs one forced single-tool call and decodes its input into out.
+//
+// Shared by the filing pass and the merge pass so the truncation guard below has
+// exactly one authoring. That guard is the whole reason this is not three lines:
+// a reply cut off at max_tokens still carries a tool_use block whose partial
+// input parses as valid JSON, because the API drops the unfinished array rather
+// than emitting broken JSON. stop_reason is the only evidence the answer is
+// incomplete, and an incomplete answer here is silently indistinguishable from a
+// model that simply had less to say.
+func invokeTool(ctx context.Context, cfg config, system string, schema map[string]any, toolName, digest string, out any) error {
 	body := map[string]any{
-		"model":      cfg.Model,
-		"max_tokens": maxOutputTokens,
-		"system":     systemPrompt,
-		"tools":      []any{reportToolSchema()},
-		"tool_choice": map[string]any{
-			"type": "tool",
-			"name": reportToolName,
-		},
-		"messages": []any{
-			map[string]any{"role": "user", "content": digest},
-		},
+		"model":       cfg.Model,
+		"max_tokens":  maxOutputTokens,
+		"system":      system,
+		"tools":       []any{schema},
+		"tool_choice": map[string]any{"type": "tool", "name": toolName},
+		"messages":    []any{map[string]any{"role": "user", "content": digest}},
 	}
 	bs, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, "POST", anthropicMessagesURL, bytes.NewReader(bs))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", cfg.AnthropicAPIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	httpC := &http.Client{Timeout: 120 * time.Second}
+	httpC := &http.Client{Timeout: 180 * time.Second}
 	resp, err := httpC.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("anthropic %s: %s", resp.Status, string(rb))
+		return fmt.Errorf("anthropic %s: %s", resp.Status, string(rb))
 	}
 	var apiResp struct {
 		StopReason string `json:"stop_reason"`
@@ -343,28 +355,29 @@ func classifyBatch(ctx context.Context, cfg config, digest string) (*filingRepor
 		} `json:"content"`
 	}
 	if err := json.Unmarshal(rb, &apiResp); err != nil {
-		return nil, fmt.Errorf("decode anthropic response: %w", err)
+		return fmt.Errorf("decode anthropic response: %w", err)
 	}
-	// A reply cut off at max_tokens still carries a tool_use block whose partial
-	// input parses as valid JSON — the API drops the unfinished array rather
-	// than emitting broken JSON. stop_reason is therefore the only evidence the
-	// report is incomplete, and an incomplete report here means emails silently
-	// went unfiled.
 	if apiResp.StopReason == stopReasonMaxTokens {
-		return nil, fmt.Errorf("%w: hit max_tokens=%d after %d output tokens; "+
-			"the missing filings are indistinguishable from emails the model chose not to file",
-			errTruncatedReport, maxOutputTokens, apiResp.Usage.OutputTokens)
+		return fmt.Errorf("%w: hit max_tokens=%d after %d output tokens", errTruncatedReport, maxOutputTokens, apiResp.Usage.OutputTokens)
 	}
 	for _, blk := range apiResp.Content {
-		if blk.Type != "tool_use" || blk.Name != reportToolName {
+		if blk.Type != "tool_use" || blk.Name != toolName {
 			continue
 		}
 		raw, _ := json.Marshal(blk.Input)
-		var rep filingReport
-		if err := json.Unmarshal(raw, &rep); err != nil {
-			return nil, fmt.Errorf("decode tool input: %w (raw=%s)", err, truncateForError(raw))
+		if err := json.Unmarshal(raw, out); err != nil {
+			return fmt.Errorf("decode tool input: %w (raw=%s)", err, truncateForError(raw))
 		}
-		return &rep, nil
+		return nil
 	}
-	return nil, fmt.Errorf("no tool_use block in response: %s", string(rb))
+	return fmt.Errorf("no tool_use block named %s in response: %s", toolName, truncateForError(rb))
+}
+
+// classifyMerges asks which cards on the board are really one bucket.
+func classifyMerges(ctx context.Context, cfg config, digest string) (*mergeReport, error) {
+	var rep mergeReport
+	if err := invokeTool(ctx, cfg, mergeSystemPrompt, mergeToolSchema(), mergeToolName, digest, &rep); err != nil {
+		return nil, err
+	}
+	return &rep, nil
 }
