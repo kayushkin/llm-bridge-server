@@ -194,8 +194,29 @@ func TestManager_AbandonedSubagentSettlesOnProcessExit(t *testing.T) {
 	close(proc.ch) // process exits with the task still open
 	waitForProcessTeardown(t, m, parentID)
 
-	if got := findSubagent(t, m, parentID).State; got != string(msg.SessionError) {
-		t.Fatalf("abandoned subagent state = %q, want error", got)
+	sub := findSubagent(t, m, parentID)
+	if sub.State != string(msg.SessionError) {
+		t.Fatalf("abandoned subagent state = %q, want error", sub.State)
+	}
+
+	// The row alone settles nothing a client can see. Writing it silently was
+	// the whole defect: the parent's timeline kept an open spawn forever and the
+	// live status line kept the subagent listed as running, because both learn
+	// that a task closed from the parent's event stream and nothing was emitted
+	// there.
+	closed := findStoredTaskEvent(t, m, parentID, "task_updated", taskID)
+	if !msg.TaskStatusIsTerminal(closed.TaskStatus) {
+		t.Errorf("derived close has status %q, which is not terminal — the spawn stays open", closed.TaskStatus)
+	}
+	if closed.TaskStatus != msg.TaskStatusCancelled {
+		t.Errorf("status = %q, want %q — the task was taken away, it did not report a failure",
+			closed.TaskStatus, msg.TaskStatusCancelled)
+	}
+	if closed.SubagentSessionID != sub.SessionID {
+		t.Errorf("derived close names session %q, want %q", closed.SubagentSessionID, sub.SessionID)
+	}
+	if closed.Message == "" {
+		t.Error("derived close carries no reason; a client showing it has nothing to say about why the task ended")
 	}
 }
 
@@ -304,6 +325,126 @@ func blockTexts(t *testing.T, m *Manager, sessionID string) []string {
 		}
 	}
 	return out
+}
+
+// storedSystemEvents returns every SystemEvent persisted against a session, in
+// order. The stored bytes are what a client actually receives, so a field that
+// is set after the marshal is invisible here — which is the point.
+func storedSystemEvents(t *testing.T, m *Manager, sessionID string) []msg.SystemEvent {
+	t.Helper()
+	events, err := m.store.ListEventsSinceID(sessionID, 0)
+	if err != nil {
+		t.Fatalf("list events for %s: %v", sessionID, err)
+	}
+	var out []msg.SystemEvent
+	for _, e := range events {
+		var ev msg.Event
+		if json.Unmarshal([]byte(e.Data), &ev) != nil {
+			continue
+		}
+		if ev.System != nil {
+			out = append(out, *ev.System)
+		}
+	}
+	return out
+}
+
+// findStoredTaskEvent returns the one stored SystemEvent of the given subtype
+// naming taskID.
+func findStoredTaskEvent(t *testing.T, m *Manager, sessionID, subtype, taskID string) msg.SystemEvent {
+	t.Helper()
+	for _, sys := range storedSystemEvents(t, m, sessionID) {
+		if sys.Subtype == subtype && sys.TaskID == taskID {
+			return sys
+		}
+	}
+	t.Fatalf("session %s has no stored %s for task %s", sessionID, subtype, taskID)
+	return msg.SystemEvent{}
+}
+
+// TestManager_TaskStartedCarriesSubagentSessionID is the regression for the
+// ordering that made the link unreachable: the session used to be minted on the
+// subagent's FIRST OWN FRAME, which arrives after task_started has already been
+// marshalled, stored and fanned out. A client watching the parent therefore saw
+// a subagent announced with no id to follow, and the only join left to it was
+// the harness's own task id against a name-shaped harness_session_id.
+//
+// The id must be on the stored bytes, not merely set on the in-memory event.
+func TestManager_TaskStartedCarriesSubagentSessionID(t *testing.T) {
+	m := newTestManager(t)
+	const parentID = "br-parent-stamp"
+	const toolUseID = "toolu_stamp"
+	const taskID = "task_stamp"
+	seedParent(t, m, parentID)
+
+	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
+	go m.readEvents(proc)
+	proc.ch <- taskStarted(parentID, toolUseID, taskID, "probe")
+	proc.ch <- taskUpdated(parentID, taskID, msg.TaskStatusCompleted)
+	close(proc.ch)
+	waitForProcessTeardown(t, m, parentID)
+
+	sub := findSubagent(t, m, parentID)
+	started := findStoredTaskEvent(t, m, parentID, "task_started", taskID)
+	if started.SubagentSessionID != sub.SessionID {
+		t.Errorf("task_started subagent_session_id = %q, want %q — the announcement is the event a client links from",
+			started.SubagentSessionID, sub.SessionID)
+	}
+	// The closing frame names the same session, so a client that renders the
+	// finish apart from the spawn can link from either row.
+	finished := findStoredTaskEvent(t, m, parentID, "task_updated", taskID)
+	if finished.SubagentSessionID != sub.SessionID {
+		t.Errorf("task_updated subagent_session_id = %q, want %q", finished.SubagentSessionID, sub.SessionID)
+	}
+}
+
+// TestManager_SubagentWithNoFramesStillGetsASessionAndSettles covers the hole
+// lazy minting left open. A task that dies before emitting a single frame never
+// reached route(), so no session was minted; settle and settleUnfinished both
+// skip a task with no session, so its terminal status went nowhere. The row
+// then reappeared later through discovery with no manager_session_id — the
+// bulk of the orphan backlog on this host.
+func TestManager_SubagentWithNoFramesStillGetsASessionAndSettles(t *testing.T) {
+	m := newTestManager(t)
+	const parentID = "br-parent-frameless"
+	const toolUseID = "toolu_frameless"
+	const taskID = "task_frameless"
+	seedParent(t, m, parentID)
+
+	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
+	go m.readEvents(proc)
+	// Announced, then reported failed. The subagent itself never speaks.
+	proc.ch <- taskStarted(parentID, toolUseID, taskID, "dies immediately")
+	proc.ch <- taskUpdated(parentID, taskID, msg.TaskStatusFailed)
+	close(proc.ch)
+	waitForProcessTeardown(t, m, parentID)
+
+	sub := findSubagent(t, m, parentID)
+	if sub.State != string(msg.SessionError) {
+		t.Errorf("state = %q, want %q — a failed subagent that never spoke must still settle", sub.State, msg.SessionError)
+	}
+}
+
+// TestManager_NonAgentTaskCarriesNoSubagentSessionID pins the empty case as a
+// real answer. A backgrounded shell gets the same task frames a subagent does
+// and deliberately gets no session, so the field must stay empty rather than be
+// filled with the parent's id or the harness's task id.
+func TestManager_NonAgentTaskCarriesNoSubagentSessionID(t *testing.T) {
+	m := newTestManager(t)
+	const parentID = "br-parent-bash"
+	const taskID = "task_bash"
+	seedParent(t, m, parentID)
+
+	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
+	go m.readEvents(proc)
+	proc.ch <- taskStartedOfType(parentID, "toolu_bash", taskID, "sleep 2", msg.TaskTypeLocalBash)
+	close(proc.ch)
+	waitForProcessTeardown(t, m, parentID)
+
+	started := findStoredTaskEvent(t, m, parentID, "task_started", taskID)
+	if started.SubagentSessionID != "" {
+		t.Errorf("subagent_session_id = %q, want empty — a backgrounded shell has no session", started.SubagentSessionID)
+	}
 }
 
 func assertHasBlockText(t *testing.T, m *Manager, sessionID, want string) {
