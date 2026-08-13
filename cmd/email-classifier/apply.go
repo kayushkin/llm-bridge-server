@@ -18,9 +18,18 @@ type applier struct {
 	kc    *kanbanclient.Client
 	state *boardState
 
+	// gate keeps the classifier off cards an agent is currently working on.
+	// See session.go for which states count as working.
+	gate *sessionGate
+
 	filed        int
 	cardsCreated int
 	cardsUpdated int
+
+	// skippedAgentOwned counts cards left alone this tick because an agent held
+	// them. Reported at the end so a board that stops changing has a visible
+	// reason rather than looking like the classifier silently died.
+	skippedAgentOwned int
 
 	// touched is the set of cards whose evidence list changed this tick and so
 	// needs its body rewritten once, at the end, rather than once per link.
@@ -289,6 +298,14 @@ func (a *applier) applyCardUpdate(upd cardUpdate) error {
 		log.Printf("[email] card %q is in %s; leaving it alone", card.Title, columnActionCompleted)
 		return nil
 	}
+	// Same reasoning one step further: an agent working the card is deciding its
+	// action and column right now, and retagging or moving it underneath a live
+	// session would fight whatever the agent is doing.
+	if owned, session := a.gate.agentOwns(card); owned {
+		log.Printf("[email] card %q is held by an agent — skipping retag/move (session=%s)", card.Title, session)
+		a.skippedAgentOwned++
+		return nil
+	}
 
 	newTags := card.Tags
 	if upd.Action != "" && upd.Action != card.Action {
@@ -376,6 +393,14 @@ func (a *applier) rewriteTouchedCardBodies() error {
 	for cardID := range a.touched {
 		card, ok := a.state.Cards[cardID]
 		if !ok {
+			continue
+		}
+		// The agent may be reading, or have edited, this body. New email links
+		// were still attached above; the evidence section just renders stale
+		// until the session ends, and the next tick after that re-renders it.
+		if owned, session := a.gate.agentOwns(card); owned {
+			log.Printf("[email] card %q is held by an agent — leaving its body alone (session=%s)", card.Title, session)
+			a.skippedAgentOwned++
 			continue
 		}
 		body := renderCardBody(card)

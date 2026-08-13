@@ -154,6 +154,7 @@ func main() {
 		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
 		mailURL      = flag.String("mail-url", envOr("MAILSTACK_URL", "http://localhost:8195"), "mailstack base URL")
 		mailToken    = flag.String("mail-token", envOr("MAILSTACK_TOKEN", "changeme"), "mailstack bearer token")
+		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL, used to tell whether an agent is still working on a card")
 		authStoreURL = flag.String("auth-store-url", envOr("AUTH_STORE_URL", "http://localhost:8303"), "auth-store base URL")
 		authToken    = flag.String("auth-token", envOr("AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
 		model        = flag.String("model", envOr("EMAIL_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
@@ -176,6 +177,7 @@ func main() {
 		KanbanURL:    *kanbanURL,
 		MailURL:      *mailURL,
 		MailToken:    *mailToken,
+		BridgeURL:    *bridgeURL,
 		AuthStoreURL: *authStoreURL,
 		AuthToken:    *authToken,
 		Model:        *model,
@@ -216,10 +218,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("load board state: %v", err)
 	}
+	// One gate per run, shared by the merge pass and the filing pass, so a
+	// session is resolved against the bridge at most once per tick however many
+	// cards carry it.
+	gate := newSessionGate(cfg.BridgeURL)
+
 	if *mergeFlag {
 		// Housekeeping over the board, not over the mail — so it exits here
 		// rather than going on to file. It reads no mailbox at all.
-		if err := runMergePass(ctx, cfg, kc, state); err != nil {
+		if err := runMergePass(ctx, cfg, kc, state, gate); err != nil {
 			log.Fatalf("merge pass: %v", err)
 		}
 		return
@@ -248,7 +255,7 @@ func main() {
 	routed, remaining := routeByAffinity(cfg, mc, state, unfiled)
 	log.Printf("[email] routed without model: %d (sender/thread affinity); to model: %d", len(routed), len(remaining))
 
-	applier := &applier{cfg: cfg, kc: kc, state: state}
+	applier := &applier{cfg: cfg, kc: kc, state: state, gate: gate}
 	if err := applier.applyDirectRoutes(routed); err != nil {
 		log.Fatalf("apply direct routes: %v", err)
 	}
@@ -272,8 +279,8 @@ func main() {
 	if err := applier.rewriteTouchedCardBodies(); err != nil {
 		log.Printf("[email] rewrite card bodies: %v", err)
 	}
-	log.Printf("[email] done: filed=%d cards_created=%d cards_updated=%d",
-		applier.filed, applier.cardsCreated, applier.cardsUpdated)
+	log.Printf("[email] done: filed=%d cards_created=%d cards_updated=%d skipped_agent_owned=%d",
+		applier.filed, applier.cardsCreated, applier.cardsUpdated, applier.skippedAgentOwned)
 }
 
 // classifyAndApply classifies one batch and applies it, halving the batch and
@@ -315,6 +322,7 @@ type config struct {
 	KanbanURL       string
 	MailURL         string
 	MailToken       string
+	BridgeURL       string
 	AuthStoreURL    string
 	AuthToken       string
 	AnthropicAPIKey string

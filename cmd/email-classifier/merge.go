@@ -96,9 +96,16 @@ func mergeToolSchema() map[string]any {
 // never truncated: a merge decision is precisely a whole-board judgement, and a
 // board trimmed to fit would hide the very duplicate being looked for. At ~90
 // cards of one line each this is a few thousand tokens.
-func buildMergeDigest(state *boardState) string {
+func buildMergeDigest(state *boardState, gate *sessionGate) string {
 	cards := make([]*cardState, 0, len(state.Cards))
 	for _, c := range state.Cards {
+		// Keeping agent-held cards out of the digest is an economy, not the
+		// safeguard — applyMerge refuses them regardless. Offering them would
+		// spend tokens on proposals that are then refused, every tick, for as
+		// long as the agent runs.
+		if owned, _ := gate.agentOwns(c); owned {
+			continue
+		}
 		cards = append(cards, c)
 	}
 	sort.Slice(cards, func(i, j int) bool {
@@ -122,8 +129,8 @@ func buildMergeDigest(state *boardState) string {
 	return b.String()
 }
 
-func runMergePass(ctx context.Context, cfg config, kc *kanbanclient.Client, state *boardState) error {
-	digest := buildMergeDigest(state)
+func runMergePass(ctx context.Context, cfg config, kc *kanbanclient.Client, state *boardState, gate *sessionGate) error {
+	digest := buildMergeDigest(state, gate)
 	if cfg.DumpDigest {
 		fmt.Println(digest)
 		return nil
@@ -141,7 +148,7 @@ func runMergePass(ctx context.Context, cfg config, kc *kanbanclient.Client, stat
 
 	applied := 0
 	for _, g := range report.Merges {
-		ok, err := applyMerge(cfg, kc, state, g)
+		ok, err := applyMerge(cfg, kc, state, g, gate)
 		if err != nil {
 			// One bad group must not abort the pass; the others are independent.
 			log.Printf("[merge] group %q failed: %v", g.SurvivorTitle, err)
@@ -157,7 +164,7 @@ func runMergePass(ctx context.Context, cfg config, kc *kanbanclient.Client, stat
 
 // applyMerge validates one group and performs it. Returns false when the group
 // was refused, which is not an error — refusing is the safe outcome.
-func applyMerge(cfg config, kc *kanbanclient.Client, state *boardState, g mergeGroup) (bool, error) {
+func applyMerge(cfg config, kc *kanbanclient.Client, state *boardState, g mergeGroup, gate *sessionGate) (bool, error) {
 	members := make([]*cardState, 0, len(g.CardIDs))
 	seen := map[string]bool{}
 	for _, id := range g.CardIDs {
@@ -201,9 +208,19 @@ func applyMerge(cfg config, kc *kanbanclient.Client, state *boardState, g mergeG
 				g.SurvivorTitle, c.Title, c.Action)
 			return false, nil
 		}
+		// An agent is working this card. Merging would retire it — archiving the
+		// card and moving its links away — while a live session is still writing
+		// to it, which is the most destructive thing this binary can do. Refuse
+		// the whole group rather than the one card: dropping a member silently
+		// changes what the model proposed into something it never approved.
+		if owned, session := gate.agentOwns(c); owned {
+			log.Printf("[merge] refused %q: card %q is held by an agent (session=%s)",
+				g.SurvivorTitle, c.Title, session)
+			return false, nil
+		}
 	}
 
-	survivor, losers, err := resolveSurvivor(cfg, kc, state, g, members)
+	survivor, losers, err := resolveSurvivor(cfg, kc, state, g, members, gate)
 	if err != nil {
 		return false, err
 	}
@@ -228,7 +245,7 @@ func applyMerge(cfg config, kc *kanbanclient.Client, state *boardState, g mergeG
 }
 
 // resolveSurvivor picks or creates the card the group folds into.
-func resolveSurvivor(cfg config, kc *kanbanclient.Client, state *boardState, g mergeGroup, members []*cardState) (*cardState, []*cardState, error) {
+func resolveSurvivor(cfg config, kc *kanbanclient.Client, state *boardState, g mergeGroup, members []*cardState, gate *sessionGate) (*cardState, []*cardState, error) {
 	if g.SurvivorCardID != "" {
 		survivor, ok := state.Cards[g.SurvivorCardID]
 		if !ok {
@@ -257,7 +274,7 @@ func resolveSurvivor(cfg config, kc *kanbanclient.Client, state *boardState, g m
 		return nil, nil, nil
 	}
 
-	ap := &applier{cfg: cfg, kc: kc, state: state}
+	ap := &applier{cfg: cfg, kc: kc, state: state, gate: gate}
 	id, err := ap.createCard(newCardSpec{
 		Title:    g.SurvivorTitle,
 		Category: firstNonEmpty(g.Category, members[0].Category),
