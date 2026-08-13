@@ -15,6 +15,7 @@
 /ask
 /spend-ceiling-guard
 /reminder-coordinator
+/email-classifier
 /cmd/scheduler/scheduler
 /cmd/autoworker/autoworker
 /cmd/kanban-curator/kanban-curator
@@ -25,6 +26,7 @@
 /cmd/ask/ask
 /cmd/spend-ceiling-guard/spend-ceiling-guard
 /cmd/reminder-coordinator/reminder-coordinator
+/cmd/email-classifier/email-classifier
 
 # DB files
 *.db
