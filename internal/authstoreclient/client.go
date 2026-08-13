@@ -125,8 +125,15 @@ func (c *Client) do(ctx context.Context, method, path, reason string, body any, 
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	if reason != "" {
+	// X-Auth-App names the caller and goes on every request. auth-store's
+	// key-touching routes reject a request without it (400), and its CRUD
+	// routes record it in the audit trail — those routes do not enforce it,
+	// so gating it on the reason left every credential this service created
+	// or deleted logged against a blank app.
+	if c.app != "" {
 		req.Header.Set("X-Auth-App", c.app)
+	}
+	if reason != "" {
 		req.Header.Set("X-Auth-Reason", reason)
 	}
 	if body != nil {

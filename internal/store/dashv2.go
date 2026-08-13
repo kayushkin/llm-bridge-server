@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"sort"
 	"strings"
 	"time"
 )
@@ -46,9 +47,111 @@ const summarySessionIDExpression = `COALESCE(NULLIF(session_id, ''), bridge_id)`
 // half is the already-projected session id, assembled in Go.
 const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), updated_at, created_at, CAST(updated_at AS TEXT)`
 
+// SessionSummaryFilter narrows ListSessionSummaries to the rows matching every
+// non-empty axis. An empty axis constrains nothing, and the values within one
+// axis are OR'd together — the same inclusion semantics chat-core's sidebar
+// chips already use, so the server and the client cannot mean two different
+// things by the same filter.
+//
+// The axes mirror the sidebar's six. `InstanceIDs` is the one whose name differs
+// from its chip label: the sidebar calls that axis "machine" and resolves an
+// instance to a machine name for DISPLAY only, while the value it actually
+// filters on is always the instance id. This field is named for the value it
+// matches, not for the label above it.
+type SessionSummaryFilter struct {
+	Harnesses   []string
+	States      []string
+	Types       []string
+	Purposes    []string
+	Modes       []string
+	InstanceIDs []string
+}
+
+// summaryFilterAxis pairs one filterable column expression with the values a row
+// must match on it.
+type summaryFilterAxis struct {
+	column string
+	values []string
+}
+
+// axes reports the filter's columns in a FIXED order. Fixed because that order
+// decides both the SQL argument order and the response-cache key, and ranging a
+// map would let two identical requests build two different keys.
+//
+// Every column is COALESCEd to '' to match the projection in summaryColumns: a
+// row whose type is NULL has to compare as the empty string, rather than drop
+// out of the comparison the silent way SQL NULL does.
+func (f SessionSummaryFilter) axes() []summaryFilterAxis {
+	return []summaryFilterAxis{
+		{`COALESCE(harness, '')`, f.Harnesses},
+		{`COALESCE(state, '')`, f.States},
+		{`COALESCE(type, '')`, f.Types},
+		{`COALESCE(purpose, '')`, f.Purposes},
+		{`COALESCE(mode, '')`, f.Modes},
+		{`COALESCE(instance_id, '')`, f.InstanceIDs},
+	}
+}
+
+// IsEmpty reports whether the filter constrains nothing, so a caller can tell an
+// unfiltered listing from a filtered one without reaching into the axes.
+func (f SessionSummaryFilter) IsEmpty() bool {
+	for _, axis := range f.axes() {
+		if len(axis.values) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// CacheKey renders the filter as a deterministic string for the response cache.
+//
+// Values are sorted so two requests that select the same set in a different chip
+// order share one entry. This belongs in the key rather than beside it: a page
+// served from an entry cached under a DIFFERENT filter is a wrong answer, not a
+// stale one, and it would look exactly like a correct one.
+func (f SessionSummaryFilter) CacheKey() string {
+	var b strings.Builder
+	for _, axis := range f.axes() {
+		b.WriteString(axis.column)
+		b.WriteByte('=')
+		sorted := append([]string(nil), axis.values...)
+		sort.Strings(sorted)
+		b.WriteString(strings.Join(sorted, ","))
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
+// sqlPlaceholders renders n bound-parameter placeholders as "?, ?, ?".
+//
+// The values themselves are always bound, never interpolated: they arrive
+// straight from a URL query string, and an IN list built by string concatenation
+// is the textbook injection.
+func sqlPlaceholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	b := make([]byte, 0, n*3)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b = append(b, ',', ' ')
+		}
+		b = append(b, '?')
+	}
+	return string(b)
+}
+
 // ListSessionSummaries returns projected session rows newest-first, paginated by
-// (updated_at, session id). `before` is the opaque cursor returned as a prior
-// page's last row's Cursor ("" for the first page). limit <= 0 defaults to 100.
+// (updated_at, session id) and narrowed by `filter`. `before` is the opaque
+// cursor returned as a prior page's last row's Cursor ("" for the first page).
+// limit <= 0 defaults to 100. A zero-value filter lists everything.
+//
+// Filtering happens HERE rather than in the client because the two compose
+// badly: the client can only sieve the page it was given, so a page of the
+// newest 100 sessions spent on machine traffic leaves it with a handful of rows
+// and no way to ask for more of the kind it wants. Measured on the live box,
+// interactive sessions are ~8% of any recent window, so a client-side sieve
+// discards 92 rows to keep 8.
 //
 // The sort key is compound because updated_at alone is not unique: 30 groups of
 // rows in the live table share a timestamp to the nanosecond. A page boundary
@@ -63,28 +166,53 @@ const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(
 // the leading term from the index and block-sorts only the right part of the
 // ORDER BY, i.e. within a tie group. Those groups hold at most 3 rows.
 //
+// A filter rides along as a residual test during that same index scan — it needs
+// no index of its own and does not change the plan. Measured against the live
+// 3.1 GB bridge.db (8,845 sessions): the newest filtered 100 in 23ms, and 42ms a
+// thousand rows deep. The cost of a filter is that the scan walks further before
+// it fills a page, which is the point — those are the rows the client would
+// otherwise have fetched and thrown away.
+//
 // The cursor filter compares updated_at as TEXT: every row's timestamp is
 // written by the store as Go's uniform t.String() format, which is lexically
 // monotonic with time, so a TEXT comparison paginates correctly without
 // depending on the column's numeric affinity.
-func (s *Store) ListSessionSummaries(limit int, before string) ([]SessionSummaryRow, error) {
+func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSummaryFilter) ([]SessionSummaryRow, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	q := `SELECT ` + summaryColumns + ` FROM sessions`
+	conds := []string{}
 	args := []any{}
 	if before != "" {
 		// A cursor minted before the compound format existed carries no id half,
 		// and needs no special case: decodeSummaryCursor yields "" for it, no id
 		// sorts below the empty string, so the second disjunct is never true and
-		// the filter collapses to exactly the timestamp-only comparison that
-		// cursor was built for. Pinned by
+		// the comparison collapses to exactly the timestamp-only one that cursor
+		// was built for. Pinned by
 		// TestListSessionSummaries_LegacyTimestampOnlyCursor — the equivalence is
 		// the reason there is one branch here rather than two.
 		updatedAtText, sessionID := decodeSummaryCursor(before)
-		q += ` WHERE CAST(updated_at AS TEXT) < ?` +
-			` OR (CAST(updated_at AS TEXT) = ? AND ` + summarySessionIDExpression + ` < ?)`
+		// Wrapped in its own parentheses as a whole. The cursor test is itself an
+		// OR, so leaving it bare and appending ` AND <axis>` would bind as
+		// `A OR (B AND C AND axis)` — every row newer than the cursor would come
+		// back regardless of the filter, and only on the SECOND page onwards, so
+		// page one would look perfectly correct.
+		conds = append(conds, `(CAST(updated_at AS TEXT) < ?`+
+			` OR (CAST(updated_at AS TEXT) = ? AND `+summarySessionIDExpression+` < ?))`)
 		args = append(args, updatedAtText, updatedAtText, sessionID)
+	}
+	for _, axis := range filter.axes() {
+		if len(axis.values) == 0 {
+			continue
+		}
+		conds = append(conds, axis.column+` IN (`+sqlPlaceholders(len(axis.values))+`)`)
+		for _, v := range axis.values {
+			args = append(args, v)
+		}
+	}
+	if len(conds) > 0 {
+		q += ` WHERE ` + strings.Join(conds, ` AND `)
 	}
 	q += ` ORDER BY updated_at DESC, ` + summarySessionIDExpression + ` DESC LIMIT ?`
 	args = append(args, limit)

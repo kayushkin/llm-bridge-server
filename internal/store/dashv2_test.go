@@ -41,7 +41,7 @@ func TestListSessionSummaries_NewestFirstProjection(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	rows, err := s.ListSessionSummaries(100, "")
+	rows, err := s.ListSessionSummaries(100, "", SessionSummaryFilter{})
 	if err != nil {
 		t.Fatalf("ListSessionSummaries: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestListSessionSummaries_CursorPagination(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	// Page 1: newest 2.
-	p1, err := s.ListSessionSummaries(2, "")
+	p1, err := s.ListSessionSummaries(2, "", SessionSummaryFilter{})
 	if err != nil {
 		t.Fatalf("page1: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestListSessionSummaries_CursorPagination(t *testing.T) {
 		t.Fatalf("page1 len = %d, want 2", len(p1))
 	}
 	// Page 2: older than the last of page 1.
-	p2, err := s.ListSessionSummaries(2, p1[len(p1)-1].Cursor)
+	p2, err := s.ListSessionSummaries(2, p1[len(p1)-1].Cursor, SessionSummaryFilter{})
 	if err != nil {
 		t.Fatalf("page2: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestListSessionSummaries_TieGroupSpansPage(t *testing.T) {
 	var seen []string
 	cursor := ""
 	for page := 0; page < 10; page++ {
-		rows, err := s.ListSessionSummaries(2, cursor)
+		rows, err := s.ListSessionSummaries(2, cursor, SessionSummaryFilter{})
 		if err != nil {
 			t.Fatalf("page %d: %v", page, err)
 		}
@@ -196,7 +196,7 @@ func TestListSessionSummaries_TieGroupSpansPage(t *testing.T) {
 func TestSummaryCursor_CarriesBothHalves(t *testing.T) {
 	s := testStore(t)
 	mkSummarySession(t, s, "only")
-	rows, err := s.ListSessionSummaries(10, "")
+	rows, err := s.ListSessionSummaries(10, "", SessionSummaryFilter{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestListSessionSummaries_TieGroupWithLegacyRow(t *testing.T) {
 	var seen []string
 	cursor := ""
 	for page := 0; page < 10; page++ {
-		rows, err := s.ListSessionSummaries(1, cursor)
+		rows, err := s.ListSessionSummaries(1, cursor, SessionSummaryFilter{})
 		if err != nil {
 			t.Fatalf("page %d: %v", page, err)
 		}
@@ -301,7 +301,7 @@ func TestListSessionSummaries_LegacyTimestampOnlyCursor(t *testing.T) {
 
 	// Exactly what the previous server would have handed a client as `next`.
 	legacy := "2026-05-02 20:55:35.000000000 +0000 UTC"
-	rows, err := s.ListSessionSummaries(10, legacy)
+	rows, err := s.ListSessionSummaries(10, legacy, SessionSummaryFilter{})
 	if err != nil {
 		t.Fatalf("legacy cursor: %v", err)
 	}
@@ -335,5 +335,188 @@ func TestMaxSessionUpdatedAt_TracksNewest(t *testing.T) {
 	}
 	if rev2 == rev1 {
 		t.Errorf("revision did not advance after mutation: %q", rev2)
+	}
+}
+
+// mkFilterableSession creates a session with the axes the filter reads set
+// independently, so a test can tell which axis did the narrowing.
+func mkFilterableSession(t *testing.T, s *Store, id, sessionType, purpose string) {
+	t.Helper()
+	sess := &Session{
+		SessionID:   id,
+		DisplayName: "disp-" + id,
+		Harness:     "claude_code",
+		InstanceID:  "inst-1",
+		State:       "idle",
+		AgentID:     "agent-1",
+		Purpose:     purpose,
+		Type:        msg.SessionType(sessionType),
+		Mode:        msg.SessionModeEvents,
+	}
+	if err := s.CreateSession(sess); err != nil {
+		t.Fatalf("create %s: %v", id, err)
+	}
+}
+
+// ids reports the session ids of a page, in order, for comparison in tests.
+func ids(rows []SessionSummaryRow) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.SessionID)
+	}
+	return out
+}
+
+// A zero-value filter constrains nothing — the pre-filter behaviour, unchanged.
+func TestListSessionSummaries_EmptyFilterListsEverything(t *testing.T) {
+	s := testStore(t)
+	mkFilterableSession(t, s, "a", "interactive", "chat")
+	mkFilterableSession(t, s, "b", "autonomous", "autoworker")
+
+	rows, err := s.ListSessionSummaries(100, "", SessionSummaryFilter{})
+	if err != nil {
+		t.Fatalf("ListSessionSummaries: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("empty filter must list everything, got %v", ids(rows))
+	}
+	if !(SessionSummaryFilter{}).IsEmpty() {
+		t.Errorf("zero-value filter must report IsEmpty")
+	}
+}
+
+// One axis narrows to the rows matching it, and drops the rest entirely.
+func TestListSessionSummaries_FilterNarrowsToMatchingAxis(t *testing.T) {
+	s := testStore(t)
+	mkFilterableSession(t, s, "chat-1", "interactive", "chat")
+	mkFilterableSession(t, s, "worker-1", "autonomous", "autoworker")
+	mkFilterableSession(t, s, "worker-2", "autonomous", "autoworker")
+
+	rows, err := s.ListSessionSummaries(100, "", SessionSummaryFilter{Types: []string{"interactive"}})
+	if err != nil {
+		t.Fatalf("ListSessionSummaries: %v", err)
+	}
+	if got := ids(rows); len(got) != 1 || got[0] != "chat-1" {
+		t.Errorf("type=interactive should yield only chat-1, got %v", got)
+	}
+}
+
+// Values within one axis are OR'd — the sidebar's inclusion semantics.
+func TestListSessionSummaries_AxisValuesAreOred(t *testing.T) {
+	s := testStore(t)
+	mkFilterableSession(t, s, "chat-1", "interactive", "chat")
+	mkFilterableSession(t, s, "herald-1", "herald", "herald")
+	mkFilterableSession(t, s, "worker-1", "autonomous", "autoworker")
+
+	rows, err := s.ListSessionSummaries(100, "", SessionSummaryFilter{
+		Types: []string{"interactive", "herald"},
+	})
+	if err != nil {
+		t.Fatalf("ListSessionSummaries: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("two values on one axis must OR, got %v", ids(rows))
+	}
+}
+
+// Separate axes are AND'd — a row has to satisfy every non-empty one.
+func TestListSessionSummaries_AxesAreAnded(t *testing.T) {
+	s := testStore(t)
+	mkFilterableSession(t, s, "match", "interactive", "chat")
+	mkFilterableSession(t, s, "wrong-purpose", "interactive", "autoworker")
+	mkFilterableSession(t, s, "wrong-type", "autonomous", "chat")
+
+	rows, err := s.ListSessionSummaries(100, "", SessionSummaryFilter{
+		Types:    []string{"interactive"},
+		Purposes: []string{"chat"},
+	})
+	if err != nil {
+		t.Fatalf("ListSessionSummaries: %v", err)
+	}
+	if got := ids(rows); len(got) != 1 || got[0] != "match" {
+		t.Errorf("axes must AND, got %v", got)
+	}
+}
+
+// THE regression this endpoint is most likely to grow: a filter that holds on
+// page one and silently stops holding from page two onwards.
+//
+// The cursor test is an OR (`older-timestamp OR same-timestamp-and-lower-id`).
+// Appended to it, an unparenthesized ` AND type IN (…)` binds as
+// `A OR (B AND C AND type)`, so every row older than the cursor comes back
+// whatever its type. Page one carries no cursor and looks perfectly correct,
+// which is exactly why this needs a test rather than a reading.
+func TestListSessionSummaries_FilterSurvivesCursorPagination(t *testing.T) {
+	s := testStore(t)
+	// Interleaved so any page after the first would pick up an autonomous row
+	// if the filter stopped applying.
+	for _, spec := range []struct{ id, sessionType string }{
+		{"i1", "interactive"},
+		{"a1", "autonomous"},
+		{"i2", "interactive"},
+		{"a2", "autonomous"},
+		{"i3", "interactive"},
+		{"a3", "autonomous"},
+	} {
+		mkFilterableSession(t, s, spec.id, spec.sessionType, "chat")
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	filter := SessionSummaryFilter{Types: []string{"interactive"}}
+	var seen []string
+	cursor := ""
+	for page := 0; page < 10; page++ {
+		rows, err := s.ListSessionSummaries(2, cursor, filter)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, r := range rows {
+			if r.Type != "interactive" {
+				t.Fatalf("page %d leaked a %q row (%s) — the filter stopped applying past the cursor",
+					page, r.Type, r.SessionID)
+			}
+			seen = append(seen, r.SessionID)
+		}
+		cursor = rows[len(rows)-1].Cursor
+	}
+	if len(seen) != 3 {
+		t.Errorf("paging a filtered list must reach every match exactly once, got %v", seen)
+	}
+}
+
+// The response cache is keyed by this string, so two different filters must
+// never render the same one — that would serve one filter's page to another.
+func TestSessionSummaryFilterCacheKey_DistinguishesFilters(t *testing.T) {
+	a := SessionSummaryFilter{Types: []string{"interactive"}}
+	b := SessionSummaryFilter{Types: []string{"autonomous"}}
+	if a.CacheKey() == b.CacheKey() {
+		t.Errorf("different filters share a cache key: %q", a.CacheKey())
+	}
+
+	// Same axis, same values, different axis entirely — must not collide either.
+	c := SessionSummaryFilter{Purposes: []string{"interactive"}}
+	if a.CacheKey() == c.CacheKey() {
+		t.Errorf("type and purpose filters share a cache key: %q", a.CacheKey())
+	}
+
+	// Chip order is not part of the selection, so it must not split the cache.
+	d := SessionSummaryFilter{Types: []string{"herald", "interactive"}}
+	e := SessionSummaryFilter{Types: []string{"interactive", "herald"}}
+	if d.CacheKey() != e.CacheKey() {
+		t.Errorf("value order changed the cache key: %q vs %q", d.CacheKey(), e.CacheKey())
+	}
+}
+
+// CacheKey must not reorder the caller's slice as a side effect — the same
+// filter value is handed to the SQL builder immediately afterwards.
+func TestSessionSummaryFilterCacheKey_DoesNotMutateCaller(t *testing.T) {
+	values := []string{"interactive", "herald"}
+	f := SessionSummaryFilter{Types: values}
+	_ = f.CacheKey()
+	if values[0] != "interactive" || values[1] != "herald" {
+		t.Errorf("CacheKey sorted the caller's slice in place: %v", values)
 	}
 }
