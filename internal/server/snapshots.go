@@ -28,10 +28,41 @@ const snapshotMaxBashFiles = 32
 // null if that phase didn't capture for that file). Response shape:
 //
 //	{ "files": [{ "file_path": "...", "before": {...}, "after": {...} }, ...] }
+// ⚠️ Two session ids are in play and they are not interchangeable. This route is
+// addressed by the BRIDGE session id, like every other /sessions/{id}/… route.
+// Snapshot rows are keyed by the HARNESS session id, because capture runs off a
+// hook-exec payload and `session_id` in that payload is the id the harness
+// reports for itself (maybeCaptureSnapshot, via handleExecHook). Reading with
+// the id the URL carries therefore matched nothing, ever: measured 2026-08-13,
+// 14,690 captured rows across 817 sessions, not one of them keyed by a bridge
+// id, and every lookup returning {"files":[]}. It failed silently because an
+// empty list is a legitimate answer for a tool that touched no file, so the UI
+// drew a tool card with no diff and no error — on both dash surfaces, for as
+// long as the feature has existed.
+//
+// The translation belongs here rather than in the client: this server owns both
+// ids and the mapping between them, and moving the route to take a harness id
+// would make one /sessions/{id}/ path mean something different from all the
+// others. There is deliberately NO fallback to the bridge id — capture never
+// writes one, so a fallback could only mask the next regression of this exact
+// kind.
 func (s *Server) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.PathValue("id")
+	bridgeID := r.PathValue("id")
 	toolUseID := r.PathValue("tool_use_id")
-	snaps, err := s.snapshotStore.Get(sessionID, toolUseID)
+
+	sess, err := s.store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	// A session that never reached its harness has no harness id and so cannot
+	// have captured anything. Empty is the honest answer, not an error.
+	if sess.HarnessSessionID == "" {
+		writeJSON(w, map[string]any{"files": []fileSnapshots{}})
+		return
+	}
+
+	snaps, err := s.snapshotStore.Get(sess.HarnessSessionID, toolUseID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
