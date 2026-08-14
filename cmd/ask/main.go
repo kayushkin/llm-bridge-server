@@ -51,6 +51,7 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/textcut"
 )
 
 func main() {
@@ -124,7 +125,7 @@ func main() {
 
 	displayName := *title
 	if displayName == "" {
-		displayName = truncate(question, 60)
+		displayName = displayNameFromQuestion(question)
 	}
 
 	if *dryRun {
@@ -262,10 +263,22 @@ func resolveInstance(bridgeURL, name string) (string, error) {
 	}
 }
 
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
+// displayNameRuneLimit is how much of the question becomes the session's display
+// name when no --title is given. It is a count of CHARACTERS, not bytes: nothing
+// downstream bounds the name's size (llm-bridge-server stores display_name as a
+// TEXT column), so the only thing this number decides is how much of the name a
+// human reads in the dash session list.
+const displayNameRuneLimit = 60
+
+// displayNameFromQuestion shapes a question into a session display name: onto one
+// line, then cut to displayNameRuneLimit characters.
+//
+// The result is persisted on the created session and shown in the dash, and
+// nothing downstream re-derives it, so a value damaged here is damaged for good.
+// It also travels as JSON over the bus, and encoding/json replaces invalid bytes
+// with U+FFFD and reports no error — which is why cutting mid-rune here was
+// silent rather than loud.
+func displayNameFromQuestion(question string) string {
+	oneLine := strings.TrimSpace(strings.ReplaceAll(question, "\n", " "))
+	return textcut.TruncateToRuneLimit(oneLine, displayNameRuneLimit)
 }
