@@ -572,7 +572,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 
 	if !report.Trackable {
 		applyDoNotTrack(kc, sess)
-		writeSig(kc, sess, tagSet, curSig)
+		writeSig(kc, sess, tagSet, curSig) // records msg=N, the baseline the reeval delta measures from
 		return true, false
 	}
 
@@ -699,6 +699,13 @@ func writeSig(kc *kanbanclient.Client, sess session, oldTags map[string]bool, si
 	}
 }
 
+// applyDoNotTrack tags a session so it is never classified again.
+//
+// It does NOT record the message count the session was tagged at, though it used to
+// take one. writeSig does, on the line after every call site, by writing msg=N into
+// the check-sig tag — and priorMsgCount reads it back out to measure the
+// doNotTrackReevalDelta. The coupling is real and invisible, so keep the writeSig
+// call next to the applyDoNotTrack call.
 func applyDoNotTrack(kc *kanbanclient.Client, sess session) {
 	if err := kc.AddEntityTag(cardLinkSession, sess.SessionID, tagDoNotTrack); err != nil {
 		log.Printf("[%s] add do-not-track: %v", sess.SessionID, err)
