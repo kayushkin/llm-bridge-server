@@ -104,6 +104,13 @@ type newCardSpec struct {
 	Action   string `json:"action"`
 	Urgency  string `json:"urgency"`
 	Summary  string `json:"summary"`
+	// DueDate is the deadline the mail states, when it states one. Empty is a
+	// real and common answer — most mail has no deadline — and is not an error.
+	//
+	// Urgency above is the model's reading at the moment of filing; this is the
+	// fact underneath it. Storing the date is what lets the tick re-derive
+	// urgency later instead of leaving a three-day-old adjective in place.
+	DueDate string `json:"due_date"`
 }
 
 // emailFiling is the model's decision for one message. CardIDs points at cards
@@ -125,6 +132,11 @@ type cardUpdate struct {
 	Action  string `json:"action"`
 	Urgency string `json:"urgency"`
 	Summary string `json:"summary"`
+	// DueDate revises the deadline when new mail moves it — a rescheduled
+	// appointment, an extended offer. Empty leaves the stored date untouched
+	// rather than clearing it, because noteboard keeps no revision history for
+	// due_at and a cleared one could not be recovered.
+	DueDate string `json:"due_date"`
 }
 
 type filingReport struct {
@@ -217,10 +229,20 @@ Axes, all required on every new card:
     low      = no deadline
     expired  = the deadline has already passed
 
+due_date: the deadline itself, as YYYY-MM-DD, or a full RFC3339 timestamp when the mail gives a time of day that matters ("the 6pm showing"). Today's date is given at the top of the digest — use it to resolve anything relative ("tomorrow", "within 3 days", "by Friday") into an absolute date.
+
+    Set it whenever the mail states or clearly implies a date: a bill due date, an event date, an offer expiry, an appointment. Leave it EMPTY when there is none — most mail has none, and inventing one is worse than omitting it.
+
+    Do not read marketing urgency as a deadline. "Sale ends soon" with no date gets no due_date. A real date the mail actually names does.
+
+    Deadlines in the PAST are still worth reporting: a card for something already missed is scored differently from one that never had a deadline, and that only works if the date is recorded.
+
 title: short, specific, ≤70 chars. Name the actual thing ("Pay August rent to Real Property Management"), not the sender ("Email from AppFolio").
 link_label: ≤50 chars describing this ONE email's role on the card ("seller counter-offer, Aug 10"), so a human scanning the card's evidence list can tell the messages apart.
 
-Use card_updates only when new mail changes an existing card's action or urgency — for example a delivery confirmation moving a purchase to action "file", or a final notice raising urgency to critical.
+Use card_updates only when new mail changes an existing card's action, urgency or deadline — for example a delivery confirmation moving a purchase to action "file", a final notice raising urgency to critical, or a rescheduling notice moving due_date.
+
+Do NOT send a card_update merely because a deadline has passed since the card was filed. Passing time is handled here without a model call; only report what the MAIL changed.
 
 You MUST output by calling the ` + reportToolName + ` tool exactly once.`
 
@@ -249,6 +271,7 @@ func reportToolSchema() map[string]any {
 									"action":   map[string]any{"type": "string", "enum": cardActions},
 									"urgency":  map[string]any{"type": "string", "enum": cardUrgencies},
 									"summary":  map[string]any{"type": "string", "description": "One or two sentences on what this card is for."},
+									"due_date": map[string]any{"type": "string", "description": "Deadline as YYYY-MM-DD, or RFC3339 when a time of day matters. Empty when the mail states none."},
 								},
 								"required": []string{"title", "category", "action", "urgency", "summary"},
 							},
@@ -258,14 +281,15 @@ func reportToolSchema() map[string]any {
 				},
 				"card_updates": map[string]any{
 					"type":        "array",
-					"description": "Existing cards whose action state or urgency this batch of mail changed.",
+					"description": "Existing cards whose action state, urgency or deadline this batch of mail changed.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"card_id": map[string]any{"type": "string"},
-							"action":  map[string]any{"type": "string", "enum": cardActions},
-							"urgency": map[string]any{"type": "string", "enum": cardUrgencies},
-							"summary": map[string]any{"type": "string"},
+							"card_id":  map[string]any{"type": "string"},
+							"action":   map[string]any{"type": "string", "enum": cardActions},
+							"urgency":  map[string]any{"type": "string", "enum": cardUrgencies},
+							"summary":  map[string]any{"type": "string"},
+							"due_date": map[string]any{"type": "string", "description": "Revised deadline, when this mail moved it. Empty leaves the stored one alone."},
 						},
 						"required": []string{"card_id"},
 					},

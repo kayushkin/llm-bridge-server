@@ -248,6 +248,11 @@ type CreateCardArgs struct {
 	Tags       []string
 	SessionID  string // becomes a card_link entity_type=session (canonical llm-bridge-server session_id)
 	Provider   string // becomes a card_link entity_type=autoworker_provider
+	// Priority and DueAt are noteboard item fields. Both are omitted from the
+	// payload at their zero values, so callers that do not rank their cards
+	// send exactly what they sent before.
+	Priority int
+	DueAt    *time.Time
 }
 
 // CreateCard creates a new card on the bound board+column and attaches the
@@ -266,6 +271,12 @@ func (c *Client) CreateCard(a CreateCardArgs) (cardID string, err error) {
 		"body":      a.Body,
 		"tags":      a.Tags,
 		"column_id": colID,
+	}
+	if a.Priority != 0 {
+		payload["priority"] = a.Priority
+	}
+	if a.DueAt != nil {
+		payload["due_at"] = a.DueAt.Format(time.RFC3339)
 	}
 	body, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/api/boards/%s/cards", c.BaseURL, c.BoardID)

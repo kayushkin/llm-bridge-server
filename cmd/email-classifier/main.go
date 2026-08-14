@@ -162,6 +162,7 @@ func main() {
 		account      = flag.String("account", "", "Restrict to one mailstack account id.")
 		backfill     = flag.Bool("backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
 		mergeFlag    = flag.Bool("merge", false, "Run the card-merge pass over the board and exit, filing no new mail.")
+		backfillDue  = flag.Bool("backfill-due", false, "Recover deadlines from existing card summaries into due_at, re-score, and exit. One-off: cards filed after this store their own date.")
 	)
 	flag.Parse()
 
@@ -231,8 +232,24 @@ func main() {
 		}
 		return
 	}
+	if *backfillDue {
+		// Same shape as the merge pass, and for the same reason: board
+		// housekeeping that reads no mailbox and is not part of a tick.
+		if err := runBackfillPass(ctx, cfg, kc, state, gate); err != nil {
+			log.Fatalf("backfill: %v", err)
+		}
+		return
+	}
 	log.Printf("[email] board state: cards=%d filed_emails=%d known_message_ids=%d sender_rules=%d",
 		len(state.Cards), len(state.FiledLocators), len(state.CardsByMessageID), state.routableSenderCount())
+
+	// Before any mailbox work, and deliberately before the "nothing new to file"
+	// return below. Most ticks file nothing, and deadlines move on those ticks
+	// just the same — scoring only when mail happens to arrive is the bug this
+	// sweep exists to fix, so it must not sit behind that early exit.
+	sweep := rescoreBoard(kc, state, gate, time.Now(), cfg.DryRun)
+	log.Printf("[email] sweep: scanned=%d repriced=%d retagged=%d skipped=%d",
+		sweep.Scanned, sweep.Repriced, sweep.Retagged, sweep.Skipped)
 
 	mc := newMailClient(cfg.MailURL, cfg.MailToken)
 	accounts, err := mc.listAccounts()
@@ -392,6 +409,13 @@ type cardState struct {
 	Category   string
 	Action     string
 	Urgency    string
+	// DueAt is the deadline this card's mail stated, nil when it stated none.
+	// The tick re-derives urgency and priority from it, so it is the one field
+	// here that keeps meaning something as time passes on its own.
+	DueAt *time.Time
+	// Priority is the last score written, kept so a sweep can skip cards whose
+	// score has not moved rather than PATCHing the whole board every tick.
+	Priority int
 	// EmailLinks is every email attached to this card, in link order.
 	EmailLinks []kanbanclient.CardLink
 	// AllLinks is every link of every type. The merge pass needs these to move
@@ -481,6 +505,8 @@ func loadBoardState(kc *kanbanclient.Client, boardID string) (*boardState, error
 			card.Category = tagValue(card.Tags, tagPrefixCat)
 			card.Action = tagValue(card.Tags, tagPrefixAction)
 			card.Urgency = tagValue(card.Tags, tagPrefixUrgent)
+			card.Priority = intField(cv.Item, "priority")
+			card.DueAt = timeField(cv.Item, "due_at", card.ID)
 
 			card.AllLinks = append(card.AllLinks, cv.Links...)
 			for _, link := range cv.Links {
@@ -504,6 +530,31 @@ func loadBoardState(kc *kanbanclient.Client, boardID string) (*boardState, error
 func stringField(item map[string]any, key string) string {
 	v, _ := item[key].(string)
 	return v
+}
+
+// intField reads a numeric noteboard field. JSON decoding gives every number as
+// a float64, so the assertion has to be against that rather than int.
+func intField(item map[string]any, key string) int {
+	v, _ := item[key].(float64)
+	return int(v)
+}
+
+// timeField reads an RFC3339 noteboard timestamp, nil when the field is absent
+// or empty. A present-but-unparseable value is logged rather than swallowed:
+// noteboard writes these itself, so a malformed one means something upstream is
+// wrong and silently treating it as "no deadline" would score the card as if it
+// never had one.
+func timeField(item map[string]any, key, cardID string) *time.Time {
+	raw, ok := item[key].(string)
+	if !ok || raw == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		log.Printf("[email] WARNING: card %s has unparseable %s %q: %v", cardID, key, raw, err)
+		return nil
+	}
+	return &t
 }
 
 func stringSliceField(item map[string]any, key string) []string {
@@ -727,6 +778,12 @@ func truncate(s string, n int) string {
 func buildDigest(state *boardState, batch []pendingEmail) string {
 	var b strings.Builder
 
+	// The model is asked to resolve relative deadlines ("tomorrow", "by Friday")
+	// into absolute dates, which it cannot do without knowing what day it is.
+	// Each email carries its own date below, but those are send dates and a
+	// batch routinely spans several days.
+	fmt.Fprintf(&b, "[TODAY IS %s]\n\n", time.Now().Format("2006-01-02 (Monday)"))
+
 	b.WriteString("[EXISTING CARDS ON THE EMAIL BOARD]\n")
 	if len(state.Cards) == 0 {
 		b.WriteString("(none yet — this is the first pass, so every email needs a new card)\n")
@@ -744,8 +801,12 @@ func buildDigest(state *boardState, batch []pendingEmail) string {
 		return cards[i].Title < cards[j].Title
 	})
 	for _, c := range cards {
-		fmt.Fprintf(&b, "- card_id=%s | %s | column=%s | category=%s action=%s urgency=%s | emails_attached=%d\n",
-			c.ID, c.Title, c.ColumnName, c.Category, c.Action, c.Urgency, len(c.EmailLinks))
+		due := ""
+		if c.DueAt != nil {
+			due = " due=" + c.DueAt.Format("2006-01-02")
+		}
+		fmt.Fprintf(&b, "- card_id=%s | %s | column=%s | category=%s action=%s urgency=%s%s | emails_attached=%d\n",
+			c.ID, c.Title, c.ColumnName, c.Category, c.Action, c.Urgency, due, len(c.EmailLinks))
 	}
 
 	b.WriteString("\n[EMAILS TO FILE — file every one of these]\n")

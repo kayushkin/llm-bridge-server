@@ -5,6 +5,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
@@ -244,22 +245,43 @@ func (a *applier) createCard(spec newCardSpec) (string, error) {
 	}
 
 	column := columnForAction(spec.Action)
+
+	// A due date the model reported in a shape parseDueDate cannot read is
+	// logged and dropped rather than guessed at. Dropping it costs the card its
+	// deadline-driven score; guessing costs the user a wrong one.
+	var due *time.Time
+	if spec.DueDate != "" {
+		parsed, err := parseDueDate(spec.DueDate, time.Local)
+		if err != nil {
+			log.Printf("[email] WARNING: card %q has unusable due_date: %v", spec.Title, err)
+		} else {
+			due = &parsed
+		}
+	}
+
+	score := scoreCard(spec.Category, spec.Action, spec.Urgency, due, time.Now())
+	urgency := spec.Urgency
+	if score.Urgency != "" {
+		urgency = score.Urgency
+	}
+
 	tags := []string{
 		tagEmail,
 		tagSource,
 		tagPrefixCat + spec.Category,
 		tagPrefixAction + spec.Action,
-		tagPrefixUrgent + spec.Urgency,
+		tagPrefixUrgent + urgency,
 		workStateNotStarted,
 	}
 	if a.cfg.DryRun {
-		log.Printf("[email] DRY-RUN create card %q [%s] cat=%s action=%s urgency=%s",
-			spec.Title, column, spec.Category, spec.Action, spec.Urgency)
+		log.Printf("[email] DRY-RUN create card %q [%s] cat=%s action=%s urgency=%s due=%s priority=%d",
+			spec.Title, column, spec.Category, spec.Action, urgency, formatDue(due), score.Priority)
 		// A synthetic id keeps the rest of the dry run coherent: filings that
 		// reference this card still resolve, so the log shows the whole plan.
 		id := "dry-run:" + normalizeTitle(spec.Title)
 		a.state.Cards[id] = &cardState{ID: id, Title: spec.Title, ColumnName: column, Tags: tags,
-			Category: spec.Category, Action: spec.Action, Urgency: spec.Urgency}
+			Category: spec.Category, Action: spec.Action, Urgency: urgency,
+			DueAt: due, Priority: score.Priority}
 		// Counted here as well as on the real path, so the run summary a dry run
 		// prints matches the one the same input would produce for real.
 		a.cardsCreated++
@@ -271,17 +293,20 @@ func (a *applier) createCard(spec newCardSpec) (string, error) {
 		Title:      spec.Title,
 		Body:       spec.Summary,
 		Tags:       tags,
+		Priority:   score.Priority,
+		DueAt:      due,
 	})
 	if err != nil {
 		return "", err
 	}
 	a.state.Cards[id] = &cardState{
 		ID: id, Title: spec.Title, Body: spec.Summary, ColumnName: column, Tags: tags,
-		Category: spec.Category, Action: spec.Action, Urgency: spec.Urgency,
+		Category: spec.Category, Action: spec.Action, Urgency: urgency,
+		DueAt: due, Priority: score.Priority,
 	}
 	a.cardsCreated++
-	log.Printf("[email] created card %q [%s] cat=%s action=%s urgency=%s id=%s",
-		spec.Title, column, spec.Category, spec.Action, spec.Urgency, id)
+	log.Printf("[email] created card %q [%s] cat=%s action=%s urgency=%s due=%s priority=%d id=%s",
+		spec.Title, column, spec.Category, spec.Action, urgency, formatDue(due), score.Priority, id)
 	return id, nil
 }
 
@@ -316,11 +341,36 @@ func (a *applier) applyCardUpdate(upd cardUpdate) error {
 		newTags = replaceTag(newTags, tagPrefixUrgent, upd.Urgency)
 		card.Urgency = upd.Urgency
 	}
+	// An empty due_date leaves the stored deadline alone rather than clearing
+	// it. noteboard keeps no revision history for due_at, so a clear is
+	// unrecoverable, and the model omitting the field is far more often "this
+	// mail said nothing about a date" than "the deadline was withdrawn".
+	dueChanged := false
+	if upd.DueDate != "" {
+		parsed, err := parseDueDate(upd.DueDate, time.Local)
+		if err != nil {
+			log.Printf("[email] WARNING: card %q has unusable due_date in update: %v", card.Title, err)
+		} else if card.DueAt == nil || !parsed.Equal(*card.DueAt) {
+			card.DueAt = &parsed
+			dueChanged = true
+		}
+	}
+
+	// Re-score after the axes have settled, so the new deadline and the new
+	// action are both reflected.
+	score := scoreCard(card.Category, card.Action, card.Urgency, card.DueAt, time.Now())
+	if score.Urgency != "" && score.Urgency != card.Urgency {
+		newTags = replaceTag(newTags, tagPrefixUrgent, score.Urgency)
+		card.Urgency = score.Urgency
+	}
+	priorityChanged := score.Priority != card.Priority
+	card.Priority = score.Priority
+
 	wantColumn := columnForAction(card.Action)
 
 	if a.cfg.DryRun {
-		log.Printf("[email] DRY-RUN update card %q -> action=%s urgency=%s column=%s",
-			card.Title, card.Action, card.Urgency, wantColumn)
+		log.Printf("[email] DRY-RUN update card %q -> action=%s urgency=%s due=%s priority=%d column=%s",
+			card.Title, card.Action, card.Urgency, formatDue(card.DueAt), card.Priority, wantColumn)
 		return nil
 	}
 
@@ -329,6 +379,17 @@ func (a *applier) applyCardUpdate(upd cardUpdate) error {
 			return fmt.Errorf("patch tags: %w", err)
 		}
 		card.Tags = newTags
+	}
+	// Sent as one PATCH: both fields live on the same noteboard item, and two
+	// calls would leave a window where the deadline and its score disagree.
+	if dueChanged || priorityChanged {
+		fields := map[string]any{"priority": card.Priority}
+		if dueChanged {
+			fields["due_at"] = card.DueAt.Format(time.RFC3339)
+		}
+		if err := a.kc.PatchCard(card.ID, fields); err != nil {
+			return fmt.Errorf("patch priority/due: %w", err)
+		}
 	}
 	if wantColumn != card.ColumnName {
 		colID, ok := a.kc.ColumnsByName[wantColumn]
