@@ -15,7 +15,7 @@ package main
 // walk of the schema reaches it and no compiler check touches it.
 //
 // Every expectation below is DERIVED — parsed out of the prompt, walked out of
-// reportToolSchema(), or measured through the applier. None of the four vocabularies
+// reportSchema(), or measured through the applier. None of the four vocabularies
 // is restated here, because a test that restates a constant is a fifth authoring of
 // it and drifts in exactly the same way.
 
@@ -76,7 +76,7 @@ func promptTitleCharacterAdvice(t *testing.T) int {
 	return n
 }
 
-// schemaArrayItemProperty walks reportToolSchema() down to one property of one
+// schemaArrayItemProperty walks reportSchema() down to one property of one
 // array-valued top-level property, e.g. ("new_tasks", "title"). Each step fails
 // loudly, because a silent zero value here would make every assertion below pass
 // against nothing.
@@ -85,18 +85,17 @@ func schemaArrayItemProperty(t *testing.T, arrayName, propertyName string) map[s
 	step := func(m map[string]any, key, path string) map[string]any {
 		v, ok := m[key]
 		if !ok {
-			t.Fatalf("reportToolSchema(): %s has no %q", path, key)
+			t.Fatalf("reportSchema(): %s has no %q", path, key)
 		}
 		sub, ok := v.(map[string]any)
 		if !ok {
-			t.Fatalf("reportToolSchema(): %s.%s is %T, want map[string]any", path, key, v)
+			t.Fatalf("reportSchema(): %s.%s is %T, want map[string]any", path, key, v)
 		}
 		return sub
 	}
-	schema := reportToolSchema()
-	input := step(schema, "input_schema", "root")
-	props := step(input, "properties", "input_schema")
-	arr := step(props, arrayName, "input_schema.properties")
+	schema := reportSchema()
+	props := step(schema, "properties", "root")
+	arr := step(props, arrayName, "properties")
 	items := step(arr, "items", arrayName)
 	itemProps := step(items, "properties", arrayName+".items")
 	return step(itemProps, propertyName, arrayName+".items.properties")
@@ -109,15 +108,15 @@ func schemaStateEnum(t *testing.T, arrayName string) []string {
 	prop := schemaArrayItemProperty(t, arrayName, "state")
 	raw, ok := prop["enum"]
 	if !ok {
-		t.Fatalf("reportToolSchema(): %s.items.properties.state has no enum — the model "+
+		t.Fatalf("reportSchema(): %s.items.properties.state has no enum — the model "+
 			"is no longer constrained to a state vocabulary at all", arrayName)
 	}
 	enum, ok := raw.([]string)
 	if !ok {
-		t.Fatalf("reportToolSchema(): %s state enum is %T, want []string", arrayName, raw)
+		t.Fatalf("reportSchema(): %s state enum is %T, want []string", arrayName, raw)
 	}
 	if len(enum) == 0 {
-		t.Fatalf("reportToolSchema(): %s state enum is empty", arrayName)
+		t.Fatalf("reportSchema(): %s state enum is empty", arrayName)
 	}
 	return enum
 }
@@ -128,11 +127,11 @@ func schemaTitleMaxLength(t *testing.T) int {
 	prop := schemaArrayItemProperty(t, "new_tasks", "title")
 	raw, ok := prop["maxLength"]
 	if !ok {
-		t.Fatal("reportToolSchema(): new_tasks.items.properties.title has no maxLength")
+		t.Fatal("reportSchema(): new_tasks.items.properties.title has no maxLength")
 	}
 	n, ok := raw.(int)
 	if !ok {
-		t.Fatalf("reportToolSchema(): new_tasks title maxLength is %T, want int", raw)
+		t.Fatalf("reportSchema(): new_tasks title maxLength is %T, want int", raw)
 	}
 	return n
 }
@@ -282,7 +281,7 @@ func TestTheTitleBoundTheBoardEnforcesIsTheOneTheSchemaAdvertises(t *testing.T) 
 	}))
 	defer srv.Close()
 
-	kc := kanbanclient.New(srv.URL)
+	kc := kanbanclient.New(srv.URL, "")
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{}
 	for _, s := range schemaStateEnum(t, "new_tasks") {
@@ -295,7 +294,7 @@ func TestTheTitleBoundTheBoardEnforcesIsTheOneTheSchemaAdvertises(t *testing.T) 
 	// is the only input that isolates that question.
 	overLong := strings.Repeat("a", hard*3)
 
-	applyNew(kc, session{SessionID: "sess-1"}, &Report{
+	applyNew(kc, session{SessionID: "sess-1"}, nil, &Report{
 		NewTasks: []NewRec{{
 			Title:   overLong,
 			State:   schemaStateEnum(t, "new_tasks")[0],

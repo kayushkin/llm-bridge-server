@@ -780,11 +780,14 @@ func applyNew(kc *kanbanclient.Client, sess session, existingCards []kanbanclien
 		body += "\n\n" + provenanceTrailer("created by", sess.SessionID, nt.State) + "\n"
 		args := kanbanclient.CreateCardArgs{
 			ColumnName: colName,
-			Title:      truncate(nt.Title, 80),
-			Body:       body,
-			Tags:       []string{cardSourceClassifier, sess.Harness, sess.Purpose},
-			SessionID:  "", // classifier adds its own session link with label "classifier" below
-			Provider:   "",
+			// 80 is the hard cut and matches the schema's maxLength; the prompt's
+			// "≤60 chars" is advice, not this number badly copied. See the note on
+			// systemPrompt. prompt_vocabulary_test.go holds the two together.
+			Title:     truncate(nt.Title, 80),
+			Body:      body,
+			Tags:      []string{cardSourceClassifier, sess.Harness, sess.Purpose},
+			SessionID: "", // classifier adds its own session link with label "classifier" below
+			Provider:  "",
 		}
 		cardID, err := kc.CreateCard(args)
 		if err != nil {
@@ -1318,6 +1321,21 @@ type NewRec struct {
 	Blocker string `json:"blocker,omitempty"`
 }
 
+// systemPrompt is the fourth place the state vocabulary is written down and the third
+// place the title bound is. The other three of each are data — the two schema enums,
+// the schema's maxLength, and applyNew's truncate call — so a walk of the schema
+// reaches them and this one it cannot: it is prose inside a const.
+//
+// That asymmetry is why the drift is worth a test. A state the SCHEMA rejects costs a
+// refused tool call, which is loud. A state the PROMPT omits is one the model is never
+// told about, so it is never reported, and nothing fails.
+//
+// The two title numbers are deliberately different and are not one number badly
+// copied: ≤60 below is ADVICE, aimed at titles a human can read on a card, and the
+// schema's maxLength of 80 is the HARD CUT that applyNew enforces. The only
+// relationship that has to hold is advice ≤ cut.
+//
+// prompt_vocabulary_test.go holds all four authorings to each other.
 const systemPrompt = `You are an internal task-tracking classifier for an AI agent infrastructure. You analyze a single chat session between a user and an autonomous agent, and decide what work-tracking cards should exist on a kanban board to represent the tasks happening in that session.
 
 Trackable cards represent meaningful units of user-directed work — bug fixes, feature builds, investigations, migrations, refactors, infra work. NOT: trivial questions, casual chat, one-line edits, or pure exploration without changes.
@@ -1372,6 +1390,8 @@ func reportSchema() map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
+						// The hard cut applyNew enforces. The prompt's "≤60 chars" is
+						// advice and is deliberately lower — see the note on systemPrompt.
 						"title":   map[string]any{"type": "string", "maxLength": 80},
 						"state":   map[string]any{"type": "string", "enum": []string{"in_progress", "blocked", "done", "abandoned"}},
 						"summary": map[string]any{"type": "string"},
