@@ -62,7 +62,7 @@ func main() {
 	}
 	var (
 		instanceName = flag.String("instance", "", "Harness instance NAME to host the session. Empty = resolve the local machine's claude_code instance.")
-		from         = flag.String("from", "herald", "Originating agent — sets the message's Agent (sender) tag shown in the dash. Use the real agent name, e.g. approval-proposer.")
+		from         = flag.String("from", "herald", "Originating agent — sets the message's Agent (sender) tag. Use the real agent name, e.g. approval-proposer. Must already be one line of nothing but text: a name carrying control, bidi or line-breaking characters is refused, not rewritten, because ask will not invent an attribution.")
 		title        = flag.String("title", "", "Session display name. Put on one line with control characters removed, but kept at whatever length you give it. Defaults to a truncated form of the question.")
 		onReply      = flag.String("on-reply", "", "Instruction for what the agent should do once the user replies. Empty = just relay the alert; no action expected.")
 		reuseSession = flag.String("session", "", "Existing herald bus session id to deliver into as a new turn, instead of opening a new session. The adapter routes it to the bridge session it created for that id; -instance and -title are meaningless here and rejected.")
@@ -82,8 +82,8 @@ func main() {
 	if !hasReadableText(question) {
 		log.Fatal("ask: a question/alert message is required (positional argument), and it must contain readable text — a message of only whitespace and control characters has nothing to relay and nothing to name the session with")
 	}
-	if strings.TrimSpace(*from) == "" {
-		log.Fatal("ask: --from (originating agent tag) must not be empty")
+	if err := validateAgentName(*from); err != nil {
+		log.Fatalf("ask: %v", err)
 	}
 
 	now := time.Now().UTC()
@@ -341,6 +341,58 @@ func resolveDisplayName(title, question string) (displayName string, titleHeldNo
 		return shaped, false
 	}
 	return displayNameFromQuestion(question), title != ""
+}
+
+// validateAgentName reports why from is not usable as the originating-agent tag,
+// or nil if it is. It REFUSES a malformed name rather than repairing one, which
+// is the opposite of what the same characters get in a display name two functions
+// below, and the difference is not an inconsistency.
+//
+// A display name is a label this program is willing to author: when --title
+// shapes away to nothing there is a second source for it — the question — so
+// shaping it costs the caller nothing they cannot get back, and refusing to
+// deliver an alert over the spelling of its label would be the worse failure.
+//
+// --from is not a label. It names WHO the message is attributed to, it is the
+// only copy of that fact (nothing downstream re-derives it, and it lands in no
+// column any query could join back to an agent), and it is what the user reads
+// when deciding whether to act on an alert at all. So the two repairs available
+// here are both worse than refusing:
+//
+//   - Rewriting it hands back an agent name nobody chose. "herald\x1bfoo" shaped
+//     is "herald foo", an agent that does not exist, attached to a message that
+//     will be acted on.
+//   - Substituting the default would attribute the message to a different agent
+//     outright, which is the same failure with the seam hidden.
+//
+// Refusing costs one caller one obvious fix. Every caller of ask is a program,
+// not a person at a prompt, and a program that put an ESC in its own name has a
+// bug that this is the cheapest place to learn about.
+//
+// The rule is therefore: an agent name must be one line of nothing but text. It
+// is spelled as a comparison against the shaping rather than as a predicate over
+// runes so that it cannot drift from what the display name calls well formed —
+// the same reason hasReadableText is defined the way it is. Computing the repair
+// and then declining to apply it is also what lets the error name the exact
+// value the caller should have passed.
+//
+// This is deliberately stricter than "contains no control characters", and the
+// extra ground it covers is the reason: a newline is whitespace, not a control
+// character by isNonText's rule, so a --from of "her\nald" carries no non-text
+// at all and still is not a name — it makes the Agent tag two lines and splits
+// the backtick span buildPrompt wraps it in, so the relayed prompt reads as an
+// unterminated code span rather than as an attribution.
+func validateAgentName(from string) error {
+	if !hasReadableText(from) {
+		return fmt.Errorf("--from %q holds no readable text: it names the agent this message is attributed to, and there is no second place to recover that name from", from)
+	}
+	// %q on both, and for the same reason the refused --title is printed quoted:
+	// the values worth refusing here are the ones that would write an escape
+	// sequence to the terminal reading the error.
+	if shaped := shapeIntoOneLineOfText(from); shaped != from {
+		return fmt.Errorf("--from %q is not one line of text — it would have to be rewritten to %q to become one. Pass the agent's real name: ask refuses to invent an attribution, because the name is what the user reads when deciding whether to act on the alert", from, shaped)
+	}
+	return nil
 }
 
 // shapeIntoOneLineOfText removes what is not text and puts what remains on a single
