@@ -130,11 +130,29 @@ func TestGuardedFieldSetsAgree(t *testing.T) {
 	}
 }
 
+// guardedFieldFloor is how many config fields the production-state guard
+// covers. It exists because TestGuardedFieldSetsAgree checks the three lists
+// against each other and nothing checks them against a number: drop a field
+// from AddressByConfigField, EnvironmentVariableByConfigField and
+// GuardedAddresses in one commit and the three still agree, the field stops
+// being guarded, and every loop below shrinks by one without a word.
+//
+// Measured 2026-08-14 by doing exactly that, field by field: 12 of the 15
+// coherent removals left this package green. A field that leaves the guard is
+// a field a `go test` run may then open for real -- the live bridge database,
+// the live log-store -- which is the one thing this file exists to stop.
+//
+// Raise it when a field is guarded. Lower it only in the commit that
+// deliberately stops guarding one.
+const guardedFieldFloor = 15
+
 // TestEveryGuardedVariableIsReadByLoad proves the override named in the panic
 // message actually works. A guard that recommends a variable Load never reads
 // would send its reader in a circle.
 func TestEveryGuardedVariableIsReadByLoad(t *testing.T) {
+	proved := 0
 	for field, variable := range productiondefaults.EnvironmentVariableByConfigField {
+		proved++
 		t.Run(field, func(t *testing.T) {
 			clearGuardedEnvironment(t)
 			t.Setenv(productiondefaults.AllowInTestsEnvironmentVariable, "1")
@@ -145,6 +163,11 @@ func TestEveryGuardedVariableIsReadByLoad(t *testing.T) {
 				t.Errorf("%s did not reach %s: got %q, want %q", variable, field, got, sentinel)
 			}
 		})
+	}
+	if proved < guardedFieldFloor {
+		t.Errorf("proved the override for %d config fields, want at least %d: a field has left the "+
+			"production-state guard, and the subtest that would have said so left with it",
+			proved, guardedFieldFloor)
 	}
 }
 
