@@ -34,6 +34,8 @@ import (
 	"testing"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/slava/scheduler/internal/textcut"
 )
 
 // whitespaceRunes returns every rune unicode.IsSpace accepts, swept out of the
@@ -471,6 +473,256 @@ func TestDisplayNameFromQuestion_ABidiOverrideCannotReorderTheRow(t *testing.T) 
 		got := displayNameFromQuestion("Approve " + string(r) + "deploy to prod")
 		if got != "Approve deploy to prod" {
 			t.Errorf("U+%04X: got %q, want %q", r, got, "Approve deploy to prod")
+		}
+	}
+}
+
+// ---------------------------------------------------------------- explicit titles
+//
+// Everything above pins the name derived from a question. These pin the other half:
+// the name a caller states with --title, which until now was stored exactly as
+// typed and so had none of the properties above.
+//
+// The sweeps are the same ones — whitespaceRunes and nonTextRunes, spelled out of
+// Unicode's tables rather than read back out of the code — for the reason given at
+// TestNonTextClasses_MatchTheCodesRule: a sweep taken from the function under test
+// narrows in step with the defect and passes vacuously.
+
+// A title gets the same well-formedness as a derived name: nothing that is not text
+// survives it. Neighbours are distinct words so a rule that dropped the separator,
+// or reordered what sits either side, fails here.
+func TestDisplayNameFromTitle_NoControlOrBidiCharacterSurvives(t *testing.T) {
+	rs := nonTextRunes()
+	if len(rs) == 0 {
+		t.Fatal("no non-text runes swept — this test would pass without checking anything")
+	}
+	for _, r := range rs {
+		got := displayNameFromTitle("alpha" + string(r) + "beta")
+		if got != "alpha beta" {
+			t.Errorf("U+%04X separating two words in a title gave %q, want %q", r, got, "alpha beta")
+		}
+		if strings.ContainsRune(got, r) {
+			t.Errorf("U+%04X survived into a display name given as a title: %q", r, got)
+		}
+	}
+}
+
+// And it is replaced, not dropped — the same decision the derived path makes, pinned
+// separately so a later edit cannot give the two paths different answers.
+func TestDisplayNameFromTitle_NeverWeldsTwoWordsIntoOne(t *testing.T) {
+	for _, r := range nonTextRunes() {
+		got := displayNameFromTitle("alpha" + string(r) + "beta")
+		if n := len(strings.Fields(got)); n != 2 {
+			t.Errorf("U+%04X between two words in a title gave %q — %d word(s), want 2; a dropped character welds them",
+				r, got, n)
+		}
+	}
+}
+
+// A title is one row of a list, so its line breaks and padding do not travel either.
+func TestDisplayNameFromTitle_IsPutOnOneLine(t *testing.T) {
+	for _, r := range whitespaceRunes() {
+		got := displayNameFromTitle("  alpha" + string(r) + "beta  ")
+		if got != "alpha beta" {
+			t.Errorf("U+%04X inside a title gave %q, want %q", r, got, "alpha beta")
+		}
+	}
+}
+
+// THE DECISION, pinned: a title is not cut at the derived name's bound.
+//
+// A caller passing --title stated the name they want and display_name is the only
+// copy of it, so shortening it here would lose the remainder for good. The derived
+// name is cut because deriving one has to choose how much of the question to take;
+// a title is an excerpt of nothing.
+//
+// Swept over script and over length. The scripts matter because a byte-based cut
+// bites at different character counts in each, and the lengths straddle the bound
+// from both sides — a fixture only above it cannot tell "not cut" from "cut at a
+// number larger than 60".
+func TestDisplayNameFromTitle_IsNotCutAtTheDerivedNamesBound(t *testing.T) {
+	for _, script := range []struct{ name, rune_ string }{
+		{"ascii", "a"},
+		{"latin1-accent", "é"},
+		{"japanese", "日"},
+		{"emoji", "🟢"},
+	} {
+		for _, length := range []int{1, 59, 60, 61, 120, 300} {
+			title := strings.Repeat(script.rune_, length)
+			got := displayNameFromTitle(title)
+
+			if got != title {
+				t.Errorf("%s: a %d-character title came back as %d characters (%q) — an explicit title was shortened",
+					script.name, length, utf8.RuneCountInString(got), got)
+			}
+			if strings.HasSuffix(got, "…") {
+				t.Errorf("%s: a %d-character title was marked as shortened: %q", script.name, length, got)
+			}
+		}
+	}
+}
+
+// The same input through both paths, to state the difference as one property: the
+// two agree except that the derived one spends the reading budget. This is what
+// fails if someone adds a shaping step to one path and forgets the other.
+//
+// It cannot stand alone — both paths broken identically would satisfy it — which is
+// why every property above is also pinned directly.
+func TestDisplayNameFromTitle_DiffersFromTheDerivedNameOnlyByTheCut(t *testing.T) {
+	for _, input := range []string{
+		"Approve the deploy?",
+		"  Approve\tthe\r\ndeploy   the\vllm-bridge-gemini deploy\fon prod now  ",
+		"Approve \x1b[31mprod\x1b[0m \u202ehctiws now please, this one runs past the sixty character bound",
+		strings.Repeat("alpha beta ", 30),
+		"日本語で書かれた質問をここに置いて、六十文字の境界をきちんと越えるようにする",
+	} {
+		title := displayNameFromTitle(input)
+		want := textcut.TruncateToRuneLimit(title, displayNameRuneLimit)
+		if got := displayNameFromQuestion(input); got != want {
+			t.Errorf("for %q:\n  title path then cut = %q\n  question path       = %q\nthe two paths disagree about something other than the cut", input, want, got)
+		}
+	}
+}
+
+// The fixture in the test above must actually exercise the cut, or it would be
+// asserting that two uncut values match and calling that a contract.
+func TestDisplayNameFromTitle_TheComparisonFixtureStraddlesTheBound(t *testing.T) {
+	var over, under int
+	for _, input := range []string{
+		"Approve the deploy?",
+		"  Approve\tthe\r\ndeploy   the\vllm-bridge-gemini deploy\fon prod now  ",
+		"Approve \x1b[31mprod\x1b[0m \u202ehctiws now please, this one runs past the sixty character bound",
+		strings.Repeat("alpha beta ", 30),
+		"日本語で書かれた質問をここに置いて、六十文字の境界をきちんと越えるようにする",
+	} {
+		if utf8.RuneCountInString(displayNameFromTitle(input)) > displayNameRuneLimit {
+			over++
+		} else {
+			under++
+		}
+	}
+	if over == 0 {
+		t.Error("no fixture exceeds the bound, so the comparison never exercises the cut")
+	}
+	if under == 0 {
+		t.Error("every fixture exceeds the bound, so the comparison never checks an uncut value")
+	}
+}
+
+// The words of a title, and their order, come through untouched.
+//
+// The fixture is non-uniform in both directions on purpose — distinct words so a
+// rule that reorders them fails, and a repeated word so a rule that deduplicates
+// them fails. Either uniformity alone is blind to exactly what the other catches.
+func TestDisplayNameFromTitle_KeepsEveryWordAndTheirOrder(t *testing.T) {
+	const want = "Approve the deploy the llm-bridge-gemini deploy on prod now please"
+	got := displayNameFromTitle("  Approve\tthe\r\ndeploy   the\vllm-bridge-gemini deploy\fon prod now please  ")
+	if got != want {
+		t.Errorf("displayNameFromTitle = %q, want %q", got, want)
+	}
+
+	words := strings.Fields(want)
+	distinct := map[string]bool{}
+	for _, w := range words {
+		distinct[w] = true
+	}
+	if len(distinct) == len(words) {
+		t.Errorf("fixture has no repeated word, so a rule that deduplicates words cannot fail here")
+	}
+	if len(distinct) < 2 {
+		t.Errorf("fixture has no distinct words, so a rule that reorders them cannot fail here")
+	}
+	// And it must be longer than the bound, so this also witnesses the no-cut rule
+	// on a fixture whose content is varied rather than repeated.
+	if utf8.RuneCountInString(want) <= displayNameRuneLimit {
+		t.Errorf("fixture is %d characters, want more than %d so that a cut would show here too",
+			utf8.RuneCountInString(want), displayNameRuneLimit)
+	}
+}
+
+// ---------------------------------------------------------------- which name wins
+//
+// resolveDisplayName is where the defect lived: the choice used to be made on the
+// RAW title, so supplying one skipped the shaping entirely.
+
+func TestResolveDisplayName_AStatedTitleWins(t *testing.T) {
+	got, rejected := resolveDisplayName("Personal todos — Aug 14", "Approve the deploy?")
+	if got != "Personal todos — Aug 14" {
+		t.Errorf("resolveDisplayName = %q, want the title", got)
+	}
+	if rejected {
+		t.Error("a perfectly good title was reported as holding no readable text")
+	}
+}
+
+func TestResolveDisplayName_NoTitleDerivesFromTheQuestion(t *testing.T) {
+	got, rejected := resolveDisplayName("", "Approve the deploy?")
+	if got != "Approve the deploy?" {
+		t.Errorf("resolveDisplayName = %q, want the name derived from the question", got)
+	}
+	if rejected {
+		t.Error("no title at all was reported as a title that held no readable text")
+	}
+}
+
+// The title that wins is the SHAPED one. This is the card's defect stated as a test:
+// a title carrying an ESC or a bidi override used to be chosen and stored raw.
+func TestResolveDisplayName_TheChosenTitleIsShaped(t *testing.T) {
+	rs := nonTextRunes()
+	if len(rs) == 0 {
+		t.Fatal("no non-text runes swept — this test would pass without checking anything")
+	}
+	for _, r := range rs {
+		got, rejected := resolveDisplayName("alpha"+string(r)+"beta", "Approve the deploy?")
+		if got != "alpha beta" {
+			t.Errorf("U+%04X in a title: resolveDisplayName = %q, want %q — the title was taken unshaped", r, got, "alpha beta")
+		}
+		if rejected {
+			t.Errorf("U+%04X: a title with readable text either side was rejected", r)
+		}
+	}
+}
+
+// A title that shapes away to nothing must not become the display name, and the
+// caller must be told rather than quietly given the derived one.
+//
+// Swept over both classes: this is the agreement between the guard and the shaping
+// that TestDisplayNameFromQuestion_NeverEmptiesAQuestionMainAccepted pins for the
+// question, and it holds for the same reason — both are defined as the shaping.
+func TestResolveDisplayName_ATitleOfNoReadableTextFallsBackAndSaysSo(t *testing.T) {
+	rs := append(whitespaceRunes(), nonTextRunes()...)
+	if len(rs) == 0 {
+		t.Fatal("no runes swept — this test would pass without checking anything")
+	}
+	for _, r := range rs {
+		title := strings.Repeat(string(r), 4)
+		got, rejected := resolveDisplayName(title, "Approve the deploy?")
+		if got == "" {
+			t.Errorf("U+%04X: a title of only that character gave an EMPTY display name", r)
+		}
+		if got != "Approve the deploy?" {
+			t.Errorf("U+%04X: resolveDisplayName = %q, want the name derived from the question", r, got)
+		}
+		if !rejected {
+			t.Errorf("U+%04X: a title that shaped away to nothing was substituted silently", r)
+		}
+	}
+}
+
+// The two returns cannot disagree: a name is never empty, and the flag is set
+// exactly when a non-empty title held no readable text.
+func TestResolveDisplayName_NeverReturnsAnEmptyName(t *testing.T) {
+	const question = "Approve the deploy?"
+	for _, title := range []string{
+		"", " ", "\x1b", "\x00\x00", "\u202e", "\r\n\t", "\u200b", "ok", strings.Repeat("x", 300),
+	} {
+		got, rejected := resolveDisplayName(title, question)
+		if got == "" {
+			t.Errorf("title %q gave an empty display name", title)
+		}
+		if want := title != "" && !hasReadableText(title); rejected != want {
+			t.Errorf("title %q: reported rejected=%v, want %v (hasReadableText=%v)",
+				title, rejected, want, hasReadableText(title))
 		}
 	}
 }

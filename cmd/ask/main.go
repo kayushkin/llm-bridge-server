@@ -63,7 +63,7 @@ func main() {
 	var (
 		instanceName = flag.String("instance", "", "Harness instance NAME to host the session. Empty = resolve the local machine's claude_code instance.")
 		from         = flag.String("from", "herald", "Originating agent — sets the message's Agent (sender) tag shown in the dash. Use the real agent name, e.g. approval-proposer.")
-		title        = flag.String("title", "", "Session display name. Defaults to a truncated form of the question.")
+		title        = flag.String("title", "", "Session display name. Put on one line with control characters removed, but kept at whatever length you give it. Defaults to a truncated form of the question.")
 		onReply      = flag.String("on-reply", "", "Instruction for what the agent should do once the user replies. Empty = just relay the alert; no action expected.")
 		reuseSession = flag.String("session", "", "Existing herald bus session id to deliver into as a new turn, instead of opening a new session. The adapter routes it to the bridge session it created for that id; -instance and -title are meaningless here and rejected.")
 		bridgeURL    = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL (for instance resolution).")
@@ -124,9 +124,12 @@ func main() {
 		log.Fatalf("ask: resolve instance: %v", err)
 	}
 
-	displayName := *title
-	if displayName == "" {
-		displayName = displayNameFromQuestion(question)
+	displayName, titleHeldNoReadableText := resolveDisplayName(*title, question)
+	if titleHeldNoReadableText {
+		// %q rather than %s on purpose: the reason this title was refused is that
+		// it is made of control characters, and printing it raw would write that
+		// ESC to the terminal reading the warning.
+		log.Printf("ask: --title %q holds no readable text once control characters are removed — naming the session from the question instead", *title)
 	}
 
 	if *dryRun {
@@ -285,7 +288,67 @@ const displayNameRuneLimit = 60
 // unescaped. A value that is invalid gets laundered; a value that is valid and
 // merely unwanted arrives intact.
 func displayNameFromQuestion(question string) string {
-	return textcut.TruncateToRuneLimit(collapseWhitespaceRuns(spaceOutNonText(question)), displayNameRuneLimit)
+	return textcut.TruncateToRuneLimit(shapeIntoOneLineOfText(question), displayNameRuneLimit)
+}
+
+// displayNameFromTitle shapes an explicit --title into a session display name. It
+// makes the value well formed — no control or bidi characters, one line — and
+// then stops. It deliberately does NOT cut to displayNameRuneLimit.
+//
+// A --title used to be stored exactly as typed, which meant every property this
+// file establishes about a display name held only for the half of them derived
+// from a question: a title could carry an ESC, a U+202E, a raw newline, and any
+// length at all into the dash session list.
+//
+// The three steps are not one decision, and this is where they part:
+//
+//   - Removing what is not text, and putting the name on one line, are about the
+//     value being a well-formed single-line name AT ALL. An ESC is an in-band
+//     command to whatever renders the row; a bidi override makes the row read as
+//     something nobody sent; a newline means the value is not one row. No caller
+//     asks for those, and a caller cannot express "I want two lines" in a surface
+//     that has one. So both apply however the name was arrived at.
+//
+//   - The 60-character cut is a reading budget, and only a DERIVED name has one to
+//     spend. Deriving a name from a question must decide how much of the question
+//     to take — that choice is the derivation. A title is not an excerpt of
+//     anything: the caller stated the name they want, in full, and display_name is
+//     the only copy of it (llm-bridge-server stores it as TEXT with no bound, so
+//     nothing downstream re-derives or retains what a cut here would discard).
+//     Shortening it would be this program spending a display budget on somebody
+//     else's authored value, and losing the remainder for good. How wide a row
+//     renders is the dash's decision, made where the row is drawn and made without
+//     destroying anything.
+//
+// So: strip and collapse always, cut only what this program itself wrote.
+func displayNameFromTitle(title string) string {
+	return shapeIntoOneLineOfText(title)
+}
+
+// resolveDisplayName decides what the session is called: the explicit --title when
+// it holds readable text, otherwise a name derived from the question. Both branches
+// are shaped, which is the whole point of it — the choice used to be made on the
+// raw title, so the shaping could be skipped by supplying one.
+//
+// The second return reports a title that was given and then shaped away to nothing
+// — a title of only control characters, say. That is not the same as no title, and
+// substituting the derived name without saying so would hide a caller's mistake
+// behind a name that looks deliberate. It is not fatal: the question is still
+// perfectly relayable, and refusing to deliver an alert over the spelling of its
+// name would be the worse failure for a tool whose job is to reach the user.
+func resolveDisplayName(title, question string) (displayName string, titleHeldNoReadableText bool) {
+	if shaped := displayNameFromTitle(title); shaped != "" {
+		return shaped, false
+	}
+	return displayNameFromQuestion(question), title != ""
+}
+
+// shapeIntoOneLineOfText removes what is not text and puts what remains on a single
+// line. It is the shaping every display name gets, whatever it was derived from,
+// and it is one function so that the two paths and the blank-message guard cannot
+// drift apart into three opinions about what a well-formed name is.
+func shapeIntoOneLineOfText(s string) string {
+	return collapseWhitespaceRuns(spaceOutNonText(s))
 }
 
 // hasReadableText reports whether s holds anything a person could read once it
@@ -298,7 +361,7 @@ func displayNameFromQuestion(question string) string {
 // a question of "\x00\x00" or a lone U+202E is not blank by TrimSpace and would
 // pass a TrimSpace guard on its way to an empty display name.
 func hasReadableText(s string) bool {
-	return collapseWhitespaceRuns(spaceOutNonText(s)) != ""
+	return shapeIntoOneLineOfText(s) != ""
 }
 
 // spaceOutNonText rewrites as a space every character that is not text: the
