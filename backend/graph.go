@@ -22,6 +22,11 @@ type Graph struct {
 	apiauthAccount  string
 	tokens          TokenSource
 	http            *http.Client
+	// base is the Graph API root every request is built on. It is a field
+	// rather than the graphBase constant so a test can point this client at a
+	// stand-in server: the continuation walk below can only be judged by
+	// watching the exact URLs that go out on the second and third requests.
+	base string
 }
 
 func NewGraph(accountID, apiauthProvider, apiauthAccount string, tokens TokenSource) *Graph {
@@ -31,6 +36,7 @@ func NewGraph(accountID, apiauthProvider, apiauthAccount string, tokens TokenSou
 		apiauthAccount:  apiauthAccount,
 		tokens:          tokens,
 		http:            &http.Client{Timeout: 30 * time.Second},
+		base:            graphBase,
 	}
 }
 
@@ -45,12 +51,20 @@ var graphCanonical = map[string]CanonicalKind{
 	"archive":      KindArchive,
 }
 
+// do issues a request against a path relative to the Graph API root.
 func (g *Graph) do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	return g.doAbsoluteURL(ctx, method, g.base+path, body)
+}
+
+// doAbsoluteURL issues a request against an already-complete URL. Continuation
+// links arrive from Graph absolute and must be sent back unchanged, so they
+// cannot go through do, which would prepend the API root a second time.
+func (g *Graph) doAbsoluteURL(ctx context.Context, method, fullURL string, body io.Reader) (*http.Response, error) {
 	token, err := g.tokens.Token(g.apiauthProvider, g.apiauthAccount)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, graphBase+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, fullURL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +98,7 @@ func (g *Graph) do(ctx context.Context, method, path string, body io.Reader) (*h
 		if err != nil {
 			return nil, err
 		}
-		retryReq, err := http.NewRequestWithContext(ctx, method, graphBase+path, retryBody)
+		retryReq, err := http.NewRequestWithContext(ctx, method, fullURL, retryBody)
 		if err != nil {
 			return nil, err
 		}
@@ -97,6 +111,21 @@ func (g *Graph) do(ctx context.Context, method, path string, body io.Reader) (*h
 	return resp, nil
 }
 
+// validatedContinuationURL checks an @odata.nextLink before it is followed.
+//
+// The link must be followed verbatim: its $skiptoken is only valid against the
+// query that issued it, so rebuilding the URL from its parts restarts the walk
+// at page one and terminates only on a loop guard. But "verbatim" must not
+// become "wherever the response points" — the follow-up request carries the
+// account's bearer token, and a link off the Graph host would hand that token
+// to whoever the link names. So the link is checked and then used unchanged.
+func (g *Graph) validatedContinuationURL(nextLink string) (string, error) {
+	if !strings.HasPrefix(nextLink, g.base+"/") {
+		return "", fmt.Errorf("graph: refusing to follow continuation link outside %s: %s", g.base, nextLink)
+	}
+	return nextLink, nil
+}
+
 type graphFolder struct {
 	ID              string `json:"id"`
 	DisplayName     string `json:"displayName"`
@@ -106,13 +135,54 @@ type graphFolder struct {
 }
 
 type graphFolderList struct {
-	Value []graphFolder `json:"value"`
+	Value    []graphFolder `json:"value"`
+	NextLink string        `json:"@odata.nextLink"`
 }
 
+const folderPath = "/me/mailFolders?$top=100&$select=id,displayName,parentFolderId,unreadItemCount,wellKnownName"
+
+// maxFolderPages bounds the continuation walk. At $top=100 this allows 5,000
+// folders, far past any real mailbox, so reaching it means the walk is not
+// terminating rather than that the account is large — and it is reported as an
+// error for that reason. A guard that stopped quietly here would return a
+// truncated folder list, which is the defect this walk exists to fix.
+const maxFolderPages = 50
+
 func (g *Graph) Folders(ctx context.Context) ([]Folder, error) {
-	resp, err := g.do(ctx, "GET",
-		"/me/mailFolders?$top=100&$select=id,displayName,parentFolderId,unreadItemCount,wellKnownName",
-		nil)
+	// Graph pages the folder list like any other collection: $top caps what one
+	// response carries and the rest arrives behind @odata.nextLink. Reading only
+	// the first page returns a short folder list that looks complete to the UI.
+	next := g.base + folderPath
+	fetched := make(map[string]bool)
+	var out []Folder
+
+	for pages := 0; ; pages++ {
+		if pages >= maxFolderPages {
+			return nil, fmt.Errorf("graph mailFolders: still paging after %d pages, giving up", maxFolderPages)
+		}
+		if fetched[next] {
+			return nil, fmt.Errorf("graph mailFolders: continuation re-served a page already read, so the walk is not advancing: %s", next)
+		}
+		fetched[next] = true
+
+		list, err := g.fetchFolderPage(ctx, next)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range list.Value {
+			out = append(out, g.toFolder(f))
+		}
+		if list.NextLink == "" {
+			return out, nil
+		}
+		if next, err = g.validatedContinuationURL(list.NextLink); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (g *Graph) fetchFolderPage(ctx context.Context, fullURL string) (*graphFolderList, error) {
+	resp, err := g.doAbsoluteURL(ctx, "GET", fullURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -125,24 +195,24 @@ func (g *Graph) Folders(ctx context.Context) ([]Folder, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		return nil, err
 	}
-	out := make([]Folder, 0, len(list.Value))
-	for _, f := range list.Value {
-		folder := Folder{
-			ID:          f.ID,
-			AccountID:   g.accountID,
-			Name:        f.DisplayName,
-			Path:        f.DisplayName,
-			ParentID:    f.ParentFolderID,
-			UnreadCount: f.UnreadItemCount,
-		}
-		if f.WellKnownName != "" {
-			if k, ok := graphCanonical[strings.ToLower(f.WellKnownName)]; ok {
-				folder.Canonical = k
-			}
-		}
-		out = append(out, folder)
+	return &list, nil
+}
+
+func (g *Graph) toFolder(f graphFolder) Folder {
+	folder := Folder{
+		ID:          f.ID,
+		AccountID:   g.accountID,
+		Name:        f.DisplayName,
+		Path:        f.DisplayName,
+		ParentID:    f.ParentFolderID,
+		UnreadCount: f.UnreadItemCount,
 	}
-	return out, nil
+	if f.WellKnownName != "" {
+		if k, ok := graphCanonical[strings.ToLower(f.WellKnownName)]; ok {
+			folder.Canonical = k
+		}
+	}
+	return folder
 }
 
 type graphRecipient struct {
@@ -228,8 +298,8 @@ func (g *Graph) List(ctx context.Context, folderID, cursor string, limit int) ([
 	}
 	// Strip the absolute base so the cursor round-trips through our handler.
 	next := list.NextLink
-	if next != "" && strings.HasPrefix(next, graphBase) {
-		next = strings.TrimPrefix(next, graphBase)
+	if next != "" && strings.HasPrefix(next, g.base) {
+		next = strings.TrimPrefix(next, g.base)
 	}
 	return out, next, nil
 }
