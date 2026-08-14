@@ -11,6 +11,8 @@ import (
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/slava/scheduler/internal/runstatus"
 )
 
 // AgentExecutor runs agent turns by publishing a BridgeInbound message on
@@ -139,7 +141,7 @@ workspace with parent_id=%[1]s) and leave a short roll-up here.
 
 func (e *AgentExecutor) Run(run AgentRun) Result {
 	if e.client == nil {
-		return Result{Status: "error", Output: "NATS client not configured"}
+		return Result{Status: runstatus.Error, Output: "NATS client not configured"}
 	}
 
 	agent := run.Agent
@@ -164,7 +166,7 @@ func (e *AgentExecutor) Run(run AgentRun) Result {
 		h := orchestratorHarness(orchestrator)
 		instanceID, err := e.firstEnabledInstance(h)
 		if err != nil {
-			return Result{Status: "error", Output: err.Error()}
+			return Result{Status: runstatus.Error, Output: err.Error()}
 		}
 		busSessionID = fmt.Sprintf("scheduler-%s-%d", orchestrator, now.UnixNano())
 		create = &msg.CreateSessionRequest{
@@ -190,8 +192,8 @@ func (e *AgentExecutor) Run(run AgentRun) Result {
 	}
 
 	if err := e.client.Publish(messages.BridgeInboundSubject, in); err != nil {
-		return Result{Status: "error", Output: fmt.Sprintf("publish failed: %v", err)}
+		return Result{Status: runstatus.Error, Output: fmt.Sprintf("publish failed: %v", err)}
 	}
 
-	return Result{Status: "success", Output: fmt.Sprintf("published to %s (bus_session=%s)", messages.BridgeInboundSubject, busSessionID)}
+	return Result{Status: runstatus.Success, Output: fmt.Sprintf("published to %s (bus_session=%s)", messages.BridgeInboundSubject, busSessionID)}
 }

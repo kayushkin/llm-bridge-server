@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/slava/scheduler/internal/runstatus"
 )
 
 // DefaultTimeout applies to any job that has not set its own timeout.
@@ -43,7 +45,7 @@ func Run(command string, timeout time.Duration) Result {
 	cmd.WaitDelay = waitDelay
 
 	if err := cmd.Start(); err != nil {
-		return Result{Status: "error", Output: err.Error()}
+		return Result{Status: runstatus.Error, Output: err.Error()}
 	}
 	// The child is the group leader, so its pid is the pgid. Sweep the group
 	// once the run is over, however it ended: a grandchild that outlives a
@@ -60,11 +62,11 @@ func Run(command string, timeout time.Duration) Result {
 		// ctx.Err() is the reliable signal here: on timeout the child is killed,
 		// so cmd.Run reports a signal error rather than anything timeout-shaped.
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return Result{Status: "timeout", Output: output + "\ntimed out after " + timeout.String()}
+			return Result{Status: runstatus.Timeout, Output: output + "\ntimed out after " + timeout.String()}
 		}
-		return Result{Status: "error", Output: output + err.Error()}
+		return Result{Status: runstatus.Error, Output: output + err.Error()}
 	}
-	return Result{Status: "success", Output: output}
+	return Result{Status: runstatus.Success, Output: output}
 }
 
 // killGroup SIGKILLs an entire process group. ESRCH just means the group is

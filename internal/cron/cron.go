@@ -10,6 +10,8 @@ import (
 	"github.com/robfig/cron/v3"
 	"github.com/slava/scheduler/internal/db"
 	"github.com/slava/scheduler/internal/executor"
+
+	"github.com/slava/scheduler/internal/runstatus"
 )
 
 type Scheduler struct {
@@ -243,7 +245,7 @@ func (s *Scheduler) executeJob(job db.Job) *db.Run {
 	var result executor.Result
 	if job.Type == "agent" {
 		if s.agentExecutor == nil {
-			result = executor.Result{Status: "error", Output: "agent executor not configured"}
+			result = executor.Result{Status: runstatus.Error, Output: "agent executor not configured"}
 		} else {
 			result = s.agentExecutor.Run(executor.AgentRun{
 				Agent:        job.Agent,

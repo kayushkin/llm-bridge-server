@@ -8,6 +8,8 @@ import (
 	"time"
 
 	natsbus "github.com/kayushkin/bus"
+
+	"github.com/slava/scheduler/internal/runstatus"
 )
 
 type LogEntry struct {
@@ -19,11 +21,25 @@ type LogEntry struct {
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
+// entryPublisher is the sink a Logger writes to. *natsbus.Client satisfies it.
+// It is an interface so that a test can read back the entry a Log* call
+// produced; with a concrete client nothing in this package could observe the
+// level a finished run was filed at, which is how the timeout case went
+// unnoticed.
+type entryPublisher interface {
+	Publish(subject string, data any) error
+}
+
 type Logger struct {
-	client *natsbus.Client
+	client entryPublisher
 }
 
 func New(natsClient *natsbus.Client) *Logger {
+	if natsClient == nil {
+		// A nil *natsbus.Client in an interface field is not a nil interface,
+		// so store an untyped nil and keep publish's guard meaningful.
+		return &Logger{}
+	}
 	return &Logger{client: natsClient}
 }
 
@@ -58,7 +74,7 @@ func (l *Logger) LogJobStart(jobID int64, jobName, schedule string, runID int64)
 // LogJobFinish logs job execution completion
 func (l *Logger) LogJobFinish(jobID int64, jobName, schedule string, runID int64, status, output string, duration time.Duration) {
 	level := "info"
-	if status == "error" || status == "failed" {
+	if runstatus.TerminalStatusIsFailure(status) {
 		level = "error"
 	}
 
