@@ -279,6 +279,28 @@ const displayNameRuneLimit = 60
 // with U+FFFD and reports no error — which is why cutting mid-rune here was
 // silent rather than loud.
 func displayNameFromQuestion(question string) string {
-	oneLine := strings.TrimSpace(strings.ReplaceAll(question, "\n", " "))
-	return textcut.TruncateToRuneLimit(oneLine, displayNameRuneLimit)
+	return textcut.TruncateToRuneLimit(collapseWhitespaceRuns(question), displayNameRuneLimit)
+}
+
+// collapseWhitespaceRuns rewrites every run of whitespace in s as a single space
+// and drops the runs at either end.
+//
+// "One line" is not only about \n. This used to replace \n and nothing else, so a
+// question typed on a CRLF machine kept its bare \r, and \t, \v, \f, U+0085,
+// U+00A0 and U+3000 all travelled into a stored display name untouched. Splitting
+// on unicode.IsSpace covers every one of them, and covers them by the same rule
+// rather than by an ever-growing list of characters somebody remembered.
+//
+// It also collapses runs of ordinary spaces, and that is a deliberate behaviour
+// change rather than a side effect worth hiding: you cannot turn "a\r\nb" into
+// one space without deciding what two adjacent whitespace characters mean. A
+// display name is one row of a list, where a run of spaces renders as a gap that
+// says nothing and spends a budget of 60 characters saying it.
+//
+// The result is empty only if s was entirely whitespace. main rejects such a
+// question before this is called, and it rejects it with strings.TrimSpace, which
+// tests the same unicode.IsSpace predicate strings.Fields splits on — so the two
+// checks cannot disagree about what counts as blank.
+func collapseWhitespaceRuns(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
