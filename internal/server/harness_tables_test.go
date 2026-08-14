@@ -1,6 +1,8 @@
 package server
 
 import (
+	"os"
+	"regexp"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -84,17 +86,164 @@ func TestCompactCapabilityMatchesTheHarnesses(t *testing.T) {
 	}
 }
 
-// TestDisabledHarnessesAreCanonical catches a disable entry that outlives the
-// harness it names — e.g. one left behind after a harness is renamed or removed
-// upstream, which would otherwise sit here forever suppressing nothing.
-func TestDisabledHarnessesAreCanonical(t *testing.T) {
+// harnessesWhoseRemovalMustBeDeliberate is an owned literal, and owning it is
+// the whole point: it is the canonical set as measured on 2026-08-14, written
+// down here so that a harness leaving msg.AllHarnesses has to be a decision
+// somebody typed rather than a row that quietly stopped existing.
+//
+// It must not be derived from msg.AllHarnesses, or from any table keyed by it.
+// TestAllHarnessesExcludesDisabled already computes its expectation as
+// len(msg.AllHarnesses) - len(disabledHarnesses); both sides shrink together,
+// so it pins the derivation and cannot notice the population moving. A count
+// checked against the table it guards agrees with itself no matter how many
+// rows leave.
+//
+// The list is a floor, not an equality: a harness added upstream is not this
+// test's business. TestHarnessTablesCoverCanonicalSet already forces a new one
+// to be described or explicitly disabled, so growth is handled, and leaving
+// growth alone here is what keeps this from having to be edited every time the
+// canonical list legitimately grows.
+var harnessesWhoseRemovalMustBeDeliberate = []msg.Harness{
+	msg.HarnessClaudeCode,
+	msg.HarnessCodex,
+	msg.HarnessOpenClaw,
+	msg.HarnessInber,
+	msg.HarnessHermes,
+	msg.HarnessAider,
+	msg.HarnessGoose,
+	msg.HarnessAutohand,
+	msg.HarnessJig,
+	msg.HarnessDexto,
+	msg.HarnessCommander,
+	msg.HarnessNanoClaw,
+	msg.HarnessCline,
+	msg.HarnessRooCode,
+	msg.HarnessKiloCode,
+	msg.HarnessOpenCode,
+	msg.HarnessForgecode,
+	msg.HarnessGemini,
+	msg.HarnessCopilotCLI,
+	msg.HarnessMock,
+}
+
+// TestNoKnownHarnessLeavesTheCanonicalListSilently is the floor under the
+// tables in this file, and it exists because the guard around them was only
+// ever built to face one direction.
+//
+// The header on TestHarnessTablesCoverCanonicalSet describes the failure it
+// prevents: a harness added upstream that nobody described here, which is how
+// copilot_cli went missing from /harnesses. That test walks msg.AllHarnesses
+// and checks each row is described — so it sees additions, and a harness
+// *removed* upstream is simply one fewer iteration. Measured 2026-08-14 by
+// deleting each row in turn: 17 of the 20 canonical harnesses can leave
+// msg.AllHarnesses without reddening anything in this package, and 11 of 19
+// can be removed from the canonical list and both local tables together — the
+// way a real retirement lands — in total silence.
+//
+// What that costs is the same thing the original drift cost: the harness stops
+// being surfaced by /harnesses, stops being validated at session create, and
+// stops being run by conformance. The tables here would keep describing it,
+// which reads exactly like a harness that is still supported.
+func TestNoKnownHarnessLeavesTheCanonicalListSilently(t *testing.T) {
 	canonical := make(map[msg.Harness]bool, len(msg.AllHarnesses))
 	for _, h := range msg.AllHarnesses {
 		canonical[h] = true
 	}
-	for h := range disabledHarnesses {
+	for _, h := range harnessesWhoseRemovalMustBeDeliberate {
 		if !canonical[h] {
-			t.Errorf("disabledHarnesses names %q, which is not in msg.AllHarnesses; drop the stale entry", h)
+			t.Errorf("harness %q has left msg.AllHarnesses; if it was retired on purpose, drop it from "+
+				"harnessesWhoseRemovalMustBeDeliberate and from every table in health.go that still "+
+				"describes it, so the retirement is one edit rather than a stale row", h)
+		}
+	}
+}
+
+// harnessKeyedTable is one table from health.go reduced to its keys, carrying
+// its own name so a stale row can say which table it sits in.
+type harnessKeyedTable struct {
+	name string
+	keys []msg.Harness
+}
+
+func harnessTableKeys[V any](name string, table map[msg.Harness]V) harnessKeyedTable {
+	keys := make([]msg.Harness, 0, len(table))
+	for h := range table {
+		keys = append(keys, h)
+	}
+	return harnessKeyedTable{name: name, keys: keys}
+}
+
+// harnessKeyedTables is every table in health.go keyed by msg.Harness. All
+// eight are listed. A ninth added later and left out of this list would be
+// unguarded — which is the state seven of these eight were in until
+// 2026-08-14 — so TestEveryHarnessKeyedTableIsListedHere reads the source and
+// goes red rather than leaving that as a sentence nobody re-checks.
+func harnessKeyedTables() []harnessKeyedTable {
+	return []harnessKeyedTable{
+		harnessTableKeys("harnessMetadata", harnessMetadata),
+		harnessTableKeys("harnessSupportedProviders", harnessSupportedProviders),
+		harnessTableKeys("harnessHookEvents", harnessHookEvents),
+		harnessTableKeys("harnessSupportsPTY", harnessSupportsPTY),
+		harnessTableKeys("harnessSupportsDisableNetwork", harnessSupportsDisableNetwork),
+		harnessTableKeys("harnessSupportedPermissionModes", harnessSupportedPermissionModes),
+		harnessTableKeys("harnessCapabilities", harnessCapabilities),
+		harnessTableKeys("disabledHarnesses", disabledHarnesses),
+	}
+}
+
+// TestHarnessKeyedTablesNameOnlyCanonicalHarnesses catches a row that outlives
+// the harness it names — one left behind after a harness is renamed or removed
+// upstream, which would otherwise sit here forever describing nothing.
+//
+// This used to be TestDisabledHarnessesAreCanonical and covered disabledHarnesses
+// alone. The same hazard applies to every table keyed by msg.Harness, and there
+// are eight of them: a stale entry in harnessCapabilities or harnessMetadata is
+// what makes a harness retired upstream still look supported here, and a stale
+// entry in harnessSupportsPTY or harnessSupportedPermissionModes is a spawn-time
+// answer about a harness that no longer exists. Only disabledHarnesses was
+// checked, so the other seven were unguarded.
+func TestHarnessKeyedTablesNameOnlyCanonicalHarnesses(t *testing.T) {
+	canonical := make(map[msg.Harness]bool, len(msg.AllHarnesses))
+	for _, h := range msg.AllHarnesses {
+		canonical[h] = true
+	}
+	for _, table := range harnessKeyedTables() {
+		for _, h := range table.keys {
+			if !canonical[h] {
+				t.Errorf("%s names %q, which is not in msg.AllHarnesses; drop the stale entry", table.name, h)
+			}
+		}
+	}
+}
+
+// TestEveryHarnessKeyedTableIsListedHere keeps the list above honest by reading
+// health.go instead of trusting it. A table that is keyed by msg.Harness but
+// missing from harnessKeyedTables is not guarded by the test above, and nothing
+// about adding one would say so — the omission would look exactly like a table
+// that had been considered and cleared.
+func TestEveryHarnessKeyedTableIsListedHere(t *testing.T) {
+	source, err := os.ReadFile("health.go")
+	if err != nil {
+		t.Fatalf("read health.go: %v", err)
+	}
+	declared := regexp.MustCompile(`(?m)^var (\w+) = map\[msg\.Harness\]`).FindAllStringSubmatch(string(source), -1)
+	if len(declared) == 0 {
+		t.Fatal("found no map[msg.Harness] tables in health.go; the pattern this test scans with has gone stale")
+	}
+
+	listed := make(map[string]bool)
+	for _, table := range harnessKeyedTables() {
+		listed[table.name] = true
+	}
+	for _, decl := range declared {
+		if !listed[decl[1]] {
+			t.Errorf("health.go declares %s, keyed by msg.Harness, and harnessKeyedTables does not list it; "+
+				"add it there so TestHarnessKeyedTablesNameOnlyCanonicalHarnesses can see its rows", decl[1])
+		}
+	}
+	for name := range listed {
+		if !regexp.MustCompile(`(?m)^var ` + name + ` = map\[msg\.Harness\]`).Match(source) {
+			t.Errorf("harnessKeyedTables lists %s, which health.go no longer declares; drop the stale entry", name)
 		}
 	}
 }
@@ -103,6 +252,16 @@ func TestDisabledHarnessesAreCanonical(t *testing.T) {
 // gateway will surface, validate and spawn is canonical and enabled. isValidHarness
 // gates session create, so a disabled harness leaking in here is what would let
 // POST /sessions spawn its binary.
+//
+// The axis it is checked on, written down so nobody re-reads its count as more
+// than it is: the len() comparison below pins the DERIVATION and not the
+// population. Its expectation is computed from msg.AllHarnesses and
+// disabledHarnesses, the same two tables it is checking, so both sides move
+// together and a harness leaving msg.AllHarnesses keeps it green. Measured
+// 2026-08-14 by deleting each canonical row in turn. The floor over the
+// population is TestNoKnownHarnessLeavesTheCanonicalListSilently; the two
+// owned literals at the bottom of this test (copilot_cli must stay invalid,
+// claude_code must stay valid) are what make those two rows the exception.
 func TestAllHarnessesExcludesDisabled(t *testing.T) {
 	seen := make(map[msg.Harness]bool, len(allHarnesses))
 	for _, h := range allHarnesses {
