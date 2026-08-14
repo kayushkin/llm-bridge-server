@@ -119,6 +119,15 @@ CASES = [
         name="new-drops-the-typed-nil-guard",
         edits=[("if natsClient == nil {", "if false {")],
     ),
+    Case(
+        # Added after the cross-table reported TestTheVocabularyHasNoDuplicateSpellings
+        # as reddened by no case. A test nothing reddens may be pinning nothing;
+        # here it was pinning a real direction the case list had not expressed —
+        # a second constant quietly taking an existing spelling, which is how the
+        # vocabulary forked in the first place.
+        name="vocabulary-forks: two constants share one spelling",
+        edits=[('Timeout = "timeout"', 'Timeout = "error"')],
+    ),
 ]
 
 if __name__ == "__main__":
