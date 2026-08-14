@@ -59,8 +59,14 @@ CASES = [
 
     # ── the call site: does LogJobFinish consult the status at all? ──────────
     Case(
-        name="finish-never-escalates: the level decision is skipped",
-        edits=[("if runstatus.TerminalStatusIsFailure(status) {", "if false {")],
+        # `if false {` orphans the runstatus import and REFUSES to compile — a
+        # scorer defect, not a suite miss (the 137th pass's build guard, tenth
+        # consecutive night it has separated the two). Asking the predicate about
+        # a constant instead keeps the import referenced and mutates the thing
+        # that matters: the finish logger no longer consults the run's status.
+        name="finish-never-escalates: the level decision ignores the run's status",
+        edits=[("if runstatus.TerminalStatusIsFailure(status) {",
+                "if runstatus.TerminalStatusIsFailure(runstatus.Success) {")],
     ),
     Case(
         name="finish-always-escalates: every run is filed at error level",
