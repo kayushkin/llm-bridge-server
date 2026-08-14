@@ -177,20 +177,111 @@ func (s *Store) migrate() error {
 	return nil
 }
 
+// InterruptedRunOutput is stored as the output of a run that startup
+// reconciliation closed out and that produced no output of its own.
+//
+// It is a constant because reconciliation writes it in SQL and reports it back
+// to the caller in Go, and those two must say the same thing: the caller
+// publishes what it is handed, so a second spelling here would be published as
+// the run's output while a different one sat in the database.
+const InterruptedRunOutput = "interrupted: scheduler exited while this run was in flight"
+
+// InterruptedRun is a run that startup reconciliation closed out, carrying the
+// job fields the finish logger needs alongside the run's own.
+//
+// JobName and Schedule are empty when the run's job no longer exists. That is
+// not defensive: the runs table declares ON DELETE CASCADE, but nothing in this
+// package ever sets PRAGMA foreign_keys=ON, so SQLite does not enforce it and
+// runs outlive their jobs in practice. They are reported with the name left
+// empty rather than invented, and JobID still identifies the row that is gone.
+type InterruptedRun struct {
+	RunID      int64
+	JobID      int64
+	JobName    string
+	Schedule   string
+	Output     string
+	StartedAt  time.Time
+	FinishedAt time.Time
+}
+
 // ReconcileOrphanedRuns closes out runs left mid-flight by a process that died
 // (a crash, an OOM kill, a deploy restart). Nothing else ever clears them, so
 // without this they stay "running" forever and read as concurrent duplicates of
 // the job. Safe to call only at startup, before the cron loop can create runs.
-func (s *Store) ReconcileOrphanedRuns() (int64, error) {
+//
+// It returns the runs it closed rather than a count of them, because closing a
+// run is a finish and the caller has to be able to report each one the way every
+// other finish is reported. A count can only be summarised, and a summary of n
+// killed runs does not say which jobs they were.
+//
+// FinishedAt is when reconciliation noticed, not when the process actually died
+// — that moment is unrecorded and unknowable here. A run interrupted long ago
+// therefore reports a long duration, which is the truth about the row and not
+// about how long the job ran.
+func (s *Store) ReconcileOrphanedRuns() ([]InterruptedRun, error) {
 	now := time.Now().UTC()
-	res, err := s.db.Exec(
-		`UPDATE runs SET status='interrupted', finished_at=?,
-		 output = CASE WHEN output='' THEN 'interrupted: scheduler exited while this run was in flight' ELSE output END
-		 WHERE status='running'`, now)
+
+	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, err
+		return nil, fmt.Errorf("reconcile orphaned runs: begin: %w", err)
 	}
-	return res.RowsAffected()
+	defer tx.Rollback()
+
+	// LEFT JOIN, so a run whose job is gone is still reported. An inner join
+	// would drop it from this set while the UPDATE below still closed it, and
+	// the caller would publish fewer finishes than the number of runs it ended.
+	rows, err := tx.Query(`
+		SELECT r.id, r.job_id, COALESCE(j.name, ''), COALESCE(j.schedule, ''), r.output, r.started_at
+		FROM runs r LEFT JOIN jobs j ON j.id = r.job_id
+		WHERE r.status = 'running'`)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile orphaned runs: select: %w", err)
+	}
+
+	var interrupted []InterruptedRun
+	for rows.Next() {
+		var r InterruptedRun
+		if err := rows.Scan(&r.RunID, &r.JobID, &r.JobName, &r.Schedule, &r.Output, &r.StartedAt); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("reconcile orphaned runs: scan: %w", err)
+		}
+		if r.Output == "" {
+			r.Output = InterruptedRunOutput
+		}
+		r.FinishedAt = now
+		interrupted = append(interrupted, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("reconcile orphaned runs: rows: %w", err)
+	}
+	rows.Close()
+
+	res, err := tx.Exec(`
+		UPDATE runs SET status = 'interrupted', finished_at = ?,
+		  output = CASE WHEN output = '' THEN ? ELSE output END
+		WHERE status = 'running'`, now, InterruptedRunOutput)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile orphaned runs: update: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("reconcile orphaned runs: rows affected: %w", err)
+	}
+
+	// The SELECT and the UPDATE carry the same WHERE clause written twice, and
+	// nothing but this check ties them together. If they ever select different
+	// sets, runs are being closed that no caller will report — the exact silence
+	// this function was changed to end — so refuse rather than return a set that
+	// is quietly short.
+	if affected != int64(len(interrupted)) {
+		return nil, fmt.Errorf("reconcile orphaned runs: closed %d runs but captured %d", affected, len(interrupted))
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("reconcile orphaned runs: commit: %w", err)
+	}
+	return interrupted, nil
 }
 
 func (s *Store) CreateJob(name, schedule, command string) (*Job, error) {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -17,6 +18,7 @@ import (
 	"github.com/slava/scheduler/internal/db"
 	"github.com/slava/scheduler/internal/executor"
 	"github.com/slava/scheduler/internal/logging"
+	"github.com/slava/scheduler/internal/runstatus"
 )
 
 func main() {
@@ -56,11 +58,19 @@ func main() {
 	// this one has not started a job yet. Close them out here rather than in
 	// Scheduler.Start, which Reload also calls, and which would therefore kill
 	// live runs on every job edit.
-	if n, err := store.ReconcileOrphanedRuns(); err != nil {
+	//
+	// Each closed run is published as a finish, at the same level and in the
+	// same shape as a run that ended on its own terms. Reconciliation does not
+	// go through the cron loop, so this is the only place these finishes can be
+	// reported, and until they were they existed solely as rows in SQLite.
+	interruptedRuns, err := store.ReconcileOrphanedRuns()
+	if err != nil {
 		logger.LogError("startup_error", fmt.Sprintf("Failed to reconcile orphaned runs: %v", err), nil)
 		log.Fatalf("reconcile orphaned runs: %v", err)
-	} else if n > 0 {
-		log.Printf("reconciled %d orphaned run(s) left behind by a previous process", n)
+	}
+	publishInterruptedRuns(logger, interruptedRuns)
+	if len(interruptedRuns) > 0 {
+		log.Printf("reconciled %d orphaned run(s) left behind by a previous process", len(interruptedRuns))
 	}
 
 	// Initialize scheduler
@@ -123,4 +133,32 @@ func main() {
 	<-sig
 	log.Println("shutting down")
 	logger.LogSchedulerLifecycle("shutting_down")
+}
+
+// interruptedRunLogger is the part of *logging.Logger that reporting a
+// reconciled run needs. It is named here so the reporting can be exercised
+// without a NATS connection.
+type interruptedRunLogger interface {
+	LogJobFinish(jobID int64, jobName, schedule string, runID int64, status, output string, duration time.Duration)
+}
+
+// publishInterruptedRuns reports every run that startup reconciliation closed,
+// one entry each, through the same call the cron loop uses for a run that ended
+// on its own terms.
+//
+// One entry per run rather than a summary: LogJobFinish's metadata is per-run
+// (job id, job name, run id, duration), so a summary would have to invent a
+// different shape, and a consumer counting finishes would miss these entirely.
+// Measured on the live database before choosing — steady-state reconciliation
+// closes 2 runs, and the one large batch on record (510) was the one-off
+// backfill when reconciliation first ran against years of accumulated rows.
+//
+// The status is runstatus.Interrupted, which TerminalStatusIsFailure reports as
+// a failure, so these publish at error level: a run that was killed is not news
+// filed at info.
+func publishInterruptedRuns(logger interruptedRunLogger, runs []db.InterruptedRun) {
+	for _, r := range runs {
+		logger.LogJobFinish(r.JobID, r.JobName, r.Schedule, r.RunID, runstatus.Interrupted,
+			r.Output, r.FinishedAt.Sub(r.StartedAt))
+	}
 }
