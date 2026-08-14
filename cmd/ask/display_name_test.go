@@ -267,35 +267,210 @@ func TestDisplayNameFromQuestion_TheBudgetIsSpentOnTheQuestionNotOnItsWhitespace
 	}
 }
 
-// main refuses a question that is blank and does it with strings.TrimSpace, then
-// hands what is left to this. TrimSpace and strings.Fields test the same
-// unicode.IsSpace predicate, so the two cannot disagree — a question main accepted
-// can never arrive here and shape into an empty display name. Swept over the class
-// because a rule built on a list of characters would break the agreement for
-// whichever members it forgot.
+// main refuses a question with no readable text in it and does it with
+// hasReadableText, which is the shaping steps themselves — so a question main
+// accepted can never arrive here and shape into an empty display name. Swept over
+// both classes because a rule built on a list of characters would break the
+// agreement for whichever members it forgot.
+//
+// This used to be an agreement between strings.TrimSpace and strings.Fields, and
+// it held only while whitespace was the sole thing removed here. Once the shaping
+// also removed the non-text characters the two came apart: TrimSpace tests
+// unicode.IsSpace, which is false for every one of them, so "\x00\x00" and a lone
+// U+202E are questions main accepts and the shaping empties.
 func TestDisplayNameFromQuestion_NeverEmptiesAQuestionMainAccepted(t *testing.T) {
-	for _, r := range whitespaceRunes() {
+	for _, r := range append(whitespaceRunes(), nonTextRunes()...) {
 		for _, question := range []string{
 			string(r) + "x" + string(r),
 			string(r) + string(r) + "hello" + string(r) + "world",
 			"x" + string(r),
 		} {
-			if strings.TrimSpace(question) == "" {
-				t.Fatalf("U+%04X: fixture %q is blank, so it tests nothing", r, question)
+			if !hasReadableText(question) {
+				t.Fatalf("U+%04X: fixture %q has no readable text, so it tests nothing", r, question)
 			}
 			if got := displayNameFromQuestion(question); got == "" {
 				t.Errorf("U+%04X: main accepted %q, but the display name came out empty", r, question)
 			}
 		}
 	}
-	// The other half of the agreement: what TrimSpace calls blank, this empties.
-	for _, r := range whitespaceRunes() {
+	// The other half of the agreement: what the guard rejects, the shaping empties.
+	for _, r := range append(whitespaceRunes(), nonTextRunes()...) {
 		blank := strings.Repeat(string(r), 4)
-		if strings.TrimSpace(blank) != "" {
-			t.Fatalf("U+%04X: TrimSpace does not consider %q blank", r, blank)
+		if hasReadableText(blank) {
+			t.Fatalf("U+%04X: the guard does not consider %q blank", r, blank)
 		}
 		if got := displayNameFromQuestion(blank); got != "" {
-			t.Errorf("U+%04X: TrimSpace calls it blank but the display name is %q", r, got)
+			t.Errorf("U+%04X: the guard calls it blank but the display name is %q", r, got)
+		}
+	}
+}
+
+// The swept classes below are spelled out from Unicode's tables HERE, in the
+// test, rather than read back out of isNonText.
+//
+// ⚠️ This is not duplication for its own sake and the first version of this file
+// got it wrong. A sweep derived from the function under test narrows in step with
+// the defect: with the bidi half of isNonText deleted, every behavioural test
+// below still passed, because nonTextRunes() stopped yielding bidi controls and
+// the loops simply had nothing to check. TestDisplayNameFromQuestion_ABidiOverride‐
+// CannotReorderTheRow — whose entire subject is bidi — passed VACUOUSLY, having
+// skipped all of its iterations. Only a hardcoded count noticed, and a count is
+// one number that the next person to change the rule legitimately would update.
+//
+// So: the code answers "what does isNonText do", the test answers "what should be
+// removed", and TestNonTextClasses_MatchTheCodesRule compares them. That is the
+// one place the two definitions are allowed to meet.
+func controlRunes() []rune {
+	var rs []rune
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if unicode.IsControl(r) && !unicode.IsSpace(r) {
+			rs = append(rs, r)
+		}
+	}
+	return rs
+}
+
+func bidiControlRunes() []rune {
+	var rs []rune
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if unicode.Is(unicode.Bidi_Control, r) {
+			rs = append(rs, r)
+		}
+	}
+	return rs
+}
+
+// nonTextRunes is the union of the two classes, defined independently of the code.
+func nonTextRunes() []rune {
+	return append(controlRunes(), bidiControlRunes()...)
+}
+
+func TestNonTextClasses_MatchTheCodesRule(t *testing.T) {
+	want := map[rune]bool{}
+	for _, r := range nonTextRunes() {
+		want[r] = true
+	}
+	if len(want) != 71 {
+		t.Errorf("the test's own classes sweep to %d runes, want 71 (59 non-whitespace controls + 12 bidi controls)", len(want))
+	}
+	// Every rune in the universe, both directions — this is what makes the two
+	// definitions agree rather than merely overlap on the members someone listed.
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if isNonText(r) != want[r] {
+			t.Errorf("U+%04X: isNonText = %v, the test's classes say %v", r, isNonText(r), want[r])
+		}
+	}
+	// The characters the defect was reported with must be in there.
+	for _, r := range []rune{0x0000, 0x0007, 0x0008, 0x001B, 0x007F, 0x009B, 0x202E, 0x2066} {
+		if !want[r] {
+			t.Errorf("U+%04X is not in the swept class, so no test below covers it", r)
+		}
+	}
+	// The two classes are disjoint from whitespace, which a different rule handles.
+	for r := range want {
+		if unicode.IsSpace(r) {
+			t.Errorf("U+%04X is in both classes; whitespace is collapseWhitespaceRuns's job", r)
+		}
+	}
+	// The sweeps are not empty, so a loop over either cannot pass vacuously.
+	if len(controlRunes()) != 59 || len(bidiControlRunes()) != 12 {
+		t.Errorf("class sizes are %d controls and %d bidi controls, want 59 and 12",
+			len(controlRunes()), len(bidiControlRunes()))
+	}
+}
+
+// The over-reach guard, and the reason this rule is not "all of category Cf".
+//
+// Cf is 170 runes and contains the two join controls, which are not decoration:
+// Arabic, Persian and the Indic scripts need them to shape, and an emoji family is
+// one glyph only because ZWJ holds it together. A rule that took all of Cf would
+// pass every test above and quietly corrupt legitimate text.
+func TestNonTextSweep_SparesTheJoinersAndOrdinaryText(t *testing.T) {
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if unicode.Is(unicode.Join_Control, r) && isNonText(r) {
+			t.Errorf("U+%04X is a join control and must survive — scripts need it to render", r)
+		}
+	}
+	for _, r := range []rune{'a', 'Z', '0', ' ', 'é', '日', '🟢', 0x200C, 0x200D} {
+		if isNonText(r) {
+			t.Errorf("U+%04X is ordinary text and must survive", r)
+		}
+	}
+	// Spelled out end to end: a ZWJ family arrives as the family, not as parts.
+	const family = "Approve \U0001F468‍\U0001F469‍\U0001F467 now"
+	if got := displayNameFromQuestion(family); got != family {
+		t.Errorf("displayNameFromQuestion(%q) = %q — a ZWJ emoji sequence was broken up", family, got)
+	}
+}
+
+// No control or bidi character reaches a display name. The neighbours are distinct
+// words so that a rule which dropped the separator, or kept the characters either
+// side in the wrong order, fails here; "a<R>a" would pass under both.
+func TestDisplayNameFromQuestion_NoControlOrBidiCharacterSurvives(t *testing.T) {
+	for _, r := range nonTextRunes() {
+		got := displayNameFromQuestion("alpha" + string(r) + "beta")
+		if got != "alpha beta" {
+			t.Errorf("U+%04X separating two words gave %q, want %q", r, got, "alpha beta")
+		}
+		if strings.ContainsRune(got, r) {
+			t.Errorf("U+%04X survived into the display name: %q", r, got)
+		}
+	}
+}
+
+// The decision this change makes, pinned so a later tidy-up cannot reverse it
+// silently: a removed character becomes a space, it is not dropped.
+//
+// Dropping is the one operation the rest of the shaping never performs — it would
+// invent a token that appeared nowhere in the input ("alpha\x00beta" -> "alphabeta")
+// and a reader cannot see where the seam was. This test fails under a drop and
+// passes under a replace, which is the whole reason it is written as a word count
+// rather than as an absence of the character.
+func TestDisplayNameFromQuestion_NeverWeldsTwoWordsIntoOne(t *testing.T) {
+	for _, r := range nonTextRunes() {
+		got := displayNameFromQuestion("alpha" + string(r) + "beta")
+		if n := len(strings.Fields(got)); n != 2 {
+			t.Errorf("U+%04X between two words gave %q — %d word(s), want 2; a dropped character welds them",
+				r, got, n)
+		}
+	}
+}
+
+// Removal happens before the collapse, so a character next to existing whitespace
+// disappears into that run rather than widening it. Swept over where the whitespace
+// sits, because a rule that ran after the collapse would leave a double space on
+// one side only.
+func TestDisplayNameFromQuestion_RemovalComposesWithTheCollapse(t *testing.T) {
+	for _, r := range nonTextRunes() {
+		for _, f := range []struct{ name, question string }{
+			{"space before", "alpha " + string(r) + "beta"},
+			{"space after", "alpha" + string(r) + " beta"},
+			{"space both sides", "alpha " + string(r) + " beta"},
+			{"run of them", "alpha" + strings.Repeat(string(r), 4) + "beta"},
+			{"at both ends", string(r) + "alpha beta" + string(r)},
+		} {
+			if got := displayNameFromQuestion(f.question); got != "alpha beta" {
+				t.Errorf("U+%04X %s: got %q, want %q", r, f.name, got, "alpha beta")
+			}
+		}
+	}
+}
+
+// The bidi case spelled out, because it is the one whose damage is to the
+// characters AROUND it rather than to itself: an override reverses the rendered
+// order of the rest of the row, so a display name reads as something nobody sent.
+func TestDisplayNameFromQuestion_ABidiOverrideCannotReorderTheRow(t *testing.T) {
+	rs := bidiControlRunes()
+	// The loop must actually run. This test filtered a sweep taken from the code
+	// itself once, and when the code stopped calling bidi controls non-text the
+	// filter emptied and the test passed having checked nothing.
+	if len(rs) == 0 {
+		t.Fatal("no bidi controls swept — this test would pass without checking anything")
+	}
+	for _, r := range rs {
+		got := displayNameFromQuestion("Approve " + string(r) + "deploy to prod")
+		if got != "Approve deploy to prod" {
+			t.Errorf("U+%04X: got %q, want %q", r, got, "Approve deploy to prod")
 		}
 	}
 }

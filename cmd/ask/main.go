@@ -44,6 +44,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/bus/messages"
@@ -78,8 +79,8 @@ func main() {
 	}
 
 	question := strings.TrimSpace(strings.Join(flag.Args(), " "))
-	if question == "" {
-		log.Fatal("ask: a question/alert message is required (positional argument)")
+	if !hasReadableText(question) {
+		log.Fatal("ask: a question/alert message is required (positional argument), and it must contain readable text — a message of only whitespace and control characters has nothing to relay and nothing to name the session with")
 	}
 	if strings.TrimSpace(*from) == "" {
 		log.Fatal("ask: --from (originating agent tag) must not be empty")
@@ -270,16 +271,87 @@ func resolveInstance(bridgeURL, name string) (string, error) {
 // human reads in the dash session list.
 const displayNameRuneLimit = 60
 
-// displayNameFromQuestion shapes a question into a session display name: onto one
-// line, then cut to displayNameRuneLimit characters.
+// displayNameFromQuestion shapes a question into a session display name: strip
+// what is not text, put it on one line, then cut to displayNameRuneLimit
+// characters.
 //
 // The result is persisted on the created session and shown in the dash, and
 // nothing downstream re-derives it, so a value damaged here is damaged for good.
 // It also travels as JSON over the bus, and encoding/json replaces invalid bytes
 // with U+FFFD and reports no error — which is why cutting mid-rune here was
-// silent rather than loud.
+// silent rather than loud. That laundering does NOT cover what spaceOutNonText
+// removes: those characters are valid UTF-8, so json passes them through with a
+// nil error, and DEL, the C1 set and the bidi controls travel the wire raw and
+// unescaped. A value that is invalid gets laundered; a value that is valid and
+// merely unwanted arrives intact.
 func displayNameFromQuestion(question string) string {
-	return textcut.TruncateToRuneLimit(collapseWhitespaceRuns(question), displayNameRuneLimit)
+	return textcut.TruncateToRuneLimit(collapseWhitespaceRuns(spaceOutNonText(question)), displayNameRuneLimit)
+}
+
+// hasReadableText reports whether s holds anything a person could read once it
+// has been shaped into a display name.
+//
+// main uses this as its blank-message guard, and it is defined as the shaping
+// steps themselves rather than as a predicate over runes, because the two must
+// agree by construction. strings.TrimSpace alone is not enough any more: it tests
+// unicode.IsSpace, which is false for every character spaceOutNonText removes, so
+// a question of "\x00\x00" or a lone U+202E is not blank by TrimSpace and would
+// pass a TrimSpace guard on its way to an empty display name.
+func hasReadableText(s string) bool {
+	return collapseWhitespaceRuns(spaceOutNonText(s)) != ""
+}
+
+// spaceOutNonText rewrites as a space every character that is not text: the
+// control characters that are not whitespace, and the bidi formatting controls.
+//
+// Both classes are taken from Unicode's own tables rather than from a list of
+// characters somebody remembered, which is the same rule collapseWhitespaceRuns
+// follows for whitespace. Together they are 71 runes:
+//
+//   - unicode.IsControl(r) && !unicode.IsSpace(r) — 59 runes, the C0 and C1 sets
+//     less the six that are whitespace. These are not text at all; they are
+//     in-band commands to whatever renders the string. An ESC or a C1 CSI
+//     reaching a terminal session list is an escape sequence somebody typed into
+//     a question.
+//   - unicode.Bidi_Control — 12 runes, the embeddings, overrides and isolates.
+//     These reorder the text around them, so a U+202E in a display name reverses
+//     the rest of the row it lands in and the row reads as something nobody sent.
+//
+// It deliberately does NOT take all 170 of category Cf. Cf contains
+// unicode.Join_Control (U+200C ZWNJ and U+200D ZWJ), which Arabic, Persian and
+// the Indic scripts need to shape correctly and which joins an emoji family into
+// one glyph. Dropping those would corrupt legitimate text to remove characters
+// that render nothing on their own and reorder nothing around them. Bidi_Control
+// and Join_Control are both wholly inside Cf, and it is the reordering half that
+// is the problem.
+//
+// Replacing with a space rather than dropping is the choice this function makes,
+// and the two differ in output: "alpha\x00beta" becomes "alpha beta" here and
+// would become "alphabeta" under a drop. Dropping is the one operation the rest
+// of this shaping never performs — it invents a token that appeared nowhere in
+// the input, and a reader cannot see where the seam was. Replacing can at worst
+// split one word the user typed into two halves they also typed, which is visible
+// and recoverable. It runs BEFORE collapseWhitespaceRuns, so a character next to
+// existing whitespace disappears into that run instead of widening it.
+//
+// The question itself is left alone and only the display name is shaped: the
+// prompt is relayed as a message for an agent to present, not written to a
+// terminal, and editing what the user actually asked is a larger decision than
+// naming a session safely.
+func spaceOutNonText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if isNonText(r) {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+// isNonText reports whether r is a control or bidi-formatting character, i.e. one
+// of the characters spaceOutNonText removes. See its comment for why these two
+// classes and not the whole of category Cf.
+func isNonText(r rune) bool {
+	return (unicode.IsControl(r) && !unicode.IsSpace(r)) || unicode.Is(unicode.Bidi_Control, r)
 }
 
 // collapseWhitespaceRuns rewrites every run of whitespace in s as a single space
@@ -297,10 +369,11 @@ func displayNameFromQuestion(question string) string {
 // display name is one row of a list, where a run of spaces renders as a gap that
 // says nothing and spends a budget of 60 characters saying it.
 //
-// The result is empty only if s was entirely whitespace. main rejects such a
-// question before this is called, and it rejects it with strings.TrimSpace, which
-// tests the same unicode.IsSpace predicate strings.Fields splits on — so the two
-// checks cannot disagree about what counts as blank.
+// The result is empty only if s held no text. main rejects such a question before
+// this is called, and it rejects it with hasReadableText, which is defined as this
+// function composed with spaceOutNonText — so the guard and the shaping cannot
+// disagree about what counts as blank. It used to guard with strings.TrimSpace,
+// which was equivalent only while whitespace was the sole thing removed here.
 func collapseWhitespaceRuns(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
