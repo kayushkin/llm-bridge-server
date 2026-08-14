@@ -684,3 +684,84 @@ func TestNewCreatesDirectory(t *testing.T) {
 		t.Error("expected directory to be created")
 	}
 }
+
+// An interrupted turn is picked back up by auto-resume, and what it is told
+// depends on whether the turn had already run tools — so the count has to be
+// right for the turn that was actually interrupted, not for the session's
+// whole history.
+func TestInterruptedTurnCountsOnlyTheInterruptedTurnsToolCalls(t *testing.T) {
+	s := testStore(t)
+	s.CreateSession(&Session{SessionID: "br_int", Harness: "mock", State: "idle"})
+
+	storeEv := func(typ msg.EventType, text string) {
+		t.Helper()
+		ev := msg.Event{Type: typ}
+		if text != "" {
+			ev.Result = &msg.ResultEvent{Text: text}
+		}
+		data, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if _, err := s.StoreEventReturningID("br_int", string(typ), "", "", data); err != nil {
+			t.Fatalf("store: %v", err)
+		}
+	}
+
+	got, err := s.InterruptedTurn("br_int")
+	if err != nil {
+		t.Fatalf("no user_message: %v", err)
+	}
+	if got != nil {
+		t.Errorf("no user_message = %+v, want nil", got)
+	}
+
+	// A completed turn that ran two tools. Balanced, so nothing to resume —
+	// and its tool calls must not be charged to any later turn.
+	storeEv(msg.EventUserMessage, "first instruction")
+	storeEv(msg.EventToolCall, "")
+	storeEv(msg.EventToolCall, "")
+	storeEv(msg.EventResult, "")
+
+	got, err = s.InterruptedTurn("br_int")
+	if err != nil {
+		t.Fatalf("balanced turn: %v", err)
+	}
+	if got != nil {
+		t.Errorf("balanced turn = %+v, want nil — a turn with a result is not interrupted", got)
+	}
+
+	// A turn killed before it touched anything: replaying it verbatim repeats
+	// nothing, and the two earlier tool calls belong to the closed turn above.
+	storeEv(msg.EventUserMessage, "second instruction")
+
+	got, err = s.InterruptedTurn("br_int")
+	if err != nil {
+		t.Fatalf("interrupted before tools: %v", err)
+	}
+	if got == nil {
+		t.Fatal("interrupted before tools = nil, want the pending turn")
+	}
+	if got.UserMessageText != "second instruction" {
+		t.Errorf("UserMessageText = %q, want the most recent instruction", got.UserMessageText)
+	}
+	if got.ToolCallsAlreadyRun != 0 {
+		t.Errorf("ToolCallsAlreadyRun = %d, want 0 — the earlier turn's tool calls leaked into this one",
+			got.ToolCallsAlreadyRun)
+	}
+
+	// The same turn, now killed after it ran a tool. This is the case that
+	// must not be replayed verbatim.
+	storeEv(msg.EventToolCall, "")
+
+	got, err = s.InterruptedTurn("br_int")
+	if err != nil {
+		t.Fatalf("interrupted after tools: %v", err)
+	}
+	if got == nil {
+		t.Fatal("interrupted after tools = nil, want the pending turn")
+	}
+	if got.ToolCallsAlreadyRun != 1 {
+		t.Errorf("ToolCallsAlreadyRun = %d, want 1", got.ToolCallsAlreadyRun)
+	}
+}

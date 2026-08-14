@@ -691,7 +691,7 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 		// below, so every token delta the browser was waiting on paid a
 		// round trip first. The queue keeps write order per session and
 		// blocks rather than drops when it fills; the read-back paths
-		// (RecoverInFlightTurn, PendingTurnMessage, RecentTurnTexts,
+		// (RecoverInFlightTurn, InterruptedTurn, RecentTurnTexts,
 		// ListToolCallInputs) and the synchronous /send push drain it
 		// first, so nothing observes a half-written session.
 		m.logStoreWrites.Enqueue(bridgeID, "event", event)
@@ -1220,32 +1220,43 @@ func (m *Manager) RecoverInFlightTurn(bridgeID string) (*store.InFlightTurnState
 	return st, nil
 }
 
-// PendingTurnMessage returns the text of the most recent user_message when no
-// terminator follows it. Replaces store.PendingTurnMessage's local-DB query.
-func (m *Manager) PendingTurnMessage(bridgeID string) (string, bool, error) {
+// InterruptedTurn returns the most recent turn when no terminator follows its
+// user_message, along with how many tool calls that turn had already run.
+// Returns nil when the last turn is balanced or when no user_message exists.
+// Replaces store.InterruptedTurn's local-DB query.
+func (m *Manager) InterruptedTurn(bridgeID string) (*store.InterruptedTurn, error) {
 	m.logStoreWrites.Flush(bridgeID)
 	ts, err := m.logStore.GetTurnState(bridgeID)
 	if err != nil {
-		return "", false, fmt.Errorf("turn-state: %w", err)
+		return nil, fmt.Errorf("turn-state: %w", err)
 	}
 	if !ts.InFlight || ts.LastUserMessageEventID == 0 {
-		return "", false, nil
+		return nil, nil
 	}
 	events, err := m.logStore.ListEvents(bridgeID, 0, []string{"user_message"})
 	if err != nil {
-		return "", false, fmt.Errorf("user_message events: %w", err)
+		return nil, fmt.Errorf("user_message events: %w", err)
 	}
 	if len(events) == 0 {
-		return "", false, nil
+		return nil, nil
 	}
 	var ev msg.Event
 	if err := json.Unmarshal(events[len(events)-1], &ev); err != nil {
-		return "", false, fmt.Errorf("decode user_message: %w", err)
+		return nil, fmt.Errorf("decode user_message: %w", err)
 	}
 	if ev.Result == nil {
-		return "", false, nil
+		return nil, nil
 	}
-	return ev.Result.Text, true, nil
+	// Counted from the user_message that opened the turn, so tool calls from
+	// earlier, completed turns cannot make this turn look like it did work.
+	toolCalls, err := m.logStore.ListEvents(bridgeID, int64(ts.LastUserMessageEventID), []string{"tool_call"})
+	if err != nil {
+		return nil, fmt.Errorf("tool_call events: %w", err)
+	}
+	return &store.InterruptedTurn{
+		UserMessageText:     ev.Result.Text,
+		ToolCallsAlreadyRun: len(toolCalls),
+	}, nil
 }
 
 // RecentTurnTexts pairs user_message events with following result events to

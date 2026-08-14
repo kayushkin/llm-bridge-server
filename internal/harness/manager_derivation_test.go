@@ -36,7 +36,7 @@ func (f *fakeProcess) Kill() error                                             {
 
 // newTestManager returns a Manager backed by a temp SQLite store and an
 // in-process log-store stub served via httptest. RecoverInFlightTurn /
-// PendingTurnMessage / RecentTurnTexts / ListToolCallInputs all read from
+// InterruptedTurn / RecentTurnTexts / ListToolCallInputs all read from
 // log-store post-II.A-cutover, so unit tests need a live log-store
 // backend. The stub keeps events in memory keyed by session_id and
 // implements just the three endpoints the cutover read paths use:

@@ -375,7 +375,7 @@ func (m *Manager) eventsInLogStore(bridgeID string) int {
 // sees a session missing its most recent events. The subscriber receiving
 // the user_message is the moment that race opens: fan-out now happens
 // before the write, by design.
-func TestPendingTurnMessageSeesAnEventStillInTheWriteQueue(t *testing.T) {
+func TestInterruptedTurnSeesAnEventStillInTheWriteQueue(t *testing.T) {
 	m, _ := newSlowLogStoreManager(t, 100*time.Millisecond)
 	const bridgeID = "br-read-after-write"
 	if err := m.store.CreateSession(&store.Session{
@@ -409,13 +409,15 @@ func TestPendingTurnMessageSeesAnEventStillInTheWriteQueue(t *testing.T) {
 		t.Fatal("subscriber never saw the user_message")
 	}
 
-	text, pending, err := m.PendingTurnMessage(bridgeID)
+	turn, err := m.InterruptedTurn(bridgeID)
 	if err != nil {
-		t.Fatalf("PendingTurnMessage: %v", err)
+		t.Fatalf("InterruptedTurn: %v", err)
 	}
-	if !pending || text != "what is the capital of France" {
-		t.Fatalf("PendingTurnMessage = (%q, %v); want the queued user_message — the read did not drain the write queue",
-			text, pending)
+	if turn == nil || turn.UserMessageText != "what is the capital of France" {
+		t.Fatalf("InterruptedTurn = %+v; want the queued user_message — the read did not drain the write queue", turn)
+	}
+	if turn.ToolCallsAlreadyRun != 0 {
+		t.Fatalf("ToolCallsAlreadyRun = %d; want 0 — this turn ran no tools", turn.ToolCallsAlreadyRun)
 	}
 }
 

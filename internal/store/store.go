@@ -739,11 +739,30 @@ func (s *Store) UpdateSessionHarnessConfig(bridgeID string, cfg json.RawMessage)
 	return nil
 }
 
-// PendingTurnMessage returns the text of the most recent user_message when
-// no 'result' event follows it — the signal of a turn killed mid-flight that
-// needs to be replayed. Returns ok=false when the last turn is balanced or
-// when no user_message exists.
-func (s *Store) PendingTurnMessage(bridgeID string) (string, bool, error) {
+// InterruptedTurn describes a turn whose user_message never got a terminator:
+// the harness process died before the turn finished. Auto-resume picks such a
+// turn back up, and how it does that depends on how far the turn had got, so
+// the count of work already done is part of the answer rather than something
+// the caller has to go and derive.
+type InterruptedTurn struct {
+	// UserMessageText is the instruction the turn was given.
+	UserMessageText string
+
+	// ToolCallsAlreadyRun counts the tool_call events logged after that
+	// user_message. Zero means the turn died before it touched anything, so
+	// re-sending the instruction repeats nothing. Above zero the turn has
+	// already changed state outside this process — files written, services
+	// restarted, requests sent — and re-sending the instruction asks for that
+	// work a second time. The two cases are indistinguishable without this
+	// count, which is why the replay used to hand a half-finished deploy back
+	// to the model as if the user had just asked for it.
+	ToolCallsAlreadyRun int
+}
+
+// InterruptedTurn returns the most recent turn when no 'result' or 'error'
+// event follows its user_message — the signal of a turn killed mid-flight.
+// Returns nil when the last turn is balanced or when no user_message exists.
+func (s *Store) InterruptedTurn(bridgeID string) (*InterruptedTurn, error) {
 	var userID int
 	var userData string
 	err := s.db.QueryRow(
@@ -751,29 +770,39 @@ func (s *Store) PendingTurnMessage(bridgeID string) (string, bool, error) {
 		bridgeID,
 	).Scan(&userID, &userData)
 	if err == sql.ErrNoRows {
-		return "", false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
 	var resultID int
 	if err := s.db.QueryRow(
 		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id=? AND type IN ('result','error')`,
 		bridgeID,
 	).Scan(&resultID); err != nil {
-		return "", false, err
+		return nil, err
 	}
 	if resultID >= userID {
-		return "", false, nil
+		return nil, nil
 	}
 	var ev msg.Event
 	if err := json.Unmarshal([]byte(userData), &ev); err != nil {
-		return "", false, err
+		return nil, err
 	}
 	if ev.Result == nil {
-		return "", false, nil
+		return nil, nil
 	}
-	return ev.Result.Text, true, nil
+	var toolCalls int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE session_id=? AND type='tool_call' AND id > ?`,
+		bridgeID, userID,
+	).Scan(&toolCalls); err != nil {
+		return nil, err
+	}
+	return &InterruptedTurn{
+		UserMessageText:     ev.Result.Text,
+		ToolCallsAlreadyRun: toolCalls,
+	}, nil
 }
 
 // ReconcileSessions resets every session in any of the given states to 'idle'

@@ -715,23 +715,68 @@ func (s *Server) autoResume(sess store.Session) {
 	}
 	log.Printf("[auto-resume] %s: resumed", sess.SessionID)
 
-	text, pending, err := s.harness.PendingTurnMessage(sess.SessionID)
+	turn, err := s.harness.InterruptedTurn(sess.SessionID)
 	if err != nil {
-		log.Printf("[auto-resume] %s: pending-turn check failed: %v", sess.SessionID, err)
+		log.Printf("[auto-resume] %s: interrupted-turn check failed: %v", sess.SessionID, err)
 		return
 	}
-	if !pending {
+	if turn == nil {
 		return
 	}
 	// Harness subprocess needs a moment to finish its start handshake before
 	// it will accept a message on stdin. 2s is enough for Claude Code's
 	// resume-load; shorter risks writing before the pipe is being drained.
 	time.Sleep(2 * time.Second)
+	text, replayed := resumeMessage(*turn)
 	if err := s.harness.Send(sess.SessionID, text, nil); err != nil {
-		log.Printf("[auto-resume] %s: replay send failed: %v", sess.SessionID, err)
+		log.Printf("[auto-resume] %s: resume send failed: %v", sess.SessionID, err)
 		return
 	}
-	log.Printf("[auto-resume] %s: replayed interrupted turn", sess.SessionID)
+	if replayed {
+		log.Printf("[auto-resume] %s: replayed interrupted turn", sess.SessionID)
+		return
+	}
+	log.Printf("[auto-resume] %s: turn was interrupted after %d tool calls; sent an interruption notice instead of replaying the instruction",
+		sess.SessionID, turn.ToolCallsAlreadyRun)
+}
+
+// resumeMessage decides what to say to a harness that has just come back up
+// under an interrupted turn, and reports whether that text is the original
+// instruction replayed verbatim.
+//
+// Something must be said either way: the harness resumes holding the whole
+// conversation but idle, waiting on stdin, so a turn killed mid-flight never
+// finishes on its own.
+//
+// What to say depends on whether the turn had already done anything. A turn
+// killed before its first tool call has left nothing behind, so replaying the
+// instruction verbatim is exactly right — it asks for work that has not
+// happened yet.
+//
+// A turn killed after its tool calls is a different thing wearing the same
+// shape. Its work is partly on disk already, and the instruction replayed
+// verbatim is indistinguishable from the user asking for all of it a second
+// time. Observed on this host: a deploy turn was killed by the restart its own
+// deploy triggered, and auto-resume handed the approval back as if freshly
+// typed; nothing but the model re-reading its own transcript stood between
+// that and a second deploy. So for that case say what happened and let the
+// model reconcile against the transcript it still holds, rather than reissuing
+// an order whose side effects have already partly landed.
+func resumeMessage(turn store.InterruptedTurn) (text string, replayedVerbatim bool) {
+	if turn.ToolCallsAlreadyRun == 0 {
+		return turn.UserMessageText, true
+	}
+	return fmt.Sprintf(
+		"[llm-bridge] Your previous turn did not finish: the harness process was restarted "+
+			"under it and this session has just been resumed. %d tool call(s) from that turn "+
+			"had already run, so part of its work may have landed and part of it certainly did "+
+			"not.\n\n"+
+			"This notice is not a new instruction, and the user's last message is deliberately "+
+			"not repeated here — treat it as still standing, not as newly given. Your own "+
+			"transcript above is intact: read back what you had already done, check the real "+
+			"state of anything it changed rather than assuming either way, and carry on from "+
+			"there. Do not repeat a step that already completed.",
+		turn.ToolCallsAlreadyRun), false
 }
 
 // AutoDiscover runs session discovery for all harness types and imports them to the store.
