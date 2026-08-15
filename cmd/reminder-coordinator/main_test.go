@@ -1356,6 +1356,17 @@ func TestDayLoadReportsItsHoursToTheNearestHalfHour(t *testing.T) {
 	if !strings.Contains(short, "~45m free") {
 		t.Errorf("45 minutes left should read as minutes, not as a rounded hour:\n%s", short)
 	}
+
+	// Ninety minutes is past the hour, so it reads in hours. Under a cut at two
+	// hours it would read "90m" in a line that otherwise talks in hours.
+	ninety := coordinator.dayLoad([]CalendarEvent{{
+		Summary: "Evening mostly booked",
+		Start:   time.Date(2026, 7, 20, 16, 30, 0, 0, loc),
+		End:     time.Date(2026, 7, 20, 20, 30, 0, 0, loc),
+	}})
+	if !strings.Contains(ninety, "~1.5h free") {
+		t.Errorf("90 minutes left should read as 1.5h:\n%s", ninety)
+	}
 }
 
 // Each bucket is sorted by due date before it is rendered, so a section reads in
@@ -1407,6 +1418,175 @@ func TestABucketIsRenderedInDueDateOrderNotInTheOrderNoteboardReturned(t *testin
 			t.Errorf("the digest lists %q out of due order:\n%s", title, rendered)
 		}
 		previous = at
+	}
+}
+
+// The day-load verdict has three bands, and until now only one of them was ever
+// asserted. TestDayLoadFlagsAFragmentedDay builds a day whose biggest open
+// stretch is 60 minutes and checks it reads red — true at any threshold above
+// 60, so the 90 was pinned to a band and not to a value. Raising it to 120
+// minutes left the whole suite green, and the 3-hour amber/green cut was not
+// exercised by any fixture at all.
+//
+// Each pair below differs by ONE minute and lands on opposite sides of a cut, so
+// a threshold that moves in either direction reddens a row. A single event that
+// runs to the end of the waking day makes the biggest open stretch exactly the
+// morning before it, which is what lets the fixture name a duration to the
+// minute instead of hoping one falls out of the merge.
+func TestTheDayLoadBandsStraddleTheirThresholds(t *testing.T) {
+	loc := pacific(t)
+	// A Saturday: on a work day the working hours are charged as busy and
+	// cover the morning this fixture measures.
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 25, 8, 0, 0, 0, loc), newFakeNoteboard())
+
+	for _, row := range []struct {
+		name          string
+		startHour     int
+		startMinute   int
+		biggestMinute int
+		wantIcon      string
+	}{
+		{"one minute under the fragmented cut", 9, 29, 89, "🔴"},
+		{"exactly on the fragmented cut", 9, 30, 90, "🟡"},
+		{"one minute under the roomy cut", 10, 59, 179, "🟡"},
+		{"exactly on the roomy cut", 11, 0, 180, "🟢"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			// Ends at the close of the waking day, so the only open stretch is
+			// the morning: start - 8am.
+			line := coordinator.dayLoad([]CalendarEvent{{
+				Summary: "All afternoon",
+				Start:   time.Date(2026, 7, 25, row.startHour, row.startMinute, 0, 0, loc),
+				End:     time.Date(2026, 7, 25, 22, 0, 0, 0, loc),
+			}})
+			if !strings.HasPrefix(line, row.wantIcon) {
+				t.Errorf("a biggest open stretch of %d minutes should read %s, got:\n%s",
+					row.biggestMinute, row.wantIcon, line)
+			}
+		})
+	}
+}
+
+// The priority mark fires at rank 3 and up. Every fixture that had ever carried a
+// priority used 3 or left it at 0, so the cut could move to 2 — flagging every p2
+// todo on the board — with the suite green. The two items here differ by one rank
+// and must render differently.
+func TestThePriorityMarkStraddlesItsRank(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 7, 13, 8, 0, 0, 0, loc)
+	due := time.Date(2026, 7, 13, 15, 0, 0, 0, loc)
+
+	nb := newFakeNoteboard(
+		&model.Item{ID: "p2", Type: "todo", Title: "Rank two todo", Status: "open",
+			Tags: []string{"personal"}, Priority: 2, DueAt: &due},
+		&model.Item{ID: "p3", Type: "todo", Title: "Rank three todo", Status: "open",
+			Tags: []string{"personal"}, Priority: 3, DueAt: &due},
+	)
+	coordinator, _, _ := newTestCoordinator(t, now, nb)
+
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+	rendered := coordinator.renderDigest(board, nil, nil)
+
+	if !contains(rendered, "❗Rank three todo") {
+		t.Errorf("a rank-3 todo should carry the priority mark:\n%s", rendered)
+	}
+	if contains(rendered, "❗Rank two todo") {
+		t.Errorf("a rank-2 todo must NOT carry the priority mark — if everything is "+
+			"marked, nothing is:\n%s", rendered)
+	}
+}
+
+// This Week ends before the seventh day; the seventh day itself is Later.
+//
+// TestNoOpenTodoCanFallThroughTheBuckets already carries an item due exactly on
+// that horizon, and it is the item whose disappearance this whole bucket switch
+// was repaired for — but it asserts only that the item lands in SOME bucket.
+// Under that assertion the horizon can slide a day in either direction and the
+// item simply changes sections, silently. These two differ by one day and name
+// the bucket each must land in.
+func TestTheThisWeekHorizonStraddlesTheSeventhDay(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 7, 13, 8, 0, 0, 0, loc)
+
+	nb := newFakeNoteboard(
+		&model.Item{ID: "sixth", Type: "todo", Title: "Sixth day out", Status: "open",
+			Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 19, 9, 0, 0, 0, loc))},
+		&model.Item{ID: "seventh", Type: "todo", Title: "Seventh day out", Status: "open",
+			Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 20, 9, 0, 0, 0, loc))},
+	)
+	coordinator, _, _ := newTestCoordinator(t, now, nb)
+
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+
+	bucketOf := func(id string) string {
+		for _, row := range []struct {
+			name  string
+			items []*model.Item
+		}{
+			{"Overdue", board.Overdue}, {"DueToday", board.DueToday},
+			{"ThisWeek", board.ThisWeek}, {"Later", board.Later}, {"Undated", board.Undated},
+		} {
+			for _, item := range row.items {
+				if item.ID == id {
+					return row.name
+				}
+			}
+		}
+		return "NONE"
+	}
+
+	if got := bucketOf("sixth"); got != "ThisWeek" {
+		t.Errorf("an item due six days out belongs in This Week, got %s", got)
+	}
+	if got := bucketOf("seventh"); got != "Later" {
+		t.Errorf("an item due seven days out is past the horizon and belongs in Later, got %s", got)
+	}
+}
+
+// A mirrored calendar event is half an hour long. Nothing asserted its length,
+// so the constant could be any number: fakeCalendar is handed the *model.Item
+// and builds no payload, and the concrete mirror that calls eventPayload is
+// declared unobservable by this suite. eventPayload is a free function in this
+// package, so the value itself is reachable even though its call site is not —
+// that half belongs to branch test/concrete-clients-speak-the-real-protocol.
+//
+// The assertion is on the gap between start and end rather than on the end
+// alone: an end stamp of the right shape computed from the wrong start reads
+// correct, and the duration is the thing the constant names.
+func TestAMirroredCalendarEventIsHalfAnHourLong(t *testing.T) {
+	loc := pacific(t)
+	due := time.Date(2026, 7, 20, 15, 0, 0, 0, loc)
+	payload := eventPayload(&model.Item{ID: "x", Type: "todo", Title: "Dentist", DueAt: &due})
+
+	start, ok := payload["start"].(map[string]string)
+	if !ok {
+		t.Fatalf("start is not a {dateTime} map: %#v", payload["start"])
+	}
+	end, ok := payload["end"].(map[string]string)
+	if !ok {
+		t.Fatalf("end is not a {dateTime} map: %#v", payload["end"])
+	}
+
+	startAt, err := time.Parse(time.RFC3339, start["dateTime"])
+	if err != nil {
+		t.Fatalf("start dateTime %q: %v", start["dateTime"], err)
+	}
+	endAt, err := time.Parse(time.RFC3339, end["dateTime"])
+	if err != nil {
+		t.Fatalf("end dateTime %q: %v", end["dateTime"], err)
+	}
+
+	if !startAt.Equal(due) {
+		t.Errorf("event starts at %s, want the item's due time %s", startAt, due)
+	}
+	if got := endAt.Sub(startAt); got != 30*time.Minute {
+		t.Errorf("a mirrored event runs %s, want 30m", got)
 	}
 }
 

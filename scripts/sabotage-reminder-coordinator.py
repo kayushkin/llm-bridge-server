@@ -45,6 +45,31 @@ nineteen rows scorable, because the flags were only half of what `main()` hid.
 The other half is the wiring, where every same-typed pair (digest hour against
 digest minute, noteboard URL against dash URL) swaps without a compile error.
 
+## A score and a census both ask about MECHANISMS, never about NUMBERS
+
+Added 2026-08-15 (card `23be5012`, note `bd881397`). At 50/57 with both controls
+behaving and zero silent functions, **eight of eleven boundary VALUES in this
+binary could be moved to a different number with the whole suite green.** Five
+were real holes: the two day-load verdict thresholds, the priority mark's rank,
+the This Week horizon, and the mirrored event's length. Three were flag defaults,
+declared unnoticed when this was written; on main parseFlags lets the suite read
+them, and all three rows are caught.
+
+The four rows this list already had that touch a literal are all FAR moves —
+22h to 18h, 90m to 30m, `*2` to `*4`, `>=3` to `>=300`. A far move proves the
+mechanism runs; it pins the boundary to a band. `TestDayLoadFlagsAFragmentedDay`
+built a day whose biggest gap was 60 minutes and asserted red, which is true at
+any threshold above 60 — so the 90 was held to "somewhere over an hour". The
+adjacent-value rows at the bottom of CASES are the fix, and the fixtures behind
+them straddle each cut by one minute, one rank or one day.
+
+Worst of them, because the fixture already existed: `TestNoOpenTodoCanFallThrough
+TheBuckets` carries an item due EXACTLY on the seven-day horizon — the very item
+whose disappearance the bucket switch was repaired for — and asserts only that it
+lands in *some* bucket. The horizon could slide a day either way and that item
+just changed sections. **A fixture placed on a boundary is not a boundary test
+until something asserts which side it fell.**
+
 ## The source side, closed 2026-08-10 — the 37 functions this plan never named
 
 `healthcheck/scripts/sabotage-scorer-unmutated-function-scan.py` asks the twin of
@@ -236,7 +261,7 @@ CASES = [
         "the nags get their own session again, so a tick that has both a digest and a nag "
         "opens two — the double-nudge bug this binary was built to end",
         [('\tif len(board.NagFiring) > 0 {\n\t\tmessage.WriteString("\\n🔔 Still not done:\\n")',
-          '\tif len(board.NagFiring) > 0 {\n\t\t_ = c.herald.Relay("personal-reminders", "Still not done", "nag")\n'
+          '\tif len(board.NagFiring) > 0 {\n\t\t_, _ = c.herald.Relay("personal-reminders", "Still not done", "nag", "")\n'
           '\t\tmessage.WriteString("\\n🔔 Still not done:\\n")')],
     ),
 
@@ -603,7 +628,7 @@ CASES = [
             ('if created.ID == "" {', 'if created.ID != "" {'),
             ('return g.do(token, "PUT", "/api/calendar/google/"+eventID, eventPayload(item), nil)',
              'return g.do(token, "POST", "/api/calendar/google/"+eventID, eventPayload(item), nil)'),
-            ('strings.Contains(err.Error(), "410")', 'strings.Contains(err.Error(), "400")'),
+            ('httpErr.StatusCode == http.StatusGone ||', 'httpErr.StatusCode == http.StatusBadRequest ||'),
             ('"summary": "📋 " + item.Title,', '"summary": item.Title,'),
             ('request.Header.Set("Authorization", "Bearer "+token)', 'request.Header.Set("Authorization", "Bearer"+token)'),
         ],
@@ -744,6 +769,75 @@ CASES = [
         "arrives looking like a message that failed to build",
         [("if len(board.Overdue)+len(board.DueToday)+len(board.ThisWeek) == 0 {",
           "if len(board.Overdue)+len(board.DueToday)+len(board.ThisWeek) < 0 {")],
+    ),
+
+    # ---- boundary VALUES: the number, not the mechanism (card 23be5012) ----
+    #
+    # Everything above this line moves a DIRECTION or deletes a MECHANISM. Four
+    # rows touch a literal — windowEnd 22h->18h, the fragmented cut 90m->30m,
+    # roundDuration's *2->*4, priorityMark's >=3->>=300 — and every one of them
+    # is a FAR move, which pins the boundary to a band and not to a value. The
+    # last of those does not even leave the mechanism running: nothing has
+    # priority 300, so it is a deletion wearing a number.
+    #
+    # Probed 2026-08-15 with one adjacent-value drift per literal, against this
+    # list at 50/57 with both controls behaving: 3 of 11 CAUGHT. The rows below
+    # are that probe, kept. Five were real holes and are now pinned by
+    # straddling fixtures in main_test.go; each pair of fixtures differs by one
+    # minute, one rank or one day, so a threshold that moves in EITHER direction
+    # reddens a row.
+    Case(
+        "VALUE the waking day starts an hour later, so an 8am event stops counting",
+        [("windowStart := dayStart.Add(8 * time.Hour)", "windowStart := dayStart.Add(9 * time.Hour)")],
+    ),
+    Case(
+        "VALUE the waking day ends an hour earlier — the adjacent move, where the "
+        "22h->18h case above only proves the window is somewhere below 10pm",
+        [("windowEnd := dayStart.Add(22 * time.Hour)", "windowEnd := dayStart.Add(21 * time.Hour)")],
+    ),
+    Case(
+        "VALUE the red/amber fragmented-day cut rises 90m->120m, so a day whose "
+        "biggest gap is under two hours is still called workable",
+        [("case biggest < 90*time.Minute:", "case biggest < 120*time.Minute:")],
+    ),
+    Case(
+        "VALUE the amber/green cut rises 3h->4h — no fixture exercised this band "
+        "at all until the straddle went in",
+        [("case biggest < 3*time.Hour:", "case biggest < 4*time.Hour:")],
+    ),
+    Case(
+        "VALUE the priority mark drops a rank (>=3 -> >=2), so every p2 todo is "
+        "flagged and the mark stops distinguishing anything",
+        [("if item.Priority >= 3 {", "if item.Priority >= 2 {")],
+    ),
+    Case(
+        "VALUE the This Week horizon widens a day (7 -> 8), quietly moving the "
+        "seventh-day item out of Later and into This Week",
+        [("weekEnd := todayDate.AddDate(0, 0, 7)", "weekEnd := todayDate.AddDate(0, 0, 8)")],
+    ),
+    Case(
+        "VALUE a mirrored calendar event runs 45 minutes instead of 30, blocking "
+        "time on the real calendar that the todo never asked for",
+        [("calendarEventMinutes = 30", "calendarEventMinutes = 45")],
+    ),
+    Case(
+        "VALUE durations render as minutes up to two hours, so 90 free "
+        "minutes report as \"90m\" in a line that talks in hours",
+        [("\tif d < time.Hour {\n\t\treturn fmt.Sprintf(\"%dm\"",
+          "\tif d < 2*time.Hour {\n\t\treturn fmt.Sprintf(\"%dm\"")],
+    ),
+    Case(
+        "VALUE the digest hour default drifts 7 -> 8",
+        [('fs.IntVar(&c.digestHour, "digest-hour", 7,', 'fs.IntVar(&c.digestHour, "digest-hour", 8,')],
+    ),
+    Case(
+        "VALUE the digest minute default drifts 30 -> 31",
+        [('fs.IntVar(&c.digestMinute, "digest-minute", 30,', 'fs.IntVar(&c.digestMinute, "digest-minute", 31,')],
+    ),
+    Case(
+        "VALUE the materialization lookahead default doubles 7d -> 14d",
+        [('fs.DurationVar(&c.lookahead, "lookahead", 7*24*time.Hour,',
+          'fs.DurationVar(&c.lookahead, "lookahead", 14*24*time.Hour,')],
     ),
 ]
 
