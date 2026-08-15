@@ -25,6 +25,33 @@ export PATH="$HOME/.local/share/mise/shims:$PATH"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
 
+# Provenance, checked per command BEFORE any of them is installed. An unidentifiable
+# binary compiles perfectly and reads clean in the log, so installing first would put
+# it in front of the live cron fleet and only then tell us it cannot be traced to a
+# commit. This script builds every command under cmd/, so the check is a function
+# called once per target rather than a single block.
+check_provenance() {
+  local binary="$1"
+  local buildinfo vcs_revision vcs_modified
+  buildinfo="$(go version -m "$binary")"
+  vcs_revision="$(printf '%s\n' "$buildinfo" | awk -F= '$1 ~ /[[:space:]]vcs\.revision$/ {print $2}')"
+  vcs_modified="$(printf '%s\n' "$buildinfo" | awk -F= '$1 ~ /[[:space:]]vcs\.modified$/ {print $2}')"
+  if [ -z "$vcs_revision" ]; then
+    echo "    REFUSING TO INSTALL $binary: it carries no vcs.revision, so nothing can tie" >&2
+    echo "    it back to a commit. 'go build' writes no VCS stamp when it cannot find a .git" >&2
+    echo "    DIRECTORY, and it does not fail when that happens -- not even with -buildvcs=true." >&2
+    echo "    The usual cause is building from a git worktree, whose .git is a pointer file." >&2
+    echo "    Build from a real clone or checkout instead." >&2
+    exit 1
+  fi
+  echo "    vcs.revision=$vcs_revision"
+  if [ "$vcs_modified" = "true" ]; then
+    echo "    WARNING: built from a DIRTY tree (vcs.modified=true). $vcs_revision names the" >&2
+    echo "    commit this binary was built NEAR, not the source it was built FROM, and that" >&2
+    echo "    source is not recoverable from any commit. Commit first for a reproducible build." >&2
+  fi
+}
+
 # Every command in cmd/ is deployed. The list used to be written out by hand
 # here and again in .gitignore, and both copies drifted: cmd/reminder-coordinator
 # was in neither, so scheduler job 32 ran a binary this script had never built
@@ -47,6 +74,7 @@ for command_name in "${commands[@]}"; do
   echo "==> Building $command_name..."
   go build -o "$BUILD_DIR/$command_name" "./cmd/$command_name"
   echo "    built: $(ls -lh "$BUILD_DIR/$command_name" | awk '{print $5}')"
+  check_provenance "$BUILD_DIR/$command_name"
 done
 
 # The new binary refuses to start on an undeclared SCHEDULER_PORT*, SCHEDULER_DB*
