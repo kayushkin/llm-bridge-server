@@ -3,11 +3,11 @@
 //
 // Cadence:
 //
-//   Registered as a scheduler shell job running every 15 minutes. On each
-//   tick, walks bridge-server's /sessions list, filters down to recently-
-//   updated candidates, skips ones whose check signature matches the
-//   already-recorded one (no-change short-circuit), and classifies the rest
-//   with Anthropic Haiku.
+//	Registered as a scheduler shell job running every 15 minutes. On each
+//	tick, walks bridge-server's /sessions list, filters down to recently-
+//	updated candidates, skips ones whose check signature matches the
+//	already-recorded one (no-change short-circuit), and classifies the rest
+//	with Anthropic Haiku.
 //
 // Decisions per session:
 //
@@ -21,7 +21,7 @@
 //
 // Signature is stored as a single entity_tag on session/<bridge_id>:
 //
-//     kanban-check-sig:msg=<n>:state=<s>:t=<YYYYMMDDhhmm>
+//	kanban-check-sig:msg=<n>:state=<s>:t=<YYYYMMDDhhmm>
 //
 // Old sigs are deleted before a new one is written. A session reaching a
 // terminal bridge state (completed/error) is marked with
@@ -49,14 +49,14 @@ import (
 )
 
 const (
-	defaultBoardName       = "Agent runs"
-	tagDoNotTrack          = "kanban-do-not-track"
-	tagFinalClassified     = "kanban-final-classified"
-	tagCheckSigPrefix      = "kanban-check-sig:"
-	cardLinkSession        = "session"
-	cardLinkSource         = "kanban-source"
-	cardSourceClassifier   = "classifier"
-	maxClassifyPerTick     = 10
+	defaultBoardName     = "Agent runs"
+	tagDoNotTrack        = "kanban-do-not-track"
+	tagFinalClassified   = "kanban-final-classified"
+	tagCheckSigPrefix    = "kanban-check-sig:"
+	cardLinkSession      = "session"
+	cardLinkSource       = "kanban-source"
+	cardSourceClassifier = "classifier"
+	maxClassifyPerTick   = 10
 	// digestCharBudget is the size of one classifier prompt in characters
 	// (~4 chars/token, so ~4k tokens). Characters, not tokens, because that
 	// is what the builder can actually measure.
@@ -69,51 +69,139 @@ const (
 	// that duplicates.
 	existingCardsBudgetShare  = 0.55
 	assistantTurnsBudgetShare = 0.35
-	terminalStateCompleted = "completed"
-	terminalStateError     = "error"
-	defaultModel           = "claude-haiku-4-5-20251001"
-	candidateLookback      = 7 * 24 * time.Hour
-	doNotTrackReevalDelta  = 20 // re-evaluate skipped sessions only after this many new messages
+	terminalStateCompleted    = "completed"
+	terminalStateError        = "error"
+	defaultModel              = "claude-haiku-4-5-20251001"
+	candidateLookback         = 7 * 24 * time.Hour
+	doNotTrackReevalDelta     = 20 // re-evaluate skipped sessions only after this many new messages
+
+	// The scheduler job -register creates. These are written exactly once per
+	// host, by hand, and the scheduler binary serving :8092 drops `command` on
+	// PATCH — so a wrong one here has no second chance through the API.
+	schedulerJobName     = "kanban-classifier-tick"
+	schedulerJobSchedule = "*/15 * * * *"
+	// A tick walks every candidate session, fetches its messages from
+	// bridge-server and makes one model call each, so it legitimately outruns
+	// the scheduler's 5-minute default. Job 14 runs with 900 on this host; the
+	// payload below did not send it, so -register on a fresh host would have
+	// created the job with the default and had it killed mid-write.
+	schedulerJobTimeoutSeconds = 900
 )
 
-func main() {
-	var (
-		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
-		dryRun       = flag.Bool("dry-run", false, "Classify but do not write to kanban-store.")
-		oneSession   = flag.String("session", "", "Classify exactly one session id and exit (no candidate filtering).")
-		boardName    = flag.String("board", defaultBoardName, "Kanban board name to write cards to.")
-		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
-		authStoreURL = flag.String("auth-store-url", envOr("AUTH_STORE_URL", "http://localhost:8303"), "auth-store base URL")
-		authToken    = flag.String("auth-token", envOr("AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
-		model        = flag.String("model", envOr("KANBAN_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
-		maxClassify  = flag.Int("max", maxClassifyPerTick, "Max classifications per tick.")
-		digestBudget = flag.Int("digest-budget", digestCharBudget, "Digest size in characters (~4 chars per token).")
-		dumpDigest   = flag.Bool("dump-digest", false, "With -session: print the digest that would be sent and exit, without calling the model.")
-	)
-	flag.Parse()
+// environmentLookup reads one environment variable. os.Getenv in production; a
+// map in a test.
+type environmentLookup func(key string) string
 
-	if *registerFlag {
-		if err := registerSchedulerJob(); err != nil {
+// parseFlags builds the flag set and parses args into a config.
+//
+// The flag set lives here rather than in main() so that a test can reach the
+// defaults. Registered inside main() they were unreachable — nothing in a test
+// can call main() — so the twelve values this binary actually starts with had
+// never been read by anything. The three test files already in this package
+// build their own config fixtures, so every value they assert is one the test
+// chose, not one that ships.
+//
+// Three of the twelve turn a tick into a no-op, and none of them fails.
+// -register exits after touching the scheduler. -dry-run pays the full model
+// bill and writes no card. -dump-digest prints every candidate's digest and
+// classifies none of them — the worst of the three, because it fills the run
+// history with plausible output rather than silence. Each leaves a process that
+// runs every 15 minutes, logs a complete pass and exits 0, which from outside is
+// a box with no active sessions.
+//
+// The flag set is a fresh FlagSet rather than the package-level
+// flag.CommandLine: a test calling this twice would panic on the redefined
+// flag, and that reads as a broken fixture rather than as the seam being
+// unusable. ContinueOnError is what makes it callable at all — ExitOnError
+// would take the test binary down on a bad argument instead of returning.
+//
+// lookupEnvironment is an argument because six defaults are read at
+// flag-registration time; a test that exported KANBAN_STORE_URL to observe one
+// would race every other test in the package for a process-wide variable.
+// homeDirectory is an argument for the same reason: the registered command is
+// home-relative and a test should not have to move HOME out from under the
+// process to assert what it resolves to.
+func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirectory string) (config, error) {
+	fs := flag.NewFlagSet("kanban-classifier", flag.ContinueOnError)
+	var c config
+	fs.BoolVar(&c.RegisterJob, "register", false, "Register/upsert this binary as a scheduler cron job and exit.")
+	fs.BoolVar(&c.DryRun, "dry-run", false, "Classify but do not write to kanban-store.")
+	fs.StringVar(&c.OneSession, "session", "", "Classify exactly one session id and exit (no candidate filtering).")
+	fs.StringVar(&c.BoardName, "board", defaultBoardName, "Kanban board name to write cards to.")
+	fs.StringVar(&c.KanbanURL, "kanban-url", envOr(lookupEnvironment, "KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
+	fs.StringVar(&c.BridgeURL, "bridge-url", envOr(lookupEnvironment, "LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
+	fs.StringVar(&c.AuthStoreURL, "auth-store-url", envOr(lookupEnvironment, "AUTH_STORE_URL", "http://localhost:8303"), "auth-store base URL")
+	fs.StringVar(&c.AuthToken, "auth-token", envOr(lookupEnvironment, "AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
+	fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "KANBAN_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
+	fs.IntVar(&c.MaxClassify, "max", maxClassifyPerTick, "Max classifications per tick.")
+	fs.IntVar(&c.DigestBudget, "digest-budget", digestCharBudget, "Digest size in characters (~4 chars per token).")
+	fs.BoolVar(&c.DumpDigest, "dump-digest", false, "With -session: print the digest that would be sent and exit, without calling the model.")
+	if err := fs.Parse(args); err != nil {
+		return config{}, err
+	}
+
+	// Derived rather than registered: the dedupe gates are rationing for the
+	// cron sweep, and naming a session by id is a human overruling them.
+	c.ExplicitSession = c.OneSession != ""
+	c.SchedulerURL = envOr(lookupEnvironment, "SCHEDULER_URL", "http://localhost:8092")
+	c.BinaryPath = filepath.Join(homeDirectory, "bin", "kanban-classifier")
+	return c, nil
+}
+
+// validate refuses the two configurations that run to a clean exit having
+// classified nothing, every tick, for as long as they ship. Every other bad
+// value in this config dies at the first HTTP call and says so.
+//
+// -dump-digest without -session is deliberately NOT refused. The flag's help
+// text reads "with -session", but without one processSession still builds and
+// prints each candidate's digest and returns false, so dumping the whole
+// candidate sweep is a working debug path rather than a mistake.
+func (c config) validate() error {
+	if c.MaxClassify < 1 {
+		// The cap is checked as `classified >= cfg.MaxClassify` before the first
+		// session, so zero breaks the loop immediately. It does log "hit per-tick
+		// cap (0)" — loud enough to find once someone looks, and indistinguishable
+		// from a normal capped tick in a run history nobody reads.
+		return fmt.Errorf("-max must be at least 1 (got %d): the per-tick cap is checked before the first session, so a tick with no budget classifies nothing", c.MaxClassify)
+	}
+	if c.DigestBudget < 1 {
+		// buildDigest treats a non-positive budget as "use the default", so this
+		// does not fail — it silently overrules the operator and sends a
+		// full-size digest at full cost.
+		return fmt.Errorf("-digest-budget must be at least 1 (got %d): buildDigest silently substitutes the default for a non-positive budget", c.DigestBudget)
+	}
+	return nil
+}
+
+func main() {
+	// Error ignored exactly as before: an unset HOME leaves this empty and the
+	// registered command resolves relative to the working directory, which is a
+	// path that fails at exec time either way.
+	homeDirectory, _ := os.UserHomeDir()
+
+	cfg, err := parseFlags(os.Args[1:], os.Getenv, homeDirectory)
+	if err != nil {
+		// Both codes are the ones this binary used before the flag set moved out
+		// of main(): flag.ExitOnError exited 2 on a bad argument after printing
+		// the error and the usage message, and 0 on -h. Parse has already printed
+		// both, so nothing a caller sees moved.
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		os.Exit(2)
+	}
+	if err := cfg.validate(); err != nil {
+		log.Fatal(err)
+	}
+
+	if cfg.RegisterJob {
+		if err := registerSchedulerJob(cfg); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
 	}
 
 	ctx := context.Background()
-	cfg := config{
-		KanbanURL:    *kanbanURL,
-		BridgeURL:    *bridgeURL,
-		AuthStoreURL: *authStoreURL,
-		AuthToken:    *authToken,
-		Model:        *model,
-		BoardName:    *boardName,
-		DryRun:       *dryRun,
-		DigestBudget: *digestBudget,
-		DumpDigest:   *dumpDigest,
-
-		ExplicitSession: *oneSession != "",
-	}
 
 	// A digest dump never reaches the model, so it must not need its key.
 	if !cfg.DumpDigest {
@@ -149,10 +237,10 @@ func main() {
 	}
 	requireColumns(kc, []string{"In Progress", "Blocked", "Done", "Failed"})
 
-	if *oneSession != "" {
-		sess, err := getSession(cfg.BridgeURL, *oneSession)
+	if cfg.OneSession != "" {
+		sess, err := getSession(cfg.BridgeURL, cfg.OneSession)
 		if err != nil {
-			log.Fatalf("get session %s: %v", *oneSession, err)
+			log.Fatalf("get session %s: %v", cfg.OneSession, err)
 		}
 		processSession(ctx, cfg, kc, sess)
 		return
@@ -166,9 +254,9 @@ func main() {
 
 	classified := 0
 	for _, sess := range candidates {
-		if classified >= *maxClassify {
+		if classified >= cfg.MaxClassify {
 			log.Printf("[classifier] hit per-tick cap (%d); deferring %d sessions to next tick",
-				*maxClassify, len(candidates)-classified)
+				cfg.MaxClassify, len(candidates)-classified)
 			break
 		}
 		ran := processSession(ctx, cfg, kc, sess)
@@ -190,6 +278,20 @@ type config struct {
 	DryRun          bool
 	DigestBudget    int
 	DumpDigest      bool
+
+	// RegisterJob and OneSession are the two mode switches. Both exit before the
+	// candidate sweep runs.
+	RegisterJob bool
+	OneSession  string
+
+	// MaxClassify bounds how many model calls one tick pays for.
+	MaxClassify int
+
+	// SchedulerURL and BinaryPath are used only by -register. They are parsed
+	// with everything else so the registration payload is assertable without
+	// reaching the environment.
+	SchedulerURL string
+	BinaryPath   string
 
 	// ExplicitSession is set when an operator named a single session on the
 	// command line. The dedupe gates below exist to ration the cron sweep, not
@@ -1044,10 +1146,26 @@ func resolveAnthropicKey(ctx context.Context, cfg config) (string, error) {
 
 // ============================ Scheduler self-registration ============================
 
-func registerSchedulerJob() error {
-	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
-	home, _ := os.UserHomeDir()
-	bin := filepath.Join(home, "bin", "kanban-classifier")
+// schedulerJobPayload is the job -register creates.
+//
+// A function rather than a literal inside the POST because this payload is the
+// whole point of -register: it is written once per host and the scheduler API
+// drops `command` on PATCH, so there is no correcting it later through the API.
+func schedulerJobPayload(cfg config) map[string]any {
+	return map[string]any{
+		"name":        schedulerJobName,
+		"description": "Cheap-model classifier that creates and updates kanban cards from bridge sessions.",
+		"schedule":    schedulerJobSchedule,
+		"type":        "shell",
+		"command":     cfg.BinaryPath,
+		// Was absent, so a fresh host registered this job with the scheduler's
+		// 5-minute default while the host it was written on runs 900.
+		"timeout_seconds": schedulerJobTimeoutSeconds,
+	}
+}
+
+func registerSchedulerJob(cfg config) error {
+	schedURL := cfg.SchedulerURL
 
 	resp, err := http.Get(schedURL + "/api/jobs")
 	if err != nil {
@@ -1060,19 +1178,12 @@ func registerSchedulerJob() error {
 	}
 	_ = json.Unmarshal(body, &jobs)
 	for _, j := range jobs {
-		if j.Name == "kanban-classifier-tick" {
-			fmt.Println("kanban-classifier-tick already registered; no changes made")
+		if j.Name == schedulerJobName {
+			fmt.Println(schedulerJobName + " already registered; no changes made")
 			return nil
 		}
 	}
-	payload := map[string]any{
-		"name":        "kanban-classifier-tick",
-		"description": "Cheap-model classifier that creates and updates kanban cards from bridge sessions.",
-		"schedule":    "*/15 * * * *",
-		"type":        "shell",
-		"command":     bin,
-	}
-	data, _ := json.Marshal(payload)
+	data, _ := json.Marshal(schedulerJobPayload(cfg))
 	req, err := http.NewRequest("POST", schedURL+"/api/jobs", strings.NewReader(string(data)))
 	if err != nil {
 		return err
@@ -1087,17 +1198,17 @@ func registerSchedulerJob() error {
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("scheduler returned %d: %s", resp.StatusCode, string(body))
 	}
-	fmt.Printf("registered kanban-classifier-tick: %s\n", strings.TrimSpace(string(body)))
+	fmt.Printf("registered %s: %s\n", schedulerJobName, strings.TrimSpace(string(body)))
 	return nil
 }
 
 // ============================ misc ============================
 
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
+func envOr(lookupEnvironment environmentLookup, key, fallback string) string {
+	if v := lookupEnvironment(key); v != "" {
 		return v
 	}
-	return def
+	return fallback
 }
 
 // silence unused import on net/url — kept in case we need query encoding later.
