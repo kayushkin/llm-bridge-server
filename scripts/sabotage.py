@@ -125,6 +125,74 @@ def _discover_tests(packages):
     return found
 
 
+def packages_no_edit_to_a_target_can_redden(target_packages, package_dependencies):
+    """The PACKAGES entries whose tests no edit to a TARGET can ever redden.
+
+    target_packages       import paths of the packages the TARGET files live in.
+    package_dependencies  PACKAGES entry -> every import path that entry's
+                          packages and their test binaries compile against,
+                          themselves included.
+
+    An entry is reachable when anything it covers is a target package: the edit
+    lands either in that package's own code or in code it compiles against.
+    An entry that covers no target package cannot go red for ANY edit to a
+    TARGET, so every test in it is silent by construction.
+
+    That distinction is the whole point. The cross-table's finding is "no case
+    reddens this test", which reads as a gap in the case list — a mechanism the
+    author pinned and nobody scored. A test the mutation cannot reach is not a
+    gap in the case list at all, and reporting it as one names N findings for
+    one fact and buries the real gaps among them. The 168th pass measured the
+    ratio on the older kanban-curator lineage: ten tests in the silent column,
+    nine of them this, one of them real.
+
+    The common shape is a cmd/ TARGET listed beside a library the binary uses.
+    A cmd/ package is `package main` and NOTHING in Go can import it, so the
+    dependency runs from the binary to the library and never back — the
+    library's tests are unreachable from the binary's code by construction, not
+    by accident. Listing a library's callers beside a LIBRARY target is the
+    sound version of the same idea and stays reachable: those callers do
+    compile against the target.
+
+    Pure, and separated from the toolchain query for that reason: it is checked
+    in both directions by scripts/sabotage-selftest.py, which runs without a Go
+    tree.
+    """
+    targets = set(target_packages)
+    return sorted(entry for entry, covered in package_dependencies.items()
+                  if not targets & set(covered))
+
+
+def _package_reach(targets, packages):
+    """(target package import paths, {PACKAGES entry -> import paths it covers}).
+
+    The toolchain half of packages_no_edit_to_a_target_can_redden. `-deps`
+    covers the named packages as well as what they import, and `-test` is what
+    makes the answer sound: a package's test files can compile against imports
+    the package itself does not have, and a reachability answer that missed
+    those would call a reachable package unreachable and hide a real finding.
+    """
+    target_packages = set()
+    for t in targets:
+        rel = t.parent.relative_to(REPO)
+        proc = subprocess.run(["go", "list", "-f", "{{.ImportPath}}", "./%s/" % rel],
+                              cwd=REPO, capture_output=True, text=True)
+        if proc.returncode != 0:
+            sys.exit("REFUSING: cannot resolve the package holding target %s\n%s"
+                     % (t, proc.stdout + proc.stderr))
+        target_packages.update(proc.stdout.split())
+
+    package_dependencies = {}
+    for pkg in packages:
+        proc = subprocess.run(["go", "list", "-deps", "-test", pkg],
+                              cwd=REPO, capture_output=True, text=True)
+        if proc.returncode != 0:
+            sys.exit("REFUSING: cannot list the dependencies of %s\n%s"
+                     % (pkg, proc.stdout + proc.stderr))
+        package_dependencies[pkg] = proc.stdout.split()
+    return target_packages, package_dependencies
+
+
 @contextlib.contextmanager
 def _sabotage_session(targets, packages):
     """Refuse on a dirty or already-red tree, then guarantee the target is put
@@ -208,12 +276,30 @@ def crosstable(targets, packages, cases, unreddened=None):
     in BOTH directions. An undeclared test in the column is the finding. A
     declared test that some case now reddens is a stale declaration, and the 47th
     pass filed a card because nothing on this box ever contradicts one of those.
+
+    The silent column marks each row with why it is there:
+
+        ???  undeclared — the finding: a test the case list does not reach
+        (b)  declared unreddened, with the reason printed under it
+        (u)  in a package no edit to a TARGET can reach, so silent by
+             construction. Not a finding about the case list, and reported once
+             against the PACKAGES entry instead of once per test — see
+             packages_no_edit_to_a_target_can_redden.
     """
     if isinstance(targets, Path):
         targets = [targets]
     unreddened = dict(unreddened or {})
     tests = _discover_tests(packages)
+
+    target_packages, package_dependencies = _package_reach(targets, packages)
+    out_of_reach = packages_no_edit_to_a_target_can_redden(target_packages, package_dependencies)
+    unreachable_tests = {name for pkg, name in tests if pkg in out_of_reach}
+
     print("cross-table: %d cases x %d tests\n" % (len(cases), len(tests)))
+    if out_of_reach:
+        print("%d of those %d tests are in %d package(s) no edit to a TARGET can reach, "
+              "and are reported below as structural rather than as findings:\n    %s\n"
+              % (len(unreachable_tests), len(tests), len(out_of_reach), ", ".join(out_of_reach)))
 
     rows = {}          # case name -> sorted [test name]
     verdicts = {}      # case name -> package-level verdict
@@ -253,6 +339,9 @@ def crosstable(targets, packages, cases, unreddened=None):
     crosstable_problems = []
     for name in silent:
         why = unreddened.get(name)
+        if name in unreachable_tests:
+            print("  %-6s %s" % ("(u)", name))
+            continue
         print("  %-6s %s" % ("(b)" if why else "???", name))
         if why:
             print("         declared: %s" % why)
@@ -260,6 +349,16 @@ def crosstable(targets, packages, cases, unreddened=None):
             crosstable_problems.append("undeclared in the silent column: %s" % name)
     if not silent:
         print("  none — every test is reddened by at least one case")
+
+    # One line per unreachable PACKAGES entry, not one per test in it. The entry
+    # is the thing that is wrong and the thing somebody can fix; the tests are
+    # only how many times the same fact would otherwise be printed.
+    for entry in out_of_reach:
+        n = len([name for pkg, name in tests if pkg == entry])
+        crosstable_problems.append(
+            "%s is in PACKAGES but no edit to a TARGET can reach it, so all %d of its "
+            "tests are silent by construction and none of them is a gap in the case "
+            "list — drop the entry, or give it a TARGET" % (entry, n))
 
     for name, why in sorted(unreddened.items()):
         if name not in all_names:
@@ -272,7 +371,9 @@ def crosstable(targets, packages, cases, unreddened=None):
         crosstable_problems.append("package went red but no single test reproduces it, so this "
                         "row credits nothing: %s" % name)
 
-    print("\n%d of %d tests reddened by no case" % (len(silent), len(all_names)))
+    reachable_silent = [name for name in silent if name not in unreachable_tests]
+    print("\n%d of %d tests reddened by no case (%d of them unreachable by construction)"
+          % (len(silent), len(all_names), len(silent) - len(reachable_silent)))
     for p in crosstable_problems:
         print("  ⚠️  " + p)
     if not crosstable_problems:
