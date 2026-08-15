@@ -22,6 +22,29 @@ cd "$REPO_DIR"
 echo "==> Compiling permission-store..."
 go build -o /tmp/permission-store-build ./cmd/permission-store/
 
+# Checked BEFORE the install, for the same reason the other pre-install checks are:
+# an unidentifiable binary compiles perfectly and reads clean in the log, so
+# installing first would put it in front of live callers and only then tell us it
+# cannot be traced back to a commit.
+echo "==> Checking provenance..."
+buildinfo="$(go version -m /tmp/permission-store-build)"
+vcs_revision="$(printf '%s\n' "$buildinfo" | awk -F= '$1 ~ /[[:space:]]vcs\.revision$/ {print $2}')"
+vcs_modified="$(printf '%s\n' "$buildinfo" | awk -F= '$1 ~ /[[:space:]]vcs\.modified$/ {print $2}')"
+if [ -z "$vcs_revision" ]; then
+    echo "    REFUSING TO INSTALL: this binary carries no vcs.revision, so nothing can tie" >&2
+    echo "    it back to a commit. 'go build' writes no VCS stamp when it cannot find a .git" >&2
+    echo "    DIRECTORY, and it does not fail when that happens -- not even with -buildvcs=true." >&2
+    echo "    The usual cause is building from a git worktree, whose .git is a pointer file." >&2
+    echo "    Build from a real clone or checkout instead." >&2
+    exit 1
+fi
+echo "    vcs.revision=$vcs_revision"
+if [ "$vcs_modified" = "true" ]; then
+    echo "    WARNING: built from a DIRTY tree (vcs.modified=true). $vcs_revision names the" >&2
+    echo "    commit this binary was built NEAR, not the source it was built FROM, and that" >&2
+    echo "    source is not recoverable from any commit. Commit first for a reproducible build." >&2
+fi
+
 echo "==> Pushing..."
 git push 2>/dev/null || echo "    (no remote or already up-to-date)"
 
