@@ -25,11 +25,22 @@ Case-writing rules learned the expensive way, and re-earned here:
     behavioural no-op, or a fake in the test file that swallows the value the
     mutation moved. Both appear below, named, with expected_unnoticed set.
 
-Score: 50/57, exit 0 — 50 real mechanisms caught and seven cases carrying an
-`expected_unnoticed`. Cross-table re-taken 2026-08-10 (`--crosstable`): every one
-of the 32 tests is reddened by at least one case, so this binary has no silent
-column and needs no `unreddened` declaration. Do not re-derive it; re-run the
-mode instead.
+Score: 69/75, exit 0 — 69 real mechanisms caught and six cases carrying an
+`expected_unnoticed`. Cross-table taken 2026-08-10 (`--crosstable`): every one
+of the 32 tests then present is reddened by at least one case, so this binary has
+no silent column and needs no `unreddened` declaration. Do not re-derive it;
+re-run the mode instead. ⚠️ The 196th pass added 15 tests and did NOT re-take the
+cross-table, so those 15 columns are unmeasured — re-run `--crosstable` before
+claiming this file has none.
+
+The jump from 50/57 came from the 196th pass lifting `parseFlags` and
+`newCoordinator` out of `main()`. Two rows that had sat under `expected_unnoticed`
+since this plan was written — the digest hour default and envOr's guard — each
+named that seam as the thing that would falsify them, and both are now real rows
+that go red. The card asking for the seam counted NINE flags; the seam made
+nineteen rows scorable, because the flags were only half of what `main()` hid.
+The other half is the wiring, where every same-typed pair (digest hour against
+digest minute, noteboard URL against dash URL) swaps without a compile error.
 
 ## The source side, closed 2026-08-10 — the 37 functions this plan never named
 
@@ -61,6 +72,17 @@ The 37 split cleanly in two, and only one half was a coverage hole:
     with fakes wholesale. Those three are declared as **one case each covering
     the whole client**, not one case per method: the claim is about the client,
     and fifteen identical declarations would read as fifteen measurements.
+
+    ⚠️ **Two of those eighteen expired on 2026-08-15 and this is what that looks
+    like.** `main` and `envOr` were declared unobservable because nothing in a
+    test can call `main()` — true as written, and it stopped being true the
+    moment the flag set moved out of `main()` into `parseFlags`. The declarations
+    did not have to be guessed at: each one had named its own falsifier in
+    advance ("falsified by a test that execs the built binary, or one that calls
+    main"), and the engine's both-directions check would have failed the run if
+    they had been left in place. **A declaration is a dated claim about the
+    suite, not a property of the function** — when the suite changes shape,
+    re-read them before assuming they still hold.
 
 `Board.HasActionable` is the odd one out and is worth naming separately: it has
 **no caller anywhere** — not in main.go, not in the suite. No mutation of dead
@@ -393,6 +415,117 @@ CASES = [
           "links = append(links, linkGoogleCalendarSyncedDueAt)")],
     ),
 
+    # ---- the command line: the defaults that ship, and the wiring under them ----
+    #
+    # Every row in this section was unscorable until parseFlags and newCoordinator
+    # were lifted out of main(). Two of them used to sit in the declared section
+    # below, each naming this seam as its own falsifier; the rest were never
+    # enumerated at all, because the card that asked for the seam counted FLAGS
+    # and the flags are only half of what main() was hiding. The other half is the
+    # wiring: nine values reaching eight fields and a two-field struct, where
+    # every same-typed pair swaps without a compile error.
+    Case(
+        "the default digest hour moves to 3am",
+        [('fs.IntVar(&c.digestHour, "digest-hour", 7,', 'fs.IntVar(&c.digestHour, "digest-hour", 3,')],
+    ),
+    Case(
+        "the default digest minute moves to the top of the hour",
+        [('fs.IntVar(&c.digestMinute, "digest-minute", 30,', 'fs.IntVar(&c.digestMinute, "digest-minute", 0,')],
+    ),
+    Case(
+        "the default noteboard port moves off 8191, so the source of truth is unreachable",
+        [('"noteboard-url", envOr(lookupEnvironment, "NOTEBOARD_URL", "http://localhost:8191")',
+          '"noteboard-url", envOr(lookupEnvironment, "NOTEBOARD_URL", "http://localhost:8192")')],
+    ),
+    Case(
+        "the default dash port moves off 8101, so the calendar mirror talks to nothing",
+        [('"dash-url", envOr(lookupEnvironment, "DASH_URL", "http://localhost:8101")',
+          '"dash-url", envOr(lookupEnvironment, "DASH_URL", "http://localhost:8100")')],
+    ),
+    Case(
+        "the default scope tag empties, so every open todo on the box is pulled into the personal digest",
+        [('fs.StringVar(&c.scopeTag, "tag", "personal",', 'fs.StringVar(&c.scopeTag, "tag", "",')],
+    ),
+    Case(
+        "the default timezone stops naming a loadable zone, so the binary log.Fatalf's on startup "
+        "and reminds the user of nothing at all",
+        [('"tz", envOr(lookupEnvironment, "REMINDER_TZ", "America/Los_Angeles")',
+          '"tz", envOr(lookupEnvironment, "REMINDER_TZ", "America/Los_Angles")')],
+    ),
+    Case(
+        "the default lookahead shrinks to a day, so a weekly template materializes nothing until "
+        "the morning it is already due",
+        [('fs.DurationVar(&c.lookahead, "lookahead", 7*24*time.Hour,',
+          'fs.DurationVar(&c.lookahead, "lookahead", 24*time.Hour,')],
+    ),
+    Case(
+        "dry-run defaults ON — the quietest failure available: every tick discovers the work, "
+        "logs what it would do, writes nothing and reports success",
+        [('fs.BoolVar(&c.dryRun, "dry-run", false,', 'fs.BoolVar(&c.dryRun, "dry-run", true,')],
+    ),
+    Case(
+        "the herald binary's default path drops the bin/ directory, so the one nudge per tick "
+        "fails to launch while the digest note still looks healthy",
+        [('"ASK_BIN", filepath.Join(homeDirectory, "bin", "ask")',
+          '"ASK_BIN", filepath.Join(homeDirectory, "ask")')],
+    ),
+    Case(
+        "envOr prefers its fallback over the environment",
+        [('if v := lookupEnvironment(key); v != "" {', 'if v := lookupEnvironment(key); v == "" {')],
+    ),
+    Case(
+        "the digest hour and minute swap on the way to the coordinator, so 7:30 becomes 30:07",
+        [("DigestAt:  dailyTime{Hour: c.digestHour, Minute: c.digestMinute},",
+          "DigestAt:  dailyTime{Hour: c.digestMinute, Minute: c.digestHour},")],
+    ),
+    Case(
+        "the two base URLs swap, so the coordinator asks noteboard for calendar events and dash for todos",
+        [('noteboard: &NoteboardClient{BaseURL: strings.TrimRight(c.noteboardURL, "/")},\n\t\tcalendar:  &GoogleCalendarMirror{DashURL: strings.TrimRight(c.dashURL, "/")},',
+          'noteboard: &NoteboardClient{BaseURL: strings.TrimRight(c.dashURL, "/")},\n\t\tcalendar:  &GoogleCalendarMirror{DashURL: strings.TrimRight(c.noteboardURL, "/")},')],
+    ),
+    Case(
+        "the noteboard base URL keeps its trailing slash, so every request path doubles its first slash",
+        [('&NoteboardClient{BaseURL: strings.TrimRight(c.noteboardURL, "/")}',
+          '&NoteboardClient{BaseURL: c.noteboardURL}')],
+    ),
+    Case(
+        "the dash base URL keeps its trailing slash",
+        [('&GoogleCalendarMirror{DashURL: strings.TrimRight(c.dashURL, "/")}',
+          '&GoogleCalendarMirror{DashURL: c.dashURL}')],
+    ),
+    Case(
+        "the coordinator's clock is left in UTC instead of the digest zone, so the day rolls over "
+        "at 5pm Pacific and every boundary in the tick moves with it",
+        [("Now:       now.In(location),", "Now:       now,")],
+    ),
+    Case(
+        "-dry-run never reaches the coordinator, so the flag that exists to mutate nothing mutates everything",
+        [("DryRun:    c.dryRun,", "DryRun:    false,")],
+    ),
+    Case(
+        "the lookahead never reaches the coordinator",
+        [("Lookahead: c.lookahead,", "Lookahead: 0,")],
+    ),
+    Case(
+        "the scope tag never reaches the coordinator",
+        [("ScopeTag:  c.scopeTag,", 'ScopeTag:  "",')],
+    ),
+    Case(
+        "the flag set goes back to ExitOnError, so a bad argument takes the calling process down "
+        "instead of returning — which is what made this seam unusable from a test in the first place",
+        [('flag.NewFlagSet("reminder-coordinator", flag.ContinueOnError)',
+          'flag.NewFlagSet("reminder-coordinator", flag.ExitOnError)')],
+    ),
+    Case(
+        "CONTROL known-negative: reword the -digest-hour usage string",
+        [('"digest-hour", 7, "local hour to send the daily digest nudge."',
+          '"digest-hour", 7, "hour of the day the digest nudge goes out."')],
+        expected_unnoticed="the usage string reaches -h output and nothing else. This is the control "
+                           "for the whole section above: it proves those rows redden on the VALUES "
+                           "that ship and not on the source lines that carry them, which is the way "
+                           "a defaults test most often lies.",
+    ),
+
     # ---- declared unnoticeable: nothing in this suite executes these ----
     Case(
         "Board.HasActionable inverts",
@@ -403,19 +536,14 @@ CASES = [
                            "is the check.",
     ),
     Case(
-        "main's default digest hour moves to 3am",
-        [('digestHour   = flag.Int("digest-hour", 7, "local hour to send the daily digest nudge.")',
-          'digestHour   = flag.Int("digest-hour", 3, "local hour to send the daily digest nudge.")')],
-        expected_unnoticed="main is flag parsing and constructor wiring; no test runs it, and the "
-                           "coordinator the suite builds sets every one of these fields itself. "
-                           "Falsified by a test that execs the built binary, or one that calls main.",
-    ),
-    Case(
-        "envOr prefers its fallback over the environment",
-        [('if v := os.Getenv(key); v != "" {', 'if v := os.Getenv(key); v == "" {')],
-        expected_unnoticed="envOr is reached only from main and from ResolveDashToken, neither of "
-                           "which any test executes. Falsified by a test that sets NOTEBOARD_URL or "
-                           "XDG_RUNTIME_DIR and asserts what the binary read.",
+        "main maps -h to the failure exit code",
+        [("if errors.Is(err, flag.ErrHelp) {\n\t\t\tos.Exit(0)", "if errors.Is(err, flag.ErrHelp) {\n\t\t\tos.Exit(2)")],
+        expected_unnoticed="what main() still holds after the seam: the mapping from parseFlags's "
+                           "error to an exit code, and its choice of os.Getenv and os.UserHomeDir as "
+                           "the real arguments. Nothing in a test can call main, so this is the "
+                           "residual the seam did NOT close — the tests pin that parseFlags RETURNS "
+                           "flag.ErrHelp, not what main does with it. Falsified only by a test that "
+                           "execs the built binary and reads its exit status.",
     ),
     Case(
         "the dry-run log prefix is reworded",
