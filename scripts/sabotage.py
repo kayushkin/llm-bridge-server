@@ -179,6 +179,32 @@ def problems(results):
     return found
 
 
+def control_summary(results):
+    """The closing line for a target with nothing wrong, saying what was observed.
+
+    This used to be the fixed sentence "both controls behaved; every real
+    mechanism is pinned by an assertion", printed whenever problems() came back
+    empty. problems() only ever inspects a control that EXISTS, so a target
+    carrying no controls at all got the same reassuring sentence as one carrying
+    two working ones — measured in llm-bridge-server, where three of five targets
+    have no control and every one of them printed it.
+
+    That is the 176th's rule inverted. A harness that reports success has to be
+    shown capable of reporting failure, and this line claimed the showing had
+    happened on targets where nothing had been shown at all.
+    """
+    kinds = {c.name.split(":")[0].strip() for c in results if c.name.startswith("CONTROL")}
+    pinned = "every real mechanism is pinned by an assertion"
+    if {"CONTROL known-positive", "CONTROL known-negative"} <= kinds:
+        return "both controls behaved; " + pinned
+    if kinds:
+        missing = ("known-negative" if "CONTROL known-positive" in kinds else "known-positive")
+        return ("%s, on ONE control — with no %s there is nothing here to tell a working "
+                "instrument from a quiet one" % (pinned, missing))
+    return ("%s — but this target carries NO control, so nothing in this run shows the "
+            "suite can report a failure at all" % pinned)
+
+
 def score(target: Path, packages, cases, guard_markers=()):
     """Apply each case to target, run packages, and print a scored table.
 
@@ -313,7 +339,7 @@ def score(target: Path, packages, cases, guard_markers=()):
     for p in found:
         print("  ⚠️  " + p)
     if not found:
-        print("  both controls behaved; every real mechanism is pinned by an assertion")
+        print("  " + control_summary([c for c, _, _, _ in results]))
     return results
 
 
@@ -385,6 +411,28 @@ def self_test():
                  "CAUGHT (guard)", "", "")]
     if problems(declared):
         print("SELF-TEST FAIL: a declared guard-caught row was flagged anyway")
+        ok = False
+
+    # control_summary is the sentence a reader takes away from a clean target, so
+    # each of its three states is pinned. The one that matters is the last: it
+    # was previously indistinguishable from the first, which is how three
+    # uncontrolled targets came to print "both controls behaved".
+    both = [Case("CONTROL known-positive: x"), Case("CONTROL known-negative: y")]
+    for cases_in, want in [(both, "both controls behaved"),
+                           (both[:1], "on ONE control"),
+                           (both[1:], "on ONE control"),
+                           ([Case("the budget drifts")], "carries NO control")]:
+        if want not in control_summary(cases_in):
+            print("SELF-TEST FAIL: control_summary(%r) is missing %r"
+                  % ([c.name for c in cases_in], want))
+            ok = False
+    # The single-control wording has to name the half that is absent, or it reads
+    # the same either way and tells the reader nothing they can act on.
+    if "no known-negative" not in control_summary(both[:1]):
+        print("SELF-TEST FAIL: control_summary did not name the missing known-negative")
+        ok = False
+    if "no known-positive" not in control_summary(both[1:]):
+        print("SELF-TEST FAIL: control_summary did not name the missing known-positive")
         ok = False
 
     # counts_as_coverage decides both the printed score and whether the

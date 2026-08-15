@@ -30,6 +30,32 @@ It does make one claim cheaper than it should be. A KNOWN GAP asserts that
 NOTHING catches the mutation, and under a filter that only proves the filtered
 tests miss it. Both gap cases were therefore also run against the unfiltered
 package once, and both were UNNOTICED there too.
+
+⚠️ Two kinds of case live here, and they ask different questions.
+
+A MECHANISM case breaks the way the code works — put the byte cut back, drop the
+ellipsis, prefer the wrong field. Every case in the first draft of this file was
+one of those, because the card that drafted it was worried about a mechanism
+breaking, and it scored 12/12.
+
+A VALUE case moves a numeric literal by ONE unit and asks whether anything knows
+where the boundary sits. Added later, they scored 5/10, and a 12/12 on mechanisms
+was no evidence at all about them: five of the six literals in scope were
+unpinned while every mechanism around them was caught. Do not read one score as
+the other.
+
+The five holes had one cause, and it is worth stating because it is invisible
+from a green suite: a test that names the boundary THROUGH the constant it is
+testing moves with it and can never fail for a wrong value. The 80 in
+displayNameFromMessage is spelled out as a literal in its test and was caught
+both ways; the 100 beside it and the 24 in renamer.go were reached only as
+`maxDiscoveredDisplayNameRunes` and `maxAutoRenameRunes`, and both stayed green
+at every value. The value test has to be a SECOND test, and its literal has to be
+written out.
+
+Also note what the far move could not tell us. `maxAutoRenameRunes*10` is caught,
+and it sits two lines from the ±1 moves that are not: multiplying a cap asks
+whether it still applies, which is a different question from where it sits.
 """
 
 import sys
@@ -106,6 +132,16 @@ TARGETS = [
         Case("CONTROL known-negative: <= 0 rewritten as < 1, identical for ints",
              [("if maxRunes <= 0 {", "if maxRunes < 1 {")],
              expected_unnoticed="a behavioural no-op; it must NOT be caught"),
+
+        # VALUE. The known-negative above rewrites this same guard without
+        # moving it, which is what makes the pair worth reading together: one
+        # holds the boundary still and one moves it by a single unit, and only
+        # the second asks whether any test knows where the boundary is.
+        #
+        # maxRunes=1 is the ONLY input that separates `<= 0` from `<= 1`, and
+        # the suite's limits are 0, -1, -100, 5, 8 and 80.
+        Case("the non-positive guard swallows a limit of 1",
+             [("if maxRunes <= 0 {", "if maxRunes <= 1 {")]),
     ]),
 
     (SESSIONS, SERVER_PKG, [
@@ -147,6 +183,40 @@ TARGETS = [
 			displayName = displayName[:100]
 		}""")],
              expected_unnoticed="KNOWN GAP: the loop needs real harness discovery to run"),
+
+        # VALUES. Both budgets in this file, moved one unit each way. The two
+        # constants look alike and are pinned very differently: 80 is spelled
+        # out as a literal in displayname_runes_test.go, and 100 is only ever
+        # named through the constant itself, so every expectation about it moves
+        # with it.
+        Case("message-title budget drifts 80 -> 79", [("const maxRunes = 80", "const maxRunes = 79")]),
+        Case("message-title budget drifts 80 -> 81", [("const maxRunes = 80", "const maxRunes = 81")]),
+        Case("discovered-title budget drifts 100 -> 99",
+             [("const maxDiscoveredDisplayNameRunes = 100", "const maxDiscoveredDisplayNameRunes = 99")]),
+        Case("discovered-title budget drifts 100 -> 101",
+             [("const maxDiscoveredDisplayNameRunes = 100", "const maxDiscoveredDisplayNameRunes = 101")]),
+
+        # CONTROLS. Until this pass only the helper target carried any, and the
+        # engine's closing line said "both controls behaved" on all five
+        # regardless — so an UNNOTICED row on four of them rested on nothing.
+        # Fixed in sabotage.py's control_summary(); the controls themselves
+        # still have to exist, and here they are.
+        #
+        # The body is replaced rather than the truncation removed: `truncated`
+        # stays live in the condition, so this scores instead of failing to
+        # compile.
+        Case("CONTROL known-positive: the message title is a fixed string",
+             [('		return truncated + "…"', '		return "SABOTAGE"')]),
+
+        # `i >= 0` vs `i > 0` differ on exactly one input — a text whose first
+        # byte is '\n' — and displayNameFromMessage calls strings.TrimSpace on
+        # the line above, so that input cannot reach this line.
+        Case("CONTROL known-negative: newline search accepts index 0, unreachable after TrimSpace",
+             [("i >= 0", "i > 0")],
+             expected_unnoticed="a no-op only because TrimSpace runs first. FALSIFY IT: if that "
+                                "TrimSpace is ever dropped or moved below this line, a message "
+                                "beginning with a newline separates the two guards and this case "
+                                "must go red"),
     ]),
 
     (RENAMER, SERVER_PKG, [
@@ -164,9 +234,44 @@ TARGETS = [
 	}"""),
             (TEXTUTIL_IMPORT, ""),
         ]),
+
+        # VALUE. The case above it moves this same cap by a factor of ten and is
+        # caught; these move it by one. A far move asks whether the cap still
+        # applies at all, which is a different question from where it sits.
+        Case("auto-rename cap drifts 24 -> 23", [("maxAutoRenameRunes = 24", "maxAutoRenameRunes = 23")]),
+        Case("auto-rename cap drifts 24 -> 25", [("maxAutoRenameRunes = 24", "maxAutoRenameRunes = 25")]),
+
+        # CONTROLS. This target had none, and the two UNNOTICED rows above were
+        # read against nothing until they existed.
+        #
+        # The truncation is this file's only use of textutil, so the
+        # known-positive drops the import with it.
+        Case("CONTROL known-positive: auto-rename stores a fixed string", [
+            ("	name = textutil.TruncateToRuneLimit(name, maxAutoRenameRunes)",
+             '	name = "SABOTAGE"'),
+            (TEXTUTIL_IMPORT, ""),
+        ]),
+        # The same constant, same value, written as a product. It is the tightest
+        # negative available here: it edits the exact bytes the two value cases
+        # above edit, so a suite that went red for them out of some accident of
+        # the edit rather than the value would go red for this too.
+        Case("CONTROL known-negative: the cap is respelled 24 as 12*2",
+             [("maxAutoRenameRunes = 24", "maxAutoRenameRunes = 12 * 2")],
+             expected_unnoticed="the same value written differently; it must NOT be caught"),
     ]),
 
     (SERVER, SERVER_PKG, [
+        # This is the one target that gets NO control, and the reason is the
+        # target: its only display-name code sits inside AutoDiscover, which no
+        # test under this filter reaches. That is what the KNOWN GAP below says.
+        # A known-positive control is an edit every test must catch, so on a
+        # target nothing reaches, no such edit exists — writing one would mean
+        # mutating a line some other test happens to cover, and the control would
+        # then be reporting on that other test rather than on this target.
+        #
+        # Left absent and stated. sabotage.py's closing line now says so on every
+        # run rather than claiming both controls behaved.
+
         # KNOWN GAP, same reason as handleDiscoverSessions.
         Case("AutoDiscover's call site byte-cuts again", [(
             "		for _, ds := range sessions {\n			displayName := displayNameForDiscoveredSession(ds.Prompt, ds.Project)",
@@ -193,6 +298,19 @@ TARGETS = [
 	}'''),
             (TEXTUTIL_IMPORT, ""),
         ]),
+
+        # VALUE. This 80 is a second, independent authoring of the message-title
+        # budget in sessions.go — the same number written twice in two packages,
+        # so it is scored twice rather than assumed to share the other's pin.
+        Case("delegate-name budget drifts 80 -> 79", [("const maxRunes = 80", "const maxRunes = 79")]),
+        Case("delegate-name budget drifts 80 -> 81", [("const maxRunes = 80", "const maxRunes = 81")]),
+
+        # CONTROLS, as above.
+        Case("CONTROL known-positive: the delegate name is a fixed string",
+             [('	return "delegate: " + name', '	return "SABOTAGE"')]),
+        Case("CONTROL known-negative: the ellipsis branch is negated twice",
+             [("truncated != name", "!(truncated == name)")],
+             expected_unnoticed="the same condition written differently; it must NOT be caught"),
     ]),
 ]
 

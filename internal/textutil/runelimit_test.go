@@ -93,3 +93,31 @@ func TestTruncateToRuneLimitOnNonPositiveLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestTruncateToRuneLimitOfOneKeepsExactlyOneRune is the other half of the test
+// above, and it exists because that one alone cannot say where the guard sits.
+//
+// `maxRunes <= 0` and `maxRunes <= 1` differ on exactly one input: a limit of 1.
+// Every limit the rest of this file passes — 0, -1, -100, 5, 8, 80 — answers the
+// same under both, so rewriting the guard to swallow a limit of 1 left the whole
+// package green. A limit of 1 is not a hypothetical: it is what a caller asks for
+// when a display budget is computed rather than spelled out.
+//
+// The limits here are literals on purpose. A test that names the boundary through
+// the thing it is testing moves with it and can never fail for a wrong value.
+func TestTruncateToRuneLimitOfOneKeepsExactlyOneRune(t *testing.T) {
+	// Multi-byte first, so a byte cut at offset 1 is distinguishable from a
+	// rune cut at 1 as well.
+	if got := TruncateToRuneLimit(fourByteRune+"rest", 1); got != fourByteRune {
+		t.Errorf("TruncateToRuneLimit(_, 1) = %q, want the single rune %q", got, fourByteRune)
+	}
+	if got := TruncateToRuneLimit("abc", 1); got != "a" {
+		t.Errorf(`TruncateToRuneLimit("abc", 1) = %q, want "a"`, got)
+	}
+	// The straddle. 0 is the largest limit that yields nothing and 1 is the
+	// smallest that yields something, so this pair reddens whichever way the
+	// guard's boundary moves.
+	if got := TruncateToRuneLimit("abc", 0); got != "" {
+		t.Errorf(`TruncateToRuneLimit("abc", 0) = %q, want empty`, got)
+	}
+}

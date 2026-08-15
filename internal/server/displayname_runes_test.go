@@ -104,12 +104,92 @@ func TestDisplayNameForDiscoveredSessionFallsBackToProject(t *testing.T) {
 	}
 }
 
+// TestDisplayNameForDiscoveredSessionCapIsExactly100Runes pins the VALUE of
+// maxDiscoveredDisplayNameRunes, which the two tests above cannot.
+//
+// Both of them name the cap through the constant — `cutAt` and the expected
+// prefix are both maxDiscoveredDisplayNameRunes — so the input and the
+// expectation move together and the pair stays green for any value of it. Moved
+// to 99 and to 101, the whole package stayed green. The neighbouring 80 in
+// displayNameFromMessage is spelled out as a literal and is caught both ways;
+// these two caps read alike and were pinned very differently.
+//
+// So the literal is written out here, and it has to be a SECOND test rather than
+// a stricter assertion inside the first: the first test's job is the rune
+// boundary, and it needs the constant to place its straddling paddings.
+//
+// The last kept rune is marked with '~' rather than the result being measured by
+// length — a cut that keeps the wrong end returns the right length. '~' appears
+// nowhere else in either input.
+func TestDisplayNameForDiscoveredSessionCapIsExactly100Runes(t *testing.T) {
+	exactly100 := strings.Repeat("a", 99) + "~"
+	if n := utf8.RuneCountInString(exactly100); n != 100 {
+		t.Fatalf("fixture is %d runes, want 100 — the test no longer reaches the defect", n)
+	}
+
+	if got := displayNameForDiscoveredSession(exactly100, "unused-project"); got != exactly100 {
+		t.Errorf("a 100-rune prompt must be served whole:\n got %q\nwant %q", got, exactly100)
+	}
+
+	// One rune over. It must come back as exactly the first 100 — still ending
+	// in the marker, with the 101st rune gone.
+	oneOver := exactly100 + "b"
+	if got := displayNameForDiscoveredSession(oneOver, "unused-project"); got != exactly100 {
+		t.Errorf("a 101-rune prompt must be cut to 100:\n got %q\nwant %q", got, exactly100)
+	}
+}
+
 // TestAutoRenameHandlerNeverStoresASplitRune is the call-site test. A helper
 // with green tests proves nothing about the places that call it, so this drives
 // the real HTTP handler and reads the name back out of the store.
 func TestAutoRenameHandlerNeverStoresASplitRune(t *testing.T) {
 	// Put the four-byte rune across the byte offset the cut used to use.
 	name := strings.Repeat("a", maxAutoRenameRunes-1) + fourByteRune + strings.Repeat("b", 40)
+
+	stored := storeNameViaAutoRenameHandler(t, name)
+	if !utf8.ValidString(stored) {
+		t.Errorf("stored display_name is not valid UTF-8: %q", stored)
+	}
+	if want := string([]rune(name)[:maxAutoRenameRunes]); stored != want {
+		t.Errorf("stored display_name = %q, want %q", stored, want)
+	}
+}
+
+// TestAutoRenameCapIsExactly24Runes pins the VALUE of maxAutoRenameRunes, which
+// the test above cannot.
+//
+// That test builds its input from maxAutoRenameRunes and expects
+// `[:maxAutoRenameRunes]`, so input and expectation move together: the cap moved
+// to 23 and to 25 both left the package green. The case that IS caught there
+// multiplies the cap by ten — which asks whether the cap still applies at all, a
+// different question from where it sits, and the two are one `*10` apart in the
+// same file.
+//
+// 24 is spelled out here, and the marker rune says which end was kept.
+func TestAutoRenameCapIsExactly24Runes(t *testing.T) {
+	exactly24 := strings.Repeat("a", 23) + "~"
+	if n := utf8.RuneCountInString(exactly24); n != 24 {
+		t.Fatalf("fixture is %d runes, want 24 — the test no longer reaches the defect", n)
+	}
+
+	if stored := storeNameViaAutoRenameHandler(t, exactly24); stored != exactly24 {
+		t.Errorf("a 24-rune title must be stored whole:\n got %q\nwant %q", stored, exactly24)
+	}
+	if stored := storeNameViaAutoRenameHandler(t, exactly24+"b"); stored != exactly24 {
+		t.Errorf("a 25-rune title must be cut to 24:\n got %q\nwant %q", stored, exactly24)
+	}
+}
+
+// storeNameViaAutoRenameHandler drives the real auto-rename HTTP handler with
+// one display name and returns what came to rest in the store. A helper with
+// green tests proves nothing about the places that call it, so these tests go
+// through the handler rather than calling the truncation directly.
+//
+// Each call gets its own server and session: ApplyAutoRename is guarded by the
+// renamer slot, and reusing a session across two renames would make the second
+// call's result depend on the first.
+func storeNameViaAutoRenameHandler(t *testing.T, displayName string) string {
+	t.Helper()
 
 	srv, st, instID := testServerWithInstance(t, msg.HarnessClaudeCode)
 	resp := doJSON(t, srv, "POST", "/sessions", msg.CreateSessionRequest{
@@ -131,7 +211,7 @@ func TestAutoRenameHandlerNeverStoresASplitRune(t *testing.T) {
 	}
 
 	resp = doJSON(t, srv, "POST", "/sessions/"+created.SessionID+"/auto-rename", AutoRenameRequest{
-		DisplayName:      name,
+		DisplayName:      displayName,
 		RenamerSessionID: "renamer-1",
 	})
 	if resp.StatusCode != 200 {
@@ -142,10 +222,5 @@ func TestAutoRenameHandlerNeverStoresASplitRune(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	if !utf8.ValidString(sess.DisplayName) {
-		t.Errorf("stored display_name is not valid UTF-8: %q", sess.DisplayName)
-	}
-	if want := string([]rune(name)[:maxAutoRenameRunes]); sess.DisplayName != want {
-		t.Errorf("stored display_name = %q, want %q", sess.DisplayName, want)
-	}
+	return sess.DisplayName
 }
