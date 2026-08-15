@@ -62,8 +62,16 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 //     into `-c hooks.<EventName>=<inline-toml>` args at app-server spawn)
 //
 // If the caller has already set the harness-specific key, it wins.
+//
+// A nil hookStore is NOT a reason to skip this. The permission gate is
+// synthesized from the session id alone and does not read the hook registry;
+// only the user-hook section does, and both builders guard hookStore
+// separately where they need it (buildClaudeCodeSettings, buildCodexHookConfig).
+// Returning early here would turn a hook-registry outage into a silent
+// permission-gate outage — main() sets the store to nil and continues when
+// hookstore.Open fails, so that path is reachable in production.
 func (s *Server) injectHookSettings(sess *store.Session) {
-	if sess == nil || s.hookStore == nil {
+	if sess == nil {
 		return
 	}
 
