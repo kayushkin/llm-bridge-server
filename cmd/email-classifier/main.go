@@ -40,6 +40,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -142,52 +143,127 @@ const (
 	// as a placeholder ("View this email in your browser") rather than the
 	// message, so the HTML part is read instead.
 	stubBodyTextLimit = 200
+
+	// The scheduler job -register creates. These are named constants rather than
+	// literals inside the registration call so a test can read the cadence and
+	// the timeout the job actually ships with.
+	//
+	// schedulerJobTimeoutSeconds is the one with something to get wrong: a tick
+	// fetches messages one live provider round trip at a time, so it legitimately
+	// outruns the scheduler's 5-minute default, and 0 here means that default —
+	// which kills the job's whole process group mid-tick.
+	schedulerJobName           = "email-classifier-tick"
+	schedulerJobSchedule       = "*/15 * * * *"
+	schedulerJobTimeoutSeconds = 900
 )
 
-func main() {
-	var (
-		registerFlag = flag.Bool("register", false, "Register this binary as a scheduler cron job and exit.")
-		dryRun       = flag.Bool("dry-run", false, "Classify but write nothing to kanban-store.")
-		dumpDigest   = flag.Bool("dump-digest", false, "Print the digest that would be sent and exit, without calling the model.")
-		boardID      = flag.String("board-id", envOr("EMAIL_BOARD_ID", ""), "Kanban board id. Pinning the id avoids the name-fork failure; falls back to lookup by -board when empty.")
-		boardName    = flag.String("board", defaultBoardName, "Kanban board name, used only when -board-id is empty.")
-		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-		mailURL      = flag.String("mail-url", envOr("MAILSTACK_URL", "http://localhost:8195"), "mailstack base URL")
-		mailToken    = flag.String("mail-token", envOr("MAILSTACK_TOKEN", "changeme"), "mailstack bearer token")
-		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL, used to tell whether an agent is still working on a card")
-		authStoreURL = flag.String("auth-store-url", envOr("AUTH_STORE_URL", "http://localhost:8303"), "auth-store base URL")
-		authToken    = flag.String("auth-token", envOr("AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
-		model        = flag.String("model", envOr("EMAIL_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
-		maxEmails    = flag.Int("max", maxEmailsPerTick, "Max emails to file per tick.")
-		account      = flag.String("account", "", "Restrict to one mailstack account id.")
-		backfill     = flag.Bool("backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
-		mergeFlag    = flag.Bool("merge", false, "Run the card-merge pass over the board and exit, filing no new mail.")
-		backfillDue  = flag.Bool("backfill-due", false, "Recover deadlines from existing card summaries into due_at, re-score, and exit. One-off: cards filed after this store their own date.")
-	)
-	flag.Parse()
+// environmentLookup has os.Getenv's shape. Taking it as an argument rather than
+// calling os.Getenv directly is what lets a test state which variables were set
+// without setting them: eight of the seventeen flag defaults below are read at
+// flag-registration time, so a test that exported MAILSTACK_URL to observe it
+// would be racing every other test in this package for one process-wide
+// variable. This package has more of those than any of its siblings.
+type environmentLookup func(key string) string
 
-	if *registerFlag {
-		if err := registerSchedulerJob(); err != nil {
+// parseFlags builds the flag set and parses args into a config.
+//
+// The flag set lives here rather than in main() so that a test can reach the
+// defaults. Registered inside main() they were unreachable — nothing in a test
+// can call main() — so the seventeen values this binary actually starts with had
+// never been read by anything.
+//
+// Four of those seventeen are early-exit mode switches (-register, -merge,
+// -backfill-due, -dump-digest) and a fifth (-dry-run) neuters the writes. Any
+// one of them shipping ON leaves a tick that reads the board, reports success
+// and files no mail — which from outside is indistinguishable from a quiet
+// mailbox. The two that decide spend are -model, which picks which model reads
+// the digest, and -max, which bounds how much mail one tick pays to classify.
+//
+// The flag set is a fresh FlagSet, not the package-level flag.CommandLine: a
+// test calling this twice would panic on the redefined flag, and that failure
+// reads as a broken fixture rather than as the seam being unusable.
+// ContinueOnError is what makes it callable at all — ExitOnError would take the
+// test binary down with it on a bad argument instead of returning the error.
+//
+// homeDirectory is an argument for the same reason as lookupEnvironment: the
+// registered command is home-relative, and a test should not have to move HOME
+// out from under the process to assert what it resolves to.
+func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirectory string) (config, error) {
+	fs := flag.NewFlagSet("email-classifier", flag.ContinueOnError)
+	var c config
+	fs.BoolVar(&c.RegisterJob, "register", false, "Register this binary as a scheduler cron job and exit.")
+	fs.BoolVar(&c.DryRun, "dry-run", false, "Classify but write nothing to kanban-store.")
+	fs.BoolVar(&c.DumpDigest, "dump-digest", false, "Print the digest that would be sent and exit, without calling the model.")
+	fs.StringVar(&c.BoardID, "board-id", envOr(lookupEnvironment, "EMAIL_BOARD_ID", ""), "Kanban board id. Pinning the id avoids the name-fork failure; falls back to lookup by -board when empty.")
+	fs.StringVar(&c.BoardName, "board", defaultBoardName, "Kanban board name, used only when -board-id is empty.")
+	fs.StringVar(&c.KanbanURL, "kanban-url", envOr(lookupEnvironment, "KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
+	fs.StringVar(&c.MailURL, "mail-url", envOr(lookupEnvironment, "MAILSTACK_URL", "http://localhost:8195"), "mailstack base URL")
+	fs.StringVar(&c.MailToken, "mail-token", envOr(lookupEnvironment, "MAILSTACK_TOKEN", "changeme"), "mailstack bearer token")
+	fs.StringVar(&c.BridgeURL, "bridge-url", envOr(lookupEnvironment, "LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL, used to tell whether an agent is still working on a card")
+	fs.StringVar(&c.AuthStoreURL, "auth-store-url", envOr(lookupEnvironment, "AUTH_STORE_URL", "http://localhost:8303"), "auth-store base URL")
+	fs.StringVar(&c.AuthToken, "auth-token", envOr(lookupEnvironment, "AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
+	fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "EMAIL_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
+	fs.IntVar(&c.MaxEmails, "max", maxEmailsPerTick, "Max emails to file per tick.")
+	fs.StringVar(&c.OnlyAccount, "account", "", "Restrict to one mailstack account id.")
+	fs.BoolVar(&c.Backfill, "backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
+	fs.BoolVar(&c.MergePass, "merge", false, "Run the card-merge pass over the board and exit, filing no new mail.")
+	fs.BoolVar(&c.BackfillDue, "backfill-due", false, "Recover deadlines from existing card summaries into due_at, re-score, and exit. One-off: cards filed after this store their own date.")
+	if err := fs.Parse(args); err != nil {
+		return config{}, err
+	}
+
+	c.SchedulerURL = envOr(lookupEnvironment, "SCHEDULER_URL", "http://localhost:8092")
+	c.BinaryPath = filepath.Join(homeDirectory, "bin", "email-classifier")
+	return c, nil
+}
+
+// validate rejects a configuration that would run, but wrongly.
+//
+// It is a method rather than a few lines in main for the usual reason — nothing
+// in a test can call main() — and it holds exactly one rule, because there is
+// exactly one input here that fails silently instead of loudly.
+//
+// A -max below 1 makes collectUnfiled stop before it reads a single message
+// (its budget check is `len(out) >= cfg.MaxEmails`, which is already true at
+// zero). The tick then logs "nothing new to file" and exits 0, every 15
+// minutes, while mail piles up. Every other bad value in this configuration
+// fails at the first HTTP call and says so.
+func (c config) validate() error {
+	if c.MaxEmails < 1 {
+		return fmt.Errorf("-max must be at least 1 (got %d): a tick with no budget files nothing and still reports success", c.MaxEmails)
+	}
+	return nil
+}
+
+func main() {
+	// Error ignored exactly as before: an unset HOME leaves this empty and the
+	// registered command resolves relative to the working directory, which is a
+	// path that fails at exec time either way.
+	homeDirectory, _ := os.UserHomeDir()
+
+	cfg, err := parseFlags(os.Args[1:], os.Getenv, homeDirectory)
+	if err != nil {
+		// Both codes are the ones this binary used before the flag set moved out
+		// of main(): flag.ExitOnError exited 2 on a bad argument after printing
+		// the error and the usage message, and 0 on -h. Parse has already printed
+		// both, so nothing a caller sees moved.
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		os.Exit(2)
+	}
+	if err := cfg.validate(); err != nil {
+		log.Fatal(err)
+	}
+
+	if cfg.RegisterJob {
+		if err := registerSchedulerJob(cfg); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
 	}
 
 	ctx := context.Background()
-	cfg := config{
-		KanbanURL:    *kanbanURL,
-		MailURL:      *mailURL,
-		MailToken:    *mailToken,
-		BridgeURL:    *bridgeURL,
-		AuthStoreURL: *authStoreURL,
-		AuthToken:    *authToken,
-		Model:        *model,
-		DryRun:       *dryRun,
-		DumpDigest:   *dumpDigest,
-		Backfill:     *backfill,
-		MaxEmails:    *maxEmails,
-		OnlyAccount:  *account,
-	}
 
 	// A digest dump never reaches the model, so it must not require the key.
 	if !cfg.DumpDigest {
@@ -199,7 +275,7 @@ func main() {
 	}
 
 	kc := kanbanclient.New(cfg.KanbanURL)
-	board, err := resolveBoard(kc, *boardID, *boardName)
+	board, err := resolveBoard(kc, cfg.BoardID, cfg.BoardName)
 	if err != nil {
 		log.Fatalf("resolve board: %v", err)
 	}
@@ -224,7 +300,7 @@ func main() {
 	// cards carry it.
 	gate := newSessionGate(cfg.BridgeURL)
 
-	if *mergeFlag {
+	if cfg.MergePass {
 		// Housekeeping over the board, not over the mail — so it exits here
 		// rather than going on to file. It reads no mailbox at all.
 		if err := runMergePass(ctx, cfg, kc, state, gate); err != nil {
@@ -232,7 +308,7 @@ func main() {
 		}
 		return
 	}
-	if *backfillDue {
+	if cfg.BackfillDue {
 		// Same shape as the merge pass, and for the same reason: board
 		// housekeeping that reads no mailbox and is not part of a tick.
 		if err := runBackfillPass(ctx, cfg, kc, state, gate); err != nil {
@@ -335,20 +411,42 @@ func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *board
 	classifyAndApply(ctx, cfg, ap, state, batch[mid:])
 }
 
+// config is every value this command is configured with: the seventeen flags,
+// plus the two pieces of wiring that used to be read from the environment
+// inside registerSchedulerJob, plus the resolved API key.
+//
+// The four base URLs and the two bearer tokens are the half of this struct with
+// something to get wrong. They are all strings, and two pairs of them are
+// consumed positionally — newMailClient takes (MailURL, MailToken) and
+// resolveBoard takes (BoardID, BoardName) — so a swap compiles clean and is read
+// by nothing else. Registering each flag directly into its own named field, and
+// giving a test a distinct value per variable, is what makes a swap fail.
 type config struct {
-	KanbanURL       string
-	MailURL         string
-	MailToken       string
-	BridgeURL       string
-	AuthStoreURL    string
-	AuthToken       string
+	// The seventeen flags.
+	RegisterJob  bool
+	DryRun       bool
+	DumpDigest   bool
+	BoardID      string
+	BoardName    string
+	KanbanURL    string
+	MailURL      string
+	MailToken    string
+	BridgeURL    string
+	AuthStoreURL string
+	AuthToken    string
+	Model        string
+	MaxEmails    int
+	OnlyAccount  string
+	Backfill     bool
+	MergePass    bool
+	BackfillDue  bool
+
+	// The wiring: where -register posts, and what it registers.
+	SchedulerURL string
+	BinaryPath   string
+
+	// Resolved after parsing, from auth-store rather than from a flag.
 	AnthropicAPIKey string
-	Model           string
-	DryRun          bool
-	DumpDigest      bool
-	Backfill        bool
-	MaxEmails       int
-	OnlyAccount     string
 }
 
 // ============================ board resolution ============================
@@ -897,21 +995,42 @@ func resolveAnthropicKey(ctx context.Context, cfg config) (string, error) {
 	return "", fmt.Errorf("auth-store: anthropic credential has no api_key or access_token")
 }
 
-func registerSchedulerJob() error {
-	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
-	home, _ := os.UserHomeDir()
-	bin := filepath.Join(home, "bin", "email-classifier")
-	const jobName = "email-classifier-tick"
+// registeredCommand renders the shell command the scheduler job runs.
+//
+// The board id is baked into the command rather than left to the environment:
+// scheduler runs jobs as `sh -c` with only its own thin env, so EMAIL_BOARD_ID
+// would not reach the process. It has to be right at creation too — the
+// scheduler binary serving :8092 accepts only enabled, description and
+// timeout_seconds on PATCH and silently drops `command` with a 200, so there is
+// no second chance to correct it through the API.
+//
+// A pure function rather than a few lines inside the POST, because this string
+// is the whole point of -register and it is written exactly once, by hand, on a
+// host nobody re-checks.
+func registeredCommand(binaryPath, boardID string) string {
+	if boardID == "" {
+		return binaryPath
+	}
+	return binaryPath + " -board-id " + boardID
+}
 
-	// The board id is baked into the command rather than left to the
-	// environment: scheduler runs jobs as `sh -c` with only its own thin env, so
-	// EMAIL_BOARD_ID would not reach the process. It has to be right at creation
-	// too — the scheduler binary serving :8092 accepts only enabled, description
-	// and timeout_seconds on PATCH and silently drops `command` with a 200, so
-	// there is no second chance to correct it through the API.
-	if boardID := envOr("EMAIL_BOARD_ID", ""); boardID != "" {
-		bin += " -board-id " + boardID
-	} else {
+// schedulerJobPayload is the job -register creates.
+func schedulerJobPayload(cfg config) map[string]any {
+	return map[string]any{
+		"name":        schedulerJobName,
+		"description": "Files incoming mail onto cards on the Email kanban board (cards are work, emails attach as links).",
+		"schedule":    schedulerJobSchedule,
+		"type":        "shell",
+		"command":     registeredCommand(cfg.BinaryPath, cfg.BoardID),
+		// A tick fetches messages one live provider round trip at a time, so it
+		// legitimately outruns the scheduler's 5-minute default.
+		"timeout_seconds": schedulerJobTimeoutSeconds,
+	}
+}
+
+func registerSchedulerJob(cfg config) error {
+	schedURL := cfg.SchedulerURL
+	if cfg.BoardID == "" {
 		log.Printf("WARNING: registering without a pinned board id. Set EMAIL_BOARD_ID and re-register, " +
 			"or the job resolves the board by name and a rename will fork it.")
 	}
@@ -927,22 +1046,12 @@ func registerSchedulerJob() error {
 	}
 	_ = json.Unmarshal(body, &jobs)
 	for _, j := range jobs {
-		if j.Name == jobName {
-			fmt.Println(jobName + " already registered; no changes made")
+		if j.Name == schedulerJobName {
+			fmt.Println(schedulerJobName + " already registered; no changes made")
 			return nil
 		}
 	}
-	payload := map[string]any{
-		"name":        jobName,
-		"description": "Files incoming mail onto cards on the Email kanban board (cards are work, emails attach as links).",
-		"schedule":    "*/15 * * * *",
-		"type":        "shell",
-		"command":     bin,
-		// A tick fetches messages one live provider round trip at a time, so it
-		// legitimately outruns the scheduler's 5-minute default.
-		"timeout_seconds": 900,
-	}
-	data, _ := json.Marshal(payload)
+	data, _ := json.Marshal(schedulerJobPayload(cfg))
 	req, err := http.NewRequest("POST", schedURL+"/api/jobs", strings.NewReader(string(data)))
 	if err != nil {
 		return err
@@ -957,13 +1066,17 @@ func registerSchedulerJob() error {
 	if resp2.StatusCode >= 300 {
 		return fmt.Errorf("scheduler returned %d: %s", resp2.StatusCode, string(body))
 	}
-	fmt.Printf("registered %s: %s\n", jobName, strings.TrimSpace(string(body)))
+	fmt.Printf("registered %s: %s\n", schedulerJobName, strings.TrimSpace(string(body)))
 	return nil
 }
 
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
+// envOr takes the lookup as an argument for the same reason homeDirectory is
+// passed in: eight of the flag defaults are read at flag-registration time, so a
+// test that exported one of these variables to observe it would be racing every
+// other test in the package for one process-wide variable.
+func envOr(lookupEnvironment environmentLookup, key, fallback string) string {
+	if v := lookupEnvironment(key); v != "" {
 		return v
 	}
-	return def
+	return fallback
 }
