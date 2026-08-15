@@ -2,10 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
@@ -210,20 +210,30 @@ func cardSpendCeiling(item map[string]any) (float64, bool) {
 	return v, true
 }
 
+// errMalformedEnvironmentValue marks a config error that came from the
+// environment rather than from the command line.
+//
+// main keeps the two apart because they used to exit differently and still
+// should: a bad argument is the flag package's exit 2, a bad environment value
+// was a log.Fatalf and stays exit 1. Returning it rather than dying in place is
+// what makes it reachable — it used to fire during package variable
+// initialisation, before main() ran, so no test could observe it at all.
+var errMalformedEnvironmentValue = errors.New("malformed environment value")
+
 // envFloat reads a float from the environment, falling back to def when unset.
-// A malformed value is fatal rather than silently ignored: this configures a
+// A malformed value is an error rather than silently ignored: this configures a
 // SPEND CAP, and a typo that quietly became "uncapped" is the failure this whole
 // mechanism exists to prevent.
-func envFloat(key string, def float64) float64 {
-	raw := os.Getenv(key)
+func envFloat(lookupEnvironment environmentLookup, key string, def float64) (float64, error) {
+	raw := lookupEnvironment(key)
 	if raw == "" {
-		return def
+		return def, nil
 	}
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		log.Fatalf("%s=%q is not a number — refusing to run uncapped on a typo", key, raw)
+		return 0, fmt.Errorf("%w: %s=%q is not a number — refusing to run uncapped on a typo", errMalformedEnvironmentValue, key, raw)
 	}
-	return v
+	return v, nil
 }
 
 // resolveSessionBudget decides the cost cap for one dispatched session, and says

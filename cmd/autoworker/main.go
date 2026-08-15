@@ -23,6 +23,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -53,19 +54,6 @@ const (
 )
 
 var kanbanDefaultColumns = []string{"Queued", "In Progress", "Blocked", "Done", "Failed"}
-
-// defaultMaxBudget is the fleet-wide per-session spend cap: the safety net for
-// sessions no per-card ceiling can cover.
-//
-// It is OFF by default (0), and 0 is the only safe "off" value here only because
-// this code never passes a zero cap through to the harness — llm-bridge-claudecode
-// omits --max-budget-usd when the value is zero, which the CLI reads as unlimited.
-// So "off" and "unlimited" genuinely are the same thing at this layer, which is
-// exactly why a spent-out CARD is held rather than dispatched with a cap of 0.
-//
-// A per-card ceiling always overrides this; the default only fills the gap.
-var defaultMaxBudget = flag.Float64("default-max-budget-usd", envFloat("AUTOWORKER_DEFAULT_MAX_BUDGET_USD", 0),
-	"Fleet-wide per-session spend cap in USD for sessions with no per-card ceiling (0 = off/uncapped). A card's own ceiling always wins.")
 
 type limitWindow struct {
 	UsedPercent   float64 `json:"used_percent"`
@@ -160,38 +148,153 @@ type state struct {
 	LastFire map[string]int64 `json:"last_fire"` // provider → unix seconds
 }
 
-func main() {
-	var (
-		registerFlag = flag.Bool("register", false, "Register (upsert) this binary as a scheduler cron job and exit.")
-		dryRun       = flag.Bool("dry-run", false, "Report decisions; do not publish or update state.")
-		slackPP      = flag.Float64("slack", 15, "Percent points below target before firing.")
-		prompt       = flag.String("prompt", defaultPrompt, "Prompt text sent to the worker agent.")
-		tz           = flag.String("tz", "America/Los_Angeles", "IANA timezone for safe-window gating.")
-	)
-	flag.Parse()
+// environmentLookup has os.Getenv's shape. Taking it as an argument rather than
+// calling os.Getenv directly is what lets a test state which variables were set
+// without setting them: the defaults below are read at flag-registration time,
+// so a test that exported NOTEBOARD_URL to observe it would be racing every
+// other test in the package for one process-wide variable.
+type environmentLookup func(key string) string
 
-	if *defaultMaxBudget < 0 {
-		log.Fatalf("-default-max-budget-usd must not be negative (got %v)", *defaultMaxBudget)
+// config is every value the tick is configured with: the six flags, and the
+// endpoints and paths that used to be read from the environment at the point of
+// use, scattered across five functions.
+//
+// The endpoints are here rather than at their call sites because they are the
+// half of the configuration with something to get wrong. They are all strings,
+// and several of them are passed positionally to the same function — bridgeURL
+// and noteboardURL reach budgetForCard side by side, and swapping them compiles
+// clean, dispatches nothing, and reports success. Naming them once, in one
+// struct a test can read, is what makes that visible.
+type config struct {
+	// The six flags.
+	registerJob         bool
+	dryRun              bool
+	slackPercentPoints  float64
+	prompt              string
+	timezone            string
+	defaultMaxBudgetUSD float64
+
+	// The wiring: service endpoints and the two home-relative paths.
+	natsURL        string
+	kanbanStoreURL string
+	llmBridgeURL   string
+	noteboardURL   string
+	usageStoreURL  string
+	schedulerURL   string
+	statePath      string
+	binaryPath     string
+}
+
+// parseFlags builds the flag set and parses args into a config.
+//
+// The flag set lives here rather than in main() so that a test can reach the
+// defaults. Registered inside main() they were unreachable — nothing in a test
+// can call main() — so the values this binary actually starts with had never
+// been read by anything. That matters more here than in most of these mains:
+// this one decides how much money a dispatched session may spend, and two of
+// its defaults fail silently rather than loudly. -dry-run defaulting on would
+// evaluate every provider, log what it would dispatch, publish nothing and exit
+// 0, which is indistinguishable from a week where no gate opened. A
+// -default-max-budget-usd that drifted off 0 would cap sessions the user never
+// asked to cap, and one that arrived negative is rejected below.
+//
+// The flag set is a fresh FlagSet, not the package-level flag.CommandLine: a
+// test calling this twice would panic on the redefined flag, and a mistake there
+// would look like a broken fixture rather than the seam being unusable.
+// ContinueOnError is what makes it callable at all — ExitOnError would take the
+// test binary down with it on a bad argument instead of returning the error.
+//
+// homeDirectory is an argument for the same reason as lookupEnvironment: the
+// state file and the registered command are both home-relative, and a test
+// should not have to move HOME out from under the process to assert what they
+// resolve to.
+func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirectory string) (config, error) {
+	fs := flag.NewFlagSet("autoworker", flag.ContinueOnError)
+	var c config
+	fs.BoolVar(&c.registerJob, "register", false, "Register (upsert) this binary as a scheduler cron job and exit.")
+	fs.BoolVar(&c.dryRun, "dry-run", false, "Report decisions; do not publish or update state.")
+	fs.Float64Var(&c.slackPercentPoints, "slack", 15, "Percent points below target before firing.")
+	fs.StringVar(&c.prompt, "prompt", defaultPrompt, "Prompt text sent to the worker agent.")
+	fs.StringVar(&c.timezone, "tz", "America/Los_Angeles", "IANA timezone for safe-window gating.")
+	budgetDefault, err := envFloat(lookupEnvironment, "AUTOWORKER_DEFAULT_MAX_BUDGET_USD", 0)
+	if err != nil {
+		return config{}, err
+	}
+	fs.Float64Var(&c.defaultMaxBudgetUSD, "default-max-budget-usd", budgetDefault,
+		"Fleet-wide per-session spend cap in USD for sessions with no per-card ceiling (0 = off/uncapped). A card's own ceiling always wins.")
+	if err := fs.Parse(args); err != nil {
+		return config{}, err
 	}
 
-	if *registerFlag {
-		if err := registerSchedulerJob(); err != nil {
+	c.natsURL = envOr(lookupEnvironment, "NATS_URL", "nats://localhost:4222")
+	c.kanbanStoreURL = envOr(lookupEnvironment, "KANBAN_STORE_URL", "http://localhost:8305")
+	c.llmBridgeURL = envOr(lookupEnvironment, "LLM_BRIDGE_URL", "http://localhost:8160")
+	c.noteboardURL = envOr(lookupEnvironment, "NOTEBOARD_URL", "http://localhost:8191")
+	c.usageStoreURL = envOr(lookupEnvironment, "USAGE_STORE_URL", "http://localhost:8185")
+	c.schedulerURL = envOr(lookupEnvironment, "SCHEDULER_URL", "http://localhost:8092")
+	c.statePath = filepath.Join(homeDirectory, ".config", "autoworker", "state.json")
+	c.binaryPath = filepath.Join(homeDirectory, "bin", "autoworker")
+	return c, nil
+}
+
+// validate rejects a config that would run, but wrongly.
+//
+// Separate from parseFlags so that main can keep the two exit codes apart: a
+// bad argument is the flag package's 2, a bad value is this binary's own 1. It
+// is a method rather than a few lines in main for the usual reason — nothing in
+// a test can call main(), and a negative spend cap is the one input here that
+// silently means "uncapped" downstream.
+func (c config) validate() error {
+	if c.defaultMaxBudgetUSD < 0 {
+		return fmt.Errorf("-default-max-budget-usd must not be negative (got %v)", c.defaultMaxBudgetUSD)
+	}
+	return nil
+}
+
+func main() {
+	// Error ignored exactly as before: an unset HOME leaves this empty and the
+	// state path resolves relative to the working directory. loadState creates
+	// its parent directory either way, so this fails no earlier and no later
+	// than it used to.
+	homeDirectory, _ := os.UserHomeDir()
+
+	cfg, err := parseFlags(os.Args[1:], os.Getenv, homeDirectory)
+	if err != nil {
+		// A malformed environment value was a log.Fatalf during package variable
+		// initialisation and keeps that exit code; everything else here is the
+		// flag package's, whose Parse has already printed the error and the usage
+		// message. All three are the codes this binary used before the flag set
+		// moved out of main(), so nothing a caller sees moved.
+		if errors.Is(err, errMalformedEnvironmentValue) {
+			log.Fatal(err)
+		}
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		os.Exit(2)
+	}
+	if err := cfg.validate(); err != nil {
+		log.Fatal(err)
+	}
+
+	if cfg.registerJob {
+		if err := registerSchedulerJob(cfg.schedulerURL, cfg.binaryPath); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
 	}
 
-	loc, err := time.LoadLocation(*tz)
+	loc, err := time.LoadLocation(cfg.timezone)
 	if err != nil {
-		log.Fatalf("timezone %q: %v", *tz, err)
+		log.Fatalf("timezone %q: %v", cfg.timezone, err)
 	}
 
-	lim, err := fetchLimits()
+	lim, err := fetchLimits(cfg.usageStoreURL)
 	if err != nil {
 		log.Fatalf("fetch limits: %v", err)
 	}
 
-	st, statePath, err := loadState()
+	st, err := loadState(cfg.statePath)
 	if err != nil {
 		log.Fatalf("load state: %v", err)
 	}
@@ -200,9 +303,8 @@ func main() {
 	nowLocal := now.In(loc)
 
 	var natsClient *natsbus.Client
-	if !*dryRun {
-		natsURL := envOr("NATS_URL", "nats://localhost:4222")
-		c, err := natsbus.Connect(natsbus.Options{URL: natsURL, Name: "autoworker"})
+	if !cfg.dryRun {
+		c, err := natsbus.Connect(natsbus.Options{URL: cfg.natsURL, Name: "autoworker"})
 		if err != nil {
 			log.Fatalf("nats connect: %v", err)
 		}
@@ -219,9 +321,9 @@ func main() {
 	)
 
 	for _, p := range providers {
-		d := evaluate(p, lim[p.Name], nowLocal, st, *slackPP)
+		d := evaluate(p, lim[p.Name], nowLocal, st, cfg.slackPercentPoints)
 		log.Printf("[%s] %s", d.provider, d.reason)
-		if !d.fire || *dryRun {
+		if !d.fire || cfg.dryRun {
 			continue
 		}
 
@@ -229,24 +331,24 @@ func main() {
 		// the noteboard-discovery default so an empty queue doesn't waste
 		// the fire decision.
 		if !queueTried {
-			queueClient = initQueueClient(false)
+			queueClient = initQueueClient(cfg.kanbanStoreURL, false)
 			queueTried = true
 		}
 		var queueCard *queueCandidate
 		if queueClient != nil {
-			cand, err := selectQueuedCard(queueClient)
+			cand, err := selectQueuedCard(queueClient, cfg)
 			if err != nil {
 				log.Printf("queue: select: %v (using default prompt)", err)
 			} else {
 				queueCard = cand
 			}
 		}
-		workerPrompt := *prompt
+		workerPrompt := cfg.prompt
 		if queueCard != nil {
 			workerPrompt = buildQueuePrompt(queueCard)
 		}
 
-		maxBudgetUSD, why := resolveSessionBudget(queueCard, *defaultMaxBudget)
+		maxBudgetUSD, why := resolveSessionBudget(queueCard, cfg.defaultMaxBudgetUSD)
 		if maxBudgetUSD > 0 {
 			log.Printf("[%s] session capped at $%.2f — %s", d.provider, maxBudgetUSD, why)
 		} else {
@@ -268,7 +370,7 @@ func main() {
 		}
 
 		if kc == nil {
-			kc = kanbanclient.New(envOr("KANBAN_STORE_URL", "http://localhost:8305"))
+			kc = kanbanclient.New(cfg.kanbanStoreURL)
 			if err := kc.EnsureBoard(kanbanBoardName, kanbanDefaultColumns); err != nil {
 				log.Printf("kanban: bootstrap %q failed: %v (continuing)", kanbanBoardName, err)
 				kc = nil // disable for the rest of this tick
@@ -304,8 +406,8 @@ func main() {
 	// show what would dispatch next. Bootstrap is read-only on dry-run so a
 	// fresh install doesn't quietly create the board.
 	if !queueTried {
-		if qc := initQueueClient(*dryRun); qc != nil {
-			if cand, err := selectQueuedCard(qc); err != nil {
+		if qc := initQueueClient(cfg.kanbanStoreURL, cfg.dryRun); qc != nil {
+			if cand, err := selectQueuedCard(qc, cfg); err != nil {
 				log.Printf("queue: %v", err)
 			} else if cand != nil {
 				log.Printf("queue: head card=%s title=%q tags=%v body_len=%d",
@@ -314,8 +416,8 @@ func main() {
 		}
 	}
 
-	if !*dryRun {
-		if err := saveState(statePath, st); err != nil {
+	if !cfg.dryRun {
+		if err := saveState(cfg.statePath, st); err != nil {
 			log.Printf("save state: %v", err)
 		}
 	}
@@ -330,8 +432,8 @@ func main() {
 // Returns nil (with logging) when the board is unavailable; callers are
 // expected to fall back to default behavior so kanban-store outages don't
 // break the fire path.
-func initQueueClient(dryRun bool) *kanbanclient.Client {
-	qc := kanbanclient.New(envOr("KANBAN_STORE_URL", "http://localhost:8305"))
+func initQueueClient(kanbanStoreURL string, dryRun bool) *kanbanclient.Client {
+	qc := kanbanclient.New(kanbanStoreURL)
 	if dryRun {
 		board, err := qc.FindBoard(autoworkerQueueBoard)
 		if err != nil {
@@ -438,7 +540,7 @@ Be self-contained. No chat; just work and close out the task.`,
 // placement order. Eligibility: non-nil noteboard item with a non-empty title.
 // Skip reasons are logged so dry-run output explains the choice. Returns
 // (nil, nil) when the column is empty or no card is eligible.
-func selectQueuedCard(qc *kanbanclient.Client) (*queueCandidate, error) {
+func selectQueuedCard(qc *kanbanclient.Client, cfg config) (*queueCandidate, error) {
 	view, err := qc.GetBoardView(qc.BoardID)
 	if err != nil {
 		return nil, err
@@ -497,10 +599,7 @@ func selectQueuedCard(qc *kanbanclient.Client) (*queueCandidate, error) {
 		// and skipped, rather than dispatched: firing a session for it would
 		// either burn money past the ceiling or (worse) be handed a cap of 0,
 		// which the harness reads as unlimited.
-		budget, dispatchable := budgetForCard(qc,
-			envOr("LLM_BRIDGE_URL", "http://localhost:8160"),
-			envOr("NOTEBOARD_URL", "http://localhost:8191"),
-			cand)
+		budget, dispatchable := budgetForCard(qc, cfg.llmBridgeURL, cfg.noteboardURL, cand)
 		if !dispatchable {
 			if err := qc.HoldCard(cand.cardID, "spend ceiling reached"); err != nil {
 				log.Printf("queue: card %s is over its spend ceiling but the hold FAILED (%v) — skipping it this tick, but it is not parked",
@@ -613,8 +712,8 @@ func inSafeWindow(p providerSpec, nowLocal time.Time) bool {
 	return minutesOfDay >= p.SafeStart && minutesOfDay < p.SafeEnd
 }
 
-func fetchLimits() (limitsResponse, error) {
-	url := envOr("USAGE_STORE_URL", "http://localhost:8185") + "/api/usage/limits"
+func fetchLimits(usageStoreURL string) (limitsResponse, error) {
+	url := usageStoreURL + "/api/usage/limits"
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", url, err)
@@ -708,30 +807,25 @@ func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetU
 	return sessionID, nil
 }
 
-func loadState() (*state, string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, "", err
-	}
-	path := filepath.Join(home, ".config", "autoworker", "state.json")
+func loadState(path string) (*state, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return nil, path, err
+		return nil, err
 	}
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return &state{LastFire: map[string]int64{}}, path, nil
+		return &state{LastFire: map[string]int64{}}, nil
 	}
 	if err != nil {
-		return nil, path, err
+		return nil, err
 	}
 	var st state
 	if err := json.Unmarshal(data, &st); err != nil {
-		return nil, path, err
+		return nil, err
 	}
 	if st.LastFire == nil {
 		st.LastFire = map[string]int64{}
 	}
-	return &st, path, nil
+	return &st, nil
 }
 
 func saveState(path string, st *state) error {
@@ -747,11 +841,7 @@ func saveState(path string, st *state) error {
 // Creates a type=shell job running `autoworker` every 30 minutes. If a job
 // with the same name already exists, leaves it alone (the scheduler has no
 // PUT-by-name primitive; users edit via the API or UI).
-func registerSchedulerJob() error {
-	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
-	home, _ := os.UserHomeDir()
-	bin := filepath.Join(home, "bin", "autoworker")
-
+func registerSchedulerJob(schedURL, bin string) error {
 	// See if a job with this name already exists.
 	resp, err := http.Get(schedURL + "/api/jobs")
 	if err != nil {
@@ -796,11 +886,11 @@ func registerSchedulerJob() error {
 	return nil
 }
 
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
+func envOr(lookupEnvironment environmentLookup, key, fallback string) string {
+	if v := lookupEnvironment(key); v != "" {
 		return v
 	}
-	return def
+	return fallback
 }
 
 const defaultPrompt = `You are the nightly todo-worker. The user is asleep; their subscription budget is under-utilised for this week and I am dispatching you to make useful progress on open todos without disturbing them.
