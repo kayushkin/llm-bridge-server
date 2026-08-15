@@ -76,8 +76,13 @@ func TestEveryWriteOpRequiresAnAccount(t *testing.T) {
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("a write op with no account must be 400; got %d (%s)", w.Code, w.Body.String())
 			}
-			if !strings.Contains(w.Body.String(), "account") {
-				t.Errorf("the error must name the missing parameter; got %s", w.Body.String())
+			// The status alone cannot tell this apart from the guard being
+			// absent: without it the empty id falls through to the store, which
+			// answers "account not found" — also a 400, and also a sentence
+			// with "account" in it. Only the specific wording separates a
+			// rejected request from a lookup that was allowed to happen.
+			if !strings.Contains(w.Body.String(), "account query param required") {
+				t.Errorf("the missing parameter must be rejected before the account lookup; got %s", w.Body.String())
 			}
 		})
 	}

@@ -201,13 +201,23 @@ func TestReadAndFlagHaveOppositePolarity(t *testing.T) {
 // omitempty is load-bearing on the wire, not cosmetic: Gmail is being told
 // which labels to change, and a key that is present-and-null is a different
 // statement from a key that is absent.
+// Both keys carry omitempty and each is the unused one on a different call, so
+// one direction cannot stand in for the other: asserting only the add side
+// leaves the remove side's tag free to change.
 func TestTheUnusedLabelKeyIsAbsentFromTheWireNotNull(t *testing.T) {
-	g, tr := newTestGmail(t, okTokens(), respond(http.StatusOK, "{}"))
+	g, tr := newTestGmail(t, okTokens(),
+		respond(http.StatusOK, "{}"), respond(http.StatusOK, "{}"))
 	if err := g.MarkRead(context.Background(), "m1", true); err != nil {
 		t.Fatalf("MarkRead: %v", err)
 	}
+	if err := g.MarkRead(context.Background(), "m1", false); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
 	if strings.Contains(tr.seen[0].Body, "addLabelIds") {
-		t.Errorf("the unused label key must be omitted from the request, not sent as null; body = %s", tr.seen[0].Body)
+		t.Errorf("a removal must not carry an addLabelIds key at all; body = %s", tr.seen[0].Body)
+	}
+	if strings.Contains(tr.seen[1].Body, "removeLabelIds") {
+		t.Errorf("an addition must not carry a removeLabelIds key at all; body = %s", tr.seen[1].Body)
 	}
 }
 
