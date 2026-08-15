@@ -297,6 +297,15 @@ var disabledHarnesses = map[msg.Harness]string{
 	// aiauth. Enabling this harness would spawn that binary. Whether to
 	// re-target, publish privately, or drop the scaffold is an open decision —
 	// noteboard todo 2d8b6d10.
+	//
+	// ⚠️ Enabling it costs more than the entries here describe. This map is the
+	// only thing holding the harness off, and injectHookSettings
+	// (hook_settings.go) has no case for copilot_cli — so deleting this line
+	// also ships a harness whose sessions carry no PreToolUse permission hook.
+	// The two facts live in different files and the reason above is about a
+	// stale binary, not about permissions, so nothing connected them.
+	// TestEnablingAHarnessKeepsItsPermissionGate now does: enable this without
+	// wiring the gate and it fails.
 	msg.HarnessCopilotCLI: "scaffold not yet re-targeted from claudecode; see noteboard todo 2d8b6d10",
 }
 
