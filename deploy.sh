@@ -86,6 +86,29 @@ echo "==> Building $BIN_NAME..."
 go build -o "$BIN_NAME" ./cmd/llm-bridge-server
 echo "    built: $(ls -lh "$BIN_NAME" | awk '{print $5}')"
 
+# Checked before the backup, and so before the stop and the install: an unidentifiable
+# binary compiles perfectly and reads clean in the log, so going any further would take
+# the gateway down for a binary that cannot be traced to a commit. Refusing here leaves
+# the running service untouched and needs no rollback.
+echo "==> Checking provenance..."
+buildinfo="$(go version -m "$BIN_NAME")"
+vcs_revision="$(printf '%s\n' "$buildinfo" | awk -F= '$1 ~ /[[:space:]]vcs\.revision$/ {print $2}')"
+vcs_modified="$(printf '%s\n' "$buildinfo" | awk -F= '$1 ~ /[[:space:]]vcs\.modified$/ {print $2}')"
+if [ -z "$vcs_revision" ]; then
+  echo "    REFUSING TO INSTALL: this binary carries no vcs.revision, so nothing can tie" >&2
+  echo "    it back to a commit. 'go build' writes no VCS stamp when it cannot find a .git" >&2
+  echo "    DIRECTORY, and it does not fail when that happens -- not even with -buildvcs=true." >&2
+  echo "    The usual cause is building from a git worktree, whose .git is a pointer file." >&2
+  echo "    Build from a real clone or checkout instead. The service was not touched." >&2
+  exit 1
+fi
+echo "    vcs.revision=$vcs_revision"
+if [ "$vcs_modified" = "true" ]; then
+  echo "    WARNING: built from a DIRTY tree (vcs.modified=true). $vcs_revision names the" >&2
+  echo "    commit this binary was built NEAR, not the source it was built FROM, and that" >&2
+  echo "    source is not recoverable from any commit. Commit first for a reproducible build." >&2
+fi
+
 echo "==> Backing up the binary and drop-in currently serving..."
 if [ -f "$SYSTEM_BIN" ]; then
   sudo cp -p "$SYSTEM_BIN" "$BACKUP_BIN"
