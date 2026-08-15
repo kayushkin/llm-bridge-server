@@ -10,6 +10,9 @@ its absence:
 
   - The needle must be found. A replacement whose search string is not in the
     file is a case that silently did nothing and scored UNNOTICED (30th pass).
+  - The needle must be found ONCE. Appearing twice in one file passed the
+    file-level check and sabotaged the first occurrence, scoring the wrong
+    mechanism while reading as a verdict on the right one (218th).
   - The file's bytes must actually change. An edit that changed nothing scores
     UNNOTICED for free, which is the same false result (33rd).
   - A case may carry a SECOND edit, so an orphaned import or variable reports a
@@ -100,6 +103,23 @@ def _apply_case(targets, original, case):
                      "picks one.\nNeedle was:\n%s"
                      % (case.name, " and ".join(t.name for t in holders), find))
         t = holders[0]
+        # The same hazard one level down, and it was unguarded until the 218th
+        # pass met it. `holders` counts FILES, so a needle appearing twice in
+        # ONE file passed both checks above and `.replace(..., 1)` silently
+        # sabotaged the first occurrence. In bundle-store,
+        # `if n, _ := res.RowsAffected(); n == 0 {` appears in both SetEnabled
+        # and DeleteBundle: a case aimed at the first mutated the second and
+        # scored UNNOTICED — a true verdict about a function nobody chose, which
+        # reads as a coverage hole in the function they did choose. That is the
+        # same false result the "needle must be found" rule exists to prevent.
+        occurrences = text[t].count(find)
+        if occurrences > 1:
+            sys.exit("ABORT [%s]: needle appears %d times in %s.\n"
+                     "The engine would sabotage the first occurrence, and the row would name a "
+                     "mechanism nobody chose — scoring the wrong function while reading as a "
+                     "verdict on the right one. Lengthen the needle until it picks one.\n"
+                     "Needle was:\n%s"
+                     % (case.name, occurrences, t.name, find))
         text[t] = text[t].replace(find, replace, 1)
     if text == original:
         sys.exit("ABORT [%s]: the edit produced an identical file." % case.name)
