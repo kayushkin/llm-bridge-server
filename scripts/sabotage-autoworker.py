@@ -45,12 +45,57 @@ and is not made here. The next pass on this binary owns that. There is also no
 "measured and found none" rather than "not measured".
 
 ⚠️ Region this plan does NOT cover, declared rather than left to be
-rediscovered: every case below edits configuration — the flag set, the endpoint
-wiring, the two home-relative paths and the spend-cap guard. The tick's decision
-logic (evaluate, interpolateTarget, insideSafeWindow, the cooldown comparison)
-and the kanban queue path (selectQueuedCard, buildQueuePrompt,
-markQueueCardDispatched) are NOT sabotaged here. That is the seam the 197th
-pass opened and nothing more; it is not a statement that the rest is covered.
+rediscovered: every case in the first three families edits configuration — the
+flag set, the endpoint wiring, the two home-relative paths and the spend-cap
+guard. The tick's decision logic (evaluate, interpolateTarget, insideSafeWindow,
+the cooldown comparison) and the rest of the kanban queue path (selectQueuedCard,
+buildQueuePrompt, markQueueCardDispatched) are NOT sabotaged here. That is the
+seam the 197th pass opened and nothing more; it is not a statement that the rest
+is covered.
+
+---- 2026-08-15, 217th pass: one mechanism added, and the scope above widens by
+exactly that much ----
+
+initQueueClient is now sabotaged, and it was excluded above under "the kanban
+queue path". The exclusion is narrowed rather than dropped: its three siblings
+are still not scored here.
+
+Why it was worth adding, and this is a measurement rather than a judgement: on
+2026-08-15 an unconditional `panic()` at initQueueClient's first line left
+`go test ./...` GREEN across the whole repository (card e9b0b89c, the 202nd
+pass). Nothing executed the function that decides whether an unattended tick may
+WRITE to kanban-store.
+
+Its mechanism is `dryRun`, and the value never exercised was the one that
+suppresses writes. It fails two ways that look alike from outside:
+
+  - a dry run that bootstraps the board is a switch that does not switch;
+  - a dry run that writes nothing AND resolves nothing returns nil, which is
+    also what a fresh install returns. The caller falls back to the default
+    prompt in both, so the difference reaches nobody except through the log.
+
+Three separate conditions answer nil here — board absent, boards unreadable,
+columns unreadable — and the log line is the only thing that tells them apart.
+So the log lines ARE the interface on those paths, and the rows below treat them
+as behaviour. ⚠️ That is why the known-negative control for this family rewords
+prose while KEEPING the `%v` that carries the error: a control that reworded a
+line the tests read would be expired on arrival, which is exactly what
+sabotage-email-classifier-sweep.py predicted when it wrote "falsified by a test
+that captures log output".
+
+Score after the family was added: 29/29 real mechanisms caught, both controls
+behaved, exit 0. The reach guard was re-taken by hand first — `panic()` at
+initQueueClient's first line now reddens cmd/autoworker, where in the 202nd
+pass's measurement it reddened nothing.
+
+⚠️ One row was UNNOTICED on the first run, and it is the most reusable thing
+here: dropping "In Progress" from kanbanDefaultColumns changed nothing the suite
+could see, because the test ranged over that same constant to build its
+expectation. The expectation moved with the code. A test that reads the constant
+it is meant to pin asserts only that the constant equals itself. The five names
+are now spelled out literally, and a second test ties the set to the two column
+constants the binary later addresses by name — which is the invariant that was
+actually at risk, since those live in a different declaration entirely.
 """
 
 import sys
@@ -161,6 +206,96 @@ CASES = [
     Case(
         "the flag set goes back to ExitOnError: a bad argument takes the test binary down with it",
         [('flag.NewFlagSet("autoworker", flag.ContinueOnError)', 'flag.NewFlagSet("autoworker", flag.ExitOnError)')],
+    ),
+
+    # ================= initQueueClient: may this tick write? =================
+    #
+    # Added by the 217th pass. See the note at the foot of the docstring for why
+    # the log lines are treated as behaviour in this family and nowhere else.
+    Case(
+        "CONTROL known-negative: reword the bootstrap failure line, keeping the error it carries",
+        [('log.Printf("queue: bootstrap %q: %v (using default prompt)", autoworkerQueueBoard, err)',
+          'log.Printf("queue: could not bootstrap %q: %v — falling back to the default prompt", autoworkerQueueBoard, err)')],
+        expected_unnoticed="prose around an error the tests DO read. The outage test asserts the "
+                           "store's failure reaches the log and that it is not mistaken for an "
+                           "absent board; neither depends on the wording around %v. Falsified by a "
+                           "test that matches this line literally, which would pin prose instead of "
+                           "the error.",
+    ),
+
+    # -- the switch itself --
+    Case(
+        "the dry-run gate inverts: a dry run bootstraps the board and a real tick refuses to",
+        [("\tqc := kanbanclient.New(kanbanStoreURL)\n\tif dryRun {",
+          "\tqc := kanbanclient.New(kanbanStoreURL)\n\tif !dryRun {")],
+    ),
+    Case(
+        "the dry-run gate is dead: -dry-run creates the queue board on a fresh install",
+        [("\tqc := kanbanclient.New(kanbanStoreURL)\n\tif dryRun {",
+          "\tqc := kanbanclient.New(kanbanStoreURL)\n\tif false {")],
+    ),
+
+    # -- a dry run that resolves nothing prints as a fresh install --
+    Case(
+        "the dry run stops recording the board id: every later lookup addresses no board",
+        [("\t\tqc.BoardID = board.ID\n\t\tcols, err := qc.ListColumns(board.ID)",
+          "\t\tcols, err := qc.ListColumns(board.ID)")],
+    ),
+    Case(
+        "the board id is set to the board NAME: kanban-store is addressed by a label, not an id",
+        [("\t\tqc.BoardID = board.ID\n", "\t\tqc.BoardID = board.Name\n")],
+    ),
+    Case(
+        "the dry run resolves no columns: it reports an empty board and a full one identically",
+        [("\t\tfor _, col := range cols {\n\t\t\tqc.ColumnsByName[col.Name] = col.ID\n\t\t}",
+          "\t\tfor range cols {\n\t\t}")],
+    ),
+    Case(
+        "the column map is keyed by id: every lookup by name misses on a board that has the column",
+        [("\t\t\tqc.ColumnsByName[col.Name] = col.ID", "\t\t\tqc.ColumnsByName[col.ID] = col.ID")],
+    ),
+
+    # -- the three nils, and telling them apart --
+    Case(
+        "an absent board is reported as an outage: the operator is sent to a service that is up",
+        [('log.Printf("queue: board %q does not exist yet — first non-dry-run will bootstrap it", autoworkerQueueBoard)',
+          'log.Printf("queue: board %q unavailable", autoworkerQueueBoard)')],
+    ),
+    Case(
+        "an unreadable board list is swallowed: a half-built client is handed to the dispatch path",
+        [('log.Printf("queue: find board %q: %v", autoworkerQueueBoard, err)\n\t\t\treturn nil',
+          'log.Printf("queue: find board %q: %v", autoworkerQueueBoard, err)\n\t\t\treturn qc')],
+    ),
+    Case(
+        "unreadable columns are swallowed: the caller gets a board id and an empty column map",
+        [('log.Printf("queue: list columns: %v", err)\n\t\t\treturn nil',
+          'log.Printf("queue: list columns: %v", err)\n\t\t\treturn qc')],
+    ),
+    Case(
+        "a failed bootstrap returns a client anyway: a kanban-store outage becomes a dispatch against nothing",
+        [("\t\tlog.Printf(\"queue: bootstrap %q: %v (using default prompt)\", autoworkerQueueBoard, err)\n\t\treturn nil",
+          "\t\tlog.Printf(\"queue: bootstrap %q: %v (using default prompt)\", autoworkerQueueBoard, err)\n\t\treturn qc")],
+    ),
+
+    # -- which board, and with what on it --
+    Case(
+        "the dry run resolves the telemetry board: -dry-run previews cards autoworker itself wrote",
+        [("board, err := qc.FindBoard(autoworkerQueueBoard)", "board, err := qc.FindBoard(kanbanBoardName)")],
+    ),
+    Case(
+        "the real run bootstraps the telemetry board: dispatch reads the board it writes to",
+        [("if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanDefaultColumns); err != nil {",
+          "if err := qc.EnsureBoard(kanbanBoardName, kanbanDefaultColumns); err != nil {")],
+    ),
+    Case(
+        "the queue board is created with no columns: nothing can ever be queued on it",
+        [("if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanDefaultColumns); err != nil {",
+          "if err := qc.EnsureBoard(autoworkerQueueBoard, nil); err != nil {")],
+    ),
+    Case(
+        "the column a dispatched card moves to is dropped from the default set",
+        [('var kanbanDefaultColumns = []string{"Queued", "In Progress", "Blocked", "Done", "Failed"}',
+          'var kanbanDefaultColumns = []string{"Queued", "Blocked", "Done", "Failed"}')],
     ),
 ]
 
