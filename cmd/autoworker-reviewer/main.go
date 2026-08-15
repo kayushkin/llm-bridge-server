@@ -56,6 +56,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
+	"github.com/slava/scheduler/internal/bridgesession"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
@@ -572,7 +573,10 @@ func createdByAutoworker(s bridgeSession) bool {
 // started reading the field the bridge owns, so the name no longer described
 // what came back.
 func getSession(bridgeURL, sessionID string) (bridgeSession, error) {
-	url := fmt.Sprintf("%s/sessions/%s", strings.TrimRight(bridgeURL, "/"), sessionID)
+	url, err := bridgesession.URL(bridgeURL, sessionID)
+	if err != nil {
+		return bridgeSession{}, err
+	}
 	resp, err := http.Get(url)
 	if err != nil {
 		return bridgeSession{}, err
@@ -604,7 +608,10 @@ func getSession(bridgeURL, sessionID string) (bridgeSession, error) {
 // (process exited) the bridge transparently respawns the harness with --resume
 // before delivering the message, so the agent resumes with full context.
 func sendMessage(bridgeURL, sessionID, message string) error {
-	url := fmt.Sprintf("%s/sessions/%s/send", strings.TrimRight(bridgeURL, "/"), sessionID)
+	url, err := bridgesession.SubresourceURL(bridgeURL, sessionID, "send")
+	if err != nil {
+		return err
+	}
 	payload, _ := json.Marshal(map[string]any{"message": message})
 	resp, err := http.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {

@@ -63,6 +63,7 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
+	"github.com/slava/scheduler/internal/bridgesession"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
@@ -985,7 +986,11 @@ func getSummaryPage(pageURL string) (summaryPage, error) {
 
 func getSession(bridgeURL, id string) (session, error) {
 	var s session
-	resp, err := http.Get(fmt.Sprintf("%s/sessions/%s", strings.TrimRight(bridgeURL, "/"), id))
+	sessionURL, err := bridgesession.URL(bridgeURL, id)
+	if err != nil {
+		return s, err
+	}
+	resp, err := http.Get(sessionURL)
 	if err != nil {
 		return s, err
 	}
@@ -1051,7 +1056,11 @@ type turnPage struct {
 // read only to count the messages and keep the last few for a 16k-character
 // digest. The bounded page carries the session-wide event count in its validator.
 func getSessionPage(bridgeURL, id string) (sessionPage, error) {
-	pageURL := fmt.Sprintf("%s/sessions/%s/messages?limit=%d&payload=preview", strings.TrimRight(bridgeURL, "/"), url.PathEscape(id), digestTurns)
+	messagesURL, err := bridgesession.SubresourceURL(bridgeURL, id, "messages")
+	if err != nil {
+		return sessionPage{}, err
+	}
+	pageURL := fmt.Sprintf("%s?limit=%d&payload=preview", messagesURL, digestTurns)
 	resp, err := http.Get(pageURL)
 	if err != nil {
 		return sessionPage{}, err

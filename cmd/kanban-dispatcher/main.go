@@ -58,6 +58,7 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
 	"github.com/slava/scheduler/internal/bridgeclient"
+	"github.com/slava/scheduler/internal/bridgesession"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
@@ -829,7 +830,10 @@ func (s bridgeSession) differenceFrom(spec cardSessionSpec) string {
 }
 
 func getBridgeSession(bridgeURL, sessionID string) (bridgeSession, error) {
-	url := fmt.Sprintf("%s/sessions/%s", strings.TrimRight(bridgeURL, "/"), sessionID)
+	url, err := bridgesession.URL(bridgeURL, sessionID)
+	if err != nil {
+		return bridgeSession{}, err
+	}
 	resp, err := http.Get(url)
 	if err != nil {
 		return bridgeSession{}, err

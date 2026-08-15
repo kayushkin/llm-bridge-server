@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/slava/scheduler/internal/boundedtext"
+	"github.com/slava/scheduler/internal/bridgesession"
 )
 
 // linkTypeSession is the entity_type that autoworker, kanban-dispatcher and the
@@ -184,7 +185,13 @@ func (g *sessionGate) dormantStillOwns(sessionID, state, updatedAt string) (bool
 // the distinction does not matter — would make an unreachable bridge look
 // exactly like a finished session and let the classifier edit live cards.
 func fetchSessionState(client *http.Client, bridgeURL, sessionID string) (state, updatedAt string, notFound bool, err error) {
-	url := fmt.Sprintf("%s/sessions/%s", strings.TrimRight(bridgeURL, "/"), sessionID)
+	// Built rather than interpolated, because an id that reaches a neighbouring
+	// route answers 404 and a 404 is the one reply that frees the card. See
+	// internal/bridgesession for the routes a bare fmt.Sprintf can hit.
+	url, err := bridgesession.URL(bridgeURL, sessionID)
+	if err != nil {
+		return "", "", false, err
+	}
 	resp, err := client.Get(url)
 	if err != nil {
 		return "", "", false, err
