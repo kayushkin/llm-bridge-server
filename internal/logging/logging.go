@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	natsbus "github.com/kayushkin/bus"
 
@@ -20,6 +21,14 @@ type LogEntry struct {
 	Time     string                 `json:"time"`
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
+
+// outputSnippetBudget is how much of a job's combined output travels with the
+// finish event. The snippet is stored by whatever reads the bus, so the cut is
+// a wire value rather than a display one.
+const outputSnippetBudget = 500
+
+// truncationMarker is appended to a snippet that did not fit.
+const truncationMarker = "... (truncated)"
 
 // entryPublisher is the sink a Logger writes to. *natsbus.Client satisfies it.
 // It is an interface so that a test can read back the entry a Log* call
@@ -53,6 +62,25 @@ func (l *Logger) publish(entry LogEntry) {
 	}
 }
 
+// truncateAtRuneBoundary cuts s to at most budget bytes, walking the cut back
+// to the start of the rune that straddles it. Cutting at a fixed byte offset
+// splits that rune, and nothing downstream reports it: json.Marshal substitutes
+// U+FFFD for the partial sequence and returns no error, so the damage is stored
+// and never announced.
+//
+// It never drops more than the width of the straddling rune, so the snippet
+// stays within one rune of its budget.
+func truncateAtRuneBoundary(s string, budget int) string {
+	if len(s) <= budget {
+		return s
+	}
+	cut := budget
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 // LogJobStart logs job execution start
 func (l *Logger) LogJobStart(jobID int64, jobName, schedule string, runID int64) {
 	l.publish(LogEntry{
@@ -79,8 +107,8 @@ func (l *Logger) LogJobFinish(jobID int64, jobName, schedule string, runID int64
 	}
 
 	outputSnippet := output
-	if len(output) > 500 {
-		outputSnippet = output[:500] + "... (truncated)"
+	if len(output) > outputSnippetBudget {
+		outputSnippet = truncateAtRuneBoundary(output, outputSnippetBudget) + truncationMarker
 	}
 
 	l.publish(LogEntry{
