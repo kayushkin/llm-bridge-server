@@ -22,6 +22,19 @@ type subagentTask struct {
 	settled     bool   // a terminal task_updated/task_notification has landed
 }
 
+// unpromotedTask is a task the router deliberately gave no session — a
+// backgrounded shell today, and any kind msg.TaskTypeIsAgent declines.
+//
+// It is tracked for one reason only: a client draws a spawn row from
+// task_started whatever the kind, and closes it on a terminal task status. When
+// the process dies before that status arrives, nothing else is left alive to
+// send one, so the row stays open forever and the live status line keeps
+// listing a shell that is not running.
+type unpromotedTask struct {
+	taskID    string
+	toolUseID string
+}
+
 // subagentRouter demuxes one harness process's event stream into per-subagent
 // bridge sessions.
 //
@@ -48,15 +61,28 @@ type subagentRouter struct {
 	byToolUse map[string]*subagentTask
 	byTaskID  map[string]*subagentTask
 	warned    map[string]bool
+
+	// Tasks that got no session, kept apart from the two maps above on
+	// purpose. byToolUse is the promoted set — sessionIDs() iterates it to tear
+	// down per-session state, and ensureSession retries a failed mint from it —
+	// so an entry with no session in there would be a session id waiting to be
+	// asked for and never supplied. This list answers one narrower question
+	// instead: which spawn rows are still open.
+	//
+	// Keyed by task id, because the closing frames name the task and nothing
+	// here is ever looked up by tool_use_id: an unpromoted task's frames stay on
+	// the parent, so route() never asks about one.
+	unpromoted map[string]*unpromotedTask
 }
 
 func newSubagentRouter(m *Manager, parentBridgeID string) *subagentRouter {
 	return &subagentRouter{
-		manager:   m,
-		parentID:  parentBridgeID,
-		byToolUse: make(map[string]*subagentTask),
-		byTaskID:  make(map[string]*subagentTask),
-		warned:    make(map[string]bool),
+		manager:    m,
+		parentID:   parentBridgeID,
+		byToolUse:  make(map[string]*subagentTask),
+		byTaskID:   make(map[string]*subagentTask),
+		warned:     make(map[string]bool),
+		unpromoted: make(map[string]*unpromotedTask),
 	}
 }
 
@@ -89,6 +115,16 @@ func (r *subagentRouter) observe(ev *msg.Event) {
 				r.warned[ev.System.TaskType] = true
 				log.Printf("[subagent] %s: not promoting task_type=%q to a session (task=%s, %q); if that is an agent kind, add it to msg.TaskTypeIsAgent",
 					r.parentID, ev.System.TaskType, ev.System.TaskID, ev.System.Description)
+			}
+			// No session, but the spawn row it just opened is still ours to
+			// close. Every kind lands here, not only local_bash: an unknown kind
+			// draws the same row and hangs the same way, and the warning above
+			// already says we do not recognize it.
+			if _, ok := r.unpromoted[ev.System.TaskID]; !ok {
+				r.unpromoted[ev.System.TaskID] = &unpromotedTask{
+					taskID:    ev.System.TaskID,
+					toolUseID: ev.System.ToolUseID,
+				}
 			}
 			return
 		}
@@ -123,7 +159,24 @@ func (r *subagentRouter) observe(ev *msg.Event) {
 			ev.System.SubagentSessionID = task.bridgeID
 		}
 		r.settle(ev)
+		r.forgetClosedUnpromoted(ev)
 	}
+}
+
+// forgetClosedUnpromoted drops a tracked unpromoted task once the harness has
+// closed it, so the list holds only the spawns still open.
+//
+// The promoted list cannot do this — its entries carry the session id that
+// teardown and a retried mint both still need after the task ends — which is
+// the whole reason these are two lists and not one.
+func (r *subagentRouter) forgetClosedUnpromoted(ev *msg.Event) {
+	if ev.System.TaskID == "" || !msg.TaskStatusIsTerminal(ev.System.TaskStatus) {
+		// Same rule settle() applies: a status this build does not recognize is
+		// not a close. Forgetting the task on one would leave its spawn row with
+		// nothing left to shut it.
+		return
+	}
+	delete(r.unpromoted, ev.System.TaskID)
 }
 
 // warnOnce logs one line per distinct subagent. A failure that recurs on every
@@ -249,11 +302,17 @@ func (r *subagentRouter) sessionIDs() []string {
 	return out
 }
 
-// settleUnfinished closes out subagents whose host process exited before their
-// task reported a terminal status — a kill, a crash, or the turn watchdog
-// firing. Without it those rows stay at "running" with nothing left alive to
-// ever move them, which is the same stuck-state class the F1 settle reconcile
-// exists to prevent on parent sessions.
+// settleUnfinished closes out every task whose host process exited before it
+// reported a terminal status — a kill, a crash, or the turn watchdog firing.
+// Without it a promoted subagent's row stays at "running" with nothing left
+// alive to ever move it, which is the same stuck-state class the F1 settle
+// reconcile exists to prevent on parent sessions.
+//
+// It covers the unpromoted tasks too. A backgrounded shell gets no row and no
+// session, so for a while it read as nothing to close — but it does get a spawn
+// row on the parent's timeline and a line on the live status surface, and both
+// of those are closed by a terminal task status arriving on the parent's stream
+// and by nothing else.
 //
 // It emits a terminal task event on the parent as well as writing the subagent's
 // row. Writing the row alone was not enough and read as a smaller bug than it
@@ -294,6 +353,26 @@ func (r *subagentRouter) settleUnfinished() {
 		if err := r.manager.store.UpdateSessionState(task.bridgeID, string(msg.SessionError)); err != nil {
 			log.Printf("[subagent] %s: settle abandoned subagent: %v", task.bridgeID, err)
 		}
+	}
+
+	// The same close for the tasks that never got a session. There is no row to
+	// write and no session to name — only the parent's stream, which is the one
+	// thing a client reads to learn a task ended. Measured on this host over the
+	// 40 most recent sessions: 20 spawns were left open, and 10-11 of them were
+	// backgrounded shells no code path could ever close.
+	for _, task := range r.unpromoted {
+		r.manager.broadcastDerived(r.parentID, &msg.Event{
+			Type:      msg.EventSystem,
+			Timestamp: time.Now(),
+			System: &msg.SystemEvent{
+				Subtype:    "task_updated",
+				TaskID:     task.taskID,
+				ToolUseID:  task.toolUseID,
+				TaskStatus: msg.TaskStatusCancelled,
+				Message:    "the harness process exited before this task reported a status",
+			},
+		})
+		delete(r.unpromoted, task.taskID)
 	}
 }
 
