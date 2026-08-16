@@ -108,9 +108,16 @@ func (s *Store) AnthropicKey() (string, error) {
 }
 
 // MaskKey masks a key for display, showing only the first and last 4 chars.
+//
+// Both cuts land on a rune boundary. The masked value goes to `aiauth status`
+// on stdout, so a split rune shows as a replacement glyph rather than
+// corrupting a stored or transmitted value — tier 3 by consequence. Every
+// provider key format on this box is ASCII, so this is unswept rather than on
+// fire. The value is display-only, so shortening a budget by up to three bytes
+// is the right repair rather than a refusal.
 func MaskKey(key string) string {
 	if len(key) <= 12 {
 		return strings.Repeat("*", len(key))
 	}
-	return key[:4] + "..." + key[len(key)-4:]
+	return truncateAtRuneBoundary(key, 4) + "..." + suffixAtRuneBoundary(key, 4)
 }
