@@ -215,24 +215,45 @@ var priorityMatrix = [4][deadlineBucketCount]int{
 	stakesSevere: {2, 2, 3, 4, 5, 5},
 }
 
-// mootWhenPassed are the categories whose deadlines simply stop mattering once
-// they pass, as against the ones where being late keeps costing something.
+// mootCategoriesWhenPassed are the topics whose deadlines simply stop mattering
+// once they pass, as against the ones where being late keeps costing something.
 //
-// This is the second half of routing expiry by consequence. A missed rent
-// payment is a late fee still growing, so it escalates to the top; a concert
-// that already happened is over, and nothing is gained by ranking it above
-// tomorrow's performance. Without this, "Blue Öyster Cult free concert at GSR
-// tonight" outscored an event happening the next day, purely because
-// action:schedule had lifted it out of the minor band.
-//
-// These cards sink to overduePassedPriority rather than to zero: the user asked
-// to archive lapsed items by hand, so they must stay visibly lapsed rather than
-// blending into the buckets that never mattered.
-var mootWhenPassed = map[string]bool{
+// This is half of routing expiry by consequence. A missed rent payment is a late
+// fee still growing, so it escalates to the top; a concert that already happened
+// is over, and nothing is gained by ranking it above tomorrow's performance.
+// Without this, "Blue Öyster Cult free concert at GSR tonight" outscored an event
+// happening the next day, purely because action:schedule had lifted it out of
+// the minor band.
+var mootCategoriesWhenPassed = map[string]bool{
 	"social-events": true,
 	"media-subs":    true,
 	"promotions":    true,
 	"politics":      true,
+}
+
+// mootActionsWhenPassed are the actions that cannot be performed retroactively,
+// whatever the card is about.
+//
+// Verification is the case that forced this: a sign-in challenge or an emailed
+// code expires and simply cannot be answered afterwards — you request a new one,
+// and the old card is spent. Measured live, "Verify Hinge account sign-in" sat
+// at the top of the board on 5, level with an overdue domain renewal, because
+// action:verify is severe stakes and cat:personal is not a moot category.
+//
+// Paying is the deliberate contrast and must never be added here: an overdue
+// bill is exactly the thing that gets worse by being ignored.
+var mootActionsWhenPassed = map[string]bool{
+	"verify": true,
+}
+
+// isMootOncePassed reports whether a passed deadline settles the card rather
+// than escalating it.
+//
+// Such cards sink to overduePassedPriority rather than to zero: the user asked
+// to archive lapsed items by hand, so they must stay visibly lapsed rather than
+// blending into the buckets that never mattered.
+func isMootOncePassed(category, action string) bool {
+	return mootCategoriesWhenPassed[category] || mootActionsWhenPassed[action]
 }
 
 // overduePassedPriority is where a lapsed but consequence-free card lands: above
@@ -273,7 +294,7 @@ func scoreCard(category, action, storedUrgency string, due *time.Time, now time.
 	}
 
 	priority := priorityMatrix[s][bucket]
-	if bucket == deadlineOverdue && mootWhenPassed[category] && priority > overduePassedPriority {
+	if bucket == deadlineOverdue && isMootOncePassed(category, action) && priority > overduePassedPriority {
 		priority = overduePassedPriority
 	}
 
@@ -287,11 +308,24 @@ func scoreCard(category, action, storedUrgency string, due *time.Time, now time.
 
 // parseDueDate reads the due date the model reported.
 //
-// Two shapes are accepted because mail states deadlines both ways: a bare
-// calendar date ("Aug 14") and a real instant ("the 6pm showing"). A bare date
-// resolves to the END of that day in the given zone, not its midnight — a bill
-// due "Aug 14" is not overdue at 00:01 on Aug 14, and rounding the other way
-// would mark a whole class of cards expired a day early.
+// Three shapes are accepted because mail states deadlines all three ways:
+//
+//   - a bare calendar date, "2026-08-14" ("due Aug 14")
+//   - a zoned instant, "2026-08-14T19:30:00-07:00"
+//   - a naive local datetime, "2026-08-14T19:30:00" ("the 7:30 showing")
+//
+// The naive form is not a concession. Asked for a deadline the mail states as a
+// wall-clock time, a model returns one far more often than it invents an offset,
+// and the first live backfill lost two cards to exactly that — "NNBA Dog Days of
+// Summer performance Aug 14" and "Confirm Nevada DMV appointment Sept 5 8am"
+// both came back as bare datetimes and were dropped. Mail states local times, so
+// reading them in the local zone is also the correct interpretation rather than
+// merely a lenient one.
+//
+// A bare date resolves to the END of that day, not its midnight — a bill due
+// "Aug 14" is not overdue at 00:01 on Aug 14, and rounding the other way would
+// mark a whole class of cards expired a day early. A datetime is taken at the
+// instant given, since a stated time is already precise.
 //
 // Anything else is an error rather than a zero time. A silently dropped deadline
 // is the failure this entire file exists to correct.
@@ -303,8 +337,11 @@ func parseDueDate(raw string, loc *time.Location) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, raw); err == nil {
 		return t, nil
 	}
+	if t, err := time.ParseInLocation("2006-01-02T15:04:05", raw, loc); err == nil {
+		return t, nil
+	}
 	if day, err := time.ParseInLocation("2006-01-02", raw, loc); err == nil {
 		return day.Add(24*time.Hour - time.Second), nil
 	}
-	return time.Time{}, fmt.Errorf("due date %q is neither RFC3339 nor YYYY-MM-DD", raw)
+	return time.Time{}, fmt.Errorf("due date %q is not YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS, or RFC3339", raw)
 }

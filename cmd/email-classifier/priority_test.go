@@ -192,3 +192,58 @@ func TestRealBoardCardsRankSensibly(t *testing.T) {
 			got["NNBA Dog Days of Summer performance Aug 14"], got["Blue Öyster Cult free concert at GSR tonight"])
 	}
 }
+
+// TestExpiredVerificationSettlesButOverdueBillDoesNot pins the second half of
+// expiry-by-consequence, against the live case that exposed it: "Verify Hinge
+// account sign-in" sat at the top of the board on 5, level with an overdue
+// domain renewal, because verify is severe stakes and personal is not a moot
+// category. A challenge you can no longer answer is spent; a bill is not.
+func TestExpiredVerificationSettlesButOverdueBillDoesNot(t *testing.T) {
+	now := time.Date(2026, 8, 14, 20, 0, 0, 0, time.UTC)
+	yesterday := mustParseDue(t, "2026-08-12")
+
+	verification := scoreCard("personal", "verify", "expired", yesterday, now)
+	if verification.Priority != overduePassedPriority {
+		t.Errorf("expired sign-in verification scored %d, want %d: it cannot be answered retroactively",
+			verification.Priority, overduePassedPriority)
+	}
+
+	bill := scoreCard("finance", "pay", "expired", yesterday, now)
+	if bill.Priority != maxPriority {
+		t.Errorf("overdue bill scored %d, want %d: paying late is still paying",
+			bill.Priority, maxPriority)
+	}
+}
+
+// TestVerificationStillOutranksWhileItIsLive guards against the fix reaching
+// past the deadline it is scoped to. A verification with time left is urgent.
+func TestVerificationStillOutranksWhileItIsLive(t *testing.T) {
+	now := time.Date(2026, 8, 14, 20, 0, 0, 0, time.UTC)
+	live := scoreCard("personal", "verify", "critical", mustParseDue(t, "2026-08-15"), now)
+	if live.Priority < 4 {
+		t.Errorf("a verification due tomorrow scored %d; it is still live and should rank high", live.Priority)
+	}
+}
+
+// TestNaiveDatetimeIsReadInLocalZone covers the shape the first live backfill
+// actually returned. Both of these were dropped, and one of them was the very
+// card the backfill existed to correct.
+func TestNaiveDatetimeIsReadInLocalZone(t *testing.T) {
+	for _, raw := range []string{"2026-08-14T19:30:00", "2026-09-05T08:00:00"} {
+		got, err := parseDueDate(raw, time.UTC)
+		if err != nil {
+			t.Fatalf("parseDueDate(%q): %v", raw, err)
+		}
+		if got.Hour() == 0 && got.Minute() == 0 {
+			t.Errorf("parseDueDate(%q) lost the time of day: %s", raw, got)
+		}
+	}
+	// A zoned instant must keep its own offset rather than being re-read locally.
+	zoned, err := parseDueDate("2026-08-14T19:30:00-07:00", time.UTC)
+	if err != nil {
+		t.Fatalf("zoned parse: %v", err)
+	}
+	if !zoned.Equal(time.Date(2026, 8, 15, 2, 30, 0, 0, time.UTC)) {
+		t.Errorf("zoned instant misread as %s", zoned)
+	}
+}
