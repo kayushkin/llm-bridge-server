@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 )
@@ -37,6 +38,29 @@ func harnessBackendURL(name string) string {
 	}
 }
 
+// restEscapesBackendPath reports whether rest, resolved as a path
+// relative to the backend's own path, climbs above it.
+//
+// It has to be asked at all because neither layer either side of this
+// handler removes a dot-segment. Go's ServeMux cleans a *raw* `../` with
+// a redirect, but leaves a percent-encoded `..%2f` alone and PathValue
+// then hands the handler the decoded `../`; Go's HTTP client does not
+// clean the outgoing path either. So a `..` in rest survives verbatim
+// into the upstream request, and against a backend URL carrying a path
+// prefix it addresses whatever sits above that prefix.
+//
+// Only rest is judged, and only as a predicate — the caller still
+// forwards it unchanged. Cleaning the whole target would collapse an
+// empty segment in the operator's own backend URL and silently reroute
+// requests that work today.
+//
+// A dot-segment that resolves back inside is not an escape and is left
+// alone: it addresses the same place under the prefix either way.
+func restEscapesBackendPath(rest string) bool {
+	cleaned := path.Clean(strings.TrimLeft(rest, "/"))
+	return cleaned == ".." || strings.HasPrefix(cleaned, "../")
+}
+
 // handleHarnessProxy forwards an authenticated request to the
 // corresponding harness backend on the bridge host. Path layout:
 //
@@ -47,11 +71,19 @@ func harnessBackendURL(name string) string {
 // working. The request body is read with a generous limit but no
 // rewriting; runners are trusted (they presented a valid
 // runner_token earlier on the WS).
+//
+// The one thing not passed through is a <rest> that climbs above the
+// backend's own path — see restEscapesBackendPath — which is refused
+// with 400 rather than forwarded.
 func (s *Server) handleHarnessProxy(w http.ResponseWriter, r *http.Request) {
 	harness := r.PathValue("harness")
 	rest := r.PathValue("rest")
 	if harness == "" {
 		http.Error(w, "missing harness", http.StatusBadRequest)
+		return
+	}
+	if restEscapesBackendPath(rest) {
+		http.Error(w, "proxy path escapes the harness backend", http.StatusBadRequest)
 		return
 	}
 
