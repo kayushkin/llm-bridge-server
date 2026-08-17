@@ -165,7 +165,7 @@ func (a *applier) applyReport(batch []pendingEmail, report *filingReport) error 
 			continue
 		}
 
-		cardIDs := a.resolveFilingCards(filing, cardIDByTitle)
+		cardIDs := a.resolveFilingCards(filing, cardIDByTitle, senderKey(em.Meta.From))
 		if len(cardIDs) == 0 {
 			log.Printf("[email] WARNING: filing for %s (%q) named no resolvable card; sending to triage",
 				em.Locator, em.Meta.Subject)
@@ -193,7 +193,7 @@ func (a *applier) applyReport(batch []pendingEmail, report *filingReport) error 
 //
 // cardIDByTitle is mutated as cards are created, so a later filing in the same
 // batch proposing the same title reuses the card rather than making a second one.
-func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[string]string) []string {
+func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[string]string, sender string) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(id string) {
@@ -212,6 +212,15 @@ func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[strin
 		add(id)
 	}
 	if spec := filing.NewCard; spec != nil && strings.TrimSpace(spec.Title) != "" {
+		// The sender decides the action axis for feeds, overriding whatever the
+		// model made of this one message. Logged rather than applied silently:
+		// the override is a claim about the sender, and a wrong entry in that
+		// list would otherwise mute a real task without trace.
+		if senderIsAlwaysNoAction(sender) && spec.Action != actionNone {
+			log.Printf("[email] %s only sends feeds; filing %q as action=%s instead of %q",
+				sender, spec.Title, actionNone, spec.Action)
+			spec.Action = actionNone
+		}
 		key := normalizeTitle(spec.Title)
 		if existing, ok := cardIDByTitle[key]; ok {
 			add(existing)
@@ -330,6 +339,14 @@ func (a *applier) applyCardUpdate(upd cardUpdate) error {
 		log.Printf("[email] card %q is held by an agent — skipping retag/move (session=%s)", card.Title, session)
 		a.skippedAgentOwned++
 		return nil
+	}
+
+	// A card the sender rule already settled must not be raised again by a later
+	// message from that same feed.
+	if upd.Action != "" && upd.Action != actionNone && anySenderIsAlwaysNoAction(card.Senders) {
+		log.Printf("[email] card %q is fed by a no-action sender; ignoring update to action=%q",
+			card.Title, upd.Action)
+		upd.Action = ""
 	}
 
 	newTags := card.Tags

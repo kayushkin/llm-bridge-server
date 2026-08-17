@@ -247,3 +247,64 @@ func TestNaiveDatetimeIsReadInLocalZone(t *testing.T) {
 		t.Errorf("zoned instant misread as %s", zoned)
 	}
 }
+
+// TestListingsFeedSendersAreNeverActionable covers the subdomain spread this
+// mail actually arrives from, and the neighbours it must not catch.
+func TestListingsFeedSendersAreNeverActionable(t *testing.T) {
+	feed := []string{
+		"my-saved-home@mail.zillow.com",
+		"zmail@zmail.zillow.com",
+		"anything@zillow.com",
+		"MIXED@Mail.Zillow.Com",
+	}
+	for _, s := range feed {
+		if !senderIsAlwaysNoAction(s) {
+			t.Errorf("senderIsAlwaysNoAction(%q) = false, want true", s)
+		}
+	}
+	// A domain that merely ends in the same letters is a different company, and
+	// a suffix match without the dot would claim it.
+	notFeed := []string{
+		"someone@notzillow.com",
+		"landlord@example.com",
+		"no-at-sign",
+		"",
+	}
+	for _, s := range notFeed {
+		if senderIsAlwaysNoAction(s) {
+			t.Errorf("senderIsAlwaysNoAction(%q) = true, want false", s)
+		}
+	}
+}
+
+// TestAnySenderIsAlwaysNoActionScansTheWholeList — a card learns several senders
+// and only one of them need be the feed.
+func TestAnySenderIsAlwaysNoActionScansTheWholeList(t *testing.T) {
+	if !anySenderIsAlwaysNoAction([]string{"a@example.com", "zmail@zmail.zillow.com"}) {
+		t.Error("a card fed by the listings feed was not recognized")
+	}
+	if anySenderIsAlwaysNoAction([]string{"a@example.com", "b@example.org"}) {
+		t.Error("a card with no feed sender was claimed")
+	}
+	if anySenderIsAlwaysNoAction(nil) {
+		t.Error("a card with no senders was claimed")
+	}
+}
+
+// TestNoActionSenderGatesScoreToZero is the end-to-end point of the rule: the
+// "Zillow open house" card scored the maximum once its date passed, because
+// action:decide made it severe via cat:housing.
+func TestNoActionSenderGatesScoreToZero(t *testing.T) {
+	now := time.Date(2026, 8, 16, 23, 0, 0, 0, time.UTC)
+	passed := mustParseDue(t, "2026-07-30")
+
+	asFiled := scoreCard("housing", "decide", "high", passed, now)
+	if asFiled.Priority != maxPriority {
+		t.Fatalf("precondition changed: an overdue housing decision scored %d, expected %d",
+			asFiled.Priority, maxPriority)
+	}
+	withRule := scoreCard("housing", actionNone, "high", passed, now)
+	if withRule.Priority != 0 {
+		t.Errorf("a listings-feed card scored %d, want 0", withRule.Priority)
+	}
+}

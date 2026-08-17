@@ -36,6 +36,11 @@ var cardCategories = []string{
 	"personal",         // mail from an actual human
 }
 
+// actionNone is the "no action, ever" value of the action axis. Named because
+// the sender override in noaction_senders.go writes it, and a second spelling of
+// it would be a vocabulary violation nothing would catch.
+const actionNone = "none"
+
 // cardActions is the "what would you have to do" axis.
 var cardActions = []string{
 	"reply",    // a counterparty is waiting on a response
@@ -46,7 +51,7 @@ var cardActions = []string{
 	"fix",      // something is broken and needs work
 	"read",     // worth reading, nothing owed
 	"file",     // receipt or record, keep for reference
-	"none",     // no action, ever
+	actionNone, // no action, ever
 }
 
 // cardUrgencies is the time-pressure axis. "expired" earns its place because in
@@ -214,6 +219,8 @@ Two kinds of card exist, and picking the right kind is most of the job:
 2. TASK cards — one real thing to do, with a beginning and an end. "Decide on the KAPITAL jacket counter-offer", "Confirm the USPS Informed Delivery registration", "Reply to masa_117 about item 206153166065". These carry a real action and are expected to complete.
 
 A RECEIPT IS NOT A TASK. Payment confirmations, order receipts, statements and delivery notices are records: nothing is owed and nothing will ever be completed. File them on a durable bucket card for that source or topic — "Payment receipts", "Rent payments", "Amazon orders" — never on a card of their own. A board with one card per receipt is a board nobody can read. The same holds for one-off newsletters and announcements: they belong on a bucket for that sender.
+
+Listings feeds are never actionable. Mail from a property or marketplace listings feed — Zillow open houses, price cuts, saved-search hits — is action "none", however specific a date it names. An open house on Saturday is not something owed to anyone.
 
 Judge the email, not its vocabulary. Marketing mail routinely says "REMINDER", "Action required", "expiring", "last chance" — that is copywriting, not a task. A real task has a specific counterparty expecting something specific from this user.
 
