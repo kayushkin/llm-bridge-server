@@ -566,8 +566,8 @@ func TestManager_RecoversTurnIDAfterProcessRestart(t *testing.T) {
 		t.Fatalf("readEvents 1 did not return")
 	}
 
-	// In-memory state is gone now (manager.go:525 deletes msgState
-	// on process exit). Second process feeds another block as if the
+	// In-memory state is gone now (readEvents deletes msgState in its
+	// cleanup tail on process exit). Second process feeds another block as if the
 	// harness resumed the same turn.
 	m.mu.RLock()
 	_, stillThere := m.msgState[bridgeID]
