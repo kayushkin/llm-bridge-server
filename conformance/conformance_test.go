@@ -32,18 +32,24 @@ type request struct {
 	Params json.RawMessage `json:"params,omitempty"`
 }
 
-// startHarness launches a harness binary and returns a test handle.
 // conformanceEventTimeout is how long a test waits for an event before calling
 // it absent.
 //
-// The old value was 10s, and it was too short to be measuring the harness. A
-// real harness spawns a CLI, which authenticates and loads a session before it
-// can answer; on this host llm-bridge-codex and llm-bridge-claudecode both
-// failed `start` at 10.01s while passing `message` at ~12s, and `message`
-// starts a session too. So the runner was recording process startup as a
-// missing feature. llm-bridge-claudecode's -discover was filed the same way:
-// it works, it takes between 20 and 60 seconds, and the matrix called it
-// unsupported.
+// The old value was 10s, which is shorter than some harnesses take to answer.
+// llm-bridge-claudecode's -discover is the clear case: it works, it takes
+// between 20 and 60 seconds on this host, and the matrix filed it as absent.
+//
+// ⚠️ This does NOT explain the `start` failures, and it was tempting to think
+// it did — both harnesses fail `start` at exactly the old timeout. They fail
+// because testStart waits for EventSessionState, and neither
+// llm-bridge-codex nor llm-bridge-claudecode emits that event at all: grep
+// both for msg.EventSessionState and you get zero hits. llm-bridge-server
+// derives session state centrally from EventResult and EventError, and the
+// harnesses say so in comments. Only cmd/mock-harness still emits it, which
+// is why the suite looks green against the mock and fails against everything
+// that ships. Raising the timeout makes that wait longer, not truer. Fixing
+// it means deciding what `start` should assert against a harness that
+// deliberately reports nothing — see the note in CONFORMANCE-GRADING.md.
 //
 // 60s by default; override with CONFORMANCE_EVENT_TIMEOUT (any duration Go can
 // parse, e.g. "90s") when testing a slower harness.
@@ -71,6 +77,7 @@ func conformanceDuration(envName string, fallback time.Duration) time.Duration {
 	return parsed
 }
 
+// startHarness launches a harness binary and returns a test handle.
 func startHarness(t *testing.T, binary string, env ...string) *harnessProcess {
 	t.Helper()
 
