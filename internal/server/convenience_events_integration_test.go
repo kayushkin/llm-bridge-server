@@ -90,14 +90,24 @@ func TestConvenienceEventsIntegration_ClaudeCode_TurnSequence(t *testing.T) {
 	sendUserMessage(t, ts.URL, bridgeID, "Reply with just the word 'ok' and nothing else.")
 
 	// Read SSE until we've collected the convenience-event triple for
-	// this turn — agent_state, usage_total, turn_complete — or the
-	// timeout expires. We don't pin the order between the second
-	// agent_state(tool_running→idle) and usage_total/turn_complete
-	// (spec leans usage_total → turn_complete after the closing
-	// agent_state, but consumers shouldn't rely on a specific
-	// interleaving). What we DO assert: at least one transition into
-	// tool_running, at least one back to idle, exactly one usage_total
-	// for the turn, and one turn_complete carrying the same turn_id.
+	// this turn — session_state, usage_total, turn_complete — or the
+	// timeout expires.
+	//
+	// A tool-using turn walks idle → model_generating → tool_running →
+	// model_generating → idle. It opens on model_generating because the
+	// user message arrives before any tool call does (derivation.go,
+	// "turn_started"), and it leaves tool_running for model_generating
+	// once the last tool result drains ("tools_drained"). So the closing
+	// transition is model_generating→idle, and idle→tool_running does not
+	// occur at all.
+	//
+	// We don't pin the order between that closing session_state and
+	// usage_total/turn_complete (spec leans usage_total → turn_complete
+	// after it, but consumers shouldn't rely on a specific interleaving).
+	// What we DO assert: at least one transition into tool_running, at
+	// least one back to idle from some non-idle state, exactly one
+	// usage_total for the turn, and one turn_complete carrying the same
+	// turn_id.
 	var (
 		sessionStates  []*msg.StateEvent
 		usageTotals    []*msg.UsageTotalEvent
@@ -181,7 +191,10 @@ done:
 
 	var startTransition, endTransition bool
 	for _, st := range sessionStates {
-		if st.Previous == msg.SessionIdle && st.State == msg.SessionToolRunning {
+		// Into tool_running from wherever. Pinning the predecessor to
+		// idle made this unreachable: the turn is already in
+		// model_generating by the time the first tool call arrives.
+		if st.State == msg.SessionToolRunning {
 			startTransition = true
 		}
 		if st.State == msg.SessionIdle && st.Previous != "" && st.Previous != msg.SessionIdle {
@@ -189,10 +202,10 @@ done:
 		}
 	}
 	if !startTransition {
-		t.Errorf("missing agent_state idle→tool_running transition; got %+v", sessionStates)
+		t.Errorf("missing session_state transition into tool_running; got %+v", sessionStates)
 	}
 	if !endTransition {
-		t.Errorf("missing agent_state →idle transition (turn never closed); got %+v", sessionStates)
+		t.Errorf("missing session_state →idle transition (turn never closed); got %+v", sessionStates)
 	}
 
 	if len(usageTotals) != 1 {
