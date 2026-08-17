@@ -33,10 +33,48 @@ type request struct {
 }
 
 // startHarness launches a harness binary and returns a test handle.
+// conformanceEventTimeout is how long a test waits for an event before calling
+// it absent.
+//
+// The old value was 10s, and it was too short to be measuring the harness. A
+// real harness spawns a CLI, which authenticates and loads a session before it
+// can answer; on this host llm-bridge-codex and llm-bridge-claudecode both
+// failed `start` at 10.01s while passing `message` at ~12s, and `message`
+// starts a session too. So the runner was recording process startup as a
+// missing feature. llm-bridge-claudecode's -discover was filed the same way:
+// it works, it takes between 20 and 60 seconds, and the matrix called it
+// unsupported.
+//
+// 60s by default; override with CONFORMANCE_EVENT_TIMEOUT (any duration Go can
+// parse, e.g. "90s") when testing a slower harness.
+func conformanceEventTimeout() time.Duration {
+	return conformanceDuration("CONFORMANCE_EVENT_TIMEOUT", 60*time.Second)
+}
+
+// conformanceProcessTimeout caps one harness subprocess. It must exceed the
+// event timeout, or the process dies before the wait it is meant to outlast.
+func conformanceProcessTimeout() time.Duration {
+	return conformanceDuration("CONFORMANCE_PROCESS_TIMEOUT", 5*time.Minute)
+}
+
+func conformanceDuration(envName string, fallback time.Duration) time.Duration {
+	raw := os.Getenv(envName)
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		// Falling back silently would run the whole matrix at a timeout the
+		// operator did not choose and report the results as if they had.
+		panic(fmt.Sprintf("%s=%q is not a duration: %v", envName, raw, err))
+	}
+	return parsed
+}
+
 func startHarness(t *testing.T, binary string, env ...string) *harnessProcess {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), conformanceProcessTimeout())
 	cmd := exec.CommandContext(ctx, binary)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stderr = os.Stderr
@@ -239,7 +277,7 @@ func TestMockHarnessEmitsToolRunning(t *testing.T) {
 func TestConformance(t *testing.T) {
 	binary := targetHarness(t)
 	name := harnessName(binary)
-	eventTimeout := 10 * time.Second
+	eventTimeout := conformanceEventTimeout()
 
 	result := &HarnessResult{
 		Harness:  name,
@@ -360,7 +398,7 @@ func TestConformance(t *testing.T) {
 		}
 
 		if !hasStream {
-			result.AddResult(TestResult{Feature: FeatureStreaming, Skipped: true, Error: "no stream events emitted"})
+			result.AddResult(TestResult{Feature: FeatureStreaming, Unsupported: true, Error: "no stream events emitted"})
 			t.Skip("harness does not emit stream events")
 		}
 
@@ -389,7 +427,7 @@ func TestConformance(t *testing.T) {
 			return e.Type == msg.EventSystem && e.System != nil
 		})
 		if err != nil {
-			result.AddResult(TestResult{Feature: FeatureCompact, Skipped: true, Error: "no compact response"})
+			result.AddResult(TestResult{Feature: FeatureCompact, Unsupported: true, Error: "no compact response"})
 			t.Skip("harness does not respond to compact")
 		}
 
@@ -422,7 +460,7 @@ func TestConformance(t *testing.T) {
 			return e.Type == msg.EventSystem && e.System != nil
 		})
 		if err != nil {
-			result.AddResult(TestResult{Feature: FeatureConfig, Skipped: true, Error: "no config response"})
+			result.AddResult(TestResult{Feature: FeatureConfig, Unsupported: true, Error: "no config response"})
 			t.Skip("harness does not respond to config")
 		}
 
@@ -498,7 +536,7 @@ func TestConformance(t *testing.T) {
 
 		event, err := hp.waitForEventType(eventTimeout, msg.EventError)
 		if err != nil {
-			result.AddResult(TestResult{Feature: FeatureErrors, Skipped: true, Error: "no error event emitted"})
+			result.AddResult(TestResult{Feature: FeatureErrors, Unsupported: true, Error: "no error event emitted"})
 			t.Skip("harness does not emit error events")
 		}
 
@@ -521,7 +559,7 @@ func TestConformance(t *testing.T) {
 		out, err := cmd.Output()
 		if err != nil {
 			// Non-zero exit: the flag is not implemented. Not applicable.
-			result.AddResult(TestResult{Feature: FeatureDiscover, Skipped: true, Error: fmt.Sprintf("binary does not support -discover: %v", err)})
+			result.AddResult(TestResult{Feature: FeatureDiscover, Unsupported: true, Error: fmt.Sprintf("binary does not support -discover: %v", err)})
 			t.Skipf("binary does not support -discover: %v", err)
 		}
 
@@ -592,7 +630,7 @@ func TestConformance(t *testing.T) {
 			t.Fatal("no result event received")
 		}
 		if !hasBlock {
-			result.AddResult(TestResult{Feature: FeatureBlock, Skipped: true, Error: "no block events emitted"})
+			result.AddResult(TestResult{Feature: FeatureBlock, Unsupported: true, Error: "no block events emitted"})
 			t.Skip("harness does not emit block events")
 		}
 		result.AddResult(TestResult{Feature: FeatureBlock, Passed: true, Duration: time.Since(start).String()})
@@ -611,7 +649,7 @@ func TestConformance(t *testing.T) {
 
 		event, err := hp.waitForEventType(eventTimeout, msg.EventSessionInfo)
 		if err != nil {
-			result.AddResult(TestResult{Feature: FeatureSessionInfo, Skipped: true, Error: "no session_info event emitted"})
+			result.AddResult(TestResult{Feature: FeatureSessionInfo, Unsupported: true, Error: "no session_info event emitted"})
 			t.Skip("harness does not emit session_info")
 		}
 		if event.Info == nil {
@@ -665,7 +703,7 @@ func TestConformance(t *testing.T) {
 			t.Fatal("no result event received")
 		}
 		if !hasUserMessage {
-			result.AddResult(TestResult{Feature: FeatureUserMessage, Skipped: true, Error: "no user_message events emitted"})
+			result.AddResult(TestResult{Feature: FeatureUserMessage, Unsupported: true, Error: "no user_message events emitted"})
 			t.Skip("harness does not emit user_message")
 		}
 		result.AddResult(TestResult{Feature: FeatureUserMessage, Passed: true, Duration: time.Since(start).String()})
@@ -712,7 +750,7 @@ func TestConformance(t *testing.T) {
 			t.Skip("plan: no terminator")
 		}
 		if !hasPlan {
-			result.AddResult(TestResult{Feature: FeaturePlan, Skipped: true, Error: "no plan events emitted (scenario-specific)"})
+			result.AddResult(TestResult{Feature: FeaturePlan, Unsupported: true, Error: "no plan events emitted (scenario-specific)"})
 			t.Skip("harness does not emit plan events")
 		}
 		result.AddResult(TestResult{Feature: FeaturePlan, Passed: true, Duration: time.Since(start).String()})
@@ -759,7 +797,7 @@ func TestConformance(t *testing.T) {
 			t.Skip("hook: no terminator")
 		}
 		if !hasHook {
-			result.AddResult(TestResult{Feature: FeatureHook, Skipped: true, Error: "no hook events emitted (scenario-specific)"})
+			result.AddResult(TestResult{Feature: FeatureHook, Unsupported: true, Error: "no hook events emitted (scenario-specific)"})
 			t.Skip("harness does not emit hook events")
 		}
 		result.AddResult(TestResult{Feature: FeatureHook, Passed: true, Duration: time.Since(start).String()})
@@ -799,7 +837,7 @@ func TestConformance(t *testing.T) {
 		if err != nil {
 			exitErr, ok := err.(*exec.ExitError)
 			if ok && exitErr.ExitCode() == 2 {
-				result.AddResult(TestResult{Feature: FeatureImport, Skipped: true, Error: "binary does not support -import-history"})
+				result.AddResult(TestResult{Feature: FeatureImport, Unsupported: true, Error: "binary does not support -import-history"})
 				t.Skip("binary does not support -import-history")
 			}
 			code := -1

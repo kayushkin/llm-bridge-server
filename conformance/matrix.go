@@ -88,20 +88,48 @@ var AllFeatures = []Feature{
 
 // TestResult records the outcome of a single feature test.
 type TestResult struct {
-	Feature  Feature `json:"feature"`
-	Passed   bool    `json:"passed"`
-	Skipped  bool    `json:"skipped,omitempty"`
-	Error    string  `json:"error,omitempty"`
-	Duration string  `json:"duration,omitempty"`
+	Feature Feature `json:"feature"`
+	Passed  bool    `json:"passed"`
+
+	// Skipped means the test could not reach a verdict: a precondition failed,
+	// or the feature cannot be exercised by this runner at all. It says nothing
+	// about the harness.
+	Skipped bool `json:"skipped,omitempty"`
+
+	// Unsupported means the test ran, the harness answered, and it does not do
+	// this. That is a verdict about the harness, and it is the one the old
+	// grading could not express — every absence was filed as Skipped, so a
+	// harness missing a feature looked identical to a feature nobody could
+	// test. Sixty per cent of the matrix was Skip, and reading it as coverage
+	// was reading mostly nothing.
+	Unsupported bool `json:"unsupported,omitempty"`
+
+	Error    string `json:"error,omitempty"`
+	Duration string `json:"duration,omitempty"`
+}
+
+// Verdict names the outcome in one word, so callers do not each re-derive it
+// from three booleans and disagree about the precedence.
+func (r TestResult) Verdict() string {
+	switch {
+	case r.Skipped:
+		return "skipped"
+	case r.Unsupported:
+		return "unsupported"
+	case r.Passed:
+		return "passed"
+	default:
+		return "failed"
+	}
 }
 
 // HarnessResult records all test results for a single harness.
 type HarnessResult struct {
-	Harness    string       `json:"harness"`
-	Binary     string       `json:"binary"`
-	TestedAt   time.Time    `json:"tested_at"`
-	Results    []TestResult `json:"results"`
-	Summary    Summary      `json:"summary"`
+	Harness  string       `json:"harness"`
+	Binary   string       `json:"binary"`
+	TestedAt time.Time    `json:"tested_at"`
+	Results  []TestResult `json:"results"`
+	Summary  Summary      `json:"summary"`
 }
 
 // Summary counts test outcomes.
@@ -110,6 +138,10 @@ type Summary struct {
 	Passed  int `json:"passed"`
 	Failed  int `json:"failed"`
 	Skipped int `json:"skipped"`
+	// Unsupported counts features the harness answered for and does not
+	// implement. Kept apart from Skipped so a reader can tell "this harness
+	// cannot do it" from "we never found out".
+	Unsupported int `json:"unsupported"`
 }
 
 // Matrix holds conformance results for all tested harnesses.
@@ -122,9 +154,14 @@ type Matrix struct {
 func (hr *HarnessResult) AddResult(r TestResult) {
 	hr.Results = append(hr.Results, r)
 	hr.Summary.Total++
+	// Skipped stays first: a test that never reached a verdict cannot also
+	// report one. Unsupported comes before Passed so a result carrying both
+	// counts as the narrower claim.
 	switch {
 	case r.Skipped:
 		hr.Summary.Skipped++
+	case r.Unsupported:
+		hr.Summary.Unsupported++
 	case r.Passed:
 		hr.Summary.Passed++
 	default:
