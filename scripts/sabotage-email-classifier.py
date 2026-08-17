@@ -51,6 +51,33 @@ The colon discipline itself is asserted structurally over both lists in
 line this suite actually prints can redden a dropped colon, and a discipline no
 case can redden is a comment rather than a rule.
 
+## A THIRD verdict, which this suite produced and the previous two did not
+
+`kanbanclient` and `schedulerjobs` both split CAUGHT rows two ways, into an
+assertion firing and a reach guard tripping. One row here is neither:
+
+    the flag set goes back to ExitOnError  ->  panic: unexpected call to
+                                               os.Exit(0) during test
+
+`-h` under `ExitOnError` calls `os.Exit(0)`, and Go's testing package panics
+rather than let a test binary exit green half way through a run. The row is
+CAUGHT, it is caught by `TestHelpIsDistinguishableFromABadArgument` — the test
+named for exactly that mechanism — and **no assertion in the file ever runs**:
+the process dies at the `-h` call on line 385, three lines above the first
+`t.Fatal`. So there is no `file.go:NN:` line to read, and a message-based
+classifier can only report "unreadable".
+
+Reported as `runtime-fired`, and deliberately not folded into either neighbour.
+Calling it guard-fired would understate coverage that is real and correctly
+aimed; calling it assertion-fired would name a line that did not execute. It
+does not fail the run, but it is printed with the panic that produced it — a
+verdict nobody sees is a verdict that turns "0 guard-fired" into "every row was
+an assertion".
+
+Score under the split, taken 2026-08-17 by the 281st pass:
+**30 rows, 29 CAUGHT, 0 guard-fired only, 1 runtime-fired, 0 unreadable**, and
+the known-negative control still UNNOTICED.
+
 Why this binary is worth a scorer: it has the largest flag set of the 21 cmd
 mains on this box (seventeen), it reads the environment in ten places, and its
 loudest failures are not its worst ones. FIVE of the seventeen switches turn a
@@ -316,6 +343,41 @@ INTERPOLATING_GUARDS = [
     re.compile(r'parseDueDate\([^)]*\): '),
 ]
 
+# Lines that mean the Go testing RUNTIME killed the run rather than a test
+# reporting a failure. A row caught this way prints no `file.go:NN:` line at all,
+# so a message-based classifier can only say "unreadable" — and this suite
+# produces one for real, which is why the third verdict exists rather than being
+# hypothesised.
+#
+# It is a THIRD answer and not a synonym for either of the other two. The row is
+# genuinely caught, and caught by the test named for the mechanism, so calling it
+# guard-fired would understate real coverage. But no assertion in the file ran,
+# so calling it assertion-fired is a lie about which line did the work. Naming it
+# is the only honest option; laundering it into either neighbour is not.
+RUNTIME_KILLS = [
+    # `-h` under ExitOnError calls os.Exit(0), and Go's testing package panics
+    # on that rather than letting a test binary exit green half way through.
+    "panic: unexpected call to os.Exit(",
+    # Any other panic out of the code under test. Also real coverage, also
+    # nothing to do with an assertion.
+    "panic: ",
+]
+
+
+def runtime_kill(out):
+    """The runtime signal that killed a run, or "" when a test reported normally.
+
+    Read from the raw output rather than from the failure messages, because the
+    whole point is that there are none.
+    """
+    for line in out.splitlines():
+        stripped = line.strip()
+        for kill in RUNTIME_KILLS:
+            if stripped.startswith(kill):
+                return stripped
+    return ""
+
+
 # `go test` reports a failure as `file.go:NN: message`. Split rather than
 # searched: the marker has to be judged against the MESSAGE, and a line-wide
 # substring test reads "filings did not decode: {...}" as the "decode: " guard.
@@ -412,6 +474,14 @@ SELF_SABOTAGES = [
         '    "first parse",\n',
         "RED",
         "drop a trailing colon-and-space: the marker-shape check must fail",
+    ),
+    SelfSabotage(
+        "RUNTIME_KILLS = [\n    # `-h` under ExitOnError",
+        "RUNTIME_KILLS = []\n_KILLS_THE_SABOTAGE_TOOK_AWAY = [\n"
+        "    # `-h` under ExitOnError",
+        "RED",
+        "empty the runtime-kill list: the os.Exit-during-test row must stop being "
+        "recognised, which would report real coverage as unreadable",
     ),
     SelfSabotage(
         "def guard_only(messages):\n",
@@ -558,6 +628,25 @@ def self_test():
             problems.append("pattern %r does not end at a '): ', so it matches the "
                             "assertions that open with the same call"
                             % pattern.pattern)
+
+    # The third verdict, driven on real output from the ExitOnError row rather
+    # than on a fabricated panic — the row that forced this verdict to exist.
+    killed = runtime_kill(
+        "--- FAIL: TestHelpIsDistinguishableFromABadArgument (0.00s)\n"
+        "panic: unexpected call to os.Exit(0) during test [recovered, repanicked]\n"
+        "\ngoroutine 20 [running]:\n"
+    )
+    if not killed.startswith("panic: unexpected call to os.Exit("):
+        problems.append("runtime_kill() read %r from a run the testing package "
+                        "killed for calling os.Exit during a test" % killed)
+    # And the other direction, which is the one that would quietly turn a
+    # guard-fired row into a runtime-fired one: an ordinary reported failure is
+    # not a runtime kill, whatever it says.
+    if runtime_kill("--- FAIL: TestTheDefaultConfigurationValidates (0.01s)\n"
+                    "    flag_defaults_test.go:313: parsing an empty command line: bad flag\n"
+                    "FAIL\n"):
+        problems.append("runtime_kill() called an ordinary reported failure a "
+                        "runtime kill, which would launder a guard-fired row")
 
     # And the reader itself: the location half must be stripped, non-failure
     # lines dropped, and a helper's own .go file read rather than skipped.
@@ -722,27 +811,37 @@ def guard_split():
             verdict, out = _run_tests(PACKAGES)
             restore()
             messages = failure_messages(out)
+            killed = runtime_kill(out)
             if verdict != "CAUGHT":
                 why = ""
-            elif not messages:
-                why = "CAUGHT with no readable failure line"
-            elif guard_only(messages):
+            elif messages and guard_only(messages):
                 why = "guard only -- NOT coverage"
-            else:
+            elif messages:
                 why = "assertion-fired"
-            rows.append((case, verdict, why))
+            elif killed:
+                why = "runtime-fired"
+            else:
+                why = "CAUGHT with no readable failure line"
+            rows.append((case, verdict, why, killed))
             print("%-14s %-32s %s" % (verdict, why, case.name))
 
     print("\n============ guard split ============")
-    guarded = [c for c, _, why in rows if why.startswith("guard only")]
-    unreadable = [c for c, _, why in rows if why.startswith("CAUGHT with no")]
-    caught = [c for c, verdict, _ in rows if verdict == "CAUGHT"]
-    print("%d CAUGHT rows, %d caught by a reach-guard only, %d unreadable"
-          % (len(caught), len(guarded), len(unreadable)))
-    for c in guarded:
-        print("  ⚠️  guard-fired only, so this row scored nothing: %s" % c.name)
-    for c in unreadable:
-        print("  ⚠️  no readable failure line, classify by hand: %s" % c.name)
+    guarded = [r for r in rows if r[2].startswith("guard only")]
+    runtime = [r for r in rows if r[2] == "runtime-fired"]
+    unreadable = [r for r in rows if r[2].startswith("CAUGHT with no")]
+    caught = [r for r in rows if r[1] == "CAUGHT"]
+    print("%d CAUGHT rows, %d caught by a reach-guard only, %d caught by the Go "
+          "test runtime, %d unreadable"
+          % (len(caught), len(guarded), len(runtime), len(unreadable)))
+    for case, _, _, _ in guarded:
+        print("  ⚠️  guard-fired only, so this row scored nothing: %s" % case.name)
+    # Printed, never swallowed. A verdict that does not fail the run still has to
+    # be visible, or "0 guard-fired" reads as "every row was an assertion".
+    for case, _, _, killed in runtime:
+        print("  ·   real coverage, but no assertion ran — the Go test runtime "
+              "caught it:\n      %s\n      %s" % (case.name, killed))
+    for case, _, _, _ in unreadable:
+        print("  ⚠️  no readable failure line, classify by hand: %s" % case.name)
     return 1 if guarded or unreadable else 0
 
 
