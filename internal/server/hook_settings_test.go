@@ -2,10 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	hookstore "github.com/kayushkin/hook-store"
+	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -43,9 +45,17 @@ func parseSettings(t *testing.T, raw string) map[string]any {
 	return out
 }
 
-func TestBuildCCSettings_PermissionHookAlwaysPresent(t *testing.T) {
-	// Even with no hook-store entries, the permission gate must be wired
-	// so every CC tool call routes through /permission/cc-prehook.
+func TestBuildCCSettings_PermissionHookPresentWithNoHookEntries(t *testing.T) {
+	// With an OPEN hook-store holding no entries, the permission gate must
+	// still be wired so every CC tool call routes through
+	// /permission/cc-prehook.
+	//
+	// Scope: this drives the helper, so it pins the helper only. It says
+	// nothing about whether a spawn reaches the helper at all — that is the
+	// caller's property and lives in
+	// TestInjectHookSettings_NilHookStoreKeepsTheClaudeCodePermissionGate.
+	// This test was named "...AlwaysPresent" for months and read as though it
+	// covered both; it never called the caller.
 	srv, _ := testServerWithHookStore(t)
 	got, err := srv.buildClaudeCodeSettings(&store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode})
 	if err != nil {
@@ -188,6 +198,115 @@ func TestInjectHookSettings_WritesSettingsStringForStartParams(t *testing.T) {
 	}
 	if !strings.Contains(settingsStr, "PreToolUse") {
 		t.Errorf("synthesized settings should contain PreToolUse: %s", settingsStr)
+	}
+}
+
+// testServerWithoutHookStore builds a Server whose hookStore is nil — the
+// state main() leaves behind when hookstore.Open fails and it logs
+// "continuing without hook registry", and the state an empty
+// LLMBRIDGE_HOOK_DB produces.
+func testServerWithoutHookStore(t *testing.T) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	cfg := &config.Config{
+		ImagesDir:       filepath.Join(dir, "images"),
+		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
+		LogStoreURL:     "http://localhost:0",
+	}
+	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
+	if srv.hookStore != nil {
+		t.Fatalf("precondition: hookStore should be nil")
+	}
+	return srv
+}
+
+func TestInjectHookSettings_NilHookStoreKeepsTheClaudeCodePermissionGate(t *testing.T) {
+	// The permission gate is built from the session id alone and never reads
+	// the hook registry. So losing the registry must not lose the gate: a
+	// hook-store outage is a hook-store outage, not an unguarded harness.
+	srv := testServerWithoutHookStore(t)
+
+	sess := &store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode}
+	srv.injectHookSettings(sess)
+
+	var cfg map[string]any
+	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
+		t.Fatalf("unmarshal HarnessConfig (%q): %v", sess.HarnessConfig, err)
+	}
+	settingsStr, ok := cfg["settings"].(string)
+	if !ok {
+		t.Fatalf("settings should be a JSON string value, got %T (%v)", cfg["settings"], cfg)
+	}
+	if !strings.Contains(settingsStr, "/permission/cc-prehook/b1") {
+		t.Errorf("permission gate missing from settings with a nil hook-store: %s", settingsStr)
+	}
+}
+
+func TestInjectHookSettings_NilHookStoreKeepsTheCodexPermissionGate(t *testing.T) {
+	// Same property on the codex path, which shares the caller's early return
+	// and so shared the defect.
+	srv := testServerWithoutHookStore(t)
+
+	sess := &store.Session{SessionID: "b2", Harness: msg.HarnessCodex}
+	srv.injectHookSettings(sess)
+
+	var cfg map[string]any
+	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
+		t.Fatalf("unmarshal HarnessConfig (%q): %v", sess.HarnessConfig, err)
+	}
+	raw, ok := cfg["codex_hooks"]
+	if !ok {
+		t.Fatalf("codex_hooks missing entirely with a nil hook-store: %v", cfg)
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("re-marshal codex_hooks: %v", err)
+	}
+	if !strings.Contains(string(encoded), "/permission/codex-prehook/b2") {
+		t.Errorf("permission gate missing from codex_hooks with a nil hook-store: %s", encoded)
+	}
+}
+
+func TestInjectHookSettings_NilHookStoreStillWritesNothingWithoutASessionID(t *testing.T) {
+	// Control. Dropping the nil-store guard must not make the injector write
+	// unconditionally: with no session id there is no gate URL to build, so
+	// HarnessConfig must be left exactly as it was. Without this, the two
+	// tests above would also pass on an injector that wrote a malformed gate
+	// for every session.
+	srv := testServerWithoutHookStore(t)
+
+	sess := &store.Session{SessionID: "", Harness: msg.HarnessClaudeCode}
+	srv.injectHookSettings(sess)
+
+	if len(sess.HarnessConfig) != 0 {
+		t.Errorf("HarnessConfig should stay empty when there is no session id, got %q", sess.HarnessConfig)
+	}
+}
+
+func TestInjectHookSettings_NilHookStoreStillRespectsAUserOverride(t *testing.T) {
+	// Control. The user-override branch sits after the guard that moved, so
+	// pin that it still wins when the registry is gone.
+	srv := testServerWithoutHookStore(t)
+
+	sess := &store.Session{
+		SessionID:     "b1",
+		Harness:       msg.HarnessClaudeCode,
+		HarnessConfig: []byte(`{"settings":"/path/to/user.json"}`),
+	}
+	srv.injectHookSettings(sess)
+
+	var cfg map[string]any
+	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg["settings"] != "/path/to/user.json" {
+		t.Errorf("user override clobbered: %v", cfg["settings"])
 	}
 }
 
