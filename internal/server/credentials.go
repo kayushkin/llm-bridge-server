@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
@@ -128,11 +127,4 @@ func (s *Server) handleCredentialDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func maskKey(key string) string {
-	if len(key) <= 16 {
-		return strings.Repeat("*", len(key))
-	}
-	return key[:8] + "..." + key[len(key)-4:]
 }
