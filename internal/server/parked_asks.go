@@ -76,6 +76,25 @@ func (p *parkedAsks) deliver(bridgeID, requestID string, d permissionDecision) b
 	return true
 }
 
+// isParked reports whether a request is still blocked waiting for a verdict.
+// Read-only: it neither delivers nor removes the entry.
+//
+// The signal-level resolve verb asks this before closing a tool-sourced
+// signal. A signal is a surface on top of the park, and the park is the
+// source of truth for a tool question — closing the surface while the
+// harness still sits on the channel would leave the session blocked with
+// nothing on screen to unblock it.
+func (p *parkedAsks) isParked(bridgeID, requestID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	bucket, ok := p.m[bridgeID]
+	if !ok {
+		return false
+	}
+	_, ok = bucket[requestID]
+	return ok
+}
+
 // cancel removes a parked entry without delivering. Called by the prehook
 // handler when its request context is canceled (CC died, network drop) so
 // a later resolve doesn't try to deliver to a dead channel.

@@ -205,6 +205,126 @@ func (s *Server) handleListSignals(w http.ResponseWriter, r *http.Request) {
 	writeSignals(w, signals, err)
 }
 
+// signalResolveRequest is the body of POST /signals/{id}/resolve.
+type signalResolveRequest struct {
+	State msg.SignalState `json:"state"`
+}
+
+// resolutionUnparksSession reports whether closing this signal this way also
+// has to walk the raising session back to idle.
+//
+// Only one row type parks its own session: a derived question, which sets
+// awaiting_user when the classifier mints it (signal_classifier.go). Dismiss
+// it and no answer is coming, so leaving the session at awaiting_user would
+// block it with nothing left on screen that explains why. Every other case
+// is already consistent — a derived notification drove the session to idle
+// at mint time, and a tool signal's session state belongs to its parked
+// hook, which this verb refuses to close behind.
+//
+// A signal that was already closed unparks nothing. Without that the second
+// of two duplicate clicks would write session state again — and by then the
+// session may be back at awaiting_user on a NEW question, which the
+// allowedFrom bound cannot tell apart from the old one. The state update
+// itself is a no-op on a closed row, so this is the one place the duplicate
+// actually costs something.
+//
+// A pure function so the cross-product is testable without a live harness:
+// the state write itself is bounded and covered in the derivation package.
+func resolutionUnparksSession(signal *store.Signal, state msg.SignalState) bool {
+	return signal.State == msg.SignalStateOpen &&
+		state == msg.SignalStateDismissed &&
+		signal.Source == msg.SignalSourceDerived &&
+		signal.Kind == msg.SignalKindQuestion
+}
+
+// handleResolveSignal serves POST /signals/{id}/resolve — the signal-level
+// close verb, and the one thing that lets a surface offer an acknowledge
+// button. Until it existed the only way out of `open` was the hook-resolve
+// path (tool questions) or a `/send` (derived questions), so a notification
+// stayed open forever and `SignalCard`'s onAcknowledge prop was passed by
+// nobody.
+//
+// It closes a signal WITHOUT delivering anything to the raising session,
+// which is why it takes only the two states that mean exactly that:
+//
+//   - acknowledged — a notification was seen. Notifications only: a question
+//     that nobody answered has not been handled, and letting it grade the
+//     same as a read notification is the enum collapse
+//     feedback_status_enum_granularity warns about.
+//   - dismissed — closed without an answer. Either kind.
+//
+// `answered` is refused. An answer has to reach the session, and the two
+// paths that carry one already close their own rows: the parked hook resolve
+// for a tool question, `POST /sessions/{id}/send` for a derived one. Minting
+// an `answered` row here would record an answer the session never received.
+func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
+	signalID := r.PathValue("id")
+	signal, err := s.store.GetSignal(signalID)
+	if err != nil {
+		http.Error(w, "signal not found", http.StatusNotFound)
+		return
+	}
+
+	var req signalResolveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	switch req.State {
+	case msg.SignalStateAcknowledged, msg.SignalStateDismissed:
+	case msg.SignalStateAnswered:
+		http.Error(w, "state=answered is not resolvable here; an answer must reach the session — "+
+			"POST /sessions/{id}/hooks/{request_id}/resolve for a tool question, "+
+			"POST /sessions/{id}/send for a derived one. Both close the signal themselves.",
+			http.StatusBadRequest)
+		return
+	default:
+		http.Error(w, errBadEnum("state", string(req.State), "acknowledged|dismissed").Error(), http.StatusBadRequest)
+		return
+	}
+	if req.State == msg.SignalStateAcknowledged && signal.Kind == msg.SignalKindQuestion {
+		http.Error(w, "a question cannot be acknowledged; answer it, or resolve it with state=dismissed",
+			http.StatusBadRequest)
+		return
+	}
+
+	// A tool-sourced signal is a surface on a parked hook, and the park is
+	// the source of truth for whether the session is still blocked. Closing
+	// the surface out from under a live park hides the ask while the harness
+	// keeps waiting on it, so refuse and name the verb that reaches both.
+	if signal.RequestID != "" && s.parkedAsks.isParked(signal.SessionID, signal.RequestID) {
+		http.Error(w, "signal "+signal.ID+" is backed by a parked request; resolve it at "+
+			"POST /sessions/"+signal.SessionID+"/hooks/"+signal.RequestID+"/resolve, which closes this signal too",
+			http.StatusConflict)
+		return
+	}
+
+	// A second resolve is not an error. The same row renders in the chat, the
+	// inbox, the RefChip panel and the kanban drawer, so duplicate clicks are
+	// ordinary — and store.ResolveSignal already makes the first resolution
+	// the one that happened, updating only while the row is still open. This
+	// handler does not repeat that rule; it re-reads the row below and
+	// reports what is actually stored.
+	if err := s.store.ResolveSignal(signal.ID, req.State, nil); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if resolutionUnparksSession(signal, req.State) {
+		// Bounded to the state the dismissal was formed about, so a session
+		// that has started another turn is left alone.
+		s.harness.ApplyDerivedSessionState(signal.SessionID, msg.SessionIdle,
+			"signal_dismissed", msg.SessionAwaitingUser)
+	}
+
+	resolved, err := s.store.GetSignal(signal.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, resolved)
+}
+
 func writeSignals(w http.ResponseWriter, signals []store.Signal, err error) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
