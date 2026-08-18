@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -13,6 +14,28 @@ import (
 )
 
 func float64Ptr(v float64) *float64 { return &v }
+
+// sendableTestServer returns a server a /send can actually complete against:
+// the mock harness rather than a real claude_code binary, and a log-store that
+// answers 200.
+//
+// Both halves are needed and each was measured. /send pushes the user_message
+// to log-store before forwarding, so on the default unreachable
+// "http://localhost:0" it returns 500 "persist user_message: connection
+// refused" — testServerWithInstance's own doc says it is only for tests that
+// never exercise /send. Swapping in just the log-store is not enough: the send
+// then really does forward, spawning a claude_code subprocess that outlives the
+// test and fails the whole package with "Test I/O incomplete 1m0s after
+// exiting". The mock harness is what makes the forward survivable.
+func sendableTestServer(t *testing.T) (*Server, *store.Store, string) {
+	t.Helper()
+	buildMockHarnessOnPath(t)
+	logStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(logStore.Close)
+	return testServerWithInstanceAndLogStore(t, msg.HarnessMock, logStore.URL)
+}
 
 func TestCreateSession_StoresTheSpendCeiling(t *testing.T) {
 	srv, st, instID := testServerWithInstance(t, "claude_code")
@@ -127,11 +150,15 @@ func TestSendMessage_RefusedWhenTheSessionHasSpentItsCeiling(t *testing.T) {
 }
 
 func TestSendMessage_AllowedWhenUnderTheCeiling(t *testing.T) {
-	srv, st, instID := testServerWithInstance(t, "claude_code")
+	// A server a send can complete against — see sendableTestServer. The old
+	// comment here said the send "fails further down for want of a real harness
+	// binary"; measured, it never got that far, dying at the log-store push.
+	srv, st, instID := sendableTestServer(t)
+	t.Cleanup(func() { srv.harness.Kill("br_under_budget") })
 
 	if err := st.CreateSession(&store.Session{
 		SessionID:    "br_under_budget",
-		Harness:      "claude_code",
+		Harness:      msg.HarnessMock,
 		InstanceID:   instID,
 		State:        string(msg.SessionIdle),
 		MaxBudgetUSD: 5.00,
@@ -143,10 +170,11 @@ func TestSendMessage_AllowedWhenUnderTheCeiling(t *testing.T) {
 	resp := doJSON(t, srv, "POST", "/sessions/br_under_budget/send", msg.SendMessageRequest{
 		Message: "keep going",
 	})
-	// The send fails further down for want of a real harness binary; what
-	// matters here is that it was not refused by the budget gate.
-	if resp.StatusCode == http.StatusPaymentRequired {
-		t.Error("send refused as over budget at $4.99 of a $5.00 ceiling")
+	// Assert the send went through, not merely that it was not refused: a
+	// negative assertion is satisfied by every other way the request can die.
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("under-ceiling send status = %d, want 200: %s", resp.StatusCode, body)
 	}
 }
 
@@ -176,11 +204,12 @@ func TestConfigSession_RaisingTheCeilingUnblocksTheSession(t *testing.T) {
 	// The escape hatch, end to end over HTTP: a halted session accepts a
 	// new ceiling even though it has no live process to forward it to,
 	// and the next send is let through.
-	srv, st, instID := testServerWithInstance(t, "claude_code")
+	srv, st, instID := sendableTestServer(t)
+	t.Cleanup(func() { srv.harness.Kill("br_raise_ceiling") })
 
 	if err := st.CreateSession(&store.Session{
 		SessionID:    "br_raise_ceiling",
-		Harness:      "claude_code",
+		Harness:      msg.HarnessMock,
 		InstanceID:   instID,
 		State:        string(msg.SessionIdle),
 		MaxBudgetUSD: 1.00,
@@ -213,9 +242,12 @@ func TestConfigSession_RaisingTheCeilingUnblocksTheSession(t *testing.T) {
 		t.Errorf("stored spend = %v; want it untouched at 1.50", stored.SpendUSD)
 	}
 
+	// The send must now succeed, not merely stop being refused: "not 402" is
+	// also satisfied by the 500 this test used to get, and did.
 	resp = doJSON(t, srv, "POST", "/sessions/br_raise_ceiling/send", msg.SendMessageRequest{Message: "hi"})
-	if resp.StatusCode == http.StatusPaymentRequired {
-		t.Error("send still refused after the ceiling was raised above the spend")
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("post-raise send status = %d, want 200: %s", resp.StatusCode, body)
 	}
 }
 

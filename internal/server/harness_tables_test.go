@@ -118,6 +118,12 @@ func TestAllHarnessesExcludesDisabled(t *testing.T) {
 		t.Errorf("allHarnesses has %d entries, want %d (canonical %d minus %d disabled)",
 			len(allHarnesses), want, len(msg.AllHarnesses), len(disabledHarnesses))
 	}
+	// This assertion pins that copilot_cli is OFF, for the reason recorded in
+	// disabledHarnesses: a stale binary on PATH. It says nothing about
+	// permissions, and it is the line someone deletes to enable the harness.
+	// TestEnablingAHarnessKeepsItsPermissionGate covers the other half —
+	// enabling it also needs a case in injectHookSettings, or its sessions
+	// spawn with no permission hook. Deleting this one does not excuse that.
 	if isValidHarness(msg.HarnessCopilotCLI) {
 		t.Error("isValidHarness accepts copilot_cli; session create would spawn the stale llm-bridge-copilotcli binary on PATH")
 	}
