@@ -110,11 +110,29 @@ func TestLinkedTodoForSessionErrors(t *testing.T) {
 // autoworker-anthropic-…, herald-…, tcl-…) is already safe, so this guards
 // the client against a future id shape rather than a live bug.
 func TestLinkedTodoForSessionEscapesTheSessionID(t *testing.T) {
-	client, path := stubKanban(t, http.StatusOK, `[]`)
-	if _, err := client.LinkedTodoForSession(context.Background(), "br_1/../br_2"); err != nil {
-		t.Fatalf("lookup: %v", err)
-	}
-	if want := "/api/entities/session/br_1%2F..%2Fbr_2/cards"; *path != want {
-		t.Errorf("path = %q, want %q", *path, want)
+	// The space case is not decoration. PathEscape and QueryEscape agree on
+	// "/" — both write %2F — so a slash cannot tell them apart, and swapping
+	// one for the other survives an id that only contains slashes. They
+	// disagree on a space: QueryEscape writes "+", which inside a PATH segment
+	// is a literal plus, not a space. That addresses a different entity ref,
+	// and kanban-store answers an unknown ref with 200 and an empty list, so
+	// the mistake would be silent.
+	for _, tc := range []struct {
+		name      string
+		sessionID string
+		want      string
+	}{
+		{"path traversal", "br_1/../br_2", "/api/entities/session/br_1%2F..%2Fbr_2/cards"},
+		{"space", "br 1", "/api/entities/session/br%201/cards"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, path := stubKanban(t, http.StatusOK, `[]`)
+			if _, err := client.LinkedTodoForSession(context.Background(), tc.sessionID); err != nil {
+				t.Fatalf("lookup: %v", err)
+			}
+			if *path != tc.want {
+				t.Errorf("path = %q, want %q", *path, tc.want)
+			}
+		})
 	}
 }
