@@ -201,37 +201,53 @@ func TestCapabilityNamesAreConsumed(t *testing.T) {
 // nothing must therefore serialize as "capabilities":[] and never omit the
 // field, so msg.HarnessInfo.Capabilities must not gain an omitempty and
 // discoverHarnesses must keep normalizing nil to an empty slice.
+//
+// The empty list it marshals is built here rather than hunted for in
+// harnessCapabilities. It used to search the shipped table and t.Skip when no
+// harness had an empty list, which made the test's coverage a property of the
+// data: 10 of 19 harnesses ship {} today, so it runs, but each of those is a
+// bridge someone is still building out and the day the last one gains a
+// capability the line would read --- SKIP and nothing would announce that the
+// check had stopped asking. The claim is about JSON serialization of an empty
+// slice and needs no real harness to have one. (noteboard f0453cc6)
 func TestEmptyCapabilitiesSerializeAsAnEmptyList(t *testing.T) {
-	var empty msg.Harness
-	for h, caps := range harnessCapabilities {
-		if len(caps) == 0 {
-			empty = h
-			break
-		}
-	}
-	if empty == "" {
-		t.Skip("no harness currently has an empty capability list; nothing to pin")
-	}
+	assertCapabilitiesSerializeAsAnEmptyList(t, "a-harness-that-supports-nothing", []string{})
 
-	caps := harnessCapabilities[empty]
-	if caps == nil {
-		caps = []string{}
+	// The shipped table gets the same assertion wherever it carries an empty
+	// list, normalized the way discoverHarnesses normalizes it. This half can
+	// legitimately find nothing to check; it is no longer the only path to the
+	// assertion above, so finding nothing is no longer silence.
+	for h, caps := range harnessCapabilities {
+		if len(caps) != 0 {
+			continue
+		}
+		if caps == nil {
+			caps = []string{}
+		}
+		assertCapabilitiesSerializeAsAnEmptyList(t, string(h), caps)
 	}
-	data, err := json.Marshal(msg.HarnessInfo{Name: string(empty), Capabilities: caps})
+}
+
+// assertCapabilitiesSerializeAsAnEmptyList marshals one HarnessInfo and fails
+// unless its capabilities field is present and reads [].
+func assertCapabilitiesSerializeAsAnEmptyList(t *testing.T, name string, capabilities []string) {
+	t.Helper()
+
+	data, err := json.Marshal(msg.HarnessInfo{Name: name, Capabilities: capabilities})
 	if err != nil {
-		t.Fatalf("marshal HarnessInfo: %v", err)
+		t.Fatalf("marshal HarnessInfo for %q: %v", name, err)
 	}
 
 	var decoded map[string]json.RawMessage
 	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+		t.Fatalf("unmarshal %q: %v", name, err)
 	}
 	raw, present := decoded["capabilities"]
 	if !present {
 		t.Fatalf("capabilities was omitted from %s; dash's `!capabilities` check fails open and shows every control", data)
 	}
 	if string(raw) != "[]" {
-		t.Errorf("capabilities serialized as %s, want []", raw)
+		t.Errorf("capabilities for %q serialized as %s, want []", name, raw)
 	}
 }
 
