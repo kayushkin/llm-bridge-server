@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -256,5 +257,69 @@ func TestNilCapabilitiesAreNormalized(t *testing.T) {
 	}
 	if string(decoded["capabilities"]) != "[]" {
 		t.Errorf("nil capabilities serialized as %s, want []", decoded["capabilities"])
+	}
+}
+
+// TestDiscoverHarnessesNormalizesANilCapabilityList pins the normalization in
+// the function that actually performs it. TestNilCapabilitiesAreNormalized
+// above names discoverHarnesses as the code under test in its own comment and
+// then never calls it — it re-implements the two lines inline and marshals the
+// result, so it asserts only itself. Deleting the `if caps == nil` branch from
+// discoverHarnesses left the whole package green.
+//
+// The nil has to be manufactured. All 19 entries in allHarnesses currently
+// have a capabilities entry, so the nil branch is unreachable from the live
+// map: a test that merely ranged over discoverHarnesses() output would also
+// have passed with the normalization deleted. Dropping one entry reproduces
+// the real condition — a harness added to msg.AllHarnesses and not to
+// harnessCapabilities — which is how the field would go nil in production.
+//
+// What rides on it is named in TestEmptyCapabilitiesSerializeAsAnEmptyList:
+// dash reads `has = cap => !capabilities || capabilities.has(cap)`, which
+// fails OPEN. A null here shows every chat control for a harness that
+// supports none of them.
+func TestDiscoverHarnessesNormalizesANilCapabilityList(t *testing.T) {
+	victim := allHarnesses[0]
+	saved, had := harnessCapabilities[victim]
+	delete(harnessCapabilities, victim)
+	t.Cleanup(func() {
+		if had {
+			harnessCapabilities[victim] = saved
+		} else {
+			delete(harnessCapabilities, victim)
+		}
+	})
+
+	srv := &Server{cfg: &config.Config{ImagesDir: t.TempDir()}}
+
+	statuses := srv.discoverHarnesses()
+	var found *HarnessStatus
+	for i := range statuses {
+		if statuses[i].Name == string(victim) {
+			found = &statuses[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("discoverHarnesses did not report %s at all", victim)
+	}
+	if found.Capabilities == nil {
+		t.Fatalf("discoverHarnesses left %s's capabilities nil; it must normalize the missing map entry to an empty slice", victim)
+	}
+
+	data, err := json.Marshal(*found)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	raw, present := decoded["capabilities"]
+	if !present {
+		t.Fatalf("capabilities was omitted from %s", data)
+	}
+	if string(raw) != "[]" {
+		t.Errorf("capabilities serialized as %s, want []", raw)
 	}
 }
