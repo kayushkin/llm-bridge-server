@@ -447,6 +447,173 @@ func TestManager_NonAgentTaskCarriesNoSubagentSessionID(t *testing.T) {
 	}
 }
 
+// taskNotification models the frame that actually closes a backgrounded shell.
+// Taken from a live capture (log-store events 1770747/1770748): a local_bash
+// task_started, then a task_notification naming the same task_id and tool_use_id
+// and carrying status "completed". A shell is never closed by a task_updated,
+// which is why the fixture is not the one the subagent tests use.
+func taskNotification(bridgeID, toolUseID, taskID, status string) msg.Event {
+	raw, _ := json.Marshal(map[string]any{
+		"type": "system", "subtype": "task_notification",
+		"task_id": taskID, "tool_use_id": toolUseID, "status": status,
+	})
+	return msg.Event{
+		Type: msg.EventSystem, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, Raw: raw,
+		System: &msg.SystemEvent{
+			Subtype: "task_notification", TaskID: taskID, ToolUseID: toolUseID, TaskStatus: status,
+		},
+	}
+}
+
+// countStoredTaskEvents counts stored SystemEvents naming taskID with a terminal
+// status — how many times a client is told this task ended.
+func countStoredTaskCloses(t *testing.T, m *Manager, sessionID, taskID string) int {
+	t.Helper()
+	var n int
+	for _, sys := range storedSystemEvents(t, m, sessionID) {
+		if sys.TaskID == taskID && msg.TaskStatusIsTerminal(sys.TaskStatus) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestManager_AbandonedUnpromotedTaskIsClosedOnProcessExit is the regression for
+// the half settleUnfinished did not cover. A backgrounded shell gets the same
+// task_started a subagent does and deliberately gets no session — so it is
+// absent from byToolUse, which settleUnfinished iterates, and when the process
+// died underneath it nothing ever sent a terminal status. The parent's timeline
+// kept the spawn row open forever and the live status line kept listing a shell
+// that had been dead since the process was.
+//
+// Measured on this host: 8% of all bash spawns never terminated, and 12 of 20
+// unfinished spawns in the 40 most recent sessions were followed by a fresh
+// init — the process died, it did not keep running.
+//
+// The kinds are a table because promotion declines for every non-agent kind, not
+// only local_bash, and an unknown kind draws the same spawn row.
+func TestManager_AbandonedUnpromotedTaskIsClosedOnProcessExit(t *testing.T) {
+	for _, taskType := range []string{msg.TaskTypeLocalBash, "a_kind_this_build_has_never_seen"} {
+		t.Run(taskType, func(t *testing.T) {
+			m := newTestManager(t)
+			parentID := "br-parent-unpromoted-" + taskType
+			const toolUseID = "toolu_unpromoted"
+			const taskID = "task_unpromoted"
+			seedParent(t, m, parentID)
+
+			proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
+			go m.readEvents(proc)
+			proc.ch <- taskStartedOfType(parentID, toolUseID, taskID, "sleep 2", taskType)
+			close(proc.ch) // the process dies with the shell still open
+			waitForProcessTeardown(t, m, parentID)
+
+			closed := findStoredTaskEvent(t, m, parentID, "task_updated", taskID)
+			if !msg.TaskStatusIsTerminal(closed.TaskStatus) {
+				t.Errorf("derived close has status %q, which is not terminal — the spawn row stays open", closed.TaskStatus)
+			}
+			if closed.TaskStatus != msg.TaskStatusCancelled {
+				t.Errorf("status = %q, want %q — the task was taken away, it did not report a failure",
+					closed.TaskStatus, msg.TaskStatusCancelled)
+			}
+			// The tool_use_id is the join back to the Bash call the row was
+			// drawn from; a close without it closes nothing a client can find.
+			if closed.ToolUseID != toolUseID {
+				t.Errorf("derived close names tool_use_id %q, want %q", closed.ToolUseID, toolUseID)
+			}
+			if closed.Message == "" {
+				t.Error("derived close carries no reason; a client showing it has nothing to say about why the task ended")
+			}
+			// An unpromoted task has no session, and inventing one here would
+			// undo exactly what declining to promote it achieved.
+			if closed.SubagentSessionID != "" {
+				t.Errorf("derived close names session %q; a backgrounded shell has none", closed.SubagentSessionID)
+			}
+			if sessions, err := m.store.ListSessions(); err != nil {
+				t.Fatalf("list sessions: %v", err)
+			} else if len(sessions) != 1 {
+				t.Fatalf("closing the task minted %d extra sessions; want only the parent", len(sessions)-1)
+			}
+		})
+	}
+}
+
+// TestManager_ClosedUnpromotedTaskIsNotClosedTwice is the other side of it. A
+// shell that the harness closed for itself must not collect a second,
+// contradicting close at process exit: the timeline draws one finish row per
+// task and moves it to the LATEST close, so a spurious cancelled would overwrite
+// a real completed and report every backgrounded shell as killed.
+//
+// Both closing subtypes are tested. A live shell closes with task_notification;
+// task_updated is what the promoted path is written against, and a rule that
+// recognized only one of them would pass on the fixture its author happened to
+// pick.
+func TestManager_ClosedUnpromotedTaskIsNotClosedTwice(t *testing.T) {
+	closers := map[string]func(bridgeID, toolUseID, taskID, status string) msg.Event{
+		"task_notification": taskNotification,
+		"task_updated": func(bridgeID, toolUseID, taskID, status string) msg.Event {
+			ev := taskUpdated(bridgeID, taskID, status)
+			ev.System.ToolUseID = toolUseID
+			return ev
+		},
+	}
+	for subtype, build := range closers {
+		t.Run(subtype, func(t *testing.T) {
+			m := newTestManager(t)
+			parentID := "br-parent-closed-" + subtype
+			const toolUseID = "toolu_closed"
+			const taskID = "task_closed"
+			seedParent(t, m, parentID)
+
+			proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
+			go m.readEvents(proc)
+			proc.ch <- taskStartedOfType(parentID, toolUseID, taskID, "sleep 2", msg.TaskTypeLocalBash)
+			proc.ch <- build(parentID, toolUseID, taskID, msg.TaskStatusCompleted)
+			close(proc.ch)
+			waitForProcessTeardown(t, m, parentID)
+
+			if got := countStoredTaskCloses(t, m, parentID, taskID); got != 1 {
+				t.Fatalf("task %s was closed %d times, want 1 — the harness already closed it", taskID, got)
+			}
+			if got := findStoredTaskEvent(t, m, parentID, subtype, taskID).TaskStatus; got != msg.TaskStatusCompleted {
+				t.Errorf("the harness's own close now reads %q, want %q", got, msg.TaskStatusCompleted)
+			}
+		})
+	}
+}
+
+// TestManager_UnpromotedTaskWithNonTerminalStatusIsStillClosed pins the rule
+// forgetClosedUnpromoted shares with settle(): a status this build does not
+// recognize is not a close. Forgetting the task on one would drop the only
+// record that its spawn row is still open, and the row would then hang exactly
+// as it did before — a fix that reads as present and fires on nothing.
+func TestManager_UnpromotedTaskWithNonTerminalStatusIsStillClosed(t *testing.T) {
+	for _, status := range []string{msg.TaskStatusInProgress, "quiesced", ""} {
+		name := status
+		if name == "" {
+			name = "empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := newTestManager(t)
+			parentID := "br-parent-nonterminal-" + name
+			const toolUseID = "toolu_nonterminal"
+			const taskID = "task_nonterminal"
+			seedParent(t, m, parentID)
+
+			proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
+			go m.readEvents(proc)
+			proc.ch <- taskStartedOfType(parentID, toolUseID, taskID, "sleep 2", msg.TaskTypeLocalBash)
+			proc.ch <- taskNotification(parentID, toolUseID, taskID, status)
+			close(proc.ch)
+			waitForProcessTeardown(t, m, parentID)
+
+			if got := countStoredTaskCloses(t, m, parentID, taskID); got != 1 {
+				t.Fatalf("task %s has %d terminal closes, want 1: status %q was treated as a close it is not",
+					taskID, got, status)
+			}
+		})
+	}
+}
+
 func assertHasBlockText(t *testing.T, m *Manager, sessionID, want string) {
 	t.Helper()
 	for _, got := range blockTexts(t, m, sessionID) {
