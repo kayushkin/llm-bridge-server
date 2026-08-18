@@ -100,7 +100,7 @@ func (s *Server) handleSwitchMode(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve instance + cred and respawn. The new process inherits
 	// HarnessSessionID, so --resume kicks in transparently inside
-	// buildStartParams (process.go:100); the user's CC history is
+	// buildStartParams (process.go); the user's CC history is
 	// preserved across the mode swap.
 	if sess.InstanceID == "" || s.harnessStore == nil {
 		http.Error(w, "session has no instance bound", http.StatusInternalServerError)
