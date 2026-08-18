@@ -458,8 +458,13 @@ func (s *Server) handleSessionAggregates(w http.ResponseWriter, r *http.Request)
 
 // proxyToLogStore proxies /sessions/{id}/messages and /sessions/{id}/history to log-store.
 func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
+	// id is the real session id, decoded — that is what every in-process
+	// lookup wants, FlushLogStoreWrites below included.
 	id := r.PathValue("id")
-	endpoint := path.Base(r.URL.Path) // "messages" or "history"
+	// endpoint is the route's own literal, always the last segment, so the
+	// decode cannot move it. Read from the escaped path anyway, so this does
+	// not quietly depend on that staying true of some later route.
+	endpoint := path.Base(r.URL.EscapedPath()) // "messages" or "history"
 
 	// The harness pump writes to log-store through an ordered queue, so
 	// drain this session's queue first. Without it a client loading the
@@ -467,7 +472,10 @@ func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 	// the pump has already streamed to it over SSE.
 	s.harness.FlushLogStoreWrites(id)
 
-	target := fmt.Sprintf("%s/api/v1/sessions/%s/%s", s.cfg.LogStoreURL, id, endpoint)
+	// logStoreSessionURL escapes the id, because that is where it becomes a
+	// URL. The lookups above keep the real one. Measured: Go's mux matches on
+	// the escaped path, so an id holding a %2F really does reach this handler.
+	target := logStoreSessionURL(s.cfg.LogStoreURL, id, endpoint)
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
@@ -903,8 +911,7 @@ func (s *Server) proxyToStore(w http.ResponseWriter, r *http.Request, prefix, ta
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	rest := path.Clean("/" + r.URL.Path[len(prefix):])
-	target = target + rest
+	target = target + cleanEscapedPathAfterPrefix(r.URL, prefix)
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
