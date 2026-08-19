@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -183,5 +184,64 @@ func TestEverySignalWriteAnnouncesItself(t *testing.T) {
 		if id != "br_1" {
 			t.Errorf("announced session %q, want br_1", id)
 		}
+	}
+}
+
+// Answering one question retires the others on the same thread.
+//
+// A session is a thread: what the answer path sends is a MESSAGE, and a
+// message retires every question on it. Leaving a sibling open behind a reply
+// would strand it — the answer would land at the end of a conversation that
+// had already moved past it.
+//
+// This is live data, not a hypothetical. One session on this host carries
+// three open questions minted in the same second with no request_id, so each
+// is its own group. Without this, answering one leaves two behind for good:
+// the session is completed and archived, so no turn-end will ever supersede
+// them.
+func TestAnsweringOneQuestionRetiresTheOthersOnTheThread(t *testing.T) {
+	srv, st := testServer(t)
+	newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
+	for i, title := range []string{"Which transport?", "Which priority?", "Headless or app-server?"} {
+		sig := &store.Signal{
+			ID: fmt.Sprintf("sig_%d", i), SessionID: "br_1", Kind: msg.SignalKindQuestion,
+			Source: msg.SignalSourceDerived, Surface: msg.SignalSurfaceChat,
+			Title: title, State: msg.SignalStateOpen,
+		}
+		if err := st.CreateSignal(sig); err != nil {
+			t.Fatalf("create %q: %v", title, err)
+		}
+	}
+
+	open, err := st.ListSignals(store.SignalFilter{SessionID: "br_1", State: msg.SignalStateOpen})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(open) != 3 {
+		t.Fatalf("setup: %d open questions, want 3", len(open))
+	}
+
+	// Close the group directly rather than driving the HTTP path, which would
+	// need a live harness to send into. What is under test is the retirement,
+	// not the transport.
+	group := []store.Signal{open[0]}
+	if err := st.ResolveSignal(group[0].ID, msg.SignalStateAnswered, &msg.SignalAnswer{Text: "codex"}); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	srv.supersedeStaleQuestions("br_1")
+
+	left, err := st.ListSignals(store.SignalFilter{SessionID: "br_1", State: msg.SignalStateOpen})
+	if err != nil {
+		t.Fatalf("list after: %v", err)
+	}
+	if len(left) != 0 {
+		t.Errorf("%d questions left open on the thread, want 0", len(left))
+	}
+	answered, err := st.GetSignal(group[0].ID)
+	if err != nil {
+		t.Fatalf("get answered: %v", err)
+	}
+	if answered.State != msg.SignalStateAnswered {
+		t.Errorf("the answered one = %q, want answered — retirement must not overwrite it", answered.State)
 	}
 }

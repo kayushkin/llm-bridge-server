@@ -236,6 +236,21 @@ func (s *Server) answerAsNextMessage(r *http.Request, sess *store.Session, group
 			log.Printf("[signals] %s: resolve on answer: %v", q.ID, err)
 		}
 	}
+
+	// Everything else open on this session goes with it.
+	//
+	// What just happened is a MESSAGE, and a message retires every question on
+	// the thread — that is what /send has always done. Closing only the group
+	// would leave a sibling open behind a reply, and it could never be answered
+	// in its own context again: the answer would land at the end of a
+	// conversation that has moved past it.
+	//
+	// Reachable today, not hypothetical. One live session on this host carries
+	// three open questions minted in the same second with no request_id, so
+	// each is its own group. Answering one of them without this leaves two
+	// behind, permanently — that session is completed and archived, so no
+	// turn-end will ever come to supersede them.
+	s.supersedeStaleQuestions(sess.SessionID)
 	return nil
 }
 
