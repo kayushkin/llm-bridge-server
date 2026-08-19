@@ -25,6 +25,13 @@ type Session = msg.ManagedSession
 type Notifier interface {
 	OnSessionChanged(bridgeID string)
 	OnSessionDeleted(bridgeID string)
+
+	// OnSignalsChanged fires when a session's signals move: raised, answered,
+	// dismissed or superseded. Fired from the store's write paths rather than
+	// from the handlers, so a caller cannot forget — a question can be closed
+	// by a turn ending, a message, a resolve verb, a supersede or a park
+	// draining, and every one of those has to reach the surfaces showing it.
+	OnSignalsChanged(bridgeID string)
 }
 
 type Store struct {
@@ -40,6 +47,12 @@ func (s *Store) SetNotifier(n Notifier) { s.notifier = n }
 func (s *Store) notifyChanged(bridgeID string) {
 	if s.notifier != nil && bridgeID != "" {
 		s.notifier.OnSessionChanged(bridgeID)
+	}
+}
+
+func (s *Store) notifySignalsChanged(bridgeID string) {
+	if s.notifier != nil && bridgeID != "" {
+		s.notifier.OnSignalsChanged(bridgeID)
 	}
 }
 

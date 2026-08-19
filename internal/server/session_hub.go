@@ -138,6 +138,28 @@ func (h *sessionHub) OnSessionChanged(bridgeID string) {
 	h.publish(sessionListEvent{Type: "upsert", Session: sess})
 }
 
+// OnSignalsChanged announces that a session's open questions have moved:
+// one was raised, answered, dismissed or superseded.
+//
+// It carries no signal payload, deliberately. The frame says WHICH session
+// changed and nothing else, so a client re-reads the open set it already knows
+// how to read. Putting the rows on the wire here would be a second encoding of
+// the signals API that could disagree with it, and every surface would then
+// have two ways to learn the same fact.
+//
+// This is the push channel signals never had. Freshness was a 30-second cache
+// plus an in-process announcement, so two surfaces on one screen could
+// disagree for half a minute, and a question answered elsewhere — another tab,
+// the CLI, an orchestrator — stayed on screen until the TTL lapsed. Now that
+// answering is a real round trip through the server, that staleness is
+// something a person watches happen.
+func (h *sessionHub) OnSignalsChanged(bridgeID string) {
+	if h == nil {
+		return
+	}
+	h.publish(sessionListEvent{Type: "signal", SessionID: bridgeID})
+}
+
 // OnSessionDeleted implements store.Notifier.
 func (h *sessionHub) OnSessionDeleted(bridgeID string) {
 	if h == nil {

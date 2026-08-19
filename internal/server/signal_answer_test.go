@@ -138,3 +138,50 @@ func TestAnswerTextRendersOneQuestionVerbatimAndManyLabelled(t *testing.T) {
 		t.Errorf("multi answer =\n%q\nwant\n%q", got, want)
 	}
 }
+
+// Every path that moves a question has to reach the surfaces showing it.
+//
+// A question can be closed by a turn ending, an ordinary message, the resolve
+// verb, a supersede, or a park draining — five call sites, and any one of them
+// forgetting to announce leaves a card on screen that the server has already
+// closed. So the announcement is fired from the STORE's write paths, not from
+// the handlers, and this test pins that: it never calls a handler.
+func TestEverySignalWriteAnnouncesItself(t *testing.T) {
+	srv, st := testServer(t)
+	var announced []string
+	st.SetNotifier(&notifierRecorder{onSignals: func(id string) {
+		announced = append(announced, id)
+	}})
+	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
+
+	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	if len(announced) != 2 {
+		t.Errorf("raising 2 questions announced %d times, want 2", len(announced))
+	}
+
+	before := len(announced)
+	ids := openQuestionsFor(t, srv, "br_1", "hreq_1")
+	if err := st.ResolveSignal(ids[0], msg.SignalStateDismissed, nil); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(announced) != before+1 {
+		t.Errorf("resolving announced %d times, want 1", len(announced)-before)
+	}
+
+	// Resolving the same question again changes nothing — two surfaces racing
+	// on one question is the ordinary case, and the loser must not make every
+	// client re-read for a write that did not happen.
+	before = len(announced)
+	if err := st.ResolveSignal(ids[0], msg.SignalStateDismissed, nil); err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if len(announced) != before {
+		t.Errorf("a no-op resolve announced %d times, want 0", len(announced)-before)
+	}
+
+	for _, id := range announced {
+		if id != "br_1" {
+			t.Errorf("announced session %q, want br_1", id)
+		}
+	}
+}

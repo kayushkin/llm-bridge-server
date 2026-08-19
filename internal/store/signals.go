@@ -141,7 +141,11 @@ func (s *Store) CreateSignal(sig *Signal) error {
 		sig.RequestID, string(sig.Surface), sig.Title, sig.Body, options, sig.AllowFreeform,
 		answer, string(sig.Severity), string(sig.State), sig.LinkedTodoID, sig.CreatedAt, resolvedAt,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	s.notifySignalsChanged(sig.SessionID)
+	return nil
 }
 
 // GetSignal looks up one signal by id.
@@ -240,9 +244,26 @@ func (s *Store) ResolveSignal(id string, state msg.SignalState, answer *msg.Sign
 		}
 		payload = string(raw)
 	}
-	_, err := s.db.Exec(
+	// Read the session before the write: after it, a resolve that changed
+	// nothing is indistinguishable from one that did, and the notify below
+	// has to name the session either way.
+	sig, err := s.GetSignal(id)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(
 		`UPDATE signals SET state=?, answer=?, resolved_at=? WHERE id=? AND state=?`,
 		string(state), payload, time.Now().UTC(), id, string(msg.SignalStateOpen),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	// Announce only a real transition. The WHERE clause makes this a no-op
+	// when the signal was already resolved — two surfaces resolving the same
+	// question race here by design — and announcing a no-op would have every
+	// client re-read for nothing.
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		s.notifySignalsChanged(sig.SessionID)
+	}
+	return nil
 }

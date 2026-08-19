@@ -111,7 +111,8 @@ func TestNotifierFanout_ForwardsToAll(t *testing.T) {
 }
 
 type notifierRecorder struct {
-	onChange func(string)
+	onChange  func(string)
+	onSignals func(string)
 }
 
 func (n *notifierRecorder) OnSessionChanged(id string) {
@@ -120,3 +121,8 @@ func (n *notifierRecorder) OnSessionChanged(id string) {
 	}
 }
 func (n *notifierRecorder) OnSessionDeleted(string) {}
+func (n *notifierRecorder) OnSignalsChanged(id string) {
+	if n.onSignals != nil {
+		n.onSignals(id)
+	}
+}

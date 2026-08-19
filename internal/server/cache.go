@@ -68,6 +68,13 @@ func (c *responseCache) OnSessionChanged(string) { c.invalidate() }
 // OnSessionDeleted implements store.Notifier.
 func (c *responseCache) OnSessionDeleted(string) { c.invalidate() }
 
+// OnSignalsChanged invalidates too. The cached session summaries do not carry
+// signal rows today, but the sidebar's waiting mark is derived from the open
+// set, and a cache that outlived a question being answered would keep serving
+// a session as waiting after it stopped. Invalidating on a signal write is
+// cheaper than reasoning about which projections happen to embed one.
+func (c *responseCache) OnSignalsChanged(string) { c.invalidate() }
+
 // notifierFanout multiplexes store mutation signals to several Notifiers. The
 // store accepts a single Notifier; the SSE hub and the response cache both need
 // the signal, so this fans it out. Order is preserved; all targets are always
@@ -89,5 +96,11 @@ func (f *notifierFanout) OnSessionChanged(id string) {
 func (f *notifierFanout) OnSessionDeleted(id string) {
 	for _, t := range f.targets {
 		t.OnSessionDeleted(id)
+	}
+}
+
+func (f *notifierFanout) OnSignalsChanged(id string) {
+	for _, t := range f.targets {
+		t.OnSignalsChanged(id)
 	}
 }
