@@ -426,7 +426,7 @@ All configuration is via environment variables with sensible defaults.
 | `LLMBRIDGE_SNAPSHOT_DB` | `~/.config/snapshot-store/snapshots.db` | Snapshot store SQLite metadata |
 | `LLMBRIDGE_SNAPSHOT_GIT` | `~/.config/snapshot-store/snapshots.git` | Snapshot store git blob backend (bare repo) |
 | `LLMBRIDGE_LOG_STORE_URL` | `http://localhost:8175` | Log-store service URL |
-| `LLMBRIDGE_TOOL_STORE_URL` | `http://localhost:8302` | Tool-store service URL (used for MCP provisioning when a session sets `tool_store_tools` in its harness config) |
+| `LLMBRIDGE_TOOL_STORE_URL` | `http://localhost:8302` | Tool-store service URL. A Claude Code session gets its MCP servers from `tool_store_tools` in its harness config, or, if it names none, from the tools its instance has been opted into on the Tools page. A named list that cannot be provisioned aborts the spawn; instance opt-ins that cannot be read log and the session starts without them, so a registry outage never stops the fleet |
 | `LLMBRIDGE_BRIDGE_PREFS` | `~/.config/llm-bridge/bridge-prefs.json` | User preferences file |
 | `LLMBRIDGE_CONFORMANCE_PATH` | `~/.config/llm-bridge/conformance.json` | Conformance run state file (latest matrix + active run) |
 | `LLMBRIDGE_IMAGES_DIR` | `images` | Static harness image directory |
