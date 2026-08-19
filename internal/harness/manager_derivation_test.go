@@ -82,6 +82,8 @@ func (s *logStoreStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleIngest(w, r)
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/turn-state"):
 		s.handleTurnState(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/by-harness-id":
+		s.handleSessionsByHarnessID(w, r)
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/events"):
 		s.handleEvents(w, r)
 	default:
@@ -158,6 +160,43 @@ func (s *logStoreStub) handleEvents(w http.ResponseWriter, r *http.Request) {
 		out = append(out, spliced)
 	}
 	json.NewEncoder(w).Encode(out)
+}
+
+// handleSessionsByHarnessID mirrors log-store's dedupe lookup. Latest wins,
+// exactly as the real projection does: a resumed session reports a new harness
+// uuid partway through its stream and log-store rolls the column forward, so a
+// stub that took the FIRST id would answer a question the real store does not.
+func (s *logStoreStub) handleSessionsByHarnessID(w http.ResponseWriter, r *http.Request) {
+	harnessSessionID := r.URL.Query().Get("harness_session_id")
+	if harnessSessionID == "" {
+		http.Error(w, `{"error":"harness_session_id is required"}`, http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sessions := []map[string]any{}
+	for sessionID, evs := range s.events {
+		latest := ""
+		for _, e := range evs {
+			var probe struct {
+				HarnessSessionID string `json:"harness_session_id"`
+			}
+			if json.Unmarshal(e.data, &probe) == nil && probe.HarnessSessionID != "" {
+				latest = probe.HarnessSessionID
+			}
+		}
+		if latest == harnessSessionID {
+			sessions = append(sessions, map[string]any{
+				"session_id":  sessionID,
+				"event_count": len(evs),
+				"last_active": "",
+			})
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]any{
+		"harness_session_id": harnessSessionID,
+		"sessions":           sessions,
+	})
 }
 
 // recvWithin reads up to want events from ch, failing the test if
