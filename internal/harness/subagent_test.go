@@ -412,11 +412,11 @@ func TestManager_TaskStartedCarriesSubagentSessionID(t *testing.T) {
 	seedParent(t, m, parentID)
 
 	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
-	go m.readEvents(proc)
+	waitForPumpExit := startEventPump(t, m, proc)
 	proc.ch <- taskStarted(parentID, toolUseID, taskID, "probe")
 	proc.ch <- taskUpdated(parentID, taskID, msg.TaskStatusCompleted)
 	close(proc.ch)
-	waitForProcessTeardown(t, m, parentID)
+	waitForPumpExit()
 
 	sub := findSubagent(t, m, parentID)
 	started := findStoredTaskEvent(t, m, parentID, "task_started", taskID)
@@ -446,12 +446,12 @@ func TestManager_SubagentWithNoFramesStillGetsASessionAndSettles(t *testing.T) {
 	seedParent(t, m, parentID)
 
 	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
-	go m.readEvents(proc)
+	waitForPumpExit := startEventPump(t, m, proc)
 	// Announced, then reported failed. The subagent itself never speaks.
 	proc.ch <- taskStarted(parentID, toolUseID, taskID, "dies immediately")
 	proc.ch <- taskUpdated(parentID, taskID, msg.TaskStatusFailed)
 	close(proc.ch)
-	waitForProcessTeardown(t, m, parentID)
+	waitForPumpExit()
 
 	sub := findSubagent(t, m, parentID)
 	if sub.State != string(msg.SessionError) {
@@ -470,10 +470,10 @@ func TestManager_NonAgentTaskCarriesNoSubagentSessionID(t *testing.T) {
 	seedParent(t, m, parentID)
 
 	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
-	go m.readEvents(proc)
+	waitForPumpExit := startEventPump(t, m, proc)
 	proc.ch <- taskStartedOfType(parentID, "toolu_bash", taskID, "sleep 2", msg.TaskTypeLocalBash)
 	close(proc.ch)
-	waitForProcessTeardown(t, m, parentID)
+	waitForPumpExit()
 
 	started := findStoredTaskEvent(t, m, parentID, "task_started", taskID)
 	if started.SubagentSessionID != "" {
@@ -536,10 +536,10 @@ func TestManager_AbandonedUnpromotedTaskIsClosedOnProcessExit(t *testing.T) {
 			seedParent(t, m, parentID)
 
 			proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
-			go m.readEvents(proc)
+			waitForPumpExit := startEventPump(t, m, proc)
 			proc.ch <- taskStartedOfType(parentID, toolUseID, taskID, "sleep 2", taskType)
 			close(proc.ch) // the process dies with the shell still open
-			waitForProcessTeardown(t, m, parentID)
+			waitForPumpExit()
 
 			closed := findStoredTaskEvent(t, m, parentID, "task_updated", taskID)
 			if !msg.TaskStatusIsTerminal(closed.TaskStatus) {
@@ -599,11 +599,11 @@ func TestManager_ClosedUnpromotedTaskIsNotClosedTwice(t *testing.T) {
 			seedParent(t, m, parentID)
 
 			proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
-			go m.readEvents(proc)
+			waitForPumpExit := startEventPump(t, m, proc)
 			proc.ch <- taskStartedOfType(parentID, toolUseID, taskID, "sleep 2", msg.TaskTypeLocalBash)
 			proc.ch <- build(parentID, toolUseID, taskID, msg.TaskStatusCompleted)
 			close(proc.ch)
-			waitForProcessTeardown(t, m, parentID)
+			waitForPumpExit()
 
 			if got := countStoredTaskCloses(t, m, parentID, taskID); got != 1 {
 				t.Fatalf("task %s was closed %d times, want 1 — the harness already closed it", taskID, got)
@@ -634,11 +634,11 @@ func TestManager_UnpromotedTaskWithNonTerminalStatusIsStillClosed(t *testing.T) 
 			seedParent(t, m, parentID)
 
 			proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
-			go m.readEvents(proc)
+			waitForPumpExit := startEventPump(t, m, proc)
 			proc.ch <- taskStartedOfType(parentID, toolUseID, taskID, "sleep 2", msg.TaskTypeLocalBash)
 			proc.ch <- taskNotification(parentID, toolUseID, taskID, status)
 			close(proc.ch)
-			waitForProcessTeardown(t, m, parentID)
+			waitForPumpExit()
 
 			if got := countStoredTaskCloses(t, m, parentID, taskID); got != 1 {
 				t.Fatalf("task %s has %d terminal closes, want 1: status %q was treated as a close it is not",
