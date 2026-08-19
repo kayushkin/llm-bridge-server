@@ -200,6 +200,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/signals", s.handleCreateSessionSignal)
 	s.mux.HandleFunc("GET /signals", s.handleListSignals)
 	s.mux.HandleFunc("POST /signals/{id}/resolve", s.handleResolveSignal)
+	// The ONE way to answer a question, whichever producer raised it and
+	// whether or not its session is still running. The server picks the
+	// delivery — a live parked hook, or the session's next message — because
+	// a request_id only says a park EXISTED, and only the server knows if it
+	// is still live. See signal_answer.go.
+	s.mux.HandleFunc("POST /signals/{id}/answer", s.handleAnswerSignal)
 
 	// PreToolUse permission gate for Claude Code. Wired into every CC
 	// session via buildClaudeCodeSettings's --settings injection so CC
