@@ -144,6 +144,24 @@ func (s *Server) resolveSignalsForRequest(bridgeID, requestID string, decision p
 		return
 	}
 
+	// A question outlives the session that asked it.
+	//
+	// When the process dies mid-park the handler synthesises a deny so Claude
+	// Code's blocked tool call gets an answer. That deny is addressed to the
+	// TOOL, not to the question: nobody decided anything. Closing the rows
+	// here — which is what this function used to do, because a deny is a deny
+	// — threw the question away at exactly the moment it became impossible to
+	// deliver any other way, and the user never learned it had been asked.
+	//
+	// Left open, the question is still answerable: the unified answer verb
+	// finds no live park and injects the answer as the session's next message,
+	// restarting it if needed. The tool call is lost either way — the process
+	// it belonged to is gone — but the question survives to be answered.
+	if decision.SessionWentAway {
+		log.Printf("[signals] %s/%s: session went away mid-park; leaving %d question(s) open to answer later", bridgeID, requestID, len(signals))
+		return
+	}
+
 	answers := map[string]string{}
 	if decision.Behavior == "allow" && len(decision.UpdatedInput) > 0 {
 		var resolution askUserQuestionResolution

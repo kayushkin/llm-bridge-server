@@ -163,8 +163,8 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 
 	res, err := s.permClient.Evaluate(r.Context(), permclient.Request{
 		SessionID: bridgeID,
-		Tool:     payload.ToolName,
-		Input:    payload.ToolInput,
+		Tool:      payload.ToolName,
+		Input:     payload.ToolInput,
 	})
 	if err != nil {
 		// Pass the client's error through rather than labelling it. Evaluate
@@ -355,9 +355,10 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 		// banner clears.
 		s.parkedAsks.cancel(bridgeID, requestID)
 		decision = permissionDecision{
-			Behavior:   "deny",
-			Message:    "request canceled before resolution: " + resolveCtx.Err().Error(),
-			ResolvedBy: "auto:context-canceled",
+			Behavior:        "deny",
+			Message:         "request canceled before resolution: " + resolveCtx.Err().Error(),
+			ResolvedBy:      "auto:context-canceled",
+			SessionWentAway: true,
 		}
 		s.broadcastPrehookResolved(bridgeID, requestID, source, decision)
 		// CC has already disconnected; writing a body here is harmless

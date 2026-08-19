@@ -709,3 +709,66 @@ func TestAResolvedSignalUnparksNothing(t *testing.T) {
 		}
 	}
 }
+
+// A question outlives the session that asked it.
+//
+// The two denies below are byte-identical to the tool — both send Claude Code
+// "deny" — and mean opposite things to the human. One is a person declining;
+// the other is a process dying while the question was still on screen. Only
+// the first is an answer.
+//
+// This used to be one case. When the reaper killed a session mid-park, the
+// handler synthesised a deny to unblock CC's tool call, that deny reached
+// here, and the question was recorded as dismissed — discarded at exactly the
+// moment it stopped being deliverable any other way. Measured on this host,
+// every open question was sitting on a session that had already finished, so
+// this is the normal path, not a corner.
+func TestSessionGoingAwayLeavesTheQuestionOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		decision  permissionDecision
+		wantState msg.SignalState
+	}{
+		{
+			name:      "a human declining is an answer and closes the question",
+			decision:  permissionDecision{Behavior: "deny", Message: "user declined", ResolvedBy: "user"},
+			wantState: msg.SignalStateDismissed,
+		},
+		{
+			name: "the session going away is not an answer and leaves it open",
+			decision: permissionDecision{
+				Behavior:        "deny",
+				Message:         "request canceled before resolution: context canceled",
+				ResolvedBy:      "auto:context-canceled",
+				SessionWentAway: true,
+			},
+			wantState: msg.SignalStateOpen,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, st := testServer(t)
+			sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
+			srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+
+			srv.resolveSignalsForRequest("br_1", "hreq_1", tc.decision)
+
+			signals, err := st.ListSignalsByRequestID("br_1", "hreq_1")
+			if err != nil {
+				t.Fatalf("list signals: %v", err)
+			}
+			if len(signals) == 0 {
+				t.Fatal("no signals recorded")
+			}
+			for _, sig := range signals {
+				if sig.State != tc.wantState {
+					t.Errorf("%q state = %q, want %q", sig.Title, sig.State, tc.wantState)
+				}
+				// An open question must carry no resolution stamp, or a later
+				// answer would be writing over one that was never made.
+				if tc.wantState == msg.SignalStateOpen && sig.ResolvedAt != nil {
+					t.Errorf("%q is open but carries resolved_at %v", sig.Title, sig.ResolvedAt)
+				}
+			}
+		})
+	}
+}

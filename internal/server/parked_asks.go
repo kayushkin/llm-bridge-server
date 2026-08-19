@@ -13,6 +13,21 @@ type permissionDecision struct {
 	UpdatedInput json.RawMessage
 	Message      string
 	ResolvedBy   string
+
+	// SessionWentAway marks a decision nobody made: the process died, the
+	// connection dropped, or the reaper killed the session while the ask was
+	// still parked. The tool call still has to be answered — Claude Code is
+	// blocked on the hook response and a deny is the only safe thing to send
+	// a process that is going away — but the QUESTION was never resolved and
+	// must stay open.
+	//
+	// The distinction is the whole reason a question outlives its session. A
+	// human deciding "deny" is an answer; a process dying is not, and
+	// recording it as one silently discarded questions the user never saw.
+	// Modelled as its own field rather than sniffed from the "auto:" prefix
+	// on ResolvedBy, because ResolvedBy is a display string and the next
+	// auto: reason added would inherit behaviour nobody chose for it.
+	SessionWentAway bool
 }
 
 // parkedAsks tracks PreToolUse permission hooks whose verdict is "ask",
