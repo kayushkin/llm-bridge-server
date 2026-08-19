@@ -38,6 +38,18 @@ func main() {
 
 	cfg := config.Load()
 
+	// Say where the two stores that outlive this process are, before writing
+	// to either. The local DB is per-instance and disposable; log-store is
+	// remote, shared and permanent, and its URL has a live-host default, so
+	// an instance that isolates LLMBRIDGE_DB_PATH and stops there is still
+	// pointed at the production event log. Nothing used to say so: every
+	// other store below logs where it loaded from, and log-store — the only
+	// one whose writes cannot be thrown away with a temp directory — booted
+	// silently. See AutoDiscover, which turns that into thousands of
+	// permanent writes seconds after boot.
+	log.Printf("bridge db %s | log-store %s (remote, shared, permanent — set LLMBRIDGE_LOG_STORE_URL to isolate an instance)",
+		cfg.DBPath, cfg.LogStoreURL)
+
 	st, err := store.New(cfg.DBPath)
 	if err != nil {
 		log.Fatalf("bridge db: %v", err)
