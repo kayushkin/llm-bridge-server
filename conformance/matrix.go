@@ -7,11 +7,9 @@ package conformance
 import (
 	"encoding/json"
 	"os"
-	"time"
-)
 
-// Feature is a capability that a harness may or may not support.
-type Feature string
+	"github.com/kayushkin/llm-bridge/msg"
+)
 
 const (
 	// ── Lifecycle (control plane) ────────────────────────────────────────
@@ -86,98 +84,29 @@ var AllFeatures = []Feature{
 	FeatureTurnComplete,
 }
 
-// TestResult records the outcome of a single feature test.
-type TestResult struct {
-	Feature Feature `json:"feature"`
-	Passed  bool    `json:"passed"`
-
-	// Skipped means the test could not reach a verdict: a precondition failed,
-	// or the feature cannot be exercised by this runner at all. It says nothing
-	// about the harness.
-	Skipped bool `json:"skipped,omitempty"`
-
-	// Unsupported means the test ran, the harness answered, and it does not do
-	// this. That is a verdict about the harness, and it is the one the old
-	// grading could not express — every absence was filed as Skipped, so a
-	// harness missing a feature looked identical to a feature nobody could
-	// test. Sixty per cent of the matrix was Skip, and reading it as coverage
-	// was reading mostly nothing.
-	Unsupported bool `json:"unsupported,omitempty"`
-
-	Error    string `json:"error,omitempty"`
-	Duration string `json:"duration,omitempty"`
-}
-
-// Verdict names the outcome in one word, so callers do not each re-derive it
-// from three booleans and disagree about the precedence.
-func (r TestResult) Verdict() string {
-	switch {
-	case r.Skipped:
-		return "skipped"
-	case r.Unsupported:
-		return "unsupported"
-	case r.Passed:
-		return "passed"
-	default:
-		return "failed"
-	}
-}
-
-// HarnessResult records all test results for a single harness.
-type HarnessResult struct {
-	Harness  string       `json:"harness"`
-	Binary   string       `json:"binary"`
-	TestedAt time.Time    `json:"tested_at"`
-	Results  []TestResult `json:"results"`
-	Summary  Summary      `json:"summary"`
-}
-
-// Summary counts test outcomes.
-type Summary struct {
-	Total   int `json:"total"`
-	Passed  int `json:"passed"`
-	Failed  int `json:"failed"`
-	Skipped int `json:"skipped"`
-	// Unsupported counts features the harness answered for and does not
-	// implement. Kept apart from Skipped so a reader can tell "this harness
-	// cannot do it" from "we never found out".
-	Unsupported int `json:"unsupported"`
-}
-
-// Matrix holds conformance results for all tested harnesses.
-type Matrix struct {
-	GeneratedAt time.Time       `json:"generated_at"`
-	Harnesses   []HarnessResult `json:"harnesses"`
-}
-
-// AddResult records a feature test result for a harness.
-func (hr *HarnessResult) AddResult(r TestResult) {
-	hr.Results = append(hr.Results, r)
-	hr.Summary.Total++
-	// Skipped stays first: a test that never reached a verdict cannot also
-	// report one. Unsupported comes before Passed so a result carrying both
-	// counts as the narrower claim.
-	switch {
-	case r.Skipped:
-		hr.Summary.Skipped++
-	case r.Unsupported:
-		hr.Summary.Unsupported++
-	case r.Passed:
-		hr.Summary.Passed++
-	default:
-		hr.Summary.Failed++
-	}
-}
-
-// Supports returns true if the harness passed the given feature test.
-func (hr *HarnessResult) Supports(f Feature) bool {
-	for _, r := range hr.Results {
-		if r.Feature == f {
-			return r.Passed
-		}
-	}
-	return false
-}
+// The conformance record types are the canonical ones from llm-bridge's msg
+// package, aliased rather than redefined.
+//
+// They used to be a second, parallel set of structs with the same JSON tags,
+// bridged by a hand-written toMsgResult in internal/server. That copy agreed
+// with the canonical shape only by luck, and stopped: when Unsupported was
+// added here, the converter kept copying five fields out of six, so the API
+// served an unsupported verdict as neither passed nor skipped — which every
+// reader renders as FAILED. The duplication silently defeated the very
+// distinction it was carrying.
+//
+// These are ALIASES (=), not new named types, so a value produced here IS a
+// msg value: no conversion exists to fall behind, and adding a field to the
+// canonical struct cannot leave this package on a stale copy. Verdict,
+// AddResult and Supports live on the canonical types for the same reason —
+// the summary invariant belongs to the shape, not to whoever fills it in.
+type (
+	Feature       = msg.ConformanceFeature
+	TestResult    = msg.ConformanceTestResult
+	HarnessResult = msg.ConformanceHarnessResult
+	Summary       = msg.ConformanceSummary
+	Matrix        = msg.ConformanceMatrix
+)
 
 // SaveMatrix writes the conformance matrix to a JSON file.
 func SaveMatrix(path string, m *Matrix) error {

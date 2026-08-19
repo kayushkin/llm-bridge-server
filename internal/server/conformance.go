@@ -228,7 +228,7 @@ func (s *Server) handleConformanceRun(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			matrix.Harnesses = append(matrix.Harnesses, toMsgResult(result))
+			matrix.Harnesses = append(matrix.Harnesses, *result)
 		}
 
 		s.cfState.commitRun(matrix, outcome)
@@ -263,29 +263,4 @@ func planConformanceRun() (targets []harnessTarget, outcome runOutcome) {
 		targets = append(targets, harnessTarget{harness: h, binary: binPath})
 	}
 	return targets, outcome
-}
-
-func toMsgResult(hr *conformance.HarnessResult) msg.ConformanceHarnessResult {
-	var results []msg.ConformanceTestResult
-	for _, r := range hr.Results {
-		results = append(results, msg.ConformanceTestResult{
-			Feature:  msg.ConformanceFeature(r.Feature),
-			Passed:   r.Passed,
-			Skipped:  r.Skipped,
-			Error:    r.Error,
-			Duration: r.Duration,
-		})
-	}
-	return msg.ConformanceHarnessResult{
-		Harness:  hr.Harness,
-		Binary:   hr.Binary,
-		TestedAt: hr.TestedAt,
-		Results:  results,
-		Summary: msg.ConformanceSummary{
-			Total:   hr.Summary.Total,
-			Passed:  hr.Summary.Passed,
-			Failed:  hr.Summary.Failed,
-			Skipped: hr.Summary.Skipped,
-		},
-	}
 }

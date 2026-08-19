@@ -1,12 +1,14 @@
 package server
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/conformance"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -191,5 +193,57 @@ func TestPlanConformanceRunFindsHarnessOnPath(t *testing.T) {
 		if h == msg.HarnessClaudeCode {
 			t.Error("claude_code is on PATH but was reported as missing")
 		}
+	}
+}
+
+// The unsupported verdict has to survive all the way to the wire, and for two
+// weeks it did not.
+//
+// conformance.HarnessResult and msg.ConformanceHarnessResult used to be two
+// parallel structs with the same JSON tags, bridged by a hand-written
+// toMsgResult in this file. When Unsupported was added to the runner's copy,
+// the converter went on copying five fields out of six. Nothing failed: the
+// field simply arrived false, and a result that is neither passed nor skipped
+// renders as FAILED — so the API reported "this harness cannot do X" as "this
+// harness got X wrong", which is the exact distinction the verdict was added
+// to draw.
+//
+// The types are now aliases of the canonical ones, so no conversion exists to
+// fall behind. This test pins the OUTCOME rather than the mechanism: if anyone
+// reintroduces a copy that drops a field, it fails here.
+func TestUnsupportedVerdictSurvivesToTheWire(t *testing.T) {
+	var hr conformance.HarnessResult
+	hr.Harness = "scaffold"
+	hr.AddResult(conformance.TestResult{Feature: "streaming", Unsupported: true, Error: "no stream events emitted"})
+	hr.AddResult(conformance.TestResult{Feature: "block", Passed: true})
+	hr.AddResult(conformance.TestResult{Feature: "compact", Skipped: true})
+	hr.AddResult(conformance.TestResult{Feature: "errors"})
+
+	matrix := &msg.ConformanceMatrix{Harnesses: []msg.ConformanceHarnessResult{hr}}
+
+	encoded, err := json.Marshal(matrix)
+	if err != nil {
+		t.Fatalf("marshal matrix: %v", err)
+	}
+	var round msg.ConformanceMatrix
+	if err := json.Unmarshal(encoded, &round); err != nil {
+		t.Fatalf("unmarshal matrix: %v", err)
+	}
+
+	got := round.Harnesses[0]
+	if !got.Results[0].Unsupported {
+		t.Errorf("unsupported did not survive the wire: %s", encoded)
+	}
+	if v := got.Results[0].Verdict(); v != "unsupported" {
+		t.Errorf("verdict = %q, want unsupported — an unsupported result must never read as failed", v)
+	}
+	// The four counts are disjoint and sum to Total. Folding Unsupported into
+	// Failed is the failure this whole distinction exists to prevent.
+	want := msg.ConformanceSummary{Total: 4, Passed: 1, Failed: 1, Skipped: 1, Unsupported: 1}
+	if got.Summary != want {
+		t.Errorf("summary = %+v, want %+v", got.Summary, want)
+	}
+	if sum := got.Summary.Passed + got.Summary.Failed + got.Summary.Skipped + got.Summary.Unsupported; sum != got.Summary.Total {
+		t.Errorf("counts sum to %d but Total is %d", sum, got.Summary.Total)
 	}
 }
