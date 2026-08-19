@@ -598,7 +598,7 @@ func TestResolveSignalUnknownSignalIs404(t *testing.T) {
 // A tool signal is a surface on a parked hook. Closing it while the harness
 // still sits on the channel hides the ask and leaves the session blocked
 // with nothing on screen to unblock it.
-func TestResolveSignalRefusesWhileTheRequestIsStillParked(t *testing.T) {
+func TestDismissingALiveParkDeniesTheToolCall(t *testing.T) {
 	srv, st := testServer(t)
 	newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 	sig := newSignalRow(t, st, &msg.Signal{
@@ -609,21 +609,31 @@ func TestResolveSignalRefusesWhileTheRequestIsStillParked(t *testing.T) {
 		Surface:   msg.SignalSurfaceChat,
 		State:     msg.SignalStateOpen,
 	})
-	srv.parkedAsks.park("br_1", "hreq_1")
+	ch := srv.parkedAsks.park("br_1", "hreq_1")
 
+	// Dismissing a question whose park is live has to reach the blocked tool
+	// call, not just close the row — the harness waits on that hook forever
+	// otherwise.
+	//
+	// This used to answer 409 naming the hook route, which handed the choice
+	// back to a caller that cannot make it: a request_id says a park EXISTED,
+	// not that it is still live. Every surface then rendered two buttons,
+	// Decline and Dismiss, and picked between them on that same bad evidence.
 	rec := resolveSignal(t, srv, sig.ID, `{"state":"dismissed"}`)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "hreq_1") {
-		t.Errorf("refusal does not name the parked request to resolve instead: %s", body)
+	if body := rec.Body.String(); !strings.Contains(body, "parked_hook") {
+		t.Errorf("response does not say the deny reached the park: %s", body)
 	}
-	stored, err := st.GetSignal(sig.ID)
-	if err != nil {
-		t.Fatalf("get signal: %v", err)
-	}
-	if stored.State != msg.SignalStateOpen {
-		t.Errorf("state = %q while its request is parked, want open", stored.State)
+	// The deny is waiting on the channel for the blocked prehook handler.
+	select {
+	case decision := <-ch:
+		if decision.Behavior != "deny" {
+			t.Errorf("behavior = %q, want deny", decision.Behavior)
+		}
+	default:
+		t.Error("nothing was delivered to the parked hook; the harness is still blocked")
 	}
 
 	// Once the park is gone — harness restart, cancelled request — the row is
@@ -633,7 +643,7 @@ func TestResolveSignalRefusesWhileTheRequestIsStillParked(t *testing.T) {
 	if rec := resolveSignal(t, srv, sig.ID, `{"state":"dismissed"}`); rec.Code != http.StatusOK {
 		t.Fatalf("status after the park went away = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	stored, err = st.GetSignal(sig.ID)
+	stored, err := st.GetSignal(sig.ID)
 	if err != nil {
 		t.Fatalf("get signal: %v", err)
 	}

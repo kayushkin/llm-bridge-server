@@ -306,15 +306,33 @@ func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A tool-sourced signal is a surface on a parked hook, and the park is
-	// the source of truth for whether the session is still blocked. Closing
-	// the surface out from under a live park hides the ask while the harness
-	// keeps waiting on it, so refuse and name the verb that reaches both.
-	if signal.RequestID != "" && s.parkedAsks.isParked(signal.SessionID, signal.RequestID) {
-		http.Error(w, "signal "+signal.ID+" is backed by a parked request; resolve it at "+
-			"POST /sessions/"+signal.SessionID+"/hooks/"+signal.RequestID+"/resolve, which closes this signal too",
-			http.StatusConflict)
-		return
+	// Dismissing a question whose park is still LIVE has to deny the parked
+	// tool call, not just close the row. The harness is blocked on that hook;
+	// closing the surface alone would hide the ask while the process kept
+	// waiting on it forever.
+	//
+	// This used to refuse with a 409 naming the hook route, which pushed the
+	// choice back to the caller — and the caller cannot make it, because a
+	// request_id says a park EXISTED, not that it is still live. Every surface
+	// then had to render two buttons, Decline and Dismiss, and pick between
+	// them on that same bad evidence. One verb, and the server picks: the deny
+	// closes these rows on its way through resolveSignalsForRequest.
+	if req.State == msg.SignalStateDismissed && signal.RequestID != "" &&
+		s.parkedAsks.isParked(signal.SessionID, signal.RequestID) {
+		decision := permissionDecision{
+			Behavior:   "deny",
+			Message:    "declined by the user",
+			ResolvedBy: "user",
+		}
+		if s.parkedAsks.deliver(signal.SessionID, signal.RequestID, decision) {
+			writeJSON(w, map[string]any{
+				"status":        string(msg.SignalStateDismissed),
+				"delivered_via": "parked_hook",
+			})
+			return
+		}
+		// The park drained between the check and the deliver. Fall through and
+		// close the row directly — the ordinary race, not a failure.
 	}
 
 	// A second resolve is not an error. The same row renders in the chat, the
