@@ -28,3 +28,4 @@ secrets.*
 # a secret. Files under /.local/ stay ignored — git cannot re-include through
 # an excluded directory.
 !*.go
+__pycache__/

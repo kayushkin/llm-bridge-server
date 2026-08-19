@@ -812,14 +812,7 @@ func (s *Server) AutoDiscover() {
 		var imported, linkedCount int
 		var pendingLinks []discoveredLink
 		for _, ds := range sessions {
-			// Use prompt as display name - it's more useful for identifying sessions
-			displayName := ds.Prompt
-			if displayName == "" {
-				displayName = ds.Project
-			}
-			if len(displayName) > 100 {
-				displayName = displayName[:100]
-			}
+			displayName := displayNameForDiscoveredSession(ds.Prompt, ds.Project)
 
 			instanceID := localInstances[ds.Harness]
 			// Prefer the adapter's structural source tag (e.g. claudecode marks
