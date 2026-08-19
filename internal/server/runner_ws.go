@@ -8,8 +8,8 @@ import (
 
 	"database/sql"
 
-	harnessstore "github.com/kayushkin/harness-store"
 	"github.com/gorilla/websocket"
+	harnessstore "github.com/kayushkin/harness-store"
 )
 
 var runnerUpgrader = websocket.Upgrader{

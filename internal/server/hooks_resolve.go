@@ -140,9 +140,9 @@ func (s *Server) broadcastStaleResolution(bridgeID, requestID string, d permissi
 // the harness reads it on next spawn. nil leaves any existing value
 // alone; an empty struct clears it.
 type permissionModeRequest struct {
-	Mode                 string                       `json:"mode"`
-	DisableNetwork       *bool                        `json:"disable_network,omitempty"`
-	PermissionModeCustom *permissionModeCustomConfig  `json:"permission_mode_custom,omitempty"`
+	Mode                 string                      `json:"mode"`
+	DisableNetwork       *bool                       `json:"disable_network,omitempty"`
+	PermissionModeCustom *permissionModeCustomConfig `json:"permission_mode_custom,omitempty"`
 }
 
 // permissionModeCustomConfig is the raw-knob payload Custom mode carries

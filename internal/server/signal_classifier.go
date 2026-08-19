@@ -325,7 +325,7 @@ func (s *Server) onTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionStat
 	// ask from a previous turn is either answered or moot. Without this a
 	// derived row would sit open forever — nothing else resolves one until
 	// P4 adds the signal-level resolve verb.
-	s.supersedeDerivedSignals(bridgeID)
+	s.supersedeStaleQuestions(bridgeID)
 
 	// The session already has a parked tool question open. That is a
 	// structured ask with a real resolve verb behind it; a derived row
@@ -426,17 +426,51 @@ func (s *Server) hasOpenToolQuestion(bridgeID string) bool {
 	return false
 }
 
-// supersedeDerivedSignals dismisses every still-open derived signal on the
-// session. Called at the top of a turn-end, so at most one derived row per
-// session is ever open: the one from the most recent turn.
-func (s *Server) supersedeDerivedSignals(bridgeID string) {
+// answerableInPlace reports whether a question can still be delivered to the
+// tool call that asked it — that is, whether its park is alive right now.
+//
+// A request_id is not enough to answer this: it says a park EXISTED. The park
+// may have drained, or died with its process. Only the live registry knows.
+func (s *Server) answerableInPlace(sig store.Signal) bool {
+	return sig.RequestID != "" && s.parkedAsks.isParked(sig.SessionID, sig.RequestID)
+}
+
+// supersedeStaleQuestions closes every open question the thread has moved past.
+// Called at the top of a turn-end.
+//
+// A session is a THREAD, and that is the whole reason this exists. Two
+// questions cannot sit open on one thread waiting to be answered at different
+// times: an answer sent now lands at the end of the conversation, so answering
+// the older one later drops a reply to a question three turns back into a
+// context that has moved on. The invariant is at most ONE open question per
+// session, and a new turn is what retires the previous one.
+//
+// The test is whether the question is still answerable IN PLACE, not what
+// produced it. That distinction used to be Source == derived, which was right
+// only while a parked question could not outlive its park — it was dismissed
+// when the process died. Now that a question survives its session, an orphaned
+// parked question is exactly as un-answerable-later as a derived one, and
+// leaving it open would let a thread accumulate the very backlog this prevents.
+//
+// A LIVE park is never superseded: something is still blocked on it, and
+// closing it would destroy a real pending tool call. In practice a live park
+// blocks mid-turn, so a turn-end cannot arrive while one is outstanding.
+//
+// Notifications keep the narrower rule. They are read, not answered, so the
+// thread argument does not reach them and this is deliberately not the commit
+// that changes when an FYI disappears.
+func (s *Server) supersedeStaleQuestions(bridgeID string) {
 	open, err := s.store.ListSignals(store.SignalFilter{SessionID: bridgeID, State: msg.SignalStateOpen})
 	if err != nil {
-		log.Printf("[signals] %s: look up derived signals to supersede: %v", bridgeID, err)
+		log.Printf("[signals] %s: look up signals to supersede: %v", bridgeID, err)
 		return
 	}
 	for _, sig := range open {
-		if sig.Source != msg.SignalSourceDerived {
+		stale := sig.Kind == msg.SignalKindQuestion && !s.answerableInPlace(sig)
+		if sig.Kind != msg.SignalKindQuestion {
+			stale = sig.Source == msg.SignalSourceDerived
+		}
+		if !stale {
 			continue
 		}
 		if err := s.store.ResolveSignal(sig.ID, msg.SignalStateDismissed, nil); err != nil {
@@ -445,30 +479,33 @@ func (s *Server) supersedeDerivedSignals(bridgeID string) {
 	}
 }
 
-// answerDerivedQuestions closes the session's open derived questions with the
+// closeQuestionsAnsweredByMessage closes the session's open questions with the
 // message the user just sent.
 //
-// A derived question has no parked hook behind it, so the hook-resolve verb
-// cannot reach it; the design's answer is that sending a message resolves it,
-// and the send handler is the one place every surface's answer passes through.
-// A notification is left alone — it is acknowledged, not answered, and the ack
-// verb lands with P4.
-func (s *Server) answerDerivedQuestions(bridgeID, text string) {
+// Any message is an answer here, whether or not the sender meant it as one:
+// the reply lands at the end of the thread either way, so a question left open
+// behind it could never be answered in its own context again. Closing it is
+// the honest record.
+//
+// Skips a question whose park is still live — that one has a channel waiting
+// and resolves through it, not through the next message. A notification is
+// left alone: it is acknowledged, not answered.
+func (s *Server) closeQuestionsAnsweredByMessage(bridgeID, text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
 	}
 	open, err := s.store.ListSignals(store.SignalFilter{SessionID: bridgeID, State: msg.SignalStateOpen})
 	if err != nil {
-		log.Printf("[signals] %s: look up derived questions to answer: %v", bridgeID, err)
+		log.Printf("[signals] %s: look up questions to answer: %v", bridgeID, err)
 		return
 	}
 	for _, sig := range open {
-		if sig.Source != msg.SignalSourceDerived || sig.Kind != msg.SignalKindQuestion {
+		if sig.Kind != msg.SignalKindQuestion || s.answerableInPlace(sig) {
 			continue
 		}
 		if err := s.store.ResolveSignal(sig.ID, msg.SignalStateAnswered, &msg.SignalAnswer{Text: text}); err != nil {
-			log.Printf("[signals] %s: answer derived signal %s: %v", bridgeID, sig.ID, err)
+			log.Printf("[signals] %s: answer signal %s: %v", bridgeID, sig.ID, err)
 		}
 	}
 }

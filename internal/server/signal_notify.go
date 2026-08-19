@@ -89,7 +89,7 @@ func (s *Server) handleCreateSessionSignal(w http.ResponseWriter, r *http.Reques
 	// `source:"tool"` question minted here would be answerable by nothing:
 	// the hook-resolve verb is keyed on a request_id this row has none of,
 	// `POST /sessions/{id}/send` closes derived questions only
-	// (answerDerivedQuestions), and the signal-level resolve verb refuses to
+	// (closeQuestionsAnsweredByMessage), and the signal-level resolve verb refuses to
 	// acknowledge a question on purpose. It would sit open until a human
 	// dismissed it unanswered. AskUserQuestion is the verb that asks, and it
 	// parks a real call to hang the answer on.

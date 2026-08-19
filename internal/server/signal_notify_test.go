@@ -313,7 +313,7 @@ func TestTurnEndDoesNotSupersedeAToolNotification(t *testing.T) {
 	}
 	raised := decodeSignal(t, rec)
 
-	srv.supersedeDerivedSignals("br_1")
+	srv.supersedeStaleQuestions("br_1")
 
 	stored, err := st.GetSignal(raised.ID)
 	if err != nil {

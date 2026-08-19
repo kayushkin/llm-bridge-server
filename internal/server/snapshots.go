@@ -28,6 +28,7 @@ const snapshotMaxBashFiles = 32
 // null if that phase didn't capture for that file). Response shape:
 //
 //	{ "files": [{ "file_path": "...", "before": {...}, "after": {...} }, ...] }
+//
 // ⚠️ Two session ids are in play and they are not interchangeable. This route is
 // addressed by the BRIDGE session id, like every other /sessions/{id}/… route.
 // Snapshot rows are keyed by the HARNESS session id, because capture runs off a
@@ -268,4 +269,3 @@ func marshalSnapshot(snap *snapshotstore.Snapshot) any {
 	}
 	return out
 }
-

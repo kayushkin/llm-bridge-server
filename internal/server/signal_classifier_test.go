@@ -227,6 +227,11 @@ func TestOnTurnEndSupersedesTheEarlierDerivedSignal(t *testing.T) {
 func TestOnTurnEndYieldsToAnOpenToolQuestion(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_tool", msg.SessionTypeInteractive)
+	// Park it for real. The invariant under test is that a question with a
+	// LIVE parked hook owns the ask — a request_id alone says a park existed,
+	// not that anything is still waiting on it, and the fixture has to carry
+	// the difference or it is testing a case production never produces.
+	srv.parkedAsks.park(sess.SessionID, "hreq_1")
 	srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 	before := len(openSignals(t, st, sess.SessionID))
 
@@ -293,7 +298,7 @@ func TestAnswerDerivedQuestionsClosesTheQuestionButNotTheNotification(t *testing
 		t.Fatalf("create notification: %v", err)
 	}
 
-	srv.answerDerivedQuestions(sess.SessionID, "  use main  ")
+	srv.closeQuestionsAnsweredByMessage(sess.SessionID, "  use main  ")
 
 	answered, err := st.GetSignal(question.ID)
 	if err != nil {
@@ -320,9 +325,10 @@ func TestAnswerDerivedQuestionsClosesTheQuestionButNotTheNotification(t *testing
 func TestAnswerDerivedQuestionsLeavesToolParksToTheHookVerb(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_park", msg.SessionTypeInteractive)
+	srv.parkedAsks.park(sess.SessionID, "hreq_1")
 	srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
-	srv.answerDerivedQuestions(sess.SessionID, "whatever")
+	srv.closeQuestionsAnsweredByMessage(sess.SessionID, "whatever")
 
 	// A tool-sourced signal is resolved by resolving its parked hook. Closing
 	// it on a bare /send would leave the hook parked with its record already
@@ -346,4 +352,60 @@ func TestClassifierTrimKeepsTail(t *testing.T) {
 	if !strings.HasSuffix(got, "abcdefghij") {
 		t.Errorf("trim = %q, want it to end with the last 10 runes", got)
 	}
+}
+
+// The other half of the pair above, and the case that had no coverage: a tool
+// question whose park is GONE.
+//
+// A session is a thread. Once the park has died — its process reaped, its
+// connection dropped — that question can no longer be delivered to the tool
+// call that asked it, and an answer sent now would land at the end of a
+// conversation that has moved on. It is exactly as stale as a derived one, and
+// the next turn has to retire it.
+//
+// This became reachable when a question started outliving its session. Before
+// that, a dead park took its rows down with it, so "tool-sourced" and "still
+// live" were the same thing and the code could test either. They are now
+// different, and only "still live" is the one that matters.
+func TestAStaleToolQuestionIsRetiredLikeAnyOther(t *testing.T) {
+	t.Run("a message closes it", func(t *testing.T) {
+		srv, st := testServer(t)
+		sess := newSessionForSignals(t, st, "br_dead", msg.SessionTypeInteractive)
+		// No park: the process that asked is gone.
+		srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_dead", json.RawMessage(askUserQuestionToolInput))
+
+		srv.closeQuestionsAnsweredByMessage(sess.SessionID, "use main")
+
+		if got := len(openSignals(t, st, sess.SessionID)); got != 0 {
+			t.Errorf("open questions = %d, want 0 — a dead park cannot be answered later", got)
+		}
+	})
+
+	t.Run("a turn-end supersedes it", func(t *testing.T) {
+		srv, st := testServer(t)
+		sess := newSessionForSignals(t, st, "br_dead2", msg.SessionTypeInteractive)
+		srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_dead", json.RawMessage(askUserQuestionToolInput))
+
+		srv.supersedeStaleQuestions(sess.SessionID)
+
+		if got := len(openSignals(t, st, sess.SessionID)); got != 0 {
+			t.Errorf("open questions = %d, want 0 — the thread moved past them", got)
+		}
+	})
+
+	t.Run("a live park is never retired", func(t *testing.T) {
+		srv, st := testServer(t)
+		sess := newSessionForSignals(t, st, "br_live", msg.SessionTypeInteractive)
+		srv.parkedAsks.park(sess.SessionID, "hreq_live")
+		srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_live", json.RawMessage(askUserQuestionToolInput))
+
+		srv.supersedeStaleQuestions(sess.SessionID)
+		srv.closeQuestionsAnsweredByMessage(sess.SessionID, "unrelated")
+
+		// Something is still blocked on this one. Closing it would destroy a
+		// real pending tool call.
+		if got := len(openSignals(t, st, sess.SessionID)); got != 2 {
+			t.Errorf("open questions = %d, want 2 — a live park owns its ask", got)
+		}
+	})
 }

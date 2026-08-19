@@ -559,12 +559,15 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// A derived question resolves by sending a message — that IS its resolve
-	// verb (SESSION-SIGNALS.md, "Resolve — per kind and source"), so this is
-	// where the record closes. Doing it here rather than in the client means
-	// a question answered from the CLI, from another surface, or by an
-	// orchestrator closes the same way as one answered from the card.
-	s.answerDerivedQuestions(bridgeID, req.Message)
+	// A session is a thread, so any message closes the questions open on it.
+	// The reply lands at the end of the conversation whether or not the sender
+	// meant it as an answer, and a question left open behind it could never be
+	// answered in its own context again. Doing it here rather than in a client
+	// means a question closed from the CLI, from another surface, or by an
+	// orchestrator closes the same way as one answered from the card. A
+	// question whose park is still live is skipped — it resolves through its
+	// channel, not through the next message.
+	s.closeQuestionsAnsweredByMessage(bridgeID, req.Message)
 
 	go s.maybeAutoRename(bridgeID)
 
