@@ -68,6 +68,7 @@ signal {
   body          string?         // optional detail for a notification
   options       []{ label, value }   // questions only; suggested/pre-baked answers
   allow_freeform bool           // questions: whether an editable text answer is accepted
+  allow_multiple_options bool   // questions: whether more than one option may be picked
   answer        { option?, text? }?  // questions: picked option AND/OR freeform edit
   severity      "info"|"warn"?  // notifications only
   state         "open"|"answered"|"acknowledged"|"dismissed"
@@ -715,3 +716,102 @@ bridge-ui commit accompanies this one.
 
 Deploy gate unchanged: the server half needs the user's gateway rebuild + restart
 (`c251f92c`). Code, build, verify, push — and stop there.
+
+---
+
+## The banner folds into the card (2026-08-19)
+
+dashv2 could draw the same question twice, and could draw some questions not at all.
+Both came from one thing: the chat pane rendered the live HOOK STREAM, while every other
+signal surface rendered the RECORD.
+
+**The duplicate.** A parked `AskUserQuestion` produced both. `PermissionBanner` built an
+answer form from the parked tool input; `SessionSignals` built one from the signal rows.
+So every signals surface had to be told which request ids the banner had already claimed —
+`excludeRequestIds` on the component, and a second copy of the same test inside the
+sidebar's question dropdown. That is a client deciding which producer raised a question,
+which is the discrimination this whole design has been removing.
+
+**The invisible.** The other direction is worse. A DERIVED question parks nothing, and a
+tool question whose process died has no park left, so neither is on the hook stream — and
+with no record renderer in the chat pane, neither appeared there at all. They showed up
+only in the sidebar `?` dropdown, which is the surface for the sessions you are *not*
+looking at. Measured on this host: every open chat question was in exactly that state.
+
+### Why the duplication had survived this long
+
+`multiSelect`. It lived in the tool input and nowhere else, so the record genuinely could
+not render a pick-many question — the card would have offered radio buttons for a question
+the model asked as "pick any that apply", and silently dropped every choice after the
+first. The banner was the only renderer that could tell the difference, which made the
+second form load-bearing rather than merely redundant.
+
+So the fold starts on the record: `msg.Signal` gains `allow_multiple_options`, set from
+the tool's own flag. With it, the banner had nothing left the card could not do.
+
+### What renders now
+
+`AwaitingYouBanner` (was `PermissionBanner`) is the one surface, and the split inside it is
+about the RECORD, not the producer:
+
+- **A signal exists** → chat-core's card, answered through `POST /signals/{id}/answer`.
+  Derived, parked, or orphaned — all the same card, all the same verb.
+- **A parked request with no signal** → the allow/deny card. That is every permission
+  gate, which has no record to answer and nothing to say beyond yes or no.
+
+The coverage test is `requestId ∈ open signals`, and it degrades in the right direction.
+When the signals read FAILS, nothing is covered, so every parked request — questions
+included — falls through to the raw allow/deny card. Uglier and says less, but the session
+stays answerable. Hiding a parked call because a *separate* read failed would freeze it
+with nothing on screen to say why.
+
+It also catches the one case the server cannot rule out: recording a signal is
+observational — it must not block the park — so a failed write leaves a parked question
+with no record. It lands on the raw card with a line saying it can be allowed or denied but
+not answered, rather than vanishing.
+
+### One session, one place to answer it
+
+The sidebar dropdown for the session the chat pane is showing now points at the chat
+instead of drawing its own copy. It used to exclude per request id, which could only ever
+hide the *parked* questions — so a derived one was still drawn twice — and it needed the
+dropdown to know what another component was rendering.
+
+Two live answer forms for one question is worse than one anywhere else: both take input,
+one submit lands, and the loser sits there looking answerable.
+
+### Retired
+
+`excludeRequestIds` on chat-core's `SessionSignals` — the last place a client had to know
+which producer raised a question. bridge-ui's own copy keeps its prop; that is the old
+chat, and it still has the old banner.
+
+`SignalAnswer` also split in two. It mirrored the server's record and carried `option`
+SINGULAR, which cannot hold the answer to a pick-many question. Composition now uses
+`SignalAnswerDraft` with `pickedOptionValues`; `SignalAnswer` stays what it always was, the
+answer a resolved question was closed with. Several picked options join with `', '`, which
+is what `AskUserQuestion`'s own input schema accepts and exactly what the folded-away
+banner did — so nothing changed about what reaches the tool.
+
+### Verified
+
+Unit: the ADD COLUMN runs on a table that already exists, twice, and a row written before
+the column reads as false rather than failing (`TestMigrateSignalsAddsAllowMultipleOptions
+ToAnExistingTable`) — every other store test starts from an empty directory and proves
+nothing about the deployed database. Both directions of the flag survive the producer.
+
+Browser, against a stub bridge-server: a derived question is answerable in the chat pane; a
+parked ask draws ONE form and no raw JSON; `allow_multiple_options` reaches the DOM as
+checkboxes and a pick-one as radios; two boxes tick at once; the answer posts comma-joined
+through the signal verb; a Bash gate keeps its allow/deny card; a park with no record still
+renders; a 500 on the signals read still shows the parked call and says what broke.
+
+Each of those was checked by breaking the thing it covers and watching it go red — the
+signal list removed from the banner (5 red), the coverage test removed so the duplication
+returns (1 red, and it is the "ONE form, not two" case), and the wire mapping forced to
+false (2 red).
+
+### Not done
+
+The cross-session "Needs you" inbox still has no dashv2 mount; the sidebar `?` markers are
+what stands in for it. `surface:"kanban"` still has no mount at all.

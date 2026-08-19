@@ -113,8 +113,12 @@ func (s *Server) recordAskUserQuestionSignals(bridgeID string, sess *store.Sessi
 			// The resolve verb takes an arbitrary answer string, so a typed
 			// answer is accepted whether or not the model offered options.
 			AllowFreeform: true,
-			State:         msg.SignalStateOpen,
-			LinkedTodoID:  linkedTodoID,
+			// Carried onto the record because the record is what the answer
+			// form is drawn from. Dropping it here would silently turn a
+			// "pick any that apply" into "pick one".
+			AllowMultipleOptions: question.MultiSelect,
+			State:                msg.SignalStateOpen,
+			LinkedTodoID:         linkedTodoID,
 		}
 		if err := s.store.CreateSignal(signal); err != nil {
 			log.Printf("[signals] %s/%s: persist signal: %v", bridgeID, requestID, err)

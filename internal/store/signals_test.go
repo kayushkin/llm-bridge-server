@@ -21,7 +21,8 @@ func openQuestion(id, sessionID, title string) *Signal {
 			{Label: "Yes", Value: "Yes", Description: "do it"},
 			{Label: "No", Value: "No"},
 		},
-		AllowFreeform: true,
+		AllowFreeform:        true,
+		AllowMultipleOptions: true,
 	}
 }
 
@@ -54,6 +55,9 @@ func TestCreateAndGetSignal(t *testing.T) {
 	}
 	if !got.AllowFreeform {
 		t.Error("allow_freeform lost")
+	}
+	if !got.AllowMultipleOptions {
+		t.Error("allow_multiple_options lost")
 	}
 	if len(got.Options) != 2 || got.Options[0].Label != "Yes" || got.Options[0].Description != "do it" {
 		t.Errorf("options lost: %+v", got.Options)
@@ -262,5 +266,70 @@ func TestListSignalsByRequestID(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Errorf("an empty request id must match nothing, got %d rows", len(empty))
+	}
+}
+
+// TestMigrateSignalsAddsAllowMultipleOptionsToAnExistingTable pins the ADD
+// COLUMN, which is the only path the deployed database will ever take.
+//
+// Every other test here starts from an empty directory, so it gets the column
+// out of CREATE TABLE and proves nothing about a store that already has a
+// signals table. The gateway on this host has one, with rows in it. If the
+// ALTER did not run, signalColumns would name a column that is not there and
+// EVERY signal read would fail — a question surface that goes blank on the
+// sessions that have questions.
+func TestMigrateSignalsAddsAllowMultipleOptionsToAnExistingTable(t *testing.T) {
+	s := testStore(t)
+
+	// Put the table back in its pre-migration shape, with a row in it, then
+	// migrate forward the way a restart does.
+	if _, err := s.db.Exec(`DROP TABLE signals`); err != nil {
+		t.Fatalf("drop signals: %v", err)
+	}
+	if _, err := s.db.Exec(`
+		CREATE TABLE signals (
+			id             TEXT PRIMARY KEY,
+			session_id     TEXT NOT NULL,
+			session_type   TEXT NOT NULL DEFAULT '',
+			kind           TEXT NOT NULL,
+			source         TEXT NOT NULL,
+			request_id     TEXT NOT NULL DEFAULT '',
+			surface        TEXT NOT NULL,
+			title          TEXT NOT NULL,
+			body           TEXT NOT NULL DEFAULT '',
+			options        TEXT NOT NULL DEFAULT '',
+			allow_freeform INTEGER NOT NULL DEFAULT 0,
+			answer         TEXT NOT NULL DEFAULT '',
+			severity       TEXT NOT NULL DEFAULT '',
+			state          TEXT NOT NULL,
+			linked_todo_id TEXT NOT NULL DEFAULT '',
+			created_at     DATETIME NOT NULL,
+			resolved_at    DATETIME
+		);
+		INSERT INTO signals (id, session_id, kind, source, surface, title, state, created_at)
+		VALUES ('sig_old', 'br_old', 'question', 'derived', 'chat', 'Asked before the column existed', 'open', CURRENT_TIMESTAMP);
+	`); err != nil {
+		t.Fatalf("recreate the old table: %v", err)
+	}
+
+	if err := s.migrateSignals(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// Twice, because a restart runs it again and the column is already there
+	// by then. A migration that only works once is a migration that breaks the
+	// second boot.
+	if err := s.migrateSignals(); err != nil {
+		t.Fatalf("migrate is not repeatable: %v", err)
+	}
+
+	got, err := s.GetSignal("sig_old")
+	if err != nil {
+		t.Fatalf("read a row written before the column existed: %v", err)
+	}
+	if got.AllowMultipleOptions {
+		t.Error("a row that predates the column should read as false, not true")
+	}
+	if got.Title != "Asked before the column existed" {
+		t.Errorf("title = %q; the old row should survive the migration intact", got.Title)
 	}
 }

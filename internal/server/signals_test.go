@@ -782,3 +782,44 @@ func TestSessionGoingAwayLeavesTheQuestionOpen(t *testing.T) {
 		})
 	}
 }
+
+// TestRecordAskUserQuestionSignalsCarriesMultiSelect pins the flag onto the
+// record, because the record is now the only thing dashv2 draws the answer form
+// from. The permission banner used to draw it from the live tool input and was
+// the sole reason multiSelect ever reached a screen; folding that banner into
+// the signal card puts the whole capability on this one field.
+//
+// Both directions are asserted. A false that arrived as true would offer
+// checkboxes for a pick-one question and let the human send an answer the tool
+// will not accept; a true that arrived as false would silently take away every
+// choice after the first.
+func TestRecordAskUserQuestionSignalsCarriesMultiSelect(t *testing.T) {
+	srv, st := testServer(t)
+	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
+
+	input := `{"questions":[
+		{"question":"Which files?","header":"Scope","multiSelect":true,
+		 "options":[{"label":"a.go"},{"label":"b.go"}]},
+		{"question":"Ship it?","header":"Release","multiSelect":false,
+		 "options":[{"label":"Yes"},{"label":"No"}]}
+	]}`
+	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_multi", json.RawMessage(input))
+
+	signals, err := st.ListSignalsByRequestID("br_1", "hreq_multi")
+	if err != nil {
+		t.Fatalf("list signals: %v", err)
+	}
+	if len(signals) != 2 {
+		t.Fatalf("got %d signals, want 2", len(signals))
+	}
+	got := map[string]bool{}
+	for _, sig := range signals {
+		got[sig.Title] = sig.AllowMultipleOptions
+	}
+	if !got["Which files?"] {
+		t.Error("a multiSelect question came back allowing one answer only")
+	}
+	if got["Ship it?"] {
+		t.Error("a single-select question came back allowing several answers")
+	}
+}

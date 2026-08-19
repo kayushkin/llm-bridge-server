@@ -44,6 +44,7 @@ func (s *Store) migrateSignals() error {
 			body           TEXT NOT NULL DEFAULT '',
 			options        TEXT NOT NULL DEFAULT '',
 			allow_freeform INTEGER NOT NULL DEFAULT 0,
+			allow_multiple_options INTEGER NOT NULL DEFAULT 0,
 			answer         TEXT NOT NULL DEFAULT '',
 			severity       TEXT NOT NULL DEFAULT '',
 			state          TEXT NOT NULL,
@@ -56,11 +57,21 @@ func (s *Store) migrateSignals() error {
 		CREATE INDEX IF NOT EXISTS idx_signals_request ON signals(session_id, request_id) WHERE request_id != '';
 		CREATE INDEX IF NOT EXISTS idx_signals_todo ON signals(linked_todo_id) WHERE linked_todo_id != '';
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Added after the table shipped, so the CREATE TABLE above never runs on the
+	// stores that need it. The error is dropped for the same reason every other
+	// ADD COLUMN in store.go drops it: on the second start the column is already
+	// there and SQLite says so, which is success, not a failure to migrate.
+	// Existing rows default to false, which is the truth about them — every one
+	// was minted before a question could say otherwise.
+	s.db.Exec(`ALTER TABLE signals ADD COLUMN allow_multiple_options INTEGER NOT NULL DEFAULT 0`)
+	return nil
 }
 
 // signalColumns selects the fields scanSignal reads, in its order.
-const signalColumns = `id, session_id, session_type, kind, source, request_id, surface, title, body, options, allow_freeform, answer, severity, state, linked_todo_id, created_at, resolved_at`
+const signalColumns = `id, session_id, session_type, kind, source, request_id, surface, title, body, options, allow_freeform, allow_multiple_options, answer, severity, state, linked_todo_id, created_at, resolved_at`
 
 func scanSignal(sc interface{ Scan(...any) error }) (*Signal, error) {
 	var sig Signal
@@ -69,7 +80,8 @@ func scanSignal(sc interface{ Scan(...any) error }) (*Signal, error) {
 	var resolvedAt sql.NullTime
 	err := sc.Scan(
 		&sig.ID, &sig.SessionID, &sessionType, &kind, &source, &sig.RequestID,
-		&surface, &sig.Title, &sig.Body, &options, &sig.AllowFreeform, &answer,
+		&surface, &sig.Title, &sig.Body, &options, &sig.AllowFreeform,
+		&sig.AllowMultipleOptions, &answer,
 		&severity, &state, &sig.LinkedTodoID, &sig.CreatedAt, &resolvedAt,
 	)
 	if err != nil {
@@ -136,10 +148,11 @@ func (s *Store) CreateSignal(sig *Signal) error {
 		resolvedAt = *sig.ResolvedAt
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO signals (`+signalColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO signals (`+signalColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sig.ID, sig.SessionID, string(sig.SessionType), string(sig.Kind), string(sig.Source),
 		sig.RequestID, string(sig.Surface), sig.Title, sig.Body, options, sig.AllowFreeform,
-		answer, string(sig.Severity), string(sig.State), sig.LinkedTodoID, sig.CreatedAt, resolvedAt,
+		sig.AllowMultipleOptions, answer, string(sig.Severity), string(sig.State),
+		sig.LinkedTodoID, sig.CreatedAt, resolvedAt,
 	)
 	if err != nil {
 		return err
