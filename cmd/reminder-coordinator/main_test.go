@@ -1829,3 +1829,64 @@ func TestAnUnusableWorkingDayIsReportedAndNotJustRefused(t *testing.T) {
 		t.Errorf("the refusal was never printed, so the operator sees only exit 2:\n%s", reported)
 	}
 }
+
+// ---------------------------------------------------------------- the weekend is not a working day
+
+// The working hours are Monday to Friday. Charging them on a Saturday would hide
+// the one day the overdue pile is actually reachable — and the line would say
+// "Work 8am–4:30pm" on a day with no work in it, which is simply untrue.
+func TestTheWeekendCarriesNoWorkingDay(t *testing.T) {
+	loc := pacific(t)
+	// 2026-07-18 is a Saturday; 2026-07-20 is the Monday after it.
+	saturday, _, _ := newTestCoordinator(t, time.Date(2026, 7, 18, 9, 0, 0, 0, loc), newFakeNoteboard())
+	monday, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 9, 0, 0, 0, loc), newFakeNoteboard())
+
+	if free := saturday.measureDay(nil).Free; free != 14*time.Hour {
+		t.Errorf("Saturday free = %s, want the whole 14-hour window", free)
+	}
+	if free := monday.measureDay(nil).Free; free != 5*time.Hour+30*time.Minute {
+		t.Errorf("Monday free = %s, want 5h30m — the working day stopped being charged", free)
+	}
+
+	weekendLine := saturday.dayLoad(nil)
+	if strings.Contains(weekendLine, "Work 8am") {
+		t.Errorf("the Saturday line claims a working day:\n%s", weekendLine)
+	}
+	if !strings.Contains(weekendLine, "No work today") || !strings.Contains(weekendLine, "~14h free") {
+		t.Errorf("the Saturday line should say the day is entirely free:\n%s", weekendLine)
+	}
+	if !strings.Contains(monday.dayLoad(nil), "Work 8am–4:30pm") {
+		t.Errorf("the Monday line dropped the working day:\n%s", monday.dayLoad(nil))
+	}
+}
+
+// A day list that reads as nothing would hand every day back as wide open — the
+// same silent wrong answer a backwards working day gives.
+func TestAnUnusableWorkDayListIsRefusedAtStartup(t *testing.T) {
+	noEnvironment := func(string) string { return "" }
+	for _, value := range []string{"", "Mon,Funday", "Mon,,Fri", "Mon,Tue,"} {
+		if _, err := parseFlags([]string{"-work-days", value}, noEnvironment, "/home/someone"); err == nil {
+			t.Errorf("-work-days %q was accepted", value)
+		}
+	}
+
+	// The shipped list is Monday to Friday, and nothing else.
+	config, err := parseFlags(nil, noEnvironment, "/home/someone")
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	days, err := parseWorkDays(config.workDays)
+	if err != nil {
+		t.Fatalf("the shipped work days do not parse: %v", err)
+	}
+	for _, weekday := range []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday} {
+		if !days[weekday] {
+			t.Errorf("%s is not a working day in the shipped default", weekday)
+		}
+	}
+	for _, weekend := range []time.Weekday{time.Saturday, time.Sunday} {
+		if days[weekend] {
+			t.Errorf("%s ships as a working day", weekend)
+		}
+	}
+}

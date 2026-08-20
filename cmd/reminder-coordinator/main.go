@@ -81,6 +81,7 @@ type config struct {
 	digestMinute int
 	workStart    string
 	workEnd      string
+	workDays     string
 	timezone     string
 	lookahead    time.Duration
 	dryRun       bool
@@ -123,6 +124,7 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	fs.IntVar(&c.digestMinute, "digest-minute", 30, "local minute to send the daily digest nudge.")
 	fs.StringVar(&c.workStart, "work-start", "08:00", "local time the working day begins. Hours inside it are not open time, so they are never offered as room for a todo.")
 	fs.StringVar(&c.workEnd, "work-end", "16:30", "local time the working day ends.")
+	fs.StringVar(&c.workDays, "work-days", "Mon,Tue,Wed,Thu,Fri", "days the working hours apply to. A day not named here is free all the way from 8am.")
 	fs.StringVar(&c.timezone, "tz", envOr(lookupEnvironment, "REMINDER_TZ", "America/Los_Angeles"), "IANA zone the daily digest hour is interpreted in.")
 	fs.DurationVar(&c.lookahead, "lookahead", 7*24*time.Hour, "how far ahead to materialize occurrences of a recurring template.")
 	fs.BoolVar(&c.dryRun, "dry-run", false, "report what would change; mutate nothing, send nothing.")
@@ -155,7 +157,44 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	if !workEnd.OnDay(referenceDay).After(workStart.OnDay(referenceDay)) {
 		return reject("-work-end %s is not after -work-start %s", c.workEnd, c.workStart)
 	}
+	if _, err := parseWorkDays(c.workDays); err != nil {
+		return reject("-work-days: %w", err)
+	}
 	return c, nil
+}
+
+// weekdaysByName is the set -work-days is read against. A table rather than a
+// chain of comparisons so an unknown day is one lookup that fails, and so the
+// error can list what was actually accepted.
+var weekdaysByName = map[string]time.Weekday{
+	"sun": time.Sunday, "mon": time.Monday, "tue": time.Tuesday, "wed": time.Wednesday,
+	"thu": time.Thursday, "fri": time.Friday, "sat": time.Saturday,
+}
+
+// parseWorkDays reads "Mon,Tue,Wed,Thu,Fri" into the set of days the working
+// hours apply to.
+//
+// An empty list is refused rather than read as "no work days". It is what a
+// blank environment variable or a trailing comma produces, and it would hand
+// every day back as wide open — the same silent wrong answer a backwards working
+// day gives, which is why that is refused too.
+func parseWorkDays(value string) (map[time.Weekday]bool, error) {
+	days := map[time.Weekday]bool{}
+	for _, name := range strings.Split(value, ",") {
+		trimmed := strings.ToLower(strings.TrimSpace(name))
+		if trimmed == "" {
+			return nil, fmt.Errorf("%q has an empty day in it", value)
+		}
+		weekday, known := weekdaysByName[trimmed]
+		if !known {
+			return nil, fmt.Errorf("%q is not a day: use Mon, Tue, Wed, Thu, Fri, Sat or Sun", name)
+		}
+		days[weekday] = true
+	}
+	if len(days) == 0 {
+		return nil, fmt.Errorf("no days given; the working hours would apply to nothing")
+	}
+	return days, nil
 }
 
 // referenceDay is an arbitrary fixed day used only to compare two daily times to
@@ -194,6 +233,7 @@ func newCoordinator(c config, location *time.Location, now time.Time) *Coordinat
 		DigestAt:  dailyTime{Hour: c.digestHour, Minute: c.digestMinute},
 		WorkStart: mustParseDailyTime(c.workStart),
 		WorkEnd:   mustParseDailyTime(c.workEnd),
+		WorkDays:  mustParseWorkDays(c.workDays),
 		Lookahead: c.lookahead,
 		DryRun:    c.dryRun,
 		Now:       now.In(location),
@@ -203,6 +243,16 @@ func newCoordinator(c config, location *time.Location, now time.Time) *Coordinat
 // mustParseDailyTime is safe only because newCoordinator runs after parseFlags,
 // which has already rejected anything unparseable. A panic here means those two
 // were reordered, which is worth a crash rather than a silent midnight.
+// mustParseWorkDays is safe for the same reason as mustParseDailyTime: parseFlags
+// has already rejected anything unreadable.
+func mustParseWorkDays(value string) map[time.Weekday]bool {
+	parsed, err := parseWorkDays(value)
+	if err != nil {
+		panic("newCoordinator reached unvalidated work days: " + err.Error())
+	}
+	return parsed
+}
+
 func mustParseDailyTime(value string) dailyTime {
 	parsed, err := parseDailyTime(value)
 	if err != nil {
@@ -299,6 +349,10 @@ type Coordinator struct {
 	// could actually spend on a todo.
 	WorkStart dailyTime
 	WorkEnd   dailyTime
+	// WorkDays is which days those hours apply to. A Saturday is free from 8am,
+	// and a digest that told the user otherwise would be hiding the one day the
+	// overdue pile is actually reachable.
+	WorkDays  map[time.Weekday]bool
 	Lookahead time.Duration
 	DryRun    bool
 	Now       time.Time
@@ -923,8 +977,10 @@ func (c *Coordinator) measureDay(events []CalendarEvent) dayShape {
 	}
 
 	busy := []interval{}
-	if work, ok := clip(c.WorkStart.OnDay(dayStart), c.WorkEnd.OnDay(dayStart)); ok {
-		busy = append(busy, work)
+	if c.isWorkDay(dayStart) {
+		if work, ok := clip(c.WorkStart.OnDay(dayStart), c.WorkEnd.OnDay(dayStart)); ok {
+			busy = append(busy, work)
+		}
 	}
 	for _, event := range events {
 		if event.End.IsZero() {
@@ -978,6 +1034,12 @@ func (c *Coordinator) measureDay(events []CalendarEvent) dayShape {
 	return dayShape{Free: window - booked, BiggestOpen: biggest, Icon: icon, Verdict: verdict}
 }
 
+// isWorkDay reports whether the working hours apply to a given day. Saturday and
+// Sunday are not working days by default, so the whole window is open on them.
+func (c *Coordinator) isWorkDay(day time.Time) bool {
+	return c.WorkDays[day.In(c.Location).Weekday()]
+}
+
 // workHours renders the working day as the digest names it: "8am–4:30pm".
 func (c *Coordinator) workHours() string {
 	day := dateOf(c.Now.In(c.Location))
@@ -990,6 +1052,13 @@ func (c *Coordinator) workHours() string {
 // dropped eight hours without explaining why reads as a bug.
 func (c *Coordinator) dayLoad(events []CalendarEvent) string {
 	shape := c.measureDay(events)
+	// On a day off the line must NOT say "Work 8am–4:30pm". It would be the one
+	// sentence in the digest that is simply untrue, and it would hide the fact
+	// that a Saturday is the day the overdue pile is most reachable.
+	if !c.isWorkDay(c.Now) {
+		return fmt.Sprintf("%s No work today; ~%s free (8am–10pm), biggest open stretch ~%s — %s.",
+			shape.Icon, roundDuration(shape.Free), roundDuration(shape.BiggestOpen), shape.Verdict)
+	}
 	return fmt.Sprintf("%s Work %s; ~%s free outside it (to 10pm), biggest open stretch ~%s — %s.",
 		shape.Icon, c.workHours(), roundDuration(shape.Free), roundDuration(shape.BiggestOpen), shape.Verdict)
 }

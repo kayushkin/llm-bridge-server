@@ -697,6 +697,33 @@ CASES = [
         [("fmt.Fprintln(fs.Output(), err)", "_ = err")],
     ),
     Case(
+        "the working hours are charged on every day, so a Saturday reports 5.5 free "
+        "hours and hides the one day the overdue pile is reachable",
+        [("if c.isWorkDay(dayStart) {", "if true || c.isWorkDay(dayStart) {")],
+    ),
+    Case(
+        "the day-load line claims a working day on a day off, the one sentence in "
+        "the digest that is simply untrue",
+        [("if !c.isWorkDay(c.Now) {", "if false && !c.isWorkDay(c.Now) {")],
+    ),
+    Case(
+        "the weekend joins the shipped working week",
+        [('fs.StringVar(&c.workDays, "work-days", "Mon,Tue,Wed,Thu,Fri",',
+          'fs.StringVar(&c.workDays, "work-days", "Mon,Tue,Wed,Thu,Fri,Sat,Sun",')],
+    ),
+    Case(
+        "an empty work-days list is read as no work days instead of refused, so "
+        "every day reads as wide open",
+        [('return nil, fmt.Errorf("no days given; the working hours would apply to nothing")',
+          "return days, nil")],
+    ),
+    Case(
+        "an unknown day name is skipped instead of refused, so a typo silently "
+        "shortens the working week",
+        [('return nil, fmt.Errorf("%q is not a day: use Mon, Tue, Wed, Thu, Fri, Sat or Sun", name)',
+          "continue")],
+    ),
+    Case(
         "the shipped working day drifts off the hours the user actually keeps",
         [('fs.StringVar(&c.workEnd, "work-end", "16:30",', 'fs.StringVar(&c.workEnd, "work-end", "23:30",')],
     ),
