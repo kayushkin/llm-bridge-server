@@ -692,6 +692,11 @@ CASES = [
           "return dailyTime{}, nil")],
     ),
     Case(
+        "a rejected working day is refused but never printed, so the job dies with "
+        "exit 2 and no reason in its run history",
+        [("fmt.Fprintln(fs.Output(), err)", "_ = err")],
+    ),
+    Case(
         "the shipped working day drifts off the hours the user actually keeps",
         [('fs.StringVar(&c.workEnd, "work-end", "16:30",', 'fs.StringVar(&c.workEnd, "work-end", "23:30",')],
     ),

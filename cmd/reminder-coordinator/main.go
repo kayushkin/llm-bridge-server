@@ -129,19 +129,31 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
+	// reject reports a configuration the flag set parsed but the program cannot
+	// use. It prints where fs.Parse prints its own errors, because main exits 2
+	// on anything this returns: a validation failure that only set the exit code
+	// would kill the one job on this box that reminds the user of anything, and
+	// say nothing about why.
+	reject := func(format string, arguments ...any) (config, error) {
+		err := fmt.Errorf(format, arguments...)
+		fmt.Fprintln(fs.Output(), err)
+		fs.Usage()
+		return config{}, err
+	}
+
 	workStart, err := parseDailyTime(c.workStart)
 	if err != nil {
-		return config{}, fmt.Errorf("-work-start: %w", err)
+		return reject("-work-start: %w", err)
 	}
 	workEnd, err := parseDailyTime(c.workEnd)
 	if err != nil {
-		return config{}, fmt.Errorf("-work-end: %w", err)
+		return reject("-work-end: %w", err)
 	}
-	// A working day that ends before it starts would silently measure as no work
-	// at all, handing back the whole day as open time — the exact wrong answer,
-	// arrived at quietly. Refuse it here, where the operator can read why.
+	// A working day that ends before it starts would measure as no work at all,
+	// handing back the whole day as open time — the wrong answer, arrived at
+	// quietly.
 	if !workEnd.OnDay(referenceDay).After(workStart.OnDay(referenceDay)) {
-		return config{}, fmt.Errorf("-work-end %s is not after -work-start %s", c.workEnd, c.workStart)
+		return reject("-work-end %s is not after -work-start %s", c.workEnd, c.workStart)
 	}
 	return c, nil
 }
@@ -208,9 +220,10 @@ func main() {
 
 	cfg, err := parseFlags(os.Args[1:], os.Getenv, homeDirectory)
 	if err != nil {
-		// Parse has already printed the error and the usage message. These are the
-		// two exit codes flag.ExitOnError would have used, kept identical so
-		// lifting the flag set out of main() changed nothing a caller sees.
+		// parseFlags has already printed the error and the usage message — both
+		// for what fs.Parse rejects and for what it validates afterwards. These
+		// are the two exit codes flag.ExitOnError would have used, kept identical
+		// so lifting the flag set out of main() changed nothing a caller sees.
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(0)
 		}

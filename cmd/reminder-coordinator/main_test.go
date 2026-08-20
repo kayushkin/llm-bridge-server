@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -1799,5 +1801,31 @@ func TestTheNudgeShowsTheWholeDayIncludingTheEveningOnABusyDay(t *testing.T) {
 	}
 	if strings.Contains(message, "more in the note") {
 		t.Errorf("the day's schedule should not be capped:\n%s", message)
+	}
+}
+
+// main exits 2 on anything parseFlags returns. A rejection that only set the
+// exit code would stop the one job on this box that reminds the user of
+// anything and say nothing about why — a silent death in the job history.
+func TestAnUnusableWorkingDayIsReportedAndNotJustRefused(t *testing.T) {
+	realStderr := os.Stderr
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	os.Stderr = write
+	_, parseErr := parseFlags([]string{"-work-end", "08:00"}, func(string) string { return "" }, "/home/someone")
+	write.Close()
+	os.Stderr = realStderr
+
+	reported, err := io.ReadAll(read)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if parseErr == nil {
+		t.Fatal("a working day ending at its start was accepted")
+	}
+	if !strings.Contains(string(reported), "-work-end 08:00 is not after -work-start 08:00") {
+		t.Errorf("the refusal was never printed, so the operator sees only exit 2:\n%s", reported)
 	}
 }
