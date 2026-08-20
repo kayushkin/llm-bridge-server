@@ -324,7 +324,7 @@ func TestAnOverdueItemWithItsOwnNagStillOpensOnlyOneSession(t *testing.T) {
 		t.Fatalf("want its nag firing, got %d firing", len(board.NagFiring))
 	}
 
-	if err := coordinator.nudgeOnce(board); err != nil {
+	if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
 		t.Fatalf("nudgeOnce: %v", err)
 	}
 
@@ -364,7 +364,7 @@ func TestANagFiresOnceNotOnEveryTick(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tick %d buildBoard: %v", tick, err)
 		}
-		if err := coordinator.nudgeOnce(board); err != nil {
+		if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
 			t.Fatalf("tick %d nudgeOnce: %v", tick, err)
 		}
 		sessions += len(herald.sessions)
@@ -419,7 +419,7 @@ func TestTheDailyDigestNudgeIsSentOncePerDay(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tick %d: %v", tick, err)
 		}
-		if err := coordinator.nudgeOnce(board); err != nil {
+		if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
 			t.Fatalf("tick %d: %v", tick, err)
 		}
 		sessions += len(herald.sessions)
@@ -454,7 +454,7 @@ func TestNothingIsSentBeforeTheDigestHour(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildBoard: %v", err)
 	}
-	if err := coordinator.nudgeOnce(board); err != nil {
+	if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
 		t.Fatalf("nudgeOnce: %v", err)
 	}
 	if len(herald.sessions) != 0 {
@@ -1397,4 +1397,240 @@ func contains(haystack, needle string) bool {
 		}
 		return false
 	})()
+}
+
+// ---------------------------------------------------------------- the nudge names the work
+
+// newNudgeFixture builds a board whose digest is due: the note exists, carries no
+// marker for today, and the clock is past the digest hour.
+func newNudgeFixture(t *testing.T, now time.Time, items ...*model.Item) (*Coordinator, *fakeHerald, *fakeCalendar) {
+	t.Helper()
+	note := &model.Item{ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag}}
+	return newTestCoordinator(t, now, newFakeNoteboard(append(items, note)...))
+}
+
+// The nudge used to say "4 overdue, 1 due today" and nothing else. A count is not
+// something you can act on: it cannot tell you whether the overdue pile is one
+// forgotten errand or the tax return, so the only move it leaves is to go open
+// the note — which makes the message a doorbell, not a reminder.
+func TestTheNudgeNamesEachItemAndHowLateItIs(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 8, 20, 9, 0, 0, 0, loc)
+
+	coordinator, herald, _ := newNudgeFixture(t, now,
+		&model.Item{
+			ID: "late", Type: "todo", Title: "Apply to jobs", Status: "open", Priority: 3,
+			Tags: []string{"personal", "career"}, DueAt: ptr(time.Date(2026, 7, 20, 9, 0, 0, 0, loc)),
+		},
+		&model.Item{
+			ID: "today", Type: "todo", Title: "Check the parent portal", Status: "open",
+			Tags: []string{"personal", "money"}, DueAt: ptr(time.Date(2026, 8, 20, 9, 0, 0, 0, loc)),
+		},
+		&model.Item{
+			ID: "week", Type: "todo", Title: "Read Exiles", Status: "open",
+			Tags: []string{"personal", "reading"}, DueAt: ptr(time.Date(2026, 8, 22, 9, 0, 0, 0, loc)),
+		},
+		// Undated work stays OUT of the nudge. Twenty-five shopping-list items are
+		// a real part of this board and would bury the three things due.
+		&model.Item{ID: "someday", Type: "todo", Title: "Buy green tea", Status: "open", Tags: []string{"personal"}},
+	)
+
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+	if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
+		t.Fatalf("nudgeOnce: %v", err)
+	}
+	if len(herald.sessions) != 1 {
+		t.Fatalf("opened %d herald sessions, want 1", len(herald.sessions))
+	}
+	message := herald.sessions[0]
+
+	for _, want := range []string{
+		"Apply to jobs",           // named, not counted
+		"(31d late)",              // and how long it has been sitting there
+		"❗",                       // priority 3 still marked
+		"`career`",                // which part of life it belongs to
+		"Check the parent portal", // due today
+		"Read Exiles",             // later this week
+		"⏰ Overdue (1)",           // the bucket totals survive
+		"📅 Due today (1)",
+		"🗓 Later this week (1)",
+		digestTitle, // and it still points at the full record
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("nudge is missing %q:\n%s", want, message)
+		}
+	}
+	if strings.Contains(message, "Buy green tea") {
+		t.Errorf("undated work reached the nudge; only what is due belongs there:\n%s", message)
+	}
+}
+
+// A cap that hides items silently is worse than no cap: the message reads as the
+// whole board while being a fifth of it. This is the same failure the Later
+// bucket exists to prevent in the note.
+func TestTheNudgeCapsALongBucketAndSaysHowManyItHid(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 8, 20, 9, 0, 0, 0, loc)
+
+	items := []*model.Item{}
+	for i := 0; i < nudgeSectionLimit+3; i++ {
+		items = append(items, &model.Item{
+			ID: fmt.Sprintf("late-%d", i), Type: "todo", Status: "open", Tags: []string{"personal"},
+			Title: fmt.Sprintf("Overdue thing %d", i),
+			DueAt: ptr(time.Date(2026, 8, 1, 9, 0, 0, 0, loc).Add(time.Duration(i) * time.Hour)),
+		})
+	}
+	coordinator, herald, _ := newNudgeFixture(t, now, items...)
+
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+	if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
+		t.Fatalf("nudgeOnce: %v", err)
+	}
+	message := herald.sessions[0]
+
+	if listed := strings.Count(message, "Overdue thing "); listed != nudgeSectionLimit {
+		t.Errorf("listed %d items, want the cap of %d:\n%s", listed, nudgeSectionLimit, message)
+	}
+	// The heading keeps the TRUE total, and the dropped items are counted out loud.
+	if !strings.Contains(message, fmt.Sprintf("⏰ Overdue (%d)", nudgeSectionLimit+3)) {
+		t.Errorf("heading should carry the full bucket size, not the capped one:\n%s", message)
+	}
+	if !strings.Contains(message, "…and 3 more") {
+		t.Errorf("capped section hid 3 items without saying so:\n%s", message)
+	}
+
+	// The note is the record and is never capped.
+	rendered := coordinator.renderDigest(board, nil, nil)
+	if listed := strings.Count(rendered, "Overdue thing "); listed != nudgeSectionLimit+3 {
+		t.Errorf("the note listed %d of %d items — the record must stay total:\n%s",
+			listed, nudgeSectionLimit+3, rendered)
+	}
+}
+
+// The old design justified its terseness by saying a copy of the note in chat is
+// a second thing to keep in sync. That was a real risk, and this is the answer to
+// it: both surfaces render an item through the SAME label function, so a change
+// to how an item reads lands on both or on neither.
+func TestTheNudgeAndTheNoteDescribeAnItemIdentically(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 8, 20, 9, 0, 0, 0, loc)
+	item := &model.Item{
+		ID: "late", Type: "todo", Title: "Follow up with the seller", Status: "open", Priority: 3,
+		Tags: []string{"personal", "car-title", "phone"}, DueAt: ptr(time.Date(2026, 8, 1, 12, 0, 0, 0, loc)),
+	}
+	coordinator, herald, _ := newNudgeFixture(t, now, item)
+
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+	if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
+		t.Fatalf("nudgeOnce: %v", err)
+	}
+
+	label := coordinator.labelWithLateness(item)
+	if !strings.Contains(herald.sessions[0], label) {
+		t.Errorf("nudge does not carry the shared label %q:\n%s", label, herald.sessions[0])
+	}
+	if !strings.Contains(coordinator.renderDigest(board, nil, nil), label) {
+		t.Errorf("note does not carry the shared label %q", label)
+	}
+}
+
+// The todos say what to do; the calendar says whether there is room to do it. A
+// nudge listing four overdue items on a day with no free hour is telling you to
+// act on something you cannot act on.
+func TestTheNudgeReadsTheDayAndSaysSoWhenTheCalendarFails(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 8, 20, 9, 0, 0, 0, loc)
+	todo := &model.Item{
+		ID: "late", Type: "todo", Title: "Laundry", Status: "open", Tags: []string{"personal"},
+		DueAt: ptr(time.Date(2026, 8, 15, 10, 0, 0, 0, loc)),
+	}
+	events := []CalendarEvent{
+		{Summary: "Standup", Start: time.Date(2026, 8, 20, 10, 0, 0, 0, loc), End: time.Date(2026, 8, 20, 10, 30, 0, 0, loc)},
+		{Summary: "Long review", Start: time.Date(2026, 8, 20, 12, 0, 0, 0, loc), End: time.Date(2026, 8, 20, 20, 0, 0, 0, loc)},
+	}
+
+	coordinator, herald, _ := newNudgeFixture(t, now, todo)
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+	if err := coordinator.nudgeOnce(board, events, nil); err != nil {
+		t.Fatalf("nudgeOnce: %v", err)
+	}
+	message := herald.sessions[0]
+	for _, want := range []string{"🗓 Today: 2 events", "first at 10am", "biggest open stretch ~2h", "🟡"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("schedule line is missing %q:\n%s", want, message)
+		}
+	}
+
+	// A calendar read that failed must SAY the day is unknown. Dropping the line
+	// makes a failed read look exactly like a free day.
+	coordinator, herald, _ = newNudgeFixture(t, now, todo)
+	board, err = coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+	if err := coordinator.nudgeOnce(board, nil, fmt.Errorf("google timeout")); err != nil {
+		t.Fatalf("nudgeOnce: %v", err)
+	}
+	if !strings.Contains(herald.sessions[0], "couldn't load your calendar") {
+		t.Errorf("a failed calendar read was silently dropped from the nudge:\n%s", herald.sessions[0])
+	}
+}
+
+// With the counts gone, a clear board renders no sections at all. Sending the
+// header and then nothing reads as a message that failed to build.
+func TestTheNudgeSaysTheBoardIsClearRatherThanSayingNothing(t *testing.T) {
+	loc := pacific(t)
+	coordinator, herald, _ := newNudgeFixture(t, time.Date(2026, 8, 20, 9, 0, 0, 0, loc),
+		&model.Item{ID: "someday", Type: "todo", Title: "Buy green tea", Status: "open", Tags: []string{"personal"}})
+
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+	if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
+		t.Fatalf("nudgeOnce: %v", err)
+	}
+	if !strings.Contains(herald.sessions[0], "Nothing due today") {
+		t.Errorf("a clear board produced a message with no statement in it:\n%s", herald.sessions[0])
+	}
+}
+
+// Lateness is counted in calendar days, the way a person counts them. Across the
+// spring-forward boundary five calendar days are 119 hours, so dividing by 24 and
+// truncating reports "4d late" — the one day of the year the number is quietly
+// wrong, and no fixture built on whole days would catch it.
+func TestLatenessIsCountedInCalendarDaysAcrossADaylightSavingBoundary(t *testing.T) {
+	loc := pacific(t)
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 3, 10, 8, 0, 0, 0, loc), newFakeNoteboard())
+
+	// Due Thu 5 Mar (PST), now Tue 10 Mar (PDT); DST began Sun 8 Mar.
+	late := &model.Item{
+		ID: "late", Type: "todo", Title: "thing", Status: "open", Tags: []string{"personal"},
+		DueAt: ptr(time.Date(2026, 3, 5, 9, 0, 0, 0, loc)),
+	}
+	if got := coordinator.daysLate(late); got != 5 {
+		t.Errorf("daysLate = %d, want 5 — an hour of daylight saving moved the count", got)
+	}
+
+	// Due yesterday at 9am, read at 8am today: a person calls that one day late,
+	// not zero. Truncating the 23-hour gap would say 0.
+	yesterday := &model.Item{
+		ID: "yesterday", Type: "todo", Title: "thing", Status: "open", Tags: []string{"personal"},
+		DueAt: ptr(time.Date(2026, 3, 9, 9, 0, 0, 0, loc)),
+	}
+	if got := coordinator.daysLate(yesterday); got != 1 {
+		t.Errorf("daysLate = %d, want 1 for something due yesterday", got)
+	}
 }

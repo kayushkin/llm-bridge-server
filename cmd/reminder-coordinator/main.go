@@ -267,7 +267,7 @@ func (c *Coordinator) Run() error {
 	if err := c.syncCalendar(); err != nil {
 		return fmt.Errorf("sync calendar: %w", err)
 	}
-	if err := c.nudgeOnce(board); err != nil {
+	if err := c.nudgeOnce(board, events, calErr); err != nil {
 		return fmt.Errorf("nudge: %w", err)
 	}
 	return nil
@@ -645,53 +645,115 @@ func (c *Coordinator) renderDigest(board *Board, events []CalendarEvent, calErr 
 		return out.String()
 	}
 
-	section := func(heading string, items []*model.Item, label func(*model.Item) string) {
-		if len(items) == 0 {
-			return
-		}
-		fmt.Fprintf(&out, "\n## %s (%d)\n\n", heading, len(items))
-		for _, item := range items {
-			fmt.Fprintf(&out, "- %s\n", label(item))
-		}
-	}
-
-	section("⏰ Overdue", board.Overdue, func(item *model.Item) string {
-		return fmt.Sprintf("%s%s — due %s%s", priorityMark(item), item.Title,
-			item.DueAt.In(c.Location).Format("Mon 2 Jan"), areaTags(item, c.ScopeTag))
-	})
-	section("📅 Due today", board.DueToday, func(item *model.Item) string {
-		return fmt.Sprintf("%s%s%s", priorityMark(item), item.Title, areaTags(item, c.ScopeTag))
-	})
-	section("🗓 Later this week", board.ThisWeek, func(item *model.Item) string {
-		return fmt.Sprintf("%s%s — %s%s", priorityMark(item), item.Title,
-			item.DueAt.In(c.Location).Format("Mon 2 Jan"), areaTags(item, c.ScopeTag))
-	})
-	section("🔭 Later", board.Later, func(item *model.Item) string {
-		return fmt.Sprintf("%s%s — %s%s", priorityMark(item), item.Title,
-			item.DueAt.In(c.Location).Format("Mon 2 Jan"), areaTags(item, c.ScopeTag))
-	})
-	section("💤 No due date", board.Undated, func(item *model.Item) string {
-		return fmt.Sprintf("%s%s%s", priorityMark(item), item.Title, areaTags(item, c.ScopeTag))
-	})
+	renderSection(&out, digestStyle, headingOverdue, board.Overdue, c.labelWithLateness)
+	renderSection(&out, digestStyle, headingDueToday, board.DueToday, c.labelTitleOnly)
+	renderSection(&out, digestStyle, headingThisWeek, board.ThisWeek, c.labelWithDueDate)
+	renderSection(&out, digestStyle, "🔭 Later", board.Later, c.labelWithDueDate)
+	renderSection(&out, digestStyle, "💤 No due date", board.Undated, c.labelTitleOnly)
 
 	return out.String()
 }
 
-// renderSchedule folds today's calendar into the digest: the timed events in
-// order, any all-day markers, and one line reading how booked the day is. That
-// last line is the point — it is what lets you tell, without opening a calendar,
-// whether there is room today for a long task.
-func (c *Coordinator) renderSchedule(out *bytes.Buffer, events []CalendarEvent, calErr error) {
-	if calErr != nil {
-		out.WriteString("\n## 🗓 Today's schedule\n\n⚠️ Couldn't load your calendar this tick.\n")
+// The headings the digest note and the herald nudge share. They are constants
+// because the two surfaces must name the same bucket the same way: a nudge that
+// says "Late" against a note that says "Overdue" reads as two different boards.
+const (
+	headingOverdue  = "⏰ Overdue"
+	headingDueToday = "📅 Due today"
+	headingThisWeek = "🗓 Later this week"
+)
+
+// sectionStyle is how a bucket is dressed for one surface. The digest note is a
+// markdown document and the nudge is a chat message, so they differ in heading
+// and bullet — and in nothing else. Everything that says what an ITEM is lives
+// in the label functions below, which both surfaces call.
+type sectionStyle struct {
+	// HeadingFormat takes the heading and the bucket's TOTAL size, which stays
+	// the true total even when Limit hides some of it.
+	HeadingFormat string
+	Bullet        string
+	// Limit caps how many items are listed; 0 lists every one. Only the nudge
+	// sets it — see nudgeSectionLimit.
+	Limit int
+}
+
+var (
+	digestStyle = sectionStyle{HeadingFormat: "\n## %s (%d)\n\n", Bullet: "- "}
+	nudgeStyle  = sectionStyle{HeadingFormat: "\n%s (%d)\n", Bullet: "  ", Limit: nudgeSectionLimit}
+)
+
+// nudgeSectionLimit caps how many items of one bucket the chat nudge lists. The
+// note is the record and must stay total; a chat message with fifteen overdue
+// items in it is one nobody reads to the end. Five is enough to make the nudge
+// worth reading on its own and short enough that it still points at the note.
+const nudgeSectionLimit = 5
+
+// renderSection writes one bucket of the board under a heading. Both the digest
+// note and the herald nudge render through here over the same label functions,
+// so the two cannot disagree about what an item says — the nudge is a shorter
+// view of the board, never a second copy of it.
+//
+// A capped section always says how many it dropped. A silent truncation reads as
+// "this is everything", which is the same lie a non-total bucket tells.
+func renderSection(out *bytes.Buffer, style sectionStyle, heading string, items []*model.Item, label func(*model.Item) string) {
+	if len(items) == 0 {
 		return
 	}
+	shown := items
+	if style.Limit > 0 && len(shown) > style.Limit {
+		shown = shown[:style.Limit]
+	}
+	fmt.Fprintf(out, style.HeadingFormat, heading, len(items))
+	for _, item := range shown {
+		fmt.Fprintf(out, "%s%s\n", style.Bullet, label(item))
+	}
+	if dropped := len(items) - len(shown); dropped > 0 {
+		fmt.Fprintf(out, "%s…and %d more in the note\n", style.Bullet, dropped)
+	}
+}
 
+// labelWithLateness renders an overdue item: its due date AND how long it has
+// been sitting there. The date alone makes every overdue item look alike — "due
+// Mon 20 Jul" and "due Sat 15 Aug" read as equally late until you work out
+// today's date yourself, which is the arithmetic the reminder exists to spare
+// you.
+func (c *Coordinator) labelWithLateness(item *model.Item) string {
+	return fmt.Sprintf("%s%s — due %s (%dd late)%s", priorityMark(item), item.Title,
+		item.DueAt.In(c.Location).Format("Mon 2 Jan"), c.daysLate(item), areaTags(item, c.ScopeTag))
+}
+
+// labelWithDueDate renders a future-dated item: when it lands, no lateness.
+func (c *Coordinator) labelWithDueDate(item *model.Item) string {
+	return fmt.Sprintf("%s%s — %s%s", priorityMark(item), item.Title,
+		item.DueAt.In(c.Location).Format("Mon 2 Jan"), areaTags(item, c.ScopeTag))
+}
+
+// labelTitleOnly renders an item whose date says nothing worth printing: due
+// today (the heading already said so) or never dated at all.
+func (c *Coordinator) labelTitleOnly(item *model.Item) string {
+	return fmt.Sprintf("%s%s%s", priorityMark(item), item.Title, areaTags(item, c.ScopeTag))
+}
+
+// daysLate counts WHOLE CALENDAR DAYS from an item's due date to today, which is
+// how a person counts them — an item due 9am yesterday is "1d late" at 8am today,
+// not "0d". Both ends are midnight in the user's zone, so the subtraction is
+// rounded to whole days: across a DST boundary the gap is 23 or 25 hours and
+// truncating it would drop or add a day twice a year.
+func (c *Coordinator) daysLate(item *model.Item) int {
+	due := dateOf(item.DueAt.In(c.Location))
+	return int(math.Round(dateOf(c.Now.In(c.Location)).Sub(due).Hours() / 24))
+}
+
+// splitTodaysEvents keeps only what actually falls on today and separates the
+// timed events, in start order, from the all-day markers. Both the digest
+// section and the one-line nudge read the day through here, so they can never
+// count a different number of events for the same day.
+func (c *Coordinator) splitTodaysEvents(events []CalendarEvent) (timed, allDay []CalendarEvent) {
 	dayStart := dateOf(c.Now.In(c.Location))
 	dayEnd := dayStart.AddDate(0, 0, 1)
 
-	timed := []CalendarEvent{}
-	allDay := []CalendarEvent{}
+	timed = []CalendarEvent{}
+	allDay = []CalendarEvent{}
 	for _, event := range events {
 		if event.AllDay {
 			allDay = append(allDay, event)
@@ -707,6 +769,20 @@ func (c *Coordinator) renderSchedule(out *bytes.Buffer, events []CalendarEvent, 
 		timed = append(timed, event)
 	}
 	sort.SliceStable(timed, func(i, j int) bool { return timed[i].Start.Before(timed[j].Start) })
+	return timed, allDay
+}
+
+// renderSchedule folds today's calendar into the digest: the timed events in
+// order, any all-day markers, and one line reading how booked the day is. That
+// last line is the point — it is what lets you tell, without opening a calendar,
+// whether there is room today for a long task.
+func (c *Coordinator) renderSchedule(out *bytes.Buffer, events []CalendarEvent, calErr error) {
+	if calErr != nil {
+		out.WriteString("\n## 🗓 Today's schedule\n\n⚠️ Couldn't load your calendar this tick.\n")
+		return
+	}
+
+	timed, allDay := c.splitTodaysEvents(events)
 
 	if len(timed) == 0 && len(allDay) == 0 {
 		out.WriteString("\n## 🗓 Today's schedule\n\nNothing on the calendar — the day is yours.\n")
@@ -728,11 +804,25 @@ func (c *Coordinator) renderSchedule(out *bytes.Buffer, events []CalendarEvent, 
 	fmt.Fprintf(out, "\n%s\n", c.dayLoad(timed))
 }
 
-// dayLoad reads how much of a waking day (8am–10pm) today's timed events consume,
-// merging overlaps so a double-booked hour is not counted twice, and reports the
+// dayShape is how much of a waking day (8am–10pm) today's events consume. It is
+// measured once and rendered two ways — the digest's full sentence and the
+// nudge's one line — because the MEASUREMENT is what must not differ between
+// them; how many words each spends on it may.
+type dayShape struct {
+	Booked, Free, BiggestOpen time.Duration
+	// WideOpen means nothing timed lands inside the window at all. That is a
+	// different statement from "0h booked", which a meeting clipped to nothing
+	// can also produce.
+	WideOpen bool
+	Icon     string
+	Verdict  string
+}
+
+// measureDay reads today's timed events against a waking window (8am–10pm),
+// merging overlaps so a double-booked hour is not counted twice, and finds the
 // biggest open stretch — the number that actually answers "can I start something
-// long today?". A day can be only 4 hours "booked" and still have no 3-hour gap.
-func (c *Coordinator) dayLoad(events []CalendarEvent) string {
+// long today?". A day can be only 4 hours booked and still have no 3-hour gap.
+func (c *Coordinator) measureDay(events []CalendarEvent) dayShape {
 	dayStart := dateOf(c.Now.In(c.Location))
 	windowStart := dayStart.Add(8 * time.Hour)
 	windowEnd := dayStart.Add(22 * time.Hour)
@@ -751,7 +841,10 @@ func (c *Coordinator) dayLoad(events []CalendarEvent) string {
 		}
 	}
 	if len(clipped) == 0 {
-		return "🟢 Wide open (8am–10pm) — plenty of room for a big task."
+		return dayShape{
+			Free: window, BiggestOpen: window, WideOpen: true,
+			Icon: "🟢", Verdict: "plenty of room for a big task",
+		}
 	}
 	sort.Slice(clipped, func(i, j int) bool { return clipped[i].start.Before(clipped[j].start) })
 
@@ -780,7 +873,6 @@ func (c *Coordinator) dayLoad(events []CalendarEvent) string {
 	if tail := windowEnd.Sub(merged[len(merged)-1].end); tail > biggest {
 		biggest = tail
 	}
-	free := window - booked
 
 	icon, verdict := "🟢", "room for a long task"
 	switch {
@@ -789,8 +881,22 @@ func (c *Coordinator) dayLoad(events []CalendarEvent) string {
 	case biggest < 3*time.Hour:
 		icon, verdict = "🟡", "some room, but the biggest open block is modest"
 	}
+	return dayShape{
+		Booked: booked, Free: window - booked, BiggestOpen: biggest,
+		Icon: icon, Verdict: verdict,
+	}
+}
+
+// dayLoad is the digest note's reading of the day: the numbers spelled out, since
+// the note is what you open when you are deciding what to do with the day.
+func (c *Coordinator) dayLoad(events []CalendarEvent) string {
+	shape := c.measureDay(events)
+	if shape.WideOpen {
+		return fmt.Sprintf("%s Wide open (8am–10pm) — %s.", shape.Icon, shape.Verdict)
+	}
 	return fmt.Sprintf("%s ~%s booked, ~%s free (8am–10pm); biggest open stretch ~%s — %s.",
-		icon, roundDuration(booked), roundDuration(free), roundDuration(biggest), verdict)
+		shape.Icon, roundDuration(shape.Booked), roundDuration(shape.Free),
+		roundDuration(shape.BiggestOpen), shape.Verdict)
 }
 
 // clockTime renders a wall-clock time compactly: "6pm", "6:30pm".
@@ -866,9 +972,17 @@ func areaTags(item *model.Item, scopeTag string) string {
 // one decision point: gather everything that fired, say it once, and record that
 // it was said.
 //
-// The message is a pointer to the digest note, not a copy of it. The note is the
-// record; restating it in chat is how you end up with two things to keep in sync.
-func (c *Coordinator) nudgeOnce(board *Board) error {
+// The message NAMES the work rather than counting it. It used to say only "4
+// overdue, 1 due today" and point at the digest note, on the reasoning that
+// restating the note in chat leaves two things to keep in sync. The counts were
+// too thin to act on — you cannot tell from "4 overdue" whether to stop what you
+// are doing — and the sync worry is answered by construction now: both surfaces
+// render through renderSection over the same label functions off the same Board,
+// so there is one description of an item, not two. What the nudge does
+// differently is stop early (nudgeSectionLimit) and skip the buckets that are
+// not asking for anything today. The note remains the full record, and the
+// message still points at it.
+func (c *Coordinator) nudgeOnce(board *Board, events []CalendarEvent, calErr error) error {
 	digestDue, err := c.dailyDigestIsDue()
 	if err != nil {
 		return err
@@ -880,8 +994,15 @@ func (c *Coordinator) nudgeOnce(board *Board) error {
 	var message bytes.Buffer
 	if digestDue {
 		fmt.Fprintf(&message, "📋 Personal todos — %s\n", c.Now.In(c.Location).Format("Mon 2 Jan"))
-		fmt.Fprintf(&message, "%d overdue, %d due today, %d later this week.\n",
-			len(board.Overdue), len(board.DueToday), len(board.ThisWeek))
+		renderSection(&message, nudgeStyle, headingOverdue, board.Overdue, c.labelWithLateness)
+		renderSection(&message, nudgeStyle, headingDueToday, board.DueToday, c.labelTitleOnly)
+		renderSection(&message, nudgeStyle, headingThisWeek, board.ThisWeek, c.labelWithDueDate)
+		if len(board.Overdue)+len(board.DueToday)+len(board.ThisWeek) == 0 {
+			// Say so out loud. A digest that renders no sections and no line about
+			// it reads as a message that failed to load, not as a clear board.
+			message.WriteString("\nNothing due today, and nothing late. 🎉\n")
+		}
+		fmt.Fprintf(&message, "\n%s\n", c.nudgeScheduleLine(events, calErr))
 	}
 	if len(board.NagFiring) > 0 {
 		message.WriteString("\n🔔 Still not done:\n")
@@ -918,6 +1039,42 @@ func (c *Coordinator) nudgeOnce(board *Board) error {
 		return c.markDailyDigestSent()
 	}
 	return nil
+}
+
+// nudgeScheduleLine says in one line what the digest's schedule section says in
+// a list: how many events today, when the first one is, and whether a long task
+// fits between them. That last part is why the calendar is in the nudge at all —
+// it is what tells you whether the overdue items are even reachable today, which
+// a list of todos on its own cannot say.
+func (c *Coordinator) nudgeScheduleLine(events []CalendarEvent, calErr error) string {
+	if calErr != nil {
+		// Say the day is unknown rather than dropping the line. A silently absent
+		// schedule line is indistinguishable from an empty calendar.
+		return "🗓 Today: couldn't load your calendar."
+	}
+
+	timed, allDay := c.splitTodaysEvents(events)
+	count := len(timed) + len(allDay)
+	if count == 0 {
+		return "🗓 Today: nothing on the calendar — the day is yours."
+	}
+
+	eventNoun := "events"
+	if count == 1 {
+		eventNoun = "event"
+	}
+	firstEventClause := ""
+	if len(timed) > 0 {
+		firstEventClause = fmt.Sprintf(", first at %s", clockTime(timed[0].Start.In(c.Location)))
+	}
+
+	shape := c.measureDay(timed)
+	if shape.WideOpen {
+		// All-day markers only: they occupy the date, not the hours.
+		return fmt.Sprintf("🗓 Today: %d %s%s — %s the hours are wide open.", count, eventNoun, firstEventClause, shape.Icon)
+	}
+	return fmt.Sprintf("🗓 Today: %d %s%s — %s ~%s free, biggest open stretch ~%s.",
+		count, eventNoun, firstEventClause, shape.Icon, roundDuration(shape.Free), roundDuration(shape.BiggestOpen))
 }
 
 // dailyDigestIsDue reports whether the digest hour has passed today and today's
