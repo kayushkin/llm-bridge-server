@@ -174,10 +174,12 @@ var weekdaysByName = map[string]time.Weekday{
 // parseWorkDays reads "Mon,Tue,Wed,Thu,Fri" into the set of days the working
 // hours apply to.
 //
-// An empty list is refused rather than read as "no work days". It is what a
-// blank environment variable or a trailing comma produces, and it would hand
-// every day back as wide open — the same silent wrong answer a backwards working
-// day gives, which is why that is refused too.
+// An empty day is refused rather than skipped. A blank value, a trailing comma
+// and a doubled one all produce one, and skipping them would read as "no work
+// days" and hand every day back as wide open — the same silent wrong answer a
+// backwards working day gives, which is why that is refused too. There is no
+// separate check for an empty RESULT: strings.Split never yields an empty slice,
+// so every path here either records a day or returns an error.
 func parseWorkDays(value string) (map[time.Weekday]bool, error) {
 	days := map[time.Weekday]bool{}
 	for _, name := range strings.Split(value, ",") {
@@ -190,9 +192,6 @@ func parseWorkDays(value string) (map[time.Weekday]bool, error) {
 			return nil, fmt.Errorf("%q is not a day: use Mon, Tue, Wed, Thu, Fri, Sat or Sun", name)
 		}
 		days[weekday] = true
-	}
-	if len(days) == 0 {
-		return nil, fmt.Errorf("no days given; the working hours would apply to nothing")
 	}
 	return days, nil
 }

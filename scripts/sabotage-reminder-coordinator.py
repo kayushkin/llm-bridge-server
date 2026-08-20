@@ -712,10 +712,10 @@ CASES = [
           'fs.StringVar(&c.workDays, "work-days", "Mon,Tue,Wed,Thu,Fri,Sat,Sun",')],
     ),
     Case(
-        "an empty work-days list is read as no work days instead of refused, so "
-        "every day reads as wide open",
-        [('return nil, fmt.Errorf("no days given; the working hours would apply to nothing")',
-          "return days, nil")],
+        "an empty day in the work-days list is skipped instead of refused, so a "
+        "blank value or a trailing comma reads as no work days and every day "
+        "reads as wide open",
+        [('return nil, fmt.Errorf("%q has an empty day in it", value)', "continue")],
     ),
     Case(
         "an unknown day name is skipped instead of refused, so a typo silently "
