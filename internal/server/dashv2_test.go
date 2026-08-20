@@ -126,3 +126,60 @@ func (n *notifierRecorder) OnSignalsChanged(id string) {
 		n.onSignals(id)
 	}
 }
+
+// The id lookup, over HTTP: named sessions come back, and an empty one is a 400.
+//
+// The 400 is the point of the second half. `?session_id=` with nothing after it
+// comes from a caller that meant to name sessions and assembled an empty list —
+// an inbox holding no signals is the obvious way to get there. Answering that
+// with "don't narrow" hands back the newest hundred sessions on the box, and a
+// caller that asked "what are these waiting sessions called?" would render every
+// one of them as waiting. Wrong, and indistinguishable from right.
+func TestHandleSessionsSummary_SessionIDLookup(t *testing.T) {
+	srv, st := testServer(t)
+	seedSession(t, st, "a")
+	seedSession(t, st, "b")
+	seedSession(t, st, "c")
+
+	// Repeated parameters, and a comma-separated list, name the same two rows.
+	for _, query := range []string{
+		"/sessions/summary?session_id=a&session_id=c",
+		"/sessions/summary?session_id=a,c",
+	} {
+		resp := doJSON(t, srv, "GET", query, nil)
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s: status = %d", query, resp.StatusCode)
+		}
+		body := decodeJSON[SummaryResponse](t, resp)
+		if len(body.Sessions) != 2 {
+			t.Fatalf("%s: got %d sessions, want the 2 named", query, len(body.Sessions))
+		}
+		names := map[string]string{}
+		for _, s := range body.Sessions {
+			names[s.SessionID] = s.DisplayName
+		}
+		if names["a"] != "disp-a" || names["c"] != "disp-c" {
+			t.Errorf("%s: names not carried back: %+v", query, names)
+		}
+		if _, unwanted := names["b"]; unwanted {
+			t.Errorf("%s: returned a session nobody asked for", query)
+		}
+	}
+
+	// Present but empty is refused, NOT treated as an unfiltered listing.
+	resp := doJSON(t, srv, "GET", "/sessions/summary?session_id=", nil)
+	if resp.StatusCode != 400 {
+		body := decodeJSON[SummaryResponse](t, resp)
+		t.Fatalf("empty session_id: status = %d with %d sessions, want 400",
+			resp.StatusCode, len(body.Sessions))
+	}
+
+	// Absent still lists everything — the lookup must not have become mandatory.
+	resp = doJSON(t, srv, "GET", "/sessions/summary?limit=100", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("unfiltered: status = %d", resp.StatusCode)
+	}
+	if got := len(decodeJSON[SummaryResponse](t, resp).Sessions); got != 3 {
+		t.Errorf("unfiltered listing returned %d sessions, want 3", got)
+	}
+}

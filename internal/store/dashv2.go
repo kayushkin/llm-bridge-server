@@ -65,6 +65,18 @@ type SessionSummaryFilter struct {
 	Purposes    []string
 	Modes       []string
 	InstanceIDs []string
+
+	// SessionIDs names the exact rows wanted, and is NOT one of the sidebar's
+	// six chip axes — it is a LOOKUP. A caller that already holds ids and needs
+	// what they are called ("these 17 sessions raised a signal; what are their
+	// names?") cannot express that as a chip, and cannot page to them either:
+	// the row it wants may be thousands deep in a listing ordered by recency.
+	//
+	// Kept off axes() for that reason. axes() is documented as mirroring the
+	// sidebar, it feeds the chip-oriented IsEmpty, and folding a lookup into it
+	// would make "the filter constrains nothing" false for a request that
+	// constrains it to one row.
+	SessionIDs []string
 }
 
 // summaryFilterAxis pairs one filterable column expression with the values a row
@@ -78,7 +90,7 @@ type summaryFilterAxis struct {
 // decides both the SQL argument order and the response-cache key, and ranging a
 // map would let two identical requests build two different keys.
 //
-// Every column is COALESCEd to '' to match the projection in summaryColumns: a
+// Every column is COALESCEd to ” to match the projection in summaryColumns: a
 // row whose type is NULL has to compare as the empty string, rather than drop
 // out of the comparison the silent way SQL NULL does.
 func (f SessionSummaryFilter) axes() []summaryFilterAxis {
@@ -95,6 +107,9 @@ func (f SessionSummaryFilter) axes() []summaryFilterAxis {
 // IsEmpty reports whether the filter constrains nothing, so a caller can tell an
 // unfiltered listing from a filtered one without reaching into the axes.
 func (f SessionSummaryFilter) IsEmpty() bool {
+	if len(f.SessionIDs) > 0 {
+		return false
+	}
 	for _, axis := range f.axes() {
 		if len(axis.values) > 0 {
 			return false
@@ -119,6 +134,14 @@ func (f SessionSummaryFilter) CacheKey() string {
 		b.WriteString(strings.Join(sorted, ","))
 		b.WriteByte(';')
 	}
+	// The lookup rides the key too, and for the same reason every axis does: a
+	// page cached for "these 17 ids" served to a request for a different 17 is
+	// a wrong answer that looks exactly like a right one.
+	b.WriteString("session_ids=")
+	ids := append([]string(nil), f.SessionIDs...)
+	sort.Strings(ids)
+	b.WriteString(strings.Join(ids, ","))
+	b.WriteByte(';')
 	return b.String()
 }
 
@@ -208,6 +231,16 @@ func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSum
 		}
 		conds = append(conds, axis.column+` IN (`+sqlPlaceholders(len(axis.values))+`)`)
 		for _, v := range axis.values {
+			args = append(args, v)
+		}
+	}
+	// Compared against the same projected expression the rows report and the
+	// cursor sorts on, never the bare session_id column — a legacy row whose id
+	// comes from bridge_id would otherwise be unfindable by the very id the
+	// caller was handed.
+	if len(filter.SessionIDs) > 0 {
+		conds = append(conds, summarySessionIDExpression+` IN (`+sqlPlaceholders(len(filter.SessionIDs))+`)`)
+		for _, v := range filter.SessionIDs {
 			args = append(args, v)
 		}
 	}

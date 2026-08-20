@@ -520,3 +520,83 @@ func TestSessionSummaryFilterCacheKey_DoesNotMutateCaller(t *testing.T) {
 		t.Errorf("CacheKey sorted the caller's slice in place: %v", values)
 	}
 }
+
+// TestListSessionSummariesBySessionIDs pins the id LOOKUP: give it ids, get
+// exactly those rows, whatever their position in the recency order.
+//
+// The point is reachability, not filtering. dashv2's signals inbox holds ids it
+// got from the signals table and needs the names behind them; on this host most
+// of those sessions are thousands of rows deep in a listing ordered by
+// updated_at, so no page size the sidebar would ever ask for reaches them.
+func TestListSessionSummariesBySessionIDs(t *testing.T) {
+	s := testStore(t)
+	for _, id := range []string{"br_a", "br_b", "br_c", "br_d"} {
+		if err := s.CreateSession(&Session{SessionID: id, Harness: "claude_code", State: "idle", DisplayName: "name " + id}); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+
+	got, err := s.ListSessionSummaries(100, "", SessionSummaryFilter{SessionIDs: []string{"br_a", "br_c"}})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want the 2 asked for", len(got))
+	}
+	names := map[string]string{}
+	for _, r := range got {
+		names[r.SessionID] = r.DisplayName
+	}
+	if names["br_a"] != "name br_a" || names["br_c"] != "name br_c" {
+		t.Errorf("the lookup did not carry the display names back: %+v", names)
+	}
+
+	// An id nobody has is simply absent — not an error, and not a listing. A
+	// caller holding a stale id must get back "no such session", not every
+	// session in the store.
+	got, err = s.ListSessionSummaries(100, "", SessionSummaryFilter{SessionIDs: []string{"br_gone"}})
+	if err != nil {
+		t.Fatalf("list unknown: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("an unknown id returned %d rows, want 0", len(got))
+	}
+}
+
+// TestSessionSummaryFilterKeepsTheLookupOutOfTheChipAxes pins the separation.
+//
+// axes() is documented as mirroring the sidebar's six filter chips, and it
+// drives both the SQL and the cache key. If the id lookup were folded in as a
+// seventh, every consumer that reasons about "which chips are set" would start
+// counting a lookup among them.
+//
+// IsEmpty must still report false for a lookup-only filter, because it decides
+// whether a request is narrowed at all — and a request narrowed to two rows is
+// emphatically narrowed.
+func TestSessionSummaryFilterKeepsTheLookupOutOfTheChipAxes(t *testing.T) {
+	lookup := SessionSummaryFilter{SessionIDs: []string{"br_a"}}
+	for _, axis := range lookup.axes() {
+		if len(axis.values) > 0 {
+			t.Errorf("the id lookup leaked into chip axis %q", axis.column)
+		}
+	}
+	if lookup.IsEmpty() {
+		t.Error("a filter narrowed to one session reports as constraining nothing")
+	}
+
+	// And it has to reach the cache key, or a page cached for one set of ids
+	// gets served for another — a wrong answer that looks exactly like a right
+	// one.
+	other := SessionSummaryFilter{SessionIDs: []string{"br_b"}}
+	if lookup.CacheKey() == other.CacheKey() {
+		t.Error("two different id lookups share a cache key")
+	}
+	if lookup.CacheKey() == (SessionSummaryFilter{}).CacheKey() {
+		t.Error("a lookup and an unfiltered listing share a cache key")
+	}
+	// Order must not matter: the same set asked for twice is one entry.
+	if (SessionSummaryFilter{SessionIDs: []string{"br_a", "br_b"}}).CacheKey() !=
+		(SessionSummaryFilter{SessionIDs: []string{"br_b", "br_a"}}).CacheKey() {
+		t.Error("the same id set in a different order builds two cache keys")
+	}
+}

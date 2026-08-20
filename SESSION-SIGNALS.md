@@ -815,3 +815,121 @@ false (2 red).
 
 The cross-session "Needs you" inbox still has no dashv2 mount; the sidebar `?` markers are
 what stands in for it. `surface:"kanban"` still has no mount at all.
+
+---
+
+## The cross-session inbox, and a close for the kanban (2026-08-20)
+
+Two surfaces that were named in the original design and never built, plus the server
+primitive the first of them needed.
+
+### The inbox: a marker needs a row, and there usually is not one
+
+dashv2 marked the row that owned a question and had no other surface for one. The
+reasoning in `QuestionMarkers` is right as far as it goes — a count tells you a number,
+a marker tells you WHICH ROW — but it assumes there is a row.
+
+There usually is not. The sidebar loads a newest-first page; a session that asked
+something and then went quiet sinks out of that page while its question stays open,
+because **a signal outlives the session state that produced it**. That is the same fact
+the `?` marker was rebuilt around, applied one level up: it is not only the STATE that
+moves on, it is the row itself.
+
+Measured while building this: **21 open chat signals across 17 sessions, and 11 of
+those 17 sessions had no row in the sidebar's first page.** Their questions were
+unreachable in dashv2 by any route at all.
+
+So the inbox is not a count replacing the markers. It is the surface for the signals
+with no row to sit on, and every card names its session and opens it — the same "which
+one" the marker gives you, carried on the card instead of the row.
+
+It costs no extra read: `useOpenSignals()` with no session id is the same cross-session
+request the sidebar already makes for its markers, and both share one cache entry.
+
+### `GET /sessions/summary?session_id=…` — a lookup, not a seventh chip
+
+A signal carries `session_id` and no name. Every other client surface already holds a
+`SessionSummary`, so nothing had ever needed to turn an id into a name, and paging
+cannot do it — the row wanted may be thousands deep in a listing ordered by recency.
+
+`SessionSummaryFilter` gains `SessionIDs`, deliberately kept OUT of `axes()`. That
+method is documented as mirroring the sidebar's six filter chips and it feeds the
+chip-oriented `IsEmpty`; folding a lookup in would make "which chips are set" start
+counting something that is not a chip. It rides the cache key on its own, because a
+page cached for one set of ids served for another is a wrong answer that looks exactly
+like a right one.
+
+Compared against `summarySessionIDExpression`, never the bare column — a legacy row
+whose id comes from `bridge_id` would otherwise be unfindable by the very id the caller
+was handed.
+
+### A defect this surfaced, older than the inbox
+
+`select()` warmed a cold session's TURNS and not its SUMMARY. Selecting a session the
+store had never seen set the active id, loaded the transcript, left `summary` null, and
+rendered **no header at all** — an id in the URL and a blank pane.
+
+Unreachable from a sidebar row, which is why it survived: a row IS a summary. Reachable
+from every surface that opens a session by id — a `?session=` deeplink to something
+older than the loaded page, a `[session:…]` reference chip, and now the inbox, whose
+whole purpose is the sessions that have sunk out of that page. `select` now warms the
+summary on the same principle it already warmed the turns.
+
+### The kanban card had no working close
+
+`CardSignals` passed `allowDismissWithoutAnswer` and its comment said a worker's
+blocker "can be answered here, or closed unanswered". The second half was false for
+exactly the blockers that need it: bridge-ui's `SignalCard` gated Dismiss on
+`!request.requestId`, so it appeared for DERIVED signals only, and a tool-raised one
+got Decline instead.
+
+A `requestId` says a park EXISTED, not that it is still live — the same mistake the
+chat surfaces made and shed. When the asking worker has stopped, which is the normal
+state of a card you are revisiting, Decline denies a hook nobody is holding and fails,
+and the gate meant Dismiss was never offered in its place. **Nothing on the board could
+close it.** 60 signals currently sit open on the kanban surface, the oldest six days
+old.
+
+Dismiss is safe for both now because the server decides what it means: the resolve verb
+denies the parked call when the park is live and closes the row when it is not. A
+surface that passes the flag gets Dismiss INSTEAD of Decline, never both — two buttons
+for one act is what sent the caller looking for evidence it does not have. Decline
+stays where the flag is absent, so bridge-ui's chat surfaces lose nothing they had.
+
+### Verified
+
+Go: the lookup returns exactly the rows asked for and nothing for an unknown id; it
+stays out of the chip axes while still reporting `IsEmpty() == false`; two different id
+sets build two cache keys and the same set in either order builds one.
+
+Browser, 13 new cases. Inbox: a signal whose session has no row still appears; every
+card names its session and opens it; the names come from ONE batched lookup; questions
+sort above notifications; Dismiss is offered here and not in the chat pane; collapsing
+keeps the count; a 404 renders nothing. Kanban: a tool-raised blocker offers Dismiss
+and not Decline, a derived one still does, and the close goes through the signal verb
+rather than the hook route.
+
+Each checked by sabotage — the summary warm removed (1 red), the Dismiss flag removed
+from the inbox (1 red), the old `!request.requestId` gate restored in bridge-ui (2
+red), the lookup folded into the chip axes (1 red).
+
+### The panel starved the list, and the first test for that was fake
+
+Recorded because both halves are the kind of thing that ships.
+
+It went in as `flex: 0 0 auto` — do not grow, and crucially do NOT shrink — with a cap
+on the scrolling body alone. With a real backlog (21 open signals on this host) the
+panel held its full height, the session list was pinned at its 160px floor, and the
+column overflowed hidden: one of two rows reachable. The comment beside the rule said it
+prevented exactly this. It described the intent, not the code.
+
+The first regression test for it PASSED with the bug reinstated. At the default viewport
+the height cap alone leaves room, so the shrink rule never has to do anything. It needed
+a short viewport and a row COUNT — a row squeezed out of a virtualized list is not in the
+DOM, and a visibility assertion cannot tell that from scrolled-out-of-view.
+
+### Still not done
+
+`surface:"kanban"` has no mount in dashv2 itself; the board at `/kanban` is bridge-ui's
+and remains where kanban signals are read. chat-core still has no by-todo read, so a
+dashv2 kanban pane would need one.

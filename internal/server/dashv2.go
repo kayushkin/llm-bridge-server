@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -44,6 +45,12 @@ func (s *Server) handleSessionsSummary(w http.ResponseWriter, r *http.Request) {
 		Modes:       query["mode"],
 		InstanceIDs: query["machine"],
 	}
+	sessionIDs, err := summarySessionIDsFromQuery(query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filter.SessionIDs = sessionIDs
 
 	revision, err := s.store.MaxSessionUpdatedAt()
 	if err != nil {
@@ -233,4 +240,45 @@ func (s *Server) fetchBundleModels(ids []string, turns int) (map[string]json.Raw
 // etagFor builds a weak-free strong ETag value from the revision string.
 func etagFor(revision string) string {
 	return `"` + revision + `"`
+}
+
+// summarySessionIDsFromQuery reads the `session_id` lookup off a summary
+// request. Repeatable (?session_id=a&session_id=b) and comma-separated
+// (?session_id=a,b) both work, because a caller assembling a list of ids from
+// somewhere else should not have to care which shape this endpoint prefers.
+//
+// This is a LOOKUP, not a filter chip: it answers "what are these sessions
+// called?" for a caller that already holds the ids. dashv2's signals inbox is
+// the first — it lists open signals across every session, and on this host 11
+// of the 17 sessions holding one are nowhere near the sidebar's first page, so
+// their cards would otherwise be headed by a raw br_1786635575897138112.
+//
+// PRESENT BUT EMPTY IS A 400, not "don't narrow". `?session_id=` with nothing
+// after it comes from a caller that meant to name sessions and assembled an
+// empty list — most likely from an inbox holding no signals. Treating that as
+// an unfiltered request would answer it with the newest hundred sessions on the
+// box, and the caller would render every one of them as something waiting on a
+// human. The signals endpoint refuses `linked_todo_id=` for exactly this reason;
+// this is the same trap on the same shape of parameter.
+//
+// Blank entries WITHIN a list are dropped rather than refused (`a,,b` is a and
+// b): a trailing comma is a formatting slip, not a caller asking for everything,
+// and it cannot widen the result — an empty id matches no row.
+func summarySessionIDsFromQuery(query url.Values) ([]string, error) {
+	raw, ok := query["session_id"]
+	if !ok {
+		return nil, nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, value := range raw {
+		for _, part := range strings.Split(value, ",") {
+			if id := strings.TrimSpace(part); id != "" {
+				out = append(out, id)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("session_id was given but named no session; omit it to list every session")
+	}
+	return out, nil
 }

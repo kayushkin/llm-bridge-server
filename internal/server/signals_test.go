@@ -542,9 +542,23 @@ func TestResolveSignalRefusesAnswered(t *testing.T) {
 		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
 	// The refusal has to say where an answer does go, or the caller has no
-	// next move.
-	if body := rec.Body.String(); !strings.Contains(body, "/send") {
-		t.Errorf("refusal does not name the path that answers a derived question: %s", body)
+	// next move — and it has to name exactly ONE place.
+	//
+	// This used to assert "/send", because the refusal named two routes and
+	// told the caller to choose: the hook resolve for a tool question, /send
+	// for a derived one. That choice is the whole thing POST /signals/{id}/
+	// answer exists to end, and a caller cannot make it anyway — a request_id
+	// says a park EXISTED, not that it is still live. So the old assertion
+	// pinned the defect. Both halves are checked, because a message that names
+	// the new route AND keeps the old ones has not stopped asking.
+	body := rec.Body.String()
+	if !strings.Contains(body, "/signals/{id}/answer") {
+		t.Errorf("refusal does not name the one route that answers a question: %s", body)
+	}
+	for _, retired := range []string{"/send", "hooks/{request_id}/resolve"} {
+		if strings.Contains(body, retired) {
+			t.Errorf("refusal still offers the retired route %q, so it is still asking the caller to choose: %s", retired, body)
+		}
 	}
 	stored, err := st.GetSignal(sig.ID)
 	if err != nil {

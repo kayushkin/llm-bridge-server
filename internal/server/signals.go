@@ -295,9 +295,14 @@ func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
 	switch req.State {
 	case msg.SignalStateAcknowledged, msg.SignalStateDismissed:
 	case msg.SignalStateAnswered:
+		// Names ONE route. It used to name two — the hook resolve for a tool
+		// question, /send for a derived one — and told the caller to pick,
+		// which is the discrimination POST /signals/{id}/answer exists to end.
+		// A caller cannot make that choice: a request_id says a park EXISTED,
+		// not that it is still live, and only the server knows which.
 		http.Error(w, "state=answered is not resolvable here; an answer must reach the session — "+
-			"POST /sessions/{id}/hooks/{request_id}/resolve for a tool question, "+
-			"POST /sessions/{id}/send for a derived one. Both close the signal themselves.",
+			"POST /signals/{id}/answer, which delivers it whichever producer raised "+
+			"the question and closes the row itself.",
 			http.StatusBadRequest)
 		return
 	default:
