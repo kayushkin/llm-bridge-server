@@ -79,6 +79,8 @@ type config struct {
 	scopeTag     string
 	digestHour   int
 	digestMinute int
+	workStart    string
+	workEnd      string
 	timezone     string
 	lookahead    time.Duration
 	dryRun       bool
@@ -119,13 +121,46 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	fs.StringVar(&c.scopeTag, "tag", "personal", "only items carrying this tag are coordinated. Keeps the ~40 bot/coding todos out of the digest.")
 	fs.IntVar(&c.digestHour, "digest-hour", 7, "local hour to send the daily digest nudge.")
 	fs.IntVar(&c.digestMinute, "digest-minute", 30, "local minute to send the daily digest nudge.")
+	fs.StringVar(&c.workStart, "work-start", "08:00", "local time the working day begins. Hours inside it are not open time, so they are never offered as room for a todo.")
+	fs.StringVar(&c.workEnd, "work-end", "16:30", "local time the working day ends.")
 	fs.StringVar(&c.timezone, "tz", envOr(lookupEnvironment, "REMINDER_TZ", "America/Los_Angeles"), "IANA zone the daily digest hour is interpreted in.")
 	fs.DurationVar(&c.lookahead, "lookahead", 7*24*time.Hour, "how far ahead to materialize occurrences of a recurring template.")
 	fs.BoolVar(&c.dryRun, "dry-run", false, "report what would change; mutate nothing, send nothing.")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
+	workStart, err := parseDailyTime(c.workStart)
+	if err != nil {
+		return config{}, fmt.Errorf("-work-start: %w", err)
+	}
+	workEnd, err := parseDailyTime(c.workEnd)
+	if err != nil {
+		return config{}, fmt.Errorf("-work-end: %w", err)
+	}
+	// A working day that ends before it starts would silently measure as no work
+	// at all, handing back the whole day as open time — the exact wrong answer,
+	// arrived at quietly. Refuse it here, where the operator can read why.
+	if !workEnd.OnDay(referenceDay).After(workStart.OnDay(referenceDay)) {
+		return config{}, fmt.Errorf("-work-end %s is not after -work-start %s", c.workEnd, c.workStart)
+	}
 	return c, nil
+}
+
+// referenceDay is an arbitrary fixed day used only to compare two daily times to
+// each other. Any day works — both sides land on the same one — and a constant
+// keeps the comparison off the wall clock, where it would depend on which day
+// the process happened to start.
+var referenceDay = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// parseDailyTime reads "8:00" or "16:30" into the hour and minute it names.
+// Rejecting a malformed value here rather than defaulting it is the point: a
+// working day silently reset to midnight would report the whole day as open.
+func parseDailyTime(value string) (dailyTime, error) {
+	parsed, err := time.Parse("15:04", value)
+	if err != nil {
+		return dailyTime{}, fmt.Errorf("%q is not a 24-hour HH:MM time", value)
+	}
+	return dailyTime{Hour: parsed.Hour(), Minute: parsed.Minute()}, nil
 }
 
 // newCoordinator wires a parsed config onto the Coordinator that runs the tick.
@@ -145,10 +180,23 @@ func newCoordinator(c config, location *time.Location, now time.Time) *Coordinat
 		ScopeTag:  c.scopeTag,
 		Location:  location,
 		DigestAt:  dailyTime{Hour: c.digestHour, Minute: c.digestMinute},
+		WorkStart: mustParseDailyTime(c.workStart),
+		WorkEnd:   mustParseDailyTime(c.workEnd),
 		Lookahead: c.lookahead,
 		DryRun:    c.dryRun,
 		Now:       now.In(location),
 	}
+}
+
+// mustParseDailyTime is safe only because newCoordinator runs after parseFlags,
+// which has already rejected anything unparseable. A panic here means those two
+// were reordered, which is worth a crash rather than a silent midnight.
+func mustParseDailyTime(value string) dailyTime {
+	parsed, err := parseDailyTime(value)
+	if err != nil {
+		panic("newCoordinator reached an unvalidated daily time: " + err.Error())
+	}
+	return parsed
 }
 
 func main() {
@@ -230,9 +278,14 @@ type Coordinator struct {
 	calendar  calendarMirror
 	herald    heraldRelay
 
-	ScopeTag  string
-	Location  *time.Location
-	DigestAt  dailyTime
+	ScopeTag string
+	Location *time.Location
+	DigestAt dailyTime
+	// WorkStart and WorkEnd bound the hours that are spoken for every day. They
+	// are measured as busy, so the free time the digest reports is time the user
+	// could actually spend on a todo.
+	WorkStart dailyTime
+	WorkEnd   dailyTime
 	Lookahead time.Duration
 	DryRun    bool
 	Now       time.Time
@@ -661,6 +714,7 @@ const (
 	headingOverdue  = "⏰ Overdue"
 	headingDueToday = "📅 Due today"
 	headingThisWeek = "🗓 Later this week"
+	headingSchedule = "🗓 Today's schedule"
 )
 
 // sectionStyle is how a bucket is dressed for one surface. The digest note is a
@@ -680,6 +734,12 @@ type sectionStyle struct {
 var (
 	digestStyle = sectionStyle{HeadingFormat: "\n## %s (%d)\n\n", Bullet: "- "}
 	nudgeStyle  = sectionStyle{HeadingFormat: "\n%s (%d)\n", Bullet: "  ", Limit: nudgeSectionLimit}
+	// The day's schedule is NOT capped, where the todo buckets are. A backlog
+	// grows without limit and a day cannot: it is bounded by being one day. The
+	// cap also truncated in the worst possible place — chronological order puts
+	// the evening last, so a day with six meetings hid the 8pm event, which is
+	// the one that answers whether there is room tonight.
+	nudgeScheduleStyle = sectionStyle{HeadingFormat: "\n%s (%d)\n", Bullet: "  "}
 )
 
 // nudgeSectionLimit caps how many items of one bucket the chat nudge lists. The
@@ -695,7 +755,7 @@ const nudgeSectionLimit = 5
 //
 // A capped section always says how many it dropped. A silent truncation reads as
 // "this is everything", which is the same lie a non-total bucket tells.
-func renderSection(out *bytes.Buffer, style sectionStyle, heading string, items []*model.Item, label func(*model.Item) string) {
+func renderSection[T any](out *bytes.Buffer, style sectionStyle, heading string, items []T, label func(T) string) {
 	if len(items) == 0 {
 		return
 	}
@@ -772,56 +832,71 @@ func (c *Coordinator) splitTodaysEvents(events []CalendarEvent) (timed, allDay [
 	return timed, allDay
 }
 
-// renderSchedule folds today's calendar into the digest: the timed events in
-// order, any all-day markers, and one line reading how booked the day is. That
-// last line is the point — it is what lets you tell, without opening a calendar,
-// whether there is room today for a long task.
+// renderSchedule folds today's calendar into the digest: the events in order and
+// one line reading how much of the day is actually left. That last line is the
+// point — it is what lets you tell, without opening a calendar, whether there is
+// room today for a long task.
 func (c *Coordinator) renderSchedule(out *bytes.Buffer, events []CalendarEvent, calErr error) {
 	if calErr != nil {
-		out.WriteString("\n## 🗓 Today's schedule\n\n⚠️ Couldn't load your calendar this tick.\n")
+		out.WriteString("\n## " + headingSchedule + "\n\n⚠️ Couldn't load your calendar this tick.\n")
 		return
 	}
 
 	timed, allDay := c.splitTodaysEvents(events)
-
 	if len(timed) == 0 && len(allDay) == 0 {
-		out.WriteString("\n## 🗓 Today's schedule\n\nNothing on the calendar — the day is yours.\n")
+		out.WriteString("\n## " + headingSchedule + "\n\nNothing on the calendar — the day is yours.\n")
+		fmt.Fprintf(out, "\n%s\n", c.dayLoad(nil))
 		return
 	}
 
-	fmt.Fprintf(out, "\n## 🗓 Today's schedule (%d)\n\n", len(timed)+len(allDay))
-	for _, event := range allDay {
-		fmt.Fprintf(out, "- all day — %s\n", event.Summary)
-	}
-	for _, event := range timed {
-		start := event.Start.In(c.Location)
-		if event.End.IsZero() {
-			fmt.Fprintf(out, "- %s — %s\n", clockTime(start), event.Summary)
-			continue
-		}
-		fmt.Fprintf(out, "- %s–%s — %s\n", clockTime(start), clockTime(event.End.In(c.Location)), event.Summary)
-	}
+	renderSection(out, digestStyle, headingSchedule, c.orderedForDisplay(allDay, timed), c.eventLabel)
 	fmt.Fprintf(out, "\n%s\n", c.dayLoad(timed))
 }
 
-// dayShape is how much of a waking day (8am–10pm) today's events consume. It is
-// measured once and rendered two ways — the digest's full sentence and the
-// nudge's one line — because the MEASUREMENT is what must not differ between
-// them; how many words each spends on it may.
-type dayShape struct {
-	Booked, Free, BiggestOpen time.Duration
-	// WideOpen means nothing timed lands inside the window at all. That is a
-	// different statement from "0h booked", which a meeting clipped to nothing
-	// can also produce.
-	WideOpen bool
-	Icon     string
-	Verdict  string
+// orderedForDisplay is the one order both surfaces list a day in: the all-day
+// markers, which own no hour, above the timed events that do.
+func (c *Coordinator) orderedForDisplay(allDay, timed []CalendarEvent) []CalendarEvent {
+	ordered := make([]CalendarEvent, 0, len(allDay)+len(timed))
+	ordered = append(ordered, allDay...)
+	return append(ordered, timed...)
 }
 
-// measureDay reads today's timed events against a waking window (8am–10pm),
-// merging overlaps so a double-booked hour is not counted twice, and finds the
-// biggest open stretch — the number that actually answers "can I start something
-// long today?". A day can be only 4 hours booked and still have no 3-hour gap.
+// eventLabel renders one calendar event as a line. Shared by the digest section
+// and the nudge for the same reason the todo labels are: two renderings of one
+// event are two things to keep in step.
+func (c *Coordinator) eventLabel(event CalendarEvent) string {
+	if event.AllDay {
+		return "all day — " + event.Summary
+	}
+	start := clockTime(event.Start.In(c.Location))
+	if event.End.IsZero() {
+		return fmt.Sprintf("%s — %s", start, event.Summary)
+	}
+	return fmt.Sprintf("%s–%s — %s", start, clockTime(event.End.In(c.Location)), event.Summary)
+}
+
+// dayShape is how much of the day is actually available, measured once and
+// rendered two ways — the digest's sentence and the nudge's line — because the
+// MEASUREMENT is what must not differ between them; how many words each spends
+// on it may.
+type dayShape struct {
+	// Free and BiggestOpen both EXCLUDE the working day. An 8-hour workday spent
+	// in the "free" column is the reason this exists: a digest that offered a
+	// Tuesday morning as room for a long todo was offering time that was already
+	// gone, which makes the whole line worth ignoring.
+	Free, BiggestOpen time.Duration
+	Icon, Verdict     string
+}
+
+// measureDay reads the day against a waking window (8am–10pm), treating the
+// working day as busy alongside the calendar's own events, and finds the biggest
+// open stretch — the number that actually answers "can I start something long
+// today?". A day can be only 4 hours booked and still have no 3-hour gap.
+//
+// Work is measured as just another busy block rather than by trimming the window
+// down to the evening. That is what makes a meeting at 10am cost nothing (it
+// merges into the work block it sits inside) while a meeting from 4pm to 5pm
+// costs only the half hour of it that lands after work.
 func (c *Coordinator) measureDay(events []CalendarEvent) dayShape {
 	dayStart := dateOf(c.Now.In(c.Location))
 	windowStart := dayStart.Add(8 * time.Hour)
@@ -829,27 +904,33 @@ func (c *Coordinator) measureDay(events []CalendarEvent) dayShape {
 	window := windowEnd.Sub(windowStart)
 
 	type interval struct{ start, end time.Time }
-	clipped := []interval{}
+	clip := func(start, end time.Time) (interval, bool) {
+		start, end = maxTime(start, windowStart), minTime(end, windowEnd)
+		return interval{start, end}, start.Before(end)
+	}
+
+	busy := []interval{}
+	if work, ok := clip(c.WorkStart.OnDay(dayStart), c.WorkEnd.OnDay(dayStart)); ok {
+		busy = append(busy, work)
+	}
 	for _, event := range events {
 		if event.End.IsZero() {
 			continue
 		}
-		start := maxTime(event.Start.In(c.Location), windowStart)
-		end := minTime(event.End.In(c.Location), windowEnd)
-		if start.Before(end) {
-			clipped = append(clipped, interval{start, end})
+		if clipped, ok := clip(event.Start.In(c.Location), event.End.In(c.Location)); ok {
+			busy = append(busy, clipped)
 		}
 	}
-	if len(clipped) == 0 {
+	if len(busy) == 0 {
 		return dayShape{
-			Free: window, BiggestOpen: window, WideOpen: true,
-			Icon: "🟢", Verdict: "plenty of room for a big task",
+			Free: window, BiggestOpen: window,
+			Icon: "🟢", Verdict: "room for a long task",
 		}
 	}
-	sort.Slice(clipped, func(i, j int) bool { return clipped[i].start.Before(clipped[j].start) })
+	sort.Slice(busy, func(i, j int) bool { return busy[i].start.Before(busy[j].start) })
 
-	merged := []interval{clipped[0]}
-	for _, v := range clipped[1:] {
+	merged := []interval{busy[0]}
+	for _, v := range busy[1:] {
 		last := &merged[len(merged)-1]
 		if !v.start.After(last.end) {
 			if v.end.After(last.end) {
@@ -881,22 +962,23 @@ func (c *Coordinator) measureDay(events []CalendarEvent) dayShape {
 	case biggest < 3*time.Hour:
 		icon, verdict = "🟡", "some room, but the biggest open block is modest"
 	}
-	return dayShape{
-		Booked: booked, Free: window - booked, BiggestOpen: biggest,
-		Icon: icon, Verdict: verdict,
-	}
+	return dayShape{Free: window - booked, BiggestOpen: biggest, Icon: icon, Verdict: verdict}
 }
 
-// dayLoad is the digest note's reading of the day: the numbers spelled out, since
-// the note is what you open when you are deciding what to do with the day.
+// workHours renders the working day as the digest names it: "8am–4:30pm".
+func (c *Coordinator) workHours() string {
+	day := dateOf(c.Now.In(c.Location))
+	return fmt.Sprintf("%s–%s", clockTime(c.WorkStart.OnDay(day)), clockTime(c.WorkEnd.OnDay(day)))
+}
+
+// dayLoad is the digest note's reading of the day, spelled out, since the note is
+// what you open when you are deciding what to do with the day. It says the
+// working day out loud rather than quietly subtracting it: a free figure that
+// dropped eight hours without explaining why reads as a bug.
 func (c *Coordinator) dayLoad(events []CalendarEvent) string {
 	shape := c.measureDay(events)
-	if shape.WideOpen {
-		return fmt.Sprintf("%s Wide open (8am–10pm) — %s.", shape.Icon, shape.Verdict)
-	}
-	return fmt.Sprintf("%s ~%s booked, ~%s free (8am–10pm); biggest open stretch ~%s — %s.",
-		shape.Icon, roundDuration(shape.Booked), roundDuration(shape.Free),
-		roundDuration(shape.BiggestOpen), shape.Verdict)
+	return fmt.Sprintf("%s Work %s; ~%s free outside it (to 10pm), biggest open stretch ~%s — %s.",
+		shape.Icon, c.workHours(), roundDuration(shape.Free), roundDuration(shape.BiggestOpen), shape.Verdict)
 }
 
 // clockTime renders a wall-clock time compactly: "6pm", "6:30pm".
@@ -1002,7 +1084,7 @@ func (c *Coordinator) nudgeOnce(board *Board, events []CalendarEvent, calErr err
 			// it reads as a message that failed to load, not as a clear board.
 			message.WriteString("\nNothing due today, and nothing late. 🎉\n")
 		}
-		fmt.Fprintf(&message, "\n%s\n", c.nudgeScheduleLine(events, calErr))
+		c.renderNudgeSchedule(&message, events, calErr)
 	}
 	if len(board.NagFiring) > 0 {
 		message.WriteString("\n🔔 Still not done:\n")
@@ -1041,40 +1123,28 @@ func (c *Coordinator) nudgeOnce(board *Board, events []CalendarEvent, calErr err
 	return nil
 }
 
-// nudgeScheduleLine says in one line what the digest's schedule section says in
-// a list: how many events today, when the first one is, and whether a long task
-// fits between them. That last part is why the calendar is in the nudge at all —
-// it is what tells you whether the overdue items are even reachable today, which
-// a list of todos on its own cannot say.
-func (c *Coordinator) nudgeScheduleLine(events []CalendarEvent, calErr error) string {
+// renderNudgeSchedule puts today's calendar in the nudge: the events themselves,
+// then the same day-load line the note carries. The events are there because
+// "7 events" does not tell you whether the day is yours after 5pm or broken into
+// twenty-minute pieces, and the todos above are only actionable against a day
+// you can see.
+func (c *Coordinator) renderNudgeSchedule(out *bytes.Buffer, events []CalendarEvent, calErr error) {
 	if calErr != nil {
-		// Say the day is unknown rather than dropping the line. A silently absent
-		// schedule line is indistinguishable from an empty calendar.
-		return "🗓 Today: couldn't load your calendar."
+		// Say the day is unknown rather than dropping the section. A silently
+		// absent schedule is indistinguishable from an empty calendar.
+		out.WriteString("\n🗓 Today: couldn't load your calendar.\n")
+		return
 	}
 
 	timed, allDay := c.splitTodaysEvents(events)
-	count := len(timed) + len(allDay)
-	if count == 0 {
-		return "🗓 Today: nothing on the calendar — the day is yours."
+	if len(timed) == 0 && len(allDay) == 0 {
+		out.WriteString("\n🗓 Today: nothing on the calendar.\n")
+		fmt.Fprintf(out, "%s\n", c.dayLoad(nil))
+		return
 	}
 
-	eventNoun := "events"
-	if count == 1 {
-		eventNoun = "event"
-	}
-	firstEventClause := ""
-	if len(timed) > 0 {
-		firstEventClause = fmt.Sprintf(", first at %s", clockTime(timed[0].Start.In(c.Location)))
-	}
-
-	shape := c.measureDay(timed)
-	if shape.WideOpen {
-		// All-day markers only: they occupy the date, not the hours.
-		return fmt.Sprintf("🗓 Today: %d %s%s — %s the hours are wide open.", count, eventNoun, firstEventClause, shape.Icon)
-	}
-	return fmt.Sprintf("🗓 Today: %d %s%s — %s ~%s free, biggest open stretch ~%s.",
-		count, eventNoun, firstEventClause, shape.Icon, roundDuration(shape.Free), roundDuration(shape.BiggestOpen))
+	renderSection(out, nudgeScheduleStyle, headingSchedule, c.orderedForDisplay(allDay, timed), c.eventLabel)
+	fmt.Fprintf(out, "\n%s\n", c.dayLoad(timed))
 }
 
 // dailyDigestIsDue reports whether the digest hour has passed today and today's

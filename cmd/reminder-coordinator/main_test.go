@@ -145,16 +145,20 @@ func newTestCoordinator(t *testing.T, now time.Time, nb *fakeNoteboard) (*Coordi
 	t.Helper()
 	herald := &fakeHerald{}
 	calendar := &fakeCalendar{}
-	return &Coordinator{
-		noteboard: nb,
-		calendar:  calendar,
-		herald:    herald,
-		ScopeTag:  "personal",
-		Location:  pacific(t),
-		DigestAt:  dailyTime{Hour: 7, Minute: 30},
-		Lookahead: 7 * 24 * time.Hour,
-		Now:       now,
-	}, herald, calendar
+	// Built from the SHIPPED defaults rather than field by field. Every value the
+	// suite restated here was a value it could no longer tell apart from the one
+	// the binary runs with, and the working day proved it: added as a flag with a
+	// default of 8am–4:30pm, it stayed 00:00–00:00 in every test, so the suite
+	// measured a day with no work in it while the binary measured a real one.
+	config, err := parseFlags(nil, func(string) string { return "" }, "/home/someone")
+	if err != nil {
+		t.Fatalf("parseFlags with no arguments should yield the shipped defaults: %v", err)
+	}
+	coordinator := newCoordinator(config, pacific(t), now)
+	coordinator.noteboard = nb
+	coordinator.calendar = calendar
+	coordinator.herald = herald
+	return coordinator, herald, calendar
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -702,7 +706,11 @@ func TestDigestShowsTodaysScheduleInOrderWithDayLoad(t *testing.T) {
 	}
 	rendered := coordinator.renderDigest(board, events, nil)
 
-	for _, want := range []string{"Today's schedule", "Salsa", "Ice Skating", "8pm", "booked", "free"} {
+	// Work runs 8am–4:30pm and Salsa takes 8–9pm, so 4.5 of the 14-hour window is
+	// free. Ice Skating at 6am is before the window opens and costs none of it.
+	for _, want := range []string{
+		"Today's schedule", "Salsa", "Ice Skating", "8pm", "Work 8am–4:30pm", "~4.5h free",
+	} {
 		if !contains(rendered, want) {
 			t.Errorf("digest is missing %q:\n%s", want, rendered)
 		}
@@ -1309,30 +1317,30 @@ func TestDayLoadReportsItsHoursToTheNearestHalfHour(t *testing.T) {
 	loc := pacific(t)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeNoteboard())
 
-	// 90 minutes booked inside a 14-hour window (8am–10pm): 1.5h booked, 12.5h
-	// free, and the tail from 10:30 to 10pm is the biggest open stretch at 11.5h.
-	// All three are half-hours on purpose — a whole-hour fixture cannot tell
-	// half-hour rounding from any coarser rounding.
+	// The work block (8am–4:30pm) leaves 5.5 hours of the 14-hour window. A
+	// 90-minute evening event takes 1.5 of them, leaving 4h free and a 3.5h
+	// stretch from 6:30pm to 10pm. All three are half-hours on purpose — a
+	// whole-hour fixture cannot tell half-hour rounding from any coarser rounding.
 	line := coordinator.dayLoad([]CalendarEvent{{
-		Summary: "Standup and a long review",
-		Start:   time.Date(2026, 7, 20, 9, 0, 0, 0, loc),
-		End:     time.Date(2026, 7, 20, 10, 30, 0, 0, loc),
+		Summary: "A long review",
+		Start:   time.Date(2026, 7, 20, 17, 0, 0, 0, loc),
+		End:     time.Date(2026, 7, 20, 18, 30, 0, 0, loc),
 	}})
-	for _, want := range []string{"~1.5h booked", "~12.5h free", "~11.5h"} {
+	for _, want := range []string{"~4h free", "~3.5h"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("day-load line is missing %q:\n%s", want, line)
 		}
 	}
 
-	// Under an hour renders as minutes. "0h booked" on a day with a real meeting
-	// on it reads as a free morning.
+	// Under an hour renders as minutes. "0h free" on an evening that still has
+	// three quarters of an hour in it reads as no evening at all.
 	short := coordinator.dayLoad([]CalendarEvent{{
-		Summary: "Quick call",
-		Start:   time.Date(2026, 7, 20, 9, 0, 0, 0, loc),
-		End:     time.Date(2026, 7, 20, 9, 45, 0, 0, loc),
+		Summary: "Evening booked solid",
+		Start:   time.Date(2026, 7, 20, 16, 30, 0, 0, loc),
+		End:     time.Date(2026, 7, 20, 21, 15, 0, 0, loc),
 	}})
-	if !strings.Contains(short, "~45m booked") {
-		t.Errorf("a 45-minute meeting should read as minutes, not as a rounded hour:\n%s", short)
+	if !strings.Contains(short, "~45m free") {
+		t.Errorf("45 minutes left should read as minutes, not as a rounded hour:\n%s", short)
 	}
 }
 
@@ -1567,12 +1575,16 @@ func TestTheNudgeReadsTheDayAndSaysSoWhenTheCalendarFails(t *testing.T) {
 		t.Fatalf("nudgeOnce: %v", err)
 	}
 	message := herald.sessions[0]
-	// 8.5h of the 14-hour window is booked, so 5.5h is free and the 10:30–12:00
-	// gap is the biggest open stretch. The free figure is asserted because the
-	// line has two durations in it and they are interchangeable at a glance:
-	// printing booked where it says free makes the fullest day read as the emptiest.
+	// The nudge LISTS the day, it does not summarise it: "2 events" cannot tell
+	// you whether the evening is yours. Standup sits inside work hours and costs
+	// nothing; the review runs to 8pm and eats all but the last two hours, so 2h
+	// is free and 8pm–10pm is the biggest stretch. The free figure is asserted
+	// because the line carries two durations that are interchangeable at a
+	// glance: printing booked where it says free makes the fullest day read as
+	// the emptiest.
 	for _, want := range []string{
-		"🗓 Today: 2 events", "first at 10am", "~5.5h free", "biggest open stretch ~2h", "🟡",
+		"🗓 Today's schedule (2)", "10am–10:30am — Standup", "12pm–8pm — Long review",
+		"Work 8am–4:30pm", "~2h free", "biggest open stretch ~2h", "🟡",
 	} {
 		if !strings.Contains(message, want) {
 			t.Errorf("schedule line is missing %q:\n%s", want, message)
@@ -1638,5 +1650,154 @@ func TestLatenessIsCountedInCalendarDaysAcrossADaylightSavingBoundary(t *testing
 	}
 	if got := coordinator.daysLate(yesterday); got != 1 {
 		t.Errorf("daysLate = %d, want 1 for something due yesterday", got)
+	}
+}
+
+// ---------------------------------------------------------------- the working day is not open time
+
+// The reason the day-load line existed at all was to answer "is there room today
+// for a big todo?", and for as long as the window was a bare 8am–10pm it answered
+// wrong every weekday: eight of those hours are spoken for. A digest offering a
+// Tuesday morning as free is offering time that is already gone.
+func TestWorkHoursAreNotCountedAsOpenTime(t *testing.T) {
+	loc := pacific(t)
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeNoteboard())
+
+	// Nothing on the calendar at all. The window is 14 hours; work takes 8.5 of
+	// them, so 5.5 are left and the whole of it is one stretch after 4:30pm.
+	shape := coordinator.measureDay(nil)
+	if shape.Free != 5*time.Hour+30*time.Minute {
+		t.Errorf("free = %s, want 5h30m — the working day is being offered as open time", shape.Free)
+	}
+	if shape.BiggestOpen != 5*time.Hour+30*time.Minute {
+		t.Errorf("biggest open stretch = %s, want 5h30m", shape.BiggestOpen)
+	}
+
+	line := coordinator.dayLoad(nil)
+	// The line SAYS the working day rather than quietly subtracting it. A free
+	// figure that dropped eight hours without explaining why reads as a bug.
+	if !strings.Contains(line, "Work 8am–4:30pm") {
+		t.Errorf("day-load line does not say where the missing hours went:\n%s", line)
+	}
+}
+
+// Work is measured as a busy block, not by trimming the window down to the
+// evening, and this is the difference: a meeting inside work hours is already
+// paid for. Counting it again would report a normal working Tuesday as busier
+// than a day off with the same meeting on it.
+func TestAMeetingInsideWorkHoursCostsNoExtraFreeTime(t *testing.T) {
+	loc := pacific(t)
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeNoteboard())
+
+	free := coordinator.measureDay([]CalendarEvent{{
+		Summary: "Standup",
+		Start:   time.Date(2026, 7, 20, 10, 0, 0, 0, loc),
+		End:     time.Date(2026, 7, 20, 10, 30, 0, 0, loc),
+	}}).Free
+	if free != 5*time.Hour+30*time.Minute {
+		t.Errorf("free = %s, want 5h30m — a meeting already inside work hours was charged twice", free)
+	}
+
+	// A meeting that straddles the end of the working day costs only the part
+	// that lands after it.
+	straddling := coordinator.measureDay([]CalendarEvent{{
+		Summary: "Runs late",
+		Start:   time.Date(2026, 7, 20, 16, 0, 0, 0, loc),
+		End:     time.Date(2026, 7, 20, 17, 0, 0, 0, loc),
+	}}).Free
+	if straddling != 5*time.Hour {
+		t.Errorf("free = %s, want 5h — only the half hour after 4:30pm should have been charged", straddling)
+	}
+}
+
+// An empty calendar still has a working day in it. Rendering "nothing on the
+// calendar" and stopping would say the day is wide open when 8.5 hours of it are
+// not.
+func TestAnEmptyCalendarStillReportsTheWorkingDay(t *testing.T) {
+	loc := pacific(t)
+	coordinator, herald, _ := newNudgeFixture(t, time.Date(2026, 7, 20, 9, 0, 0, 0, loc),
+		&model.Item{ID: "late", Type: "todo", Title: "Laundry", Status: "open", Tags: []string{"personal"},
+			DueAt: ptr(time.Date(2026, 7, 15, 10, 0, 0, 0, loc))})
+
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+	if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
+		t.Fatalf("nudgeOnce: %v", err)
+	}
+	message := herald.sessions[0]
+	if !strings.Contains(message, "nothing on the calendar") {
+		t.Errorf("nudge should say the calendar is empty:\n%s", message)
+	}
+	if !strings.Contains(message, "Work 8am–4:30pm") || !strings.Contains(message, "~5.5h free") {
+		t.Errorf("an empty calendar still has a working day in it:\n%s", message)
+	}
+}
+
+// A working day that cannot be parsed, or that ends before it begins, measures as
+// no work at all — which hands back the whole day as open time. That is the wrong
+// answer arrived at silently, so it is refused at startup instead.
+func TestAnUnusableWorkingDayIsRefusedAtStartup(t *testing.T) {
+	noEnvironment := func(string) string { return "" }
+	for _, arguments := range [][]string{
+		{"-work-start", "half-eight"},
+		{"-work-end", "25:00"},
+		{"-work-start", "16:30", "-work-end", "08:00"},
+		{"-work-start", "09:00", "-work-end", "09:00"},
+	} {
+		if _, err := parseFlags(arguments, noEnvironment, "/home/someone"); err == nil {
+			t.Errorf("%v was accepted; an unusable working day makes the whole day read as free", arguments)
+		}
+	}
+
+	// And the shipped default is the working day the user actually keeps.
+	config, err := parseFlags(nil, noEnvironment, "/home/someone")
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if config.workStart != "08:00" || config.workEnd != "16:30" {
+		t.Errorf("shipped working day is %s–%s, want 08:00–16:30", config.workStart, config.workEnd)
+	}
+}
+
+// The todo buckets are capped and the day is not, because a backlog grows
+// without limit and a day cannot. The cap also truncated in the worst place:
+// chronological order puts the evening last, so a busy day hid the 8pm event —
+// the one that says whether there is room tonight.
+func TestTheNudgeShowsTheWholeDayIncludingTheEveningOnABusyDay(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 7, 20, 9, 0, 0, 0, loc)
+	coordinator, herald, _ := newNudgeFixture(t, now,
+		&model.Item{ID: "late", Type: "todo", Title: "Laundry", Status: "open", Tags: []string{"personal"},
+			DueAt: ptr(time.Date(2026, 7, 15, 10, 0, 0, 0, loc))})
+
+	events := []CalendarEvent{}
+	for hour := 9; hour < 9+nudgeSectionLimit+1; hour++ {
+		events = append(events, CalendarEvent{
+			Summary: fmt.Sprintf("Meeting %d", hour),
+			Start:   time.Date(2026, 7, 20, hour, 0, 0, 0, loc),
+			End:     time.Date(2026, 7, 20, hour, 30, 0, 0, loc),
+		})
+	}
+	events = append(events, CalendarEvent{
+		Summary: "Salsa",
+		Start:   time.Date(2026, 7, 20, 20, 0, 0, 0, loc),
+		End:     time.Date(2026, 7, 20, 21, 0, 0, 0, loc),
+	})
+
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+	if err := coordinator.nudgeOnce(board, events, nil); err != nil {
+		t.Fatalf("nudgeOnce: %v", err)
+	}
+	message := herald.sessions[0]
+	if !strings.Contains(message, "Salsa") {
+		t.Errorf("the evening event was truncated away — it is the one the day-load line is about:\n%s", message)
+	}
+	if strings.Contains(message, "more in the note") {
+		t.Errorf("the day's schedule should not be capped:\n%s", message)
 	}
 }

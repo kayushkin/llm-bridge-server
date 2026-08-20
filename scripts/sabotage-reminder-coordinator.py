@@ -327,8 +327,8 @@ CASES = [
     ),
     Case(
         "a calendar read failure renders as an EMPTY calendar, so a failed load reads as a free day",
-        [('out.WriteString("\\n## 🗓 Today\'s schedule\\n\\n⚠️ Couldn\'t load your calendar this tick.\\n")',
-          'out.WriteString("\\n## 🗓 Today\'s schedule\\n\\nNothing on the calendar — the day is yours.\\n")')],
+        [('out.WriteString("\\n## " + headingSchedule + "\\n\\n⚠️ Couldn\'t load your calendar this tick.\\n")',
+          'out.WriteString("\\n## " + headingSchedule + "\\n\\nNothing on the calendar — the day is yours.\\n")')],
     ),
 
     # ---- the digest hour, the board's totality, and the note write-back ----
@@ -656,13 +656,56 @@ CASES = [
     Case(
         "a failed calendar read drops the nudge's schedule line, so a failure to load "
         "the day is indistinguishable from an empty one",
-        [('return "🗓 Today: couldn\'t load your calendar."', 'return ""')],
+        [('out.WriteString("\\n🗓 Today: couldn\'t load your calendar.\\n")',
+          'out.WriteString("\\n🗓 Today: nothing on the calendar.\\n")')],
     ),
     Case(
-        "the nudge reports the day's BOOKED hours where it says free, so the fuller "
-        "the day looks the emptier it reads",
-        [("count, eventNoun, firstEventClause, shape.Icon, roundDuration(shape.Free), roundDuration(shape.BiggestOpen))",
-          "count, eventNoun, firstEventClause, shape.Icon, roundDuration(shape.Booked), roundDuration(shape.BiggestOpen))")],
+        "the day-load line reports the day's BOOKED hours where it says free, so the "
+        "fuller the day looks the emptier it reads",
+        [("return dayShape{Free: window - booked, BiggestOpen: biggest, Icon: icon, Verdict: verdict}",
+          "return dayShape{Free: booked, BiggestOpen: biggest, Icon: icon, Verdict: verdict}")],
+    ),
+
+    # ---- the working day is not open time ----
+    Case(
+        "the working day stops being measured as busy, so eight hours the user is at "
+        "work are offered back as room for a big todo",
+        [("if work, ok := clip(c.WorkStart.OnDay(dayStart), c.WorkEnd.OnDay(dayStart)); ok {",
+          "if work, ok := clip(c.WorkStart.OnDay(dayStart), c.WorkStart.OnDay(dayStart)); ok {")],
+    ),
+    Case(
+        "the working day is measured but never named, so the digest quietly drops "
+        "eight hours and the free figure reads as a bug",
+        [('"%s Work %s; ~%s free outside it (to 10pm), biggest open stretch ~%s — %s."',
+          '"%s%.0s ~%s free, biggest open stretch ~%s — %s."')],
+    ),
+    Case(
+        "a working day that ends before it starts is accepted, measuring as no work "
+        "at all and handing the whole day back as open time",
+        [("if !workEnd.OnDay(referenceDay).After(workStart.OnDay(referenceDay)) {",
+          "if false && !workEnd.OnDay(referenceDay).After(workStart.OnDay(referenceDay)) {")],
+    ),
+    Case(
+        "an unparseable working day defaults to midnight instead of refusing, so the "
+        "whole day reads as free",
+        [("return dailyTime{}, fmt.Errorf(\"%q is not a 24-hour HH:MM time\", value)",
+          "return dailyTime{}, nil")],
+    ),
+    Case(
+        "the shipped working day drifts off the hours the user actually keeps",
+        [('fs.StringVar(&c.workEnd, "work-end", "16:30",', 'fs.StringVar(&c.workEnd, "work-end", "23:30",')],
+    ),
+    Case(
+        "the nudge caps the day's schedule like a todo bucket, so a busy day hides "
+        "the evening — the part the day-load line is about",
+        [('nudgeScheduleStyle = sectionStyle{HeadingFormat: "\\n%s (%d)\\n", Bullet: "  "}',
+          'nudgeScheduleStyle = sectionStyle{HeadingFormat: "\\n%s (%d)\\n", Bullet: "  ", Limit: nudgeSectionLimit}')],
+    ),
+    Case(
+        "an event already inside work hours is charged again, so a normal working "
+        "Tuesday reads as busier than a day off with the same meeting on it",
+        [("busy = append(busy, clipped)", "busy = append(busy, clipped, clipped)"),
+         ("if !v.start.After(last.end) {", "if false && !v.start.After(last.end) {")],
     ),
     Case(
         "a clear board renders no sections and says nothing about it, so the digest "
