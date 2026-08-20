@@ -1567,7 +1567,13 @@ func TestTheNudgeReadsTheDayAndSaysSoWhenTheCalendarFails(t *testing.T) {
 		t.Fatalf("nudgeOnce: %v", err)
 	}
 	message := herald.sessions[0]
-	for _, want := range []string{"🗓 Today: 2 events", "first at 10am", "biggest open stretch ~2h", "🟡"} {
+	// 8.5h of the 14-hour window is booked, so 5.5h is free and the 10:30–12:00
+	// gap is the biggest open stretch. The free figure is asserted because the
+	// line has two durations in it and they are interchangeable at a glance:
+	// printing booked where it says free makes the fullest day read as the emptiest.
+	for _, want := range []string{
+		"🗓 Today: 2 events", "first at 10am", "~5.5h free", "biggest open stretch ~2h", "🟡",
+	} {
 		if !strings.Contains(message, want) {
 			t.Errorf("schedule line is missing %q:\n%s", want, message)
 		}
