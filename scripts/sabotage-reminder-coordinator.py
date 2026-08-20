@@ -25,13 +25,16 @@ Case-writing rules learned the expensive way, and re-earned here:
     behavioural no-op, or a fake in the test file that swallows the value the
     mutation moved. Both appear below, named, with expected_unnoticed set.
 
-Score: 69/75, exit 0 — 69 real mechanisms caught and six cases carrying an
-`expected_unnoticed`. Cross-table taken 2026-08-10 (`--crosstable`): every one
+Score: 78/84, exit 0 — 78 real mechanisms caught and six cases carrying an
+`expected_unnoticed`. Was 69/75 until the nudge stopped being three counts and
+started naming the work; the nine cases at the end of the list are that change's
+mechanisms, and one of them (booked hours printed where the line says free) was
+UNNOTICED on its first run and is pinned now. Cross-table taken 2026-08-10 (`--crosstable`): every one
 of the 32 tests then present is reddened by at least one case, so this binary has
 no silent column and needs no `unreddened` declaration. Do not re-derive it;
 re-run the mode instead. ⚠️ The 196th pass added 15 tests and did NOT re-take the
-cross-table, so those 15 columns are unmeasured — re-run `--crosstable` before
-claiming this file has none.
+cross-table, and the nudge pass added 6 more, so 21 columns are unmeasured —
+re-run `--crosstable` before claiming this file has none.
 
 The jump from 50/57 came from the 196th pass lifting `parseFlags` and
 `newCoordinator` out of `main()`. Two rows that had sat under `expected_unnoticed`
@@ -348,8 +351,8 @@ CASES = [
     Case(
         "the Overdue heading is rendered from the due-today bucket, so today's work "
         "reads as late and the genuinely overdue items are never shown",
-        [('section("⏰ Overdue", board.Overdue, func(item *model.Item) string {',
-          'section("⏰ Overdue", board.DueToday, func(item *model.Item) string {')],
+        [("renderSection(&out, digestStyle, headingOverdue, board.Overdue, c.labelWithLateness)",
+          "renderSection(&out, digestStyle, headingOverdue, board.DueToday, c.labelWithLateness)")],
     ),
     Case(
         "dateOf rolls the day forward, so \"today\" is tomorrow everywhere at once — "
@@ -611,6 +614,61 @@ CASES = [
                            "410 that is no longer treated as already-deleted are both invisible. "
                            "Falsified by a test that drives GoogleCalendarMirror at an httptest "
                            "server standing in for the dash proxy.",
+    ),
+
+    # ---- what the herald nudge says, and what it is allowed to leave out ----
+    # The nudge used to be three counts. These pin the four things that make it
+    # worth reading instead: it names the items, it dates them, it says what it
+    # hid, and it says whether the day has room to act.
+    Case(
+        "the nudge lists the overdue bucket without its lateness, so 31 days late "
+        "and 5 days late read alike",
+        [("renderSection(&message, nudgeStyle, headingOverdue, board.Overdue, c.labelWithLateness)",
+          "renderSection(&message, nudgeStyle, headingOverdue, board.Overdue, c.labelWithDueDate)")],
+    ),
+    Case(
+        "a capped section hides the overflow silently, so a message showing 5 of 15 "
+        "overdue items reads as the whole board",
+        [('fmt.Fprintf(out, "%s…and %d more in the note\\n", style.Bullet, dropped)',
+          "_ = dropped")],
+    ),
+    Case(
+        "the cap goes away, so a bad week puts the entire overdue pile in a chat message",
+        [("Bullet: \"  \", Limit: nudgeSectionLimit", "Bullet: \"  \", Limit: 0")],
+    ),
+    Case(
+        "a section heading counts what it SHOWED rather than what the bucket holds, "
+        "so a capped nudge says \"Overdue (5)\" of fifteen",
+        [("fmt.Fprintf(out, style.HeadingFormat, heading, len(items))",
+          "fmt.Fprintf(out, style.HeadingFormat, heading, len(shown))")],
+    ),
+    Case(
+        "the note is capped like the nudge, so the record stops being total",
+        [('digestStyle = sectionStyle{HeadingFormat: "\\n## %s (%d)\\n\\n", Bullet: "- "}',
+          'digestStyle = sectionStyle{HeadingFormat: "\\n## %s (%d)\\n\\n", Bullet: "- ", Limit: nudgeSectionLimit}')],
+    ),
+    Case(
+        "lateness truncates instead of rounding, so five calendar days across the "
+        "spring-forward boundary are 119 hours and report as four",
+        [("return int(math.Round(dateOf(c.Now.In(c.Location)).Sub(due).Hours() / 24))",
+          "return int(dateOf(c.Now.In(c.Location)).Sub(due).Hours() / 24)")],
+    ),
+    Case(
+        "a failed calendar read drops the nudge's schedule line, so a failure to load "
+        "the day is indistinguishable from an empty one",
+        [('return "🗓 Today: couldn\'t load your calendar."', 'return ""')],
+    ),
+    Case(
+        "the nudge reports the day's BOOKED hours where it says free, so the fuller "
+        "the day looks the emptier it reads",
+        [("count, eventNoun, firstEventClause, shape.Icon, roundDuration(shape.Free), roundDuration(shape.BiggestOpen))",
+          "count, eventNoun, firstEventClause, shape.Icon, roundDuration(shape.Booked), roundDuration(shape.BiggestOpen))")],
+    ),
+    Case(
+        "a clear board renders no sections and says nothing about it, so the digest "
+        "arrives looking like a message that failed to build",
+        [("if len(board.Overdue)+len(board.DueToday)+len(board.ThisWeek) == 0 {",
+          "if len(board.Overdue)+len(board.DueToday)+len(board.ThisWeek) < 0 {")],
     ),
 ]
 
