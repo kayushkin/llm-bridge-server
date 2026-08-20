@@ -25,7 +25,7 @@ Case-writing rules learned the expensive way, and re-earned here:
     behavioural no-op, or a fake in the test file that swallows the value the
     mutation moved. Both appear below, named, with expected_unnoticed set.
 
-Score: 86/92, exit 0 — 86 real mechanisms caught and six cases carrying an
+Score: 91/97, exit 0 — 91 real mechanisms caught and six cases carrying an
 `expected_unnoticed`. Was 69/75 until the nudge stopped being three counts and
 started naming the work, then 78/84; the fifteen cases at the end of the list are
 those two passes' mechanisms. One of them (booked hours printed where the line
