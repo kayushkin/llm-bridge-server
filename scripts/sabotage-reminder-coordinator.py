@@ -25,15 +25,15 @@ Case-writing rules learned the expensive way, and re-earned here:
     behavioural no-op, or a fake in the test file that swallows the value the
     mutation moved. Both appear below, named, with expected_unnoticed set.
 
-Score: 78/84, exit 0 — 78 real mechanisms caught and six cases carrying an
+Score: 85/91, exit 0 — 85 real mechanisms caught and six cases carrying an
 `expected_unnoticed`. Was 69/75 until the nudge stopped being three counts and
-started naming the work; the nine cases at the end of the list are that change's
-mechanisms, and one of them (booked hours printed where the line says free) was
-UNNOTICED on its first run and is pinned now. Cross-table taken 2026-08-10 (`--crosstable`): every one
+started naming the work, then 78/84; the fifteen cases at the end of the list are
+those two passes' mechanisms. One of them (booked hours printed where the line
+says free) was UNNOTICED on its first run and is pinned now. Cross-table taken 2026-08-10 (`--crosstable`): every one
 of the 32 tests then present is reddened by at least one case, so this binary has
 no silent column and needs no `unreddened` declaration. Do not re-derive it;
 re-run the mode instead. ⚠️ The 196th pass added 15 tests and did NOT re-take the
-cross-table, and the nudge pass added 6 more, so 21 columns are unmeasured —
+cross-table, and the two nudge passes added 12 more, so 27 columns are unmeasured —
 re-run `--crosstable` before claiming this file has none.
 
 The jump from 50/57 came from the 196th pass lifting `parseFlags` and
