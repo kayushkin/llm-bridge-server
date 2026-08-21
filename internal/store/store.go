@@ -62,20 +62,64 @@ func (s *Store) notifyDeleted(bridgeID string) {
 	}
 }
 
+// busyTimeoutMillisecondsWanted is how long a connection waits for a lock
+// before giving up. Named so the DSN that sets it and the check that proves it
+// took effect cannot drift apart.
+const busyTimeoutMillisecondsWanted = 5000
+
+// dataSourceName builds the sqlite DSN for a database path.
+//
+// busy_timeout MUST be set here rather than with a PRAGMA statement after
+// Open: it is a per-connection setting, and *sql.DB is a pool. A one-shot
+// db.Exec("PRAGMA busy_timeout=5000") reaches only whichever connection the
+// pool happened to hand out, so every other connection keeps SQLite's default
+// of 0 and fails instantly on a lock instead of waiting.
+//
+// _pragma=... is modernc's syntax and it is the only one that works here. The
+// reader pool used to be opened with the mattn/go-sqlite3 spelling,
+// "?_busy_timeout=5000", directly above a comment saying each connection got
+// the setting on open. This driver ignores an unrecognised DSN key without
+// complaint, so that DSN opened cleanly and configured nothing: measured,
+// 0 of 8 pooled reader connections had a busy_timeout above 0. That is why
+// both pools now verify the value after opening rather than trusting the
+// connection string.
+func dataSourceName(dbPath string) string {
+	return fmt.Sprintf("%s?_pragma=busy_timeout(%d)", dbPath, busyTimeoutMillisecondsWanted)
+}
+
+// verifyBusyTimeoutTookEffect proves the DSN was understood by the driver.
+func verifyBusyTimeoutTookEffect(db *sql.DB) error {
+	var busyTimeoutMilliseconds int
+	if err := db.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeoutMilliseconds); err != nil {
+		return fmt.Errorf("read busy_timeout pragma: %w", err)
+	}
+	if busyTimeoutMilliseconds != busyTimeoutMillisecondsWanted {
+		return fmt.Errorf("busy_timeout is %d, want %d: the DSN did not take effect",
+			busyTimeoutMilliseconds, busyTimeoutMillisecondsWanted)
+	}
+	return nil
+}
+
 func New(dbPath string) (*Store, error) {
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
-	d, err := sql.Open("sqlite", dbPath)
+	d, err := sql.Open("sqlite", dataSourceName(dbPath))
 	if err != nil {
 		return nil, err
 	}
 
-	// Enable WAL mode and busy timeout to handle concurrent writes.
-	if _, err := d.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
+	// journal_mode is the one pragma that belongs here rather than in the DSN:
+	// it is a property of the database file, so setting it once is permanent.
+	// busy_timeout is per-connection and lives in dataSourceName.
+	if _, err := d.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		d.Close()
-		return nil, fmt.Errorf("sqlite pragmas: %w", err)
+		return nil, fmt.Errorf("enable WAL: %w", err)
+	}
+	if err := verifyBusyTimeoutTookEffect(d); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("writer pool: %w", err)
 	}
 
 	// Single connection serializes writes through Go's sql pool. Without this,
@@ -87,13 +131,18 @@ func New(dbPath string) (*Store, error) {
 	// writer connection. WAL allows many concurrent readers alongside one
 	// writer; the SetMaxOpenConns(1) limit applies only to the writer.
 	// busy_timeout via DSN so each connection in the pool gets it on open.
-	dbRO, err := sql.Open("sqlite", dbPath+"?_busy_timeout=5000")
+	dbRO, err := sql.Open("sqlite", dataSourceName(dbPath))
 	if err != nil {
 		d.Close()
 		return nil, fmt.Errorf("sqlite open ro: %w", err)
 	}
 	dbRO.SetMaxOpenConns(8)
 	dbRO.SetMaxIdleConns(4)
+	if err := verifyBusyTimeoutTookEffect(dbRO); err != nil {
+		d.Close()
+		dbRO.Close()
+		return nil, fmt.Errorf("reader pool: %w", err)
+	}
 
 	s := &Store{db: d, dbRO: dbRO}
 	if err := s.migrate(); err != nil {
