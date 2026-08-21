@@ -56,7 +56,11 @@ func TestCreateMachineRefusesANameAlreadyInUse(t *testing.T) {
 	if want := "machine name already in use"; !strings.Contains(string(body), want) {
 		t.Errorf("body = %q, want it to contain %q (the Go guard's wording)", body, want)
 	}
-	// The duplicate must not have been stored under a second id.
+	// The duplicate must not have been stored under a second id. This is an
+	// invariant, not a discriminator: it cannot redden under the guard-only
+	// mutation, because the UNIQUE index rejects the insert whether or not the
+	// guard ran. Only deleting the index too would move it, and deleting the
+	// index proves nothing about the test. Stated rather than dressed up.
 	list := doJSON(t, srv, "GET", "/machines", nil)
 	defer list.Body.Close()
 	machines := decodeJSON[[]*msg.Machine](t, list)
@@ -105,7 +109,9 @@ func TestCreateSessionRefusesACallerMintedIDThatAlreadyExists(t *testing.T) {
 	}
 
 	// The first session must be untouched — same row, not overwritten by the
-	// second request's fields.
+	// second request's fields. Same standing as the machine count above: the
+	// PRIMARY KEY blocks the second insert on its own, so this cannot redden
+	// under the guard-only mutation either.
 	sess, err := st.GetSession("br_caller_minted")
 	if err != nil {
 		t.Fatalf("get session: %v", err)
