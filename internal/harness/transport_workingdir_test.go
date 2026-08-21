@@ -12,11 +12,18 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// The three transports each hand the resolved directory to a different thing —
-// a cd in a remote shell command, a field on a spawn message, an env var on a
-// sidecar process — so each needs its own end-to-end check that the session
-// level survives the trip. Testing only the resolver leaves three call sites
-// where the session can be dropped without a single test noticing.
+// The resolved directory is handed to four different things, and this file
+// covers three of them: a cd in a remote shell command (ssh transport), a field
+// on a spawn message (runner transport), and an env var on the OTel sidecar
+// (local transport, pty mode, claudecode only). The fourth is cmd.Dir on the
+// local child itself, pinned next door in startoninstance_workingdir_test.go.
+// Each needs its own end-to-end check that the session level survives the trip:
+// testing only the resolver leaves all four free to drop it without a single
+// test noticing.
+//
+// Not "the three transports", which is what this said and which hid the fourth.
+// The transports are local, ssh and runner; the sidecar is not one of them, and
+// what the local transport does with the directory is the cmd.Dir next door.
 
 // TestSSHRunsTheSessionInItsOwnWorkingDirectory drives the real startSSH
 // against a stand-in ssh binary that records its argument list, so the

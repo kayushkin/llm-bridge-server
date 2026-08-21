@@ -142,11 +142,17 @@ func TestAnswerTextRendersOneQuestionVerbatimAndManyLabelled(t *testing.T) {
 
 // Every path that moves a question has to reach the surfaces showing it.
 //
-// A question can be closed by a turn ending, an ordinary message, the resolve
-// verb, a supersede, or a park draining — five call sites, and any one of them
-// forgetting to announce leaves a card on screen that the server has already
-// closed. So the announcement is fired from the STORE's write paths, not from
-// the handlers, and this test pins that: it never calls a handler.
+// A question can be closed by the answer verb, an ordinary message, the resolve
+// verb, a supersede, or a park draining — five store.ResolveSignal call sites,
+// and any one of them forgetting to announce leaves a card on screen that the
+// server has already closed. So the announcement is fired from the STORE's
+// write paths, not from the handlers, and this test pins that: it never calls a
+// handler.
+//
+// A turn ending is not a sixth, and naming it as one is what used to leave the
+// answer verb off this list: onTurnEnd closes questions by calling
+// supersedeStaleQuestions, which is the same call site an answer supersedes
+// through.
 func TestEverySignalWriteAnnouncesItself(t *testing.T) {
 	srv, st := testServer(t)
 	var announced []string
