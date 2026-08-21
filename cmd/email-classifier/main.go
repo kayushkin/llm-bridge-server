@@ -327,8 +327,8 @@ func run() int {
 		}
 		return degraded.exitCode()
 	}
-	log.Printf("[email] board state: cards=%d filed_emails=%d known_message_ids=%d sender_rules=%d",
-		len(state.Cards), len(state.FiledLocators), len(state.CardsByMessageID), state.routableSenderCount())
+	log.Printf("[email] board state: cards=%d filed_emails=%d known_message_ids=%d",
+		len(state.Cards), len(state.FiledLocators), len(state.CardsByMessageID))
 
 	// Before any mailbox work, and deliberately before the "nothing new to file"
 	// return below. Most ticks file nothing, and deadlines move on those ticks
@@ -354,10 +354,12 @@ func run() int {
 	}
 	log.Printf("[email] unfiled=%d", len(unfiled))
 
-	// Cheap path first: anything a learned sender rule or an existing thread can
-	// place needs neither a message fetch nor a model call.
-	routed, remaining := routeByAffinity(cfg, mc, state, unfiled)
-	log.Printf("[email] routed without model: %d (sender/thread affinity); to model: %d", len(routed), len(remaining))
+	// Message identity first: a second copy of a message already filed, and a
+	// reply to one, belong where that message went. Both are facts stated in the
+	// headers. Everything else is a judgement about what the mail says, and that
+	// is the model's job, not a rule's.
+	routed, remaining := routeByMessageIdentity(mc, state, unfiled)
+	log.Printf("[email] routed by message identity: %d; to model: %d", len(routed), len(remaining))
 
 	applier := &applier{cfg: cfg, kc: kc, state: state, gate: gate}
 	if err := applier.applyDirectRoutes(routed); err != nil {
@@ -533,9 +535,10 @@ type cardState struct {
 	// a card's evidence onto its survivor, and they are already in the board
 	// view, so keeping them costs nothing.
 	AllLinks []kanbanclient.CardLink
-	// Senders is the distinct addresses whose mail lands here, from the learned
-	// sender-affinity links. The strongest signal for "these two cards are the
-	// same bucket".
+	// Senders is the distinct addresses whose mail lands here. Evidence for the
+	// merge pass — two cards fed by the same addresses are candidates for one
+	// bucket — and for the never-actionable domain override. Not a routing rule;
+	// see CardsBySender.
 	Senders []string
 }
 
@@ -553,36 +556,10 @@ type boardState struct {
 	// reply join its parent's card.
 	CardsByMessageID map[string][]string
 	// CardsBySender maps a sender address to the cards its mail has landed on.
+	// Evidence only. It tells the merge pass which cards draw on the same
+	// sources, and it answers the never-actionable domain override. No mail is
+	// routed onto a card because of it: one address is not one topic.
 	CardsBySender map[string][]string
-}
-
-func (s *boardState) routableSenderCount() int {
-	n := 0
-	for sender := range s.CardsBySender {
-		if s.routeForSender(sender) != "" {
-			n++
-		}
-	}
-	return n
-}
-
-// routeForSender returns the card a sender's mail may be auto-filed onto without
-// a model call, or "" when no rule applies.
-//
-// It deliberately only fires for a single unambiguous bucket card in No action.
-// A sender whose mail has landed on two cards is genuinely ambiguous, and a
-// sender whose card needs action is exactly the mail that must not be filed
-// blind — google.com sends both a Play Store receipt and a security alert.
-func (s *boardState) routeForSender(sender string) string {
-	ids := s.CardsBySender[sender]
-	if len(ids) != 1 {
-		return ""
-	}
-	card, ok := s.Cards[ids[0]]
-	if !ok || card.ColumnName != columnNoAction {
-		return ""
-	}
-	return card.ID
 }
 
 func loadBoardState(kc *kanbanclient.Client, boardID string) (*boardState, error) {
@@ -780,35 +757,39 @@ type directRoute struct {
 	Label   string
 }
 
-// routeByAffinity applies the two cheap placements and returns what is left for
-// the model. Sender affinity is checked before any message fetch, so bulk mail
-// costs nothing beyond the page listing that surfaced it.
-func routeByAffinity(cfg config, mc *mailClient, state *boardState, emails []pendingEmail) ([]directRoute, []pendingEmail) {
+// routeByMessageIdentity places the mail whose card is settled by its RFC 5322
+// headers rather than by what it says: a second copy of a message already filed,
+// and a reply to one. Everything it cannot place that way is returned for the
+// model to read.
+//
+// There was a third and cheaper path here, and it was wrong. A learned rule sent
+// a sender's mail to whichever bucket card their previous message landed on,
+// without fetching the message or reading a word of it. One address is not one
+// topic: wellsfargoonline@mail1.wellsfargo.com sends a marketing blast and an
+// address-change alert from the same mailbox, and the rule filed both onto
+// "Wells Fargo Deals eligibility update" unread. The rule also grew, because
+// every bucket filing taught another one — by the tenth day the board carried
+// 103 of them and roughly seven of every eight messages reached a card without
+// being classified at all.
+//
+// Dropping it costs one message fetch and a share of a batched model call per
+// email, on a mailbox taking about thirty a day. It buys two things: every
+// message is read before it is filed, and every message now has its Message-ID
+// recorded. That second one matters here — the two paths below run on
+// Message-IDs, and the sender rule was starving them by filing mail it never
+// fetched, leaving 228 identities recorded against 645 filed messages.
+func routeByMessageIdentity(mc *mailClient, state *boardState, emails []pendingEmail) ([]directRoute, []pendingEmail) {
 	var routed []directRoute
 	var remaining []pendingEmail
 
-	for _, em := range emails {
-		if cardID := state.routeForSender(senderKey(em.Meta.From)); cardID != "" {
-			routed = append(routed, directRoute{
-				Email:   em,
-				CardIDs: []string{cardID},
-				Reason:  "sender affinity",
-				Label:   emailLinkLabel(em.Meta, ""),
-			})
-			continue
-		}
-		remaining = append(remaining, em)
-	}
-
-	// Everything past this point needs the message itself — for Message-ID, for
-	// the reply chain, and for the body the model reads.
-	var stillRemaining []pendingEmail
-	for i := range remaining {
-		em := remaining[i]
+	// Every path from here needs the message itself — for Message-ID, for the
+	// reply chain, and for the body the model reads.
+	for i := range emails {
+		em := emails[i]
 		full, err := mc.getMessage(em.Meta.AccountID, em.Meta.ID)
 		if err != nil {
 			log.Printf("[email] fetch %s: %v — filing on headers alone", em.Locator, err)
-			stillRemaining = append(stillRemaining, em)
+			remaining = append(remaining, em)
 			continue
 		}
 		em.Full = full
@@ -837,9 +818,9 @@ func routeByAffinity(cfg config, mc *mailClient, state *boardState, emails []pen
 			})
 			continue
 		}
-		stillRemaining = append(stillRemaining, em)
+		remaining = append(remaining, em)
 	}
-	return routed, stillRemaining
+	return routed, remaining
 }
 
 // threadCards returns the cards holding any message this one references.
@@ -952,8 +933,8 @@ func collapseWhitespace(s string) string {
 // The plain-text part is preferred, but it is not always the richer one: senders
 // that build HTML-first mail often ship a text part that is a single "view this
 // in your browser" line, so an HTML part with substantially more prose after
-// cleaning wins. The snippet is the floor, used when the message was never
-// fetched — which is every message routed by sender affinity.
+// cleaning wins. The snippet is the floor, used when the message could not be
+// fetched at all and is being filed on its headers alone.
 func bestBodyText(em pendingEmail) string {
 	if em.Full == nil {
 		return cleanBodyText(em.Meta.Snippet)

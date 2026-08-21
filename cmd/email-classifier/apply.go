@@ -78,8 +78,8 @@ func (a *applier) linkEmail(cardIDs []string, em pendingEmail, label string) err
 
 		// The RFC 5322 identity is stored as its own link so a copy of this
 		// message arriving in another account, or a reply quoting it, resolves
-		// to this card without a model call. Absent when the message was routed
-		// without ever being fetched, which is the common bulk-mail case.
+		// to this card without a model call. Absent only when the provider fetch
+		// failed and the message was filed on its headers alone.
 		if em.MessageID != "" && !containsString(a.state.CardsByMessageID[em.MessageID], cardID) {
 			if err := a.kc.AddCardLink(cardID, linkTypeEmailMessageID, em.MessageID, ""); err != nil {
 				// Losing the durable identity costs future dedup, not this
@@ -90,10 +90,14 @@ func (a *applier) linkEmail(cardIDs []string, em pendingEmail, label string) err
 			}
 		}
 
-		// Teach the sender rule, but only for buckets. Recording an affinity to
-		// a card that needs action would let the next message from that sender
-		// skip the model, and "another email from eBay" is not reliably the same
-		// task as the last one.
+		// Record which addresses feed this card. This is evidence, not a routing
+		// rule: it tells the merge pass which cards draw on the same sources and
+		// it answers the never-actionable domain override. No mail is filed onto
+		// a card because an earlier message from that address landed there —
+		// that rule existed here, and one address is not one topic.
+		//
+		// Kept to buckets because that is where the merge pass looks. A task
+		// card's sender says nothing about the next task.
 		if card.ColumnName == columnNoAction {
 			sender := senderKey(em.Meta.From)
 			if sender != "" && !containsString(a.state.CardsBySender[sender], cardID) {

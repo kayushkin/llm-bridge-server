@@ -87,9 +87,9 @@ func TestBestBodyTextPrefersHTMLWhenThePlainPartIsAStub(t *testing.T) {
 	}
 }
 
-func TestBestBodyTextFallsBackToTheSnippetWhenTheMessageWasNeverFetched(t *testing.T) {
-	// Every message routed by sender affinity takes this path: it is filed
-	// without a provider round trip, so Full is nil by design.
+func TestBestBodyTextFallsBackToTheSnippetWhenTheMessageCouldNotBeFetched(t *testing.T) {
+	// A message whose provider fetch failed reaches the model on its headers
+	// alone, so Full is nil and the snippet is all there is to read.
 	em := pendingEmail{Meta: messageMeta{Snippet: "Your daily digest is ready &amp; waiting"}}
 	if got, want := bestBodyText(em), "Your daily digest is ready & waiting"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
