@@ -600,3 +600,141 @@ func TestSessionSummaryFilterKeepsTheLookupOutOfTheChipAxes(t *testing.T) {
 		t.Error("the same id set in a different order builds two cache keys")
 	}
 }
+
+// TestListSessionSummariesByManagerSessionIDs pins the PARENT lookup: give it
+// parents, get their children, whatever their position in the recency order.
+//
+// The point is the same reachability the id lookup above exists for, and the
+// numbers are why it cannot be done client-side. On this host 1,325 subagent
+// sessions hang off 435 parents, one of them with 106 children — and a child is
+// ordered by its OWN updated_at, not its parent's, so a sidebar that grouped
+// only the children on its loaded page would show four of that 106 and say
+// nothing about the other 102.
+//
+// Several parents in one call is deliberate: the sidebar asks about a whole page
+// of rows in ONE request. That is also what lets it know WHICH rows have
+// children at all, without a count column existing anywhere.
+func TestListSessionSummariesByManagerSessionIDs(t *testing.T) {
+	s := testStore(t)
+	for _, id := range []string{"br_parent", "br_other_parent", "br_unrelated"} {
+		if err := s.CreateSession(&Session{SessionID: id, Harness: "claude_code", State: "idle", DisplayName: "name " + id}); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	children := map[string]string{
+		"br_kid_1": "br_parent",
+		"br_kid_2": "br_parent",
+		"br_kid_3": "br_other_parent",
+	}
+	for id, parent := range children {
+		if err := s.CreateSession(&Session{
+			SessionID: id, Harness: "claude_code", State: "idle",
+			DisplayName: "name " + id, ManagerSessionID: parent,
+		}); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+
+	got, err := s.ListSessionSummaries(100, "", SessionSummaryFilter{
+		ManagerSessionIDs: []string{"br_parent"},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want br_parent's 2 children", len(got))
+	}
+	for _, row := range got {
+		if row.ManagerSessionID != "br_parent" {
+			t.Errorf("row %s has manager %q, want br_parent", row.SessionID, row.ManagerSessionID)
+		}
+	}
+
+	// Two parents at once — the sidebar's real shape.
+	got, err = s.ListSessionSummaries(100, "", SessionSummaryFilter{
+		ManagerSessionIDs: []string{"br_parent", "br_other_parent"},
+	})
+	if err != nil {
+		t.Fatalf("list two parents: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d rows across two parents, want 3", len(got))
+	}
+
+	// A parent with no children is an empty answer, never every session. This is
+	// the case that would silently become "here is the whole box" if the lookup
+	// were dropped when it matched nothing.
+	got, err = s.ListSessionSummaries(100, "", SessionSummaryFilter{
+		ManagerSessionIDs: []string{"br_unrelated"},
+	})
+	if err != nil {
+		t.Fatalf("list childless: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d rows for a session that spawned nothing, want 0", len(got))
+	}
+}
+
+// TestSessionSummaryRowCarriesManagerSessionID pins the field on the PROJECTION,
+// which is the half that was missing.
+//
+// `manager_session_id` has always been on the full session record, so
+// `GET /sessions/{id}` and every SSE upsert carried it. The paged list did not,
+// and the sidebar reads only the list — so it could not tell a parent from a
+// child however many rows it loaded. A test that only exercised the lookup above
+// would still pass with the column absent from the projection, because the
+// filter reads the table directly.
+func TestSessionSummaryRowCarriesManagerSessionID(t *testing.T) {
+	s := testStore(t)
+	if err := s.CreateSession(&Session{SessionID: "br_top", Harness: "claude_code", State: "idle", DisplayName: "top"}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if err := s.CreateSession(&Session{
+		SessionID: "br_child", Harness: "claude_code", State: "idle",
+		DisplayName: "child", ManagerSessionID: "br_top",
+	}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	rows, err := s.ListSessionSummaries(100, "", SessionSummaryFilter{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	byID := map[string]SessionSummaryRow{}
+	for _, r := range rows {
+		byID[r.SessionID] = r
+	}
+	if got := byID["br_child"].ManagerSessionID; got != "br_top" {
+		t.Errorf("child's ManagerSessionID = %q, want br_top", got)
+	}
+	// Empty, never a placeholder: a top-level session HAS no parent, and
+	// inventing one would make every root look like somebody's child.
+	if got := byID["br_top"].ManagerSessionID; got != "" {
+		t.Errorf("top-level ManagerSessionID = %q, want empty", got)
+	}
+}
+
+// TestManagerLookupRidesTheCacheKey pins the cache key. Two requests differing
+// only by which parent they ask about share a revision, a limit and a cursor, so
+// without the key one parent's children would be served as another's — a wrong
+// answer that looks exactly like a right one.
+func TestManagerLookupRidesTheCacheKey(t *testing.T) {
+	a := SessionSummaryFilter{ManagerSessionIDs: []string{"br_parent"}}
+	b := SessionSummaryFilter{ManagerSessionIDs: []string{"br_other"}}
+	if a.CacheKey() == b.CacheKey() {
+		t.Fatal("two different parents produced the same cache key")
+	}
+	if (SessionSummaryFilter{}).CacheKey() == a.CacheKey() {
+		t.Fatal("a parent lookup keyed the same as no lookup at all")
+	}
+	// Order must not matter — the sidebar builds this list from a page whose
+	// order is its own business.
+	if (SessionSummaryFilter{ManagerSessionIDs: []string{"a", "b"}}).CacheKey() !=
+		(SessionSummaryFilter{ManagerSessionIDs: []string{"b", "a"}}).CacheKey() {
+		t.Fatal("cache key depends on the order the parents were listed in")
+	}
+	// And a parent lookup is not "unfiltered".
+	if (SessionSummaryFilter{ManagerSessionIDs: []string{"br_parent"}}).IsEmpty() {
+		t.Fatal("a parent lookup reported itself as constraining nothing")
+	}
+}
