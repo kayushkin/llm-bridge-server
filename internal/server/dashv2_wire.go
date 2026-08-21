@@ -25,8 +25,13 @@ type SessionSummary struct {
 	FolderName  string `json:"folderName"`
 	DisplayName string `json:"displayName"`
 	AgentID     string `json:"agentId"`
-	UpdatedAt   string `json:"updatedAt"`
-	CreatedAt   string `json:"createdAt"`
+	// ManagerSessionID is the bridge session id of the session that spawned this
+	// one; empty for a top-level session. Named exactly as chat-core's
+	// SessionSummary already declares it (`managerSessionId`), which the SSE
+	// upsert path has always carried — this list is what was missing it.
+	ManagerSessionID string `json:"managerSessionId"`
+	UpdatedAt        string `json:"updatedAt"`
+	CreatedAt        string `json:"createdAt"`
 }
 
 // SummaryResponse is the /sessions/summary wire shape. Next is null when there
@@ -69,6 +74,8 @@ func summaryFromRow(r store.SessionSummaryRow) SessionSummary {
 		AgentID:     r.AgentID,
 		UpdatedAt:   formatWireTime(r.UpdatedAt),
 		CreatedAt:   formatWireTime(r.CreatedAt),
+
+		ManagerSessionID: r.ManagerSessionID,
 	}
 }
 

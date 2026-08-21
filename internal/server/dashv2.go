@@ -45,12 +45,19 @@ func (s *Server) handleSessionsSummary(w http.ResponseWriter, r *http.Request) {
 		Modes:       query["mode"],
 		InstanceIDs: query["machine"],
 	}
-	sessionIDs, err := summarySessionIDsFromQuery(query)
+	sessionIDs, err := summaryIDLookupFromQuery(query, "session_id")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	filter.SessionIDs = sessionIDs
+
+	managerSessionIDs, err := summaryIDLookupFromQuery(query, "manager_session_id")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filter.ManagerSessionIDs = managerSessionIDs
 
 	revision, err := s.store.MaxSessionUpdatedAt()
 	if err != nil {
@@ -242,16 +249,22 @@ func etagFor(revision string) string {
 	return `"` + revision + `"`
 }
 
-// summarySessionIDsFromQuery reads the `session_id` lookup off a summary
+// summaryIDLookupFromQuery reads one repeated id parameter off a summary
 // request. Repeatable (?session_id=a&session_id=b) and comma-separated
 // (?session_id=a,b) both work, because a caller assembling a list of ids from
 // somewhere else should not have to care which shape this endpoint prefers.
 //
-// This is a LOOKUP, not a filter chip: it answers "what are these sessions
-// called?" for a caller that already holds the ids. dashv2's signals inbox is
-// the first — it lists open signals across every session, and on this host 11
-// of the 17 sessions holding one are nowhere near the sidebar's first page, so
-// their cards would otherwise be headed by a raw br_1786635575897138112.
+// Both callers are LOOKUPS, not filter chips — see SessionSummaryFilter, which
+// keeps them off axes() for that reason:
+//
+//   - `session_id` answers "what are these sessions called?" for a caller that
+//     already holds the ids. dashv2's signals inbox is the first — it lists open
+//     signals across every session, and on this host 11 of the 17 sessions
+//     holding one are nowhere near the sidebar's first page, so their cards
+//     would otherwise be headed by a raw br_1786635575897138112.
+//   - `manager_session_id` answers "what did these sessions spawn?". A parent's
+//     children are ordered by their own recency rather than the parent's, so
+//     they are unreachable by paging toward the parent.
 //
 // PRESENT BUT EMPTY IS A 400, not "don't narrow". `?session_id=` with nothing
 // after it comes from a caller that meant to name sessions and assembled an
@@ -264,8 +277,8 @@ func etagFor(revision string) string {
 // Blank entries WITHIN a list are dropped rather than refused (`a,,b` is a and
 // b): a trailing comma is a formatting slip, not a caller asking for everything,
 // and it cannot widen the result — an empty id matches no row.
-func summarySessionIDsFromQuery(query url.Values) ([]string, error) {
-	raw, ok := query["session_id"]
+func summaryIDLookupFromQuery(query url.Values, parameter string) ([]string, error) {
+	raw, ok := query[parameter]
 	if !ok {
 		return nil, nil
 	}
@@ -278,7 +291,7 @@ func summarySessionIDsFromQuery(query url.Values) ([]string, error) {
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("session_id was given but named no session; omit it to list every session")
+		return nil, fmt.Errorf("%s was given but named no session; omit it to list every session", parameter)
 	}
 	return out, nil
 }

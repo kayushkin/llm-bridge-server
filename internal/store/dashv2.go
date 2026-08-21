@@ -29,6 +29,18 @@ type SessionSummaryRow struct {
 	UpdatedAt   time.Time
 	CreatedAt   time.Time
 	Cursor      string
+
+	// ManagerSessionID is the BRIDGE session id of the session that spawned this
+	// one, empty for a top-level session. It is the store's own parent pointer —
+	// set by the subagent promoter (internal/harness/subagent.go) — and nothing
+	// derives or invents it here.
+	//
+	// It was absent from this projection while being present on the full session
+	// record, so `GET /sessions/{id}` and every SSE upsert carried it and the
+	// paged LIST did not. The sidebar reads only the list, so it could not tell a
+	// parent from a child at all: 1,325 subagent sessions across 435 parents sat
+	// in it as unrelated rows.
+	ManagerSessionID string
 }
 
 // summarySessionIDExpression is the projected session id: session_id falling
@@ -45,7 +57,7 @@ const summarySessionIDExpression = `COALESCE(NULLIF(session_id, ''), bridge_id)`
 // summaryColumns are the projected columns, in scan order. The raw updated_at is
 // selected a second time (as text) as the timestamp half of the cursor; the id
 // half is the already-projected session id, assembled in Go.
-const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), updated_at, created_at, CAST(updated_at AS TEXT)`
+const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), updated_at, created_at, COALESCE(manager_session_id, ''), CAST(updated_at AS TEXT)`
 
 // SessionSummaryFilter narrows ListSessionSummaries to the rows matching every
 // non-empty axis. An empty axis constrains nothing, and the values within one
@@ -77,6 +89,21 @@ type SessionSummaryFilter struct {
 	// would make "the filter constrains nothing" false for a request that
 	// constrains it to one row.
 	SessionIDs []string
+
+	// ManagerSessionIDs names the PARENTS whose children are wanted, and like
+	// SessionIDs above it is a LOOKUP rather than a chip axis: "what did these
+	// sessions spawn?".
+	//
+	// It cannot be answered by paging. A parent's children are ordered by their
+	// own recency, not the parent's, so a session that spawned 106 subagents last
+	// week has them scattered thousands of rows deep in a listing the sidebar
+	// reads one page of. Grouping only the children that happen to be on the
+	// loaded page would show four of the 106 and say nothing about the rest.
+	//
+	// Several parents at once, deliberately: the sidebar asks about a whole page
+	// of rows in ONE request rather than one request per row, which is also what
+	// lets it know WHICH rows have children without a count column existing.
+	ManagerSessionIDs []string
 }
 
 // summaryFilterAxis pairs one filterable column expression with the values a row
@@ -107,7 +134,7 @@ func (f SessionSummaryFilter) axes() []summaryFilterAxis {
 // IsEmpty reports whether the filter constrains nothing, so a caller can tell an
 // unfiltered listing from a filtered one without reaching into the axes.
 func (f SessionSummaryFilter) IsEmpty() bool {
-	if len(f.SessionIDs) > 0 {
+	if len(f.SessionIDs) > 0 || len(f.ManagerSessionIDs) > 0 {
 		return false
 	}
 	for _, axis := range f.axes() {
@@ -141,6 +168,13 @@ func (f SessionSummaryFilter) CacheKey() string {
 	ids := append([]string(nil), f.SessionIDs...)
 	sort.Strings(ids)
 	b.WriteString(strings.Join(ids, ","))
+	b.WriteByte(';')
+	// Same reasoning as the lookup above: a page of one parent's children served
+	// to a request about a different parent is a wrong answer that looks right.
+	b.WriteString("manager_session_ids=")
+	managers := append([]string(nil), f.ManagerSessionIDs...)
+	sort.Strings(managers)
+	b.WriteString(strings.Join(managers, ","))
 	b.WriteByte(';')
 	return b.String()
 }
@@ -244,6 +278,17 @@ func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSum
 			args = append(args, v)
 		}
 	}
+	// The parent pointer is stored as the parent's BRIDGE session id (see
+	// internal/store/subagent_test.go, which pins exactly that), so this compares
+	// the raw column against the ids the caller holds — which are themselves
+	// projected session ids. No COALESCE fallback to bridge_id is wanted here:
+	// the promoter writes one id into this column and it is the same id space.
+	if len(filter.ManagerSessionIDs) > 0 {
+		conds = append(conds, `COALESCE(manager_session_id, '') IN (`+sqlPlaceholders(len(filter.ManagerSessionIDs))+`)`)
+		for _, v := range filter.ManagerSessionIDs {
+			args = append(args, v)
+		}
+	}
 	if len(conds) > 0 {
 		q += ` WHERE ` + strings.Join(conds, ` AND `)
 	}
@@ -261,7 +306,8 @@ func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSum
 		var updatedAtText string
 		if err := rows.Scan(
 			&r.SessionID, &r.State, &r.Harness, &r.InstanceID, &r.Type, &r.Purpose,
-			&r.Mode, &r.FolderName, &r.DisplayName, &r.AgentID, &r.UpdatedAt, &r.CreatedAt, &updatedAtText,
+			&r.Mode, &r.FolderName, &r.DisplayName, &r.AgentID, &r.UpdatedAt, &r.CreatedAt,
+			&r.ManagerSessionID, &updatedAtText,
 		); err != nil {
 			return nil, err
 		}

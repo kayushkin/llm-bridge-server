@@ -26,6 +26,28 @@ func seedSession(t *testing.T, st *store.Store, id string) {
 	}
 }
 
+// seedSubagentSession seeds a session that another session spawned. The parent
+// pointer is set at CREATE because the store has no generic session update — the
+// promoter writes it on insert too (internal/harness/subagent.go).
+func seedSubagentSession(t *testing.T, st *store.Store, id, parentID string) {
+	t.Helper()
+	sess := &store.Session{
+		SessionID:        id,
+		DisplayName:      "disp-" + id,
+		Harness:          "claude_code",
+		InstanceID:       "inst-1",
+		State:            "idle",
+		AgentID:          "agent-1",
+		Purpose:          "subagent",
+		Type:             msg.SessionType("system"),
+		Mode:             msg.SessionModeEvents,
+		ManagerSessionID: parentID,
+	}
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatalf("seed subagent %s: %v", id, err)
+	}
+}
+
 // The summary endpoint returns the projected list, a revision, an ETag header,
 // and honors If-None-Match with a 304.
 func TestHandleSessionsSummary_ETagAnd304(t *testing.T) {
@@ -181,5 +203,72 @@ func TestHandleSessionsSummary_SessionIDLookup(t *testing.T) {
 	}
 	if got := len(decodeJSON[SummaryResponse](t, resp).Sessions); got != 3 {
 		t.Errorf("unfiltered listing returned %d sessions, want 3", got)
+	}
+}
+
+// The PARENT lookup over HTTP: name parents, get their children, and get the
+// parent pointer back on every row.
+//
+// Two halves, and the second is the one that was actually missing.
+// `manager_session_id` has always been on the full session record, so
+// `GET /sessions/{id}` and every SSE upsert carried it — the paged LIST did not.
+// The sidebar reads only the list, so it could not tell a parent from a child
+// however many rows it loaded, and the 1,325 subagent sessions on this host sat
+// in it as unrelated rows.
+func TestHandleSessionsSummary_ManagerSessionIDLookup(t *testing.T) {
+	srv, st := testServer(t)
+	seedSession(t, st, "parent")
+	seedSession(t, st, "other")
+	seedSubagentSession(t, st, "kid1", "parent")
+	seedSubagentSession(t, st, "kid2", "parent")
+	seedSubagentSession(t, st, "kid3", "other")
+
+	// Repeated and comma-separated name the same parents — the sidebar asks
+	// about a whole page of rows in one request.
+	for _, query := range []string{
+		"/sessions/summary?manager_session_id=parent&manager_session_id=other",
+		"/sessions/summary?manager_session_id=parent,other",
+	} {
+		resp := doJSON(t, srv, "GET", query, nil)
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s: status = %d", query, resp.StatusCode)
+		}
+		body := decodeJSON[SummaryResponse](t, resp)
+		if len(body.Sessions) != 3 {
+			t.Fatalf("%s: got %d sessions, want the 3 children", query, len(body.Sessions))
+		}
+		for _, s := range body.Sessions {
+			if s.ManagerSessionID == "" {
+				t.Errorf("%s: child %s came back with no parent id", query, s.SessionID)
+			}
+		}
+	}
+
+	// The projection carries it on an UNFILTERED listing too, which is how the
+	// sidebar learns it at all. A test that only exercised the lookup above would
+	// pass with the column missing from the projection.
+	resp := doJSON(t, srv, "GET", "/sessions/summary?limit=100", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("unfiltered: status = %d", resp.StatusCode)
+	}
+	body := decodeJSON[SummaryResponse](t, resp)
+	seen := map[string]string{}
+	for _, s := range body.Sessions {
+		seen[s.SessionID] = s.ManagerSessionID
+	}
+	if seen["kid1"] != "parent" {
+		t.Errorf("unfiltered listing gave kid1 parent %q, want parent", seen["kid1"])
+	}
+	// Empty, never a placeholder: a top-level session HAS no parent.
+	if seen["parent"] != "" {
+		t.Errorf("top-level session reported parent %q, want empty", seen["parent"])
+	}
+
+	// Present but empty is refused, the same trap and the same answer as the id
+	// lookup: treating it as "don't narrow" would answer "what did this session
+	// spawn?" with the newest hundred sessions on the box.
+	resp = doJSON(t, srv, "GET", "/sessions/summary?manager_session_id=", nil)
+	if resp.StatusCode != 400 {
+		t.Fatalf("empty manager_session_id: status = %d, want 400", resp.StatusCode)
 	}
 }
