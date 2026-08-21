@@ -1,5 +1,21 @@
 # Plan: switch CC permission gating from MCP to PreToolUse hook
 
+Status: **shipped**. All six migration steps below have landed. Measured against
+`main` in each repo on 2026-08-21:
+
+| step | evidence |
+|---|---|
+| 1-2. bridge-server prehook endpoint + registered `PreToolUse` hook | `llm-bridge-server/internal/server/permission_prehook.go`; the settings builder writes the gate's URL at `internal/server/hook_settings.go:211` |
+| 3-4. claudecode drops `--permission-prompt-tool` and the MCP code | `llm-bridge-claudecode/process.go:83` says the flag is no longer wired, and none of `ensurePermissionMCP`, `SetBypassPermissionsParams`, `ResolveHookParams`, `PermissionMCP`, `handleResolveHook` or `handleSetBypassPermissions` is declared anywhere in that repo |
+| 5-6. fallback dropped, bridge-ui cleaned | `llm-bridge-claudecode/DESIGN.md:543` states the end state: no `bridge_perm` MCP, no `resolve_hook` JSON-RPC method, no `--permission-prompt-tool` / `--mcp-config` for permissions |
+
+⚠️ **The header carried no status at all until 2026-08-21**, so a document whose
+last three sections are *"Migration steps, in shippable order"*, *"Open questions to
+resolve before step 1"* and *"Estimated effort"* read as work waiting to start.
+Everything below is kept as written and is now a record of what was done, not a
+proposal: the names in **Code to remove** are named in order to be deleted, and they
+are deleted.
+
 This document plans the migration described in `cc-mcp-retrospective.md`.
 The approval flow moves from the embedded `bridge_perm` MCP to a
 PreToolUse hook configured via `--settings`. `permission-store` and
