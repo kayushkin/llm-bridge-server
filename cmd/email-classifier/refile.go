@@ -169,8 +169,13 @@ func runRefileUnreadPass(cfg config, kc *kanbanclient.Client, state *boardState,
 		return fmt.Errorf("rewrite card bodies: %w", err)
 	}
 	reportEmptiedCards(state, byCard)
-	log.Printf("[refile] unfiled %d message(s) from %d card(s); the next ticks will classify them",
-		unfiled, len(byCard))
+	log.Printf("[refile] unfiled %d message(s) from %d card(s)", unfiled, len(byCard))
+	// An ordinary tick stops walking at the first page where everything is
+	// already filed, so mail unfiled from further back than that page reaches is
+	// invisible to it and would sit off the board indefinitely. Measured: of 124
+	// messages unfiled over five days, three were on a deeper page and only a
+	// backfill walk found them.
+	log.Printf("[refile] drain with `email-classifier -backfill` — a plain tick stops at the first fully-filed page and will miss anything older than it")
 	return nil
 }
 
