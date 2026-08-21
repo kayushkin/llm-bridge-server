@@ -159,7 +159,7 @@ const (
 
 // environmentLookup has os.Getenv's shape. Taking it as an argument rather than
 // calling os.Getenv directly is what lets a test state which variables were set
-// without setting them: eight of the seventeen flag defaults below are read at
+// without setting them: eight of the eighteen flag defaults below are read at
 // flag-registration time, so a test that exported MAILSTACK_URL to observe it
 // would be racing every other test in this package for one process-wide
 // variable. This package has more of those than any of its siblings.
@@ -169,11 +169,12 @@ type environmentLookup func(key string) string
 //
 // The flag set lives here rather than in main() so that a test can reach the
 // defaults. Registered inside main() they were unreachable — nothing in a test
-// can call main() — so the seventeen values this binary actually starts with had
+// can call main() — so the eighteen values this binary actually starts with had
 // never been read by anything.
 //
-// Four of those seventeen are early-exit mode switches (-register, -merge,
-// -backfill-due, -dump-digest) and a fifth (-dry-run) neuters the writes. Any
+// Five of those eighteen are early-exit mode switches (-register, -merge,
+// -backfill-due, -refile-unread-since, -dump-digest) and a sixth (-dry-run)
+// neuters the writes. Any
 // one of them shipping ON leaves a tick that reads the board, reports success
 // and files no mail — which from outside is indistinguishable from a quiet
 // mailbox. The two that decide spend are -model, which picks which model reads
@@ -208,6 +209,7 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	fs.BoolVar(&c.Backfill, "backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
 	fs.BoolVar(&c.MergePass, "merge", false, "Run the card-merge pass over the board and exit, filing no new mail.")
 	fs.BoolVar(&c.BackfillDue, "backfill-due", false, "Recover deadlines from existing card summaries into due_at, re-score, and exit. One-off: cards filed after this store their own date.")
+	fs.StringVar(&c.RefileUnreadSince, "refile-unread-since", "", "Unfile mail attached on or after this date (YYYY-MM-DD) that was never fetched or read, and exit. The next ticks classify it. Empty means off.")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -327,6 +329,19 @@ func run() int {
 		}
 		return degraded.exitCode()
 	}
+	if cfg.RefileUnreadSince != "" {
+		// This one does read the mailbox — it has to fetch each message to find
+		// out whether the card holding it ever saw it — but it files nothing, so
+		// it exits here with the other passes rather than falling through.
+		since, err := time.Parse("2006-01-02", cfg.RefileUnreadSince)
+		if err != nil {
+			log.Fatalf("-refile-unread-since %q: want YYYY-MM-DD: %v", cfg.RefileUnreadSince, err)
+		}
+		if err := runRefileUnreadPass(cfg, kc, state, gate, since); err != nil {
+			log.Fatalf("refile: %v", err)
+		}
+		return degraded.exitCode()
+	}
 	log.Printf("[email] board state: cards=%d filed_emails=%d known_message_ids=%d",
 		len(state.Cards), len(state.FiledLocators), len(state.CardsByMessageID))
 
@@ -426,7 +441,7 @@ func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *board
 	classifyAndApply(ctx, cfg, ap, state, batch[mid:], degraded)
 }
 
-// config is every value this command is configured with: the seventeen flags,
+// config is every value this command is configured with: the eighteen flags,
 // plus the two pieces of wiring that used to be read from the environment
 // inside registerSchedulerJob, plus the resolved API key.
 //
@@ -437,7 +452,7 @@ func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *board
 // by nothing else. Registering each flag directly into its own named field, and
 // giving a test a distinct value per variable, is what makes a swap fail.
 type config struct {
-	// The seventeen flags.
+	// The eighteen flags.
 	RegisterJob  bool
 	DryRun       bool
 	DumpDigest   bool
@@ -455,6 +470,11 @@ type config struct {
 	Backfill     bool
 	MergePass    bool
 	BackfillDue  bool
+	// RefileUnreadSince is a YYYY-MM-DD date, empty when off. A string rather
+	// than a time.Time because it is a flag value: an unparseable date must be
+	// refused by name at startup, not silently become the zero time, which would
+	// sweep the entire history of the board.
+	RefileUnreadSince string
 
 	// The wiring: where -register posts, and what it registers.
 	SchedulerURL string

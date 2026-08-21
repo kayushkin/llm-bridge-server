@@ -322,6 +322,11 @@ type CardLink struct {
 	EntityType string `json:"entity_type"`
 	EntityRef  string `json:"entity_ref"`
 	Label      string `json:"label"`
+	// CreatedAt is when the link was attached, which for an email link is when
+	// the classifier filed that message. kanban-store has always sent it; this
+	// struct used to drop it on the floor, and a caller that wanted to ask "what
+	// did we file since Tuesday" had no way to.
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // AddCardLink attaches a typed pointer to an external entity.

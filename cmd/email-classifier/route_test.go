@@ -13,6 +13,8 @@ import (
 type messageFixture struct {
 	MessageID string
 	InReplyTo string
+	Subject   string
+	Sender    string
 }
 
 // fakeMailstack serves just the single-message route, which is all
@@ -31,7 +33,11 @@ func fakeMailstack(t *testing.T, fixtures map[string]messageFixture) *httptest.S
 			headers["In-Reply-To"] = "<" + fixture.InReplyTo + ">"
 		}
 		json.NewEncoder(w).Encode(fullMessage{
-			Meta:     messageMeta{ID: id},
+			Meta: messageMeta{
+				ID:      id,
+				Subject: fixture.Subject,
+				From:    mailAddress{Email: fixture.Sender},
+			},
 			BodyText: "body",
 			Headers:  headers,
 		})
