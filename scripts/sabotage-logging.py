@@ -29,6 +29,39 @@ Case-writing rules re-earned here:
   - Move a boundary to a different VALUE rather than deleting the guard. A
     deletion is caught for the wrong reason; a drifted literal is the regression
     that actually happens.
+
+Score under --guard-split, taken 2026-08-21 by the 296th nightly pass:
+**14 CAUGHT rows, 0 caught by a reach-guard only, 1 caught by the Go test
+runtime, 0 unreadable**, and the known-negative control still UNNOTICED. The
+default table's 13/13 is unchanged; 14 against 13 because the split counts the
+known-positive control as a CAUGHT row, the same arithmetic as the 269th and
+281st passes.
+
+Three things that zero is worth reading with, because a zero is also what a
+classifier that can never fire would print.
+
+**It is a measurement.** ~/.nightly-296/prove_the_mode.sh removes the one test
+that makes the zero true and re-runs the known-positive control: the row flips
+to guard-only on nine real guard lines. The 269th pass ended saying a self-test
+proves the FUNCTION and only a probe proves the MODE, and that its probe was not
+committed; this one is.
+
+**It rests on a single test, and not the obvious one.** Every test in
+logging_test.go reaches its assertion through `recordingPublisher.only`, which
+is fatal, except TestTheFinishEntryGoesToTheSchedulerLogSubject — it reads the
+recorder's subjects directly. So every mutation that stops the logger publishing
+reddens that one test on an assertion while tripping the guard in all the
+others. It is a test about the SUBJECT holding up the readability of rows about
+the LEVEL, which is the 254th pass's finding seen from the other side: an
+assertion behind a fatal guard is not reached, and here one assertion that is
+not behind the guard is carrying eight rows that are.
+
+**The third verdict is not exotic.** `new-drops-the-typed-nil-guard` is caught
+by TestALoggerWithNoBusPublishesNothing, whose property is that a call does not
+panic and which therefore contains no assertion at all. The 281st pass reached
+this verdict class through `os.Exit` under a `-h` flag and called it a row its
+suite happened to produce. Assert-no-panic is an ordinary Go idiom, so any suite
+carrying one has a row a two-way split can only call unreadable.
 """
 
 import ast
@@ -807,21 +840,17 @@ def guard_split():
     1 otherwise. A guard-fired row is a finding, not a footnote — it is a case
     whose CAUGHT in the default table is a number for something nobody measured.
 
-    ⚠️ A CONTROL is exempt from the finding, and this suite is the first in the
-    lineage where that matters. A known-positive control is an edit every test
-    must catch, and the cheapest such edit is one that breaks the SETUP every
-    test shares — here, stopping the logger publishing at all, which trips
-    `recordingPublisher.only` in every test and reaches no assertion anywhere.
-    That is a control doing its job, not a coverage hole, and counting it would
-    make a healthy suite report a finding. The three scorers before this one
-    count every guard-fired row alike; none of them met a control shaped this
-    way, so none of them had to decide.
-
-    It is also what makes this the first split in the lineage whose MODE is
-    proven on real output rather than on a hand-driven probe. The 269th pass
-    ended with exactly that gap — its own note says proving the split can print
-    "guard only" over a real row needed a separate probe, and that the probe was
-    not committed. This suite prints one every run.
+    ⚠️ No row of this suite reaches the guard-only verdict, and the reason is
+    structural rather than lucky. Every setup-breaking mutation — the
+    known-positive control included — also reddens
+    TestTheFinishEntryGoesToTheSchedulerLogSubject, which reads the recorder
+    directly instead of through `recordingPublisher.only`. One test that
+    observes the double without the guard is enough to keep every such row
+    assertion-fired. That was measured, not assumed: with that one test removed
+    the control row reports guard-only, which is also this mode's only proof
+    over real output that it can say so at all. The probe is
+    ~/.nightly-296/prove_the_mode.sh; the 269th pass ended with exactly that
+    gap and left its own probe uncommitted.
     """
     problems = self_test()
     # The sabotage procedure is an instrument too, and the one here whose
@@ -871,29 +900,22 @@ def guard_split():
 
     print("\n============ guard split ============")
     guarded = [r for r in rows if r[2].startswith("guard only")]
-    real_guarded = [r for r in guarded if not r[0].name.startswith("CONTROL")]
-    control_guarded = [r for r in guarded if r[0].name.startswith("CONTROL")]
     runtime = [r for r in rows if r[2] == "runtime-fired"]
     unreadable = [r for r in rows if r[2].startswith("CAUGHT with no")]
     caught = [r for r in rows if r[1] == "CAUGHT"]
-    print("%d CAUGHT rows, %d real mechanisms caught by a reach-guard only, "
-          "%d caught by the Go test runtime, %d unreadable"
-          % (len(caught), len(real_guarded), len(runtime), len(unreadable)))
-    for case, _, _, _ in real_guarded:
+    print("%d CAUGHT rows, %d caught by a reach-guard only, %d caught by the Go "
+          "test runtime, %d unreadable"
+          % (len(caught), len(guarded), len(runtime), len(unreadable)))
+    for case, _, _, _ in guarded:
         print("  ⚠️  guard-fired only, so this row scored nothing: %s" % case.name)
     # Printed, never swallowed. A verdict that does not fail the run still has
     # to be visible, or "0 guard-fired" reads as "every row was an assertion".
-    for case, _, _, _ in control_guarded:
-        print("  ·   guard-fired, and exempt: a known-positive control that breaks "
-              "the shared setup is SUPPOSED to reach no assertion.\n      %s\n"
-              "      It is also this mode's proof over real output that the "
-              "classifier can say \"guard only\" at all." % case.name)
     for case, _, _, killed in runtime:
         print("  ·   real coverage, but no assertion ran — the Go test runtime "
               "caught it:\n      %s\n      %s" % (case.name, killed))
     for case, _, _, _ in unreadable:
         print("  ⚠️  no readable failure line, classify by hand: %s" % case.name)
-    return 1 if real_guarded or unreadable else 0
+    return 1 if guarded or unreadable else 0
 
 
 if __name__ == "__main__":
