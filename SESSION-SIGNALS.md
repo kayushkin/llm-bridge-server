@@ -670,7 +670,7 @@ watches.
 
 ### The defect this producer would have introduced, and the one-line fix
 
-`hasOpenToolSignal` — the guard that stops the classifier raising a derived row alongside
+`hasOpenToolQuestion` — the guard that stops the classifier raising a derived row alongside
 a structured one — matched on **`source == tool` alone**. Every such row today is a parked
 `AskUserQuestion`, so that read was correct by accident.
 
