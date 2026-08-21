@@ -45,18 +45,60 @@ type Store struct {
 	db *sql.DB
 }
 
+// busyTimeoutMillisecondsWanted is how long a connection waits for a lock
+// before giving up. Named so the DSN that sets it and the check that proves it
+// took effect cannot drift apart.
+const busyTimeoutMillisecondsWanted = 5000
+
+// dataSourceName builds the sqlite DSN for a database path.
+//
+// busy_timeout MUST be set here rather than with a PRAGMA statement after
+// Open: it is a per-connection setting, and *sql.DB is a pool. A one-shot
+// db.Exec("PRAGMA busy_timeout=5000") reaches only whichever connection the
+// pool happened to hand out, so every other connection keeps SQLite's default
+// of 0 and fails instantly on a lock instead of waiting. Measured on this
+// driver holding 8 connections open at once: 7 of the 8 never saw it.
+//
+// The SetMaxOpenConns(1) cap below is what let the old Exec form work here —
+// one connection, so the pragma reached all of it. That is a property of the
+// cap, not of the pragma, and it stops holding the moment that connection is
+// replaced. Cron ticks racing API writes is exactly the case the cap exists
+// for, so the timeout going missing would fail job-run inserts silently.
+//
+// _pragma=... is modernc's syntax and it is the only one that works here. The
+// mattn/go-sqlite3 spelling (_busy_timeout=5000) is silently ignored by this
+// driver, as is any other unrecognised key — hence the check in New.
+func dataSourceName(dbPath string) string {
+	return fmt.Sprintf("%s?_pragma=busy_timeout(%d)", dbPath, busyTimeoutMillisecondsWanted)
+}
+
 func New(dbPath string) (*Store, error) {
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
-	d, err := sql.Open("sqlite", dbPath)
+	d, err := sql.Open("sqlite", dataSourceName(dbPath))
 	if err != nil {
 		return nil, err
 	}
-	if _, err := d.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
+	// journal_mode is the one pragma that belongs here rather than in the DSN:
+	// it is a property of the database file, so setting it once is permanent.
+	// busy_timeout is per-connection and lives in dataSourceName.
+	if _, err := d.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		d.Close()
-		return nil, fmt.Errorf("sqlite pragmas: %w", err)
+		return nil, fmt.Errorf("enable WAL: %w", err)
+	}
+	// An unrecognised DSN key is silently ignored by this driver, so prove the
+	// setting actually took effect instead of trusting the connection string.
+	var busyTimeoutMilliseconds int
+	if err := d.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeoutMilliseconds); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("read busy_timeout pragma: %w", err)
+	}
+	if busyTimeoutMilliseconds != busyTimeoutMillisecondsWanted {
+		d.Close()
+		return nil, fmt.Errorf("busy_timeout is %d, want %d: the DSN did not take effect",
+			busyTimeoutMilliseconds, busyTimeoutMillisecondsWanted)
 	}
 	// Single connection serializes writes through Go's sql pool. Without this,
 	// modernc.org/sqlite hits SQLITE_BUSY (5) when the cron tick races user
