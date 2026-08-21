@@ -315,10 +315,27 @@ def guard_only(messages):
 # direction, not a verdict: a helper may legitimately carry an assertion, and
 # HELPER_ASSERTIONS is where that is declared rather than left to be argued
 # about at the next reading.
-TEST_FILES = [
-    REPO / "internal" / "logging" / "logging_test.go",
-    REPO / "internal" / "runstatus" / "runstatus_test.go",
-]
+#
+# ⚠️ The limit worth knowing, measured against the three earlier scorers rather
+# than reasoned about: a marker can be right about the PRINTED line and absent
+# from the format string. `cmd/email-classifier`'s suite guards with
+# `t.Fatalf("parsing %s: %v", max, err)` where `max` is "-max=0", so the 281st
+# pass's markers "parsing -max=0: " and "parsing -max=-1: " match real output
+# and appear nowhere in any source file. This check would call both of them
+# dead. It fails LOUDLY when it does, which is the tolerable direction — the
+# author looks and finds the interpolation — but it is a screen, not a verdict,
+# and porting it to a suite with guards of that shape means teaching it to
+# expand the interpolation first. ~/.nightly-296/audit_prior_markers.py is the
+# out-of-tree version and carries the same limit.
+# Every .go file in the two packages, not just the _test.go ones. A `t.Fatalf`
+# can only appear where a *testing.T is in scope, so widening costs nothing and
+# closes a real hole: the 269th pass's own guards print from
+# internal/schedulerjobsprotocol/schedulerjobsprotocol.go, an ordinary source
+# file, and a scan reading only _test.go reports them as naming nothing.
+SUITE_FILES = sorted(
+    path
+    for directory in (REPO / "internal" / "logging", REPO / "internal" / "runstatus")
+    for path in directory.glob("*.go"))
 
 # Failure formats printed from a non-Test function that are assertions rather
 # than reach guards, with the reason. Empty, and measured empty: the one helper
@@ -371,7 +388,7 @@ def suite_failure_formats():
     toolchain, which is what lets --prove-self-test drive it under sabotage.
     """
     found = []
-    for path in TEST_FILES:
+    for path in SUITE_FILES:
         enclosing = "?"
         text = path.read_text()
         lines = text.split("\n")
