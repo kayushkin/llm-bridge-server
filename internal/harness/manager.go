@@ -108,9 +108,9 @@ func (m *Manager) SetTurnEndObserver(fn TurnEndObserver) {
 }
 
 // ApplyDerivedSessionState writes a session state decided outside the raw
-// event stream — today only the turn-end signal classifier, whose verdict
-// arrives after a network round trip. It reports whether the state actually
-// changed.
+// event stream: the turn-end signal classifier, whose verdict arrives after a
+// network round trip, and signal dismissal, which arrives when the user acts.
+// It reports whether the state actually changed.
 //
 // allowedFrom names the states the caller's decision was formed about; the
 // write is dropped when the session has since moved to anything else, so a

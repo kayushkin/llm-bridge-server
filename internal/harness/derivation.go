@@ -545,10 +545,13 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 // stream, and returns the transition event when the state actually changes
 // (nil otherwise, so an unchanged state broadcasts nothing).
 //
-// The only caller today is the turn-end signal classifier, which cannot run
-// inside derive(): it makes a network call, and derive() holds the state
-// mutex on the hot event path. So the classifier answers late and writes its
-// verdict back through here.
+// Two callers today, and only the first is late for the reason this seam was
+// built: the turn-end signal classifier cannot run inside derive(), because it
+// makes a network call and derive() holds the state mutex on the hot event
+// path, so it answers late and writes its verdict back through here. The
+// second is signal dismissal (server/signals.go), which makes no network call
+// at all — it is a user action arriving whenever the user acts, and it is
+// outside the event stream for that reason rather than for a timing one.
 //
 // allowedFrom bounds that write. The caller names the states its verdict was
 // formed about; a session that has since moved on — a new turn opened, an

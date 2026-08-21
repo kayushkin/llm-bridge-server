@@ -195,10 +195,14 @@ func supportedPermissionModesFor(h msg.Harness) []string {
 // reach a running harness from this server: the bare "compact" / "compact:
 // <summary>" method, and "config:<json>" carrying msg.ConfigSessionRequest —
 // its four fields model / effort / disabled_tools / max_budget are the entire
-// mid-session vocabulary. Manager.SendJSONRPC has no caller here, so every
-// harness's set_model, fork and interrupt JSON-RPC method is unreachable from
-// this gateway however well it is written, and POST /sessions/{id}/interrupt
-// is SIGINT (process.go Interrupt), not a request. "fork" is start-params
+// mid-session vocabulary. Manager.SendJSONRPC has exactly one caller here
+// (sessions.go handleCompactSession) and it passes the literal method
+// "compact", so every harness's set_model, fork and interrupt JSON-RPC method
+// is still unreachable from this gateway however well it is written, and POST
+// /sessions/{id}/interrupt is SIGINT (process.go Interrupt), not a request.
+// ⚠️ What makes those methods unreachable is the fixed method string at that
+// call site, NOT the absence of a caller — the absence is what this sentence
+// used to claim, and it stopped being true when compact was wired through. "fork" is start-params
 // only: buildStartParams sets params.Fork from the parent's harness UUID.
 //
 // The grading rule, so a future entry is decidable rather than a matter of
