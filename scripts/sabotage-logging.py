@@ -396,6 +396,20 @@ def check_markers_against_the_suite(formats=None):
                 "marker %r is a prefix of %d of the suite's %d failure messages; "
                 "exactly one is the only count that can tell a guard from an "
                 "assertion" % (marker, len(named), len(formats)))
+            continue
+        # And it must reach ALL the way to the interpolation point. A marker cut
+        # shorter than that is a prefix of every future message that opens the
+        # same way, and this is the on-disk statement of the discipline the 269th
+        # pass wrote down as a trailing colon — asked of the format string rather
+        # than of the author's memory of it.
+        head = PRINTF_VERB.search(named[0])
+        fixed = named[0][:head.start()] if head else named[0]
+        if marker != fixed:
+            problems.append(
+                "marker %r is not the fixed head of the message it names — that "
+                "head is %r. A marker that stops short prefixes every later "
+                "message opening the same way; one that runs past the first verb "
+                "matches nothing at all" % (marker, fixed))
 
     for name, enclosing, fmt in formats:
         if enclosing.startswith("Test"):
@@ -448,11 +462,25 @@ def self_test():
           False)
     check("no failure lines at all is not a guard verdict", [], False)
 
-    # An assertion whose subject is the very thing the guard counts. This is
-    # what the marker's trailing ", got " is for: without it, "expected exactly
-    # one published entry" would also prefix an assertion phrased about the same
-    # count, and there is no reason a later test could not be.
-    check("an assertion about the published entry, not the guard's count",
+    # ⚠️ The next three lines are NOT messages this suite prints, and are
+    # labelled so rather than mixed in above. They state a property of the
+    # CLASSIFIER, which is a different thing from characterising the suite: a
+    # marker found anywhere but at the start of a message is not a guard.
+    #
+    # It is stated directly because this suite cannot state it any other way.
+    # The 281st pass could redden `in`-instead-of-`startswith` with real output,
+    # because its suite really did print an assertion quoting a guard's wording.
+    # None of this suite's fourteen assertions contains the one marker, so every
+    # real line agrees under both readings and a fixture built from them would
+    # measure nothing. A discipline no case can redden is a comment rather than
+    # a rule (the 269th pass), and this is the redden-able form of it.
+    for marker in REACH_GUARDS:
+        if is_reach_guard("the entry the logger published said it " + marker):
+            problems.append(
+                "is_reach_guard() found %r in the middle of a message and called "
+                "it a guard; an assertion that quotes a guard's wording is an "
+                "assertion" % marker)
+    check("an assertion that opens the way the guard does and continues differently",
           ["expected exactly one published entry to carry the run's status, "
            "and it carried none"],
           False)
