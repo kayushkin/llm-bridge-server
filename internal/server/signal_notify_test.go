@@ -133,7 +133,7 @@ func TestRaiseNotificationDefaultsSeverityToInfo(t *testing.T) {
 }
 
 // A question raised here would be answerable by nothing: no request_id for the
-// hook resolve, source=tool so answerDerivedQuestions skips it, and the
+// hook resolve, source=tool so closeQuestionsAnsweredByMessage skips it, and the
 // signal-level resolve verb refuses to acknowledge a question. Refuse it at
 // the door rather than mint a row with no way out.
 func TestRaiseNotificationRefusesAQuestion(t *testing.T) {

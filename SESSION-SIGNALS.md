@@ -468,10 +468,17 @@ moment; claiming a link the signal was not raised under would be worse than clai
 none.
 
 **3. A failed lookup costs the pointer, never the signal.**
-kanban-store down, wedged, absent from config, or answering junk — every one logs and
-returns `""`. A signal is an extra surface on top of work that already happened; losing
-the todo pointer must not lose the signal. Verified curative: making the lookup fatal
-fails the "still recorded" test three ways (500, garbage body, unreachable host).
+kanban-store down, wedged, or answering junk — all three log and return `""`. A signal is
+an extra surface on top of work that already happened; losing the todo pointer must not
+lose the signal. Verified curative: making the lookup fatal fails the "still recorded"
+test three ways (500, garbage body, unreachable host).
+
+**Absent from config is the fourth case and it is not one of these.** An unset
+`KanbanStoreURL` makes `newKanbanClient` return nil, and `linkedTodoForSession` then
+returns `""` **without logging anything, at boot or per lookup**. That is the feature
+being switched off rather than a lookup failing, so it is not a swallowed error — but it
+does mean an empty `linked_todo_id` on every signal has two indistinguishable causes in
+the log, and only one of them writes a line.
 
 **4. `?linked_todo_id=` with an empty value is a 400, not "everything".**
 Same reasoning as the enum params: a todo view that meant to name its todo and named
@@ -636,11 +643,20 @@ watches.
   An empty `request_id` is the contract, not an omission: it is what lets
   `POST /signals/{id}/resolve` acknowledge the row without tripping the parked-request
   guard.
-- **A question is refused, with all three reasons named in the 400.** A `source:"tool"`
-  question minted here would be answerable by nothing — the hook resolve is keyed on a
-  `request_id` it would not have, `answerDerivedQuestions` skips anything that is not
-  `derived`, and the resolve verb refuses to acknowledge a question on purpose. It would
-  sit open until a human dismissed it unanswered. `AskUserQuestion` asks; this route tells.
+- **A question is refused, and the 400 names two of the three reasons it is unanswerable.**
+  A `source:"tool"` question minted here would be answerable by nothing — the hook resolve
+  is keyed on a `request_id` it would not have, `closeQuestionsAnsweredByMessage` (behind
+  `POST /sessions/{id}/send`) skips anything that is not `derived`, and the resolve verb
+  refuses to acknowledge a question on purpose. It would sit open until a human dismissed
+  it unanswered. `AskUserQuestion` asks; this route tells.
+
+  ⚠️ Read the refusal text before quoting this rule. The 400 that
+  `handleCreateSessionSignal` actually returns names the first two reasons; the **third**
+  — the resolve verb's refusal — lives only in the code comment above the `switch`, not in
+  the response the caller reads. Nothing pins the count either:
+  `TestRaiseNotificationRefusesAQuestion` asserts only that the body names
+  `AskUserQuestion`. Whether the third clause belongs in the message is a live question,
+  not a settled one.
 - **An unknown `severity` is a 400, not a fall back to `info`.** Same reasoning as the read
   filters: a typo that silently grades a warning as routine is worse than a rejected call
   the caller can fix.
@@ -693,7 +709,9 @@ bridge-ui commit accompanies this one.
 - **33 checks against the real binary over HTTP** (`/tmp/notify-canary.sh` shape: boot on a
   spare port with a seeded DB holding one interactive and one autonomous session, no
   kanban-store, classifier off). Both surfaces, both severities, all nine refusals, "a
-  refused call writes no row", readability through all three existing read routes, and the
+  refused call writes no row", readability through both existing read routes
+  (`GET /sessions/{id}/signals` and `GET /signals` — there are two, and there have only
+  ever been two), and the
   full acknowledge → idempotent second click → gone-from-inbox path.
 
 ### What is left of P4
