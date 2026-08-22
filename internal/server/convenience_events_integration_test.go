@@ -87,7 +87,15 @@ func TestConvenienceEventsIntegration_ClaudeCode_TurnSequence(t *testing.T) {
 		sseDone <- streamSSE(sseCtx, ts.URL+"/sessions/"+bridgeID+"/events", events)
 	}()
 
-	sendUserMessage(t, ts.URL, bridgeID, "Reply with just the word 'ok' and nothing else.")
+	// The prompt MUST provoke a tool call. The assertions below require a
+	// transition into tool_running, and the comment beneath this line
+	// reasons entirely about a tool-using turn — but the prompt shipped in
+	// 1719699 was "Reply with just the word 'ok' and nothing else.",
+	// written to suppress exactly the tool call the test then demanded. The
+	// file is behind a build tag, so no default run ever built it and the
+	// contradiction stood from 2026-04-28 until it was first executed.
+	// Keep the tool call, or drop the tool_running assertion with it.
+	sendUserMessage(t, ts.URL, bridgeID, "Run the bash command `echo ok` and then reply with just the word ok.")
 
 	// Read SSE until we've collected the convenience-event triple for
 	// this turn — session_state, usage_total, turn_complete — or the
@@ -297,8 +305,15 @@ func createEventsSession(t *testing.T, baseURL, instID string) string {
 	if err := json.NewDecoder(resp.Body).Decode(&sess); err != nil {
 		t.Fatalf("decode session: %v", err)
 	}
-	if sess.State != string(msg.SessionRunning) {
-		t.Fatalf("session state = %q, want running (auto_start)", sess.State)
+	// auto_start reports the state the session is actually in when the
+	// create response is written: the harness process has been spawned but
+	// has not yet announced itself, which is "starting", not "running".
+	// Server-side this is sessions.go's auto_start branch, narrowed from
+	// running to starting by 72cc3c8 ("Say what a session is actually
+	// doing"). Nothing in the default suite pins that branch, so this
+	// assertion is the only executable statement of it.
+	if sess.State != string(msg.SessionStarting) {
+		t.Fatalf("session state = %q, want starting (auto_start)", sess.State)
 	}
 	return sess.SessionID
 }
