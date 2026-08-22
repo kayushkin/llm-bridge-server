@@ -52,6 +52,7 @@ Your job is to find groups of cards that are really ONE bucket, split apart beca
 Rules:
 - NEVER merge TASK cards. Two different things to do are two cards even if they look similar. If in doubt, do not merge.
 - Only group cards that would genuinely receive the same future mail.
+- A SHARED SENDER IS NOT A SHARED BUCKET. One organisation sends several unrelated kinds of mail from one address: a bank sends statements, security alerts AND rewards marketing; a retailer sends order receipts AND promotions. Each card lists the addresses that feed it, and a shared address is a hint worth looking at — it is never on its own a reason to merge. "They are all Wells Fargo mail" is not a group. "They are all marketing", "they are all receipts" is. Group by what the mail IS, never by who sent it.
 - A group needs at least two cards.
 - survivor_card_id: if one existing card is already correctly named for the whole group, give its id and the others fold into it. If none is, leave it empty and give a survivor_title naming the CATEGORY ("Payment receipts", "Substack newsletters") — never an instance.
 - reason: one short sentence a human can check.
@@ -234,8 +235,8 @@ func applyMerge(cfg config, kc *kanbanclient.Client, state *boardState, g mergeG
 		if err != nil {
 			return false, fmt.Errorf("move links from %q: %w", loser.Title, err)
 		}
-		totalMoved += moved
-		if err := retireCard(cfg, kc, loser, survivor); err != nil {
+		totalMoved += len(moved)
+		if err := retireCard(cfg, kc, loser, survivor, moved); err != nil {
 			return false, fmt.Errorf("retire %q: %w", loser.Title, err)
 		}
 	}
@@ -294,17 +295,17 @@ func resolveSurvivor(cfg config, kc *kanbanclient.Client, state *boardState, g m
 // that is no longer on the board, and the next filing tick — which reads the
 // board to learn what is already filed — would see that email as unfiled and
 // file it a second time.
-func moveLinks(cfg config, kc *kanbanclient.Client, loser, survivor *cardState) (int, error) {
+func moveLinks(cfg config, kc *kanbanclient.Client, loser, survivor *cardState) ([]kanbanclient.CardLink, error) {
 	existing := map[string]bool{}
 	for _, l := range survivor.AllLinks {
 		existing[l.EntityType+"\x00"+l.EntityRef] = true
 	}
 
-	moved := 0
+	var moved []kanbanclient.CardLink
 	for _, l := range loser.AllLinks {
 		key := l.EntityType + "\x00" + l.EntityRef
 		if cfg.DryRun {
-			moved++
+			moved = append(moved, l)
 			continue
 		}
 		if !existing[key] {
@@ -320,7 +321,7 @@ func moveLinks(cfg config, kc *kanbanclient.Client, loser, survivor *cardState) 
 		if err := kc.DeleteCardLink(l.ID); err != nil {
 			return moved, fmt.Errorf("delete link %s: %w", l.ID, err)
 		}
-		moved++
+		moved = append(moved, l)
 	}
 	loser.AllLinks = nil
 	loser.EmailLinks = nil
@@ -329,14 +330,22 @@ func moveLinks(cfg config, kc *kanbanclient.Client, loser, survivor *cardState) 
 
 // retireCard takes a merged-away card off the board.
 //
-// It is archived rather than deleted, and its body records where its evidence
-// went. Deleting would be tidier to look at and much worse to live with: the
-// underlying noteboard item is what a human may have edited, and a merge is a
-// judgement that deserves to be reversible.
-func retireCard(cfg config, kc *kanbanclient.Client, loser, survivor *cardState) error {
+// It is archived rather than deleted, and its body records both where its
+// evidence went and exactly what went. Deleting would be tidier to look at and
+// much worse to live with: the underlying noteboard item is what a human may
+// have edited, and a merge is a judgement that deserves to be reversible.
+//
+// The list of moved links is what makes it reversible, and it was missing for
+// as long as this function existed. The note said where the evidence had gone
+// and not which evidence it was, so undoing one merge in a group meant finding
+// a board snapshot from before the pass ran, or reconstructing the split by
+// hand from the mail itself. Writing the links down costs a few lines in a body
+// nobody reads until the day they need it.
+func retireCard(cfg config, kc *kanbanclient.Client, loser, survivor *cardState, moved []kanbanclient.CardLink) error {
 	note := fmt.Sprintf("%s\n\n%s\n\nMerged into %q (card %s) by email-classifier -merge. "+
-		"Its linked emails were moved to that card; this one is kept for history.",
-		strings.TrimSpace(stripEvidence(loser.Body)), evidenceMarker, survivor.Title, survivor.ID)
+		"Its linked emails were moved to that card; this one is kept for history.%s",
+		strings.TrimSpace(stripEvidence(loser.Body)), evidenceMarker, survivor.Title, survivor.ID,
+		renderMovedLinks(moved))
 	if cfg.DryRun {
 		log.Printf("[merge] DRY-RUN retire %q into %q", loser.Title, survivor.Title)
 		return nil
@@ -345,6 +354,33 @@ func retireCard(cfg config, kc *kanbanclient.Client, loser, survivor *cardState)
 		return err
 	}
 	return kc.DetachCardFromBoard(kc.BoardID, loser.ID)
+}
+
+// renderMovedLinks writes the links this merge relocated, in the form an undo
+// needs: the type and the ref, which together are enough to re-attach each one,
+// plus the label so a human reading the card knows what it was.
+func renderMovedLinks(moved []kanbanclient.CardLink) string {
+	if len(moved) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\n## Links moved to that card (%d)\n\n", len(moved))
+	sorted := make([]kanbanclient.CardLink, len(moved))
+	copy(sorted, moved)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].EntityType != sorted[j].EntityType {
+			return sorted[i].EntityType < sorted[j].EntityType
+		}
+		return sorted[i].EntityRef < sorted[j].EntityRef
+	})
+	for _, l := range sorted {
+		fmt.Fprintf(&b, "- `%s` · `%s`", l.EntityType, l.EntityRef)
+		if l.Label != "" {
+			fmt.Fprintf(&b, " — %s", l.Label)
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func stripEvidence(body string) string {
