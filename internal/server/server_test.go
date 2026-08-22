@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	harnessstore "github.com/kayushkin/harness-store"
@@ -800,25 +801,42 @@ func TestModels_NotRegistered(t *testing.T) {
 // Create session with auto_start (harness not available)
 // ──────────────────────────────────────────────────────────────────────────────
 
-func TestCreateSession_AutoStart_HarnessUnavailable(t *testing.T) {
-	srv, _ := testServer(t)
+// TestCreateSessionWithoutHarnessStoreConfiguredIsUnavailable pins the guard
+// that refuses to create a session when no harness-store is wired up.
+//
+// It was called TestCreateSession_AutoStart_HarnessUnavailable and carried the
+// comments "use a harness type whose binary is not in PATH" and "should fail
+// because binary not found". Both were false, and measurably so: handleCreateSession
+// checks `s.harnessStore == nil` before it resolves an instance and long before
+// it looks at AutoStart, so the 503 here is "harness-store not configured".
+// Setting AutoStart to false and naming an installed harness left the test
+// passing unchanged — neither half of the old name was load-bearing. The
+// binary it called a missing stub, llm-bridge-dexto, is in fact installed on
+// this box.
+//
+// The reported reason is asserted now, so the test cannot quietly start passing
+// for one of the other two 503s this handler can return (no enabled instance,
+// instance disabled).
+func TestCreateSessionWithoutHarnessStoreConfiguredIsUnavailable(t *testing.T) {
+	srv, _ := testServer(t) // testServer passes nil for the harness-store
 
-	// Use a harness type whose binary is not in PATH
 	req := msg.CreateSessionRequest{
-		Type:      msg.SessionTypeInteractive,
-		Purpose:   msg.PurposeChat,
-		Origin:    "test",
-		Harness:   "dexto", // stub, not installed
-		AutoStart: true,
+		Type:    msg.SessionTypeInteractive,
+		Purpose: msg.PurposeChat,
+		Origin:  "test",
+		Harness: msg.HarnessClaudeCode,
 	}
 
 	resp := doJSON(t, srv, "POST", "/sessions", req)
-	// Should fail because binary not found
+	defer resp.Body.Close()
 	if resp.StatusCode != 503 {
 		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("status = %d, want 503 (harness unavailable): %s", resp.StatusCode, body)
+		t.Fatalf("status = %d, want 503: %s", resp.StatusCode, body)
 	}
-	resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if want := "harness-store not configured"; !strings.Contains(string(body), want) {
+		t.Errorf("body = %q, want it to contain %q", body, want)
+	}
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
