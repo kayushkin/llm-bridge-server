@@ -60,11 +60,31 @@ func buildInberManifest(ctx ManifestContext) ([]msg.HarnessService, error) {
 	}}, nil
 }
 
-// pickAnthropicKey extracts an Anthropic API key. Preference order:
+// pickAnthropicKey returns the secret that buildInberManifest puts in the
+// spawned inber's ANTHROPIC_API_KEY variable. Despite that variable's name
+// the secret is not necessarily an API key: Resolved.Secret returns the
+// access token for an oauth or token credential, and nothing here filters
+// by kind.
 //
-//  1. The explicitly-bound credential resolved by ctx.Credential.
-//  2. Best-match provider=anthropic resolution via auth-store, preferring
-//     api_key creds (most predictable, no refresh dance).
+// Order:
+//
+//  1. The explicitly-bound credential resolved by ctx.Credential, whatever
+//     its auth_type.
+//  2. Otherwise whatever auth-store answers for provider=anthropic,
+//     intended_app=llm-bridge-server. auth-store chooses that row with
+//     ORDER BY priority ASC, error_count ASC (auth-store credentials.go
+//     Store.Resolve) and applies no other ranking — in particular it has
+//     no preference for api_key credentials, so credentials tied on both
+//     sort keys are separated by row order alone.
+//
+// Measured on this box 2026-08-22: five enabled anthropic credentials are
+// eligible, all five tie on priority=100 and error_count=0, and three of
+// them are not api_key. So which secret a spawn ships is decided by row
+// order today.
+//
+// Whether to prefer, rank or refuse a non-api_key credential here is open
+// — noteboard todo 0ba576b0 prices three answers. This comment only stops
+// claiming a preference that no code implements.
 func pickAnthropicKey(ctx ManifestContext) (string, error) {
 	if ctx.Credential != nil {
 		return anthropicSecret(ctx.Credential)
