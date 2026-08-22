@@ -363,7 +363,17 @@ Capability-matrix runs across all harnesses.
 | `POST` | `/api/runner/enroll` | Exchange a single-use enrollment passphrase for a durable runner token |
 | `GET` | `/api/runner/install.sh` | Runner install script |
 | `GET` | `/api/runner/binary` | Prebuilt runner / harness wrapper binary (`?os=&arch=&name=`) |
-| `*` | `/api/harness-proxy/{harness}/{rest...}` | Reverse-proxy from runners to a service-style harness (inber, hermes…) hosted on the bridge |
+| `*` | `/api/harness-proxy/{harness}/{rest...}` | Reverse-proxy from runners to a service-style harness (inber, hermes…) hosted on the bridge. **No auth gate** — see the note below |
+
+> **`/api/harness-proxy/` runs no auth check, and it is the only ungated row here that writes.**
+> Two rows in this table are gated or trade a credential: `/api/runner/ws` checks a Bearer against
+> `machines.runner_token_hash`, and `/api/runner/enroll` exchanges a single-use passphrase. The other two,
+> `install.sh` and `binary`, are open on purpose — a fresh host needs them before it has a token — but both
+> only serve a static file. The harness proxy is neither: it forwards method, query, headers and body
+> verbatim to `localhost:8200` (inber) or `localhost:8500` (hermes) for anyone who can reach the listener.
+> Its two sibling seed proxies, `/api/agent-store/` and `/api/skill-store/`, do gate and answer 401.
+> Whether to add the gate or leave the route open on purpose is still open; the handler's doc comment in
+> `internal/server/harness_proxy.go` carries the measurement.
 
 ### Admin
 
