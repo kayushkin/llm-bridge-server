@@ -983,6 +983,11 @@ func TestDiscoverSessions(t *testing.T) {
 		t.Skip("discover spawns harness binaries; skipping in short mode")
 	}
 
+	// Without this the route walks the developer's real ~/.claude/projects
+	// and starts one -import-history subprocess per session found there.
+	// See isolateHarnessSessionDiscovery for the measurement.
+	isolateHarnessSessionDiscovery(t)
+
 	srv, _ := testServer(t)
 
 	resp := doJSON(t, srv, "GET", "/sessions/discover", nil)
