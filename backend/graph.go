@@ -64,20 +64,35 @@ func (g *Graph) do(ctx context.Context, method, path string, body io.Reader) (*h
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		g.tokens.Invalidate(g.apiauthProvider, g.apiauthAccount)
+
+		// Same rule as Gmail.do: the first Do drained the reader this method
+		// was handed, so the retry has to replay the bytes rather than resend
+		// that reader. Every Graph write op is errNotImplemented today, so no
+		// caller passes a body and the empty-retry defect is latent here — it
+		// goes live with the first write op somebody implements.
+		retryBody, replayable, err := bodyForRetry(req)
+		if err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("graph: rebuilding the request body for the 401 retry: %w", err)
+		}
+		if !replayable {
+			return resp, nil
+		}
+
 		resp.Body.Close()
 		token, err = g.tokens.Token(g.apiauthProvider, g.apiauthAccount)
 		if err != nil {
 			return nil, err
 		}
-		req, err := http.NewRequestWithContext(ctx, method, graphBase+path, body)
+		retryReq, err := http.NewRequestWithContext(ctx, method, graphBase+path, retryBody)
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
+		retryReq.Header.Set("Authorization", "Bearer "+token)
 		if body != nil {
-			req.Header.Set("Content-Type", "application/json")
+			retryReq.Header.Set("Content-Type", "application/json")
 		}
-		return g.http.Do(req)
+		return g.http.Do(retryReq)
 	}
 	return resp, nil
 }

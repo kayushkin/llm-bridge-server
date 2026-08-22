@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -582,5 +583,62 @@ func TestABodyThatCannotBeReplayedIsNotRetried(t *testing.T) {
 	// The credential really was rejected, so the cache is stale either way.
 	if len(tokens.invalidated) != 1 {
 		t.Errorf("the rejected token must be dropped from the cache even when the call is not retried; invalidated %v", tokens.invalidated)
+	}
+}
+
+// Graph.do is Gmail.do with a different base URL, and it carried the same
+// empty-retry defect. It is latent there only because every Graph write op is
+// errNotImplemented, so nothing passes a body — these two pin the repair
+// against the day one of them is written.
+func TestGraphThe401RetryCarriesTheSameBodyAsTheFirstAttempt(t *testing.T) {
+	tr := &scriptedTransport{t: t, responses: []*http.Response{
+		respond(http.StatusUnauthorized, "expired"), respond(http.StatusOK, "{}"),
+	}}
+	g := NewGraph("acct-1", "microsoft", "default", okTokens())
+	g.http = &http.Client{Transport: tr}
+
+	resp, err := g.do(context.Background(), "PATCH", "/me/messages/m1",
+		bytes.NewReader([]byte(`{"isRead":true}`)))
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if len(tr.seen) != 2 {
+		t.Fatalf("expected a retry; %d requests sent", len(tr.seen))
+	}
+	if tr.seen[1].Body != tr.seen[0].Body {
+		t.Fatalf("the retry must resend the first attempt's body\n first  = %q\n second = %q",
+			tr.seen[0].Body, tr.seen[1].Body)
+	}
+	if !strings.Contains(tr.seen[1].Body, "isRead") {
+		t.Fatalf("the retry body lost the change; got %q", tr.seen[1].Body)
+	}
+}
+
+func TestGraphABodyThatCannotBeReplayedIsNotRetried(t *testing.T) {
+	tr := &scriptedTransport{t: t, responses: []*http.Response{
+		respondClosable(http.StatusUnauthorized, "expired"), respond(http.StatusOK, "{}"),
+	}}
+	g := NewGraph("acct-1", "microsoft", "default", okTokens())
+	g.http = &http.Client{Transport: tr}
+
+	resp, err := g.do(context.Background(), "PATCH", "/me/messages/m1",
+		unreplayableReader{strings.NewReader(`{"isRead":true}`)})
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if len(tr.seen) != 1 {
+		t.Fatalf("an unreplayable body must not be retried; %d requests sent", len(tr.seen))
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the 401 must reach the caller; got %d", resp.StatusCode)
+	}
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("the returned 401 body must still be readable: %v", err)
+	}
+	if string(b) != "expired" {
+		t.Fatalf("the returned response must be the 401 the server sent; body = %q", string(b))
 	}
 }
