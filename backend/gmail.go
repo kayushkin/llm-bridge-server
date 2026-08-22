@@ -71,22 +71,62 @@ func (g *Gmail) do(ctx context.Context, method, path string, body io.Reader) (*h
 	if resp.StatusCode == http.StatusUnauthorized {
 		// Token may have been revoked/rotated; drop cache and retry once.
 		g.tokens.Invalidate(g.apiauthProvider, g.apiauthAccount)
+
+		// The retry has to carry the same bytes as the first attempt. That
+		// first Do drained the reader this method was handed, so building the
+		// retry from it again puts an EMPTY body on the wire — and an empty
+		// modify is a well-formed request that changes nothing, which Gmail
+		// answers 200 and every layer above reports as a successful write.
+		retryBody, replayable, err := bodyForRetry(req)
+		if err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("gmail: rebuilding the request body for the 401 retry: %w", err)
+		}
+		if !replayable {
+			// Nothing can rebuild this body, so there is no retry to make that
+			// is not a silent no-op. Hand the 401 to the caller instead.
+			return resp, nil
+		}
+
 		resp.Body.Close()
 		token, err = g.tokens.Token(g.apiauthProvider, g.apiauthAccount)
 		if err != nil {
 			return nil, err
 		}
-		req, err := http.NewRequestWithContext(ctx, method, gmailBase+path, body)
+		retryReq, err := http.NewRequestWithContext(ctx, method, gmailBase+path, retryBody)
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
+		retryReq.Header.Set("Authorization", "Bearer "+token)
 		if body != nil {
-			req.Header.Set("Content-Type", "application/json")
+			retryReq.Header.Set("Content-Type", "application/json")
 		}
-		return g.http.Do(req)
+		return g.http.Do(retryReq)
 	}
 	return resp, nil
+}
+
+// bodyForRetry returns a fresh reader over the bytes an already-sent request
+// carried, so a retry of that request can send the same body. Sending drains
+// whatever io.Reader the caller supplied, so the original is at EOF and cannot
+// be reused.
+//
+// net/http records a GetBody hook for the in-memory body types this package
+// passes (*bytes.Reader, *bytes.Buffer, *strings.Reader). For anything else —
+// a streaming body, a pipe — there is no hook and no way to replay the bytes:
+// replayable is false and the caller must not retry.
+func bodyForRetry(req *http.Request) (fresh io.Reader, replayable bool, err error) {
+	if req.Body == nil {
+		return nil, true, nil // nothing was sent, so nothing needs replaying
+	}
+	if req.GetBody == nil {
+		return nil, false, nil
+	}
+	rc, err := req.GetBody()
+	if err != nil {
+		return nil, false, err
+	}
+	return rc, true, nil
 }
 
 type gmailLabel struct {

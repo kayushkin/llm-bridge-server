@@ -70,6 +70,37 @@ func respond(status int, body string) *http.Response {
 	}
 }
 
+// closeTrackingBody fails a read made after Close, so a test can tell a
+// response handed back intact from one whose body was closed on the way out.
+// io.NopCloser cannot: its Close is a no-op and the reader stays readable, so
+// against it "the body must still be readable" is unfalsifiable — a control
+// arm that closes the returned 401 survives every assertion.
+type closeTrackingBody struct {
+	r      *strings.Reader
+	closed bool
+}
+
+func (c *closeTrackingBody) Read(p []byte) (int, error) {
+	if c.closed {
+		return 0, errors.New("read after close")
+	}
+	return c.r.Read(p)
+}
+
+func (c *closeTrackingBody) Close() error {
+	c.closed = true
+	return nil
+}
+
+// respondClosable is respond() with a body whose Close is observable.
+func respondClosable(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Body:       &closeTrackingBody{r: strings.NewReader(body)},
+		Header:     http.Header{},
+	}
+}
+
 // fakeTokens records how many times a token was asked for and how many times
 // the cache was invalidated. Both counts matter: the 401 path is defined by
 // invalidate-then-re-fetch, and a retry that skipped either would still answer
@@ -466,21 +497,16 @@ func TestTheRetriedRequestCarriesTheFreshToken(t *testing.T) {
 	}
 }
 
-// ⛔ CHARACTERISATION — this pins a DEFECT, not the intended behaviour.
+// A 401 is the ordinary consequence of a rotated or expired access token, so
+// the retry that handles it runs on real writes. It has to carry the body the
+// first attempt carried.
 //
-// do() builds the retry from the same io.Reader the first request already
-// drained, so the second request goes out with an EMPTY body. For a write op
-// that means Gmail receives a modify with no labels: it answers 200, changes
-// nothing, and mailstack reports {"ok":true} to its caller. The message is not
-// marked read and nothing anywhere says so.
-//
-// Filed as a noteboard card rather than fixed here, because the repair is a
-// choice: buffer the body into a []byte and rebuild the reader per attempt, use
-// the request's GetBody hook, or only retry when there is no body to resend.
-//
-// When that decision is made and the fix lands, this test FAILS — that is the
-// point. Change it to assert the two bodies are equal.
-func TestKnownDefectThe401RetryResendsAnEmptyBody(t *testing.T) {
+// This replaces a characterisation that pinned the opposite: do() used to build
+// the retry from the io.Reader the first Do had already drained, so the second
+// request went out with an empty body. For a modify that is a well-formed
+// request with no labels to add and none to remove — Gmail answers 200, changes
+// nothing, and mailstack reports {"ok":true}. Card ce787527.
+func TestThe401RetryCarriesTheSameBodyAsTheFirstAttempt(t *testing.T) {
 	g, tr := newTestGmail(t, okTokens(),
 		respond(http.StatusUnauthorized, "expired"), respond(http.StatusOK, "{}"))
 	if err := g.MarkRead(context.Background(), "m1", true); err != nil {
@@ -493,25 +519,68 @@ func TestKnownDefectThe401RetryResendsAnEmptyBody(t *testing.T) {
 	if !strings.Contains(first, "UNREAD") {
 		t.Fatalf("the first attempt should carry the label change; body = %q", first)
 	}
-	if second == first {
-		t.Fatal("the 401 retry now resends the body — the defect is fixed. " +
-			"Replace this characterisation with an equality assertion on the two bodies.")
-	}
-	if second != "" {
-		t.Errorf("the retry body was expected to be empty (the reader is drained); got %q", second)
+	if second != first {
+		t.Fatalf("the retry must resend the first attempt's body\n first  = %q\n second = %q", first, second)
 	}
 }
 
-// The same defect stated as its consequence, which is the part that matters:
-// the caller cannot tell this apart from a write that worked.
-func TestKnownDefectALostRetryBodyStillReportsSuccess(t *testing.T) {
+// The same requirement stated as its consequence, which is the part that
+// matters: a write that reports success has to have asked for the label change.
+// The defect this pins was invisible precisely because it left every layer
+// reporting success.
+func TestARetriedWriteThatReportsSuccessAskedForTheLabelChange(t *testing.T) {
 	g, tr := newTestGmail(t, okTokens(),
 		respond(http.StatusUnauthorized, "expired"), respond(http.StatusOK, "{}"))
-	err := g.MarkRead(context.Background(), "m1", true)
-	if err != nil {
+	if err := g.MarkRead(context.Background(), "m1", true); err != nil {
 		t.Fatalf("MarkRead: %v", err)
 	}
-	if tr.seen[1].Body == "" && err == nil {
-		t.Log("confirmed: a write that changed nothing returned a nil error")
+	if len(tr.seen) != 2 {
+		t.Fatalf("expected a retry; %d requests sent", len(tr.seen))
+	}
+	got := decodeModify(t, tr.seen[1].Body)
+	if len(got.RemoveLabelIDs) != 1 || got.RemoveLabelIDs[0] != "UNREAD" {
+		t.Fatalf("a nil error must mean the retry asked Gmail to drop UNREAD; the request Gmail received was %+v", got)
+	}
+}
+
+// unreplayableReader hides a reader behind a type net/http does not recognise,
+// so http.NewRequest records no GetBody hook for it. This is the shape do()
+// cannot resend: a streaming body, a pipe, anything not held in memory.
+type unreplayableReader struct{ io.Reader }
+
+// When the body cannot be replayed there is no retry to make that is not a
+// silent no-op, so do() must return the 401 rather than send an empty request.
+// Retrying anyway is the original defect; refusing to retry a replayable body
+// would give up the retry on exactly the calls that need it, which the two
+// tests above pin.
+func TestABodyThatCannotBeReplayedIsNotRetried(t *testing.T) {
+	tokens := okTokens()
+	g, tr := newTestGmail(t, tokens,
+		respondClosable(http.StatusUnauthorized, "expired"), respond(http.StatusOK, "{}"))
+	body := unreplayableReader{strings.NewReader(`{"addLabelIds":["STARRED"]}`)}
+	resp, err := g.do(context.Background(), "POST", "/users/me/messages/m1/modify", body)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if len(tr.seen) != 1 {
+		t.Fatalf("an unreplayable body must not be retried; %d requests sent, the second body was %q",
+			len(tr.seen), tr.seen[len(tr.seen)-1].Body)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the 401 must reach the caller; got %d", resp.StatusCode)
+	}
+	// The response handed back must still be readable — do() returns this one
+	// instead of the retry's, so it must not have closed it on the way out.
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("the returned 401 body must still be readable: %v", err)
+	}
+	if string(b) != "expired" {
+		t.Fatalf("the returned response must be the 401 the server sent; body = %q", string(b))
+	}
+	// The credential really was rejected, so the cache is stale either way.
+	if len(tokens.invalidated) != 1 {
+		t.Errorf("the rejected token must be dropped from the cache even when the call is not retried; invalidated %v", tokens.invalidated)
 	}
 }
