@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -239,12 +240,31 @@ func (d *delegate) createSession(ctx context.Context, harness, instance, purpose
 	return created.SessionID, nil
 }
 
+// escapePathSegment percent-encodes a session id so it occupies exactly one
+// path segment on the wire.
+//
+// The id is llm-bridge-server's, not this process's: createSession reads it
+// out of the create answer's session_id field and every call below aims at it.
+// Concatenated raw, an id carrying "/", "?" or "#" addresses a different
+// endpoint than the one asked for, and does so silently — net/http drops a
+// fragment and everything after it before the request leaves, and the server
+// routes on the path alone, so the wrong request gets an ordinary answer.
+// stop is the sharpest of the three: it reports only transport errors, so a
+// stop aimed at the wrong endpoint leaves the delegate session running and
+// says nothing.
+//
+// PathEscape is a no-op for every well-formed session id, so no legitimate
+// call changes.
+func escapePathSegment(segment string) string {
+	return url.PathEscape(segment)
+}
+
 func (d *delegate) send(ctx context.Context, sessionID, prompt string) error {
 	body, err := json.Marshal(msg.SendMessageRequest{Message: prompt})
 	if err != nil {
 		return err
 	}
-	resp, err := d.post(ctx, "/sessions/"+sessionID+"/send", body)
+	resp, err := d.post(ctx, "/sessions/"+escapePathSegment(sessionID)+"/send", body)
 	if err != nil {
 		return err
 	}
@@ -261,7 +281,7 @@ func (d *delegate) send(ctx context.Context, sessionID, prompt string) error {
 func (d *delegate) stop(sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	resp, err := d.post(ctx, "/sessions/"+sessionID+"/stop", nil)
+	resp, err := d.post(ctx, "/sessions/"+escapePathSegment(sessionID)+"/stop", nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[bridge-agent] warning: stop session %s: %v\n", sessionID, err)
 		return
@@ -271,7 +291,7 @@ func (d *delegate) stop(sessionID string) {
 
 // subscribe opens the SSE event stream and decodes each frame into a msg.Event.
 func (d *delegate) subscribe(ctx context.Context, sessionID string) (<-chan msg.Event, func(), error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.server+"/sessions/"+sessionID+"/events", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.server+"/sessions/"+escapePathSegment(sessionID)+"/events", nil)
 	if err != nil {
 		return nil, nil, err
 	}
