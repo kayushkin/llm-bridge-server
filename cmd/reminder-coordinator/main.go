@@ -1436,7 +1436,9 @@ func (h *Herald) Relay(from, title, message string) error {
 type NoteboardClient struct{ BaseURL string }
 
 func (n *NoteboardClient) ListOpen(tag string) ([]*model.Item, error) {
-	return n.list(fmt.Sprintf("/api/items?type=todo&status=open&tag=%s&limit=500", tag))
+	return n.list("/api/items?" + url.Values{
+		"type": {"todo"}, "status": {"open"}, "tag": {tag}, "limit": {"500"},
+	}.Encode())
 }
 
 // ListAllStatuses covers the calendar teardown path: an item that was completed
@@ -1444,7 +1446,9 @@ func (n *NoteboardClient) ListOpen(tag string) ([]*model.Item, error) {
 func (n *NoteboardClient) ListAllStatuses(tag string) ([]*model.Item, error) {
 	all := []*model.Item{}
 	for _, status := range []string{"open", "done", "archived"} {
-		items, err := n.list(fmt.Sprintf("/api/items?type=todo&status=%s&tag=%s&limit=500", status, tag))
+		items, err := n.list("/api/items?" + url.Values{
+			"type": {"todo"}, "status": {status}, "tag": {tag}, "limit": {"500"},
+		}.Encode())
 		if err != nil {
 			return nil, err
 		}
@@ -1471,11 +1475,15 @@ func (n *NoteboardClient) ListScheduled(tag string) ([]*model.Item, error) {
 }
 
 func (n *NoteboardClient) ListChildren(parentID string) ([]*model.Item, error) {
-	return n.list("/api/items?parent_id=" + parentID + "&limit=500")
+	return n.list("/api/items?" + url.Values{
+		"parent_id": {parentID}, "limit": {"500"},
+	}.Encode())
 }
 
 func (n *NoteboardClient) FindByTag(itemType, tag string) (*model.Item, error) {
-	items, err := n.list(fmt.Sprintf("/api/items?type=%s&tag=%s&limit=10", itemType, tag))
+	items, err := n.list("/api/items?" + url.Values{
+		"type": {itemType}, "tag": {tag}, "limit": {"10"},
+	}.Encode())
 	if err != nil {
 		return nil, err
 	}
