@@ -61,16 +61,29 @@ func restEscapesBackendPath(rest string) bool {
 	return cleaned == ".." || strings.HasPrefix(cleaned, "../")
 }
 
-// handleHarnessProxy forwards an authenticated request to the
-// corresponding harness backend on the bridge host. Path layout:
+// handleHarnessProxy forwards a request to the corresponding harness
+// backend on the bridge host. Path layout:
 //
 //	/api/harness-proxy/{harness}/<rest> → <backend>/<rest>
 //
-// Method, query string, headers, and request body are passed through
-// verbatim. Response is streamed back so SSE-style backends keep
-// working. The request body is read with a generous limit but no
-// rewriting; runners are trusted (they presented a valid
-// runner_token earlier on the WS).
+// This route authenticates nobody. Its two sibling seed proxies,
+// proxyAgentStore and proxySkillStore, registered a few lines above it
+// in server.go, both call authorizeRunnerRequest and answer 401. This
+// one has no gate, and neither ServeHTTP nor the mux supplies one.
+//
+// What made that look settled is that runners reach the bridge over
+// /api/runner/ws having presented a runner_token, and the header loop
+// below strips an incoming Authorization as though one were always
+// there. But this is plain HTTP on the same mux, and nothing ties a
+// request arriving on it to that handshake, so the caller is whoever
+// can reach the listener. Whether to add the gate or leave the route
+// open on purpose is still open — noteboard card f4e5e1ef — and the
+// wider exposure it sits inside is f02351f2.
+//
+// Method, query string, headers and request body pass through
+// verbatim. The body streams straight to the upstream under no size
+// limit: this handler sets none, and nothing wraps the mux. The
+// response streams back, so SSE-style backends keep working.
 //
 // The one thing not passed through is a <rest> that climbs above the
 // backend's own path — see restEscapesBackendPath — which is refused
@@ -113,8 +126,9 @@ func (s *Server) handleHarnessProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, vs := range r.Header {
-		// Strip hop-by-hop headers and the runner's bearer (it's for the
-		// bridge, not for the upstream).
+		// Strip hop-by-hop headers, and the caller's Authorization with
+		// them: it addresses the bridge, not the upstream. On this route
+		// the bridge does not read it either — see the doc comment above.
 		switch strings.ToLower(k) {
 		case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
 			"te", "trailer", "transfer-encoding", "upgrade", "authorization":
