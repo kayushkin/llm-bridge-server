@@ -41,6 +41,12 @@ func TestDiscoverAnnouncesLogStoreBeforeImporting(t *testing.T) {
 
 	const sentinelLogStore = "http://127.0.0.1:1/sentinel-log-store"
 
+	// Discovery walks $HOME and imports one subprocess per session it has
+	// not seen. Against the real home directory that is thousands of them;
+	// against this one it is exactly the rollout planted below, which is
+	// also what stops the "nothing discovered" skip below from firing.
+	fixtureSessionID := isolateHarnessSessionDiscovery(t)
+
 	dir := t.TempDir()
 	st, err := store.New(filepath.Join(dir, "test.db"))
 	if err != nil {
@@ -85,6 +91,18 @@ func TestDiscoverAnnouncesLogStoreBeforeImporting(t *testing.T) {
 	}
 	if len(discovered) == 0 {
 		t.Skip("no harness sessions discovered on this host; the announcement is not exercised")
+	}
+	// The planted rollout is the session discovery is meant to have adopted.
+	// Checking it by name keeps the isolation honest: if HOME stopped being
+	// the lever that moves discovery, this test would silently go back to
+	// walking the developer's real transcripts and would still pass.
+	if len(discovered) != 1 || discovered[0].HarnessSessionID != fixtureSessionID {
+		ids := make([]string, 0, len(discovered))
+		for _, d := range discovered {
+			ids = append(ids, d.HarnessSessionID)
+		}
+		t.Fatalf("discovery adopted %d sessions %v, want exactly the planted fixture %q — discovery is not reading the isolated HOME",
+			len(discovered), ids, fixtureSessionID)
 	}
 
 	lines := strings.Split(captured.String(), "\n")

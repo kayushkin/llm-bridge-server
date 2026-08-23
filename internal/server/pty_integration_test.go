@@ -98,8 +98,21 @@ func TestPTYIntegration_ClaudeCode_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session mid-run: %v", err)
 	}
-	if msg.SessionState(finalDuringRun.State) != msg.SessionRunning {
-		t.Fatalf("session state mid-run = %q, want running (claude exited prematurely?)", finalDuringRun.State)
+	// What this pins is that the subprocess is still ALIVE, which is what
+	// the paragraph above describes. It is deliberately not an equality
+	// check against one state: nothing moves a PTY session off "starting"
+	// (no UpdateSessionState call in the pty path does, and PTY has no
+	// harness-announcement hook like server.go's events-mode idle
+	// transition), so a live pty session reads "starting" for its whole
+	// life. The previous assertion wanted msg.SessionRunning, which is
+	// both unreachable here and deprecated in llm-bridge's msg package in
+	// favour of SessionModelGenerating / SessionToolRunning.
+	//
+	// IsActive is llm-bridge's own answer to "does this state imply a live
+	// subprocess", so use it rather than restating the live-state list
+	// here and letting the two drift.
+	if !msg.SessionState(finalDuringRun.State).IsActive() {
+		t.Fatalf("session state mid-run = %q, want a live state (claude exited prematurely?)", finalDuringRun.State)
 	}
 
 	// Stop the session — exercises the writer-side teardown path the way
@@ -179,8 +192,15 @@ func createPTYSession(t *testing.T, baseURL, instID string) (string, string) {
 	if sess.Mode != msg.SessionModePTY {
 		t.Fatalf("session mode = %q, want pty", sess.Mode)
 	}
-	if sess.State != string(msg.SessionRunning) {
-		t.Fatalf("session state = %q, want running (auto_start)", sess.State)
+	// auto_start reports the state the session is actually in when the
+	// create response is written: the harness process has been spawned but
+	// has not yet announced itself, which is "starting", not "running".
+	// Server-side this is sessions.go's auto_start branch, narrowed from
+	// running to starting by 72cc3c8 ("Say what a session is actually
+	// doing"). Nothing in the default suite pins that branch, so this
+	// assertion is the only executable statement of it.
+	if sess.State != string(msg.SessionStarting) {
+		t.Fatalf("session state = %q, want starting (auto_start)", sess.State)
 	}
 	if sess.AttachToken == "" {
 		t.Fatalf("attach_token missing in pty create response")
