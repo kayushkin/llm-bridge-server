@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
@@ -120,8 +121,20 @@ func anthropicSecret(c *authstoreclient.Resolved) (string, error) {
 
 // assetURL composes the canonical /api/runner/binary URL for a backend
 // service binary.
+//
+// The three values are escaped rather than concatenated because os and arch
+// arrive verbatim in the runner's Hello frame (runner.go builds the
+// ManifestContext from conn.Hello) and nothing between the socket and here
+// checks them against a GOOS or GOARCH set. Concatenated, an os of
+// "linux&arch=other" put a second arch ahead of the real one, and
+// url.Values.Get returns the first — so the value a runner sent for one
+// parameter decided what the server read for another.
 func assetURL(serverURL, name, os, arch string) string {
 	base := strings.TrimRight(serverURL, "/") + "/api/runner/binary"
-	q := fmt.Sprintf("?name=%s&os=%s&arch=%s", name, os, arch)
-	return base + q
+	q := url.Values{
+		"name": {name},
+		"os":   {os},
+		"arch": {arch},
+	}
+	return base + "?" + q.Encode()
 }
