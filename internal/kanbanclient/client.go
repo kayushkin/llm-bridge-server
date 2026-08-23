@@ -65,6 +65,31 @@ func New(baseURL, serviceToken string) *Client {
 	}
 }
 
+// escapePathSegment percent-encodes a value so it occupies exactly one segment
+// of the request path.
+//
+// Every value below is chosen by some other process, never by this one:
+// kanban-store minted the board, card and link ids, llm-bridge-server minted
+// the session ids used as entity refs, and DeleteEntityTag sends back a tag it
+// just read out of kanban-store. Interpolated raw, a value carrying "/", "?"
+// or "#" addresses a different endpoint than the one asked for, and none of it
+// surfaces as an error — the wrong request gets an ordinary 200:
+//
+//	"a/b"             -> /api/boards/a/b/columns        an extra path segment
+//	"sess?agent=root" -> /api/boards/sess?agent=root/…  a query string
+//	"sess#frag"       -> /api/boards/sess               the rest of the URL is dropped
+//	"../boards"       -> /api/boards/../boards/…        climbs out of the collection
+//	"sess%2Fb"        -> arrives decoded, so a slash again
+//
+// PathEscape is a no-op for every well-formed kanban id, session id and tag,
+// so no legitimate call changes.
+//
+// It must be PathEscape and not QueryEscape: QueryEscape encodes a space as
+// "+", which inside a path segment is a literal plus rather than a space.
+func escapePathSegment(segment string) string {
+	return url.PathEscape(segment)
+}
+
 // ============================ Boards & columns ============================
 
 type Board struct {
@@ -131,7 +156,7 @@ func (c *Client) GetBoard(id string) (*Board, error) {
 	if id == "" {
 		return nil, errors.New("kanbanclient: GetBoard called with an empty board id")
 	}
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s", c.BaseURL, id))
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s", c.BaseURL, escapePathSegment(id)))
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +262,7 @@ func (c *Client) GetCardEffectiveDefaults(boardID, cardID string) (*EffectiveDef
 	if boardID == "" || cardID == "" {
 		return nil, fmt.Errorf("kanbanclient: GetCardEffectiveDefaults needs a board id and a card id, got board %q card %q", boardID, cardID)
 	}
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s/cards/%s/effective-defaults", c.BaseURL, boardID, cardID))
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s/cards/%s/effective-defaults", c.BaseURL, escapePathSegment(boardID), escapePathSegment(cardID)))
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +422,7 @@ func (c *Client) createBoard(name string) (*Board, error) {
 }
 
 func (c *Client) ListColumns(boardID string) ([]Column, error) {
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s/columns", c.BaseURL, boardID))
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s/columns", c.BaseURL, escapePathSegment(boardID)))
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +443,7 @@ func (c *Client) createColumn(boardID, name string, autoStatus *string) (*Column
 		payload["auto_status"] = *autoStatus
 	}
 	body, _ := json.Marshal(payload)
-	resp, err := c.HTTP.Post(fmt.Sprintf("%s/api/boards/%s/columns", c.BaseURL, boardID),
+	resp, err := c.HTTP.Post(fmt.Sprintf("%s/api/boards/%s/columns", c.BaseURL, escapePathSegment(boardID)),
 		"application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -481,7 +506,7 @@ type BoardView struct {
 
 // GetBoardView returns the full board+columns+cards tree.
 func (c *Client) GetBoardView(boardID string) (*BoardView, error) {
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s/cards", c.BaseURL, boardID))
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s/cards", c.BaseURL, escapePathSegment(boardID)))
 	if err != nil {
 		return nil, err
 	}
@@ -548,7 +573,7 @@ func (c *Client) CreateCard(a CreateCardArgs) (cardID string, err error) {
 		payload["hold_reason"] = a.HoldReason
 	}
 	body, _ := json.Marshal(payload)
-	url := fmt.Sprintf("%s/api/boards/%s/cards", c.BaseURL, c.BoardID)
+	url := fmt.Sprintf("%s/api/boards/%s/cards", c.BaseURL, escapePathSegment(c.BoardID))
 	resp, err := c.HTTP.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -616,7 +641,7 @@ func (c *Client) PutTicket(cardID, requesterPrincipalID, channel, sourceEntityTy
 		"source_entity_ref":      sourceEntityRef,
 	})
 	req, err := http.NewRequest(http.MethodPut,
-		fmt.Sprintf("%s/api/cards/%s/ticket", c.BaseURL, cardID), bytes.NewReader(body))
+		fmt.Sprintf("%s/api/cards/%s/ticket", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -640,7 +665,7 @@ func (c *Client) AddCardLink(cardID, entityType, entityRef, label string) error 
 	}
 	body, _ := json.Marshal(payload)
 	resp, err := c.HTTP.Post(
-		fmt.Sprintf("%s/api/cards/%s/links", c.BaseURL, cardID),
+		fmt.Sprintf("%s/api/cards/%s/links", c.BaseURL, escapePathSegment(cardID)),
 		"application/json", bytes.NewReader(body),
 	)
 	if err != nil {
@@ -655,7 +680,7 @@ func (c *Client) AddCardLink(cardID, entityType, entityRef, label string) error 
 
 // ListCardLinks returns all entity-link rows for a card.
 func (c *Client) ListCardLinks(cardID string) ([]CardLink, error) {
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/cards/%s/links", c.BaseURL, cardID))
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/cards/%s/links", c.BaseURL, escapePathSegment(cardID)))
 	if err != nil {
 		return nil, err
 	}
@@ -681,7 +706,7 @@ func (c *Client) MoveCard(cardID, boardID, columnID string, position float64) er
 		"position":  position,
 	}
 	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/cards/%s/move", c.BaseURL, cardID), bytes.NewReader(body))
+	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/cards/%s/move", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -705,7 +730,7 @@ func (c *Client) MoveCard(cardID, boardID, columnID string, position float64) er
 // destroys the old value with no recoverable history.
 func (c *Client) PatchCard(cardID string, fields map[string]any) error {
 	payload, _ := json.Marshal(fields)
-	req, _ := http.NewRequest("PATCH", fmt.Sprintf("%s/api/cards/%s", c.BaseURL, cardID), bytes.NewReader(payload))
+	req, _ := http.NewRequest("PATCH", fmt.Sprintf("%s/api/cards/%s", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -729,7 +754,7 @@ func (c *Client) PatchCardBody(cardID, body string) error {
 // reads this board's columns.
 func (c *Client) HoldCard(cardID, reason string) error {
 	payload, _ := json.Marshal(map[string]any{"reason": reason})
-	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/cards/%s/hold", c.BaseURL, cardID), bytes.NewReader(payload))
+	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/cards/%s/hold", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -754,7 +779,7 @@ type EntityTag struct {
 // ListEntityTags returns all tags on a single (entity_type, entity_ref) pair.
 func (c *Client) ListEntityTags(entityType, entityRef string) ([]EntityTag, error) {
 	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/entities/%s/%s/tags",
-		c.BaseURL, entityType, entityRef))
+		c.BaseURL, escapePathSegment(entityType), escapePathSegment(entityRef)))
 	if err != nil {
 		return nil, err
 	}
@@ -773,7 +798,7 @@ func (c *Client) ListEntityTags(entityType, entityRef string) ([]EntityTag, erro
 func (c *Client) AddEntityTag(entityType, entityRef, tag string) error {
 	body, _ := json.Marshal(map[string]any{"tag": tag})
 	resp, err := c.HTTP.Post(
-		fmt.Sprintf("%s/api/entities/%s/%s/tags", c.BaseURL, entityType, entityRef),
+		fmt.Sprintf("%s/api/entities/%s/%s/tags", c.BaseURL, escapePathSegment(entityType), escapePathSegment(entityRef)),
 		"application/json", bytes.NewReader(body),
 	)
 	if err != nil {
@@ -789,7 +814,7 @@ func (c *Client) AddEntityTag(entityType, entityRef, tag string) error {
 // DeleteEntityTag removes a single tag from (entity_type, entity_ref).
 func (c *Client) DeleteEntityTag(entityType, entityRef, tag string) error {
 	req, _ := http.NewRequest("DELETE",
-		fmt.Sprintf("%s/api/entities/%s/%s/tags/%s", c.BaseURL, entityType, entityRef, tag), nil)
+		fmt.Sprintf("%s/api/entities/%s/%s/tags/%s", c.BaseURL, escapePathSegment(entityType), escapePathSegment(entityRef), escapePathSegment(tag)), nil)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -812,7 +837,7 @@ type EntityCardEntry struct {
 // ListCardsForEntity returns the cards linked to (entity_type, entity_ref).
 func (c *Client) ListCardsForEntity(entityType, entityRef string) ([]EntityCardEntry, error) {
 	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/entities/%s/%s/cards",
-		c.BaseURL, entityType, entityRef))
+		c.BaseURL, escapePathSegment(entityType), escapePathSegment(entityRef)))
 	if err != nil {
 		return nil, err
 	}
@@ -842,7 +867,7 @@ func statusErr(op string, resp *http.Response) error {
 // to learn what is already filed — would then see that email as unfiled and file
 // it a second time.
 func (c *Client) DeleteCardLink(linkID string) error {
-	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/api/links/%s", c.BaseURL, linkID), nil)
+	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/api/links/%s", c.BaseURL, escapePathSegment(linkID)), nil)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -861,7 +886,7 @@ func (c *Client) DeleteCardLink(linkID string) error {
 // taking a card off a board is a presentation decision, not a decision to
 // destroy the work it describes.
 func (c *Client) DetachCardFromBoard(boardID, cardID string) error {
-	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/api/boards/%s/cards/%s", c.BaseURL, boardID, cardID), nil)
+	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/api/boards/%s/cards/%s", c.BaseURL, escapePathSegment(boardID), escapePathSegment(cardID)), nil)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
