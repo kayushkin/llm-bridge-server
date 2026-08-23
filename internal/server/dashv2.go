@@ -129,7 +129,12 @@ func (s *Server) handleSessionsValidators(w http.ResponseWriter, r *http.Request
 		writeJSON(w, map[string]Validator{})
 		return
 	}
-	target := fmt.Sprintf("%s/api/v1/sessions/validators?ids=%s", s.cfg.LogStoreURL, ids)
+	// url.Values, not concatenation: `ids` is whatever the caller sent, and an
+	// `&` in it would add parameters to a request this server makes on the
+	// caller's behalf, against a log-store the caller may not be able to reach.
+	// log-store reads this back with r.URL.Query().Get("ids") and splits on ",",
+	// so an escaped comma round-trips.
+	target := s.cfg.LogStoreURL + "/api/v1/sessions/validators?" + url.Values{"ids": {ids}}.Encode()
 	resp, err := http.Get(target)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("log-store unreachable: %v", err), http.StatusBadGateway)
@@ -227,8 +232,16 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 // raw TurnModel JSON, decoded streaming from the response body (no full-body
 // buffer + re-marshal). A missing id maps to a null model.
 func (s *Server) fetchBundleModels(ids []string, turns int) (map[string]json.RawMessage, error) {
-	target := fmt.Sprintf("%s/api/v1/sessions/bundle?ids=%s&turns=%d",
-		s.cfg.LogStoreURL, strings.Join(ids, ","), turns)
+	// The ids here come off the store, not off the inbound request — but that
+	// is not a reason to concatenate them. handleCreateSession honours a
+	// caller-minted `session_id` without constraining its characters, so an id
+	// carrying `&` is STORED and then rides every later recent-bundle call,
+	// including bundles covering sessions the caller has nothing to do with.
+	q := url.Values{
+		"ids":   {strings.Join(ids, ",")},
+		"turns": {strconv.Itoa(turns)},
+	}
+	target := s.cfg.LogStoreURL + "/api/v1/sessions/bundle?" + q.Encode()
 	resp, err := http.Get(target)
 	if err != nil {
 		return nil, err
