@@ -954,22 +954,100 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 		// normal shape of the escape hatch — the gate interrupted it, so
 		// there is nothing left to forward the config to. Forwarding
 		// anyway would fail with "session not running" and report the
-		// revival as an error even though the ceiling was saved. Only
-		// budget-only requests take this path; anything that also
-		// carries harness config still needs a harness to carry it to.
+		// revival as an error even though the ceiling was saved.
 		if !carriesHarnessConfig(req) && s.harness.Get(bridgeID) == nil {
 			writeJSON(w, sess)
 			return
 		}
 	}
 
+	// No live process, but harness config to apply: PERSIST it instead of
+	// forwarding, and let the spawn pick it up.
+	//
+	// ⚠️ This branch used to be an error, on the stated reasoning that harness
+	// config "still needs a harness to carry it to". That is not true of this
+	// server: `startParams` (internal/harness/process.go:145) merges the stored
+	// `harness_config` into the params it spawns with, which is exactly how
+	// `permission_mode` already reaches a session that has never run.
+	//
+	// What the old behaviour cost: a freshly created session is in the database
+	// and has no process until the first send starts one, so a client that
+	// configures between create and send — which is the normal shape of "new chat
+	// with a model chosen", chat-core's `send` does precisely that — got a 500
+	// and the config was DROPPED. The session then ran on the harness default
+	// while the picker showed the user's choice. A silent wrong answer, not a
+	// visible failure, which is why it survived.
+	//
+	// Merged into whatever is already stored, never written over it: a bare
+	// replace would delete the `permission_mode` the create path had just put
+	// there. Same rule, and the same reason, as `hooks_resolve.go`.
+	if s.harness.Get(bridgeID) == nil {
+		merged, err := mergeHarnessConfig(sess.HarnessConfig, req)
+		if err != nil {
+			http.Error(w, "merge harness_config: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := s.store.UpdateSessionHarnessConfig(bridgeID, merged); err != nil {
+			http.Error(w, "persist harness_config: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sess.HarnessConfig = merged
+		writeJSON(w, sess)
+		return
+	}
+
 	params, _ := json.Marshal(req)
 	if err := s.harness.SendCommand(bridgeID, "config:"+string(params)); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// A CONFLICT, not a server fault: the caller asked a session to change
+		// something it is not in a state to change. 500 said the server broke, which
+		// sent every reader of this endpoint looking in the wrong place.
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 
 	writeJSON(w, sess)
+}
+
+// mergeHarnessConfig folds the harness-facing fields of a config request into a
+// session's stored `harness_config` blob, leaving every other key alone.
+//
+// Only the three fields `carriesHarnessConfig` recognises are written, and only
+// when set — `max_budget` is server state persisted separately, and an unset
+// field means "leave this as it is" rather than "clear it".
+func mergeHarnessConfig(current json.RawMessage, req ConfigSessionRequest) (json.RawMessage, error) {
+	cfg := map[string]json.RawMessage{}
+	if len(current) > 0 {
+		if err := json.Unmarshal(current, &cfg); err != nil {
+			// Refused rather than replaced. An unreadable blob is not licence to
+			// throw away whatever a running session was configured with.
+			return nil, fmt.Errorf("stored harness_config is not an object: %w", err)
+		}
+	}
+	set := func(key, value string) error {
+		if value == "" {
+			return nil
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		cfg[key] = raw
+		return nil
+	}
+	if err := set("model", req.Model); err != nil {
+		return nil, err
+	}
+	if err := set("effort", req.Effort); err != nil {
+		return nil, err
+	}
+	if req.DisabledTools != nil {
+		raw, err := json.Marshal(req.DisabledTools)
+		if err != nil {
+			return nil, err
+		}
+		cfg["disabled_tools"] = raw
+	}
+	return json.Marshal(cfg)
 }
 
 func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) {
