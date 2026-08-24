@@ -1593,8 +1593,30 @@ func (n *NoteboardClient) CreateItem(req *model.CreateItemRequest) (*model.Item,
 	return &created, nil
 }
 
+// itemPath addresses one noteboard item, keeping the id inside a single path
+// segment however it is spelled. The id is not ours: noteboard assigns it and the
+// coordinator reads it back off a list answer, so nothing here constrains its
+// shape. An id carrying "/" opens further segments and re-points the request at
+// another noteboard route; "?" or "#" ends the path early, so the call addresses a
+// DIFFERENT item and reports success.
+//
+// This one is a WRITE, which is what separates it from the read sites. A
+// re-pointed PATCH does not return the wrong answer — it edits the wrong row, on a
+// service with no auth at all, and answers 200. `~/CLAUDE.md` records that an
+// UPDATE in noteboard is the one operation that can still destroy data, because
+// its revision snapshot covers 8 of 20 columns and not `rank`, `due_at` or
+// `schedule` — the very fields SetSchedule writes through here.
+//
+// PathEscape, not QueryEscape, for the same reason calendarEventPath gives: this
+// is a path position, and QueryEscape writes a space as "+", a literal plus in a
+// path segment. The query-string sites a few lines up correctly use url.Values
+// instead, because PathEscape does not escape "&".
+func itemPath(id string) string {
+	return "/api/items/" + url.PathEscape(id)
+}
+
 func (n *NoteboardClient) Patch(id string, fields map[string]any) error {
-	return n.do("PATCH", "/api/items/"+id, fields, nil)
+	return n.do("PATCH", itemPath(id), fields, nil)
 }
 
 // SetSchedule writes back the coordinator's bookkeeping (last_materialized_at,
