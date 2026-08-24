@@ -354,7 +354,11 @@ func main() {
 		} else {
 			log.Printf("[%s] session is UNCAPPED — %s", d.provider, why)
 		}
-		sessionID, err := publishWorker(natsClient, p, workerPrompt, maxBudgetUSD)
+		workingDir := ""
+		if queueCard != nil {
+			workingDir = queueCard.workingDir
+		}
+		sessionID, err := publishWorker(natsClient, p, workerPrompt, maxBudgetUSD, workingDir)
 		if err != nil {
 			log.Printf("[%s] publish failed: %v", d.provider, err)
 			continue
@@ -471,6 +475,12 @@ type queueCandidate struct {
 	body   string
 	tags   []string
 	item   map[string]any
+	// workingDir is the directory the agent's harness runs in, read from the
+	// card's `repo` link. Empty means "wherever the instance puts you", which
+	// until now was the only answer available: nothing in this repo set
+	// WorkingDir, so every dispatched agent started in ~/repos and found its
+	// project only because the prompt said so in prose.
+	workingDir string
 	// maxBudgetUSD is the per-session cost cap handed to the harness, derived
 	// from the card's spend ceiling minus what it has already cost. Zero means
 	// "no ceiling on this card" — NOT "no budget" — and is why the dispatch path
@@ -594,6 +604,15 @@ func selectQueuedCard(qc *kanbanclient.Client, cfg config) (*queueCandidate, err
 			tags:   tags,
 			item:   c.Item,
 		}
+		workingDir, err := repoWorkingDir(c.Links)
+		if err != nil {
+			// Skip rather than dispatch into the wrong tree. An agent told to
+			// change a repo, started somewhere else, does not fail — it works on
+			// whatever it finds, which is the expensive kind of wrong.
+			log.Printf("queue: skip card %s — %v", cand.cardID, err)
+			continue
+		}
+		cand.workingDir = workingDir
 
 		// Spend ceiling. A card that has already spent its ceiling is held here
 		// and skipped, rather than dispatched: firing a session for it would
@@ -770,7 +789,7 @@ func applySessionSpendCeiling(create *msg.CreateSessionRequest, maxBudgetUSD flo
 //
 // maxBudgetUSD, when > 0, becomes the session's per-session cost cap on both the
 // server-side and the harness-native enforcer — see applySessionSpendCeiling.
-func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetUSD float64) (string, error) {
+func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetUSD float64, workingDir string) (string, error) {
 	now := time.Now().UTC()
 	// Mint the canonical session_id here. Adapter passes BusSessionID through
 	// as bridge-server session_id (see llm-bridge-adapter@73c7cb5), so this
@@ -789,6 +808,10 @@ func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetU
 	if err := applySessionSpendCeiling(create, maxBudgetUSD); err != nil {
 		return "", err
 	}
+	// Top of the four-level cascade: session > Instance.WorkingDir >
+	// Machine.DefaultWorkingDir > whatever the spawning process had. Left empty
+	// the instance decides, which is the previous behaviour exactly.
+	create.WorkingDir = workingDir
 
 	in := messages.BridgeInbound{
 		BusSessionID: sessionID,
@@ -911,3 +934,44 @@ Steps:
 7. If every top todo is blocked, stop — better to do nothing than the wrong thing.
 
 Be self-contained. No chat; just work and close out the todo.`
+
+// repoWorkingDir reads the directory an agent should work in from a card's
+// links.
+//
+// The `repo` entity type has been registered in kanban-store since the
+// beginning and read by nothing: its entity_ref is documented as a local
+// filesystem path. This is the first consumer.
+//
+// Two failure modes are refused rather than guessed at. A card carrying two
+// repo links does not say which one the work is in, and a path that is not a
+// directory on this host cannot be worked in at all. Either would otherwise
+// land an agent in an arbitrary tree holding a prompt that tells it to change
+// things, which does not fail — it succeeds against the wrong repo.
+func repoWorkingDir(links []kanbanclient.CardLink) (string, error) {
+	var found []string
+	for _, l := range links {
+		if l.EntityType == "repo" && strings.TrimSpace(l.EntityRef) != "" {
+			found = append(found, l.EntityRef)
+		}
+	}
+	switch len(found) {
+	case 0:
+		// No repo link is not an error: the fleet's ordinary todo work is not
+		// scoped to a tree, and the instance's own working dir still applies.
+		return "", nil
+	case 1:
+	default:
+		return "", fmt.Errorf("it carries %d repo links (%s) and so does not say which tree the work is in",
+			len(found), strings.Join(found, ", "))
+	}
+
+	path := found[0]
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("its repo link points at %s, which cannot be read here: %w", path, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("its repo link points at %s, which is not a directory", path)
+	}
+	return path, nil
+}
