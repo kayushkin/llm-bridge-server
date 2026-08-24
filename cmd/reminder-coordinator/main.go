@@ -1677,12 +1677,29 @@ func (g *GoogleCalendarMirror) CreateEvent(token string, item *model.Item) (stri
 	return created.ID, nil
 }
 
+// calendarEventPath addresses one event, keeping the id inside a single path
+// segment however it is spelled. The id is not ours: splitCalendarLinks trims it
+// off an entry in a noteboard item's `links` array, and noteboard constrains
+// nothing in that array. An id carrying "/" opens further segments and re-points
+// the request at another dash route; "?" or "#" ends the path early, so the call
+// addresses a DIFFERENT event and reports success. Both requests carry the
+// DASH_TOKEN, so a re-pointed path is an authenticated call the coordinator never
+// meant to make.
+//
+// PathEscape, not QueryEscape: this is a path segment, and QueryEscape would write
+// a space as "+", which is a literal plus in a path. The converse also holds —
+// PathEscape does not escape "&", which is why the query-string sites a few
+// hundred lines up use url.Values instead.
+func calendarEventPath(eventID string) string {
+	return "/api/calendar/google/" + url.PathEscape(eventID)
+}
+
 func (g *GoogleCalendarMirror) UpdateEvent(token, eventID string, item *model.Item) error {
-	return g.do(token, "PUT", "/api/calendar/google/"+eventID, eventPayload(item), nil)
+	return g.do(token, "PUT", calendarEventPath(eventID), eventPayload(item), nil)
 }
 
 func (g *GoogleCalendarMirror) DeleteEvent(token, eventID string) error {
-	err := g.do(token, "DELETE", "/api/calendar/google/"+eventID, nil, nil)
+	err := g.do(token, "DELETE", calendarEventPath(eventID), nil, nil)
 	// Google leaves a `cancelled` tombstone, and re-deleting one returns 410. An
 	// event that is already gone is the state we wanted.
 	if err != nil && (strings.Contains(err.Error(), "410") || strings.Contains(err.Error(), "404")) {
