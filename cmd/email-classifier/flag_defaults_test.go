@@ -11,14 +11,14 @@ import (
 //
 // Every one of these was unreachable until parseFlags was lifted out of main().
 // The suite in priority_test.go, session_test.go and text_test.go builds its own
-// fixtures, so every value it asserts is one the tests chose; the eighteen
+// fixtures, so every value it asserts is one the tests chose; the twenty-three
 // values this binary actually starts with had never been read by anything.
 //
 // Two families are worth more than the rest here:
 //
-//   - The SIX switches that turn a tick into a no-op. Five are early exits
-//     (-register, -merge, -backfill-due, -refile-unread-since, -dump-digest)
-//     and the sixth (-dry-run) neuters the writes. Any one of them shipping ON leaves a binary that runs
+//   - The EIGHT switches that turn a tick into a no-op. Seven are early exits
+//     (-register, -merge, -backfill-due, -refile-unread-since, -sender,
+//     -message, -dump-digest) and the eighth (-dry-run) neuters the writes. Any one of them shipping ON leaves a binary that runs
 //     every 15 minutes, reads the board, logs, exits 0 and files nothing — which
 //     from outside is a quiet mailbox.
 //   - The TWO that decide spend. -model picks which model reads every digest,
@@ -68,6 +68,11 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		{"-merge", cfg.MergePass, false},
 		{"-backfill-due", cfg.BackfillDue, false},
 		{"-refile-unread-since", cfg.RefileUnreadSince, ""},
+		{"-noteboard-url", cfg.NoteboardURL, "http://localhost:8191"},
+		{"-sender", cfg.SenderQuery, ""},
+		{"-message", cfg.MessageQuery, ""},
+		{"-note", cfg.NoteText, ""},
+		{"-delete-note", cfg.DeleteNote, false},
 
 		{"SCHEDULER_URL", cfg.SchedulerURL, "http://localhost:8092"},
 		{"registered command", cfg.BinaryPath, "/home/someone/bin/email-classifier"},
@@ -111,9 +116,9 @@ func TestTheDefaultBoardIsResolvedByNameOnlyAsAFallback(t *testing.T) {
 // they are off but what ON would look like from outside: a tick that reads the
 // board, logs a full pass, files nothing, and exits 0.
 //
-// This binary has six of them where its siblings have one. Five are early exits
-// that return before any new mail is read at all, and -refile-unread-since is
-// the one whose no-op is not harmless: shipped ON it would strip mail off the
+// This binary has eight of them where its siblings have one. Seven are early
+// exits that return before any new mail is read at all, and -refile-unread-since
+// is the one whose no-op is not harmless: shipped ON it would strip mail off the
 // board every fifteen minutes.
 func TestEveryNoOpSwitchShipsOff(t *testing.T) {
 	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
@@ -129,6 +134,8 @@ func TestEveryNoOpSwitchShipsOff(t *testing.T) {
 		{"-merge", cfg.MergePass, "every tick runs the merge pass and returns, filing no new mail at all"},
 		{"-backfill-due", cfg.BackfillDue, "every tick runs the one-off deadline recovery and returns, filing no new mail"},
 		{"-refile-unread-since", cfg.RefileUnreadSince != "", "every tick unfiles mail off the board and returns, filing no new mail"},
+		{"-sender", cfg.SenderQuery != "", "every tick reports on one address and returns, filing no new mail"},
+		{"-message", cfg.MessageQuery != "", "every tick reports on one message and returns, filing no new mail"},
 		{"-dump-digest", cfg.DumpDigest, "every tick prints the digest to stdout and never calls the model or writes a card"},
 		{"-dry-run", cfg.DryRun, "every tick classifies at full model cost and writes nothing to kanban-store"},
 	} {

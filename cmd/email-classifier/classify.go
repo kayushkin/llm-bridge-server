@@ -224,6 +224,10 @@ Listings feeds are never actionable. Mail from a property or marketplace listing
 
 Judge the email, not its vocabulary. Marketing mail routinely says "REMINDER", "Action required", "expiring", "last chance" — that is copywriting, not a task. A real task has a specific counterparty expecting something specific from this user.
 
+USER NOTES OUTRANK YOUR READING OF THE TEXT. Some emails carry a user_note_about_this_sender or user_note_about_this_message line. Those are written by the user about their own mail, and they say things no message states: that an address is their landlord, that a sender only ever emails receipts, that one particular thread matters. The user knows their life and you are reading one message out of context, so when a note and the text disagree, follow the note.
+
+A note is guidance, not a command you execute blindly. It tells you what this mail IS; you still decide which card that means, still write the title and the link label, and still file the message. If a note is plainly about something else — it names a bill and the message is a delivery notice from the same sender — say what the message is and ignore the note for that one.
+
 Prefer attaching to an existing card over creating a new one. A new card for something already tracked is the most expensive mistake you can make here, because it splits one thread of work across two places.
 
 Axes, all required on every new card:

@@ -159,7 +159,7 @@ const (
 
 // environmentLookup has os.Getenv's shape. Taking it as an argument rather than
 // calling os.Getenv directly is what lets a test state which variables were set
-// without setting them: eight of the eighteen flag defaults below are read at
+// without setting them: nine of the twenty-three flag defaults below are read at
 // flag-registration time, so a test that exported MAILSTACK_URL to observe it
 // would be racing every other test in this package for one process-wide
 // variable. This package has more of those than any of its siblings.
@@ -169,12 +169,12 @@ type environmentLookup func(key string) string
 //
 // The flag set lives here rather than in main() so that a test can reach the
 // defaults. Registered inside main() they were unreachable — nothing in a test
-// can call main() — so the eighteen values this binary actually starts with had
-// never been read by anything.
+// can call main() — so the twenty-three values this binary actually starts with
+// had never been read by anything.
 //
-// Five of those eighteen are early-exit mode switches (-register, -merge,
-// -backfill-due, -refile-unread-since, -dump-digest) and a sixth (-dry-run)
-// neuters the writes. Any
+// Seven of those twenty-three are early-exit mode switches (-register, -merge,
+// -backfill-due, -refile-unread-since, -sender, -message, -dump-digest) and an
+// eighth (-dry-run) neuters the writes. Any
 // one of them shipping ON leaves a tick that reads the board, reports success
 // and files no mail — which from outside is indistinguishable from a quiet
 // mailbox. The two that decide spend are -model, which picks which model reads
@@ -210,6 +210,11 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	fs.BoolVar(&c.MergePass, "merge", false, "Run the card-merge pass over the board and exit, filing no new mail.")
 	fs.BoolVar(&c.BackfillDue, "backfill-due", false, "Recover deadlines from existing card summaries into due_at, re-score, and exit. One-off: cards filed after this store their own date.")
 	fs.StringVar(&c.RefileUnreadSince, "refile-unread-since", "", "Unfile mail attached on or after this date (YYYY-MM-DD) that was never fetched or read, and exit. Drain it with -backfill afterwards. Empty means off.")
+	fs.StringVar(&c.NoteboardURL, "noteboard-url", envOr(lookupEnvironment, "NOTEBOARD_URL", "http://localhost:8191"), "noteboard base URL, where routing notes live")
+	fs.StringVar(&c.SenderQuery, "sender", "", "Report everything known about one email address — its routing note, the cards its mail feeds, the messages it sent — and exit. With -note, writes that note instead.")
+	fs.StringVar(&c.MessageQuery, "message", "", "Report or annotate one message by locator (account:message_id), and exit. With -note, writes that note instead.")
+	fs.StringVar(&c.NoteText, "note", "", "The routing note to store against -sender or -message. Pass \"\" with -delete-note to remove one.")
+	fs.BoolVar(&c.DeleteNote, "delete-note", false, "Delete the routing note for -sender or -message instead of writing one.")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -329,6 +334,14 @@ func run() int {
 		}
 		return degraded.exitCode()
 	}
+	if cfg.SenderQuery != "" || cfg.MessageQuery != "" {
+		// Reads and writes one entity's routing note, or reports it. Files no
+		// mail, so it exits here with the other passes.
+		if err := runEntityPass(cfg, kc, state); err != nil {
+			log.Fatalf("entity: %v", err)
+		}
+		return degraded.exitCode()
+	}
 	if cfg.RefileUnreadSince != "" {
 		// This one does read the mailbox — it has to fetch each message to find
 		// out whether the card holding it ever saw it — but it files nothing, so
@@ -342,8 +355,19 @@ func run() int {
 		}
 		return degraded.exitCode()
 	}
-	log.Printf("[email] board state: cards=%d filed_emails=%d known_message_ids=%d",
-		len(state.Cards), len(state.FiledLocators), len(state.CardsByMessageID))
+	// One call, before any mail work. A note the user wrote is the cheapest
+	// signal this command has and it must reach every batch, so it is loaded
+	// with the board rather than per batch.
+	notes, err := loadRoutingNotes(newNoteboardClient(cfg.NoteboardURL))
+	if err != nil {
+		// Notes make filing better; their absence must not stop it. Filing
+		// without them is the behaviour this command had until today.
+		log.Printf("[email] WARNING: could not load routing notes: %v — filing without them", err)
+		degraded.record("routing notes unavailable, filed %s", "without user guidance")
+		notes = &routingNotes{bySender: map[string]routingNote{}, byMessage: map[string]routingNote{}}
+	}
+	log.Printf("[email] board state: cards=%d filed_emails=%d known_message_ids=%d routing_notes=%d",
+		len(state.Cards), len(state.FiledLocators), len(state.CardsByMessageID), notes.count())
 
 	// Before any mailbox work, and deliberately before the "nothing new to file"
 	// return below. Most ticks file nothing, and deadlines move on those ticks
@@ -388,10 +412,10 @@ func run() int {
 		}
 		batch := remaining[start:end]
 		if cfg.DumpDigest {
-			fmt.Println(buildDigest(state, batch))
+			fmt.Println(buildDigest(state, notes, batch))
 			continue
 		}
-		classifyAndApply(ctx, cfg, applier, state, batch, degraded)
+		classifyAndApply(ctx, cfg, applier, state, notes, batch, degraded)
 	}
 
 	if cfg.DumpDigest {
@@ -417,11 +441,11 @@ func run() int {
 // Recursion bottoms out at a single email, which is then left unfiled. That is
 // the safe end state: an email with no card link is exactly what the next tick
 // looks for, so nothing is lost, it is only deferred.
-func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *boardState, batch []pendingEmail, degraded *degradations) {
+func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *boardState, notes *routingNotes, batch []pendingEmail, degraded *degradations) {
 	if len(batch) == 0 {
 		return
 	}
-	report, err := classifyBatch(ctx, cfg, buildDigest(state, batch))
+	report, err := classifyBatch(ctx, cfg, buildDigest(state, notes, batch))
 	if err == nil {
 		if applyErr := ap.applyReport(batch, report); applyErr != nil {
 			log.Printf("[email] apply batch of %d failed: %v", len(batch), applyErr)
@@ -437,11 +461,11 @@ func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *board
 	mid := len(batch) / 2
 	log.Printf("[email] classify failed for a batch of %d, splitting into %d + %d and retrying: %v",
 		len(batch), mid, len(batch)-mid, err)
-	classifyAndApply(ctx, cfg, ap, state, batch[:mid], degraded)
-	classifyAndApply(ctx, cfg, ap, state, batch[mid:], degraded)
+	classifyAndApply(ctx, cfg, ap, state, notes, batch[:mid], degraded)
+	classifyAndApply(ctx, cfg, ap, state, notes, batch[mid:], degraded)
 }
 
-// config is every value this command is configured with: the eighteen flags,
+// config is every value this command is configured with: the twenty-three flags,
 // plus the two pieces of wiring that used to be read from the environment
 // inside registerSchedulerJob, plus the resolved API key.
 //
@@ -452,7 +476,7 @@ func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *board
 // by nothing else. Registering each flag directly into its own named field, and
 // giving a test a distinct value per variable, is what makes a swap fail.
 type config struct {
-	// The eighteen flags.
+	// The twenty-three flags.
 	RegisterJob  bool
 	DryRun       bool
 	DumpDigest   bool
@@ -470,6 +494,14 @@ type config struct {
 	Backfill     bool
 	MergePass    bool
 	BackfillDue  bool
+	NoteboardURL string
+	// SenderQuery and MessageQuery name the entity a -sender / -message run is
+	// about. Both empty is the ordinary tick.
+	SenderQuery  string
+	MessageQuery string
+	NoteText     string
+	DeleteNote   bool
+
 	// RefileUnreadSince is a YYYY-MM-DD date, empty when off. A string rather
 	// than a time.Time because it is a flag value: an unparseable date must be
 	// refused by name at startup, not silently become the zero time, which would
@@ -889,7 +921,7 @@ func truncate(s string, n int) string {
 // to file. Card identity comes first and is never dropped, because an incomplete
 // picture of existing cards is what makes a classifier invent duplicates of work
 // it is already tracking.
-func buildDigest(state *boardState, batch []pendingEmail) string {
+func buildDigest(state *boardState, notes *routingNotes, batch []pendingEmail) string {
 	var b strings.Builder
 
 	// The model is asked to resolve relative deadlines ("tomorrow", "by Friday")
@@ -939,6 +971,9 @@ func buildDigest(state *boardState, batch []pendingEmail) string {
 		if em.Meta.Unread {
 			b.WriteString("state: unread\n")
 		}
+		// What the user knows about this mail that the mail does not say. Placed
+		// before the body so it frames the reading rather than trailing it.
+		b.WriteString(renderNoteForDigest(notes, em))
 		fmt.Fprintf(&b, "body: %s\n", truncate(bestBodyText(em), perEmail))
 	}
 	return b.String()
