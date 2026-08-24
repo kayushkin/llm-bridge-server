@@ -20,56 +20,8 @@ import (
 // be columns; action state won that slot, so category and urgency ride along as
 // noteboard tags and become the board's filter and grouping controls.
 
-// cardCategories is the topic axis: which part of life the card belongs to.
-var cardCategories = []string{
-	"finance",          // bills, payments, receipts, banking (Venmo, PayPal, Link)
-	"housing",          // rent, landlord, apartment hunting (AppFolio, Apartment List)
-	"health",           // appointments, insurance, providers (Tebra, Anthem)
-	"commerce",         // orders, shipping, returns, marketplace (eBay, Etsy, USPS)
-	"work-career",      // jobs, recruiters, professional (Glassdoor, Indeed)
-	"dev-infra",        // repos, domains, model providers, service alerts
-	"social-events",    // meetups, classes, community (Meetup, dance, ballet)
-	"government-legal", // DMV, USPS official, taxes, governing bodies
-	"media-subs",       // digests and subscriptions (Medium, MyAnimeList, Plex)
-	"politics",         // campaign and advocacy mail
-	"promotions",       // pure marketing
-	"personal",         // mail from an actual human
-}
-
-// actionNone is the "no action, ever" value of the action axis. Named because
-// the sender override in noaction_senders.go writes it, and a second spelling of
-// it would be a vocabulary violation nothing would catch.
-const actionNone = "none"
-
-// cardActions is the "what would you have to do" axis.
-var cardActions = []string{
-	"reply",    // a counterparty is waiting on a response
-	"pay",      // money is due
-	"decide",   // accept/decline/choose, usually against a deadline
-	"schedule", // book, attend, or move an appointment
-	"verify",   // confirm identity or a security event
-	"fix",      // something is broken and needs work
-	"read",     // worth reading, nothing owed
-	"file",     // receipt or record, keep for reference
-	actionNone, // no action, ever
-}
-
-// cardUrgencies is the time-pressure axis. "expired" earns its place because in
-// email a large share of what reads as urgent is a deadline already missed, and
-// collapsing that into "low" hides the difference between "ignore this" and
-// "you missed it".
-var cardUrgencies = []string{"critical", "high", "normal", "low", "expired"}
-
-// actionsNeedingWork are the action values that put a card in the Action needed
-// column. Everything else lands in No action. A set rather than a chain of
-// string comparisons so the vocabulary has exactly one authoring.
-var actionsNeedingWork = map[string]bool{
-	"reply": true, "pay": true, "decide": true,
-	"schedule": true, "verify": true, "fix": true,
-}
-
-func isKnown(vocabulary []string, value string) bool {
-	for _, v := range vocabulary {
+func isKnown(values []string, value string) bool {
+	for _, v := range values {
 		if v == value {
 			return true
 		}
@@ -82,10 +34,10 @@ func isKnown(vocabulary []string, value string) bool {
 // needing action: an unrecognized value means the classifier misbehaved, and
 // parking that in No action would hide it forever.
 func columnForAction(action string) string {
-	if !isKnown(cardActions, action) {
+	if !isKnown(active.Actions, action) {
 		return columnActionNeeded
 	}
-	if actionsNeedingWork[action] {
+	if active.ActionsNeedingWork[action] {
 		return columnActionNeeded
 	}
 	return columnNoAction
@@ -204,7 +156,18 @@ func truncateForError(data []byte) string {
 
 const reportToolName = "report_email_filing"
 
-var systemPrompt = `You are an email triage classifier. You are given a batch of emails and the cards that currently exist on an "Email" kanban board. You decide which card each email belongs to.
+// buildSystemPrompt assembles the prompt for the ACTIVE vocabulary.
+//
+// A function and not a package-level var, which is what it used to be. A var is
+// evaluated at package init, before flags are parsed, so it captured the default
+// vocabulary's axes and kept them however the flag was set — the schema would
+// have said "work" while the prompt still said "finance, housing, health". The
+// two disagreeing is the worst version of this: the model is told one vocabulary
+// and graded against another.
+func buildSystemPrompt() string {
+	prompt := `You are an email triage classifier. You are given a batch of emails and the cards that currently exist on a kanban board. You decide which card each email belongs to.
+
+THE MAILBOX: ` + active.Domain + `
 
 CARDS ARE THE UNIT OF WORK. Emails are evidence attached to cards, never cards themselves. One card gathers many emails; one email may attach to more than one card.
 
@@ -218,12 +181,6 @@ Two kinds of card exist, and picking the right kind is most of the job:
 
 2. TASK cards — one real thing to do, with a beginning and an end. "Decide on the KAPITAL jacket counter-offer", "Confirm the USPS Informed Delivery registration", "Reply to masa_117 about item 206153166065". These carry a real action and are expected to complete.
 
-A RECEIPT IS NOT A TASK. Payment confirmations, order receipts, statements and delivery notices are records: nothing is owed and nothing will ever be completed. File them on a durable bucket card for that source or topic — "Payment receipts", "Rent payments", "Amazon orders" — never on a card of their own. A board with one card per receipt is a board nobody can read. The same holds for one-off newsletters and announcements: they belong on a bucket for that sender.
-
-Listings feeds are never actionable. Mail from a property or marketplace listings feed — Zillow open houses, price cuts, saved-search hits — is action "none", however specific a date it names. An open house on Saturday is not something owed to anyone.
-
-Judge the email, not its vocabulary. Marketing mail routinely says "REMINDER", "Action required", "expiring", "last chance" — that is copywriting, not a task. A real task has a specific counterparty expecting something specific from this user.
-
 USER NOTES OUTRANK YOUR READING OF THE TEXT. Some emails carry a user_note_about_this_sender or user_note_about_this_message line. Those are written by the user about their own mail, and they say things no message states: that an address is their landlord, that a sender only ever emails receipts, that one particular thread matters. The user knows their life and you are reading one message out of context, so when a note and the text disagree, follow the note.
 
 A note is guidance, not a command you execute blindly. It tells you what this mail IS; you still decide which card that means, still write the title and the link label, and still file the message. If a note is plainly about something else — it names a bill and the message is a delivery notice from the same sender — say what the message is and ignore the note for that one.
@@ -231,9 +188,9 @@ A note is guidance, not a command you execute blindly. It tells you what this ma
 Prefer attaching to an existing card over creating a new one. A new card for something already tracked is the most expensive mistake you can make here, because it splits one thread of work across two places.
 
 Axes, all required on every new card:
-- category: ` + strings.Join(cardCategories, ", ") + `
-- action: ` + strings.Join(cardActions, ", ") + `
-- urgency: ` + strings.Join(cardUrgencies, ", ") + `
+- category: ` + strings.Join(active.Categories, ", ") + `
+- action: ` + strings.Join(active.Actions, ", ") + `
+- urgency: ` + strings.Join(active.Urgencies, ", ") + `
     critical = deadline inside 24h, or money/security at stake
     high     = deadline inside 3 days
     normal   = deadline inside 2 weeks
@@ -257,6 +214,14 @@ Do NOT send a card_update merely because a deadline has passed since the card wa
 
 You MUST output by calling the ` + reportToolName + ` tool exactly once.`
 
+	// The vocabulary's own judgement calls go last, where they are read against
+	// everything above rather than qualified by it.
+	if guidance := strings.TrimSpace(active.Guidance); guidance != "" {
+		prompt += "\n\nJUDGEMENT CALLS FOR THIS MAILBOX:\n" + guidance
+	}
+	return prompt
+}
+
 func reportToolSchema() map[string]any {
 	return map[string]any{
 		"name":        reportToolName,
@@ -278,9 +243,9 @@ func reportToolSchema() map[string]any {
 								"description": "A card that does not exist yet. Two emails may describe the same new card with the same title; it is created once.",
 								"properties": map[string]any{
 									"title":    map[string]any{"type": "string", "maxLength": 70},
-									"category": map[string]any{"type": "string", "enum": cardCategories},
-									"action":   map[string]any{"type": "string", "enum": cardActions},
-									"urgency":  map[string]any{"type": "string", "enum": cardUrgencies},
+									"category": map[string]any{"type": "string", "enum": active.Categories},
+									"action":   map[string]any{"type": "string", "enum": active.Actions},
+									"urgency":  map[string]any{"type": "string", "enum": active.Urgencies},
 									"summary":  map[string]any{"type": "string", "description": "One or two sentences on what this card is for."},
 									"due_date": map[string]any{"type": "string", "description": "Deadline as YYYY-MM-DD, or RFC3339 when a time of day matters. Empty when the mail states none."},
 								},
@@ -297,8 +262,8 @@ func reportToolSchema() map[string]any {
 						"type": "object",
 						"properties": map[string]any{
 							"card_id":  map[string]any{"type": "string"},
-							"action":   map[string]any{"type": "string", "enum": cardActions},
-							"urgency":  map[string]any{"type": "string", "enum": cardUrgencies},
+							"action":   map[string]any{"type": "string", "enum": active.Actions},
+							"urgency":  map[string]any{"type": "string", "enum": active.Urgencies},
 							"summary":  map[string]any{"type": "string"},
 							"due_date": map[string]any{"type": "string", "description": "Revised deadline, when this mail moved it. Empty leaves the stored one alone."},
 						},
@@ -334,7 +299,7 @@ var anthropicMessagesURL = "https://api.anthropic.com/v1/messages"
 
 func classifyBatch(ctx context.Context, cfg config, digest string) (*filingReport, error) {
 	var rep filingReport
-	if err := invokeTool(ctx, cfg, systemPrompt, reportToolSchema(), reportToolName, digest, &rep); err != nil {
+	if err := invokeTool(ctx, cfg, buildSystemPrompt(), reportToolSchema(), reportToolName, digest, &rep); err != nil {
 		return nil, err
 	}
 	return &rep, nil

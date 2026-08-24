@@ -79,9 +79,9 @@ func mergeToolSchema() map[string]any {
 							"survivor_card_id": map[string]any{"type": "string", "description": "Existing card to absorb the others. Empty to create a new one."},
 							"survivor_title":   map[string]any{"type": "string", "maxLength": 70, "description": "Category name, used when survivor_card_id is empty."},
 							"card_ids":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Every card in the group, at least two."},
-							"category":         map[string]any{"type": "string", "enum": cardCategories},
-							"action":           map[string]any{"type": "string", "enum": cardActions},
-							"urgency":          map[string]any{"type": "string", "enum": cardUrgencies},
+							"category":         map[string]any{"type": "string", "enum": active.Categories},
+							"action":           map[string]any{"type": "string", "enum": active.Actions},
+							"urgency":          map[string]any{"type": "string", "enum": active.Urgencies},
 							"reason":           map[string]any{"type": "string"},
 						},
 						"required": []string{"card_ids", "reason"},
@@ -204,7 +204,7 @@ func applyMerge(cfg config, kc *kanbanclient.Client, state *boardState, g mergeG
 		}
 		// Only buckets merge. Two things to do stay two things to do, however
 		// alike they look.
-		if actionsNeedingWork[c.Action] {
+		if active.ActionsNeedingWork[c.Action] {
 			log.Printf("[merge] refused %q: card %q is a task (action=%s), not a bucket",
 				g.SurvivorTitle, c.Title, c.Action)
 			return false, nil

@@ -58,38 +58,6 @@ func (s stakes) String() string {
 	}
 }
 
-// actionStakes scores the "what would you have to do" axis. Paying and verifying
-// are severe wherever they appear: money leaving an account and a security
-// challenge both cost something real to miss, whatever the mail is nominally
-// about.
-var actionStakes = map[string]stakes{
-	"pay":      stakesSevere,
-	"verify":   stakesSevere,
-	"fix":      stakesReal,
-	"decide":   stakesReal,
-	"reply":    stakesReal,
-	"schedule": stakesReal,
-	"read":     stakesNone,
-	"file":     stakesNone,
-	"none":     stakesNone,
-}
-
-// categoryStakes scores the topic axis, used when the action axis leaves room.
-var categoryStakes = map[string]stakes{
-	"finance":          stakesSevere,
-	"housing":          stakesSevere,
-	"health":           stakesSevere,
-	"government-legal": stakesSevere,
-	"dev-infra":        stakesReal,
-	"work-career":      stakesReal,
-	"commerce":         stakesReal,
-	"personal":         stakesReal,
-	"social-events":    stakesMinor,
-	"media-subs":       stakesMinor,
-	"politics":         stakesNone,
-	"promotions":       stakesNone,
-}
-
 // stakesOf combines the two axes.
 //
 // An action of read/file/none gates the card to zero no matter how weighty its
@@ -102,11 +70,11 @@ var categoryStakes = map[string]stakes{
 // category. An unrecognized value means the classifier misbehaved, and silently
 // scoring it to zero would bury exactly the card worth seeing.
 func stakesOf(category, action string) stakes {
-	actionScore, actionKnown := actionStakes[action]
+	actionScore, actionKnown := active.ActionStakes[action]
 	if actionKnown && actionScore == stakesNone {
 		return stakesNone
 	}
-	categoryScore := categoryStakes[category]
+	categoryScore := active.CategoryStakes[category]
 	if actionScore > categoryScore {
 		return actionScore
 	}
@@ -215,37 +183,6 @@ var priorityMatrix = [4][deadlineBucketCount]int{
 	stakesSevere: {2, 2, 3, 4, 5, 5},
 }
 
-// mootCategoriesWhenPassed are the topics whose deadlines simply stop mattering
-// once they pass, as against the ones where being late keeps costing something.
-//
-// This is half of routing expiry by consequence. A missed rent payment is a late
-// fee still growing, so it escalates to the top; a concert that already happened
-// is over, and nothing is gained by ranking it above tomorrow's performance.
-// Without this, "Blue Öyster Cult free concert at GSR tonight" outscored an event
-// happening the next day, purely because action:schedule had lifted it out of
-// the minor band.
-var mootCategoriesWhenPassed = map[string]bool{
-	"social-events": true,
-	"media-subs":    true,
-	"promotions":    true,
-	"politics":      true,
-}
-
-// mootActionsWhenPassed are the actions that cannot be performed retroactively,
-// whatever the card is about.
-//
-// Verification is the case that forced this: a sign-in challenge or an emailed
-// code expires and simply cannot be answered afterwards — you request a new one,
-// and the old card is spent. Measured live, "Verify Hinge account sign-in" sat
-// at the top of the board on 5, level with an overdue domain renewal, because
-// action:verify is severe stakes and cat:personal is not a moot category.
-//
-// Paying is the deliberate contrast and must never be added here: an overdue
-// bill is exactly the thing that gets worse by being ignored.
-var mootActionsWhenPassed = map[string]bool{
-	"verify": true,
-}
-
 // isMootOncePassed reports whether a passed deadline settles the card rather
 // than escalating it.
 //
@@ -253,7 +190,7 @@ var mootActionsWhenPassed = map[string]bool{
 // to archive lapsed items by hand, so they must stay visibly lapsed rather than
 // blending into the buckets that never mattered.
 func isMootOncePassed(category, action string) bool {
-	return mootCategoriesWhenPassed[category] || mootActionsWhenPassed[action]
+	return active.MootCategoriesWhenPassed[category] || active.MootActionsWhenPassed[action]
 }
 
 // overduePassedPriority is where a lapsed but consequence-free card lands: above

@@ -204,6 +204,8 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	fs.StringVar(&c.AuthStoreURL, "auth-store-url", envOr(lookupEnvironment, "AUTH_STORE_URL", "http://localhost:8303"), "auth-store base URL")
 	fs.StringVar(&c.AuthToken, "auth-token", envOr(lookupEnvironment, "AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
 	fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "EMAIL_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
+	fs.StringVar(&c.Vocabulary, "vocabulary", envOr(lookupEnvironment, "EMAIL_CLASSIFIER_VOCABULARY", personalVocabulary.Name),
+		"Classification scheme: personal or work. A work mailbox and a personal one are not the same problem in different words.")
 	fs.IntVar(&c.MaxEmails, "max", maxEmailsPerTick, "Max emails to file per tick.")
 	fs.StringVar(&c.OnlyAccount, "account", "", "Restrict to one mailstack account id.")
 	fs.BoolVar(&c.Backfill, "backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
@@ -276,6 +278,15 @@ func run() int {
 		}
 		return 0
 	}
+
+	// Selected before anything reads an axis. A typo here must stop the run: a
+	// misspelled scheme silently falling back to personal would classify work
+	// mail against personal axes and produce a board that looks fine and means
+	// nothing.
+	if err := selectVocabulary(cfg.Vocabulary); err != nil {
+		log.Fatalf("%v", err)
+	}
+	log.Printf("[email] classifying with the %s vocabulary", active.Name)
 
 	ctx := context.Background()
 
@@ -489,6 +500,7 @@ type config struct {
 	AuthStoreURL string
 	AuthToken    string
 	Model        string
+	Vocabulary   string
 	MaxEmails    int
 	OnlyAccount  string
 	Backfill     bool

@@ -243,17 +243,17 @@ func (a *applier) createCard(spec newCardSpec) (string, error) {
 	// unexpected value is visible in the UI's filter list and can be corrected;
 	// a silently rewritten one is a wrong answer that looks right.
 	for _, axis := range []struct {
-		name       string
-		value      string
-		vocabulary []string
+		name   string
+		value  string
+		values []string
 	}{
-		{"category", spec.Category, cardCategories},
-		{"action", spec.Action, cardActions},
-		{"urgency", spec.Urgency, cardUrgencies},
+		{"category", spec.Category, active.Categories},
+		{"action", spec.Action, active.Actions},
+		{"urgency", spec.Urgency, active.Urgencies},
 	} {
-		if !isKnown(axis.vocabulary, axis.value) {
+		if !isKnown(axis.values, axis.value) {
 			log.Printf("[email] WARNING: card %q has %s %q outside the vocabulary (%s)",
-				spec.Title, axis.name, axis.value, strings.Join(axis.vocabulary, ", "))
+				spec.Title, axis.name, axis.value, strings.Join(axis.values, ", "))
 		}
 	}
 
