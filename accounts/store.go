@@ -18,6 +18,11 @@ const (
 	ProviderGoogle    Provider = "google"
 	ProviderMicrosoft Provider = "microsoft"
 	ProviderIMAP      Provider = "imap"
+	// ProviderLocal is an account this host owns outright — no provider, no
+	// network, no credentials. Its messages are stored locally and served
+	// through the same routes as real mail, which is what lets synthetic data
+	// exercise every consumer without any of them growing a second code path.
+	ProviderLocal Provider = "local"
 )
 
 type Account struct {

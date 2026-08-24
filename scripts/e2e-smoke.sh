@@ -23,6 +23,7 @@
 #      dropped, this smoke would open the LIVE account list, which is both a
 #      lie (every assertion below would be measuring live data) and a write.
 #      The hermeticity step at the end fails if that default path was created.
+#      MAILSTACK_LOCAL_DB does the same for the synthetic-mail database.
 #
 # No IMAP or Gmail connection is ever attempted against a real host: the only
 # account this smoke creates is one it invents, and the only backend it drives
@@ -124,6 +125,7 @@ echo "    binary: $BIN_DIR/mailstack ($(ls -lh "$BIN_DIR/mailstack" | awk '{prin
 step "launch mailstack on :$PORT (db: $DB_PATH, auth-store: DISCONNECTED)"
 MAILSTACK_PORT="$PORT" \
 MAILSTACK_DB="$DB_PATH" \
+MAILSTACK_LOCAL_DB="$TMP_DIR/data/local-mail.db" \
 MAILSTACK_TOKEN="$TOKEN" \
 AUTH_STORE_URL="$DEAD_AUTH_STORE" \
 AUTH_STORE_TOKEN="" \
@@ -242,7 +244,13 @@ step "the run never went near the live credentials"
 DEFAULT_DB="${HOME:-/nonexistent}/.config/mailstack/accounts.db"
 [ ! -e "$DEFAULT_DB" ] \
   || fail "the binary created its DEFAULT db at $DEFAULT_DB — the MAILSTACK_DB override is not being honoured"
-echo "    wrote only $DB_PATH; default path untouched"
+# Synthetic mail has its own default path and its own override. It is opened
+# lazily, so this also fails if that laziness is ever lost and the file starts
+# being created at boot on every host.
+DEFAULT_LOCAL_DB="${HOME:-/nonexistent}/.config/mailstack/local-mail.db"
+[ ! -e "$DEFAULT_LOCAL_DB" ] \
+  || fail "the binary created its DEFAULT synthetic-mail db at $DEFAULT_LOCAL_DB — MAILSTACK_LOCAL_DB is not being honoured, or the store is no longer opened lazily"
+echo "    wrote only $DB_PATH; default paths untouched"
 
 step "SUCCESS — mailstack boots and answers"
 echo "    server log: $LOG"

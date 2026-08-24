@@ -19,6 +19,8 @@ import (
 func main() {
 	port := flag.Int("port", envInt("MAILSTACK_PORT", 8195), "HTTP listen port (loopback)")
 	dbPath := flag.String("db", os.Getenv("MAILSTACK_DB"), "accounts.db path (default: ~/.config/mailstack/accounts.db)")
+	localDBPath := flag.String("local-db", os.Getenv("MAILSTACK_LOCAL_DB"),
+		"synthetic mail db for local accounts (default: ~/.config/mailstack/local-mail.db, created only when a local account is used)")
 	flag.Parse()
 
 	if *dbPath == "" {
@@ -39,7 +41,7 @@ func main() {
 	defer store.Close()
 
 	auth := apiauth.New(authStoreURL, authStoreToken)
-	srv := mailstack.NewServer(store, auth, mailstackToken)
+	srv := mailstack.NewServer(store, auth, mailstackToken, mailstack.WithLocalMailDB(*localDBPath))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	httpSrv := &http.Server{

@@ -14,6 +14,7 @@ import (
 	"github.com/kayushkin/mailstack/accounts"
 	"github.com/kayushkin/mailstack/apiauth"
 	"github.com/kayushkin/mailstack/backend"
+	"github.com/kayushkin/mailstack/localmail"
 )
 
 type Server struct {
@@ -24,9 +25,27 @@ type Server struct {
 
 	imapMu       sync.Mutex
 	imapBackends map[string]*backend.Imap
+
+	// Synthetic mail lives in its own database, opened on first use. A host with
+	// no local account never creates the file — which matters because the e2e
+	// smoke asserts that running the server touches nothing under the real
+	// config directory.
+	localMu     sync.Mutex
+	localDBPath string
+	localStore  *localmail.Store
 }
 
-func NewServer(store *accounts.Store, auth *apiauth.Client, bearerToken string) *Server {
+// ServerOption adjusts a Server at construction. Variadic so that adding one
+// never breaks an existing NewServer call.
+type ServerOption func(*Server)
+
+// WithLocalMailDB sets where synthetic mail is stored. Empty means the default
+// path, which is only ever created if a local account is actually used.
+func WithLocalMailDB(path string) ServerOption {
+	return func(s *Server) { s.localDBPath = path }
+}
+
+func NewServer(store *accounts.Store, auth *apiauth.Client, bearerToken string, opts ...ServerOption) *Server {
 	s := &Server{
 		accounts:     store,
 		apiauth:      auth,
@@ -34,12 +53,20 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, bearerToken string) 
 		mux:          http.NewServeMux(),
 		imapBackends: map[string]*backend.Imap{},
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.Handle("GET /api/accounts", s.auth(s.handleListAccounts))
 	s.mux.Handle("POST /api/accounts", s.auth(s.handleCreateAccount))
 	s.mux.Handle("GET /api/accounts/{id}", s.auth(s.handleGetAccount))
 	s.mux.Handle("PATCH /api/accounts/{id}", s.auth(s.handlePatchAccount))
 	s.mux.Handle("DELETE /api/accounts/{id}", s.auth(s.handleDeleteAccount))
+	// Appending a message is only meaningful for an account this host owns. It
+	// is scoped under the account rather than sitting at /api/messages because
+	// it is not a mail operation that any provider could answer — see the
+	// handler.
+	s.mux.Handle("POST /api/accounts/{id}/messages", s.auth(s.handleAppendLocalMessage))
 	s.mux.Handle("GET /api/imap/creds", s.auth(s.handleListImapCreds))
 	s.mux.Handle("POST /api/imap/creds", s.auth(s.handleSaveImapCred))
 	s.mux.Handle("GET /api/imap/creds/{name}", s.auth(s.handleGetImapCred))
@@ -320,6 +347,12 @@ func (s *Server) backendFor(accountID string) (backend.Backend, *accounts.Accoun
 			return nil, a, err
 		}
 		return b, a, nil
+	case accounts.ProviderLocal:
+		store, err := s.localMailStore()
+		if err != nil {
+			return nil, a, err
+		}
+		return backend.NewLocal(a.ID, store), a, nil
 	default:
 		return nil, a, fmt.Errorf("unknown provider %q", a.Provider)
 	}
@@ -622,10 +655,21 @@ var _ backend.TokenSource = (*apiauth.Client)(nil)
 // Shutdown closes all persistent IMAP connections.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.imapMu.Lock()
-	defer s.imapMu.Unlock()
 	for id, b := range s.imapBackends {
 		_ = b.Close()
 		delete(s.imapBackends, id)
+	}
+	s.imapMu.Unlock()
+
+	s.localMu.Lock()
+	defer s.localMu.Unlock()
+	if s.localStore != nil {
+		// Closing matters here in a way it does not for a read-only handle: the
+		// synthetic mailbox runs in WAL mode, and leaving it open on shutdown
+		// leaves the -wal file to be recovered on next open.
+		err := s.localStore.Close()
+		s.localStore = nil
+		return err
 	}
 	return nil
 }
