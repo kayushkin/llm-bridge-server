@@ -1,0 +1,512 @@
+{
+  "model": "claude-sonnet-4-6",
+  "generated_at": "2026-08-24T22:11:56.444499439Z",
+  "account": "demo-work",
+  "messages": [
+    {
+      "key": "msg-018",
+      "kind": "unfiled",
+      "thread_key": "thread-noise-03",
+      "from": {
+        "key": "portal",
+        "name": "Vendor Portal",
+        "email": "no-reply@vendor-portal.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 160,
+      "unread": true,
+      "message_id": "msg-018.1787033516@northwind-eng.example",
+      "subject": "Action may be required on your account",
+      "body": "This is an automated message from the Vendor Portal.\n\nOur system has detected activity associated with your account that may require your attention.\n\nPlease log in to review any outstanding items. If you believe this message was sent in error, no further action is needed at this time.\n\nVendor Portal Notification Service",
+      "locator": "demo-work:lmfdf6b508f37d3728"
+    },
+    {
+      "key": "msg-017",
+      "kind": "bulk_notification",
+      "thread_key": "thread-noise-02",
+      "from": {
+        "key": "ci",
+        "name": "CI",
+        "email": "ci-bot@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 152,
+      "unread": false,
+      "message_id": "msg-017.1787062316@northwind-eng.example",
+      "subject": "CI Digest — main — 2026-08-18",
+      "body": "branch: main\nbuild: #4412\nstatus: PASS\nduration: 4m 38s\ncommit: a3f7c21\ntests: 1847 passed / 0 failed / 3 skipped\ncoverage: 81.4%\nartifacts: 3 uploaded",
+      "locator": "demo-work:lmc7a7781e7739530f"
+    },
+    {
+      "key": "msg-016",
+      "kind": "bulk_notification",
+      "thread_key": "thread-noise-01",
+      "from": {
+        "key": "ci",
+        "name": "CI",
+        "email": "ci-bot@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 142,
+      "unread": false,
+      "message_id": "msg-016.1787098316@northwind-eng.example",
+      "subject": "CI Digest — main — 2026-08-19",
+      "body": "branch: main\nbuild: #4417\nstatus: PASS\nduration: 4m 51s\ncommit: d09b4fe\ntests: 1847 passed / 0 failed / 3 skipped\ncoverage: 81.4%\nartifacts: 3 uploaded",
+      "locator": "demo-work:lm48d35ab8b8496971"
+    },
+    {
+      "key": "msg-001",
+      "kind": "task_request",
+      "work_item": "Add cursor-based pagination to /v1/search",
+      "thread_key": "thread-add-cursorbased-pagination-to",
+      "from": {
+        "key": "priya",
+        "name": "Priya Raman",
+        "email": "priya.raman@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 123.71,
+      "unread": true,
+      "message_id": "msg-001.1787164160@northwind-eng.example",
+      "subject": "Add cursor-based pagination to /v1/search",
+      "body": "Hey Vlad,\n\nI need to flag something that's becoming urgent ahead of the mobile release. The offset-based paging on /v1/search completely falls apart once you get past page 40 — results get duplicated or dropped depending on catalog churn, and the mobile team has been hitting this in testing. They need stable cursors they can rely on.\n\nCan you take this on? The ask is to introduce cursor-based pagination on that endpoint. One thing I want to make sure we get right: the offset parameter should stay available behind a flag for at least one release so existing clients don't suddenly break. We can't just yank it.\n\nThis needs to land before the mobile release goes out. Let me know if you have questions or if anything in scope is unclear.\n\nPriya",
+      "locator": "demo-work:lma1b5b22d6edcc6e8"
+    },
+    {
+      "key": "msg-003",
+      "kind": "task_request",
+      "work_item": "Bump the build image to Node 22 LTS",
+      "thread_key": "thread-bump-the-build-image",
+      "from": {
+        "key": "helena",
+        "name": "Helena Vos",
+        "email": "helena.vos@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 103.71,
+      "unread": true,
+      "message_id": "msg-003.1787236160@northwind-eng.example",
+      "subject": "Bump the build image to Node 22 LTS",
+      "body": "Vlad,\n\nSmall housekeeping thing I want to get off the backlog — our build image is still sitting on Node 20 and Node 22 has been LTS for a while now. It's the kind of thing that's easy to defer until it becomes a pain, so I'd rather we just do it.\n\nCan you pick this up when you have a gap? Nothing urgent, but I don't want it slipping another quarter.\n\nHelena",
+      "locator": "demo-work:lm935078bc797c5688"
+    },
+    {
+      "key": "msg-002",
+      "kind": "review_response",
+      "work_item": "Add cursor-based pagination to /v1/search",
+      "thread_key": "thread-add-cursorbased-pagination-to",
+      "reply_to_key": "msg-001",
+      "from": {
+        "key": "marcus",
+        "name": "Marcus Feld",
+        "email": "marcus.feld@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 80.71,
+      "unread": true,
+      "message_id": "msg-002.1787318960@northwind-eng.example",
+      "in_reply_to": "msg-001.1787164160@northwind-eng.example",
+      "references": [
+        "msg-001.1787164160@northwind-eng.example"
+      ],
+      "subject": "Re: Add cursor-based pagination to /v1/search",
+      "body": "Looks reasonable. One thing before this merges: make sure the cursor token is opaque to the client — base64-encode the internal position so we're not leaking sort keys or offsets in the response payload. That's bitten us before.\n\nThe feature-flag approach for keeping offset alive is the right call. Approve once that's addressed.\n\nMarcus",
+      "locator": "demo-work:lm8061023a4d8d3298"
+    },
+    {
+      "key": "msg-005",
+      "kind": "bulk_notification",
+      "work_item": "Nightly CI digest — main",
+      "thread_key": "thread-nightly-ci-digest",
+      "from": {
+        "key": "ci",
+        "name": "CI",
+        "email": "ci-bot@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 75.71,
+      "unread": false,
+      "message_id": "msg-005.1787336960@northwind-eng.example",
+      "subject": "CI Digest — main — 2026-08-21",
+      "body": "branch: main\nbuild: #4429\nstatus: PASS\nduration: 4m 44s\ncommit: 7e1a03c\ntests: 1849 passed / 0 failed / 3 skipped\ncoverage: 81.5%\nartifacts: 3 uploaded",
+      "locator": "demo-work:lm01ca8112690e808f"
+    },
+    {
+      "key": "msg-006",
+      "kind": "cancellation",
+      "work_item": "Cancel the Redis → Valkey migration spike",
+      "thread_key": "thread-cancel-the-redis",
+      "from": {
+        "key": "priya",
+        "name": "Priya Raman",
+        "email": "priya.raman@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 75.71,
+      "unread": true,
+      "message_id": "msg-006.1787336960@northwind-eng.example",
+      "subject": "Stopping the Redis → Valkey migration spike",
+      "body": "Vlad,\n\nWe're calling off the Valkey spike. Platform met earlier this week and the decision is to stay on managed Redis for this quarter — the operational risk of switching isn't worth it right now and the timeline doesn't support it.\n\nPlease stop any work in progress on that. Don't throw everything away though — the benchmark harness you built is genuinely reusable and I want to keep it. Make sure that's in a state someone can pick up later, then close it out.\n\nSorry for the pivot. Appreciate the work you put in.\n\nPriya",
+      "locator": "demo-work:lm3105bf4f58ad75a8"
+    },
+    {
+      "key": "msg-020",
+      "kind": "bulk_notification",
+      "thread_key": "thread-noise-05",
+      "from": {
+        "key": "ci",
+        "name": "CI",
+        "email": "ci-bot@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 72,
+      "unread": false,
+      "message_id": "msg-020.1787350316@northwind-eng.example",
+      "subject": "CI Digest — Build #4471 — Fri 21 Aug 22:08",
+      "body": "BUILD DIGEST — northwind/catalogue-api\n\nBuild:    #4471\nStatus:   PASSED\nCommit:   a3f9c12e\nBranch:   main\nDuration: 4m 38s\n\nTests:    312 passed / 0 failed / 2 skipped\nCoverage: 87.4% (prev 87.4%)\nLint:     0 errors / 3 warnings\n\nArtifact: catalogue-api:main-a3f9c12e pushed to registry.",
+      "locator": "demo-work:lmbfcec0eff97673e1"
+    },
+    {
+      "key": "msg-004",
+      "kind": "review_response",
+      "work_item": "Bump the build image to Node 22 LTS",
+      "thread_key": "thread-bump-the-build-image",
+      "reply_to_key": "msg-003",
+      "from": {
+        "key": "marcus",
+        "name": "Marcus Feld",
+        "email": "marcus.feld@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 40.71,
+      "unread": true,
+      "message_id": "msg-004.1787462960@northwind-eng.example",
+      "in_reply_to": "msg-003.1787236160@northwind-eng.example",
+      "references": [
+        "msg-003.1787236160@northwind-eng.example"
+      ],
+      "subject": "Re: Bump the build image to Node 22 LTS",
+      "body": "Approved. One thing to check before merging: the engines field in package.json still pins \"\u003e=20.0.0\" — worth tightening that to \"\u003e=22.0.0\" so mismatches surface early rather than at runtime.\n\nOtherwise looks fine.\n\nMarcus",
+      "locator": "demo-work:lmeb611eaa6cc435c6"
+    },
+    {
+      "key": "msg-007",
+      "kind": "task_request",
+      "work_item": "Rotate the staging Postgres credentials before the 1 Sep audit",
+      "thread_key": "thread-rotate-the-staging-postgres",
+      "from": {
+        "key": "helena",
+        "name": "Helena Vos",
+        "email": "helena.vos@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 33.71,
+      "unread": true,
+      "message_id": "msg-007.1787488160@northwind-eng.example",
+      "subject": "Rotate the staging Postgres credentials before the 1 Sep audit",
+      "body": "Vlad,\n\nSecurity has flagged that the staging Postgres credentials need to be rotated before the audit on 1 Sep. That's a hard external deadline — if the credentials haven't been rotated by the time the auditors check, it's a finding.\n\nThe catch is that rotation triggers an app restart, so we can't just do it ad hoc. It needs to go through the Thursday maintenance window. That still gives us enough lead time, but it doesn't leave much slack, so I'd rather you have it on your radar now.\n\nLet me know if anything makes Thursday a problem.\n\nHelena",
+      "locator": "demo-work:lm8c300fd1c06b7a91"
+    },
+    {
+      "key": "msg-009",
+      "kind": "incident",
+      "work_item": "Draft the incident review for the 14:02 checkout outage",
+      "thread_key": "thread-draft-the-incident-review",
+      "from": {
+        "key": "helena",
+        "name": "Helena Vos",
+        "email": "helena.vos@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 31.71,
+      "unread": true,
+      "message_id": "msg-009.1787495360@northwind-eng.example",
+      "subject": "Incident: checkout outage 14:02–14:37 — need a write-up",
+      "body": "Vlad,\n\nAs you'll know, checkout was down from 14:02 to 14:37 today. That's 35 minutes of customer-visible failure during a weekend afternoon — not a small blast radius. We had orders failing at the point of payment confirmation and we're still working out the exact drop in conversions.\n\nI need a proper incident review from you. It should cover: a timeline of what happened and when, the customer-impact numbers once we have them, and the follow-up actions with owners. It needs to be circulated by Friday.\n\nStart pulling the logs and any Slack thread from the response together now while it's fresh.\n\nHelena",
+      "locator": "demo-work:lm068eb6904fedff37"
+    },
+    {
+      "key": "msg-011",
+      "kind": "status_check",
+      "work_item": "Check the status of order ORD-48812 — stuck in the fulfilment webhook",
+      "thread_key": "thread-check-the-status-of",
+      "from": {
+        "key": "helena",
+        "name": "Helena Vos",
+        "email": "helena.vos@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 29.71,
+      "unread": true,
+      "message_id": "msg-011.1787502560@northwind-eng.example",
+      "subject": "ORD-48812 — where are we?",
+      "body": "Vlad,\n\nCustomer ops is on my back about ORD-48812. Payment was captured but no fulfilment event ever came through, so the order is just sitting there. They want an answer today — not tomorrow, today.\n\nCan you dig into the webhook side and tell me what's going on? Even a \"we've found the problem and it's being fixed\" would be enough for them to hold on, but they need something.\n\nHelena",
+      "locator": "demo-work:lm3e5a695a95ea656b"
+    },
+    {
+      "key": "msg-010",
+      "kind": "scope_change",
+      "work_item": "Draft the incident review for the 14:02 checkout outage",
+      "thread_key": "thread-draft-the-incident-review",
+      "reply_to_key": "msg-009",
+      "from": {
+        "key": "helena",
+        "name": "Helena Vos",
+        "email": "helena.vos@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 13.71,
+      "unread": true,
+      "message_id": "msg-010.1787560160@northwind-eng.example",
+      "in_reply_to": "msg-009.1787495360@northwind-eng.example",
+      "references": [
+        "msg-009.1787495360@northwind-eng.example"
+      ],
+      "subject": "Re: Incident: checkout outage 14:02–14:37 — need a write-up",
+      "body": "Vlad,\n\nOne addition to the review: can you include a section on the alerting gap? We were down 35 minutes and I don't think PagerDuty fired for at least the first ten. Leadership is going to ask about that directly, so it needs to be in the document rather than handled verbally.\n\nFriday deadline still stands. If the alerting piece means you need more time I need to know before Thursday, not on the day.\n\nHelena",
+      "locator": "demo-work:lmef34aff32f13cd16"
+    },
+    {
+      "key": "msg-012",
+      "kind": "vendor_reply",
+      "work_item": "Check the status of order ORD-48812 — stuck in the fulfilment webhook",
+      "thread_key": "thread-check-the-status-of",
+      "reply_to_key": "msg-011",
+      "from": {
+        "key": "vendor",
+        "name": "Fulfilment Partner Support",
+        "email": "support@fulfilment-partner.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 13.71,
+      "unread": true,
+      "message_id": "msg-012.1787560160@northwind-eng.example",
+      "in_reply_to": "msg-011.1787502560@northwind-eng.example",
+      "references": [
+        "msg-011.1787502560@northwind-eng.example"
+      ],
+      "subject": "Re: ORD-48812 — where are we?",
+      "body": "Dear Vlad,\n\nThank you for contacting Fulfilment Partner Support. This message has been logged under ticket reference FPS-209341.\n\nWe have reviewed our records for order reference ORD-48812. We can confirm that our inbound webhook endpoint received no delivery attempt for this order identifier. To investigate further, we will require the following:\n\n- The exact timestamp of the payment-captured event on your side\n- The full webhook request payload your system attempted to send, if available\n- Confirmation of the endpoint URL configured in your integration settings at the time of the event\n\nOnce we have the above, we will be in a position to cross-reference against our gateway logs and advise accordingly.\n\nWe aim to respond to updates on open tickets within one business day.\n\nKind regards,\nFulfilment Partner Support\nTicket: FPS-209341",
+      "locator": "demo-work:lmdbc272d017762a68"
+    },
+    {
+      "key": "msg-013",
+      "kind": "task_request",
+      "work_item": "Update the SSO rollout task to include SCIM provisioning",
+      "thread_key": "thread-update-the-sso-rollout",
+      "from": {
+        "key": "helena",
+        "name": "Helena Vos",
+        "email": "helena.vos@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 11.71,
+      "unread": true,
+      "message_id": "msg-013.1787567360@northwind-eng.example",
+      "subject": "SSO rollout — scope has grown, need you across it",
+      "body": "Vlad,\n\nThe SSO rollout scope has expanded and I want to make sure you're aware before it catches someone off guard.\n\nOn top of the core SSO work, we now have to cover SCIM user provisioning for Okta. That came in from the identity team last week. Then, separately, group sync landed on top of that — so it's not just individual user provisioning anymore.\n\nThe part nobody has touched yet is deprovisioning. It's unscoped, nobody has sized it, and it needs to be handled before we can call the rollout done. That's the piece I'm most worried about.\n\nCan you take ownership of this and work out what deprovisioning actually involves? I'd like at least a rough scope before end of week so we know what we're dealing with.\n\nHelena",
+      "locator": "demo-work:lme4a88c6968074fac"
+    },
+    {
+      "key": "msg-015",
+      "kind": "unfiled",
+      "work_item": "Unfiled email — needs triage",
+      "thread_key": "thread-unfiled-email-needs",
+      "from": {
+        "key": "portal",
+        "name": "Vendor Portal",
+        "email": "no-reply@vendor-portal.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 9.71,
+      "unread": true,
+      "message_id": "msg-015.1787574560@northwind-eng.example",
+      "subject": "Action Required: Your Account Has Items Pending Review",
+      "body": "Dear Portal User,\n\nThis is an automated notification to let you know that one or more items associated with your account may require your attention at this time.\n\nPlease log in to the Vendor Portal to review any outstanding actions. If you believe this message was sent in error, no further steps are needed at this time.\n\nThank you for your continued engagement with the portal.\n\nVendor Portal Notification Service\nno-reply@vendor-portal.example",
+      "locator": "demo-work:lmf5f03eb6f9df6860"
+    },
+    {
+      "key": "msg-019",
+      "kind": "bulk_notification",
+      "thread_key": "thread-noise-04",
+      "from": {
+        "key": "ci",
+        "name": "CI",
+        "email": "ci-bot@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 8,
+      "unread": false,
+      "message_id": "msg-019.1787580716@northwind-eng.example",
+      "subject": "CI Digest — northwind/product-catalogue-api — 2026-08-24",
+      "body": "BUILD DIGEST 2026-08-24 14:08 UTC\nrepo: northwind/product-catalogue-api\n\npassed: 4\nfailed: 1\nskipped: 2\ntotal duration: 8m 42s\n\nfailed job: integration-test-suite\ncommit: a3f7c91\nbranch: main\nrunner: ci-runner-07\nexit code: 1\n\nlog: https://ci.northwind-eng.example/builds/9204",
+      "locator": "demo-work:lm85a189495f2236b4"
+    },
+    {
+      "key": "msg-008",
+      "kind": "review_response",
+      "work_item": "Rotate the staging Postgres credentials before the 1 Sep audit",
+      "thread_key": "thread-rotate-the-staging-postgres",
+      "reply_to_key": "msg-007",
+      "from": {
+        "key": "dinesh",
+        "name": "Dinesh Okonkwo",
+        "email": "dinesh.okonkwo@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 2,
+      "unread": true,
+      "message_id": "msg-008.1787602316@northwind-eng.example",
+      "in_reply_to": "msg-007.1787488160@northwind-eng.example",
+      "references": [
+        "msg-007.1787488160@northwind-eng.example"
+      ],
+      "subject": "Re: Rotate the staging Postgres credentials before the 1 Sep audit",
+      "body": "Thursday works. One thing — make sure the new credentials are written to the secrets manager before the restart, not after. Last time someone did it in the wrong order and the app came up against the old creds and immediately failed health checks.\n\nDinesh",
+      "locator": "demo-work:lma167c679520d41db"
+    },
+    {
+      "key": "msg-014",
+      "kind": "review_response",
+      "work_item": "Update the SSO rollout task to include SCIM provisioning",
+      "thread_key": "thread-update-the-sso-rollout",
+      "reply_to_key": "msg-013",
+      "from": {
+        "key": "marcus",
+        "name": "Marcus Feld",
+        "email": "marcus.feld@northwind-eng.example"
+      },
+      "to": [
+        {
+          "key": "owner",
+          "name": "Vlad",
+          "email": "vlad@northwind-eng.example"
+        }
+      ],
+      "hours_ago": 2,
+      "unread": true,
+      "message_id": "msg-014.1787602316@northwind-eng.example",
+      "in_reply_to": "msg-013.1787567360@northwind-eng.example",
+      "references": [
+        "msg-013.1787567360@northwind-eng.example"
+      ],
+      "subject": "Re: SSO rollout — scope has grown, need you across it",
+      "body": "Deprovisioning is the right thing to focus on first — it's also the part most likely to block sign-off from the identity team if it's undefined.\n\nOne concrete thing before you scope it: find out whether Okta's SCIM deprovisioning sends a DELETE or just sets active=false. That distinction changes the implementation significantly and nobody seems to know which it is. Get that answered and the rest of the scope should follow.\n\nMarcus",
+      "locator": "demo-work:lmcdba65b38bb327f8"
+    }
+  ]
+}
