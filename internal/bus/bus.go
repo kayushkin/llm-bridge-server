@@ -14,19 +14,19 @@ import (
 
 // Command represents a bus command
 type Command struct {
-	Action        string `json:"action"`
-	Name          string `json:"name,omitempty"`
-	Schedule      string `json:"schedule,omitempty"`
-	Command       string `json:"command,omitempty"`
-	Type          string `json:"type,omitempty"`
-	Agent         string `json:"agent,omitempty"`
-	Prompt        string `json:"prompt,omitempty"`
-	Model         string `json:"model,omitempty"`
-	Orchestrator  string `json:"orchestrator,omitempty"`
-	SessionID     string `json:"session_id,omitempty"`
-	ID            int64  `json:"id,omitempty"`
-	Enabled       *bool  `json:"enabled,omitempty"`
-	JobID         int64  `json:"job_id,omitempty"`
+	Action       string `json:"action"`
+	Name         string `json:"name,omitempty"`
+	Schedule     string `json:"schedule,omitempty"`
+	Command      string `json:"command,omitempty"`
+	Type         string `json:"type,omitempty"`
+	Agent        string `json:"agent,omitempty"`
+	Prompt       string `json:"prompt,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Orchestrator string `json:"orchestrator,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+	ID           int64  `json:"id,omitempty"`
+	Enabled      *bool  `json:"enabled,omitempty"`
+	JobID        int64  `json:"job_id,omitempty"`
 }
 
 // RunResult represents a job run result for publishing

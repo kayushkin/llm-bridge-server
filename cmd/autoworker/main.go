@@ -354,11 +354,11 @@ func main() {
 		} else {
 			log.Printf("[%s] session is UNCAPPED — %s", d.provider, why)
 		}
-		workingDir := ""
+		workingDir, agentSlug := "", ""
 		if queueCard != nil {
-			workingDir = queueCard.workingDir
+			workingDir, agentSlug = queueCard.workingDir, queueCard.agentSlug
 		}
-		sessionID, err := publishWorker(natsClient, p, workerPrompt, maxBudgetUSD, workingDir)
+		sessionID, err := publishWorker(natsClient, p, workerPrompt, maxBudgetUSD, workingDir, agentSlug)
 		if err != nil {
 			log.Printf("[%s] publish failed: %v", d.provider, err)
 			continue
@@ -475,6 +475,11 @@ type queueCandidate struct {
 	body   string
 	tags   []string
 	item   map[string]any
+	// agentSlug is the agent-store identity this work is done AS, read from the
+	// card's `agent` link. It becomes CreateSessionRequest.AgentID — the field
+	// designed to carry exactly this and empty on 92% of sessions, which is why
+	// nothing downstream can key on who is acting.
+	agentSlug string
 	// workingDir is the directory the agent's harness runs in, read from the
 	// card's `repo` link. Empty means "wherever the instance puts you", which
 	// until now was the only answer available: nothing in this repo set
@@ -604,6 +609,13 @@ func selectQueuedCard(qc *kanbanclient.Client, cfg config) (*queueCandidate, err
 			tags:   tags,
 			item:   c.Item,
 		}
+		agentSlug, err := sessionAgentSlug(c.Links)
+		if err != nil {
+			log.Printf("queue: skip card %s — %v", cand.cardID, err)
+			continue
+		}
+		cand.agentSlug = agentSlug
+
 		workingDir, err := repoWorkingDir(c.Links)
 		if err != nil {
 			// Skip rather than dispatch into the wrong tree. An agent told to
@@ -789,7 +801,7 @@ func applySessionSpendCeiling(create *msg.CreateSessionRequest, maxBudgetUSD flo
 //
 // maxBudgetUSD, when > 0, becomes the session's per-session cost cap on both the
 // server-side and the harness-native enforcer — see applySessionSpendCeiling.
-func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetUSD float64, workingDir string) (string, error) {
+func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetUSD float64, workingDir, agentSlug string) (string, error) {
 	now := time.Now().UTC()
 	// Mint the canonical session_id here. Adapter passes BusSessionID through
 	// as bridge-server session_id (see llm-bridge-adapter@73c7cb5), so this
@@ -812,6 +824,9 @@ func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetU
 	// Machine.DefaultWorkingDir > whatever the spawning process had. Left empty
 	// the instance decides, which is the previous behaviour exactly.
 	create.WorkingDir = workingDir
+	// Who this session is acting as. Empty leaves it unattributed, which is what
+	// every session has been until now.
+	create.AgentID = agentSlug
 
 	in := messages.BridgeInbound{
 		BusSessionID: sessionID,
@@ -934,6 +949,34 @@ Steps:
 7. If every top todo is blocked, stop — better to do nothing than the wrong thing.
 
 Be self-contained. No chat; just work and close out the todo.`
+
+// sessionAgentSlug reads the identity this work is done as from a card's links.
+//
+// The ref is an agent-store slug, which is that store's own unique key — so
+// this is a join on the owning store's id, not on a display name.
+//
+// It is deliberately NOT resolved against agent-store here. The writer of the
+// link is the one that knows the identity exists, and validating at write time
+// keeps the dispatch path from failing because a registry it does not otherwise
+// need happens to be down. Two links are still refused: a card that names two
+// identities does not say which one did the work.
+func sessionAgentSlug(links []kanbanclient.CardLink) (string, error) {
+	var found []string
+	for _, l := range links {
+		if l.EntityType == "agent" && strings.TrimSpace(l.EntityRef) != "" {
+			found = append(found, l.EntityRef)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return "", nil
+	case 1:
+		return found[0], nil
+	default:
+		return "", fmt.Errorf("it carries %d agent links (%s) and so does not say which identity did the work",
+			len(found), strings.Join(found, ", "))
+	}
+}
 
 // repoWorkingDir reads the directory an agent should work in from a card's
 // links.

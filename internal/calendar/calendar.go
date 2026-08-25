@@ -4,17 +4,17 @@ import "time"
 
 // Event represents a calendar event.
 type Event struct {
-	ID          string     `json:"id"`
-	Title       string     `json:"title"`
-	Description string     `json:"description,omitempty"`
-	Start       time.Time  `json:"start"`
-	End         time.Time  `json:"end"`
-	AllDay      bool       `json:"all_day,omitempty"`
-	Location    string     `json:"location,omitempty"`
-	CalendarID  string     `json:"calendar_id,omitempty"`
-	Recurring   bool       `json:"recurring,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description,omitempty"`
+	Start       time.Time `json:"start"`
+	End         time.Time `json:"end"`
+	AllDay      bool      `json:"all_day,omitempty"`
+	Location    string    `json:"location,omitempty"`
+	CalendarID  string    `json:"calendar_id,omitempty"`
+	Recurring   bool      `json:"recurring,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // ListEventsRequest is the request for listing calendar events.

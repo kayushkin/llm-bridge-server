@@ -11,7 +11,7 @@ import (
 )
 
 type LogEntry struct {
-	Source    string                 `json:"source"`
+	Source   string                 `json:"source"`
 	Level    string                 `json:"level"`
 	Type     string                 `json:"type"`
 	Content  string                 `json:"content"`
@@ -165,7 +165,7 @@ func (l *Logger) LogError(errorType, message string, metadata map[string]interfa
 	metadata["error_type"] = errorType
 
 	l.publish(LogEntry{
-		Source:  "scheduler",
+		Source:   "scheduler",
 		Level:    "error",
 		Type:     "error",
 		Content:  message,

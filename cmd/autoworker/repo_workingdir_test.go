@@ -74,3 +74,60 @@ func TestAnEmptyRefIsIgnoredRatherThanUsed(t *testing.T) {
 		t.Fatalf("got %q, want empty", got)
 	}
 }
+
+func agentLink(ref string) kanbanclient.CardLink {
+	return kanbanclient.CardLink{EntityType: "agent", EntityRef: ref}
+}
+
+func TestACardWithNoAgentLinkStaysUnattributed(t *testing.T) {
+	got, err := sessionAgentSlug([]kanbanclient.CardLink{repoLink("/tmp")})
+	if err != nil {
+		t.Fatalf("sessionAgentSlug: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("got %q, want empty — that is what every session has been until now", got)
+	}
+}
+
+func TestAnAgentLinkBecomesTheSessionIdentity(t *testing.T) {
+	got, err := sessionAgentSlug([]kanbanclient.CardLink{agentLink("northwind-builder")})
+	if err != nil {
+		t.Fatalf("sessionAgentSlug: %v", err)
+	}
+	if got != "northwind-builder" {
+		t.Fatalf("got %q, want northwind-builder", got)
+	}
+}
+
+// A card naming two identities does not say which one did the work, and
+// attribution that picks one is worse than none.
+func TestTwoAgentLinksAreRefused(t *testing.T) {
+	_, err := sessionAgentSlug([]kanbanclient.CardLink{
+		agentLink("northwind-builder"), agentLink("northwind-reviewer"),
+	})
+	if err == nil {
+		t.Fatal("a card claiming two identities was given one of them")
+	}
+	if !strings.Contains(err.Error(), "2 agent links") {
+		t.Fatalf("error does not say what is wrong: %v", err)
+	}
+}
+
+func TestTheTwoLinkKindsAreReadIndependently(t *testing.T) {
+	links := []kanbanclient.CardLink{
+		agentLink("northwind-reviewer"),
+		repoLink(t.TempDir()),
+		{EntityType: "session", EntityRef: "autoworker-x-1"},
+	}
+	slug, err := sessionAgentSlug(links)
+	if err != nil {
+		t.Fatalf("sessionAgentSlug: %v", err)
+	}
+	dir, err := repoWorkingDir(links)
+	if err != nil {
+		t.Fatalf("repoWorkingDir: %v", err)
+	}
+	if slug != "northwind-reviewer" || dir == "" {
+		t.Fatalf("slug=%q dir=%q — a card carries both without either reading the other", slug, dir)
+	}
+}

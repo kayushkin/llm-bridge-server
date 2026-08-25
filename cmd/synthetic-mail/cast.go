@@ -1,5 +1,11 @@
 package main
 
+import (
+	"strings"
+
+	"github.com/slava/scheduler/internal/demoteam"
+)
+
 // The people this mailbox hears from.
 //
 // A fixed cast rather than generated names, for two reasons. Sender affinity is
@@ -24,6 +30,10 @@ type person struct {
 	// the cast it was copied from. The key is what the corpus records; the role
 	// is looked up from here.
 	Role string `json:"-"`
+	// Slug is the agent-store identity behind this sender, empty for the machine
+	// senders. It is what lets a message be attributed to somebody the board can
+	// actually resolve, rather than to a display name.
+	Slug string `json:"slug,omitempty"`
 }
 
 // owner is the mailbox all of this arrives in.
@@ -32,15 +42,11 @@ var owner = person{
 	Role: "the engineer who owns this mailbox",
 }
 
-var cast = []person{
-	{Key: "priya", Name: "Priya Raman", Email: "priya.raman@northwind-eng.example",
-		Role: "product manager; asks for work, changes scope, chases delivery dates"},
-	{Key: "dinesh", Name: "Dinesh Okonkwo", Email: "dinesh.okonkwo@northwind-eng.example",
-		Role: "senior engineer who reviews pull requests; terse, technical, direct"},
-	{Key: "marcus", Name: "Marcus Feld", Email: "marcus.feld@northwind-eng.example",
-		Role: "platform lead; makes build and infrastructure decisions, cancels work that is not paying off"},
-	{Key: "helena", Name: "Helena Vos", Email: "helena.vos@northwind-eng.example",
-		Role: "engineering manager; asks for write-ups, incident reviews and status for people above her"},
+// machineSenders are the addresses that belong to no one. They send mail and
+// hold no identity: a build robot is not a member of the team, it is a thing
+// the team's tooling does, and giving it an agent-store row would put a
+// permission subject where there is no actor.
+var machineSenders = []person{
 	{Key: "ops", Name: "Customer Ops", Email: "ops@northwind-support.example",
 		Role: "a shared customer-operations mailbox; reports customer-visible problems with order numbers"},
 	{Key: "security", Name: "Security", Email: "security@northwind-eng.example",
@@ -51,6 +57,29 @@ var cast = []person{
 		Role: "an automated build robot; writes identical terse digests with numbers in them, never prose"},
 	{Key: "portal", Name: "Vendor Portal", Email: "no-reply@vendor-portal.example",
 		Role: "an automated no-reply notifier whose messages are vague and hard to act on"},
+}
+
+// cast is the machine senders plus every roster member who sends mail. Built
+// once at start-up from demoteam.Roster, so the people who write email and the
+// identities that do work are the same list read two ways — a colleague cannot
+// appear in the mailbox without existing on the board.
+var cast = buildCast()
+
+func buildCast() []person {
+	out := append([]person(nil), machineSenders...)
+	for _, m := range demoteam.Roster {
+		if !m.SendsMail() {
+			continue
+		}
+		out = append(out, person{
+			Key:   strings.TrimPrefix(m.Slug, "northwind-"),
+			Name:  m.Name,
+			Email: m.Email,
+			Role:  m.Voice,
+			Slug:  m.Slug,
+		})
+	}
+	return out
 }
 
 func personByKey(key string) person {

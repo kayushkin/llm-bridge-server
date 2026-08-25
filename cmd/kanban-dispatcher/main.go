@@ -5,21 +5,21 @@
 //
 // Cadence:
 //
-//   Registered as a scheduler shell job running every ~5 minutes. Each tick:
+//	Registered as a scheduler shell job running every ~5 minutes. Each tick:
 //
-//     1. Walk the board.
-//     2. For each parent in Goals (with the "scoped" entity_tag):
-//        a. Find Backlog children for that parent (no session link yet).
-//        b. Group them by their group:<key> tag.
-//        c. For each group, pick the first eligible child:
-//           - Look at sibling cards (same parent, same group) for an idle
-//             session whose last update was within the revive window. If one
-//             exists, REUSE its session_id (publish Send only).
-//           - Otherwise mint a fresh session_id and publish Create+Send.
-//        d. Add a session card_link, move the child to In Progress.
-//     3. Final pass — for each scoped parent, if every child noteboard item
-//        has status "done" or "archived", move the parent to Done with a
-//        rollup body note.
+//	  1. Walk the board.
+//	  2. For each parent in Goals (with the "scoped" entity_tag):
+//	     a. Find Backlog children for that parent (no session link yet).
+//	     b. Group them by their group:<key> tag.
+//	     c. For each group, pick the first eligible child:
+//	        - Look at sibling cards (same parent, same group) for an idle
+//	          session whose last update was within the revive window. If one
+//	          exists, REUSE its session_id (publish Send only).
+//	        - Otherwise mint a fresh session_id and publish Create+Send.
+//	     d. Add a session card_link, move the child to In Progress.
+//	  3. Final pass — for each scoped parent, if every child noteboard item
+//	     has status "done" or "archived", move the parent to Done with a
+//	     rollup body note.
 //
 // Session IDs are canonical post session-consolidation (2026-05-09): the
 // BridgeInbound.BusSessionID we publish becomes the llm-bridge-server
@@ -54,20 +54,20 @@ import (
 // "session" once bus_session_id became the bridge session_id.
 
 const (
-	defaultBoardName  = "Task completion loop"
-	columnGoals       = "Goals"
-	columnBacklog     = "Backlog"
-	columnInProgress  = "In Progress"
-	columnDone        = "Done"
-	columnFailed      = "Failed"
-	tagSubtask        = "task-completion-loop-subtask"
-	tagScoped         = "scoped"
-	tagGroupPrefix    = "group:"
-	linkTypeParent    = "parent_card"
-	linkTypeSession   = "session"
-	defaultHarness    = msg.HarnessClaudeCode
-	defaultInstanceID = "inst-cc-local"
-	reviveWindow      = time.Hour
+	defaultBoardName   = "Task completion loop"
+	columnGoals        = "Goals"
+	columnBacklog      = "Backlog"
+	columnInProgress   = "In Progress"
+	columnDone         = "Done"
+	columnFailed       = "Failed"
+	tagSubtask         = "task-completion-loop-subtask"
+	tagScoped          = "scoped"
+	tagGroupPrefix     = "group:"
+	linkTypeParent     = "parent_card"
+	linkTypeSession    = "session"
+	defaultHarness     = msg.HarnessClaudeCode
+	defaultInstanceID  = "inst-cc-local"
+	reviveWindow       = time.Hour
 	maxDispatchPerTick = 3
 )
 
@@ -75,10 +75,10 @@ func main() {
 	var (
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
 		dryRun       = flag.Bool("dry-run", false, "Decide but do not publish or move cards.")
-		boardName   = flag.String("board", defaultBoardName, "Kanban board name to dispatch on.")
-		kanbanURL   = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-		bridgeURL   = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
-		maxDispatch = flag.Int("max", maxDispatchPerTick, "Max sub-card dispatches per tick.")
+		boardName    = flag.String("board", defaultBoardName, "Kanban board name to dispatch on.")
+		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
+		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
+		maxDispatch  = flag.Int("max", maxDispatchPerTick, "Max sub-card dispatches per tick.")
 	)
 	flag.Parse()
 
@@ -534,8 +534,8 @@ func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool) messa
 			Harness:     defaultHarness,
 			InstanceID:  defaultInstanceID,
 			DisplayName: displayName,
-			Purpose:    "dispatcher",
-			Origin:     "scheduler",
+			Purpose:     "dispatcher",
+			Origin:      "scheduler",
 			Type:        msg.SessionTypeAutonomous,
 			AutoStart:   true,
 		}
