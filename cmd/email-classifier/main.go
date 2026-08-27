@@ -411,6 +411,24 @@ func run() int {
 	routed, remaining := routeByMessageIdentity(mc, state, unfiled)
 	log.Printf("[email] routed by message identity: %d; to model: %d", len(routed), len(remaining))
 
+	// Attach worked examples: for each email the model will judge, the stored
+	// mail that reads most like it and where that mail was filed. A failed
+	// lookup costs the example, never the filing — but it is recorded, because
+	// a tick that filed everything blind fell short of its job.
+	similarSearchFailures := 0
+	for i := range remaining {
+		examples, err := similarFiledExamples(mc, state, remaining[i])
+		if err != nil {
+			similarSearchFailures++
+			log.Printf("[email] similar-mail search for %s: %v — classifying without examples", remaining[i].Locator, err)
+			continue
+		}
+		remaining[i].SimilarFiled = examples
+	}
+	if similarSearchFailures > 0 {
+		degraded.record("similar-mail search failed for %d of %d message(s)", similarSearchFailures, len(remaining))
+	}
+
 	applier := &applier{cfg: cfg, kc: kc, state: state, gate: gate}
 	if err := applier.applyDirectRoutes(routed); err != nil {
 		log.Fatalf("apply direct routes: %v", err)
@@ -743,6 +761,10 @@ type pendingEmail struct {
 	Locator   string
 	MessageID string
 	Full      *fullMessage
+	// SimilarFiled is the worked examples for this email: stored messages that
+	// read like it and the card each landed on. Prompt evidence only — see the
+	// package comment in retrieval.go for why nothing routes on it.
+	SimilarFiled []filedExample
 }
 
 // collectUnfiled walks each account newest-first and returns messages with no
@@ -986,6 +1008,10 @@ func buildDigest(state *boardState, notes *routingNotes, batch []pendingEmail) s
 		// What the user knows about this mail that the mail does not say. Placed
 		// before the body so it frames the reading rather than trailing it.
 		b.WriteString(renderNoteForDigest(notes, em))
+		// Precedent before the body for the same reason: where mail like this
+		// went is the frame; this message's own text is what the model reads
+		// against it.
+		b.WriteString(renderSimilarFiledForDigest(em.SimilarFiled))
 		fmt.Fprintf(&b, "body: %s\n", truncate(bestBodyText(em), perEmail))
 	}
 	return b.String()

@@ -17,9 +17,12 @@ import (
 // treated as expensive, and the caller is expected to bound how many it makes
 // per tick rather than sweeping the mailbox.
 //
-// It also has no search route and no since-filter, which is why this classifier
-// cannot look a message up by its RFC 5322 Message-ID and must carry the
-// provider locator (account_id:message_id) as the addressable reference.
+// It has no since-filter, and until 2026-08-27 no search route either, which is
+// why this classifier carries the provider locator (account_id:message_id) as
+// the addressable reference. Search now exists (POST /api/search/similar,
+// backed by mailstack's recorded message bodies) but it covers only mail whose
+// body has been fetched at least once — it ranks likeness, it does not resolve
+// identity, so the locator remains the only real address.
 
 type mailClient struct {
 	BaseURL string
@@ -162,6 +165,60 @@ func (m *mailClient) getMessage(accountID, messageID string) (*fullMessage, erro
 	return &msg, nil
 }
 
+// similarHit is one result from mailstack's similarity search: a stored message
+// that reads like the queried text. Score is raw bm25 — negative, lower is a
+// better match — passed through so the caller applies its own recency policy.
+type similarHit struct {
+	AccountID  string  `json:"account_id"`
+	ProviderID string  `json:"provider_id"`
+	MessageID  string  `json:"message_id"`
+	Subject    string  `json:"subject"`
+	FromName   string  `json:"from_name"`
+	FromEmail  string  `json:"from_email"`
+	DateMs     int64   `json:"date_ms"`
+	Score      float64 `json:"score"`
+}
+
+// similarMessages asks mailstack which stored mail reads like the given text.
+// The excluded message is the one the text came from, so it cannot match
+// itself — by the time this runs, routeByMessageIdentity has fetched the
+// message and mailstack has therefore already recorded its body.
+func (m *mailClient) similarMessages(text, excludeAccountID, excludeProviderID string, limit int) ([]similarHit, error) {
+	payload, err := json.Marshal(map[string]any{
+		"text":  text,
+		"limit": limit,
+		"exclude": map[string]string{
+			"account_id":  excludeAccountID,
+			"provider_id": excludeProviderID,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", m.BaseURL+"/api/search/similar", strings.NewReader(string(payload)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+m.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := m.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("mailstack POST /api/search/similar: %s — %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var r struct {
+		Hits []similarHit `json:"hits"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("decode /api/search/similar: %w", err)
+	}
+	return r.Hits, nil
+}
+
 // ============================ identity ============================
 
 // locatorOf builds the addressable reference for a message:
@@ -169,8 +226,9 @@ func (m *mailClient) getMessage(accountID, messageID string) (*fullMessage, erro
 //	<account_id>:<provider message id>
 //
 // This is the entity_ref stored on card links, because it is the only id
-// mailstack can resolve back to a message — the service has no search route, so
-// a Message-ID alone is a dead end.
+// mailstack can resolve back to a message — a Message-ID alone is a dead end
+// for fetching (the similarity search added 2026-08-27 ranks likeness over
+// stored bodies; it is not a lookup).
 //
 // It is account-qualified deliberately. Gmail ids are permanent per account, but
 // an IMAP id here is a bare UID with no mailbox qualifier and UIDs are unique
