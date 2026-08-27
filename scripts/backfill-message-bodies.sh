@@ -46,6 +46,14 @@ done < <(sqlite3 "$DB" "
      AND b.folder_scope = m.folder_scope
      AND b.provider_id = m.provider_id
     WHERE b.id IS NULL
+      -- Inbox rows only. Two reasons, either sufficient: the account-scoped
+      -- GET cannot reach an IMAP UID outside the selected inbox (measured
+      -- 2026-08-27: all 131 Sent/Spam/Trash/Drafts rows 404 forever), and
+      -- spam/sent mail does not belong in a similarity corpus that feeds the
+      -- email-classifier worked examples. folder_scope is '' for providers
+      -- with account-wide ids (Gmail, Graph, local) and the mailbox name for
+      -- IMAP, where only INBOX is wanted.
+      AND m.folder_scope IN ('', 'INBOX')
     ORDER BY m.date_ms DESC
     LIMIT $LIMIT
 " -separator '|')
