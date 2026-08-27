@@ -207,6 +207,29 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 		summaries[row.SessionID] = summaryFromRow(row)
 	}
 
+	// Stream resume points, read BEFORE the flush below and before the models are
+	// fetched. The ordering is the same one `handleSessionMessages` documents at length
+	// and it is what makes the pair safe: flushing first and reading the head second
+	// leaves an event that landed in between at or below the head while never reaching
+	// log-store, so it appears on neither the bundled model nor the resumed stream.
+	//
+	// Staleness here is harmless in the one direction that matters. This response is
+	// cached, so a client can receive an old head — and an old head resumes EARLIER,
+	// replaying events it already has rather than skipping ones it does not. The model
+	// in that cache entry is equally old, so the two stay consistent.
+	heads := make(map[string]int64, len(ids))
+	for _, id := range ids {
+		head, err := s.store.MaxEventRowID(id)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("stream head unavailable for %s: %v", id, err), http.StatusInternalServerError)
+			return
+		}
+		heads[id] = head
+		// Drain this session's queued writes so log-store's bundle really does contain
+		// everything at or below the head just read.
+		s.harness.FlushLogStoreWrites(id)
+	}
+
 	// Fetch materialized tails from log-store, decoding the response streaming.
 	models, err := s.fetchBundleModels(ids, turns)
 	if err != nil {
@@ -216,7 +239,11 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 
 	out := make(map[string]bundleEntry, len(rows))
 	for _, id := range ids {
-		out[id] = bundleEntry{Summary: summaries[id], Model: models[id]}
+		out[id] = bundleEntry{
+			Summary: summaries[id],
+			Model:   models[id],
+			Stream:  StreamResumePoint{Head: heads[id]},
+		}
 	}
 	body, err := json.Marshal(out)
 	if err != nil {

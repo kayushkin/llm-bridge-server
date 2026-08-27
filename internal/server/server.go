@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path"
 	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
@@ -164,7 +163,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/attach", s.handleAttachSession)
 	s.mux.HandleFunc("GET /sessions/{id}/attach-token", s.handleGetAttachToken)
 	s.mux.HandleFunc("GET /sessions/aggregates", s.handleSessionAggregates)
-	s.mux.HandleFunc("GET /sessions/{id}/messages", s.proxyToLogStore)
+	s.mux.HandleFunc("GET /sessions/{id}/messages", s.handleSessionMessages)
+	// The unprojected page, for the Raw pane and for audit. `/messages` is projected
+	// by log-store — no `raw` payloads, no duplicate entries — because the Turns view
+	// renders about a tenth of what was being sent (9.91 MB against 0.95 MB, measured
+	// on one real session). This route is how a caller asks for the rest, and it is a
+	// route rather than a query param so nobody requests ten times the bytes by
+	// accident. Proxied unchanged, like every other log-store path.
+	s.mux.HandleFunc("GET /sessions/{id}/messages/raw", s.handleSessionMessages)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.proxyToLogStore)
 	s.mux.HandleFunc("POST /sessions/{id}/interrupt", s.handleInterruptSession)
 	s.mux.HandleFunc("POST /sessions/{id}/resume", s.handleResumeSession)
@@ -467,10 +473,19 @@ func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 	// id is the real session id, decoded — that is what every in-process
 	// lookup wants, FlushLogStoreWrites below included.
 	id := r.PathValue("id")
-	// endpoint is the route's own literal, always the last segment, so the
-	// decode cannot move it. Read from the escaped path anyway, so this does
-	// not quietly depend on that staying true of some later route.
-	endpoint := path.Base(r.URL.EscapedPath()) // "messages" or "history"
+	// endpoint is the route's own literal — everything after the id segment, which
+	// is one segment for "messages" and "history" and TWO for "messages/raw".
+	//
+	// This used to be `path.Base(r.URL.EscapedPath())`, on the stated assumption that
+	// the literal is "always the last segment". That held for exactly as long as every
+	// proxied route was three segments: the first two-segment route, `/messages/raw`,
+	// proxied to `/api/v1/sessions/{id}/raw` and 404ed. Read from the ESCAPED path, so
+	// an id holding a %2F cannot move the split.
+	endpoint := logStoreEndpointFromPath(r.URL.EscapedPath())
+	if endpoint == "" {
+		http.Error(w, "not a log-store session route", http.StatusNotFound)
+		return
+	}
 
 	// The harness pump writes to log-store through an ordered queue, so
 	// drain this session's queue first. Without it a client loading the

@@ -56,6 +56,15 @@ type Validator struct {
 type bundleEntry struct {
 	Summary SessionSummary  `json:"summary"`
 	Model   json.RawMessage `json:"model"`
+
+	// Stream is where to resume this session's event stream so that the bundled model
+	// and the stream meet exactly — the same fact `SessionMessagesResponse` carries, for
+	// the same reason. Without it a bundle-warmed session is opened with no resume
+	// point, the click path skips its fetch because the model is already in the store,
+	// and the server replays the entire current turn at a client that has all of it.
+	// That is most sessions on a cold boot, so omitting it here would leave the whole
+	// mechanism unreachable for exactly the sessions people open first.
+	Stream StreamResumePoint `json:"stream"`
 }
 
 // summaryFromRow formats a projected store row into the wire SessionSummary,

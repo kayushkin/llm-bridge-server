@@ -71,6 +71,27 @@ func escapedPathAfterPrefix(u *url.URL, mountPrefix string) string {
 // addresses a different resource. Escaping at the point of USE rather than the
 // point of READ is what lets both consumers be right at once: the manager
 // indexes by the decoded id, the wire needs the escaped one.
+// logStoreEndpointFromPath returns the part of a /sessions/{id}/... route that names
+// the log-store endpoint — "messages", "history", "messages/raw" — or "" if the path
+// is not one.
+//
+// It replaced a `path.Base` on the same input, which read the LAST segment on the
+// stated assumption that the endpoint literal is always last. That held for exactly as
+// long as every proxied route was three segments. The first two-segment endpoint,
+// `/messages/raw`, proxied to `/api/v1/sessions/{id}/raw` and 404ed — the route was
+// registered, the binary had it, and the request still could not arrive.
+//
+// Splits the ESCAPED path, so a session id containing an encoded slash stays one
+// segment and cannot shift the split.
+func logStoreEndpointFromPath(escapedPath string) string {
+	// ["sessions", "<id>", "messages", ...]
+	segments := strings.Split(strings.TrimPrefix(escapedPath, "/"), "/")
+	if len(segments) < 3 || segments[0] != "sessions" {
+		return ""
+	}
+	return strings.Join(segments[2:], "/")
+}
+
 func logStoreSessionURL(base, sessionID, endpoint string) string {
 	return base + "/api/v1/sessions/" + url.PathEscape(sessionID) + "/" + endpoint
 }

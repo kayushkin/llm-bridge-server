@@ -1177,6 +1177,27 @@ type EventWithID struct {
 	Data  json.RawMessage
 }
 
+// MaxEventRowID reports the highest event row id stored for a session, or 0 when it has
+// none. This is the SSE stream's resume point: a client holding it can reconnect with
+// `Last-Event-ID` and be sent only what arrived after, instead of having the whole
+// current turn replayed at it.
+//
+// ⚠️ Read it BEFORE flushing pending writes to log-store, never after. The guarantee a
+// caller needs is "every event at or below this id is already in the materialized page",
+// and only that order provides it: the flush drains everything queued at the moment it
+// runs, which necessarily includes every event that existed when the id was read. Read
+// the id after the flush and an event written in between is at or below it while never
+// having reached log-store — present in neither the page nor the resumed stream, and
+// nothing anywhere reports the loss.
+func (s *Store) MaxEventRowID(sessionID string) (int64, error) {
+	var maxID int64
+	err := s.dbRO.QueryRow(
+		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id=?`,
+		sessionID,
+	).Scan(&maxID)
+	return maxID, err
+}
+
 // ListCurrentTurnEventsWithIDs returns current-turn events with row IDs.
 func (s *Store) ListCurrentTurnEventsWithIDs(sessionID string) ([]EventWithID, error) {
 	var lastUserID int
