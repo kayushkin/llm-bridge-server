@@ -81,6 +81,11 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, bearerToken string, 
 	// and Go's mux panics at registration rather than guessing. Caught by the
 	// e2e smoke, which exists for precisely this.
 	s.mux.Handle("GET /api/lookup/message-id/{messageID}", s.auth(s.handleLocatorsForMessageID))
+	// Search runs over recorded payloads only (see accounts.MessageBody): a
+	// message never fetched through GET /api/messages/{id} is invisible to it.
+	// /api/index/stats reports the coverage gap as messages − bodies_stored.
+	s.mux.Handle("GET /api/search", s.auth(s.handleSearchMessages))
+	s.mux.Handle("POST /api/search/similar", s.auth(s.handleSimilarMessages))
 	s.mux.Handle("GET /api/messages/{id}/thread", s.auth(s.handleMessageThread))
 	s.mux.Handle("GET /api/index/stats", s.auth(s.handleIndexStats))
 	s.mux.Handle("GET /api/messages/{id}", s.auth(s.handleGetMessage))
@@ -449,8 +454,10 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The get path carries headers the list path does not, so this is where a
-	// message's References chain usually first becomes known.
-	s.indexFullMessage(acct, msg)
+	// message's References chain usually first becomes known — and the only
+	// place its body passes through, so this is also where the payload is
+	// recorded for search.
+	s.recordFullMessage(acct, msg)
 	writeJSON(w, http.StatusOK, msg)
 }
 
@@ -716,14 +723,34 @@ func (s *Server) indexMessages(accountID string, msgs []backend.MessageMeta) {
 	}
 }
 
-func (s *Server) indexFullMessage(accountID string, msg backend.Message) {
+// recordFullMessage stores everything a full fetch teaches: the identity row
+// in the message index, and the payload in message_bodies so search can see
+// the text. Named record rather than index because since migration 0002 it
+// persists content, not just metadata.
+func (s *Server) recordFullMessage(accountID string, msg backend.Message) {
 	a, err := s.accounts.Get(accountID)
 	if err != nil {
 		log.Printf("index: account %s: %v — message not indexed", accountID, err)
 		return
 	}
-	if err := s.accounts.UpsertMessages([]accounts.IndexedMessage{indexRow(a, msg.Meta, msg.Headers)}); err != nil {
+	row := indexRow(a, msg.Meta, msg.Headers)
+	if err := s.accounts.UpsertMessages([]accounts.IndexedMessage{row}); err != nil {
 		log.Printf("index: upsert message %s for %s: %v", msg.Meta.ID, accountID, err)
+	}
+	if err := s.accounts.UpsertMessageBody(accounts.MessageBody{
+		AccountID:   row.AccountID,
+		FolderScope: row.FolderScope,
+		ProviderID:  row.ProviderID,
+		MessageID:   row.MessageID,
+		Subject:     msg.Meta.Subject,
+		FromName:    msg.Meta.From.Name,
+		FromEmail:   msg.Meta.From.Email,
+		DateMs:      row.DateMs,
+		BodyText:    msg.BodyText,
+		BodyHTML:    msg.BodyHTML,
+		SearchText:  accounts.SearchableText(msg.BodyText, msg.BodyHTML),
+	}); err != nil {
+		log.Printf("index: store body %s for %s: %v", msg.Meta.ID, accountID, err)
 	}
 }
 
@@ -835,6 +862,59 @@ func (s *Server) handleMessageThread(w http.ResponseWriter, r *http.Request) {
 		"root_message_id": seed.RootID,
 		"messages":        msgs,
 	})
+}
+
+// handleSearchMessages is full-text search over recorded message payloads,
+// bm25-ranked. q is plain text, not FTS5 syntax. Optional: account narrows to
+// one account, limit caps results (default 20, max 200).
+func (s *Server) handleSearchMessages(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeError(w, http.StatusBadRequest, errors.New("q query param required"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	hits, err := s.accounts.SearchMessages(q, r.URL.Query().Get("account"), limit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if hits == nil {
+		hits = []accounts.SearchHit{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
+}
+
+// handleSimilarMessages finds recorded messages that read like the posted
+// text. POST because the text is a whole message body, not a query string.
+// exclude names a message to leave out of the results — normally the message
+// the text came from, so it does not match itself.
+func (s *Server) handleSimilarMessages(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text    string `json:"text"`
+		Limit   int    `json:"limit"`
+		Exclude struct {
+			AccountID  string `json:"account_id"`
+			ProviderID string `json:"provider_id"`
+		} `json:"exclude"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Text == "" {
+		writeError(w, http.StatusBadRequest, errors.New("text is required"))
+		return
+	}
+	hits, err := s.accounts.SimilarMessages(req.Text, req.Exclude.AccountID, req.Exclude.ProviderID, req.Limit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if hits == nil {
+		hits = []accounts.SearchHit{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
 }
 
 func (s *Server) handleIndexStats(w http.ResponseWriter, r *http.Request) {

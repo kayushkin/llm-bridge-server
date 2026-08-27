@@ -43,9 +43,11 @@ CREATE TABLE IF NOT EXISTS imap_folder_map (
 // "what messages exist, what are their ids, and how do they relate", without
 // asking the provider.
 //
-// It stores METADATA ONLY and never bodies. mailstack stays a live proxy for
-// content, so an indexed subject going slightly stale is cosmetic, while a
-// cached body would be both a correctness problem and a storage one.
+// It stores METADATA ONLY and never bodies. This table originally carried the
+// rule "never bodies" for the whole store; since migration 0002 bodies ARE
+// recorded, in message_bodies below, but only to back full-text search — the
+// read path stays a live proxy, and no stored body is ever served back as the
+// message. See the comment on messageBodiesSchema.
 //
 // The primary key is (account_id, folder_scope, provider_id):
 //
@@ -89,4 +91,71 @@ CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id) WHERE
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(account_id, thread_id) WHERE thread_id != '';
 CREATE INDEX IF NOT EXISTS idx_messages_root ON messages(root_message_id) WHERE root_message_id != '';
 CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(account_id, date_ms DESC);
+`
+
+// messageBodiesSchema is migration 0002: the message payload record and its
+// full-text index.
+//
+// This deliberately revises the "metadata only, never bodies" rule stated above
+// messagesSchema. The email-classifier needs "which stored mail reads like this
+// one" answered with BM25 over real text, and that question cannot be answered
+// live against a provider. So bodies are now recorded — but only to back
+// search. Every read of a message (GET /api/messages/{id}) still goes live to
+// the provider; nothing serves a stored body back as the message.
+//
+// message_bodies carries its own copy of subject/from/date rather than joining
+// messages, because the FTS index reads its columns from exactly one content
+// table. Both rows are written in the same call from the same fetched message,
+// so they cannot disagree about what the provider said at fetch time. messages
+// stays the identity/threading index; message_bodies is the record of payloads
+// fetched.
+//
+// search_text is the one derived column: the body rendered as plain text for
+// indexing (the text part when it is the real message, the de-tagged HTML part
+// when the text part is a "view in browser" stub), capped so a single giant
+// message cannot bloat the index. body_text and body_html are verbatim.
+//
+// The FTS table uses external content against message_bodies, kept true by the
+// three triggers. Tokenizer is porter+unicode61: stemmed prose matching, and
+// addresses split on @ and dots so "wellsfargo" matches the sender domain.
+const messageBodiesSchema = `
+CREATE TABLE IF NOT EXISTS message_bodies (
+	id           INTEGER PRIMARY KEY,
+	account_id   TEXT NOT NULL,
+	folder_scope TEXT NOT NULL DEFAULT '',
+	provider_id  TEXT NOT NULL,
+	message_id   TEXT NOT NULL DEFAULT '',
+	subject      TEXT NOT NULL DEFAULT '',
+	from_name    TEXT NOT NULL DEFAULT '',
+	from_email   TEXT NOT NULL DEFAULT '',
+	date_ms      INTEGER NOT NULL DEFAULT 0,
+	body_text    TEXT NOT NULL DEFAULT '',
+	body_html    TEXT NOT NULL DEFAULT '',
+	search_text  TEXT NOT NULL DEFAULT '',
+	fetched_ms   INTEGER NOT NULL,
+	UNIQUE (account_id, folder_scope, provider_id)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS message_bodies_fts USING fts5(
+	subject, from_name, from_email, search_text,
+	content='message_bodies', content_rowid='id',
+	tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS message_bodies_fts_insert AFTER INSERT ON message_bodies BEGIN
+	INSERT INTO message_bodies_fts(rowid, subject, from_name, from_email, search_text)
+	VALUES (new.id, new.subject, new.from_name, new.from_email, new.search_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS message_bodies_fts_delete AFTER DELETE ON message_bodies BEGIN
+	INSERT INTO message_bodies_fts(message_bodies_fts, rowid, subject, from_name, from_email, search_text)
+	VALUES ('delete', old.id, old.subject, old.from_name, old.from_email, old.search_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS message_bodies_fts_update AFTER UPDATE ON message_bodies BEGIN
+	INSERT INTO message_bodies_fts(message_bodies_fts, rowid, subject, from_name, from_email, search_text)
+	VALUES ('delete', old.id, old.subject, old.from_name, old.from_email, old.search_text);
+	INSERT INTO message_bodies_fts(rowid, subject, from_name, from_email, search_text)
+	VALUES (new.id, new.subject, new.from_name, new.from_email, new.search_text);
+END;
 `

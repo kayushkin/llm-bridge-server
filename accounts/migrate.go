@@ -30,6 +30,10 @@ var migrations = []struct {
 		name: "0001_messages_index",
 		stmt: messagesSchema,
 	},
+	{
+		name: "0002_message_bodies",
+		stmt: messageBodiesSchema,
+	},
 }
 
 func migrate(db *sql.DB) error {

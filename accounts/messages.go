@@ -205,6 +205,10 @@ type IndexStats struct {
 	Accounts       int   `json:"accounts"`
 	OldestDateMs   int64 `json:"oldest_date_ms"`
 	NewestDateMs   int64 `json:"newest_date_ms"`
+	// BodiesStored counts message_bodies rows: how much of the index has a
+	// recorded payload behind it. The gap Messages−BodiesStored is the mail
+	// search cannot see yet.
+	BodiesStored int `json:"bodies_stored"`
 }
 
 func (s *Store) IndexStats() (IndexStats, error) {
@@ -222,6 +226,10 @@ func (s *Store) IndexStats() (IndexStats, error) {
 		FROM messages
 	`).Scan(&st.Messages, &st.WithMessageID, &st.WithThreadID, &st.DistinctThread,
 		&st.Accounts, &st.OldestDateMs, &st.NewestDateMs)
+	if err != nil {
+		return st, err
+	}
+	err = s.db.QueryRow(`SELECT COUNT(*) FROM message_bodies`).Scan(&st.BodiesStored)
 	return st, err
 }
 
