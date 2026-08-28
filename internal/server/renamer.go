@@ -298,9 +298,26 @@ func buildRenamerPrompt(target *store.Session, renamerID string, turns []store.T
 	}
 	b.WriteString("---\n\n")
 	b.WriteString("When you have decided on a title, post it back via curl:\n\n")
+	// Both ids are session ids, so both are caller-choosable (sessions.go
+	// takes req.SessionID off the POST body verbatim), and this string is a
+	// shell command an agent is being told to run. The URL is escaped for the
+	// path AND quoted as one shell word; the payload is JSON-encoded for the
+	// body AND quoted as one shell word. See the note on shellSingleQuote in
+	// hook_settings.go for why escaping alone is not enough here.
+	//
+	// <TITLE> stays a literal placeholder: the agent substitutes it, so it
+	// cannot be encoded now.
+	encodedRenamerID, err := json.Marshal(renamerID)
+	if err != nil {
+		// Marshalling a string cannot fail; if it somehow does, emit no
+		// renamer id rather than an unquoted one.
+		encodedRenamerID = []byte(`""`)
+	}
+	renameURL := fmt.Sprintf("%s/sessions/%s/auto-rename", baseURL, escapePathSegment(target.SessionID))
+	renamePayload := fmt.Sprintf(`{"display_name":"<TITLE>","renamer_session_id":%s}`, encodedRenamerID)
 	fmt.Fprintf(&b,
-		"curl -sfS -X POST %s/sessions/%s/auto-rename -H 'Content-Type: application/json' -d '{\"display_name\":\"<TITLE>\",\"renamer_session_id\":\"%s\"}'\n\n",
-		baseURL, target.SessionID, renamerID,
+		"curl -sfS -X POST %s -H 'Content-Type: application/json' -d %s\n\n",
+		shellSingleQuote(renameURL), shellSingleQuote(renamePayload),
 	)
 	b.WriteString("After the curl returns 200 you are completely done — do not do any further work, do not summarize, do not produce any extra output. Just give a single short confirmation and stop.")
 	return b.String()

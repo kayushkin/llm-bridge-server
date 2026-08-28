@@ -54,17 +54,31 @@ func pathProbes() []pathProbe {
 		// Also passed straight through by PathEscape. Inert in a URL, a
 		// variable expansion in an unquoted shell word.
 		{"dollar", "a$SENTINEL"},
+		// ⚠️ The marker probes above are a LOWER BOUND on their own, and this
+		// one is why. Whether an injected command leaves its marker behind
+		// depends on what follows the id ON THE LINE: at the hook sites the
+		// URL is last, so `a&touch MARKER` runs touch with no arguments and
+		// the file appears; in the renamer prompt the curl flags trail the
+		// URL, so touch is handed `-H` and exits with "invalid option"
+		// leaving nothing. Measured both ways. A missing marker is NOT
+		// evidence the injection failed. Terminating the payload with `;#`
+		// comments out the remainder, so this probe's marker appears wherever
+		// the id reaches a shell at all.
+		{"comment-terminated", "a&touch MARKER;#"},
 	}
 }
 
-// assertOneSegment parses rawURL and requires that it addresses exactly
-// /<want...>/<id>, with the id occupying exactly ONE path segment.
+// assertSegments parses rawURL and requires that its path is exactly the
+// given template, with the id occupying exactly ONE segment. The empty string
+// marks the id's slot -- it is not always the last one (the renamer's URL is
+// /sessions/<id>/auto-rename), and an assertion that assumed "last" passed on
+// a URL whose id had moved.
 //
 // It reads EscapedPath rather than Path deliberately: Path is the decoded
-// form, so a %2F that must stay inside the last segment has already turned
-// back into a separator by the time you read it and the assertion passes on
+// form, so a %2F that must stay inside one segment has already turned back
+// into a separator by the time you read it, and the assertion passes on
 // unrepaired code.
-func assertOneSegment(t *testing.T, label, rawURL, id string, want ...string) {
+func assertSegments(t *testing.T, label, rawURL, id string, template ...string) {
 	t.Helper()
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -77,23 +91,27 @@ func assertOneSegment(t *testing.T, label, rawURL, id string, want ...string) {
 		return
 	}
 	segments := strings.Split(strings.TrimPrefix(u.EscapedPath(), "/"), "/")
-	if len(segments) != len(want)+1 {
-		t.Errorf("%s: want %d path segments, got %d: %q", label, len(want)+1, len(segments), u.EscapedPath())
+	if len(segments) != len(template) {
+		t.Errorf("%s: want %d path segments, got %d: %q", label, len(template), len(segments), u.EscapedPath())
 		return
 	}
-	for i, w := range want {
-		if segments[i] != w {
-			t.Errorf("%s: path segment %d = %q, want %q (full: %q)", label, i, segments[i], w, u.EscapedPath())
+	for i, want := range template {
+		if want != "" {
+			if segments[i] != want {
+				t.Errorf("%s: path segment %d = %q, want %q (full: %q)", label, i, segments[i], want, u.EscapedPath())
+				return
+			}
+			continue
+		}
+		got, err := url.PathUnescape(segments[i])
+		if err != nil {
+			t.Errorf("%s: segment %d = %q does not decode: %v", label, i, segments[i], err)
 			return
 		}
-	}
-	last, err := url.PathUnescape(segments[len(segments)-1])
-	if err != nil {
-		t.Errorf("%s: last segment %q does not decode: %v", label, segments[len(segments)-1], err)
-		return
-	}
-	if last != id {
-		t.Errorf("%s: last path segment decodes to %q, want the id %q (full: %q)", label, last, id, u.EscapedPath())
+		if got != id {
+			t.Errorf("%s: path segment %d decodes to %q, want the id %q (full: %q)", label, i, got, id, u.EscapedPath())
+			return
+		}
 	}
 }
 
@@ -110,7 +128,7 @@ func TestCCPermissionHookURLKeepsTheSessionIDInOneSegment(t *testing.T) {
 			pre := parsed["hooks"].(map[string]any)["PreToolUse"].([]any)
 			inner := pre[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
 			raw, _ := inner["url"].(string)
-			assertOneSegment(t, probe.name, raw, id, "permission", "cc-prehook")
+			assertSegments(t, probe.name, raw, id, "permission", "cc-prehook", "")
 		})
 	}
 }
@@ -164,7 +182,7 @@ func runGeneratedCommand(t *testing.T, cmd string) [][]string {
 
 // assertOneCurlRun is the shell half of the pin, shared by the codex probes
 // and the two user-hook tests.
-func assertOneCurlRun(t *testing.T, label, cmd, marker, id string, want ...string) {
+func assertOneCurlRun(t *testing.T, label, cmd, marker, id string, template ...string) {
 	t.Helper()
 	runs := runGeneratedCommand(t, cmd)
 
@@ -183,12 +201,22 @@ func assertOneCurlRun(t *testing.T, label, cmd, marker, id string, want ...strin
 		}
 	}
 
-	// 3. curl's URL argument is one word addressing the intended endpoint,
-	//    with the id in exactly one path segment. Reading the LAST argv
-	//    entry also catches a repair that leaves the URL split across two
-	//    words, because then the last word is only the tail of it.
+	// 3. Exactly one argv entry is a URL, it is one word, and it addresses
+	//    the intended endpoint with the id in exactly one path segment.
+	//    Requiring exactly one also catches a repair that leaves the URL
+	//    split across two words: the tail word is then not a URL and the
+	//    head word's path is short.
 	argv := runs[0]
-	assertOneSegment(t, label, argv[len(argv)-1], id, want...)
+	var urls []string
+	for _, a := range argv {
+		if strings.HasPrefix(a, "http://") || strings.HasPrefix(a, "https://") {
+			urls = append(urls, a)
+		}
+	}
+	if len(urls) != 1 {
+		t.Fatalf("%s: %d argv entries look like a URL, want exactly 1: %q", label, len(urls), argv)
+	}
+	assertSegments(t, label, urls[0], id, template...)
 }
 
 func TestCodexPermissionHookCommandRunsExactlyOneCurl(t *testing.T) {
@@ -206,7 +234,7 @@ func TestCodexPermissionHookCommandRunsExactlyOneCurl(t *testing.T) {
 				t.Fatalf("build: %v", err)
 			}
 			cmd := codexPermissionCommand(t, byEvent)
-			assertOneCurlRun(t, probe.name, cmd, marker, id, "permission", "codex-prehook")
+			assertOneCurlRun(t, probe.name, cmd, marker, id, "permission", "codex-prehook", "")
 		})
 	}
 }
@@ -264,7 +292,7 @@ func TestCCUserHookCommandRunsExactlyOneCurl(t *testing.T) {
 			continue
 		}
 		found = true
-		assertOneCurlRun(t, "cc user hook", cmd, "", "hook_01J0GLOBAL", "hooks", "exec")
+		assertOneCurlRun(t, "cc user hook", cmd, "", "hook_01J0GLOBAL", "hooks", "exec", "")
 	}
 	if !found {
 		t.Fatalf("no /hooks/exec/ command generated: %v", pre)
@@ -301,7 +329,7 @@ func TestCodexUserHookCommandRunsExactlyOneCurl(t *testing.T) {
 					continue
 				}
 				found = true
-				assertOneCurlRun(t, "codex user hook", hk.Command, "", "hook_01J0CODEX", "hooks", "exec")
+				assertOneCurlRun(t, "codex user hook", hk.Command, "", "hook_01J0CODEX", "hooks", "exec", "")
 			}
 		}
 	}
