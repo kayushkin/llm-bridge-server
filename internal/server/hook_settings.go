@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 
 	hookstore "github.com/kayushkin/hook-store"
@@ -208,7 +209,7 @@ func (s *Server) buildClaudeCodeSettings(sess *store.Session) (string, error) {
 			"hooks": []map[string]any{
 				{
 					"type":    "http",
-					"url":     fmt.Sprintf("%s/permission/cc-prehook/%s", base, sess.SessionID),
+					"url":     fmt.Sprintf("%s/permission/cc-prehook/%s", base, escapePathSegment(sess.SessionID)),
 					"timeout": 86400,
 				},
 			},
@@ -225,9 +226,8 @@ func (s *Server) buildClaudeCodeSettings(sess *store.Session) (string, error) {
 			return "", err
 		}
 		for _, h := range applicable {
-			cmd := fmt.Sprintf(
-				"curl -sfS -X POST -H 'Content-Type: application/json' --data-binary @- %s/hooks/exec/%s",
-				base, h.ID,
+			cmd := hookCurlCommand(
+				fmt.Sprintf("%s/hooks/exec/%s", base, escapePathSegment(h.ID)),
 			)
 			entry := map[string]any{
 				"matcher": h.Matcher,
@@ -313,9 +313,9 @@ func (s *Server) buildCodexHookConfig(sess *store.Session) (map[string][]any, er
 	// timeout 86400s = 1 day; same headroom as the CC gate so a human-driven
 	// approval flow doesn't hit the codex hook timeout.
 	if sess.SessionID != "" {
-		cmd := fmt.Sprintf(
-			"curl -sfS --max-time 86400 -X POST -H 'Content-Type: application/json' --data-binary @- %s/permission/codex-prehook/%s",
-			base, sess.SessionID,
+		cmd := hookCurlCommand(
+			fmt.Sprintf("%s/permission/codex-prehook/%s", base, escapePathSegment(sess.SessionID)),
+			"--max-time", "86400",
 		)
 		permEntry := map[string]any{
 			"matcher": ".*",
@@ -338,9 +338,8 @@ func (s *Server) buildCodexHookConfig(sess *store.Session) (map[string][]any, er
 			return nil, err
 		}
 		for _, h := range applicable {
-			cmd := fmt.Sprintf(
-				"curl -sfS -X POST -H 'Content-Type: application/json' --data-binary @- %s/hooks/exec/%s",
-				base, h.ID,
+			cmd := hookCurlCommand(
+				fmt.Sprintf("%s/hooks/exec/%s", base, escapePathSegment(h.ID)),
 			)
 			entry := map[string]any{
 				"matcher": h.Matcher,
@@ -370,4 +369,44 @@ func publicBaseURL(listenAddr string) string {
 		host = "localhost" + host
 	}
 	return "http://" + host
+}
+
+// escapePathSegment percent-encodes a value so it occupies exactly one path
+// segment of the URL it is interpolated into. Without it a session id
+// containing "/", "?" or "#" re-aims the request at a different endpoint
+// entirely, and the id reaching here is caller-chosen: server/sessions.go
+// takes req.SessionID off the POST body verbatim and checks it only for
+// collision.
+func escapePathSegment(segment string) string {
+	return url.PathEscape(segment)
+}
+
+// shellSingleQuote wraps a value so a POSIX shell reads it as exactly one
+// word. Every character inside single quotes is literal except the closing
+// quote itself, which is written as: close, backslash-escaped quote, reopen.
+//
+// ⚠️ This is NOT redundant with escapePathSegment, and the difference is the
+// whole reason this function exists. url.PathEscape encodes for a URL path
+// segment, and "&" and "$" are legal sub-delims there (RFC 3986 §3.3), so it
+// passes both through unchanged. In a URL that is correct and inert. In a
+// shell command line "&" separates two commands, which turns a caller-chosen
+// session id into a caller-chosen command. Measured before this was added:
+// a session id of `a&touch /tmp/x` created /tmp/x when the generated hook ran.
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+// hookCurlCommand renders the curl invocation that a type:"command" hook
+// runs. Both harnesses hand the string to a shell, so targetURL is quoted as
+// one word here rather than at each call site -- the four sites that build
+// one of these are otherwise four copies of the same string.
+func hookCurlCommand(targetURL string, extraFlags ...string) string {
+	flags := "-sfS"
+	if len(extraFlags) > 0 {
+		flags += " " + strings.Join(extraFlags, " ")
+	}
+	return fmt.Sprintf(
+		"curl %s -X POST -H 'Content-Type: application/json' --data-binary @- %s",
+		flags, shellSingleQuote(targetURL),
+	)
 }
