@@ -114,12 +114,22 @@ var harnessSupportsDisableNetwork = map[msg.Harness]bool{
 }
 
 // harnessSupportedPermissionModes lists the permission modes each harness
-// knows how to express in its own start params. Every harness implicitly
-// supports "ask" and "bypass" via the universal prehook gate; the
-// restrictive modes (block_all / plan / read / ask_all) also work for
-// every harness since they're enforced bridge-side. Auto is harness-aware
-// (the harness translates to its native vocab). Custom is opt-in per
-// harness since it surfaces raw harness-specific knobs.
+// knows how to express in its own start params. Auto is harness-aware (the
+// harness translates to its native vocab). Custom is opt-in per harness
+// since it surfaces raw harness-specific knobs.
+//
+// This table says what the UI is OFFERED, not what is ENFORCED. The
+// bridge-side prehook that carries out block_all / plan / read / ask_all /
+// ask / bypass is installed by injectHookSettings, whose switch has no
+// default arm: only claude_code and codex ever receive a gate URL. For
+// every other harness the mode is recorded and nothing evaluates it.
+//
+// This comment used to call the prehook universal and say the restrictive
+// modes work for every harness. Both were false, and permission-store's
+// audit log agrees: every tool name in >=10,000 evaluations to 2026-08-15
+// is a Claude Code name. Card 49a697df holds the repair — give the gate a
+// default arm, or report only the modes a harness can enforce. Pinned by
+// TestInjectHookSettings_OnlyClaudeCodeAndCodexGetAPermissionGate.
 var harnessSupportedPermissionModes = map[msg.Harness][]string{
 	msg.HarnessClaudeCode: {
 		msg.PermissionModeBlockAll,
@@ -145,11 +155,18 @@ var harnessSupportedPermissionModes = map[msg.Harness][]string{
 }
 
 // supportedPermissionModesFor returns the modes for a harness, defaulting
-// to the prehook-enforced subset for any harness without an explicit entry.
-// The restrictive modes (block_all / plan / read / ask_all) and the always-
-// available rule modes (ask / bypass) all work via the universal prehook
-// gate without any per-harness translation. Auto and Custom require
-// harness opt-in (auto needs a translation; custom needs a UI panel).
+// to the full restrictive set for any harness without an explicit entry.
+// Auto and Custom require harness opt-in (auto needs a translation; custom
+// needs a UI panel).
+//
+// That default is wider than what the bridge can enforce, and deliberately
+// left so pending card 49a697df. block_all / plan / read / ask_all / ask /
+// bypass are carried out by the prehook, and the prehook is installed only
+// for claude_code and codex — so an unlisted harness is handed a set
+// nothing keeps, and bridge-ui offers a user "Block All" on a session that
+// has no gate. The comment here used to call that subset prehook-enforced.
+// Narrowing the set is a visible UI change, which is why it is reserved
+// rather than done; see harnessSupportedPermissionModes above.
 func supportedPermissionModesFor(h msg.Harness) []string {
 	if modes, ok := harnessSupportedPermissionModes[h]; ok {
 		return modes

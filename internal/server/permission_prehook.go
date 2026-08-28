@@ -238,7 +238,11 @@ func (s *Server) writeHookNoVerdict(w http.ResponseWriter, unattended bool, reas
 //
 // This is the single source of truth for what "auto" means at the prehook
 // level. Each harness binary chooses its own translation of the mode for
-// its native gate; the prehook decision here is the universal floor.
+// its native gate; the prehook decision here is the floor for the harnesses
+// that have a prehook at all — claude_code and codex. It is not the
+// universal floor this comment used to claim: injectHookSettings installs
+// no gate for any other harness, so nothing consults this set for them
+// (card 49a697df).
 var autoModeSafeTools = map[string]struct{}{
 	// Read-only inspection
 	"Read":         {},

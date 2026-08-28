@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -321,5 +322,72 @@ func TestPublicBaseURL(t *testing.T) {
 		if got := publicBaseURL(in); got != want {
 			t.Errorf("publicBaseURL(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestInjectHookSettings_OnlyClaudeCodeAndCodexGetAPermissionGate pins which
+// harnesses the prehook gate is actually installed for.
+//
+// This exists because three doc comments used to call the prehook "the
+// universal gate" and told the UI that every harness supports the restrictive
+// permission modes. It is installed by a switch with no default arm, so only
+// the two harnesses named below ever receive a gate URL; for every other
+// harness the injector writes nothing and no permission decision is ever
+// evaluated. Card 49a697df.
+//
+// The population is msg.AllHarnesses rather than a list written out here, so
+// adding a harness to the canonical set without deciding whether it gets a
+// gate reddens this test instead of silently joining the ungated majority.
+func TestInjectHookSettings_OnlyClaudeCodeAndCodexGetAPermissionGate(t *testing.T) {
+	gatedHarnesses := map[msg.Harness]string{
+		msg.HarnessClaudeCode: "/permission/cc-prehook/",
+		msg.HarnessCodex:      "/permission/codex-prehook/",
+	}
+
+	for _, harness := range msg.AllHarnesses {
+		t.Run(string(harness), func(t *testing.T) {
+			srv := testServerWithoutHookStore(t)
+			sess := &store.Session{SessionID: "s1", Harness: harness}
+			srv.injectHookSettings(sess)
+
+			wantURL, wantGate := gatedHarnesses[harness]
+			config := string(sess.HarnessConfig)
+
+			if !wantGate {
+				if len(sess.HarnessConfig) != 0 {
+					t.Fatalf("%s is not gated by the prehook, so the injector should write nothing; got HarnessConfig %q", harness, config)
+				}
+				return
+			}
+			if !strings.Contains(config, wantURL) {
+				t.Fatalf("%s should receive a %s gate URL; got HarnessConfig %q", harness, wantURL, config)
+			}
+		})
+	}
+}
+
+// TestSupportedPermissionModesForOutrunsTheGate is a characterisation, not an
+// endorsement. supportedPermissionModesFor hands an ungated harness the full
+// restrictive set, so bridge-ui offers a user "Block All" on a session where
+// nothing enforces it.
+//
+// Card 49a697df reserves the repair — making the claim true (a default gate
+// arm) and making the table honest (report only enforceable modes) are
+// different sizes and change different things — so this test asserts the
+// behaviour exactly as it stands and will redden when either is taken. That is
+// the point: whoever takes the decision must come here and say which it was.
+func TestSupportedPermissionModesForOutrunsTheGate(t *testing.T) {
+	// aider has no entry in harnessSupportedPermissionModes and no gate arm.
+	modes := supportedPermissionModesFor(msg.HarnessAider)
+
+	if !slices.Contains(modes, msg.PermissionModeBlockAll) {
+		t.Fatalf("characterisation drifted: aider no longer offered block_all (got %v) — card 49a697df's decision may have been taken; update this test and the comments it guards", modes)
+	}
+
+	srv := testServerWithoutHookStore(t)
+	sess := &store.Session{SessionID: "s1", Harness: msg.HarnessAider}
+	srv.injectHookSettings(sess)
+	if len(sess.HarnessConfig) != 0 {
+		t.Fatalf("characterisation drifted: aider now receives a gate (%q) — card 49a697df's decision may have been taken", sess.HarnessConfig)
 	}
 }
