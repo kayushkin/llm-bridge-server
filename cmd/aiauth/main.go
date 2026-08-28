@@ -91,10 +91,11 @@ func statusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show all configured providers and credential status",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
 			store := aiauth.DefaultStore()
 			profiles := store.Profiles()
 			if len(profiles) == 0 {
-				fmt.Println("No credentials configured.")
+				fmt.Fprintln(out, "No credentials configured.")
 				return nil
 			}
 			for name, c := range profiles {
@@ -114,7 +115,7 @@ func statusCmd() *cobra.Command {
 				case "api_key":
 					masked = aiauth.MaskKey(c.Key)
 				}
-				fmt.Printf("%-25s  type=%-7s  provider=%-10s  key=%s  status=%s\n",
+				fmt.Fprintf(out, "%-25s  type=%-7s  provider=%-10s  key=%s  status=%s\n",
 					name, c.Type, c.Provider, masked, status)
 			}
 			return nil
