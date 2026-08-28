@@ -23,8 +23,9 @@ import (
 // llm-bridge-jig also spawns `claude`, but it accepts no settings param at all,
 // so wiring a case here would inject a blob it cannot carry — a gap that lives
 // in the harness, not in this switch. That is noteboard todo 49a697df's scope
-// (the UI is told every harness is gated by the universal prehook when only
-// claude_code is). Adding jig here would claim this file can fix it.
+// (the UI is told every harness is gated by the prehook when only claude_code
+// and codex are — injectHookSettings' switch has no default arm). Adding jig
+// here would claim this file can fix it.
 var claudeCodeShapedHarnesses = []msg.Harness{
 	msg.HarnessCopilotCLI,
 }
