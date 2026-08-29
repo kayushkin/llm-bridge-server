@@ -34,6 +34,31 @@ type SessionSummary struct {
 	CreatedAt        string `json:"createdAt"`
 }
 
+// SummaryLookupRequest is the POST /sessions/summary body: the same query the
+// GET takes on its query string, re-encoded because the id lookups outgrow a
+// URL (see handleSessionsSummaryLookup). List fields are named as the
+// collections they are (`types`, `session_ids`), where the GET spells them as
+// one repeated singular parameter (`type=a&type=b`) — same values, each
+// encoding's own convention.
+//
+// The two id fields are pointers because absent and present-but-empty mean
+// different things here (omitted = don't narrow; empty = a 400), and a plain
+// slice cannot carry that distinction through encoding/json.
+type SummaryLookupRequest struct {
+	Limit  int    `json:"limit,omitempty"`
+	Before string `json:"before,omitempty"`
+
+	Harnesses []string `json:"harnesses,omitempty"`
+	States    []string `json:"statuses,omitempty"`
+	Types     []string `json:"types,omitempty"`
+	Purposes  []string `json:"purposes,omitempty"`
+	Modes     []string `json:"modes,omitempty"`
+	Machines  []string `json:"machines,omitempty"`
+
+	SessionIDs        *[]string `json:"session_ids,omitempty"`
+	ManagerSessionIDs *[]string `json:"manager_session_ids,omitempty"`
+}
+
 // SummaryResponse is the /sessions/summary wire shape. Next is null when there
 // are no more pages; Revision doubles as the ETag.
 type SummaryResponse struct {

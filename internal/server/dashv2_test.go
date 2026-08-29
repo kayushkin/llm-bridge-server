@@ -272,3 +272,75 @@ func TestHandleSessionsSummary_ManagerSessionIDLookup(t *testing.T) {
 		t.Fatalf("empty manager_session_id: status = %d, want 400", resp.StatusCode)
 	}
 }
+
+// POST /sessions/summary — the same query in a body, because the id lookups
+// outgrow a URL. A sidebar's worth of manager_session_id parameters reached
+// 93 KB of query string on this host, and past ~11.5 KB nginx answers by
+// destroying the whole HTTP/2 connection, killing every other request in
+// flight — a new chat's /send, its /events stream, and the /signals read whose
+// failure was the visible bug. This pins that the POST encoding answers the
+// same questions the GET does, and refuses the same traps.
+func TestHandleSessionsSummaryLookup_PostBody(t *testing.T) {
+	srv, st := testServer(t)
+	seedSession(t, st, "a")
+	seedSession(t, st, "b")
+	seedSubagentSession(t, st, "kid1", "a")
+	seedSubagentSession(t, st, "kid2", "b")
+
+	// The session_ids lookup answers over POST.
+	resp := doJSON(t, srv, "POST", "/sessions/summary",
+		SummaryLookupRequest{SessionIDs: &[]string{"a"}})
+	if resp.StatusCode != 200 {
+		t.Fatalf("session_ids lookup: status = %d", resp.StatusCode)
+	}
+	body := decodeJSON[SummaryResponse](t, resp)
+	if len(body.Sessions) != 1 || body.Sessions[0].SessionID != "a" {
+		t.Fatalf("session_ids lookup: got %+v, want just session a", body.Sessions)
+	}
+
+	// The manager_session_ids lookup answers over POST, several parents at once.
+	resp = doJSON(t, srv, "POST", "/sessions/summary",
+		SummaryLookupRequest{ManagerSessionIDs: &[]string{"a", "b"}})
+	if resp.StatusCode != 200 {
+		t.Fatalf("manager_session_ids lookup: status = %d", resp.StatusCode)
+	}
+	body = decodeJSON[SummaryResponse](t, resp)
+	if len(body.Sessions) != 2 {
+		t.Fatalf("manager_session_ids lookup: got %d sessions, want the 2 children", len(body.Sessions))
+	}
+	for _, s := range body.Sessions {
+		if s.ManagerSessionID == "" {
+			t.Errorf("child %s came back with no parent id", s.SessionID)
+		}
+	}
+
+	// Present but empty is a 400 over POST too — the pointer fields exist to
+	// keep that distinction through JSON.
+	for _, req := range []SummaryLookupRequest{
+		{SessionIDs: &[]string{}},
+		{ManagerSessionIDs: &[]string{}},
+		{SessionIDs: &[]string{"", "  "}},
+	} {
+		resp = doJSON(t, srv, "POST", "/sessions/summary", req)
+		if resp.StatusCode != 400 {
+			t.Errorf("empty id list %+v: status = %d, want 400", req, resp.StatusCode)
+		}
+	}
+
+	// A misspelled field is a 400, not a silently unfiltered listing — the
+	// strict decoder is what stands between a typo and a wrong answer.
+	resp = doJSON(t, srv, "POST", "/sessions/summary",
+		map[string]any{"session_id": []string{"a"}})
+	if resp.StatusCode != 400 {
+		t.Errorf("unknown field: status = %d, want 400", resp.StatusCode)
+	}
+
+	// An empty body is the unfiltered listing, same as a bare GET.
+	resp = doJSON(t, srv, "POST", "/sessions/summary", SummaryLookupRequest{})
+	if resp.StatusCode != 200 {
+		t.Fatalf("unfiltered POST: status = %d", resp.StatusCode)
+	}
+	if got := len(decodeJSON[SummaryResponse](t, resp).Sessions); got != 4 {
+		t.Errorf("unfiltered POST returned %d sessions, want 4", got)
+	}
+}

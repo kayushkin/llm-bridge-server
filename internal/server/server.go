@@ -148,6 +148,10 @@ func (s *Server) routes() {
 	// dashv2 additive endpoints — projected sidebar list, recent-bundle warmer,
 	// and the cheap validators staleness check. See dashv2-architecture.md §5.
 	s.mux.HandleFunc("GET /sessions/summary", s.handleSessionsSummary)
+	// Same query, POST body: the id lookups (session_ids, manager_session_ids)
+	// outgrow a URL — a long-enough query string kills the whole HTTP/2
+	// connection at nginx, not just the request. See handleSessionsSummaryLookup.
+	s.mux.HandleFunc("POST /sessions/summary", s.handleSessionsSummaryLookup)
 	s.mux.HandleFunc("GET /sessions/recent-bundle", s.handleRecentBundle)
 	s.mux.HandleFunc("GET /sessions/validators", s.handleSessionsValidators)
 	s.mux.HandleFunc("GET /sessions/search", s.handleSearchSessions)

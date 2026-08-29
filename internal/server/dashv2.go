@@ -59,6 +59,72 @@ func (s *Server) handleSessionsSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	filter.ManagerSessionIDs = managerSessionIDs
 
+	s.serveSessionsSummary(w, r, limit, before, filter)
+}
+
+// handleSessionsSummaryLookup is the SAME query as handleSessionsSummary in a
+// POST body, and it exists because the id lookups do not fit in a URL. A
+// sidebar's worth of `manager_session_id` parameters reached 93 KB of query
+// string on this host, and a URL that long does not fail as a request — nginx
+// answers it by destroying the whole HTTP/2 connection (GOAWAY, measured at
+// ~11.5 KB), killing every OTHER stream in flight with it: the new session's
+// /send, its /events stream, and whichever /signals read was up at that
+// moment. The visible bug was "Couldn't load this session's questions: Failed
+// to fetch" on every new chat, with the typed message still in the composer.
+//
+// POST /sessions/summary — same path, same response shape, same semantics,
+// body instead of query string. The GET stays for listing and paging, where
+// the request is small and conditional GET (ETag/If-None-Match) rides the
+// browser cache for free; a POST gets no such ride, which is the one thing a
+// caller gives up by coming in this way.
+//
+// The two id fields are pointers so that PRESENT BUT EMPTY IS STILL A 400 —
+// the same trap summaryIDLookupFromQuery refuses on the query string. A
+// caller that assembled an empty id list meant to name sessions and named
+// none; answering with the newest hundred sessions on the box would hand an
+// empty signals inbox every session as "waiting on a human".
+func (s *Server) handleSessionsSummaryLookup(w http.ResponseWriter, r *http.Request) {
+	var req SummaryLookupRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	limit := 100
+	if req.Limit > 0 {
+		limit = req.Limit
+	}
+	filter := store.SessionSummaryFilter{
+		Harnesses:   req.Harnesses,
+		States:      req.States,
+		Types:       req.Types,
+		Purposes:    req.Purposes,
+		Modes:       req.Modes,
+		InstanceIDs: req.Machines,
+	}
+	sessionIDs, err := summaryIDLookupFromBody(req.SessionIDs, "session_ids")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filter.SessionIDs = sessionIDs
+
+	managerSessionIDs, err := summaryIDLookupFromBody(req.ManagerSessionIDs, "manager_session_ids")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filter.ManagerSessionIDs = managerSessionIDs
+
+	s.serveSessionsSummary(w, r, limit, req.Before, filter)
+}
+
+// serveSessionsSummary is the shared serving path behind the GET and POST
+// encodings of the summary query: revision/ETag, response cache, store read,
+// cursor. Everything above it is parameter parsing; nothing below it knows
+// which encoding the request arrived in.
+func (s *Server) serveSessionsSummary(w http.ResponseWriter, r *http.Request, limit int, before string, filter store.SessionSummaryFilter) {
 	revision, err := s.store.MaxSessionUpdatedAt()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -332,6 +398,27 @@ func summaryIDLookupFromQuery(query url.Values, parameter string) ([]string, err
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%s was given but named no session; omit it to list every session", parameter)
+	}
+	return out, nil
+}
+
+// summaryIDLookupFromBody is summaryIDLookupFromQuery for the POST encoding:
+// same refusal of present-but-empty, same dropping of blank entries. The
+// pointer is what carries the present/absent distinction JSON otherwise
+// loses — a nil pointer is the field omitted, a pointer to an empty slice is
+// a caller who assembled an empty id list and meant to name sessions.
+func summaryIDLookupFromBody(ids *[]string, field string) ([]string, error) {
+	if ids == nil {
+		return nil, nil
+	}
+	out := make([]string, 0, len(*ids))
+	for _, value := range *ids {
+		if id := strings.TrimSpace(value); id != "" {
+			out = append(out, id)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s was given but named no session; omit it to list every session", field)
 	}
 	return out, nil
 }
