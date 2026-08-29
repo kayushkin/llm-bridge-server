@@ -95,7 +95,7 @@ func runTicks(store *fakeStore, n int, sendErr error, dryRun bool) tickResult {
 			store, "autoworker-test-1", dryRun,
 			func(string) error { r.sends++; return sendErr },
 			func(string) {},
-			func(string, ...any) {},
+			func(string, ...any) {}, func(string, ...any) {},
 		)
 		r.actions = append(r.actions, action)
 	}
@@ -199,7 +199,7 @@ func TestAPassIsCountedBeforeItIsSpent(t *testing.T) {
 	action := reviewCompletedSession(
 		store, "autoworker-test-1", false,
 		func(string) error { order = append(order, "send"); return nil },
-		func(string) {}, func(string, ...any) {},
+		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
 	if action != actionNudged {
 		t.Fatalf("action = %v, want actionNudged", action)
@@ -220,7 +220,7 @@ func TestAFailedPassTagSendsNothing(t *testing.T) {
 	action := reviewCompletedSession(
 		store, "autoworker-test-1", false,
 		func(string) error { sends++; return nil },
-		func(string) {}, func(string, ...any) {},
+		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
 	if sends != 0 {
 		t.Errorf("sent %d nudges after the pass tag failed, want 0", sends)
@@ -244,7 +244,7 @@ func TestAnUnwritableStoreDoesNotWedgeSilently(t *testing.T) {
 	action := reviewCompletedSession(
 		store, "autoworker-test-1", false,
 		func(string) error { sends++; return nil },
-		func(string) {}, func(string, ...any) {},
+		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
 	if action != actionError {
 		t.Errorf("action = %v, want actionError — an unwritable store must be "+
@@ -266,7 +266,7 @@ func TestSettledSessionIsLeftAlone(t *testing.T) {
 	action := reviewCompletedSession(
 		store, "autoworker-test-1", false,
 		func(string) error { sends++; return nil },
-		func(string) {}, func(string, ...any) {},
+		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
 	if action != actionAlreadySettled {
 		t.Errorf("action = %v, want actionAlreadySettled", action)
@@ -283,7 +283,7 @@ func TestSpentBudgetSettlesInsteadOfNudging(t *testing.T) {
 	action := reviewCompletedSession(
 		store, "autoworker-test-1", false,
 		func(string) error { sends++; return nil },
-		func(string) {}, func(string, ...any) {},
+		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
 	if action != actionSettled {
 		t.Errorf("action = %v, want actionSettled", action)
@@ -303,7 +303,7 @@ func TestAnUnreadableStoreSkipsWithoutSending(t *testing.T) {
 	action := reviewCompletedSession(
 		store, "autoworker-test-1", false,
 		func(string) error { sends++; return nil },
-		func(string) {}, func(string, ...any) {},
+		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
 	if action != actionError {
 		t.Errorf("action = %v, want actionError", action)
@@ -354,7 +354,7 @@ func TestNudgeTextCarriesThePassItWasCountedAs(t *testing.T) {
 		reviewCompletedSession(
 			store, "autoworker-test-1", false,
 			func(m string) error { sent = append(sent, m); return nil },
-			func(string) {}, func(string, ...any) {},
+			func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 		)
 	}
 	if len(sent) != maxPasses {

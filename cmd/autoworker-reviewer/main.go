@@ -33,6 +33,12 @@
 // One ordering is load-bearing rather than incidental: the review-pass-N tag is
 // written BEFORE the nudge is sent, and the nudge is sent only if that write
 // succeeded. See reviewCompletedSession.
+//
+// Best-effort is not the same as silent, and until 2026-08-29 this command
+// conflated them: every one of its per-card failures answered `continue`, the
+// counters it printed were the only trace, and the run exited 0 either way. See
+// run below for which failures are shortfalls and which are the reviewer having
+// nothing to do.
 package main
 
 import (
@@ -51,6 +57,7 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -83,6 +90,16 @@ const (
 	tagPassPrefix = "review-pass-" // review-pass-1, review-pass-2, …
 )
 
+// config is everything one tick reads from the outside, so a test can point the
+// whole run at stubs.
+type config struct {
+	kanbanURL          string
+	kanbanServiceToken string
+	bridgeURL          string
+	boardName          string
+	dryRun             bool
+}
+
 func main() {
 	settings, err := schedulerconfig.AutoworkerReviewer.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
@@ -112,14 +129,52 @@ func main() {
 		return
 	}
 
-	kc := kanbanclient.New(*kanbanURL, settings.String(schedulerconfig.SettingKanbanStoreServiceToken))
-	board, err := kc.FindBoard(*boardName)
+	os.Exit(run(config{
+		kanbanURL:          *kanbanURL,
+		kanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
+		bridgeURL:          *bridgeURL,
+		boardName:          *boardName,
+		dryRun:             *dryRun,
+	}))
+}
+
+// run is one tick, and its return value is the process exit status.
+//
+// ==================== a tick that reviewed nothing it meant to ====================
+//
+// Everything that can stop the whole tick is still fatal: with no board view
+// there is no tick to have. What this adds is the ways the reviewer used to fall
+// short of its job PER CARD and still exit 0, because the loop's answer to every
+// one of them is `continue`.
+//
+// They are errors it hit while trying: a placement whose noteboard item did not
+// resolve, a card whose links it could not read, a session the bridge would not
+// answer for, pass tags it could not look up, a settle the board refused at the
+// loop guard, a pass tag the board refused (so the nudge was withheld), a nudge
+// the bridge would not deliver, and an audit note the board would not take. When
+// the settle that covers for a withheld or undelivered nudge is refused too, the
+// card is wedged In Progress with nothing left to take it out, and that is
+// recorded as a second shortfall.
+//
+// The other direction matters as much and is tested as hard, because on this
+// board it is almost the whole population. Measured 2026-08-29 over the 234 In
+// Progress cards on "Agent runs": 231 carry a session link minted by
+// kanban-classifier rather than by autoworker, and the origin gate skips every
+// one of them exactly as its comment says it should. A session still running, a
+// session already settled, a card with no session link at all, an empty board
+// and a dry run are the reviewer having nothing to do, not falling short. A job
+// that goes red every tick carries as little as the green it replaces.
+func run(cfg config) int {
+	degraded := degradations.New("reviewer")
+
+	kc := kanbanclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
+	board, err := kc.FindBoard(cfg.boardName)
 	if err != nil {
-		log.Fatalf("find board %q: %v", *boardName, err)
+		log.Fatalf("find board %q: %v", cfg.boardName, err)
 	}
 	if board == nil {
-		log.Printf("board %q does not exist yet — nothing to review", *boardName)
-		return
+		log.Printf("board %q does not exist yet — nothing to review", cfg.boardName)
+		return degraded.ExitCode()
 	}
 
 	view, err := kc.GetBoardView(board.ID)
@@ -134,7 +189,7 @@ func main() {
 			break
 		}
 	}
-	log.Printf("[reviewer] board=%q in-progress=%d", *boardName, len(inProgress))
+	log.Printf("[reviewer] board=%q in-progress=%d", cfg.boardName, len(inProgress))
 
 	// Every skip is counted under the reason it happened. A single "skipped"
 	// total is what let this binary report success for eleven days while doing
@@ -146,25 +201,43 @@ func main() {
 	for _, c := range inProgress {
 		if c.Item == nil {
 			counts.noItem++
+			log.Printf("[reviewer] card %s: no noteboard item behind the placement", c.Placement.CardID)
+			degraded.Record("card %s: its noteboard item did not resolve, so the card was not examined", c.Placement.CardID)
 			continue
 		}
 		title, _ := c.Item["title"].(string)
+		// record names the card in every shortfall this iteration reports. The
+		// log line above each Record names the card too, which is why the tests
+		// read the `run degraded:` line alone: a report that dropped the card
+		// would otherwise stay green.
+		record := func(format string, args ...any) {
+			degraded.Record("card %s (%s): "+format, append([]any{c.Placement.CardID, title}, args...)...)
+		}
 
 		sessionID, err := sessionLink(kc, c.Placement.CardID)
 		if err != nil {
 			log.Printf("[%s] list links: %v", title, err)
 			errors++
+			record("its links could not be read (%v), so it was not examined", err)
 			continue
 		}
+		// A card with no session link is not a shortfall: this reviewer is
+		// session-driven and there is nothing for it to review. It is made loud
+		// rather than recorded, because one such card has sat In Progress since
+		// 2026-07-13 (f1107651-67dd-4be5-b03a-a9c964f5f4ce) and recording it
+		// would paint this job red every five minutes for a card no tick of it
+		// can ever move. kanban-curator says the same thing about the same card.
 		if sessionID == "" {
 			counts.noSessionLink++
+			log.Printf("[%s] no session link — nothing to review against (card_id=%s)", title, c.Placement.CardID)
 			continue
 		}
 
-		sess, err := getSession(*bridgeURL, sessionID)
+		sess, err := getSession(cfg.bridgeURL, sessionID)
 		if err != nil {
 			log.Printf("[%s] bridge GET /sessions/%s: %v — skip", title, sessionID, err)
 			errors++
+			record("session %s could not be read from the bridge (%v), so it was not reviewed", sessionID, err)
 			continue
 		}
 		// Origin gate: only autoworker sessions; skip dispatcher/attended cards.
@@ -182,12 +255,17 @@ func main() {
 		}
 
 		action := reviewCompletedSession(
-			kc, sessionID, *dryRun,
-			func(message string) error { return sendMessage(*bridgeURL, sessionID, message) },
-			func(note string) { stampBody(kc, c, note) },
+			kc, sessionID, cfg.dryRun,
+			func(message string) error { return sendMessage(cfg.bridgeURL, sessionID, message) },
+			func(note string) {
+				if err := stampBody(kc, c, note); err != nil {
+					record("the reviewer's note %q was not written to the card body (%v)", note, err)
+				}
+			},
 			func(format string, args ...any) {
 				log.Printf("[%s] "+format, append([]any{title}, args...)...)
 			},
+			record,
 		)
 		switch action {
 		case actionAlreadySettled:
@@ -204,6 +282,7 @@ func main() {
 	}
 	log.Printf("[reviewer] done: nudged=%d settled=%d skipped=%d (%s) errors=%d",
 		nudged, settled, counts.total(), counts.breakdown(), errors)
+	return degraded.ExitCode()
 }
 
 // ============================ skip accounting ============================
@@ -305,6 +384,14 @@ type reviewStore interface {
 // the precedent for a failed send. If that settle write fails too, nothing is
 // sent and the tick reports an error — the card waits for the curator's idle
 // grace window rather than being nudged again.
+//
+// # Never wedging a card is not the same as never falling short
+//
+// record receives every way this call fell short of reviewing the session: an
+// unreadable tag list, a refused settle, a withheld or undelivered nudge. A
+// settle that covers for one of those and is itself refused is recorded as well,
+// because the card is then left In Progress with nothing to move it. Deliberate
+// outcomes — already settled, a dry run — record nothing.
 func reviewCompletedSession(
 	store reviewStore,
 	sessionID string,
@@ -312,10 +399,12 @@ func reviewCompletedSession(
 	send func(message string) error,
 	stamp func(note string),
 	logf func(format string, args ...any),
+	record func(format string, args ...any),
 ) reviewAction {
 	tags, err := store.ListEntityTags(entityTypeSession, sessionID)
 	if err != nil {
 		logf("list entity tags: %v — skip", err)
+		record("the review passes on session %s could not be looked up (%v), so it was not reviewed", sessionID, err)
 		return actionError
 	}
 	if hasTag(tags, tagSettled) {
@@ -331,6 +420,7 @@ func reviewCompletedSession(
 		if err := settleSession(store, stamp, sessionID,
 			fmt.Sprintf("review loop guard hit (%d passes)", passes)); err != nil {
 			logf("settle: %v", err)
+			record("session %s hit the %d-pass loop guard and the settle tag was refused (%v) — the curator cannot close it", sessionID, maxPasses, err)
 			return actionError
 		}
 		return actionSettled
@@ -348,9 +438,11 @@ func reviewCompletedSession(
 		fmt.Sprintf("%s%d", tagPassPrefix, pass)); err != nil {
 		logf("tag review-pass-%d: %v — not sending nudge %d, settling so curator can close",
 			pass, err, pass)
+		record("the review-pass-%d tag for session %s was refused (%v), so nudge %d was withheld to keep the loop guard counting and the session was closed unreviewed", pass, sessionID, err, pass)
 		if serr := settleSession(store, stamp, sessionID,
 			fmt.Sprintf("review pass tag unwritable: %v", err)); serr != nil {
 			logf("settle after tag failure: %v", serr)
+			record("the settle that covers for the withheld nudge was refused too (%v) — it is still In Progress with nothing left to move it", serr)
 		}
 		return actionError
 	}
@@ -360,9 +452,11 @@ func reviewCompletedSession(
 		// curator closes it as it would have without review. The pass tag is
 		// already stored, so the cap holds even if this settle fails.
 		logf("nudge send failed: %v — settling so curator can close", err)
+		record("self-review nudge %d/%d for session %s was not delivered (%v), so the session was closed unreviewed", pass, maxPasses, sessionID, err)
 		if serr := settleSession(store, stamp, sessionID,
 			fmt.Sprintf("review nudge send failed: %v", err)); serr != nil {
 			logf("settle after send failure: %v", serr)
+			record("the nudge failed AND the settle that covers for it was refused (%v) — it is still In Progress with nothing left to move it", serr)
 		}
 		return actionError
 	}
@@ -401,16 +495,20 @@ func settleSession(store reviewStore, stamp func(note string), sessionID, reason
 	return nil
 }
 
-// stampBody appends a single timestamped reviewer line to the card body. Best
-// effort: a failed stamp is logged but never blocks the decision.
-func stampBody(kc *kanbanclient.Client, c kanbanclient.CardView, note string) {
+// stampBody appends a single timestamped reviewer line to the card body and
+// returns whether the board took it. A failed stamp never blocks the decision;
+// it is logged here, and the caller decides whether losing the note is a
+// shortfall, since Record does not log.
+func stampBody(kc *kanbanclient.Client, c kanbanclient.CardView, note string) error {
 	body, _ := c.Item["body"].(string)
 	suffix := fmt.Sprintf("\n\n---\n_autoworker-reviewer %s: %s_\n",
 		time.Now().UTC().Format(time.RFC3339), note)
 	if err := kc.PatchCardBody(c.Placement.CardID, body+suffix); err != nil {
 		title, _ := c.Item["title"].(string)
 		log.Printf("[%s] stamp body: %v (continuing)", title, err)
+		return err
 	}
+	return nil
 }
 
 func sessionLink(kc *kanbanclient.Client, cardID string) (string, error) {
