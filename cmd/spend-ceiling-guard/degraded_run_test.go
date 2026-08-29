@@ -195,12 +195,28 @@ func TestTheFailedHoldNamesTheTaskThatIsStillDispatchable(t *testing.T) {
 		holdStatus: http.StatusNotFound,
 	}
 	out := captureLog(t, func() { run(f.start(t)) })
-	if !strings.Contains(out, "capped-1") {
-		t.Errorf("the shortfall report does not name the task that is still dispatchable:\n%s", out)
+	report := shortfallReport(out)
+	if report == "" {
+		t.Fatalf("the run exited 1 but printed no shortfall report, so run history shows `error` with no reason:\n%s", out)
 	}
-	if !strings.Contains(out, "run degraded") {
-		t.Errorf("the run exited 1 but printed no shortfall report, so run history shows `error` with no reason:\n%s", out)
+	// Read the REPORT line, not the whole log. The Printf immediately above the
+	// Record names the same task, so `strings.Contains(out, ...)` is answered by
+	// a different line and stays green with the id dropped from the shortfall —
+	// which is exactly what the scorer caught on the first run.
+	if !strings.Contains(report, "capped-1") {
+		t.Errorf("the shortfall report does not name the task that is still dispatchable: %q", report)
 	}
+}
+
+// shortfallReport returns the one line degradations.Report writes, or "" if the
+// run wrote none.
+func shortfallReport(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "run degraded") {
+			return line
+		}
+	}
+	return ""
 }
 
 // TestATruncatedItemReadDegradesTheRun is the half that was live on 2026-08-29:
@@ -218,8 +234,8 @@ func TestATruncatedItemReadDegradesTheRun(t *testing.T) {
 			t.Errorf("a tick built on a truncated item list exited %d, want 1", got)
 		}
 	})
-	if !strings.Contains(out, "incomplete") {
-		t.Errorf("the shortfall report does not say the tree is incomplete:\n%s", out)
+	if report := shortfallReport(out); !strings.Contains(report, "incomplete") {
+		t.Errorf("the shortfall report does not say the tree is incomplete: %q", report)
 	}
 	if len(f.itemRequests) != maxItemPages {
 		t.Errorf("the read stopped after %d pages, want %d — the bound is not where the constant says it is",
