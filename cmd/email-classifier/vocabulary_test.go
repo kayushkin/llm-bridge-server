@@ -40,6 +40,25 @@ func TestEveryVocabularyScoresEveryAxisValue(t *testing.T) {
 					t.Errorf("category %q has no stakes, so it would score zero", category)
 				}
 			}
+			// The reverse direction, and it is the one that catches a row being
+			// DELETED. Every assertion above walks an axis list and asks whether
+			// the maps keep up, so removing a row from Categories or Actions makes
+			// every loop run one fewer time and stays green — the shape card
+			// `5f9d24be` calls a derived fixture. A stakes map that still scores a
+			// value the vocabulary no longer offers is the trace such a deletion
+			// leaves, and asserting it is what makes the axis lists pinned rather
+			// than merely walked. Both maps were exact bijections with their axis
+			// when this was written; a retired value is a decision, not a silence.
+			for action := range v.ActionStakes {
+				if !isKnown(v.Actions, action) {
+					t.Errorf("ActionStakes scores %q, which is not in the vocabulary — either the action was deleted from Actions or the stakes entry is a typo", action)
+				}
+			}
+			for category := range v.CategoryStakes {
+				if !isKnown(v.Categories, category) {
+					t.Errorf("CategoryStakes scores %q, which is not in the vocabulary — either the category was deleted from Categories or the stakes entry is a typo", category)
+				}
+			}
 			for action := range v.ActionsNeedingWork {
 				if !isKnown(v.Actions, action) {
 					t.Errorf("action %q needs work but is not in the vocabulary", action)
