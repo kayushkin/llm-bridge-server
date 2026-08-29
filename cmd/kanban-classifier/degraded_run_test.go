@@ -32,6 +32,9 @@ type bridgeAndBoard struct {
 	moveStatus int
 	// tagWriteStatus is the status the entity-tag write answers with.
 	tagWriteStatus int
+	// tagReadStatus is the status the entity-tag read answers with. The board is
+	// a separate service and this is the first thing processSession asks it.
+	tagReadStatus int
 	// tags is what ListEntityTags returns, which is what the dedupe gate reads.
 	tags []string
 	// cards is what ListCardsForEntity returns.
@@ -54,11 +57,19 @@ func (b *bridgeAndBoard) start(t *testing.T) (config, *kanbanclient.Client) {
 	if b.tagWriteStatus == 0 {
 		b.tagWriteStatus = http.StatusCreated
 	}
+	if b.tagReadStatus == 0 {
+		b.tagReadStatus = http.StatusOK
+	}
 
 	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(path, "/tags"):
+			if b.tagReadStatus != http.StatusOK {
+				w.WriteHeader(b.tagReadStatus)
+				_, _ = w.Write([]byte(`{"error":"board unavailable"}`))
+				return
+			}
 			out := []map[string]any{}
 			for _, tag := range b.tags {
 				out = append(out, map[string]any{"tag": tag})
@@ -277,5 +288,33 @@ func TestAnUnreadableSessionDegradesTheRun(t *testing.T) {
 	}
 	if !degraded.HasShortfall() {
 		t.Fatal("an unreachable bridge did not register as a shortfall")
+	}
+}
+
+// TestAnUnreadableBoardDegradesTheRun — the board is the other separate service,
+// and its tags are the first thing processSession reads. A candidate whose tags
+// cannot be read is skipped before the dedupe gate is even consulted, so it
+// looks from the outside exactly like a candidate with nothing new to classify.
+//
+// This case was added because the scorer said so: the sabotage that deletes this
+// site's Record call came back MISSED against the five cases written first, and
+// a shortfall no case reaches is a shortfall the next edit can delete in silence.
+func TestAnUnreadableBoardDegradesTheRun(t *testing.T) {
+	stub := &bridgeAndBoard{tagReadStatus: http.StatusInternalServerError}
+	cfg, kc := stub.start(t)
+	stub.answerModelCalls(http.StatusBadGateway, creditExhausted400)
+	degraded := degradations.New("classifier")
+
+	if ran := processSession(context.Background(), cfg, kc, testSession(), degraded); ran {
+		t.Error("a session whose tags could not be read was counted as classified")
+	}
+	if stub.modelCalls != 0 {
+		t.Fatalf("the model was called %d times after the board read failed", stub.modelCalls)
+	}
+	if !degraded.HasShortfall() {
+		t.Fatal("an unreadable board did not register as a shortfall")
+	}
+	if joined := strings.Join(degraded.Reasons(), "; "); !strings.Contains(joined, testSession().SessionID) {
+		t.Errorf("the summary %q does not name the session that went unclassified", joined)
 	}
 }
