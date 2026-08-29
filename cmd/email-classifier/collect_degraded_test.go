@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/slava/scheduler/internal/degradations"
 )
 
 // TestUnreachableAccountIsRecordedWhileOthersStillFile reproduces the outage
@@ -51,12 +53,12 @@ func TestUnreachableAccountIsRecordedWhileOthersStillFile(t *testing.T) {
 		CardsByMessageID: map[string][]string{},
 		CardsBySender:    map[string][]string{},
 	}
-	var degraded degradations
+	degraded := degradations.New("email")
 
 	_, err := collectUnfiled(
 		config{MaxEmails: maxEmailsPerTick},
 		newMailClient(mailstack.URL, "test-token"),
-		accounts, state, &degraded,
+		accounts, state, degraded,
 	)
 	if err != nil {
 		t.Fatalf("collectUnfiled returned a hard error: %v", err)
@@ -65,13 +67,13 @@ func TestUnreachableAccountIsRecordedWhileOthersStillFile(t *testing.T) {
 	if !healthyWalked {
 		t.Error("the healthy account was not walked; one bad account must not stop the others")
 	}
-	if !degraded.any() {
+	if !degraded.HasShortfall() {
 		t.Fatal("an unreachable account produced no shortfall, so the run would exit 0 and read as success")
 	}
-	if got := degraded.exitCode(); got != 1 {
+	if got := degraded.ExitCode(); got != 1 {
 		t.Errorf("exit code %d, want 1 so the scheduler records `error`", got)
 	}
-	if joined := strings.Join(degraded.reasons, "; "); !strings.Contains(joined, "broken-account") {
+	if joined := strings.Join(degraded.Reasons(), "; "); !strings.Contains(joined, "broken-account") {
 		t.Errorf("shortfall %q does not name the account that failed", joined)
 	}
 }

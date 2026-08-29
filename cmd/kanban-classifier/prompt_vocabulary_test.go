@@ -31,6 +31,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -292,7 +293,7 @@ func TestTheTitleBoundTheBoardEnforcesIsTheOneTheSchemaAdvertises(t *testing.T) 
 				State:   schemaStateEnum(t, "new_tasks")[0],
 				Summary: "summary",
 			}},
-		})
+		}, degradations.New("classifier"))
 		if len(createdTitles) != 1 {
 			t.Fatalf("applyNew created %d cards for one new task, want 1 — a test that reaches "+
 				"no create call passes for the wrong reason", len(createdTitles))

@@ -64,6 +64,7 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/oneshot"
 	"github.com/slava/scheduler/internal/textcut"
@@ -210,6 +211,15 @@ func (c config) validate() error {
 }
 
 func main() {
+	os.Exit(run())
+}
+
+// run is the whole command. It returns the process exit status rather than
+// calling os.Exit itself, so that every early return below settles the run's
+// verdict through the same path and a new one cannot forget to. Copied in shape
+// from cmd/email-classifier, which is where the verdict this returns was worked
+// out; see internal/degradations for why a tick that fell short must not exit 0.
+func run() int {
 	// Error ignored exactly as before: an unset HOME leaves this empty and the
 	// registered command resolves relative to the working directory, which is a
 	// path that fails at exec time either way.
@@ -244,10 +254,16 @@ func main() {
 		if err := registerSchedulerJob(cfg); err != nil {
 			log.Fatalf("register: %v", err)
 		}
-		return
+		return 0
 	}
 
 	ctx := context.Background()
+
+	// Collects the ways this run falls short of doing its whole job. Threaded
+	// rather than global so the failure sites stay testable in isolation. The
+	// subject matches the prefix the progress lines already carry, so a reader
+	// of scheduler run history sees one voice.
+	degraded := degradations.New("classifier")
 
 	// A digest dump never reaches the model, so it must not name an instance.
 	if !cfg.DumpDigest && cfg.OneshotInstance == "" {
@@ -284,8 +300,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("get session %s: %v", cfg.OneSession, err)
 		}
-		processSession(ctx, cfg, kc, sess)
-		return
+		processSession(ctx, cfg, kc, sess, degraded)
+		return degraded.ExitCode()
 	}
 
 	candidates, err := selectCandidates(cfg)
@@ -294,28 +310,23 @@ func main() {
 	}
 	log.Printf("[classifier] candidates=%d", len(candidates))
 
-	classified, failed := 0, 0
+	classified := 0
 	for _, sess := range candidates {
 		if classified >= cfg.MaxClassify {
 			log.Printf("[classifier] hit per-tick cap (%d); deferring %d sessions to next tick",
 				cfg.MaxClassify, len(candidates)-classified)
 			break
 		}
-		ran, callFailed := processSession(ctx, cfg, kc, sess)
-		if ran {
+		if processSession(ctx, cfg, kc, sess, degraded) {
 			classified++
 		}
-		if callFailed {
-			failed++
-		}
 	}
-	log.Printf("[classifier] done: classified=%d failed=%d", classified, failed)
+	log.Printf("[classifier] done: classified=%d", classified)
 	// Fail loud: a tick that could not classify must not report success. This
 	// exact loop once logged "classifier failed" every 15 minutes for a dead
-	// credential while the scheduler recorded success on every run.
-	if failed > 0 {
-		os.Exit(1)
-	}
+	// credential while the scheduler recorded success on every run. A failed
+	// model call is one of the shortfalls the recorder holds.
+	return degraded.ExitCode()
 }
 
 type config struct {
@@ -443,21 +454,30 @@ func turnInFlight(state msg.SessionState) bool {
 
 // processSession runs the full pipeline for one session. Returns true if a
 // classifier call was made (vs. dedupe-skipped or final-classified).
-// processSession returns whether a model call ran, and whether the model
-// call failed. The distinction exists for the exit code: a tick where calls
-// failed must not report success just because the loop completed.
-func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, sess session) (ran, failed bool) {
+// processSession classifies one candidate and applies the result, reporting
+// whether it got as far as spending a model call.
+//
+// That bool answers "did this tick do work", which is not the same question as
+// "did this tick do its job", and the difference is what card `b4130d06` was
+// filed about: every failure below returns false, and a run made entirely of
+// false still printed `classified=0` and exited 0. The recorder is the second
+// answer. Every path that gives up on a candidate, and every write that does not
+// land, records why — so a tick that classified nothing because the API refused
+// it is distinguishable from a tick that classified nothing because there was
+// nothing to do.
+func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, sess session, degraded *degradations.Recorder) bool {
 	tags, err := kc.ListEntityTags(cardLinkSession, sess.SessionID)
 	if err != nil {
 		log.Printf("[%s] list tags: %v", sess.SessionID, err)
-		return false, false
+		degraded.Record("session %s not classified: list tags failed", sess.SessionID)
+		return false
 	}
 	tagSet := tagSet(tags)
 
 	// Permanent skip: previously classified as terminal.
 	if tagSet[tagFinalClassified] {
 		if !cfg.ExplicitSession {
-			return false, false
+			return false
 		}
 		log.Printf("[%s] already final-classified — proceeding anyway because this session was named explicitly",
 			sess.SessionID)
@@ -467,7 +487,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	// settles reads it, once.
 	if turnInFlight(msg.SessionState(sess.State)) {
 		if !cfg.ExplicitSession {
-			return false, false
+			return false
 		}
 		log.Printf("[%s] a turn is in flight (state %s) — proceeding anyway because this session was named explicitly",
 			sess.SessionID, sess.State)
@@ -476,20 +496,21 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	page, err := getSessionPage(cfg.BridgeURL, sess.SessionID)
 	if err != nil {
 		log.Printf("[%s] get messages: %v", sess.SessionID, err)
-		return false, false
+		degraded.Record("session %s not classified: reading its messages failed", sess.SessionID)
+		return false
 	}
 	msgs, eventCount := page.messages, page.eventCount
 
 	if page.newestFinishedResponseID == "" {
 		if !cfg.ExplicitSession {
-			return false, false
+			return false
 		}
 		log.Printf("[%s] no finished response in its newest %d turns — proceeding anyway because this session was named explicitly",
 			sess.SessionID, digestTurns)
 	}
 
 	if !cfg.ExplicitSession && saidNothingSince(page.newestEntryAt, time.Now().Add(-candidateLookback)) {
-		return false, false
+		return false
 	}
 
 	// do-not-track: only re-evaluate after a big delta.
@@ -500,12 +521,12 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 			// against. Record today's count and leave the decision standing, rather
 			// than re-classifying every do-not-track session at once.
 			if !cfg.ExplicitSession {
-				writeSig(kc, sess, tagSet, buildSig(page.newestFinishedResponseID, eventCount))
-				return false, false
+				writeSig(kc, sess, tagSet, buildSig(page.newestFinishedResponseID, eventCount), degraded)
+				return false
 			}
 		} else if eventCount-priorN < doNotTrackReevalEvents {
 			if !cfg.ExplicitSession {
-				return false, false
+				return false
 			}
 			log.Printf("[%s] do-not-track and Δevents=%d < %d — proceeding anyway because this session was named explicitly",
 				sess.SessionID, eventCount-priorN, doNotTrackReevalEvents)
@@ -520,7 +541,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	priorSig := priorSigTag(tagSet)
 	if responseAlreadyClassified(priorSig, page.newestFinishedResponseID) {
 		if !cfg.ExplicitSession {
-			return false, false
+			return false
 		}
 		log.Printf("[%s] newest finished response already classified (%s) — proceeding anyway because this session was named explicitly",
 			sess.SessionID, priorSig)
@@ -530,14 +551,15 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	cards, err := kc.ListCardsForEntity(cardLinkSession, sess.SessionID)
 	if err != nil {
 		log.Printf("[%s] list cards: %v", sess.SessionID, err)
-		return false, false
+		degraded.Record("session %s not classified: listing its cards failed", sess.SessionID)
+		return false
 	}
 
 	digest := buildDigest(sess, msgs, cards, cfg.DigestBudget)
 	if cfg.DumpDigest {
 		fmt.Printf("%s\n", digest)
 		log.Printf("[%s] dump-digest: %d chars, %d existing card(s)", sess.SessionID, len(digest), len(cards))
-		return false, false
+		return false
 	}
 	report, err := classify(ctx, cfg, digest)
 	if errors.Is(err, errTruncatedReport) {
@@ -554,27 +576,29 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 			"This session needs more than max_tokens=%d to classify; raise it or narrow what the model must report "+
 			"(see noteboard todo 55aab37a). Re-run: kanban-classifier -session %s -dry-run",
 			sess.SessionID, len(cards), err, maxOutputTokens, sess.SessionID)
+		degraded.Record("session %s: report truncated, %d existing card(s) not updated", sess.SessionID, len(cards))
 		if !cfg.DryRun {
-			writeSig(kc, sess, tagSet, curSig)
+			writeSig(kc, sess, tagSet, curSig, degraded)
 		}
-		return true, false
+		return true
 	}
 	if err != nil {
 		log.Printf("[%s] classifier failed: %v — leaving sig unchanged for retry", sess.SessionID, err)
-		return false, true
+		degraded.Record("session %s not classified: the model call failed", sess.SessionID)
+		return false
 	}
 	log.Printf("[%s] trackable=%v existing=%d new=%d summary=%q",
 		sess.SessionID, report.Trackable, len(report.ExistingCards), len(report.NewTasks),
 		textcut.TruncateToRuneLimit(report.SessionSummary, 100))
 
 	if cfg.DryRun {
-		return true, false
+		return true
 	}
 
 	if !report.Trackable {
-		applyDoNotTrack(kc, sess)
-		writeSig(kc, sess, tagSet, curSig) // records msg=N, the baseline the reeval delta measures from
-		return true, false
+		applyDoNotTrack(kc, sess, degraded)
+		writeSig(kc, sess, tagSet, curSig, degraded) // records the event count, the baseline the reeval delta measures from
+		return true
 	}
 
 	// A session that has cards but comes back with an opinion on none of them
@@ -589,18 +613,19 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 		log.Printf("[%s] WARNING: %d existing card(s) went unaddressed (filed %d new task(s)) — "+
 			"confirm the digest carries [EXISTING CARDS] with: kanban-classifier -session %s -dump-digest",
 			sess.SessionID, len(cards), len(report.NewTasks), sess.SessionID)
+		degraded.Record("session %s: %d existing card(s) went unaddressed by the model", sess.SessionID, len(cards))
 	}
 
-	applyExisting(kc, sess, report)
-	applyNew(kc, sess, cards, report)
+	applyExisting(kc, sess, report, degraded)
+	applyNew(kc, sess, cards, report, degraded)
 
-	writeSig(kc, sess, tagSet, curSig)
+	writeSig(kc, sess, tagSet, curSig, degraded)
 
 	// If bridge state is terminal, mark the session as final-classified.
 	if sess.State == terminalStateCompleted || sess.State == terminalStateError {
 		_ = kc.AddEntityTag(cardLinkSession, sess.SessionID, tagFinalClassified)
 	}
-	return true, false
+	return true
 }
 
 // ============================ Tag helpers ============================
@@ -689,7 +714,12 @@ func saidNothingSince(newestEntryAt, cutoff time.Time) bool {
 }
 
 // writeSig deletes the prior check-sig tag (if any) and adds the new one.
-func writeSig(kc *kanbanclient.Client, sess session, oldTags map[string]bool, sig string) {
+//
+// A failure to write the signature is a shortfall and not a cosmetic one: the
+// signature is the whole dedupe gate, so a session whose tag did not land is
+// classified again on the next tick and every tick after it, at the price of a
+// model call each time.
+func writeSig(kc *kanbanclient.Client, sess session, oldTags map[string]bool, sig string, degraded *degradations.Recorder) {
 	for tag := range oldTags {
 		if strings.HasPrefix(tag, tagCheckSigPrefix) && tag != sig {
 			_ = kc.DeleteEntityTag(cardLinkSession, sess.SessionID, tag)
@@ -697,6 +727,7 @@ func writeSig(kc *kanbanclient.Client, sess session, oldTags map[string]bool, si
 	}
 	if err := kc.AddEntityTag(cardLinkSession, sess.SessionID, sig); err != nil {
 		log.Printf("[%s] add check sig: %v", sess.SessionID, err)
+		degraded.Record("session %s: check signature not written, it will be re-classified and re-billed next tick", sess.SessionID)
 	}
 }
 
@@ -707,9 +738,10 @@ func writeSig(kc *kanbanclient.Client, sess session, oldTags map[string]bool, si
 // the check-sig tag — and priorMsgCount reads it back out to measure the
 // doNotTrackReevalDelta. The coupling is real and invisible, so keep the writeSig
 // call next to the applyDoNotTrack call.
-func applyDoNotTrack(kc *kanbanclient.Client, sess session) {
+func applyDoNotTrack(kc *kanbanclient.Client, sess session, degraded *degradations.Recorder) {
 	if err := kc.AddEntityTag(cardLinkSession, sess.SessionID, tagDoNotTrack); err != nil {
 		log.Printf("[%s] add do-not-track: %v", sess.SessionID, err)
+		degraded.Record("session %s: do-not-track tag not written, it will be re-classified next tick", sess.SessionID)
 	}
 }
 
@@ -731,17 +763,26 @@ func provenanceTrailer(action, sessionID, state string) string {
 		action, time.Now().UTC().Format(time.RFC3339), sessionID, state)
 }
 
-func applyExisting(kc *kanbanclient.Client, sess session, report *Report) {
+// applyExisting moves and rewrites the cards the model had an opinion about.
+//
+// Every failure here is a card the board still shows in the wrong column, which
+// is worse than an unclassified session: the session at least looks unfiled,
+// while a card left behind looks current. Measured on job 14's run history
+// 2026-08-29, one card had been failing to move with `404 Not Found` on eight of
+// the last sixty ticks — every one of those runs recorded `success`.
+func applyExisting(kc *kanbanclient.Client, sess session, report *Report, degraded *degradations.Recorder) {
 	for _, ec := range report.ExistingCards {
 		colName := stateToColumn(ec.State)
 		colID, ok := kc.ColumnsByName[colName]
 		if !ok {
 			log.Printf("[%s] column %q missing for existing card update; skipping", sess.SessionID, colName)
+			degraded.Record("session %s: card %s not moved, column %q is missing from the board", sess.SessionID, ec.CardID, colName)
 			continue
 		}
 		moveResult, err := kc.MoveCard(ec.CardID, kc.BoardID, colID, 0)
 		if err != nil {
 			log.Printf("[%s] move card %s → %s: %v", sess.SessionID, ec.CardID, colName, err)
+			degraded.Record("session %s: card %s not moved to %q", sess.SessionID, ec.CardID, colName)
 			continue
 		}
 		if moveResult.AutoStatusError != "" {
@@ -754,11 +795,12 @@ func applyExisting(kc *kanbanclient.Client, sess session, report *Report) {
 		body += "\n\n" + provenanceTrailer("updated by", sess.SessionID, ec.State) + "\n"
 		if err := kc.PatchCardBody(ec.CardID, body); err != nil {
 			log.Printf("[%s] patch existing card %s: %v", sess.SessionID, ec.CardID, err)
+			degraded.Record("session %s: card %s moved but its body was not updated", sess.SessionID, ec.CardID)
 		}
 	}
 }
 
-func applyNew(kc *kanbanclient.Client, sess session, existingCards []kanbanclient.EntityCardEntry, report *Report) {
+func applyNew(kc *kanbanclient.Client, sess session, existingCards []kanbanclient.EntityCardEntry, report *Report, degraded *degradations.Recorder) {
 	filed := map[string]bool{}
 	for _, ec := range existingCards {
 		if title, _ := ec.Item["title"].(string); title != "" {
@@ -799,13 +841,19 @@ func applyNew(kc *kanbanclient.Client, sess session, existingCards []kanbanclien
 		cardID, err := kc.CreateCard(args)
 		if err != nil {
 			log.Printf("[%s] create new task card: %v", sess.SessionID, err)
+			degraded.Record("session %s: new task %q was not filed", sess.SessionID, textcut.TruncateToRuneLimit(nt.Title, 60))
 			continue
 		}
+		// The card exists at this point, so neither failure below loses the
+		// work — but both lose the JOIN. An unlinked card is invisible to the
+		// dedupe on the next tick, which is how one task becomes six cards.
 		if err := kc.AddCardLink(cardID, cardLinkSession, sess.SessionID, "classifier"); err != nil {
 			log.Printf("[%s] link new card to session: %v", sess.SessionID, err)
+			degraded.Record("session %s: card %s was filed but not linked to the session, so the dedupe cannot see it", sess.SessionID, cardID)
 		}
 		if err := kc.AddCardLink(cardID, cardLinkSource, cardSourceClassifier, ""); err != nil {
 			log.Printf("[%s] mark source on new card: %v", sess.SessionID, err)
+			degraded.Record("session %s: card %s was filed without its source link", sess.SessionID, cardID)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -92,7 +93,7 @@ func TestUpdatingACardKeepsTheSessionItCameFrom(t *testing.T) {
 
 	applyExisting(kc, sess, &Report{ExistingCards: []ExistingRec{
 		{CardID: "card-1", State: "in_progress", Summary: "still working on the resolver"},
-	}})
+	}}, degradations.New("classifier"))
 
 	body, ok := rec.patchedBodies["card-1"]
 	if !ok {
@@ -114,7 +115,7 @@ func TestCreatingACardStampsTheSessionItCameFrom(t *testing.T) {
 
 	applyNew(kc, sess, nil, &Report{NewTasks: []NewRec{
 		{Title: "Port the resolver", State: "in_progress", Summary: "started tonight"},
-	}})
+	}}, degradations.New("classifier"))
 
 	if len(rec.createdBodies) != 1 {
 		t.Fatalf("want 1 created card, got %d", len(rec.createdBodies))
@@ -135,7 +136,7 @@ func TestACreatedCardCarriesTheIDKeyedSessionLinkNotJustTheEcho(t *testing.T) {
 
 	applyNew(kc, sess, nil, &Report{NewTasks: []NewRec{
 		{Title: "Port the resolver", State: "in_progress", Summary: "started tonight"},
-	}})
+	}}, degradations.New("classifier"))
 
 	want := cardLinkSession + "=" + sess.SessionID
 	found := false
@@ -159,10 +160,10 @@ func TestTheProvenanceLineIsLastOnBothWritePaths(t *testing.T) {
 
 	applyExisting(kc, sess, &Report{ExistingCards: []ExistingRec{
 		{CardID: "card-1", State: "blocked", Summary: "paused", Blocker: "waiting on a deploy"},
-	}})
+	}}, degradations.New("classifier"))
 	applyNew(kc, sess, nil, &Report{NewTasks: []NewRec{
 		{Title: "Something else", State: "blocked", Summary: "paused", Blocker: "waiting on a deploy"},
-	}})
+	}}, degradations.New("classifier"))
 
 	for name, body := range map[string]string{
 		"updated": rec.patchedBodies["card-1"],

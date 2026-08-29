@@ -55,6 +55,7 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/principalstore"
 )
@@ -327,7 +328,7 @@ func run() int {
 
 	// Collects the ways this run falls short of doing its whole job. Threaded
 	// rather than global so the failure sites stay testable in isolation.
-	degraded := &degradations{}
+	degraded := degradations.New("email")
 
 	kc := kanbanclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
 	board, err := kc.GetBoard(cfg.BoardID)
@@ -403,7 +404,7 @@ func run() int {
 		if err := runMergePass(ctx, cfg, kc, state, gate); err != nil {
 			log.Fatalf("merge pass: %v", err)
 		}
-		return degraded.exitCode()
+		return degraded.ExitCode()
 	}
 	if cfg.BackfillDue {
 		// Same shape as the merge pass, and for the same reason: board
@@ -411,7 +412,7 @@ func run() int {
 		if err := runBackfillPass(ctx, cfg, kc, state, gate); err != nil {
 			log.Fatalf("backfill: %v", err)
 		}
-		return degraded.exitCode()
+		return degraded.ExitCode()
 	}
 	if cfg.SenderQuery != "" || cfg.MessageQuery != "" {
 		// Reads and writes one entity's routing note, or reports it. Files no
@@ -419,7 +420,7 @@ func run() int {
 		if err := runEntityPass(cfg, kc, state); err != nil {
 			log.Fatalf("entity: %v", err)
 		}
-		return degraded.exitCode()
+		return degraded.ExitCode()
 	}
 	if cfg.RefileUnreadSince != "" {
 		// This one does read the mailbox — it has to fetch each message to find
@@ -432,7 +433,7 @@ func run() int {
 		if err := runRefileUnreadPass(cfg, kc, state, gate, since); err != nil {
 			log.Fatalf("refile: %v", err)
 		}
-		return degraded.exitCode()
+		return degraded.ExitCode()
 	}
 	// One call, before any mail work. A note the user wrote is the cheapest
 	// signal this command has and it must reach every batch, so it is loaded
@@ -442,7 +443,7 @@ func run() int {
 		// Notes make filing better; their absence must not stop it. Filing
 		// without them is the behaviour this command had until today.
 		log.Printf("[email] WARNING: could not load routing notes: %v — filing without them", err)
-		degraded.record("routing notes unavailable, filed %s", "without user guidance")
+		degraded.Record("routing notes unavailable, filed %s", "without user guidance")
 		notes = &routingNotes{bySender: map[string]routingNote{}, byMessage: map[string]routingNote{}}
 	}
 	log.Printf("[email] board state: cards=%d filed_emails=%d known_message_ids=%d routing_notes=%d",
@@ -479,7 +480,7 @@ func run() int {
 	}
 	if len(unfiled) == 0 {
 		log.Printf("[email] done: nothing new to file")
-		return degraded.exitCode()
+		return degraded.ExitCode()
 	}
 	log.Printf("[email] unfiled=%d", len(unfiled))
 
@@ -505,7 +506,7 @@ func run() int {
 		remaining[i].SimilarFiled = examples
 	}
 	if similarSearchFailures > 0 {
-		degraded.record("similar-mail search failed for %d of %d message(s)", similarSearchFailures, len(remaining))
+		degraded.Record("similar-mail search failed for %d of %d message(s)", similarSearchFailures, len(remaining))
 	}
 
 	// A card filed for a piece of work somebody asked for becomes a ticket, and
@@ -531,7 +532,7 @@ func run() int {
 	}
 
 	if cfg.DumpDigest {
-		return degraded.exitCode()
+		return degraded.ExitCode()
 	}
 	if err := applier.rewriteTouchedCardBodies(); err != nil {
 		log.Printf("[email] rewrite card bodies: %v", err)
@@ -539,7 +540,7 @@ func run() int {
 	log.Printf("[email] done: filed=%d cards_created=%d cards_updated=%d skipped_agent_owned=%d tickets_written=%d tickets_failed=%d",
 		applier.filed, applier.cardsCreated, applier.cardsUpdated, applier.skippedAgentOwned,
 		applier.ticketsWritten, applier.ticketsFailed)
-	return degraded.exitCode()
+	return degraded.ExitCode()
 }
 
 // classifyAndApply classifies one batch and applies it, halving the batch and
@@ -554,7 +555,7 @@ func run() int {
 // Recursion bottoms out at a single email, which is then left unfiled. That is
 // the safe end state: an email with no card link is exactly what the next tick
 // looks for, so nothing is lost, it is only deferred.
-func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *boardState, notes *routingNotes, batch []pendingEmail, degraded *degradations) {
+func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *boardState, notes *routingNotes, batch []pendingEmail, degraded *degradations.Recorder) {
 	if len(batch) == 0 {
 		return
 	}
@@ -566,7 +567,7 @@ func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *board
 		return
 	}
 	if len(batch) == 1 {
-		degraded.record("model could not classify %s, left unfiled", batch[0].Locator)
+		degraded.Record("model could not classify %s, left unfiled", batch[0].Locator)
 		log.Printf("[email] classify failed for %s (%q): %v — leaving it unfiled for the next tick",
 			batch[0].Locator, batch[0].Meta.Subject, err)
 		return
@@ -887,7 +888,7 @@ type pendingEmail struct {
 // card link. In steady state the newest page is almost entirely filed already,
 // so the walk stops on the first fully-filed page and the tick costs one
 // mailstack page per account.
-func collectUnfiled(cfg config, mc *mailClient, accounts []mailAccount, state *boardState, degraded *degradations) ([]pendingEmail, error) {
+func collectUnfiled(cfg config, mc *mailClient, accounts []mailAccount, state *boardState, degraded *degradations.Recorder) ([]pendingEmail, error) {
 	var out []pendingEmail
 	for _, acct := range accounts {
 		if !acct.Enabled {
@@ -895,7 +896,7 @@ func collectUnfiled(cfg config, mc *mailClient, accounts []mailAccount, state *b
 			// a disagreement between two owners, reported as a shortfall so
 			// the run reads as `error` rather than as a quiet mailbox.
 			log.Printf("[email] account %s is disabled in mailstack — skipping it", acct.ID)
-			degraded.record("account %s is disabled in mailstack, filed nothing from it", acct.ID)
+			degraded.Record("account %s is disabled in mailstack, filed nothing from it", acct.ID)
 			continue
 		}
 		folder, err := mc.inboxFolder(acct.ID)
@@ -903,7 +904,7 @@ func collectUnfiled(cfg config, mc *mailClient, accounts []mailAccount, state *b
 			// One unreachable account must not stop the others: a broken IMAP
 			// connection should not block Gmail triage.
 			log.Printf("[email] account %s: %v — skipping this account", acct.ID, err)
-			degraded.record("account %s unreachable, filed nothing from it", acct.ID)
+			degraded.Record("account %s unreachable, filed nothing from it", acct.ID)
 			continue
 		}
 
@@ -915,7 +916,7 @@ func collectUnfiled(cfg config, mc *mailClient, accounts []mailAccount, state *b
 			metas, next, err := mc.listMessages(acct.ID, folder, cursor, mailPageSize)
 			if err != nil {
 				log.Printf("[email] account %s page %d: %v — skipping the rest of this account", acct.ID, page, err)
-				degraded.record("account %s scanned only %d page(s) before erroring", acct.ID, page)
+				degraded.Record("account %s scanned only %d page(s) before erroring", acct.ID, page)
 				break
 			}
 			if len(metas) == 0 {
