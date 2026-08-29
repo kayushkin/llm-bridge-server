@@ -74,16 +74,20 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 			if err != nil {
 				return fmt.Errorf("dispatch %s: %w", cardID, err)
 			}
-			if err := kc.AddCardLink(cardID, "session", sessionID, "demo-worker"); err != nil {
+			// Linking the session IS the dispatch event: kanban-store records an
+			// agent_dispatched for a session link, carrying the session on the
+			// event's detail so the timeline can name it. Writing our own event
+			// beside it recorded the same handover twice — the mistake the email
+			// arrivals already taught, in a second place.
+			//
+			// The actor rides on the query string, which is how kanban-store reads
+			// it, so the one event has both who acted and what it acted on.
+			if err := linkAs(cfg.KanbanURL, cardID, "session", sessionID,
+				"demo-worker", actorPrefixAgent+identity.Slug); err != nil {
 				return fmt.Errorf("link session %s: %w", sessionID, err)
 			}
 			if err := kc.MoveCard(cardID, workBoard.ID, inProgress, 0); err != nil {
 				return fmt.Errorf("move %s: %w", cardID, err)
-			}
-			if err := addEvent(cfg.KanbanURL, cardID, workBoard.ID, "agent_dispatched",
-				actorPrefixAgent+identity.Slug,
-				fmt.Sprintf("Dispatched to %s in %s, capped at $%.2f", identity.Name, workingDir, cfg.MaxBudget)); err != nil {
-				return fmt.Errorf("record dispatch %s: %w", cardID, err)
 			}
 			fmt.Printf("      session %s\n", sessionID)
 			fired++

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 )
@@ -59,12 +60,18 @@ func addNote(kanbanURL, cardID, boardID, actor, body string) error {
 		http.StatusCreated, http.StatusOK)
 }
 
-// addEvent records something that happened to the card.
-func addEvent(kanbanURL, cardID, boardID, kind, actor, summary string) error {
-	return doJSON(http.MethodPost,
-		fmt.Sprintf("%s/api/cards/%s/events", strings.TrimRight(kanbanURL, "/"), cardID),
-		map[string]any{"kind": kind, "board_id": boardID, "actor": actor, "summary": summary},
-		http.StatusCreated, http.StatusOK)
+// linkAs creates a card link and says who created it.
+//
+// kanban-store reads the actor from the query string (body actor wins, else
+// ?actor=), and kanbanclient's AddCardLink has nowhere to put one — so the
+// events its links generate have always been anonymous. This is the same call
+// with attribution attached.
+func linkAs(kanbanURL, cardID, entityType, entityRef, label, actor string) error {
+	url := fmt.Sprintf("%s/api/cards/%s/links?actor=%s",
+		strings.TrimRight(kanbanURL, "/"), cardID, neturl.QueryEscape(actor))
+	return doJSON(http.MethodPost, url, map[string]any{
+		"entity_type": entityType, "entity_ref": entityRef, "label": label,
+	}, http.StatusCreated, http.StatusOK)
 }
 
 // getItem reads a card's noteboard item.
