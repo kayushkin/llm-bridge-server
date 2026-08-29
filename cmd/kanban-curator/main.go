@@ -39,6 +39,7 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -83,6 +84,18 @@ const (
 	reviewGrace = 30 * time.Minute
 )
 
+// config names the two services this curator talks to, the board it curates and
+// whether it is allowed to write. It exists so run can be handed stubs by a
+// test; main fills it from flags and the service settings.
+type config struct {
+	kanbanURL          string
+	kanbanServiceToken string
+	bridgeURL          string
+	boardID            string
+	staleAfter         time.Duration
+	dryRun             bool
+}
+
 func main() {
 	settings, err := schedulerconfig.KanbanCurator.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
@@ -110,20 +123,74 @@ func main() {
 		log.Fatal("-board-id is required; there is no board to default to")
 	}
 
-	kc := kanbanclient.New(*kanbanURL, settings.String(schedulerconfig.SettingKanbanStoreServiceToken))
-	board, err := kc.GetBoard(*boardID)
-	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
-		log.Fatalf("board %s does not exist — refusing to create a replacement, since a second board is exactly the fork pinning the id prevents", *boardID)
-	}
-	if err != nil {
-		log.Fatalf("get board %s: %v", *boardID, err)
+	cfg := config{
+		kanbanURL:          *kanbanURL,
+		kanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
+		bridgeURL:          *bridgeURL,
+		boardID:            *boardID,
+		staleAfter:         *staleAfter,
+		dryRun:             *dryRun,
 	}
 
 	if *registerFlag {
+		board, err := getPinnedBoard(kanbanclient.New(cfg.kanbanURL, cfg.kanbanServiceToken), cfg.boardID)
+		if err != nil {
+			log.Fatal(err)
+		}
 		if err := registerSchedulerJob(settings.String(schedulerconfig.SettingSchedulerURL), board, *jobName); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
+	}
+
+	os.Exit(run(cfg))
+}
+
+// getPinnedBoard reads the board the curator is pinned to. A missing board is an
+// error rather than something to create: kanban-store resolves boards by name
+// with no unique constraint, so a replacement is exactly the fork pinning the id
+// prevents.
+func getPinnedBoard(kc *kanbanclient.Client, boardID string) (*kanbanclient.Board, error) {
+	board, err := kc.GetBoard(boardID)
+	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
+		return nil, fmt.Errorf("board %s does not exist — refusing to create a replacement, since a second board is exactly the fork pinning the id prevents", boardID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get board %s: %w", boardID, err)
+	}
+	return board, nil
+}
+
+// run is one tick, and its return value is the process exit status.
+//
+// ==================== a tick that closed nothing it meant to ====================
+//
+// Everything below that can stop the whole tick is still fatal: with no board
+// view there is no tick to have, and exiting 1 already says so. What this adds is
+// the six ways the curator used to fall short of its job PER CARD and still exit
+// 0, because the loop's answer to every one of them is `continue`.
+//
+// Five are errors it hit while trying: a card whose links it could not read, a
+// session the bridge would not answer for, a review sign-off it could not look
+// up, a closing note the board refused, and — the sharp one — a MOVE the board
+// refused. By that last line the curator has decided the card is finished; the
+// move is the only thing that takes it out of In Progress, and when it fails the
+// card wedges there while the run is recorded `success`. The sixth is a
+// placement whose noteboard item did not resolve at all, so the card could not
+// even be read.
+//
+// The other direction matters as much and is tested as hard. A card with no
+// session link, a card awaiting the reviewer's sign-off, a still-running session
+// and an empty board are the curator having nothing to do, not falling short —
+// scheduler jobs 17 and 18 curate boards that are empty on 100 of 100 ticks, and
+// a job that goes red every tick carries as little as the green it replaces.
+func run(cfg config) int {
+	degraded := degradations.New("curator")
+
+	kc := kanbanclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
+	board, err := getPinnedBoard(kc, cfg.boardID)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	view, err := kc.GetBoardView(board.ID)
@@ -154,6 +221,14 @@ func main() {
 	var moved, skipped, errors int
 	for _, c := range inProgress {
 		if c.Item == nil {
+			// A placement with no item behind it. kanban-store stores placement and
+			// treats noteboard as the source of truth for content, so this is a card
+			// whose content is gone: it cannot be read, cannot be judged, and will sit
+			// In Progress forever. Measured 2026-08-29 across all 7 boards and 7,970
+			// cards: none. So this is not the curator having nothing to do, it is the
+			// curator being handed a card it cannot see.
+			log.Printf("[curator] card %s: placement has no noteboard item — cannot be read or closed", c.Placement.CardID)
+			degraded.Record("card %s: its noteboard item did not resolve, so the card was not examined", c.Placement.CardID)
 			skipped++
 			continue
 		}
@@ -161,6 +236,7 @@ func main() {
 		links, err := kc.ListCardLinks(c.Placement.CardID)
 		if err != nil {
 			log.Printf("[%s] list links: %v", title, err)
+			degraded.Record("card %s (%s): its links could not be read (%v), so it was not examined", c.Placement.CardID, title, err)
 			errors++
 			continue
 		}
@@ -172,13 +248,22 @@ func main() {
 			}
 		}
 		if sessionID == "" {
+			// Nothing to close against. This is NOT a shortfall: the curator is
+			// session-driven and a card with no session is not its business. It is
+			// logged because it used to be silent, and silence is what let card
+			// f1107651-67dd-4be5-b03a-a9c964f5f4ce sit In Progress from 2026-07-13 to
+			// 2026-08-29 — skipped on every one of the ~13,000 ticks in between with
+			// nothing in the run history naming it. Recording it instead would paint
+			// job 13 red every five minutes for a card the curator can never close.
+			log.Printf("[%s] no session link — nothing to close against (card_id=%s)", title, c.Placement.CardID)
 			skipped++
 			continue
 		}
-		sess, notFound, err := getSession(*bridgeURL, sessionID)
+		sess, notFound, err := getSession(cfg.bridgeURL, sessionID)
 		state, ended := sess.State, sess.UpdatedAt
 		if err != nil && !notFound {
 			log.Printf("[%s] bridge GET /sessions/%s: %v — skip", title, sessionID, err)
+			degraded.Record("card %s (%s): session %s could not be read from the bridge (%v), so it was not examined", c.Placement.CardID, title, sessionID, err)
 			errors++
 			continue
 		}
@@ -196,10 +281,20 @@ func main() {
 			// to Done until the reviewer has signed off (review-settled tag), so
 			// the agent gets its self-review pass to finish obvious leftover work.
 			// Bounded by reviewGrace so a down reviewer can't wedge the card.
-			if createdByAutoworker(sess) && !reviewSettled(kc, sessionID) && !staleCompleted(ended) {
-				log.Printf("[%s] completed; awaiting autoworker-reviewer sign-off — leaving In Progress (session_id=%s)", title, sessionID)
-				skipped++
-				continue
+			if createdByAutoworker(sess) && !staleCompleted(ended) {
+				settled, err := reviewSettled(kc, sessionID)
+				if err != nil {
+					// The sign-off question went unanswered, so the card is deferred on a
+					// kanban-store error rather than on the review state. Deferring is the
+					// right local choice — the grace window still closes it — but a tick
+					// that could not ask is not a tick that asked and got "no".
+					degraded.Record("card %s (%s): the review sign-off for session %s could not be looked up (%v), so closing was deferred without asking", c.Placement.CardID, title, sessionID, err)
+				}
+				if !settled {
+					log.Printf("[%s] completed; awaiting autoworker-reviewer sign-off — leaving In Progress (session_id=%s)", title, sessionID)
+					skipped++
+					continue
+				}
 			}
 			target, targetName = doneCol, columnDone
 		case state == "error", state == "aborted", state == "disconnected":
@@ -225,11 +320,11 @@ func main() {
 				skipped++
 				continue
 			}
-			if !staleSince(ended, *staleAfter) {
+			if !staleSince(ended, cfg.staleAfter) {
 				continue
 			}
 			target, targetName = failedCol, columnFailed
-			reapNote = fmt.Sprintf("reaped: %s with no activity since %s (> %s)", state, ended, *staleAfter)
+			reapNote = fmt.Sprintf("reaped: %s with no activity since %s (> %s)", state, ended, cfg.staleAfter)
 		default:
 			continue // running / unknown — leave alone
 		}
@@ -239,7 +334,7 @@ func main() {
 		} else {
 			log.Printf("[%s] %s → %s (session_id=%s)", title, state, targetName, sessionID)
 		}
-		if *dryRun {
+		if cfg.dryRun {
 			continue
 		}
 
@@ -256,12 +351,14 @@ func main() {
 			if suffix != "" {
 				if err := kc.PatchCardBody(c.Placement.CardID, body+suffix); err != nil {
 					log.Printf("[%s] patch body: %v (continuing to move)", title, err)
+					degraded.Record("card %s (%s): closed to %s with no note saying why — the body patch was refused (%v)", c.Placement.CardID, title, targetName, err)
 				}
 			}
 		}
 		moveResult, err := kc.MoveCard(c.Placement.CardID, board.ID, target, 0)
 		if err != nil {
 			log.Printf("[%s] move card: %v", title, err)
+			degraded.Record("card %s (%s): judged %s and the move was refused (%v) — it is still In Progress", c.Placement.CardID, title, targetName, err)
 			errors++
 			continue
 		}
@@ -271,6 +368,7 @@ func main() {
 		moved++
 	}
 	log.Printf("[curator] done: moved=%d skipped=%d errors=%d", moved, skipped, errors)
+	return degraded.ExitCode()
 }
 
 // ============================ helpers ============================
@@ -352,20 +450,24 @@ func stateLabel(state string, notFound bool) string {
 }
 
 // reviewSettled reports whether the autoworker-reviewer has signed off on this
-// session (review-settled entity tag present). On a tag-lookup error it returns
-// false so the grace window — not a transient kanban-store hiccup — decides.
-func reviewSettled(kc *kanbanclient.Client, sessionID string) bool {
+// session (review-settled entity tag present), and separately whether it could
+// find out. On a tag-lookup error it returns (false, err): deferring is still
+// the right local choice — the grace window, not a transient kanban-store
+// hiccup, then decides — but the caller needs the error to say that this tick
+// deferred without ever asking. Folding the two into one bool is what made that
+// invisible.
+func reviewSettled(kc *kanbanclient.Client, sessionID string) (settled bool, err error) {
 	tags, err := kc.ListEntityTags(entityTypeSession, sessionID)
 	if err != nil {
 		log.Printf("[curator] list entity tags for %s: %v — treating as unsettled", sessionID, err)
-		return false
+		return false, err
 	}
 	for _, t := range tags {
 		if t.Tag == tagReviewSettled {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // staleCompleted reports whether a session has been in its terminal state longer
