@@ -80,6 +80,38 @@ func restEscapesBackendPath(rest string) bool {
 // open on purpose is still open — noteboard card f4e5e1ef — and the
 // wider exposure it sits inside is f02351f2.
 //
+// Measured 2026-08-29, because that card had been holding the gate
+// question open on an unmeasured input — do the live callers send a
+// bearer? — and the answer turned out to be that there are no callers.
+// Zero files outside this repository name the route, on any local ref
+// of any repository on the bridge host; neither service-style wrapper
+// builds a proxy path (llm-bridge-inber resolves INBER_URL, default
+// localhost:8200; llm-bridge-hermes resolves HERMES_URL); and no inber
+// or hermes session was created at all over the journal's span. So
+// adding the gate breaks nothing today.
+//
+// What it would cost later depends on who the caller turns out to be,
+// and the two are not the same job. llm-bridge-runner already sends
+// the accepted credential on its WebSocket dial and on both gated seed
+// routes, so a gate costs it one header. A spawned wrapper cannot: the
+// runner exports only LLMBRIDGE_SERVER into a child (subprocess.go),
+// and the runner token is read from its config file rather than its
+// environment, so no child inherits it. Gating against a wrapper means
+// first deciding to put a durable per-machine credential into every
+// harness subprocess's environment.
+//
+// One more thing the decider should see: the purpose stated at the top
+// of this file — run the backend once on the bridge and spare remote
+// runners from duplicating state, credentials and storage — is not
+// what the server actually does for a remote service-style instance.
+// buildInberManifest (internal/harness/manifests.go) ships inber-server
+// to the runner with a resolved Anthropic credential in its env and
+// health-checks the runner's own localhost:8200, duplicating all three.
+// A route with no caller and a superseded purpose may want deleting
+// rather than gating. Census and its control set:
+// ~/.nightly-todoworker-harnessproxycallers/; write-up is noteboard
+// note df97054c-6ca0-4846-95b7-c707d5c09f76.
+//
 // Method, query string, headers and request body pass through
 // verbatim. The body streams straight to the upstream under no size
 // limit: this handler sets none, and nothing wraps the mux. The
