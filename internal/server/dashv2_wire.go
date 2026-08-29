@@ -59,6 +59,15 @@ type SummaryLookupRequest struct {
 	ManagerSessionIDs *[]string `json:"manager_session_ids,omitempty"`
 }
 
+// ValidatorsLookupRequest is the POST /sessions/validators body: the same id
+// set the GET takes as `?ids=a,b,c`, as a JSON array. No pointer here, unlike
+// SummaryLookupRequest's id fields: absent and empty both mean "check
+// nothing" and both answer an empty map, so the distinction JSON loses is one
+// this endpoint never had.
+type ValidatorsLookupRequest struct {
+	IDs []string `json:"ids,omitempty"`
+}
+
 // SummaryResponse is the /sessions/summary wire shape. Next is null when there
 // are no more pages; Revision doubles as the ETag.
 type SummaryResponse struct {

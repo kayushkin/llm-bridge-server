@@ -344,3 +344,50 @@ func TestHandleSessionsSummaryLookup_PostBody(t *testing.T) {
 		t.Errorf("unfiltered POST returned %d sessions, want 4", got)
 	}
 }
+
+// POST /sessions/validators — the staleness check's id set in a body, for the
+// same reason POST /sessions/summary exists: the list is one id per cached
+// session, and a query string that grows with the cache walks toward the URL
+// length at which nginx destroys the whole HTTP/2 connection.
+func TestHandleSessionsValidatorsLookup_PostBody(t *testing.T) {
+	logStore := newCaptureLogStore(t, `{"br_a":{"maxEventId":7,"eventCount":3,"updatedAt":"u"}}`)
+	srv, _ := serverWithLogStore(t, logStore.URL)
+
+	// The ids reach log-store intact, comma-joined onto the one localhost hop
+	// that keeps its GET encoding.
+	resp := doJSON(t, srv, "POST", "/sessions/validators",
+		ValidatorsLookupRequest{IDs: []string{"br_a", "br_b"}})
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if got := logStore.upstreamQuery(t).Get("ids"); got != "br_a,br_b" {
+		t.Errorf("log-store received ids %q, want br_a,br_b", got)
+	}
+	body := decodeJSON[map[string]Validator](t, resp)
+	if _, ok := body["br_a"]; !ok {
+		t.Errorf("log-store's answer did not pass through: %v", body)
+	}
+
+	// Absent and empty both answer an empty map without touching log-store —
+	// the same answer the GET has always given a blank ids parameter.
+	for _, req := range []any{ValidatorsLookupRequest{}, ValidatorsLookupRequest{IDs: []string{}}} {
+		before := len(logStore.requests)
+		resp = doJSON(t, srv, "POST", "/sessions/validators", req)
+		if resp.StatusCode != 200 {
+			t.Fatalf("empty ids %+v: status = %d", req, resp.StatusCode)
+		}
+		if got := len(decodeJSON[map[string]Validator](t, resp)); got != 0 {
+			t.Errorf("empty ids %+v: got %d validators, want none", req, got)
+		}
+		if len(logStore.requests) != before {
+			t.Errorf("empty ids %+v: log-store was called anyway", req)
+		}
+	}
+
+	// A misspelled field is a 400, not a silently empty check that reads as
+	// "nothing is stale".
+	resp = doJSON(t, srv, "POST", "/sessions/validators", map[string]any{"id": []string{"br_a"}})
+	if resp.StatusCode != 400 {
+		t.Errorf("unknown field: status = %d, want 400", resp.StatusCode)
+	}
+}

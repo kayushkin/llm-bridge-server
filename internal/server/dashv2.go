@@ -190,7 +190,37 @@ func (s *Server) serveSessionsSummary(w http.ResponseWriter, r *http.Request, li
 // forwards the id set and passes log-store's already-correct { [id]: Validator }
 // body straight through (layers are transparent).
 func (s *Server) handleSessionsValidators(w http.ResponseWriter, r *http.Request) {
-	ids := r.URL.Query().Get("ids")
+	s.serveSessionsValidators(w, r.URL.Query().Get("ids"))
+}
+
+// handleSessionsValidatorsLookup is the POST encoding of the same check:
+// {"ids": ["a","b"]} in a body, because the id list is one entry per cached
+// session and a query string that grows with the cache walks toward the same
+// cliff POST /sessions/summary was added for — past ~11.5 KB of URL, nginx
+// destroys the whole HTTP/2 connection rather than refusing the request.
+// ~1.2 KB on this host today; the encoding is fixed before the cliff, not
+// after it.
+func (s *Server) handleSessionsValidatorsLookup(w http.ResponseWriter, r *http.Request) {
+	var req ValidatorsLookupRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	s.serveSessionsValidators(w, strings.Join(req.IDs, ","))
+}
+
+// serveSessionsValidators is the shared path behind both encodings. Absent or
+// blank ids answer an empty map rather than a 400 — unlike the summary's id
+// lookups, an empty validator check has an obviously correct answer ("nothing
+// is stale") and both encodings have always given it.
+//
+// The forward to log-store stays a GET on purpose: it is one localhost hop
+// with no nginx in it, and Go's own header ceiling (~1 MB) is two orders of
+// magnitude above any real id set. The cliff this endpoint's POST encoding
+// exists for is at the public edge, not here.
+func (s *Server) serveSessionsValidators(w http.ResponseWriter, ids string) {
 	if strings.TrimSpace(ids) == "" {
 		writeJSON(w, map[string]Validator{})
 		return

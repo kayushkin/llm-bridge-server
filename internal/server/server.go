@@ -154,6 +154,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/summary", s.handleSessionsSummaryLookup)
 	s.mux.HandleFunc("GET /sessions/recent-bundle", s.handleRecentBundle)
 	s.mux.HandleFunc("GET /sessions/validators", s.handleSessionsValidators)
+	// Same check, POST body — the id list grows with the client's cache and a
+	// growing query string walks toward nginx's HTTP/2 connection-kill cliff.
+	s.mux.HandleFunc("POST /sessions/validators", s.handleSessionsValidatorsLookup)
 	s.mux.HandleFunc("GET /sessions/search", s.handleSearchSessions)
 	s.mux.HandleFunc("GET /sessions/discover", s.handleDiscoverSessions)
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
