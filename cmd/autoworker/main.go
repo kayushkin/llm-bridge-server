@@ -40,6 +40,7 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -145,6 +146,21 @@ type decision struct {
 	fraction float64
 	fire     bool
 	reason   string
+	// shortfall is empty when the tick decided not to fire, and names the reason
+	// when it could not decide at all.
+	//
+	// The difference is the whole point. "actual is already within slack of
+	// target" and "the snapshot has no weekly window in it" both end the
+	// evaluation with fire=false and both used to read identically in run
+	// history: a green tick. The first is this binary doing its job — there was
+	// no room to dispatch into. The second is this binary unable to tell whether
+	// there was room, which is a run that fell short and must say so.
+	//
+	// Not every non-fire with unusable data belongs here. A stale snapshot is
+	// the documented expected state for a provider nobody has used lately (see
+	// the package comment), so it stays a skip and is made loud instead. What is
+	// left is a snapshot that arrived fresh and malformed.
+	shortfall string
 }
 
 type state struct {
@@ -260,6 +276,17 @@ func (c config) validate() error {
 	return nil
 }
 
+// workerPublisher publishes one dispatch and returns the session id it minted.
+//
+// It is a function value rather than a *natsbus.Client because the bus is the
+// one service in a tick that a test cannot stand up. Every other service this
+// binary talks to is reached through a URL in config, so a test points those at
+// httptest and drives the real code. NATS is not one of those, and a test that
+// connected to the real bus to reach the write path would dispatch a real agent
+// session and spend real money. So the bus crosses this seam and nothing else
+// needs to.
+type workerPublisher func(p providerSpec, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error)
+
 func main() {
 	// Error ignored exactly as before: an unset HOME leaves this empty and the
 	// state path resolves relative to the working directory. loadState creates
@@ -300,6 +327,48 @@ func main() {
 		return
 	}
 
+	// On a dry run nothing is published, and the loop never reaches this: it
+	// continues past the dispatch on cfg.dryRun. The stub is here so that a
+	// publisher is never nil, because a nil one would turn a missed guard into a
+	// panic rather than into the error the caller already handles.
+	publish := workerPublisher(func(providerSpec, string, float64, string, string, string) (string, error) {
+		return "", errors.New("dry run: nothing is published")
+	})
+	closeBus := func() {}
+	if !cfg.dryRun {
+		nc, err := natsbus.Connect(natsbus.Options{URL: cfg.natsURL, Name: "autoworker"})
+		if err != nil {
+			log.Fatalf("nats connect: %v", err)
+		}
+		closeBus = nc.Close
+		publish = func(p providerSpec, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
+			return publishWorker(nc, p, prompt, maxBudgetUSD, workingDir, agentSlug, cardID)
+		}
+	}
+
+	// The bus is closed before the exit rather than deferred, because os.Exit
+	// does not run deferred functions and a silently unclosed connection is the
+	// kind of thing that looks fine until the bus runs out of them.
+	code := run(cfg, publish)
+	closeBus()
+	os.Exit(code)
+}
+
+// run is one tick, and returns the process exit status.
+//
+// Split out of main so a test can drive a whole tick against stub services and
+// read the verdict. That is not a refactor for its own sake: every shortfall
+// below is a failure this binary answers by carrying on, so the only thing that
+// distinguishes a tick that dispatched from a tick that could not is the exit
+// code, and nothing in a test can call main().
+//
+// The three log.Fatalf calls that remain are the failures where the tick does
+// no work at all — no timezone, no limits, no state — and exiting 1 already
+// makes those visible. Everything after them is partial, which is what
+// degradations exists for.
+func run(cfg config, publish workerPublisher) int {
+	degraded := degradations.New("autoworker")
+
 	loc, err := time.LoadLocation(cfg.timezone)
 	if err != nil {
 		log.Fatalf("timezone %q: %v", cfg.timezone, err)
@@ -318,16 +387,6 @@ func main() {
 	now := time.Now()
 	nowLocal := now.In(loc)
 
-	var natsClient *natsbus.Client
-	if !cfg.dryRun {
-		c, err := natsbus.Connect(natsbus.Options{URL: cfg.natsURL, Name: "autoworker"})
-		if err != nil {
-			log.Fatalf("nats connect: %v", err)
-		}
-		defer c.Close()
-		natsClient = c
-	}
-
 	// Lazy kanban-store clients; only initialised when actually needed so
 	// dry-run passes and skip-everything ticks don't hit kanban-store.
 	var (
@@ -339,6 +398,9 @@ func main() {
 	for _, p := range providers {
 		d := evaluate(p, lim[p.Name], nowLocal, st, cfg.slackPercentPoints)
 		log.Printf("[%s] %s", d.provider, d.reason)
+		if d.shortfall != "" {
+			degraded.Record("%s", d.shortfall)
+		}
 		if !d.fire || cfg.dryRun {
 			continue
 		}
@@ -347,14 +409,23 @@ func main() {
 		// the noteboard-discovery default so an empty queue doesn't waste
 		// the fire decision.
 		if !queueTried {
-			queueClient = initQueueClient(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken, false)
+			var why string
+			queueClient, why = initQueueClient(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken, false)
+			if why != "" {
+				degraded.Record("%s", why)
+			}
 			queueTried = true
 		}
 		var queueCard *queueCandidate
 		if queueClient != nil {
-			cand, err := selectQueuedCard(queueClient, cfg)
+			cand, err := selectQueuedCard(queueClient, cfg, degraded)
 			if err != nil {
+				// The queue could not be read, so this fire dispatches the
+				// default discovery prompt instead of the work somebody queued.
+				// It still fires, which is why this is a shortfall and not a
+				// failure: budget is spent, on the wrong thing.
 				log.Printf("queue: select: %v (using default prompt)", err)
+				degraded.Record("the %s dispatch used the default prompt because the queue could not be read (%v)", d.provider, err)
 			} else {
 				queueCard = cand
 			}
@@ -374,9 +445,12 @@ func main() {
 		if queueCard != nil {
 			workingDir, agentSlug, cardID = queueCard.workingDir, queueCard.agentSlug, queueCard.cardID
 		}
-		sessionID, err := publishWorker(natsClient, p, workerPrompt, maxBudgetUSD, workingDir, agentSlug, cardID)
+		sessionID, err := publish(p, workerPrompt, maxBudgetUSD, workingDir, agentSlug, cardID)
 		if err != nil {
+			// Every gate opened and no worker exists. This is the one shortfall
+			// here that loses the whole point of the tick.
 			log.Printf("[%s] publish failed: %v", d.provider, err)
+			degraded.Record("%s passed every gate and no worker was dispatched: the publish failed (%v)", d.provider, err)
 			continue
 		}
 		st.LastFire[p.Name] = now.Unix()
@@ -385,7 +459,14 @@ func main() {
 
 		if queueCard != nil && queueClient != nil {
 			if err := markQueueCardDispatched(queueClient, queueCard, p, sessionID, now); err != nil {
+				// The session is running against this card's prompt and the
+				// board still shows the card as Queued, so the next tick can
+				// pick it up again and dispatch a second worker onto the same
+				// work. Card 2920becb's second rule: the write path is where
+				// the failures already happening in production live.
 				log.Printf("[%s] queue: dispatch side-effects failed: %v", d.provider, err)
+				degraded.Record("card %s was dispatched as session %s and the board was not updated (%v) — it is still in %q and can be dispatched again",
+					queueCard.cardID, sessionID, err, autoworkerQueueColumnFrom)
 			}
 		}
 
@@ -393,6 +474,7 @@ func main() {
 			kc = kanbanclient.New(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken)
 			if err := kc.EnsureBoard(kanbanBoardName, kanbanDefaultColumns); err != nil {
 				log.Printf("kanban: bootstrap %q failed: %v (continuing)", kanbanBoardName, err)
+				degraded.Record("the %q board could not be reached (%v), so this tick's dispatches have no telemetry card", kanbanBoardName, err)
 				kc = nil // disable for the rest of this tick
 			}
 		}
@@ -414,6 +496,12 @@ func main() {
 				Provider:   p.Name,
 			})
 			log.Print(cardCreationLogLine(d.provider, sessionID, cardID, err))
+			if err != nil {
+				// The session exists and nothing on any board points at it, so
+				// neither kanban-curator nor autoworker-reviewer will ever see
+				// it: it runs, finishes, and is never signed off or closed.
+				degraded.Record("session %s was dispatched with no card on %q (%v), so no reviewer or curator will ever see it", sessionID, kanbanBoardName, err)
+			}
 		}
 	}
 
@@ -421,9 +509,13 @@ func main() {
 	// still surface the head of the Queued column so dry-run / quiet ticks
 	// show what would dispatch next. Bootstrap is read-only on dry-run so a
 	// fresh install doesn't quietly create the board.
+	//
+	// Nothing here is a shortfall. This is a peek at what would happen next on a
+	// tick that already decided not to dispatch, so failing to read it costs the
+	// run nothing it meant to do.
 	if !queueTried {
-		if qc := initQueueClient(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken, cfg.dryRun); qc != nil {
-			if cand, err := selectQueuedCard(qc, cfg); err != nil {
+		if qc, _ := initQueueClient(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken, cfg.dryRun); qc != nil {
+			if cand, err := selectQueuedCard(qc, cfg, nil); err != nil {
 				log.Printf("queue: %v", err)
 			} else if cand != nil {
 				log.Printf("queue: head card=%s title=%q tags=%v body_len=%d",
@@ -434,9 +526,15 @@ func main() {
 
 	if !cfg.dryRun {
 		if err := saveState(cfg.statePath, st); err != nil {
+			// LastFire is how the cooldown is enforced across ticks. Dropped, the
+			// next tick five minutes from now sees no last fire and can dispatch
+			// again inside a cooldown that was supposed to be fifteen minutes.
 			log.Printf("save state: %v", err)
+			degraded.Record("the cooldown state was not saved (%v), so the next tick may dispatch again inside this one's cooldown", err)
 		}
 	}
+
+	return degraded.ExitCode()
 }
 
 // initQueueClient resolves the Autoworker queue board into a kanbanclient
@@ -448,35 +546,45 @@ func main() {
 // Returns nil (with logging) when the board is unavailable; callers are
 // expected to fall back to default behavior so kanban-store outages don't
 // break the fire path.
-func initQueueClient(kanbanStoreURL, kanbanStoreServiceToken string, dryRun bool) *kanbanclient.Client {
+//
+// The second return value is the shortfall to record when the board was
+// unavailable, and "" when it was not. It is a string rather than an error
+// because one of the three ways to come back nil is not a failure: a board that
+// does not exist yet on a dry run is a fresh install, and the caller wants a
+// nil client and nothing recorded. Returning an error for that case would make
+// every caller re-derive which errors count, which is the distinction this
+// function is already making.
+func initQueueClient(kanbanStoreURL, kanbanStoreServiceToken string, dryRun bool) (*kanbanclient.Client, string) {
 	qc := kanbanclient.New(kanbanStoreURL, kanbanStoreServiceToken)
 	if dryRun {
 		board, err := qc.FindBoard(autoworkerQueueBoard)
 		if err != nil {
 			log.Printf("queue: find board %q: %v", autoworkerQueueBoard, err)
-			return nil
+			return nil, fmt.Sprintf("the %q board could not be looked up (%v), so the queue was not read", autoworkerQueueBoard, err)
 		}
 		if board == nil {
+			// Not a shortfall: nothing has bootstrapped the board yet, which is
+			// the state a fresh install is supposed to be in.
 			log.Printf("queue: board %q does not exist yet — first non-dry-run will bootstrap it", autoworkerQueueBoard)
-			return nil
+			return nil, ""
 		}
 		qc.BoardID = board.ID
 		cols, err := qc.ListColumns(board.ID)
 		if err != nil {
 			log.Printf("queue: list columns: %v", err)
-			return nil
+			return nil, fmt.Sprintf("the columns of %q could not be listed (%v), so the queue was not read", autoworkerQueueBoard, err)
 		}
 		qc.ColumnsByName = map[string]string{}
 		for _, col := range cols {
 			qc.ColumnsByName[col.Name] = col.ID
 		}
-		return qc
+		return qc, ""
 	}
 	if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanDefaultColumns); err != nil {
 		log.Printf("queue: bootstrap %q: %v (using default prompt)", autoworkerQueueBoard, err)
-		return nil
+		return nil, fmt.Sprintf("the %q board could not be reached (%v), so this tick dispatches the default prompt instead of queued work", autoworkerQueueBoard, err)
 	}
-	return qc
+	return qc, ""
 }
 
 // queueCandidate is one eligible card resolved from the Autoworker queue's
@@ -571,7 +679,10 @@ Be self-contained. No chat; just work and close out the task.`,
 // placement order. Eligibility: non-nil noteboard item with a non-empty title.
 // Skip reasons are logged so dry-run output explains the choice. Returns
 // (nil, nil) when the column is empty or no card is eligible.
-func selectQueuedCard(qc *kanbanclient.Client, cfg config) (*queueCandidate, error) {
+// degraded may be nil, which means the caller is peeking rather than
+// dispatching: the observability read at the end of a quiet tick wants the same
+// selection logic and has nothing to fall short of.
+func selectQueuedCard(qc *kanbanclient.Client, cfg config, degraded *degradations.Recorder) (*queueCandidate, error) {
 	view, err := qc.GetBoardView(qc.BoardID)
 	if err != nil {
 		return nil, err
@@ -649,8 +760,14 @@ func selectQueuedCard(qc *kanbanclient.Client, cfg config) (*queueCandidate, err
 		budget, dispatchable := budgetForCard(qc, cfg.llmBridgeURL, cfg.noteboardURL, cand)
 		if !dispatchable {
 			if err := qc.HoldCard(cand.cardID, "spend ceiling reached"); err != nil {
+				// The card is over its ceiling and was not parked, so every
+				// later tick has to re-derive that and re-attempt the hold. The
+				// skip is safe; the unparked card is what falls short.
 				log.Printf("queue: card %s is over its spend ceiling but the hold FAILED (%v) — skipping it this tick, but it is not parked",
 					cand.cardID, err)
+				if degraded != nil {
+					degraded.Record("card %s is over its spend ceiling and the hold was refused (%v), so it is skipped but not parked", cand.cardID, err)
+				}
 			}
 			continue
 		}
@@ -669,18 +786,34 @@ func evaluate(p providerSpec, lim *providerLimits, nowLocal time.Time, st *state
 		return d
 	}
 	if lim.StaleAfter != nil && time.Now().Unix() > *lim.StaleAfter {
-		d.reason = fmt.Sprintf("snapshot stale (snapshot_at=%s) — skip",
-			time.Unix(lim.SnapshotAt, 0).Format(time.RFC3339))
+		// Deliberate skip, not a shortfall: the package comment names this as
+		// the expected state for a provider with no recent session, and codex
+		// reaches it whenever nobody has used codex.
+		//
+		// It is made loud instead. The line used to print the snapshot
+		// timestamp and nothing else, so two hours stale and five days stale
+		// read the same — and five days stale means this binary has not
+		// evaluated that provider at all since, which is worth reading
+		// differently. Saying the age is what makes the difference visible
+		// without painting every tick red.
+		snapshotAt := time.Unix(lim.SnapshotAt, 0)
+		d.reason = fmt.Sprintf("snapshot stale (snapshot_at=%s, %s old) — skip",
+			snapshotAt.Format(time.RFC3339), time.Since(snapshotAt).Truncate(time.Minute))
 		return d
 	}
 
+	// Below here the snapshot is fresh, so anything missing from it is malformed
+	// data rather than an absent provider — the tick cannot tell whether there
+	// was room to dispatch into, which is a shortfall and not a skip.
 	win, ok := lim.Windows[p.WindowKey]
 	if !ok || win == nil {
 		d.reason = fmt.Sprintf("weekly window %q not in snapshot — skip", p.WindowKey)
+		d.shortfall = fmt.Sprintf("%s was never evaluated: its snapshot is fresh but carries no %q window", p.Name, p.WindowKey)
 		return d
 	}
 	if win.ResetsAt == nil {
 		d.reason = "weekly window has no resets_at — skip"
+		d.shortfall = fmt.Sprintf("%s was never evaluated: its %q window has no resets_at, so the elapsed fraction is uncomputable", p.Name, p.WindowKey)
 		return d
 	}
 
