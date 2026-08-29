@@ -40,11 +40,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/spendtree"
 )
@@ -62,6 +64,17 @@ type noteboardItem struct {
 	AutoHoldAtUSD *float64 `json:"auto_hold_at_usd"`
 }
 
+// config names the three services this guard reads and whether it is allowed to
+// write. It exists so run can be given stubs by a test; main fills it from the
+// service settings.
+type config struct {
+	kanbanURL          string
+	kanbanServiceToken string
+	bridgeURL          string
+	noteboardURL       string
+	dryRun             bool
+}
+
 func main() {
 	settings, err := schedulerconfig.SpendCeilingGuard.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
@@ -70,7 +83,6 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "Report what would be held; change nothing.")
 	flag.Parse()
 
-	kanbanURL := settings.String(schedulerconfig.SettingKanbanStoreURL)
 	bridgeURL := settings.String(schedulerconfig.SettingBridgeURL)
 
 	// llm-bridge-server gates every route; stamp this process's calls to it
@@ -79,10 +91,29 @@ func main() {
 	if err := bridgeauth.StampRequestsToBridge(bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
 		log.Fatal(err)
 	}
-	noteboardURL := settings.String(schedulerconfig.SettingNoteboardURL)
+
+	os.Exit(run(config{
+		kanbanURL:          settings.String(schedulerconfig.SettingKanbanStoreURL),
+		kanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
+		bridgeURL:          bridgeURL,
+		noteboardURL:       settings.String(schedulerconfig.SettingNoteboardURL),
+		dryRun:             *dryRun,
+	}))
+}
+
+// run is one tick, and its return value is the process exit status.
+//
+// The two fetches below stay fatal: with no cost table or no items there is no
+// tick to have, and exiting 1 already tells the scheduler so. What this
+// function adds is the three ways the guard used to fall short of its job and
+// still exit 0 — a subtree whose spend it could not price, a breach whose hold
+// the board refused, and an item list it read only part of. All three left the
+// run recorded `success`, which for a dollar cap is the wrong answer.
+func run(cfg config) int {
+	degraded := degradations.New("ceiling")
 
 	// Cost is a whole-fleet table; fetch it once rather than per item.
-	aggregates, err := fetchSessionAggregates(bridgeURL)
+	aggregates, err := fetchSessionAggregates(cfg.bridgeURL)
 	if err != nil {
 		log.Fatalf("session aggregates: %v", err)
 	}
@@ -94,14 +125,22 @@ func main() {
 	// include_held=true: we must see parked items to build the tree. A held
 	// ancestor is exactly the thing whose descendants we need to reason about,
 	// and noteboard hides held items from discovery by default.
-	items, err := fetchItems(noteboardURL)
+	items, truncated, err := fetchItems(cfg.noteboardURL)
 	if err != nil {
 		log.Fatalf("noteboard items: %v", err)
+	}
+	if truncated {
+		// The tree is the instrument. An item this read never saw contributes no
+		// spend to its ancestor's total and is never checked as an owner of its
+		// own, so a short read prices every ceiling too low — in the direction
+		// that lets a task keep running.
+		degraded.Record("read only %d noteboard items before hitting the %d-page safety bound: the spend tree is incomplete and every ceiling below it is priced too LOW",
+			len(items), maxItemPages)
 	}
 	log.Printf("loaded cost for %d sessions, %d items", len(cost), len(items))
 
 	tree := spendtree.NewTree(toTreeItems(items))
-	qc := kanbanclient.New(kanbanURL, settings.String(schedulerconfig.SettingKanbanStoreServiceToken))
+	qc := kanbanclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
 
 	// A card's session links are how spend is attributed to an item. Cache per
 	// item: a subtree walk asks for the same parent's links once per descendant
@@ -146,6 +185,7 @@ func main() {
 			// this is loud, and the autoworker independently fails CLOSED when it
 			// cannot read a capped card's spend.
 			log.Printf("item %s: spend unreadable (%v) — NOT holding; the autoworker will refuse to dispatch it", it.ID, err)
+			degraded.Record("item %s: spend unreadable (%v) — its ceiling went unenforced this tick", it.ID, err)
 			continue
 		}
 		if spent < ceiling {
@@ -153,7 +193,7 @@ func main() {
 		}
 
 		n := len(tree.Subtree(it.ID))
-		if *dryRun {
+		if cfg.dryRun {
 			log.Printf("WOULD HOLD %s — $%.2f spent of $%.2f ceiling across %d item(s) — %q", it.ID, spent, ceiling, n, it.Title)
 			held++
 			continue
@@ -162,12 +202,18 @@ func main() {
 		if err := qc.HoldCard(it.ID, reason); err != nil {
 			log.Printf("item %s: OVER CEILING ($%.2f of $%.2f) but the hold FAILED: %v — this task is still dispatchable",
 				it.ID, spent, ceiling, err)
+			// The sharpest of the three. The guard has already decided this task
+			// is out of money; the only thing that stops it spending more is the
+			// hold, and the hold did not land.
+			degraded.Record("item %s is OVER CEILING ($%.2f of $%.2f) and the hold FAILED (%v) — it is still dispatchable",
+				it.ID, spent, ceiling, err)
 			continue
 		}
 		log.Printf("HELD %s — $%.2f spent of $%.2f ceiling across %d item(s) — %q", it.ID, spent, ceiling, n, it.Title)
 		held++
 	}
 	log.Printf("done: %d task(s) with a ceiling checked, %d held", checked, held)
+	return degraded.ExitCode()
 }
 
 func toTreeItems(items []noteboardItem) []spendtree.Item {
@@ -186,23 +232,72 @@ func toTreeItems(items []noteboardItem) []spendtree.Item {
 	return out
 }
 
-func fetchItems(noteboardURL string) ([]noteboardItem, error) {
+// itemPageSize and maxItemPages bound the paged read below. The product is the
+// point at which the guard gives up and says so: a bound that is never reached
+// is a bound nobody has to think about, and one that is reached silently is the
+// defect this replaced.
+const (
+	itemPageSize = 1000
+	maxItemPages = 200
+)
+
+// fetchItems reads EVERY noteboard item, and reports whether it failed to.
+//
+// It used to ask for `limit=10000` in one request and hand back whatever came.
+// That number was already too small: measured 2026-08-29 the board held 10,309
+// items with `include_held` unset alone, and every one of the last 100 ticks
+// logged "10000 items" — the limit, exactly. The rows that fell off the end are
+// invisible to the tree, so a descendant out there adds nothing to its
+// ancestor's subtree total and an owner out there is never priced at all. A
+// short read can only under-price a ceiling, never over-price one, which is the
+// direction that lets a task past its cap.
+//
+// Raising the constant would have bought the same defect a later date. So the
+// read pages instead, and the only remaining bound is loud.
+//
+// include_held is required and is not the caller's own search: the tree needs
+// held ancestors in it or a parent edge dangles, and noteboard hides held items
+// by default.
+//
+// Ordering is `created_at DESC, id`, a total order, so the window is stable
+// across pages. An item created mid-read shifts rows toward later pages and can
+// hand the same id back twice, which the dedupe below absorbs; an item DELETED
+// mid-read shifts them the other way and can drop one, which it cannot. That is
+// accepted: the guard runs every five minutes and the next tick sees the row.
+func fetchItems(noteboardURL string) (items []noteboardItem, truncated bool, err error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	// include_held is required: the tree needs held ancestors in it, and a large
-	// limit because the whole tree must be present or a parent edge dangles.
-	resp, err := client.Get(noteboardURL + "/api/items?include_held=true&limit=10000")
-	if err != nil {
-		return nil, err
+	seen := map[string]bool{}
+	for page := 0; page < maxItemPages; page++ {
+		url := fmt.Sprintf("%s/api/items?include_held=true&limit=%d&offset=%d",
+			noteboardURL, itemPageSize, page*itemPageSize)
+		resp, err := client.Get(url)
+		if err != nil {
+			return nil, false, err
+		}
+		var batch []noteboardItem
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, false, fmt.Errorf("noteboard items: %s", resp.Status)
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&batch)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, false, decodeErr
+		}
+		for _, it := range batch {
+			if seen[it.ID] {
+				continue
+			}
+			seen[it.ID] = true
+			items = append(items, it)
+		}
+		// A page shorter than it asked for is the end of the list. This is the
+		// normal exit, and it is the only one that returns truncated=false.
+		if len(batch) < itemPageSize {
+			return items, false, nil
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("noteboard items: %s", resp.Status)
-	}
-	var items []noteboardItem
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return items, true, nil
 }
 
 func fetchSessionAggregates(bridgeURL string) ([]sessionAggregate, error) {
