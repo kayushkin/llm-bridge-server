@@ -374,6 +374,15 @@ Capability-matrix runs across all harnesses.
 > Its two sibling seed proxies, `/api/agent-store/` and `/api/skill-store/`, do gate and answer 401.
 > Whether to add the gate or leave the route open on purpose is still open; the handler's doc comment in
 > `internal/server/harness_proxy.go` carries the measurement.
+>
+> **Measured 2026-08-29: the route has no callers at all.** Nothing outside this repository names it,
+> on any local ref of any repository on the bridge host; neither service-style wrapper builds a proxy
+> path (`llm-bridge-inber` resolves `INBER_URL`, `llm-bridge-hermes` resolves `HERMES_URL`); and no
+> `inber` or `hermes` session was created over the journal's whole span. Adding the gate breaks nothing
+> today. What it would cost later splits on who the caller turns out to be — `llm-bridge-runner` already
+> sends the accepted bearer on its WebSocket dial and on both seed routes, but a **spawned wrapper**
+> cannot, since the runner exports only `LLMBRIDGE_SERVER` into a child and holds its token in a config
+> file rather than its environment.
 
 ### Admin
 
