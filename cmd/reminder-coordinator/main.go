@@ -53,6 +53,7 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/noteboard/model"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/degradations"
 )
 
 const (
@@ -241,6 +242,13 @@ func newCoordinator(c config, location *time.Location, now time.Time) *Coordinat
 		noteboard: &NoteboardClient{BaseURL: strings.TrimRight(c.noteboardURL, "/")},
 		calendar:  &GoogleCalendarMirror{DashURL: strings.TrimRight(c.dashURL, "/"), RuntimeDirectory: c.runtimeDirectory, SessionBusAddress: c.sessionBusAddress},
 		herald:    &Herald{AskPath: c.askPath},
+		// The subject matches the prefix this command's own error lines already
+		// carry, so a reader of scheduler run history meets one voice rather than
+		// two. Constructed here rather than left nil for a caller to supply: every
+		// coordinator has to be able to record, and a nil recorder would turn the
+		// first shortfall into a panic on the one path this package exists to make
+		// survivable.
+		Degraded:  degradations.New("reminder-coordinator"),
 		ScopeTag:  c.scopeTag,
 		Location:  location,
 		DigestAt:  dailyTime{Hour: c.digestHour, Minute: c.digestMinute},
@@ -275,6 +283,16 @@ func mustParseDailyTime(value string) dailyTime {
 }
 
 func main() {
+	os.Exit(run())
+}
+
+// run is the whole command. It returns the process exit status rather than
+// calling os.Exit itself, so that every path out settles the run's verdict
+// through the same return and a new one cannot forget to. Copied in shape from
+// cmd/kanban-classifier and cmd/email-classifier, which is where this verdict was
+// worked out; see internal/degradations for why a tick that fell short must not
+// exit 0.
+func run() int {
 	cfg, err := parseFlags(os.Args[1:], servicesettings.ProcessEnvironment())
 	if err != nil {
 		if errors.Is(err, errSettingsRefused) {
@@ -285,9 +303,9 @@ func main() {
 		// are the two exit codes flag.ExitOnError would have used, kept identical
 		// so lifting the flag set out of main() changed nothing a caller sees.
 		if errors.Is(err, flag.ErrHelp) {
-			os.Exit(0)
+			return 0
 		}
-		os.Exit(2)
+		return 2
 	}
 
 	location, err := time.LoadLocation(cfg.timezone)
@@ -302,6 +320,12 @@ func main() {
 		// with nothing to say, and you find out weeks later by missing something.
 		log.Fatalf("reminder-coordinator: %v", err)
 	}
+
+	// A tick that reminded nobody because it had nothing to say exits 0; a tick
+	// that fell short of part of its job exits non-zero, and the report names
+	// which part. Telling those two apart in scheduler run history is the whole
+	// reason this return exists.
+	return coordinator.Degraded.ExitCode()
 }
 
 type dailyTime struct{ Hour, Minute int }
@@ -348,6 +372,12 @@ type Coordinator struct {
 	calendar  calendarMirror
 	herald    heraldRelay
 
+	// Degraded collects the ways one tick fell short of its job, so the shortfall
+	// reaches scheduler run history rather than living only in the log body. It is
+	// a field rather than a package global because the failure sites are methods
+	// on this type and the tests build one coordinator per case.
+	Degraded *degradations.Recorder
+
 	ScopeTag string
 	Location *time.Location
 	DigestAt dailyTime
@@ -386,6 +416,14 @@ func (c *Coordinator) Run() error {
 	events, calErr := c.todaysCalendar()
 	if calErr != nil {
 		log.Printf("reminder-coordinator: calendar read failed, digest will note it: %v", calErr)
+		// Carrying on is right; exiting 0 afterwards is not. The digest and the
+		// nudge both go out without the day's shape, which is the half of them the
+		// user reads to decide whether an overdue todo is reachable today. Measured
+		// on the live job before this line existed: 12 of the last 100 ticks of job
+		// 32 logged exactly the failure above — auth-store held no google
+		// credential for two hours on 2026-08-28 — and all 100 runs were recorded
+		// `success`, so the outage reached nobody.
+		c.Degraded.Record("today's calendar could not be read, so the digest and the nudge went out without the day's schedule: %v", calErr)
 	}
 
 	if err := c.writeDigestNote(board, events, calErr); err != nil {
