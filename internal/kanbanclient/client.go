@@ -603,10 +603,64 @@ func (c *Client) CreateCard(a CreateCardArgs) (cardID string, err error) {
 			continue
 		}
 		if err := c.AddCardLink(id, l.entityType, l.entityRef, l.label); err != nil {
-			return id, fmt.Errorf("link %s/%s: %w", l.entityType, l.entityRef, err)
+			// The card is already on the board and this is the only moment its id
+			// is known to anyone. Returning a bare error here reads to every caller
+			// as "no card was created" — the Go convention is to ignore the other
+			// results when err != nil — and the id is dropped. A card that reaches
+			// the board with no session link can never be resolved back to a
+			// session, so kanban-curator skips it on every tick forever and no log
+			// line anywhere names it. Carry the id IN the error so a caller cannot
+			// report the failure without also being handed the thing it stranded.
+			return id, &CardCreatedWithoutAllLinksError{
+				CardID:     id,
+				EntityType: l.entityType,
+				EntityRef:  l.entityRef,
+				Cause:      err,
+			}
 		}
 	}
 	return id, nil
+}
+
+// CardCreatedWithoutAllLinksError reports that the card WAS created and at least
+// one of its entity links was not attached.
+//
+// This is not the same failure as "the card could not be created", and the
+// difference is the whole point of the type: a card with no session link is
+// unreachable from every consumer that resolves a card by session — which is
+// how kanban-curator closes autoworker cards — so it sits in its column
+// permanently. Callers must name CardID when they report this, and callers that
+// can undo the half-made card should use CardID to do it.
+type CardCreatedWithoutAllLinksError struct {
+	// CardID is the card that exists on the board despite this error.
+	CardID string
+	// EntityType and EntityRef are the link that failed to attach. Links are
+	// attached in order and the first failure stops the loop, so later links
+	// were never attempted.
+	EntityType string
+	EntityRef  string
+	Cause      error
+}
+
+func (e *CardCreatedWithoutAllLinksError) Error() string {
+	return fmt.Sprintf("card %s created but link %s/%s did not attach: %v",
+		e.CardID, e.EntityType, e.EntityRef, e.Cause)
+}
+
+func (e *CardCreatedWithoutAllLinksError) Unwrap() error { return e.Cause }
+
+// StrandedCardID returns the id of a card that was created but left without all
+// of its links, and whether err reports that case at all.
+//
+// Use it instead of testing CreateCard's first result against "", which cannot
+// tell a stranded card from a card that was never created: both are reported
+// through a non-nil error, and only this one leaves a row on the board.
+func StrandedCardID(err error) (string, bool) {
+	var partial *CardCreatedWithoutAllLinksError
+	if errors.As(err, &partial) {
+		return partial.CardID, true
+	}
+	return "", false
 }
 
 // CardLink is one (card_id, entity_type, entity_ref) row.

@@ -413,11 +413,7 @@ func main() {
 				SessionID:  sessionID,
 				Provider:   p.Name,
 			})
-			if err != nil {
-				log.Printf("[%s] kanban: create card failed: %v", d.provider, err)
-			} else {
-				log.Printf("[%s] kanban: card %s in %q on %q", d.provider, cardID, kanbanColumnTarget, kanbanBoardName)
-			}
+			log.Print(cardCreationLogLine(d.provider, sessionID, cardID, err))
 		}
 	}
 
@@ -1042,4 +1038,29 @@ func repoWorkingDir(links []kanbanclient.CardLink) (string, error) {
 		return "", fmt.Errorf("its repo link points at %s, which is not a directory", path)
 	}
 	return path, nil
+}
+
+// cardCreationLogLine renders the one line that reports what CreateCard did.
+//
+// It is a function, and it is tested, because the three outcomes are NOT two.
+// A card whose links did not attach was still created, and it is the case that
+// costs something: with no session link, kanban-curator can never resolve the
+// card to a session, so it skips it on every tick for as long as the board
+// exists and no other record anywhere holds its id. Reporting that as
+// "create card failed" — which the code did until 2026-08-30, and which is what
+// the plain `if err != nil` shape leads to — throws away the only handle that
+// could ever find the card again. See card
+// a68ad12c-28c4-4514-bbe7-75994e305367: one such card sat In Progress from
+// 2026-07-13 through roughly 13,000 curator ticks, unnamed by anything.
+func cardCreationLogLine(provider, sessionID, cardID string, err error) string {
+	if stranded, ok := kanbanclient.StrandedCardID(err); ok {
+		return fmt.Sprintf("[%s] kanban: card %s created but STRANDED with incomplete links "+
+			"(session %s) — the curator cannot close it, attach its links by hand: %v",
+			provider, stranded, sessionID, err)
+	}
+	if err != nil {
+		return fmt.Sprintf("[%s] kanban: create card failed: %v", provider, err)
+	}
+	return fmt.Sprintf("[%s] kanban: card %s in %q on %q",
+		provider, cardID, kanbanColumnTarget, kanbanBoardName)
 }
