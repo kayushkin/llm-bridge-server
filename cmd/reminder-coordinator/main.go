@@ -52,6 +52,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/noteboard/model"
+	"github.com/slava/scheduler/internal/boundedtext"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 )
@@ -1796,13 +1797,22 @@ func (g *GoogleCalendarMirror) ListEvents(token string, timeMin, timeMax time.Ti
 		case e.Start.DateTime != "":
 			start, err := time.Parse(time.RFC3339, e.Start.DateTime)
 			if err != nil {
-				return nil, fmt.Errorf("event %q start %q: %w", e.Summary, e.Start.DateTime, err)
+				// Summary, dateTime and the parser's own message are all
+				// unbounded: they arrive from Google via the dash proxy, and
+				// time.Parse quotes its whole input back twice. This error
+				// reaches the tick's log, which scheduler run history keeps.
+				// %w becomes %v because a bounded string is no longer the
+				// error — nothing unwraps this, and the alternative is to keep
+				// the whole 15 KB so that errors.Is could work.
+				return nil, fmt.Errorf("event %q start %q: %v",
+					boundedtext.Value(e.Summary), boundedtext.Value(e.Start.DateTime), boundedtext.ErrorMessage(err))
 			}
 			event.Start = start
 			if e.End.DateTime != "" {
 				end, err := time.Parse(time.RFC3339, e.End.DateTime)
 				if err != nil {
-					return nil, fmt.Errorf("event %q end %q: %w", e.Summary, e.End.DateTime, err)
+					return nil, fmt.Errorf("event %q end %q: %v",
+						boundedtext.Value(e.Summary), boundedtext.Value(e.End.DateTime), boundedtext.ErrorMessage(err))
 				}
 				event.End = end
 			}
@@ -1810,7 +1820,8 @@ func (g *GoogleCalendarMirror) ListEvents(token string, timeMin, timeMax time.Ti
 			event.AllDay = true
 			day, err := time.Parse("2006-01-02", e.Start.Date)
 			if err != nil {
-				return nil, fmt.Errorf("event %q date %q: %w", e.Summary, e.Start.Date, err)
+				return nil, fmt.Errorf("event %q date %q: %v",
+					boundedtext.Value(e.Summary), boundedtext.Value(e.Start.Date), boundedtext.ErrorMessage(err))
 			}
 			event.Start = day
 		default:

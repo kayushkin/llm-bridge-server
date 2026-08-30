@@ -53,6 +53,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/boundedtext"
 	"github.com/slava/scheduler/internal/bridgeauth"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
@@ -428,6 +429,12 @@ func run() int {
 		// it exits here with the other passes rather than falling through.
 		since, err := time.Parse("2006-01-02", cfg.RefileUnreadSince)
 		if err != nil {
+			// Deliberately NOT bounded, and this comment is here so the next sweep
+			// of the embed-the-input parser class does not re-open it. Every other
+			// site of this shape in the repo renders a value some other service
+			// sent; this one renders a flag the operator typed on the command line
+			// that started the process, and log.Fatalf then exits. There is no run
+			// history to bury and no remote party who can choose the length.
 			log.Fatalf("-refile-unread-since %q: want YYYY-MM-DD: %v", cfg.RefileUnreadSince, err)
 		}
 		if err := runRefileUnreadPass(cfg, kc, state, gate, since); err != nil {
@@ -838,7 +845,12 @@ func timeField(item map[string]any, key, cardID string) *time.Time {
 	}
 	t, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
-		log.Printf("[email] WARNING: card %s has unparseable %s %q: %v", cardID, key, raw, err)
+		// Both halves are bounded. raw is a noteboard field and nothing here
+		// caps it, and time.Parse quotes the whole value back inside its own
+		// error, twice — bounding either one alone still leaves the line
+		// unbounded, measured at 15 KB for a 5 KB field.
+		log.Printf("[email] WARNING: card %s has unparseable %s %q: %v",
+			cardID, key, boundedtext.Value(raw), boundedtext.ErrorMessage(err))
 		return nil
 	}
 	return &t

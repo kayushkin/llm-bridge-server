@@ -11,6 +11,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/robfig/cron/v3"
+	"github.com/slava/scheduler/internal/boundedtext"
 	cronpkg "github.com/slava/scheduler/internal/cron"
 	"github.com/slava/scheduler/internal/db"
 )
@@ -307,7 +308,10 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 			if req.Until != nil {
 				parsed, err := time.Parse(time.RFC3339, *req.Until)
 				if err != nil {
-					writeError(w, 400, "invalid 'until' format, use RFC3339", err.Error())
+					// Bounded: *req.Until is caller-supplied and time.Parse
+					// quotes its whole input back inside its own message,
+					// twice, so a 5 KB until answered with a 10 KB body.
+					writeError(w, 400, "invalid 'until' format, use RFC3339", boundedtext.ErrorMessage(err))
 					return
 				}
 				holdUntil = parsed
@@ -400,7 +404,7 @@ func (s *Server) handleCalendarEvents(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("from"); v != "" {
 		parsed, err := time.Parse(time.RFC3339, v)
 		if err != nil {
-			writeError(w, 400, "invalid 'from' (use RFC3339)", err.Error())
+			writeError(w, 400, "invalid 'from' (use RFC3339)", boundedtext.ErrorMessage(err))
 			return
 		}
 		from = parsed
@@ -408,7 +412,7 @@ func (s *Server) handleCalendarEvents(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("to"); v != "" {
 		parsed, err := time.Parse(time.RFC3339, v)
 		if err != nil {
-			writeError(w, 400, "invalid 'to' (use RFC3339)", err.Error())
+			writeError(w, 400, "invalid 'to' (use RFC3339)", boundedtext.ErrorMessage(err))
 			return
 		}
 		to = parsed

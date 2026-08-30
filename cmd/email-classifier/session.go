@@ -29,6 +29,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/slava/scheduler/internal/boundedtext"
 )
 
 // linkTypeSession is the entity_type that autoworker, kanban-dispatcher and the
@@ -161,8 +163,10 @@ func (g *sessionGate) dormantStillOwns(sessionID, state, updatedAt string) (bool
 	}
 	t, err := time.Parse(time.RFC3339, updatedAt)
 	if err != nil {
+		// Both halves are bounded: updated_at comes from llm-bridge-server and
+		// time.Parse quotes it back inside its own error, twice.
 		log.Printf("[email] WARNING: session %s is %s with unparseable updated_at %q (%v) — treating card as agent-owned and skipping it",
-			sessionID, state, updatedAt, err)
+			sessionID, state, boundedtext.Value(updatedAt), boundedtext.ErrorMessage(err))
 		return true, state + ", age unparseable"
 	}
 	age := g.now().Sub(t)
