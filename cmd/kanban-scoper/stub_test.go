@@ -1,0 +1,240 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// The stubs below stand in for kanban-store and llm-bridge-server's oneshot
+// route, which is where the decomposition call goes. Each fault field is a status code: zero means "answer
+// normally", non-zero means answer with that status, which is how every failure
+// this suite is about arrives in production — the service answering, just not
+// with the status the client wanted.
+
+const (
+	stubBoardID    = "board-1"
+	stubColGoals   = "col-goals"
+	stubColBacklog = "col-backlog"
+	stubBoardName  = "Task completion loop"
+	stubInstanceID = "inst-test"
+)
+
+// stubGoal is one card in the Goals column as the scoper meets it: a placement,
+// the noteboard item behind it, and whether it already carries `scoped`.
+type stubGoal struct {
+	cardID   string
+	title    string
+	body     string
+	tags     []string // noteboard tags; must contain tagTrigger to be picked
+	isScoped bool     // already carries the `scoped` entity_tag
+}
+
+type stubKanban struct {
+	t     *testing.T
+	goals []stubGoal
+	// blankBacklogID is the one way the Backlog column can resolve to an empty
+	// id in production. run calls EnsureBoard first, and EnsureBoard CREATES any
+	// column the board is missing — so an absent Backlog column is not
+	// reachable. A column row that is present under the right name and carries a
+	// blank id is: EnsureBoard sees the name, skips creation, and caches "".
+	blankBacklogID bool
+	failTags       int // status to answer GET /api/entities/note/{id}/tags with
+	failCreate     int // status to answer POST /api/boards/{id}/cards with
+	failLink       int // status to answer POST /api/cards/{id}/links with
+	failStamp      int // status to answer POST /api/entities/note/{id}/tags with
+
+	created []map[string]any  // every card body the scoper posted
+	linked  map[string]string // child card id -> parent it was linked to
+	stamped []string          // parent card ids stamped `scoped`
+	server  *httptest.Server
+}
+
+func newStubKanban(t *testing.T, goals ...stubGoal) *stubKanban {
+	k := &stubKanban{t: t, goals: goals, linked: map[string]string{}}
+	k.server = httptest.NewServer(http.HandlerFunc(k.serve))
+	t.Cleanup(k.server.Close)
+	return k
+}
+
+func (k *stubKanban) URL() string { return k.server.URL }
+
+func (k *stubKanban) columns() []map[string]any {
+	cols := []map[string]any{
+		{"id": stubColGoals, "board_id": stubBoardID, "name": columnGoals, "position": 1.0},
+	}
+	backlogID := stubColBacklog
+	if k.blankBacklogID {
+		backlogID = ""
+	}
+	cols = append(cols, map[string]any{"id": backlogID, "board_id": stubBoardID, "name": columnBacklog, "position": 2.0})
+	for i, n := range []string{columnInProgress, columnDone, columnFailed} {
+		cols = append(cols, map[string]any{"id": "col-" + n, "board_id": stubBoardID, "name": n, "position": float64(i + 3)})
+	}
+	return cols
+}
+
+func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Path
+	switch {
+	case r.Method == "GET" && p == "/api/boards/"+stubBoardID:
+		writeJSON(w, 200, map[string]any{"id": stubBoardID, "name": stubBoardName})
+
+	case r.Method == "GET" && p == "/api/boards/"+stubBoardID+"/columns":
+		writeJSON(w, 200, k.columns())
+
+	// The board view. Only the Goals column carries cards; every other column
+	// is present and empty, which is what the live board looks like on the
+	// ticks this job actually has.
+	case r.Method == "GET" && p == "/api/boards/"+stubBoardID+"/cards":
+		var colViews []map[string]any
+		for _, col := range k.columns() {
+			var cards []map[string]any
+			if col["name"] == columnGoals {
+				for _, g := range k.goals {
+					cards = append(cards, map[string]any{
+						"placement": map[string]any{"card_id": g.cardID, "board_id": stubBoardID, "column_id": stubColGoals, "position": 1.0},
+						"item":      map[string]any{"id": g.cardID, "title": g.title, "body": g.body, "tags": toAny(g.tags)},
+					})
+				}
+			}
+			colViews = append(colViews, map[string]any{"column": col, "cards": cards})
+		}
+		writeJSON(w, 200, map[string]any{
+			"board":   map[string]any{"id": stubBoardID, "name": stubBoardName},
+			"columns": colViews,
+		})
+
+	// createSubcard posts here directly rather than through kanbanclient.
+	case r.Method == "POST" && p == "/api/boards/"+stubBoardID+"/cards":
+		if k.failCreate != 0 {
+			w.WriteHeader(k.failCreate)
+			fmt.Fprint(w, "board refused the card")
+			return
+		}
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		k.created = append(k.created, payload)
+		writeJSON(w, 201, map[string]any{"item": map[string]any{"id": fmt.Sprintf("child-%d", len(k.created))}})
+
+	case r.Method == "POST" && strings.HasSuffix(p, "/links"):
+		if k.failLink != 0 {
+			w.WriteHeader(k.failLink)
+			fmt.Fprint(w, "board refused the link")
+			return
+		}
+		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/links")
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		ref, _ := payload["entity_ref"].(string)
+		k.linked[cardID] = ref
+		writeJSON(w, 201, map[string]any{"id": "link-" + cardID})
+
+	case strings.HasPrefix(p, "/api/entities/note/") && strings.HasSuffix(p, "/tags"):
+		ref := strings.TrimSuffix(strings.TrimPrefix(p, "/api/entities/note/"), "/tags")
+		if r.Method == "GET" {
+			if k.failTags != 0 {
+				w.WriteHeader(k.failTags)
+				fmt.Fprint(w, "tag read refused")
+				return
+			}
+			var tags []map[string]any
+			for _, g := range k.goals {
+				if g.cardID == ref && g.isScoped {
+					tags = append(tags, map[string]any{"entity_type": "note", "entity_ref": ref, "tag": tagScoped})
+				}
+			}
+			writeJSON(w, 200, tags)
+			return
+		}
+		if k.failStamp != 0 {
+			w.WriteHeader(k.failStamp)
+			fmt.Fprint(w, "stamp refused")
+			return
+		}
+		k.stamped = append(k.stamped, ref)
+		writeJSON(w, 201, map[string]any{"entity_type": "note", "entity_ref": ref, "tag": tagScoped})
+
+	default:
+		k.t.Errorf("stub kanban: unexpected %s %s", r.Method, p)
+		w.WriteHeader(500)
+	}
+}
+
+// stubModel answers llm-bridge-server's oneshot route. It exists so that no
+// test in this package can send a real model call — the hazard measured on the
+// sibling spawn path in card `f8fbd728`.
+type stubModel struct {
+	t        *testing.T
+	subtasks []Subtask
+	status   int  // non-200 makes the decompose call fail
+	noParsed bool // a 200 whose reply carries no parsed JSON
+	calls    int
+	server   *httptest.Server
+}
+
+func newStubModel(t *testing.T, subtasks ...Subtask) *stubModel {
+	m := &stubModel{t: t, subtasks: subtasks}
+	m.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/instances/"+stubInstanceID+"/oneshot" {
+			t.Errorf("stub model: unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(500)
+			return
+		}
+		m.calls++
+		if m.status != 0 {
+			w.WriteHeader(m.status)
+			fmt.Fprint(w, `{"error":{"message":"credit balance is too low"}}`)
+			return
+		}
+		if m.noParsed {
+			writeJSON(w, 200, map[string]any{"stop_reason": "end_turn", "text": "no"})
+			return
+		}
+		items := make([]map[string]any, 0, len(m.subtasks))
+		for _, st := range m.subtasks {
+			items = append(items, map[string]any{
+				"title": st.Title, "body": st.Body, "group_key": st.GroupKey,
+				"capability": st.Capability, "role": st.Role,
+			})
+		}
+		writeJSON(w, 200, map[string]any{"stop_reason": "end_turn", "parsed": map[string]any{"subtasks": items}})
+	}))
+	t.Cleanup(m.server.Close)
+	return m
+}
+
+func (m *stubModel) URL() string { return m.server.URL }
+
+// testConfig wires a run at the two stubs and nowhere else.
+func testConfig(k *stubKanban, decomposer *stubModel) config {
+	return config{
+		KanbanURL:       k.URL(),
+		BridgeURL:       decomposer.URL(),
+		OneshotInstance: stubInstanceID,
+		Model:           "claude-haiku-4-5-20251001",
+		BoardID:         stubBoardID,
+		MaxScope:        maxScopePerTick,
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func toAny(ss []string) []any {
+	out := make([]any, 0, len(ss))
+	for _, s := range ss {
+		out = append(out, s)
+	}
+	return out
+}
+
+func plainSubtask(title string) Subtask {
+	return Subtask{Title: title, Body: "do the thing", GroupKey: "grp"}
+}

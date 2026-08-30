@@ -30,6 +30,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -43,6 +44,7 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/oneshot"
 )
@@ -68,13 +70,15 @@ const (
 var defaultColumns = []string{columnGoals, columnBacklog, columnInProgress, columnDone, columnFailed}
 
 type config struct {
-	KanbanURL       string
-	BridgeURL       string
-	OneshotInstance string
-	Model           string
-	BoardID         string
-	DryRun          bool
-	RoleTags        bool // TEAM-ORCHESTRATION step 1: emit capability:/role: tags. OFF by default.
+	KanbanURL          string
+	KanbanServiceToken string
+	BridgeURL          string
+	OneshotInstance    string
+	Model              string
+	BoardID            string
+	MaxScope           int
+	DryRun             bool
+	RoleTags           bool // TEAM-ORCHESTRATION step 1: emit capability:/role: tags. OFF by default.
 }
 
 func main() {
@@ -113,18 +117,58 @@ func main() {
 		return
 	}
 
-	ctx := context.Background()
-	cfg := config{
-		KanbanURL:       *kanbanURL,
-		BridgeURL:       *bridgeURL,
-		OneshotInstance: *oneshotInstance,
-		Model:           *model,
-		BoardID:         *boardID,
-		DryRun:          *dryRun,
-		RoleTags:        *roleTags,
-	}
+	os.Exit(run(config{
+		KanbanURL:          *kanbanURL,
+		KanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
+		BridgeURL:          *bridgeURL,
+		OneshotInstance:    *oneshotInstance,
+		Model:              *model,
+		BoardID:            *boardID,
+		MaxScope:           *maxScope,
+		DryRun:             *dryRun,
+		RoleTags:           *roleTags,
+	}))
+}
 
-	kc := kanbanclient.New(cfg.KanbanURL, settings.String(schedulerconfig.SettingKanbanStoreServiceToken))
+// run is one tick, and its return value is the process exit status.
+//
+// ==================== a tick that scoped nothing it meant to ====================
+//
+// Everything that can stop the whole tick is still fatal: with no board, no board
+// view and no oneshot instance there is no tick to have, and exiting 1 already
+// says so. What this adds is the ways the scoper used to fall short of its job
+// PER PARENT or PER SUB-TASK and still exit 0, because the answer to every one of
+// them is `continue`.
+//
+// Two are on the read path: a Goals card whose `scoped` tag could not be read, so
+// it was never considered, and a decomposition the model would not produce. The
+// rest are on the WRITE path, and three of them cost money rather than only
+// accuracy:
+//
+//   - A sub-card the board refused. The parent is then left unstamped, so the next
+//     tick decomposes it again and re-creates every sub-card that DID land — a
+//     duplicate set every five minutes, each one paying for a model call.
+//   - The `scoped` stamp itself refused. Same loop, and this one fires after the
+//     whole plan has been written, so the duplicate set is complete.
+//   - A parent link the board refused. The sub-card exists on the board with no
+//     parent_card edge, so kanban-dispatcher's closure roll-up will never find it
+//     and it cannot be rolled up by anything.
+//
+// The quietest: a sub-task the decomposer returned with an empty title is
+// dropped, and the parent is stamped `scoped` anyway — so that slice of the goal
+// is lost permanently, on a card nothing will ever revisit.
+//
+// The other direction matters as much and is tested as hard. An empty Goals
+// column, a card without the trigger tag, a card already stamped `scoped`, a
+// deferral at the per-tick cap and a dry run are the scoper having nothing to do
+// or being told not to write, not falling short. Job 15 logs
+// `parents-needing-scope=0` on 100 of 100 retained ticks, and a job that goes red
+// every tick carries as little as the green it replaces.
+func run(cfg config) int {
+	degraded := degradations.New("scoper")
+	ctx := context.Background()
+
+	kc := kanbanclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
 	board, err := kc.EnsureBoardColumns(cfg.BoardID, defaultColumns)
 	if err != nil {
 		log.Fatalf("board %s: %v", cfg.BoardID, err)
@@ -135,10 +179,10 @@ func main() {
 		log.Fatalf("board view: %v", err)
 	}
 
-	parents := pickParents(view, kc)
+	parents := pickParents(view, kc, degraded)
 	log.Printf("[scoper] board=%q id=%s parents-needing-scope=%d", board.Name, board.ID, len(parents))
 	if len(parents) == 0 {
-		return
+		return degraded.ExitCode()
 	}
 
 	if cfg.OneshotInstance == "" {
@@ -147,18 +191,23 @@ func main() {
 
 	scoped := 0
 	for _, p := range parents {
-		if scoped >= *maxScope {
+		if scoped >= cfg.MaxScope {
+			// Deliberate, and not a shortfall: the deferred parents keep their
+			// unstamped state and the next tick five minutes later takes them.
 			log.Printf("[scoper] hit per-tick cap (%d); deferring %d parents to next tick",
-				*maxScope, len(parents)-scoped)
+				cfg.MaxScope, len(parents)-scoped)
 			break
 		}
-		if err := scopeParent(ctx, cfg, kc, p); err != nil {
+		// scopeParent records every shortfall itself, at the site it happens,
+		// with the consequence attached; the error here is control flow only.
+		if err := scopeParent(ctx, cfg, kc, p, degraded); err != nil {
 			log.Printf("[%s] scope failed: %v", p.title(), err)
 			continue
 		}
 		scoped++
 	}
 	log.Printf("[scoper] done: scoped=%d", scoped)
+	return degraded.ExitCode()
 }
 
 // ============================ Parent selection ============================
@@ -185,7 +234,7 @@ func (p parentCard) body() string {
 
 // pickParents returns Goals-column cards tagged with the trigger tag that
 // don't yet carry the "scoped" entity_tag.
-func pickParents(view *kanbanclient.BoardView, kc *kanbanclient.Client) []parentCard {
+func pickParents(view *kanbanclient.BoardView, kc *kanbanclient.Client, degraded *degradations.Recorder) []parentCard {
 	var goalsCards []kanbanclient.CardView
 	for _, cv := range view.Columns {
 		if cv.Column.Name == columnGoals {
@@ -206,6 +255,8 @@ func pickParents(view *kanbanclient.BoardView, kc *kanbanclient.Client) []parent
 		etags, err := kc.ListEntityTags("note", c.Placement.CardID)
 		if err != nil {
 			log.Printf("[%s] list entity tags: %v — skip", c.Placement.CardID, err)
+			degraded.Record("goal card %s (%s): its scoped tag could not be read (%v), so it was never considered for decomposition",
+				c.Placement.CardID, cardTitle(c.Item), err)
 			continue
 		}
 		if anyTagEquals(etags, tagScoped) {
@@ -223,13 +274,21 @@ func pickParents(view *kanbanclient.BoardView, kc *kanbanclient.Client) []parent
 
 // ============================ Decomposition ============================
 
-func scopeParent(ctx context.Context, cfg config, kc *kanbanclient.Client, p parentCard) error {
+// scopeParent decomposes one parent and writes the result. It records each way
+// it can fall short at the site where that happens, with the consequence
+// attached, and returns an error only as control flow for the caller's loop —
+// the caller must not record again.
+func scopeParent(ctx context.Context, cfg config, kc *kanbanclient.Client, p parentCard, degraded *degradations.Recorder) error {
 	digest := buildDigest(p)
 	plan, err := decompose(ctx, cfg, digest)
 	if err != nil {
+		degraded.Record("goal card %s (%s): the decomposer failed (%v), so it was not broken down and stays unscoped",
+			p.cardID, p.title(), err)
 		return fmt.Errorf("decompose: %w", err)
 	}
 	if len(plan.Subtasks) == 0 {
+		degraded.Record("goal card %s (%s): the decomposer returned 0 sub-tasks, so nothing was written and it stays unscoped",
+			p.cardID, p.title())
 		return fmt.Errorf("decomposer returned 0 sub-tasks")
 	}
 	log.Printf("[%s] %d sub-tasks: %s", p.title(), len(plan.Subtasks), summarizePlan(plan))
@@ -240,13 +299,20 @@ func scopeParent(ctx context.Context, cfg config, kc *kanbanclient.Client, p par
 
 	backlogCol := kc.ColumnsByName[columnBacklog]
 	if backlogCol == "" {
+		degraded.Record("goal card %s (%s): the board has no %q column, so its %d sub-tasks had nowhere to go",
+			p.cardID, p.title(), columnBacklog, len(plan.Subtasks))
 		return fmt.Errorf("board missing %q column", columnBacklog)
 	}
 
 	for i, st := range plan.Subtasks {
 		draft := buildSubcardDraft(p, st, cfg.RoleTags)
 		if draft.Title == "" {
+			// The parent is stamped `scoped` at the foot of this function
+			// whether or not this fired, so a dropped sub-task is not deferred
+			// to the next tick — it is gone, on a card nothing will revisit.
 			log.Printf("[%s] subtask %d has empty title — skip", p.title(), i)
+			degraded.Record("goal card %s (%s): sub-task %d came back with an empty title and was dropped, and the parent is stamped scoped regardless — that slice of the goal is lost",
+				p.cardID, p.title(), i)
 			continue
 		}
 		// The decomposer's output can lose information without being invalid.
@@ -258,12 +324,24 @@ func scopeParent(ctx context.Context, cfg config, kc *kanbanclient.Client, p par
 		// reverse lookups via /api/entities/parent_card/<id>/cards.
 		childID, err := createSubcard(kc, backlogCol, draft.Title, draft.Body, draft.Tags, p.cardID)
 		if err != nil {
+			if errors.Is(err, errParentLinkRefused) {
+				// The card exists; only its parent_card edge is missing. Keep
+				// going: abandoning the plan here would leave the parent
+				// unstamped and re-create every sibling on the next tick.
+				degraded.Record("goal card %s (%s): sub-card %s (%q) was created with no parent_card link (%v), so kanban-dispatcher's closure roll-up will never find it",
+					p.cardID, p.title(), childID, draft.Title, err)
+				continue
+			}
+			degraded.Record("goal card %s (%s): sub-card %q was refused by the board (%v) — the parent is left unstamped, so the next tick decomposes it again and re-creates every sub-card that did land",
+				p.cardID, p.title(), draft.Title, err)
 			return fmt.Errorf("create subcard %q: %w", draft.Title, err)
 		}
 		log.Printf("[%s] subcard %s → %q", p.title(), childID, draft.Title)
 	}
 
 	if err := kc.AddEntityTag("note", p.cardID, tagScoped); err != nil {
+		degraded.Record("goal card %s (%s): its %d sub-cards were written but the scoped stamp was refused (%v), so every later tick decomposes it again and writes a duplicate set",
+			p.cardID, p.title(), len(plan.Subtasks), err)
 		return fmt.Errorf("mark scoped: %w", err)
 	}
 	return nil
@@ -388,9 +466,30 @@ func createSubcard(kc *kanbanclient.Client, columnID, title, body string, tags [
 		return "", fmt.Errorf("create card: empty item id in response")
 	}
 	if err := kc.AddCardLink(id, linkTypeParent, parentID, "scoped"); err != nil {
-		return id, fmt.Errorf("link parent: %w", err)
+		return id, fmt.Errorf("%w: %v", errParentLinkRefused, err)
 	}
 	return id, nil
+}
+
+// errParentLinkRefused separates the one createSubcard failure that leaves a
+// card BEHIND on the board from the ones that leave nothing. The card id is
+// returned alongside it, and the caller needs both facts to say what was lost:
+// after this error the sub-card exists and is unreachable from its parent, so
+// carrying on with the plan is right and abandoning it would re-create the
+// siblings on the next tick.
+var errParentLinkRefused = errors.New("parent link refused")
+
+// cardTitle names a board card for a shortfall line when there is no parentCard
+// value to ask. A card with no title is reported as "untitled" rather than as an
+// empty string, because an unnamed card in a shortfall report is unactionable.
+func cardTitle(item map[string]any) string {
+	if item == nil {
+		return "untitled"
+	}
+	if t, _ := item["title"].(string); t != "" {
+		return t
+	}
+	return "untitled"
 }
 
 func buildDigest(p parentCard) string {
