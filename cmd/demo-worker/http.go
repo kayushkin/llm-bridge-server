@@ -97,6 +97,14 @@ func getItem(noteboardURL, cardID string) (map[string]any, error) {
 	return item, nil
 }
 
+// unhold releases a parked card. Already-released is not an error: the point is
+// that it ends up runnable, not that we were the one to make it so.
+func unhold(kanbanURL, cardID string) error {
+	return doJSON(http.MethodPost,
+		fmt.Sprintf("%s/api/cards/%s/unhold", strings.TrimRight(kanbanURL, "/"), cardID),
+		nil, http.StatusOK, http.StatusCreated, http.StatusConflict)
+}
+
 // cardEvent is the part of an event this tool reads.
 type cardEvent struct {
 	Kind  string `json:"kind"`

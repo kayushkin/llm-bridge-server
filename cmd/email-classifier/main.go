@@ -204,6 +204,8 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	fs.StringVar(&c.AuthStoreURL, "auth-store-url", envOr(lookupEnvironment, "AUTH_STORE_URL", "http://localhost:8303"), "auth-store base URL")
 	fs.StringVar(&c.AuthToken, "auth-token", envOr(lookupEnvironment, "AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
 	fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "EMAIL_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
+	fs.BoolVar(&c.HoldNewCards, "hold-new-cards", false,
+		"Create every new card parked, so an unattended worker discovering noteboard todos does not pick it up. The pipeline that owns these cards is expected to release them.")
 	fs.StringVar(&c.Vocabulary, "vocabulary", envOr(lookupEnvironment, "EMAIL_CLASSIFIER_VOCABULARY", personalVocabulary.Name),
 		"Classification scheme: personal or work. A work mailbox and a personal one are not the same problem in different words.")
 	fs.IntVar(&c.MaxEmails, "max", maxEmailsPerTick, "Max emails to file per tick.")
@@ -519,6 +521,7 @@ type config struct {
 	AuthToken    string
 	Model        string
 	Vocabulary   string
+	HoldNewCards bool
 	MaxEmails    int
 	OnlyAccount  string
 	Backfill     bool

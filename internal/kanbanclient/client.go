@@ -253,6 +253,15 @@ type CreateCardArgs struct {
 	// send exactly what they sent before.
 	Priority int
 	DueAt    *time.Time
+	// Hold creates the card already parked, with HoldReason saying why.
+	//
+	// A hold is how noteboard says "this is not yours to pick up": held items
+	// are hidden from the default listing, which is the listing an unattended
+	// worker discovers work from. A caller that files cards a specific pipeline
+	// owns needs this, or the cards look to the whole fleet like unclaimed
+	// todos — and get worked by whoever finds them first.
+	Hold       bool
+	HoldReason string
 }
 
 // CreateCard creates a new card on the bound board+column and attaches the
@@ -277,6 +286,10 @@ func (c *Client) CreateCard(a CreateCardArgs) (cardID string, err error) {
 	}
 	if a.DueAt != nil {
 		payload["due_at"] = a.DueAt.Format(time.RFC3339)
+	}
+	if a.Hold {
+		payload["hold"] = true
+		payload["hold_reason"] = a.HoldReason
 	}
 	body, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/api/boards/%s/cards", c.BaseURL, c.BoardID)

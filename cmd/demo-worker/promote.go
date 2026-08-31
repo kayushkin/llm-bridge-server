@@ -96,7 +96,14 @@ func promote(kc *kanbanclient.Client, cfg config) error {
 func eligible(card kanbanclient.CardView) (string, bool) {
 	item := card.Item
 	if heldAt, _ := item["held_at"].(string); heldAt != "" {
-		return "held", false
+		// A card parked BY the classifier is parked for this pipeline to pick
+		// up — that is what the hold is for, keeping unattended workers off it.
+		// A hold anybody else set means somebody decided this should not run,
+		// and that decision is not ours to overrule.
+		reason, _ := item["hold_reason"].(string)
+		if !strings.Contains(reason, "email-classifier") {
+			return "held: " + truncate(reason, 40), false
+		}
 	}
 	if status, _ := item["status"].(string); status != "open" {
 		return "status=" + status, false
@@ -122,6 +129,11 @@ func eligible(card kanbanclient.CardView) (string, bool) {
 // place attaches the card to the work board and records what an agent needs to
 // know to act on it.
 func place(kc *kanbanclient.Client, cfg config, workBoardID, queuedColumn, cardID string, identity demoteam.Member) error {
+	// Released as it is taken. The card was parked so that whoever found it
+	// first would leave it alone; this pipeline is the one it was waiting for.
+	if err := unhold(cfg.KanbanURL, cardID); err != nil {
+		return fmt.Errorf("release the hold: %w", err)
+	}
 	if err := attachCard(cfg.KanbanURL, workBoardID, cardID, queuedColumn); err != nil {
 		return err
 	}

@@ -238,6 +238,11 @@ func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[strin
 	return out
 }
 
+// holdReason is what a parked card says about itself. Written out rather than
+// left blank so that a human meeting one on the board is told who is expected
+// to release it, not merely that it is stuck.
+const holdReason = "filed by email-classifier for a pipeline that has not picked it up yet"
+
 func (a *applier) createCard(spec newCardSpec) (string, error) {
 	// Report vocabulary violations rather than coercing them. A tag carrying an
 	// unexpected value is visible in the UI's filter list and can be corrected;
@@ -308,6 +313,12 @@ func (a *applier) createCard(spec newCardSpec) (string, error) {
 		Tags:       tags,
 		Priority:   score.Priority,
 		DueAt:      due,
+		// Parked on arrival when the caller asked for it. Cards this classifier
+		// files are noteboard todos, and an unattended worker discovering todos
+		// cannot tell one that belongs to a pipeline from one nobody has claimed
+		// — so without this it works whichever it finds first.
+		Hold:       a.cfg.HoldNewCards,
+		HoldReason: holdReason,
 	})
 	if err != nil {
 		return "", err
