@@ -64,6 +64,7 @@ const (
 type config struct {
 	Promote  bool
 	Dispatch bool
+	Review   bool
 	DryRun   bool
 
 	EmailBoard   string
@@ -73,9 +74,11 @@ type config struct {
 	NATSURL      string
 	RepoPath     string
 
-	BuilderSlug string
-	MaxBudget   float64
-	MaxPerTick  int
+	BuilderSlug  string
+	ReviewerSlug string
+	RepoSlug     string
+	MaxBudget    float64
+	MaxPerTick   int
 }
 
 func main() {
@@ -90,6 +93,7 @@ func parseFlags() config {
 	var c config
 	flag.BoolVar(&c.Promote, "promote", false, "Move eligible Work board cards onto the work board's Queued column.")
 	flag.BoolVar(&c.Dispatch, "dispatch", false, "Spawn a real agent session for queued cards.")
+	flag.BoolVar(&c.Review, "review", false, "Spawn a reviewer for cards whose pull request has not been reviewed.")
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Say what would happen and change nothing.")
 	flag.StringVar(&c.EmailBoard, "email-board", defaultEmailBoard, "Board the classifier files onto.")
 	flag.StringVar(&c.WorkBoard, "work-board", defaultWorkBoard, "Board the agents work from.")
@@ -98,6 +102,8 @@ func parseFlags() config {
 	flag.StringVar(&c.NATSURL, "nats-url", envOr("NATS_URL", "nats://localhost:4222"), "NATS URL")
 	flag.StringVar(&c.RepoPath, "repo", defaultRepoPath, "The repo agents work in.")
 	flag.StringVar(&c.BuilderSlug, "builder", "northwind-builder", "Identity that does the building.")
+	flag.StringVar(&c.ReviewerSlug, "reviewer", "northwind-reviewer", "Identity that does the reviewing.")
+	flag.StringVar(&c.RepoSlug, "repo-slug", "kayushkin/northwind-api", "owner/name of the repo, for pull request refs.")
 	flag.Float64Var(&c.MaxBudget, "max-budget-usd", 10, "Per-card spend ceiling.")
 	flag.IntVar(&c.MaxPerTick, "max", 1, "Most cards to act on in one tick.")
 	flag.Parse()
@@ -105,9 +111,9 @@ func parseFlags() config {
 }
 
 func run(cfg config) error {
-	if !cfg.Promote && !cfg.Dispatch {
+	if !cfg.Promote && !cfg.Dispatch && !cfg.Review {
 		flag.Usage()
-		return fmt.Errorf("nothing to do: pass -promote or -dispatch")
+		return fmt.Errorf("nothing to do: pass -promote, -dispatch or -review")
 	}
 	if cfg.MaxBudget <= 0 {
 		// Zero is not "no ceiling" to a harness, it is "unlimited" — the exact
@@ -129,6 +135,11 @@ func run(cfg config) error {
 			return err
 		}
 	}
+	if cfg.Review {
+		if err := review(kc, cfg); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -137,14 +148,15 @@ func run(cfg config) error {
 //
 // Attribution is the whole reason this tool sets AgentID, so dispatching as
 // nobody would quietly give back the thing that was just built.
-func requireIdentity(slug string) (demoteam.Member, error) {
+func requireIdentity(slug string, want demoteam.Role) (demoteam.Member, error) {
 	m, ok := demoteam.BySlug(slug)
 	if !ok {
 		return demoteam.Member{}, fmt.Errorf("identity %q is not on the roster; add it to internal/demoteam", slug)
 	}
-	if m.Role != demoteam.RoleBuilder {
-		return demoteam.Member{}, fmt.Errorf("identity %q holds role %q, and only a builder may be dispatched to write code",
-			slug, m.Role)
+	if m.Role != want {
+		return demoteam.Member{}, fmt.Errorf(
+			"identity %q holds role %q, and this work needs a %s — a reviewer must not be sent to write code, nor a builder to sign off its own",
+			slug, m.Role, want)
 	}
 	return m, nil
 }

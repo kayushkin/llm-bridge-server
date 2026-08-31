@@ -13,7 +13,7 @@ import (
 
 // dispatch turns queued cards into real agent sessions.
 func dispatch(kc *kanbanclient.Client, cfg config) error {
-	identity, err := requireIdentity(cfg.BuilderSlug)
+	identity, err := requireIdentity(cfg.BuilderSlug, demoteam.RoleBuilder)
 	if err != nil {
 		return err
 	}
@@ -61,7 +61,7 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 				continue
 			}
 
-			prompt := builderPrompt(identity, title, body, workingDir, cardID)
+			prompt := builderPrompt(identity, title, body, workingDir, cardID, cfg.RepoSlug, cfg.KanbanURL)
 			fmt.Printf("  DISPATCH %s %-48s as=%s dir=%s cap=$%.2f\n",
 				shortID(cardID), truncate(title, 48), identity.Slug, workingDir, cfg.MaxBudget)
 			if cfg.DryRun {

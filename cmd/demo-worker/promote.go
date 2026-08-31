@@ -27,7 +27,7 @@ var buildableActions = map[string]bool{
 // item, two placements — so the email view and the work view are the same card
 // seen twice, and closing it in one closes it in the other.
 func promote(kc *kanbanclient.Client, cfg config) error {
-	identity, err := requireIdentity(cfg.BuilderSlug)
+	identity, err := requireIdentity(cfg.BuilderSlug, demoteam.RoleBuilder)
 	if err != nil {
 		return err
 	}

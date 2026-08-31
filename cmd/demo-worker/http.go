@@ -97,6 +97,31 @@ func getItem(noteboardURL, cardID string) (map[string]any, error) {
 	return item, nil
 }
 
+// cardEvent is the part of an event this tool reads.
+type cardEvent struct {
+	Kind  string `json:"kind"`
+	Actor string `json:"actor"`
+}
+
+// listEvents reads a card's action log.
+func listEvents(kanbanURL, cardID string) ([]cardEvent, error) {
+	url := fmt.Sprintf("%s/api/cards/%s/events", strings.TrimRight(kanbanURL, "/"), cardID)
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("read events for %s: %w", cardID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("read events for %s: %d %s", cardID, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var events []cardEvent
+	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
+		return nil, fmt.Errorf("decode events for %s: %w", cardID, err)
+	}
+	return events, nil
+}
+
 // retag swaps one tag for another, preserving the rest.
 //
 // It reads the card back rather than trusting a copy held from earlier in the
