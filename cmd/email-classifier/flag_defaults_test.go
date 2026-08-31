@@ -59,8 +59,7 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		{"-mail-url", cfg.MailURL, "http://localhost:8195"},
 		{"-mail-token", cfg.MailToken, "changeme"},
 		{"-bridge-url", cfg.BridgeURL, "http://localhost:8160"},
-		{"-auth-store-url", cfg.AuthStoreURL, "http://localhost:8303"},
-		{"-auth-token", cfg.AuthToken, "changeme"},
+		{"-oneshot-instance", cfg.OneshotInstance, ""},
 		{"-model", cfg.Model, "claude-sonnet-4-6"},
 		{"-max", cfg.MaxEmails, 50},
 		{"-account", cfg.OnlyAccount, ""},
@@ -181,8 +180,7 @@ func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 		"MAILSTACK_URL":          "http://mailstack.example",
 		"MAILSTACK_TOKEN":        "mail-token-value",
 		"LLM_BRIDGE_URL":         "http://bridge.example",
-		"AUTH_STORE_URL":         "http://auth.example",
-		"AUTH_STORE_TOKEN":       "auth-token-value",
+		"ONESHOT_INSTANCE_ID":    "inst-from-the-environment",
 		"EMAIL_CLASSIFIER_MODEL": "model-from-the-environment",
 		"SCHEDULER_URL":          "http://scheduler.example",
 	}), "/home/someone")
@@ -200,39 +198,13 @@ func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 		{"MAILSTACK_URL", cfg.MailURL, "http://mailstack.example"},
 		{"MAILSTACK_TOKEN", cfg.MailToken, "mail-token-value"},
 		{"LLM_BRIDGE_URL", cfg.BridgeURL, "http://bridge.example"},
-		{"AUTH_STORE_URL", cfg.AuthStoreURL, "http://auth.example"},
-		{"AUTH_STORE_TOKEN", cfg.AuthToken, "auth-token-value"},
+		{"ONESHOT_INSTANCE_ID", cfg.OneshotInstance, "inst-from-the-environment"},
 		{"EMAIL_CLASSIFIER_MODEL", cfg.Model, "model-from-the-environment"},
 		{"SCHEDULER_URL", cfg.SchedulerURL, "http://scheduler.example"},
 	} {
 		if check.got != check.want {
 			t.Errorf("%s reached the wrong field: got %q, want %q", check.variable, check.got, check.want)
 		}
-	}
-}
-
-// TestTheTwoTokensDoNotReachEachOthersService is the swap this package can
-// actually afford to get wrong.
-//
-// mailstack's token and auth-store's token are both strings called "changeme"
-// by default, and on a host where both are still the default a swap is
-// invisible. Handing auth-store the mailstack token means the Anthropic key
-// resolve fails and the tick dies loudly; handing mailstack the auth-store
-// token means every message fetch 401s and the tick files on headers alone,
-// quietly and forever.
-func TestTheTwoTokensDoNotReachEachOthersService(t *testing.T) {
-	cfg, err := parseFlags(nil, environmentWith(map[string]string{
-		"MAILSTACK_TOKEN":  "for-mailstack",
-		"AUTH_STORE_TOKEN": "for-auth-store",
-	}), "/home/someone")
-	if err != nil {
-		t.Fatalf("parsing an empty command line: %v", err)
-	}
-	if cfg.MailToken != "for-mailstack" {
-		t.Errorf("MailToken = %q, want the mailstack token", cfg.MailToken)
-	}
-	if cfg.AuthToken != "for-auth-store" {
-		t.Errorf("AuthToken = %q, want the auth-store token", cfg.AuthToken)
 	}
 }
 

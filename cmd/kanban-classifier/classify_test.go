@@ -9,45 +9,34 @@ import (
 	"testing"
 )
 
-// serveAnthropic points classify at a stub returning the given response body.
-func serveAnthropic(t *testing.T, body any) {
+// serveOneshot points classify at a stub llm-bridge-server whose oneshot
+// endpoint returns the given msg.OneShotResponse-shaped body.
+func serveOneshot(t *testing.T, body any) config {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(body)
 	}))
 	t.Cleanup(srv.Close)
-
-	prev := anthropicMessagesURL
-	anthropicMessagesURL = srv.URL
-	t.Cleanup(func() { anthropicMessagesURL = prev })
+	return config{Model: defaultModel, BridgeURL: srv.URL, OneshotInstance: "inst-test"}
 }
 
-// A reply cut off at max_tokens still carries a well-formed tool_use block —
-// the API drops the unfinished array rather than emitting broken JSON — so it
-// decodes without error and is indistinguishable from a model that had no
-// opinion on any card. stop_reason is the only evidence, and classify must
-// refuse the report on it. Verified against the live API on session
-// br_1784416900461396845 (69 cards): max_tokens=1024 returns exactly this
-// shape.
+// A reply that stopped at max_tokens is incomplete however cleanly it parses:
+// the cards it left out are indistinguishable from "no opinion". stop_reason
+// is the only evidence, and classify must refuse the report on it. The check
+// lives in the oneshot client now, but the behavior is this command's
+// contract, so it is pinned here.
 func TestClassifyRejectsTruncatedReport(t *testing.T) {
-	serveAnthropic(t, map[string]any{
+	cfg := serveOneshot(t, map[string]any{
 		"stop_reason": "max_tokens",
-		"usage":       map[string]any{"output_tokens": 1024},
-		"content": []any{
-			map[string]any{
-				"type": "tool_use",
-				"name": reportToolName,
-				// Parses cleanly. existing_cards is simply absent.
-				"input": map[string]any{
-					"trackable":       true,
-					"session_summary": "partial",
-				},
-			},
+		"usage":       map[string]any{"output_tokens": maxOutputTokens},
+		"parsed": map[string]any{
+			"trackable":       true,
+			"session_summary": "partial",
 		},
 	})
 
-	rep, err := classify(context.Background(), config{Model: defaultModel}, "digest")
+	rep, err := classify(context.Background(), cfg, "digest")
 	if !errors.Is(err, errTruncatedReport) {
 		t.Fatalf("want errTruncatedReport, got err=%v rep=%+v", err, rep)
 	}
@@ -60,25 +49,19 @@ func TestClassifyRejectsTruncatedReport(t *testing.T) {
 // carry no existing_cards is a real classification and has to pass through —
 // otherwise every genuinely-empty session becomes an error.
 func TestClassifyAcceptsCompleteReportWithNoExistingCards(t *testing.T) {
-	serveAnthropic(t, map[string]any{
-		"stop_reason": "tool_use",
+	cfg := serveOneshot(t, map[string]any{
+		"stop_reason": "end_turn",
 		"usage":       map[string]any{"output_tokens": 40},
-		"content": []any{
-			map[string]any{
-				"type": "tool_use",
-				"name": reportToolName,
-				"input": map[string]any{
-					"trackable":       true,
-					"session_summary": "complete",
-					"new_tasks": []any{
-						map[string]any{"title": "t", "state": "in_progress", "summary": "s"},
-					},
-				},
+		"parsed": map[string]any{
+			"trackable":       true,
+			"session_summary": "complete",
+			"new_tasks": []any{
+				map[string]any{"title": "t", "state": "in_progress", "summary": "s"},
 			},
 		},
 	})
 
-	rep, err := classify(context.Background(), config{Model: defaultModel}, "digest")
+	rep, err := classify(context.Background(), cfg, "digest")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,24 +74,18 @@ func TestClassifyAcceptsCompleteReportWithNoExistingCards(t *testing.T) {
 // unusable as one that emitted none: the cards it left out are silently
 // treated as "no opinion". Refuse on stop_reason, not on emptiness.
 func TestClassifyRejectsTruncatedReportThatCarriesSomeCards(t *testing.T) {
-	serveAnthropic(t, map[string]any{
+	cfg := serveOneshot(t, map[string]any{
 		"stop_reason": "max_tokens",
-		"usage":       map[string]any{"output_tokens": 1024},
-		"content": []any{
-			map[string]any{
-				"type": "tool_use",
-				"name": reportToolName,
-				"input": map[string]any{
-					"trackable": true,
-					"existing_cards": []any{
-						map[string]any{"card_id": "c1", "state": "done", "summary": "s"},
-					},
-				},
+		"usage":       map[string]any{"output_tokens": maxOutputTokens},
+		"parsed": map[string]any{
+			"trackable": true,
+			"existing_cards": []any{
+				map[string]any{"card_id": "c1", "state": "done", "summary": "s"},
 			},
 		},
 	})
 
-	if _, err := classify(context.Background(), config{Model: defaultModel}, "digest"); !errors.Is(err, errTruncatedReport) {
+	if _, err := classify(context.Background(), cfg, "digest"); !errors.Is(err, errTruncatedReport) {
 		t.Fatalf("want errTruncatedReport, got %v", err)
 	}
 }

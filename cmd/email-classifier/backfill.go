@@ -25,8 +25,6 @@ import (
 // makes this both cheap and safe to re-run: a card that already has a due date
 // is never a candidate.
 
-const backfillToolName = "report_card_deadlines"
-
 var backfillSystemPrompt = `You are reading kanban cards that were filed from email before deadlines were stored as dates. Each card's summary was written at filing time and often states its deadline in prose ("due August 1st", "expires Aug 14", "appointment Sept 5").
 
 Recover that deadline as a date.
@@ -37,7 +35,7 @@ Today's date is given below. Use it to resolve anything relative, and to pick th
 
 Format: YYYY-MM-DD, or full RFC3339 when the card names a time of day that matters.
 
-Report by calling the ` + backfillToolName + ` tool exactly once.`
+Report by outputting a single JSON object conforming to the provided schema, exactly once.`
 
 // cardDeadline is one recovered date.
 type cardDeadline struct {
@@ -49,28 +47,27 @@ type backfillReport struct {
 	Deadlines []cardDeadline `json:"deadlines"`
 }
 
-func backfillToolSchema() map[string]any {
+// backfillSchema is the JSON Schema the model's deadline reply must conform
+// to (formerly a forced tool's input_schema; the oneshot bridge path takes
+// the bare schema).
+func backfillSchema() map[string]any {
 	return map[string]any{
-		"name":        backfillToolName,
-		"description": "Report the deadline each card states, omitting cards that state none. Call exactly once.",
-		"input_schema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"deadlines": map[string]any{
-					"type":        "array",
-					"description": "Only cards whose own text states a deadline. Omit the rest entirely.",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"card_id":  map[string]any{"type": "string", "description": "The card_id exactly as given."},
-							"due_date": map[string]any{"type": "string", "description": "YYYY-MM-DD or RFC3339."},
-						},
-						"required": []string{"card_id", "due_date"},
+		"type": "object",
+		"properties": map[string]any{
+			"deadlines": map[string]any{
+				"type":        "array",
+				"description": "Only cards whose own text states a deadline. Omit the rest entirely.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"card_id":  map[string]any{"type": "string", "description": "The card_id exactly as given."},
+						"due_date": map[string]any{"type": "string", "description": "YYYY-MM-DD or RFC3339."},
 					},
+					"required": []string{"card_id", "due_date"},
 				},
 			},
-			"required": []string{"deadlines"},
 		},
+		"required": []string{"deadlines"},
 	}
 }
 
@@ -134,7 +131,7 @@ func runBackfillPass(ctx context.Context, cfg config, kc *kanbanclient.Client, s
 	}
 
 	var report backfillReport
-	if err := invokeTool(ctx, cfg, backfillSystemPrompt, backfillToolSchema(), backfillToolName, digest, &report); err != nil {
+	if err := invokeSchema(ctx, cfg, backfillSystemPrompt, backfillSchema(), digest, &report); err != nil {
 		return fmt.Errorf("backfill model call: %w", err)
 	}
 	log.Printf("[email] backfill: model reported %d deadlines", len(report.Deadlines))

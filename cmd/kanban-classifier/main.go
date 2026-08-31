@@ -29,7 +29,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,6 +43,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/slava/scheduler/internal/oneshot"
 
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
@@ -130,8 +131,7 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	fs.StringVar(&c.BoardName, "board", defaultBoardName, "Kanban board name to write cards to.")
 	fs.StringVar(&c.KanbanURL, "kanban-url", envOr(lookupEnvironment, "KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
 	fs.StringVar(&c.BridgeURL, "bridge-url", envOr(lookupEnvironment, "LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
-	fs.StringVar(&c.AuthStoreURL, "auth-store-url", envOr(lookupEnvironment, "AUTH_STORE_URL", "http://localhost:8303"), "auth-store base URL")
-	fs.StringVar(&c.AuthToken, "auth-token", envOr(lookupEnvironment, "AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
+	fs.StringVar(&c.OneshotInstance, "oneshot-instance", envOr(lookupEnvironment, "ONESHOT_INSTANCE_ID", ""), "claude_code harness instance id for subscription oneshot calls (required unless -dump-digest)")
 	fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "KANBAN_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
 	fs.IntVar(&c.MaxClassify, "max", maxClassifyPerTick, "Max classifications per tick.")
 	fs.IntVar(&c.DigestBudget, "digest-budget", digestCharBudget, "Digest size in characters (~4 chars per token).")
@@ -203,13 +203,9 @@ func main() {
 
 	ctx := context.Background()
 
-	// A digest dump never reaches the model, so it must not need its key.
-	if !cfg.DumpDigest {
-		apiKey, err := resolveAnthropicKey(ctx, cfg)
-		if err != nil {
-			log.Fatalf("resolve anthropic key: %v", err)
-		}
-		cfg.AnthropicAPIKey = apiKey
+	// A digest dump never reaches the model, so it must not name an instance.
+	if !cfg.DumpDigest && cfg.OneshotInstance == "" {
+		log.Fatal("-oneshot-instance is required: model calls route through llm-bridge-server's oneshot endpoint on the subscription login")
 	}
 
 	kc := kanbanclient.New(cfg.KanbanURL)
@@ -252,27 +248,34 @@ func main() {
 	}
 	log.Printf("[classifier] candidates=%d", len(candidates))
 
-	classified := 0
+	classified, failed := 0, 0
 	for _, sess := range candidates {
 		if classified >= cfg.MaxClassify {
 			log.Printf("[classifier] hit per-tick cap (%d); deferring %d sessions to next tick",
 				cfg.MaxClassify, len(candidates)-classified)
 			break
 		}
-		ran := processSession(ctx, cfg, kc, sess)
+		ran, callFailed := processSession(ctx, cfg, kc, sess)
 		if ran {
 			classified++
 		}
+		if callFailed {
+			failed++
+		}
 	}
-	log.Printf("[classifier] done: classified=%d", classified)
+	log.Printf("[classifier] done: classified=%d failed=%d", classified, failed)
+	// Fail loud: a tick that could not classify must not report success. This
+	// exact loop once logged "classifier failed" every 15 minutes for a dead
+	// credential while the scheduler recorded success on every run.
+	if failed > 0 {
+		os.Exit(1)
+	}
 }
 
 type config struct {
 	KanbanURL       string
 	BridgeURL       string
-	AuthStoreURL    string
-	AuthToken       string
-	AnthropicAPIKey string
+	OneshotInstance string
 	Model           string
 	BoardName       string
 	DryRun          bool
@@ -341,18 +344,21 @@ func selectCandidates(cfg config) ([]session, error) {
 
 // processSession runs the full pipeline for one session. Returns true if a
 // classifier call was made (vs. dedupe-skipped or final-classified).
-func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, sess session) bool {
+// processSession returns whether a model call ran, and whether the model
+// call failed. The distinction exists for the exit code: a tick where calls
+// failed must not report success just because the loop completed.
+func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, sess session) (ran, failed bool) {
 	tags, err := kc.ListEntityTags(cardLinkSession, sess.SessionID)
 	if err != nil {
 		log.Printf("[%s] list tags: %v", sess.SessionID, err)
-		return false
+		return false, false
 	}
 	tagSet := tagSet(tags)
 
 	// Permanent skip: previously classified as terminal.
 	if tagSet[tagFinalClassified] {
 		if !cfg.ExplicitSession {
-			return false
+			return false, false
 		}
 		log.Printf("[%s] already final-classified — proceeding anyway because this session was named explicitly",
 			sess.SessionID)
@@ -361,7 +367,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	msgs, err := getSessionMessages(cfg.BridgeURL, sess.SessionID)
 	if err != nil {
 		log.Printf("[%s] get messages: %v", sess.SessionID, err)
-		return false
+		return false, false
 	}
 	msgCount := len(msgs)
 
@@ -370,7 +376,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 		priorN := priorMsgCount(tagSet)
 		if msgCount-priorN < doNotTrackReevalDelta {
 			if !cfg.ExplicitSession {
-				return false
+				return false, false
 			}
 			log.Printf("[%s] do-not-track and Δmsg=%d < %d — proceeding anyway because this session was named explicitly",
 				sess.SessionID, msgCount-priorN, doNotTrackReevalDelta)
@@ -385,7 +391,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	priorSig := priorSigTag(tagSet)
 	if priorSig == curSig {
 		if !cfg.ExplicitSession {
-			return false
+			return false, false
 		}
 		log.Printf("[%s] signature unchanged (%s) — proceeding anyway because this session was named explicitly",
 			sess.SessionID, curSig)
@@ -395,14 +401,14 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	cards, err := kc.ListCardsForEntity(cardLinkSession, sess.SessionID)
 	if err != nil {
 		log.Printf("[%s] list cards: %v", sess.SessionID, err)
-		return false
+		return false, false
 	}
 
 	digest := buildDigest(sess, msgs, cards, cfg.DigestBudget)
 	if cfg.DumpDigest {
 		fmt.Printf("%s\n", digest)
 		log.Printf("[%s] dump-digest: %d chars, %d existing card(s)", sess.SessionID, len(digest), len(cards))
-		return false
+		return false, false
 	}
 	report, err := classify(ctx, cfg, digest)
 	if errors.Is(err, errTruncatedReport) {
@@ -422,24 +428,24 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 		if !cfg.DryRun {
 			writeSig(kc, sess, tagSet, curSig)
 		}
-		return true
+		return true, false
 	}
 	if err != nil {
 		log.Printf("[%s] classifier failed: %v — leaving sig unchanged for retry", sess.SessionID, err)
-		return false
+		return false, true
 	}
 	log.Printf("[%s] trackable=%v existing=%d new=%d summary=%q",
 		sess.SessionID, report.Trackable, len(report.ExistingCards), len(report.NewTasks),
 		truncate(report.SessionSummary, 100))
 
 	if cfg.DryRun {
-		return true
+		return true, false
 	}
 
 	if !report.Trackable {
 		applyDoNotTrack(kc, sess, msgCount)
 		writeSig(kc, sess, tagSet, curSig)
-		return true
+		return true, false
 	}
 
 	// A session that has cards but comes back with an opinion on none of them
@@ -465,7 +471,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	if sess.State == terminalStateCompleted || sess.State == terminalStateError {
 		_ = kc.AddEntityTag(cardLinkSession, sess.SessionID, tagFinalClassified)
 	}
-	return true
+	return true, false
 }
 
 // ============================ Tag helpers ============================
@@ -973,175 +979,78 @@ Rules:
 
 Bridge state ≠ task state. A session can be "completed" while tasks are still in_progress (session ended early), or "idle" with all tasks done. Trust the conversational evidence over bridge state.`
 
-const reportToolName = "report_classification"
-
-func reportToolSchema() map[string]any {
+// reportSchema is the JSON Schema the model's reply must conform to. It was
+// the input_schema of a forced tool call when this command spoke to
+// api.anthropic.com directly; the oneshot bridge path takes the bare schema.
+func reportSchema() map[string]any {
 	return map[string]any{
-		"name":        reportToolName,
-		"description": "Report the classification of this session's tasks. Call exactly once.",
-		"input_schema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"trackable":       map[string]any{"type": "boolean", "description": "False if the session has no real work to track."},
-				"session_summary": map[string]any{"type": "string", "description": "1-3 sentence overall description."},
-				"existing_cards": map[string]any{
-					"type":        "array",
-					"description": "One entry per pre-existing card on this session. Required: include every card you were given.",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"card_id": map[string]any{"type": "string"},
-							"state":   map[string]any{"type": "string", "enum": []string{"in_progress", "blocked", "done", "abandoned"}},
-							"summary": map[string]any{"type": "string"},
-							"blocker": map[string]any{"type": "string"},
-						},
-						"required": []string{"card_id", "state", "summary"},
+		"type": "object",
+		"properties": map[string]any{
+			"trackable":       map[string]any{"type": "boolean", "description": "False if the session has no real work to track."},
+			"session_summary": map[string]any{"type": "string", "description": "1-3 sentence overall description."},
+			"existing_cards": map[string]any{
+				"type":        "array",
+				"description": "One entry per pre-existing card on this session. Required: include every card you were given.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"card_id": map[string]any{"type": "string"},
+						"state":   map[string]any{"type": "string", "enum": []string{"in_progress", "blocked", "done", "abandoned"}},
+						"summary": map[string]any{"type": "string"},
+						"blocker": map[string]any{"type": "string"},
 					},
-				},
-				"new_tasks": map[string]any{
-					"type":        "array",
-					"description": "Tasks happening in this session that are NOT yet represented by an existing card.",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"title":   map[string]any{"type": "string", "maxLength": 80},
-							"state":   map[string]any{"type": "string", "enum": []string{"in_progress", "blocked", "done", "abandoned"}},
-							"summary": map[string]any{"type": "string"},
-							"blocker": map[string]any{"type": "string"},
-						},
-						"required": []string{"title", "state", "summary"},
-					},
+					"required": []string{"card_id", "state", "summary"},
 				},
 			},
-			"required": []string{"trackable"},
+			"new_tasks": map[string]any{
+				"type":        "array",
+				"description": "Tasks happening in this session that are NOT yet represented by an existing card.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"title":   map[string]any{"type": "string", "maxLength": 80},
+						"state":   map[string]any{"type": "string", "enum": []string{"in_progress", "blocked", "done", "abandoned"}},
+						"summary": map[string]any{"type": "string"},
+						"blocker": map[string]any{"type": "string"},
+					},
+					"required": []string{"title", "state", "summary"},
+				},
+			},
 		},
+		"required": []string{"trackable"},
 	}
 }
 
 // maxOutputTokens bounds the classifier's reply. A full sweep costs roughly 69
-// output tokens per existing card, so this ceiling is also a cap on how many
-// cards one session can have its state refreshed in a single call; past it the
-// reply is truncated and rejected (see errTruncatedReport).
-const maxOutputTokens = 1024
-
-const stopReasonMaxTokens = "max_tokens"
+// output tokens per existing card. This was 1024 on the direct-API path and
+// was measured truncating at 69 cards (session br_1784416900461396845, which
+// needed 4,771 tokens); on the subscription there is no per-token bill, so it
+// sits high enough that only a pathological session hits it — and one that
+// does is still rejected, not silently shortened (see errTruncatedReport).
+const maxOutputTokens = 8192
 
 // errTruncatedReport marks a classification that the model did not finish
 // writing. It is deliberately distinct from a transport or decode failure: the
-// call succeeded and cost money, so it must not be retried on identical input.
-var errTruncatedReport = errors.New("classification truncated")
+// call succeeded, and it must not be retried on identical input. It is the
+// package's name for oneshot.ErrTruncated so call sites read in this
+// command's vocabulary.
+var errTruncatedReport = oneshot.ErrTruncated
 
-// anthropicMessagesURL is a package var rather than a constant so tests can
-// point classify at an httptest server; nothing else reassigns it.
-var anthropicMessagesURL = "https://api.anthropic.com/v1/messages"
-
+// classify runs one schema-forced call through llm-bridge-server's oneshot
+// endpoint on the Claude Code subscription login. Replaced a direct POST to
+// api.anthropic.com that billed an API key resolved from auth-store.
 func classify(ctx context.Context, cfg config, digest string) (*Report, error) {
-	body := map[string]any{
-		"model":      cfg.Model,
-		"max_tokens": maxOutputTokens,
-		"system":     systemPrompt,
-		"tools":      []any{reportToolSchema()},
-		"tool_choice": map[string]any{
-			"type": "tool",
-			"name": reportToolName,
-		},
-		"messages": []any{
-			map[string]any{
-				"role":    "user",
-				"content": digest,
-			},
-		},
-	}
-	bs, _ := json.Marshal(body)
-	req, _ := http.NewRequestWithContext(ctx, "POST", anthropicMessagesURL, bytes.NewReader(bs))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", cfg.AnthropicAPIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	httpC := &http.Client{Timeout: 60 * time.Second}
-	resp, err := httpC.Do(req)
-	if err != nil {
+	var rep Report
+	if err := oneshot.Call(ctx, oneshot.Config{
+		BridgeURL:  cfg.BridgeURL,
+		InstanceID: cfg.OneshotInstance,
+		Model:      cfg.Model,
+		MaxTokens:  maxOutputTokens,
+		Timeout:    120 * time.Second,
+	}, systemPrompt, digest, reportSchema(), &rep); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	rb, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("anthropic %s: %s", resp.Status, string(rb))
-	}
-	var apiResp struct {
-		StopReason string `json:"stop_reason"`
-		Usage      struct {
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-		Content []struct {
-			Type  string         `json:"type"`
-			Name  string         `json:"name,omitempty"`
-			Input map[string]any `json:"input,omitempty"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(rb, &apiResp); err != nil {
-		return nil, fmt.Errorf("decode anthropic response: %w", err)
-	}
-	// A response cut off at max_tokens still carries a tool_use block, and its
-	// partial input still parses as valid JSON — the API drops the unfinished
-	// array rather than emitting broken JSON. So there is no decode error to
-	// catch here: stop_reason is the ONLY evidence that the classification is
-	// incomplete, and a truncated report reads exactly like a model that had no
-	// opinion on any card. Measured on session br_1784416900461396845 (69
-	// cards): at max_tokens=1024 the report comes back existing=0 new=0 and
-	// parses cleanly; the same digest at 8192 returns all 69 in 4,771 tokens.
-	if apiResp.StopReason == stopReasonMaxTokens {
-		return nil, fmt.Errorf("%w: model hit max_tokens=%d after %d output tokens; "+
-			"the report is incomplete and its missing cards are indistinguishable from 'no opinion'",
-			errTruncatedReport, maxOutputTokens, apiResp.Usage.OutputTokens)
-	}
-	for _, blk := range apiResp.Content {
-		if blk.Type != "tool_use" || blk.Name != reportToolName {
-			continue
-		}
-		raw, _ := json.Marshal(blk.Input)
-		var rep Report
-		if err := json.Unmarshal(raw, &rep); err != nil {
-			return nil, fmt.Errorf("decode tool input: %w (raw=%s)", err, string(raw))
-		}
-		return &rep, nil
-	}
-	return nil, fmt.Errorf("no tool_use block in response: %s", string(rb))
-}
-
-// ============================ Auth-store key fetch ============================
-
-func resolveAnthropicKey(ctx context.Context, cfg config) (string, error) {
-	u := strings.TrimRight(cfg.AuthStoreURL, "/") + "/api/resolve/anthropic"
-	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
-	req.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
-	req.Header.Set("X-Auth-App", "kanban-classifier")
-	req.Header.Set("X-Auth-Reason", "classify-bridge-sessions")
-	c := &http.Client{Timeout: 10 * time.Second}
-	resp, err := c.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("auth-store resolve: %s — %s", resp.Status, string(body))
-	}
-	var r struct {
-		AuthType    string `json:"auth_type"`
-		APIKey      string `json:"api_key"`
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return "", fmt.Errorf("decode resolve: %w", err)
-	}
-	if r.APIKey != "" {
-		return r.APIKey, nil
-	}
-	if r.AccessToken != "" {
-		return r.AccessToken, nil
-	}
-	return "", fmt.Errorf("auth-store: anthropic credential has no api_key or access_token")
+	return &rep, nil
 }
 
 // ============================ Scheduler self-registration ============================

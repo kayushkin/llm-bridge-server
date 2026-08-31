@@ -52,8 +52,7 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 			{"-board", cfg.BoardName, "Agent runs"},
 			{"-kanban-url", cfg.KanbanURL, "http://localhost:8305"},
 			{"-bridge-url", cfg.BridgeURL, "http://localhost:8160"},
-			{"-auth-store-url", cfg.AuthStoreURL, "http://localhost:8303"},
-			{"-auth-token", cfg.AuthToken, "changeme"},
+			{"-oneshot-instance", cfg.OneshotInstance, ""},
 			{"-model", cfg.Model, "claude-haiku-4-5-20251001"},
 			{"-session", cfg.OneSession, ""},
 		} {
@@ -145,19 +144,18 @@ func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 // TestEachEnvironmentVariableReachesItsOwnField is the test the flag set was
 // registered into named fields for.
 //
-// Six variables land in this config and five of them are strings that would be
-// accepted in each other's place — three base URLs, a bearer token and a model
-// id. Nothing downstream would reject a swap: kanbanclient.New takes the kanban
-// URL positionally, resolveAnthropicKey takes AuthStoreURL and AuthToken off
-// the same struct, and listSessions takes the bridge URL. Giving each variable
-// a distinct value and asserting the field it lands in is what makes a swap
+// Five variables land in this config and most are strings that would be
+// accepted in each other's place — base URLs, an instance id and a model id.
+// Nothing downstream would reject a swap: kanbanclient.New takes the kanban
+// URL positionally, oneshot.Call takes BridgeURL and OneshotInstance off the
+// same struct, and listSessions takes the bridge URL. Giving each variable a
+// distinct value and asserting the field it lands in is what makes a swap
 // fail.
 func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
 		"KANBAN_STORE_URL":        "http://kanban.example",
 		"LLM_BRIDGE_URL":          "http://bridge.example",
-		"AUTH_STORE_URL":          "http://auth.example",
-		"AUTH_STORE_TOKEN":        "token-for-auth-store",
+		"ONESHOT_INSTANCE_ID":     "inst-from-environment",
 		"KANBAN_CLASSIFIER_MODEL": "model-from-environment",
 		"SCHEDULER_URL":           "http://scheduler.example",
 	}), "/home/agent")
@@ -171,8 +169,7 @@ func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 	}{
 		{"KANBAN_STORE_URL", cfg.KanbanURL, "http://kanban.example"},
 		{"LLM_BRIDGE_URL", cfg.BridgeURL, "http://bridge.example"},
-		{"AUTH_STORE_URL", cfg.AuthStoreURL, "http://auth.example"},
-		{"AUTH_STORE_TOKEN", cfg.AuthToken, "token-for-auth-store"},
+		{"ONESHOT_INSTANCE_ID", cfg.OneshotInstance, "inst-from-environment"},
 		{"KANBAN_CLASSIFIER_MODEL", cfg.Model, "model-from-environment"},
 		{"SCHEDULER_URL", cfg.SchedulerURL, "http://scheduler.example"},
 	} {

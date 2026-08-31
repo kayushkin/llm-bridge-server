@@ -25,8 +25,6 @@ import (
 // evidence of one card onto another and takes the first off the board. So the
 // safety rules below are enforced in code, not asked for in the prompt.
 
-const mergeToolName = "report_card_merges"
-
 // mergeGroup is one set of cards the model believes are a single bucket.
 type mergeGroup struct {
 	SurvivorCardID string   `json:"survivor_card_id"`
@@ -61,35 +59,34 @@ Groups must not overlap in purpose. Two groups that would both end up being "rec
 
 Returning an empty merges list is a perfectly good answer. Do not invent groupings to look useful.
 
-You MUST output by calling the ` + mergeToolName + ` tool exactly once.`
+You MUST output a single JSON object conforming to the provided schema, exactly once.`
 
-func mergeToolSchema() map[string]any {
+// mergeSchema is the JSON Schema the model's merge reply must conform to
+// (formerly a forced tool's input_schema; the oneshot bridge path takes the
+// bare schema).
+func mergeSchema() map[string]any {
 	return map[string]any{
-		"name":        mergeToolName,
-		"description": "Report groups of cards that are really one bucket. Call exactly once.",
-		"input_schema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"merges": map[string]any{
-					"type":        "array",
-					"description": "Groups of cards to combine. Empty is a valid answer.",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"survivor_card_id": map[string]any{"type": "string", "description": "Existing card to absorb the others. Empty to create a new one."},
-							"survivor_title":   map[string]any{"type": "string", "maxLength": 70, "description": "Category name, used when survivor_card_id is empty."},
-							"card_ids":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Every card in the group, at least two."},
-							"category":         map[string]any{"type": "string", "enum": active.Categories},
-							"action":           map[string]any{"type": "string", "enum": active.Actions},
-							"urgency":          map[string]any{"type": "string", "enum": active.Urgencies},
-							"reason":           map[string]any{"type": "string"},
-						},
-						"required": []string{"card_ids", "reason"},
+		"type": "object",
+		"properties": map[string]any{
+			"merges": map[string]any{
+				"type":        "array",
+				"description": "Groups of cards to combine. Empty is a valid answer.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"survivor_card_id": map[string]any{"type": "string", "description": "Existing card to absorb the others. Empty to create a new one."},
+						"survivor_title":   map[string]any{"type": "string", "maxLength": 70, "description": "Category name, used when survivor_card_id is empty."},
+						"card_ids":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Every card in the group, at least two."},
+						"category":         map[string]any{"type": "string", "enum": active.Categories},
+						"action":           map[string]any{"type": "string", "enum": active.Actions},
+						"urgency":          map[string]any{"type": "string", "enum": active.Urgencies},
+						"reason":           map[string]any{"type": "string"},
 					},
+					"required": []string{"card_ids", "reason"},
 				},
 			},
-			"required": []string{"merges"},
 		},
+		"required": []string{"merges"},
 	}
 }
 

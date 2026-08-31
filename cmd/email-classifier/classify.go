@@ -1,16 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"strings"
 	"time"
+
+	"github.com/slava/scheduler/internal/oneshot"
 )
 
 // ============================ taxonomy ============================
@@ -154,8 +152,6 @@ func truncateForError(data []byte) string {
 	return string(data[:limit]) + "…"
 }
 
-const reportToolName = "report_email_filing"
-
 // buildSystemPrompt assembles the prompt for the ACTIVE vocabulary.
 //
 // A function and not a package-level var, which is what it used to be. A var is
@@ -214,7 +210,7 @@ Use card_updates only when new mail changes an existing card's action, urgency o
 
 Do NOT send a card_update merely because a deadline has passed since the card was filed. Passing time is handled here without a model call; only report what the MAIL changed.
 
-You MUST output by calling the ` + reportToolName + ` tool exactly once.`
+You MUST output a single JSON object conforming to the provided schema, exactly once.`
 
 	// The vocabulary's own judgement calls go last, where they are read against
 	// everything above rather than qualified by it.
@@ -224,57 +220,56 @@ You MUST output by calling the ` + reportToolName + ` tool exactly once.`
 	return prompt
 }
 
-func reportToolSchema() map[string]any {
+// reportSchema is the JSON Schema the model's reply must conform to. It was
+// the input_schema of a forced tool call when this command spoke to
+// api.anthropic.com directly; the oneshot bridge path takes the bare schema.
+func reportSchema() map[string]any {
 	return map[string]any{
-		"name":        reportToolName,
-		"description": "Report which card each email belongs to. Call exactly once.",
-		"input_schema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"filings": map[string]any{
-					"type":        "array",
-					"description": "Exactly one entry per email supplied. Every entry must reference at least one card, via card_ids or new_card or both.",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"email_ref":  map[string]any{"type": "string", "description": "The email's ref exactly as given in the prompt."},
-							"card_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Ids of existing cards this email attaches to."},
-							"link_label": map[string]any{"type": "string", "maxLength": 50},
-							"new_card": map[string]any{
-								"type":        "object",
-								"description": "A card that does not exist yet. Two emails may describe the same new card with the same title; it is created once.",
-								"properties": map[string]any{
-									"title":    map[string]any{"type": "string", "maxLength": 70},
-									"category": map[string]any{"type": "string", "enum": active.Categories},
-									"action":   map[string]any{"type": "string", "enum": active.Actions},
-									"urgency":  map[string]any{"type": "string", "enum": active.Urgencies},
-									"summary":  map[string]any{"type": "string", "description": "One or two sentences on what this card is for."},
-									"due_date": map[string]any{"type": "string", "description": "Deadline as YYYY-MM-DD, or RFC3339 when a time of day matters. Empty when the mail states none."},
-								},
-								"required": []string{"title", "category", "action", "urgency", "summary"},
+		"type": "object",
+		"properties": map[string]any{
+			"filings": map[string]any{
+				"type":        "array",
+				"description": "Exactly one entry per email supplied. Every entry must reference at least one card, via card_ids or new_card or both.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"email_ref":  map[string]any{"type": "string", "description": "The email's ref exactly as given in the prompt."},
+						"card_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Ids of existing cards this email attaches to."},
+						"link_label": map[string]any{"type": "string", "maxLength": 50},
+						"new_card": map[string]any{
+							"type":        "object",
+							"description": "A card that does not exist yet. Two emails may describe the same new card with the same title; it is created once.",
+							"properties": map[string]any{
+								"title":    map[string]any{"type": "string", "maxLength": 70},
+								"category": map[string]any{"type": "string", "enum": active.Categories},
+								"action":   map[string]any{"type": "string", "enum": active.Actions},
+								"urgency":  map[string]any{"type": "string", "enum": active.Urgencies},
+								"summary":  map[string]any{"type": "string", "description": "One or two sentences on what this card is for."},
+								"due_date": map[string]any{"type": "string", "description": "Deadline as YYYY-MM-DD, or RFC3339 when a time of day matters. Empty when the mail states none."},
 							},
+							"required": []string{"title", "category", "action", "urgency", "summary"},
 						},
-						"required": []string{"email_ref"},
 					},
-				},
-				"card_updates": map[string]any{
-					"type":        "array",
-					"description": "Existing cards whose action state, urgency or deadline this batch of mail changed.",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"card_id":  map[string]any{"type": "string"},
-							"action":   map[string]any{"type": "string", "enum": active.Actions},
-							"urgency":  map[string]any{"type": "string", "enum": active.Urgencies},
-							"summary":  map[string]any{"type": "string"},
-							"due_date": map[string]any{"type": "string", "description": "Revised deadline, when this mail moved it. Empty leaves the stored one alone."},
-						},
-						"required": []string{"card_id"},
-					},
+					"required": []string{"email_ref"},
 				},
 			},
-			"required": []string{"filings"},
+			"card_updates": map[string]any{
+				"type":        "array",
+				"description": "Existing cards whose action state, urgency or deadline this batch of mail changed.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"card_id":  map[string]any{"type": "string"},
+						"action":   map[string]any{"type": "string", "enum": active.Actions},
+						"urgency":  map[string]any{"type": "string", "enum": active.Urgencies},
+						"summary":  map[string]any{"type": "string"},
+						"due_date": map[string]any{"type": "string", "description": "Revised deadline, when this mail moved it. Empty leaves the stored one alone."},
+					},
+					"required": []string{"card_id"},
+				},
+			},
 		},
+		"required": []string{"filings"},
 	}
 }
 
@@ -289,96 +284,45 @@ const maxOutputTokens = 8192
 const stopReasonMaxTokens = "max_tokens"
 
 // errTruncatedReport marks a report the model did not finish writing. Kept
-// distinct from transport and decode failures because the call still cost
-// money, and because a truncated report is indistinguishable from one that
-// simply filed fewer emails — the emails it dropped would silently violate the
-// every-email-is-filed invariant.
-var errTruncatedReport = errors.New("filing report truncated")
-
-// anthropicMessagesURL is a package var rather than a constant so tests can
-// point classifyBatch at an httptest server; nothing else reassigns it.
-var anthropicMessagesURL = "https://api.anthropic.com/v1/messages"
+// distinct from transport and decode failures because a truncated report is
+// indistinguishable from one that simply filed fewer emails — the emails it
+// dropped would silently violate the every-email-is-filed invariant. It is
+// the package's name for oneshot.ErrTruncated so call sites read in this
+// command's vocabulary.
+var errTruncatedReport = oneshot.ErrTruncated
 
 func classifyBatch(ctx context.Context, cfg config, digest string) (*filingReport, error) {
 	var rep filingReport
-	if err := invokeTool(ctx, cfg, buildSystemPrompt(), reportToolSchema(), reportToolName, digest, &rep); err != nil {
+	if err := invokeSchema(ctx, cfg, buildSystemPrompt(), reportSchema(), digest, &rep); err != nil {
 		return nil, err
 	}
 	return &rep, nil
 }
 
-// invokeTool runs one forced single-tool call and decodes its input into out.
+// invokeSchema runs one schema-forced call through llm-bridge-server's
+// oneshot endpoint on the Claude Code subscription login and decodes the
+// reply into out. Replaced a direct forced-tool POST to api.anthropic.com
+// that billed an API key resolved from auth-store.
 //
-// Shared by the filing pass and the merge pass so the truncation guard below has
-// exactly one authoring. That guard is the whole reason this is not three lines:
-// a reply cut off at max_tokens still carries a tool_use block whose partial
-// input parses as valid JSON, because the API drops the unfinished array rather
-// than emitting broken JSON. stop_reason is the only evidence the answer is
-// incomplete, and an incomplete answer here is silently indistinguishable from a
-// model that simply had less to say.
-func invokeTool(ctx context.Context, cfg config, system string, schema map[string]any, toolName, digest string, out any) error {
-	body := map[string]any{
-		"model":       cfg.Model,
-		"max_tokens":  maxOutputTokens,
-		"system":      system,
-		"tools":       []any{schema},
-		"tool_choice": map[string]any{"type": "tool", "name": toolName},
-		"messages":    []any{map[string]any{"role": "user", "content": digest}},
-	}
-	bs, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, "POST", anthropicMessagesURL, bytes.NewReader(bs))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", cfg.AnthropicAPIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	httpC := &http.Client{Timeout: 180 * time.Second}
-	resp, err := httpC.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	rb, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("anthropic %s: %s", resp.Status, string(rb))
-	}
-	var apiResp struct {
-		StopReason string `json:"stop_reason"`
-		Usage      struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-		Content []struct {
-			Type  string         `json:"type"`
-			Name  string         `json:"name,omitempty"`
-			Input map[string]any `json:"input,omitempty"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(rb, &apiResp); err != nil {
-		return fmt.Errorf("decode anthropic response: %w", err)
-	}
-	if apiResp.StopReason == stopReasonMaxTokens {
-		return fmt.Errorf("%w: hit max_tokens=%d after %d output tokens", errTruncatedReport, maxOutputTokens, apiResp.Usage.OutputTokens)
-	}
-	for _, blk := range apiResp.Content {
-		if blk.Type != "tool_use" || blk.Name != toolName {
-			continue
-		}
-		raw, _ := json.Marshal(blk.Input)
-		if err := json.Unmarshal(raw, out); err != nil {
-			return fmt.Errorf("decode tool input: %w (raw=%s)", err, truncateForError(raw))
-		}
-		return nil
-	}
-	return fmt.Errorf("no tool_use block named %s in response: %s", toolName, truncateForError(rb))
+// Shared by the filing pass, the merge pass and the deadline backfill so the
+// truncation guard has exactly one authoring: a reply that stopped at
+// max_tokens is refused (oneshot.ErrTruncated, aliased errTruncatedReport
+// here), because its missing entries read exactly like a model that had less
+// to say.
+func invokeSchema(ctx context.Context, cfg config, system string, schema map[string]any, digest string, out any) error {
+	return oneshot.Call(ctx, oneshot.Config{
+		BridgeURL:  cfg.BridgeURL,
+		InstanceID: cfg.OneshotInstance,
+		Model:      cfg.Model,
+		MaxTokens:  maxOutputTokens,
+		Timeout:    180 * time.Second,
+	}, system, digest, schema, out)
 }
 
 // classifyMerges asks which cards on the board are really one bucket.
 func classifyMerges(ctx context.Context, cfg config, digest string) (*mergeReport, error) {
 	var rep mergeReport
-	if err := invokeTool(ctx, cfg, mergeSystemPrompt, mergeToolSchema(), mergeToolName, digest, &rep); err != nil {
+	if err := invokeSchema(ctx, cfg, mergeSystemPrompt, mergeSchema(), digest, &rep); err != nil {
 		return nil, err
 	}
 	return &rep, nil

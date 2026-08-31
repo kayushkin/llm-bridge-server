@@ -201,8 +201,7 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	fs.StringVar(&c.MailURL, "mail-url", envOr(lookupEnvironment, "MAILSTACK_URL", "http://localhost:8195"), "mailstack base URL")
 	fs.StringVar(&c.MailToken, "mail-token", envOr(lookupEnvironment, "MAILSTACK_TOKEN", "changeme"), "mailstack bearer token")
 	fs.StringVar(&c.BridgeURL, "bridge-url", envOr(lookupEnvironment, "LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL, used to tell whether an agent is still working on a card")
-	fs.StringVar(&c.AuthStoreURL, "auth-store-url", envOr(lookupEnvironment, "AUTH_STORE_URL", "http://localhost:8303"), "auth-store base URL")
-	fs.StringVar(&c.AuthToken, "auth-token", envOr(lookupEnvironment, "AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
+	fs.StringVar(&c.OneshotInstance, "oneshot-instance", envOr(lookupEnvironment, "ONESHOT_INSTANCE_ID", ""), "claude_code harness instance id for subscription oneshot calls (required unless -dump-digest)")
 	fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "EMAIL_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
 	fs.BoolVar(&c.HoldNewCards, "hold-new-cards", false,
 		"Create every new card parked, so an unattended worker discovering noteboard todos does not pick it up. The pipeline that owns these cards is expected to release them.")
@@ -292,13 +291,9 @@ func run() int {
 
 	ctx := context.Background()
 
-	// A digest dump never reaches the model, so it must not require the key.
-	if !cfg.DumpDigest {
-		key, err := resolveAnthropicKey(ctx, cfg)
-		if err != nil {
-			log.Fatalf("resolve anthropic key: %v", err)
-		}
-		cfg.AnthropicAPIKey = key
+	// A digest dump never reaches the model, so it must not name an instance.
+	if !cfg.DumpDigest && cfg.OneshotInstance == "" {
+		log.Fatal("-oneshot-instance is required: model calls route through llm-bridge-server's oneshot endpoint on the subscription login")
 	}
 
 	// Collects the ways this run falls short of doing its whole job. Threaded
@@ -508,26 +503,25 @@ func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *board
 // giving a test a distinct value per variable, is what makes a swap fail.
 type config struct {
 	// The twenty-three flags.
-	RegisterJob  bool
-	DryRun       bool
-	DumpDigest   bool
-	BoardID      string
-	BoardName    string
-	KanbanURL    string
-	MailURL      string
-	MailToken    string
-	BridgeURL    string
-	AuthStoreURL string
-	AuthToken    string
-	Model        string
-	Vocabulary   string
-	HoldNewCards bool
-	MaxEmails    int
-	OnlyAccount  string
-	Backfill     bool
-	MergePass    bool
-	BackfillDue  bool
-	NoteboardURL string
+	RegisterJob     bool
+	DryRun          bool
+	DumpDigest      bool
+	BoardID         string
+	BoardName       string
+	KanbanURL       string
+	MailURL         string
+	MailToken       string
+	BridgeURL       string
+	OneshotInstance string
+	Model           string
+	Vocabulary      string
+	HoldNewCards    bool
+	MaxEmails       int
+	OnlyAccount     string
+	Backfill        bool
+	MergePass       bool
+	BackfillDue     bool
+	NoteboardURL    string
 	// SenderQuery and MessageQuery name the entity a -sender / -message run is
 	// about. Both empty is the ordinary tick.
 	SenderQuery  string
@@ -544,9 +538,6 @@ type config struct {
 	// The wiring: where -register posts, and what it registers.
 	SchedulerURL string
 	BinaryPath   string
-
-	// Resolved after parsing, from auth-store rather than from a flag.
-	AnthropicAPIKey string
 }
 
 // ============================ board resolution ============================
@@ -1054,38 +1045,6 @@ func bestBodyText(em pendingEmail) string {
 }
 
 // ============================ misc ============================
-
-func resolveAnthropicKey(ctx context.Context, cfg config) (string, error) {
-	u := strings.TrimRight(cfg.AuthStoreURL, "/") + "/api/resolve/anthropic"
-	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
-	req.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
-	req.Header.Set("X-Auth-App", "email-classifier")
-	req.Header.Set("X-Auth-Reason", "file-email-onto-kanban-cards")
-	c := &http.Client{Timeout: 10 * time.Second}
-	resp, err := c.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("auth-store resolve: %s — %s", resp.Status, string(body))
-	}
-	var r struct {
-		APIKey      string `json:"api_key"`
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return "", fmt.Errorf("decode resolve: %w", err)
-	}
-	if r.APIKey != "" {
-		return r.APIKey, nil
-	}
-	if r.AccessToken != "" {
-		return r.AccessToken, nil
-	}
-	return "", fmt.Errorf("auth-store: anthropic credential has no api_key or access_token")
-}
 
 // registeredCommand renders the shell command the scheduler job runs.
 //

@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/oneshot"
 )
 
 const (
@@ -62,9 +63,8 @@ var defaultColumns = []string{columnGoals, columnBacklog, columnInProgress, colu
 
 type config struct {
 	KanbanURL       string
-	AuthStoreURL    string
-	AuthToken       string
-	AnthropicAPIKey string
+	BridgeURL       string
+	OneshotInstance string
 	Model           string
 	BoardName       string
 	DryRun          bool
@@ -73,15 +73,15 @@ type config struct {
 
 func main() {
 	var (
-		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
-		dryRun       = flag.Bool("dry-run", false, "Decompose but do not write to kanban-store.")
-		boardName    = flag.String("board", defaultBoardName, "Kanban board name to scope.")
-		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-		authStoreURL = flag.String("auth-store-url", envOr("AUTH_STORE_URL", "http://localhost:8303"), "auth-store base URL")
-		authToken    = flag.String("auth-token", envOr("AUTH_STORE_TOKEN", "changeme"), "auth-store bearer token")
-		model        = flag.String("model", envOr("KANBAN_SCOPER_MODEL", defaultModel), "Anthropic model id")
-		maxScope     = flag.Int("max", maxScopePerTick, "Max parents to decompose per tick.")
-		roleTags     = flag.Bool("role-tags", envBool("KANBAN_SCOPER_ROLE_TAGS", false), "TEAM-ORCHESTRATION step 1: require capability+role in decomposition and emit capability:/role: tags on sub-cards. OFF by default — when off, behavior is identical to the pre-team-orchestration scoper.")
+		registerFlag    = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
+		dryRun          = flag.Bool("dry-run", false, "Decompose but do not write to kanban-store.")
+		boardName       = flag.String("board", defaultBoardName, "Kanban board name to scope.")
+		kanbanURL       = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
+		bridgeURL       = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
+		oneshotInstance = flag.String("oneshot-instance", envOr("ONESHOT_INSTANCE_ID", ""), "claude_code harness instance id for subscription oneshot calls (required to decompose)")
+		model           = flag.String("model", envOr("KANBAN_SCOPER_MODEL", defaultModel), "Anthropic model id")
+		maxScope        = flag.Int("max", maxScopePerTick, "Max parents to decompose per tick.")
+		roleTags        = flag.Bool("role-tags", envBool("KANBAN_SCOPER_ROLE_TAGS", false), "TEAM-ORCHESTRATION step 1: require capability+role in decomposition and emit capability:/role: tags on sub-cards. OFF by default — when off, behavior is identical to the pre-team-orchestration scoper.")
 	)
 	flag.Parse()
 
@@ -94,13 +94,13 @@ func main() {
 
 	ctx := context.Background()
 	cfg := config{
-		KanbanURL:    *kanbanURL,
-		AuthStoreURL: *authStoreURL,
-		AuthToken:    *authToken,
-		Model:        *model,
-		BoardName:    *boardName,
-		DryRun:       *dryRun,
-		RoleTags:     *roleTags,
+		KanbanURL:       *kanbanURL,
+		BridgeURL:       *bridgeURL,
+		OneshotInstance: *oneshotInstance,
+		Model:           *model,
+		BoardName:       *boardName,
+		DryRun:          *dryRun,
+		RoleTags:        *roleTags,
 	}
 
 	kc := kanbanclient.New(cfg.KanbanURL)
@@ -119,11 +119,9 @@ func main() {
 		return
 	}
 
-	apiKey, err := resolveAnthropicKey(ctx, cfg)
-	if err != nil {
-		log.Fatalf("resolve anthropic key: %v", err)
+	if cfg.OneshotInstance == "" {
+		log.Fatal("-oneshot-instance is required: decomposition routes through llm-bridge-server's oneshot endpoint on the subscription login")
 	}
-	cfg.AnthropicAPIKey = apiKey
 
 	scoped := 0
 	for _, p := range parents {
@@ -359,7 +357,7 @@ You receive a high-level goal card. Produce a small set of self-contained sub-ta
 - Body: one or two paragraphs of concrete instructions — what to read, what to change, what success looks like.
 - group_key: short kebab-case identifier (e.g. "kanban-store-schema", "auth-store-tests"). Reuse the same key for sibling sub-tasks that should run together.
 
-You MUST output by calling the decompose_task tool exactly once.
+You MUST output a single JSON object conforming to the provided schema, exactly once.
 
 If the goal is too vague or trivial to decompose, return a single sub-task that asks the user to clarify, with group_key="clarification".`
 
@@ -369,9 +367,10 @@ const roleTagsInstructions = `Additionally, for EACH sub-task provide:
 - capability: short kebab-case identifier for the domain/skill the sub-task needs (e.g. "go-http", "sqlite-migration", "react-ui", "shell-ops"). Used to equip the working agent with the right tools.
 - role: which kind of agent should work this sub-task — exactly one of: "builder" (writes code; the default for implementation), "reviewer" (code review only), "tester" (writes/runs tests), "researcher" (investigation/discovery, no writes), "docs" (documentation). Most implementation sub-tasks are "builder".`
 
-const decomposeToolName = "decompose_task"
-
-func decomposeToolSchema(roleTags bool) map[string]any {
+// decomposeSchema is the JSON Schema the model's reply must conform to. It
+// was the input_schema of a forced tool call when this command spoke to
+// api.anthropic.com directly; the oneshot bridge path takes the bare schema.
+func decomposeSchema(roleTags bool) map[string]any {
 	props := map[string]any{
 		"title":     map[string]any{"type": "string", "maxLength": 100},
 		"body":      map[string]any{"type": "string"},
@@ -384,120 +383,41 @@ func decomposeToolSchema(roleTags bool) map[string]any {
 		required = append(required, "capability", "role")
 	}
 	return map[string]any{
-		"name":        decomposeToolName,
-		"description": "Decompose a goal into sub-tasks with context grouping. Call exactly once.",
-		"input_schema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"subtasks": map[string]any{
-					"type":        "array",
-					"description": "Ordered sub-tasks. Group siblings via shared group_key.",
-					"items": map[string]any{
-						"type":       "object",
-						"properties": props,
-						"required":   required,
-					},
+		"type": "object",
+		"properties": map[string]any{
+			"subtasks": map[string]any{
+				"type":        "array",
+				"description": "Ordered sub-tasks. Group siblings via shared group_key.",
+				"items": map[string]any{
+					"type":       "object",
+					"properties": props,
+					"required":   required,
 				},
 			},
-			"required": []string{"subtasks"},
 		},
+		"required": []string{"subtasks"},
 	}
 }
 
+// decompose runs one schema-forced call through llm-bridge-server's oneshot
+// endpoint on the Claude Code subscription login. Replaced a direct POST to
+// api.anthropic.com that billed an API key resolved from auth-store.
 func decompose(ctx context.Context, cfg config, digest string) (*Plan, error) {
 	sys := systemPrompt
 	if cfg.RoleTags {
 		sys += "\n\n" + roleTagsInstructions
 	}
-	body := map[string]any{
-		"model":      cfg.Model,
-		"max_tokens": 2048,
-		"system":     sys,
-		"tools":      []any{decomposeToolSchema(cfg.RoleTags)},
-		"tool_choice": map[string]any{
-			"type": "tool",
-			"name": decomposeToolName,
-		},
-		"messages": []any{
-			map[string]any{
-				"role":    "user",
-				"content": digest,
-			},
-		},
-	}
-	bs, _ := json.Marshal(body)
-	req, _ := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(bs))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", cfg.AnthropicAPIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	httpC := &http.Client{Timeout: 60 * time.Second}
-	resp, err := httpC.Do(req)
-	if err != nil {
+	var p Plan
+	if err := oneshot.Call(ctx, oneshot.Config{
+		BridgeURL:  cfg.BridgeURL,
+		InstanceID: cfg.OneshotInstance,
+		Model:      cfg.Model,
+		MaxTokens:  4096,
+		Timeout:    120 * time.Second,
+	}, sys, digest, decomposeSchema(cfg.RoleTags), &p); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	rb, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("anthropic %s: %s", resp.Status, string(rb))
-	}
-	var apiResp struct {
-		Content []struct {
-			Type  string         `json:"type"`
-			Name  string         `json:"name,omitempty"`
-			Input map[string]any `json:"input,omitempty"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(rb, &apiResp); err != nil {
-		return nil, fmt.Errorf("decode anthropic response: %w", err)
-	}
-	for _, blk := range apiResp.Content {
-		if blk.Type != "tool_use" || blk.Name != decomposeToolName {
-			continue
-		}
-		raw, _ := json.Marshal(blk.Input)
-		var p Plan
-		if err := json.Unmarshal(raw, &p); err != nil {
-			return nil, fmt.Errorf("decode tool input: %w (raw=%s)", err, string(raw))
-		}
-		return &p, nil
-	}
-	return nil, fmt.Errorf("no tool_use block in response: %s", string(rb))
-}
-
-// ============================ Auth-store key fetch ============================
-
-func resolveAnthropicKey(ctx context.Context, cfg config) (string, error) {
-	u := strings.TrimRight(cfg.AuthStoreURL, "/") + "/api/resolve/anthropic"
-	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
-	req.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
-	req.Header.Set("X-Auth-App", "kanban-scoper")
-	req.Header.Set("X-Auth-Reason", "decompose-goal-cards")
-	c := &http.Client{Timeout: 10 * time.Second}
-	resp, err := c.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("auth-store resolve: %s — %s", resp.Status, string(body))
-	}
-	var r struct {
-		AuthType    string `json:"auth_type"`
-		APIKey      string `json:"api_key"`
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return "", fmt.Errorf("decode resolve: %w", err)
-	}
-	if r.APIKey != "" {
-		return r.APIKey, nil
-	}
-	if r.AccessToken != "" {
-		return r.AccessToken, nil
-	}
-	return "", fmt.Errorf("auth-store: anthropic credential has no api_key or access_token")
+	return &p, nil
 }
 
 // ============================ Scheduler self-registration ============================
