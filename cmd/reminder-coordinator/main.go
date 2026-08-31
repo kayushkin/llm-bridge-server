@@ -332,7 +332,11 @@ type calendarMirror interface {
 }
 
 type heraldRelay interface {
-	Relay(from, title, message string) error
+	// Relay delivers message to the user and returns the bus session id it
+	// landed in. With reuseSessionID empty it opens a new herald session;
+	// otherwise it adds a turn to that existing session (and title, a
+	// create-time name, must be empty).
+	Relay(from, title, message, reuseSessionID string) (string, error)
 }
 
 type Coordinator struct {
@@ -1130,10 +1134,13 @@ func areaTags(item *model.Item, scopeTag string) string {
 //
 // This is the fix. The old design let any of five jobs open a session whenever
 // its own cron line came up, so an overdue todo with a dedicated nudge job got
-// two sessions a day, and every fire minted a fresh one (herald `ask` has no
-// session reuse) which then piled up in the dash "Needs you" list. Here there is
-// one decision point: gather everything that fired, say it once, and record that
-// it was said.
+// two sessions a day, and every fire minted a fresh one which then piled up in
+// the dash "Needs you" list. Here there is one decision point: gather
+// everything that fired, say it once, and record that it was said. And since
+// 2026-08-31 saying it twice in one day reuses one session: the first relay's
+// id is recorded on the digest note, and a later firing (a nag whose rule puts
+// it after the digest hour) is delivered into that session via `ask -session`
+// rather than opening a second one under the same title.
 //
 // The message NAMES the work rather than counting it. It used to say only "4
 // overdue, 1 due today" and point at the digest note, on the reasoning that
@@ -1176,20 +1183,42 @@ func (c *Coordinator) nudgeOnce(board *Board, events []CalendarEvent, calErr err
 	message.WriteString("\nFull board: the \"" + digestTitle + "\" note in dash /notes.\n")
 	message.WriteString("\nWant to go through any of these?")
 
-	log.Printf("%snudge: digest=%v nags=%d", dryPrefix(c.DryRun), digestDue, len(board.NagFiring))
+	// One herald session per day, not per firing. The first relay of the day
+	// opens the session and its id is recorded on the digest note; every later
+	// relay that day — typically a nag firing after the morning digest — lands
+	// as a new turn in that same session instead of a second "Needs you" entry
+	// with the same title. (2026-08-31: a Monday-morning nag 90 minutes after
+	// the digest produced exactly that pair.)
+	reuseSessionID, err := c.todaysHeraldSessionID()
+	if err != nil {
+		return err
+	}
+
+	log.Printf("%snudge: digest=%v nags=%d reuse=%s", dryPrefix(c.DryRun), digestDue, len(board.NagFiring), reuseSessionID)
 	if c.DryRun {
 		fmt.Println(message.String())
 		return nil
 	}
 
-	if err := c.herald.Relay("personal-reminders",
-		"Personal todos — "+c.Now.In(c.Location).Format("Jan 2"), message.String()); err != nil {
+	title := ""
+	if reuseSessionID == "" {
+		title = "Personal todos — " + c.Now.In(c.Location).Format("Jan 2")
+	}
+	sessionID, err := c.herald.Relay("personal-reminders", title, message.String(), reuseSessionID)
+	if err != nil {
 		return err
 	}
 
 	// Record what was said, so the next tick 15 minutes from now stays quiet.
 	// Written AFTER a successful relay: a nag marked delivered by a send that
 	// failed is a reminder silently lost, which is the failure mode that matters.
+	// A relay into today's existing session with no digest has nothing new to
+	// record — re-patching an unchanged marker would mint a needless revision.
+	if sessionID != reuseSessionID || digestDue {
+		if err := c.recordRelayMarkers(sessionID, digestDue); err != nil {
+			return err
+		}
+	}
 	for _, item := range board.NagFiring {
 		stamped := *item.Schedule
 		naggedAt := c.Now
@@ -1197,9 +1226,6 @@ func (c *Coordinator) nudgeOnce(board *Board, events []CalendarEvent, calErr err
 		if err := c.noteboard.SetSchedule(item.ID, &stamped, false); err != nil {
 			return fmt.Errorf("stamp last_nagged_at on %s: %w", item.ID, err)
 		}
-	}
-	if digestDue {
-		return c.markDailyDigestSent()
 	}
 	return nil
 }
@@ -1254,24 +1280,63 @@ func (c *Coordinator) dailyDigestIsDue() (bool, error) {
 	return true, nil
 }
 
-func (c *Coordinator) markDailyDigestSent() error {
+// recordRelayMarkers rewrites the digest note's marker links after a relay:
+// today's herald-session marker always, plus today's digest-sent marker when
+// the digest just went out. Both markers live on the note for the same reason —
+// the coordinator keeps no state of its own — and they are written in ONE
+// read-and-patch: as two functions each doing its own read-modify-write, the
+// second write was built from a read that predated the first, which clobbers
+// the first marker the moment the reads stop interleaving kindly.
+//
+// Only today's marker of each kind is kept: the note carries one line of state
+// per kind, not a growing log of every day the digest ever went out.
+func (c *Coordinator) recordRelayMarkers(sessionID string, digestSent bool) error {
 	note, err := c.noteboard.FindByTag(model.TypeNote, digestTag)
 	if err != nil || note == nil {
 		return err
 	}
-	// Keep only today's marker: the note carries one line of state, not a growing
-	// log of every day the digest ever went out.
-	links := []string{digestSentMarker(c.Now.In(c.Location))}
+	today := c.Now.In(c.Location)
+	links := []string{heraldSessionMarker(today, sessionID)}
+	if digestSent {
+		links = append(links, digestSentMarker(today))
+	}
 	for _, link := range note.Links {
-		if !strings.HasPrefix(link, "digest-sent:") {
-			links = append(links, link)
+		if strings.HasPrefix(link, "herald-session:") {
+			continue
 		}
+		if digestSent && strings.HasPrefix(link, "digest-sent:") {
+			// Replaced above. On a nag-only relay (digestSent false) the branch
+			// is skipped, so a digest-sent marker from earlier today survives.
+			continue
+		}
+		links = append(links, link)
 	}
 	return c.noteboard.Patch(note.ID, map[string]any{"links": links})
 }
 
 func digestSentMarker(day time.Time) string {
 	return "digest-sent:" + day.Format("2006-01-02")
+}
+
+func heraldSessionMarker(day time.Time, sessionID string) string {
+	return "herald-session:" + day.Format("2006-01-02") + ":" + sessionID
+}
+
+// todaysHeraldSessionID returns the bus session id of a herald session already
+// opened today, or "" when today has not spoken yet (including before the
+// digest note first exists).
+func (c *Coordinator) todaysHeraldSessionID() (string, error) {
+	note, err := c.noteboard.FindByTag(model.TypeNote, digestTag)
+	if err != nil || note == nil {
+		return "", err
+	}
+	prefix := "herald-session:" + c.Now.In(c.Location).Format("2006-01-02") + ":"
+	for _, link := range note.Links {
+		if strings.HasPrefix(link, prefix) {
+			return strings.TrimPrefix(link, prefix), nil
+		}
+	}
+	return "", nil
 }
 
 // ------------------------------------------------------------------ calendar
@@ -1419,16 +1484,39 @@ func dryPrefix(dryRun bool) string {
 
 type Herald struct{ AskPath string }
 
-// Relay opens a single herald session carrying the message. It ends in a question
-// so llm-bridge-server's turn-end heuristic parks it as awaiting_user, which is
-// what puts it in the dash "Needs you" list rather than letting it scroll away.
-func (h *Herald) Relay(from, title, message string) error {
-	command := exec.Command(h.AskPath, "-from", from, "-title", title, message)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("ask: %w — %s", err, strings.TrimSpace(string(output)))
+// Relay carries the message to the user through `ask` and returns the bus
+// session id `ask` prints. With reuseSessionID empty it opens a new herald
+// session; otherwise it passes -session so the message lands as a new turn in
+// that existing session. Either way the message ends in a question, so
+// llm-bridge-server's turn-end heuristic parks the session as awaiting_user,
+// which is what puts it in the dash "Needs you" list rather than letting it
+// scroll away.
+func (h *Herald) Relay(from, title, message, reuseSessionID string) (string, error) {
+	arguments := []string{"-from", from}
+	if reuseSessionID != "" {
+		// -title names a session at creation; ask rejects it alongside -session.
+		arguments = append(arguments, "-session", reuseSessionID)
+	} else {
+		arguments = append(arguments, "-title", title)
 	}
-	return nil
+	arguments = append(arguments, message)
+	command := exec.Command(h.AskPath, arguments...)
+	// Output, not CombinedOutput: stdout must be exactly the session id, and a
+	// stray log line on stderr must not corrupt it. On failure the ExitError
+	// carries the captured stderr.
+	output, err := command.Output()
+	if err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return "", fmt.Errorf("ask: %w — %s", err, strings.TrimSpace(string(exitError.Stderr)))
+		}
+		return "", fmt.Errorf("ask: %w", err)
+	}
+	sessionID := strings.TrimSpace(string(output))
+	if sessionID == "" {
+		return "", fmt.Errorf("ask exited 0 but printed no session id")
+	}
+	return sessionID, nil
 }
 
 // ------------------------------------------------------------------ noteboard

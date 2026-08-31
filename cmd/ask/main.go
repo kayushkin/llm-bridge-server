@@ -22,6 +22,11 @@
 //     kanban-curator idle-reaper (scoped to autoworker-).
 //   - Attribution is structured: --from sets the message's Agent tag (the
 //     sender shown in the UI). The prompt does not roleplay a persona.
+//   - Session reuse: --session <herald-...> delivers the message as a new turn
+//     in an existing herald session instead of opening another one. The caller
+//     keeps the id ask printed and passes it back; reminder-coordinator uses
+//     this so a nag firing after the morning digest lands in the digest's
+//     session rather than a second "Needs you" entry with the same title.
 //
 // Usage:
 //
@@ -52,6 +57,7 @@ func main() {
 		from         = flag.String("from", "herald", "Originating agent — sets the message's Agent (sender) tag shown in the dash. Use the real agent name, e.g. approval-proposer.")
 		title        = flag.String("title", "", "Session display name. Defaults to a truncated form of the question.")
 		onReply      = flag.String("on-reply", "", "Instruction for what the agent should do once the user replies. Empty = just relay the alert; no action expected.")
+		reuseSession = flag.String("session", "", "Existing herald bus session id to deliver into as a new turn, instead of opening a new session. The adapter routes it to the bridge session it created for that id; -instance and -title are meaningless here and rejected.")
 		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL (for instance resolution).")
 		dryRun       = flag.Bool("dry-run", false, "Print the resolved instance and prompt; do not publish.")
 	)
@@ -65,32 +71,56 @@ func main() {
 		log.Fatal("ask: --from (originating agent tag) must not be empty")
 	}
 
+	now := time.Now().UTC()
+	prompt := buildPrompt(*from, question, *onReply)
+
+	// Reuse: deliver into an existing herald session as a new turn. The adapter
+	// keeps a persisted bus_session_id → bridge session mapping and reuses it
+	// for a Send with no Create, so the message lands in the same chat session
+	// the earlier ask opened. Create-time knobs cannot apply to a session that
+	// already exists, so passing one is an error, not something to ignore.
+	if *reuseSession != "" {
+		if *instanceName != "" {
+			log.Fatal("ask: -instance sets where a NEW session is hosted; it cannot apply with -session")
+		}
+		if *title != "" {
+			log.Fatal("ask: -title names a NEW session at creation; it cannot apply with -session")
+		}
+		if *dryRun {
+			fmt.Printf("session:  %s (reused)\nfrom:     %s\n\n--- prompt ---\n%s\n", *reuseSession, *from, prompt)
+			return
+		}
+		publishInbound(messages.BridgeInbound{
+			BusSessionID: *reuseSession,
+			Agent:        *from,
+			Orchestrator: "claude-code",
+			Channel:      "herald",
+			Timestamp:    now,
+			Send: &msg.SendMessageRequest{
+				Message: prompt,
+			},
+		})
+		fmt.Println(*reuseSession)
+		return
+	}
+
 	instanceID, err := resolveInstance(*bridgeURL, *instanceName)
 	if err != nil {
 		log.Fatalf("ask: resolve instance: %v", err)
 	}
 
-	now := time.Now().UTC()
 	displayName := *title
 	if displayName == "" {
 		displayName = truncate(question, 60)
 	}
-	prompt := buildPrompt(*from, question, *onReply)
 
 	if *dryRun {
 		fmt.Printf("instance: %s\nfrom:     %s\nsession:  herald-<ns>\ndisplay:  %s\n\n--- prompt ---\n%s\n", instanceID, *from, displayName, prompt)
 		return
 	}
 
-	natsURL := envOr("NATS_URL", "nats://localhost:4222")
-	nc, err := natsbus.Connect(natsbus.Options{URL: natsURL, Name: "ask"})
-	if err != nil {
-		log.Fatalf("ask: nats connect: %v", err)
-	}
-	defer nc.Close()
-
 	sessionID := fmt.Sprintf("herald-%d", now.UnixNano())
-	in := messages.BridgeInbound{
+	publishInbound(messages.BridgeInbound{
 		BusSessionID: sessionID,
 		Agent:        *from,
 		Orchestrator: "claude-code",
@@ -112,11 +142,22 @@ func main() {
 		Send: &msg.SendMessageRequest{
 			Message: prompt,
 		},
+	})
+	fmt.Println(sessionID)
+}
+
+// publishInbound connects to NATS, publishes the request, and exits the process
+// on any failure — ask is a one-shot; there is nothing to clean up.
+func publishInbound(in messages.BridgeInbound) {
+	natsURL := envOr("NATS_URL", "nats://localhost:4222")
+	nc, err := natsbus.Connect(natsbus.Options{URL: natsURL, Name: "ask"})
+	if err != nil {
+		log.Fatalf("ask: nats connect: %v", err)
 	}
+	defer nc.Close()
 	if err := nc.Publish(messages.BridgeInboundSubject, in); err != nil {
 		log.Fatalf("ask: publish: %v", err)
 	}
-	fmt.Println(sessionID)
 }
 
 // buildPrompt frames the spawned agent as a relay: present the message

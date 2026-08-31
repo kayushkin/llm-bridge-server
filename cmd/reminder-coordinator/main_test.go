@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -127,11 +128,18 @@ func (f *fakeCalendar) CreateEvent(string, *model.Item) (string, error) {
 func (f *fakeCalendar) UpdateEvent(string, string, *model.Item) error { f.updated++; return nil }
 func (f *fakeCalendar) DeleteEvent(string, string) error              { f.deleted++; return nil }
 
-type fakeHerald struct{ sessions []string }
+type fakeHerald struct {
+	sessions []string // the message of each relay, in order
+	reused   []string // the reuseSessionID passed alongside each ("" = opened new)
+}
 
-func (f *fakeHerald) Relay(from, title, message string) error {
+func (f *fakeHerald) Relay(from, title, message, reuseSessionID string) (string, error) {
 	f.sessions = append(f.sessions, message)
-	return nil
+	f.reused = append(f.reused, reuseSessionID)
+	if reuseSessionID != "" {
+		return reuseSessionID, nil
+	}
+	return fmt.Sprintf("herald-test-%d", len(f.sessions)), nil
 }
 
 func pacific(t *testing.T) *time.Location {
@@ -988,25 +996,29 @@ func TestARecurringTemplateIsNeverRolledInPlace(t *testing.T) {
 	}
 }
 
-// markDailyDigestSent rewrites the note's links to carry exactly one day marker.
-// It must drop the PREVIOUS day's marker and keep everything else — inverting
-// that test drops every non-marker link on the note instead, which is silent
-// data loss on the one note the user reads.
-func TestMarkingTheDigestSentReplacesOnlyTheDayMarker(t *testing.T) {
+// recordRelayMarkers rewrites the note's links to carry exactly one day marker
+// of each kind. It must drop the PREVIOUS day's markers and keep everything
+// else — inverting that test drops every non-marker link on the note instead,
+// which is silent data loss on the one note the user reads.
+func TestMarkingTheDigestSentReplacesOnlyTheDayMarkers(t *testing.T) {
 	loc := pacific(t)
 	digestNote := &model.Item{
 		ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag},
-		Links: []string{"digest-sent:2026-07-12", "https://example.com/keep-me"},
+		Links: []string{"digest-sent:2026-07-12", "herald-session:2026-07-12:herald-yesterday", "https://example.com/keep-me"},
 	}
 	nb := newFakeNoteboard(digestNote)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 13, 8, 0, 0, 0, loc), nb)
 
-	if err := coordinator.markDailyDigestSent(); err != nil {
-		t.Fatalf("markDailyDigestSent: %v", err)
+	if err := coordinator.recordRelayMarkers("herald-today", true); err != nil {
+		t.Fatalf("recordRelayMarkers: %v", err)
 	}
 	links, _ := nb.patched["digest"]["links"].([]string)
 
-	want := map[string]bool{"digest-sent:2026-07-13": false, "https://example.com/keep-me": false}
+	want := map[string]bool{
+		"digest-sent:2026-07-13":                 false,
+		"herald-session:2026-07-13:herald-today": false,
+		"https://example.com/keep-me":            false,
+	}
 	for _, link := range links {
 		if _, ok := want[link]; !ok {
 			t.Errorf("unexpected link left on the note: %q", link)
@@ -1019,8 +1031,8 @@ func TestMarkingTheDigestSentReplacesOnlyTheDayMarker(t *testing.T) {
 			t.Errorf("link %q was dropped from the digest note", link)
 		}
 	}
-	if len(links) != 2 {
-		t.Fatalf("note carries %d links (%v), want exactly today's marker and the unrelated one — "+
+	if len(links) != 3 {
+		t.Fatalf("note carries %d links (%v), want exactly today's two markers and the unrelated one — "+
 			"a growing log of every day the digest went out is not state, it is a leak", len(links), links)
 	}
 }
@@ -1888,5 +1900,92 @@ func TestAnUnusableWorkDayListIsRefusedAtStartup(t *testing.T) {
 		if days[weekend] {
 			t.Errorf("%s ships as a working day", weekend)
 		}
+	}
+}
+
+// 2026-08-31, a Monday: the 7:30 digest opened a session titled "Personal todos
+// — Aug 31", and a weekly nag with BYHOUR=9 opened a second one 90 minutes
+// later with the SAME title but almost none of the content — two "Needs you"
+// entries that read as a duplicate. The fix: the first relay of the day records
+// its session id on the digest note, and every later relay that day is
+// delivered into that session as a new turn.
+func TestALaterFiringTheSameDayReusesTheMorningSession(t *testing.T) {
+	loc := pacific(t)
+	overdue := time.Date(2026, 8, 24, 9, 0, 0, 0, loc)
+	nagged := &model.Item{
+		ID: "apply", Type: "todo", Title: "Apply to jobs", Status: "open",
+		Tags: []string{"personal", "career"}, DueAt: &overdue,
+		Schedule: &model.Schedule{
+			TZID:   "America/Los_Angeles",
+			Remind: &model.Remind{Nag: "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0;BYSECOND=0"},
+		},
+	}
+
+	// 7:30: the digest opens a fresh session and records its id on the note.
+	morning := time.Date(2026, 8, 31, 7, 30, 0, 0, loc)
+	digestNote := &model.Item{
+		ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag},
+	}
+	nb := newFakeNoteboard(nagged, digestNote)
+	coordinator, herald, _ := newTestCoordinator(t, morning, nb)
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("morning buildBoard: %v", err)
+	}
+	if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
+		t.Fatalf("morning nudgeOnce: %v", err)
+	}
+	if len(herald.reused) != 1 || herald.reused[0] != "" {
+		t.Fatalf("the day's first relay should open a new session, got reused=%q", herald.reused)
+	}
+	patchedLinks, ok := nb.patched["digest"]["links"].([]string)
+	if !ok {
+		t.Fatalf("the digest note was not patched with links after the first relay: %#v", nb.patched["digest"])
+	}
+	wantMarker := "herald-session:2026-08-31:herald-test-1"
+	if !slices.Contains(patchedLinks, wantMarker) {
+		t.Fatalf("links after the first relay = %q, want them to carry %q", patchedLinks, wantMarker)
+	}
+
+	// 9:00, same day: the nag fires. The note now carries both markers (the fake
+	// Patch does not write back to the item, so state them as the real store
+	// would hold them). The relay must land in the morning's session — and must
+	// not re-patch an unchanged marker, which would mint a needless revision.
+	nine := time.Date(2026, 8, 31, 9, 0, 0, 0, loc)
+	digestNote.Links = []string{"digest-sent:2026-08-31", "herald-session:2026-08-31:herald-morning"}
+	coordinator, herald, _ = newTestCoordinator(t, nine, nb)
+	delete(nb.patched, "digest")
+	board, err = coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("9am buildBoard: %v", err)
+	}
+	if len(board.NagFiring) != 1 {
+		t.Fatalf("want the 9am nag firing, got %d", len(board.NagFiring))
+	}
+	if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
+		t.Fatalf("9am nudgeOnce: %v", err)
+	}
+	if len(herald.reused) != 1 || herald.reused[0] != "herald-morning" {
+		t.Fatalf("the 9am nag should reuse the morning session, got reused=%q", herald.reused)
+	}
+	if _, patched := nb.patched["digest"]; patched {
+		t.Errorf("reusing a session re-patched the note: %#v", nb.patched["digest"])
+	}
+
+	// Next Monday: yesterday's marker is stale, so the digest opens a new
+	// session again rather than resurrecting last week's.
+	nextMonday := time.Date(2026, 9, 7, 7, 30, 0, 0, loc)
+	digestNote.Links = []string{"digest-sent:2026-08-31", "herald-session:2026-08-31:herald-morning"}
+	nagged.Schedule.LastNaggedAt = &nine
+	coordinator, herald, _ = newTestCoordinator(t, nextMonday, nb)
+	board, err = coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("next-Monday buildBoard: %v", err)
+	}
+	if err := coordinator.nudgeOnce(board, nil, nil); err != nil {
+		t.Fatalf("next-Monday nudgeOnce: %v", err)
+	}
+	if len(herald.reused) != 1 || herald.reused[0] != "" {
+		t.Fatalf("a marker from a past day must not be reused, got reused=%q", herald.reused)
 	}
 }
