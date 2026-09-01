@@ -24,18 +24,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slava/scheduler/internal/anthropic"
 	"github.com/slava/scheduler/internal/demomail"
+	"github.com/slava/scheduler/internal/demosession"
 	"github.com/slava/scheduler/internal/demoteam"
 )
 
 const (
 	defaultRepo    = "/home/kayushkincom/repos/northwind-api"
 	defaultAccount = "demo-work"
-	defaultModel   = "claude-sonnet-4-6"
-
-	maxOutputTokens = 4096
-	writeToolName   = "write_work_email"
 )
 
 type config struct {
@@ -44,9 +40,9 @@ type config struct {
 	MailURL   string
 	MailToken string
 
-	AuthStoreURL string
-	AuthToken    string
-	Model        string
+	NATSURL    string
+	WriterSlug string
+	MaxBudget  float64
 
 	Count  int
 	Purge  bool
@@ -67,9 +63,9 @@ func parseFlags() config {
 	flag.StringVar(&c.Account, "account", defaultAccount, "The LOCAL mailstack account to deliver to.")
 	flag.StringVar(&c.MailURL, "mail-url", envOr("MAILSTACK_URL", "http://localhost:8195"), "mailstack base URL")
 	flag.StringVar(&c.MailToken, "mail-token", os.Getenv("MAILSTACK_TOKEN"), "mailstack bearer token")
-	flag.StringVar(&c.AuthStoreURL, "auth-store-url", envOr("AUTH_STORE_URL", "http://localhost:8303"), "auth-store base URL")
-	flag.StringVar(&c.AuthToken, "auth-token", os.Getenv("AUTH_STORE_TOKEN"), "auth-store bearer token")
-	flag.StringVar(&c.Model, "model", envOr("DEMO_MAIL_MODEL", defaultModel), "Anthropic model id")
+	flag.StringVar(&c.NATSURL, "nats-url", envOr("NATS_URL", "nats://localhost:4222"), "NATS URL")
+	flag.StringVar(&c.WriterSlug, "writer", "northwind-priya", "Roster identity the writing session acts as.")
+	flag.Float64Var(&c.MaxBudget, "max-budget-usd", 2, "Spend ceiling for the writing session.")
 	flag.IntVar(&c.Count, "count", 2, "How many messages to write this tick.")
 	flag.BoolVar(&c.Purge, "purge", false, "Delete every message in the account first.")
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Print what would be sent to the model and stop.")
@@ -105,64 +101,30 @@ func run(cfg config) error {
 		seed = time.Now().UnixNano()
 	}
 	plan := planMessages(cfg.Count, rand.New(rand.NewSource(seed)))
-	brief := buildBrief(project, plan)
-
 	if cfg.DryRun {
 		fmt.Println(strings.Repeat("─", 72))
-		fmt.Print(brief)
+		fmt.Print(sessionPrompt(project, plan, cfg.Account, cfg.MailURL, "<mailstack token>"))
 		fmt.Println(strings.Repeat("─", 72))
-		fmt.Println("(-dry-run: nothing was sent and no mail was delivered)")
+		fmt.Println("(-dry-run: no session was spawned and no mail was delivered)")
 		return nil
 	}
 
-	key, err := anthropic.ResolveKey(ctx, cfg.AuthStoreURL, cfg.AuthToken,
-		"demo-mail-generator", "write-work-email-about-a-real-repository")
+	sessionID, err := demosession.Spawn(cfg.NATSURL, demosession.Task{
+		Prompt:      sessionPrompt(project, plan, cfg.Account, cfg.MailURL, cfg.MailToken),
+		AgentSlug:   cfg.WriterSlug,
+		DisplayName: fmt.Sprintf("✉️ mail for %s %s", project.Name, time.Now().UTC().Format("Jan 2 15:04")),
+		WorkingDir:  cfg.Repo,
+		// Capped, because an agent writing four emails should never be able to
+		// spend like one refactoring a service.
+		MaxBudgetUSD: cfg.MaxBudget,
+	})
 	if err != nil {
 		return err
 	}
-	var written struct {
-		Messages []struct {
-			Key     string `json:"key"`
-			Subject string `json:"subject"`
-			Body    string `json:"body"`
-		} `json:"messages"`
+	fmt.Printf("dispatched %s as %s — it writes and posts the mail itself\n", sessionID, cfg.WriterSlug)
+	for _, m := range plan {
+		fmt.Printf("  %-14s %s\n", m.Kind.Name, m.From.Name)
 	}
-	if err := anthropic.InvokeTool(ctx, anthropic.Config{
-		APIKey: key, Model: cfg.Model, MaxTokens: maxOutputTokens, Timeout: 120 * time.Second,
-	}, systemPrompt, writeToolSchema(), writeToolName, brief, &written); err != nil {
-		return err
-	}
-
-	byKey := map[string]string{}
-	subjects := map[string]string{}
-	for _, m := range written.Messages {
-		byKey[m.Key] = strings.TrimSpace(m.Body)
-		subjects[m.Key] = strings.TrimSpace(m.Subject)
-	}
-
-	delivered := 0
-	for _, want := range plan {
-		body, subject := byKey[want.Key], subjects[want.Key]
-		if body == "" || subject == "" {
-			// Loudly, and keep going: one unusable message should not cost the
-			// others, but it must not pass unnoticed either.
-			fmt.Printf("  WARNING: the model returned nothing usable for %s (%s)\n", want.Key, want.Kind)
-			continue
-		}
-		locator, err := mail.Append(ctx, cfg.Account, demomail.Message{
-			Subject:  subject,
-			From:     demomail.Address{Name: want.From.Name, Email: want.From.Email},
-			To:       []demomail.Address{{Name: "Vlad", Email: "vlad@northwind-eng.example"}},
-			BodyText: body,
-		})
-		if err != nil {
-			return fmt.Errorf("deliver %s: %w", want.Key, err)
-		}
-		fmt.Printf("  %-14s %-22s %s\n", want.Kind.Name, want.From.Name, truncate(subject, 54))
-		fmt.Printf("      %s\n", locator)
-		delivered++
-	}
-	fmt.Printf("delivered %d of %d\n", delivered, len(plan))
 	return nil
 }
 
