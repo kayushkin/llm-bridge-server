@@ -96,7 +96,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 			cfg.SignalClassifierTimeout,
 			cfg.SignalClassifierMaxChars,
 			cfg.SignalClassifierOptOut,
-			authClient,
+			nil, // wired below: it needs the server that owns it
 		),
 		cfg: cfg,
 	}
@@ -108,6 +108,12 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	// The classifier reacts to turn-ends, so it hangs off the manager's
 	// observer rather than reaching into the derivation state machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
+	// The classifier runs its call on a harness instance rather than against
+	// api.anthropic.com, so it needs the server's oneshot runner. Wired here
+	// because the runner is a method on the server the classifier hangs off.
+	if srv.signalClassifier != nil {
+		srv.signalClassifier.runOneShot = srv.classifierOneShot
+	}
 	srv.routes()
 	srv.syncHarnessTypes()
 	srv.syncSourceFolderRegistry()

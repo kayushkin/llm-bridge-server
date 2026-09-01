@@ -11,26 +11,26 @@ import (
 )
 
 type Config struct {
-	ListenAddr       string
-	DBPath           string
-	AgentStoreDB     string
-	MemoryStoreDB    string
-	HarnessStoreDB   string
-	HookStoreDB      string
-	ModelStoreDB     string
-	ModelStoreURL    string
-	AgentStoreURL    string
-	ImagesDir        string
-	BridgePrefsPath  string
-	ConformancePath  string
-	LogStoreURL      string
+	ListenAddr      string
+	DBPath          string
+	AgentStoreDB    string
+	MemoryStoreDB   string
+	HarnessStoreDB  string
+	HookStoreDB     string
+	ModelStoreDB    string
+	ModelStoreURL   string
+	AgentStoreURL   string
+	ImagesDir       string
+	BridgePrefsPath string
+	ConformancePath string
+	LogStoreURL     string
 	// PublicURL is the externally-reachable bridge URL that runners use
 	// to fetch backend binaries listed in HarnessService.BinaryURL. Empty
 	// → manifests fall back to the runner's own server_url, which works
 	// when the runner is reaching the bridge over a tunnel on
 	// localhost:port (the WSL-via-SSH-tunnel case).
-	PublicURL        string
-	ToolStoreURL     string
+	PublicURL    string
+	ToolStoreURL string
 	// PermissionStoreURL is the base URL of the permission-store service
 	// consulted by the PreToolUse permission-prehook handler. Defaults to
 	// localhost:8304.
@@ -90,6 +90,11 @@ type Config struct {
 	// from its tail, which is where a question or a sign-off lives.
 	// Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS.
 	SignalClassifierMaxChars int
+	// SignalClassifierInstance is the harness instance the classifier runs its
+	// call on. It must be a claude_code instance with no bound credential —
+	// that is what puts the call on the Claude Code subscription login instead
+	// of on an API key. Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE.
+	SignalClassifierInstance string
 }
 
 // Load reads the process environment, falling back to the addresses in
@@ -102,31 +107,32 @@ type Config struct {
 // check is inert in a real gateway process.
 func Load() *Config {
 	cfg := &Config{
-		ListenAddr:     envOr("LLMBRIDGE_LISTEN_ADDR", productiondefaults.ListenAddr),
-		DBPath:         envOr("LLMBRIDGE_DB_PATH", productiondefaults.BridgeDatabasePath()),
-		AgentStoreDB:   envOr("LLMBRIDGE_AGENT_DB", productiondefaults.AgentStoreDatabasePath()),
-		MemoryStoreDB:  envOr("LLMBRIDGE_MEMORY_DB", productiondefaults.MemoryStoreDatabasePath()),
-		HarnessStoreDB: envOr("LLMBRIDGE_HARNESS_DB", productiondefaults.HarnessStoreDatabasePath()),
-		HookStoreDB:    envOr("LLMBRIDGE_HOOK_DB", productiondefaults.HookStoreDatabasePath()),
-		ModelStoreDB:    envOr("LLMBRIDGE_MODEL_STORE_DB", productiondefaults.ModelStoreDatabasePath()),
-		ModelStoreURL:   os.Getenv("LLMBRIDGE_MODEL_STORE_URL"),
-		AgentStoreURL:   os.Getenv("LLMBRIDGE_AGENT_STORE_URL"),
-		ImagesDir:       envOr("LLMBRIDGE_IMAGES_DIR", "images"),
-		BridgePrefsPath: envOr("LLMBRIDGE_BRIDGE_PREFS", productiondefaults.BridgePreferencesPath()),
-		ConformancePath: envOr("LLMBRIDGE_CONFORMANCE_PATH", productiondefaults.ConformancePath()),
-		LogStoreURL:     envOr("LLMBRIDGE_LOG_STORE_URL", productiondefaults.LogStoreURL),
-		PublicURL:       os.Getenv("LLMBRIDGE_PUBLIC_URL"),
-		ToolStoreURL:    envOr("LLMBRIDGE_TOOL_STORE_URL", productiondefaults.ToolStoreURL),
-		PermissionStoreURL: envOr("LLMBRIDGE_PERMISSION_STORE_URL", productiondefaults.PermissionStoreURL),
-		KanbanStoreURL:     envOr("LLMBRIDGE_KANBAN_STORE_URL", productiondefaults.KanbanStoreURL),
-		SnapshotStoreDB:  envOr("LLMBRIDGE_SNAPSHOT_DB", productiondefaults.SnapshotStoreDatabasePath()),
-		SnapshotStoreGit: envOr("LLMBRIDGE_SNAPSHOT_GIT", productiondefaults.SnapshotStoreGitPath()),
-		PurposeFolders:  parsePurposeFolders(os.Getenv("LLMBRIDGE_PURPOSE_FOLDERS")),
-		PTYRingBufferBytes: envInt("LLMBRIDGE_PTY_RING_BUFFER_BYTES", 64*1024),
-		IdleTimeout:        envDuration("LLMBRIDGE_IDLE_TIMEOUT", 15*time.Minute),
-		PTYIdleTimeout:     envDuration("LLMBRIDGE_PTY_IDLE_TIMEOUT", 60*time.Minute),
+		ListenAddr:               envOr("LLMBRIDGE_LISTEN_ADDR", productiondefaults.ListenAddr),
+		DBPath:                   envOr("LLMBRIDGE_DB_PATH", productiondefaults.BridgeDatabasePath()),
+		AgentStoreDB:             envOr("LLMBRIDGE_AGENT_DB", productiondefaults.AgentStoreDatabasePath()),
+		MemoryStoreDB:            envOr("LLMBRIDGE_MEMORY_DB", productiondefaults.MemoryStoreDatabasePath()),
+		HarnessStoreDB:           envOr("LLMBRIDGE_HARNESS_DB", productiondefaults.HarnessStoreDatabasePath()),
+		HookStoreDB:              envOr("LLMBRIDGE_HOOK_DB", productiondefaults.HookStoreDatabasePath()),
+		ModelStoreDB:             envOr("LLMBRIDGE_MODEL_STORE_DB", productiondefaults.ModelStoreDatabasePath()),
+		ModelStoreURL:            os.Getenv("LLMBRIDGE_MODEL_STORE_URL"),
+		AgentStoreURL:            os.Getenv("LLMBRIDGE_AGENT_STORE_URL"),
+		ImagesDir:                envOr("LLMBRIDGE_IMAGES_DIR", "images"),
+		BridgePrefsPath:          envOr("LLMBRIDGE_BRIDGE_PREFS", productiondefaults.BridgePreferencesPath()),
+		ConformancePath:          envOr("LLMBRIDGE_CONFORMANCE_PATH", productiondefaults.ConformancePath()),
+		LogStoreURL:              envOr("LLMBRIDGE_LOG_STORE_URL", productiondefaults.LogStoreURL),
+		PublicURL:                os.Getenv("LLMBRIDGE_PUBLIC_URL"),
+		ToolStoreURL:             envOr("LLMBRIDGE_TOOL_STORE_URL", productiondefaults.ToolStoreURL),
+		PermissionStoreURL:       envOr("LLMBRIDGE_PERMISSION_STORE_URL", productiondefaults.PermissionStoreURL),
+		KanbanStoreURL:           envOr("LLMBRIDGE_KANBAN_STORE_URL", productiondefaults.KanbanStoreURL),
+		SnapshotStoreDB:          envOr("LLMBRIDGE_SNAPSHOT_DB", productiondefaults.SnapshotStoreDatabasePath()),
+		SnapshotStoreGit:         envOr("LLMBRIDGE_SNAPSHOT_GIT", productiondefaults.SnapshotStoreGitPath()),
+		PurposeFolders:           parsePurposeFolders(os.Getenv("LLMBRIDGE_PURPOSE_FOLDERS")),
+		PTYRingBufferBytes:       envInt("LLMBRIDGE_PTY_RING_BUFFER_BYTES", 64*1024),
+		IdleTimeout:              envDuration("LLMBRIDGE_IDLE_TIMEOUT", 15*time.Minute),
+		PTYIdleTimeout:           envDuration("LLMBRIDGE_PTY_IDLE_TIMEOUT", 60*time.Minute),
 		SignalClassifierModel:    envOr("LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL", "claude-haiku-4-5"),
 		SignalClassifierOptOut:   parseHarnessSet(os.Getenv("LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT")),
+		SignalClassifierInstance: envOr("LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE", "inst-cc-local"),
 		SignalClassifierTimeout:  envDuration("LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", 20*time.Second),
 		SignalClassifierMaxChars: envInt("LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", 6000),
 	}

@@ -1,17 +1,13 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -73,12 +69,15 @@ type turnClassification struct {
 // signalClassifier calls a cheap model to classify a turn-end. Zero value is
 // unusable; build it with newSignalClassifier.
 type signalClassifier struct {
-	model      string
-	timeout    time.Duration
-	maxChars   int
-	optOut     map[msg.Harness]bool
-	authClient *authstoreclient.Client
-	httpClient *http.Client
+	// runOneShot executes one schema-forced call on a harness instance. Injected
+	// rather than reached for, so this type still knows nothing about the
+	// server that owns it.
+	runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)
+
+	model    string
+	timeout  time.Duration
+	maxChars int
+	optOut   map[msg.Harness]bool
 
 	// baseURL overrides the Anthropic endpoint. Empty means "take it from
 	// the resolved credential, falling back to the public API" — the
@@ -87,14 +86,13 @@ type signalClassifier struct {
 	baseURL string
 }
 
-func newSignalClassifier(model string, timeout time.Duration, maxChars int, optOut map[msg.Harness]bool, authClient *authstoreclient.Client) *signalClassifier {
+func newSignalClassifier(model string, timeout time.Duration, maxChars int, optOut map[msg.Harness]bool, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *signalClassifier {
 	return &signalClassifier{
 		model:      model,
 		timeout:    timeout,
 		maxChars:   maxChars,
 		optOut:     optOut,
-		authClient: authClient,
-		httpClient: &http.Client{Timeout: timeout},
+		runOneShot: runOneShot,
 	}
 }
 
@@ -129,6 +127,19 @@ For "neither": leave every other field empty.`
 // classifierToolSchema is the forced tool. Enum constraints keep the verdict
 // inside the vocabulary the record understands, so an unexpected value is a
 // schema violation the model retries rather than a bad row.
+// classifierOutputSchema is the bare JSON Schema the oneshot path takes.
+//
+// Derived from the tool schema rather than written out a second time: two
+// copies of one shape drift, and the failure that follows is a model answering
+// a question nobody asked.
+func classifierOutputSchema() map[string]any {
+	tool := classifierToolSchema()
+	if inner, ok := tool["input_schema"].(map[string]any); ok {
+		return inner
+	}
+	return map[string]any{"type": "object"}
+}
+
 func classifierToolSchema() map[string]any {
 	return map[string]any{
 		"name":        classifierToolName,
@@ -175,77 +186,58 @@ func classifierToolSchema() map[string]any {
 // classify sends one turn's final text and returns the verdict. A nil
 // verdict with a nil error is impossible — every path either yields a
 // classification or explains why it could not.
+// classify asks the model what a finished turn was.
+//
+// It goes through the harness oneshot path, not api.anthropic.com. That call
+// used to resolve an API key from auth-store on EVERY turn end, which the audit
+// log showed was the largest remaining drain on that key once the scheduler's
+// classifiers had moved off it. The harness runs on the Claude Code
+// subscription login, so no credential passes through here at all — the
+// endpoint/auth-header logic this replaced is gone with it.
 func (c *signalClassifier) classify(ctx context.Context, text string) (*turnClassification, error) {
-	endpoint, authHeader, authValue, extraHeaders, err := c.endpoint(ctx)
+	if c.runOneShot == nil {
+		return nil, fmt.Errorf("classify: no oneshot runner wired")
+	}
+	schema, err := json.Marshal(classifierOutputSchema())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("marshal classify schema: %w", err)
 	}
 
-	body, err := json.Marshal(map[string]any{
-		"model":       c.model,
-		"max_tokens":  classifierMaxTokens,
-		"system":      classifierSystemPrompt,
-		"tools":       []any{classifierToolSchema()},
-		"tool_choice": map[string]any{"type": "tool", "name": classifierToolName},
-		"messages": []any{map[string]any{
-			"role":    "user",
-			"content": "Final message of the finished turn:\n\n" + c.trim(text),
-		}},
+	raw, err := c.runOneShot(ctx, msg.OneShotRequest{
+		Prompt:       "Final message of the finished turn:\n\n" + c.trim(text),
+		SystemPrompt: classifierSystemPrompt,
+		Model:        c.model,
+		Schema:       schema,
+		MaxTokens:    classifierMaxTokens,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal classify request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", classifierAnthropicVersion)
-	req.Header.Set(authHeader, authValue)
-	for k, v := range extraHeaders {
-		req.Header.Set(k, v)
+
+	var reply msg.OneShotResponse
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		return nil, fmt.Errorf("decode oneshot reply: %w", err)
+	}
+	if len(reply.Parsed) == 0 {
+		// No parsed object means the schema was not satisfied. Reported rather
+		// than guessed at: a classification invented here would be indis-
+		// tinguishable from one the model actually made.
+		return nil, fmt.Errorf("classify: oneshot returned no schema-conformant output (stop_reason=%q)", reply.StopReason)
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
+	var out turnClassification
+	if err := json.Unmarshal(reply.Parsed, &out); err != nil {
+		return nil, fmt.Errorf("decode classification: %w", err)
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	switch out.Kind {
+	case turnSignalQuestion, turnSignalNotification, turnSignalNeither:
+		return &out, nil
+	default:
+		// Refused rather than treated as "neither". A kind outside the
+		// vocabulary means the model did not answer the question asked, and
+		// silently reading that as "no signal" would hide every such failure.
+		return nil, fmt.Errorf("classify returned unknown kind %q", out.Kind)
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("classify: %s — %s", resp.Status, string(raw))
-	}
-
-	var parsed struct {
-		Content []struct {
-			Type  string          `json:"type"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("decode classify response: %w", err)
-	}
-	for _, block := range parsed.Content {
-		if block.Type != "tool_use" || block.Name != classifierToolName {
-			continue
-		}
-		var verdict turnClassification
-		if err := json.Unmarshal(block.Input, &verdict); err != nil {
-			return nil, fmt.Errorf("decode %s input: %w", classifierToolName, err)
-		}
-		switch verdict.Kind {
-		case turnSignalQuestion, turnSignalNotification, turnSignalNeither:
-			return &verdict, nil
-		default:
-			return nil, fmt.Errorf("classify returned unknown kind %q", verdict.Kind)
-		}
-	}
-	return nil, fmt.Errorf("classify response carried no %s call", classifierToolName)
 }
 
 // trim caps the text sent to the model, keeping the TAIL. A turn that ends
@@ -261,40 +253,6 @@ func (c *signalClassifier) trim(text string) string {
 		return text
 	}
 	return "…" + string(runes[len(runes)-limit:])
-}
-
-// endpoint resolves the Anthropic credential and returns everything the
-// request needs to authenticate. auth_type decides the header: an API key
-// goes in x-api-key, an OAuth access token in Authorization, and sending
-// one in the other's header is a 401 that reads like a bad credential.
-func (c *signalClassifier) endpoint(ctx context.Context) (url, authHeader, authValue string, extra map[string]string, err error) {
-	base := c.baseURL
-	if base != "" {
-		// Test stub: no credential, no auth-store round trip.
-		return strings.TrimRight(base, "/") + "/v1/messages", "x-api-key", "stub", nil, nil
-	}
-	if c.authClient == nil {
-		return "", "", "", nil, fmt.Errorf("no auth-store client")
-	}
-	cred, err := c.authClient.ResolveByProvider(ctx, "anthropic", "", "llm-bridge-server", "signal-classifier")
-	if err != nil {
-		return "", "", "", nil, fmt.Errorf("resolve anthropic credential: %w", err)
-	}
-	secret := cred.Secret()
-	if secret == "" {
-		return "", "", "", nil, fmt.Errorf("anthropic credential %s has no usable secret", cred.ID)
-	}
-	base = cred.BaseURL
-	if base == "" {
-		base = "https://api.anthropic.com"
-	}
-	switch cred.AuthType {
-	case "oauth", "token":
-		return strings.TrimRight(base, "/") + "/v1/messages", "Authorization", "Bearer " + secret,
-			map[string]string{"anthropic-beta": "oauth-2025-04-20"}, nil
-	default:
-		return strings.TrimRight(base, "/") + "/v1/messages", "x-api-key", secret, nil, nil
-	}
 }
 
 // onTurnEnd is the Manager's turn-end observer. It classifies the finished
@@ -374,6 +332,17 @@ func (s *Server) onTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionStat
 // when it should be. Split out so the skip rules are testable without a
 // model, a store or a network.
 func skipClassifyReason(sess *store.Session, text string, state msg.SessionState) string {
+	// A signal exists to put something in front of a PERSON: a question they
+	// have to answer, a notification worth their attention. An autonomous
+	// session has nobody watching it, so a signal raised on one is a row
+	// nobody reads, minted at the cost of a model call on every turn end.
+	//
+	// This is most of the traffic. The fleet runs autoworker, dispatcher and
+	// demo sessions continuously and interactive chat rarely, so classifying
+	// everything meant nearly every call was spent on a turn with no reader.
+	if sess != nil && sess.Type != "" && sess.Type != msg.SessionTypeInteractive {
+		return "not an interactive session: " + string(sess.Type)
+	}
 	if sess != nil && sess.Purpose == renamerSourceTag {
 		// The renamer is our own helper. Classifying its turns spends money
 		// on a session no human reads, and its sign-off looks enough like a

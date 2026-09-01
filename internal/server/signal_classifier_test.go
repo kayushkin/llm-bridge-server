@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,25 +18,25 @@ import (
 // test can assert what the model was actually asked.
 func stubClassifier(t *testing.T, srv *Server, verdict map[string]any) *string {
 	t.Helper()
+	// Stubs the ONESHOT runner, not an HTTP endpoint. The classifier no longer
+	// speaks to api.anthropic.com — it hands a schema to a harness instance —
+	// so a stub that answered in the Anthropic wire format would be testing a
+	// path that no longer exists.
 	var captured string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body := make([]byte, r.ContentLength)
-		r.Body.Read(body)
-		captured = string(body)
-		resp := map[string]any{
-			"content": []any{map[string]any{
-				"type":  "tool_use",
-				"name":  classifierToolName,
-				"input": verdict,
-			}},
+	runner := func(_ context.Context, req msg.OneShotRequest) ([]byte, error) {
+		body, err := json.Marshal(req)
+		if err != nil {
+			return nil, err
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}))
-	t.Cleanup(ts.Close)
+		captured = string(body)
+		parsed, err := json.Marshal(verdict)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(msg.OneShotResponse{Parsed: parsed, StopReason: "tool_use"})
+	}
 
-	srv.signalClassifier = newSignalClassifier("claude-haiku-4-5", 5*time.Second, 6000, nil, nil)
-	srv.signalClassifier.baseURL = ts.URL
+	srv.signalClassifier = newSignalClassifier("claude-haiku-4-5", 5*time.Second, 6000, nil, runner)
 	return &captured
 }
 
@@ -87,6 +88,17 @@ func TestSkipClassifyReason(t *testing.T) {
 		{"ordinary settled turn", plain, "Which database should I migrate first?", msg.SessionIdle, false},
 		{"heuristic already parked it", plain, "Which database should I migrate first?", msg.SessionAwaitingUser, false},
 		{"renamer helper", &store.Session{Purpose: renamerSourceTag}, "Renamed the session, done.", msg.SessionIdle, true},
+		// A signal exists to put something in front of a person. An autonomous
+		// session has nobody watching, so classifying one spends a model call
+		// on a row no one will read — and autonomous turns are most of the
+		// traffic on this host.
+		{"autonomous session", &store.Session{Type: msg.SessionTypeAutonomous}, "Should I use Postgres or MySQL?", msg.SessionIdle, true},
+		{"system session", &store.Session{Type: msg.SessionTypeSystem}, "Should I use Postgres or MySQL?", msg.SessionIdle, true},
+		{"interactive session", &store.Session{Type: msg.SessionTypeInteractive}, "Should I use Postgres or MySQL?", msg.SessionIdle, false},
+		// An untyped session predates the type column. Classified rather than
+		// skipped: silence about what a session is must not silently switch a
+		// feature off for it.
+		{"untyped session", plain, "Should I use Postgres or MySQL?", msg.SessionIdle, false},
 		{"empty final message", plain, "   ", msg.SessionIdle, true},
 		{"too short to carry a signal", plain, "ok", msg.SessionIdle, true},
 		{"turn errored", plain, "Which database should I migrate first?", msg.SessionError, true},
