@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"time"
+
+	"github.com/slava/scheduler/internal/demosession"
 
 	"github.com/slava/scheduler/internal/demoteam"
 	"github.com/slava/scheduler/internal/kanbanclient"
@@ -72,7 +75,13 @@ func review(kc *kanbanclient.Client, cfg config) error {
 				continue
 			}
 
-			sessionID, err := spawn(cfg, reviewer, prompt, workingDir)
+			sessionID, err := demosession.Spawn(cfg.NATSURL, demosession.Task{
+				Prompt:       prompt,
+				AgentSlug:    reviewer.Slug,
+				DisplayName:  fmt.Sprintf("%s %s %s", reviewer.Emoji, reviewer.Name, time.Now().UTC().Format("Jan 2 15:04")),
+				WorkingDir:   workingDir,
+				MaxBudgetUSD: cfg.MaxBudget,
+			})
 			if err != nil {
 				return fmt.Errorf("dispatch reviewer for %s: %w", cardID, err)
 			}

@@ -4,9 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	natsbus "github.com/kayushkin/bus"
-	"github.com/kayushkin/bus/messages"
-	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/slava/scheduler/internal/demosession"
 	"github.com/slava/scheduler/internal/demoteam"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
@@ -70,7 +68,13 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 				continue
 			}
 
-			sessionID, err := spawn(cfg, identity, prompt, workingDir)
+			sessionID, err := demosession.Spawn(cfg.NATSURL, demosession.Task{
+				Prompt:       prompt,
+				AgentSlug:    identity.Slug,
+				DisplayName:  fmt.Sprintf("%s %s %s", identity.Emoji, identity.Name, time.Now().UTC().Format("Jan 2 15:04")),
+				WorkingDir:   workingDir,
+				MaxBudgetUSD: cfg.MaxBudget,
+			})
 			if err != nil {
 				return fmt.Errorf("dispatch %s: %w", cardID, err)
 			}
@@ -118,54 +122,6 @@ func cardRepo(card kanbanclient.CardView) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no repo link — it was never promoted properly")
-}
-
-// spawn publishes the session request. The session id is minted here because
-// the adapter passes BusSessionID through as the bridge session_id, so this
-// value is what the card's session link resolves to.
-func spawn(cfg config, identity demoteam.Member, prompt, workingDir string) (string, error) {
-	nc, err := natsbus.Connect(natsbus.Options{URL: cfg.NATSURL, Name: "demo-worker"})
-	if err != nil {
-		return "", fmt.Errorf("nats: %w", err)
-	}
-	defer nc.Close()
-
-	now := time.Now().UTC()
-	sessionID := fmt.Sprintf("demo-%s-%d", identity.Slug, now.UnixNano())
-	budget := cfg.MaxBudget
-
-	create := &msg.CreateSessionRequest{
-		Harness:     msg.HarnessClaudeCode,
-		InstanceID:  "inst-cc-local",
-		DisplayName: fmt.Sprintf("%s %s %s", identity.Emoji, identity.Name, now.Format("Jan 2 15:04")),
-		Purpose:     "autoworker",
-		Origin:      "scheduler",
-		Type:        msg.SessionTypeAutonomous,
-		AutoStart:   true,
-		// Who this session acts as, and where it works. Both were designed for
-		// exactly this and have been empty on essentially every session.
-		AgentID:    identity.Slug,
-		WorkingDir: workingDir,
-		MaxBudget:  &budget,
-	}
-	// The harness-side cap as well as the server-side one. autoworker's spend
-	// notes are blunt about why both: the fastest observed session burned
-	// $29.22/min, so a poller that notices afterwards is not a control.
-	create.HarnessConfig = []byte(fmt.Sprintf(`{"max_budget_usd":%.2f}`, budget))
-
-	in := messages.BridgeInbound{
-		BusSessionID: sessionID,
-		Agent:        identity.Slug,
-		Orchestrator: "demo-worker",
-		Channel:      "demo-worker",
-		Timestamp:    now,
-		Create:       create,
-		Send:         &msg.SendMessageRequest{Message: prompt},
-	}
-	if err := nc.Publish(messages.BridgeInboundSubject, in); err != nil {
-		return "", fmt.Errorf("publish: %w", err)
-	}
-	return sessionID, nil
 }
 
 func indent(s string) string {

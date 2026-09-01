@@ -25,13 +25,18 @@ import (
 	"time"
 
 	"github.com/slava/scheduler/internal/demomail"
-	"github.com/slava/scheduler/internal/demosession"
 	"github.com/slava/scheduler/internal/demoteam"
+	"github.com/slava/scheduler/internal/oneshot"
 )
 
 const (
 	defaultRepo    = "/home/kayushkincom/repos/northwind-api"
 	defaultAccount = "demo-work"
+	defaultModel   = "claude-sonnet-4-6"
+
+	// Sized for a handful of full email bodies. Too small does not fail
+	// silently — oneshot reports truncation — but it does fail.
+	maxOutputTokens = 8192
 )
 
 type config struct {
@@ -40,9 +45,9 @@ type config struct {
 	MailURL   string
 	MailToken string
 
-	NATSURL    string
-	WriterSlug string
-	MaxBudget  float64
+	BridgeURL       string
+	OneshotInstance string
+	Model           string
 
 	Count  int
 	Purge  bool
@@ -63,9 +68,10 @@ func parseFlags() config {
 	flag.StringVar(&c.Account, "account", defaultAccount, "The LOCAL mailstack account to deliver to.")
 	flag.StringVar(&c.MailURL, "mail-url", envOr("MAILSTACK_URL", "http://localhost:8195"), "mailstack base URL")
 	flag.StringVar(&c.MailToken, "mail-token", os.Getenv("MAILSTACK_TOKEN"), "mailstack bearer token")
-	flag.StringVar(&c.NATSURL, "nats-url", envOr("NATS_URL", "nats://localhost:4222"), "NATS URL")
-	flag.StringVar(&c.WriterSlug, "writer", "northwind-priya", "Roster identity the writing session acts as.")
-	flag.Float64Var(&c.MaxBudget, "max-budget-usd", 2, "Spend ceiling for the writing session.")
+	flag.StringVar(&c.BridgeURL, "bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
+	flag.StringVar(&c.OneshotInstance, "oneshot-instance", envOr("ONESHOT_INSTANCE_ID", "inst-cc-local"),
+		"claude_code harness instance for the subscription oneshot call")
+	flag.StringVar(&c.Model, "model", envOr("DEMO_MAIL_MODEL", defaultModel), "model id for the oneshot call")
 	flag.IntVar(&c.Count, "count", 2, "How many messages to write this tick.")
 	flag.BoolVar(&c.Purge, "purge", false, "Delete every message in the account first.")
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Print what would be sent to the model and stop.")
@@ -103,28 +109,65 @@ func run(cfg config) error {
 	plan := planMessages(cfg.Count, rand.New(rand.NewSource(seed)))
 	if cfg.DryRun {
 		fmt.Println(strings.Repeat("─", 72))
-		fmt.Print(sessionPrompt(project, plan, cfg.Account, cfg.MailURL, "<mailstack token>"))
+		fmt.Print(buildBrief(project, plan))
 		fmt.Println(strings.Repeat("─", 72))
-		fmt.Println("(-dry-run: no session was spawned and no mail was delivered)")
+		fmt.Println("(-dry-run: nothing was sent and no mail was delivered)")
 		return nil
 	}
 
-	sessionID, err := demosession.Spawn(cfg.NATSURL, demosession.Task{
-		Prompt:      sessionPrompt(project, plan, cfg.Account, cfg.MailURL, cfg.MailToken),
-		AgentSlug:   cfg.WriterSlug,
-		DisplayName: fmt.Sprintf("✉️ mail for %s %s", project.Name, time.Now().UTC().Format("Jan 2 15:04")),
-		WorkingDir:  cfg.Repo,
-		// Capped, because an agent writing four emails should never be able to
-		// spend like one refactoring a service.
-		MaxBudgetUSD: cfg.MaxBudget,
-	})
-	if err != nil {
+	var written struct {
+		Messages []struct {
+			Key     string `json:"key"`
+			Subject string `json:"subject"`
+			Body    string `json:"body"`
+		} `json:"messages"`
+	}
+	// Composed through llm-bridge's oneshot endpoint, which forces the schema
+	// and runs on the Claude Code subscription login. No credential passes
+	// through here at all.
+	//
+	// The composing is the model's job and the DELIVERY is not: an agent asked
+	// to curl its own output has to get shell quoting right on a body full of
+	// newlines and apostrophes, and a body mangled that way looks delivered.
+	// Go posts it instead.
+	if err := oneshot.Call(ctx, oneshot.Config{
+		BridgeURL:  cfg.BridgeURL,
+		InstanceID: cfg.OneshotInstance,
+		Model:      cfg.Model,
+		MaxTokens:  maxOutputTokens,
+		Timeout:    300 * time.Second,
+	}, systemPrompt, buildBrief(project, plan), writeSchema(), &written); err != nil {
 		return err
 	}
-	fmt.Printf("dispatched %s as %s — it writes and posts the mail itself\n", sessionID, cfg.WriterSlug)
-	for _, m := range plan {
-		fmt.Printf("  %-14s %s\n", m.Kind.Name, m.From.Name)
+
+	byKey := map[string]struct{ subject, body string }{}
+	for _, m := range written.Messages {
+		byKey[m.Key] = struct{ subject, body string }{strings.TrimSpace(m.Subject), strings.TrimSpace(m.Body)}
 	}
+
+	delivered := 0
+	for _, want := range plan {
+		got, ok := byKey[want.Key]
+		if !ok || got.subject == "" || got.body == "" {
+			// Loudly, and keep going: one unusable message must not cost the
+			// others, and must not pass unnoticed either.
+			fmt.Printf("  WARNING: nothing usable came back for %s (%s)\n", want.Key, want.Kind.Name)
+			continue
+		}
+		locator, err := mail.Append(ctx, cfg.Account, demomail.Message{
+			Subject:  got.subject,
+			From:     demomail.Address{Name: want.From.Name, Email: want.From.Email},
+			To:       []demomail.Address{{Name: "Vlad", Email: "vlad@northwind-eng.example"}},
+			BodyText: got.body,
+		})
+		if err != nil {
+			return fmt.Errorf("deliver %s: %w", want.Key, err)
+		}
+		fmt.Printf("  %-14s %-20s %s\n", want.Kind.Name, want.From.Name, truncate(got.subject, 52))
+		fmt.Printf("      %s\n", locator)
+		delivered++
+	}
+	fmt.Printf("delivered %d of %d\n", delivered, len(plan))
 	return nil
 }
 
