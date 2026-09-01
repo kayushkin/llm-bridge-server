@@ -75,7 +75,7 @@ func review(kc *kanbanclient.Client, cfg config) error {
 				continue
 			}
 
-			sessionID, err := demosession.Spawn(cfg.NATSURL, demosession.Task{
+			sessionID, err := demosession.Spawn(cfg.BridgeURL, demosession.Task{
 				Prompt:       prompt,
 				AgentSlug:    reviewer.Slug,
 				DisplayName:  fmt.Sprintf("%s %s %s", reviewer.Emoji, reviewer.Name, time.Now().UTC().Format("Jan 2 15:04")),

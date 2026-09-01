@@ -71,7 +71,7 @@ type config struct {
 	WorkBoard    string
 	KanbanURL    string
 	NoteboardURL string
-	NATSURL      string
+	BridgeURL    string
 	RepoPath     string
 
 	BuilderSlug  string
@@ -99,7 +99,8 @@ func parseFlags() config {
 	flag.StringVar(&c.WorkBoard, "work-board", defaultWorkBoard, "Board the agents work from.")
 	flag.StringVar(&c.KanbanURL, "kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
 	flag.StringVar(&c.NoteboardURL, "noteboard-url", envOr("NOTEBOARD_URL", "http://localhost:8191"), "noteboard base URL")
-	flag.StringVar(&c.NATSURL, "nats-url", envOr("NATS_URL", "nats://localhost:4222"), "NATS URL")
+	flag.StringVar(&c.BridgeURL, "bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"),
+		"llm-bridge-server base URL. Sessions are created here directly rather than published to NATS, so a failure to start is an error rather than silence.")
 	flag.StringVar(&c.RepoPath, "repo", defaultRepoPath, "The repo agents work in.")
 	flag.StringVar(&c.BuilderSlug, "builder", "northwind-builder", "Identity that does the building.")
 	flag.StringVar(&c.ReviewerSlug, "reviewer", "northwind-reviewer", "Identity that does the reviewing.")

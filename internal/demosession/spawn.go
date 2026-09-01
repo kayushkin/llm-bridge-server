@@ -1,32 +1,38 @@
-// Package demosession runs a one-shot task as a Claude Code session instead of
-// as a direct Anthropic API call.
+// Package demosession runs a one-shot task as a Claude Code session.
 //
 // The reason is billing, and it is not a detail. A direct call to
 // /v1/messages spends API credit; a Claude Code session runs on the Max
 // subscription, where the marginal cost of a turn is zero. Everything on this
-// host that dispatches agents already works that way — the builder and the
-// reviewer do — while the tools that called the API directly did not, and
-// stopped the day the API credit ran out.
+// host that dispatches agents already works that way.
 //
-// It also removes a credential problem rather than maintaining one. auth-store
-// holds a Max OAuth credential whose refresh_mode is client_lease, which means
-// auth-store never refreshes it and nothing else did either: the stored token
-// is invalid, while Claude Code holds a live one it refreshes itself. Going
-// through the harness means never handling that token at all.
+// It talks to llm-bridge-server over HTTP rather than publishing to NATS, which
+// is what autoworker and kanban-dispatcher do. Two reasons, both learned here:
 //
-// What is given up: a forced tool call. An API call can demand a schema and get
-// a validated object back. A session is an agent doing work, so the task has to
-// be expressible as WORK — write these messages into that mailbox — rather than
-// as a value to be returned and then acted on. For these tasks that is the
-// better shape anyway, since the caller only wanted the side effect.
+//   - A NATS publish is fire-and-forget. It succeeds whether or not a session
+//     is ever created, so a caller that publishes and then links the session id
+//     to a card can leave the card pointing at a session that never existed.
+//     That happened: the first dispatch produced a session that did nothing,
+//     went idle having spent nothing, and reported no error anywhere.
+//   - The NATS route passes through llm-bridge-adapter, which for three months
+//     silently dropped every CreateSessionRequest field added after the binary
+//     was built — working_dir and max_budget among them — because it decoded
+//     into a compiled-in struct. Going straight to the server removes the hop.
+//
+// The session id is still minted by the caller, so a card's session link
+// resolves exactly as it did over NATS: the server only invents one when the
+// request leaves it empty.
 package demosession
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"time"
 
-	natsbus "github.com/kayushkin/bus"
-	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -54,16 +60,19 @@ type Task struct {
 	Origin  string
 }
 
-// Spawn publishes the session request and returns the session id.
+// Spawn creates the session, starts it, and sends it the prompt.
 //
-// The id is minted here because the adapter passes BusSessionID through as the
-// bridge session_id, so this value is what a card's session link resolves to.
-func Spawn(natsURL string, t Task) (string, error) {
+// It returns the session id only once the harness is actually running. A
+// caller can therefore link the id to a card knowing it refers to something.
+func Spawn(bridgeURL string, t Task) (string, error) {
 	if t.Prompt == "" {
 		return "", fmt.Errorf("demosession: a task with no prompt would spawn an agent with nothing to do")
 	}
 	if t.AgentSlug == "" {
 		return "", fmt.Errorf("demosession: a session with no identity cannot be attributed to anyone")
+	}
+	if bridgeURL == "" {
+		return "", fmt.Errorf("demosession: no llm-bridge-server URL")
 	}
 	if t.InstanceID == "" {
 		t.InstanceID = "inst-cc-local"
@@ -75,16 +84,11 @@ func Spawn(natsURL string, t Task) (string, error) {
 		t.Origin = "scheduler"
 	}
 
-	nc, err := natsbus.Connect(natsbus.Options{URL: natsURL, Name: "demosession"})
-	if err != nil {
-		return "", fmt.Errorf("demosession: nats: %w", err)
-	}
-	defer nc.Close()
-
 	now := time.Now().UTC()
 	sessionID := fmt.Sprintf("demo-%s-%d", t.AgentSlug, now.UnixNano())
 
-	create := &msg.CreateSessionRequest{
+	create := msg.CreateSessionRequest{
+		SessionID:   sessionID,
 		Harness:     msg.HarnessClaudeCode,
 		InstanceID:  t.InstanceID,
 		DisplayName: t.DisplayName,
@@ -104,17 +108,61 @@ func Spawn(natsURL string, t Task) (string, error) {
 		create.HarnessConfig = []byte(fmt.Sprintf(`{"max_budget_usd":%.2f}`, budget))
 	}
 
-	in := messages.BridgeInbound{
-		BusSessionID: sessionID,
-		Agent:        t.AgentSlug,
-		Orchestrator: "demo",
-		Channel:      "demo",
-		Timestamp:    now,
-		Create:       create,
-		Send:         &msg.SendMessageRequest{Message: t.Prompt},
+	base := strings.TrimRight(bridgeURL, "/")
+	var created struct {
+		SessionID string `json:"session_id"`
+		State     string `json:"state"`
 	}
-	if err := nc.Publish(messages.BridgeInboundSubject, in); err != nil {
-		return "", fmt.Errorf("demosession: publish: %w", err)
+	if err := postJSON(base+"/sessions", create, &created); err != nil {
+		return "", fmt.Errorf("demosession: create session: %w", err)
+	}
+	// ⚠️ Creation answers 201 even when the harness failed to start — the
+	// server records the failure as the session's state and returns it. Reading
+	// only the status code would report a working agent that does not exist.
+	if created.State == string(msg.SessionError) {
+		return "", fmt.Errorf("demosession: session %s was created but its harness failed to start", sessionID)
+	}
+	if created.SessionID != "" && created.SessionID != sessionID {
+		// The caller mints the id so a card's link resolves to it. A server that
+		// chose a different one would leave that link pointing nowhere.
+		return "", fmt.Errorf("demosession: asked for session %q and the server made %q", sessionID, created.SessionID)
+	}
+
+	if err := postJSON(base+"/sessions/"+sessionID+"/send",
+		msg.SendMessageRequest{Message: t.Prompt}, nil); err != nil {
+		return "", fmt.Errorf("demosession: session %s started but the prompt did not reach it: %w", sessionID, err)
 	}
 	return sessionID, nil
+}
+
+// postJSON sends one request and insists on a 2xx, carrying the body on
+// failure. A non-2xx swallowed here is a session nobody knows did not start.
+func postJSON(url string, body any, out any) error {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encode request: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(encoded))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Errorf("%s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("%s returned %d: %s", url, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if out != nil && len(bytes.TrimSpace(raw)) > 0 {
+		if err := json.Unmarshal(raw, out); err != nil {
+			return fmt.Errorf("decode reply from %s: %w", url, err)
+		}
+	}
+	return nil
 }

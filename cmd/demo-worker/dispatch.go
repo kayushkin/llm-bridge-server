@@ -68,7 +68,7 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 				continue
 			}
 
-			sessionID, err := demosession.Spawn(cfg.NATSURL, demosession.Task{
+			sessionID, err := demosession.Spawn(cfg.BridgeURL, demosession.Task{
 				Prompt:       prompt,
 				AgentSlug:    identity.Slug,
 				DisplayName:  fmt.Sprintf("%s %s %s", identity.Emoji, identity.Name, time.Now().UTC().Format("Jan 2 15:04")),
