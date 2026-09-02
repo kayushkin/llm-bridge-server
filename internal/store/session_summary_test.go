@@ -524,7 +524,7 @@ func TestSessionSummaryFilterCacheKey_DoesNotMutateCaller(t *testing.T) {
 // TestListSessionSummariesBySessionIDs pins the id LOOKUP: give it ids, get
 // exactly those rows, whatever their position in the recency order.
 //
-// The point is reachability, not filtering. dashv2's signals inbox holds ids it
+// The point is reachability, not filtering. the chat page's signals inbox holds ids it
 // got from the signals table and needs the names behind them; on this host most
 // of those sessions are thousands of rows deep in a listing ordered by
 // updated_at, so no page size the sidebar would ever ask for reaches them.

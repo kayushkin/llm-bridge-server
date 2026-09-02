@@ -96,7 +96,7 @@ func main() {
 	// Purpose is a slug from a known list, and this flag is where that stopped
 	// being true. Its old help text — "session purpose recorded on the session
 	// row" — read as an invitation to describe the task, so callers wrote
-	// "dashv2 browser verification + A/B perf" and "waitwell-dmv-api-recon"
+	// "browser verification + A/B perf" and "waitwell-dmv-api-recon"
 	// into a column meant for grouping and filtering. Every unregistered
 	// purpose in the sessions table came through here.
 	//

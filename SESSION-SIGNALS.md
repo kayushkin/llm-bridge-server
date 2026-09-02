@@ -739,7 +739,7 @@ Deploy gate unchanged: the server half needs the user's gateway rebuild + restar
 
 ## The banner folds into the card (2026-08-19)
 
-dashv2 could draw the same question twice, and could draw some questions not at all.
+the chat page could draw the same question twice, and could draw some questions not at all.
 Both came from one thing: the chat pane rendered the live HOOK STREAM, while every other
 signal surface rendered the RECORD.
 
@@ -831,7 +831,7 @@ false (2 red).
 
 ### Not done
 
-The cross-session "Needs you" inbox still has no dashv2 mount; the sidebar `?` markers are
+The cross-session "Needs you" inbox still has no chat-page mount; the sidebar `?` markers are
 what stands in for it. `surface:"kanban"` still has no mount at all.
 
 ---
@@ -843,7 +843,7 @@ primitive the first of them needed.
 
 ### The inbox: a marker needs a row, and there usually is not one
 
-dashv2 marked the row that owned a question and had no other surface for one. The
+the chat page marked the row that owned a question and had no other surface for one. The
 reasoning in `QuestionMarkers` is right as far as it goes — a count tells you a number,
 a marker tells you WHICH ROW — but it assumes there is a row.
 
@@ -855,7 +855,7 @@ moves on, it is the row itself.
 
 Measured while building this: **21 open chat signals across 17 sessions, and 11 of
 those 17 sessions had no row in the sidebar's first page.** Their questions were
-unreachable in dashv2 by any route at all.
+unreachable in the chat page by any route at all.
 
 So the inbox is not a count replacing the markers. It is the surface for the signals
 with no row to sit on, and every card names its session and opens it — the same "which
@@ -948,6 +948,6 @@ DOM, and a visibility assertion cannot tell that from scrolled-out-of-view.
 
 ### Still not done
 
-`surface:"kanban"` has no mount in dashv2 itself; the board at `/kanban` is bridge-ui's
+`surface:"kanban"` has no mount in the chat page itself; the board at `/kanban` is bridge-ui's
 and remains where kanban signals are read. chat-core still has no by-todo read, so a
-dashv2 kanban pane would need one.
+chat-page kanban pane would need one.

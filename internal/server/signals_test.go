@@ -798,7 +798,7 @@ func TestSessionGoingAwayLeavesTheQuestionOpen(t *testing.T) {
 }
 
 // TestRecordAskUserQuestionSignalsCarriesMultiSelect pins the flag onto the
-// record, because the record is now the only thing dashv2 draws the answer form
+// record, because the record is now the only thing the chat page draws the answer form
 // from. The permission banner used to draw it from the live tool input and was
 // the sole reason multiSelect ever reached a screen; folding that banner into
 // the signal card puts the whole capability on this one field.

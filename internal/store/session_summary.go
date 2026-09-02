@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// SessionSummaryRow is the projected sidebar row for the dashv2 list. It carries
+// SessionSummaryRow is the projected sidebar row for the chat sidebar. It carries
 // ONLY the light columns the sidebar needs — deliberately no info /
 // harness_config blobs, which are the expensive part of a full Session and are
 // fetched lazily per session when actually opened.

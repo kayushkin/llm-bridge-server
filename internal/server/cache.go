@@ -6,8 +6,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
-// responseCache is a tiny in-memory cache for the SERIALIZED dashv2 summary and
-// recent-bundle responses (L3 in dashv2-architecture.md §3). It caches the
+// responseCache is a tiny in-memory cache for the SERIALIZED chat-page summary and
+// recent-bundle responses (L3 in dash docs/chat-architecture.md §3). It caches the
 // already-encoded bytes so a hot refresh skips both the DB projection and JSON
 // encoding — the DB is fast, but re-serializing the list/bundle on every poll
 // is the avoidable cost this removes.

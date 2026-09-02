@@ -68,7 +68,7 @@ type Server struct {
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
 	authClient := authstoreclient.New("", "", "llm-bridge-server")
 	hub := newSessionHub(st)
-	// The dashv2 response cache and the SSE hub both need session-row mutation
+	// The chat-page response cache and the SSE hub both need session-row mutation
 	// signals; the store takes a single Notifier, so fan out to both. The cache
 	// invalidates on any change/delete; the hub publishes list deltas as before.
 	respCache := newResponseCache()
@@ -151,8 +151,8 @@ func (s *Server) routes() {
 	// Session routes
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
 	s.mux.HandleFunc("GET /session-events", s.handleSessionListEvents)
-	// dashv2 additive endpoints — projected sidebar list, recent-bundle warmer,
-	// and the cheap validators staleness check. See dashv2-architecture.md §5.
+	// chat-page endpoints — projected sidebar list, recent-bundle warmer,
+	// and the cheap validators staleness check. See dash docs/chat-architecture.md §5.
 	s.mux.HandleFunc("GET /sessions/summary", s.handleSessionsSummary)
 	// Same query, POST body: the id lookups (session_ids, manager_session_ids)
 	// outgrow a URL — a long-enough query string kills the whole HTTP/2

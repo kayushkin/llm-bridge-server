@@ -9,7 +9,7 @@ import (
 
 // The wire types below mirror chat-core/src/net/types.ts EXACTLY (camelCase
 // field names, RFC3339+offset timestamps). See docs/WIRE.md — that contract is
-// authoritative and these structs must serialize to it. All dashv2 endpoints
+// authoritative and these structs must serialize to it. All chat-page endpoints
 // are additive; nothing here changes an existing endpoint's shape.
 
 // SessionSummary is the projected sidebar row. Deliberately omits the heavy

@@ -19,7 +19,7 @@ import (
 // The six filter axes (`harness`, `status`, `type`, `purpose`, `mode`,
 // `machine`) are the sidebar's own, spelled the same way, and each is REPEATED
 // rather than comma-separated: a purpose on this box can read
-// "dashv2 browser verification + A/B perf", and nothing stops one containing a
+// "browser verification + A/B perf", and nothing stops one containing a
 // comma, so splitting on one would silently cut a value in half. Omitting an
 // axis filters nothing on it, which keeps every existing caller unchanged.
 //
@@ -394,7 +394,7 @@ func etagFor(revision string) string {
 // keeps them off axes() for that reason:
 //
 //   - `session_id` answers "what are these sessions called?" for a caller that
-//     already holds the ids. dashv2's signals inbox is the first — it lists open
+//     already holds the ids. the chat page's signals inbox is the first — it lists open
 //     signals across every session, and on this host 11 of the 17 sessions
 //     holding one are nowhere near the sidebar's first page, so their cards
 //     would otherwise be headed by a raw br_1786635575897138112.

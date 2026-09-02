@@ -173,7 +173,7 @@ func TestAuditedCapabilityColumnsMatchTheHarnesses(t *testing.T) {
 //
 // The list is every capability string the three consumer surfaces branch on:
 // bridge-ui Workspace.tsx and BridgeSettings.tsx, dash chat/SessionControls.tsx
-// and dash dashv2/ControlsBar.tsx.
+// and dash src/pages/chat/ControlsBar.tsx.
 func TestCapabilityNamesAreConsumed(t *testing.T) {
 	consumed := map[string]bool{
 		"compact":       true,

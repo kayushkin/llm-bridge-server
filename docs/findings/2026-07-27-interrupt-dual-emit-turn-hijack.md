@@ -4,7 +4,7 @@ Date: 2026-07-27
 Investigated by: agent session (chat-surface bug triage on session `bridge-ui Vim keys`, `br_1784050100695400516`)
 Status: **diagnosed, not yet fixed.** Fix plan below. A gateway restart is required to ship the server half — do NOT restart `llm-bridge.service` unattended.
 
-This file is duplicated onto the noteboard (search tag `chat-surface-bugs`) so agents in other repos — notably the dashv2 agent in `~/repos/dash` on branch `dashv2-page`, which consumes `@kayushkin/bridge-ui` — can find it.
+This file is duplicated onto the noteboard (search tag `chat-surface-bugs`) so agents in other repos — notably the the chat page agent in `~/repos/dash` on branch `the chat page-page`, which consumes `@kayushkin/bridge-ui` — can find it.
 
 ---
 
@@ -318,9 +318,9 @@ manager during the restructure (branch 2, §8).
 
 ---
 
-## §6 — What the dashv2 / bridge-ui-consumer agent must know
+## §6 — What the chat-page / bridge-ui-consumer agent must know
 
-`dash` (branch `dashv2-page`) consumes `@kayushkin/bridge-ui`. The render-edge
+`dash` (on its chat-page branch at the time) consumes `@kayushkin/bridge-ui`. The render-edge
 bugs (1 and the render half of 3) live in the library, not in dash. Things to
 carry into a new chat surface:
 
@@ -398,7 +398,7 @@ carry into a new chat surface:
   `applyDelta`) out of the 1,235-line `useBridgeSession.ts` into its own testable
   module; add a regression test for the bug-1 race.
 - Hoist the dual-emit dedup into one shared selector both `TurnsView` and `Thread`
-  (and any dashv2 surface) consume.
+  (and dash's chat page) consume.
 
 ---
 
