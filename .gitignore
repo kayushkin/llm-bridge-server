@@ -44,3 +44,5 @@
 # blocks `git worktree remove` if left behind.
 __pycache__/
 *.pyc
+/demo-mail-generator
+/demo-worker
