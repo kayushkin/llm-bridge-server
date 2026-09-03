@@ -55,7 +55,9 @@ func ReadProject(path string) (*Project, error) {
 	p.Packages = subdirs(filepath.Join(path, "internal"))
 	p.Files = lines(run(path, "git", "ls-files"))
 	p.Endpoints = endpoints(path)
-	p.OpenPRs = openPullRequests(path)
+	if p.OpenPRs, err = openPullRequests(path); err != nil {
+		return nil, err
+	}
 	p.Tests = countTests(run(path, "git", "grep", "-c", "^func Test", "--", "*_test.go"))
 
 	if p.Readme == "" && len(p.Files) == 0 {
@@ -79,23 +81,39 @@ func endpoints(path string) []string {
 	return routes
 }
 
-// openPullRequests asks gh. A repository with no remote, or a host with no gh,
-// simply has none to mention.
-func openPullRequests(path string) []string {
-	out := run(path, "gh", "pr", "list", "--state", "open", "--json", "number,title,headRefName")
+// openPullRequests asks gh. A missing gh, or one that cannot list, is an
+// error rather than an empty list: run() swallowing it is how scheduler job 82
+// told the model "0 open PR(s)" for a repository with three, because systemd's
+// PATH does not include ~/bin. Mail that references nothing real is the
+// failure this whole reader exists to prevent, so it must not be silent. A
+// repository with genuinely no open pull requests still returns an empty list.
+func openPullRequests(path string) ([]string, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return nil, fmt.Errorf("gh is not on PATH (%s), so open pull requests cannot be read: %w", os.Getenv("PATH"), err)
+	}
+	cmd := exec.Command("gh", "pr", "list", "--state", "open", "--json", "number,title,headRefName")
+	cmd.Dir = path
+	out, err := cmd.Output()
+	if err != nil {
+		detail := ""
+		if ee, ok := err.(*exec.ExitError); ok {
+			detail = ": " + strings.TrimSpace(string(ee.Stderr))
+		}
+		return nil, fmt.Errorf("gh pr list in %s: %w%s", path, err, detail)
+	}
 	var prs []struct {
 		Number      int    `json:"number"`
 		Title       string `json:"title"`
 		HeadRefName string `json:"headRefName"`
 	}
-	if json.Unmarshal([]byte(out), &prs) != nil {
-		return nil
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return nil, fmt.Errorf("gh pr list returned something that is not JSON: %w", err)
 	}
 	var described []string
 	for _, pr := range prs {
 		described = append(described, fmt.Sprintf("#%d %s (branch %s)", pr.Number, pr.Title, pr.HeadRefName))
 	}
-	return described
+	return described, nil
 }
 
 func countTests(grepOutput string) int {

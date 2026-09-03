@@ -185,9 +185,14 @@ func planMessages(count int, random *rand.Rand) []planned {
 	var out []planned
 	for i := 0; i < count; i++ {
 		kind := requestKinds[random.Intn(len(requestKinds))]
-		senders := demoteam.WithRole(kind.From)
+		// Only members with an address can send mail. WithRole also returns
+		// the agents — northwind-reviewer shares RoleReviewer with Dinesh —
+		// and an agent has no Email, so picking one produced a message
+		// mailstack refused with "from.email is required". Measured on
+		// scheduler job 82, 2026-09-03: two of the first eight ticks.
+		senders := sendersWithMail(demoteam.WithRole(kind.From))
 		if len(senders) == 0 {
-			senders = demoteam.Roster
+			senders = sendersWithMail(demoteam.Roster)
 		}
 		out = append(out, planned{
 			Key:  fmt.Sprintf("msg-%d", i+1),
@@ -210,4 +215,15 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// sendersWithMail keeps the members who have an address to send from.
+func sendersWithMail(members []demoteam.Member) []demoteam.Member {
+	var out []demoteam.Member
+	for _, m := range members {
+		if m.SendsMail() {
+			out = append(out, m)
+		}
+	}
+	return out
 }
