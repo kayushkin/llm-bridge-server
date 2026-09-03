@@ -1,11 +1,15 @@
 package harness
 
 import (
+	"errors"
 	"log"
+	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
+	logstore "github.com/kayushkin/log-store/client"
 )
 
 // logStoreQueueDepth bounds how many events may sit unwritten per session.
@@ -32,6 +36,36 @@ const logStoreQueueDepth = 256
 // draining behind it. The cost is a read that may miss the tail of a
 // session, which is why it is logged rather than swallowed.
 const logStoreDrainTimeout = 10 * time.Second
+
+// A push that fails is retried, not dropped. The header above promises
+// producers block rather than lose an event, and since the queue was
+// written the one place that promise was not kept was the push itself: a
+// log-store restart — deploy.sh stops and starts the unit, about a second
+// — refused every connection in that window and each refused event was
+// logged once and gone. Measured in the system journal 2026-08-20 →
+// 2026-09-03: 59 events lost, 55 of them "connection refused", 4 client
+// timeouts.
+//
+// The writer sleeps between attempts, doubling from the base delay up to
+// the cap, and gives up at the deadline. Thirty seconds covers a restart
+// several times over and a slow migration on boot; past it log-store is
+// down rather than restarting, and the event is dropped LOUDLY — the drop
+// is the failure, and the log line says so with the word DROPPED.
+//
+// While the writer retries, the session's queue fills and its producer —
+// the event pump — blocks on Enqueue, which stalls that session's SSE
+// fan-out too. That is the contract stated above, and a one-second
+// restart costs a one-second pause. What it must NOT cost is every live
+// chat frozen at one event per deadline while log-store is dead for an
+// hour, so hitting the deadline once marks log-store down: from then on
+// each push gets ONE attempt — still loud when it fails — until one
+// succeeds, which marks it up again. A dead log-store degrades to what
+// this code did before, minus the silence.
+const (
+	logStoreRetryBaseDelay = 50 * time.Millisecond
+	logStoreRetryMaxDelay  = 2 * time.Second
+	logStoreRetryDeadline  = 30 * time.Second
+)
 
 // logStoreItem is one unit of work for a session's writer goroutine.
 // Exactly one of event/barrier is meaningful: a barrier carries no event
@@ -82,14 +116,30 @@ type logStoreQueue struct {
 	depth  int
 	// drainTimeout bounds Flush and Close; see logStoreDrainTimeout.
 	drainTimeout time.Duration
+	// The retry schedule for a failed push; see logStoreRetryDeadline.
+	retryBaseDelay time.Duration
+	retryMaxDelay  time.Duration
+	retryDeadline  time.Duration
+	// sleep is time.Sleep, replaceable so a test can run the schedule
+	// without waiting it out.
+	sleep func(time.Duration)
+	// downSince is when a push last exhausted its deadline, in UnixNano,
+	// or 0 while log-store is believed up. Queue-wide, not per session:
+	// one log-store serves every session, so one of them learning it is
+	// down is all of them learning it.
+	downSince atomic.Int64
 }
 
 func newLogStoreQueue(push func(msg.Event) (int64, error)) *logStoreQueue {
 	return &logStoreQueue{
-		queues:       make(map[string]*sessionLogQueue),
-		push:         push,
-		depth:        logStoreQueueDepth,
-		drainTimeout: logStoreDrainTimeout,
+		queues:         make(map[string]*sessionLogQueue),
+		push:           push,
+		depth:          logStoreQueueDepth,
+		drainTimeout:   logStoreDrainTimeout,
+		retryBaseDelay: logStoreRetryBaseDelay,
+		retryMaxDelay:  logStoreRetryMaxDelay,
+		retryDeadline:  logStoreRetryDeadline,
+		sleep:          time.Sleep,
 	}
 }
 
@@ -154,7 +204,7 @@ func (q *logStoreQueue) Close(bridgeID string) {
 func (q *logStoreQueue) Enqueue(bridgeID, label string, ev msg.Event) {
 	sq := q.acquire(bridgeID)
 	if sq == nil {
-		q.pushLogged(label, ev)
+		q.pushOrDrop(label, ev)
 		return
 	}
 	sq.items <- logStoreItem{event: ev, label: label}
@@ -211,14 +261,81 @@ func (q *logStoreQueue) writeLoop(sq *sessionLogQueue) {
 			close(item.barrier)
 			continue
 		}
-		q.pushLogged(item.label, item.event)
+		q.pushOrDrop(item.label, item.event)
 	}
 }
 
-func (q *logStoreQueue) pushLogged(label string, ev msg.Event) {
-	if _, err := q.push(ev); err != nil {
-		log.Printf("[harness] failed to push %s to log-store: %v", label, err)
+// pushOrDrop writes ev, retrying a failure that a retry can fix, and drops
+// it — loudly — when one cannot or when the deadline passes. It runs on
+// the session's writer goroutine, so a retry here holds that session's
+// queue and keeps its order; the next event does not overtake this one.
+func (q *logStoreQueue) pushOrDrop(label string, ev msg.Event) {
+	start := time.Now()
+	delay := q.retryBaseDelay
+	for attempt := 1; ; attempt++ {
+		_, err := q.push(ev)
+		if err == nil {
+			if since := q.downSince.Swap(0); since != 0 {
+				log.Printf("[harness] log-store is back after being down since %s; pushes are retried again",
+					time.Unix(0, since).Format(time.RFC3339))
+			}
+			if attempt > 1 {
+				log.Printf("[harness] pushed %s for %s to log-store on attempt %d after %s",
+					label, ev.BridgeSessionID, attempt, time.Since(start).Round(time.Millisecond))
+			}
+			return
+		}
+		if why := whyNotToRetryLogStorePush(err); why != "" {
+			log.Printf("[harness] DROPPED %s for %s: log-store push failed and %s: %v",
+				label, ev.BridgeSessionID, why, err)
+			return
+		}
+		if since := q.downSince.Load(); since != 0 {
+			log.Printf("[harness] DROPPED %s for %s: log-store has been down since %s and is not retried until a push succeeds: %v",
+				label, ev.BridgeSessionID, time.Unix(0, since).Format(time.RFC3339), err)
+			return
+		}
+		if time.Since(start)+delay > q.retryDeadline {
+			q.downSince.CompareAndSwap(0, time.Now().UnixNano())
+			log.Printf("[harness] DROPPED %s for %s after %d attempts over %s; log-store is down, not restarting, and gets one attempt per push until one succeeds: %v",
+				label, ev.BridgeSessionID, attempt, time.Since(start).Round(time.Millisecond), err)
+			return
+		}
+		if attempt == 1 {
+			log.Printf("[harness] failed to push %s for %s to log-store; retrying for up to %s: %v",
+				label, ev.BridgeSessionID, q.retryDeadline, err)
+		}
+		q.sleep(delay)
+		if delay *= 2; delay > q.retryMaxDelay {
+			delay = q.retryMaxDelay
+		}
 	}
+}
+
+// whyNotToRetryLogStorePush names the reason a failed push must not be
+// re-sent, or returns "" when a retry is the right move.
+//
+// Two failures are final. A 4xx is log-store REJECTING the event, and the
+// same body re-sent is rejected the same way. A timeout is worse: the
+// request may have reached log-store and been stored before the client
+// gave up, and log-store's ingest is a plain INSERT with no idempotency
+// key, so re-sending could store the event twice — and a duplicated
+// stream delta corrupts a transcript in a way a missing one does not.
+// Everything else — connection refused, reset, EOF before a response,
+// 5xx — means log-store stored nothing, so a retry cannot duplicate.
+func whyNotToRetryLogStorePush(err error) string {
+	var status *logstore.StatusError
+	if errors.As(err, &status) {
+		if status.StatusCode < 500 {
+			return "log-store rejected it, so re-sending the same event cannot help"
+		}
+		return ""
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "the request timed out, so log-store may already hold it and a retry could store it twice"
+	}
+	return ""
 }
 
 // waitFor reports whether ch closed before the timeout expired.

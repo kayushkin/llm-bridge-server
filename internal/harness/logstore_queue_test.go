@@ -12,6 +12,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
+	logstore "github.com/kayushkin/log-store/client"
 )
 
 // recordingPusher stands in for the log-store client. It records what it
@@ -24,11 +25,16 @@ type recordingPusher struct {
 	delay   time.Duration
 	gate    chan struct{} // when non-nil, every push waits on it first
 	err     error
+	// failFirst makes the next N pushes fail with err and then succeed —
+	// a log-store that is restarting rather than gone. Zero means err
+	// applies to every push.
+	failFirst int
+	attempts  int
 }
 
 func (p *recordingPusher) push(ev msg.Event) (int64, error) {
 	p.mu.Lock()
-	gate, delay, err := p.gate, p.delay, p.err
+	gate, delay := p.gate, p.delay
 	p.mu.Unlock()
 
 	if gate != nil {
@@ -40,11 +46,18 @@ func (p *recordingPusher) push(ev msg.Event) (int64, error) {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if err != nil {
-		return 0, err
+	p.attempts++
+	if p.err != nil && (p.failFirst == 0 || p.attempts <= p.failFirst) {
+		return 0, p.err
 	}
 	p.written = append(p.written, ev.BridgeSessionID+"/"+ev.TurnID)
 	return int64(len(p.written)), nil
+}
+
+func (p *recordingPusher) attemptCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.attempts
 }
 
 func (p *recordingPusher) snapshot() []string {
@@ -461,5 +474,205 @@ func TestLogStoreQueue_FlushAndCloseGiveUpOnAWedgedLogStore(t *testing.T) {
 			t.Fatalf("writer wrote %d of %d events after log-store recovered", p.count(), n)
 		case <-time.After(5 * time.Millisecond):
 		}
+	}
+}
+
+// retryingQueue is a queue whose retry schedule runs in test time: no real
+// sleeping, a deadline measured in wall-clock but with a base delay of one
+// microsecond so the schedule is exhausted in milliseconds.
+func retryingQueue(p *recordingPusher, deadline time.Duration) (*logStoreQueue, *int) {
+	q := newLogStoreQueue(p.push)
+	q.retryBaseDelay = time.Microsecond
+	q.retryMaxDelay = 10 * time.Microsecond
+	q.retryDeadline = deadline
+	sleeps := 0
+	q.sleep = func(d time.Duration) {
+		sleeps++
+		time.Sleep(d)
+	}
+	return q, &sleeps
+}
+
+// timedOut stands in for the error net/http returns when Client.Timeout
+// expires: a net.Error whose Timeout() is true.
+type timedOut struct{}
+
+func (timedOut) Error() string {
+	return "context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+}
+func (timedOut) Timeout() bool   { return true }
+func (timedOut) Temporary() bool { return false }
+
+// A log-store restart refuses connections for about a second. Every event
+// pushed in that window used to be logged once and lost; now the writer
+// waits it out and the event lands, once, in its place in the order.
+func TestLogStoreQueue_RetriesAPushRefusedDuringARestart(t *testing.T) {
+	p := &recordingPusher{err: errors.New("dial tcp: connect: connection refused"), failFirst: 3}
+	q, sleeps := retryingQueue(p, time.Second)
+	q.Open("br-restart")
+
+	for i := 0; i < 5; i++ {
+		q.Enqueue("br-restart", "event", event("br-restart", fmt.Sprintf("t%03d", i)))
+	}
+	q.Close("br-restart")
+
+	got := p.snapshot()
+	if len(got) != 5 {
+		t.Fatalf("log-store holds %d of 5 events after a transient failure: %v", len(got), got)
+	}
+	for i, w := range got {
+		if want := fmt.Sprintf("br-restart/t%03d", i); w != want {
+			t.Fatalf("position %d: wrote %q; want %q — a retried event lost its place", i, w, want)
+		}
+	}
+	if p.attemptCount() != 5+3 {
+		t.Fatalf("push attempted %d times; want 8 (three refusals, then one per event)", p.attemptCount())
+	}
+	if *sleeps != 3 {
+		t.Fatalf("writer slept %d times; want once per refused attempt (3)", *sleeps)
+	}
+}
+
+// A 5xx is log-store answering that it stored nothing, so it is retried
+// like a refused connection.
+func TestLogStoreQueue_RetriesAServerError(t *testing.T) {
+	p := &recordingPusher{
+		err:       &logstore.StatusError{StatusCode: 500, Status: "500 Internal Server Error", Body: "store failed"},
+		failFirst: 2,
+	}
+	q, _ := retryingQueue(p, time.Second)
+	q.Open("br-5xx")
+	q.Enqueue("br-5xx", "event", event("br-5xx", "t000"))
+	q.Close("br-5xx")
+
+	if got := p.snapshot(); len(got) != 1 {
+		t.Fatalf("log-store holds %d events after two 500s; want the event, retried until stored", len(got))
+	}
+}
+
+// A 4xx is log-store REJECTING the event. Re-sending the same body is
+// rejected the same way, so the writer drops it after one attempt and the
+// events behind it are not held up.
+func TestLogStoreQueue_DropsARejectedEventAfterOneAttempt(t *testing.T) {
+	p := &recordingPusher{
+		err:       &logstore.StatusError{StatusCode: 400, Status: "400 Bad Request", Body: "missing bridge_session_id"},
+		failFirst: 1,
+	}
+	q, sleeps := retryingQueue(p, time.Second)
+	q.Open("br-4xx")
+	q.Enqueue("br-4xx", "event", event("br-4xx", "rejected"))
+	q.Enqueue("br-4xx", "event", event("br-4xx", "next"))
+	q.Close("br-4xx")
+
+	if got := p.snapshot(); len(got) != 1 || got[0] != "br-4xx/next" {
+		t.Fatalf("wrote %v; want only the event behind the rejected one", got)
+	}
+	if p.attemptCount() != 2 {
+		t.Fatalf("push attempted %d times; want 2 — a rejected event must not be retried", p.attemptCount())
+	}
+	if *sleeps != 0 {
+		t.Fatalf("writer slept %d times on a rejection; want 0", *sleeps)
+	}
+}
+
+// A timeout is the one transport failure that is NOT retried: log-store's
+// ingest is a plain INSERT, so a request it stored before the client gave
+// up would be stored again. Dropped after one attempt, and said so.
+func TestLogStoreQueue_DoesNotRetryATimedOutPush(t *testing.T) {
+	p := &recordingPusher{err: fmt.Errorf("post event: %w", timedOut{}), failFirst: 1}
+	q, sleeps := retryingQueue(p, time.Second)
+	q.Open("br-timeout")
+	q.Enqueue("br-timeout", "event", event("br-timeout", "ambiguous"))
+	q.Enqueue("br-timeout", "event", event("br-timeout", "next"))
+	q.Close("br-timeout")
+
+	if got := p.snapshot(); len(got) != 1 || got[0] != "br-timeout/next" {
+		t.Fatalf("wrote %v; want only the event behind the timed-out one", got)
+	}
+	if p.attemptCount() != 2 || *sleeps != 0 {
+		t.Fatalf("attempts=%d sleeps=%d; want 2 and 0 — a timed-out push must not be re-sent", p.attemptCount(), *sleeps)
+	}
+}
+
+// When log-store stays down past the deadline the event is dropped rather
+// than the writer wedged forever, and the writer goes on to the next one.
+func TestLogStoreQueue_GivesUpAtTheDeadlineAndMovesOn(t *testing.T) {
+	p := &recordingPusher{err: errors.New("dial tcp: connect: connection refused")}
+	q, _ := retryingQueue(p, 20*time.Millisecond)
+	q.Open("br-down")
+	q.Enqueue("br-down", "event", event("br-down", "lost"))
+
+	// Comes back up only after the first event's deadline has passed.
+	time.Sleep(30 * time.Millisecond)
+	p.mu.Lock()
+	p.err = nil
+	p.mu.Unlock()
+	q.Enqueue("br-down", "event", event("br-down", "after"))
+	q.Close("br-down")
+
+	if got := p.snapshot(); len(got) != 1 || got[0] != "br-down/after" {
+		t.Fatalf("wrote %v; want the deadline to drop the first event and the writer to carry on", got)
+	}
+	if p.attemptCount() < 3 {
+		t.Fatalf("push attempted %d times; want several before the deadline gave up", p.attemptCount())
+	}
+}
+
+// The synchronous fallback — a session with no queue — gets the same
+// retry, so a teardown event on a session whose pump has gone does not
+// vanish in a restart window either.
+func TestLogStoreQueue_RetriesTheSynchronousFallbackToo(t *testing.T) {
+	p := &recordingPusher{err: errors.New("connection refused"), failFirst: 2}
+	q, _ := retryingQueue(p, time.Second)
+	q.Enqueue("br-none", "hook event", event("br-none", "t000"))
+	if got := p.snapshot(); len(got) != 1 {
+		t.Fatalf("wrote %v; want the event pushed after two refusals", got)
+	}
+}
+
+// Once a push has exhausted the deadline, log-store is down rather than
+// restarting, and every live chat's pump would otherwise stall for a full
+// deadline per event. From then on each push gets one attempt until one
+// succeeds; then the retry is back.
+func TestLogStoreQueue_StopsRetryingWhileLogStoreStaysDown(t *testing.T) {
+	p := &recordingPusher{err: errors.New("dial tcp: connect: connection refused")}
+	q, sleeps := retryingQueue(p, 20*time.Millisecond)
+	q.Open("br-dead")
+
+	q.Enqueue("br-dead", "event", event("br-dead", "exhausts-the-deadline"))
+	q.Flush("br-dead")
+	if q.downSince.Load() == 0 {
+		t.Fatal("hitting the deadline did not mark log-store down")
+	}
+	attemptsBefore, sleepsBefore := p.attemptCount(), *sleeps
+
+	q.Enqueue("br-dead", "event", event("br-dead", "while-down"))
+	q.Flush("br-dead")
+	if got := p.attemptCount() - attemptsBefore; got != 1 {
+		t.Fatalf("a push while log-store is down was attempted %d times; want exactly 1", got)
+	}
+	if *sleeps != sleepsBefore {
+		t.Fatal("a push while log-store is down slept between attempts; it must not wait at all")
+	}
+
+	// Back up: the next success clears the mark, and the retry is back for
+	// the failure after that.
+	p.mu.Lock()
+	p.err = nil
+	p.mu.Unlock()
+	q.Enqueue("br-dead", "event", event("br-dead", "back"))
+	q.Flush("br-dead")
+	if q.downSince.Load() != 0 {
+		t.Fatal("a successful push did not mark log-store up again")
+	}
+	p.mu.Lock()
+	p.err = errors.New("dial tcp: connect: connection refused")
+	p.failFirst = p.attempts + 2
+	p.mu.Unlock()
+	q.Enqueue("br-dead", "event", event("br-dead", "retried-again"))
+	q.Close("br-dead")
+
+	if got := p.snapshot(); len(got) != 2 || got[0] != "br-dead/back" || got[1] != "br-dead/retried-again" {
+		t.Fatalf("wrote %v; want the two events pushed after log-store came back, the second after two refusals", got)
 	}
 }
