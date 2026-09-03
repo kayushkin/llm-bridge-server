@@ -38,10 +38,17 @@ const (
 	// Messages request carries.
 	classifierAnthropicVersion = "2023-06-01"
 
-	// classifierMaxTokens bounds the verdict. The tool schema is small —
-	// a kind, a headline, a short body and a handful of options — so this
-	// is generous rather than tight.
-	classifierMaxTokens = 700
+	// classifierMaxTokens bounds the verdict, and the cap covers the
+	// model's thinking as well as its answer: the harness passes it as
+	// CLAUDE_CODE_MAX_OUTPUT_TOKENS. At 700 the classifier failed one to
+	// two turns an hour from 2026-09-02 22:00 with "response exceeded the
+	// 700 output token maximum" — measured on the failing calls, thinking
+	// alone ran 460–704 tokens before the verdict started, and the
+	// successful calls peaked at 660. The verdict itself is small (a kind, a
+	// headline, a short body, a handful of options), so this is headroom for
+	// the thinking, not the answer. A classifier with no tools cannot loop on
+	// tokens, so generous costs nothing when the model is brief.
+	classifierMaxTokens = 4000
 )
 
 // turnSignalKind is the classifier's three-way verdict. It is deliberately
