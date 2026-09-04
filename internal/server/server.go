@@ -665,12 +665,19 @@ func (s *Server) reapIdleTick() {
 			continue
 		}
 
-		idle, reap := reapDecision(now, sess.Mode, msg.SessionState(sess.State), lastAt, sess.UpdatedAt, s.cfg.IdleTimeout, s.cfg.PTYIdleTimeout)
+		quiet, reap := reapDecision(now, sess.Mode, msg.SessionState(sess.State), lastAt, sess.UpdatedAt, s.cfg.IdleTimeout, s.cfg.PTYIdleTimeout)
 		if !reap {
 			continue
 		}
 
-		log.Printf("[reaper] %s: idle %s (mode=%s state=%s) exceeds timeout; killing", id, idle.Round(time.Second), sess.Mode, sess.State)
+		// Say which of the two faults this is. A session reaped out of
+		// `starting` never emitted a first event, so calling it "idle" hides
+		// the spawn failure behind a word that means the opposite.
+		if msg.SessionState(sess.State) == msg.SessionStarting {
+			log.Printf("[reaper] %s: spawned %s ago and never emitted a first event (mode=%s); killing", id, quiet.Round(time.Second), sess.Mode)
+		} else {
+			log.Printf("[reaper] %s: idle %s (mode=%s state=%s) exceeds timeout; killing", id, quiet.Round(time.Second), sess.Mode, sess.State)
+		}
 		// Kill may fail if the process already exited — flip state anyway so
 		// the row reflects reality and the watchdog won't try to resume it.
 		_ = s.harness.Kill(id)
@@ -682,18 +689,30 @@ func (s *Server) reapIdleTick() {
 
 // reapDecision is the pure idle-reaper policy, split out so the gating
 // rules are unit-testable without a live harness. Returns how long the
-// session has been idle and whether it should be killed.
+// session has been quiet and whether it should be killed.
 //
 // Rules:
 //   - Pick the timeout by mode (pty uses the longer PTYIdleTimeout).
 //   - timeout <= 0 disables reaping for that mode.
-//   - Events-mode sessions in an active state (model_generating,
-//     tool_running, compacting, rate_limited, starting) are never reaped:
+//   - Events-mode sessions the harness has reported busy (model_generating,
+//     tool_running, compacting, rate_limited, running) are never reaped:
 //     a long tool call emits no events while it runs, so state — not the
 //     timestamp — is the guard. PTY state isn't derived from telemetry, so
 //     PTY is intentionally not state-gated; its longer timeout is the guard.
-//   - Idle is measured from the last event, falling back to updatedAt when
-//     no event has landed yet so freshly-spawned processes get a grace gap.
+//   - `starting` is NOT one of those, and that is the point. Every other
+//     active state was set BY the harness, so it is evidence the process is
+//     alive and silence is expected. `starting` is set by the bridge at spawn
+//     and means the exact opposite: nothing has been heard from the harness
+//     at all. Exempting it turned a spawn that never emits a first event into
+//     a session parked in `starting` forever, with Send disabled behind it and
+//     no error anywhere. So `starting` is reaped on the ordinary timeout.
+//   - In `starting` the clock runs from updatedAt — the moment the state was
+//     entered, i.e. the spawn — and NEVER from the last event. A resumed
+//     session's newest event belongs to its previous process and is already
+//     hours old, so measuring from it would reap the new process on the first
+//     tick instead of giving it the grace gap it is owed.
+//   - Otherwise idle is measured from the last event, falling back to
+//     updatedAt when no event has landed yet.
 func reapDecision(now time.Time, mode msg.SessionMode, state msg.SessionState, lastActivity, updatedAt time.Time, idleTimeout, ptyTimeout time.Duration) (time.Duration, bool) {
 	isPTY := mode == msg.SessionModePTY
 	timeout := idleTimeout
@@ -703,15 +722,16 @@ func reapDecision(now time.Time, mode msg.SessionMode, state msg.SessionState, l
 	if timeout <= 0 {
 		return 0, false
 	}
-	if !isPTY && state.IsActive() {
+	starting := state == msg.SessionStarting
+	if !isPTY && state.IsActive() && !starting {
 		return 0, false
 	}
 	ref := lastActivity
-	if ref.IsZero() {
+	if starting || ref.IsZero() {
 		ref = updatedAt
 	}
-	idle := now.Sub(ref)
-	return idle, idle >= timeout
+	quiet := now.Sub(ref)
+	return quiet, quiet >= timeout
 }
 
 // autoResume restarts a single session's harness process. Mirrors the flow in
