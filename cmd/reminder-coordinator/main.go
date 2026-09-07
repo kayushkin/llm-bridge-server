@@ -1871,9 +1871,15 @@ func (g *GoogleCalendarMirror) UpdateEvent(token, eventID string, item *model.It
 
 func (g *GoogleCalendarMirror) DeleteEvent(token, eventID string) error {
 	err := g.do(token, "DELETE", calendarEventPath(eventID), nil, nil)
-	// Google leaves a `cancelled` tombstone, and re-deleting one returns 410. An
-	// event that is already gone is the state we wanted.
-	if err != nil && (strings.Contains(err.Error(), "410") || strings.Contains(err.Error(), "404")) {
+	// Google leaves a `cancelled` tombstone, and re-deleting one returns 410; an
+	// event Google has never heard of returns 404. Either way the state we wanted
+	// is the state we have, so both are success.
+	//
+	// Read off the status CODE, never the message text. The message carries the
+	// request path and the path carries the event id — see calendarHTTPError.
+	var httpErr *calendarHTTPError
+	if errors.As(err, &httpErr) &&
+		(httpErr.StatusCode == http.StatusGone || httpErr.StatusCode == http.StatusNotFound) {
 		return nil
 	}
 	return err
@@ -1887,6 +1893,29 @@ func eventPayload(item *model.Item) map[string]any {
 		"start":   map[string]string{"dateTime": start.Format(time.RFC3339)},
 		"end":     map[string]string{"dateTime": end.Format(time.RFC3339)},
 	}
+}
+
+// calendarHTTPError is a non-2xx answer from the dash calendar proxy, carrying the
+// status as a NUMBER as well as in its message.
+//
+// The number is the point. The only caller that classifies one is DeleteEvent,
+// which treats "the event is already gone" as success — and it used to decide
+// that by looking for "410" or "404" as a SUBSTRING of the formatted message.
+// That message also carries the request path, and the path carries the caller's
+// event id. A Google event id is base32hex, so "6f8k404m2p1q9r" is an ordinary
+// id and not a contrived one: any failure at all on that event — a 500 from
+// Google, a 401 from a rotated DASH_TOKEN, a 503 from the proxy — matched, and
+// the mirror reported the delete as done while the event stayed on the calendar.
+type calendarHTTPError struct {
+	Method     string
+	Path       string
+	Status     string
+	StatusCode int
+	Body       string
+}
+
+func (e *calendarHTTPError) Error() string {
+	return fmt.Sprintf("%s %s: HTTP %s — %s", e.Method, e.Path, e.Status, e.Body)
 }
 
 func (g *GoogleCalendarMirror) do(token, method, path string, body, out any) error {
@@ -1917,7 +1946,13 @@ func (g *GoogleCalendarMirror) do(token, method, path string, body, out any) err
 		return err
 	}
 	if response.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: HTTP %s — %s", method, path, response.Status, strings.TrimSpace(string(raw)))
+		return &calendarHTTPError{
+			Method:     method,
+			Path:       path,
+			Status:     response.Status,
+			StatusCode: response.StatusCode,
+			Body:       strings.TrimSpace(string(raw)),
+		}
 	}
 	if out == nil || len(raw) == 0 {
 		return nil
