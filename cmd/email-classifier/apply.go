@@ -297,7 +297,7 @@ func (a *applier) createCard(spec newCardSpec) (string, error) {
 		// A synthetic id keeps the rest of the dry run coherent: filings that
 		// reference this card still resolve, so the log shows the whole plan.
 		id := "dry-run:" + normalizeTitle(spec.Title)
-		a.state.Cards[id] = &cardState{ID: id, Title: spec.Title, ColumnName: column, Tags: tags,
+		a.state.Cards[id] = &cardState{ID: id, Title: spec.Title, ColumnName: column, Status: statusOpen, Tags: tags,
 			Category: spec.Category, Action: spec.Action, Urgency: urgency,
 			DueAt: due, Priority: score.Priority}
 		// Counted here as well as on the real path, so the run summary a dry run
@@ -324,7 +324,7 @@ func (a *applier) createCard(spec newCardSpec) (string, error) {
 		return "", err
 	}
 	a.state.Cards[id] = &cardState{
-		ID: id, Title: spec.Title, Body: spec.Summary, ColumnName: column, Tags: tags,
+		ID: id, Title: spec.Title, Body: spec.Summary, ColumnName: column, Status: statusOpen, Tags: tags,
 		Category: spec.Category, Action: spec.Action, Urgency: urgency,
 		DueAt: due, Priority: score.Priority,
 	}

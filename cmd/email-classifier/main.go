@@ -62,6 +62,13 @@ const (
 	columnActionNeeded    = "Action needed"
 	columnActionCompleted = "Action completed"
 
+	// noteboard statuses this command reads. noteboard itself accepts any
+	// string; these two are the ones kanban-store's auto_status writes and the
+	// ones a human sets by ticking a todo, so they are the two that mean
+	// something for column placement.
+	statusOpen = "open"
+	statusDone = "done"
+
 	// Link types. entity_ref for linkTypeEmail is the mailstack locator
 	// (account_id:message_id) because that is the only id mailstack can resolve
 	// back to a message; linkTypeEmailMessageID carries the RFC 5322 identity
@@ -381,6 +388,13 @@ func run() int {
 	// return below. Most ticks file nothing, and deadlines move on those ticks
 	// just the same — scoring only when mail happens to arrive is the bug this
 	// sweep exists to fix, so it must not sit behind that early exit.
+	// Status first, then score: a card that just moved to Action completed is
+	// one the re-score sweep then skips, so the order saves a PATCH per card
+	// rather than costing one.
+	reconciled := reconcileStatusWithColumn(kc, state, gate, cfg.DryRun)
+	log.Printf("[email] reconcile: scanned=%d completed=%d reopened=%d skipped=%d",
+		reconciled.Scanned, reconciled.Completed, reconciled.Reopened, reconciled.Skipped)
+
 	sweep := rescoreBoard(kc, state, gate, time.Now(), cfg.DryRun)
 	log.Printf("[email] sweep: scanned=%d repriced=%d retagged=%d skipped=%d",
 		sweep.Scanned, sweep.Repriced, sweep.Retagged, sweep.Skipped)
@@ -594,10 +608,15 @@ type cardState struct {
 	Title      string
 	Body       string
 	ColumnName string
-	Tags       []string
-	Category   string
-	Action     string
-	Urgency    string
+	// Status is the noteboard item's status (open, done, archived). It is a
+	// separate fact from ColumnName: kanban-store sets status when a card lands
+	// in a column with auto_status, but nothing sets the column when the status
+	// changes — reconcileStatusWithColumn is what closes that gap.
+	Status   string
+	Tags     []string
+	Category string
+	Action   string
+	Urgency  string
 	// DueAt is the deadline this card's mail stated, nil when it stated none.
 	// The tick re-derives urgency and priority from it, so it is the one field
 	// here that keeps meaning something as time passes on its own.
@@ -664,6 +683,7 @@ func loadBoardState(kc *kanbanclient.Client, boardID string) (*boardState, error
 				Title:      stringField(cv.Item, "title"),
 				Body:       stringField(cv.Item, "body"),
 				ColumnName: col.Column.Name,
+				Status:     stringField(cv.Item, "status"),
 				Tags:       stringSliceField(cv.Item, "tags"),
 			}
 			card.Category = tagValue(card.Tags, tagPrefixCat)
