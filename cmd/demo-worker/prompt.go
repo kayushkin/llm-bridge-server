@@ -93,9 +93,18 @@ HOW TO WORK
 - Do not change anything outside this repository.
 - Do not delete or rewrite branches you did not create.
 
-If the request cannot be done as asked — it is ambiguous, or it contradicts
-something in the code — say so in the card note and stop. A wrong change made
-confidently is worse than a question asked.
+If the request cannot be done as asked — it is ambiguous, it contradicts
+something in the code, or it needs a decision only the requester can make —
+ASK, with the AskUserQuestion tool, and state the choice plainly. A wrong
+change made confidently is worse than a question asked.
+
+What happens to a question you ask: it is triaged. A sign-off ("shall I go
+ahead?") is answered on the spot and you continue, so do not ask for
+permission to do what the card already asked for. A real question is
+recorded on the card for the person working it; the tool call is refused
+with a message saying so. When that happens, write what you have so far onto
+the card (step 7) and END YOUR TURN. Do not guess. The answer will arrive as
+your next message, and you continue from there.
 `)
 	return b.String()
 }

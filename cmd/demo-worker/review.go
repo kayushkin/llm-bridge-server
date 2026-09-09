@@ -88,6 +88,11 @@ func review(kc *kanbanclient.Client, cfg config) error {
 				InstanceID:   host.InstanceID,
 				BundleID:     host.BundleID,
 				CardID:       cardID,
+				// dispatcher is the one autonomous purpose whose questions reach
+				// a person: llm-bridge-server triages them and lands the real
+				// ones on this card. Under the default purpose (autoworker) an
+				// AskUserQuestion is denied and the worker is left to guess.
+				Purpose: "dispatcher",
 			})
 			if err != nil {
 				return fmt.Errorf("dispatch reviewer for %s: %w", cardID, err)
