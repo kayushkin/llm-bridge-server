@@ -91,9 +91,20 @@ func (c *Client) GetMessageHeaders(ctx context.Context, accountID, providerID st
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("mailstack message lookup: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	var headers MessageHeaders
-	if err := json.Unmarshal(body, &headers); err != nil {
+	// mailstack answers {"meta": {...headers...}, "body": ...}. Only meta is
+	// read; the body stays on the wire.
+	var envelope struct {
+		Meta MessageHeaders `json:"meta"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, fmt.Errorf("parse message response: %w", err)
 	}
-	return &headers, nil
+	if envelope.Meta.From.Email == "" {
+		// A message with no sender cannot be replied to, and a caller that
+		// got an empty address back would draft a reply to nobody without
+		// knowing. Measured once already: reading the top level instead of
+		// meta gave exactly that, silently.
+		return nil, fmt.Errorf("message %s in account %s carries no sender address", providerID, accountID)
+	}
+	return &envelope.Meta, nil
 }

@@ -129,7 +129,7 @@ func stubMailstack(t *testing.T, srv *Server) {
 			http.Error(w, "account query param required", http.StatusBadRequest)
 			return
 		}
-		_, _ = w.Write([]byte(`{"id":"lmf8c5178e02571eae","account_id":"demo-work","subject":"Catalogue size in /health","from":{"name":"Helena Ortiz","email":"helena@example.com"}}`))
+		_, _ = w.Write([]byte(`{"meta":{"id":"lmf8c5178e02571eae","account_id":"demo-work","subject":"Catalogue size in /health","from":{"name":"Helena Ortiz","email":"helena@example.com"}},"body":{"text":"…"}}`))
 	}))
 	t.Cleanup(mail.Close)
 	client, err := mailstackclient.New(mail.URL, "tok")
