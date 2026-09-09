@@ -17,6 +17,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -62,7 +63,14 @@ type Server struct {
 	// signalClassifier is the derived signal producer: a cheap-model pass
 	// over each turn-end. Nil only in tests that never exercise it.
 	signalClassifier *signalClassifier
-	cfg              *config.Config
+	// questionTriage stands between a surfacing worker's question and the
+	// person on its card. See signal_question_triage.go.
+	questionTriage *questionTriage
+	// mailstackClient resolves the sender of a card's mail so a drafted
+	// customer reply has a recipient. Nil when no token is configured, and
+	// every draft is then minted with an empty To.
+	mailstackClient *mailstackclient.Client
+	cfg             *config.Config
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
@@ -113,6 +121,17 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	// because the runner is a method on the server the classifier hangs off.
 	if srv.signalClassifier != nil {
 		srv.signalClassifier.runOneShot = srv.classifierOneShot
+	}
+	// Triage shares the classifier's model, timeout and oneshot path: it is
+	// the same kind of cheap call, on the same subscription login, and one
+	// switch turns both off.
+	srv.questionTriage = newQuestionTriage(cfg.SignalClassifierModel, cfg.SignalClassifierTimeout, srv.classifierOneShot)
+	if cfg.MailstackToken == "" {
+		log.Printf("[triage] LLMBRIDGE_MAILSTACK_TOKEN is not set: customer reply drafts will carry no recipient")
+	} else if client, err := mailstackclient.New(cfg.MailstackURL, cfg.MailstackToken); err != nil {
+		log.Printf("[triage] mailstack client not built: %v", err)
+	} else {
+		srv.mailstackClient = client
 	}
 	srv.routes()
 	srv.syncHarnessTypes()

@@ -193,7 +193,7 @@ func TestDerivedSignalsCarryTheLinkedTodo(t *testing.T) {
 	srv.recordDerivedSignal(sess, &turnClassification{
 		Kind:  turnSignalQuestion,
 		Title: "Which branch should I ship from?",
-	}, msg.SignalKindQuestion)
+	}, msg.SignalKindQuestion, nil, cardContext{})
 
 	signals, err := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if err != nil {

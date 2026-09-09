@@ -54,6 +54,7 @@ const (
 	ToolStoreURL       = "http://localhost:8302"
 	PermissionStoreURL = "http://localhost:8304"
 	KanbanStoreURL     = "http://localhost:8305"
+	MailstackURL       = "http://localhost:8195"
 )
 
 // The on-disk state this gateway owns or shares. These are functions rather
@@ -119,6 +120,7 @@ var EnvironmentVariableByConfigField = map[string]string{
 	"ToolStoreURL":       "LLMBRIDGE_TOOL_STORE_URL",
 	"PermissionStoreURL": "LLMBRIDGE_PERMISSION_STORE_URL",
 	"KanbanStoreURL":     "LLMBRIDGE_KANBAN_STORE_URL",
+	"MailstackURL":       "LLMBRIDGE_MAILSTACK_URL",
 	"SnapshotStoreDB":    "LLMBRIDGE_SNAPSHOT_DB",
 	"SnapshotStoreGit":   "LLMBRIDGE_SNAPSHOT_GIT",
 }
@@ -140,6 +142,7 @@ func AddressByConfigField() map[string]string {
 		"ToolStoreURL":       ToolStoreURL,
 		"PermissionStoreURL": PermissionStoreURL,
 		"KanbanStoreURL":     KanbanStoreURL,
+		"MailstackURL":       MailstackURL,
 		"SnapshotStoreDB":    SnapshotStoreDatabasePath(),
 		"SnapshotStoreGit":   SnapshotStoreGitPath(),
 	}

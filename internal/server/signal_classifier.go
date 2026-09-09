@@ -312,14 +312,18 @@ func (s *Server) onTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionStat
 
 	switch verdict.Kind {
 	case turnSignalQuestion:
-		s.recordDerivedSignal(sess, verdict, msg.SignalKindQuestion)
+		if sessionSurfacesQuestions(sess) {
+			s.surfaceDerivedWorkerQuestion(sess, verdict)
+			return
+		}
+		s.recordDerivedSignal(sess, verdict, msg.SignalKindQuestion, nil, cardContext{})
 		// Promote: the classifier saw a question the heuristic's string
 		// match did not. Bounded to the states this verdict was formed
 		// about, so a turn that has already started again is left alone.
 		s.harness.ApplyDerivedSessionState(bridgeID, msg.SessionAwaitingUser,
 			"turn_complete_signal_question", msg.SessionIdle, msg.SessionAwaitingUser)
 	case turnSignalNotification:
-		s.recordDerivedSignal(sess, verdict, msg.SignalKindNotification)
+		s.recordDerivedSignal(sess, verdict, msg.SignalKindNotification, nil, cardContext{})
 		// A notification does not block, so a session the heuristic parked
 		// at awaiting_user goes back to idle: nobody is being asked
 		// anything.
@@ -347,7 +351,11 @@ func skipClassifyReason(sess *store.Session, text string, state msg.SessionState
 	// This is most of the traffic. The fleet runs autoworker, dispatcher and
 	// demo sessions continuously and interactive chat rarely, so classifying
 	// everything meant nearly every call was spent on a turn with no reader.
-	if sess != nil && sess.Type != "" && sess.Type != msg.SessionTypeInteractive {
+	//
+	// The exception is an autonomous session whose purpose surfaces
+	// questions: a worker on a kanban card has a reader — the person on the
+	// card — and a question it ends its turn on goes there through triage.
+	if sess != nil && sess.Type != "" && sess.Type != msg.SessionTypeInteractive && !sessionSurfacesQuestions(sess) {
 		return "not an interactive session: " + string(sess.Type)
 	}
 	if sess != nil && sess.Purpose == renamerSourceTag {
@@ -489,11 +497,15 @@ func (s *Server) closeQuestionsAnsweredByMessage(bridgeID, text string) {
 // recordDerivedSignal persists the classifier's verdict as a signal row.
 // Derived rows carry no RequestID — there is no parked hook behind them —
 // which is exactly how a consumer tells the two resolve paths apart.
-func (s *Server) recordDerivedSignal(sess *store.Session, verdict *turnClassification, kind msg.SignalKind) {
+//
+// triage and card are the question triage's verdict and what it knew about
+// the card, for a question raised by a surfacing worker; nil and empty for
+// every other signal. Returns the row it wrote, or nil when it wrote none.
+func (s *Server) recordDerivedSignal(sess *store.Session, verdict *turnClassification, kind msg.SignalKind, triage *questionTriageVerdict, card cardContext) *msg.Signal {
 	title := strings.TrimSpace(verdict.Title)
 	if title == "" {
 		log.Printf("[signals] %s: classifier returned %s with no title, no signal recorded", sess.SessionID, kind)
-		return
+		return nil
 	}
 
 	signal := &msg.Signal{
@@ -527,6 +539,10 @@ func (s *Server) recordDerivedSignal(sess *store.Session, verdict *turnClassific
 		// A derived question resolves by sending a message, and a message
 		// is free text whether or not the assistant listed choices.
 		signal.AllowFreeform = true
+		if triage != nil {
+			signal.Audience = triage.Audience
+			signal.CustomerReplyDraft = customerReplyDraftFor(triage, card)
+		}
 	} else {
 		switch verdict.Severity {
 		case string(msg.SignalSeverityWarn):
@@ -538,7 +554,8 @@ func (s *Server) recordDerivedSignal(sess *store.Session, verdict *turnClassific
 
 	if err := s.store.CreateSignal(signal); err != nil {
 		log.Printf("[signals] %s: persist derived signal: %v", sess.SessionID, err)
-		return
+		return nil
 	}
-	log.Printf("[signals] %s: derived %s signal %s (surface=%s)", sess.SessionID, kind, signal.ID, signal.Surface)
+	log.Printf("[signals] %s: derived %s signal %s (surface=%s audience=%s)", sess.SessionID, kind, signal.ID, signal.Surface, signal.Audience)
+	return signal
 }

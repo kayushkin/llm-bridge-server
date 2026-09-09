@@ -39,7 +39,15 @@ type Config struct {
 	// the session↔noteboard-todo link a signal propagates to. Configured via
 	// LLMBRIDGE_KANBAN_STORE_URL; empty switches the lookup off entirely and
 	// every signal is minted unlinked.
-	KanbanStoreURL   string
+	KanbanStoreURL string
+	// MailstackURL is the base URL of mailstack, asked for the sender and
+	// subject of the mail behind a card when question triage drafts a reply
+	// to the customer. Configured via LLMBRIDGE_MAILSTACK_URL. MailstackToken
+	// is its bearer token, via LLMBRIDGE_MAILSTACK_TOKEN; mailstack answers
+	// 401 without one, so an empty token switches the lookup off and every
+	// draft is minted with an empty To rather than a guessed address.
+	MailstackURL     string
+	MailstackToken   string
 	SnapshotStoreDB  string
 	SnapshotStoreGit string
 	// PurposeFolders maps CreateSessionRequest.Purpose values to the folder a
@@ -124,6 +132,8 @@ func Load() *Config {
 		ToolStoreURL:             envOr("LLMBRIDGE_TOOL_STORE_URL", productiondefaults.ToolStoreURL),
 		PermissionStoreURL:       envOr("LLMBRIDGE_PERMISSION_STORE_URL", productiondefaults.PermissionStoreURL),
 		KanbanStoreURL:           envOr("LLMBRIDGE_KANBAN_STORE_URL", productiondefaults.KanbanStoreURL),
+		MailstackURL:             envOr("LLMBRIDGE_MAILSTACK_URL", productiondefaults.MailstackURL),
+		MailstackToken:           os.Getenv("LLMBRIDGE_MAILSTACK_TOKEN"),
 		SnapshotStoreDB:          envOr("LLMBRIDGE_SNAPSHOT_DB", productiondefaults.SnapshotStoreDatabasePath()),
 		SnapshotStoreGit:         envOr("LLMBRIDGE_SNAPSHOT_GIT", productiondefaults.SnapshotStoreGitPath()),
 		PurposeFolders:           parsePurposeFolders(os.Getenv("LLMBRIDGE_PURPOSE_FOLDERS")),
@@ -162,6 +172,7 @@ func (c *Config) GuardedAddresses() map[string]string {
 		"ToolStoreURL":       c.ToolStoreURL,
 		"PermissionStoreURL": c.PermissionStoreURL,
 		"KanbanStoreURL":     c.KanbanStoreURL,
+		"MailstackURL":       c.MailstackURL,
 		"SnapshotStoreDB":    c.SnapshotStoreDB,
 		"SnapshotStoreGit":   c.SnapshotStoreGit,
 	}

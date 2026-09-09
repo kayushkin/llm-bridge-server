@@ -99,6 +99,7 @@ func (s *Server) handleAnswerSignal(w http.ResponseWriter, r *http.Request) {
 
 	if signal.RequestID != "" && s.parkedAsks.isParked(signal.SessionID, signal.RequestID) {
 		if s.answerThroughParkedHook(signal, group, req) {
+			s.recordCardWaitingEndedForSignal(signal, "Question answered; the worker has the ball again")
 			writeJSON(w, map[string]any{"status": "answered", "delivered_via": "parked_hook"})
 			return
 		}
@@ -112,7 +113,18 @@ func (s *Server) handleAnswerSignal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.recordCardWaitingEndedForSignal(signal, "Question answered; the worker has the ball again")
 	writeJSON(w, map[string]any{"status": "answered", "delivered_via": "message"})
+}
+
+// recordCardWaitingEndedForSignal closes the card's waiting period for a
+// question that was surfaced to it. Only a kanban-surface question opened
+// one, so only that kind closes one — a chat question never touched the card.
+func (s *Server) recordCardWaitingEndedForSignal(signal *store.Signal, summary string) {
+	if signal == nil || signal.Surface != msg.SignalSurfaceKanban || signal.Kind != msg.SignalKindQuestion || signal.LinkedTodoID == "" {
+		return
+	}
+	s.recordCardWaitingEnded(signal.LinkedTodoID, signal.SessionID, summary)
 }
 
 // openQuestionGroup returns every open question that resolves together with

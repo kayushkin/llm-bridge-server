@@ -333,3 +333,36 @@ func TestMigrateSignalsAddsAllowMultipleOptionsToAnExistingTable(t *testing.T) {
 		t.Errorf("title = %q; the old row should survive the migration intact", got.Title)
 	}
 }
+
+func TestSignalAudienceAndCustomerReplyDraftRoundTrip(t *testing.T) {
+	st := testStore(t)
+	draft := &msg.SignalCustomerReplyDraft{To: "helena@example.com", Subject: "Re: Catalogue size", Body: "Should the count include discontinued products?"}
+	if err := st.CreateSignal(&msg.Signal{
+		ID: "sig_draft", SessionID: "br_1", Kind: msg.SignalKindQuestion, Source: msg.SignalSourceTool,
+		Surface: msg.SignalSurfaceKanban, Title: "Include discontinued?", State: msg.SignalStateOpen,
+		Audience: msg.SignalAudienceCustomer, CustomerReplyDraft: draft,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetSignal("sig_draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Audience != msg.SignalAudienceCustomer {
+		t.Errorf("audience = %q, want customer", got.Audience)
+	}
+	if got.CustomerReplyDraft == nil || *got.CustomerReplyDraft != *draft {
+		t.Errorf("draft = %+v, want %+v", got.CustomerReplyDraft, draft)
+	}
+	// A row without either reads back as absent, not as an empty draft.
+	if err := st.CreateSignal(&msg.Signal{ID: "sig_plain", SessionID: "br_1", Kind: msg.SignalKindNotification, Source: msg.SignalSourceDerived, Surface: msg.SignalSurfaceChat, Title: "done", State: msg.SignalStateOpen}); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := st.GetSignal("sig_plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Audience != "" || plain.CustomerReplyDraft != nil {
+		t.Errorf("plain row: audience=%q draft=%+v, want empty/nil", plain.Audience, plain.CustomerReplyDraft)
+	}
+}

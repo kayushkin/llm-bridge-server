@@ -361,6 +361,11 @@ func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
 		s.harness.ApplyDerivedSessionState(signal.SessionID, msg.SessionIdle,
 			"signal_dismissed", msg.SessionAwaitingUser)
 	}
+	if req.State == msg.SignalStateDismissed {
+		// Nobody is going to answer, so nothing is being waited on. The card's
+		// clock stops being paused on a question that no longer exists.
+		s.recordCardWaitingEndedForSignal(signal, "Question dismissed without an answer")
+	}
 
 	resolved, err := s.store.GetSignal(signal.ID)
 	if err != nil {

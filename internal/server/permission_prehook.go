@@ -100,10 +100,20 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	// permission mode applies: auto-allow would strip the answer payload,
 	// auto-deny would deny the question. Park for the human — but an
 	// unattended session has no human, so parking would hang the worker until
-	// the idle reaper kills it. Deny with a clear message so it proceeds or
-	// stops on its own instead of blocking.
+	// the idle reaper kills it.
+	//
+	// An unattended session whose purpose surfaces questions (a worker on a
+	// kanban card) goes through triage instead: a sign-off is answered on the
+	// spot, and a real question is recorded on the card and the worker told to
+	// stop — the answer comes back as its next message. Any other unattended
+	// session is denied with a clear message so it proceeds or stops on its
+	// own instead of blocking.
 	if payload.ToolName == "AskUserQuestion" {
 		if unattended {
+			if sessionSurfacesQuestions(sess) {
+				s.surfaceUnattendedQuestion(w, bridgeID, sess, payload)
+				return
+			}
 			writeHookDeny(w, "No human is attached to this autonomous session to answer AskUserQuestion; proceed without human input or stop.")
 			return
 		}

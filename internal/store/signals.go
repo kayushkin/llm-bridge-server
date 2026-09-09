@@ -49,6 +49,8 @@ func (s *Store) migrateSignals() error {
 			severity       TEXT NOT NULL DEFAULT '',
 			state          TEXT NOT NULL,
 			linked_todo_id TEXT NOT NULL DEFAULT '',
+			audience       TEXT NOT NULL DEFAULT '',
+			customer_reply_draft TEXT NOT NULL DEFAULT '',
 			created_at     DATETIME NOT NULL,
 			resolved_at    DATETIME
 		);
@@ -67,22 +69,27 @@ func (s *Store) migrateSignals() error {
 	// Existing rows default to false, which is the truth about them — every one
 	// was minted before a question could say otherwise.
 	s.db.Exec(`ALTER TABLE signals ADD COLUMN allow_multiple_options INTEGER NOT NULL DEFAULT 0`)
+	// Same again for the two triage columns. Rows from before triage existed
+	// read back empty, which is the truth: nobody judged who they were for.
+	s.db.Exec(`ALTER TABLE signals ADD COLUMN audience TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE signals ADD COLUMN customer_reply_draft TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 
 // signalColumns selects the fields scanSignal reads, in its order.
-const signalColumns = `id, session_id, session_type, kind, source, request_id, surface, title, body, options, allow_freeform, allow_multiple_options, answer, severity, state, linked_todo_id, created_at, resolved_at`
+const signalColumns = `id, session_id, session_type, kind, source, request_id, surface, title, body, options, allow_freeform, allow_multiple_options, answer, severity, state, linked_todo_id, audience, customer_reply_draft, created_at, resolved_at`
 
 func scanSignal(sc interface{ Scan(...any) error }) (*Signal, error) {
 	var sig Signal
-	var sessionType, kind, source, surface, severity, state string
-	var options, answer string
+	var sessionType, kind, source, surface, severity, state, audience string
+	var options, answer, customerReplyDraft string
 	var resolvedAt sql.NullTime
 	err := sc.Scan(
 		&sig.ID, &sig.SessionID, &sessionType, &kind, &source, &sig.RequestID,
 		&surface, &sig.Title, &sig.Body, &options, &sig.AllowFreeform,
 		&sig.AllowMultipleOptions, &answer,
-		&severity, &state, &sig.LinkedTodoID, &sig.CreatedAt, &resolvedAt,
+		&severity, &state, &sig.LinkedTodoID, &audience, &customerReplyDraft,
+		&sig.CreatedAt, &resolvedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -93,6 +100,14 @@ func scanSignal(sc interface{ Scan(...any) error }) (*Signal, error) {
 	sig.Surface = msg.SignalSurface(surface)
 	sig.Severity = msg.SignalSeverity(severity)
 	sig.State = msg.SignalState(state)
+	sig.Audience = msg.SignalAudience(audience)
+	if customerReplyDraft != "" {
+		var parsed msg.SignalCustomerReplyDraft
+		if err := json.Unmarshal([]byte(customerReplyDraft), &parsed); err != nil {
+			return nil, fmt.Errorf("signal %s: unmarshal customer reply draft: %w", sig.ID, err)
+		}
+		sig.CustomerReplyDraft = &parsed
+	}
 	if options != "" {
 		if err := json.Unmarshal([]byte(options), &sig.Options); err != nil {
 			return nil, fmt.Errorf("signal %s: unmarshal options: %w", sig.ID, err)
@@ -143,16 +158,24 @@ func (s *Store) CreateSignal(sig *Signal) error {
 		}
 		answer = string(raw)
 	}
+	customerReplyDraft := ""
+	if sig.CustomerReplyDraft != nil {
+		raw, err := json.Marshal(sig.CustomerReplyDraft)
+		if err != nil {
+			return fmt.Errorf("marshal signal customer reply draft: %w", err)
+		}
+		customerReplyDraft = string(raw)
+	}
 	var resolvedAt any
 	if sig.ResolvedAt != nil {
 		resolvedAt = *sig.ResolvedAt
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO signals (`+signalColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO signals (`+signalColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sig.ID, sig.SessionID, string(sig.SessionType), string(sig.Kind), string(sig.Source),
 		sig.RequestID, string(sig.Surface), sig.Title, sig.Body, options, sig.AllowFreeform,
 		sig.AllowMultipleOptions, answer, string(sig.Severity), string(sig.State),
-		sig.LinkedTodoID, sig.CreatedAt, resolvedAt,
+		sig.LinkedTodoID, string(sig.Audience), customerReplyDraft, sig.CreatedAt, resolvedAt,
 	)
 	if err != nil {
 		return err
