@@ -28,6 +28,8 @@ if [ -z "${DEPLOY_DETACHED:-}" ]; then
     --setenv=PATH="$PATH" \
     --setenv=AUTH_STORE_URL="${AUTH_STORE_URL:-}" \
     --setenv=AUTH_STORE_TOKEN="${AUTH_STORE_TOKEN:-}" \
+    --setenv=LLMBRIDGE_MAILSTACK_TOKEN="${LLMBRIDGE_MAILSTACK_TOKEN:-}" \
+    --setenv=GOWORK="${GOWORK:-}" \
     --property=StandardOutput=append:"$LOG" \
     --property=StandardError=append:"$LOG" \
     bash "$SCRIPT" "$@" >/dev/null
@@ -83,6 +85,14 @@ cd "$REPO_DIR"
 export PATH="$HOME/.local/share/mise/shims:$PATH"
 
 echo "==> Building $BIN_NAME..."
+# GOWORK is passed through from the caller's environment. go.mod replaces the
+# sibling modules (../llm-bridge, ../log-store) with their checkouts, and a
+# sibling checked out on somebody's branch can fail this build through no
+# fault of this repo. A go.work that points the replace at a clean worktree
+# is the way to build past that without touching their checkout.
+if [ -n "${GOWORK:-}" ]; then
+  echo "    building with GOWORK=$GOWORK"
+fi
 go build -o "$BIN_NAME" ./cmd/llm-bridge-server
 echo "    built: $(ls -lh "$BIN_NAME" | awk '{print $5}')"
 
@@ -164,6 +174,19 @@ if [ -z "$DEPLOY_AUTH_STORE_TOKEN" ]; then
   fi
   echo "WARNING: AUTH_STORE_TOKEN not set in deploy env; service will be unauthed against auth-store"
 fi
+# LLMBRIDGE_MAILSTACK_TOKEN lets question triage read the sender of a card's
+# mail so a drafted customer reply has a recipient. mailstack's own unit file
+# is the source of its token — the same place scheduler job 82 reads it from —
+# so an unset deploy env falls back to that rather than blanking it. Unlike
+# AUTH_STORE_TOKEN an empty value is not a downgrade worth refusing over: the
+# server logs it at start and every draft is minted with an empty To.
+DEPLOY_MAILSTACK_TOKEN="${LLMBRIDGE_MAILSTACK_TOKEN:-}"
+if [ -z "$DEPLOY_MAILSTACK_TOKEN" ] && [ -f "$HOME/.config/systemd/user/mailstack.service" ]; then
+  DEPLOY_MAILSTACK_TOKEN="$(grep -oP '^Environment=MAILSTACK_TOKEN=\K.*' "$HOME/.config/systemd/user/mailstack.service" || true)"
+fi
+if [ -z "$DEPLOY_MAILSTACK_TOKEN" ]; then
+  echo "WARNING: no mailstack token found; customer reply drafts will carry no recipient"
+fi
 TMP_DROPIN=$(mktemp)
 # CODEX_DISABLE_SANDBOX: this host's kernel rejects bwrap loopback setup
 # ("RTM_NEWADDR: Operation not permitted") so codex's workspace-write
@@ -179,6 +202,7 @@ Environment=PATH=$DEPLOY_PATH
 Environment=HOME=$HOME
 Environment=AUTH_STORE_URL=$DEPLOY_AUTH_STORE_URL
 Environment=AUTH_STORE_TOKEN=$DEPLOY_AUTH_STORE_TOKEN
+Environment=LLMBRIDGE_MAILSTACK_TOKEN=$DEPLOY_MAILSTACK_TOKEN
 Environment=CODEX_DISABLE_SANDBOX=1
 EOF
 sudo cp "$TMP_DROPIN" "$DROPIN_DIR/local.conf"
