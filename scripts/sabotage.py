@@ -51,6 +51,9 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import tree_hold  # noqa: E402  vendored; see tree_hold.py on keeping copies identical
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -452,7 +455,38 @@ def problems(results):
 
 
 def score(targets, packages, cases, unreddened=None):
-    """Apply each case to the target files, run packages, print a scored table,
+    """Take this tree exclusively, then score. Call this, not `score_on_a_held_tree`.
+
+    Card `d869d2be`. A case's verdict here is read off the SUITE'S exit code, and the
+    exit code belongs to the whole tree rather than to the mutation this run wrote. So a
+    second run mutating the same files hands this one a red suite it did not cause, and
+    this one records it as CAUGHT — the collision does not add noise, it **inflates the
+    score**, and these scores are the numbers the nightly write-ups quote.
+
+    Concurrent runs are the normal state of this box, so the repair cannot be a rule
+    telling passes not to overlap. It is a lock, and it refuses rather than waits: a run
+    told to come back later can say so and exit, where one silently blocked for the
+    length of somebody else's suite looks hung.
+
+    The `git status` guard this engine already carries is a different guard. It stops
+    this harness deleting somebody's uncommitted work. It cannot see a concurrent run at
+    all, because the other run restores each file before the next case and the tree is
+    clean between mutations exactly when it is most dangerous to trust.
+    """
+    with tree_hold.exclusive_hold_on_tree(
+            REPO, purpose=os.path.basename(sys.argv[0] or "sabotage")) as refusal:
+        if refusal:
+            sys.exit("REFUSING: " + refusal)
+        return score_on_a_held_tree(targets, packages, cases, unreddened)
+
+
+def score_on_a_held_tree(targets, packages, cases, unreddened=None):
+    """The scoring itself, on a tree this process already holds.
+
+    Call `score` rather than this: on its own it will happily mutate a tree another run
+    is mutating, which is exactly what the hold exists to stop.
+
+    Apply each case to the target files, run packages, print a scored table,
     and return a process exit status: 0 when both controls behaved and every
     real mechanism was caught, 1 otherwise. Callers end with sys.exit(score(...)).
 
