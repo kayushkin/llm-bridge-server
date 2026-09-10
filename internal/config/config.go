@@ -46,8 +46,12 @@ type Config struct {
 	// is its bearer token, via LLMBRIDGE_MAILSTACK_TOKEN; mailstack answers
 	// 401 without one, so an empty token switches the lookup off and every
 	// draft is minted with an empty To rather than a guessed address.
-	MailstackURL     string
-	MailstackToken   string
+	MailstackURL   string
+	MailstackToken string
+	// HealthcheckURL is the base URL of healthcheck, whose /api/status is the
+	// list of services the Services page shows and the only source of their
+	// up/down state. Configured via LLMBRIDGE_HEALTHCHECK_URL.
+	HealthcheckURL   string
 	SnapshotStoreDB  string
 	SnapshotStoreGit string
 	// PurposeFolders maps CreateSessionRequest.Purpose values to the folder a
@@ -134,6 +138,7 @@ func Load() *Config {
 		KanbanStoreURL:           envOr("LLMBRIDGE_KANBAN_STORE_URL", productiondefaults.KanbanStoreURL),
 		MailstackURL:             envOr("LLMBRIDGE_MAILSTACK_URL", productiondefaults.MailstackURL),
 		MailstackToken:           os.Getenv("LLMBRIDGE_MAILSTACK_TOKEN"),
+		HealthcheckURL:           envOr("LLMBRIDGE_HEALTHCHECK_URL", productiondefaults.HealthcheckURL),
 		SnapshotStoreDB:          envOr("LLMBRIDGE_SNAPSHOT_DB", productiondefaults.SnapshotStoreDatabasePath()),
 		SnapshotStoreGit:         envOr("LLMBRIDGE_SNAPSHOT_GIT", productiondefaults.SnapshotStoreGitPath()),
 		PurposeFolders:           parsePurposeFolders(os.Getenv("LLMBRIDGE_PURPOSE_FOLDERS")),
@@ -173,6 +178,7 @@ func (c *Config) GuardedAddresses() map[string]string {
 		"PermissionStoreURL": c.PermissionStoreURL,
 		"KanbanStoreURL":     c.KanbanStoreURL,
 		"MailstackURL":       c.MailstackURL,
+		"HealthcheckURL":     c.HealthcheckURL,
 		"SnapshotStoreDB":    c.SnapshotStoreDB,
 		"SnapshotStoreGit":   c.SnapshotStoreGit,
 	}

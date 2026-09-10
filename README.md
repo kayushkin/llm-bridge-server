@@ -353,6 +353,16 @@ Capability-matrix runs across all harnesses.
 | `GET` | `/conformance` | Latest conformance matrix and run state |
 | `POST` | `/conformance/run` | Kick off a new conformance run |
 
+### Services
+
+The bridge's Services page: which services on this host are up, which SQLite files each one holds open, and a read-only look inside those files. Health comes from healthcheck (`LLMBRIDGE_HEALTHCHECK_URL`); the process and file facts are read from `/proc` when asked, so the list is what is open *now*, not what a config says should be. A file can be read only while some listed service holds it open — the schema and rows routes refuse any other path with a 404, so this is not a general SQLite browser. Every file is opened `mode=ro` with `query_only` on. A column whose name says it holds a credential (`token`, `secret`, `password`, `api_key`, …) is listed with `masked: true` and its values come back as null.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/services` | Every service healthcheck watches, its status, pids and open databases |
+| `GET` | `/services/databases/schema?path=` | Tables and views of one open database, with DDL, columns and row counts |
+| `GET` | `/services/databases/rows?path=&table=&limit=50&order_by=&order=desc&filter=col:op:value` | Newest rows of one table. `filter` repeats; `op` ∈ `eq ne contains gt gte lt lte null not_null`. Default order is `rowid` descending; a view or `WITHOUT ROWID` table comes back in storage order |
+
 ### Runner (requires harness-store)
 
 `/api/runner/*` powers `llm-bridge-runner` daemons on remote machines. The WebSocket multiplexes harness IO; the asset and enrollment endpoints bootstrap a fresh host.
@@ -439,6 +449,7 @@ All configuration is via environment variables with sensible defaults.
 | `LLMBRIDGE_TOOL_STORE_URL` | `http://localhost:8302` | Tool-store service URL. A Claude Code session gets its MCP servers from `tool_store_tools` in its harness config, or, if it names none, from the tools its instance has been opted into on the Tools page. A named list that cannot be provisioned aborts the spawn; instance opt-ins that cannot be read log and the session starts without them, so a registry outage never stops the fleet |
 | `LLMBRIDGE_BRIDGE_PREFS` | `~/.config/llm-bridge/bridge-prefs.json` | User preferences file |
 | `LLMBRIDGE_CONFORMANCE_PATH` | `~/.config/llm-bridge/conformance.json` | Conformance run state file (latest matrix + active run) |
+| `LLMBRIDGE_HEALTHCHECK_URL` | `http://localhost:8099` | healthcheck service URL; its `/api/status` is the service list behind `GET /services` |
 | `LLMBRIDGE_IMAGES_DIR` | `images` | Static harness image directory |
 | `LLMBRIDGE_SOURCE_FOLDERS` | `scheduler:Scheduled,autoworker:Scheduled,healthcheck:Scheduled,renamer:Auto-rename,conformance:Conformance` | Comma-separated `source:folder` map for auto-filing new sessions by their `source` field |
 | `LLMBRIDGE_PTY_RING_BUFFER_BYTES` | `65536` | Per-session pty output ring buffer (bytes); late attachers receive a replay of this much screen state |

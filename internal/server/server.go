@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
@@ -19,6 +20,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/permclient"
+	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 	memorystore "github.com/kayushkin/memory-store"
@@ -71,6 +73,11 @@ type Server struct {
 	// every draft is then minted with an empty To.
 	mailstackClient *mailstackclient.Client
 	cfg             *config.Config
+	// serviceInventory is the last reading of the host's services and their
+	// databases, held for serviceInventoryMaxAge so a page load that asks for
+	// the list and then a schema does not walk /proc twice. See services.go.
+	serviceInventoryMu sync.Mutex
+	serviceInventory   *serviceinventory.Inventory
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
@@ -244,6 +251,13 @@ func (s *Server) routes() {
 	// a request_id only says a park EXISTED, and only the server knows if it
 	// is still live. See signal_answer.go.
 	s.mux.HandleFunc("POST /signals/{id}/answer", s.handleAnswerSignal)
+
+	// The Services page: healthcheck's services joined to the SQLite files
+	// their processes hold open, and read-only reads of those files. See
+	// services.go for what a path must be before it can be read.
+	s.mux.HandleFunc("GET /services", s.handleListServices)
+	s.mux.HandleFunc("GET /services/databases/schema", s.handleDatabaseSchema)
+	s.mux.HandleFunc("GET /services/databases/rows", s.handleDatabaseRows)
 
 	// PreToolUse permission gate for Claude Code. Wired into every CC
 	// session via buildClaudeCodeSettings's --settings injection so CC
