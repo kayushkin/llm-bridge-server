@@ -104,6 +104,18 @@ func runDiscover(w io.Writer) error {
 
 func main() {
 	for _, arg := range os.Args[1:] {
+		if arg == "-oneshot" || arg == "--oneshot" {
+			// The stateless call runOneShot execs. The reference harness echoes
+			// the model it was handed, so a test can see the server's resolution
+			// reach a harness rather than take the server's word for it.
+			var req msg.OneShotRequest
+			if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil {
+				fmt.Fprintf(os.Stderr, "mock-harness: -oneshot: invalid request: %v\n", err)
+				os.Exit(1)
+			}
+			json.NewEncoder(os.Stdout).Encode(msg.OneShotResponse{Text: "mock oneshot: " + req.Prompt, Model: req.Model, StopReason: "end_turn"})
+			return
+		}
 		if arg == "-discover" || arg == "--discover" {
 			if err := runDiscover(os.Stdout); err != nil {
 				fmt.Fprintf(os.Stderr, "mock-harness: write discover output: %v\n", err)

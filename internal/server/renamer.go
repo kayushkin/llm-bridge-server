@@ -12,6 +12,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/textutil"
 	"github.com/kayushkin/llm-bridge/msg"
+	modelstore "github.com/kayushkin/model-store"
 )
 
 const (
@@ -198,17 +199,25 @@ func (s *Server) renamerStillAlive(renamerID string) bool {
 	return st.IsActive() || st == msg.SessionIdle
 }
 
-// spawnRenamerSession creates a fresh Claude Code session bound to the same
-// instance as the target, reserves the renamer slot, starts the harness, and
-// pushes the renamer prompt onto its stdin.
+// spawnRenamerSession creates a fresh session on the `efficient` role's model,
+// on an instance whose harness can run it, reserves the renamer slot, starts
+// the harness, and sends it the renamer prompt.
+//
+// It used to copy the target's instance and hardcode Claude Code, with no
+// model at all — which, once sessions resolved their model centrally, meant a
+// title was being written on the bridge-prefs default: the best model, five
+// times an afternoon. A rename is the definition of a call that should run on
+// whatever is cheapest, wherever that is.
 func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnText) error {
-	inst, err := s.harnessStore.GetInstance(target.InstanceID)
+	model, role, err := s.resolveModelRow(modelstore.RoleEfficient)
 	if err != nil {
-		return fmt.Errorf("lookup instance: %w", err)
+		return fmt.Errorf("renamer model: %w", err)
 	}
-	if !inst.Enabled {
-		return fmt.Errorf("instance %s disabled", inst.ID)
+	inst, err := s.instanceForModel(model, false)
+	if err != nil {
+		return fmt.Errorf("renamer instance: %w", err)
 	}
+	selection := msg.ModelSelection{Model: msg.ModelID(model.ID), Role: role, SelectedBy: msg.ModelSelectedByRole}
 
 	// Intentionally NOT setting ParentID: in this codebase parent_id is
 	// CC-fork plumbing (process.go maps it to params.Fork → "--resume <id>
@@ -219,7 +228,7 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 	renamer := &store.Session{
 		SessionID:   renamerID,
 		DisplayName: fmt.Sprintf("rename %s", target.SessionID),
-		Harness:     msg.HarnessClaudeCode,
+		Harness:     inst.HarnessType,
 		InstanceID:  inst.ID,
 		State:       string(msg.SessionIdle),
 		AgentID:     "session-renamer",
@@ -227,6 +236,9 @@ func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnTe
 		Type:        msg.SessionTypeSystem,
 		Origin:      "llm-bridge-server",
 		FolderName:  s.folderForPurpose(renamerSourceTag),
+	}
+	if err := writeModelSelectionIntoSession(renamer, selection); err != nil {
+		return fmt.Errorf("renamer model selection: %w", err)
 	}
 	if err := s.store.CreateSession(renamer); err != nil {
 		return fmt.Errorf("create session: %w", err)

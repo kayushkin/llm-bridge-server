@@ -56,12 +56,17 @@ type Server struct {
 	// kanbanClient answers "which noteboard todo is this session linked
 	// to?" when a signal is minted. Nil when kanban-store has no configured
 	// URL, which leaves every signal unlinked rather than guessing.
-	kanbanClient  *kanbanclient.Client
-	bridgePrefs   *bridgePrefsStore
-	cfState       *conformanceState
-	sessionHub    *sessionHub
-	parkedAsks    *parkedAsks
-	responseCache *responseCache
+	kanbanClient *kanbanclient.Client
+	bridgePrefs  *bridgePrefsStore
+	// harnessProviders and oneShotCapable are the dispatch tables (see
+	// model_dispatch.go), copied from the package vars so tests can inject
+	// a harness the real tables do not list.
+	harnessProviders map[msg.Harness][]string
+	oneShotCapable   map[msg.Harness]bool
+	cfState          *conformanceState
+	sessionHub       *sessionHub
+	parkedAsks       *parkedAsks
+	responseCache    *responseCache
 	// signalClassifier is the derived signal producer: a cheap-model pass
 	// over each turn-end. Nil only in tests that never exercise it.
 	signalClassifier *signalClassifier
@@ -89,23 +94,25 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	respCache := newResponseCache()
 	st.SetNotifier(newNotifierFanout(hub, respCache))
 	srv := &Server{
-		mux:           http.NewServeMux(),
-		store:         st,
-		agentStore:    as,
-		memoryStore:   ms,
-		harnessStore:  hs,
-		hookStore:     hks,
-		modelStore:    mds,
-		snapshotStore: ss,
-		harness:       harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
-		authClient:    authClient,
-		permClient:    permclient.New(cfg.PermissionStoreURL),
-		kanbanClient:  newKanbanClient(cfg.KanbanStoreURL),
-		bridgePrefs:   newBridgePrefsStore(cfg.BridgePrefsPath),
-		cfState:       newConformanceState(cfg.ConformancePath),
-		sessionHub:    hub,
-		parkedAsks:    newParkedAsks(),
-		responseCache: respCache,
+		mux:              http.NewServeMux(),
+		store:            st,
+		agentStore:       as,
+		memoryStore:      ms,
+		harnessStore:     hs,
+		hookStore:        hks,
+		modelStore:       mds,
+		snapshotStore:    ss,
+		harness:          harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
+		authClient:       authClient,
+		permClient:       permclient.New(cfg.PermissionStoreURL),
+		kanbanClient:     newKanbanClient(cfg.KanbanStoreURL),
+		bridgePrefs:      newBridgePrefsStore(cfg.BridgePrefsPath),
+		harnessProviders: harnessSupportedProviders,
+		oneShotCapable:   harnessOneShotCapable,
+		cfState:          newConformanceState(cfg.ConformancePath),
+		sessionHub:       hub,
+		parkedAsks:       newParkedAsks(),
+		responseCache:    respCache,
 		signalClassifier: newSignalClassifier(
 			cfg.SignalClassifierModel,
 			cfg.SignalClassifierTimeout,
@@ -345,6 +352,7 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("POST /instances/{id}/credentials", s.handleBindCredential)
 		s.mux.HandleFunc("DELETE /instances/{id}/credentials/{cred_id}", s.handleUnbindCredential)
 		s.mux.HandleFunc("POST /instances/{id}/oneshot", s.handleInstanceOneShot)
+		s.mux.HandleFunc("POST /oneshot", s.handleOneShot) // instance chosen from the model's provider
 	}
 
 	// Hook registry routes (mounted only when hook-store is loaded).

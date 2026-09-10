@@ -126,7 +126,7 @@ func TestResolveModelSelectionRegistryDefaultIsTheFloor(t *testing.T) {
 func TestResolveModelSelectionUnknownModelFailsLoud(t *testing.T) {
 	srv, _ := testServer(t)
 	_, err := srv.resolveModelSelection(sessionWithConfig("mock", `{"model":"claude-imaginary"}`))
-	if err == nil || !strings.Contains(err.Error(), "does not know") {
+	if err == nil || !strings.Contains(err.Error(), "the registry knows") {
 		t.Fatalf("err = %v; want a refusal naming the unknown model", err)
 	}
 }

@@ -103,28 +103,11 @@ func (s *Server) resolveModelSelection(sess *store.Session) (msg.ModelSelection,
 // alias, or a canonical role name — through model-store, attributing the
 // result to that layer. Anything the registry cannot resolve is an error.
 func (s *Server) selectionFromRequested(requested string, selectedBy msg.ModelSelectedBy) (msg.ModelSelection, error) {
-	if s.modelStore == nil {
-		return msg.ModelSelection{}, fmt.Errorf("resolve %q: model-store is not configured, and the registry is the only source of a model", requested)
-	}
-	if modelstore.IsCanonicalRole(requested) {
-		m, err := s.modelStore.ResolveRole(requested)
-		if err != nil {
-			return msg.ModelSelection{}, fmt.Errorf("%s names role %q: %w", selectedBy, requested, err)
-		}
-		return msg.ModelSelection{
-			Model:      msg.ModelID(m.ID),
-			Role:       msg.ModelRole(requested),
-			SelectedBy: selectedBy,
-		}, nil
-	}
-	m, err := s.modelStore.ResolveModel(requested)
+	m, role, err := s.resolveModelRow(requested)
 	if err != nil {
-		return msg.ModelSelection{}, fmt.Errorf("%s names %q, which model-store does not know: %w", selectedBy, requested, err)
+		return msg.ModelSelection{}, fmt.Errorf("%s: %w", selectedBy, err)
 	}
-	return msg.ModelSelection{
-		Model:      msg.ModelID(m.ID),
-		SelectedBy: selectedBy,
-	}, nil
+	return msg.ModelSelection{Model: msg.ModelID(m.ID), Role: role, SelectedBy: selectedBy}, nil
 }
 
 // snapshotModelSelectionIntoSession pins the resolved model and its selection

@@ -27,6 +27,10 @@ func TestOneShotRefusesAHarnessWhoseBinaryIsNotOnPath(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	srv, _, instID := testServerWithInstance(t, msg.HarnessClaudeCode)
+	// The fixture registry's models are provider "mock"; the real dispatch table
+	// says claude_code accepts only anthropic, which would refuse this request
+	// as unrunnable (400) before the missing-binary path (502) this test pins.
+	srv.harnessProviders = map[msg.Harness][]string{msg.HarnessClaudeCode: {"mock"}}
 
 	resp := doJSON(t, srv, "POST", "/instances/"+instID+"/oneshot", msg.OneShotRequest{Prompt: "hello"})
 	defer resp.Body.Close()

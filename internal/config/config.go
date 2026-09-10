@@ -81,12 +81,16 @@ type Config struct {
 	// defaults much higher than IdleTimeout. Configured via
 	// LLMBRIDGE_PTY_IDLE_TIMEOUT; <=0 disables reaping for pty sessions.
 	PTYIdleTimeout time.Duration
-	// SignalClassifierModel is the cheap model the turn-end signal
-	// classifier calls to sort a finished turn into question |
-	// notification | neither. Configured via
+	// SignalClassifierModel is the model the turn-end signal classifier calls
+	// to sort a finished turn into question | notification | neither — a
+	// registry id, alias, or role name, resolved through model-store at call
+	// time. Defaults to the `efficient` role, so the operator moves it with
+	// `ms role set efficient …` rather than an env edit. Configured via
 	// LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL; empty turns the classifier off
 	// everywhere, leaving the looksLikeQuestion heuristic as the only
-	// awaiting_user signal and minting no derived signals.
+	// awaiting_user signal and minting no derived signals. The old default was
+	// the literal "claude-haiku-4-5", a spelling the registry does not know
+	// that worked only because Claude Code accepts it.
 	SignalClassifierModel string
 	// SignalClassifierOptOut is the set of harnesses the classifier skips
 	// — the per-harness escape hatch the on-by-default decision was taken
@@ -145,9 +149,9 @@ func Load() *Config {
 		PTYRingBufferBytes:       envInt("LLMBRIDGE_PTY_RING_BUFFER_BYTES", 64*1024),
 		IdleTimeout:              envDuration("LLMBRIDGE_IDLE_TIMEOUT", 15*time.Minute),
 		PTYIdleTimeout:           envDuration("LLMBRIDGE_PTY_IDLE_TIMEOUT", 60*time.Minute),
-		SignalClassifierModel:    envOr("LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL", "claude-haiku-4-5"),
+		SignalClassifierModel:    envOr("LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL", string(msg.ModelRoleEfficient)),
 		SignalClassifierOptOut:   parseHarnessSet(os.Getenv("LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT")),
-		SignalClassifierInstance: envOr("LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE", "inst-cc-local"),
+		SignalClassifierInstance: os.Getenv("LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE"),
 		SignalClassifierTimeout:  envDuration("LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", 20*time.Second),
 		SignalClassifierMaxChars: envInt("LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", 6000),
 	}

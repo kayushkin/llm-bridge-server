@@ -13,6 +13,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge/msg"
+	modelstore "github.com/kayushkin/model-store"
 )
 
 // handleInstanceOneShot runs a stateless single-turn LLM call against an
@@ -44,11 +45,31 @@ func (s *Server) handleInstanceOneShot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The model is resolved through the registry — a role or alias becomes its
+	// id, an unknown name is a 400 — and an empty model means the registry's
+	// default role, never whatever account default the harness would fall to.
+	// Then the instance's harness must explicitly support the model's provider.
+	requested, selectedBy := req.Model, msg.ModelSelectedBySession
+	if requested == "" {
+		requested, selectedBy = modelstore.RoleDefault, msg.ModelSelectedByRole
+	}
+	m, role, err := s.resolveModelRow(requested)
+	if err != nil {
+		writeErrorCode(w, http.StatusBadRequest, "model_unresolvable", err.Error())
+		return
+	}
+	if !s.harnessSupportsProvider(inst.HarnessType, m.Provider) {
+		writeErrorCode(w, http.StatusBadRequest, "model_not_runnable_on_instance", fmt.Sprintf("instance %s runs harness %s, which does not support provider %q (model %s); use POST /oneshot to let the server pick an instance", inst.ID, inst.HarnessType, m.Provider, m.ID))
+		return
+	}
+	req.Model = m.ID
+
 	raw, status, err := s.runOneShot(r.Context(), inst, req)
 	if err != nil {
 		http.Error(w, err.Error(), status)
 		return
 	}
+	setModelDispatchHeaders(w, m, role, selectedBy, inst)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(raw)
@@ -117,16 +138,30 @@ func (s *Server) runOneShot(ctx context.Context, inst *msg.Instance, req msg.One
 // a working classifier and a working-but-billing classifier look identical from
 // outside.
 func (s *Server) classifierOneShot(ctx context.Context, req msg.OneShotRequest) ([]byte, error) {
-	id := s.cfg.SignalClassifierInstance
-	if id == "" {
-		return nil, fmt.Errorf("no signal-classifier instance configured")
-	}
-	inst, err := s.harnessStore.GetInstance(id)
+	// The classifier's model is a registry name (by default the `efficient`
+	// role); it is resolved here, once. The instance is chosen from the
+	// model's provider unless LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE pins one —
+	// and a pinned instance that cannot run the model is an error, not a
+	// silent run on some other model.
+	m, _, err := s.resolveModelRow(req.Model)
 	if err != nil {
-		return nil, fmt.Errorf("signal-classifier instance %q: %w", id, err)
+		return nil, fmt.Errorf("signal-classifier model: %w", err)
 	}
-	if !inst.Enabled {
-		return nil, fmt.Errorf("signal-classifier instance %q is disabled", id)
+	req.Model = m.ID
+	var inst *msg.Instance
+	if id := s.cfg.SignalClassifierInstance; id != "" {
+		inst, err = s.harnessStore.GetInstance(id)
+		if err != nil {
+			return nil, fmt.Errorf("signal-classifier instance %q: %w", id, err)
+		}
+		if !inst.Enabled {
+			return nil, fmt.Errorf("signal-classifier instance %q is disabled", id)
+		}
+		if !s.harnessSupportsProvider(inst.HarnessType, m.Provider) {
+			return nil, fmt.Errorf("signal-classifier instance %q runs harness %s, which does not support provider %q (model %s)", id, inst.HarnessType, m.Provider, m.ID)
+		}
+	} else if inst, err = s.instanceForModel(m, true); err != nil {
+		return nil, fmt.Errorf("signal-classifier: %w", err)
 	}
 	raw, status, err := s.runOneShot(ctx, inst, req)
 	if err != nil {
