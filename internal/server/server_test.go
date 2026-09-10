@@ -17,7 +17,8 @@ import (
 )
 
 // testServer creates a test server with an in-memory SQLite store.
-// Optional stores (agent, memory, harness, model) are nil.
+// Optional stores (agent, memory, harness) are nil; the model registry is
+// seeded, because the server's model resolution requires one — see testModelStore.
 func testServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
@@ -33,7 +34,7 @@ func testServer(t *testing.T) (*Server, *store.Store) {
 		LogStoreURL:     "http://localhost:0", // unused in unit tests
 	}
 
-	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
+	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
 	return srv, st
 }
 
@@ -96,7 +97,7 @@ func testServerWithInstanceAndLogStore(t *testing.T, harness msg.Harness, logSto
 		LogStoreURL:     logStoreURL,
 	}
 
-	srv := New(st, nil, nil, hs, nil, nil, nil, cfg)
+	srv := New(st, nil, nil, hs, nil, testModelStore(t), nil, cfg)
 	return srv, st, inst.ID
 }
 
@@ -788,7 +789,17 @@ func TestInstances_NotRegistered(t *testing.T) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 func TestModels_NotRegistered(t *testing.T) {
-	srv, _ := testServer(t) // model-store is nil
+	// Built directly with NO registry. The shared fixture now seeds one, because
+	// the server requires it (main refuses to start without one), so the guard
+	// this pins — no registry, no /models route — is reachable only by
+	// constructing a Server without a model-store by hand.
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := New(st, nil, nil, nil, nil, nil, nil, &config.Config{ImagesDir: filepath.Join(dir, "images"), BridgePrefsPath: filepath.Join(dir, "prefs.json"), LogStoreURL: "http://localhost:0"})
 
 	resp := doJSON(t, srv, "GET", "/models", nil)
 	if resp.StatusCode != 404 && resp.StatusCode != 405 {

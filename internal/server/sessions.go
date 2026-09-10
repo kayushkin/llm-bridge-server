@@ -334,6 +334,16 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// req.HarnessConfig.
 	s.snapshotPermissionModeIntoSession(sess)
 
+	// The model is decided here, once, and pinned into the row before it
+	// exists — see model_selection.go. A session whose model cannot be
+	// resolved is not created: the alternative was a row that spawned on
+	// whatever the harness felt like while the picker showed the user's pick.
+	if err := s.snapshotModelSelectionIntoSession(sess); err != nil {
+		body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": "model_unresolvable", "message": err.Error()}})
+		http.Error(w, string(body), http.StatusUnprocessableEntity)
+		return
+	}
+
 	if err := s.store.CreateSession(sess); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -881,6 +891,10 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		Type:                sessionType,
 		Purpose:             purpose,
 		Origin:              origin,
+		// A fork runs the parent's setup: its model, its permission mode, its
+		// tool provisioning. Not copying this was how a fork silently landed on
+		// the harness default while the parent ran the model the user chose.
+		HarnessConfig: parent.HarnessConfig,
 		// Inherit the parent's spend ceiling. Not inheriting it would make
 		// forking the way to get an uncapped session out of a capped one,
 		// which is the whole gate defeated by one button. The fork does
@@ -981,28 +995,54 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 	// Merged into whatever is already stored, never written over it: a bare
 	// replace would delete the `permission_mode` the create path had just put
 	// there. Same rule, and the same reason, as `hooks_resolve.go`.
-	if s.harness.Get(bridgeID) == nil {
-		merged, err := mergeHarnessConfig(sess.HarnessConfig, req)
+	// A model named here is resolved THROUGH the registry before anything
+	// else happens — a role name becomes its id, an unknown id is a 400 — so
+	// neither branch below can forward or persist a model nothing can run.
+	var selection *msg.ModelSelection
+	if req.Model != "" {
+		resolved, err := s.selectionFromRequested(req.Model, msg.ModelSelectedBySession)
 		if err != nil {
-			http.Error(w, "merge harness_config: "+err.Error(), http.StatusInternalServerError)
+			body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": "model_unresolvable", "message": err.Error()}})
+			http.Error(w, string(body), http.StatusBadRequest)
 			return
 		}
-		if err := s.store.UpdateSessionHarnessConfig(bridgeID, merged); err != nil {
-			http.Error(w, "persist harness_config: "+err.Error(), http.StatusInternalServerError)
+		selection = &resolved
+		req.Model = string(resolved.Model) // the harness receives the id, never the role name
+	}
+
+	merged, err := mergeHarnessConfig(sess.HarnessConfig, req)
+	if err != nil {
+		http.Error(w, "merge harness_config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sess.HarnessConfig = merged
+	if selection != nil {
+		if err := writeModelSelectionIntoSession(sess, *selection); err != nil {
+			http.Error(w, "record model selection: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		sess.HarnessConfig = merged
-		writeJSON(w, sess)
+	}
+
+	// Persisted on BOTH branches, and BEFORE forwarding. This used to persist
+	// only when there was no live process: a model set on a running session
+	// lived in that process's memory alone, silently reverted at the next
+	// respawn, and the row the client got back still showed the old value.
+	// Persisting first means the durable truth is never behind the process;
+	// if the forward below fails, the next spawn still applies the change.
+	if err := s.store.UpdateSessionHarnessConfig(bridgeID, sess.HarnessConfig); err != nil {
+		http.Error(w, "persist harness_config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	params, _ := json.Marshal(req)
-	if err := s.harness.SendCommand(bridgeID, "config:"+string(params)); err != nil {
-		// A CONFLICT, not a server fault: the caller asked a session to change
-		// something it is not in a state to change. 500 said the server broke, which
-		// sent every reader of this endpoint looking in the wrong place.
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
+	if s.harness.Get(bridgeID) != nil {
+		params, _ := json.Marshal(req)
+		if err := s.harness.SendCommand(bridgeID, "config:"+string(params)); err != nil {
+			// A CONFLICT, not a server fault: the caller asked a session to change
+			// something it is not in a state to change. 500 said the server broke, which
+			// sent every reader of this endpoint looking in the wrong place.
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 	}
 
 	writeJSON(w, sess)

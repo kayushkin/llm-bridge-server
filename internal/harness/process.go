@@ -64,6 +64,13 @@ type StartParams struct {
 	Resume           bool   `json:"resume,omitempty"`
 	Fork             string `json:"fork,omitempty"` // parent harness_session_id (the harness UUID to fork from)
 	WorkDir          string `json:"work_dir,omitempty"`
+	// Model is the registry id the harness must spawn on, decided centrally
+	// (internal/server/model_selection.go) and carried here TYPED rather than
+	// as an untyped key in the config blob. ModelSelection says which layer
+	// chose it. The blob merge in buildStartParams still copies both keys, so
+	// a bridge that only reads the blob sees the same values.
+	Model          msg.ModelID         `json:"model,omitempty"`
+	ModelSelection *msg.ModelSelection `json:"model_selection,omitempty"`
 }
 
 // MessageParams for the "message" method. BridgeSessionID is added so a single
@@ -137,6 +144,7 @@ func buildStartParams(sess *store.Session, credentialID string) json.RawMessage 
 	if sess.ParentID != "" {
 		params.Fork = sess.ParentID
 	}
+	params.Model, params.ModelSelection = modelSelectionFromHarnessConfig(sess.HarnessConfig)
 
 	data, _ := json.Marshal(params)
 
@@ -155,6 +163,26 @@ func buildStartParams(sess *store.Session, credentialID string) json.RawMessage 
 	}
 
 	return data
+}
+
+// modelSelectionFromHarnessConfig lifts the centrally decided model out of the
+// session's config blob into the typed StartParams fields. Absence is reported
+// as absence — an empty id and a nil selection — never guessed. The blob has
+// already been validated by the spawn chokepoint's injector by the time this
+// runs, which is why an unparseable blob is reported as absent here rather
+// than failing a second time.
+func modelSelectionFromHarnessConfig(raw json.RawMessage) (msg.ModelID, *msg.ModelSelection) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var cfg struct {
+		Model          msg.ModelID         `json:"model"`
+		ModelSelection *msg.ModelSelection `json:"model_selection"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return "", nil
+	}
+	return cfg.Model, cfg.ModelSelection
 }
 
 // Process represents a running harness subprocess.

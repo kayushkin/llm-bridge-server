@@ -13,12 +13,12 @@ import (
 	agentstore "github.com/kayushkin/agent-store"
 	harnessstore "github.com/kayushkin/harness-store"
 	hookstore "github.com/kayushkin/hook-store"
-	memorystore "github.com/kayushkin/memory-store"
-	modelstore "github.com/kayushkin/model-store"
-	snapshotstore "github.com/kayushkin/snapshot-store"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	memorystore "github.com/kayushkin/memory-store"
+	modelstore "github.com/kayushkin/model-store"
+	snapshotstore "github.com/kayushkin/snapshot-store"
 )
 
 func main() {
@@ -108,18 +108,21 @@ func main() {
 		}
 	}
 
-	// Initialize model-store (optional)
-	var mds *modelstore.Store
-	if cfg.ModelStoreDB != "" {
-		mds, err = modelstore.Open(cfg.ModelStoreDB)
-		if err != nil {
-			log.Printf("model-store: %v (continuing without model data)", err)
-			mds = nil
-		} else {
-			defer mds.Close()
-			log.Printf("model-store loaded from %s", cfg.ModelStoreDB)
-		}
+	// Initialize model-store — REQUIRED. It is the only source of a model:
+	// every session's model is resolved through it (internal/server/
+	// model_selection.go), so a server without it cannot start a session.
+	// Refusing to start here is louder and earlier than refusing every
+	// create later, and "continuing without model data" was how a server
+	// could run for months with no idea what model any session was on.
+	if cfg.ModelStoreDB == "" {
+		log.Fatalf("model-store: no registry path configured (ModelStoreDB); the model registry is required")
 	}
+	mds, err := modelstore.Open(cfg.ModelStoreDB)
+	if err != nil {
+		log.Fatalf("model-store: open %s: %v", cfg.ModelStoreDB, err)
+	}
+	defer mds.Close()
+	log.Printf("model-store loaded from %s", cfg.ModelStoreDB)
 
 	// Initialize snapshot-store (optional)
 	var ss *snapshotstore.Store

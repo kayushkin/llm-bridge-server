@@ -3,12 +3,12 @@
 // It reads JSON-RPC requests from stdin and emits canonical msg.Event on stdout
 // as NDJSON. Behavior is controlled via environment variables:
 //
-//   MOCK_HARNESS_NAME        - harness name to report (default: "mock")
-//   MOCK_HARNESS_SESSION_ID  - session ID to report in events (default: "mock-session-001")
-//   MOCK_HARNESS_CAPS        - comma-separated capabilities (default: "compact,fork,model,effort")
-//   MOCK_HARNESS_DELAY_MS    - delay before emitting events in ms (default: "0")
-//   MOCK_HARNESS_FAIL_START  - if "true", exit with error on start
-//   MOCK_HARNESS_EMIT_ERROR  - if "true", emit an error event instead of result
+//	MOCK_HARNESS_NAME        - harness name to report (default: "mock")
+//	MOCK_HARNESS_SESSION_ID  - session ID to report in events (default: "mock-session-001")
+//	MOCK_HARNESS_CAPS        - comma-separated capabilities (default: "compact,fork,model,effort")
+//	MOCK_HARNESS_DELAY_MS    - delay before emitting events in ms (default: "0")
+//	MOCK_HARNESS_FAIL_START  - if "true", exit with error on start
+//	MOCK_HARNESS_EMIT_ERROR  - if "true", emit an error event instead of result
 //
 // Invoked with -discover it does not read stdin at all: it writes its on-disk
 // sessions to stdout as a JSON array and exits. See runDiscover.
@@ -50,6 +50,7 @@ type startParams struct {
 	Prompt      string `json:"prompt"`
 	Resume      bool   `json:"resume"`
 	Fork        string `json:"fork"`
+	Model       string `json:"model"`
 }
 
 type messageParams struct {
@@ -129,11 +130,11 @@ func main() {
 
 	emitState := func(state msg.SessionState) {
 		emit(msg.Event{
-			Type:      msg.EventSessionState,
-			Harness:   msg.Harness(harnessName),
+			Type:            msg.EventSessionState,
+			Harness:         msg.Harness(harnessName),
 			BridgeSessionID: sessionID,
-			Timestamp: time.Now(),
-			State:     &msg.StateEvent{State: state},
+			Timestamp:       time.Now(),
+			State:           &msg.StateEvent{State: state},
 		})
 	}
 
@@ -173,7 +174,7 @@ func main() {
 				Info: &msg.SessionInfo{
 					SystemPrompt: "mock-harness reference system prompt",
 					WorkingDir:   "/tmp",
-					Model:        "mock-model",
+					Model:        sp.Model, // echoed verbatim: an empty model is reported empty, never invented
 					Tools: []msg.ToolInfo{
 						{Name: "echo", Description: "echoes its input"},
 					},
@@ -222,11 +223,11 @@ func main() {
 				message = "Context compacted with summary: " + cp.Summary
 			}
 			emit(msg.Event{
-				Type:      msg.EventSystem,
-				Harness:   msg.Harness(harnessName),
+				Type:            msg.EventSystem,
+				Harness:         msg.Harness(harnessName),
 				BridgeSessionID: sessionID,
-				Timestamp: time.Now(),
-				System:    &msg.SystemEvent{Subtype: "compact_complete", Message: message},
+				Timestamp:       time.Now(),
+				System:          &msg.SystemEvent{Subtype: "compact_complete", Message: message},
 			})
 
 		case "resume":
@@ -238,11 +239,11 @@ func main() {
 			// conformance runner sends it that way.
 			if strings.HasPrefix(req.Method, "config:") {
 				emit(msg.Event{
-					Type:      msg.EventSystem,
-					Harness:   msg.Harness(harnessName),
+					Type:            msg.EventSystem,
+					Harness:         msg.Harness(harnessName),
 					BridgeSessionID: sessionID,
-					Timestamp: time.Now(),
-					System:    &msg.SystemEvent{Subtype: "config_updated", Message: "Configuration updated"},
+					Timestamp:       time.Now(),
+					System:          &msg.SystemEvent{Subtype: "config_updated", Message: "Configuration updated"},
 				})
 			}
 		}
@@ -252,11 +253,11 @@ func main() {
 func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string) {
 	if envBool("MOCK_HARNESS_EMIT_ERROR") {
 		emit(msg.Event{
-			Type:      msg.EventError,
-			Harness:   msg.Harness(harnessName),
+			Type:            msg.EventError,
+			Harness:         msg.Harness(harnessName),
 			BridgeSessionID: sessionID,
-			Timestamp: time.Now(),
-			Error:     &msg.ErrorEvent{Message: "simulated error"},
+			Timestamp:       time.Now(),
+			Error:           &msg.ErrorEvent{Message: "simulated error"},
 		})
 		return
 	}
@@ -306,10 +307,10 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 
 	// Emit a stream event
 	emit(msg.Event{
-		Type:      msg.EventStream,
-		Harness:   msg.Harness(harnessName),
+		Type:            msg.EventStream,
+		Harness:         msg.Harness(harnessName),
 		BridgeSessionID: sessionID,
-		Timestamp: time.Now(),
+		Timestamp:       time.Now(),
 		Stream: &msg.HarnessStream{Delta: &msg.BlockDelta{
 			Type: msg.DeltaText,
 			Text: responseText,
@@ -380,19 +381,19 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 
 	// Emit result
 	emit(msg.Event{
-		Type:      msg.EventResult,
-		Harness:   msg.Harness(harnessName),
+		Type:            msg.EventResult,
+		Harness:         msg.Harness(harnessName),
 		BridgeSessionID: sessionID,
-		Timestamp: time.Now(),
-		Result:    &msg.ResultEvent{Text: responseText},
+		Timestamp:       time.Now(),
+		Result:          &msg.ResultEvent{Text: responseText},
 	})
 
 	// Emit idle state
 	emit(msg.Event{
-		Type:      msg.EventSessionState,
-		Harness:   msg.Harness(harnessName),
+		Type:            msg.EventSessionState,
+		Harness:         msg.Harness(harnessName),
 		BridgeSessionID: sessionID,
-		Timestamp: time.Now(),
-		State:     &msg.StateEvent{State: msg.SessionIdle},
+		Timestamp:       time.Now(),
+		State:           &msg.StateEvent{State: msg.SessionIdle},
 	})
 }

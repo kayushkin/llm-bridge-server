@@ -27,7 +27,7 @@ func TestConfigSession_NoLiveProcess_PersistsInsteadOfFailing(t *testing.T) {
 	srv, st := testServer(t)
 	seedSession(t, st, "fresh")
 
-	resp := doJSON(t, srv, "POST", "/sessions/fresh/config", map[string]any{"model": "claude-fable-5"})
+	resp := doJSON(t, srv, "POST", "/sessions/fresh/config", map[string]any{"model": "mock-model-alt"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 — a created-but-unstarted session must accept config", resp.StatusCode)
 	}
@@ -40,8 +40,8 @@ func TestConfigSession_NoLiveProcess_PersistsInsteadOfFailing(t *testing.T) {
 	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
 		t.Fatalf("harness_config is not an object: %v (raw %q)", err, string(sess.HarnessConfig))
 	}
-	if cfg["model"] != "claude-fable-5" {
-		t.Errorf("model = %v, want claude-fable-5 — the pick was dropped", cfg["model"])
+	if cfg["model"] != "mock-model-alt" {
+		t.Errorf("model = %v, want mock-model-alt — the pick was dropped", cfg["model"])
 	}
 }
 
@@ -55,7 +55,7 @@ func TestConfigSession_NoLiveProcess_MergesRatherThanReplaces(t *testing.T) {
 		t.Fatalf("seed config: %v", err)
 	}
 
-	resp := doJSON(t, srv, "POST", "/sessions/fresh/config", map[string]any{"model": "m1", "effort": "high"})
+	resp := doJSON(t, srv, "POST", "/sessions/fresh/config", map[string]any{"model": "mock-model", "effort": "high"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -68,8 +68,8 @@ func TestConfigSession_NoLiveProcess_MergesRatherThanReplaces(t *testing.T) {
 	if cfg["permission_mode"] != "bypass" {
 		t.Errorf("permission_mode = %v, want bypass — the merge dropped what was already there", cfg["permission_mode"])
 	}
-	if cfg["model"] != "m1" || cfg["effort"] != "high" {
-		t.Errorf("model/effort = %v/%v, want m1/high", cfg["model"], cfg["effort"])
+	if cfg["model"] != "mock-model" || cfg["effort"] != "high" {
+		t.Errorf("model/effort = %v/%v, want mock-model/high", cfg["model"], cfg["effort"])
 	}
 }
 
@@ -79,7 +79,7 @@ func TestConfigSession_NoLiveProcess_LeavesUnsetFieldsAlone(t *testing.T) {
 	srv, st := testServer(t)
 	seedSession(t, st, "fresh")
 
-	if resp := doJSON(t, srv, "POST", "/sessions/fresh/config", map[string]any{"model": "m1"}); resp.StatusCode != 200 {
+	if resp := doJSON(t, srv, "POST", "/sessions/fresh/config", map[string]any{"model": "mock-model"}); resp.StatusCode != 200 {
 		t.Fatalf("first config: %d", resp.StatusCode)
 	}
 	if resp := doJSON(t, srv, "POST", "/sessions/fresh/config", map[string]any{"effort": "low"}); resp.StatusCode != 200 {
@@ -89,8 +89,8 @@ func TestConfigSession_NoLiveProcess_LeavesUnsetFieldsAlone(t *testing.T) {
 	sess, _ := st.GetSession("fresh")
 	var cfg map[string]any
 	json.Unmarshal(sess.HarnessConfig, &cfg)
-	if cfg["model"] != "m1" {
-		t.Errorf("model = %v, want m1 — setting effort cleared it", cfg["model"])
+	if cfg["model"] != "mock-model" {
+		t.Errorf("model = %v, want mock-model — setting effort cleared it", cfg["model"])
 	}
 	if cfg["effort"] != "low" {
 		t.Errorf("effort = %v, want low", cfg["effort"])
