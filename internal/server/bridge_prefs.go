@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -88,9 +89,18 @@ func (s *bridgePrefsStore) setPermissionMode(mode string) {
 	s.save()
 }
 
-func (s *bridgePrefsStore) set(prefs BridgePrefs) {
+// set folds a partial record onto the stored one. Every string field here
+// treats "" as "not sent", which is what lets a caller PUT one field without
+// blanking the rest — and also what makes a field impossible to clear. The
+// one field a person needs to clear, default_principal_id, is handled on key
+// presence instead: presentKeys is the set of JSON keys the body carried, so
+// {"default_principal_id":""} clears it and a body without the key leaves it.
+func (s *bridgePrefsStore) set(prefs BridgePrefs, presentKeys map[string]bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if presentKeys["default_principal_id"] {
+		s.data.DefaultPrincipalID = prefs.DefaultPrincipalID
+	}
 	if prefs.LastHarness != "" {
 		s.data.LastHarness = prefs.LastHarness
 	}
@@ -137,12 +147,26 @@ func (s *Server) handleBridgePrefs(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, s.bridgePrefs.get())
 	case http.MethodPut:
-		var prefs BridgePrefs
-		if err := json.NewDecoder(r.Body).Decode(&prefs); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
 			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 			return
 		}
-		s.bridgePrefs.set(prefs)
+		var prefs BridgePrefs
+		if err := json.Unmarshal(body, &prefs); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(body, &raw); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+		presentKeys := make(map[string]bool, len(raw))
+		for key := range raw {
+			presentKeys[key] = true
+		}
+		s.bridgePrefs.set(prefs, presentKeys)
 		writeJSON(w, map[string]string{"status": "ok"})
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
