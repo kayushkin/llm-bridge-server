@@ -47,12 +47,46 @@ type grant struct {
 	ResourceID   string `json:"resource_id"`
 }
 
+// EffectiveResourceIDs returns the resource ids the principal's effective
+// grants of one relation name, for one resource type. An empty answer means
+// the principal — and every group they are in — holds no such grant; it is
+// not an error.
+func (c *Client) EffectiveResourceIDs(ctx context.Context, principalID, relation, resourceType string) ([]string, error) {
+	grants, err := c.effective(ctx, principalID, relation, resourceType)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(grants))
+	for _, g := range grants {
+		ids = append(ids, g.ResourceID)
+	}
+	return ids, nil
+}
+
 // EffectiveToolIDs returns the tool-store ids the principal's effective
 // can_use grants name. An empty answer means the principal — and every group
 // they are in — holds no such grant; it is not an error.
 func (c *Client) EffectiveToolIDs(ctx context.Context, principalID string) ([]int64, error) {
-	requestURL := fmt.Sprintf("%s/principals/%s/effective?relation=can_use&resource_type=tool",
-		c.url, url.PathEscape(principalID))
+	grants, err := c.effective(ctx, principalID, "can_use", "tool")
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(grants))
+	for _, g := range grants {
+		id, err := strconv.ParseInt(g.ResourceID, 10, 64)
+		if err != nil {
+			// tool-store ids are integers and grant-store checks the shape on
+			// write, so this is a store answering something it never accepts.
+			return nil, fmt.Errorf("grant %s names tool resource_id %q, which is not a tool-store id", g.ID, g.ResourceID)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func (c *Client) effective(ctx context.Context, principalID, relation, resourceType string) ([]grant, error) {
+	requestURL := fmt.Sprintf("%s/principals/%s/effective?relation=%s&resource_type=%s",
+		c.url, url.PathEscape(principalID), url.QueryEscape(relation), url.QueryEscape(resourceType))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build GET %s: %w", requestURL, err)
@@ -76,15 +110,5 @@ func (c *Client) EffectiveToolIDs(ctx context.Context, principalID string) ([]in
 	if err := json.Unmarshal(body, &grants); err != nil {
 		return nil, fmt.Errorf("grant-store answered GET %s with a body that is not a list of grants: %w", requestURL, err)
 	}
-	ids := make([]int64, 0, len(grants))
-	for _, g := range grants {
-		id, err := strconv.ParseInt(g.ResourceID, 10, 64)
-		if err != nil {
-			// tool-store ids are integers and grant-store checks the shape on
-			// write, so this is a store answering something it never accepts.
-			return nil, fmt.Errorf("grant %s names tool resource_id %q, which is not a tool-store id", g.ID, g.ResourceID)
-		}
-		ids = append(ids, id)
-	}
-	return ids, nil
+	return grants, nil
 }

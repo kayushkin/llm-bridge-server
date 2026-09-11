@@ -41,6 +41,9 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 		}
 		inst.Machine = m
 	}
+	if err := s.checkPrincipalMayRunHere(ctx, sess, inst); err != nil {
+		return nil, err
+	}
 	s.injectHookSettings(sess)
 	s.injectAgentsContext(sess)
 	s.injectPermissionModeFlag(sess)

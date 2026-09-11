@@ -341,6 +341,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.PrincipalID != "" {
+		if err := s.checkPrincipalMayRunHere(r.Context(), &store.Session{SessionID: bridgeID, PrincipalID: req.PrincipalID, AgentID: req.AgentID}, inst); err != nil {
+			status, code := grantGateStatus(err)
+			writeJSONError(w, status, code, err.Error())
+			return
+		}
+	}
+
 	sess := &store.Session{
 		SessionID:     bridgeID,
 		DisplayName:   req.DisplayName,

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -41,6 +42,9 @@ func TestCreateSessionStoresAKnownPrincipalAndRefusesAnUnknownOne(t *testing.T) 
 	srv, st, instanceID := testServerWithInstance(t, msg.HarnessMock)
 	directory := fakePrincipalStore(t, "principal_000001")
 	srv.principalClient = principalclient.New(directory.URL)
+	// No grants at all: the gate lets everything through, which is the case
+	// this test is about — the principal check itself.
+	srv.grantClient = grantclient.New(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{}).URL)
 
 	created := postCreateSession(t, srv, principalRequest(instanceID, "principal_000001"))
 	if created.PrincipalID != "principal_000001" {
