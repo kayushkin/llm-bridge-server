@@ -38,9 +38,7 @@ import (
 )
 
 const (
-	defaultEmailBoard = "Work board"
-	defaultWorkBoard  = "Northwind work"
-	defaultRepoPath   = "/home/kayushkincom/repos/northwind-api"
+	defaultRepoPath = "/home/kayushkincom/repos/northwind-api"
 
 	columnQueued     = "Queued"
 	columnInProgress = "In Progress"
@@ -67,8 +65,11 @@ type config struct {
 	Review   bool
 	DryRun   bool
 
-	EmailBoard   string
-	WorkBoard    string
+	// EmailBoardID is the board the classifier files onto; WorkBoardID the
+	// board agents work from. Ids, never names: kanban-store resolves a name
+	// with auto-create and no unique constraint, so a rename forks the board.
+	EmailBoardID string
+	WorkBoardID  string
 	KanbanURL    string
 	NoteboardURL string
 	BridgeURL    string
@@ -95,8 +96,8 @@ func parseFlags() config {
 	flag.BoolVar(&c.Dispatch, "dispatch", false, "Spawn a real agent session for queued cards.")
 	flag.BoolVar(&c.Review, "review", false, "Spawn a reviewer for cards whose pull request has not been reviewed.")
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Say what would happen and change nothing.")
-	flag.StringVar(&c.EmailBoard, "email-board", defaultEmailBoard, "Board the classifier files onto.")
-	flag.StringVar(&c.WorkBoard, "work-board", defaultWorkBoard, "Board the agents work from.")
+	flag.StringVar(&c.EmailBoardID, "email-board-id", "", "Id of the board the classifier files onto (required).")
+	flag.StringVar(&c.WorkBoardID, "work-board-id", "", "Id of the board the agents work from (required). Its default_instance_id says where sessions run and its default_bundle_id what they are provisioned with.")
 	flag.StringVar(&c.KanbanURL, "kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
 	flag.StringVar(&c.NoteboardURL, "noteboard-url", envOr("NOTEBOARD_URL", "http://localhost:8191"), "noteboard base URL")
 	flag.StringVar(&c.BridgeURL, "bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"),
@@ -115,6 +116,9 @@ func run(cfg config) error {
 	if !cfg.Promote && !cfg.Dispatch && !cfg.Review {
 		flag.Usage()
 		return fmt.Errorf("nothing to do: pass -promote, -dispatch or -review")
+	}
+	if cfg.EmailBoardID == "" || cfg.WorkBoardID == "" {
+		return fmt.Errorf("-email-board-id and -work-board-id are both required; there is no board to default to")
 	}
 	if cfg.MaxBudget <= 0 {
 		// Zero is not "no ceiling" to a harness, it is "unlimited" — the exact
@@ -160,6 +164,33 @@ func requireIdentity(slug string, want demoteam.Role) (demoteam.Member, error) {
 			slug, m.Role, want)
 	}
 	return m, nil
+}
+
+// sessionHost is where a session for a card on the work board runs and what it
+// is provisioned with, read from that board's settings.
+type sessionHost struct {
+	InstanceID string
+	BundleID   string
+}
+
+// sessionHostFromBoard reads the work board's default_instance_id and
+// default_bundle_id. The instance is required — there is no fallback, because
+// the one demosession used to carry ("inst-cc-local") was a second copy of a
+// board setting and the two would drift. The bundle is optional and passed on
+// verbatim.
+//
+// default_agent_id is deliberately NOT read here. The identity a session acts
+// as is this demo's own rotation — the builder for -dispatch, the reviewer for
+// -review (identity.Slug and reviewer.Slug, both checked against the roster by
+// requireIdentity) — because the prompt each gets is written for that role and
+// the card's attribution names it. One board-wide default agent would put the
+// reviewer's session under the builder's name, or the other way round.
+func sessionHostFromBoard(board *kanbanclient.Board) (sessionHost, error) {
+	if board.DefaultInstanceID == "" {
+		return sessionHost{}, fmt.Errorf("board %q (%s) has no default_instance_id — set it (PATCH /api/boards/%s {\"default_instance_id\":…}); sessions have nowhere to run",
+			board.Name, board.ID, board.ID)
+	}
+	return sessionHost{InstanceID: board.DefaultInstanceID, BundleID: board.DefaultBundleID}, nil
 }
 
 func envOr(key, fallback string) string {

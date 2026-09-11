@@ -25,6 +25,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -39,12 +40,18 @@ import (
 )
 
 const (
-	defaultBoardName = "Agent runs"
-	columnInProgress = "In Progress"
-	columnDone       = "Done"
-	columnFailed     = "Failed"
-	tagAutoworker    = "autoworker"
-	linkTypeSession  = "session"
+	// agentRunsBoardName is the board the first curator job was registered
+	// for, back when the job took a board name and this one was its default.
+	// It survives only in registerSchedulerJob's job-name rule, so that the
+	// job for that board keeps its original name ("kanban-curator-tick") and
+	// updates in place rather than registering a second job beside it. It is
+	// never used to find a board — boards are found by id.
+	agentRunsBoardName = "Agent runs"
+	columnInProgress   = "In Progress"
+	columnDone         = "Done"
+	columnFailed       = "Failed"
+	tagAutoworker      = "autoworker"
+	linkTypeSession    = "session"
 
 	// autoworkerPrefix is the canonical session_id prefix minted by autoworker.
 	// Cards whose session matches it are held from closing to Done until the
@@ -63,30 +70,33 @@ const (
 
 func main() {
 	var (
-		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit. Honors -board and -job-name.")
-		jobName      = flag.String("job-name", "", "Scheduler job name for -register. Defaults to kanban-curator-tick for the default board, kanban-curator-<slug>-tick otherwise.")
+		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit. Honors -board-id and -job-name.")
+		jobName      = flag.String("job-name", "", "Scheduler job name for -register. Defaults to kanban-curator-tick for the \"Agent runs\" board, kanban-curator-<slug of the board name>-tick otherwise.")
 		dryRun       = flag.Bool("dry-run", false, "Report decisions; do not write to kanban-store.")
 		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
 		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
-		boardName    = flag.String("board", defaultBoardName, "Kanban board name to curate")
+		boardID      = flag.String("board-id", "", "Kanban board id to curate (required). Pinned by id so a rename in the UI cannot fork a second board.")
 		staleAfter   = flag.Duration("stale-after", 2*time.Hour, "Reap an In Progress card whose session is idle/gone and has had no activity for longer than this.")
 	)
 	flag.Parse()
 
-	if *registerFlag {
-		if err := registerSchedulerJob(*boardName, *jobName); err != nil {
-			log.Fatalf("register: %v", err)
-		}
-		return
+	if *boardID == "" {
+		log.Fatal("-board-id is required; there is no board to default to")
 	}
 
 	kc := kanbanclient.New(*kanbanURL)
-	board, err := kc.FindBoard(*boardName)
-	if err != nil {
-		log.Fatalf("find board %q: %v", *boardName, err)
+	board, err := kc.GetBoard(*boardID)
+	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
+		log.Fatalf("board %s does not exist — refusing to create a replacement, since a second board is exactly the fork pinning the id prevents", *boardID)
 	}
-	if board == nil {
-		log.Printf("board %q does not exist yet — nothing to curate", *boardName)
+	if err != nil {
+		log.Fatalf("get board %s: %v", *boardID, err)
+	}
+
+	if *registerFlag {
+		if err := registerSchedulerJob(board, *jobName); err != nil {
+			log.Fatalf("register: %v", err)
+		}
 		return
 	}
 
@@ -102,7 +112,7 @@ func main() {
 	doneCol, ok1 := colByName[columnDone]
 	failedCol, ok2 := colByName[columnFailed]
 	if !ok1 || !ok2 {
-		log.Fatalf("board %q missing required columns (Done=%v Failed=%v)", *boardName, ok1, ok2)
+		log.Fatalf("board %q missing required columns (Done=%v Failed=%v)", board.Name, ok1, ok2)
 	}
 
 	var inProgress []kanbanclient.CardView
@@ -113,7 +123,7 @@ func main() {
 		inProgress = cv.Cards
 		break
 	}
-	log.Printf("[curator] board=%q in-progress=%d", *boardName, len(inProgress))
+	log.Printf("[curator] board=%q id=%s in-progress=%d", board.Name, board.ID, len(inProgress))
 
 	var moved, skipped, errors int
 	for _, c := range inProgress {
@@ -324,29 +334,26 @@ func staleCompleted(updatedAt string) bool {
 // ============================ scheduler self-registration ============================
 
 // registerSchedulerJob registers (idempotently) a kanban-curator cron job for
-// the given board. The job name defaults to "kanban-curator-tick" for the
-// default "Agent runs" board, or "kanban-curator-<slug>-tick" for any other
-// board, where slug is the board name lowercased with non-alphanumerics
-// collapsed to '-'. Pass jobName explicitly to override.
+// the given board, fetched by id so its name is the one the store holds today.
+// The job name is derived from that name exactly as it always was —
+// "kanban-curator-tick" for the "Agent runs" board, "kanban-curator-<slug>-tick"
+// for any other, where slug is the board name lowercased with non-alphanumerics
+// collapsed to '-' — so a re-register finds the existing job and updates in
+// place instead of registering a second one. Pass jobName explicitly to
+// override.
 //
-// The registered command preserves a -board="..." flag when the curator is
-// targeted at a non-default board so each cron tick curates the right board.
-func registerSchedulerJob(boardName, jobName string) error {
+// The registered command always carries -board-id: the scheduler runs jobs as
+// `sh -c` with its own thin environment, so nothing else would deliver it.
+func registerSchedulerJob(board *kanbanclient.Board, jobName string) error {
 	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
 	home, _ := os.UserHomeDir()
 	bin := filepath.Join(home, "bin", "kanban-curator")
 
 	if jobName == "" {
-		if boardName == defaultBoardName {
-			jobName = "kanban-curator-tick"
-		} else {
-			jobName = "kanban-curator-" + slugify(boardName) + "-tick"
-		}
+		jobName = defaultJobName(board.Name)
 	}
-	command := bin
-	if boardName != defaultBoardName {
-		command = fmt.Sprintf("%s -board=%q", bin, boardName)
-	}
+	command := bin + " -board-id " + board.ID
+	boardName := board.Name
 
 	resp, err := http.Get(schedURL + "/api/jobs")
 	if err != nil {
@@ -388,6 +395,16 @@ func registerSchedulerJob(boardName, jobName string) error {
 	}
 	fmt.Printf("registered %s: %s\n", jobName, strings.TrimSpace(string(body)))
 	return nil
+}
+
+// defaultJobName is the job-name rule registerSchedulerJob applies when no
+// -job-name is given. A pure function so a test can pin that the names the
+// live jobs carry today are the ones a re-register derives.
+func defaultJobName(boardName string) string {
+	if boardName == agentRunsBoardName {
+		return "kanban-curator-tick"
+	}
+	return "kanban-curator-" + slugify(boardName) + "-tick"
 }
 
 // slugify lowercases s and collapses runs of non-alphanumeric characters to a

@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // actionNone is the "no action, ever" value of the action axis, and it is shared
 // by every vocabulary. Named because the sender override in noaction_senders.go
@@ -23,7 +27,7 @@ const actionNone = "none"
 // mailbox, and letting the model pick a scheme per email would make the axes
 // incomparable across the board they all land on.
 type vocabulary struct {
-	// Name is what -vocabulary takes.
+	// Name is what a board's classifier.vocabulary names.
 	Name string
 	// Domain is one line telling the model what sort of mailbox this is. It
 	// leads the prompt, because every axis below reads differently depending on
@@ -270,11 +274,22 @@ var vocabularies = map[string]*vocabulary{
 	workVocabulary.Name:     &workVocabulary,
 }
 
-// active is the vocabulary this run classifies against.
-//
-// It defaults to personal so that the live job, which passes no flag, keeps
-// behaving exactly as it did.
+// active is the vocabulary this run classifies against. A tick always selects
+// it from the board's classifier setting before reading any axis; the initial
+// value only makes the axis helpers callable from a test that never selects.
 var active = &personalVocabulary
+
+// vocabularyNames lists every scheme this binary knows, sorted. It is the one
+// list behind -list-vocabularies and behind selectVocabulary's refusal, so the
+// names a board may carry and the names the error reports cannot drift apart.
+func vocabularyNames() []string {
+	names := make([]string, 0, len(vocabularies))
+	for name := range vocabularies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // selectVocabulary switches schemes, refusing a name it does not know rather
 // than falling back. A typo silently classifying work mail against the personal
@@ -282,7 +297,7 @@ var active = &personalVocabulary
 func selectVocabulary(name string) error {
 	v, ok := vocabularies[name]
 	if !ok {
-		return fmt.Errorf("unknown vocabulary %q; known: personal, work", name)
+		return fmt.Errorf("unknown vocabulary %q; known: %s", name, strings.Join(vocabularyNames(), ", "))
 	}
 	active = v
 	return nil

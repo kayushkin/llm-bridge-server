@@ -32,13 +32,13 @@ func promote(kc *kanbanclient.Client, cfg config) error {
 		return err
 	}
 
-	emailBoard, err := kc.FindBoard(cfg.EmailBoard)
+	emailBoard, err := kc.GetBoard(cfg.EmailBoardID)
 	if err != nil {
-		return fmt.Errorf("find board %q: %w", cfg.EmailBoard, err)
+		return fmt.Errorf("email board: %w", err)
 	}
-	workBoard, err := kc.FindBoard(cfg.WorkBoard)
+	workBoard, err := kc.GetBoard(cfg.WorkBoardID)
 	if err != nil {
-		return fmt.Errorf("find board %q: %w", cfg.WorkBoard, err)
+		return fmt.Errorf("work board: %w", err)
 	}
 	queuedColumn, err := columnID(kc, workBoard.ID, columnQueued)
 	if err != nil {
@@ -47,7 +47,7 @@ func promote(kc *kanbanclient.Client, cfg config) error {
 
 	view, err := kc.GetBoardView(emailBoard.ID)
 	if err != nil {
-		return fmt.Errorf("read board %q: %w", cfg.EmailBoard, err)
+		return fmt.Errorf("read board %q: %w", emailBoard.Name, err)
 	}
 
 	promoted := 0
@@ -74,7 +74,7 @@ func promote(kc *kanbanclient.Client, cfg config) error {
 			fmt.Printf("  PROMOTE %s %-52s action=%s\n", shortID(cardID), truncate(title, 52), actionOf(card.Item))
 			if cfg.DryRun {
 				fmt.Printf("      would place on %q/%s, link repo=%s agent=%s, cap $%.2f\n",
-					cfg.WorkBoard, columnQueued, cfg.RepoPath, identity.Slug, cfg.MaxBudget)
+					workBoard.Name, columnQueued, cfg.RepoPath, identity.Slug, cfg.MaxBudget)
 				promoted++
 				continue
 			}

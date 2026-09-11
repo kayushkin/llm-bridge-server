@@ -45,7 +45,6 @@ import (
 )
 
 const (
-	defaultBoardName = "Task completion loop"
 	columnGoals      = "Goals"
 	columnBacklog    = "Backlog"
 	columnInProgress = "In Progress"
@@ -66,7 +65,7 @@ type config struct {
 	BridgeURL       string
 	OneshotInstance string
 	Model           string
-	BoardName       string
+	BoardID         string
 	DryRun          bool
 	RoleTags        bool // TEAM-ORCHESTRATION step 1: emit capability:/role: tags. OFF by default.
 }
@@ -75,7 +74,7 @@ func main() {
 	var (
 		registerFlag    = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
 		dryRun          = flag.Bool("dry-run", false, "Decompose but do not write to kanban-store.")
-		boardName       = flag.String("board", defaultBoardName, "Kanban board name to scope.")
+		boardID         = flag.String("board-id", "", "Kanban board id to scope (required). Pinned by id so a rename in the UI cannot fork a second board.")
 		kanbanURL       = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
 		bridgeURL       = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
 		oneshotInstance = flag.String("oneshot-instance", envOr("ONESHOT_INSTANCE_ID", ""), "claude_code harness instance id for subscription oneshot calls (required to decompose)")
@@ -85,8 +84,12 @@ func main() {
 	)
 	flag.Parse()
 
+	if *boardID == "" {
+		log.Fatal("-board-id is required; there is no board to default to")
+	}
+
 	if *registerFlag {
-		if err := registerSchedulerJob(); err != nil {
+		if err := registerSchedulerJob(*boardID, *oneshotInstance); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
@@ -98,14 +101,15 @@ func main() {
 		BridgeURL:       *bridgeURL,
 		OneshotInstance: *oneshotInstance,
 		Model:           *model,
-		BoardName:       *boardName,
+		BoardID:         *boardID,
 		DryRun:          *dryRun,
 		RoleTags:        *roleTags,
 	}
 
 	kc := kanbanclient.New(cfg.KanbanURL)
-	if err := kc.EnsureBoard(cfg.BoardName, defaultColumns); err != nil {
-		log.Fatalf("ensure board %q: %v", cfg.BoardName, err)
+	board, err := kc.EnsureBoardColumns(cfg.BoardID, defaultColumns)
+	if err != nil {
+		log.Fatalf("board %s: %v", cfg.BoardID, err)
 	}
 
 	view, err := kc.GetBoardView(kc.BoardID)
@@ -114,7 +118,7 @@ func main() {
 	}
 
 	parents := pickParents(view, kc)
-	log.Printf("[scoper] board=%q parents-needing-scope=%d", cfg.BoardName, len(parents))
+	log.Printf("[scoper] board=%q id=%s parents-needing-scope=%d", board.Name, board.ID, len(parents))
 	if len(parents) == 0 {
 		return
 	}
@@ -422,10 +426,18 @@ func decompose(ctx context.Context, cfg config, digest string) (*Plan, error) {
 
 // ============================ Scheduler self-registration ============================
 
-func registerSchedulerJob() error {
+// registerSchedulerJob creates the tick job with the board id — and the
+// oneshot instance, when given — baked into the command: the scheduler runs
+// jobs as `sh -c` with its own thin environment, so neither would reach the
+// process any other way. The oneshot instance is the scoper's OWN model
+// transport, not a board setting, which is why it stays a flag.
+func registerSchedulerJob(boardID, oneshotInstance string) error {
 	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
 	home, _ := os.UserHomeDir()
-	bin := filepath.Join(home, "bin", "kanban-scoper")
+	bin := filepath.Join(home, "bin", "kanban-scoper") + " -board-id " + boardID
+	if oneshotInstance != "" {
+		bin += " -oneshot-instance " + oneshotInstance
+	}
 
 	resp, err := http.Get(schedURL + "/api/jobs")
 	if err != nil {

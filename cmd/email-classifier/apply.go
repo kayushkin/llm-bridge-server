@@ -317,7 +317,7 @@ func (a *applier) createCard(spec newCardSpec) (string, error) {
 		// files are noteboard todos, and an unattended worker discovering todos
 		// cannot tell one that belongs to a pipeline from one nobody has claimed
 		// — so without this it works whichever it finds first.
-		Hold:       a.cfg.HoldNewCards,
+		Hold:       a.cfg.Classifier.HoldNewCards,
 		HoldReason: holdReason,
 	})
 	if err != nil {

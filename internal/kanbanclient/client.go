@@ -36,6 +36,74 @@ func New(baseURL string) *Client {
 type Board struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+
+	// The board's settings: WHAT a job runs with. The scheduler job owns only
+	// WHEN it runs. Each is absent on the wire when unset, and kanban-store has
+	// already checked each id with its owner on write — principal-store,
+	// llm-bridge-server's GET /agents and GET /instances/{id} — so a value here
+	// resolved at the time it was set.
+
+	// DefaultPrincipalID is applied by kanban-store itself on card creation;
+	// no scheduler binary needs to assign it.
+	DefaultPrincipalID string `json:"default_principal_id,omitempty"`
+	// DefaultAgentID is agent-store's NUMERIC id as llm-bridge-server's
+	// GET /agents lists it — never the slug, which is renameable. A dispatcher
+	// resolves it to the slug at spawn time because the bridge's session
+	// agent_id field takes the slug.
+	DefaultAgentID string `json:"default_agent_id,omitempty"`
+	// DefaultInstanceID is the llm-bridge-server harness instance sessions
+	// for this board's cards are spawned on.
+	DefaultInstanceID string `json:"default_instance_id,omitempty"`
+	// DefaultBundleID is bundle-store's numeric id, as a string ("6"). A
+	// dispatcher sends it verbatim as `bundle_id` on llm-bridge-server's
+	// POST /sessions, which checks it with bundle-store and provisions the
+	// bundle's tools at spawn.
+	DefaultBundleID string `json:"default_bundle_id,omitempty"`
+	// Classifier is what email-classifier reads before filing mail onto this
+	// board. Nil when the board has none set.
+	Classifier *ClassifierConfig `json:"classifier,omitempty"`
+}
+
+// ClassifierConfig mirrors kanban-store's board `classifier` object.
+type ClassifierConfig struct {
+	// Vocabulary names one of email-classifier's classification schemes.
+	// email-classifier owns the list (`email-classifier -list-vocabularies`)
+	// and refuses a name it lacks.
+	Vocabulary string `json:"vocabulary"`
+	// MailAccountIDs are the mailstack account ids (GET /api/accounts → id)
+	// the classifier reads for this board. Explicit, never "every account".
+	MailAccountIDs []string `json:"mail_account_ids"`
+	// HoldNewCards parks every card the classifier creates, so an unattended
+	// worker discovering noteboard todos does not pick one up.
+	HoldNewCards bool `json:"hold_new_cards"`
+}
+
+// ErrBoardNotFound is returned by GetBoard when kanban-store answers 404 for
+// the id. Distinct so a caller can tell "the pinned id is gone" from "the
+// store is down" — the first is a configuration fault, the second transient.
+var ErrBoardNotFound = errors.New("kanban board not found")
+
+// GetBoard fetches one board by id, settings included.
+func (c *Client) GetBoard(id string) (*Board, error) {
+	if id == "" {
+		return nil, errors.New("kanbanclient: GetBoard called with an empty board id")
+	}
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s", c.BaseURL, id))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: id %s", ErrBoardNotFound, id)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusErr("get board "+id, resp)
+	}
+	var b Board
+	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+		return nil, err
+	}
+	return &b, nil
 }
 
 type Column struct {
@@ -59,9 +127,29 @@ func (c *Client) EnsureBoard(name string, wantColumns []string) error {
 			return fmt.Errorf("create board %q: %w", name, err)
 		}
 	}
-	c.BoardID = board.ID
+	return c.ensureColumns(board.ID, wantColumns)
+}
 
-	cols, err := c.ListColumns(board.ID)
+// EnsureBoardColumns is EnsureBoard for a caller that pins the board by id:
+// it fetches the board (ErrBoardNotFound if the id is gone — never created,
+// since creating a replacement is how a board forks), ensures the named
+// columns exist, and caches the resolved ids on the client. Returns the board
+// so the caller has its name and settings.
+func (c *Client) EnsureBoardColumns(boardID string, wantColumns []string) (*Board, error) {
+	board, err := c.GetBoard(boardID)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.ensureColumns(board.ID, wantColumns); err != nil {
+		return nil, err
+	}
+	return board, nil
+}
+
+func (c *Client) ensureColumns(boardID string, wantColumns []string) error {
+	c.BoardID = boardID
+
+	cols, err := c.ListColumns(boardID)
 	if err != nil {
 		return fmt.Errorf("list columns: %w", err)
 	}
@@ -82,7 +170,7 @@ func (c *Client) EnsureBoard(name string, wantColumns []string) error {
 			s := "archived"
 			autoStatus = &s
 		}
-		col, err := c.createColumn(board.ID, want, autoStatus)
+		col, err := c.createColumn(boardID, want, autoStatus)
 		if err != nil {
 			return fmt.Errorf("create column %q: %w", want, err)
 		}

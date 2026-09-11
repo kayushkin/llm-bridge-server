@@ -11,14 +11,15 @@ import (
 //
 // Every one of these was unreachable until parseFlags was lifted out of main().
 // The suite in priority_test.go, session_test.go and text_test.go builds its own
-// fixtures, so every value it asserts is one the tests chose; the twenty-three
-// values this binary actually starts with had never been read by anything.
+// fixtures, so every value it asserts is one the tests chose; the values this
+// binary actually starts with had never been read by anything.
 //
 // Two families are worth more than the rest here:
 //
-//   - The EIGHT switches that turn a tick into a no-op. Seven are early exits
-//     (-register, -merge, -backfill-due, -refile-unread-since, -sender,
-//     -message, -dump-digest) and the eighth (-dry-run) neuters the writes. Any one of them shipping ON leaves a binary that runs
+//   - The NINE switches that turn a tick into a no-op. Eight are early exits
+//     (-list-vocabularies, -register, -merge, -backfill-due,
+//     -refile-unread-since, -sender, -message, -dump-digest) and the ninth
+//     (-dry-run) neuters the writes. Any one of them shipping ON leaves a binary that runs
 //     every 15 minutes, reads the board, logs, exits 0 and files nothing — which
 //     from outside is a quiet mailbox.
 //   - The TWO that decide spend. -model picks which model reads every digest,
@@ -50,11 +51,11 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		got  any
 		want any
 	}{
+		{"-list-vocabularies", cfg.ListVocabularies, false},
 		{"-register", cfg.RegisterJob, false},
 		{"-dry-run", cfg.DryRun, false},
 		{"-dump-digest", cfg.DumpDigest, false},
 		{"-board-id", cfg.BoardID, ""},
-		{"-board", cfg.BoardName, "Email"},
 		{"-kanban-url", cfg.KanbanURL, "http://localhost:8305"},
 		{"-mail-url", cfg.MailURL, "http://localhost:8195"},
 		{"-mail-token", cfg.MailToken, "changeme"},
@@ -62,7 +63,6 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		{"-oneshot-instance", cfg.OneshotInstance, ""},
 		{"-model", cfg.Model, "claude-sonnet-4-6"},
 		{"-max", cfg.MaxEmails, 50},
-		{"-account", cfg.OnlyAccount, ""},
 		{"-backfill", cfg.Backfill, false},
 		{"-merge", cfg.MergePass, false},
 		{"-backfill-due", cfg.BackfillDue, false},
@@ -82,12 +82,15 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 	}
 }
 
-// TestTheDefaultBoardIsResolvedByNameOnlyAsAFallback pins the pair resolveBoard
-// takes positionally. Swapping them compiles clean: both are strings, and the
-// binary would then look for a board whose id is "Email", fail to find it, and
-// refuse to run — or worse, with -board-id set, treat the id as a name and
-// auto-create a second board, which is the exact fork pinning the id prevents.
-func TestTheDefaultBoardIsResolvedByNameOnlyAsAFallback(t *testing.T) {
+// TestThereIsNoBoardToDefaultTo pins that the board is named, never assumed.
+//
+// The board's classifier setting is what a tick files with — the vocabulary,
+// the mailstack accounts, whether new cards are parked — so a tick with no
+// board id has nothing to run with. Until 2026-09-11 an empty -board-id fell
+// back to finding the board by the name "Email", which is the name-join fork
+// pinning the id exists to prevent. -list-vocabularies reads no board and is
+// the one mode exempt.
+func TestThereIsNoBoardToDefaultTo(t *testing.T) {
 	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
@@ -95,18 +98,27 @@ func TestTheDefaultBoardIsResolvedByNameOnlyAsAFallback(t *testing.T) {
 	if cfg.BoardID != "" {
 		t.Errorf("-board-id ships with a value (%q): every host would pin the same board", cfg.BoardID)
 	}
-	if cfg.BoardName != defaultBoardName {
-		t.Errorf("-board default = %q, want %q", cfg.BoardName, defaultBoardName)
+	if err := cfg.validate(); err == nil {
+		t.Error("a tick with no -board-id validated: it has no classifier setting to run with")
 	}
 
-	// And the id has to win when both are given, which is the whole reason the
-	// id exists.
-	cfg, err = parseFlags([]string{"-board-id=abc123", "-board=Somewhere Else"}, noEnvironment, "/home/someone")
+	cfg, err = parseFlags([]string{"-list-vocabularies"}, noEnvironment, "/home/someone")
 	if err != nil {
-		t.Fatalf("parsing: %v", err)
+		t.Fatalf("parsing -list-vocabularies: %v", err)
 	}
-	if cfg.BoardID != "abc123" || cfg.BoardName != "Somewhere Else" {
-		t.Fatalf("board flags reached the wrong fields: id=%q name=%q", cfg.BoardID, cfg.BoardName)
+	if err := cfg.validate(); err != nil {
+		t.Errorf("-list-vocabularies reads no board but was refused: %v", err)
+	}
+}
+
+// TestTheFlagsTheBoardReplacedAreGone pins that a job still passing a flag the
+// board now owns fails at parse, loudly, rather than having its value quietly
+// ignored in favour of the board's — which would look like the flag working.
+func TestTheFlagsTheBoardReplacedAreGone(t *testing.T) {
+	for _, removed := range []string{"-board=Email", "-vocabulary=work", "-account=demo-work", "-hold-new-cards"} {
+		if _, err := parseFlags([]string{removed}, noEnvironment, "/home/someone"); err == nil {
+			t.Errorf("%s still parses; the board's classifier setting owns it now", removed)
+		}
 	}
 }
 
@@ -115,7 +127,7 @@ func TestTheDefaultBoardIsResolvedByNameOnlyAsAFallback(t *testing.T) {
 // they are off but what ON would look like from outside: a tick that reads the
 // board, logs a full pass, files nothing, and exits 0.
 //
-// This binary has eight of them where its siblings have one. Seven are early
+// This binary has nine of them where its siblings have one. Eight are early
 // exits that return before any new mail is read at all, and -refile-unread-since
 // is the one whose no-op is not harmless: shipped ON it would strip mail off the
 // board every fifteen minutes.
@@ -129,6 +141,7 @@ func TestEveryNoOpSwitchShipsOff(t *testing.T) {
 		on         bool
 		whatItDoes string
 	}{
+		{"-list-vocabularies", cfg.ListVocabularies, "every tick prints the vocabulary names and exits before reading the board"},
 		{"-register", cfg.RegisterJob, "every tick tries to register a cron job and exits before reading the board"},
 		{"-merge", cfg.MergePass, "every tick runs the merge pass and returns, filing no new mail at all"},
 		{"-backfill-due", cfg.BackfillDue, "every tick runs the one-off deadline recovery and returns, filing no new mail"},
@@ -167,11 +180,10 @@ func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 // TestEachEnvironmentVariableReachesItsOwnField is the test the flag set was
 // registered into named fields for.
 //
-// Nine variables land in this config and seven of them are strings that would
-// be accepted in each other's place. Two pairs are consumed positionally —
-// newMailClient takes (MailURL, MailToken) and resolveBoard takes (BoardID,
-// BoardName) — so a swap compiles clean and passes every other test in the
-// package, because nothing else reads them. Giving each variable a distinct
+// Eight variables land in this config and all of them are strings that would
+// be accepted in each other's place. One pair is consumed positionally —
+// newMailClient takes (MailURL, MailToken) — so a swap compiles clean and
+// passes every other test in the package, because nothing else reads them. Giving each variable a distinct
 // value and asserting the field it lands in is what makes a swap fail.
 func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
@@ -241,7 +253,7 @@ func TestTheRegisteredCommandIsBuiltFromTheGivenHome(t *testing.T) {
 
 func TestExplicitArgumentsBeatBothTheEnvironmentAndTheDefault(t *testing.T) {
 	cfg, err := parseFlags(
-		[]string{"-dry-run", "-max=7", "-model=claude-haiku-4-5", "-account=gmail-1", "-board-id=from-the-argument"},
+		[]string{"-dry-run", "-max=7", "-model=claude-haiku-4-5", "-board-id=from-the-argument"},
 		environmentWith(map[string]string{
 			"EMAIL_CLASSIFIER_MODEL": "from-the-environment",
 			"EMAIL_BOARD_ID":         "from-the-environment",
@@ -256,9 +268,6 @@ func TestExplicitArgumentsBeatBothTheEnvironmentAndTheDefault(t *testing.T) {
 	}
 	if cfg.MaxEmails != 7 {
 		t.Errorf("-max = %d, want 7", cfg.MaxEmails)
-	}
-	if cfg.OnlyAccount != "gmail-1" {
-		t.Errorf("-account = %q, want gmail-1", cfg.OnlyAccount)
 	}
 	// These two have to win over the variable, not merely over the built-in
 	// default: the variable is what supplies each flag's default, so a precedence
@@ -290,8 +299,10 @@ func TestATickWithNoBudgetIsRefusedRatherThanReportingSuccess(t *testing.T) {
 	}
 }
 
-func TestTheDefaultConfigurationValidates(t *testing.T) {
-	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
+// TestTheDefaultsWithABoardValidate: the shipped defaults plus the one thing a
+// tick must be told — which board — are a configuration that runs.
+func TestTheDefaultsWithABoardValidate(t *testing.T) {
+	cfg, err := parseFlags([]string{"-board-id=board-42"}, noEnvironment, "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
 	}
@@ -303,13 +314,13 @@ func TestTheDefaultConfigurationValidates(t *testing.T) {
 // TestTheRegisteredJobIsTheOneTheSchedulerCanActuallyRun pins the payload
 // -register POSTs.
 //
-// This is written exactly once per host, by hand, and CLAUDE.md records that
-// there is no second chance to correct the command through the API. The timeout
+// This is written once per host, by hand, and a wrong one fails every tick until
+// someone reads the run log. The timeout
 // is the quiet one: 0 means the scheduler's 5-minute default, and a tick that
 // makes one live provider round trip per message routinely outruns that, so it
 // would be killed mid-run — reported as `timeout`, with the board half-written.
 func TestTheRegisteredJobIsTheOneTheSchedulerCanActuallyRun(t *testing.T) {
-	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
+	cfg, err := parseFlags([]string{"-board-id=board-42", "-oneshot-instance=inst-cc-local"}, noEnvironment, "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
 	}
@@ -323,7 +334,7 @@ func TestTheRegisteredJobIsTheOneTheSchedulerCanActuallyRun(t *testing.T) {
 		{"schedule", "*/15 * * * *"},
 		{"type", "shell"},
 		{"timeout_seconds", 900},
-		{"command", "/home/someone/bin/email-classifier"},
+		{"command", "/home/someone/bin/email-classifier -board-id board-42 -oneshot-instance inst-cc-local"},
 	} {
 		if got := payload[check.key]; got != check.want {
 			t.Errorf("registered job %s = %v, want %v", check.key, got, check.want)
@@ -339,25 +350,23 @@ func TestTheRegisteredJobIsTheOneTheSchedulerCanActuallyRun(t *testing.T) {
 //
 // The scheduler runs jobs as `sh -c` with its own thin environment, so
 // EMAIL_BOARD_ID does not reach the process — the id has to be baked into the
-// command string or the job resolves the board by name, and a rename in the UI
-// then forks a second board that every cron writer follows.
+// command string or the job has no board to read its classifier setting from.
+// ONESHOT_INSTANCE_ID is the same: without it every tick dies at the first
+// model call.
 func TestAPinnedBoardIdReachesTheRegisteredCommand(t *testing.T) {
-	if got := registeredCommand("/home/someone/bin/email-classifier", "board-42"); got != "/home/someone/bin/email-classifier -board-id board-42" {
-		t.Errorf("registered command = %q, want the board id baked in", got)
-	}
-	if got := registeredCommand("/home/someone/bin/email-classifier", ""); got != "/home/someone/bin/email-classifier" {
-		t.Errorf("registered command with no board id = %q, want the bare binary", got)
+	if got := registeredCommand("/home/someone/bin/email-classifier", "board-42", "inst-cc-local"); got != "/home/someone/bin/email-classifier -board-id board-42 -oneshot-instance inst-cc-local" {
+		t.Errorf("registered command = %q, want the board id and oneshot instance baked in", got)
 	}
 
 	// And it has to arrive from the flag, not only from the environment: before
 	// the seam, registerSchedulerJob read EMAIL_BOARD_ID directly and ignored
 	// -board-id entirely, so `-register -board-id X` warned that no id was
 	// pinned and then registered a job without one.
-	cfg, err := parseFlags([]string{"-board-id=board-42"}, noEnvironment, "/home/someone")
+	cfg, err := parseFlags([]string{"-board-id=board-42", "-oneshot-instance=inst-cc-local"}, noEnvironment, "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
-	if got := schedulerJobPayload(cfg)["command"]; got != "/home/someone/bin/email-classifier -board-id board-42" {
+	if got := schedulerJobPayload(cfg)["command"]; got != "/home/someone/bin/email-classifier -board-id board-42 -oneshot-instance inst-cc-local" {
 		t.Errorf("-board-id did not reach the registered command: %v", got)
 	}
 }

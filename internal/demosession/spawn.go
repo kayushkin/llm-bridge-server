@@ -1,9 +1,16 @@
-// Package demosession runs a one-shot task as a Claude Code session.
+// Package demosession runs a one-shot task as a harness session on the
+// instance the caller names.
 //
-// The reason is billing, and it is not a detail. A direct call to
-// /v1/messages spends API credit; a Claude Code session runs on the Max
-// subscription, where the marginal cost of a turn is zero. Everything on this
-// host that dispatches agents already works that way.
+// The reason it is a session and not a model call is billing, and it is not a
+// detail. A direct call to /v1/messages spends API credit; a Claude Code
+// session runs on the Max subscription, where the marginal cost of a turn is
+// zero. Everything on this host that dispatches agents already works that way.
+//
+// Which instance hosts it is not this package's to decide: the kanban board the
+// work came from owns that as default_instance_id, and the caller reads it
+// there. The harness type is then whatever llm-bridge-server says that
+// instance runs — read at spawn, never assumed, so a board pointed at a codex
+// instance does not get a claude_code request it would refuse.
 //
 // It talks to llm-bridge-server over HTTP rather than publishing to NATS, which
 // is what autoworker and kanban-dispatcher do. Two reasons, both learned here:
@@ -34,6 +41,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/slava/scheduler/internal/bridgeclient"
 )
 
 // Task is one piece of work to hand an agent.
@@ -52,8 +60,15 @@ type Task struct {
 	// harness reads a missing flag as — so a caller that wants a cap must say a
 	// positive number.
 	MaxBudgetUSD float64
-	// InstanceID is the harness instance to host it.
+	// InstanceID is the harness instance to host it: the board's
+	// default_instance_id. Required — there is no fallback instance, because
+	// the one that used to be written here ("inst-cc-local") was a second copy
+	// of a board setting and the two would drift.
 	InstanceID string
+	// BundleID is bundle-store's numeric id as a string, sent verbatim as
+	// bundle_id; llm-bridge-server checks it with bundle-store and provisions
+	// the bundle's tools at spawn. Empty sends no bundle.
+	BundleID string
 	// Purpose and Origin are governed vocabularies on llm-bridge-server and are
 	// enforced at creation, so they are not free text.
 	Purpose string
@@ -75,7 +90,7 @@ func Spawn(bridgeURL string, t Task) (string, error) {
 		return "", fmt.Errorf("demosession: no llm-bridge-server URL")
 	}
 	if t.InstanceID == "" {
-		t.InstanceID = "inst-cc-local"
+		return "", fmt.Errorf("demosession: no instance id — the board's default_instance_id is unset, and there is no fallback instance")
 	}
 	if t.Purpose == "" {
 		t.Purpose = "autoworker"
@@ -84,13 +99,19 @@ func Spawn(bridgeURL string, t Task) (string, error) {
 		t.Origin = "scheduler"
 	}
 
+	harness, err := bridgeclient.InstanceHarnessType(bridgeURL, t.InstanceID)
+	if err != nil {
+		return "", fmt.Errorf("demosession: %w", err)
+	}
+
 	now := time.Now().UTC()
 	sessionID := fmt.Sprintf("demo-%s-%d", t.AgentSlug, now.UnixNano())
 
 	create := msg.CreateSessionRequest{
 		SessionID:   sessionID,
-		Harness:     msg.HarnessClaudeCode,
+		Harness:     harness,
 		InstanceID:  t.InstanceID,
+		BundleID:    t.BundleID,
 		DisplayName: t.DisplayName,
 		Purpose:     t.Purpose,
 		Origin:      t.Origin,

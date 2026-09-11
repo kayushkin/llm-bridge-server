@@ -32,6 +32,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -46,6 +47,7 @@ import (
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/slava/scheduler/internal/bridgeclient"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -54,7 +56,6 @@ import (
 // "session" once bus_session_id became the bridge session_id.
 
 const (
-	defaultBoardName   = "Task completion loop"
 	columnGoals        = "Goals"
 	columnBacklog      = "Backlog"
 	columnInProgress   = "In Progress"
@@ -65,8 +66,6 @@ const (
 	tagGroupPrefix     = "group:"
 	linkTypeParent     = "parent_card"
 	linkTypeSession    = "session"
-	defaultHarness     = msg.HarnessClaudeCode
-	defaultInstanceID  = "inst-cc-local"
 	reviveWindow       = time.Hour
 	maxDispatchPerTick = 3
 )
@@ -75,29 +74,42 @@ func main() {
 	var (
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
 		dryRun       = flag.Bool("dry-run", false, "Decide but do not publish or move cards.")
-		boardName    = flag.String("board", defaultBoardName, "Kanban board name to dispatch on.")
+		boardID      = flag.String("board-id", "", "Kanban board id to dispatch on (required). The board owns what a session runs with — default_instance_id, default_agent_id, default_bundle_id — and this job owns only when.")
 		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
 		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
 		maxDispatch  = flag.Int("max", maxDispatchPerTick, "Max sub-card dispatches per tick.")
 	)
 	flag.Parse()
 
+	if *boardID == "" {
+		log.Fatal("-board-id is required: the board owns what a dispatched session runs with, so there is no board to default to")
+	}
+
 	if *registerFlag {
-		if err := registerSchedulerJob(); err != nil {
+		if err := registerSchedulerJob(*boardID); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
 	}
 
 	kc := kanbanclient.New(*kanbanURL)
-	board, err := kc.FindBoard(*boardName)
+	board, err := kc.GetBoard(*boardID)
+	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
+		log.Fatalf("board %s does not exist — refusing to create a replacement, since a second board is exactly the fork pinning the id prevents", *boardID)
+	}
 	if err != nil {
-		log.Fatalf("find board %q: %v", *boardName, err)
+		log.Fatalf("get board %s: %v", *boardID, err)
 	}
-	if board == nil {
-		log.Printf("board %q does not exist yet — nothing to dispatch", *boardName)
-		return
+	// Resolved once per tick, before any card is touched: a board with no
+	// instance, or an instance or agent the bridge no longer knows, must stop
+	// the tick here rather than after the first card has been moved to In
+	// Progress with no session behind it.
+	spec, err := resolveSessionSpec(*bridgeURL, board)
+	if err != nil {
+		log.Fatalf("board %q (%s): %v", board.Name, board.ID, err)
 	}
+	log.Printf("[dispatcher] board=%q id=%s instance=%s harness=%s agent=%q bundle=%q",
+		board.Name, board.ID, spec.InstanceID, spec.Harness, spec.AgentSlug, spec.BundleID)
 	view, err := kc.GetBoardView(board.ID)
 	if err != nil {
 		log.Fatalf("board view: %v", err)
@@ -108,7 +120,7 @@ func main() {
 	}
 	for _, want := range []string{columnGoals, columnBacklog, columnInProgress, columnDone, columnFailed} {
 		if colByName[want] == "" {
-			log.Fatalf("board %q missing required column %q", *boardName, want)
+			log.Fatalf("board %q missing required column %q", board.Name, want)
 		}
 	}
 
@@ -124,7 +136,7 @@ func main() {
 	}
 
 	parents := scopedParents(view, kc)
-	log.Printf("[dispatcher] board=%q scoped-parents=%d", *boardName, len(parents))
+	log.Printf("[dispatcher] board=%q scoped-parents=%d", board.Name, len(parents))
 
 	dispatched := 0
 	for _, p := range parents {
@@ -155,7 +167,7 @@ func main() {
 				continue
 			}
 
-			in := buildBridgeInbound(sessionID, displayName, prompt, reused == "")
+			in := buildBridgeInbound(sessionID, displayName, prompt, reused == "", spec)
 			if err := natsClient.Publish(messages.BridgeInboundSubject, in); err != nil {
 				log.Printf("[%s] nats publish: %v", p.title(), err)
 				continue
@@ -518,7 +530,42 @@ func shortID(id string) string {
 	return id[:8]
 }
 
-func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool) messages.BridgeInbound {
+// sessionSpec is what a fresh session runs with, resolved from the board.
+type sessionSpec struct {
+	Harness    msg.Harness
+	InstanceID string
+	// AgentSlug is empty when the board sets no default_agent_id; the bridge
+	// then starts the session as no agent, exactly as before boards had one.
+	AgentSlug string
+	// BundleID is the board's default_bundle_id verbatim, or empty.
+	BundleID string
+}
+
+// resolveSessionSpec turns the board's settings into what POST /sessions
+// takes. The board stores ids — the instance id and agent-store's numeric agent
+// id — and the bridge wants the harness type and the agent's slug, so both are
+// read from the bridge now rather than copied onto the board at some earlier
+// date and trusted since.
+func resolveSessionSpec(bridgeURL string, board *kanbanclient.Board) (sessionSpec, error) {
+	if board.DefaultInstanceID == "" {
+		return sessionSpec{}, fmt.Errorf("no default_instance_id — set it on the board (PATCH /api/boards/%s {\"default_instance_id\":…}); the dispatcher no longer carries a fallback instance", board.ID)
+	}
+	harness, err := bridgeclient.InstanceHarnessType(bridgeURL, board.DefaultInstanceID)
+	if err != nil {
+		return sessionSpec{}, fmt.Errorf("default_instance_id: %w", err)
+	}
+	spec := sessionSpec{Harness: harness, InstanceID: board.DefaultInstanceID, BundleID: board.DefaultBundleID}
+	if board.DefaultAgentID != "" {
+		slug, err := bridgeclient.AgentSlugByID(bridgeURL, board.DefaultAgentID)
+		if err != nil {
+			return sessionSpec{}, fmt.Errorf("default_agent_id: %w", err)
+		}
+		spec.AgentSlug = slug
+	}
+	return spec, nil
+}
+
+func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec sessionSpec) messages.BridgeInbound {
 	in := messages.BridgeInbound{
 		BusSessionID: sessionID,
 		Agent:        "tcl-worker",
@@ -531,8 +578,10 @@ func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool) messa
 	}
 	if fresh {
 		in.Create = &msg.CreateSessionRequest{
-			Harness:     defaultHarness,
-			InstanceID:  defaultInstanceID,
+			Harness:     spec.Harness,
+			InstanceID:  spec.InstanceID,
+			AgentID:     spec.AgentSlug,
+			BundleID:    spec.BundleID,
 			DisplayName: displayName,
 			Purpose:     "dispatcher",
 			Origin:      "scheduler",
@@ -642,10 +691,13 @@ func getSessionState(bridgeURL, sessionID string) (state string, updatedAt strin
 
 // ============================ Scheduler self-registration ============================
 
-func registerSchedulerJob() error {
+// registerSchedulerJob creates the tick job, with the board id baked into the
+// command: the scheduler runs jobs as `sh -c` with its own thin environment,
+// so nothing else would carry it to the process.
+func registerSchedulerJob(boardID string) error {
 	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
 	home, _ := os.UserHomeDir()
-	bin := filepath.Join(home, "bin", "kanban-dispatcher")
+	bin := filepath.Join(home, "bin", "kanban-dispatcher") + " -board-id " + boardID
 
 	resp, err := http.Get(schedURL + "/api/jobs")
 	if err != nil {

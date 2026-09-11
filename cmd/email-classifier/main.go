@@ -56,8 +56,6 @@ import (
 )
 
 const (
-	defaultBoardName = "Email"
-
 	columnNoAction        = "No action"
 	columnActionNeeded    = "Action needed"
 	columnActionCompleted = "Action completed"
@@ -176,16 +174,21 @@ type environmentLookup func(key string) string
 //
 // The flag set lives here rather than in main() so that a test can reach the
 // defaults. Registered inside main() they were unreachable — nothing in a test
-// can call main() — so the twenty-three values this binary actually starts with
-// had never been read by anything.
+// can call main() — so the values this binary actually starts with had never
+// been read by anything.
 //
-// Seven of those twenty-three are early-exit mode switches (-register, -merge,
-// -backfill-due, -refile-unread-since, -sender, -message, -dump-digest) and an
-// eighth (-dry-run) neuters the writes. Any
-// one of them shipping ON leaves a tick that reads the board, reports success
-// and files no mail — which from outside is indistinguishable from a quiet
-// mailbox. The two that decide spend are -model, which picks which model reads
-// the digest, and -max, which bounds how much mail one tick pays to classify.
+// Eight of the flags are early-exit mode switches (-list-vocabularies,
+// -register, -merge, -backfill-due, -refile-unread-since, -sender, -message,
+// -dump-digest) and a ninth (-dry-run) neuters the writes. Any one of them
+// shipping ON leaves a tick that reads the board, reports success and files no
+// mail — which from outside is indistinguishable from a quiet mailbox. The two
+// that decide spend are -model, which picks which model reads the digest, and
+// -max, which bounds how much mail one tick pays to classify.
+//
+// What a run files WITH — the vocabulary, the mailstack accounts it reads and
+// whether new cards are parked — is not a flag at all. The board owns it, as
+// its classifier setting, and this binary reads it there after the flags are
+// parsed: the board owns what a job runs with, the scheduler job owns when.
 //
 // The flag set is a fresh FlagSet, not the package-level flag.CommandLine: a
 // test calling this twice would panic on the redefined flag, and that failure
@@ -199,23 +202,18 @@ type environmentLookup func(key string) string
 func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirectory string) (config, error) {
 	fs := flag.NewFlagSet("email-classifier", flag.ContinueOnError)
 	var c config
+	fs.BoolVar(&c.ListVocabularies, "list-vocabularies", false, "Print the vocabulary names a board's classifier.vocabulary may carry, as a JSON array, and exit.")
 	fs.BoolVar(&c.RegisterJob, "register", false, "Register this binary as a scheduler cron job and exit.")
 	fs.BoolVar(&c.DryRun, "dry-run", false, "Classify but write nothing to kanban-store.")
 	fs.BoolVar(&c.DumpDigest, "dump-digest", false, "Print the digest that would be sent and exit, without calling the model.")
-	fs.StringVar(&c.BoardID, "board-id", envOr(lookupEnvironment, "EMAIL_BOARD_ID", ""), "Kanban board id. Pinning the id avoids the name-fork failure; falls back to lookup by -board when empty.")
-	fs.StringVar(&c.BoardName, "board", defaultBoardName, "Kanban board name, used only when -board-id is empty.")
+	fs.StringVar(&c.BoardID, "board-id", envOr(lookupEnvironment, "EMAIL_BOARD_ID", ""), "Kanban board id (required except with -list-vocabularies). The board's classifier setting — vocabulary, mail_account_ids, hold_new_cards — says what this run files with.")
 	fs.StringVar(&c.KanbanURL, "kanban-url", envOr(lookupEnvironment, "KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
 	fs.StringVar(&c.MailURL, "mail-url", envOr(lookupEnvironment, "MAILSTACK_URL", "http://localhost:8195"), "mailstack base URL")
 	fs.StringVar(&c.MailToken, "mail-token", envOr(lookupEnvironment, "MAILSTACK_TOKEN", "changeme"), "mailstack bearer token")
 	fs.StringVar(&c.BridgeURL, "bridge-url", envOr(lookupEnvironment, "LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL, used to tell whether an agent is still working on a card")
 	fs.StringVar(&c.OneshotInstance, "oneshot-instance", envOr(lookupEnvironment, "ONESHOT_INSTANCE_ID", ""), "claude_code harness instance id for subscription oneshot calls (required unless -dump-digest)")
 	fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "EMAIL_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
-	fs.BoolVar(&c.HoldNewCards, "hold-new-cards", false,
-		"Create every new card parked, so an unattended worker discovering noteboard todos does not pick it up. The pipeline that owns these cards is expected to release them.")
-	fs.StringVar(&c.Vocabulary, "vocabulary", envOr(lookupEnvironment, "EMAIL_CLASSIFIER_VOCABULARY", personalVocabulary.Name),
-		"Classification scheme: personal or work. A work mailbox and a personal one are not the same problem in different words.")
 	fs.IntVar(&c.MaxEmails, "max", maxEmailsPerTick, "Max emails to file per tick.")
-	fs.StringVar(&c.OnlyAccount, "account", "", "Restrict to one mailstack account id.")
 	fs.BoolVar(&c.Backfill, "backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
 	fs.BoolVar(&c.MergePass, "merge", false, "Run the card-merge pass over the board and exit, filing no new mail.")
 	fs.BoolVar(&c.BackfillDue, "backfill-due", false, "Recover deadlines from existing card summaries into due_at, re-score, and exit. One-off: cards filed after this store their own date.")
@@ -234,20 +232,28 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	return c, nil
 }
 
-// validate rejects a configuration that would run, but wrongly.
+// validate rejects a configuration that would run, but wrongly, or that names
+// no board to run against.
 //
 // It is a method rather than a few lines in main for the usual reason — nothing
-// in a test can call main() — and it holds exactly one rule, because there is
-// exactly one input here that fails silently instead of loudly.
+// in a test can call main() — and it holds two rules.
 //
 // A -max below 1 makes collectUnfiled stop before it reads a single message
 // (its budget check is `len(out) >= cfg.MaxEmails`, which is already true at
 // zero). The tick then logs "nothing new to file" and exits 0, every 15
 // minutes, while mail piles up. Every other bad value in this configuration
 // fails at the first HTTP call and says so.
+//
+// A missing board id has no board to fall back to: the board is where the
+// vocabulary, the accounts and the hold policy live, so there is nothing to
+// run with until one is named. -list-vocabularies is the one mode that reads
+// no board and is exempt.
 func (c config) validate() error {
 	if c.MaxEmails < 1 {
 		return fmt.Errorf("-max must be at least 1 (got %d): a tick with no budget files nothing and still reports success", c.MaxEmails)
+	}
+	if !c.ListVocabularies && c.BoardID == "" {
+		return errors.New("-board-id (or EMAIL_BOARD_ID) is required: the board's classifier setting is what this run files with, and there is no board to default to")
 	}
 	return nil
 }
@@ -280,21 +286,22 @@ func run() int {
 		log.Fatal(err)
 	}
 
+	if cfg.ListVocabularies {
+		// kanban-store's board editor asks this binary what a board's
+		// classifier.vocabulary may say, because the list is owned here and
+		// nowhere else. JSON on stdout, nothing else on stdout.
+		if err := json.NewEncoder(os.Stdout).Encode(vocabularyNames()); err != nil {
+			log.Fatalf("list vocabularies: %v", err)
+		}
+		return 0
+	}
+
 	if cfg.RegisterJob {
 		if err := registerSchedulerJob(cfg); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return 0
 	}
-
-	// Selected before anything reads an axis. A typo here must stop the run: a
-	// misspelled scheme silently falling back to personal would classify work
-	// mail against personal axes and produce a board that looks fine and means
-	// nothing.
-	if err := selectVocabulary(cfg.Vocabulary); err != nil {
-		log.Fatalf("%v", err)
-	}
-	log.Printf("[email] classifying with the %s vocabulary", active.Name)
 
 	ctx := context.Background()
 
@@ -308,10 +315,36 @@ func run() int {
 	degraded := &degradations{}
 
 	kc := kanbanclient.New(cfg.KanbanURL)
-	board, err := resolveBoard(kc, cfg.BoardID, cfg.BoardName)
-	if err != nil {
-		log.Fatalf("resolve board: %v", err)
+	board, err := kc.GetBoard(cfg.BoardID)
+	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
+		// Fatal rather than re-created: kanban-store resolves boards by name
+		// with auto-create and no unique constraint on the name, so creating a
+		// replacement is exactly how a second board with the same name forks.
+		log.Fatalf("pinned board id %s not found — refusing to create a replacement, "+
+			"since a second board with the same name is exactly the failure pinning the id prevents", cfg.BoardID)
 	}
+	if err != nil {
+		log.Fatalf("get board %s: %v", cfg.BoardID, err)
+	}
+
+	// The board says what this run files with. Read before anything touches an
+	// axis: a board with no classifier setting has no vocabulary, and a typo
+	// in the one it has must stop the run — a misspelled scheme silently
+	// falling back to personal would classify work mail against personal axes
+	// and produce a board that looks fine and means nothing.
+	if board.Classifier == nil {
+		log.Fatalf("board %q (%s) has no classifier setting — set one: "+
+			"PATCH %s/api/boards/%s {\"classifier\":{\"vocabulary\":…,\"mail_account_ids\":[…],\"hold_new_cards\":…}}; "+
+			"the vocabulary must be one of %s",
+			board.Name, board.ID, cfg.KanbanURL, board.ID, strings.Join(vocabularyNames(), ", "))
+	}
+	if err := selectVocabulary(board.Classifier.Vocabulary); err != nil {
+		log.Fatalf("board %q (%s) classifier: %v", board.Name, board.ID, err)
+	}
+	cfg.Classifier = *board.Classifier
+	log.Printf("[email] board config: vocabulary=%s mail_account_ids=%v hold_new_cards=%v",
+		active.Name, cfg.Classifier.MailAccountIDs, cfg.Classifier.HoldNewCards)
+
 	cols, err := kc.ListColumns(board.ID)
 	if err != nil {
 		log.Fatalf("list columns: %v", err)
@@ -400,9 +433,13 @@ func run() int {
 		sweep.Scanned, sweep.Repriced, sweep.Retagged, sweep.Skipped)
 
 	mc := newMailClient(cfg.MailURL, cfg.MailToken)
-	accounts, err := mc.listAccounts()
+	listed, err := mc.listAccounts()
 	if err != nil {
 		log.Fatalf("list mail accounts: %v", err)
+	}
+	accounts, err := selectMailAccounts(listed, cfg.Classifier.MailAccountIDs)
+	if err != nil {
+		log.Fatalf("board %q (%s) classifier.mail_account_ids: %v", board.Name, board.ID, err)
 	}
 
 	unfiled, err := collectUnfiled(cfg, mc, accounts, state, degraded)
@@ -505,37 +542,34 @@ func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *board
 	classifyAndApply(ctx, cfg, ap, state, notes, batch[mid:], degraded)
 }
 
-// config is every value this command is configured with: the twenty-three flags,
-// plus the two pieces of wiring that used to be read from the environment
-// inside registerSchedulerJob, plus the resolved API key.
+// config is every value this command is configured with: the flags, the two
+// pieces of wiring that used to be read from the environment inside
+// registerSchedulerJob, and the classifier setting read off the board.
 //
 // The four base URLs and the two bearer tokens are the half of this struct with
-// something to get wrong. They are all strings, and two pairs of them are
-// consumed positionally — newMailClient takes (MailURL, MailToken) and
-// resolveBoard takes (BoardID, BoardName) — so a swap compiles clean and is read
-// by nothing else. Registering each flag directly into its own named field, and
-// giving a test a distinct value per variable, is what makes a swap fail.
+// something to get wrong. They are all strings, and one pair of them is
+// consumed positionally — newMailClient takes (MailURL, MailToken) — so a swap
+// compiles clean and is read by nothing else. Registering each flag directly
+// into its own named field, and giving a test a distinct value per variable, is
+// what makes a swap fail.
 type config struct {
-	// The twenty-three flags.
-	RegisterJob     bool
-	DryRun          bool
-	DumpDigest      bool
-	BoardID         string
-	BoardName       string
-	KanbanURL       string
-	MailURL         string
-	MailToken       string
-	BridgeURL       string
-	OneshotInstance string
-	Model           string
-	Vocabulary      string
-	HoldNewCards    bool
-	MaxEmails       int
-	OnlyAccount     string
-	Backfill        bool
-	MergePass       bool
-	BackfillDue     bool
-	NoteboardURL    string
+	// The flags.
+	ListVocabularies bool
+	RegisterJob      bool
+	DryRun           bool
+	DumpDigest       bool
+	BoardID          string
+	KanbanURL        string
+	MailURL          string
+	MailToken        string
+	BridgeURL        string
+	OneshotInstance  string
+	Model            string
+	MaxEmails        int
+	Backfill         bool
+	MergePass        bool
+	BackfillDue      bool
+	NoteboardURL     string
 	// SenderQuery and MessageQuery name the entity a -sender / -message run is
 	// about. Both empty is the ordinary tick.
 	SenderQuery  string
@@ -552,39 +586,52 @@ type config struct {
 	// The wiring: where -register posts, and what it registers.
 	SchedulerURL string
 	BinaryPath   string
+
+	// Classifier is the board's classifier setting — the vocabulary, the
+	// mailstack accounts to read and whether new cards are parked — copied off
+	// the board after the flags are parsed. Not a flag: the board owns what a
+	// run files with, so a value here that disagreed with the board would be a
+	// second source of truth.
+	Classifier kanbanclient.ClassifierConfig
 }
 
-// ============================ board resolution ============================
+// ============================ mail accounts ============================
 
-// resolveBoard prefers an explicitly pinned id. kanban-store resolves boards by
-// name with auto-create and no unique constraint on the name, so a rename in the
-// UI silently forks a second board and every cron writer follows the new one.
-// A pinned id that no longer resolves is fatal rather than re-created, because
-// creating a replacement is how the fork happens.
-func resolveBoard(kc *kanbanclient.Client, boardID, boardName string) (*kanbanclient.Board, error) {
-	if boardID != "" {
-		boards, err := kc.ListBoards()
-		if err != nil {
-			return nil, err
+// selectMailAccounts picks, from what mailstack lists, exactly the accounts the
+// board's classifier.mail_account_ids names, in the board's order.
+//
+// Explicit, never "every account": until 2026-09-11 an empty -account meant all
+// enabled accounts, and the personal Email board's job swept 226 messages from
+// the synthetic demo-work account onto it. An id mailstack does not list is an
+// error naming it — a board pointing at an account that is gone has nothing to
+// read there and must say so rather than quietly file from the rest.
+func selectMailAccounts(listed []mailAccount, wantIDs []string) ([]mailAccount, error) {
+	if len(wantIDs) == 0 {
+		return nil, errors.New("names no mail accounts; the classifier reads exactly the accounts the board lists, never every account")
+	}
+	byID := make(map[string]mailAccount, len(listed))
+	for _, account := range listed {
+		byID[account.ID] = account
+	}
+	var missing []string
+	out := make([]mailAccount, 0, len(wantIDs))
+	for _, id := range wantIDs {
+		account, ok := byID[id]
+		if !ok {
+			missing = append(missing, id)
+			continue
 		}
-		for i := range boards {
-			if boards[i].ID == boardID {
-				return &boards[i], nil
-			}
+		out = append(out, account)
+	}
+	if len(missing) > 0 {
+		known := make([]string, 0, len(listed))
+		for _, account := range listed {
+			known = append(known, account.ID)
 		}
-		return nil, fmt.Errorf("pinned board id %s not found — refusing to create a replacement, "+
-			"since a second board with the same name is exactly the failure pinning the id prevents", boardID)
+		return nil, fmt.Errorf("mailstack does not list account(s) %s; it lists %s",
+			strings.Join(missing, ", "), strings.Join(known, ", "))
 	}
-	board, err := kc.FindBoard(boardName)
-	if err != nil {
-		return nil, err
-	}
-	if board == nil {
-		return nil, fmt.Errorf("board %q not found; create it and pin its id with -board-id/EMAIL_BOARD_ID", boardName)
-	}
-	log.Printf("[email] WARNING: board resolved by name %q. Pin EMAIL_BOARD_ID=%s so a rename cannot fork the board.",
-		boardName, board.ID)
-	return board, nil
+	return out, nil
 }
 
 func requireColumns(kc *kanbanclient.Client, names []string) {
@@ -789,10 +836,11 @@ func collectUnfiled(cfg config, mc *mailClient, accounts []mailAccount, state *b
 	var out []pendingEmail
 	for _, acct := range accounts {
 		if !acct.Enabled {
-			log.Printf("[email] account %s disabled; skipping", acct.ID)
-			continue
-		}
-		if cfg.OnlyAccount != "" && acct.ID != cfg.OnlyAccount {
+			// The board named this account and mailstack has it switched off:
+			// a disagreement between two owners, reported as a shortfall so
+			// the run reads as `error` rather than as a quiet mailbox.
+			log.Printf("[email] account %s is disabled in mailstack — skipping it", acct.ID)
+			degraded.record("account %s is disabled in mailstack, filed nothing from it", acct.ID)
 			continue
 		}
 		folder, err := mc.inboxFolder(acct.ID)
@@ -1068,21 +1116,18 @@ func bestBodyText(em pendingEmail) string {
 
 // registeredCommand renders the shell command the scheduler job runs.
 //
-// The board id is baked into the command rather than left to the environment:
-// scheduler runs jobs as `sh -c` with only its own thin env, so EMAIL_BOARD_ID
-// would not reach the process. It has to be right at creation too — the
-// scheduler binary serving :8092 accepts only enabled, description and
-// timeout_seconds on PATCH and silently drops `command` with a 200, so there is
-// no second chance to correct it through the API.
+// Both values are baked into the command rather than left to the environment:
+// scheduler runs jobs as `sh -c` with only its own thin env, so neither
+// EMAIL_BOARD_ID nor ONESHOT_INSTANCE_ID would reach the process. The board id
+// is where everything else a tick runs with is read from, and the oneshot
+// instance is the tick's own model transport — without it every tick dies at
+// the first model call.
 //
 // A pure function rather than a few lines inside the POST, because this string
 // is the whole point of -register and it is written exactly once, by hand, on a
 // host nobody re-checks.
-func registeredCommand(binaryPath, boardID string) string {
-	if boardID == "" {
-		return binaryPath
-	}
-	return binaryPath + " -board-id " + boardID
+func registeredCommand(binaryPath, boardID, oneshotInstance string) string {
+	return binaryPath + " -board-id " + boardID + " -oneshot-instance " + oneshotInstance
 }
 
 // schedulerJobPayload is the job -register creates.
@@ -1092,7 +1137,7 @@ func schedulerJobPayload(cfg config) map[string]any {
 		"description": "Files incoming mail onto cards on the Email kanban board (cards are work, emails attach as links).",
 		"schedule":    schedulerJobSchedule,
 		"type":        "shell",
-		"command":     registeredCommand(cfg.BinaryPath, cfg.BoardID),
+		"command":     registeredCommand(cfg.BinaryPath, cfg.BoardID, cfg.OneshotInstance),
 		// A tick fetches messages one live provider round trip at a time, so it
 		// legitimately outruns the scheduler's 5-minute default.
 		"timeout_seconds": schedulerJobTimeoutSeconds,
@@ -1101,9 +1146,11 @@ func schedulerJobPayload(cfg config) map[string]any {
 
 func registerSchedulerJob(cfg config) error {
 	schedURL := cfg.SchedulerURL
-	if cfg.BoardID == "" {
-		log.Printf("WARNING: registering without a pinned board id. Set EMAIL_BOARD_ID and re-register, " +
-			"or the job resolves the board by name and a rename will fork it.")
+	// validate has already insisted on the board id. The oneshot instance is
+	// only required for a tick, but a registered job IS a tick, so a job
+	// without one would be registered only to die every fifteen minutes.
+	if cfg.OneshotInstance == "" {
+		return errors.New("-oneshot-instance is required to register: the job it creates makes model calls through it, and the scheduler's environment will not supply it")
 	}
 
 	resp, err := http.Get(schedURL + "/api/jobs")

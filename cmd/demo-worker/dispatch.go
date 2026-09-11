@@ -15,9 +15,13 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 	if err != nil {
 		return err
 	}
-	workBoard, err := kc.FindBoard(cfg.WorkBoard)
+	workBoard, err := kc.GetBoard(cfg.WorkBoardID)
 	if err != nil {
-		return fmt.Errorf("find board %q: %w", cfg.WorkBoard, err)
+		return fmt.Errorf("work board: %w", err)
+	}
+	host, err := sessionHostFromBoard(workBoard)
+	if err != nil {
+		return err
 	}
 	inProgress, err := columnID(kc, workBoard.ID, columnInProgress)
 	if err != nil {
@@ -25,7 +29,7 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 	}
 	view, err := kc.GetBoardView(workBoard.ID)
 	if err != nil {
-		return fmt.Errorf("read board %q: %w", cfg.WorkBoard, err)
+		return fmt.Errorf("read board %q: %w", workBoard.Name, err)
 	}
 
 	fired := 0
@@ -60,8 +64,8 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 			}
 
 			prompt := builderPrompt(identity, title, body, workingDir, cardID, cfg.RepoSlug, cfg.KanbanURL)
-			fmt.Printf("  DISPATCH %s %-48s as=%s dir=%s cap=$%.2f\n",
-				shortID(cardID), truncate(title, 48), identity.Slug, workingDir, cfg.MaxBudget)
+			fmt.Printf("  DISPATCH %s %-48s as=%s dir=%s instance=%s bundle=%q cap=$%.2f\n",
+				shortID(cardID), truncate(title, 48), identity.Slug, workingDir, host.InstanceID, host.BundleID, cfg.MaxBudget)
 			if cfg.DryRun {
 				fmt.Printf("      ── prompt ──\n%s\n      ────────────\n", indent(prompt))
 				fired++
@@ -74,6 +78,8 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 				DisplayName:  fmt.Sprintf("%s %s %s", identity.Emoji, identity.Name, time.Now().UTC().Format("Jan 2 15:04")),
 				WorkingDir:   workingDir,
 				MaxBudgetUSD: cfg.MaxBudget,
+				InstanceID:   host.InstanceID,
+				BundleID:     host.BundleID,
 			})
 			if err != nil {
 				return fmt.Errorf("dispatch %s: %w", cardID, err)

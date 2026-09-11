@@ -23,13 +23,17 @@ func review(kc *kanbanclient.Client, cfg config) error {
 	if err != nil {
 		return err
 	}
-	workBoard, err := kc.FindBoard(cfg.WorkBoard)
+	workBoard, err := kc.GetBoard(cfg.WorkBoardID)
 	if err != nil {
-		return fmt.Errorf("find board %q: %w", cfg.WorkBoard, err)
+		return fmt.Errorf("work board: %w", err)
+	}
+	host, err := sessionHostFromBoard(workBoard)
+	if err != nil {
+		return err
 	}
 	view, err := kc.GetBoardView(workBoard.ID)
 	if err != nil {
-		return fmt.Errorf("read board %q: %w", cfg.WorkBoard, err)
+		return fmt.Errorf("read board %q: %w", workBoard.Name, err)
 	}
 
 	reviewed := 0
@@ -66,8 +70,8 @@ func review(kc *kanbanclient.Client, cfg config) error {
 				continue
 			}
 
-			fmt.Printf("  REVIEW %s %-46s pr=%s as=%s\n",
-				shortID(cardID), truncate(title, 46), prRef, reviewer.Slug)
+			fmt.Printf("  REVIEW %s %-46s pr=%s as=%s instance=%s bundle=%q\n",
+				shortID(cardID), truncate(title, 46), prRef, reviewer.Slug, host.InstanceID, host.BundleID)
 			prompt := reviewerPrompt(reviewer, title, prRef, workingDir, cardID, cfg.KanbanURL)
 			if cfg.DryRun {
 				fmt.Printf("      ── prompt ──\n%s      ────────────\n", indent(prompt))
@@ -81,6 +85,8 @@ func review(kc *kanbanclient.Client, cfg config) error {
 				DisplayName:  fmt.Sprintf("%s %s %s", reviewer.Emoji, reviewer.Name, time.Now().UTC().Format("Jan 2 15:04")),
 				WorkingDir:   workingDir,
 				MaxBudgetUSD: cfg.MaxBudget,
+				InstanceID:   host.InstanceID,
+				BundleID:     host.BundleID,
 			})
 			if err != nil {
 				return fmt.Errorf("dispatch reviewer for %s: %w", cardID, err)
