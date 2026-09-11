@@ -35,6 +35,14 @@ type Config struct {
 	// consulted by the PreToolUse permission-prehook handler. Defaults to
 	// localhost:8304.
 	PermissionStoreURL string
+	// GrantStoreURL is the base URL of grant-store, read at spawn for the
+	// effective grants of a session's principal — which tools it may be
+	// offered. Configured via LLMBRIDGE_GRANT_STORE_URL.
+	GrantStoreURL string
+	// PrincipalStoreURL is the base URL of principal-store, asked at session
+	// creation whether a principal_id names a real principal. Configured via
+	// LLMBRIDGE_PRINCIPAL_STORE_URL.
+	PrincipalStoreURL string
 	// KanbanStoreURL is the base URL of the kanban-store service, which owns
 	// the session↔noteboard-todo link a signal propagates to. Configured via
 	// LLMBRIDGE_KANBAN_STORE_URL; empty switches the lookup off entirely and
@@ -135,6 +143,8 @@ func Load() *Config {
 		PublicURL:                os.Getenv("LLMBRIDGE_PUBLIC_URL"),
 		ToolStoreURL:             envOr("LLMBRIDGE_TOOL_STORE_URL", productiondefaults.ToolStoreURL),
 		PermissionStoreURL:       envOr("LLMBRIDGE_PERMISSION_STORE_URL", productiondefaults.PermissionStoreURL),
+		GrantStoreURL:            envOr("LLMBRIDGE_GRANT_STORE_URL", productiondefaults.GrantStoreURL),
+		PrincipalStoreURL:        envOr("LLMBRIDGE_PRINCIPAL_STORE_URL", productiondefaults.PrincipalStoreURL),
 		KanbanStoreURL:           envOr("LLMBRIDGE_KANBAN_STORE_URL", productiondefaults.KanbanStoreURL),
 		MailstackURL:             envOr("LLMBRIDGE_MAILSTACK_URL", productiondefaults.MailstackURL),
 		MailstackToken:           os.Getenv("LLMBRIDGE_MAILSTACK_TOKEN"),

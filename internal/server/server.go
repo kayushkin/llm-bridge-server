@@ -16,10 +16,12 @@ import (
 	hookstore "github.com/kayushkin/hook-store"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/permclient"
+	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -53,6 +55,11 @@ type Server struct {
 	harness       *harness.Manager
 	authClient    *authstoreclient.Client
 	permClient    *permclient.Client
+	// grantClient reads a session principal's effective grants at spawn;
+	// principalClient checks a principal_id at creation. See tool_provision.go
+	// and handleCreateSession.
+	grantClient     *grantclient.Client
+	principalClient *principalclient.Client
 	// kanbanClient answers "which noteboard todo is this session linked
 	// to?" when a signal is minted. Nil when kanban-store has no configured
 	// URL, which leaves every signal unlinked rather than guessing.
@@ -89,23 +96,25 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	respCache := newResponseCache()
 	st.SetNotifier(newNotifierFanout(hub, respCache))
 	srv := &Server{
-		mux:           http.NewServeMux(),
-		store:         st,
-		agentStore:    as,
-		memoryStore:   ms,
-		harnessStore:  hs,
-		hookStore:     hks,
-		modelStore:    mds,
-		snapshotStore: ss,
-		harness:       harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
-		authClient:    authClient,
-		permClient:    permclient.New(cfg.PermissionStoreURL),
-		kanbanClient:  newKanbanClient(cfg.KanbanStoreURL),
-		bridgePrefs:   newBridgePrefsStore(cfg.BridgePrefsPath),
-		cfState:       newConformanceState(cfg.ConformancePath),
-		sessionHub:    hub,
-		parkedAsks:    newParkedAsks(),
-		responseCache: respCache,
+		mux:             http.NewServeMux(),
+		store:           st,
+		agentStore:      as,
+		memoryStore:     ms,
+		harnessStore:    hs,
+		hookStore:       hks,
+		modelStore:      mds,
+		snapshotStore:   ss,
+		harness:         harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
+		authClient:      authClient,
+		permClient:      permclient.New(cfg.PermissionStoreURL),
+		grantClient:     grantclient.New(cfg.GrantStoreURL),
+		principalClient: principalclient.New(cfg.PrincipalStoreURL),
+		kanbanClient:    newKanbanClient(cfg.KanbanStoreURL),
+		bridgePrefs:     newBridgePrefsStore(cfg.BridgePrefsPath),
+		cfState:         newConformanceState(cfg.ConformancePath),
+		sessionHub:      hub,
+		parkedAsks:      newParkedAsks(),
+		responseCache:   respCache,
 		signalClassifier: newSignalClassifier(
 			cfg.SignalClassifierModel,
 			cfg.SignalClassifierTimeout,

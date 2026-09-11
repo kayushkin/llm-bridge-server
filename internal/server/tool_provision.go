@@ -2,11 +2,13 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -26,7 +28,17 @@ import (
 //     the caller asked for by hand. The key is removed afterwards: it is an
 //     instruction, not state to ship. An empty array means "no MCP servers",
 //     and is honoured as an explicit opt-out.
-//  2. Otherwise, the opt-in list the session's instance carries in tool-store —
+//  2. Otherwise, for a session started as a principal, the tools the
+//     principal's effective can_use grants name (grant-store) that the
+//     session's instance also has opted in (tool-store) — both must hold: a
+//     grant says who may have it, an opt-in says where it is wired. Lenient by
+//     the operator's choice on 2026-09-11: a principal holding no can_use tool
+//     grant at all falls through to source 3 unchanged, with a log line saying
+//     so. A grant-store that cannot answer aborts the spawn — a session that
+//     named a principal must not be offered everything because the check
+//     failed — where a tool-store that cannot answer starts it with nothing,
+//     as source 3 does.
+//  3. Otherwise, the opt-in list the session's instance carries in tool-store —
 //     the rows the Tools page writes. This is what makes a tick on that page
 //     reach a spawned session instead of sitting in a table nothing reads.
 //
@@ -89,6 +101,12 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 	if sess.InstanceID == "" {
 		return nil
 	}
+	if sess.PrincipalID != "" {
+		handled, err := s.injectGrantedMCPConfig(sess, cfg)
+		if err != nil || handled {
+			return err
+		}
+	}
 	path, err := s.writeProvisionedMCPConfig(map[string]any{"instance_id": sess.InstanceID})
 	if err != nil {
 		log.Printf("[tool-store] instance %s opt-ins unavailable for session %s, starting with no MCP servers: %v",
@@ -100,6 +118,97 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 		return nil
 	}
 	return s.setMCPConfigPath(sess, cfg, path, 0)
+}
+
+// injectGrantedMCPConfig is source 2 above. It reports handled=false, with no
+// error, exactly when the principal holds no can_use tool grant, so the caller
+// falls through to the instance's opt-ins.
+func (s *Server) injectGrantedMCPConfig(sess *store.Session, cfg map[string]json.RawMessage) (bool, error) {
+	if s.grantClient == nil {
+		return false, fmt.Errorf("session %s is started as %s but this server has no grant-store to read its grants from (LLMBRIDGE_GRANT_STORE_URL)", sess.SessionID, sess.PrincipalID)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	grantedIDs, err := s.grantClient.EffectiveToolIDs(ctx, sess.PrincipalID)
+	if err != nil {
+		return false, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
+	}
+	if len(grantedIDs) == 0 {
+		log.Printf("[grant-store] principal %s holds no can_use tool grant; session %s is offered instance %s's opt-ins unchanged (lenient, operator's choice 2026-09-11)",
+			sess.PrincipalID, sess.SessionID, sess.InstanceID)
+		return false, nil
+	}
+	optedInIDs, err := s.instanceMCPToolIDs(ctx, sess.InstanceID)
+	if err != nil {
+		log.Printf("[tool-store] instance %s opt-ins unavailable for session %s (started as %s), starting with no MCP servers: %v",
+			sess.InstanceID, sess.SessionID, sess.PrincipalID, err)
+		return true, nil
+	}
+	granted := make(map[int64]bool, len(grantedIDs))
+	for _, id := range grantedIDs {
+		granted[id] = true
+	}
+	var offered []int64
+	for _, id := range optedInIDs {
+		if granted[id] {
+			offered = append(offered, id)
+		}
+	}
+	if len(offered) == 0 {
+		log.Printf("[grant-store] session %s as %s: granted tools %v and instance %s's opt-ins %v share nothing; starting with no MCP servers",
+			sess.SessionID, sess.PrincipalID, grantedIDs, sess.InstanceID, optedInIDs)
+		return true, nil
+	}
+	path, err := s.writeProvisionedMCPConfig(map[string]any{"tool_ids": offered})
+	if err != nil {
+		return true, fmt.Errorf("session %s as %s: provisioning granted tools %v failed, so it was not started: %w", sess.SessionID, sess.PrincipalID, offered, err)
+	}
+	if path == "" {
+		return true, fmt.Errorf("session %s as %s: tool-store provisioned no servers for granted tools %v", sess.SessionID, sess.PrincipalID, offered)
+	}
+	if err := s.setMCPConfigPath(sess, cfg, path, len(offered)); err != nil {
+		return true, err
+	}
+	log.Printf("[grant-store] session %s as %s: offered tools %v (granted %v ∩ instance %s opt-ins %v)",
+		sess.SessionID, sess.PrincipalID, offered, grantedIDs, sess.InstanceID, optedInIDs)
+	return true, nil
+}
+
+// instanceMCPToolIDs reads the instance's opt-in list from tool-store and
+// returns the ids of its MCP tools — the only kind /provision can hand back.
+func (s *Server) instanceMCPToolIDs(ctx context.Context, instanceID string) ([]int64, error) {
+	requestURL := s.cfg.ToolStoreURL + "/instances/" + url.PathEscape(instanceID) + "/tools"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call %s: %w", requestURL, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read tool-store response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("tool-store GET %s returned %d: %s", requestURL, resp.StatusCode, string(body))
+	}
+	var tools []struct {
+		ID   int64  `json:"id"`
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(body, &tools); err != nil {
+		return nil, fmt.Errorf("tool-store GET %s returned unparseable JSON: %w", requestURL, err)
+	}
+	ids := make([]int64, 0, len(tools))
+	for _, t := range tools {
+		if t.Kind == "mcp" {
+			ids = append(ids, t.ID)
+		}
+	}
+	return ids, nil
 }
 
 // setMCPConfigPath points HarnessConfig's mcp_config at path and writes the
@@ -117,7 +226,7 @@ func (s *Server) setMCPConfigPath(sess *store.Session, cfg map[string]json.RawMe
 		return err
 	}
 	if toolCount > 0 {
-		log.Printf("[tool-store] provisioned %d named tools for session %s → %s", toolCount, sess.SessionID, path)
+		log.Printf("[tool-store] provisioned %d tools for session %s → %s", toolCount, sess.SessionID, path)
 	} else {
 		log.Printf("[tool-store] provisioned instance %s opt-ins for session %s → %s", sess.InstanceID, sess.SessionID, path)
 	}

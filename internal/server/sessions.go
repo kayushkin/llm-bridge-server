@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	harnessstore "github.com/kayushkin/harness-store"
 	"github.com/kayushkin/llm-bridge-server/conformance"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/textutil"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -299,6 +301,34 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Who the session is started as. Optional; when given it must be a
+	// principal-store id that principal-store has, because the spawn reads
+	// grant-store's effective set for it and a session created as an id
+	// nobody hands out would be offered nothing with no explanation. A
+	// display name or email is refused by shape: neither is unique.
+	if req.PrincipalID != "" {
+		if !strings.HasPrefix(req.PrincipalID, "principal_") {
+			writeJSONError(w, http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
+				"principal_id %q is not a principal-store id (principal_000001); a name or email is not accepted, because neither is unique", req.PrincipalID))
+			return
+		}
+		if s.principalClient == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "principal_store_not_configured",
+				"principal_id was given but this server has no principal-store to check it with (LLMBRIDGE_PRINCIPAL_STORE_URL)")
+			return
+		}
+		if err := s.principalClient.CheckExists(r.Context(), req.PrincipalID); err != nil {
+			if errors.Is(err, principalclient.ErrNotFound) {
+				writeJSONError(w, http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
+					"principal_id %s does not exist in principal-store: %v", req.PrincipalID, err))
+				return
+			}
+			writeJSONError(w, http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
+				"could not confirm principal_id %s with principal-store, so the session was not created: %v", req.PrincipalID, err))
+			return
+		}
+	}
+
 	// Caller-minted session id: workers (autoworker, scheduler, dispatcher)
 	// pass their own session_id so they can persist a kanban link or queue
 	// row before the create round-trip returns. Empty = bridge mints
@@ -318,6 +348,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		InstanceID:    inst.ID,
 		State:         string(msg.SessionIdle),
 		AgentID:       req.AgentID,
+		PrincipalID:   req.PrincipalID,
 		HarnessConfig: req.HarnessConfig,
 		Purpose:       req.Purpose,
 		Type:          req.Type,
