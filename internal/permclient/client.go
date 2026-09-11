@@ -20,8 +20,8 @@ import (
 
 // Client is a permission-store /evaluate caller. Safe for concurrent use.
 type Client struct {
-	url    string
-	http   *http.Client
+	url  string
+	http *http.Client
 }
 
 // New constructs a Client. baseURL is the permission-store root (e.g.
@@ -47,13 +47,19 @@ type Result struct {
 	UpdatedInput  json.RawMessage `json:"updated_input,omitempty"`
 }
 
-// Request is the body of POST /evaluate. SessionID and InstanceID provide
-// scope; Tool is the harness-native tool name; Input is the raw tool input.
+// Request is the body of POST /evaluate. BridgeSessionID and InstanceID
+// provide scope — permission-store matches them against its "bridge:<id>"
+// and "instance:<id>" rule scopes, and its audit log records both. The wire
+// keys are permission-store's (EvaluateRequest in its engine.go): until
+// 2026-09-11 this struct sent "session_id", which the store's decoder dropped
+// as unknown, so no scoped rule ever matched from a live session and every
+// audit row it wrote had an empty bridge_id. Tool is the harness-native tool
+// name; Input is the raw tool input.
 type Request struct {
-	SessionID  string          `json:"session_id,omitempty"`
-	InstanceID string          `json:"instance_id,omitempty"`
-	Tool       string          `json:"tool"`
-	Input      json.RawMessage `json:"input,omitempty"`
+	BridgeSessionID string          `json:"bridge_id,omitempty"`
+	InstanceID      string          `json:"instance_id,omitempty"`
+	Tool            string          `json:"tool"`
+	Input           json.RawMessage `json:"input,omitempty"`
 }
 
 // Evaluate posts the request and parses the response. Any transport or

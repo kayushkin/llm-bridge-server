@@ -171,10 +171,17 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// An unknown bridge id (sess == nil) still gets a verdict from the global
+	// rules; it just has no instance for the "instance:<id>" scope to match.
+	var instanceID string
+	if sess != nil {
+		instanceID = sess.InstanceID
+	}
 	res, err := s.permClient.Evaluate(r.Context(), permclient.Request{
-		SessionID: bridgeID,
-		Tool:      payload.ToolName,
-		Input:     payload.ToolInput,
+		BridgeSessionID: bridgeID,
+		InstanceID:      instanceID,
+		Tool:            payload.ToolName,
+		Input:           payload.ToolInput,
 	})
 	if err != nil {
 		// Pass the client's error through rather than labelling it. Evaluate

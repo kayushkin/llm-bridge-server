@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -299,4 +300,60 @@ func TestPrehookUnknownSessionAsks(t *testing.T) {
 	if decision != "ask" {
 		t.Errorf("permissionDecision = %q, want ask for an unknown session", decision)
 	}
+}
+
+// TestPrehookSendsScopeUnderPermissionStoreKeys pins the wire keys of the
+// evaluate request. permission-store decodes "bridge_id" and "instance_id"
+// (EvaluateRequest in its engine.go). Until 2026-09-11 the client sent
+// "session_id" and never sent the instance at all; the store's decoder dropped
+// the unknown key, so no "bridge:<id>" or "instance:<id>" rule ever matched
+// from a live session and 500 of 500 audit rows read that day carried an
+// empty instance_id. This test fakes the store and reads what arrives.
+func TestPrehookSendsScopeUnderPermissionStoreKeys(t *testing.T) {
+	srv, st := testServer(t)
+	seedPrehookSession(t, st, "bridge-scoped", msg.SessionTypeInteractive)
+
+	var got map[string]json.RawMessage
+	fakeStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/evaluate" {
+			t.Errorf("path = %q, want /evaluate", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode evaluate body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"outcome":"allow","matched_rule_id":"test-allow","atoms":[]}`))
+	}))
+	defer fakeStore.Close()
+	srv.permClient = permclient.New(fakeStore.URL)
+
+	decision, _ := postPrehook(t, srv, "bridge-scoped",
+		`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)
+	if decision != "allow" {
+		t.Fatalf("permissionDecision = %q, want allow from the fake store", decision)
+	}
+
+	want := map[string]string{"bridge_id": "bridge-scoped", "instance_id": "inst-1", "tool": "Bash"}
+	for key, value := range want {
+		raw, ok := got[key]
+		if !ok {
+			t.Errorf("evaluate body lacks %q; keys sent: %v", key, keysOf(got))
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil || s != value {
+			t.Errorf("evaluate body %s = %s, want %q", key, string(raw), value)
+		}
+	}
+	if _, ok := got["session_id"]; ok {
+		t.Errorf("evaluate body still carries session_id, the key permission-store ignores")
+	}
+}
+
+func keysOf(m map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
