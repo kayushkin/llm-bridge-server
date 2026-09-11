@@ -1,10 +1,12 @@
 # permission-store
 
-Canonical rule engine for tool-call gating across the llm-bridge harness ecosystem. Backs the `bridge_perm` MCP server in `llm-bridge-claudecode` so every Claude Code tool call is evaluated against a single rule set.
+Canonical rule engine for tool-call gating across the llm-bridge harness ecosystem. llm-bridge-server's Claude Code `PreToolUse` prehook (`internal/server/permission_prehook.go`) posts every tool call to `POST /evaluate` and turns the verdict into the hook's allow/deny/ask. The `bridge_perm` MCP server this used to back was deleted from `llm-bridge-claudecode` on 2026-05-05 (commit `c28fc84` there; the story is in `docs/cc-mcp-retrospective.md`).
 
 ## Status
 
-**Step 1 of 7 — Bash splitter complete.** Service skeleton, MCP wiring, seed rules, settings toggle, rules editor UI, and ask-flow UI are still TODO. See `project_permission_prompt_followups.md` in the auto-memory for the full plan.
+**Running.** SQLite store with migrations (`store.go`), the cascade rule engine (`engine.go`), the HTTP surface (`internal/server/`: `/rules`, `/evaluate`, `/audit`, `/healthz`), 17 seed rules (`seed.go`), the Bash splitter (`splitter/`), a systemd unit and `deploy.sh`, and an e2e smoke (`scripts/e2e-smoke.sh`). bridge-ui's Permissions page (`BridgePermissions.tsx`) is the rules editor, audit browser and dry-run tester. For months this line said "step 1 of 7 — Bash splitter complete", which was false from commit `f7a9d1d` on.
+
+Still open: `audit.resolved_by` is declared and never written; `EvaluateResponse` has no `updated_input` although llm-bridge-server's client parses one; a rule has no subject — scope is `global`, `bridge:<session>` or `instance:<id>`, never a principal. ⚠️ Until 2026-09-11 the live prehook sent the bridge id under the key `session_id` and never sent the instance, so no scoped rule had ever matched from a real session; fixed in llm-bridge-server that day.
 
 ## Layout
 
