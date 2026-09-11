@@ -15,6 +15,7 @@ import (
 	harnessstore "github.com/kayushkin/harness-store"
 	hookstore "github.com/kayushkin/hook-store"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
+	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
@@ -60,6 +61,8 @@ type Server struct {
 	// and handleCreateSession.
 	grantClient     *grantclient.Client
 	principalClient *principalclient.Client
+	// bundleClient checks a bundle_id at creation and resolves it at spawn.
+	bundleClient *bundleclient.Client
 	// kanbanClient answers "which noteboard todo is this session linked
 	// to?" when a signal is minted. Nil when kanban-store has no configured
 	// URL, which leaves every signal unlinked rather than guessing.
@@ -109,6 +112,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		permClient:      permclient.New(cfg.PermissionStoreURL),
 		grantClient:     grantclient.New(cfg.GrantStoreURL),
 		principalClient: principalclient.New(cfg.PrincipalStoreURL),
+		bundleClient:    bundleclient.New(cfg.BundleStoreURL),
 		kanbanClient:    newKanbanClient(cfg.KanbanStoreURL),
 		bridgePrefs:     newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfState:         newConformanceState(cfg.ConformancePath),

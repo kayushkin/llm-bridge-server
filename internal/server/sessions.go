@@ -13,6 +13,7 @@ import (
 
 	harnessstore "github.com/kayushkin/harness-store"
 	"github.com/kayushkin/llm-bridge-server/conformance"
+	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -329,6 +330,29 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The bundle the session is composed from. Optional; when given it must
+	// be a bundle-store id that bundle-store has, because the spawn resolves
+	// it and provisions exactly what it names — a session created with an id
+	// nobody hands out would fail at spawn, far from the request that caused
+	// it. A bundle's name is refused by shape: it is renameable.
+	if req.BundleID != "" {
+		if s.bundleClient == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "bundle_store_not_configured",
+				"bundle_id was given but this server has no bundle-store to check it with (LLMBRIDGE_BUNDLE_STORE_URL)")
+			return
+		}
+		if err := s.bundleClient.CheckExists(r.Context(), req.BundleID); err != nil {
+			if errors.Is(err, bundleclient.ErrNotFound) {
+				writeJSONError(w, http.StatusBadRequest, "unknown_bundle", fmt.Sprintf(
+					"bundle_id %q is not a bundle bundle-store has: %v", req.BundleID, err))
+				return
+			}
+			writeJSONError(w, http.StatusBadGateway, "bundle_store_unavailable", fmt.Sprintf(
+				"could not confirm bundle_id %s with bundle-store, so the session was not created: %v", req.BundleID, err))
+			return
+		}
+	}
+
 	// Caller-minted session id: workers (autoworker, scheduler, dispatcher)
 	// pass their own session_id so they can persist a kanban link or queue
 	// row before the create round-trip returns. Empty = bridge mints
@@ -357,6 +381,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		State:         string(msg.SessionIdle),
 		AgentID:       req.AgentID,
 		PrincipalID:   req.PrincipalID,
+		BundleID:      req.BundleID,
 		HarnessConfig: req.HarnessConfig,
 		Purpose:       req.Purpose,
 		Type:          req.Type,

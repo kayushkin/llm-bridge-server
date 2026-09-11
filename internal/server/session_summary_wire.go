@@ -25,6 +25,9 @@ type SessionSummary struct {
 	FolderName  string `json:"folderName"`
 	DisplayName string `json:"displayName"`
 	AgentID     string `json:"agentId"`
+	// BundleID is the bundle-store id the session was started with, or ""
+	// (see msg.ManagedSession.BundleID).
+	BundleID string `json:"bundleId"`
 	// ManagerSessionID is the bridge session id of the session that spawned this
 	// one; empty for a top-level session. Named exactly as chat-core's
 	// SessionSummary already declares it (`managerSessionId`), which the SSE
@@ -115,6 +118,7 @@ func summaryFromRow(r store.SessionSummaryRow) SessionSummary {
 		FolderName:  r.FolderName,
 		DisplayName: r.DisplayName,
 		AgentID:     r.AgentID,
+		BundleID:    r.BundleID,
 		UpdatedAt:   formatWireTime(r.UpdatedAt),
 		CreatedAt:   formatWireTime(r.CreatedAt),
 

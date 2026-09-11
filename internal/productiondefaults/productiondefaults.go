@@ -57,6 +57,7 @@ const (
 	// of their own), so their addresses are 127.0.0.1, not localhost-by-name.
 	PrincipalStoreURL = "http://127.0.0.1:8314"
 	GrantStoreURL     = "http://127.0.0.1:8315"
+	BundleStoreURL    = "http://localhost:8307"
 	KanbanStoreURL    = "http://localhost:8305"
 	MailstackURL      = "http://localhost:8195"
 	HealthcheckURL    = "http://localhost:8099"

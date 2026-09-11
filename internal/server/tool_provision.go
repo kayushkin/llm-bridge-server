@@ -28,17 +28,29 @@ import (
 //     the caller asked for by hand. The key is removed afterwards: it is an
 //     instruction, not state to ship. An empty array means "no MCP servers",
 //     and is honoured as an explicit opt-out.
-//  2. Otherwise, for a session started as a principal, the tools the
+//  2. Otherwise, for a session started with a bundle (BundleID, normally a
+//     kanban board's default_bundle_id), the tools bundle-store resolves the
+//     bundle to — its extends chain plus base. A bundle is a per-session
+//     request like source 1, so a bundle-store that cannot answer, a bundle
+//     that resolves to tools tool-store cannot provision, or a bundle that
+//     has gone missing since creation aborts the spawn. When the session is
+//     also started as a principal holding can_use tool grants, only the
+//     bundle's tools those grants name are offered (a bundle says what the
+//     work needs; a grant says what the person may have); a principal with
+//     no such grant is lenient exactly as in source 3. A bundle naming no
+//     tools at all provisions nothing and does not fall through — the caller
+//     chose a bundle, and its answer was "no MCP servers".
+//  3. Otherwise, for a session started as a principal, the tools the
 //     principal's effective can_use grants name (grant-store) that the
 //     session's instance also has opted in (tool-store) — both must hold: a
 //     grant says who may have it, an opt-in says where it is wired. Lenient by
 //     the operator's choice on 2026-09-11: a principal holding no can_use tool
-//     grant at all falls through to source 3 unchanged, with a log line saying
+//     grant at all falls through to source 4 unchanged, with a log line saying
 //     so. A grant-store that cannot answer aborts the spawn — a session that
 //     named a principal must not be offered everything because the check
 //     failed — where a tool-store that cannot answer starts it with nothing,
-//     as source 3 does.
-//  3. Otherwise, the opt-in list the session's instance carries in tool-store —
+//     as source 4 does.
+//  4. Otherwise, the opt-in list the session's instance carries in tool-store —
 //     the rows the Tools page writes. This is what makes a tick on that page
 //     reach a spawned session instead of sitting in a table nothing reads.
 //
@@ -97,6 +109,10 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 		return s.setMCPConfigPath(sess, cfg, path, len(tools))
 	}
 
+	if sess.BundleID != "" {
+		return s.injectBundleMCPConfig(sess, cfg)
+	}
+
 	// Instance defaults. Nothing to look up for a session with no instance.
 	if sess.InstanceID == "" {
 		return nil
@@ -120,7 +136,76 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 	return s.setMCPConfigPath(sess, cfg, path, 0)
 }
 
-// injectGrantedMCPConfig is source 2 above. It reports handled=false, with no
+// injectBundleMCPConfig is source 2 above: the bundle's tools, narrowed by
+// the principal's can_use grants when it holds any. Every failure aborts the
+// spawn — the caller asked for this bundle.
+func (s *Server) injectBundleMCPConfig(sess *store.Session, cfg map[string]json.RawMessage) error {
+	if s.bundleClient == nil {
+		return fmt.Errorf("session %s was started with bundle %s but this server has no bundle-store to resolve it with (LLMBRIDGE_BUNDLE_STORE_URL)", sess.SessionID, sess.BundleID)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resolution, err := s.bundleClient.Resolve(ctx, sess.BundleID)
+	if err != nil {
+		return fmt.Errorf("session %s was started with bundle %s, which could not be resolved, so it was not started: %w", sess.SessionID, sess.BundleID, err)
+	}
+	offered := resolution.ToolIDs()
+	if sess.PrincipalID != "" {
+		if s.grantClient == nil {
+			return fmt.Errorf("session %s is started as %s but this server has no grant-store to read its grants from (LLMBRIDGE_GRANT_STORE_URL)", sess.SessionID, sess.PrincipalID)
+		}
+		grantedIDs, err := s.grantClient.EffectiveToolIDs(ctx, sess.PrincipalID)
+		if err != nil {
+			return fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
+		}
+		if len(grantedIDs) == 0 {
+			log.Printf("[grant-store] principal %s holds no can_use tool grant; session %s is offered bundle %s's tools unchanged (lenient, operator's choice 2026-09-11)",
+				sess.PrincipalID, sess.SessionID, sess.BundleID)
+		} else {
+			granted := make(map[int64]bool, len(grantedIDs))
+			for _, id := range grantedIDs {
+				granted[id] = true
+			}
+			narrowed := offered[:0:0]
+			for _, id := range offered {
+				if granted[id] {
+					narrowed = append(narrowed, id)
+				}
+			}
+			if len(narrowed) < len(offered) {
+				log.Printf("[grant-store] session %s as %s: bundle %s names tools %v, grants allow %v, offering %v",
+					sess.SessionID, sess.PrincipalID, sess.BundleID, offered, grantedIDs, narrowed)
+			}
+			offered = narrowed
+		}
+	}
+	if len(resolution.Skills) > 0 {
+		// Skills are recorded in the resolution but not provisioned: Claude
+		// Code lists ~/.claude/skills wholesale and there is no per-session
+		// skill set to write (see the grant-store row in ~/CLAUDE.md).
+		log.Printf("[bundle-store] session %s bundle %s names %d skills, which are not provisioned per session yet: %v",
+			sess.SessionID, sess.BundleID, len(resolution.Skills), resolution.Skills)
+	}
+	if len(offered) == 0 {
+		log.Printf("[bundle-store] session %s bundle %s resolves to no MCP tools (bundles %v); starting with no MCP servers",
+			sess.SessionID, sess.BundleID, resolution.Bundles)
+		return s.replaceHarnessConfig(sess, cfg)
+	}
+	path, err := s.writeProvisionedMCPConfig(map[string]any{"tool_ids": offered})
+	if err != nil {
+		return fmt.Errorf("session %s bundle %s: provisioning tools %v failed, so it was not started: %w", sess.SessionID, sess.BundleID, offered, err)
+	}
+	if path == "" {
+		return fmt.Errorf("session %s bundle %s: tool-store provisioned no servers for tools %v", sess.SessionID, sess.BundleID, offered)
+	}
+	if err := s.setMCPConfigPath(sess, cfg, path, len(offered)); err != nil {
+		return err
+	}
+	log.Printf("[bundle-store] session %s: offered tools %v from bundle %s (bundles %v)", sess.SessionID, offered, sess.BundleID, resolution.Bundles)
+	return nil
+}
+
+// injectGrantedMCPConfig is source 3 above. It reports handled=false, with no
 // error, exactly when the principal holds no can_use tool grant, so the caller
 // falls through to the instance's opt-ins.
 func (s *Server) injectGrantedMCPConfig(sess *store.Session, cfg map[string]json.RawMessage) (bool, error) {

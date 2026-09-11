@@ -26,9 +26,11 @@ type SessionSummaryRow struct {
 	FolderName  string
 	DisplayName string
 	AgentID     string
-	UpdatedAt   time.Time
-	CreatedAt   time.Time
-	Cursor      string
+	// BundleID is the bundle-store id the session was started with, or "".
+	BundleID  string
+	UpdatedAt time.Time
+	CreatedAt time.Time
+	Cursor    string
 
 	// ManagerSessionID is the BRIDGE session id of the session that spawned this
 	// one, empty for a top-level session. It is the store's own parent pointer —
@@ -57,7 +59,7 @@ const summarySessionIDExpression = `COALESCE(NULLIF(session_id, ''), bridge_id)`
 // summaryColumns are the projected columns, in scan order. The raw updated_at is
 // selected a second time (as text) as the timestamp half of the cursor; the id
 // half is the already-projected session id, assembled in Go.
-const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), updated_at, created_at, COALESCE(manager_session_id, ''), CAST(updated_at AS TEXT)`
+const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), COALESCE(bundle_id, ''), updated_at, created_at, COALESCE(manager_session_id, ''), CAST(updated_at AS TEXT)`
 
 // SessionSummaryFilter narrows ListSessionSummaries to the rows matching every
 // non-empty axis. An empty axis constrains nothing, and the values within one
@@ -306,7 +308,7 @@ func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSum
 		var updatedAtText string
 		if err := rows.Scan(
 			&r.SessionID, &r.State, &r.Harness, &r.InstanceID, &r.Type, &r.Purpose,
-			&r.Mode, &r.FolderName, &r.DisplayName, &r.AgentID, &r.UpdatedAt, &r.CreatedAt,
+			&r.Mode, &r.FolderName, &r.DisplayName, &r.AgentID, &r.BundleID, &r.UpdatedAt, &r.CreatedAt,
 			&r.ManagerSessionID, &updatedAtText,
 		); err != nil {
 			return nil, err

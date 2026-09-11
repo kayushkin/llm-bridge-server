@@ -43,6 +43,10 @@ type Config struct {
 	// creation whether a principal_id names a real principal. Configured via
 	// LLMBRIDGE_PRINCIPAL_STORE_URL.
 	PrincipalStoreURL string
+	// BundleStoreURL is the base URL of bundle-store, asked at session
+	// creation whether a bundle_id names a real bundle and at spawn what it
+	// resolves to. Configured via LLMBRIDGE_BUNDLE_STORE_URL.
+	BundleStoreURL string
 	// KanbanStoreURL is the base URL of the kanban-store service, which owns
 	// the session↔noteboard-todo link a signal propagates to. Configured via
 	// LLMBRIDGE_KANBAN_STORE_URL; empty switches the lookup off entirely and
@@ -145,6 +149,7 @@ func Load() *Config {
 		PermissionStoreURL:       envOr("LLMBRIDGE_PERMISSION_STORE_URL", productiondefaults.PermissionStoreURL),
 		GrantStoreURL:            envOr("LLMBRIDGE_GRANT_STORE_URL", productiondefaults.GrantStoreURL),
 		PrincipalStoreURL:        envOr("LLMBRIDGE_PRINCIPAL_STORE_URL", productiondefaults.PrincipalStoreURL),
+		BundleStoreURL:           envOr("LLMBRIDGE_BUNDLE_STORE_URL", productiondefaults.BundleStoreURL),
 		KanbanStoreURL:           envOr("LLMBRIDGE_KANBAN_STORE_URL", productiondefaults.KanbanStoreURL),
 		MailstackURL:             envOr("LLMBRIDGE_MAILSTACK_URL", productiondefaults.MailstackURL),
 		MailstackToken:           os.Getenv("LLMBRIDGE_MAILSTACK_TOKEN"),
