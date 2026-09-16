@@ -110,6 +110,21 @@ type derivationState struct {
 	apiSpendByModel  map[string]float64 // USD per model
 	apiSpendBySource map[string]float64 // USD per query_source
 
+	// The session cost estimate (msg.SessionCostEvent). A derivation lives as
+	// long as one harness process, which is exactly the unit the estimate is
+	// taken over: for this process, the larger of the API spend since it
+	// started and the per-turn result costs it reported, added to what the
+	// session had cost before it started.
+	//
+	// costBeforeProcessUSD and apiSpendBeforeProcessUSD are seeded from the
+	// persisted row (seedSessionCost); turnResultBeforeProcessUSD likewise.
+	costBeforeProcessUSD       float64
+	apiSpendBeforeProcessUSD   float64
+	turnResultBeforeProcessUSD float64
+	turnResultThisProcessUSD   float64
+	// sessionCostUSD is the last estimate emitted. It never goes down.
+	sessionCostUSD float64
+
 	// turnAccums holds in-flight per-turn accumulators keyed by
 	// turn_id. Created on the first event seen for a turn_id, closed
 	// on the terminating EventResult / EventError, or evicted FIFO
@@ -179,6 +194,35 @@ func (d *derivationState) seedAPISpend(totalUSD float64, calls int, usage msg.To
 	d.apiSpendBySource = make(map[string]float64, len(byQuerySource))
 	for source, usd := range byQuerySource {
 		d.apiSpendBySource[source] = usd
+	}
+}
+
+// seedSessionCost starts the cost estimate from what the session was recorded
+// as costing before this harness process, and what its per-turn results summed
+// to. Call it after seedAPISpend: the API spend before this process is read off
+// the accumulator seedAPISpend just set.
+func (d *derivationState) seedSessionCost(totalUSD, turnResultUSD float64) {
+	d.costBeforeProcessUSD = totalUSD
+	d.apiSpendBeforeProcessUSD = d.apiSpendUSD
+	d.turnResultBeforeProcessUSD = turnResultUSD
+	d.turnResultThisProcessUSD = 0
+	d.sessionCostUSD = totalUSD
+}
+
+// sessionCostEvent recomputes the cost estimate and returns the event carrying
+// it. Called after an api_call or a priced result has been folded in.
+func (d *derivationState) sessionCostEvent() *msg.SessionCostEvent {
+	thisProcessUSD := d.apiSpendUSD - d.apiSpendBeforeProcessUSD
+	if d.turnResultThisProcessUSD > thisProcessUSD {
+		thisProcessUSD = d.turnResultThisProcessUSD
+	}
+	if estimate := d.costBeforeProcessUSD + thisProcessUSD; estimate > d.sessionCostUSD {
+		d.sessionCostUSD = estimate
+	}
+	return &msg.SessionCostEvent{
+		TotalUSD:      d.sessionCostUSD,
+		APISpendUSD:   d.apiSpendUSD,
+		TurnResultUSD: d.turnResultBeforeProcessUSD + d.turnResultThisProcessUSD,
 	}
 }
 
@@ -495,6 +539,10 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 
 	if ev.Type == msg.EventResult {
 		d.applyResultUsage(ev.Result)
+		if ev.Result != nil && ev.Result.Cost != nil && ev.Result.Cost.TotalUSD > 0 {
+			d.turnResultThisProcessUSD += ev.Result.Cost.TotalUSD
+			out = append(out, d.sessionCostDerived(ev))
+		}
 		out = append(out, msg.Event{
 			Type:             msg.EventUsageTotal,
 			Harness:          ev.Harness,
@@ -530,6 +578,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 				ByQuerySource: copyFloatMap(d.apiSpendBySource),
 			},
 		})
+		out = append(out, d.sessionCostDerived(ev))
 	}
 
 	if ev.Type == msg.EventResult || ev.Type == msg.EventError {
@@ -908,6 +957,22 @@ func (d *derivationState) applyAPICall(a *msg.APICallEvent) {
 	}
 	if a.QuerySource != "" {
 		d.apiSpendBySource[a.QuerySource] += a.CostUSD
+	}
+}
+
+// sessionCostDerived builds the session_cost event that follows a priced source
+// event.
+func (d *derivationState) sessionCostDerived(src *msg.Event) msg.Event {
+	return msg.Event{
+		Type:             msg.EventSessionCost,
+		Harness:          src.Harness,
+		BridgeSessionID:  src.BridgeSessionID,
+		HarnessSessionID: src.HarnessSessionID,
+		ClientRequestID:  src.ClientRequestID,
+		TurnID:           src.TurnID,
+		Timestamp:        time.Now(),
+		DerivedFrom:      derivedFromIDs(src),
+		SessionCost:      d.sessionCostEvent(),
 	}
 }
 

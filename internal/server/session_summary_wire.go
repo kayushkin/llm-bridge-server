@@ -33,7 +33,10 @@ type SessionSummary struct {
 	// SessionSummary already declares it (`managerSessionId`), which the SSE
 	// upsert path has always carried — this list is what was missing it.
 	ManagerSessionID string `json:"managerSessionId"`
-	UpdatedAt        string `json:"updatedAt"`
+	// SpendUSD is the session's cost estimate so far, in US dollars — every
+	// session, oneshot calls included (msg.ManagedSession.SpendUSD).
+	SpendUSD  float64 `json:"spendUsd"`
+	UpdatedAt string  `json:"updatedAt"`
 	CreatedAt        string `json:"createdAt"`
 }
 
@@ -123,6 +126,7 @@ func summaryFromRow(r store.SessionSummaryRow) SessionSummary {
 		CreatedAt:   formatWireTime(r.CreatedAt),
 
 		ManagerSessionID: r.ManagerSessionID,
+		SpendUSD:         r.SpendUSD,
 	}
 }
 

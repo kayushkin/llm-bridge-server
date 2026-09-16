@@ -410,8 +410,9 @@ func TestManager_UsageTotalSnapshotsAcrossTurns(t *testing.T) {
 
 	// Per turn we receive 6 events: user_message, agent_state
 	// (idle→tool_running), result, agent_state (tool_running→idle),
-	// usage_total, turn_complete. Three turns: 18 total.
-	all := recvWithin(t, sub, 18, 3*time.Second)
+	// usage_total, turn_complete — plus a session_cost for each PRICED turn
+	// (turns 1 and 3). 20 total.
+	all := recvWithin(t, sub, 20, 3*time.Second)
 
 	var totals []*msg.UsageTotalEvent
 	for _, ev := range all {
