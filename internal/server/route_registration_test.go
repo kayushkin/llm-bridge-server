@@ -99,8 +99,10 @@ func TestRoutesRegisterWithEveryStoreMountedAndDemoLoginEnabled(t *testing.T) {
 		{"GET", "/auth/principal"},
 		{"GET", "/kanban/boards"},
 	} {
+		// Through ServeHTTP, not the bare mux: with demo login enabled the
+		// request authorization in front of the mux is part of the route.
 		w := httptest.NewRecorder()
-		srv.mux.ServeHTTP(w, httptest.NewRequest(route.method, route.path, nil))
+		srv.ServeHTTP(w, httptest.NewRequest(route.method, route.path, nil))
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s without a login cookie -> %d, want 401 from the demo login routes", route.method, route.path, w.Code)
 		}

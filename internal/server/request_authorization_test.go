@@ -60,7 +60,11 @@ const (
 type gatedTestServer struct {
 	server *Server
 	store  *store.Store
+	kanban *fakeKanbanStore
 }
+
+// gatedTestServerPublicURL is the gateway URL session agents are given.
+const gatedTestServerPublicURL = "https://gateway.example.test"
 
 func newGatedTestServer(t *testing.T, grantsByPrincipal map[string]map[string][]string) *gatedTestServer {
 	t.Helper()
@@ -87,6 +91,7 @@ func newGatedTestServer(t *testing.T, grantsByPrincipal map[string]map[string][]
 		firstTestPrincipalID:  `{"id":"principal_000001","kind":"human","display_name":"One","disabled_at":0,"groups":[]}`,
 		secondTestPrincipalID: `{"id":"principal_000002","kind":"human","display_name":"Two","disabled_at":0,"groups":[]}`,
 	})
+	kanban := newFakeKanbanStore(t)
 	if grantsByPrincipal == nil {
 		grantsByPrincipal = map[string]map[string][]string{firstTestPrincipalID: {}, secondTestPrincipalID: {}}
 	}
@@ -96,12 +101,13 @@ func newGatedTestServer(t *testing.T, grantsByPrincipal map[string]map[string][]
 		LogStoreURL:         "http://localhost:0",
 		PrincipalStoreURL:   principals.URL,
 		GrantStoreURL:       fakeGrantStoreForPrincipals(t, grantsByPrincipal).URL,
-		KanbanStoreURL:      newFakeKanbanStore(t).server.URL,
+		KanbanStoreURL:      kanban.server.URL,
+		PublicURL:           gatedTestServerPublicURL,
 		DemoLoginSetting:    config.DemoLoginEnabledValue,
 		DemoLoginSigningKey: demoLoginTestSigningKey,
 		ServiceToken:        demoLoginTestServiceToken,
 	}
-	return &gatedTestServer{server: New(bridgeStore, nil, nil, harnesses, nil, testModelStore(t), nil, cfg), store: bridgeStore}
+	return &gatedTestServer{server: New(bridgeStore, nil, nil, harnesses, nil, testModelStore(t), nil, cfg), store: bridgeStore, kanban: kanban}
 }
 
 // requestAs sends a request with the given login cookie (nil for none).

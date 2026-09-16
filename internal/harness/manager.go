@@ -459,7 +459,7 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 		return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 	}
 
-	proc, err := StartProcess(ctx, binPath, sess, "", "")
+	proc, err := StartProcess(ctx, binPath, sess, "", nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1354,9 +1354,19 @@ func (m *Manager) ActiveCount() int {
 //
 // inst.Machine must be populated by the caller (startOnInstance helper in
 // the server package handles this).
-func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string) (HarnessProcess, error) {
+//
+// sessionEnvironment holds variables for this session's harness child only
+// (the session agent token and the gateway URL, when the session acts for a
+// principal). A local child receives them in its environment. Neither the ssh
+// nor the runner transport has a way to deliver them, so a session that has
+// any is refused on those transports rather than started without them.
+func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string, sessionEnvironment []string) (HarnessProcess, error) {
 	if inst.Machine == nil {
 		return nil, fmt.Errorf("instance %s missing Machine; caller must populate it before StartOnInstance", inst.ID)
+	}
+	if len(sessionEnvironment) > 0 && inst.Machine.Transport != msg.TransportLocal {
+		return nil, fmt.Errorf("session %s needs %d session environment variables in its harness child, and instance %s uses the %s transport, which cannot deliver them; start it on a local instance",
+			sess.SessionID, len(sessionEnvironment), inst.ID, inst.Machine.Transport)
 	}
 	h := msg.Harness(sess.Harness)
 
@@ -1418,7 +1428,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 			}
 		}
 
-		proc, err = StartProcessPTY(ctx, binPath, sess, credentialID, sidecarEnv, workingDir)
+		proc, err = StartProcessPTY(ctx, binPath, sess, credentialID, append(sidecarEnv, sessionEnvironment...), workingDir)
 		if err != nil {
 			// PTY launch failed — sidecar is now orphaned. Stop it.
 			m.mu.Lock()
@@ -1443,7 +1453,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 			if err := verifyLocalWorkingDir(workingDirOwner, workingDir); err != nil {
 				return nil, err
 			}
-			proc, err = StartProcess(ctx, binPath, sess, credentialID, workingDir)
+			proc, err = StartProcess(ctx, binPath, sess, credentialID, sessionEnvironment, workingDir)
 		}
 	}
 

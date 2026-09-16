@@ -28,8 +28,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,19 +42,6 @@ const demoLoginCookieName = "llm_bridge_principal_session"
 // demoLoginSessionLifetime is how long a demo login lasts before the caller
 // must log in again. There is no refresh.
 const demoLoginSessionLifetime = 12 * time.Hour
-
-// kanbanProxyMountPrefix is where the kanban proxy is mounted; the remainder
-// of the path is forwarded under kanban-store's /api/.
-const kanbanProxyMountPrefix = "/kanban"
-
-// principalIdentityHeader is the header kanban-store reads the caller's
-// principal id from, and kanbanStoreServiceTokenHeader the one it accepts from
-// internal services for unrestricted access. Both are deleted from every client
-// request; only the first is ever set, and only from a verified cookie.
-const (
-	principalIdentityHeader       = "X-Principal-Id"
-	kanbanStoreServiceTokenHeader = "X-Kanban-Store-Service-Token"
-)
 
 // principalSessionCookieCodec signs and verifies the demo login cookie.
 //
@@ -135,7 +120,7 @@ func (s *Server) registerDemoLoginRoutes() {
 	s.mux.HandleFunc("POST /auth/demo-login", s.handleDemoLogin)
 	s.mux.HandleFunc("GET /auth/principal", s.handleGetLoggedInPrincipal)
 	s.mux.HandleFunc("POST /auth/logout", s.handleDemoLogout)
-	s.mux.HandleFunc(kanbanProxyMountPrefix+"/", s.handleKanbanProxyWithPrincipalIdentity)
+	s.mux.HandleFunc(kanbanProxyMountPrefix+"/", s.handleKanbanStoreProxyAsPrincipal)
 }
 
 type demoLoginRequest struct {
@@ -243,73 +228,6 @@ func (s *Server) handleDemoLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// hopByHopHeaders are connection-scoped and not forwarded (RFC 9110 §7.6.1);
-// the outbound connection sets its own.
-var hopByHopHeaders = []string{
-	"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate",
-	"Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade",
-}
-
-// kanbanProxyHTTPClient forwards to kanban-store. It does not follow
-// redirects: a redirect is part of kanban-store's answer and is passed back
-// unchanged. No overall timeout, so a slow body is not cut off mid-stream; the
-// caller's request context still cancels it.
-var kanbanProxyHTTPClient = &http.Client{
-	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-}
-
-// handleKanbanProxyWithPrincipalIdentity forwards /kanban/<rest> to
-// kanban-store /api/<rest> as the logged-in principal.
-func (s *Server) handleKanbanProxyWithPrincipalIdentity(w http.ResponseWriter, r *http.Request) {
-	session, err := s.verifiedPrincipalSession(r)
-	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "not_logged_in", err.Error())
-		return
-	}
-
-	target := strings.TrimSuffix(s.cfg.KanbanStoreURL, "/") + "/api" + escapedPathAfterPrefix(r.URL, kanbanProxyMountPrefix)
-	if r.URL.RawQuery != "" {
-		target += "?" + r.URL.RawQuery
-	}
-	outbound, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "proxy_request_invalid", fmt.Sprintf("build request to kanban-store %s: %v", target, err))
-		return
-	}
-	outbound.ContentLength = r.ContentLength
-	outbound.Header = r.Header.Clone()
-	for _, header := range hopByHopHeaders {
-		outbound.Header.Del(header)
-	}
-	// Identity comes from the verified cookie and nowhere else. Header.Del
-	// canonicalises, so any casing the client sent is removed; the loop below
-	// also removes a non-canonical key a caller set directly on the map.
-	for key := range outbound.Header {
-		if strings.EqualFold(key, principalIdentityHeader) || strings.EqualFold(key, kanbanStoreServiceTokenHeader) {
-			delete(outbound.Header, key)
-		}
-	}
-	outbound.Header.Set(principalIdentityHeader, session.PrincipalID)
-	removeCookieFromRequestHeader(outbound.Header, demoLoginCookieName)
-
-	response, err := kanbanProxyHTTPClient.Do(outbound)
-	if err != nil {
-		log.Printf("[kanban-proxy] %s %s as %s: %v", r.Method, target, session.PrincipalID, err)
-		writeJSONError(w, http.StatusBadGateway, "kanban_store_unavailable", fmt.Sprintf("kanban-store unreachable at %s: %v", s.cfg.KanbanStoreURL, err))
-		return
-	}
-	defer response.Body.Close()
-	for key, values := range response.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-	w.WriteHeader(response.StatusCode)
-	if _, err := io.Copy(w, response.Body); err != nil {
-		log.Printf("[kanban-proxy] %s %s as %s: copy response body: %v", r.Method, target, session.PrincipalID, err)
-	}
 }
 
 // removeCookieFromRequestHeader rewrites the Cookie header without the named

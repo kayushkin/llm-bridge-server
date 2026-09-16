@@ -107,7 +107,7 @@ func TestALocalHarnessRunsInTheInstanceWorkingDirectory(t *testing.T) {
 	recordTo := filepath.Join(t.TempDir(), "cwd.txt")
 	binPath := writeCwdRecordingHarness(t, recordTo)
 
-	proc, err := StartProcess(t.Context(), binPath, &store.Session{SessionID: "sess-local"}, "", workingDir)
+	proc, err := StartProcess(t.Context(), binPath, &store.Session{SessionID: "sess-local"}, "", nil, workingDir)
 	if err != nil {
 		t.Fatalf("StartProcess: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestALocalHarnessWithNoWorkingDirectoryInheritsTheServersOwn(t *testing.T) 
 	recordTo := filepath.Join(t.TempDir(), "cwd.txt")
 	binPath := writeCwdRecordingHarness(t, recordTo)
 
-	proc, err := StartProcess(t.Context(), binPath, &store.Session{SessionID: "sess-inherit"}, "", "")
+	proc, err := StartProcess(t.Context(), binPath, &store.Session{SessionID: "sess-inherit"}, "", nil, "")
 	if err != nil {
 		t.Fatalf("StartProcess: %v", err)
 	}

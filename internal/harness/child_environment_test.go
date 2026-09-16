@@ -9,6 +9,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // writeEnvironmentRecordingHarness returns an executable that writes its
@@ -59,7 +60,7 @@ func assertNoSecretInEnvironment(t *testing.T, environment []string) {
 func TestAnEventsModeHarnessChildDoesNotReceiveServerSecrets(t *testing.T) {
 	setEverySecretInServerEnvironment(t)
 	recordTo := filepath.Join(t.TempDir(), "environment.txt")
-	proc, err := StartProcess(t.Context(), writeEnvironmentRecordingHarness(t, recordTo), &store.Session{SessionID: "sess-environment"}, "cred-1", "")
+	proc, err := StartProcess(t.Context(), writeEnvironmentRecordingHarness(t, recordTo), &store.Session{SessionID: "sess-environment"}, "cred-1", []string{"SESSION_VARIABLE=1"}, "")
 	if err != nil {
 		t.Fatalf("StartProcess: %v", err)
 	}
@@ -93,4 +94,15 @@ func containsEntry(environment []string, entry string) bool {
 		}
 	}
 	return false
+}
+
+func TestSessionEnvironmentIsRefusedOnTransportsThatCannotDeliverIt(t *testing.T) {
+	manager := NewManager(nil, "", "", "", 0, nil)
+	for _, transport := range []msg.Transport{msg.TransportSSH, msg.TransportRunner} {
+		_, err := manager.StartOnInstance(t.Context(), &store.Session{SessionID: "sess-remote", Harness: msg.HarnessMock},
+			&msg.Instance{ID: "inst-remote", Machine: &msg.Machine{ID: "m-remote", Transport: transport}}, "", []string{"LLM_BRIDGE_PRINCIPAL_TOKEN=token"})
+		if err == nil || !strings.Contains(err.Error(), "cannot deliver") {
+			t.Errorf("%s transport with a session environment: err = %v, want a refusal", transport, err)
+		}
+	}
 }

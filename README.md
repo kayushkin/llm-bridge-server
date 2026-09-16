@@ -475,7 +475,7 @@ Routes:
 - `POST /auth/demo-login` `{"principal_id":"principal_000001"}` — checks the principal with principal-store: unknown → 400 `unknown_principal`, a `group` → 400 `principal_not_human`, disabled → 400 `principal_disabled`, principal-store unreachable → 502 `principal_store_unavailable`. On success sets the `llm_bridge_principal_session` cookie (HttpOnly, SameSite=Lax, Secure when the request arrived over TLS or with `X-Forwarded-Proto: https`) holding the principal id and a 12h expiry signed with HMAC-SHA256, and answers 200 `{principal_id, expires_at}`.
 - `GET /auth/principal` — 200 `{principal_id, expires_at}` for a valid cookie; 401 for a missing, malformed, tampered or expired one.
 - `POST /auth/logout` — clears the cookie, 204. The cookie is stateless, so a copy taken before logout stays valid until it expires.
-- `/kanban/<rest>` (any method) — requires a valid cookie (401 otherwise, and nothing is forwarded), then forwards to kanban-store `/api/<rest>` with the query string, method, body and headers unchanged, except: `X-Principal-Id` and `X-Kanban-Store-Service-Token` from the client are **deleted**, `X-Principal-Id` is set from the cookie, and the login cookie is removed. kanban-store's status, headers and body come back unchanged; kanban-store unreachable → 502 `kanban_store_unavailable`.
+- `/kanban/<rest>` (any method) — requires a valid cookie or a session agent token (401 otherwise, and nothing is forwarded), then forwards to kanban-store `/api/<rest>` with the query string, method, body and headers unchanged, except: `X-Principal-Id`, `X-Kanban-Store-Service-Token`, `X-Grant-Store-Service-Token`, `X-LLM-Bridge-Service-Token` and `Authorization` from the client are **deleted**, `X-Principal-Id` is set from the verified credential, and the login cookie is removed. With the service token and no principal it is 403 `store_proxy_requires_a_principal`. kanban-store's status, headers and body come back unchanged; kanban-store unreachable → 502 `kanban_store_unavailable`.
 
 ⚠️ **kanban-store trusts `X-Principal-Id`, so it must not be reachable by users except through this proxy.** A user who can reach kanban-store directly can name any principal.
 
@@ -501,6 +501,27 @@ Callers and classes:
 - **nobody** — 401 on everything but open routes and harness callbacks.
 
 Sessions a session spawns carry its principal: a fork and a promoted subagent take the parent's `principal_id` (and `bundle_id`).
+
+### Agent tool calls act as the session's principal
+
+When demo login is enabled and a session started as a principal is spawned (create with `auto_start`, send, resume, fork), its harness child gets two variables, added after the server's secrets are removed from its environment:
+
+| Variable | Value |
+|----------|-------|
+| `LLM_BRIDGE_GATEWAY_URL` | This server's base URL: `LLMBRIDGE_PUBLIC_URL` when set, otherwise the one built from `LLMBRIDGE_LISTEN_ADDR` (the same base the permission prehook URLs use). If neither gives one, the spawn fails. |
+| `LLM_BRIDGE_PRINCIPAL_TOKEN` | A **session agent token**: principal id, session id and a 24h expiry, HMAC-SHA256-signed with `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY` under its own domain separator, so it never verifies as a login cookie and a cookie never verifies as one. Minted afresh at every spawn. |
+
+An MCP server or a Bash tool call that needs the principal's boards sends the token to the gateway, never to the store:
+
+```bash
+curl -sS "$LLM_BRIDGE_GATEWAY_URL/kanban/boards" -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN"
+```
+
+The token is accepted **only** on `/kanban/` (and `/grant-store/`, below), as `Authorization: Bearer`; on any other route an `Authorization` header is 401. On every request the session it names is read from the store: it must still exist, still be started as the token's principal, and not be `completed`, `error`, `aborted` or `disconnected` — so the token stops working when its session ends. The request then reaches the store exactly as a cookie-carrying one would, with `Authorization` removed.
+
+Only the local transport can deliver these variables; a principal's session on an `ssh` or `runner` instance is refused at spawn rather than started without them.
+
+⚠️ **This binds only agents that go through the gateway.** An agent process can open any socket it likes, so in deployment **kanban-store and grant-store must not be network-reachable from agent processes**, and **no store service token may be in an agent's environment** (the ones this server knows are removed, see below; anything else an operator puts in the unit's environment is inherited).
 
 ### Secrets never reach a child process
 

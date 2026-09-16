@@ -33,7 +33,7 @@ func TestStartOnInstanceRunsALocalHarnessInTheInstanceWorkingDirectory(t *testin
 		Machine:    &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal},
 	}
 
-	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "")
+	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "", nil)
 	if err != nil {
 		t.Fatalf("StartOnInstance: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestStartOnInstanceRunsALocalHarnessInTheSessionWorkingDirectory(t *testing
 		Machine:    &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal, DefaultWorkingDir: t.TempDir()},
 	}
 
-	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "")
+	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "", nil)
 	if err != nil {
 		t.Fatalf("StartOnInstance: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestStartOnInstanceRunsAPTYHarnessInTheSessionWorkingDirectory(t *testing.T
 		Machine:    &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal},
 	}
 
-	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "")
+	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "", nil)
 	if err != nil {
 		t.Fatalf("StartOnInstance (pty): %v", err)
 	}
@@ -133,7 +133,7 @@ func TestStartOnInstanceRefusesASessionWorkingDirectoryByNamingTheSession(t *tes
 		Machine:    &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal},
 	}
 
-	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "")
+	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "", nil)
 	if err == nil {
 		proc.Kill()
 		t.Fatalf("StartOnInstance started a session in a directory that does not exist")
@@ -161,7 +161,7 @@ func TestStartOnInstanceFallsBackToTheMachineDefaultWorkingDirectory(t *testing.
 		Machine: &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal, DefaultWorkingDir: machineDefault},
 	}
 
-	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "")
+	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "", nil)
 	if err != nil {
 		t.Fatalf("StartOnInstance: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestStartOnInstanceRefusesAWorkingDirectoryThatDoesNotExist(t *testing.T) {
 		Machine:    &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal},
 	}
 
-	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "")
+	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "", nil)
 	if err == nil {
 		proc.Kill()
 		t.Fatalf("StartOnInstance started a session in a directory that does not exist")
@@ -226,7 +226,7 @@ func TestStartOnInstanceRunsAPTYHarnessInTheInstanceWorkingDirectory(t *testing.
 		Machine:    &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal},
 	}
 
-	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "")
+	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "", nil)
 	if err != nil {
 		t.Fatalf("StartOnInstance (pty): %v", err)
 	}

@@ -200,19 +200,24 @@ type Process struct {
 // StartProcess spawns a harness bridge subprocess.
 // If credentialID is non-empty, it's passed to the subprocess via LLMBRIDGE_CREDENTIAL_ID env var.
 //
+// sessionEnvironment is appended to the child's environment after the
+// server's secrets are removed and after LLMBRIDGE_CREDENTIAL_ID: the
+// variables that belong to this one session, such as its session agent token.
+//
 // workingDir is the directory the wrapper runs in; empty inherits
 // bridge-server's own. It is the wrapper that moves, not just the agent it
 // forks, because that is what the ssh transport's "cd <dir> && <bin>" and the
 // runner's WorkingDir have always meant — and because the wrapper resolves
 // paths of its own against its current directory, and a harness that keeps
 // per-directory state finds none of it from somewhere else.
-func StartProcess(ctx context.Context, binPath string, sess *store.Session, credentialID, workingDir string) (*Process, error) {
+func StartProcess(ctx context.Context, binPath string, sess *store.Session, credentialID string, sessionEnvironment []string, workingDir string) (*Process, error) {
 	cmd := exec.Command(binPath)
 	cmd.Dir = workingDir
 	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	if credentialID != "" {
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_CREDENTIAL_ID="+credentialID)
 	}
+	cmd.Env = append(cmd.Env, sessionEnvironment...)
 	cmd.Stderr = os.Stderr // Surface harness subprocess errors
 	// Put the wrapper in its own process group so Kill can reap the whole
 	// tree. The wrapper (e.g. llm-bridge-claudecode) forks the real agent

@@ -18,8 +18,9 @@ package server
 //   - the internal service: X-LLM-Bridge-Service-Token equal to
 //     LLMBRIDGE_SERVICE_TOKEN. Unrestricted. A wrong token is 401 — it is never
 //     silently downgraded to a principal.
-//   - a principal: a valid demo login cookie. What a principal may do
-//     depends on the route's class.
+//   - a principal: a valid demo login cookie, or — on the identity-carrying
+//     store proxies only — a session agent token (session_agent_token.go).
+//     What a principal may do depends on the route's class.
 //   - nobody: 401 on any route that is not open or a harness callback.
 
 import (
@@ -403,8 +404,21 @@ func (e *requestCredentialError) write(w http.ResponseWriter) {
 // login cookie — or, on a route that accepts one, its session agent token.
 func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (string, *requestCredentialError) {
 	if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization {
-		return "", &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted",
-			"an Authorization header is not a credential this server accepts with demo login enabled; send the login cookie or " + serviceTokenHeader}
+		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy {
+			return "", &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
+				"an Authorization header is accepted only on %s/, as a session agent token; this route takes the login cookie or %s",
+				kanbanProxyMountPrefix, serviceTokenHeader)}
+		}
+		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+		if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
+			return "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token",
+				"the Authorization header must be \"Bearer <session agent token>\""}
+		}
+		principalID, err := s.principalOfSessionAgentToken(strings.TrimSpace(token))
+		if err != nil {
+			return "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token", err.Error()}
+		}
+		return principalID, nil
 	}
 	session, err := s.verifiedPrincipalSession(r)
 	if err != nil {
