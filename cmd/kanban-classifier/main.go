@@ -4,15 +4,15 @@
 // Cadence:
 //
 //	Registered as a scheduler shell job running every 15 minutes. On each
-//	tick, walks bridge-server's /sessions list, filters down to recently-
-//	updated candidates, skips ones whose check signature matches the
+//	tick, pages bridge-server's /sessions/summary newest first until the
+//	lookback cutoff, skips sessions whose check signature matches the
 //	already-recorded one (no-change short-circuit), and classifies the rest
-//	with Anthropic Haiku.
+//	with Anthropic Haiku from a bounded page of each session's newest turns.
 //
 // Decisions per session:
 //
 //   - trackable=false → set kanban:do-not-track tag on the session, never
-//     classify again unless message_count grows by ≥20 messages.
+//     classify again unless its event count grows by ≥doNotTrackReevalEvents.
 //   - existing_cards updates → move card to matching column on the Agent
 //     runs board, append summary to body. Bridge state has NO automatic
 //     mapping to columns; the model owns column placement.
@@ -21,7 +21,10 @@
 //
 // Signature is stored as a single entity_tag on session/<bridge_id>:
 //
-//	kanban-check-sig:msg=<n>:state=<s>:t=<YYYYMMDDhhmm>
+//	kanban-check-sig:events=<n>:state=<s>:t=<YYYYMMDDhhmm>
+//
+// <n> is the session's stored event count (the page's validator). Signatures
+// written before 2026-09-16 carry msg=<n> instead — see sigUnchanged.
 //
 // Old sigs are deleted before a new one is written. A session reaching a
 // terminal bridge state (completed/error) is marked with
@@ -40,7 +43,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -74,7 +76,15 @@ const (
 	terminalStateError        = "error"
 	defaultModel              = "claude-haiku-4-5-20251001"
 	candidateLookback         = 7 * 24 * time.Hour
-	doNotTrackReevalDelta     = 20 // re-evaluate skipped sessions only after this many new messages
+	// doNotTrackReevalEvents is how many new events re-open a do-not-track
+	// session. It replaced "20 new messages" when the classifier stopped
+	// downloading every message to count them; measured 2026-09-16, sessions
+	// ran 148–228 events per prompt, so 20 messages (~10 prompts) is ~2,000.
+	doNotTrackReevalEvents = 2000
+	// digestTurns is how many of a session's newest prompt turns the digest
+	// is built from. The digest keeps at most ~10 assistant turns and a 16k
+	// character budget, so a longer transcript was downloaded and thrown away.
+	digestTurns = 15
 
 	// The scheduler job -register creates. These are written exactly once per
 	// host, by hand, and the scheduler binary serving :8092 drops `command` on
@@ -309,7 +319,6 @@ type session struct {
 	SessionID   string `json:"session_id"`
 	State       string `json:"state"`
 	Purpose     string `json:"purpose"`
-	Origin      string `json:"origin"`
 	DisplayName string `json:"display_name"`
 	Harness     string `json:"harness"`
 	CreatedAt   string `json:"created_at"`
@@ -317,27 +326,9 @@ type session struct {
 }
 
 func selectCandidates(cfg config) ([]session, error) {
-	all, err := listSessions(cfg.BridgeURL)
-	if err != nil {
-		return nil, err
-	}
-	cutoff := time.Now().Add(-candidateLookback)
-	var out []session
-	for _, s := range all {
-		t, err := time.Parse(time.RFC3339, s.UpdatedAt)
-		if err != nil {
-			continue
-		}
-		if t.Before(cutoff) {
-			continue
-		}
-		out = append(out, s)
-	}
-	// Most recently updated first — likely-active wins the per-tick budget.
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].UpdatedAt > out[j].UpdatedAt
-	})
-	return out, nil
+	// Newest first, and the lookback cutoff ends the walk: the summary is ordered
+	// by updated_at, so the first older row means every later one is older too.
+	return listSessionsUpdatedSince(cfg.BridgeURL, time.Now().Add(-candidateLookback))
 }
 
 // ============================ Process one session ============================
@@ -364,32 +355,43 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 			sess.SessionID)
 	}
 
-	msgs, err := getSessionMessages(cfg.BridgeURL, sess.SessionID)
+	page, err := getSessionPage(cfg.BridgeURL, sess.SessionID)
 	if err != nil {
 		log.Printf("[%s] get messages: %v", sess.SessionID, err)
 		return false, false
 	}
-	msgCount := len(msgs)
+	msgs, eventCount := page.messages, page.eventCount
 
 	// do-not-track: only re-evaluate after a big delta.
 	if tagSet[tagDoNotTrack] {
-		priorN := priorMsgCount(tagSet)
-		if msgCount-priorN < doNotTrackReevalDelta {
+		priorN, known := priorEventCount(tagSet)
+		if !known {
+			// A signature from before event counts: nothing to measure a delta
+			// against. Record today's count and leave the decision standing, rather
+			// than re-classifying every do-not-track session at once.
+			if !cfg.ExplicitSession {
+				writeSig(kc, sess, tagSet, buildSig(eventCount, sess.State, sess.UpdatedAt))
+				return false, false
+			}
+		} else if eventCount-priorN < doNotTrackReevalEvents {
 			if !cfg.ExplicitSession {
 				return false, false
 			}
-			log.Printf("[%s] do-not-track and Δmsg=%d < %d — proceeding anyway because this session was named explicitly",
-				sess.SessionID, msgCount-priorN, doNotTrackReevalDelta)
+			log.Printf("[%s] do-not-track and Δevents=%d < %d — proceeding anyway because this session was named explicitly",
+				sess.SessionID, eventCount-priorN, doNotTrackReevalEvents)
 		} else {
-			log.Printf("[%s] do-not-track but Δmsg=%d ≥ %d — re-evaluating",
-				sess.SessionID, msgCount-priorN, doNotTrackReevalDelta)
+			log.Printf("[%s] do-not-track but Δevents=%d ≥ %d — re-evaluating",
+				sess.SessionID, eventCount-priorN, doNotTrackReevalEvents)
 		}
 	}
 
 	// Compute current signature; bail if unchanged.
-	curSig := buildSig(msgCount, sess.State, sess.UpdatedAt)
+	curSig := buildSig(eventCount, sess.State, sess.UpdatedAt)
 	priorSig := priorSigTag(tagSet)
-	if priorSig == curSig {
+	if sigUnchanged(priorSig, curSig) {
+		if priorSig != curSig && !cfg.ExplicitSession {
+			writeSig(kc, sess, tagSet, curSig) // carry an old-format signature forward
+		}
 		if !cfg.ExplicitSession {
 			return false, false
 		}
@@ -443,7 +445,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	}
 
 	if !report.Trackable {
-		applyDoNotTrack(kc, sess, msgCount)
+		applyDoNotTrack(kc, sess)
 		writeSig(kc, sess, tagSet, curSig)
 		return true, false
 	}
@@ -493,27 +495,53 @@ func priorSigTag(tagSet map[string]bool) string {
 	return ""
 }
 
-// priorMsgCount parses the msg= component from the prior sig, or returns 0
-// if no prior sig exists / parseable.
-func priorMsgCount(tagSet map[string]bool) int {
+// priorEventCount parses the events= component from the prior sig. known is
+// false when there is no prior sig or it predates event counts (msg=).
+func priorEventCount(tagSet map[string]bool) (n int, known bool) {
 	sig := priorSigTag(tagSet)
 	if sig == "" {
-		return 0
+		return 0, false
 	}
 	for _, part := range strings.Split(strings.TrimPrefix(sig, tagCheckSigPrefix), ":") {
-		if strings.HasPrefix(part, "msg=") {
-			var n int
-			fmt.Sscanf(part, "msg=%d", &n)
-			return n
+		if strings.HasPrefix(part, "events=") {
+			if _, err := fmt.Sscanf(part, "events=%d", &n); err == nil {
+				return n, true
+			}
 		}
 	}
-	return 0
+	return 0, false
 }
 
-func buildSig(msgCount int, state, updatedAt string) string {
+func buildSig(eventCount int, state, updatedAt string) string {
 	t, _ := time.Parse(time.RFC3339, updatedAt)
 	minute := t.UTC().Format("200601021504")
-	return fmt.Sprintf("%smsg=%d:state=%s:t=%s", tagCheckSigPrefix, msgCount, state, minute)
+	return fmt.Sprintf("%sevents=%d:state=%s:t=%s", tagCheckSigPrefix, eventCount, state, minute)
+}
+
+// sigUnchanged reports whether a session has not moved since its prior sig.
+//
+// A signature from before 2026-09-16 counts messages (msg=<n>) where the
+// current one counts events, so the two never compare equal. Treating that as
+// "changed" would re-classify every recent session once, at ten model calls a
+// tick, for no new information. The state and the minute of the last update
+// are the same in both formats and say whether anything happened, so an old
+// signature whose state and minute match is unchanged.
+func sigUnchanged(prior, current string) bool {
+	if prior == current {
+		return true
+	}
+	if !strings.HasPrefix(prior, tagCheckSigPrefix+"msg=") {
+		return false
+	}
+	return sigTail(prior) == sigTail(current)
+}
+
+// sigTail is the state=…:t=… part of a signature.
+func sigTail(sig string) string {
+	if i := strings.Index(sig, ":state="); i >= 0 {
+		return sig[i:]
+	}
+	return ""
 }
 
 // writeSig deletes the prior check-sig tag (if any) and adds the new one.
@@ -528,7 +556,7 @@ func writeSig(kc *kanbanclient.Client, sess session, oldTags map[string]bool, si
 	}
 }
 
-func applyDoNotTrack(kc *kanbanclient.Client, sess session, msgCount int) {
+func applyDoNotTrack(kc *kanbanclient.Client, sess session) {
 	if err := kc.AddEntityTag(cardLinkSession, sess.SessionID, tagDoNotTrack); err != nil {
 		log.Printf("[%s] add do-not-track: %v", sess.SessionID, err)
 	}
@@ -668,21 +696,78 @@ func requireColumns(kc *kanbanclient.Client, names []string) {
 
 // ============================ Bridge-server client ============================
 
-func listSessions(bridgeURL string) ([]session, error) {
-	resp, err := http.Get(strings.TrimRight(bridgeURL, "/") + "/sessions")
+// listSessionsUpdatedSince pages GET /sessions/summary, newest first, and stops
+// at the first session last updated before `since`.
+//
+// This used to be GET /sessions, which has no bound: every column of every
+// session, info blobs included, 64 MB in 2.6 s on 2026-09-16 — fetched every 15
+// minutes to keep the ~0.1% updated inside the lookback window.
+func listSessionsUpdatedSince(bridgeURL string, since time.Time) ([]session, error) {
+	base := strings.TrimRight(bridgeURL, "/") + "/sessions/summary?limit=100"
+	var out []session
+	cursor := ""
+	for {
+		pageURL := base
+		if cursor != "" {
+			pageURL += "&before=" + url.QueryEscape(cursor)
+		}
+		page, err := getSummaryPage(pageURL)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range page.Sessions {
+			updated, err := time.Parse(time.RFC3339, row.UpdatedAt)
+			if err != nil {
+				return nil, fmt.Errorf("session %s: updatedAt %q: %w", row.SessionID, row.UpdatedAt, err)
+			}
+			if updated.Before(since) {
+				return out, nil
+			}
+			out = append(out, session{
+				SessionID:   row.SessionID,
+				State:       row.State,
+				Purpose:     row.Purpose,
+				DisplayName: row.DisplayName,
+				Harness:     row.Harness,
+				CreatedAt:   row.CreatedAt,
+				UpdatedAt:   row.UpdatedAt,
+			})
+		}
+		if page.Next == "" {
+			return out, nil
+		}
+		cursor = page.Next
+	}
+}
+
+type summaryPage struct {
+	Sessions []struct {
+		SessionID   string `json:"sessionId"`
+		State       string `json:"state"`
+		Purpose     string `json:"purpose"`
+		DisplayName string `json:"displayName"`
+		Harness     string `json:"harness"`
+		CreatedAt   string `json:"createdAt"`
+		UpdatedAt   string `json:"updatedAt"`
+	} `json:"sessions"`
+	Next string `json:"next"`
+}
+
+func getSummaryPage(pageURL string) (summaryPage, error) {
+	var page summaryPage
+	resp, err := http.Get(pageURL)
 	if err != nil {
-		return nil, err
+		return page, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("list sessions: %s — %s", resp.Status, string(body))
+		return page, fmt.Errorf("list sessions: %s — %s", resp.Status, string(body))
 	}
-	var ss []session
-	if err := json.NewDecoder(resp.Body).Decode(&ss); err != nil {
-		return nil, err
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return page, fmt.Errorf("decode sessions summary: %w", err)
 	}
-	return ss, nil
+	return page, nil
 }
 
 func getSession(bridgeURL, id string) (session, error) {
@@ -712,21 +797,85 @@ type bridgeMessage struct {
 	Timestamp string           `json:"timestamp"`
 }
 
-func getSessionMessages(bridgeURL, id string) ([]bridgeMessage, error) {
-	resp, err := http.Get(fmt.Sprintf("%s/sessions/%s/messages", strings.TrimRight(bridgeURL, "/"), id))
+// sessionPage is what the classifier reads of one session: its newest turns as
+// digest messages, and its whole-session event count for the signature.
+type sessionPage struct {
+	messages   []bridgeMessage
+	eventCount int
+}
+
+// turnPage is the part of GET /sessions/{id}/messages?limit= the digest reads.
+type turnPage struct {
+	Model struct {
+		Turns []struct {
+			EntryIDs []string `json:"entryIds"`
+		} `json:"turns"`
+		Entries map[string]struct {
+			Role      string `json:"role"`
+			Kind      string `json:"kind"`
+			Text      string `json:"text"`
+			ToolName  string `json:"toolName"`
+			Ts        string `json:"ts"`
+			Duplicate bool   `json:"duplicate"`
+		} `json:"entries"`
+		Validator struct {
+			EventCount int `json:"eventCount"`
+		} `json:"validator"`
+	} `json:"model"`
+}
+
+// getSessionPage reads a session's newest digestTurns turns, tool payloads as
+// previews.
+//
+// This used to be GET /sessions/{id}/messages with no limit: every event of the
+// session materialized with its raw payload (306 MB for one session at worst),
+// read only to count the messages and keep the last few for a 16k-character
+// digest. The bounded page carries the session-wide event count in its validator.
+func getSessionPage(bridgeURL, id string) (sessionPage, error) {
+	pageURL := fmt.Sprintf("%s/sessions/%s/messages?limit=%d&payload=preview", strings.TrimRight(bridgeURL, "/"), url.PathEscape(id), digestTurns)
+	resp, err := http.Get(pageURL)
 	if err != nil {
-		return nil, err
+		return sessionPage{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get messages: %s — %s", resp.Status, string(body))
+		return sessionPage{}, fmt.Errorf("get messages: %s — %s", resp.Status, string(body))
 	}
-	var ms []bridgeMessage
-	if err := json.NewDecoder(resp.Body).Decode(&ms); err != nil {
-		return nil, err
+	var page turnPage
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return sessionPage{}, fmt.Errorf("decode messages page: %w", err)
 	}
-	return ms, nil
+	return sessionPage{messages: digestMessages(page), eventCount: page.Model.Validator.EventCount}, nil
+}
+
+// digestMessages flattens a turn page into the messages the digest sections read,
+// in turn order: a prompt is a user message, assistant text or a result is an
+// assistant message, and a tool call is an event on an assistant message. Hidden
+// duplicates (the OTel copy of a prompt) are skipped.
+func digestMessages(page turnPage) []bridgeMessage {
+	var out []bridgeMessage
+	for _, turn := range page.Model.Turns {
+		for _, id := range turn.EntryIDs {
+			e, ok := page.Model.Entries[id]
+			if !ok || e.Duplicate {
+				continue
+			}
+			switch {
+			case e.Role == "user" && e.Kind == "text":
+				out = append(out, bridgeMessage{Role: "user", Content: e.Text, Timestamp: e.Ts})
+			case e.Role == "assistant" && (e.Kind == "text" || e.Kind == "result") && e.Text != "":
+				out = append(out, bridgeMessage{Role: "assistant", Content: e.Text, Timestamp: e.Ts})
+			case e.Kind == "tool_call" && e.ToolName != "":
+				out = append(out, bridgeMessage{
+					Role:      "assistant",
+					Timestamp: e.Ts,
+					Events:    []map[string]any{{"type": "tool_call", "tool_name": e.ToolName}},
+				})
+			}
+		}
+	}
+	return out
 }
 
 // ============================ Digest builder ============================
@@ -785,7 +934,7 @@ func buildMetaSection(sess session, msgCount int) string {
 	fmt.Fprintf(&b, "state: %s\n", sess.State)
 	fmt.Fprintf(&b, "created: %s\n", sess.CreatedAt)
 	fmt.Fprintf(&b, "last_message: %s\n", sess.UpdatedAt)
-	fmt.Fprintf(&b, "turn_count: %d\n\n", msgCount)
+	fmt.Fprintf(&b, "messages_shown: %d\n\n", msgCount)
 	return b.String()
 }
 
