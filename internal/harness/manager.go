@@ -884,7 +884,8 @@ func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 		// persisted MAX() ignores every dollar under the previous
 		// high-water mark, and a session's ceiling re-arms once per resume.
 		totalUSD, detail := m.persistedSpend(bridgeID)
-		d.seedAPISpend(totalUSD, detail.Calls, detail.Usage, detail.ByModel, detail.ByQuerySource)
+		d.seedAPISpend(detail.APISpendUSD, detail.Calls, detail.Usage, detail.ByModel, detail.ByQuerySource)
+		d.seedSessionCost(totalUSD, detail.TurnResultUSD)
 		m.derivation[bridgeID] = d
 	}
 	m.mu.Unlock()
@@ -951,7 +952,7 @@ func (m *Manager) publishDerived(bridgeID string, derived []msg.Event) (emittedS
 
 		// The spend ceiling is checked here because this is the only
 		// place the running per-session dollar total exists: the
-		// derivation produces api_spend_total, nothing upstream carries
+		// derivation produces session_cost, nothing upstream carries
 		// a cumulative figure, and no harness knows what its ceiling is.
 		m.enforceBudget(bridgeID, ev)
 	}
@@ -1012,7 +1013,7 @@ func (m *Manager) persistedSessionState(bridgeID string) msg.SessionState {
 // Missing row (fresh session) reads as zero, which is the correct seed for
 // one. A real read error is logged loudly and also reads as zero: refusing to
 // derive at all would take the session's whole event stream down, and the
-// MAX() in RecordSessionSpend is what stops a zero seed from walking the
+// MAX() in RecordSessionCost is what stops a zero seed from walking the
 // recorded figure backwards.
 func (m *Manager) persistedSpend(bridgeID string) (float64, store.SessionSpendDetail) {
 	totalUSD, detail, err := m.store.SessionSpend(bridgeID)

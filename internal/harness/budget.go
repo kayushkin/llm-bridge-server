@@ -46,27 +46,35 @@ import (
 //     holds across a bridge-server restart because the spend it reads is
 //     persisted and monotonic.
 
-// enforceBudget records the session's spend and halts it if the spend has
-// reached the session's ceiling. Called for every derived event; returns
-// immediately for anything that is not a spend total.
+// enforceBudget records the session's spend — the API breakdown from
+// api_spend_total, the cost estimate from session_cost — and halts the session
+// when its cost has reached its ceiling. Called for every derived event; returns
+// immediately for anything else.
 //
 // Sessions with no ceiling (max_budget_usd <= 0, which is every session
 // that predates the ceiling and every caller that does not ask for one)
 // still get their spend recorded — the number is worth having whether or
 // not anything gates on it — and are never halted.
 func (m *Manager) enforceBudget(bridgeID string, ev *msg.Event) {
-	if ev.Type != msg.EventAPISpendTotal || ev.APISpendTotal == nil {
+	if ev.Type == msg.EventAPISpendTotal && ev.APISpendTotal != nil {
+		if err := m.store.RecordAPISpendBreakdown(bridgeID, store.SessionSpendDetail{
+			Usage:         ev.APISpendTotal.Usage,
+			Calls:         ev.APISpendTotal.Calls,
+			ByModel:       ev.APISpendTotal.ByModel,
+			ByQuerySource: ev.APISpendTotal.ByQuerySource,
+			APISpendUSD:   ev.APISpendTotal.TotalUSD,
+		}); err != nil {
+			log.Printf("[harness] budget: failed to record API spend breakdown for %s: %v", bridgeID, err)
+		}
+		return
+	}
+	if ev.Type != msg.EventSessionCost || ev.SessionCost == nil {
 		return
 	}
 
-	spendUSD, err := m.store.RecordSessionSpend(bridgeID, ev.APISpendTotal.TotalUSD, store.SessionSpendDetail{
-		Usage:         ev.APISpendTotal.Usage,
-		Calls:         ev.APISpendTotal.Calls,
-		ByModel:       ev.APISpendTotal.ByModel,
-		ByQuerySource: ev.APISpendTotal.ByQuerySource,
-	})
+	spendUSD, err := m.store.RecordSessionCost(bridgeID, ev.SessionCost.TotalUSD, ev.SessionCost.TurnResultUSD)
 	if err != nil {
-		log.Printf("[harness] budget: failed to record spend for %s: %v", bridgeID, err)
+		log.Printf("[harness] budget: failed to record cost for %s: %v", bridgeID, err)
 		return
 	}
 
