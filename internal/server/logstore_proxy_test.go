@@ -10,7 +10,7 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// GET /sessions/{id}/messages and /history proxy straight to log-store,
+// GET /sessions/{id}/messages and /entries/{eventId} go straight to log-store,
 // bypassing the manager, so the handler drains the session's log-store
 // write queue itself before proxying. Every archived session — the
 // common case — has no queue at all, and that drain must be a no-op

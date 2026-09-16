@@ -3,7 +3,10 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
 // A shortened tool payload on the reading page is expanded through this route, so
@@ -38,5 +41,34 @@ func TestEntryRoutePassesALogStoreRefusalThrough(t *testing.T) {
 	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sessions/br_1/entries/7", nil))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status %d, want 404 passed through", w.Code)
+	}
+}
+
+// The reading pages chat-core boots from ask log-store for tool payload previews, as
+// /messages does.
+func TestRecentBundleAsksForPreviews(t *testing.T) {
+	logStore := newCaptureLogStore(t, `{}`)
+	srv, st := serverWithLogStore(t, logStore.URL)
+	if err := st.CreateSession(&store.Session{
+		SessionID:  "br_bundle",
+		Harness:    "claude-code",
+		InstanceID: "inst_test",
+		State:      "idle",
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sessions/recent-bundle?n=5&turns=30", nil))
+	var sawBundle bool
+	for _, uri := range logStore.requests {
+		if strings.HasPrefix(uri, "/api/v1/sessions/bundle?") {
+			sawBundle = true
+			if !strings.Contains(uri, "payload=preview") {
+				t.Fatalf("bundle request without previews: %s", uri)
+			}
+		}
+	}
+	if !sawBundle {
+		t.Fatalf("no bundle request reached log-store: %v (status %d %s)", logStore.requests, w.Code, w.Body.String())
 	}
 }

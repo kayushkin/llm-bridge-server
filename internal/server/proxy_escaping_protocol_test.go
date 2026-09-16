@@ -81,7 +81,7 @@ func TestTheSessionIdSurvivesAsOneSegmentOnTheWire(t *testing.T) {
 // The endpoint literal is the route's own last segment. It is read from the
 // escaped path so it cannot be moved by whatever the id decodes to.
 func TestTheEndpointLiteralIsNotMovedByTheId(t *testing.T) {
-	for _, endpoint := range []string{"messages", "history"} {
+	for _, endpoint := range []string{"messages", "entries/42"} {
 		t.Run(endpoint, func(t *testing.T) {
 			up, got := recordUpstreamRequestLine(t)
 			srv, _, _ := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, up.URL)

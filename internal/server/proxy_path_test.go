@@ -15,7 +15,7 @@ func TestLogStoreEndpointFromPath(t *testing.T) {
 		want string
 	}{
 		{"one-segment endpoint", "/sessions/br_1/messages", "messages"},
-		{"the other one-segment endpoint", "/sessions/br_1/history", "history"},
+		{"an endpoint with a trailing id", "/sessions/br_1/entries/42", "entries/42"},
 		{"two-segment endpoint", "/sessions/br_1/messages/raw", "messages/raw"},
 		// An id holding an encoded slash stays ONE segment, so it cannot shift the
 		// split — the whole reason this reads the escaped path.

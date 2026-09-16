@@ -223,7 +223,6 @@ func (s *Server) routes() {
 	// route rather than a query param so nobody requests ten times the bytes by
 	// accident. Proxied unchanged, like every other log-store path.
 	s.mux.HandleFunc("GET /sessions/{id}/messages/raw", s.handleSessionMessages)
-	s.mux.HandleFunc("GET /sessions/{id}/history", s.proxyToLogStore)
 	// One entry of the reading page with its tool input and output in full. A page's
 	// entries carry tool payloads shortened to 2 KB (`payload=preview`, log-store
 	// stored_turns.go); a card that is opened fetches the whole entry here.
@@ -531,7 +530,8 @@ func (s *Server) handleSessionAggregates(w http.ResponseWriter, r *http.Request)
 	io.Copy(w, resp.Body)
 }
 
-// proxyToLogStore proxies /sessions/{id}/messages and /sessions/{id}/history to log-store.
+// proxyToLogStore proxies a session's log-store routes (/sessions/{id}/entries/{eventId})
+// to log-store unchanged.
 func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 	// id is the real session id, decoded — that is what every in-process
 	// lookup wants, FlushLogStoreWrites below included.

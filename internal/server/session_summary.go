@@ -363,6 +363,11 @@ func (s *Server) fetchBundleModels(ids []string, turns int) (map[string]json.Raw
 	q := url.Values{
 		"ids":   {strings.Join(ids, ",")},
 		"turns": {strconv.Itoa(turns)},
+		// The bundle is chat-core's cold-boot page, read exactly like /messages is:
+		// tool payloads as 2 KB previews, a full entry one request away. Without it
+		// the 20-session bundle carried every tool output whole — 4.1 MB measured
+		// 2026-09-16 — while the same sessions' /messages pages did not.
+		"payload": {"preview"},
 	}
 	target := s.cfg.LogStoreURL + "/api/v1/sessions/bundle?" + q.Encode()
 	resp, err := http.Get(target)
