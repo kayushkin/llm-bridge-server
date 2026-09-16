@@ -224,6 +224,10 @@ func (s *Server) routes() {
 	// accident. Proxied unchanged, like every other log-store path.
 	s.mux.HandleFunc("GET /sessions/{id}/messages/raw", s.handleSessionMessages)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.proxyToLogStore)
+	// One entry of the reading page with its tool input and output in full. A page's
+	// entries carry tool payloads shortened to 2 KB (`payload=preview`, log-store
+	// stored_turns.go); a card that is opened fetches the whole entry here.
+	s.mux.HandleFunc("GET /sessions/{id}/entries/{eventId}", s.proxyToLogStore)
 	s.mux.HandleFunc("POST /sessions/{id}/interrupt", s.handleInterruptSession)
 	s.mux.HandleFunc("POST /sessions/{id}/resume", s.handleResumeSession)
 	s.mux.HandleFunc("POST /sessions/{id}/stop", s.handleStopSession)
