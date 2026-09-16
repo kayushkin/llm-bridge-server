@@ -42,6 +42,11 @@ type Board struct {
 	// already checked each id with its owner on write — principal-store,
 	// llm-bridge-server's GET /agents and GET /instances/{id} — so a value here
 	// resolved at the time it was set.
+	//
+	// ⚠️ The four default_* fields below are the board's OWN defaults, not what
+	// a given card runs with: the board's tag rules override them per card.
+	// A dispatcher spawning a session for a card reads GetCardEffectiveDefaults
+	// for that card, never these fields directly.
 
 	// DefaultPrincipalID is applied by kanban-store itself on card creation;
 	// no scheduler binary needs to assign it.
@@ -104,6 +109,118 @@ func (c *Client) GetBoard(id string) (*Board, error) {
 		return nil, err
 	}
 	return &b, nil
+}
+
+// ============================ Effective defaults ============================
+
+// DefaultField names one of the four defaults a board or one of its tag rules
+// may set. Its value is the JSON key both carry in kanban-store, and the key
+// EffectiveDefaults.Defaults is indexed by.
+type DefaultField string
+
+const (
+	DefaultFieldPrincipal DefaultField = "default_principal_id"
+	DefaultFieldAgent     DefaultField = "default_agent_id"
+	DefaultFieldInstance  DefaultField = "default_instance_id"
+	DefaultFieldBundle    DefaultField = "default_bundle_id"
+)
+
+// The kinds of setting a resolved default can be read from, as kanban-store
+// writes them in DefaultSource.Kind.
+const (
+	DefaultSourceKindBoard   = "board"
+	DefaultSourceKindTagRule = "tag_rule"
+)
+
+// DefaultSource says which setting a resolved default was read from: the
+// board's own default, or one tag rule — named by its id, with its tags and
+// position carried for display.
+type DefaultSource struct {
+	Kind         string   `json:"kind"`
+	RuleID       string   `json:"rule_id,omitempty"`
+	RuleTags     []string `json:"rule_tags,omitempty"`
+	RulePosition *int     `json:"rule_position,omitempty"`
+}
+
+// Describe renders the source for a log line: "board", or the tag rule's tags,
+// position and id. A kind this client does not know is printed as sent rather
+// than dropped.
+func (s DefaultSource) Describe() string {
+	switch s.Kind {
+	case DefaultSourceKindBoard:
+		return "board"
+	case DefaultSourceKindTagRule:
+		position := "?"
+		if s.RulePosition != nil {
+			position = fmt.Sprint(*s.RulePosition)
+		}
+		return fmt.Sprintf("tag rule [%s] (position %s, id %s)", strings.Join(s.RuleTags, " + "), position, s.RuleID)
+	default:
+		return fmt.Sprintf("source kind %q", s.Kind)
+	}
+}
+
+// EffectiveDefault is one resolved default and where it came from.
+type EffectiveDefault struct {
+	Value  string        `json:"value"`
+	Source DefaultSource `json:"source"`
+}
+
+// EffectiveDefaults is what one card gets on one board once kanban-store has
+// applied the board's tag rules to the card's tags: for each default, the
+// first matching rule that sets it, else the board's own value. The
+// precedence lives in kanban-store only — this client reads the answer and
+// never re-derives it.
+type EffectiveDefaults struct {
+	BoardID        string   `json:"board_id"`
+	CardID         string   `json:"card_id"`
+	Tags           []string `json:"tags"`
+	MatchedRuleIDs []string `json:"matched_rule_ids"`
+	// Defaults holds only the defaults that have a value somewhere. A field
+	// absent here is set by no matching rule and not by the board either.
+	Defaults map[DefaultField]EffectiveDefault `json:"defaults"`
+}
+
+// Default returns one resolved default, and false when nothing sets it.
+func (e *EffectiveDefaults) Default(field DefaultField) (EffectiveDefault, bool) {
+	resolved, ok := e.Defaults[field]
+	return resolved, ok
+}
+
+// ErrCardNotFound is returned by GetCardEffectiveDefaults when kanban-store
+// answers 404: noteboard has no item with that card id.
+var ErrCardNotFound = errors.New("kanban card not found")
+
+// GetCardEffectiveDefaults asks kanban-store which defaults one card gets on
+// one board (GET /api/boards/{board}/cards/{card}/effective-defaults). A 404 is
+// ErrCardNotFound; any other non-200 — 502 when kanban-store cannot read the
+// card from noteboard — is an error carrying the body.
+func (c *Client) GetCardEffectiveDefaults(boardID, cardID string) (*EffectiveDefaults, error) {
+	if boardID == "" || cardID == "" {
+		return nil, fmt.Errorf("kanbanclient: GetCardEffectiveDefaults needs a board id and a card id, got board %q card %q", boardID, cardID)
+	}
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s/cards/%s/effective-defaults", c.BaseURL, boardID, cardID))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%w: card %s on board %s — %s", ErrCardNotFound, cardID, boardID, strings.TrimSpace(string(raw)))
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusErr("effective defaults of card "+cardID+" on board "+boardID, resp)
+	}
+	var resolved EffectiveDefaults
+	if err := json.NewDecoder(resp.Body).Decode(&resolved); err != nil {
+		return nil, fmt.Errorf("decode effective defaults of card %s on board %s: %w", cardID, boardID, err)
+	}
+	// An answer about some other card or board would be applied to this one.
+	if resolved.BoardID != boardID || resolved.CardID != cardID {
+		return nil, fmt.Errorf("kanban effective defaults: asked for card %s on board %s, answered for card %q on board %q",
+			cardID, boardID, resolved.CardID, resolved.BoardID)
+	}
+	return &resolved, nil
 }
 
 type Column struct {

@@ -12,9 +12,17 @@
 //	     a. Find Backlog children for that parent (no session link yet).
 //	     b. Group them by their group:<key> tag.
 //	     c. For each group, pick the first eligible child:
+//	        - Ask kanban-store for the child's effective defaults: the board's
+//	          tag rules matched against the child's tags, falling through to
+//	          the board's own defaults. That answer — not the board's fields —
+//	          is the instance, agent and bundle the child runs with. A child
+//	          whose effective defaults name no instance is NOT dispatched; it
+//	          is logged, the other groups carry on, and the run exits non-zero.
 //	        - Look at sibling cards (same parent, same group) for an idle
-//	          session whose last update was within the revive window. If one
-//	          exists, REUSE its session_id (publish Send only).
+//	          session whose last update was within the revive window and that
+//	          was started with the same instance, agent and bundle the child
+//	          resolves to. If one exists, REUSE its session_id (publish Send
+//	          only).
 //	        - Otherwise mint a fresh session_id and publish Create+Send.
 //	     d. Add a session card_link, move the child to In Progress.
 //	  3. Final pass — for each scoped parent, if every child noteboard item
@@ -26,7 +34,7 @@
 // session_id verbatim, so the card_link entity_ref is the deeplink target.
 //
 // Closure of in-progress sub-cards is left to kanban-curator (run with
-// `-board="Task completion loop"` on its own scheduler tick), which moves
+// `-board-id <this board's id>` on its own scheduler tick), which moves
 // In Progress → Done/Failed based on bridge session state.
 package main
 
@@ -74,7 +82,7 @@ func main() {
 	var (
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
 		dryRun       = flag.Bool("dry-run", false, "Decide but do not publish or move cards.")
-		boardID      = flag.String("board-id", "", "Kanban board id to dispatch on (required). The board owns what a session runs with — default_instance_id, default_agent_id, default_bundle_id — and this job owns only when.")
+		boardID      = flag.String("board-id", "", "Kanban board id to dispatch on (required). The board owns what a session runs with — per card, its tag rules matched against the card's tags, then its own default_instance_id, default_agent_id and default_bundle_id — and this job owns only when.")
 		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
 		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
 		maxDispatch  = flag.Int("max", maxDispatchPerTick, "Max sub-card dispatches per tick.")
@@ -92,27 +100,49 @@ func main() {
 		return
 	}
 
-	kc := kanbanclient.New(*kanbanURL)
-	board, err := kc.GetBoard(*boardID)
+	err := run(runOptions{
+		BoardID:     *boardID,
+		KanbanURL:   *kanbanURL,
+		BridgeURL:   *bridgeURL,
+		NATSURL:     envOr("NATS_URL", "nats://localhost:4222"),
+		DryRun:      *dryRun,
+		MaxDispatch: *maxDispatch,
+	})
+	if err != nil {
+		log.Fatalf("[dispatcher] %v", err)
+	}
+}
+
+type runOptions struct {
+	BoardID     string
+	KanbanURL   string
+	BridgeURL   string
+	NATSURL     string
+	DryRun      bool
+	MaxDispatch int
+}
+
+// run is one tick. It returns an error — and main exits non-zero, so the
+// scheduler records the run as `error` — when the tick cannot start, and also
+// when it finished but left any card undispatched for a reason a person has to
+// fix, such as a card nothing gives an instance.
+func run(options runOptions) error {
+	kc := kanbanclient.New(options.KanbanURL)
+	board, err := kc.GetBoard(options.BoardID)
 	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
-		log.Fatalf("board %s does not exist — refusing to create a replacement, since a second board is exactly the fork pinning the id prevents", *boardID)
+		return fmt.Errorf("board %s does not exist — refusing to create a replacement, since a second board is exactly the fork pinning the id prevents", options.BoardID)
 	}
 	if err != nil {
-		log.Fatalf("get board %s: %v", *boardID, err)
+		return fmt.Errorf("get board %s: %w", options.BoardID, err)
 	}
-	// Resolved once per tick, before any card is touched: a board with no
-	// instance, or an instance or agent the bridge no longer knows, must stop
-	// the tick here rather than after the first card has been moved to In
-	// Progress with no session behind it.
-	spec, err := resolveSessionSpec(*bridgeURL, board)
-	if err != nil {
-		log.Fatalf("board %q (%s): %v", board.Name, board.ID, err)
-	}
-	log.Printf("[dispatcher] board=%q id=%s instance=%s harness=%s agent=%q bundle=%q",
-		board.Name, board.ID, spec.InstanceID, spec.Harness, spec.AgentSlug, spec.BundleID)
+	// There is no run-level instance any more: with tag rules one card can have
+	// an instance while the board has none, so each card is resolved on its own
+	// just before it is dispatched.
+	log.Printf("[dispatcher] board=%q id=%s — each card runs with its effective defaults from kanban-store (tag rules matching its tags, then the board's own)",
+		board.Name, board.ID)
 	view, err := kc.GetBoardView(board.ID)
 	if err != nil {
-		log.Fatalf("board view: %v", err)
+		return fmt.Errorf("board view: %w", err)
 	}
 	colByName := map[string]string{}
 	for _, cv := range view.Columns {
@@ -120,69 +150,36 @@ func main() {
 	}
 	for _, want := range []string{columnGoals, columnBacklog, columnInProgress, columnDone, columnFailed} {
 		if colByName[want] == "" {
-			log.Fatalf("board %q missing required column %q", board.Name, want)
+			return fmt.Errorf("board %q missing required column %q", board.Name, want)
 		}
 	}
 
-	var natsClient *natsbus.Client
-	if !*dryRun {
-		natsURL := envOr("NATS_URL", "nats://localhost:4222")
-		c, err := natsbus.Connect(natsbus.Options{URL: natsURL, Name: "kanban-dispatcher"})
+	var publish func(messages.BridgeInbound) error
+	if !options.DryRun {
+		natsClient, err := natsbus.Connect(natsbus.Options{URL: options.NATSURL, Name: "kanban-dispatcher"})
 		if err != nil {
-			log.Fatalf("nats connect: %v", err)
+			return fmt.Errorf("nats connect: %w", err)
 		}
-		defer c.Close()
-		natsClient = c
+		defer natsClient.Close()
+		publish = func(in messages.BridgeInbound) error {
+			return natsClient.Publish(messages.BridgeInboundSubject, in)
+		}
 	}
 
 	parents := scopedParents(view, kc)
 	log.Printf("[dispatcher] board=%q scoped-parents=%d", board.Name, len(parents))
 
-	dispatched := 0
-	for _, p := range parents {
-		if dispatched >= *maxDispatch {
-			break
-		}
-		groups := backlogGroups(view, p.cardID)
-		if len(groups) == 0 {
-			continue
-		}
-		for _, g := range groups {
-			if dispatched >= *maxDispatch {
-				break
-			}
-			child := g.cards[0] // first in group
-			sessionID, reused := decideReuse(g, view, *bridgeURL)
-			prompt := buildPrompt(p, child, g.key, reused)
-			displayName := fmt.Sprintf("tcl %s · %s", g.key, time.Now().Format("Jan 2 15:04"))
-
-			if reused == "" {
-				sessionID = mintSessionID(p.cardID, g.key)
-			}
-
-			log.Printf("[%s] dispatching %q group=%s reuse=%v session=%s",
-				p.title(), childTitle(child), g.key, reused != "", sessionID)
-			if *dryRun {
-				dispatched++
-				continue
-			}
-
-			in := buildBridgeInbound(sessionID, displayName, prompt, reused == "", spec)
-			if err := natsClient.Publish(messages.BridgeInboundSubject, in); err != nil {
-				log.Printf("[%s] nats publish: %v", p.title(), err)
-				continue
-			}
-			if err := kc.AddCardLink(child.Placement.CardID, linkTypeSession, sessionID, "tcl-dispatcher"); err != nil {
-				log.Printf("[%s] add session link: %v", p.title(), err)
-				continue
-			}
-			if err := kc.MoveCard(child.Placement.CardID, board.ID, colByName[columnInProgress], 0); err != nil {
-				log.Printf("[%s] move to In Progress: %v", p.title(), err)
-				continue
-			}
-			dispatched++
-		}
+	dispatcher := &backlogDispatcher{
+		kanban:             kc,
+		bridgeURL:          options.BridgeURL,
+		board:              board,
+		view:               view,
+		inProgressColumnID: colByName[columnInProgress],
+		publish:            publish,
+		dryRun:             options.DryRun,
+		maxDispatch:        options.MaxDispatch,
 	}
+	dispatched, undispatched := dispatcher.dispatchBacklog(parents)
 
 	// Closure pass: children whose noteboard status is "done" / "archived"
 	// but still sit in In Progress (because their bridge session went idle
@@ -207,12 +204,12 @@ func main() {
 			default:
 				continue
 			}
-			placement, err := currentPlacement(e.CardID, board.ID)
+			placement, err := currentPlacement(kc.BaseURL, e.CardID, board.ID)
 			if err != nil || placement == "" || placement == targetCol {
 				continue
 			}
-			log.Printf("[%s] closure: child %s status=%s → %s", p.title(), e.CardID[:8], status, targetName)
-			if *dryRun {
+			log.Printf("[%s] closure: child %s status=%s → %s", p.title(), shortID(e.CardID), status, targetName)
+			if options.DryRun {
 				continue
 			}
 			if err := kc.MoveCard(e.CardID, board.ID, targetCol, 0); err != nil {
@@ -231,7 +228,7 @@ func main() {
 			continue
 		}
 		log.Printf("[%s] rollup: %d/%d children settled", p.title(), settled, total)
-		if *dryRun {
+		if options.DryRun {
 			continue
 		}
 		body, _ := p.item["body"].(string)
@@ -247,14 +244,21 @@ func main() {
 		rolled++
 	}
 
-	log.Printf("[dispatcher] done: dispatched=%d closed=%d rolled-up=%d", dispatched, closed, rolled)
+	log.Printf("[dispatcher] done: dispatched=%d closed=%d rolled-up=%d not-dispatched=%d", dispatched, closed, rolled, len(undispatched))
+	if len(undispatched) > 0 {
+		described := make([]string, 0, len(undispatched))
+		for _, card := range undispatched {
+			described = append(described, fmt.Sprintf("%s %q (%v)", card.CardID, card.Title, card.Reason))
+		}
+		return fmt.Errorf("%d card(s) were not dispatched: %s", len(undispatched), strings.Join(described, "; "))
+	}
+	return nil
 }
 
 // currentPlacement returns the column id this card is on for the given board.
 // Empty string means the card is not placed on this board (orphaned).
-func currentPlacement(cardID, boardID string) (string, error) {
-	url := fmt.Sprintf("%s/api/cards/%s/placements",
-		strings.TrimRight(envOr("KANBAN_STORE_URL", "http://localhost:8305"), "/"), cardID)
+func currentPlacement(kanbanURL, cardID, boardID string) (string, error) {
+	url := fmt.Sprintf("%s/api/cards/%s/placements", strings.TrimRight(kanbanURL, "/"), cardID)
 	resp, err := http.Get(url)
 	if err != nil {
 		return "", err
@@ -277,6 +281,91 @@ func currentPlacement(cardID, boardID string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// ============================ Backlog dispatch ============================
+
+// backlogDispatcher is one tick's dispatch pass over a board's Backlog.
+type backlogDispatcher struct {
+	kanban             *kanbanclient.Client
+	bridgeURL          string
+	board              *kanbanclient.Board
+	view               *kanbanclient.BoardView
+	inProgressColumnID string
+	// publish sends one BridgeInbound. Nil on a dry run, which publishes nothing.
+	publish     func(messages.BridgeInbound) error
+	dryRun      bool
+	maxDispatch int
+}
+
+// undispatchedCard is a Backlog card this tick chose to dispatch and could not.
+type undispatchedCard struct {
+	CardID string
+	Title  string
+	Reason error
+}
+
+// dispatchBacklog dispatches the first card of each Backlog group under each
+// scoped parent, up to maxDispatch, each with its own effective defaults. A card
+// that cannot be dispatched is logged where it fails and returned, and the
+// other groups carry on: with tag rules, one card lacking an instance says
+// nothing about the next. The group behind that card waits — its order is the
+// point of a group.
+func (d *backlogDispatcher) dispatchBacklog(parents []scopedParent) (dispatched int, undispatched []undispatchedCard) {
+	for _, p := range parents {
+		if dispatched >= d.maxDispatch {
+			break
+		}
+		groups := backlogGroups(d.kanban, d.view, p.cardID)
+		for _, g := range groups {
+			if dispatched >= d.maxDispatch {
+				break
+			}
+			child := g.cards[0] // first in group
+			childID := child.Placement.CardID
+			notDispatched := func(reason error) {
+				log.Printf("[%s] NOT DISPATCHED card %s %q group=%s: %v — it stays where it is and the rest of its group waits behind it",
+					p.title(), childID, childTitle(child), g.key, reason)
+				undispatched = append(undispatched, undispatchedCard{CardID: childID, Title: childTitle(child), Reason: reason})
+			}
+
+			spec, err := resolveCardSessionSpec(d.kanban, d.bridgeURL, d.board, childID)
+			if err != nil {
+				notDispatched(err)
+				continue
+			}
+			reusedSessionID := reusableSiblingSession(d.kanban, d.bridgeURL, d.view, g, spec)
+			sessionID := reusedSessionID
+			if sessionID == "" {
+				sessionID = mintSessionID(p.cardID, g.key)
+			}
+			prompt := buildPrompt(p, child, g.key, reusedSessionID)
+			displayName := fmt.Sprintf("tcl %s · %s", g.key, time.Now().Format("Jan 2 15:04"))
+
+			log.Printf("[%s] dispatching %q card=%s group=%s reuse=%v session=%s %s",
+				p.title(), childTitle(child), childID, g.key, reusedSessionID != "", sessionID, spec.describe())
+			if d.dryRun {
+				dispatched++
+				continue
+			}
+
+			in := buildBridgeInbound(sessionID, displayName, prompt, reusedSessionID == "", spec)
+			if err := d.publish(in); err != nil {
+				notDispatched(fmt.Errorf("nats publish: %w", err))
+				continue
+			}
+			if err := d.kanban.AddCardLink(childID, linkTypeSession, sessionID, "tcl-dispatcher"); err != nil {
+				notDispatched(fmt.Errorf("session %s was published but linking it to the card failed: %w", sessionID, err))
+				continue
+			}
+			if err := d.kanban.MoveCard(childID, d.board.ID, d.inProgressColumnID, 0); err != nil {
+				notDispatched(fmt.Errorf("session %s was published and linked but moving the card to In Progress failed: %w", sessionID, err))
+				continue
+			}
+			dispatched++
+		}
+	}
+	return dispatched, undispatched
 }
 
 // ============================ Parent / group selection ============================
@@ -331,7 +420,7 @@ type backlogGroup struct {
 // A child counts as "in this parent" when it has a card_link with
 // entity_type=parent_card pointing to parent_id. Group key comes from a
 // "group:<key>" tag; missing group → key "".
-func backlogGroups(view *kanbanclient.BoardView, parentID string) []backlogGroup {
+func backlogGroups(kc *kanbanclient.Client, view *kanbanclient.BoardView, parentID string) []backlogGroup {
 	var backlogCards []kanbanclient.CardView
 	for _, cv := range view.Columns {
 		if cv.Column.Name == columnBacklog {
@@ -340,29 +429,19 @@ func backlogGroups(view *kanbanclient.BoardView, parentID string) []backlogGroup
 		}
 	}
 	byKey := map[string][]kanbanclient.CardView{}
-	for _, c := range backlogCards {
-		if c.Item == nil {
-			continue
-		}
-		// Cheap parent check: pull links inline. Avoids a per-card RTT for
-		// non-children. But we only have placement+item here — no links list.
-		// Caller responsible for filtering via parent lookup separately.
-		_ = c
-	}
-	// We don't have links in the BoardView, so do the inverse: list cards
-	// linked to this parent_card entity, then intersect with Backlog
-	// placements in the view.
+	// List the cards linked to this parent_card entity, then intersect with
+	// Backlog placements in the view.
 	parentChildren := map[string]bool{}
-	if entries, err := listCardsForEntity(view.Board.ID, parentID); err == nil {
-		for _, e := range entries {
-			parentChildren[e] = true
-		}
-	} else {
+	childIDs, err := listChildCardIDs(kc, parentID)
+	if err != nil {
 		log.Printf("[%s] list children: %v", parentID, err)
 		return nil
 	}
+	for _, id := range childIDs {
+		parentChildren[id] = true
+	}
 	for _, c := range backlogCards {
-		if !parentChildren[c.Placement.CardID] {
+		if c.Item == nil || !parentChildren[c.Placement.CardID] {
 			continue
 		}
 		key := groupKey(c.Item)
@@ -379,25 +458,11 @@ func backlogGroups(view *kanbanclient.BoardView, parentID string) []backlogGroup
 	return out
 }
 
-// listCardsForEntity is a thin wrapper around the kanbanclient helper plus a
-// projection to card_id strings, since callers here don't need the whole item.
-func listCardsForEntity(boardID, parentID string) ([]string, error) {
-	url := fmt.Sprintf("%s/api/entities/%s/%s/cards",
-		strings.TrimRight(envOr("KANBAN_STORE_URL", "http://localhost:8305"), "/"),
-		linkTypeParent, parentID)
-	resp, err := http.Get(url)
+// listChildCardIDs returns the ids of the cards linked to a parent card, read
+// from the kanban-store the -kanban-url flag names.
+func listChildCardIDs(kc *kanbanclient.Client, parentID string) ([]string, error) {
+	entries, err := kc.ListCardsForEntity(linkTypeParent, parentID)
 	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %s — %s", resp.Status, strings.TrimSpace(string(raw)))
-	}
-	var entries []struct {
-		CardID string `json:"card_id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
 		return nil, err
 	}
 	out := make([]string, 0, len(entries))
@@ -418,20 +483,31 @@ func groupKey(item map[string]any) string {
 
 // ============================ Revive decision ============================
 
-// decideReuse looks at sibling sub-cards under the same parent (any column,
-// not just Backlog) that share this group's key and have a session link.
-// If any such session is currently idle and updated within the revive window,
-// returns its session_id; else returns "".
-func decideReuse(g backlogGroup, view *kanbanclient.BoardView, bridgeURL string) (sessionID string, reused string) {
-	siblings := groupSiblings(view, g.parentID, g.key)
+// reusableSiblingSession looks at sibling sub-cards under the same parent (any
+// column, not just Backlog) that share this group's key and have a session
+// link, and returns the first session that is idle, was updated within the
+// revive window, and was started with exactly what the card resolves to: the
+// same instance, the same agent and the same bundle. Returns "" when no
+// sibling qualifies, and the caller spawns a fresh session.
+//
+// Why all three and not just the instance: llm-bridge-server sets each of them
+// once, at session creation. Sending a card into a sibling's session started on
+// another instance would run it there; one started as another agent or with
+// another bundle would run it under that identity or without its bundle's
+// tools — each a way of ignoring the tag rule that gave the card its defaults.
+// A fresh session costs some context; the wrong session costs correctness.
+func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kanbanclient.BoardView, g backlogGroup, spec cardSessionSpec) string {
+	candidateID := g.cards[0].Placement.CardID
+	siblings := groupSiblings(kc, view, g.parentID, g.key)
 	now := time.Now()
 	for _, sibling := range siblings {
 		// Skip the candidate itself (still in Backlog with no link yet).
-		if sibling.Placement.CardID == g.cards[0].Placement.CardID {
+		if sibling.Placement.CardID == candidateID {
 			continue
 		}
-		links, err := fetchLinks(sibling.Placement.CardID)
+		links, err := kc.ListCardLinks(sibling.Placement.CardID)
 		if err != nil {
+			log.Printf("[reuse] card %s: sibling %s links unreadable, not reusing its session: %v", candidateID, sibling.Placement.CardID, err)
 			continue
 		}
 		var sid string
@@ -444,34 +520,42 @@ func decideReuse(g backlogGroup, view *kanbanclient.BoardView, bridgeURL string)
 		if sid == "" {
 			continue
 		}
-		state, updatedAt, err := getSessionState(bridgeURL, sid)
+		session, err := getBridgeSession(bridgeURL, sid)
 		if err != nil {
+			log.Printf("[reuse] card %s: sibling session %s unreadable, not reusing it: %v", candidateID, sid, err)
 			continue
 		}
-		if state != "idle" {
+		if session.State != "idle" {
 			continue
 		}
-		if updatedAt != "" {
-			if t, err := time.Parse(time.RFC3339, updatedAt); err == nil {
+		if session.UpdatedAt != "" {
+			if t, err := time.Parse(time.RFC3339, session.UpdatedAt); err == nil {
 				if now.Sub(t) > reviveWindow {
 					continue
 				}
 			}
 		}
-		return sid, sid
+		if difference := session.differenceFrom(spec); difference != "" {
+			log.Printf("[reuse] card %s: not reusing idle sibling session %s — %s", candidateID, sid, difference)
+			continue
+		}
+		return sid
 	}
-	return "", ""
+	return ""
 }
 
 // groupSiblings returns ALL cards on the board that share the parent_card
 // link and the same group:<key> tag — across every column, so we can find a
 // freshly-completed sibling whose session is still idle.
-func groupSiblings(view *kanbanclient.BoardView, parentID, key string) []kanbanclient.CardView {
+func groupSiblings(kc *kanbanclient.Client, view *kanbanclient.BoardView, parentID, key string) []kanbanclient.CardView {
 	parentChildren := map[string]bool{}
-	if cardIDs, err := listCardsForEntity(view.Board.ID, parentID); err == nil {
-		for _, id := range cardIDs {
-			parentChildren[id] = true
-		}
+	childIDs, err := listChildCardIDs(kc, parentID)
+	if err != nil {
+		log.Printf("[%s] list children for reuse: %v — no sibling session will be reused", parentID, err)
+		return nil
+	}
+	for _, id := range childIDs {
+		parentChildren[id] = true
 	}
 	var out []kanbanclient.CardView
 	for _, cv := range view.Columns {
@@ -489,25 +573,6 @@ func groupSiblings(view *kanbanclient.BoardView, parentID, key string) []kanbanc
 		}
 	}
 	return out
-}
-
-func fetchLinks(cardID string) ([]kanbanclient.CardLink, error) {
-	url := fmt.Sprintf("%s/api/cards/%s/links",
-		strings.TrimRight(envOr("KANBAN_STORE_URL", "http://localhost:8305"), "/"), cardID)
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %s — %s", resp.Status, strings.TrimSpace(string(raw)))
-	}
-	var links []kanbanclient.CardLink
-	if err := json.NewDecoder(resp.Body).Decode(&links); err != nil {
-		return nil, err
-	}
-	return links, nil
 }
 
 // ============================ Bridge inbound ============================
@@ -530,42 +595,79 @@ func shortID(id string) string {
 	return id[:8]
 }
 
-// sessionSpec is what a fresh session runs with, resolved from the board.
-type sessionSpec struct {
+// errCardHasNoInstance marks a card whose effective defaults name no instance:
+// no tag rule matching its tags sets default_instance_id, and the board does
+// not set one either.
+var errCardHasNoInstance = errors.New("no instance to run on")
+
+// cardSessionSpec is what a session for one card runs with, resolved from that
+// card's effective defaults.
+type cardSessionSpec struct {
 	Harness    msg.Harness
 	InstanceID string
-	// AgentSlug is empty when the board sets no default_agent_id; the bridge
-	// then starts the session as no agent, exactly as before boards had one.
+	// AgentSlug is empty when nothing sets default_agent_id for the card; the
+	// bridge then starts the session as no agent.
 	AgentSlug string
-	// BundleID is the board's default_bundle_id verbatim, or empty.
+	// BundleID is the card's effective default_bundle_id verbatim, or empty.
 	BundleID string
+	// Defaults is kanban-store's answer the spec was read from, kept so a log
+	// line can say where each value came from.
+	Defaults *kanbanclient.EffectiveDefaults
 }
 
-// resolveSessionSpec turns the board's settings into what POST /sessions
-// takes. The board stores ids — the instance id and agent-store's numeric agent
-// id — and the bridge wants the harness type and the agent's slug, so both are
-// read from the bridge now rather than copied onto the board at some earlier
-// date and trusted since.
-func resolveSessionSpec(bridgeURL string, board *kanbanclient.Board) (sessionSpec, error) {
-	if board.DefaultInstanceID == "" {
-		return sessionSpec{}, fmt.Errorf("no default_instance_id — set it on the board (PATCH /api/boards/%s {\"default_instance_id\":…}); the dispatcher no longer carries a fallback instance", board.ID)
-	}
-	harness, err := bridgeclient.InstanceHarnessType(bridgeURL, board.DefaultInstanceID)
+// resolveCardSessionSpec asks kanban-store for the card's effective defaults
+// on the board and turns them into what POST /sessions takes. kanban-store owns
+// the precedence (matching tag rules in order, then the board); this reads its
+// answer and never re-derives it. The defaults are ids — the instance id and
+// agent-store's numeric agent id — and the bridge wants the harness type and
+// the agent's slug, so both are read from the bridge now rather than copied
+// anywhere earlier and trusted since.
+func resolveCardSessionSpec(kc *kanbanclient.Client, bridgeURL string, board *kanbanclient.Board, cardID string) (cardSessionSpec, error) {
+	defaults, err := kc.GetCardEffectiveDefaults(board.ID, cardID)
 	if err != nil {
-		return sessionSpec{}, fmt.Errorf("default_instance_id: %w", err)
+		return cardSessionSpec{}, fmt.Errorf("effective defaults: %w", err)
 	}
-	spec := sessionSpec{Harness: harness, InstanceID: board.DefaultInstanceID, BundleID: board.DefaultBundleID}
-	if board.DefaultAgentID != "" {
-		slug, err := bridgeclient.AgentSlugByID(bridgeURL, board.DefaultAgentID)
+	instance, ok := defaults.Default(kanbanclient.DefaultFieldInstance)
+	if !ok {
+		return cardSessionSpec{}, fmt.Errorf("%w: neither a tag rule matching the card's tags %q nor board %q (%s) sets default_instance_id — add a tag rule (PUT /api/boards/%s/tag-rules) or set the board's (PATCH /api/boards/%s); there is no fallback instance",
+			errCardHasNoInstance, defaults.Tags, board.Name, board.ID, board.ID, board.ID)
+	}
+	harness, err := bridgeclient.InstanceHarnessType(bridgeURL, instance.Value)
+	if err != nil {
+		return cardSessionSpec{}, fmt.Errorf("default_instance_id from %s: %w", instance.Source.Describe(), err)
+	}
+	spec := cardSessionSpec{Harness: harness, InstanceID: instance.Value, Defaults: defaults}
+	if bundle, ok := defaults.Default(kanbanclient.DefaultFieldBundle); ok {
+		spec.BundleID = bundle.Value
+	}
+	if agent, ok := defaults.Default(kanbanclient.DefaultFieldAgent); ok {
+		slug, err := bridgeclient.AgentSlugByID(bridgeURL, agent.Value)
 		if err != nil {
-			return sessionSpec{}, fmt.Errorf("default_agent_id: %w", err)
+			return cardSessionSpec{}, fmt.Errorf("default_agent_id from %s: %w", agent.Source.Describe(), err)
 		}
 		spec.AgentSlug = slug
 	}
 	return spec, nil
 }
 
-func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec sessionSpec) messages.BridgeInbound {
+// describe renders the spec for a log line, naming where each value came from.
+func (s cardSessionSpec) describe() string {
+	instance, _ := s.Defaults.Default(kanbanclient.DefaultFieldInstance)
+	parts := []string{fmt.Sprintf("instance=%s harness=%s (from %s)", s.InstanceID, s.Harness, instance.Source.Describe())}
+	if agent, ok := s.Defaults.Default(kanbanclient.DefaultFieldAgent); ok {
+		parts = append(parts, fmt.Sprintf("agent=%s id=%s (from %s)", s.AgentSlug, agent.Value, agent.Source.Describe()))
+	} else {
+		parts = append(parts, "agent=none (nothing sets default_agent_id)")
+	}
+	if bundle, ok := s.Defaults.Default(kanbanclient.DefaultFieldBundle); ok {
+		parts = append(parts, fmt.Sprintf("bundle=%s (from %s)", s.BundleID, bundle.Source.Describe()))
+	} else {
+		parts = append(parts, "bundle=none (nothing sets default_bundle_id)")
+	}
+	return strings.Join(parts, " ")
+}
+
+func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec cardSessionSpec) messages.BridgeInbound {
 	in := messages.BridgeInbound{
 		BusSessionID: sessionID,
 		Agent:        "tcl-worker",
@@ -665,28 +767,52 @@ func childrenSettlement(kc *kanbanclient.Client, parentID string) (int, int, str
 
 // ============================ HTTP / NATS helpers ============================
 
-func getSessionState(bridgeURL, sessionID string) (state string, updatedAt string, err error) {
+// bridgeSession is the part of llm-bridge-server's GET /sessions/{id} the
+// revive decision reads.
+type bridgeSession struct {
+	State      string `json:"state"`
+	UpdatedAt  string `json:"updated_at"`
+	InstanceID string `json:"instance_id"`
+	// AgentID is the agent's slug, which is what a session is created with.
+	AgentID  string `json:"agent_id"`
+	BundleID string `json:"bundle_id"`
+}
+
+// differenceFrom says how the session was started with something other than
+// what the card resolves to, or "" when instance, agent and bundle all match.
+func (s bridgeSession) differenceFrom(spec cardSessionSpec) string {
+	var differences []string
+	if s.InstanceID != spec.InstanceID {
+		differences = append(differences, fmt.Sprintf("it runs on instance %q and the card resolves to %q", s.InstanceID, spec.InstanceID))
+	}
+	if s.AgentID != spec.AgentSlug {
+		differences = append(differences, fmt.Sprintf("it runs as agent %q and the card resolves to %q", s.AgentID, spec.AgentSlug))
+	}
+	if s.BundleID != spec.BundleID {
+		differences = append(differences, fmt.Sprintf("it was started with bundle %q and the card resolves to %q", s.BundleID, spec.BundleID))
+	}
+	return strings.Join(differences, "; ")
+}
+
+func getBridgeSession(bridgeURL, sessionID string) (bridgeSession, error) {
 	url := fmt.Sprintf("%s/sessions/%s", strings.TrimRight(bridgeURL, "/"), sessionID)
 	resp, err := http.Get(url)
 	if err != nil {
-		return "", "", err
+		return bridgeSession{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return "", "", fmt.Errorf("not found")
+		return bridgeSession{}, fmt.Errorf("not found")
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", "", fmt.Errorf("HTTP %s — %s", resp.Status, strings.TrimSpace(string(body)))
+		return bridgeSession{}, fmt.Errorf("HTTP %s — %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	var s struct {
-		State     string `json:"state"`
-		UpdatedAt string `json:"updated_at"`
+	var session bridgeSession
+	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
+		return bridgeSession{}, err
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
-		return "", "", err
-	}
-	return s.State, s.UpdatedAt, nil
+	return session, nil
 }
 
 // ============================ Scheduler self-registration ============================
