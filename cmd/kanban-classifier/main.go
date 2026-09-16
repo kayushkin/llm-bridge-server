@@ -46,6 +46,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/msg"
+
 	"github.com/slava/scheduler/internal/oneshot"
 
 	"github.com/slava/scheduler/internal/kanbanclient"
@@ -328,7 +330,31 @@ type session struct {
 func selectCandidates(cfg config) ([]session, error) {
 	// Newest first, and the lookback cutoff ends the walk: the summary is ordered
 	// by updated_at, so the first older row means every later one is older too.
-	return listSessionsUpdatedSince(cfg.BridgeURL, time.Now().Add(-candidateLookback))
+	recent, err := listSessionsUpdatedSince(cfg.BridgeURL, time.Now().Add(-candidateLookback))
+	if err != nil {
+		return nil, err
+	}
+	candidates, skippedOneshot := withoutOneshotCalls(recent)
+	log.Printf("[classifier] skipped %d oneshot model calls (purpose %q)", skippedOneshot, msg.PurposeOneshot)
+	return candidates, nil
+}
+
+// withoutOneshotCalls drops sessions whose purpose is oneshot and reports how
+// many it dropped. A oneshot session is a single stateless model call — a
+// classifier or generator run through a harness's oneshot mode, including this
+// command's own — not work anyone directed, so there is nothing to put on the
+// board. The match is on the purpose field the bridge assigned, never on the
+// name or prompt. It filters the board only: those sessions are still stored
+// and still counted everywhere usage is reported.
+func withoutOneshotCalls(sessions []session) ([]session, int) {
+	kept := make([]session, 0, len(sessions))
+	for _, sess := range sessions {
+		if sess.Purpose == msg.PurposeOneshot {
+			continue
+		}
+		kept = append(kept, sess)
+	}
+	return kept, len(sessions) - len(kept)
 }
 
 // ============================ Process one session ============================
