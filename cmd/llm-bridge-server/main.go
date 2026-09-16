@@ -46,6 +46,9 @@ func main() {
 		log.Fatalf("demo login: %v", err)
 	}
 	if demoLoginEnabled {
+		if err := forbidSameUserProcessesFromReadingThisProcess(); err != nil {
+			log.Fatalf("demo login: refusing to start, because an agent running as this user could read the signing key out of this process: %v", err)
+		}
 		log.Printf("demo login ENABLED: POST /auth/demo-login signs in as any human principal-store principal with no password; /kanban/ proxies to kanban-store %s carrying X-Principal-Id — demo only, never expose kanban-store directly", cfg.KanbanStoreURL)
 	} else {
 		log.Printf("demo login disabled (LLMBRIDGE_DEMO_LOGIN unset): /auth/demo-login and /kanban/ are not routed")

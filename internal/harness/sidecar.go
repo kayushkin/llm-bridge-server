@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 )
 
 // otelSidecar is a long-running co-process spawned alongside a PTY session
@@ -46,7 +48,7 @@ func startOTelSidecar(binPath, bridgeSessionID, bridgeServerURL, ptyCwd, ptyResu
 	}
 
 	cmd := exec.Command(binPath, "-otel-sidecar")
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(),
 		"LLMBRIDGE_BRIDGE_SESSION_ID="+bridgeSessionID,
 		"LLMBRIDGE_BRIDGE_SERVER_URL="+bridgeServerURL,
 	)

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	logstore "github.com/kayushkin/log-store/client"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -1596,6 +1597,7 @@ func discoverableHarnesses() []msg.Harness {
 // runDiscover executes a harness binary with -discover and parses the JSON output.
 func runDiscover(ctx context.Context, binPath string) ([]msg.StoredSession, error) {
 	cmd := exec.CommandContext(ctx, binPath, "-discover")
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	cmd.Stderr = os.Stderr
 
 	out, err := cmd.Output()
@@ -1637,6 +1639,7 @@ func (m *Manager) ImportHistory(ctx context.Context, bridgeSessionID string, h m
 	}
 
 	cmd := exec.CommandContext(ctx, binPath, "-import-history", harnessSessionID)
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	cmd.Stderr = os.Stderr
 
 	out, err := cmd.Output()
@@ -1763,6 +1766,7 @@ func (m *Manager) CheckSSHReachability(mach *msg.Machine) bool {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	err := cmd.Run()
 	return err == nil
 }

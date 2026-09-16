@@ -131,6 +131,35 @@ type Config struct {
 	DemoLoginSigningKey string
 }
 
+// Names of the environment variables that hold this server's own secrets.
+// They are declared once here because two things read them: Load, and
+// SecretEnvironmentVariableNames, which the child-process environment builder
+// (internal/childprocessenv) strips from every process this server spawns.
+const (
+	DemoLoginSigningKeyEnvironmentVariable     = "LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY"
+	ServiceTokenEnvironmentVariable            = "LLMBRIDGE_SERVICE_TOKEN"
+	GrantStoreServiceTokenEnvironmentVariable  = "LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN"
+	KanbanStoreServiceTokenEnvironmentVariable = "LLMBRIDGE_KANBAN_STORE_SERVICE_TOKEN"
+)
+
+// SecretEnvironmentVariableNames lists every environment variable that must
+// never reach a process this server spawns. A harness child runs an agent that
+// can execute shell commands; whatever is in its environment the agent can
+// read. The demo login signing key would let it mint a login cookie for any
+// principal, the service token would make it the unrestricted internal caller,
+// and a store service token would let it bypass that store's per-principal
+// enforcement. LLMBRIDGE_KANBAN_STORE_SERVICE_TOKEN is not read by this server;
+// it is listed so that an operator who puts it in the same environment file
+// does not hand it to every agent.
+func SecretEnvironmentVariableNames() []string {
+	return []string{
+		DemoLoginSigningKeyEnvironmentVariable,
+		ServiceTokenEnvironmentVariable,
+		GrantStoreServiceTokenEnvironmentVariable,
+		KanbanStoreServiceTokenEnvironmentVariable,
+	}
+}
+
 // DemoLoginEnabledValue is the only LLMBRIDGE_DEMO_LOGIN value that turns demo
 // login on.
 const DemoLoginEnabledValue = "enabled"
@@ -217,7 +246,7 @@ func Load() *Config {
 		SignalClassifierTimeout:  envDuration("LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", 20*time.Second),
 		SignalClassifierMaxChars: envInt("LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", 6000),
 		DemoLoginSetting:         os.Getenv("LLMBRIDGE_DEMO_LOGIN"),
-		DemoLoginSigningKey:      os.Getenv("LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY"),
+		DemoLoginSigningKey:      os.Getenv(DemoLoginSigningKeyEnvironmentVariable),
 	}
 	productiondefaults.PanicIfUsedUnderTest(cfg.GuardedAddresses())
 	return cfg

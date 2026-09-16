@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/ndjson"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -208,7 +209,7 @@ type Process struct {
 func StartProcess(ctx context.Context, binPath string, sess *store.Session, credentialID, workingDir string) (*Process, error) {
 	cmd := exec.Command(binPath)
 	cmd.Dir = workingDir
-	cmd.Env = os.Environ()
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	if credentialID != "" {
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_CREDENTIAL_ID="+credentialID)
 	}
@@ -448,7 +449,7 @@ type PTYProcess struct {
 func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, credentialID string, extraEnv []string, workingDir string) (*PTYProcess, error) {
 	cmd := exec.Command(binPath)
 	cmd.Dir = workingDir
-	cmd.Env = append(os.Environ(), "LLMBRIDGE_PTY_MODE=1")
+	cmd.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(), "LLMBRIDGE_PTY_MODE=1")
 	if credentialID != "" {
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_CREDENTIAL_ID="+credentialID)
 	}
@@ -608,7 +609,7 @@ func (p *PTYProcess) Done() <-chan struct{} { return p.done }
 // credentialID is passed to the remote harness via the start params JSON.
 func StartSSHProcess(ctx context.Context, args []string, sess *store.Session, credentialID string) (*Process, error) {
 	cmd := exec.Command("ssh", args...)
-	cmd.Env = os.Environ()
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()

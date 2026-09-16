@@ -479,6 +479,12 @@ Routes:
 
 ⚠️ **kanban-store trusts `X-Principal-Id`, so it must not be reachable by users except through this proxy.** A user who can reach kanban-store directly can name any principal.
 
+### Secrets never reach a child process
+
+Every process this server spawns — harness wrappers in events, pty and ssh mode, the OTel sidecar, `-oneshot`, `-discover` and `-import-history`, registered hook commands, `git`, and the conformance runner — gets its environment from `internal/childprocessenv`, which removes every variable `config.SecretEnvironmentVariableNames` declares: `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY`, `LLMBRIDGE_SERVICE_TOKEN`, `LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN` and `LLMBRIDGE_KANBAN_STORE_SERVICE_TOKEN`. Those processes run agents, and an agent with a shell can read its own environment; with the signing key it could mint a login cookie for any principal. A test walks the module and fails on any `exec.Command` whose `Env` is not set from that package.
+
+Scrubbing the child is not enough while the agent runs as the same Unix user, because a same-user process can read `/proc/<server pid>/environ` or ptrace the server. So with demo login enabled the server marks itself non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`) at startup and refuses to start if it cannot. That does not help against the environment *file* the unit reads its secrets from: in deployment keep it unreadable by the user agents run as, or run agents as a different user.
+
 ## Testing
 
 Three tiers, in increasing strictness about the host environment:

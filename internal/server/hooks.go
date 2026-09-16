@@ -12,6 +12,7 @@ import (
 	"time"
 
 	hookstore "github.com/kayushkin/hook-store"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -213,6 +214,7 @@ func (s *Server) handleExecHook(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), hookExecTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", hook.Command)
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	cmd.Stdin = bytes.NewReader(body)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
