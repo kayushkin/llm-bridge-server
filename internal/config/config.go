@@ -129,6 +129,12 @@ type Config struct {
 	// cookie, from LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY. Required, and at least
 	// DemoLoginSigningKeyMinimumBytes long, when demo login is enabled.
 	DemoLoginSigningKey string
+	// ServiceToken is the credential an internal service presents in
+	// X-LLM-Bridge-Service-Token to call this server without the demo login
+	// restrictions, from LLMBRIDGE_SERVICE_TOKEN. Required, and at least
+	// ServiceTokenMinimumBytes long, when demo login is enabled; unused
+	// otherwise, because with demo login off nothing is restricted.
+	ServiceToken string
 }
 
 // Names of the environment variables that hold this server's own secrets.
@@ -168,6 +174,9 @@ const DemoLoginEnabledValue = "enabled"
 // size of an HMAC-SHA256 output, so the key is not the weaker half of the MAC.
 const DemoLoginSigningKeyMinimumBytes = 32
 
+// ServiceTokenMinimumBytes is the shortest LLMBRIDGE_SERVICE_TOKEN accepted.
+const ServiceTokenMinimumBytes = 32
+
 // DemoLoginEnabled reports whether demo login is switched on, and returns an
 // error naming what is wrong when the demo login settings are inconsistent: an
 // unrecognised LLMBRIDGE_DEMO_LOGIN value, or demo login enabled without a
@@ -189,6 +198,14 @@ func (c *Config) DemoLoginEnabled() (bool, error) {
 	if len(c.DemoLoginSigningKey) < DemoLoginSigningKeyMinimumBytes {
 		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY is %d bytes; it must be at least %d",
 			len(c.DemoLoginSigningKey), DemoLoginSigningKeyMinimumBytes)
+	}
+	if c.ServiceToken == "" {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires %s: with demo login on every route is gated, and internal services reach operator routes only by presenting it",
+			DemoLoginEnabledValue, ServiceTokenEnvironmentVariable)
+	}
+	if len(c.ServiceToken) < ServiceTokenMinimumBytes {
+		return false, fmt.Errorf("%s is %d bytes; it must be at least %d",
+			ServiceTokenEnvironmentVariable, len(c.ServiceToken), ServiceTokenMinimumBytes)
 	}
 	if c.KanbanStoreURL == "" {
 		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_KANBAN_STORE_URL, the kanban-store the /kanban/ proxy forwards to, and it is empty",
@@ -247,6 +264,7 @@ func Load() *Config {
 		SignalClassifierMaxChars: envInt("LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", 6000),
 		DemoLoginSetting:         os.Getenv("LLMBRIDGE_DEMO_LOGIN"),
 		DemoLoginSigningKey:      os.Getenv(DemoLoginSigningKeyEnvironmentVariable),
+		ServiceToken:             os.Getenv(ServiceTokenEnvironmentVariable),
 	}
 	productiondefaults.PanicIfUsedUnderTest(cfg.GuardedAddresses())
 	return cfg

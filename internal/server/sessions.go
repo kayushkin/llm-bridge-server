@@ -172,7 +172,9 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var sessions []store.Session
-	if state != "" {
+	if principalID, restricted := principalRestrictingRequest(r); restricted {
+		sessions, err = s.store.ListSessionsOwnedByPrincipalPaged(principalID, state, limit, offset)
+	} else if state != "" {
 		sessions, err = s.store.ListSessionsByStatePaged(state, limit, offset)
 	} else {
 		sessions, err = s.store.ListSessionsPaged(limit, offset)
@@ -216,6 +218,18 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		req.Harness, req.Type, req.Purpose, req.Origin,
 		req.DisplayName, req.SessionID,
 	)
+
+	// With demo login gating the server, a principal creates sessions as
+	// itself and as nobody else. Naming another principal is refused rather
+	// than overwritten, so a client bug that sends the wrong id is visible.
+	if callerPrincipalID, restricted := principalRestrictingRequest(r); restricted {
+		if req.PrincipalID != "" && req.PrincipalID != callerPrincipalID {
+			writeJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
+				"principal_id %q is not the logged-in principal %s; a session can only be created as yourself (omit principal_id)", req.PrincipalID, callerPrincipalID))
+			return
+		}
+		req.PrincipalID = callerPrincipalID
+	}
 
 	h := msg.Harness(req.Harness)
 	if !isValidHarness(h) {
@@ -946,6 +960,12 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		InstanceID:  parent.InstanceID,
 		State:       string(msg.SessionIdle),
 		AgentID:     parent.AgentID,
+		// A fork runs as whoever the parent runs as, with the parent's bundle:
+		// otherwise forking would be how a principal's session sheds its
+		// owner (becoming invisible to them and ungated by their grants) or
+		// its bundle.
+		PrincipalID: parent.PrincipalID,
+		BundleID:    parent.BundleID,
 		// ParentID carries the parent's HARNESS uuid — the value `--fork` needs.
 		// ForkedFromSessionID is the honest lineage link: the parent's bridge id.
 		// Once the fork plumbing resolves the harness id from the parent row,

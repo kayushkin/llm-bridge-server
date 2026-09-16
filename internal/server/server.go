@@ -502,7 +502,13 @@ func (s *Server) localInstancesByHarness(types []msg.Harness) map[msg.Harness]st
 	return out
 }
 
+// ServeHTTP dispatches to the mux. With demo login enabled every request is
+// authorized first (request_authorization.go); with it off, nothing is.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.principalSessionCookieCodec != nil {
+		s.authorizeAndServe(w, r)
+		return
+	}
 	s.mux.ServeHTTP(w, r)
 }
 

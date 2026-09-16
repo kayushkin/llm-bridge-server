@@ -633,6 +633,73 @@ func (s *Store) ListSessionsPaged(limit, offset int) ([]Session, error) {
 	return sessions, rows.Err()
 }
 
+// ListSessionsOwnedByPrincipalPaged is ListSessionsPaged, or
+// ListSessionsByStatePaged when state is non-empty, narrowed to the sessions
+// whose principal_id is principalID. A session with no principal is owned by
+// nobody and never listed here. principalID must be non-empty: an empty one
+// would match exactly the unowned sessions, the opposite of what a caller
+// narrowing to one principal wants.
+func (s *Store) ListSessionsOwnedByPrincipalPaged(principalID, state string, limit, offset int) ([]Session, error) {
+	if principalID == "" {
+		return nil, fmt.Errorf("ListSessionsOwnedByPrincipalPaged: principal id is required")
+	}
+	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE principal_id=?`
+	args := []any{principalID}
+	if state != "" {
+		query += ` AND state=?`
+		args = append(args, state)
+	}
+	query += ` ORDER BY created_at DESC`
+	if limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	rows, err := s.dbRO.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sessions []Session
+	for rows.Next() {
+		sess, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, *sess)
+	}
+	return sessions, rows.Err()
+}
+
+// SessionIDsOwnedByPrincipal returns the subset of sessionIDs whose session
+// has principal_id principalID, in no particular order. Ids that name no
+// session, or a session owned by someone else or by nobody, are dropped.
+func (s *Store) SessionIDsOwnedByPrincipal(principalID string, sessionIDs []string) ([]string, error) {
+	if principalID == "" {
+		return nil, fmt.Errorf("SessionIDsOwnedByPrincipal: principal id is required")
+	}
+	if len(sessionIDs) == 0 {
+		return []string{}, nil
+	}
+	args := []any{principalID}
+	for _, id := range sessionIDs {
+		args = append(args, id)
+	}
+	rows, err := s.dbRO.Query(`SELECT bridge_id FROM sessions WHERE principal_id=? AND bridge_id IN (`+sqlPlaceholders(len(sessionIDs))+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	owned := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		owned = append(owned, id)
+	}
+	return owned, rows.Err()
+}
+
 func (s *Store) ListSessionsByState(state string) ([]Session, error) {
 	return s.ListSessionsByStatePaged(state, 0, 0)
 }
@@ -1753,12 +1820,17 @@ func (s *Store) EnsureSubagentSession(parent *Session, harnessSessionID, display
 		State:            string(msg.SessionRunning),
 		ManagerSessionID: parent.SessionID,
 		RootSessionID:    root,
-		Depth:            parent.Depth + 1,
-		ControlledBy:     msg.ControlledByHarness,
-		Purpose:          "subagent",
-		Type:             msg.SessionTypeSystem,
-		Origin:           "llm-bridge-" + strings.ReplaceAll(string(parent.Harness), "_", ""),
-		FolderName:       folderName,
+		// A subagent acts for the same principal as the session that spawned
+		// it, from the same bundle; an ownerless child would vanish from its
+		// principal's view.
+		PrincipalID:  parent.PrincipalID,
+		BundleID:     parent.BundleID,
+		Depth:        parent.Depth + 1,
+		ControlledBy: msg.ControlledByHarness,
+		Purpose:      "subagent",
+		Type:         msg.SessionTypeSystem,
+		Origin:       "llm-bridge-" + strings.ReplaceAll(string(parent.Harness), "_", ""),
+		FolderName:   folderName,
 	}
 	if err := s.CreateSession(sub); err != nil {
 		return "", false, err

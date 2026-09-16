@@ -58,6 +58,7 @@ func (s *Server) handleSessionsSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter.ManagerSessionIDs = managerSessionIDs
+	filter.OwnedByPrincipalID, _ = principalRestrictingRequest(r)
 
 	s.serveSessionsSummary(w, r, limit, before, filter)
 }
@@ -116,6 +117,7 @@ func (s *Server) handleSessionsSummaryLookup(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	filter.ManagerSessionIDs = managerSessionIDs
+	filter.OwnedByPrincipalID, _ = principalRestrictingRequest(r)
 
 	s.serveSessionsSummary(w, r, limit, req.Before, filter)
 }
@@ -190,7 +192,7 @@ func (s *Server) serveSessionsSummary(w http.ResponseWriter, r *http.Request, li
 // forwards the id set and passes log-store's already-correct { [id]: Validator }
 // body straight through (layers are transparent).
 func (s *Server) handleSessionsValidators(w http.ResponseWriter, r *http.Request) {
-	s.serveSessionsValidators(w, r.URL.Query().Get("ids"))
+	s.serveSessionsValidators(w, r, r.URL.Query().Get("ids"))
 }
 
 // handleSessionsValidatorsLookup is the POST encoding of the same check:
@@ -208,7 +210,7 @@ func (s *Server) handleSessionsValidatorsLookup(w http.ResponseWriter, r *http.R
 		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
-	s.serveSessionsValidators(w, strings.Join(req.IDs, ","))
+	s.serveSessionsValidators(w, r, strings.Join(req.IDs, ","))
 }
 
 // serveSessionsValidators is the shared path behind both encodings. Absent or
@@ -220,7 +222,19 @@ func (s *Server) handleSessionsValidatorsLookup(w http.ResponseWriter, r *http.R
 // with no nginx in it, and Go's own header ceiling (~1 MB) is two orders of
 // magnitude above any real id set. The cliff this endpoint's POST encoding
 // exists for is at the public edge, not here.
-func (s *Server) serveSessionsValidators(w http.ResponseWriter, ids string) {
+//
+// A principal restricted by demo login is answered only about its own
+// sessions: every other id is dropped before log-store is asked, exactly as if
+// it named no session.
+func (s *Server) serveSessionsValidators(w http.ResponseWriter, r *http.Request, ids string) {
+	if principalID, restricted := principalRestrictingRequest(r); restricted && strings.TrimSpace(ids) != "" {
+		owned, err := s.store.SessionIDsOwnedByPrincipal(principalID, strings.Split(ids, ","))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		ids = strings.Join(owned, ",")
+	}
 	if strings.TrimSpace(ids) == "" {
 		writeJSON(w, map[string]Validator{})
 		return
@@ -267,7 +281,12 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 	// Unfiltered on purpose: the recent-bundle warms whatever the user is most
 	// likely to open next, and narrowing it to the sidebar's current chips would
 	// leave a session cold the moment they cleared a filter.
-	rows, err := s.store.ListSessionSummaries(n, "", store.SessionSummaryFilter{})
+	//
+	// Except by owner: a principal restricted by demo login is warmed only its
+	// own sessions, and the cache key carries the principal so one principal's
+	// bundle is never served to another.
+	ownedByPrincipalID, _ := principalRestrictingRequest(r)
+	rows, err := s.store.ListSessionSummaries(n, "", store.SessionSummaryFilter{OwnedByPrincipalID: ownedByPrincipalID})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -281,7 +300,7 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 	if len(rows) > 0 {
 		scopeRev = rows[0].Cursor
 	}
-	cacheKey := fmt.Sprintf("bundle|rev=%s|n=%d|turns=%d|count=%d", scopeRev, n, turns, len(rows))
+	cacheKey := fmt.Sprintf("bundle|rev=%s|n=%d|turns=%d|count=%d|owned_by_principal_id=%s", scopeRev, n, turns, len(rows), ownedByPrincipalID)
 	if body, ok := s.responseCache.get(cacheKey); ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(body)

@@ -63,6 +63,14 @@ type sessionListFrame struct {
 	seq  uint64
 	typ  string
 	data []byte
+	// ownerPrincipalID is the principal_id of the session the frame is about,
+	// read when the frame was published, so a subscriber restricted to one
+	// principal is written only that principal's frames. Empty for a session
+	// with no principal — and for a delete, whose row is already gone when
+	// the store announces it; no path deletes a principal's session today
+	// (only the renamer deletes, and its sessions have no principal), so a
+	// restricted subscriber misses no delete it could have been sent.
+	ownerPrincipalID string
 }
 
 // sessionHub fans out session-row mutation signals to all SSE subscribers.
@@ -135,7 +143,7 @@ func (h *sessionHub) OnSessionChanged(bridgeID string) {
 	if err != nil || sess == nil {
 		return
 	}
-	h.publish(sessionListEvent{Type: "upsert", Session: sess})
+	h.publishOwnedBy(sessionListEvent{Type: "upsert", Session: sess}, sess.PrincipalID)
 }
 
 // OnSignalsChanged announces that a session's open questions have moved:
@@ -157,7 +165,11 @@ func (h *sessionHub) OnSignalsChanged(bridgeID string) {
 	if h == nil {
 		return
 	}
-	h.publish(sessionListEvent{Type: "signal", SessionID: bridgeID})
+	ownerPrincipalID := ""
+	if sess, err := h.store.GetSession(bridgeID); err == nil {
+		ownerPrincipalID = sess.PrincipalID
+	}
+	h.publishOwnedBy(sessionListEvent{Type: "signal", SessionID: bridgeID}, ownerPrincipalID)
 }
 
 // OnSessionDeleted implements store.Notifier.
@@ -165,10 +177,10 @@ func (h *sessionHub) OnSessionDeleted(bridgeID string) {
 	if h == nil {
 		return
 	}
-	h.publish(sessionListEvent{Type: "delete", SessionID: bridgeID})
+	h.publishOwnedBy(sessionListEvent{Type: "delete", SessionID: bridgeID}, "")
 }
 
-func (h *sessionHub) publish(ev sessionListEvent) {
+func (h *sessionHub) publishOwnedBy(ev sessionListEvent, ownerPrincipalID string) {
 	data, err := json.Marshal(ev)
 	if err != nil {
 		log.Printf("[session-hub] marshal %s: %v", ev.Type, err)
@@ -179,7 +191,7 @@ func (h *sessionHub) publish(ev sessionListEvent) {
 	defer h.mu.Unlock()
 
 	h.seq++
-	frame := sessionListFrame{seq: h.seq, typ: ev.Type, data: data}
+	frame := sessionListFrame{seq: h.seq, typ: ev.Type, data: data, ownerPrincipalID: ownerPrincipalID}
 
 	h.replay = append(h.replay, frame)
 	if len(h.replay) > sessionListReplayCapacity {
@@ -309,7 +321,11 @@ func (s *Server) handleSessionListEvents(w http.ResponseWriter, r *http.Request)
 	// Everything the client missed, in the order it was published, before any
 	// live frame — the backlog was snapshotted at subscribe time, so no live
 	// frame can be older than the last one here.
+	restrictedToPrincipalID, restricted := principalRestrictingRequest(r)
 	for _, frame := range backlog {
+		if restricted && frame.ownerPrincipalID != restrictedToPrincipalID {
+			continue
+		}
 		if !s.writeSessionListFrame(w, frame) {
 			return
 		}
@@ -341,6 +357,9 @@ func (s *Server) handleSessionListEvents(w http.ResponseWriter, r *http.Request)
 			if !ok {
 				// Hub dropped us as a slow subscriber.
 				return
+			}
+			if restricted && frame.ownerPrincipalID != restrictedToPrincipalID {
+				continue
 			}
 			if !s.writeSessionListFrame(w, frame) {
 				return

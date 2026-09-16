@@ -479,6 +479,29 @@ Routes:
 
 ⚠️ **kanban-store trusts `X-Principal-Id`, so it must not be reachable by users except through this proxy.** A user who can reach kanban-store directly can name any principal.
 
+### The whole server is gated while demo login is on
+
+With `LLMBRIDGE_DEMO_LOGIN=enabled` every request is authorized before it reaches a handler (`internal/server/request_authorization.go`); with it unset nothing below applies. Every route is classified by its exact registration pattern in `routeAccessRules`. **A route with no rule is 403 `route_not_classified` naming the pattern**, to everyone except the service token, so a route added later stays closed until someone classifies it; `TestEveryRegisteredRouteIsClassified` fails the build for a `HandleFunc` in this package with no rule.
+
+| Variable | Description |
+|----------|-------------|
+| `LLMBRIDGE_SERVICE_TOKEN` | Required when demo login is enabled, at least 32 bytes; startup is refused otherwise. An internal service sends it as `X-LLM-Bridge-Service-Token` and is unrestricted on every route. A wrong token is 401, never a fall-back to the cookie. |
+
+Callers and classes:
+
+- **open** — `GET /health`, `POST /auth/demo-login`, `GET /auth/principal`, `POST /auth/logout`.
+- **harness callbacks** — keep exactly the checks their handlers already make: `POST /permission/cc-prehook/{bridge_id}`, `POST /permission/codex-prehook/{bridge_id}`, `POST /sidecar/event/{bridge_id}`, `POST /hooks/exec/{id}`, `POST /sessions/{id}/auto-rename`, `GET /api/runner/ws`, `POST /api/runner/enroll`, `GET /api/runner/install.sh`, `GET /api/runner/binary`, `/api/agent-store/`, `/api/skill-store/`, `/api/harness-proxy/{harness}/{rest...}`. ⚠️ The prehooks, the sidecar ingest, hook exec and the harness proxy authenticate nobody today, so anyone who can reach this listener can post into any session's stream through them; in deployment do not publish those paths beyond this host.
+- **principal** (a valid login cookie):
+  - `POST /sessions` creates the session as the caller; a body naming a different `principal_id` is 403 `principal_mismatch`. The grant gates still apply.
+  - Every route naming one session (`/sessions/{id}`, `/send`, `/events`, `/messages`, `/fork`, `/stop`, `/attach`, `/git`, `/signals`, …) and `POST /signals/{id}/resolve|answer` reach only sessions whose `principal_id` is the caller's; anything else — another principal's session, a session with no principal, a missing one — is the same 404.
+  - `GET /sessions`, `GET|POST /sessions/summary`, `GET /sessions/recent-bundle`, `GET|POST /sessions/validators`, `GET /signals` and the `GET /session-events` stream are narrowed to the caller's sessions.
+  - `GET /sessions/search`, `GET /sessions/aggregates` (answered by log-store across every session) and `GET /snapshots/blob/{sha}` (shared across sessions) are 403 for principals.
+  - Catalogs: `GET /harnesses`, `/harnesses/{name}/capabilities`, `/harnesses/{name}/agents`, `/images/`, `GET /session-taxonomy`, `GET /agents`, `GET /agents/{slug}` read as they are (agents are **not** narrowed by `can_run_as`); `GET /instances` is narrowed by `can_dispatch_on` with the same lenient rule as the create gate and returns no machine details.
+  - Everything else — instances, machines, credentials and hooks writes, `GET /models`, bridge-prefs, `admin/*`, conformance, folders, source-folders, `PUT /sessions/{id}/folder`, the services inventory, permission and bypass modes, agent-store's other routes, memory-store — is 403 `operator route: use the service token`.
+- **nobody** — 401 on everything but open routes and harness callbacks.
+
+Sessions a session spawns carry its principal: a fork and a promoted subagent take the parent's `principal_id` (and `bundle_id`).
+
 ### Secrets never reach a child process
 
 Every process this server spawns — harness wrappers in events, pty and ssh mode, the OTel sidecar, `-oneshot`, `-discover` and `-import-history`, registered hook commands, `git`, and the conformance runner — gets its environment from `internal/childprocessenv`, which removes every variable `config.SecretEnvironmentVariableNames` declares: `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY`, `LLMBRIDGE_SERVICE_TOKEN`, `LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN` and `LLMBRIDGE_KANBAN_STORE_SERVICE_TOKEN`. Those processes run agents, and an agent with a shell can read its own environment; with the signing key it could mint a login cookie for any principal. A test walks the module and fails on any `exec.Command` whose `Env` is not set from that package.

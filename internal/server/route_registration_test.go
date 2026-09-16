@@ -91,6 +91,7 @@ func TestRoutesRegisterWithEveryStoreMountedAndDemoLoginEnabled(t *testing.T) {
 	srv := newServerWithAllStoresConfigured(t, func(cfg *config.Config) {
 		cfg.DemoLoginSetting = config.DemoLoginEnabledValue
 		cfg.DemoLoginSigningKey = "route-registration-test-signing-key-32b"
+		cfg.ServiceToken = "route-registration-test-service-token-32b"
 		cfg.KanbanStoreURL = "http://kanban-store.invalid"
 		cfg.PrincipalStoreURL = "http://principal-store.invalid"
 	})

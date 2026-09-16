@@ -106,6 +106,13 @@ type SessionSummaryFilter struct {
 	// of rows in ONE request rather than one request per row, which is also what
 	// lets it know WHICH rows have children without a count column existing.
 	ManagerSessionIDs []string
+
+	// OwnedByPrincipalID narrows to the sessions started as one principal.
+	// It is not a chip axis either: it is set by the server from the caller's
+	// verified identity when demo login gates the server, never from the
+	// query, and a session with no principal matches no principal. Empty means
+	// "don't narrow".
+	OwnedByPrincipalID string
 }
 
 // summaryFilterAxis pairs one filterable column expression with the values a row
@@ -136,7 +143,7 @@ func (f SessionSummaryFilter) axes() []summaryFilterAxis {
 // IsEmpty reports whether the filter constrains nothing, so a caller can tell an
 // unfiltered listing from a filtered one without reaching into the axes.
 func (f SessionSummaryFilter) IsEmpty() bool {
-	if len(f.SessionIDs) > 0 || len(f.ManagerSessionIDs) > 0 {
+	if len(f.SessionIDs) > 0 || len(f.ManagerSessionIDs) > 0 || f.OwnedByPrincipalID != "" {
 		return false
 	}
 	for _, axis := range f.axes() {
@@ -177,6 +184,11 @@ func (f SessionSummaryFilter) CacheKey() string {
 	managers := append([]string(nil), f.ManagerSessionIDs...)
 	sort.Strings(managers)
 	b.WriteString(strings.Join(managers, ","))
+	b.WriteByte(';')
+	// One principal's page served to another principal is a leak, not just a
+	// wrong answer.
+	b.WriteString("owned_by_principal_id=")
+	b.WriteString(f.OwnedByPrincipalID)
 	b.WriteByte(';')
 	return b.String()
 }
@@ -290,6 +302,10 @@ func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSum
 		for _, v := range filter.ManagerSessionIDs {
 			args = append(args, v)
 		}
+	}
+	if filter.OwnedByPrincipalID != "" {
+		conds = append(conds, `COALESCE(principal_id, '') = ?`)
+		args = append(args, filter.OwnedByPrincipalID)
 	}
 	if len(conds) > 0 {
 		q += ` WHERE ` + strings.Join(conds, ` AND `)

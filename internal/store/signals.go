@@ -25,6 +25,10 @@ type SignalFilter struct {
 	// badge, so it must never match the unlinked rows: an empty filter means
 	// "don't narrow", never "the ones with no link".
 	LinkedTodoID string
+	// OwnedByPrincipalID narrows to the signals raised by sessions started as
+	// one principal. Set by the server from the caller's verified identity
+	// when demo login gates the server. Empty means "don't narrow".
+	OwnedByPrincipalID string
 	// Limit caps the returned rows. Zero means no cap.
 	Limit int
 }
@@ -212,6 +216,10 @@ func (s *Store) ListSignals(filter SignalFilter) ([]Signal, error) {
 	if filter.LinkedTodoID != "" {
 		query += ` AND linked_todo_id=?`
 		args = append(args, filter.LinkedTodoID)
+	}
+	if filter.OwnedByPrincipalID != "" {
+		query += ` AND session_id IN (SELECT bridge_id FROM sessions WHERE principal_id=?)`
+		args = append(args, filter.OwnedByPrincipalID)
 	}
 	// created_at ties are common (one AskUserQuestion mints a row per
 	// question in the same millisecond), so id breaks the tie — without it

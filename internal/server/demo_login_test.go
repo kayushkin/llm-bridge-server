@@ -17,6 +17,8 @@ import (
 
 const demoLoginTestSigningKey = "0123456789abcdef0123456789abcdef-test-key"
 
+const demoLoginTestServiceToken = "service-token-for-tests-0123456789abcdef"
+
 // fakePrincipalDirectory answers GET /principals/{id} from a fixed set of
 // records and principal-store's own {"error":…} 404 for anything else.
 func fakePrincipalDirectory(t *testing.T, recordsByID map[string]string) *httptest.Server {
@@ -111,6 +113,7 @@ func demoLoginTestServer(t *testing.T, demoLoginSetting, principalStoreURL, kanb
 		KanbanStoreURL:      kanbanStoreURL,
 		DemoLoginSetting:    demoLoginSetting,
 		DemoLoginSigningKey: demoLoginTestSigningKey,
+		ServiceToken:        demoLoginTestServiceToken,
 	}
 	return New(bridgeStore, nil, nil, nil, nil, testModelStore(t), nil, cfg)
 }
@@ -381,18 +384,20 @@ func TestDemoLoginDisabledRoutesNothing(t *testing.T) {
 
 func TestDemoLoginConfigurationIsRefusedWhenIncomplete(t *testing.T) {
 	complete := config.Config{
-		DemoLoginSetting: "enabled", DemoLoginSigningKey: demoLoginTestSigningKey,
+		DemoLoginSetting: "enabled", DemoLoginSigningKey: demoLoginTestSigningKey, ServiceToken: demoLoginTestServiceToken,
 		KanbanStoreURL: "http://kanban.invalid", PrincipalStoreURL: "http://principal.invalid",
 	}
 	if enabled, err := complete.DemoLoginEnabled(); !enabled || err != nil {
 		t.Fatalf("complete configuration: enabled=%v err=%v, want enabled", enabled, err)
 	}
 	for name, mutate := range map[string]func(*config.Config){
-		"unrecognised value": func(c *config.Config) { c.DemoLoginSetting = "true" },
-		"no signing key":     func(c *config.Config) { c.DemoLoginSigningKey = "" },
-		"short signing key":  func(c *config.Config) { c.DemoLoginSigningKey = "short" },
-		"no kanban-store":    func(c *config.Config) { c.KanbanStoreURL = "" },
-		"no principal-store": func(c *config.Config) { c.PrincipalStoreURL = "" },
+		"unrecognised value":  func(c *config.Config) { c.DemoLoginSetting = "true" },
+		"no signing key":      func(c *config.Config) { c.DemoLoginSigningKey = "" },
+		"short signing key":   func(c *config.Config) { c.DemoLoginSigningKey = "short" },
+		"no service token":    func(c *config.Config) { c.ServiceToken = "" },
+		"short service token": func(c *config.Config) { c.ServiceToken = "short" },
+		"no kanban-store":     func(c *config.Config) { c.KanbanStoreURL = "" },
+		"no principal-store":  func(c *config.Config) { c.PrincipalStoreURL = "" },
 	} {
 		candidate := complete
 		mutate(&candidate)
