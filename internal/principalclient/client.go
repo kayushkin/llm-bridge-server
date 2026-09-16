@@ -34,26 +34,50 @@ func New(base string) *Client {
 	return &Client{url: strings.TrimSuffix(base, "/"), http: &http.Client{Timeout: 5 * time.Second}}
 }
 
+// Principal is the part of principal-store's principal record this server
+// reads. Kind is "human" or "group"; DisabledAt is 0 for an active principal
+// and the epoch second it was disabled otherwise.
+type Principal struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	DisabledAt int64  `json:"disabled_at"`
+}
+
 // CheckExists returns nil when principal-store has the principal, an error
 // wrapping ErrNotFound when it says it does not, and any other error when it
 // could not be asked or answered something else.
 func (c *Client) CheckExists(ctx context.Context, principalID string) error {
+	_, err := c.Get(ctx, principalID)
+	return err
+}
+
+// Get returns principal-store's record for principalID, with the same error
+// contract as CheckExists. A 2xx whose body is not a principal record with the
+// requested id and a kind is an error, not an empty principal.
+func (c *Client) Get(ctx context.Context, principalID string) (Principal, error) {
 	requestURL := c.url + "/principals/" + url.PathEscape(principalID)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		return fmt.Errorf("build GET %s: %w", requestURL, err)
+		return Principal{}, fmt.Errorf("build GET %s: %w", requestURL, err)
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return fmt.Errorf("principal-store unreachable: GET %s: %w", requestURL, err)
+		return Principal{}, fmt.Errorf("principal-store unreachable: GET %s: %w", requestURL, err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return fmt.Errorf("read principal-store response: %w", err)
+		return Principal{}, fmt.Errorf("read principal-store response: %w", err)
 	}
 	if response.StatusCode/100 == 2 {
-		return nil
+		var principal Principal
+		if err := json.Unmarshal(body, &principal); err != nil {
+			return Principal{}, fmt.Errorf("principal-store answered GET %s with %s and a body that is not a principal: %w", requestURL, response.Status, err)
+		}
+		if principal.ID != principalID || principal.Kind == "" {
+			return Principal{}, fmt.Errorf("principal-store answered GET %s with a record for id %q kind %q, not the principal asked for", requestURL, principal.ID, principal.Kind)
+		}
+		return principal, nil
 	}
 	var parsed struct {
 		Error string `json:"error"`
@@ -61,10 +85,10 @@ func (c *Client) CheckExists(ctx context.Context, principalID string) error {
 	_ = json.Unmarshal(body, &parsed)
 	switch {
 	case response.StatusCode == http.StatusNotFound && parsed.Error != "":
-		return fmt.Errorf("%w: %s", ErrNotFound, parsed.Error)
+		return Principal{}, fmt.Errorf("%w: %s", ErrNotFound, parsed.Error)
 	case response.StatusCode == http.StatusNotFound:
-		return fmt.Errorf("principal-store answered GET %s with 404 and no JSON error, which is Go's answer for a route that does not exist, not for a missing principal: check LLMBRIDGE_PRINCIPAL_STORE_URL", requestURL)
+		return Principal{}, fmt.Errorf("principal-store answered GET %s with 404 and no JSON error, which is Go's answer for a route that does not exist, not for a missing principal: check LLMBRIDGE_PRINCIPAL_STORE_URL", requestURL)
 	default:
-		return fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
+		return Principal{}, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
 	}
 }

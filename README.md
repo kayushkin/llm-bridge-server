@@ -457,6 +457,28 @@ All configuration is via environment variables with sensible defaults.
 | `LLMBRIDGE_RUNNER_INSTALL_SCRIPT` | _(unset)_ | Override path for the runner install script served by `/api/runner/install.sh` (falls back to `<assets-dir>/install.sh`, then `~/repos/llm-bridge-runner/scripts/install.sh`) |
 | `LLMBRIDGE_HARNESS_PROXY_<NAME>` | _(per-harness default: `inber`=`http://localhost:8200`, `hermes`=`http://localhost:8500`)_ | Override URL for the `/api/harness-proxy/{harness}/...` reverse target; set to empty string to disable a harness's proxy |
 
+## Demo login and the kanban proxy (demo only)
+
+**This is a stand-in for real login, not a login system.** It exists so a separately deployed product with its own frontend can sign a user in and have kanban-store see who they are; the company's real login replaces it. Anyone who can reach `POST /auth/demo-login` can sign in as any active human principal by naming its id — there is no password.
+
+It is **off unless configured**. With `LLMBRIDGE_DEMO_LOGIN` unset none of these routes exist (404), and startup logs which state it is in.
+
+| Variable | Description |
+|----------|-------------|
+| `LLMBRIDGE_DEMO_LOGIN` | Must be exactly `enabled` to turn it on. Any other non-empty value refuses to start. |
+| `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY` | HMAC-SHA256 key for the login cookie. Required when enabled, at least 32 bytes; startup is refused otherwise. |
+| `LLMBRIDGE_KANBAN_STORE_URL` | The kanban-store `/kanban/` forwards to. Must be non-empty when enabled. |
+| `LLMBRIDGE_PRINCIPAL_STORE_URL` | The principal-store a login is checked against. Must be non-empty when enabled. |
+
+Routes:
+
+- `POST /auth/demo-login` `{"principal_id":"principal_000001"}` — checks the principal with principal-store: unknown → 400 `unknown_principal`, a `group` → 400 `principal_not_human`, disabled → 400 `principal_disabled`, principal-store unreachable → 502 `principal_store_unavailable`. On success sets the `llm_bridge_principal_session` cookie (HttpOnly, SameSite=Lax, Secure when the request arrived over TLS or with `X-Forwarded-Proto: https`) holding the principal id and a 12h expiry signed with HMAC-SHA256, and answers 200 `{principal_id, expires_at}`.
+- `GET /auth/principal` — 200 `{principal_id, expires_at}` for a valid cookie; 401 for a missing, malformed, tampered or expired one.
+- `POST /auth/logout` — clears the cookie, 204. The cookie is stateless, so a copy taken before logout stays valid until it expires.
+- `/kanban/<rest>` (any method) — requires a valid cookie (401 otherwise, and nothing is forwarded), then forwards to kanban-store `/api/<rest>` with the query string, method, body and headers unchanged, except: `X-Principal-Id` and `X-Kanban-Store-Service-Token` from the client are **deleted**, `X-Principal-Id` is set from the cookie, and the login cookie is removed. kanban-store's status, headers and body come back unchanged; kanban-store unreachable → 502 `kanban_store_unavailable`.
+
+⚠️ **kanban-store trusts `X-Principal-Id`, so it must not be reachable by users except through this proxy.** A user who can reach kanban-store directly can name any principal.
+
 ## Testing
 
 Three tiers, in increasing strictness about the host environment:

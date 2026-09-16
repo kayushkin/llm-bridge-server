@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -119,6 +120,56 @@ type Config struct {
 	// that is what puts the call on the Claude Code subscription login instead
 	// of on an API key. Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE.
 	SignalClassifierInstance string
+	// DemoLoginSetting is the raw LLMBRIDGE_DEMO_LOGIN value. Only the exact
+	// value "enabled" turns demo login and the identity-carrying kanban proxy
+	// on; empty leaves them off; anything else is a startup error. Read it
+	// through DemoLoginEnabled, which applies those rules — never directly.
+	DemoLoginSetting string
+	// DemoLoginSigningKey is the HMAC-SHA256 key that signs the demo login
+	// cookie, from LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY. Required, and at least
+	// DemoLoginSigningKeyMinimumBytes long, when demo login is enabled.
+	DemoLoginSigningKey string
+}
+
+// DemoLoginEnabledValue is the only LLMBRIDGE_DEMO_LOGIN value that turns demo
+// login on.
+const DemoLoginEnabledValue = "enabled"
+
+// DemoLoginSigningKeyMinimumBytes is the shortest signing key accepted: the
+// size of an HMAC-SHA256 output, so the key is not the weaker half of the MAC.
+const DemoLoginSigningKeyMinimumBytes = 32
+
+// DemoLoginEnabled reports whether demo login is switched on, and returns an
+// error naming what is wrong when the demo login settings are inconsistent: an
+// unrecognised LLMBRIDGE_DEMO_LOGIN value, or demo login enabled without a
+// long-enough signing key or without a kanban-store to proxy to. The caller
+// must refuse to start on an error; there is no partially-enabled state.
+func (c *Config) DemoLoginEnabled() (bool, error) {
+	switch c.DemoLoginSetting {
+	case "":
+		return false, nil
+	case DemoLoginEnabledValue:
+	default:
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%q is not accepted: the only accepted value is %q (leave it unset to keep demo login off)",
+			c.DemoLoginSetting, DemoLoginEnabledValue)
+	}
+	if c.DemoLoginSigningKey == "" {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY, the key that signs the login cookie, and it is unset",
+			DemoLoginEnabledValue)
+	}
+	if len(c.DemoLoginSigningKey) < DemoLoginSigningKeyMinimumBytes {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY is %d bytes; it must be at least %d",
+			len(c.DemoLoginSigningKey), DemoLoginSigningKeyMinimumBytes)
+	}
+	if c.KanbanStoreURL == "" {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_KANBAN_STORE_URL, the kanban-store the /kanban/ proxy forwards to, and it is empty",
+			DemoLoginEnabledValue)
+	}
+	if c.PrincipalStoreURL == "" {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_PRINCIPAL_STORE_URL, the principal-store a login is checked with, and it is empty",
+			DemoLoginEnabledValue)
+	}
+	return true, nil
 }
 
 // Load reads the process environment, falling back to the addresses in
@@ -165,6 +216,8 @@ func Load() *Config {
 		SignalClassifierInstance: envOr("LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE", "inst-cc-local"),
 		SignalClassifierTimeout:  envDuration("LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", 20*time.Second),
 		SignalClassifierMaxChars: envInt("LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", 6000),
+		DemoLoginSetting:         os.Getenv("LLMBRIDGE_DEMO_LOGIN"),
+		DemoLoginSigningKey:      os.Getenv("LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY"),
 	}
 	productiondefaults.PanicIfUsedUnderTest(cfg.GuardedAddresses())
 	return cfg

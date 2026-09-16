@@ -38,6 +38,19 @@ func main() {
 
 	cfg := config.Load()
 
+	// Demo login is a stand-in for real login on a separately deployed
+	// product; it is off unless configured, and a half-configured demo login
+	// refuses to start rather than running without its protection.
+	demoLoginEnabled, err := cfg.DemoLoginEnabled()
+	if err != nil {
+		log.Fatalf("demo login: %v", err)
+	}
+	if demoLoginEnabled {
+		log.Printf("demo login ENABLED: POST /auth/demo-login signs in as any human principal-store principal with no password; /kanban/ proxies to kanban-store %s carrying X-Principal-Id — demo only, never expose kanban-store directly", cfg.KanbanStoreURL)
+	} else {
+		log.Printf("demo login disabled (LLMBRIDGE_DEMO_LOGIN unset): /auth/demo-login and /kanban/ are not routed")
+	}
+
 	// Say where the two stores that outlive this process are, before writing
 	// to either. The local DB is per-instance and disposable; log-store is
 	// remote, shared and permanent, and its URL has a live-host default, so
