@@ -1978,6 +1978,60 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 	return bridgeID, true, nil
 }
 
+// ReclassifyDiscoveredSession gives an existing discovered session the purpose
+// its harness adapter now reports for it.
+//
+// UpsertDiscoveredSession classifies a session only when it inserts the row,
+// so a purpose the adapter learned to recognise after the row was imported —
+// oneshot transcripts, 51,002 of 51,258 discovered rows when it was added —
+// never reached the rows that already existed. This carries it to them.
+//
+// It writes only over the generic label: the row changes only while its
+// purpose is exactly "discovered", which is what the insert path writes when
+// nothing recognised the session. A purpose anything else set is never
+// overwritten, and a second call is a no-op. type follows the registry entry
+// for the new purpose, as it does on insert.
+//
+// folder_name moves to folderName only while it still holds what the insert
+// path filed an unrecognised session under — the registry folder for
+// "discovered", or nothing. A session someone has since moved (on 2026-09-16,
+// 33,145 discovered rows sat in "Archive") stays where they put it.
+//
+// updated_at is left alone on purpose: reclassification is not activity, and
+// bumping it would reorder the sidebar by the time of a discovery pass.
+//
+// Returns whether the row changed. An unregistered purpose, or "discovered"
+// itself, is a caller bug and returns an error rather than writing a label
+// nothing can group.
+func (s *Store) ReclassifyDiscoveredSession(bridgeID, purpose, folderName string) (bool, error) {
+	if purpose == msg.PurposeDiscovered {
+		return false, fmt.Errorf("ReclassifyDiscoveredSession %s: purpose %q is the label being replaced, not a reclassification", bridgeID, purpose)
+	}
+	spec, ok := msg.LookupPurpose(purpose)
+	if !ok {
+		return false, fmt.Errorf("ReclassifyDiscoveredSession %s: purpose %q is not in the registry", bridgeID, purpose)
+	}
+	res, err := s.db.Exec(
+		`UPDATE sessions
+		    SET purpose = ?,
+		        type = ?,
+		        folder_name = CASE WHEN COALESCE(folder_name, '') IN ('', ?) THEN ? ELSE folder_name END
+		  WHERE bridge_id = ? AND purpose = ?`,
+		purpose, string(spec.Type), msg.FolderForPurpose(msg.PurposeDiscovered), folderName, bridgeID, msg.PurposeDiscovered,
+	)
+	if err != nil {
+		return false, fmt.Errorf("ReclassifyDiscoveredSession %s: %w", bridgeID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("ReclassifyDiscoveredSession %s: %w", bridgeID, err)
+	}
+	if n > 0 {
+		s.notifyChanged(bridgeID)
+	}
+	return n > 0, nil
+}
+
 // ListSourceFolders returns every runtime override row, keyed by source.
 // The caller is responsible for merging these on top of env-var defaults.
 func (s *Store) ListSourceFolders() (map[string]string, error) {
