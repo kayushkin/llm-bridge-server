@@ -82,7 +82,7 @@ func TestHandleSessionsSummary_ETagAnd304(t *testing.T) {
 	req := httptest.NewRequest("GET", "/sessions/summary?limit=100", nil)
 	req.Header.Set("If-None-Match", etag)
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	asInternalService(srv).ServeHTTP(w, req)
 	if w.Code != 304 {
 		t.Errorf("If-None-Match match should 304, got %d", w.Code)
 	}

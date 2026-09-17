@@ -37,10 +37,16 @@ func New(base string) *Client {
 // Principal is the part of principal-store's principal record this server
 // reads. Kind is "human" or "group"; DisabledAt is 0 for an active principal
 // and the epoch second it was disabled otherwise.
+//
+// IsAdministrator is principal-store's own answer to "may this person do
+// anything?", and it is read, never derived: this server does not keep a list
+// of administrators and must not infer one from a name, an email or a group.
+// principal-store sets it on humans only.
 type Principal struct {
-	ID         string `json:"id"`
-	Kind       string `json:"kind"`
-	DisabledAt int64  `json:"disabled_at"`
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`
+	DisabledAt      int64  `json:"disabled_at"`
+	IsAdministrator bool   `json:"is_administrator"`
 }
 
 // CheckExists returns nil when principal-store has the principal, an error

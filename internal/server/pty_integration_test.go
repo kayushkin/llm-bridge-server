@@ -53,7 +53,7 @@ func TestPTYIntegration_ClaudeCode_RoundTrip(t *testing.T) {
 	}
 
 	srv, st, instID := testServerWithInstance(t, msg.HarnessClaudeCode)
-	ts := httptest.NewServer(srv)
+	ts := httptest.NewServer(asInternalService(srv))
 	t.Cleanup(ts.Close)
 
 	bridgeID, attachToken := createPTYSession(t, ts.URL, instID)

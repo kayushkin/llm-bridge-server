@@ -30,7 +30,7 @@ func TestSessionHistoryProxyServesSessionsWithNoWriteQueue(t *testing.T) {
 	t.Cleanup(logStore.Close)
 
 	srv, _, _ := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, logStore.URL)
-	ts := httptest.NewServer(srv)
+	ts := httptest.NewServer(asInternalService(srv))
 	t.Cleanup(ts.Close)
 
 	client := &http.Client{Timeout: 5 * time.Second}

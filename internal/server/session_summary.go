@@ -223,7 +223,7 @@ func (s *Server) handleSessionsValidatorsLookup(w http.ResponseWriter, r *http.R
 // magnitude above any real id set. The cliff this endpoint's POST encoding
 // exists for is at the public edge, not here.
 //
-// A principal restricted by demo login is answered only about its own
+// A principal restricted to itself is answered only about its own
 // sessions: every other id is dropped before log-store is asked, exactly as if
 // it named no session.
 func (s *Server) serveSessionsValidators(w http.ResponseWriter, r *http.Request, ids string) {
@@ -282,7 +282,7 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 	// likely to open next, and narrowing it to the sidebar's current chips would
 	// leave a session cold the moment they cleared a filter.
 	//
-	// Except by owner: a principal restricted by demo login is warmed only its
+	// Except by owner: a principal restricted to itself is warmed only its
 	// own sessions, and the cache key carries the principal so one principal's
 	// bundle is never served to another.
 	ownedByPrincipalID, _ := principalRestrictingRequest(r)

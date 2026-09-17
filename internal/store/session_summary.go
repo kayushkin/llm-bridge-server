@@ -111,7 +111,7 @@ type SessionSummaryFilter struct {
 
 	// OwnedByPrincipalID narrows to the sessions started as one principal.
 	// It is not a chip axis either: it is set by the server from the caller's
-	// verified identity when demo login gates the server, never from the
+	// identity request authorization verified, never from the
 	// query, and a session with no principal matches no principal. Empty means
 	// "don't narrow".
 	OwnedByPrincipalID string

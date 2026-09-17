@@ -88,10 +88,14 @@ type Server struct {
 	// the list and then a schema does not walk /proc twice. See services.go.
 	serviceInventoryMu sync.Mutex
 	serviceInventory   *serviceinventory.Inventory
-	// principalSessionCookieCodec signs and verifies the demo login cookie.
-	// Nil unless LLMBRIDGE_DEMO_LOGIN=enabled, in which case the demo login
-	// routes and the /kanban/ proxy are registered. See demo_login.go.
+	// principalSessionCookieCodec signs and verifies the demo login cookie and
+	// the session agent tokens. Always present: New refuses to build a server
+	// without a signing key. See demo_login.go.
 	principalSessionCookieCodec *principalSessionCookieCodec
+	// principalLookupCache holds principal-store's answer about a caller —
+	// active or disabled, administrator or not — for a few seconds. See
+	// request_principal_lookup.go.
+	principalLookupCache *principalLookupCache
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
@@ -157,19 +161,19 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	} else {
 		srv.mailstackClient = client
 	}
-	demoLoginEnabled, err := cfg.DemoLoginEnabled()
-	if err != nil {
-		// main refuses to start on this before calling New; reaching it here
-		// means a caller skipped that check, and running without it would
-		// serve a half-configured login.
-		panic(fmt.Sprintf("demo login: %v", err))
+	// Every request this server answers is authorized first, and it cannot
+	// identify a caller without these. main refuses to start on the same
+	// check plus the store addresses; reaching this means a caller skipped it,
+	// and a server that gated nothing while looking gated is worse than one
+	// that does not start.
+	if err := cfg.ValidateRequestAuthorizationCredentials(); err != nil {
+		panic(fmt.Sprintf("request authorization: %v", err))
 	}
-	if demoLoginEnabled {
-		srv.principalSessionCookieCodec = &principalSessionCookieCodec{
-			signingKey: []byte(cfg.DemoLoginSigningKey),
-			now:        time.Now,
-		}
+	srv.principalSessionCookieCodec = &principalSessionCookieCodec{
+		signingKey: []byte(cfg.DemoLoginSigningKey),
+		now:        time.Now,
 	}
+	srv.principalLookupCache = newPrincipalLookupCache(srv.principalClient)
 	srv.routes()
 	srv.syncHarnessTypes()
 	srv.syncPromptHarnessDeliveries()
@@ -198,9 +202,7 @@ func (s *Server) syncHarnessTypes() {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
-	if s.principalSessionCookieCodec != nil {
-		s.registerDemoLoginRoutes()
-	}
+	s.registerLoginAndStoreProxyRoutes()
 	s.mux.HandleFunc("GET /harnesses", s.handleHarnesses)
 	s.mux.HandleFunc("GET /harnesses/{name}/capabilities", s.handleHarnessCapabilities)
 	s.mux.HandleFunc("GET /harnesses/{name}/agents", s.handleHarnessAgents)
@@ -502,14 +504,10 @@ func (s *Server) localInstancesByHarness(types []msg.Harness) map[msg.Harness]st
 	return out
 }
 
-// ServeHTTP dispatches to the mux. With demo login enabled every request is
-// authorized first (request_authorization.go); with it off, nothing is.
+// ServeHTTP authorizes every request before the mux dispatches it
+// (request_authorization.go). There is no path around it.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.principalSessionCookieCodec != nil {
-		s.authorizeAndServe(w, r)
-		return
-	}
-	s.mux.ServeHTTP(w, r)
+	s.authorizeAndServe(w, r)
 }
 
 // handleSearchSessions proxies /sessions/search to log-store's /api/v1/sessions/search.

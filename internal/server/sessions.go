@@ -236,8 +236,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		req.DisplayName, req.SessionID,
 	)
 
-	// With demo login gating the server, a principal creates sessions as
-	// itself and as nobody else. Naming another principal is refused rather
+	// A principal creates sessions as itself and as nobody else.
+	// An administrator and the internal service are not restricted here. Naming another principal is refused rather
 	// than overwritten, so a client bug that sends the wrong id is visible.
 	if callerPrincipalID, restricted := principalRestrictingRequest(r); restricted {
 		if req.PrincipalID != "" && req.PrincipalID != callerPrincipalID {

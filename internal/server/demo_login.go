@@ -1,12 +1,14 @@
 package server
 
-// Demo login and the identity-carrying kanban proxy.
+// Demo login and the identity-carrying store proxies.
 //
-// This is a stand-in for real login, for a product deployed separately from
+// ⚠️ This is a stand-in for real login, for a product deployed separately from
 // this host with its own frontend. A caller names a principal-store principal
 // and is signed in as it — no password, no second factor — and every request it
 // then sends through /kanban/ reaches kanban-store carrying that principal's id
-// in X-Principal-Id, which kanban-store trusts and filters boards by.
+// in X-Principal-Id, which kanban-store trusts and filters boards by. The
+// company's real login replaces it; anyone who can reach POST /auth/demo-login
+// can sign in as anybody.
 //
 // Because kanban-store trusts the header, two things make this safe only as a
 // demo, and only behind this proxy:
@@ -17,9 +19,6 @@ package server
 //     unrestricted service identity.
 //   - kanban-store must not be reachable by users except through this proxy;
 //     a user who can reach it directly can send any X-Principal-Id they like.
-//
-// All of it is registered only when LLMBRIDGE_DEMO_LOGIN=enabled (see
-// config.DemoLoginEnabled); otherwise none of these routes exist.
 
 import (
 	"crypto/hmac"
@@ -114,10 +113,9 @@ func isWellFormedPrincipalID(principalID string) bool {
 	return true
 }
 
-// registerDemoLoginRoutes mounts the demo login routes and the kanban-store
-// and grant-store proxies.
-// Called from routes() only when demo login is enabled.
-func (s *Server) registerDemoLoginRoutes() {
+// registerLoginAndStoreProxyRoutes mounts the demo login routes and the
+// kanban-store and grant-store proxies. They are always mounted.
+func (s *Server) registerLoginAndStoreProxyRoutes() {
 	s.mux.HandleFunc("POST /auth/demo-login", s.handleDemoLogin)
 	s.mux.HandleFunc("GET /auth/principal", s.handleGetLoggedInPrincipal)
 	s.mux.HandleFunc("POST /auth/logout", s.handleDemoLogout)

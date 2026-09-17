@@ -4,9 +4,11 @@ package server
 //
 // kanban-store and grant-store trust X-Principal-Id and filter what a caller
 // may see and do by it. These proxies are the only place that header is set:
-// from the principal request authorization established (a login cookie or a
-// session agent token), never from anything the client sent. Registered only
-// when demo login is enabled, behind authorizeAndServe.
+// from the principal request authorization established (a login cookie, a
+// session agent token, or an X-Principal-Id the internal service asserted with
+// its service token), never from anything the client sent unchecked. An
+// administrator is forwarded as itself: these stores make their own
+// administrator check, and this proxy does not answer it for them.
 //
 // Two things make this safe only behind the proxy: every identity header and
 // credential the client sent is deleted before forwarding, and the stores must
@@ -111,8 +113,8 @@ func (s *Server) handleGrantStoreProxyAsPrincipal(w http.ResponseWriter, r *http
 // authorization put on the request, with method, query, body and every other
 // header unchanged, and passes the store's answer back unchanged.
 func (s *Server) serveStoreProxyAsPrincipal(w http.ResponseWriter, r *http.Request, proxy principalIdentityStoreProxy) {
-	principalID, restricted := principalRestrictingRequest(r)
-	if !restricted {
+	principalID, identified := principalIdentityOfRequest(r)
+	if !identified {
 		// Only the service token passes authorization without a principal.
 		writeJSONError(w, http.StatusForbidden, "store_proxy_requires_a_principal", fmt.Sprintf(
 			"%s/ forwards to %s as a principal, and the service token is not one; an internal service calls %s directly with that store's own service token",

@@ -38,21 +38,18 @@ func main() {
 
 	cfg := config.Load()
 
-	// Demo login is a stand-in for real login on a separately deployed
-	// product; it is off unless configured, and a half-configured demo login
-	// refuses to start rather than running without its protection.
-	demoLoginEnabled, err := cfg.DemoLoginEnabled()
-	if err != nil {
-		log.Fatalf("demo login: %v", err)
+	// Every request to this server is authorized before it reaches a handler,
+	// so the credentials and store addresses that authorization needs are
+	// mandatory. There is no half-configured state and no way to switch the
+	// gate off: refuse to start instead.
+	if err := cfg.ValidateRequestAuthorizationSettings(); err != nil {
+		log.Fatalf("request authorization: %v", err)
 	}
-	if demoLoginEnabled {
-		if err := forbidSameUserProcessesFromReadingThisProcess(); err != nil {
-			log.Fatalf("demo login: refusing to start, because an agent running as this user could read the signing key out of this process: %v", err)
-		}
-		log.Printf("demo login ENABLED: POST /auth/demo-login signs in as any human principal-store principal with no password; every route is gated (service token or login); /kanban/ proxies to kanban-store %s and /grant-store/ to grant-store %s carrying X-Principal-Id — demo only, never expose either store directly", cfg.KanbanStoreURL, cfg.GrantStoreURL)
-	} else {
-		log.Printf("demo login disabled (LLMBRIDGE_DEMO_LOGIN unset): /auth/demo-login, /kanban/ and /grant-store/ are not routed and no route is gated")
+	if err := forbidSameUserProcessesFromReadingThisProcess(); err != nil {
+		log.Fatalf("refusing to start, because an agent running as this user could read the login signing key out of this process: %v", err)
 	}
+	log.Printf("every route is gated (service token or login); POST /auth/demo-login signs in as any active human principal-store principal with no password — a stand-in for real login, never expose it to the internet; /kanban/ proxies to kanban-store %s and /grant-store/ to grant-store %s carrying X-Principal-Id, so neither store may be reachable except through here; principals read from principal-store %s",
+		cfg.KanbanStoreURL, cfg.GrantStoreURL, cfg.PrincipalStoreURL)
 
 	// Say where the two stores that outlive this process are, before writing
 	// to either. The local DB is per-instance and disposable; log-store is

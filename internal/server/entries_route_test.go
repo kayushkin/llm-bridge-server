@@ -17,7 +17,7 @@ func TestEntryRouteProxiesToLogStore(t *testing.T) {
 	srv, _ := serverWithLogStore(t, logStore.URL)
 
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sessions/br_1/entries/42", nil))
+	asInternalService(srv).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sessions/br_1/entries/42", nil))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
@@ -38,7 +38,7 @@ func TestEntryRoutePassesALogStoreRefusalThrough(t *testing.T) {
 	srv, _ := serverWithLogStore(t, notFound.URL)
 
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sessions/br_1/entries/7", nil))
+	asInternalService(srv).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sessions/br_1/entries/7", nil))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status %d, want 404 passed through", w.Code)
 	}
@@ -58,7 +58,7 @@ func TestRecentBundleAsksForPreviews(t *testing.T) {
 		t.Fatalf("seed session: %v", err)
 	}
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sessions/recent-bundle?n=5&turns=30", nil))
+	asInternalService(srv).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sessions/recent-bundle?n=5&turns=30", nil))
 	var sawBundle bool
 	for _, uri := range logStore.requests {
 		if strings.HasPrefix(uri, "/api/v1/sessions/bundle?") {

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,18 +50,50 @@ func fakeGrantStoreForPrincipals(t *testing.T, grantsByPrincipal map[string]map[
 }
 
 const (
-	firstTestPrincipalID  = "principal_000001"
-	secondTestPrincipalID = "principal_000002"
+	firstTestPrincipalID = "principal_000001"
+	// secondTestPrincipalID is principal-store's administrator in the gated
+	// test server, so a check that an administrator is unrestricted and a
+	// check that a principal is restricted use different ids.
+	secondTestPrincipalID        = "principal_000002"
+	administratorTestPrincipalID = "principal_000003"
+	disabledTestPrincipalID      = "principal_000009"
+	groupTestPrincipalID         = "principal_000006"
+	unknownTestPrincipalID       = "principal_000404"
 )
 
-// gatedTestServer is a server with demo login enabled, one enabled mock
-// instance ("inst_test" on machine "m_test") and a second one
-// ("inst_second" on "m_second"), a principal directory knowing two humans,
-// and a grant-store whose grants the caller supplies.
+// gatedTestServer is a server with one enabled mock instance ("inst_test" on
+// machine "m_test") and a second one ("inst_second" on "m_second"), a
+// principal directory knowing two ordinary humans, an administrator, a
+// disabled human and a group, and a grant-store whose grants the caller
+// supplies.
 type gatedTestServer struct {
 	server *Server
 	store  *store.Store
 	kanban *fakeKanbanStore
+	// principals is the directory the server reads a caller from; a test
+	// rewrites a record in it to demote or disable somebody.
+	principals *fakePrincipalDirectory
+	// clock is what the principal lookup cache reads the time from, so a test
+	// can let a cached answer expire without sleeping.
+	clock *testClock
+}
+
+// testClock is a time source a test moves by hand.
+type testClock struct {
+	mutex sync.Mutex
+	now   time.Time
+}
+
+func (clock *testClock) Now() time.Time {
+	clock.mutex.Lock()
+	defer clock.mutex.Unlock()
+	return clock.now
+}
+
+func (clock *testClock) advance(by time.Duration) {
+	clock.mutex.Lock()
+	defer clock.mutex.Unlock()
+	clock.now = clock.now.Add(by)
 }
 
 // gatedTestServerPublicURL is the gateway URL session agents are given.
@@ -87,27 +120,40 @@ func newGatedTestServer(t *testing.T, grantsByPrincipal map[string]map[string][]
 			t.Fatalf("seed instance: %v", err)
 		}
 	}
-	principals := fakePrincipalDirectory(t, map[string]string{
-		firstTestPrincipalID:  `{"id":"principal_000001","kind":"human","display_name":"One","disabled_at":0,"groups":[]}`,
-		secondTestPrincipalID: `{"id":"principal_000002","kind":"human","display_name":"Two","disabled_at":0,"groups":[]}`,
-	})
+	principalRecords := map[string]string{
+		firstTestPrincipalID:         `{"id":"principal_000001","kind":"human","display_name":"One","disabled_at":0,"is_administrator":false,"groups":[]}`,
+		secondTestPrincipalID:        `{"id":"principal_000002","kind":"human","display_name":"Two","disabled_at":0,"is_administrator":false,"groups":[]}`,
+		administratorTestPrincipalID: `{"id":"principal_000003","kind":"human","display_name":"Root","disabled_at":0,"is_administrator":true,"groups":[]}`,
+		groupTestPrincipalID:         `{"id":"principal_000006","kind":"group","display_name":"Data Team","disabled_at":0,"is_administrator":false,"members":[]}`,
+		disabledTestPrincipalID:      `{"id":"principal_000009","kind":"human","display_name":"Gone","disabled_at":1788980427,"is_administrator":true,"groups":[]}`,
+	}
+	principals := newFakePrincipalDirectory(t, principalRecords)
 	kanban := newFakeKanbanStore(t)
 	if grantsByPrincipal == nil {
 		grantsByPrincipal = map[string]map[string][]string{firstTestPrincipalID: {}, secondTestPrincipalID: {}}
 	}
-	cfg := &config.Config{
-		ImagesDir:           filepath.Join(directory, "images"),
-		BridgePrefsPath:     filepath.Join(directory, "prefs.json"),
-		LogStoreURL:         "http://localhost:0",
-		PrincipalStoreURL:   principals.URL,
-		GrantStoreURL:       fakeGrantStoreForPrincipals(t, grantsByPrincipal).URL,
-		KanbanStoreURL:      kanban.server.URL,
-		PublicURL:           gatedTestServerPublicURL,
-		DemoLoginSetting:    config.DemoLoginEnabledValue,
-		DemoLoginSigningKey: demoLoginTestSigningKey,
-		ServiceToken:        demoLoginTestServiceToken,
+	if grantsByPrincipal[administratorTestPrincipalID] == nil {
+		grantsByPrincipal[administratorTestPrincipalID] = map[string][]string{}
 	}
-	return &gatedTestServer{server: New(bridgeStore, nil, nil, harnesses, nil, testModelStore(t), nil, cfg), store: bridgeStore, kanban: kanban}
+	cfg := &config.Config{
+		ImagesDir:         filepath.Join(directory, "images"),
+		BridgePrefsPath:   filepath.Join(directory, "prefs.json"),
+		LogStoreURL:       "http://localhost:0",
+		PrincipalStoreURL: principals.server.URL,
+		GrantStoreURL:     fakeGrantStoreForPrincipals(t, grantsByPrincipal).URL,
+		KanbanStoreURL:    kanban.server.URL,
+		PublicURL:         gatedTestServerPublicURL,
+	}
+	testAuthorizationConfig(cfg)
+	gated := &gatedTestServer{
+		server:     New(bridgeStore, nil, nil, harnesses, nil, testModelStore(t), nil, cfg),
+		store:      bridgeStore,
+		kanban:     kanban,
+		principals: principals,
+		clock:      &testClock{now: time.Now()},
+	}
+	gated.server.principalLookupCache.now = gated.clock.Now
+	return gated
 }
 
 // requestAs sends a request with the given login cookie (nil for none).
@@ -134,8 +180,25 @@ func (gated *gatedTestServer) requestAs(t *testing.T, cookie *http.Cookie, metho
 func (gated *gatedTestServer) requestAsService(t *testing.T, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, path, nil)
-	request.Header.Set(serviceTokenHeader, demoLoginTestServiceToken)
+	request.Header.Set(serviceTokenHeader, testServiceToken)
 	return serve(gated.server, request)
+}
+
+// requestAsServiceAssertingPrincipal is how dash calls this server for one of
+// its logged-in users: its own service token plus the principal it says the
+// request is for.
+func (gated *gatedTestServer) requestAsServiceAssertingPrincipal(t *testing.T, principalID, method, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, path, nil)
+	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(principalIdentityHeader, principalID)
+	return serve(gated.server, request)
+}
+
+// loginAs signs in and returns the cookie.
+func (gated *gatedTestServer) loginAs(t *testing.T, principalID string) *http.Cookie {
+	t.Helper()
+	return loginCookieFrom(t, demoLogin(t, gated.server, principalID))
 }
 
 func (gated *gatedTestServer) createSessionAs(t *testing.T, cookie *http.Cookie, principalID string) *store.Session {
@@ -231,6 +294,198 @@ func TestTwoPrincipalsEachSeeAndReachOnlyTheirOwnSessions(t *testing.T) {
 	}
 	if response := gated.requestAsService(t, "GET", "/sessions/"+secondSession.SessionID); response.Code != http.StatusOK {
 		t.Errorf("service token GET a principal's session = %d, want 200", response.Code)
+	}
+
+	// An administrator is a person with a login, and principal-store says they
+	// may do anything: they see every session whoever owns it, including the
+	// one nobody owns, and the list is not narrowed.
+	administratorCookie := gated.loginAs(t, administratorTestPrincipalID)
+	administratorList := gated.requestAs(t, administratorCookie, "GET", "/sessions", nil)
+	if got := sessionIDsOfList(t, administratorList.Body.Bytes()); len(got) != 3 {
+		t.Errorf("an administrator lists %v, want all three sessions", got)
+	}
+	for _, sessionID := range []string{firstSession.SessionID, secondSession.SessionID, "br_unowned"} {
+		if response := gated.requestAs(t, administratorCookie, "GET", "/sessions/"+sessionID, nil); response.Code != http.StatusOK {
+			t.Errorf("an administrator GET /sessions/%s = %d %s, want 200", sessionID, response.Code, response.Body.String())
+		}
+	}
+	if response := gated.requestAs(t, administratorCookie, "GET", "/sessions/br_does_not_exist", nil); response.Code != http.StatusNotFound {
+		t.Errorf("an administrator GET a session that does not exist = %d, want 404", response.Code)
+	}
+}
+
+// TestAnAdministratorReachesTheOperatorRoutesAndTheStoreProxies is the other
+// half: past the per-resource checks, and identified to the stores all the
+// same, because kanban-store and grant-store make their own administrator
+// check and this server does not answer it for them.
+func TestAnAdministratorReachesTheOperatorRoutesAndTheStoreProxies(t *testing.T) {
+	gated := newGatedTestServer(t, nil)
+	administratorCookie := gated.loginAs(t, administratorTestPrincipalID)
+	ordinaryCookie := gated.loginAs(t, firstTestPrincipalID)
+
+	for _, route := range []struct{ method, path string }{
+		{"GET", "/bridge-prefs"}, {"GET", "/folders"}, {"GET", "/machines"}, {"GET", "/conformance"},
+	} {
+		administrator := gated.requestAs(t, administratorCookie, route.method, route.path, nil)
+		if administrator.Code != http.StatusOK {
+			t.Errorf("an administrator %s %s = %d %s, want 200", route.method, route.path, administrator.Code, administrator.Body.String())
+		}
+		ordinary := gated.requestAs(t, ordinaryCookie, route.method, route.path, nil)
+		if ordinary.Code != http.StatusForbidden || !strings.Contains(ordinary.Body.String(), "operator route: use the service token") {
+			t.Errorf("a non-administrator %s %s = %d %s, want 403 operator route", route.method, route.path, ordinary.Code, ordinary.Body.String())
+		}
+	}
+
+	// The routes answered across every session from a source that cannot be
+	// narrowed are per-principal refusals, so an administrator is past them too.
+	if response := gated.requestAs(t, ordinaryCookie, "GET", "/sessions/aggregates", nil); response.Code != http.StatusForbidden {
+		t.Errorf("a non-administrator GET /sessions/aggregates = %d, want 403", response.Code)
+	}
+	if response := gated.requestAs(t, administratorCookie, "GET", "/sessions/aggregates", nil); response.Code == http.StatusForbidden {
+		t.Errorf("an administrator GET /sessions/aggregates = 403 %s, want the route to answer", response.Body.String())
+	}
+
+	if response := gated.requestAs(t, administratorCookie, "GET", "/kanban/boards", nil); response.Code != http.StatusOK {
+		t.Fatalf("an administrator GET /kanban/boards = %d %s, want 200", response.Code, response.Body.String())
+	}
+	recorded := gated.kanban.recorded()
+	if len(recorded) != 1 {
+		t.Fatalf("kanban-store received %d requests, want 1", len(recorded))
+	}
+	if got := recorded[0].Header.Values(principalIdentityHeader); len(got) != 1 || got[0] != administratorTestPrincipalID {
+		t.Errorf("kanban-store saw %s %v, want [%s]: the store makes its own administrator check", principalIdentityHeader, got, administratorTestPrincipalID)
+	}
+
+	// An unclassified route is not a per-resource check. Nobody has decided
+	// who may call it, and an administrator cannot decide that by arriving.
+	gated.server.mux.HandleFunc("GET /another-route-added-later", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	response := gated.requestAs(t, administratorCookie, "GET", "/another-route-added-later", nil)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "GET /another-route-added-later") {
+		t.Errorf("an administrator on an unclassified route = %d %s, want 403 naming the route", response.Code, response.Body.String())
+	}
+}
+
+// TestADemotedAdministratorLosesAccessWhenTheCachedAnswerExpires pins the cost
+// of caching principal-store's answer: the demotion bites late, and by no more
+// than principalLookupCacheLifetime.
+func TestADemotedAdministratorLosesAccessWhenTheCachedAnswerExpires(t *testing.T) {
+	gated := newGatedTestServer(t, nil)
+	cookie := gated.loginAs(t, administratorTestPrincipalID)
+	if response := gated.requestAs(t, cookie, "GET", "/bridge-prefs", nil); response.Code != http.StatusOK {
+		t.Fatalf("administrator GET /bridge-prefs = %d %s, want 200", response.Code, response.Body.String())
+	}
+
+	gated.principals.setRecord(administratorTestPrincipalID,
+		`{"id":"principal_000003","kind":"human","display_name":"Root","disabled_at":0,"is_administrator":false,"groups":[]}`)
+
+	// What the cache buys: a page load is many requests and one lookup.
+	readsBeforeThePage := gated.principals.readCount()
+	for range 10 {
+		gated.requestAs(t, cookie, "GET", "/sessions", nil)
+	}
+	if extraReads := gated.principals.readCount() - readsBeforeThePage; extraReads != 0 {
+		t.Errorf("ten requests inside the cache lifetime made %d principal-store lookups, want 0", extraReads)
+	}
+
+	gated.clock.advance(principalLookupCacheLifetime - time.Second)
+	if response := gated.requestAs(t, cookie, "GET", "/bridge-prefs", nil); response.Code != http.StatusOK {
+		t.Errorf("one second before the cached answer expires = %d, want the stale 200 this cache is paid for", response.Code)
+	}
+
+	gated.clock.advance(2 * time.Second)
+	response := gated.requestAs(t, cookie, "GET", "/bridge-prefs", nil)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "operator route: use the service token") {
+		t.Errorf("after the cached answer expired = %d %s, want 403 operator route", response.Code, response.Body.String())
+	}
+	// Disabling bites the same way, and is refused before is_administrator is
+	// read — this record says is_administrator true and disabled_at set.
+	gated.principals.setRecord(administratorTestPrincipalID,
+		`{"id":"principal_000003","kind":"human","display_name":"Root","disabled_at":1788980427,"is_administrator":true,"groups":[]}`)
+	gated.clock.advance(principalLookupCacheLifetime)
+	response = gated.requestAs(t, cookie, "GET", "/sessions", nil)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "principal_disabled") {
+		t.Errorf("a disabled administrator = %d %s, want 403 principal_disabled", response.Code, response.Body.String())
+	}
+}
+
+// TestATrustedCallerMayAssertWhichPrincipalARequestIsFor is dash's path: it
+// holds the service token and says which of its logged-in users each request
+// belongs to.
+func TestATrustedCallerMayAssertWhichPrincipalARequestIsFor(t *testing.T) {
+	gated := newGatedTestServer(t, nil)
+	firstCookie := gated.loginAs(t, firstTestPrincipalID)
+	secondCookie := gated.loginAs(t, secondTestPrincipalID)
+	firstSession := gated.createSessionAs(t, firstCookie, "")
+	secondSession := gated.createSessionAs(t, secondCookie, "")
+
+	// Asserted, the request is that principal's in every respect.
+	listed := gated.requestAsServiceAssertingPrincipal(t, firstTestPrincipalID, "GET", "/sessions")
+	if got := sessionIDsOfList(t, listed.Body.Bytes()); len(got) != 1 || got[0] != firstSession.SessionID {
+		t.Errorf("asserted %s lists %v, want only %s", firstTestPrincipalID, got, firstSession.SessionID)
+	}
+	if response := gated.requestAsServiceAssertingPrincipal(t, firstTestPrincipalID, "GET", "/sessions/"+secondSession.SessionID); response.Code != http.StatusNotFound {
+		t.Errorf("asserted %s reaching another principal's session = %d, want 404", firstTestPrincipalID, response.Code)
+	}
+	if response := gated.requestAsServiceAssertingPrincipal(t, firstTestPrincipalID, "GET", "/bridge-prefs"); response.Code != http.StatusForbidden {
+		t.Errorf("asserted %s on an operator route = %d, want 403: the token's own freedom does not carry over", firstTestPrincipalID, response.Code)
+	}
+	// The same token with no assertion stays unrestricted.
+	if response := gated.requestAsService(t, "GET", "/bridge-prefs"); response.Code != http.StatusOK {
+		t.Errorf("service token with no %s on an operator route = %d, want 200", principalIdentityHeader, response.Code)
+	}
+
+	// The administrator rule applies to an asserted principal too.
+	administratorList := gated.requestAsServiceAssertingPrincipal(t, administratorTestPrincipalID, "GET", "/sessions")
+	if got := sessionIDsOfList(t, administratorList.Body.Bytes()); len(got) != 2 {
+		t.Errorf("asserted administrator lists %v, want both sessions", got)
+	}
+	if response := gated.requestAsServiceAssertingPrincipal(t, administratorTestPrincipalID, "GET", "/bridge-prefs"); response.Code != http.StatusOK {
+		t.Errorf("asserted administrator on an operator route = %d, want 200", response.Code)
+	}
+
+	// The proxy forwards the asserted principal and nothing the client sent.
+	if response := gated.requestAsServiceAssertingPrincipal(t, secondTestPrincipalID, "GET", "/kanban/boards"); response.Code != http.StatusOK {
+		t.Fatalf("asserted %s on /kanban/boards = %d %s, want 200", secondTestPrincipalID, response.Code, response.Body.String())
+	}
+	recorded := gated.kanban.recorded()
+	if len(recorded) != 1 {
+		t.Fatalf("kanban-store received %d requests, want 1", len(recorded))
+	}
+	if got := recorded[0].Header.Values(principalIdentityHeader); len(got) != 1 || got[0] != secondTestPrincipalID {
+		t.Errorf("kanban-store saw %s %v, want exactly [%s]", principalIdentityHeader, got, secondTestPrincipalID)
+	}
+	for _, key := range recorded[0].HeaderKeyNames {
+		if strings.EqualFold(key, serviceTokenHeader) {
+			t.Errorf("kanban-store saw this server's service token under %q", key)
+		}
+	}
+}
+
+func TestAnAssertedPrincipalIsCheckedWithPrincipalStore(t *testing.T) {
+	gated := newGatedTestServer(t, nil)
+	for name, testCase := range map[string]struct {
+		principalID string
+		wantStatus  int
+		wantCode    string
+	}{
+		"unknown":   {unknownTestPrincipalID, http.StatusBadRequest, "unknown_principal"},
+		"disabled":  {disabledTestPrincipalID, http.StatusForbidden, "principal_disabled"},
+		"a group":   {groupTestPrincipalID, http.StatusBadRequest, "principal_not_human"},
+		"not an id": {"Slava Kayushkin", http.StatusBadRequest, "invalid_principal_id"},
+	} {
+		response := gated.requestAsServiceAssertingPrincipal(t, testCase.principalID, "GET", "/sessions")
+		if response.Code != testCase.wantStatus || !strings.Contains(response.Body.String(), testCase.wantCode) {
+			t.Errorf("%s: asserted %q = %d %s, want %d %s", name, testCase.principalID, response.Code, response.Body.String(), testCase.wantStatus, testCase.wantCode)
+		}
+	}
+
+	// principal-store unreachable is a 502, never a caller treated as an
+	// ordinary principal and never one treated as an administrator.
+	gated.principals.server.Close()
+	gated.clock.advance(principalLookupCacheLifetime)
+	response := gated.requestAsServiceAssertingPrincipal(t, administratorTestPrincipalID, "GET", "/sessions")
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "principal_store_unavailable") {
+		t.Errorf("principal-store down = %d %s, want 502 principal_store_unavailable", response.Code, response.Body.String())
 	}
 }
 
@@ -513,12 +768,7 @@ func TestEveryRegisteredRouteIsClassified(t *testing.T) {
 // unclassified while the table looks complete.
 func TestEveryAccessRuleNamesARegisteredRoute(t *testing.T) {
 	server := newServerWithAllStoresConfigured(t, func(cfg *config.Config) {
-		cfg.DemoLoginSetting = config.DemoLoginEnabledValue
-		cfg.DemoLoginSigningKey = demoLoginTestSigningKey
-		cfg.ServiceToken = demoLoginTestServiceToken
 		cfg.KanbanStoreURL = "http://kanban-store.invalid"
-		cfg.PrincipalStoreURL = "http://principal-store.invalid"
-		cfg.GrantStoreURL = "http://grant-store.invalid"
 	})
 	wildcard := regexp.MustCompile(`\{[^}]+\}`)
 	for pattern := range routeAccessRules {
@@ -533,20 +783,6 @@ func TestEveryAccessRuleNamesARegisteredRoute(t *testing.T) {
 		_, matched := server.mux.Handler(httptest.NewRequest(method, concretePath, nil))
 		if matched != pattern {
 			t.Errorf("access rule %q: %s %s matches registered pattern %q", pattern, method, concretePath, matched)
-		}
-	}
-}
-
-func TestDemoLoginOffLeavesEveryRouteUngated(t *testing.T) {
-	server, bridgeStore, instanceID := testServerWithInstance(t, msg.HarnessMock)
-	if err := bridgeStore.CreateSession(&store.Session{SessionID: "br_owned", PrincipalID: firstTestPrincipalID, Harness: msg.HarnessMock, InstanceID: instanceID, State: string(msg.SessionIdle)}); err != nil {
-		t.Fatal(err)
-	}
-	for _, route := range []struct{ method, path string }{
-		{"GET", "/sessions"}, {"GET", "/sessions/br_owned"}, {"GET", "/bridge-prefs"}, {"GET", "/folders"},
-	} {
-		if response := serve(server, httptest.NewRequest(route.method, route.path, nil)); response.Code != http.StatusOK {
-			t.Errorf("demo login off: %s %s = %d %s, want 200 with no credential", route.method, route.path, response.Code, response.Body.String())
 		}
 	}
 }

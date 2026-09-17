@@ -24,7 +24,7 @@ func TestRemoveServerSecretsDropsEverySecretAndKeepsEverythingElse(t *testing.T)
 		// Near-misses are not secrets and must survive: names are exact.
 		"LLMBRIDGE_SERVICE_TOKEN_HINT=not-a-secret",
 		"llmbridge_service_token=different-name-on-unix",
-		"LLMBRIDGE_DEMO_LOGIN=enabled",
+		"LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY_FILE=/etc/keys/login",
 		"NO_EQUALS_SIGN",
 	}
 	got := RemoveServerSecrets(environment)
@@ -32,7 +32,7 @@ func TestRemoveServerSecretsDropsEverySecretAndKeepsEverythingElse(t *testing.T)
 		"PATH=/usr/bin",
 		"LLMBRIDGE_SERVICE_TOKEN_HINT=not-a-secret",
 		"llmbridge_service_token=different-name-on-unix",
-		"LLMBRIDGE_DEMO_LOGIN=enabled",
+		"LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY_FILE=/etc/keys/login",
 		"NO_EQUALS_SIGN",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {

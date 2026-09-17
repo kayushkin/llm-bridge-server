@@ -38,20 +38,22 @@ type Config struct {
 	PermissionStoreURL string
 	// GrantStoreURL is the base URL of grant-store, read at spawn for the
 	// effective grants of a session's principal — which tools it may be
-	// offered. Configured via LLMBRIDGE_GRANT_STORE_URL.
+	// offered — and proxied at /grant-store/ as the calling principal.
+	// Required, via LLMBRIDGE_GRANT_STORE_URL.
 	GrantStoreURL string
-	// PrincipalStoreURL is the base URL of principal-store, asked at session
-	// creation whether a principal_id names a real principal. Configured via
-	// LLMBRIDGE_PRINCIPAL_STORE_URL.
+	// PrincipalStoreURL is the base URL of principal-store: asked at session
+	// creation whether a principal_id names a real principal, and asked on
+	// every gated request whether the caller is active and an administrator.
+	// Required, via LLMBRIDGE_PRINCIPAL_STORE_URL.
 	PrincipalStoreURL string
 	// BundleStoreURL is the base URL of bundle-store, asked at session
 	// creation whether a bundle_id names a real bundle and at spawn what it
 	// resolves to. Configured via LLMBRIDGE_BUNDLE_STORE_URL.
 	BundleStoreURL string
 	// KanbanStoreURL is the base URL of the kanban-store service, which owns
-	// the session↔noteboard-todo link a signal propagates to. Configured via
-	// LLMBRIDGE_KANBAN_STORE_URL; empty switches the lookup off entirely and
-	// every signal is minted unlinked.
+	// the session↔noteboard-todo link a signal propagates to, and which
+	// /kanban/ proxies to as the calling principal. Required, via
+	// LLMBRIDGE_KANBAN_STORE_URL.
 	KanbanStoreURL string
 	// MailstackURL is the base URL of mailstack, asked for the sender and
 	// subject of the mail behind a card when question triage drafts a reply
@@ -126,20 +128,17 @@ type Config struct {
 	// turns labelling off: drifts are still detected and held, unlabelled.
 	PromptDriftTaggerInstance string
 	PromptDriftTaggerModel    string
-	// DemoLoginSetting is the raw LLMBRIDGE_DEMO_LOGIN value. Only the exact
-	// value "enabled" turns demo login and the identity-carrying kanban proxy
-	// on; empty leaves them off; anything else is a startup error. Read it
-	// through DemoLoginEnabled, which applies those rules — never directly.
-	DemoLoginSetting string
 	// DemoLoginSigningKey is the HMAC-SHA256 key that signs the demo login
-	// cookie, from LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY. Required, and at least
-	// DemoLoginSigningKeyMinimumBytes long, when demo login is enabled.
+	// cookie and the session agent tokens, from
+	// LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY. Required, and at least
+	// DemoLoginSigningKeyMinimumBytes long: without it nothing can be signed
+	// and no caller can be identified.
 	DemoLoginSigningKey string
 	// ServiceToken is the credential an internal service presents in
-	// X-LLM-Bridge-Service-Token to call this server without the demo login
-	// restrictions, from LLMBRIDGE_SERVICE_TOKEN. Required, and at least
-	// ServiceTokenMinimumBytes long, when demo login is enabled; unused
-	// otherwise, because with demo login off nothing is restricted.
+	// X-LLM-Bridge-Service-Token to call this server unrestricted, from
+	// LLMBRIDGE_SERVICE_TOKEN. Required, and at least ServiceTokenMinimumBytes
+	// long: every route is gated, and an internal service reaches the operator
+	// routes only by presenting it.
 	ServiceToken string
 	// GrantStoreServiceToken is sent to grant-store as
 	// X-Grant-Store-Service-Token on every call this server makes as itself
@@ -178,10 +177,6 @@ func SecretEnvironmentVariableNames() []string {
 	}
 }
 
-// DemoLoginEnabledValue is the only LLMBRIDGE_DEMO_LOGIN value that turns demo
-// login on.
-const DemoLoginEnabledValue = "enabled"
-
 // DemoLoginSigningKeyMinimumBytes is the shortest signing key accepted: the
 // size of an HMAC-SHA256 output, so the key is not the weaker half of the MAC.
 const DemoLoginSigningKeyMinimumBytes = 32
@@ -189,49 +184,61 @@ const DemoLoginSigningKeyMinimumBytes = 32
 // ServiceTokenMinimumBytes is the shortest LLMBRIDGE_SERVICE_TOKEN accepted.
 const ServiceTokenMinimumBytes = 32
 
-// DemoLoginEnabled reports whether demo login is switched on, and returns an
-// error naming what is wrong when the demo login settings are inconsistent: an
-// unrecognised LLMBRIDGE_DEMO_LOGIN value, or demo login enabled without a
-// long-enough signing key or without a kanban-store to proxy to. The caller
-// must refuse to start on an error; there is no partially-enabled state.
-func (c *Config) DemoLoginEnabled() (bool, error) {
-	switch c.DemoLoginSetting {
-	case "":
-		return false, nil
-	case DemoLoginEnabledValue:
-	default:
-		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%q is not accepted: the only accepted value is %q (leave it unset to keep demo login off)",
-			c.DemoLoginSetting, DemoLoginEnabledValue)
-	}
+// ValidateRequestAuthorizationCredentials checks the two secrets this server
+// cannot identify a caller without: the key that signs the login cookie and
+// the session agent tokens, and the token an internal service presents. Every
+// request is authorized before it reaches a handler, so a server that starts
+// without either would gate nothing while looking as though it did.
+//
+// server.New calls this and refuses to build a server that fails it.
+// ValidateRequestAuthorizationSettings is the whole startup check.
+func (c *Config) ValidateRequestAuthorizationCredentials() error {
 	if c.DemoLoginSigningKey == "" {
-		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY, the key that signs the login cookie, and it is unset",
-			DemoLoginEnabledValue)
+		return fmt.Errorf("%s is unset: it signs the login cookie and every session agent token, and every request to this server is authorized",
+			DemoLoginSigningKeyEnvironmentVariable)
 	}
 	if len(c.DemoLoginSigningKey) < DemoLoginSigningKeyMinimumBytes {
-		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY is %d bytes; it must be at least %d",
-			len(c.DemoLoginSigningKey), DemoLoginSigningKeyMinimumBytes)
+		return fmt.Errorf("%s is %d bytes; it must be at least %d",
+			DemoLoginSigningKeyEnvironmentVariable, len(c.DemoLoginSigningKey), DemoLoginSigningKeyMinimumBytes)
 	}
 	if c.ServiceToken == "" {
-		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires %s: with demo login on every route is gated, and internal services reach operator routes only by presenting it",
-			DemoLoginEnabledValue, ServiceTokenEnvironmentVariable)
+		return fmt.Errorf("%s is unset: every route is gated, and internal services reach the operator routes only by presenting it",
+			ServiceTokenEnvironmentVariable)
 	}
 	if len(c.ServiceToken) < ServiceTokenMinimumBytes {
-		return false, fmt.Errorf("%s is %d bytes; it must be at least %d",
+		return fmt.Errorf("%s is %d bytes; it must be at least %d",
 			ServiceTokenEnvironmentVariable, len(c.ServiceToken), ServiceTokenMinimumBytes)
 	}
-	if c.KanbanStoreURL == "" {
-		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_KANBAN_STORE_URL, the kanban-store the /kanban/ proxy forwards to, and it is empty",
-			DemoLoginEnabledValue)
+	return nil
+}
+
+// ValidateRequestAuthorizationSettings is every setting request authorization
+// needs: the two credentials above, and the three stores a gated request is
+// answered from — principal-store, which says whether the caller is active and
+// an administrator, and the two stores mounted behind the identity-carrying
+// proxies. None of them has a default; a missing one is a startup error naming
+// the variable, because guessing an address here would send a principal's
+// boards to whatever answers on that port.
+//
+// main calls this and refuses to start on an error.
+func (c *Config) ValidateRequestAuthorizationSettings() error {
+	if err := c.ValidateRequestAuthorizationCredentials(); err != nil {
+		return err
 	}
-	if c.GrantStoreURL == "" {
-		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_GRANT_STORE_URL, the grant-store the /grant-store/ proxy forwards to, and it is empty",
-			DemoLoginEnabledValue)
+	for _, required := range []struct {
+		environmentVariable string
+		value               string
+		purpose             string
+	}{
+		{"LLMBRIDGE_PRINCIPAL_STORE_URL", c.PrincipalStoreURL, "the principal-store every caller's principal is read from"},
+		{"LLMBRIDGE_KANBAN_STORE_URL", c.KanbanStoreURL, "the kanban-store /kanban/ forwards to"},
+		{"LLMBRIDGE_GRANT_STORE_URL", c.GrantStoreURL, "the grant-store /grant-store/ forwards to"},
+	} {
+		if strings.TrimSpace(required.value) == "" {
+			return fmt.Errorf("%s is unset: it is %s, and it has no default", required.environmentVariable, required.purpose)
+		}
 	}
-	if c.PrincipalStoreURL == "" {
-		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_PRINCIPAL_STORE_URL, the principal-store a login is checked with, and it is empty",
-			DemoLoginEnabledValue)
-	}
-	return true, nil
+	return nil
 }
 
 // Load reads the process environment, falling back to the addresses in
@@ -260,10 +267,10 @@ func Load() *Config {
 		PublicURL:                 os.Getenv("LLMBRIDGE_PUBLIC_URL"),
 		ToolStoreURL:              envOr("LLMBRIDGE_TOOL_STORE_URL", productiondefaults.ToolStoreURL),
 		PermissionStoreURL:        envOr("LLMBRIDGE_PERMISSION_STORE_URL", productiondefaults.PermissionStoreURL),
-		GrantStoreURL:             envOr("LLMBRIDGE_GRANT_STORE_URL", productiondefaults.GrantStoreURL),
-		PrincipalStoreURL:         envOr("LLMBRIDGE_PRINCIPAL_STORE_URL", productiondefaults.PrincipalStoreURL),
+		GrantStoreURL:             os.Getenv("LLMBRIDGE_GRANT_STORE_URL"),
+		PrincipalStoreURL:         os.Getenv("LLMBRIDGE_PRINCIPAL_STORE_URL"),
 		BundleStoreURL:            envOr("LLMBRIDGE_BUNDLE_STORE_URL", productiondefaults.BundleStoreURL),
-		KanbanStoreURL:            envOr("LLMBRIDGE_KANBAN_STORE_URL", productiondefaults.KanbanStoreURL),
+		KanbanStoreURL:            os.Getenv("LLMBRIDGE_KANBAN_STORE_URL"),
 		MailstackURL:              envOr("LLMBRIDGE_MAILSTACK_URL", productiondefaults.MailstackURL),
 		MailstackToken:            os.Getenv("LLMBRIDGE_MAILSTACK_TOKEN"),
 		HealthcheckURL:            envOr("LLMBRIDGE_HEALTHCHECK_URL", productiondefaults.HealthcheckURL),
@@ -280,7 +287,6 @@ func Load() *Config {
 		PromptDriftTaggerModel:    envOr("LLMBRIDGE_PROMPT_DRIFT_TAGGER_MODEL", "claude-haiku-4-5"),
 		SignalClassifierTimeout:   envDuration("LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", 20*time.Second),
 		SignalClassifierMaxChars:  envInt("LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", 6000),
-		DemoLoginSetting:          os.Getenv("LLMBRIDGE_DEMO_LOGIN"),
 		DemoLoginSigningKey:       os.Getenv(DemoLoginSigningKeyEnvironmentVariable),
 		ServiceToken:              os.Getenv(ServiceTokenEnvironmentVariable),
 		GrantStoreServiceToken:    os.Getenv(GrantStoreServiceTokenEnvironmentVariable),
@@ -310,7 +316,6 @@ func (c *Config) GuardedAddresses() map[string]string {
 		"LogStoreURL":        c.LogStoreURL,
 		"ToolStoreURL":       c.ToolStoreURL,
 		"PermissionStoreURL": c.PermissionStoreURL,
-		"KanbanStoreURL":     c.KanbanStoreURL,
 		"MailstackURL":       c.MailstackURL,
 		"HealthcheckURL":     c.HealthcheckURL,
 		"SnapshotStoreDB":    c.SnapshotStoreDB,

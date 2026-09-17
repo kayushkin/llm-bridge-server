@@ -3,8 +3,8 @@ package server
 // Session agent tokens: how an agent's tool calls act as the session's
 // principal.
 //
-// When demo login is enabled and a session started as a principal is spawned,
-// its harness child is given LLM_BRIDGE_GATEWAY_URL and
+// When a session started as a principal is spawned, its harness child is
+// given LLM_BRIDGE_GATEWAY_URL and
 // LLM_BRIDGE_PRINCIPAL_TOKEN. An MCP server or a shell command the agent runs
 // sends the token as "Authorization: Bearer <token>" to the gateway's
 // identity-carrying store proxies (/kanban/ and /grant-store/), and the
@@ -146,11 +146,11 @@ func (s *Server) principalOfSessionAgentToken(token string) (string, error) {
 
 // sessionAgentEnvironment returns the variables a session's harness child
 // receives so its tool calls can act as the session's principal: none unless
-// demo login is enabled and the session is started as a principal. A gateway
+// the session is started as a principal. A gateway
 // URL that cannot be determined is an error — a child given a token and no
 // place to send it would fail at its first tool call instead of at spawn.
 func (s *Server) sessionAgentEnvironment(session *store.Session) ([]string, error) {
-	if s.principalSessionCookieCodec == nil || session.PrincipalID == "" {
+	if session.PrincipalID == "" {
 		return nil, nil
 	}
 	gatewayURL := s.gatewayURLForSessionAgents()

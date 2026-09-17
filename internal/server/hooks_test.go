@@ -35,6 +35,7 @@ func testServerWithHookStore(t *testing.T) (*Server, *hookstore.Store) {
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 		LogStoreURL:     "http://localhost:0",
 	}
+	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, hks, nil, nil, cfg)
 	return srv, hks
 }
@@ -192,7 +193,7 @@ func TestExecHook_EchoCommand(t *testing.T) {
 	req := httptest.NewRequest("POST", "/hooks/exec/echo", bytes.NewReader([]byte(payload)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	asInternalService(srv).ServeHTTP(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != 200 {
@@ -222,7 +223,7 @@ func TestExecHook_JSONDecisionExtracted(t *testing.T) {
 	req := httptest.NewRequest("POST", "/hooks/exec/deny",
 		bytes.NewReader([]byte(`{"session_id":"","tool_name":""}`)))
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	asInternalService(srv).ServeHTTP(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != 200 {
@@ -290,7 +291,7 @@ func TestExecHookCommandDoesNotReceiveServerSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, httptest.NewRequest("POST", "/hooks/exec/print-environment", strings.NewReader(`{}`)))
+	asInternalService(srv).ServeHTTP(w, httptest.NewRequest("POST", "/hooks/exec/print-environment", strings.NewReader(`{}`)))
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}

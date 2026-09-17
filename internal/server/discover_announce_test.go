@@ -61,6 +61,7 @@ func TestDiscoverAnnouncesLogStoreBeforeImporting(t *testing.T) {
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 		LogStoreURL:     sentinelLogStore,
 	}
+	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
 
 	var captured bytes.Buffer

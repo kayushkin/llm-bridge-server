@@ -39,6 +39,7 @@ func testServerWithKanban(t *testing.T, handler http.HandlerFunc) (*Server, *sto
 		LogStoreURL:     "http://localhost:0",
 		KanbanStoreURL:  kanbanURL,
 	}
+	testAuthorizationConfig(cfg)
 	return New(st, nil, nil, nil, nil, nil, nil, cfg), st
 }
 
@@ -335,7 +336,7 @@ func TestHandleListSignalsFiltersByLinkedTodo(t *testing.T) {
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.query, nil))
+			asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.query, nil))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 			}
@@ -361,7 +362,7 @@ func TestHandleListSignalsRejectsAnEmptyLinkedTodo(t *testing.T) {
 	for _, query := range []string{"/signals?linked_todo_id=", "/signals?linked_todo_id=%20"} {
 		t.Run(query, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, query, nil))
+			asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, query, nil))
 			if rec.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
 			}
@@ -370,7 +371,7 @@ func TestHandleListSignalsRejectsAnEmptyLinkedTodo(t *testing.T) {
 
 	// Omitting the parameter entirely still means "don't narrow".
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/signals", nil))
+	asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/signals", nil))
 	var signals []msg.Signal
 	if err := json.Unmarshal(rec.Body.Bytes(), &signals); err != nil {
 		t.Fatalf("decode body: %v", err)

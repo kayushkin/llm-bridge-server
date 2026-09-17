@@ -21,7 +21,7 @@ func TestBridgePrefsDefaultPrincipalIsSetAndClearedByKeyPresence(t *testing.T) {
 		req := httptest.NewRequest("PUT", "/bridge-prefs", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		srv.ServeHTTP(w, req)
+		asInternalService(srv).ServeHTTP(w, req)
 		if w.Code != 200 {
 			t.Fatalf("PUT %s = %d: %s", body, w.Code, w.Body.String())
 		}

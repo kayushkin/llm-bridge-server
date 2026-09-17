@@ -59,7 +59,7 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 }
 
 // instancesPrincipalMayDispatchOn narrows instances to the ones a principal
-// restricted by demo login may start a session on, by the same lenient rule
+// restricted to itself may start a session on, by the same lenient rule
 // checkPrincipalMayRunHere enforces at creation: a principal holding no
 // can_dispatch_on grant is not restricted, one holding any may use only the
 // instances it names and the instances of the machines it names. Machine
