@@ -71,7 +71,9 @@ rollback() {
   sudo systemctl daemon-reload
   sudo systemctl start "$SERVICE"
   sleep 2
-  if curl -fsS http://localhost:8160/sessions >/dev/null 2>&1; then
+  # The restored binary may predate the gate, so /health is the check that is
+  # true either way.
+  if curl -fsS http://localhost:8160/health >/dev/null 2>&1; then
     echo "    rollback OK — previous binary is serving again"
   else
     echo "FATAL: rollback restarted the service but it is not answering on :8160"
@@ -215,6 +217,21 @@ sudo systemctl daemon-reload
 echo "==> Starting $SERVICE..."
 sudo systemctl start "$SERVICE"
 
+# Every route but /health is gated. The readiness poll therefore reads the
+# service token the unit carries — from the same host-local file, so the check
+# exercises the real credential — and proves both that a gated route answers it
+# and that a bare call is refused.
+TOKEN_FILE="${LLM_BRIDGE_TOKEN_FILE:-/home/kayushkincom/.config/principal-gating-tokens.env}"
+SERVICE_TOKEN="${LLMBRIDGE_SERVICE_TOKEN:-}"
+if [ -z "$SERVICE_TOKEN" ] && [ -r "$TOKEN_FILE" ]; then
+  SERVICE_TOKEN="$(sed -n 's/^LLMBRIDGE_SERVICE_TOKEN=//p' "$TOKEN_FILE" | head -1)"
+fi
+if [ -z "$SERVICE_TOKEN" ]; then
+  echo "ERROR: no LLMBRIDGE_SERVICE_TOKEN to verify with (looked in the environment and $TOKEN_FILE)"
+  rollback
+  exit 1
+fi
+
 echo "==> Verifying..."
 # `is-active` proves a process exists, not that the binary answers: a
 # duplicate route registration compiles, vets, and then panics at boot. Poll
@@ -222,17 +239,23 @@ echo "==> Verifying..."
 # sleep that is either too short or wasted.
 READY=""
 for _ in $(seq 1 30); do
-  if curl -fsS http://localhost:8160/sessions >/dev/null 2>&1; then READY=1; break; fi
+  if curl -fsS -H "X-LLM-Bridge-Service-Token: $SERVICE_TOKEN" http://localhost:8160/sessions >/dev/null 2>&1; then READY=1; break; fi
   if ! systemctl is-active --quiet "$SERVICE"; then break; fi
   sleep 1
 done
 if [ -z "$READY" ]; then
-  echo "ERROR: $SERVICE is not answering on :8160/sessions after 30s"
+  echo "ERROR: $SERVICE is not answering the service token on :8160/sessions after 30s"
   journalctl -u "$SERVICE" -n 30 --no-pager 2>&1
   rollback
   exit 1
 fi
-echo "    $SERVICE is running and answering on :8160"
+echo "    $SERVICE is running and answering the service token on :8160"
+if [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8160/sessions)" != "401" ]; then
+  echo "ERROR: /sessions answered an unauthenticated call with something other than 401"
+  rollback
+  exit 1
+fi
+echo "    an unauthenticated /sessions is refused"
 journalctl -u "$SERVICE" -n 5 --no-pager 2>&1 | grep -v '^--'
 
 echo "==> Smoke test..."
