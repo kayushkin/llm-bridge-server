@@ -333,13 +333,13 @@ func TestDeleteSession_NotFound(t *testing.T) {
 // Session state transitions
 // ──────────────────────────────────────────────────────────────────────────────
 
-func TestUpdateSessionState(t *testing.T) {
+func TestWriteSessionStatus_WritesTheState(t *testing.T) {
 	s := testStore(t)
 
 	sess := &Session{SessionID: "br_state", Harness: "mock", State: "idle"}
 	s.CreateSession(sess)
 
-	if err := s.UpdateSessionState("br_state", "running"); err != nil {
+	if err := writeSessionState(s, "br_state", "running"); err != nil {
 		t.Fatalf("update state: %v", err)
 	}
 
@@ -349,9 +349,9 @@ func TestUpdateSessionState(t *testing.T) {
 	}
 }
 
-func TestUpdateSessionState_NotFound(t *testing.T) {
+func TestWriteSessionStatus_NotFound(t *testing.T) {
 	s := testStore(t)
-	err := s.UpdateSessionState("nonexistent", "running")
+	err := writeSessionState(s, "nonexistent", "running")
 	if err == nil {
 		t.Fatal("expected error for nonexistent session")
 	}
@@ -839,4 +839,14 @@ func TestInterruptedTurnCountsOnlyTheInterruptedTurnsToolCalls(t *testing.T) {
 	if got.ToolCallsAlreadyRun != 1 {
 		t.Errorf("ToolCallsAlreadyRun = %d, want 1", got.ToolCallsAlreadyRun)
 	}
+}
+
+// writeSessionState writes a bare state through the only write path there is.
+func writeSessionState(s *Store, bridgeID, state string) error {
+	_, err := s.WriteSessionStatus(bridgeID, &msg.Event{
+		Type:      msg.EventSessionStatus,
+		Timestamp: time.Now(),
+		Status:    &msg.SessionStatus{State: msg.SessionState(state)},
+	})
+	return err
 }

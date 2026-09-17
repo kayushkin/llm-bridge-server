@@ -113,7 +113,7 @@ func (s *Server) handleSwitchMode(w http.ResponseWriter, r *http.Request) {
 	}
 	credID := resolveCredential(s.harnessStore, inst.ID)
 	if _, startErr := s.startOnInstance(r.Context(), sess, inst, credID); startErr != nil {
-		s.store.UpdateSessionState(bridgeID, string(msg.SessionError))
+		s.harness.ForceSessionState(bridgeID, msg.SessionError, "spawn_failed")
 		sess.State = string(msg.SessionError)
 		http.Error(w, fmt.Sprintf("spawn in %s mode: %v", req.Mode, startErr), http.StatusInternalServerError)
 		return

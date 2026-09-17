@@ -13,7 +13,7 @@ import (
 
 func TestApplyExternalStatePromotesASettledTurn(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "All set."}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "All set."}})
 	if got := d.currentState(); got != msg.SessionIdle {
 		t.Fatalf("state after a plain turn-end = %q, want idle", got)
 	}
@@ -34,7 +34,7 @@ func TestApplyExternalStateDemotesAHeuristicFalsePositive(t *testing.T) {
 	d := newDerivationState()
 	// "does that make sense?" ends in a question mark, so the heuristic parks
 	// the session even though nothing was asked.
-	d.derive(&msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "I renamed the field. Does that make sense?"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "I renamed the field. Does that make sense?"}})
 	if got := d.currentState(); got != msg.SessionAwaitingUser {
 		t.Fatalf("state = %q, want the heuristic to have parked it at awaiting_user", got)
 	}
@@ -49,10 +49,10 @@ func TestApplyExternalStateDemotesAHeuristicFalsePositive(t *testing.T) {
 
 func TestApplyExternalStateIsDroppedOnceANewTurnHasOpened(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "All set."}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "All set."}})
 	// The user replied before the classifier answered. A turn opens at
 	// model_generating — no tool has been called yet, and none may ever be.
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
 	if got := d.currentState(); got != msg.SessionModelGenerating {
 		t.Fatalf("state = %q, want model_generating", got)
 	}
@@ -68,7 +68,7 @@ func TestApplyExternalStateIsDroppedOnceANewTurnHasOpened(t *testing.T) {
 
 func TestApplyExternalStateWithoutABoundWritesNothing(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "All set."}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "All set."}})
 
 	// A caller that forgets allowedFrom gets no write, not an unbounded one:
 	// the failure mode of an unbounded default is silent state corruption.
@@ -82,7 +82,7 @@ func TestApplyExternalStateWithoutABoundWritesNothing(t *testing.T) {
 
 func TestApplyExternalStateEmitsNothingWhenTheStateAlreadyMatches(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "Which branch should I use?"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "Which branch should I use?"}})
 	if got := d.currentState(); got != msg.SessionAwaitingUser {
 		t.Fatalf("state = %q, want awaiting_user", got)
 	}

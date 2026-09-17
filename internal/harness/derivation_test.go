@@ -16,7 +16,7 @@ func sessionStateOf(t *testing.T, d *derivationState, evs []msg.Event) []msg.Ses
 	t.Helper()
 	var emitted []msg.SessionState
 	for i := range evs {
-		for _, derived := range d.derive(&evs[i]) {
+		for _, derived := range deriveWithoutStatus(d, &evs[i]) {
 			if derived.Type != msg.EventSessionState {
 				continue
 			}
@@ -72,9 +72,9 @@ func TestDerivation_NoTransitionEmitsNoEvent(t *testing.T) {
 	// The FIRST tool_call is a real transition now — the turn opened in
 	// model_generating, so this is where the tool actually takes over. The
 	// second must be silent: state is already tool_running.
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	first := d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
-	second := d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t2", Name: "Read"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	first := deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	second := deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t2", Name: "Read"}})
 	if st := firstSessionState(first); st == nil || st.State.State != msg.SessionToolRunning {
 		t.Fatalf("first tool_call should transition model_generating→tool_running; got %v", first)
 	}
@@ -85,12 +85,12 @@ func TestDerivation_NoTransitionEmitsNoEvent(t *testing.T) {
 
 func TestDerivation_MultipleConcurrentTools(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
-	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t2", Name: "Read"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t2", Name: "Read"}})
 
 	// First tool returns — still one in flight, should not transition.
-	if got := d.derive(&msg.Event{Type: msg.EventToolResult, ToolResult: &msg.ToolResultEvent{ToolID: "t1"}}); len(got) != 0 {
+	if got := deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolResult, ToolResult: &msg.ToolResultEvent{ToolID: "t1"}}); len(got) != 0 {
 		t.Fatalf("first tool_result with another in flight: got %v; want no transition", got)
 	}
 	if d.sessionState != msg.SessionToolRunning {
@@ -100,13 +100,13 @@ func TestDerivation_MultipleConcurrentTools(t *testing.T) {
 	// Second tool returns — the LAST one, so the tools have drained and the
 	// model picks back up. The turn is still not done; that is what the
 	// result below is for.
-	got2 := d.derive(&msg.Event{Type: msg.EventToolResult, ToolResult: &msg.ToolResultEvent{ToolID: "t2"}})
+	got2 := deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolResult, ToolResult: &msg.ToolResultEvent{ToolID: "t2"}})
 	if st := firstSessionState(got2); st == nil || st.State.State != msg.SessionModelGenerating {
 		t.Fatalf("last tool_result should transition tool_running→model_generating; got %v", got2)
 	}
 
 	// Result closes the turn.
-	got := d.derive(&msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{}})
+	got := deriveWithoutStatus(d, &msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{}})
 	as := firstSessionState(got)
 	if as == nil || as.State.State != msg.SessionIdle {
 		t.Fatalf("result transition = %+v; want idle agent_state", got)
@@ -118,11 +118,11 @@ func TestDerivation_MultipleConcurrentTools(t *testing.T) {
 
 func TestDerivation_ApprovalOverridesToolRunning(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 
 	// Approval requested — overrides tool_running.
-	got := d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "pending"}})
+	got := deriveWithoutStatus(d, &msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "pending"}})
 	if len(got) != 1 || got[0].State.State != msg.SessionAwaitingPermission {
 		t.Fatalf("pending approval: got %+v; want awaiting_input", got)
 	}
@@ -131,7 +131,7 @@ func TestDerivation_ApprovalOverridesToolRunning(t *testing.T) {
 	}
 
 	// Approved — should restore tool_running (the pre-approval state).
-	got = d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "approved"}})
+	got = deriveWithoutStatus(d, &msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "approved"}})
 	if len(got) != 1 || got[0].State.State != msg.SessionToolRunning {
 		t.Fatalf("approved: got %+v; want tool_running", got)
 	}
@@ -140,8 +140,8 @@ func TestDerivation_ApprovalOverridesToolRunning(t *testing.T) {
 	}
 
 	// Tool result + result close the turn cleanly.
-	d.derive(&msg.Event{Type: msg.EventToolResult, ToolResult: &msg.ToolResultEvent{ToolID: "t1"}})
-	got = d.derive(&msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolResult, ToolResult: &msg.ToolResultEvent{ToolID: "t1"}})
+	got = deriveWithoutStatus(d, &msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{}})
 	as := firstSessionState(got)
 	if as == nil || as.State.State != msg.SessionIdle {
 		t.Fatalf("final result: got %+v; want idle agent_state", got)
@@ -150,13 +150,13 @@ func TestDerivation_ApprovalOverridesToolRunning(t *testing.T) {
 
 func TestDerivation_ApprovalDeniedRestoresModelGenerating(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "pending"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "pending"}})
 
 	// The turn continues, but not as a tool: a denied tool never runs, and
 	// what resumes is the model reading the refusal. The prompt arrived
 	// while the turn was in model_generating, and that is what is restored.
-	got := d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "denied"}})
+	got := deriveWithoutStatus(d, &msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "denied"}})
 	if len(got) != 1 || got[0].State.State != msg.SessionModelGenerating {
 		t.Fatalf("denied: got %+v; want model_generating (turn continues, no tool ran)", got)
 	}
@@ -164,11 +164,11 @@ func TestDerivation_ApprovalDeniedRestoresModelGenerating(t *testing.T) {
 
 func TestDerivation_AutoApprovedNoPriorPendingIsNoop(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
 
 	// Pre-resolved approvals (e.g. cline auto_approved without a
 	// preceding pending) shouldn't bounce the state machine.
-	if got := d.derive(&msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "auto_approved"}}); len(got) != 0 {
+	if got := deriveWithoutStatus(d, &msg.Event{Type: msg.EventApproval, Approval: &msg.ApprovalEvent{Status: "auto_approved"}}); len(got) != 0 {
 		t.Fatalf("auto_approved with no prior pending: got %+v; want no transition", got)
 	}
 	if d.sessionState != msg.SessionModelGenerating {
@@ -178,10 +178,10 @@ func TestDerivation_AutoApprovedNoPriorPendingIsNoop(t *testing.T) {
 
 func TestDerivation_ErrorTermination(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 
-	got := d.derive(&msg.Event{Type: msg.EventError, Error: &msg.ErrorEvent{Code: "boom"}})
+	got := deriveWithoutStatus(d, &msg.Event{Type: msg.EventError, Error: &msg.ErrorEvent{Code: "boom"}})
 	if len(got) != 1 || got[0].State.State != msg.SessionError {
 		t.Fatalf("error: got %+v; want error", got)
 	}
@@ -192,10 +192,10 @@ func TestDerivation_ErrorTermination(t *testing.T) {
 
 func TestDerivation_AbortedSessionEmitsAborted(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 
-	got := d.derive(&msg.Event{
+	got := deriveWithoutStatus(d, &msg.Event{
 		Type:  msg.EventSessionState,
 		State: &msg.StateEvent{State: msg.SessionAborted},
 	})
@@ -209,10 +209,10 @@ func TestDerivation_AbortedSessionEmitsAborted(t *testing.T) {
 
 func TestDerivation_HookAwaitingResolutionEntersAwaitingPermission(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 
-	got := d.derive(&msg.Event{
+	got := deriveWithoutStatus(d, &msg.Event{
 		Type: msg.EventHook,
 		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-1", Source: "permission_prompt"},
 	})
@@ -229,14 +229,14 @@ func TestDerivation_HookAwaitingResolutionEntersAwaitingPermission(t *testing.T)
 
 func TestDerivation_HookCompletedRestoresPriorState(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
-	d.derive(&msg.Event{
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	deriveWithoutStatus(d, &msg.Event{
 		Type: msg.EventHook,
 		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-1", Source: "permission_prompt"},
 	})
 
-	got := d.derive(&msg.Event{
+	got := deriveWithoutStatus(d, &msg.Event{
 		Type: msg.EventHook,
 		Hook: &msg.HookEvent{Phase: "completed", RequestID: "req-1"},
 	})
@@ -253,16 +253,16 @@ func TestDerivation_HookCompletedRestoresPriorState(t *testing.T) {
 
 func TestDerivation_HookMultipleConcurrentDrainOrderIndependent(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 
 	// Two pending hooks. The second should NOT re-emit awaiting_permission
 	// (already there); resolving one of them should NOT restore (one still pending).
-	d.derive(&msg.Event{
+	deriveWithoutStatus(d, &msg.Event{
 		Type: msg.EventHook,
 		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-1"},
 	})
-	got := d.derive(&msg.Event{
+	got := deriveWithoutStatus(d, &msg.Event{
 		Type: msg.EventHook,
 		Hook: &msg.HookEvent{Phase: "awaiting_resolution", RequestID: "req-2"},
 	})
@@ -270,7 +270,7 @@ func TestDerivation_HookMultipleConcurrentDrainOrderIndependent(t *testing.T) {
 		t.Fatalf("second hook awaiting_resolution: got transition %+v; want no transition (already awaiting)", got)
 	}
 
-	got = d.derive(&msg.Event{
+	got = deriveWithoutStatus(d, &msg.Event{
 		Type: msg.EventHook,
 		Hook: &msg.HookEvent{Phase: "completed", RequestID: "req-1"},
 	})
@@ -278,7 +278,7 @@ func TestDerivation_HookMultipleConcurrentDrainOrderIndependent(t *testing.T) {
 		t.Fatalf("first resolution while another pending: got %+v; want no transition", got)
 	}
 
-	got = d.derive(&msg.Event{
+	got = deriveWithoutStatus(d, &msg.Event{
 		Type: msg.EventHook,
 		Hook: &msg.HookEvent{Phase: "completed", RequestID: "req-2"},
 	})
@@ -291,13 +291,13 @@ func TestDerivation_HookEmptyBodyIsNoop(t *testing.T) {
 	// Defensive: a hook event with no body or empty request_id should
 	// not crash and should not transition.
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
 
 	for _, ev := range []msg.Event{
 		{Type: msg.EventHook},
 		{Type: msg.EventHook, Hook: &msg.HookEvent{Phase: "awaiting_resolution"}}, // no RequestID
 	} {
-		if got := d.derive(&ev); len(got) != 0 {
+		if got := deriveWithoutStatus(d, &ev); len(got) != 0 {
 			t.Errorf("hook %+v: got transition %+v; want none", ev, got)
 		}
 	}
@@ -305,9 +305,9 @@ func TestDerivation_HookEmptyBodyIsNoop(t *testing.T) {
 
 func TestDerivation_ResultWithQuestionEmitsAwaitingUser(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
 
-	got := d.derive(&msg.Event{
+	got := deriveWithoutStatus(d, &msg.Event{
 		Type:   msg.EventResult,
 		Result: &msg.ResultEvent{Text: "All set. Want me to ship it?"},
 	})
@@ -319,9 +319,9 @@ func TestDerivation_ResultWithQuestionEmitsAwaitingUser(t *testing.T) {
 
 func TestDerivation_ResultWithoutQuestionEmitsIdle(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
 
-	got := d.derive(&msg.Event{
+	got := deriveWithoutStatus(d, &msg.Event{
 		Type:   msg.EventResult,
 		Result: &msg.ResultEvent{Text: "Done — committed and pushed."},
 	})
@@ -358,12 +358,12 @@ func TestDerivation_LooksLikeQuestion(t *testing.T) {
 
 func TestDerivation_StreamEventsAreNotTransitions(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
 
 	// EventStream / EventBlock / EventThinking / EventSystem should all be
 	// no-ops — they don't appear in the transition table.
 	for _, t2 := range []msg.EventType{msg.EventStream, msg.EventBlock, msg.EventThinking, msg.EventSystem, msg.EventPlan, msg.EventSessionInfo, msg.EventHook} {
-		if got := d.derive(&msg.Event{Type: t2}); len(got) != 0 {
+		if got := deriveWithoutStatus(d, &msg.Event{Type: t2}); len(got) != 0 {
 			t.Errorf("%s: got transition %+v; want none", t2, got)
 		}
 	}
@@ -371,7 +371,7 @@ func TestDerivation_StreamEventsAreNotTransitions(t *testing.T) {
 
 func TestDerivation_TransitionEventsCarryCauseCorrelation(t *testing.T) {
 	d := newDerivationState()
-	got := d.derive(&msg.Event{
+	got := deriveWithoutStatus(d, &msg.Event{
 		Type:             msg.EventUserMessage,
 		Harness:          msg.HarnessClaudeCode,
 		BridgeSessionID:  "br-1",
@@ -411,7 +411,7 @@ func equalStates(a, b []msg.SessionState) bool {
 func derivedOf(d *derivationState, evs []msg.Event) []msg.Event {
 	var out []msg.Event
 	for i := range evs {
-		out = append(out, d.derive(&evs[i])...)
+		out = append(out, deriveWithoutStatus(d, &evs[i])...)
 	}
 	return out
 }
@@ -688,8 +688,8 @@ func TestDerivation_UsageTotal_IsByokSticky(t *testing.T) {
 
 func TestDerivation_UsageTotal_CarriesCauseCorrelation(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	got := d.derive(&msg.Event{
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	got := deriveWithoutStatus(d, &msg.Event{
 		Type:             msg.EventResult,
 		Harness:          msg.HarnessClaudeCode,
 		BridgeSessionID:  "sess-2",
@@ -1073,14 +1073,14 @@ func TestDerivation_TurnComplete_InflightEvictionLogsWarning(t *testing.T) {
 	d := newDerivationState()
 	for i := 0; i < maxInflightTurns+2; i++ {
 		turnID := "turn-" + string(rune('a'+i))
-		d.derive(&msg.Event{Type: msg.EventUserMessage, TurnID: turnID})
+		deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage, TurnID: turnID})
 	}
 	if len(d.turnAccums) != maxInflightTurns {
 		t.Fatalf("turnAccums size = %d; want cap=%d", len(d.turnAccums), maxInflightTurns)
 	}
 	// First two turns ("turn-a", "turn-b") were evicted. A late
 	// terminator for an evicted turn should NOT emit turn_complete.
-	got := d.derive(&msg.Event{Type: msg.EventResult, TurnID: "turn-a", Result: &msg.ResultEvent{}})
+	got := deriveWithoutStatus(d, &msg.Event{Type: msg.EventResult, TurnID: "turn-a", Result: &msg.ResultEvent{}})
 	if tc := turnCompleteEvents(got); len(tc) != 0 {
 		t.Fatalf("evicted turn emitted turn_complete on late terminator: %+v", tc)
 	}
@@ -1088,8 +1088,8 @@ func TestDerivation_TurnComplete_InflightEvictionLogsWarning(t *testing.T) {
 
 func TestDerivation_TurnComplete_CarriesCauseCorrelation(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage, TurnID: "turn-1"})
-	got := d.derive(&msg.Event{
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage, TurnID: "turn-1"})
+	got := deriveWithoutStatus(d, &msg.Event{
 		Type:             msg.EventResult,
 		Harness:          msg.HarnessClaudeCode,
 		BridgeSessionID:  "sess-1",
@@ -1177,17 +1177,17 @@ func TestDerivation_TurnComplete_ToolResultWithoutCallStillRecorded(t *testing.T
 // never once recorded (finding §5); these two pin the path that produces it.
 func TestDerivation_ManualCompactionOpensAndRestores(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 
-	got := d.derive(&msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "compact_ack"}})
+	got := deriveWithoutStatus(d, &msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "compact_ack"}})
 	if st := firstSessionState(got); st == nil || st.State.State != msg.SessionCompacting {
 		t.Fatalf("compact_ack: got %v; want compacting", got)
 	}
 
 	// Restores what the turn was doing, not idle — a compaction interrupts a
 	// turn, it does not end one. The tool was in flight when it started.
-	got = d.derive(&msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "compact_boundary"}})
+	got = deriveWithoutStatus(d, &msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "compact_boundary"}})
 	if st := firstSessionState(got); st == nil || st.State.State != msg.SessionToolRunning {
 		t.Fatalf("compact_boundary: got %v; want tool_running restored", got)
 	}
@@ -1198,15 +1198,15 @@ func TestDerivation_ManualCompactionOpensAndRestores(t *testing.T) {
 // invent a transition out of a state the session was never in.
 func TestDerivation_AutomaticCompactionBoundaryWithoutAckIsNoop(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
 	// A TOOL is in flight when the automatic boundary lands. This detail is
 	// the whole test: with the turn merely in model_generating, a boundary
 	// that wrongly restored would compute model_generating anyway and the
 	// bug would hide behind next==prev. From tool_running the wrong answer
 	// is observable.
-	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 
-	if got := d.derive(&msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "compact_boundary"}}); len(got) != 0 {
+	if got := deriveWithoutStatus(d, &msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "compact_boundary"}}); len(got) != 0 {
 		t.Fatalf("boundary with no preceding ack: got %v; want no transition", got)
 	}
 	if d.sessionState != msg.SessionToolRunning {
@@ -1218,9 +1218,9 @@ func TestDerivation_AutomaticCompactionBoundaryWithoutAckIsNoop(t *testing.T) {
 // forwards many system subtypes (task_*, status, …) down the same channel.
 func TestDerivation_UnrelatedSystemEventDoesNotTransition(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
 
-	if got := d.derive(&msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "status"}}); len(got) != 0 {
+	if got := deriveWithoutStatus(d, &msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{Subtype: "status"}}); len(got) != 0 {
 		t.Fatalf("unrelated system subtype: got %v; want no transition", got)
 	}
 }
@@ -1231,8 +1231,8 @@ func TestDerivation_UnrelatedSystemEventDoesNotTransition(t *testing.T) {
 // not coming back.
 func TestDerivation_ForceStateReportsPreviousAndClearsInflight(t *testing.T) {
 	d := newDerivationState()
-	d.derive(&msg.Event{Type: msg.EventUserMessage})
-	d.derive(&msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
+	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 
 	prev, changed := d.forceState(msg.SessionPaused)
 	if !changed {

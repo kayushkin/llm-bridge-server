@@ -31,7 +31,7 @@ func TestDerivationPassesThroughEveryStateMarkDoneCanSend(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newDerivationStateSeeded(tc.start)
-			got := d.derive(&msg.Event{
+			got := deriveWithoutStatus(d, &msg.Event{
 				Type:  msg.EventSessionState,
 				State: &msg.StateEvent{State: tc.send},
 			})
@@ -76,7 +76,7 @@ func TestDerivationMarkDoneRoundTripReturnsToIdle(t *testing.T) {
 // done again is exactly this case, and it happens on every double click.
 func TestDerivationSuppressesALifecycleStateItIsAlreadyIn(t *testing.T) {
 	d := newDerivationStateSeeded(msg.SessionIdle)
-	if got := d.derive(&msg.Event{
+	if got := deriveWithoutStatus(d, &msg.Event{
 		Type:  msg.EventSessionState,
 		State: &msg.StateEvent{State: msg.SessionIdle},
 	}); firstSessionState(got) != nil {

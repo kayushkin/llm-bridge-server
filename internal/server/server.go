@@ -675,7 +675,7 @@ func (s *Server) watchdogTick() {
 			// Drop back to idle so autoResume's startOnInstance path takes a
 			// clean state transition. Skip the auto-resume on failure to flip
 			// state — leaving it active would just refire next tick.
-			if err := s.store.UpdateSessionState(sess.SessionID, string(msg.SessionIdle)); err != nil {
+			if _, err := s.harness.ForceSessionState(sess.SessionID, msg.SessionIdle, "watchdog_no_process"); err != nil {
 				log.Printf("[watchdog] %s: state reset failed: %v", sess.SessionID, err)
 				continue
 			}
@@ -724,7 +724,7 @@ func (s *Server) reapIdleTick() {
 		// Kill may fail if the process already exited — flip state anyway so
 		// the row reflects reality and the watchdog won't try to resume it.
 		_ = s.harness.Kill(id)
-		if err := s.store.UpdateSessionState(id, string(msg.SessionAborted)); err != nil {
+		if _, err := s.harness.ForceSessionState(id, msg.SessionAborted, "idle_reaped"); err != nil {
 			log.Printf("[reaper] %s: state transition failed: %v", id, err)
 		}
 	}

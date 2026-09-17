@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // The wire types below mirror chat-core/src/net/types.ts EXACTLY (camelCase
@@ -36,6 +37,13 @@ type SessionSummary struct {
 	// SpendUSD is the session's cost estimate so far, in US dollars — every
 	// session, oneshot calls included (msg.ManagedSession.SpendUSD).
 	SpendUSD  float64 `json:"spendUsd"`
+	// Status is the session's whole status, exactly as msg.SessionStatus
+	// serializes it — the same JSON the session-list stream's upsert carries
+	// and the same an EventSessionStatus carries, so a client has one decoder
+	// for all three. It is NOT re-keyed to camelCase like the fields around
+	// it: a second spelling of one struct is a second thing to keep in step.
+	// State above is Status.State, kept for the consumers that filter on it.
+	Status *msg.SessionStatus `json:"status"`
 	UpdatedAt string  `json:"updatedAt"`
 	CreatedAt        string `json:"createdAt"`
 }
@@ -127,6 +135,7 @@ func summaryFromRow(r store.SessionSummaryRow) SessionSummary {
 
 		ManagerSessionID: r.ManagerSessionID,
 		SpendUSD:         r.SpendUSD,
+		Status:           r.Status,
 	}
 }
 

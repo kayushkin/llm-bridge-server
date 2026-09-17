@@ -232,7 +232,7 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 
 	const bridgeID = "br-derivation-test"
 
-	// Seed a session row so UpdateSessionPID/UpdateSessionState
+	// Seed a session row so UpdateSessionPID/WriteSessionStatus
 	// inside readEvents have something to update. The store's
 	// methods are tolerant of unknown ids (they no-op), but
 	// seeding keeps the test honest.
@@ -262,7 +262,7 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 	}
 	close(proc.ch)
 
-	got := recvWithin(t, sub, 10, 2*time.Second)
+	got := recvWithin(t, sub, 14, 2*time.Second)
 
 	// Every raw event that moves the state machine is now followed by its
 	// own session_state. The turn opens in model_generating, the tool_call
@@ -272,14 +272,20 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 	wantOrder := []msg.EventType{
 		msg.EventUserMessage,
 		msg.EventSessionState,
+		msg.EventSessionStatus,
 		msg.EventToolCall,
 		msg.EventSessionState,
+		msg.EventSessionStatus,
 		msg.EventToolResult,
 		msg.EventSessionState,
+		msg.EventSessionStatus,
 		msg.EventResult,
 		msg.EventSessionState,
 		msg.EventUsageTotal,
 		msg.EventTurnComplete,
+		// Always last in its batch: it describes the session after
+		// everything the source event caused has been applied.
+		msg.EventSessionStatus,
 	}
 	for i, ev := range got {
 		if ev.Type != wantOrder[i] {
@@ -301,17 +307,17 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 		t.Fatalf("derived event missing bridge_session_id stamp: %+v", first.Event)
 	}
 
-	toolTransition := got[3]
+	toolTransition := got[4]
 	if toolTransition.State == nil || toolTransition.State.Previous != msg.SessionModelGenerating || toolTransition.State.State != msg.SessionToolRunning {
 		t.Fatalf("tool session_state body = %+v; want model_generating→tool_running", toolTransition.State)
 	}
 
-	drainTransition := got[5]
+	drainTransition := got[7]
 	if drainTransition.State == nil || drainTransition.State.Previous != msg.SessionToolRunning || drainTransition.State.State != msg.SessionModelGenerating {
 		t.Fatalf("drain session_state body = %+v; want tool_running→model_generating", drainTransition.State)
 	}
 
-	idleTransition := got[7]
+	idleTransition := got[10]
 	if idleTransition.State == nil || idleTransition.State.Previous != msg.SessionModelGenerating || idleTransition.State.State != msg.SessionIdle {
 		t.Fatalf("idle session_state body = %+v; want model_generating→idle", idleTransition.State)
 	}
@@ -319,7 +325,7 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 		t.Fatalf("idle session_state derived event has zero RowID — not persisted")
 	}
 
-	usageTotal := got[8]
+	usageTotal := got[11]
 	if usageTotal.UsageTotal == nil || usageTotal.UsageTotal.Turns != 1 {
 		t.Fatalf("usage_total body = %+v; want turns=1", usageTotal.UsageTotal)
 	}
@@ -330,7 +336,7 @@ func TestManager_DerivesSessionStateAfterRawEvent(t *testing.T) {
 		t.Fatalf("usage_total missing bridge_session_id stamp: %+v", usageTotal.Event)
 	}
 
-	turnComplete := got[9]
+	turnComplete := got[12]
 	if turnComplete.TurnComplete == nil || turnComplete.TurnComplete.TurnID != "turn-1" {
 		t.Fatalf("turn_complete body = %+v; want turn_id=turn-1", turnComplete.TurnComplete)
 	}
@@ -411,8 +417,9 @@ func TestManager_UsageTotalSnapshotsAcrossTurns(t *testing.T) {
 	// Per turn we receive 6 events: user_message, agent_state
 	// (idle→tool_running), result, agent_state (tool_running→idle),
 	// usage_total, turn_complete — plus a session_cost for each PRICED turn
-	// (turns 1 and 3). 20 total.
-	all := recvWithin(t, sub, 20, 3*time.Second)
+	// (turns 1 and 3) — and a session_status after each of the two state
+	// changes a turn makes. 26 total.
+	all := recvWithin(t, sub, 26, 3*time.Second)
 
 	var totals []*msg.UsageTotalEvent
 	for _, ev := range all {
@@ -693,7 +700,7 @@ func TestManager_SeedsDerivationPrevFromStateAfterRestart(t *testing.T) {
 	}
 	// Persisted row is holding at tool_running (as a live turn would be)
 	// with NO in-memory derivation entry — the post-restart condition.
-	if err := m.store.UpdateSessionState(bridgeID, string(msg.SessionToolRunning)); err != nil {
+	if err := writeStaleSessionState(m, bridgeID, msg.SessionToolRunning); err != nil {
 		t.Fatalf("set tool_running: %v", err)
 	}
 	m.mu.RLock()
@@ -753,7 +760,7 @@ func TestManager_ReconcilesStaleSettledRowWhenTransitionSuppressed(t *testing.T)
 	m.mu.Unlock()
 	// ...but the persisted row was written directly to a holding value,
 	// bypassing derivation (as manager.Start/Resume do).
-	if err := m.store.UpdateSessionState(bridgeID, string(msg.SessionToolRunning)); err != nil {
+	if err := writeStaleSessionState(m, bridgeID, msg.SessionToolRunning); err != nil {
 		t.Fatalf("set tool_running: %v", err)
 	}
 
@@ -763,8 +770,9 @@ func TestManager_ReconcilesStaleSettledRowWhenTransitionSuppressed(t *testing.T)
 		TurnID: "turn-y", Result: &msg.ResultEvent{Text: "done"},
 	})
 
-	// usage_total (from the loop) + the reconcile session_state (after).
-	got := recvWithin(t, sub, 2, 2*time.Second)
+	// usage_total and session_status (from the loop), then the reconcile
+	// session_state.
+	got := recvWithin(t, sub, 3, 2*time.Second)
 	ss := firstStoredSessionState(got)
 	if ss == nil {
 		t.Fatalf("reconcile did not broadcast a session_state; got %+v", eventTypes(got))
@@ -858,12 +866,13 @@ func TestManager_ForceSessionStateBroadcastsAndPersists(t *testing.T) {
 
 	// Open a turn so there is a live derivation holding a real state.
 	proc.ch <- msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, Harness: msg.HarnessClaudeCode, TurnID: "turn-1"}
-	got := recvWithin(t, sub, 2, 2*time.Second)
+	// user_message, its session_state, and the session_status that follows.
+	got := recvWithin(t, sub, 3, 2*time.Second)
 	if got[1].State == nil || got[1].State.State != msg.SessionModelGenerating {
 		t.Fatalf("turn open = %+v; want model_generating", got[1].State)
 	}
 
-	if !m.ForceSessionState(bridgeID, msg.SessionPaused, "user_interrupt") {
+	if changed, err := m.ForceSessionState(bridgeID, msg.SessionPaused, "user_interrupt"); err != nil || !changed {
 		t.Fatal("ForceSessionState reported no change; want changed")
 	}
 
@@ -890,9 +899,20 @@ func TestManager_ForceSessionStateBroadcastsAndPersists(t *testing.T) {
 	}
 
 	// Forcing the state it already holds must not emit a second event.
-	if m.ForceSessionState(bridgeID, msg.SessionPaused, "user_interrupt") {
+	if changed, _ := m.ForceSessionState(bridgeID, msg.SessionPaused, "user_interrupt"); changed {
 		t.Fatal("re-forcing the held state reported a change; want none")
 	}
 
 	close(proc.ch)
+}
+
+// writeStaleSessionState puts a state on the session row behind the
+// derivation's back, which is what the settle reconcile exists to correct.
+func writeStaleSessionState(m *Manager, bridgeID string, state msg.SessionState) error {
+	_, err := m.store.WriteSessionStatus(bridgeID, &msg.Event{
+		Type:      msg.EventSessionStatus,
+		Timestamp: time.Now(),
+		Status:    &msg.SessionStatus{State: state},
+	})
+	return err
 }

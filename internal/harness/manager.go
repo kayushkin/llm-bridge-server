@@ -471,7 +471,7 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 	// emitted its first event yet, which is exactly what the enum says that
 	// moment is. The derivation moves it on from here.
 	m.store.UpdateSessionPID(sess.SessionID, proc.PID())
-	m.store.UpdateSessionState(sess.SessionID, string(msg.SessionStarting))
+	m.ForceSessionState(sess.SessionID, msg.SessionStarting, "process_spawned")
 
 	// Start event reader goroutine
 	go m.readEvents(proc)
@@ -822,34 +822,33 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 // session had left, and no SSE subscriber ever heard the interrupt — only
 // derive() broadcasts. Every client learned about it by refetching, which
 // is why bridge-ui carried a localStorage set of interrupted ids instead.
-func (m *Manager) ForceSessionState(bridgeID string, state msg.SessionState, reason string) bool {
+func (m *Manager) ForceSessionState(bridgeID string, state msg.SessionState, reason string) (changed bool, err error) {
 	m.mu.Lock()
 	d := m.derivation[bridgeID]
 	m.mu.Unlock()
-	if d == nil {
-		// No live derivation — the process is gone, so there is no state
-		// machine to keep honest. Write the row and say so; the next
-		// derivation seeds itself from exactly this value.
-		if err := m.store.UpdateSessionState(bridgeID, string(state)); err != nil {
-			log.Printf("[harness] ForceSessionState: update session %s: %v", bridgeID, err)
-			return false
-		}
-		return true
-	}
-
-	prev, changed := d.forceState(state)
-	if !changed {
-		return false
-	}
-
-	if err := m.store.UpdateSessionState(bridgeID, string(state)); err != nil {
-		log.Printf("[harness] ForceSessionState: update session %s: %v", bridgeID, err)
-		return false
-	}
 
 	var harnessName msg.Harness
 	if sess, err := m.store.GetSession(bridgeID); err == nil && sess != nil {
 		harnessName = sess.Harness
+	}
+
+	if d == nil {
+		// No live derivation — the process is gone, so there is no state
+		// machine to keep honest and nothing can be in flight. The status is
+		// the state alone; the next derivation seeds itself from the row.
+		now := time.Now()
+		err := m.storeAndFanOutDerived(bridgeID, &msg.Event{
+			Type:      msg.EventSessionStatus,
+			Harness:   harnessName,
+			Timestamp: now,
+			Status:    &msg.SessionStatus{State: state, ChangedAt: now},
+		}, true)
+		return err == nil, err
+	}
+
+	prev, changed := d.forceState(state)
+	if !changed {
+		return false, nil
 	}
 
 	m.broadcastDerived(bridgeID, &msg.Event{
@@ -863,7 +862,27 @@ func (m *Manager) ForceSessionState(bridgeID string, state msg.SessionState, rea
 			Reason:   reason,
 		},
 	})
-	return true
+	if err := m.broadcastCurrentStatus(bridgeID, d, harnessName); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// broadcastCurrentStatus emits the derivation's status as it stands now, for
+// the two callers that change a session's state outside derive(): a forced
+// state and the settle reconcile. It is what writes the session row.
+func (m *Manager) broadcastCurrentStatus(bridgeID string, d *derivationState, harnessName msg.Harness) error {
+	d.mu.Lock()
+	status := d.statusLocked()
+	d.lastStatus = status
+	d.statusEmitted = true
+	d.mu.Unlock()
+	return m.broadcastDerived(bridgeID, &msg.Event{
+		Type:      msg.EventSessionStatus,
+		Harness:   harnessName,
+		Timestamp: time.Now(),
+		Status:    &status,
+	})
 }
 
 func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
@@ -889,6 +908,15 @@ func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 		m.derivation[bridgeID] = d
 	}
 	m.mu.Unlock()
+
+	// Read before anything below writes the row: the settle reconcile asks
+	// whether the row was stale when this terminal event arrived, and the
+	// session_status derive() emits would already have corrected it.
+	terminal := src.Type == msg.EventResult || src.Type == msg.EventError
+	var stateBeforeEvent msg.SessionState
+	if terminal {
+		stateBeforeEvent = m.persistedSessionState(bridgeID)
+	}
 
 	derived := d.derive(src)
 
@@ -922,8 +950,8 @@ func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 	// NOTE: the OTHER settle failure — a hung harness that never emits any
 	// terminator at all — is handled by the reaper and the
 	// TURN_IDLE_TIMEOUT watchdog in llm-bridge-claudecode, not here.
-	if (src.Type == msg.EventResult || src.Type == msg.EventError) && !emittedState {
-		m.reconcileSettledSessionState(bridgeID, d)
+	if terminal && !emittedState {
+		m.reconcileSettledSessionState(bridgeID, d, stateBeforeEvent)
 	}
 }
 
@@ -938,15 +966,12 @@ func (m *Manager) publishDerived(bridgeID string, derived []msg.Event) (emittedS
 	for i := range derived {
 		ev := &derived[i]
 
-		// SessionState transitions also update the persistent session
-		// row — derivation owns the authoritative state. readEvents no
-		// longer flips state on EventResult/EventError directly; this
-		// is the single point where session.state is written.
+		// A session_state transition does not write the session row itself.
+		// Every transition changes the status, so derive() follows it with a
+		// session_status in the same batch, and broadcasting THAT is the one
+		// place the row is written (state and status together).
 		if ev.Type == msg.EventSessionState && ev.State != nil {
 			emittedSessionState = true
-			if err := m.store.UpdateSessionState(bridgeID, string(ev.State.State)); err != nil {
-				log.Printf("[harness] failed to update session state for %s: %v", bridgeID, err)
-			}
 		}
 		m.broadcastDerived(bridgeID, ev)
 
@@ -964,18 +989,39 @@ func (m *Manager) publishDerived(bridgeID string, derived []msg.Event) (emittedS
 // subscribers. It stamps BridgeSessionID but does NOT write
 // sessions.state — callers own the state write so the single-source-of-
 // truth update stays explicit at each call site.
-func (m *Manager) broadcastDerived(bridgeID string, ev *msg.Event) {
+func (m *Manager) broadcastDerived(bridgeID string, ev *msg.Event) error {
+	return m.storeAndFanOutDerived(bridgeID, ev, false)
+}
+
+// storeAndFanOutDerived is broadcastDerived with a say over how log-store is
+// told. logStoreOffCallerGoroutine is for an event raised while the session
+// has no process: its log-store queue is closed then, and Enqueue falls back to
+// pushing on the caller's goroutine with up to 30s of retries — which would
+// put a spawn, a kill or the reaper behind a log-store outage.
+func (m *Manager) storeAndFanOutDerived(bridgeID string, ev *msg.Event, logStoreOffCallerGoroutine bool) error {
 	ev.BridgeSessionID = bridgeID
 
 	var rowID int64
-	if data, err := json.Marshal(ev); err == nil {
-		var storeErr error
+	var storeErr error
+	if ev.Type == msg.EventSessionStatus {
+		// A status is stored together with the session row it describes, and
+		// comes back stamped with its own row id as AsOf — see
+		// store.WriteSessionStatus. Nothing else writes a session's state.
+		rowID, storeErr = m.store.WriteSessionStatus(bridgeID, ev)
+		if storeErr != nil {
+			log.Printf("[harness] failed to write session status for %s: %v", bridgeID, storeErr)
+		}
+	} else if data, err := json.Marshal(ev); err == nil {
 		rowID, storeErr = m.store.StoreEventReturningID(bridgeID, string(ev.Type), "", "", data)
 		if storeErr != nil {
 			log.Printf("[harness] failed to store derived event: %v", storeErr)
 		}
 	}
-	m.logStoreWrites.Enqueue(bridgeID, "derived event", *ev)
+	if logStoreOffCallerGoroutine {
+		go m.logStoreWrites.Enqueue(bridgeID, "derived event", *ev)
+	} else {
+		m.logStoreWrites.Enqueue(bridgeID, "derived event", *ev)
+	}
 
 	stored := StoredEvent{Event: *ev, RowID: rowID}
 	m.mu.RLock()
@@ -989,6 +1035,7 @@ func (m *Manager) broadcastDerived(bridgeID string, ev *msg.Event) {
 			// Drop on a full channel — replay path covers it.
 		}
 	}
+	return storeErr
 }
 
 // persistedSessionState reads the canonical sessions.state row for
@@ -1033,13 +1080,15 @@ func (m *Manager) persistedSpend(bridgeID string) (float64, store.SessionSpendDe
 // (next==prev), so it fires exactly when the in-memory prev already
 // matched the settled state but the persisted row diverged.
 //
+// stored is the row's state as it read BEFORE the terminal event was derived.
+//
 // It gates on the persisted row (a) being a holding state — so a late
 // stray result cannot clobber a legitimate completed/aborted/paused row
 // — and (b) differing from the settled truth, so a row already correct
 // triggers no redundant write or broadcast. d.currentState() is the
 // settled target: derive() leaves d.sessionState at the terminal value
 // even when it suppressed the transition (prev already equalled next).
-func (m *Manager) reconcileSettledSessionState(bridgeID string, d *derivationState) {
+func (m *Manager) reconcileSettledSessionState(bridgeID string, d *derivationState, stored msg.SessionState) {
 	settled := d.currentState()
 
 	sess, err := m.store.GetSession(bridgeID)
@@ -1052,15 +1101,10 @@ func (m *Manager) reconcileSettledSessionState(bridgeID string, d *derivationSta
 	if sess == nil {
 		return
 	}
-	stored := msg.SessionState(sess.State)
 	if stored == settled || !isHoldingSessionState(stored) {
 		return
 	}
 
-	if err := m.store.UpdateSessionState(bridgeID, string(settled)); err != nil {
-		log.Printf("[harness] reconcileSettledSessionState: update session %s: %v", bridgeID, err)
-		return
-	}
 	log.Printf("[harness] reconciled stale session state for %s: %s → %s (turn settled, transition was suppressed)", bridgeID, stored, settled)
 
 	m.broadcastDerived(bridgeID, &msg.Event{
@@ -1074,6 +1118,9 @@ func (m *Manager) reconcileSettledSessionState(bridgeID string, d *derivationSta
 			Reason:   "turn_settled_reconcile",
 		},
 	})
+	// No session_status here: the one derive() emitted for this same terminal
+	// event has already written the row. What was missing, and what this
+	// supplies, is the session_state a consumer of transitions never heard.
 }
 
 // BroadcastEvent assigns a MessageID on ev (mutating it), persists, and fans
@@ -1456,7 +1503,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	m.mu.Unlock()
 
 	m.store.UpdateSessionPID(sess.SessionID, proc.PID())
-	m.store.UpdateSessionState(sess.SessionID, string(msg.SessionStarting))
+	m.ForceSessionState(sess.SessionID, msg.SessionStarting, "process_spawned")
 
 	if sess.Mode == msg.SessionModePTY {
 		// PTY processes have no event channel to drain; readEvents would
@@ -1506,7 +1553,7 @@ func (m *Manager) watchPTYExit(p *PTYProcess) {
 	}
 
 	m.store.UpdateSessionPID(bridgeID, 0)
-	m.store.UpdateSessionState(bridgeID, string(msg.SessionCompleted))
+	m.ForceSessionState(bridgeID, msg.SessionCompleted, "pty_exited")
 }
 
 // startSSH spawns a harness process on a remote machine via SSH. Reads

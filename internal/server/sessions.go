@@ -433,7 +433,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.AutoStart {
 		credID := resolveCredential(s.harnessStore, inst.ID)
 		if _, startErr := s.startOnInstance(r.Context(), sess, inst, credID); startErr != nil {
-			s.store.UpdateSessionState(sess.SessionID, string(msg.SessionError))
+			s.harness.ForceSessionState(sess.SessionID, msg.SessionError, "spawn_failed")
 			sess.State = string(msg.SessionError)
 		} else {
 			sess.State = string(msg.SessionStarting)
@@ -543,7 +543,7 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 		// Process might not be running, just update state
 	}
 
-	if err := s.store.UpdateSessionState(bridgeID, string(msg.SessionAborted)); err != nil {
+	if _, err := s.harness.ForceSessionState(bridgeID, msg.SessionAborted, "killed"); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -992,7 +992,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 
 	credID := resolveCredential(s.harnessStore, inst.ID)
 	if _, err := s.startOnInstance(context.Background(), forked, inst, credID); err != nil {
-		s.store.UpdateSessionState(forked.SessionID, string(msg.SessionError))
+		s.harness.ForceSessionState(forked.SessionID, msg.SessionError, "spawn_failed")
 		forked.State = string(msg.SessionError)
 	} else {
 		forked.State = string(msg.SessionStarting)

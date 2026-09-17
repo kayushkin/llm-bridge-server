@@ -37,7 +37,7 @@ func TestListSessionSummaries_NewestFirstProjection(t *testing.T) {
 	mkSummarySession(t, s, "c")
 	// Bump 'a' so it becomes the most recently updated.
 	time.Sleep(2 * time.Millisecond)
-	if err := s.UpdateSessionState("a", "running"); err != nil {
+	if err := writeSessionState(s, "a", "running"); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
@@ -326,7 +326,7 @@ func TestMaxSessionUpdatedAt_TracksNewest(t *testing.T) {
 		t.Fatalf("revision after insert = %q, err %v", rev1, err)
 	}
 	time.Sleep(2 * time.Millisecond)
-	if err := s.UpdateSessionState("x", "running"); err != nil {
+	if err := writeSessionState(s, "x", "running"); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	rev2, err := s.MaxSessionUpdatedAt()

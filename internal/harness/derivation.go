@@ -134,6 +134,10 @@ type derivationState struct {
 	// turnOrder preserves insertion order so we can FIFO-evict the
 	// oldest open accumulator when maxInflightTurns is exceeded.
 	turnOrder []string
+
+	// statusTracking is everything msg.SessionStatus carries beyond
+	// sessionState. See derivation_status.go.
+	statusTracking
 }
 
 // newDerivationState builds an empty per-session derivation whose
@@ -263,9 +267,8 @@ func (d *derivationState) forceState(next msg.SessionState) (msg.SessionState, b
 		return prev, false
 	}
 	d.sessionState = next
-	d.activeTools = map[string]string{}
-	d.awaitingApproval = false
-	d.pendingApprovals = make(map[string]struct{})
+	d.changedAt = time.Now()
+	d.clearTurnInFlight()
 	return prev, true
 }
 
@@ -310,6 +313,8 @@ func isHoldingSessionState(s msg.SessionState) bool {
 //  2. usage_total (only on EventResult)
 //  3. turn_complete (only on terminating EventResult/EventError with
 //     a known turn_id; emitted after usage_total).
+//  4. session_status (whenever the status differs from the last one
+//     emitted; always last).
 func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -320,6 +325,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 	// logic runs. Any event with a turn_id contributes; tool_call /
 	// tool_result are the ones that actually mutate the summary.
 	d.recordForTurn(ev)
+	d.foldStatus(ev)
 
 	prev := d.sessionState
 	next := prev
@@ -382,8 +388,30 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 				}
 				next = msg.SessionCompacting
 				reason = "compact_requested"
+			case "status":
+				// The harness compacting on its own initiative: no
+				// compact_ack precedes it, and until this case read the
+				// frame an automatic compaction was invisible for as long
+				// as it ran. An empty status closes only what this opened —
+				// a permission-mode change sends the same empty frame.
+				if ev.System.Status == msg.SystemStatusCompacting {
+					if prev != msg.SessionCompacting {
+						d.preCompactState = prev
+					}
+					d.harnessCompacting = true
+					next = msg.SessionCompacting
+					reason = "harness_compacting"
+				} else if d.harnessCompacting && prev == msg.SessionCompacting {
+					d.harnessCompacting = false
+					next = d.preCompactState
+					if next == "" || next == msg.SessionCompacting {
+						next = msg.SessionModelGenerating
+					}
+					reason = "compact_complete"
+				}
 			case "compact_boundary":
 				if prev == msg.SessionCompacting {
+					d.harnessCompacting = false
 					next = d.preCompactState
 					if next == "" || next == msg.SessionCompacting {
 						next = msg.SessionModelGenerating
@@ -476,15 +504,11 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 			next = msg.SessionIdle
 			reason = "turn_complete"
 		}
-		d.activeTools = map[string]string{}
-		d.awaitingApproval = false
-		d.pendingApprovals = make(map[string]struct{})
+		d.clearTurnInFlight()
 
 	case msg.EventError:
 		next = msg.SessionError
-		d.activeTools = map[string]string{}
-		d.awaitingApproval = false
-		d.pendingApprovals = make(map[string]struct{})
+		d.clearTurnInFlight()
 		reason = "error"
 
 	case msg.EventSessionState:
@@ -497,9 +521,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 			switch ev.State.State {
 			case msg.SessionAborted:
 				next = msg.SessionAborted
-				d.activeTools = map[string]string{}
-				d.awaitingApproval = false
-				d.pendingApprovals = make(map[string]struct{})
+				d.clearTurnInFlight()
 				reason = "aborted"
 			case msg.SessionStarting,
 				msg.SessionCompacting, msg.SessionPaused, msg.SessionRateLimited,
@@ -520,6 +542,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 
 	if next != prev {
 		d.sessionState = next
+		d.changedAt = eventTime(ev)
 		out = append(out, msg.Event{
 			Type:             msg.EventSessionState,
 			Harness:          ev.Harness,
@@ -585,6 +608,25 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 		if tc := d.closeTurn(ev); tc != nil {
 			out = append(out, *tc)
 		}
+	}
+
+	// Last, so it describes the session after everything above has been
+	// applied. Emitted whenever the status differs from the last one sent —
+	// which is every state transition, and also the changes a transition does
+	// not cover: a second tool starting while one is already running, a
+	// subagent starting or finishing, thinking giving way to text.
+	if status := d.changedStatusLocked(); status != nil {
+		out = append(out, msg.Event{
+			Type:             msg.EventSessionStatus,
+			Harness:          ev.Harness,
+			BridgeSessionID:  ev.BridgeSessionID,
+			HarnessSessionID: ev.HarnessSessionID,
+			ClientRequestID:  ev.ClientRequestID,
+			TurnID:           ev.TurnID,
+			Timestamp:        time.Now(),
+			DerivedFrom:      derivedFromIDs(ev),
+			Status:           status,
+		})
 	}
 
 	return out

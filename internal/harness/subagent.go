@@ -260,9 +260,7 @@ func (r *subagentRouter) settle(ev *msg.Event) {
 	}
 
 	task.settled = true
-	if err := r.manager.store.UpdateSessionState(task.bridgeID, string(state)); err != nil {
-		log.Printf("[subagent] %s: settle to %s: %v", task.bridgeID, state, err)
-	}
+	r.manager.ForceSessionState(task.bridgeID, state, "task_"+ev.System.TaskStatus)
 }
 
 // route returns the bridge session id an event belongs to: the subagent's own
@@ -350,9 +348,7 @@ func (r *subagentRouter) settleUnfinished() {
 		if task.bridgeID == "" {
 			continue
 		}
-		if err := r.manager.store.UpdateSessionState(task.bridgeID, string(msg.SessionError)); err != nil {
-			log.Printf("[subagent] %s: settle abandoned subagent: %v", task.bridgeID, err)
-		}
+		r.manager.ForceSessionState(task.bridgeID, msg.SessionError, "parent_process_exited")
 	}
 
 	// The same close for the tasks that never got a session. There is no row to
