@@ -351,12 +351,20 @@ func callerOfRequest(r *http.Request) (requestCaller, bool) {
 }
 
 // principalRestrictingRequest returns the principal a request is restricted
-// to, and false when it is not restricted: the caller is the internal service
-// acting as itself, or an administrator. Handlers that narrow their answer to
-// one principal's sessions read it here and nowhere else.
+// to, and "" with false when it is not restricted: the caller is the internal
+// service acting as itself, or an administrator. Handlers that narrow their
+// answer to one principal's sessions read it here and nowhere else.
+//
+// The id is empty whenever the bool is false, so a caller that reads only the
+// id — a store filter where "" means every owner — cannot narrow an
+// administrator to the sessions that happen to carry their own id.
+// principalIdentityOfRequest is the one that names an administrator.
 func principalRestrictingRequest(r *http.Request) (string, bool) {
 	caller, ok := callerOfRequest(r)
-	return caller.principalID, ok && caller.narrowsToOnePrincipal()
+	if !ok || !caller.narrowsToOnePrincipal() {
+		return "", false
+	}
+	return caller.principalID, true
 }
 
 // principalIdentityOfRequest returns who the request acts as, whether or not

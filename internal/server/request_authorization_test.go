@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -362,6 +363,66 @@ func TestAnAdministratorReachesTheOperatorRoutesAndTheStoreProxies(t *testing.T)
 	response := gated.requestAs(t, administratorCookie, "GET", "/another-route-added-later", nil)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "GET /another-route-added-later") {
 		t.Errorf("an administrator on an unclassified route = %d %s, want 403 naming the route", response.Code, response.Body.String())
+	}
+}
+
+// TestAnAdministratorListsEverySessionWhoeverOwnsIt pins the lists that are
+// narrowed in the store. The operator's sidebar went down to two sessions out
+// of 65,000 on 2026-09-17: principalRestrictingRequest handed back an
+// administrator's id beside restricted=false, and the four callers that read
+// only the id filtered on it. The same requests as the service, and as the
+// administrator through a trusted caller, must all answer every session.
+func TestAnAdministratorListsEverySessionWhoeverOwnsIt(t *testing.T) {
+	gated := newGatedTestServer(t, nil)
+	administratorCookie := gated.loginAs(t, administratorTestPrincipalID)
+	firstCookie := gated.loginAs(t, firstTestPrincipalID)
+
+	owned := gated.createSessionAs(t, firstCookie, "")
+	if err := gated.store.CreateSession(&store.Session{SessionID: "br_unowned", Harness: msg.HarnessMock, InstanceID: "inst_test", State: string(msg.SessionIdle)}); err != nil {
+		t.Fatal(err)
+	}
+	raised := gated.requestAs(t, firstCookie, "POST", "/sessions/"+owned.SessionID+"/signals", map[string]string{"title": "done", "severity": "info"})
+	if raised.Code/100 != 2 {
+		t.Fatalf("raise signal = %d %s", raised.Code, raised.Body.String())
+	}
+	want := []string{owned.SessionID, "br_unowned"}
+	sort.Strings(want)
+
+	summaryIDs := func(response *httptest.ResponseRecorder) []string {
+		t.Helper()
+		var body SummaryResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode summary %s: %v", response.Body.String(), err)
+		}
+		ids := []string{}
+		for _, session := range body.Sessions {
+			ids = append(ids, session.SessionID)
+		}
+		sort.Strings(ids)
+		return ids
+	}
+
+	for name, got := range map[string][]string{
+		"GET /sessions":                      sessionIDsOfList(t, gated.requestAs(t, administratorCookie, "GET", "/sessions", nil).Body.Bytes()),
+		"GET /sessions/summary":              summaryIDs(gated.requestAs(t, administratorCookie, "GET", "/sessions/summary", nil)),
+		"POST /sessions/summary":             summaryIDs(gated.requestAs(t, administratorCookie, "POST", "/sessions/summary", map[string]int{"limit": 50})),
+		"GET /sessions/summary, as asserted": summaryIDs(gated.requestAsServiceAssertingPrincipal(t, administratorTestPrincipalID, "GET", "/sessions/summary")),
+	} {
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("an administrator %s lists %v, want every session %v", name, got, want)
+		}
+	}
+
+	recentBundle := gated.requestAs(t, administratorCookie, "GET", "/sessions/recent-bundle", nil)
+	for _, sessionID := range want {
+		if !strings.Contains(recentBundle.Body.String(), sessionID) {
+			t.Errorf("an administrator GET /sessions/recent-bundle = %s, want it to carry %s", recentBundle.Body.String(), sessionID)
+		}
+	}
+
+	var signals []store.Signal
+	if err := json.Unmarshal(gated.requestAs(t, administratorCookie, "GET", "/signals", nil).Body.Bytes(), &signals); err != nil || len(signals) != 1 {
+		t.Errorf("an administrator GET /signals = %d signals (%v), want the one another principal's session raised", len(signals), err)
 	}
 }
 
