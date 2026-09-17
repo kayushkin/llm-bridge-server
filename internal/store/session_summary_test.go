@@ -738,3 +738,38 @@ func TestManagerLookupRidesTheCacheKey(t *testing.T) {
 		t.Fatal("a parent lookup reported itself as constraining nothing")
 	}
 }
+
+// TestSessionSummaryIDLookupsSearchAnIndex pins the plan, not the rows. The
+// chat sidebar asks for children by manager id and for names by session id
+// several times a second; on 2026-09-17 both were scans of 65,000 sessions
+// (0.12s–0.24s a call), which queued every other request behind them. A lookup
+// that loses its index still answers correctly, so only the plan can fail here.
+func TestSessionSummaryIDLookupsSearchAnIndex(t *testing.T) {
+	s := testStore(t)
+	for name, check := range map[string]struct {
+		filter    SessionSummaryFilter
+		wantIndex string
+	}{
+		"manager_session_ids": {SessionSummaryFilter{ManagerSessionIDs: []string{"br_parent_a", "br_parent_b"}}, "idx_sessions_manager"},
+		"session_ids":         {SessionSummaryFilter{SessionIDs: []string{"br_a", "br_b"}}, "idx_sessions_summary_session_id"},
+	} {
+		query, args := sessionSummariesQuery(100, "", check.filter)
+		rows, err := s.dbRO.Query("EXPLAIN QUERY PLAN "+query, args...)
+		if err != nil {
+			t.Fatalf("%s: explain: %v", name, err)
+		}
+		plan := ""
+		for rows.Next() {
+			var id, parent, notUsed int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan += detail + "\n"
+		}
+		rows.Close()
+		if !strings.Contains(plan, "SEARCH sessions USING INDEX "+check.wantIndex) {
+			t.Errorf("%s lookup does not search %s; plan:\n%s", name, check.wantIndex, plan)
+		}
+	}
+}

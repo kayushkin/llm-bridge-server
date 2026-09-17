@@ -251,6 +251,34 @@ func sqlPlaceholders(n int) string {
 // monotonic with time, so a TEXT comparison paginates correctly without
 // depending on the column's numeric affinity.
 func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSummaryFilter) ([]SessionSummaryRow, error) {
+	q, args := sessionSummariesQuery(limit, before, filter)
+	rows, err := s.dbRO.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionSummaryRow
+	for rows.Next() {
+		var r SessionSummaryRow
+		var updatedAtText string
+		if err := rows.Scan(
+			&r.SessionID, &r.State, &r.Harness, &r.InstanceID, &r.Type, &r.Purpose,
+			&r.Mode, &r.FolderName, &r.DisplayName, &r.AgentID, &r.BundleID, &r.UpdatedAt, &r.CreatedAt,
+			&r.ManagerSessionID, &updatedAtText, &r.SpendUSD,
+		); err != nil {
+			return nil, err
+		}
+		r.Cursor = encodeSummaryCursor(updatedAtText, r.SessionID)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// sessionSummariesQuery builds the statement ListSessionSummaries runs. It is
+// its own function so a test can hand the exact statement to EXPLAIN QUERY
+// PLAN: a lookup that stops using its index still answers correctly, only
+// slowly, and no test of the rows would notice.
+func sessionSummariesQuery(limit int, before string, filter SessionSummaryFilter) (string, []any) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -300,7 +328,11 @@ func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSum
 	// projected session ids. No COALESCE fallback to bridge_id is wanted here:
 	// the promoter writes one id into this column and it is the same id space.
 	if len(filter.ManagerSessionIDs) > 0 {
-		conds = append(conds, `COALESCE(manager_session_id, '') IN (`+sqlPlaceholders(len(filter.ManagerSessionIDs))+`)`)
+		// The bare column beside the partial index's own predicate, so the
+		// planner may use idx_sessions_manager. Wrapped in COALESCE — which the
+		// NOT NULL column never needed — this was a scan of every session: 0.12s
+		// a call on 65,000 rows, from a sidebar that asks several times a second.
+		conds = append(conds, `manager_session_id != '' AND manager_session_id IN (`+sqlPlaceholders(len(filter.ManagerSessionIDs))+`)`)
 		for _, v := range filter.ManagerSessionIDs {
 			args = append(args, v)
 		}
@@ -314,27 +346,7 @@ func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSum
 	}
 	q += ` ORDER BY updated_at DESC, ` + summarySessionIDExpression + ` DESC LIMIT ?`
 	args = append(args, limit)
-
-	rows, err := s.dbRO.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []SessionSummaryRow
-	for rows.Next() {
-		var r SessionSummaryRow
-		var updatedAtText string
-		if err := rows.Scan(
-			&r.SessionID, &r.State, &r.Harness, &r.InstanceID, &r.Type, &r.Purpose,
-			&r.Mode, &r.FolderName, &r.DisplayName, &r.AgentID, &r.BundleID, &r.UpdatedAt, &r.CreatedAt,
-			&r.ManagerSessionID, &updatedAtText, &r.SpendUSD,
-		); err != nil {
-			return nil, err
-		}
-		r.Cursor = encodeSummaryCursor(updatedAtText, r.SessionID)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return q, args
 }
 
 // summaryCursorSeparator joins the two halves of the compound cursor.

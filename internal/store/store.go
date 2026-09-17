@@ -302,6 +302,11 @@ func (s *Store) migrate() error {
 	// is unsafe (callers must declare), so older rows surface as "" type.
 	// See llm-bridge MIGRATION-session-identity.md.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
+	// The summary query names sessions by summarySessionIDExpression, and an
+	// index on that same expression is what lets its session-id lookup search
+	// instead of scanning. The expression is spelled from the constant so the
+	// two cannot drift apart: SQLite matches an expression index textually.
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_summary_session_id ON sessions(" + summarySessionIDExpression + ")")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT ''")
 	// One-time backfill: populate session_id from bridge_id for any row that
 	// pre-dates this migration. New inserts write both columns directly.
