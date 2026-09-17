@@ -273,8 +273,17 @@ echo "==> Smoke test..."
 # service couldn't exec `claude`.
 SVC_PID=$(systemctl show -p MainPID --value "$SERVICE")
 if [ -n "$SVC_PID" ] && [ "$SVC_PID" != "0" ]; then
-  SVC_PATH=$(tr '\0' '\n' < /proc/"$SVC_PID"/environ 2>/dev/null \
-             | grep '^PATH=' | head -1 | cut -d= -f2-)
+  # Read as root: /proc/<pid>/environ of the running service is owned by
+  # root (measured 2026-09-17), and the unprivileged read this used to do
+  # failed under `set -e`, ending every deploy here — after the new binary was
+  # live, before the backups were pruned and the ledger was written. A read
+  # that fails now fails the deploy by name instead.
+  SVC_ENVIRON=$(sudo cat /proc/"$SVC_PID"/environ | tr '\0' '\n') || {
+    echo "ERROR: cannot read /proc/$SVC_PID/environ, so the service PATH is unchecked"
+    rollback
+    exit 1
+  }
+  SVC_PATH=$(grep '^PATH=' <<< "$SVC_ENVIRON" | head -1 | cut -d= -f2-)
   MISSING=""
   IFS=':' read -ra DEP_DIRS <<< "$DEPLOY_PATH"
   for dir in "${DEP_DIRS[@]}"; do
