@@ -19,6 +19,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 )
 
 const (
@@ -43,7 +45,7 @@ const principalIdentityHeader = "X-Principal-Id"
 var requestHeadersNeverForwardedToStores = []string{
 	principalIdentityHeader,
 	"X-Kanban-Store-Service-Token",
-	"X-Grant-Store-Service-Token",
+	grantclient.ServiceTokenHeader,
 	serviceTokenHeader,
 	"Authorization",
 }
@@ -87,6 +89,20 @@ func (s *Server) handleKanbanStoreProxyAsPrincipal(w http.ResponseWriter, r *htt
 		upstreamBaseURL:      s.cfg.KanbanStoreURL,
 		upstreamPathPrefix:   "/api",
 		unavailableErrorCode: "kanban_store_unavailable",
+	})
+}
+
+// handleGrantStoreProxyAsPrincipal forwards /grant-store/<rest> to grant-store
+// /<rest>: grant-store's routes are rooted at /, so /grant-store/grants,
+// /grant-store/grants/{id}/revoke, /grant-store/principals/{id}/effective,
+// /grant-store/relations and /grant-store/resource-types all reach it.
+func (s *Server) handleGrantStoreProxyAsPrincipal(w http.ResponseWriter, r *http.Request) {
+	s.serveStoreProxyAsPrincipal(w, r, principalIdentityStoreProxy{
+		storeName:            "grant-store",
+		mountPrefix:          grantStoreProxyMountPrefix,
+		upstreamBaseURL:      s.cfg.GrantStoreURL,
+		upstreamPathPrefix:   "",
+		unavailableErrorCode: "grant_store_unavailable",
 	})
 }
 

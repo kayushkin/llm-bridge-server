@@ -135,6 +135,12 @@ type Config struct {
 	// ServiceTokenMinimumBytes long, when demo login is enabled; unused
 	// otherwise, because with demo login off nothing is restricted.
 	ServiceToken string
+	// GrantStoreServiceToken is sent to grant-store as
+	// X-Grant-Store-Service-Token on every call this server makes as itself
+	// (the spawn-time effective-grants read), from
+	// LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN. Optional: empty sends no token,
+	// which a grant-store that enforces per-principal access answers with 401.
+	GrantStoreServiceToken string
 }
 
 // Names of the environment variables that hold this server's own secrets.
@@ -211,6 +217,10 @@ func (c *Config) DemoLoginEnabled() (bool, error) {
 		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_KANBAN_STORE_URL, the kanban-store the /kanban/ proxy forwards to, and it is empty",
 			DemoLoginEnabledValue)
 	}
+	if c.GrantStoreURL == "" {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_GRANT_STORE_URL, the grant-store the /grant-store/ proxy forwards to, and it is empty",
+			DemoLoginEnabledValue)
+	}
 	if c.PrincipalStoreURL == "" {
 		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_PRINCIPAL_STORE_URL, the principal-store a login is checked with, and it is empty",
 			DemoLoginEnabledValue)
@@ -265,6 +275,7 @@ func Load() *Config {
 		DemoLoginSetting:         os.Getenv("LLMBRIDGE_DEMO_LOGIN"),
 		DemoLoginSigningKey:      os.Getenv(DemoLoginSigningKeyEnvironmentVariable),
 		ServiceToken:             os.Getenv(ServiceTokenEnvironmentVariable),
+		GrantStoreServiceToken:   os.Getenv(GrantStoreServiceTokenEnvironmentVariable),
 	}
 	productiondefaults.PanicIfUsedUnderTest(cfg.GuardedAddresses())
 	return cfg

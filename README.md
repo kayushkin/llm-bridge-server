@@ -457,17 +457,19 @@ All configuration is via environment variables with sensible defaults.
 | `LLMBRIDGE_RUNNER_INSTALL_SCRIPT` | _(unset)_ | Override path for the runner install script served by `/api/runner/install.sh` (falls back to `<assets-dir>/install.sh`, then `~/repos/llm-bridge-runner/scripts/install.sh`) |
 | `LLMBRIDGE_HARNESS_PROXY_<NAME>` | _(per-harness default: `inber`=`http://localhost:8200`, `hermes`=`http://localhost:8500`)_ | Override URL for the `/api/harness-proxy/{harness}/...` reverse target; set to empty string to disable a harness's proxy |
 
-## Demo login and the kanban proxy (demo only)
+## Demo login, route gating and the store proxies (demo only)
 
 **This is a stand-in for real login, not a login system.** It exists so a separately deployed product with its own frontend can sign a user in and have kanban-store see who they are; the company's real login replaces it. Anyone who can reach `POST /auth/demo-login` can sign in as any active human principal by naming its id — there is no password.
 
-It is **off unless configured**. With `LLMBRIDGE_DEMO_LOGIN` unset none of these routes exist (404), and startup logs which state it is in.
+It is **off unless configured**. With `LLMBRIDGE_DEMO_LOGIN` unset none of these routes exist (404), nothing is gated, and startup logs which state it is in.
 
 | Variable | Description |
 |----------|-------------|
 | `LLMBRIDGE_DEMO_LOGIN` | Must be exactly `enabled` to turn it on. Any other non-empty value refuses to start. |
 | `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY` | HMAC-SHA256 key for the login cookie. Required when enabled, at least 32 bytes; startup is refused otherwise. |
 | `LLMBRIDGE_KANBAN_STORE_URL` | The kanban-store `/kanban/` forwards to. Must be non-empty when enabled. |
+| `LLMBRIDGE_GRANT_STORE_URL` | The grant-store `/grant-store/` forwards to. Must be non-empty when enabled. |
+| `LLMBRIDGE_SERVICE_TOKEN` | See below. Required when enabled, at least 32 bytes. |
 | `LLMBRIDGE_PRINCIPAL_STORE_URL` | The principal-store a login is checked against. Must be non-empty when enabled. |
 
 Routes:
@@ -478,6 +480,25 @@ Routes:
 - `/kanban/<rest>` (any method) — requires a valid cookie or a session agent token (401 otherwise, and nothing is forwarded), then forwards to kanban-store `/api/<rest>` with the query string, method, body and headers unchanged, except: `X-Principal-Id`, `X-Kanban-Store-Service-Token`, `X-Grant-Store-Service-Token`, `X-LLM-Bridge-Service-Token` and `Authorization` from the client are **deleted**, `X-Principal-Id` is set from the verified credential, and the login cookie is removed. With the service token and no principal it is 403 `store_proxy_requires_a_principal`. kanban-store's status, headers and body come back unchanged; kanban-store unreachable → 502 `kanban_store_unavailable`.
 
 ⚠️ **kanban-store trusts `X-Principal-Id`, so it must not be reachable by users except through this proxy.** A user who can reach kanban-store directly can name any principal.
+
+### The grant-store proxy and grant-store's service token
+
+`/grant-store/<rest>` (any method) is the same identity-carrying proxy as `/kanban/`, forwarding to `LLMBRIDGE_GRANT_STORE_URL` **`/<rest>`** — grant-store's routes are rooted at `/`, so the mapping is:
+
+| Gateway | grant-store |
+|---------|-------------|
+| `/grant-store/grants` | `/grants` |
+| `/grant-store/grants/{id}` | `/grants/{id}` |
+| `/grant-store/grants/{id}/revoke` | `/grants/{id}/revoke` |
+| `/grant-store/principals/{id}/effective` | `/principals/{id}/effective` |
+| `/grant-store/relations` | `/relations` |
+| `/grant-store/resource-types` | `/resource-types` |
+
+It takes a login cookie or a session agent token, deletes the same headers (`X-Principal-Id`, `X-Grant-Store-Service-Token`, `X-Kanban-Store-Service-Token`, `X-LLM-Bridge-Service-Token`, `Authorization`) and the login cookie, and sets `X-Principal-Id`. What a principal may do there is grant-store's decision. grant-store unreachable → 502 `grant_store_unavailable`. `LLMBRIDGE_GRANT_STORE_URL` must be non-empty when demo login is enabled. Both proxies are one function, `serveStoreProxyAsPrincipal` in `internal/server/principal_identity_store_proxy.go`.
+
+| Variable | Description |
+|----------|-------------|
+| `LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN` | Optional, and independent of demo login. When set, every call `internal/grantclient` makes — the spawn-time effective-grants reads, the create-time grant gate, the principal's instance list — carries it as `X-Grant-Store-Service-Token`, because those reads run as this server, not as a user, and an enforcing grant-store answers them 401 without it. Unset sends no such header. Never passed to a child process. |
 
 ### The whole server is gated while demo login is on
 

@@ -28,15 +28,27 @@ import (
 // that has since lost the row, or never had it.
 var ErrPrincipalUnknown = errors.New("principal unknown")
 
+// ServiceTokenHeader is the header grant-store accepts an internal service's
+// token in, for unrestricted access.
+const ServiceTokenHeader = "X-Grant-Store-Service-Token"
+
 // Client talks to one grant-store.
 type Client struct {
-	url  string
-	http *http.Client
+	url          string
+	serviceToken string
+	http         *http.Client
 }
 
 // New builds a client against base (e.g. http://127.0.0.1:8315).
-func New(base string) *Client {
-	return &Client{url: strings.TrimSuffix(base, "/"), http: &http.Client{Timeout: 5 * time.Second}}
+//
+// serviceToken, when non-empty, is sent as X-Grant-Store-Service-Token on
+// every call. This server reads a session principal's effective grants as
+// itself, not as that principal, and a grant-store that enforces who may read
+// what answers 401 to a call carrying neither a principal nor the token. Empty
+// sends no such header, which is what a grant-store that does not enforce
+// expects.
+func New(base, serviceToken string) *Client {
+	return &Client{url: strings.TrimSuffix(base, "/"), serviceToken: serviceToken, http: &http.Client{Timeout: 5 * time.Second}}
 }
 
 // grant is the part of a grant-store row this client reads.
@@ -90,6 +102,9 @@ func (c *Client) effective(ctx context.Context, principalID, relation, resourceT
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build GET %s: %w", requestURL, err)
+	}
+	if c.serviceToken != "" {
+		request.Header.Set(ServiceTokenHeader, c.serviceToken)
 	}
 	response, err := c.http.Do(request)
 	if err != nil {

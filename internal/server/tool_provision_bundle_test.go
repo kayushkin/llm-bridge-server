@@ -69,7 +69,7 @@ func fakeBundleStore(t *testing.T, bundleID string, toolIDs []int64, skillIDs []
 func newServerWithBundles(toolStoreURL, bundleStoreURL, grantStoreURL string) *Server {
 	s := &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, bundleClient: bundleclient.New(bundleStoreURL)}
 	if grantStoreURL != "" {
-		s.grantClient = grantclient.New(grantStoreURL)
+		s.grantClient = grantclient.New(grantStoreURL, "")
 	}
 	return s
 }

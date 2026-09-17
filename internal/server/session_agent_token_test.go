@@ -2,11 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -225,5 +227,104 @@ func decodeRecorderJSON(t *testing.T, recorder *httptest.ResponseRecorder, into 
 	t.Helper()
 	if err := json.Unmarshal(recorder.Body.Bytes(), into); err != nil {
 		t.Fatalf("decode %s: %v", recorder.Body.String(), err)
+	}
+}
+
+// fakeGrantStoreRecording records every request it receives and answers 200
+// with an empty list.
+type fakeGrantStoreRecording struct {
+	server   *httptest.Server
+	mutex    sync.Mutex
+	requests []recordedKanbanRequest
+}
+
+func TestGrantStoreProxyMapsEveryRouteAndCarriesOnlyThePrincipal(t *testing.T) {
+	recording := &fakeGrantStoreRecording{}
+	recording.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var keyNames []string
+		for key := range r.Header {
+			keyNames = append(keyNames, key)
+		}
+		recording.mutex.Lock()
+		recording.requests = append(recording.requests, recordedKanbanRequest{
+			Method: r.Method, EscapedPath: r.URL.EscapedPath(), RawQuery: r.URL.RawQuery,
+			Header: r.Header.Clone(), Body: string(body), HeaderKeyNames: keyNames,
+		})
+		recording.mutex.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(recording.server.Close)
+
+	gated := newGatedTestServer(t, nil)
+	gated.server.cfg.GrantStoreURL = recording.server.URL
+	cookie := loginCookieFrom(t, demoLogin(t, gated.server, firstTestPrincipalID))
+	session := gated.createSessionAs(t, cookie, "")
+	token := gated.sessionAgentTokenFor(t, session)
+
+	for _, route := range []struct{ method, gatewayPath, upstreamPath, upstreamQuery string }{
+		{"GET", "/grant-store/grants?principal_id=principal_000001", "/grants", "principal_id=principal_000001"},
+		{"POST", "/grant-store/grants", "/grants", ""},
+		{"GET", "/grant-store/grants/grant_000001", "/grants/grant_000001", ""},
+		{"POST", "/grant-store/grants/grant_000001/revoke", "/grants/grant_000001/revoke", ""},
+		{"GET", "/grant-store/principals/principal_000001/effective?relation=can_use", "/principals/principal_000001/effective", "relation=can_use"},
+		{"GET", "/grant-store/relations", "/relations", ""},
+		{"GET", "/grant-store/resource-types", "/resource-types", ""},
+	} {
+		recording.mutex.Lock()
+		recording.requests = nil
+		recording.mutex.Unlock()
+
+		request := httptest.NewRequest(route.method, route.gatewayPath, strings.NewReader(`{}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Principal-Id", secondTestPrincipalID)
+		request.Header.Set("X-Grant-Store-Service-Token", "forged")
+		request.Header.Set("X-Kanban-Store-Service-Token", "forged")
+		request.Header["x-grant-store-service-token"] = []string{"forged-lowercase"}
+		request.AddCookie(&http.Cookie{Name: "unrelated", Value: "kept"})
+		if route.method == "POST" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		} else {
+			request.AddCookie(cookie)
+		}
+		response := serve(gated.server, request)
+		if response.Code != http.StatusOK {
+			t.Errorf("%s %s = %d %s, want 200", route.method, route.gatewayPath, response.Code, response.Body.String())
+			continue
+		}
+
+		recording.mutex.Lock()
+		requests := append([]recordedKanbanRequest(nil), recording.requests...)
+		recording.mutex.Unlock()
+		if len(requests) != 1 {
+			t.Errorf("%s %s reached grant-store %d times, want 1", route.method, route.gatewayPath, len(requests))
+			continue
+		}
+		seen := requests[0]
+		if seen.Method != route.method || seen.EscapedPath != route.upstreamPath || seen.RawQuery != route.upstreamQuery {
+			t.Errorf("%s %s forwarded as %s %s ? %s, want %s ? %s", route.method, route.gatewayPath, seen.Method, seen.EscapedPath, seen.RawQuery, route.upstreamPath, route.upstreamQuery)
+		}
+		if got := seen.Header.Values("X-Principal-Id"); len(got) != 1 || got[0] != firstTestPrincipalID {
+			t.Errorf("%s %s: grant-store saw X-Principal-Id %v, want [%s]", route.method, route.gatewayPath, got, firstTestPrincipalID)
+		}
+		for _, key := range seen.HeaderKeyNames {
+			for _, forbidden := range []string{"X-Grant-Store-Service-Token", "X-Kanban-Store-Service-Token", "Authorization"} {
+				if strings.EqualFold(key, forbidden) {
+					t.Errorf("%s %s: grant-store saw %s", route.method, route.gatewayPath, key)
+				}
+			}
+		}
+		if cookieHeader := seen.Header.Get("Cookie"); strings.Contains(cookieHeader, demoLoginCookieName) || !strings.Contains(cookieHeader, "unrelated=kept") {
+			t.Errorf("%s %s: grant-store saw Cookie %q, want only the unrelated cookie", route.method, route.gatewayPath, cookieHeader)
+		}
+	}
+
+	if response := gated.requestAs(t, nil, "GET", "/grant-store/relations", nil); response.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous /grant-store/relations = %d, want 401", response.Code)
+	}
+	if response := gated.requestAsService(t, "GET", "/grant-store/relations"); response.Code != http.StatusForbidden ||
+		!strings.Contains(response.Body.String(), "store_proxy_requires_a_principal") {
+		t.Errorf("service token on /grant-store/relations = %d %s, want 403 store_proxy_requires_a_principal", response.Code, response.Body.String())
 	}
 }

@@ -49,9 +49,9 @@ func main() {
 		if err := forbidSameUserProcessesFromReadingThisProcess(); err != nil {
 			log.Fatalf("demo login: refusing to start, because an agent running as this user could read the signing key out of this process: %v", err)
 		}
-		log.Printf("demo login ENABLED: POST /auth/demo-login signs in as any human principal-store principal with no password; /kanban/ proxies to kanban-store %s carrying X-Principal-Id — demo only, never expose kanban-store directly", cfg.KanbanStoreURL)
+		log.Printf("demo login ENABLED: POST /auth/demo-login signs in as any human principal-store principal with no password; every route is gated (service token or login); /kanban/ proxies to kanban-store %s and /grant-store/ to grant-store %s carrying X-Principal-Id — demo only, never expose either store directly", cfg.KanbanStoreURL, cfg.GrantStoreURL)
 	} else {
-		log.Printf("demo login disabled (LLMBRIDGE_DEMO_LOGIN unset): /auth/demo-login and /kanban/ are not routed")
+		log.Printf("demo login disabled (LLMBRIDGE_DEMO_LOGIN unset): /auth/demo-login, /kanban/ and /grant-store/ are not routed and no route is gated")
 	}
 
 	// Say where the two stores that outlive this process are, before writing

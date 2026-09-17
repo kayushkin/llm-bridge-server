@@ -94,6 +94,7 @@ func TestRoutesRegisterWithEveryStoreMountedAndDemoLoginEnabled(t *testing.T) {
 		cfg.ServiceToken = "route-registration-test-service-token-32b"
 		cfg.KanbanStoreURL = "http://kanban-store.invalid"
 		cfg.PrincipalStoreURL = "http://principal-store.invalid"
+		cfg.GrantStoreURL = "http://grant-store.invalid"
 	})
 	for _, route := range []struct{ method, path string }{
 		{"GET", "/auth/principal"},

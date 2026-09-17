@@ -43,7 +43,7 @@ func gatedServer(t *testing.T, grants map[string][]string) (*Server, string) {
 	t.Helper()
 	srv, _, instanceID := testServerWithInstance(t, msg.HarnessMock)
 	srv.principalClient = principalclient.New(fakePrincipalStore(t, "principal_000001").URL)
-	srv.grantClient = grantclient.New(fakeGrantStoreByRelation(t, "principal_000001", grants).URL)
+	srv.grantClient = grantclient.New(fakeGrantStoreByRelation(t, "principal_000001", grants).URL, "")
 	return srv, instanceID
 }
 
@@ -73,7 +73,7 @@ func TestGateRefusesAnInstanceOutsideTheDispatchGrants(t *testing.T) {
 	}
 
 	byInstance, instanceID := gatedServer(t, map[string][]string{"can_dispatch_on/instance": {"inst-elsewhere"}})
-	byInstance.grantClient = grantclient.New(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{"can_dispatch_on/instance": {instanceID}}).URL)
+	byInstance.grantClient = grantclient.New(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{"can_dispatch_on/instance": {instanceID}}).URL, "")
 	if status, body := createStatus(t, byInstance, principalRequest(instanceID, "principal_000001")); status != 201 {
 		t.Fatalf("granted instance: status = %d: %s", status, body)
 	}
@@ -124,7 +124,7 @@ func TestGateIgnoresSessionsWithoutAPrincipal(t *testing.T) {
 func TestGateRunsAtSpawnToo(t *testing.T) {
 	srv, instanceID := gatedServer(t, map[string][]string{})
 	created := postCreateSession(t, srv, principalRequest(instanceID, "principal_000001"))
-	srv.grantClient = grantclient.New(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{"can_dispatch_on/instance": {"inst-elsewhere"}}).URL)
+	srv.grantClient = grantclient.New(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{"can_dispatch_on/instance": {"inst-elsewhere"}}).URL, "")
 	inst, err := srv.harnessStore.GetInstance(instanceID)
 	if err != nil {
 		t.Fatal(err)

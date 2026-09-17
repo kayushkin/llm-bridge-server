@@ -114,7 +114,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		harness:         harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
 		authClient:      authClient,
 		permClient:      permclient.New(cfg.PermissionStoreURL),
-		grantClient:     grantclient.New(cfg.GrantStoreURL),
+		grantClient:     grantclient.New(cfg.GrantStoreURL, cfg.GrantStoreServiceToken),
 		principalClient: principalclient.New(cfg.PrincipalStoreURL),
 		bundleClient:    bundleclient.New(cfg.BundleStoreURL),
 		kanbanClient:    newKanbanClient(cfg.KanbanStoreURL),

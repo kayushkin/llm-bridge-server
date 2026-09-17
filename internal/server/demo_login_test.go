@@ -111,6 +111,7 @@ func demoLoginTestServer(t *testing.T, demoLoginSetting, principalStoreURL, kanb
 		LogStoreURL:         "http://localhost:0",
 		PrincipalStoreURL:   principalStoreURL,
 		KanbanStoreURL:      kanbanStoreURL,
+		GrantStoreURL:       "http://grant-store.invalid",
 		DemoLoginSetting:    demoLoginSetting,
 		DemoLoginSigningKey: demoLoginTestSigningKey,
 		ServiceToken:        demoLoginTestServiceToken,
@@ -372,6 +373,7 @@ func TestDemoLoginDisabledRoutesNothing(t *testing.T) {
 		httptest.NewRequest("GET", "/auth/principal", nil),
 		httptest.NewRequest("POST", "/auth/logout", nil),
 		httptest.NewRequest("GET", "/kanban/boards", nil),
+		httptest.NewRequest("GET", "/grant-store/relations", nil),
 	} {
 		if response := serve(server, request); response.Code != http.StatusNotFound {
 			t.Errorf("%s %s with demo login disabled = %d, want 404", request.Method, request.URL.Path, response.Code)
@@ -385,7 +387,7 @@ func TestDemoLoginDisabledRoutesNothing(t *testing.T) {
 func TestDemoLoginConfigurationIsRefusedWhenIncomplete(t *testing.T) {
 	complete := config.Config{
 		DemoLoginSetting: "enabled", DemoLoginSigningKey: demoLoginTestSigningKey, ServiceToken: demoLoginTestServiceToken,
-		KanbanStoreURL: "http://kanban.invalid", PrincipalStoreURL: "http://principal.invalid",
+		KanbanStoreURL: "http://kanban.invalid", PrincipalStoreURL: "http://principal.invalid", GrantStoreURL: "http://grant.invalid",
 	}
 	if enabled, err := complete.DemoLoginEnabled(); !enabled || err != nil {
 		t.Fatalf("complete configuration: enabled=%v err=%v, want enabled", enabled, err)
@@ -397,6 +399,7 @@ func TestDemoLoginConfigurationIsRefusedWhenIncomplete(t *testing.T) {
 		"no service token":    func(c *config.Config) { c.ServiceToken = "" },
 		"short service token": func(c *config.Config) { c.ServiceToken = "short" },
 		"no kanban-store":     func(c *config.Config) { c.KanbanStoreURL = "" },
+		"no grant-store":      func(c *config.Config) { c.GrantStoreURL = "" },
 		"no principal-store":  func(c *config.Config) { c.PrincipalStoreURL = "" },
 	} {
 		candidate := complete

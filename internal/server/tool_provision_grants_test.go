@@ -84,7 +84,7 @@ func fakeToolStoreWithOptIns(t *testing.T, optIns map[string][]map[string]any) (
 }
 
 func newServerWithGrants(toolStoreURL, grantStoreURL string) *Server {
-	return &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, grantClient: grantclient.New(grantStoreURL)}
+	return &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, grantClient: grantclient.New(grantStoreURL, "")}
 }
 
 var mcpTool13 = map[string]any{"id": 13, "name": "playwright", "kind": "mcp"}

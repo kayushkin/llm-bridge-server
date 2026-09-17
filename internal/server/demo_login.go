@@ -114,13 +114,15 @@ func isWellFormedPrincipalID(principalID string) bool {
 	return true
 }
 
-// registerDemoLoginRoutes mounts the demo login routes and the kanban proxy.
+// registerDemoLoginRoutes mounts the demo login routes and the kanban-store
+// and grant-store proxies.
 // Called from routes() only when demo login is enabled.
 func (s *Server) registerDemoLoginRoutes() {
 	s.mux.HandleFunc("POST /auth/demo-login", s.handleDemoLogin)
 	s.mux.HandleFunc("GET /auth/principal", s.handleGetLoggedInPrincipal)
 	s.mux.HandleFunc("POST /auth/logout", s.handleDemoLogout)
 	s.mux.HandleFunc(kanbanProxyMountPrefix+"/", s.handleKanbanStoreProxyAsPrincipal)
+	s.mux.HandleFunc(grantStoreProxyMountPrefix+"/", s.handleGrantStoreProxyAsPrincipal)
 }
 
 type demoLoginRequest struct {
