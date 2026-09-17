@@ -86,6 +86,23 @@ var discoveryPromptPrefixes = []struct {
 // discoveryPromptPrefixes. Anything else is left unfiled — the harness CLI is
 // the source of truth for the original prompt and we don't second-guess user
 // sessions.
+// reclassifyDiscoveredSession carries an adapter-reported purpose to a
+// discovered session that already existed, which UpsertDiscoveredSession
+// never re-classifies. adapterPurpose is the adapter's structural tag
+// (msg.StoredSession.Source) and nothing else: the prompt-prefix inference is
+// not re-run over old rows. An empty tag, the generic "discovered" label, or a
+// slug the registry does not know leaves the row alone; the store decides
+// whether the row is still unclassified and whether its folder may move.
+func (s *Server) reclassifyDiscoveredSession(bridgeID, adapterPurpose string) (bool, error) {
+	if adapterPurpose == "" || adapterPurpose == msg.PurposeDiscovered {
+		return false, nil
+	}
+	if _, ok := msg.LookupPurpose(adapterPurpose); !ok {
+		return false, nil
+	}
+	return s.store.ReclassifyDiscoveredSession(bridgeID, adapterPurpose, s.folderForPurpose(adapterPurpose))
+}
+
 func (s *Server) discoverySourceFolder(prompt string) (string, string) {
 	if conformance.IsConformancePrompt(prompt) {
 		return conformance.SourceTag, s.folderForPurpose(conformance.SourceTag)
@@ -1199,7 +1216,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Persist discovered sessions to the store so they appear in GET /sessions
-	var imported, linkedCount int
+	var imported, linkedCount, reclassified int
 	var pendingLinks []discoveredLink
 	for _, ds := range sessions {
 		displayName := displayNameForDiscoveredSession(ds.Prompt, ds.Project)
@@ -1237,6 +1254,14 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		if ds.ParentHarnessSessionID != "" {
 			pendingLinks = append(pendingLinks, discoveredLink{bridgeID: bridgeID, parentHarnessID: ds.ParentHarnessSessionID})
 		}
+		if !inserted {
+			changed, err := s.reclassifyDiscoveredSession(bridgeID, ds.Source)
+			if err != nil {
+				log.Printf("[discover] failed to reclassify %s as %q: %v", bridgeID, ds.Source, err)
+			} else if changed {
+				reclassified++
+			}
+		}
 		if inserted {
 			imported++
 			// Import history to log-store for new sessions
@@ -1253,6 +1278,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	if imported > 0 {
 		log.Printf("[discover] imported %d new sessions", imported)
 	}
+	log.Printf("[discover] reclassified %d existing discovered sessions to the purpose their adapter now reports", reclassified)
 	for _, l := range pendingLinks {
 		linked, err := s.store.LinkDiscoveredSessionParent(l.bridgeID, l.parentHarnessID)
 		if err != nil {

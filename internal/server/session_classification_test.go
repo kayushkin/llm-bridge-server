@@ -267,3 +267,42 @@ func TestDiscoveredSubagentPassesTheTaxonomyGuard(t *testing.T) {
 // off disk carry the harness's own created/updated times, so the value only
 // has to be stable, not current.
 var discoveredAt = time.Date(2026, 7, 27, 19, 7, 23, 0, time.UTC)
+
+// A oneshot transcript imported before the adapter could recognise it sits as
+// "discovered". The next discovery pass, now carrying Source=oneshot, must
+// relabel that existing row — filed where the registry files oneshot — while
+// tags that are not a registered reclassification leave it alone.
+func TestDiscoveryReclassifiesAnExistingDiscoveredRow(t *testing.T) {
+	srv, st, _ := testServerWithInstance(t, "claude_code")
+
+	bridgeID, _, err := st.UpsertDiscoveredSession(
+		"000036a5-26ae-41c7-9995-46ecf9a97dc2", "000036a5-26ae-41c7-9995-46ecf9a97dc2",
+		"Classify this email", "claude_code", "inst-cc-local", "", "",
+		discoveredAt, discoveredAt,
+	)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	for _, tag := range []string{"", msg.PurposeDiscovered, "not-in-the-registry"} {
+		changed, err := srv.reclassifyDiscoveredSession(bridgeID, tag)
+		if err != nil || changed {
+			t.Errorf("tag %q: changed=%v err=%v, want the row left alone", tag, changed, err)
+		}
+	}
+
+	changed, err := srv.reclassifyDiscoveredSession(bridgeID, msg.PurposeOneshot)
+	if err != nil || !changed {
+		t.Fatalf("reclassify as oneshot: changed=%v err=%v", changed, err)
+	}
+	sess, err := st.GetSession(bridgeID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if sess.Purpose != msg.PurposeOneshot || sess.Type != msg.SessionTypeExternal {
+		t.Errorf("purpose/type = %q/%q, want %q/%q", sess.Purpose, sess.Type, msg.PurposeOneshot, msg.SessionTypeExternal)
+	}
+	if want := msg.FolderForPurpose(msg.PurposeOneshot); sess.FolderName != want {
+		t.Errorf("folder = %q, want %q", sess.FolderName, want)
+	}
+}

@@ -28,6 +28,8 @@ type SessionSummaryRow struct {
 	AgentID     string
 	// BundleID is the bundle-store id the session was started with, or "".
 	BundleID  string
+	// SpendUSD is the session's cost estimate (msg.ManagedSession.SpendUSD).
+	SpendUSD  float64
 	UpdatedAt time.Time
 	CreatedAt time.Time
 	Cursor    string
@@ -59,7 +61,7 @@ const summarySessionIDExpression = `COALESCE(NULLIF(session_id, ''), bridge_id)`
 // summaryColumns are the projected columns, in scan order. The raw updated_at is
 // selected a second time (as text) as the timestamp half of the cursor; the id
 // half is the already-projected session id, assembled in Go.
-const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), COALESCE(bundle_id, ''), updated_at, created_at, COALESCE(manager_session_id, ''), CAST(updated_at AS TEXT)`
+const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), COALESCE(bundle_id, ''), updated_at, created_at, COALESCE(manager_session_id, ''), CAST(updated_at AS TEXT), COALESCE(spend_usd, 0)`
 
 // SessionSummaryFilter narrows ListSessionSummaries to the rows matching every
 // non-empty axis. An empty axis constrains nothing, and the values within one
@@ -325,7 +327,7 @@ func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSum
 		if err := rows.Scan(
 			&r.SessionID, &r.State, &r.Harness, &r.InstanceID, &r.Type, &r.Purpose,
 			&r.Mode, &r.FolderName, &r.DisplayName, &r.AgentID, &r.BundleID, &r.UpdatedAt, &r.CreatedAt,
-			&r.ManagerSessionID, &updatedAtText,
+			&r.ManagerSessionID, &updatedAtText, &r.SpendUSD,
 		); err != nil {
 			return nil, err
 		}

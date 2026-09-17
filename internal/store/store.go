@@ -1,6 +1,7 @@
 package store
 
 import (
+	"log"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -439,6 +440,16 @@ func (s *Store) migrate() error {
 	// that predates this column was never persisted anywhere, and inventing
 	// one would attribute dollars to a model nobody measured.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN api_spend_detail TEXT NOT NULL DEFAULT ''")
+	// Until 2026-09-16 spend_usd WAS the per-call API sum; from then it is the
+	// session cost estimate, which can exceed it, and the API sum moved into the
+	// breakdown as api_spend_usd so api_spend_total can keep continuing it. Every
+	// row written before then carries the API sum only in spend_usd, so it is
+	// copied across once. Idempotent: rows that already have the field are left.
+	if _, err := s.db.Exec(`UPDATE sessions
+		SET api_spend_detail = json_set(COALESCE(NULLIF(api_spend_detail, ''), '{}'), '$.api_spend_usd', spend_usd)
+		WHERE spend_usd > 0 AND json_extract(COALESCE(NULLIF(api_spend_detail, ''), '{}'), '$.api_spend_usd') IS NULL`); err != nil {
+		log.Printf("[store] migrate api_spend_usd into the spend breakdown: %v", err)
+	}
 	// Index on harness_session_id must be created after ALTER TABLE migration adds/renames the column.
 	// Drop the legacy non-unique index in favor of a partial UNIQUE one below.
 	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_session_id")
@@ -765,7 +776,7 @@ func (s *Store) SetSessionMaxBudgetUSD(bridgeID string, maxBudgetUSD float64) er
 // SessionSpendDetail is every field of the cumulative api_spend_total
 // aggregate except TotalUSD.
 //
-// TotalUSD is deliberately absent: it lives in the sessions.spend_usd REAL
+// The session cost total is deliberately absent: it lives in the sessions.spend_usd REAL
 // column because the spend gate compares it in SQL and a figure inside a
 // JSON blob cannot be compared there. Splitting the aggregate this way
 // keeps exactly one home for the dollar total instead of two that can
@@ -776,37 +787,69 @@ type SessionSpendDetail struct {
 	Calls         int                `json:"calls"`
 	ByModel       map[string]float64 `json:"by_model,omitempty"`
 	ByQuerySource map[string]float64 `json:"by_query_source,omitempty"`
+
+	// The two inputs of the cost estimate in spend_usd (msg.SessionCostEvent),
+	// session-cumulative. APISpendUSD is what api_spend_total continues from on a
+	// resume; TurnResultUSD is the sum of per-turn result costs.
+	APISpendUSD   float64 `json:"api_spend_usd"`
+	TurnResultUSD float64 `json:"turn_result_usd"`
 }
 
-// RecordSessionSpend raises the session's recorded spend to spendUSD, stores
-// the matching breakdown, and returns the dollar value now stored, which is
-// never lower than what was there.
-//
-// The MAX() is a backstop, not the mechanism. The running total this is fed
-// from is derived in bridge-server's memory, and the derivation that holds it
-// is discarded when the harness process exits — so without the seeding in
-// harness.persistedSpend the total restarts at zero on every resume and a
-// plain assignment would walk a session's spend backwards, handing a budget
-// that was already exhausted a fresh full allowance. Cumulative spend does not
-// go down. The MAX() survives here for the case seeding cannot cover: a store
-// read that fails at derivation-creation time starts the total at zero, and
-// the recorded figure must not follow it down.
-//
-// The breakdown is written only when the total advances, for the same reason:
-// a per-run breakdown from a derivation that lost its history describes less
-// spending than the row already knows about, and overwriting with it would
-// lose the earlier runs' attribution.
-func (s *Store) RecordSessionSpend(bridgeID string, spendUSD float64, detail SessionSpendDetail) (float64, error) {
-	encoded, err := json.Marshal(detail)
+// RecordAPISpendBreakdown stores the session's per-call spend aggregate — token
+// usage, call count, per-model and per-query-source dollars and the API total
+// (api_spend_usd) — from the latest api_spend_total, keeping the recorded
+// turn_result_usd. It never replaces a breakdown with one describing less API
+// spend: a derivation seeded from a failed read restarts at zero, and its
+// breakdown would erase earlier runs' attribution.
+func (s *Store) RecordAPISpendBreakdown(bridgeID string, detail SessionSpendDetail) error {
+	now := time.Now().UTC()
+	var current SessionSpendDetail
+	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, fmt.Errorf("marshal spend detail for %s: %w", bridgeID, err)
+		return err
 	}
+	defer tx.Rollback()
+	var encoded string
+	if err := tx.QueryRow(`SELECT COALESCE(api_spend_detail, '') FROM sessions WHERE bridge_id=?`, bridgeID).Scan(&encoded); err != nil {
+		return err
+	}
+	if encoded != "" {
+		if err := json.Unmarshal([]byte(encoded), &current); err != nil {
+			return fmt.Errorf("unmarshal spend detail for %s: %w", bridgeID, err)
+		}
+	}
+	if detail.APISpendUSD < current.APISpendUSD {
+		return tx.Commit()
+	}
+	detail.TurnResultUSD = current.TurnResultUSD
+	next, err := json.Marshal(detail)
+	if err != nil {
+		return fmt.Errorf("marshal spend detail for %s: %w", bridgeID, err)
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET api_spend_detail=?, updated_at=? WHERE bridge_id=?`, string(next), now, bridgeID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RecordSessionCost raises the session's recorded cost (spend_usd) to totalUSD
+// and its per-turn result total to turnResultUSD, and returns the cost now
+// stored, which is never lower than what was there.
+//
+// spend_usd is the session cost estimate (msg.SessionCostEvent), the figure the
+// spend ceiling compares against. The MAX() is a backstop, not the mechanism:
+// the derivation seeds each harness process from the persisted row, and the
+// MAX() covers a failed seed read, which starts the estimate at zero.
+func (s *Store) RecordSessionCost(bridgeID string, totalUSD, turnResultUSD float64) (float64, error) {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(`UPDATE sessions
-		SET api_spend_detail = CASE WHEN ? > spend_usd THEN ? ELSE api_spend_detail END,
-		    spend_usd        = MAX(spend_usd, ?),
+		SET spend_usd        = MAX(spend_usd, ?),
+		    api_spend_detail = CASE
+		        WHEN ? > COALESCE(json_extract(COALESCE(NULLIF(api_spend_detail, ''), '{}'), '$.turn_result_usd'), 0)
+		        THEN json_set(COALESCE(NULLIF(api_spend_detail, ''), '{}'), '$.turn_result_usd', ?)
+		        ELSE api_spend_detail END,
 		    updated_at       = ?
-		WHERE bridge_id = ?`, spendUSD, string(encoded), spendUSD, now, bridgeID)
+		WHERE bridge_id = ?`, totalUSD, turnResultUSD, turnResultUSD, now, bridgeID)
 	if err != nil {
 		return 0, err
 	}
@@ -2048,6 +2091,60 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 	}
 	s.notifyChanged(bridgeID)
 	return bridgeID, true, nil
+}
+
+// ReclassifyDiscoveredSession gives an existing discovered session the purpose
+// its harness adapter now reports for it.
+//
+// UpsertDiscoveredSession classifies a session only when it inserts the row,
+// so a purpose the adapter learned to recognise after the row was imported —
+// oneshot transcripts, 51,002 of 51,258 discovered rows when it was added —
+// never reached the rows that already existed. This carries it to them.
+//
+// It writes only over the generic label: the row changes only while its
+// purpose is exactly "discovered", which is what the insert path writes when
+// nothing recognised the session. A purpose anything else set is never
+// overwritten, and a second call is a no-op. type follows the registry entry
+// for the new purpose, as it does on insert.
+//
+// folder_name moves to folderName only while it still holds what the insert
+// path filed an unrecognised session under — the registry folder for
+// "discovered", or nothing. A session someone has since moved (on 2026-09-16,
+// 33,145 discovered rows sat in "Archive") stays where they put it.
+//
+// updated_at is left alone on purpose: reclassification is not activity, and
+// bumping it would reorder the sidebar by the time of a discovery pass.
+//
+// Returns whether the row changed. An unregistered purpose, or "discovered"
+// itself, is a caller bug and returns an error rather than writing a label
+// nothing can group.
+func (s *Store) ReclassifyDiscoveredSession(bridgeID, purpose, folderName string) (bool, error) {
+	if purpose == msg.PurposeDiscovered {
+		return false, fmt.Errorf("ReclassifyDiscoveredSession %s: purpose %q is the label being replaced, not a reclassification", bridgeID, purpose)
+	}
+	spec, ok := msg.LookupPurpose(purpose)
+	if !ok {
+		return false, fmt.Errorf("ReclassifyDiscoveredSession %s: purpose %q is not in the registry", bridgeID, purpose)
+	}
+	res, err := s.db.Exec(
+		`UPDATE sessions
+		    SET purpose = ?,
+		        type = ?,
+		        folder_name = CASE WHEN COALESCE(folder_name, '') IN ('', ?) THEN ? ELSE folder_name END
+		  WHERE bridge_id = ? AND purpose = ?`,
+		purpose, string(spec.Type), msg.FolderForPurpose(msg.PurposeDiscovered), folderName, bridgeID, msg.PurposeDiscovered,
+	)
+	if err != nil {
+		return false, fmt.Errorf("ReclassifyDiscoveredSession %s: %w", bridgeID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("ReclassifyDiscoveredSession %s: %w", bridgeID, err)
+	}
+	if n > 0 {
+		s.notifyChanged(bridgeID)
+	}
+	return n > 0, nil
 }
 
 // ListSourceFolders returns every runtime override row, keyed by source.
