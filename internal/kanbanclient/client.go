@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -24,10 +25,41 @@ type Client struct {
 	ColumnsByName map[string]string
 }
 
+// ServiceTokenHeader is where kanban-store reads the token an internal service
+// presents. kanban-store gates every route, so a job that sends no token is
+// answered 401 and does no work.
+const ServiceTokenHeader = "X-Kanban-Store-Service-Token"
+
+// ServiceTokenEnvironmentVariable holds that token for every binary in this
+// repo; the scheduler unit carries it, so the jobs it runs inherit it.
+const ServiceTokenEnvironmentVariable = "KANBAN_STORE_SERVICE_TOKEN"
+
+// serviceTokenTransport puts the token on every request this client makes.
+// It sits in the transport rather than at each of the thirty-odd call sites
+// below, so a route added later carries it too.
+type serviceTokenTransport struct {
+	token string
+	base  http.RoundTripper
+}
+
+func (t *serviceTokenTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	// The caller's request must not be mutated; RoundTrip may be retried.
+	cloned := request.Clone(request.Context())
+	cloned.Header.Set(ServiceTokenHeader, t.token)
+	return t.base.RoundTrip(cloned)
+}
+
+// New builds a client that authenticates as an internal service with the token
+// in KANBAN_STORE_SERVICE_TOKEN. An empty token is left off rather than sent
+// blank, so the 401 names the missing header instead of a wrong token.
 func New(baseURL string) *Client {
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	if token := os.Getenv(ServiceTokenEnvironmentVariable); token != "" {
+		httpClient.Transport = &serviceTokenTransport{token: token, base: http.DefaultTransport}
+	}
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
-		HTTP:    &http.Client{Timeout: 10 * time.Second},
+		HTTP:    httpClient,
 	}
 }
 
