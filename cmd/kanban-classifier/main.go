@@ -399,6 +399,10 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	}
 	msgs, eventCount := page.messages, page.eventCount
 
+	if !cfg.ExplicitSession && saidNothingSince(page.newestEntryAt, time.Now().Add(-candidateLookback)) {
+		return false, false
+	}
+
 	// do-not-track: only re-evaluate after a big delta.
 	if tagSet[tagDoNotTrack] {
 		priorN, known := priorEventCount(tagSet)
@@ -597,6 +601,16 @@ func sigUnchanged(prior, current string, newestEntryAt time.Time) bool {
 		return false
 	}
 	return newestEntryAt.Before(takenAt.Add(time.Minute))
+}
+
+// saidNothingSince reports whether a session's newest entry is older than
+// cutoff. The summary walk picks candidates by the row's updated_at, which any
+// write to the row advances: the 2026-09-16 cost backfill put 2,536
+// never-classified sessions from May and June inside the seven-day lookback.
+// The lookback is about the conversation, so the newest entry has the last
+// word. A page with no entry time is not judged here.
+func saidNothingSince(newestEntryAt, cutoff time.Time) bool {
+	return !newestEntryAt.IsZero() && newestEntryAt.Before(cutoff)
 }
 
 const sigMinuteLayout = "200601021504"

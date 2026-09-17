@@ -191,3 +191,16 @@ func TestNewestMessageTime(t *testing.T) {
 		t.Error("an unparseable timestamp must be an error, not a missing time")
 	}
 }
+
+func TestTheLookbackMeasuresTheConversation(t *testing.T) {
+	cutoff := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	if !saidNothingSince(time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC), cutoff) {
+		t.Error("a session last spoken in before the cutoff is inside the lookback")
+	}
+	if saidNothingSince(cutoff, cutoff) || saidNothingSince(cutoff.Add(time.Hour), cutoff) {
+		t.Error("a session spoken in at or after the cutoff is outside the lookback")
+	}
+	if saidNothingSince(time.Time{}, cutoff) {
+		t.Error("a page with no entry time was judged stale")
+	}
+}
