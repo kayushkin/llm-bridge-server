@@ -29,6 +29,9 @@ if [ -z "${DEPLOY_DETACHED:-}" ]; then
     --uid="$(id -u)" \
     --gid="$(id -g)" \
     --setenv=DEPLOY_DETACHED=1 \
+    ${DEPLOY_GATE_OVERRIDE:+--setenv=DEPLOY_GATE_OVERRIDE="$DEPLOY_GATE_OVERRIDE"} \
+    ${CLAUDE_CODE_SESSION_ID:+--setenv=CLAUDE_CODE_SESSION_ID="$CLAUDE_CODE_SESSION_ID"} \
+    ${AI_AGENT:+--setenv=AI_AGENT="$AI_AGENT"} \
     --setenv=HOME="$HOME" \
     --setenv=PATH="$PATH" \
     --setenv=AUTH_STORE_URL="${AUTH_STORE_URL:-}" \
