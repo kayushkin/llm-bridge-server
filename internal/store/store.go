@@ -1009,6 +1009,37 @@ func (s *Store) InterruptedTurn(bridgeID string) (*InterruptedTurn, error) {
 	}, nil
 }
 
+// LastReportedBackgroundTasks returns the background tasks the harness listed
+// in the session's most recent background_tasks_changed event: what was
+// running inside the harness process the last time it said. Empty when the
+// last report was an empty list, and when the session never reported one.
+//
+// Auto-resume reads it after the process died, to tell the model which of its
+// subagents and backgrounded commands went down with it.
+func (s *Store) LastReportedBackgroundTasks(bridgeID string) ([]msg.BackgroundTask, error) {
+	var data string
+	err := s.db.QueryRow(
+		`SELECT data FROM events
+		  WHERE session_id=? AND type='system' AND json_extract(data,'$.system.subtype')=?
+		  ORDER BY id DESC LIMIT 1`,
+		bridgeID, msg.SystemSubtypeBackgroundTasksChanged,
+	).Scan(&data)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ev msg.Event
+	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+		return nil, err
+	}
+	if ev.System == nil {
+		return nil, nil
+	}
+	return ev.System.BackgroundTasks, nil
+}
+
 // ReconcileSessions resets every session in any of the given states to 'idle'
 // with pid=0 and returns the sessions that were reconciled. Called at startup:
 // the harness subprocess can only exist in memory, so any row marked with an

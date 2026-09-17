@@ -840,3 +840,45 @@ func TestInterruptedTurnCountsOnlyTheInterruptedTurnsToolCalls(t *testing.T) {
 		t.Errorf("ToolCallsAlreadyRun = %d, want 1", got.ToolCallsAlreadyRun)
 	}
 }
+
+func TestLastReportedBackgroundTasksIsTheNewestListNotAnOlderOne(t *testing.T) {
+	s := testStore(t)
+	s.CreateSession(&Session{SessionID: "br_bg", Harness: "mock", State: "idle"})
+
+	got, err := s.LastReportedBackgroundTasks("br_bg")
+	if err != nil || got != nil {
+		t.Fatalf("no report yet = %+v, %v; want nil, nil", got, err)
+	}
+
+	report := func(tasks ...msg.BackgroundTask) {
+		t.Helper()
+		data, err := json.Marshal(msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{
+			Subtype: msg.SystemSubtypeBackgroundTasksChanged, BackgroundTasks: tasks,
+		}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if _, err := s.StoreEventReturningID("br_bg", string(msg.EventSystem), "", "", data); err != nil {
+			t.Fatalf("store: %v", err)
+		}
+	}
+	subagent := msg.BackgroundTask{TaskID: "a1", TaskType: msg.TaskTypeLocalAgent, Description: "Map dash"}
+	shell := msg.BackgroundTask{TaskID: "b1", TaskType: msg.TaskTypeLocalBash, Description: "Run the tests"}
+
+	report(subagent)
+	report(subagent, shell)
+	got, err = s.LastReportedBackgroundTasks("br_bg")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got) != 2 || got[0] != subagent || got[1] != shell {
+		t.Fatalf("got %+v, want the newest list of two", got)
+	}
+
+	// The harness saying nothing runs any more is the newest report too.
+	report()
+	got, err = s.LastReportedBackgroundTasks("br_bg")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("after an empty report = %+v, %v; want none", got, err)
+	}
+}

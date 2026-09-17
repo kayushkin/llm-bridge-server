@@ -371,7 +371,11 @@ func skipClassifyReason(sess *store.Session, text string, state msg.SessionState
 		return "final message too short to carry a signal"
 	}
 	switch state {
-	case msg.SessionIdle, msg.SessionAwaitingUser:
+	case msg.SessionIdle, msg.SessionAwaitingUser, msg.SessionBackgroundTasksRunning:
+		// background_tasks_running is a turn that settled with subagents or
+		// backgrounded commands still going. Its final message can ask a
+		// question as well as any other, and the verdict is held under the
+		// running tasks (derivationState.applyExternalState).
 		return ""
 	default:
 		// The turn did not end on its own terms — it errored, was aborted,

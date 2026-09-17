@@ -125,6 +125,25 @@ type derivationState struct {
 	// sessionCostUSD is the last estimate emitted. It never goes down.
 	sessionCostUSD float64
 
+	// backgroundTasks is the harness's last report of every background task
+	// running inside its process — subagents, workflows, backgrounded shell
+	// commands (msg.SystemSubtypeBackgroundTasksChanged). The harness resends
+	// the whole list on each change, so this is replaced, never edited.
+	//
+	// A turn that ends while this is non-empty settles to
+	// background_tasks_running instead of idle. It used to settle to idle, and
+	// the restart reconcile selects on active states: a session whose three
+	// subagents were mid-search was killed by a redeploy and never resumed,
+	// because its row said nothing was happening.
+	backgroundTasks []msg.BackgroundTask
+
+	// stateOnceBackgroundTasksFinish is what the turn would have settled to had
+	// nothing been running — idle, or awaiting_user when it ended on a
+	// question. background_tasks_running outranks both while the list is
+	// non-empty, and this is what the session returns to when it empties, so a
+	// question asked over a running subagent is not forgotten.
+	stateOnceBackgroundTasksFinish msg.SessionState
+
 	// turnAccums holds in-flight per-turn accumulators keyed by
 	// turn_id. Created on the first event seen for a turn_id, closed
 	// on the terminating EventResult / EventError, or evicted FIFO
@@ -390,6 +409,24 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 					}
 					reason = "compact_complete"
 				}
+			case msg.SystemSubtypeBackgroundTasksChanged:
+				// The whole list, every time. Mid-turn it only updates what
+				// the turn's end will read; it moves the state in the two cases
+				// where the turn has already ended.
+				d.backgroundTasks = append([]msg.BackgroundTask(nil), ev.System.BackgroundTasks...)
+				switch {
+				case len(d.backgroundTasks) == 0 && prev == msg.SessionBackgroundTasksRunning:
+					next = d.stateOnceBackgroundTasksFinish
+					if next == "" {
+						next = msg.SessionIdle
+					}
+					reason = "background_tasks_finished"
+				case len(d.backgroundTasks) > 0 && (prev == msg.SessionIdle || prev == msg.SessionAwaitingUser):
+					// The list can land after the result that ended the turn.
+					d.stateOnceBackgroundTasksFinish = prev
+					next = msg.SessionBackgroundTasksRunning
+					reason = "background_tasks_running"
+				}
 			}
 		}
 
@@ -476,6 +513,16 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 			next = msg.SessionIdle
 			reason = "turn_complete"
 		}
+		// The turn is over but the process is not quiet: work the turn started
+		// is still running in it, and the harness will open a turn by itself
+		// when that work reports. That is live work, so it must read as an
+		// active state — the restart reconcile and the watchdog both select on
+		// those, and neither can see an idle session.
+		if len(d.backgroundTasks) > 0 {
+			d.stateOnceBackgroundTasksFinish = next
+			next = msg.SessionBackgroundTasksRunning
+			reason = "turn_complete_background_tasks_running"
+		}
 		d.activeTools = map[string]string{}
 		d.awaitingApproval = false
 		d.pendingApprovals = make(map[string]struct{})
@@ -498,6 +545,8 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 			case msg.SessionAborted:
 				next = msg.SessionAborted
 				d.activeTools = map[string]string{}
+				// An abort kills the process, and its background tasks with it.
+				d.backgroundTasks = nil
 				d.awaitingApproval = false
 				d.pendingApprovals = make(map[string]struct{})
 				reason = "aborted"
@@ -618,6 +667,19 @@ func (d *derivationState) applyExternalState(next msg.SessionState, reason strin
 	defer d.mu.Unlock()
 
 	prev := d.sessionState
+	// A verdict about how the turn settled (idle or awaiting_user) can arrive
+	// while background tasks still hold the session active. It is about the
+	// state underneath, so it is recorded there and takes effect when the tasks
+	// finish; the live state stays background_tasks_running, which is still true.
+	if prev == msg.SessionBackgroundTasksRunning {
+		for _, s := range allowedFrom {
+			if d.stateOnceBackgroundTasksFinish == s {
+				d.stateOnceBackgroundTasksFinish = next
+				break
+			}
+		}
+		return nil
+	}
 	permitted := false
 	for _, s := range allowedFrom {
 		if prev == s {

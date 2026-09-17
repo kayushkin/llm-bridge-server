@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -844,6 +845,7 @@ func (s *Server) autoResume(sess store.Session) {
 		return
 	}
 	if turn == nil {
+		s.tellResumedSessionItsBackgroundTasksDied(sess)
 		return
 	}
 	// Harness subprocess needs a moment to finish its start handshake before
@@ -861,6 +863,58 @@ func (s *Server) autoResume(sess store.Session) {
 	}
 	log.Printf("[auto-resume] %s: turn was interrupted after %d tool calls; sent an interruption notice instead of replaying the instruction",
 		sess.SessionID, turn.ToolCallsAlreadyRun)
+}
+
+// tellResumedSessionItsBackgroundTasksDied handles the resume that has no
+// interrupted turn to pick up: the last turn finished, and what the restart
+// killed was the work that turn left running — subagents, backgrounded
+// commands. sess is the row as it read before the reconcile reset it, so its
+// state still says what the session was doing when the process went away.
+//
+// Those tasks do not come back with the process. The model is parked waiting
+// for them to report, and nothing ever will, so unless it is told it waits for
+// good — resumed, idle, and looking finished.
+func (s *Server) tellResumedSessionItsBackgroundTasksDied(sess store.Session) {
+	if msg.SessionState(sess.State) != msg.SessionBackgroundTasksRunning {
+		return
+	}
+	tasks, err := s.store.LastReportedBackgroundTasks(sess.SessionID)
+	if err != nil {
+		log.Printf("[auto-resume] %s: reading the background tasks it lost failed: %v", sess.SessionID, err)
+		return
+	}
+	// Same wait as the interrupted-turn send below: the start handshake.
+	time.Sleep(2 * time.Second)
+	if err := s.harness.Send(sess.SessionID, backgroundTasksLostMessage(tasks), nil); err != nil {
+		log.Printf("[auto-resume] %s: background-tasks notice send failed: %v", sess.SessionID, err)
+		return
+	}
+	log.Printf("[auto-resume] %s: its turn had finished but %d background task(s) died with the process; sent a notice naming them",
+		sess.SessionID, len(tasks))
+}
+
+// backgroundTasksLostMessage is what a resumed session is told when the restart
+// killed work its finished turn had left running. It names each task, because
+// "some tasks" leaves the model to guess which results it is still owed.
+func backgroundTasksLostMessage(tasks []msg.BackgroundTask) string {
+	var b strings.Builder
+	b.WriteString("[llm-bridge] The harness process was restarted under this session and it has just been " +
+		"resumed. Your last turn had finished, but background work it started was still running " +
+		"inside that process and was killed with it. It will never report back, so do not wait for it.\n\n")
+	if len(tasks) == 0 {
+		b.WriteString("The bridge has no list of what was running.\n\n")
+	} else {
+		b.WriteString("What was running:\n")
+		for _, task := range tasks {
+			fmt.Fprintf(&b, "- %s (%s, task %s)\n", task.Description, task.TaskType, task.TaskID)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("This notice is not a new instruction; the user's last request still stands. Your transcript " +
+		"above is intact. A subagent's partial work is lost unless it wrote files, and a backgrounded " +
+		"command may have got part way, so check the real state of anything they could have changed, " +
+		"then start again whatever you still need. Do not repeat work that already completed.")
+	return b.String()
 }
 
 // resumeMessage decides what to say to a harness that has just come back up
