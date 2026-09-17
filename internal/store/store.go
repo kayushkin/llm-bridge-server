@@ -2032,7 +2032,8 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 
 	// Check if session already exists by harness_session_id
 	var existingBridgeID, existingInstanceID, existingDisplayName, existingSource, existingFolder string
-	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(purpose, ''), COALESCE(folder_name, '') FROM sessions WHERE harness_session_id=?`, harnessSessionID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder)
+	var existingUpdatedAt time.Time
+	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(purpose, ''), COALESCE(folder_name, ''), updated_at FROM sessions WHERE harness_session_id=?`, harnessSessionID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder, &existingUpdatedAt)
 	if err == nil {
 		// Already exists - update timestamp, display_name, instance_id, source,
 		// and folder where the existing values are empty. Existing non-empty
@@ -2053,7 +2054,17 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 		if existingFolder == "" && folderName != "" {
 			newFolder = folderName
 		}
-		s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=?, purpose=?, folder_name=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, newSource, newFolder, existingBridgeID)
+		// Nothing to write, nothing to announce. The startup discovery pass
+		// brings every session on disk through here; until 2026-09-17 each one
+		// was an UPDATE and an upsert frame to every open /session-events
+		// stream whether or not anything differed — tens of thousands of
+		// frames per restart, over rows that had not changed in days.
+		if updatedAt.Equal(existingUpdatedAt) && newInstanceID == existingInstanceID && newDisplayName == existingDisplayName && newSource == existingSource && newFolder == existingFolder {
+			return existingBridgeID, false, nil
+		}
+		if _, err := s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=?, purpose=?, folder_name=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, newSource, newFolder, existingBridgeID); err != nil {
+			return "", false, fmt.Errorf("UpsertDiscoveredSession: update %s: %w", existingBridgeID, err)
+		}
 		s.notifyChanged(existingBridgeID)
 		return existingBridgeID, false, nil
 	}
