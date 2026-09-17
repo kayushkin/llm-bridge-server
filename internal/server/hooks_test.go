@@ -272,3 +272,35 @@ func TestHookRoutes_DisabledWithoutHookStore(t *testing.T) {
 		t.Errorf("status = %d, want 404 when hook-store missing", resp.StatusCode)
 	}
 }
+
+// TestExecHookCommandDoesNotReceiveServerSecrets spawns a real hook command
+// and reads back the environment it was given. A registered hook is an
+// arbitrary shell command; it must not see the server's own secrets.
+func TestExecHookCommandDoesNotReceiveServerSecrets(t *testing.T) {
+	for _, name := range config.SecretEnvironmentVariableNames() {
+		t.Setenv(name, "must-not-reach-a-hook-"+name)
+	}
+	t.Setenv("LLMBRIDGE_HOOK_ENVIRONMENT_TEST_MARKER", "kept")
+	srv, hks := testServerWithHookStore(t)
+	h := &msg.Hook{
+		ID: "print-environment", Harness: msg.HarnessClaudeCode, Event: "PreToolUse",
+		Command: "env", ScopeKind: msg.HookScopeGlobal, Enabled: true,
+	}
+	if err := hks.CreateHook(h); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest("POST", "/hooks/exec/print-environment", strings.NewReader(`{}`)))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	output := w.Body.String()
+	if !strings.Contains(output, "LLMBRIDGE_HOOK_ENVIRONMENT_TEST_MARKER=kept") {
+		t.Fatalf("hook output does not look like its environment: %q", output)
+	}
+	for _, name := range config.SecretEnvironmentVariableNames() {
+		if strings.Contains(output, name+"=") {
+			t.Errorf("hook command received %s", name)
+		}
+	}
+}

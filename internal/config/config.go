@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -119,6 +120,112 @@ type Config struct {
 	// that is what puts the call on the Claude Code subscription login instead
 	// of on an API key. Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE.
 	SignalClassifierInstance string
+	// DemoLoginSetting is the raw LLMBRIDGE_DEMO_LOGIN value. Only the exact
+	// value "enabled" turns demo login and the identity-carrying kanban proxy
+	// on; empty leaves them off; anything else is a startup error. Read it
+	// through DemoLoginEnabled, which applies those rules — never directly.
+	DemoLoginSetting string
+	// DemoLoginSigningKey is the HMAC-SHA256 key that signs the demo login
+	// cookie, from LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY. Required, and at least
+	// DemoLoginSigningKeyMinimumBytes long, when demo login is enabled.
+	DemoLoginSigningKey string
+	// ServiceToken is the credential an internal service presents in
+	// X-LLM-Bridge-Service-Token to call this server without the demo login
+	// restrictions, from LLMBRIDGE_SERVICE_TOKEN. Required, and at least
+	// ServiceTokenMinimumBytes long, when demo login is enabled; unused
+	// otherwise, because with demo login off nothing is restricted.
+	ServiceToken string
+	// GrantStoreServiceToken is sent to grant-store as
+	// X-Grant-Store-Service-Token on every call this server makes as itself
+	// (the spawn-time effective-grants read), from
+	// LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN. Optional: empty sends no token,
+	// which a grant-store that enforces per-principal access answers with 401.
+	GrantStoreServiceToken string
+}
+
+// Names of the environment variables that hold this server's own secrets.
+// They are declared once here because two things read them: Load, and
+// SecretEnvironmentVariableNames, which the child-process environment builder
+// (internal/childprocessenv) strips from every process this server spawns.
+const (
+	DemoLoginSigningKeyEnvironmentVariable     = "LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY"
+	ServiceTokenEnvironmentVariable            = "LLMBRIDGE_SERVICE_TOKEN"
+	GrantStoreServiceTokenEnvironmentVariable  = "LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN"
+	KanbanStoreServiceTokenEnvironmentVariable = "LLMBRIDGE_KANBAN_STORE_SERVICE_TOKEN"
+)
+
+// SecretEnvironmentVariableNames lists every environment variable that must
+// never reach a process this server spawns. A harness child runs an agent that
+// can execute shell commands; whatever is in its environment the agent can
+// read. The demo login signing key would let it mint a login cookie for any
+// principal, the service token would make it the unrestricted internal caller,
+// and a store service token would let it bypass that store's per-principal
+// enforcement. LLMBRIDGE_KANBAN_STORE_SERVICE_TOKEN is not read by this server;
+// it is listed so that an operator who puts it in the same environment file
+// does not hand it to every agent.
+func SecretEnvironmentVariableNames() []string {
+	return []string{
+		DemoLoginSigningKeyEnvironmentVariable,
+		ServiceTokenEnvironmentVariable,
+		GrantStoreServiceTokenEnvironmentVariable,
+		KanbanStoreServiceTokenEnvironmentVariable,
+	}
+}
+
+// DemoLoginEnabledValue is the only LLMBRIDGE_DEMO_LOGIN value that turns demo
+// login on.
+const DemoLoginEnabledValue = "enabled"
+
+// DemoLoginSigningKeyMinimumBytes is the shortest signing key accepted: the
+// size of an HMAC-SHA256 output, so the key is not the weaker half of the MAC.
+const DemoLoginSigningKeyMinimumBytes = 32
+
+// ServiceTokenMinimumBytes is the shortest LLMBRIDGE_SERVICE_TOKEN accepted.
+const ServiceTokenMinimumBytes = 32
+
+// DemoLoginEnabled reports whether demo login is switched on, and returns an
+// error naming what is wrong when the demo login settings are inconsistent: an
+// unrecognised LLMBRIDGE_DEMO_LOGIN value, or demo login enabled without a
+// long-enough signing key or without a kanban-store to proxy to. The caller
+// must refuse to start on an error; there is no partially-enabled state.
+func (c *Config) DemoLoginEnabled() (bool, error) {
+	switch c.DemoLoginSetting {
+	case "":
+		return false, nil
+	case DemoLoginEnabledValue:
+	default:
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%q is not accepted: the only accepted value is %q (leave it unset to keep demo login off)",
+			c.DemoLoginSetting, DemoLoginEnabledValue)
+	}
+	if c.DemoLoginSigningKey == "" {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY, the key that signs the login cookie, and it is unset",
+			DemoLoginEnabledValue)
+	}
+	if len(c.DemoLoginSigningKey) < DemoLoginSigningKeyMinimumBytes {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY is %d bytes; it must be at least %d",
+			len(c.DemoLoginSigningKey), DemoLoginSigningKeyMinimumBytes)
+	}
+	if c.ServiceToken == "" {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires %s: with demo login on every route is gated, and internal services reach operator routes only by presenting it",
+			DemoLoginEnabledValue, ServiceTokenEnvironmentVariable)
+	}
+	if len(c.ServiceToken) < ServiceTokenMinimumBytes {
+		return false, fmt.Errorf("%s is %d bytes; it must be at least %d",
+			ServiceTokenEnvironmentVariable, len(c.ServiceToken), ServiceTokenMinimumBytes)
+	}
+	if c.KanbanStoreURL == "" {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_KANBAN_STORE_URL, the kanban-store the /kanban/ proxy forwards to, and it is empty",
+			DemoLoginEnabledValue)
+	}
+	if c.GrantStoreURL == "" {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_GRANT_STORE_URL, the grant-store the /grant-store/ proxy forwards to, and it is empty",
+			DemoLoginEnabledValue)
+	}
+	if c.PrincipalStoreURL == "" {
+		return false, fmt.Errorf("LLMBRIDGE_DEMO_LOGIN=%s requires LLMBRIDGE_PRINCIPAL_STORE_URL, the principal-store a login is checked with, and it is empty",
+			DemoLoginEnabledValue)
+	}
+	return true, nil
 }
 
 // Load reads the process environment, falling back to the addresses in
@@ -165,6 +272,10 @@ func Load() *Config {
 		SignalClassifierInstance: envOr("LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE", "inst-cc-local"),
 		SignalClassifierTimeout:  envDuration("LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", 20*time.Second),
 		SignalClassifierMaxChars: envInt("LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", 6000),
+		DemoLoginSetting:         os.Getenv("LLMBRIDGE_DEMO_LOGIN"),
+		DemoLoginSigningKey:      os.Getenv(DemoLoginSigningKeyEnvironmentVariable),
+		ServiceToken:             os.Getenv(ServiceTokenEnvironmentVariable),
+		GrantStoreServiceToken:   os.Getenv(GrantStoreServiceTokenEnvironmentVariable),
 	}
 	productiondefaults.PanicIfUsedUnderTest(cfg.GuardedAddresses())
 	return cfg

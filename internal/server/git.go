@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -255,6 +256,7 @@ func collectGitView(parent context.Context, repo string) (*GitView, error) {
 
 func runGit(ctx context.Context, repo string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	cmd.Dir = repo
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

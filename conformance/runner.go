@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/ndjson"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -70,9 +71,7 @@ func launchProcess(ctx context.Context, binary string, env ...string) (*runProce
 	// before the test's wait can observe its result.
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	cmd := exec.CommandContext(ctx, binary)
-	if len(env) > 0 {
-		cmd.Env = append(cmd.Environ(), env...)
-	}
+	cmd.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(), env...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -832,6 +831,7 @@ func testDiscover(ctx context.Context, binary string) TestResult {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binary, "-discover")
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	out, err := cmd.Output()
 	if err != nil {
 		// A non-zero exit means the flag is not implemented. That is a
@@ -871,6 +871,7 @@ func testImport(ctx context.Context, binary string) TestResult {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binary, "-import-history", "nonexistent-session")
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	err := cmd.Run()
 	if err != nil {
 		exitErr, ok := err.(*exec.ExitError)

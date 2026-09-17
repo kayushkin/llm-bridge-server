@@ -53,7 +53,11 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 	if err := s.injectMCPConfig(sess); err != nil {
 		return nil, fmt.Errorf("inject mcp config: %w", err)
 	}
-	return s.harness.StartOnInstance(ctx, sess, inst, credID)
+	sessionEnvironment, err := s.sessionAgentEnvironment(sess)
+	if err != nil {
+		return nil, err
+	}
+	return s.harness.StartOnInstance(ctx, sess, inst, credID, sessionEnvironment)
 }
 
 // injectHookSettings synthesizes a per-harness hook config blob and merges

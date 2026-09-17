@@ -49,8 +49,8 @@ func TestSessionHubNumbersFramesFromOne(t *testing.T) {
 		t.Fatalf("fresh connect backlog = %d frames, want 0", len(backlog))
 	}
 
-	h.publish(upsert("a"))
-	h.publish(upsert("b"))
+	h.publishOwnedBy(upsert("a"), "")
+	h.publishOwnedBy(upsert("b"), "")
 
 	first := <-ch
 	second := <-ch
@@ -65,7 +65,7 @@ func TestSessionHubNumbersFramesFromOne(t *testing.T) {
 func TestSessionHubReplaysExactlyWhatWasMissed(t *testing.T) {
 	h := newSessionHub(nil)
 	for i := 0; i < 5; i++ {
-		h.publish(upsert(fmt.Sprintf("s%d", i)))
+		h.publishOwnedBy(upsert(fmt.Sprintf("s%d", i)), "")
 	}
 
 	// A client that saw through frame 2 gets 3, 4 and 5 and nothing else.
@@ -80,7 +80,7 @@ func TestSessionHubReplaysExactlyWhatWasMissed(t *testing.T) {
 
 func TestSessionHubUpToDateClientGetsNoBacklog(t *testing.T) {
 	h := newSessionHub(nil)
-	h.publish(upsert("a"))
+	h.publishOwnedBy(upsert("a"), "")
 
 	_, _, backlog, resume := h.subscribe(h.eventID(1))
 	if resume != resumeReplayed {
@@ -94,7 +94,7 @@ func TestSessionHubUpToDateClientGetsNoBacklog(t *testing.T) {
 func TestSessionHubReportsGapWhenBufferHasRolledPast(t *testing.T) {
 	h := newSessionHub(nil)
 	for i := 0; i < sessionListReplayCapacity+10; i++ {
-		h.publish(upsert(fmt.Sprintf("s%d", i)))
+		h.publishOwnedBy(upsert(fmt.Sprintf("s%d", i)), "")
 	}
 
 	// Frame 1 fell out of the buffer long ago. Reporting "replayed" here would
@@ -123,15 +123,15 @@ func TestSessionHubReportsGapWhenBufferHasRolledPast(t *testing.T) {
 
 func TestSessionHubRejectsAnotherProcessesEventID(t *testing.T) {
 	old := newSessionHub(nil)
-	old.publish(upsert("a"))
-	old.publish(upsert("b"))
+	old.publishOwnedBy(upsert("a"), "")
+	old.publishOwnedBy(upsert("b"), "")
 
 	// A client reconnecting across a server restart carries an id whose numbers
 	// mean nothing to the new process. Honouring them would replay frames that
 	// happen to share a sequence number but are entirely different sessions.
 	fresh := newSessionHub(nil)
 	for i := 0; i < 5; i++ {
-		fresh.publish(upsert(fmt.Sprintf("t%d", i)))
+		fresh.publishOwnedBy(upsert(fmt.Sprintf("t%d", i)), "")
 	}
 	_, _, backlog, resume := fresh.subscribe(old.eventID(2))
 	if resume != resumeGap {
@@ -144,7 +144,7 @@ func TestSessionHubRejectsAnotherProcessesEventID(t *testing.T) {
 
 func TestSessionHubRejectsUnparseableAndFutureEventIDs(t *testing.T) {
 	h := newSessionHub(nil)
-	h.publish(upsert("a"))
+	h.publishOwnedBy(upsert("a"), "")
 
 	for _, id := range []string{
 		"garbage",
@@ -163,14 +163,14 @@ func TestSessionHubRejectsUnparseableAndFutureEventIDs(t *testing.T) {
 func TestSessionHubBacklogAndLiveChannelDoNotOverlap(t *testing.T) {
 	h := newSessionHub(nil)
 	for i := 0; i < 3; i++ {
-		h.publish(upsert(fmt.Sprintf("s%d", i)))
+		h.publishOwnedBy(upsert(fmt.Sprintf("s%d", i)), "")
 	}
 
 	_, ch, backlog, resume := h.subscribe(h.eventID(1))
 	if resume != resumeReplayed {
 		t.Fatalf("resume = %q, want %q", resume, resumeReplayed)
 	}
-	h.publish(upsert("live"))
+	h.publishOwnedBy(upsert("live"), "")
 
 	got := seqsOf(backlog)
 	for {
@@ -208,7 +208,7 @@ func TestSessionHubJoinsCleanlyUnderConcurrentPublish(t *testing.T) {
 	)
 	for attempt := 0; attempt < attempts; attempt++ {
 		h := newSessionHub(nil)
-		h.publish(upsert("seed"))
+		h.publishOwnedBy(upsert("seed"), "")
 
 		start := make(chan struct{})
 		results := make(chan []uint64, joiners)
@@ -249,7 +249,7 @@ func TestSessionHubJoinsCleanlyUnderConcurrentPublish(t *testing.T) {
 		go func() {
 			<-start
 			for i := 0; i < published; i++ {
-				h.publish(upsert(fmt.Sprintf("s%d", i)))
+				h.publishOwnedBy(upsert(fmt.Sprintf("s%d", i)), "")
 			}
 		}()
 
@@ -283,7 +283,7 @@ func TestSessionHubJoinsCleanlyUnderConcurrentPublish(t *testing.T) {
 func TestSessionHubBufferStaysBounded(t *testing.T) {
 	h := newSessionHub(nil)
 	for i := 0; i < sessionListReplayCapacity*3; i++ {
-		h.publish(upsert(fmt.Sprintf("s%d", i)))
+		h.publishOwnedBy(upsert(fmt.Sprintf("s%d", i)), "")
 	}
 	h.mu.Lock()
 	held, capacity := len(h.replay), cap(h.replay)
@@ -390,8 +390,8 @@ func TestSessionListEventsReplaysOverHTTP(t *testing.T) {
 		t.Fatalf("hello data = %s, want resume none", frames[0].data)
 	}
 
-	hub.publish(upsert("a"))
-	hub.publish(upsert("b"))
+	hub.publishOwnedBy(upsert("a"), "")
+	hub.publishOwnedBy(upsert("b"), "")
 	frames = first.take(t, 2)
 	if frames[0].id != hub.eventID(1) || frames[1].id != hub.eventID(2) {
 		t.Fatalf("frame ids = %q,%q, want %q,%q",
@@ -405,7 +405,7 @@ func TestSessionListEventsReplaysOverHTTP(t *testing.T) {
 
 	// Anything published while nobody is connected is exactly what the gap used
 	// to swallow.
-	hub.publish(upsert("c"))
+	hub.publishOwnedBy(upsert("c"), "")
 
 	req2, _ := http.NewRequest(http.MethodGet, ts.URL, nil)
 	req2.Header.Set("Last-Event-ID", lastSeen)
@@ -448,7 +448,7 @@ func TestSessionHubUnsubscribeStopsDelivery(t *testing.T) {
 	h := newSessionHub(nil)
 	id, ch, _, _ := h.subscribe("")
 	h.unsubscribe(id)
-	h.publish(upsert("a"))
+	h.publishOwnedBy(upsert("a"), "")
 	select {
 	case frame := <-ch:
 		t.Fatalf("unsubscribed channel got frame %d", frame.seq)

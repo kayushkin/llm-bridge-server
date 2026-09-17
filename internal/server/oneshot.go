@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -88,7 +88,7 @@ func (s *Server) runOneShot(ctx context.Context, inst *msg.Instance, req msg.One
 	body, _ := json.Marshal(req)
 
 	cmd := exec.CommandContext(callCtx, binPath, "-oneshot")
-	cmd.Env = os.Environ()
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	if credID != "" {
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_CREDENTIAL_ID="+credID)
 	}

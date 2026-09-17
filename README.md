@@ -457,6 +457,99 @@ All configuration is via environment variables with sensible defaults.
 | `LLMBRIDGE_RUNNER_INSTALL_SCRIPT` | _(unset)_ | Override path for the runner install script served by `/api/runner/install.sh` (falls back to `<assets-dir>/install.sh`, then `~/repos/llm-bridge-runner/scripts/install.sh`) |
 | `LLMBRIDGE_HARNESS_PROXY_<NAME>` | _(per-harness default: `inber`=`http://localhost:8200`, `hermes`=`http://localhost:8500`)_ | Override URL for the `/api/harness-proxy/{harness}/...` reverse target; set to empty string to disable a harness's proxy |
 
+## Demo login, route gating and the store proxies (demo only)
+
+**This is a stand-in for real login, not a login system.** It exists so a separately deployed product with its own frontend can sign a user in and have kanban-store see who they are; the company's real login replaces it. Anyone who can reach `POST /auth/demo-login` can sign in as any active human principal by naming its id — there is no password.
+
+It is **off unless configured**. With `LLMBRIDGE_DEMO_LOGIN` unset none of these routes exist (404), nothing is gated, and startup logs which state it is in.
+
+| Variable | Description |
+|----------|-------------|
+| `LLMBRIDGE_DEMO_LOGIN` | Must be exactly `enabled` to turn it on. Any other non-empty value refuses to start. |
+| `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY` | HMAC-SHA256 key for the login cookie. Required when enabled, at least 32 bytes; startup is refused otherwise. |
+| `LLMBRIDGE_KANBAN_STORE_URL` | The kanban-store `/kanban/` forwards to. Must be non-empty when enabled. |
+| `LLMBRIDGE_GRANT_STORE_URL` | The grant-store `/grant-store/` forwards to. Must be non-empty when enabled. |
+| `LLMBRIDGE_SERVICE_TOKEN` | See below. Required when enabled, at least 32 bytes. |
+| `LLMBRIDGE_PRINCIPAL_STORE_URL` | The principal-store a login is checked against. Must be non-empty when enabled. |
+
+Routes:
+
+- `POST /auth/demo-login` `{"principal_id":"principal_000001"}` — checks the principal with principal-store: unknown → 400 `unknown_principal`, a `group` → 400 `principal_not_human`, disabled → 400 `principal_disabled`, principal-store unreachable → 502 `principal_store_unavailable`. On success sets the `llm_bridge_principal_session` cookie (HttpOnly, SameSite=Lax, Secure when the request arrived over TLS or with `X-Forwarded-Proto: https`) holding the principal id and a 12h expiry signed with HMAC-SHA256, and answers 200 `{principal_id, expires_at}`.
+- `GET /auth/principal` — 200 `{principal_id, expires_at}` for a valid cookie; 401 for a missing, malformed, tampered or expired one.
+- `POST /auth/logout` — clears the cookie, 204. The cookie is stateless, so a copy taken before logout stays valid until it expires.
+- `/kanban/<rest>` (any method) — requires a valid cookie or a session agent token (401 otherwise, and nothing is forwarded), then forwards to kanban-store `/api/<rest>` with the query string, method, body and headers unchanged, except: `X-Principal-Id`, `X-Kanban-Store-Service-Token`, `X-Grant-Store-Service-Token`, `X-LLM-Bridge-Service-Token` and `Authorization` from the client are **deleted**, `X-Principal-Id` is set from the verified credential, and the login cookie is removed. With the service token and no principal it is 403 `store_proxy_requires_a_principal`. kanban-store's status, headers and body come back unchanged; kanban-store unreachable → 502 `kanban_store_unavailable`.
+
+⚠️ **kanban-store trusts `X-Principal-Id`, so it must not be reachable by users except through this proxy.** A user who can reach kanban-store directly can name any principal.
+
+### The grant-store proxy and grant-store's service token
+
+`/grant-store/<rest>` (any method) is the same identity-carrying proxy as `/kanban/`, forwarding to `LLMBRIDGE_GRANT_STORE_URL` **`/<rest>`** — grant-store's routes are rooted at `/`, so the mapping is:
+
+| Gateway | grant-store |
+|---------|-------------|
+| `/grant-store/grants` | `/grants` |
+| `/grant-store/grants/{id}` | `/grants/{id}` |
+| `/grant-store/grants/{id}/revoke` | `/grants/{id}/revoke` |
+| `/grant-store/principals/{id}/effective` | `/principals/{id}/effective` |
+| `/grant-store/relations` | `/relations` |
+| `/grant-store/resource-types` | `/resource-types` |
+
+It takes a login cookie or a session agent token, deletes the same headers (`X-Principal-Id`, `X-Grant-Store-Service-Token`, `X-Kanban-Store-Service-Token`, `X-LLM-Bridge-Service-Token`, `Authorization`) and the login cookie, and sets `X-Principal-Id`. What a principal may do there is grant-store's decision. grant-store unreachable → 502 `grant_store_unavailable`. `LLMBRIDGE_GRANT_STORE_URL` must be non-empty when demo login is enabled. Both proxies are one function, `serveStoreProxyAsPrincipal` in `internal/server/principal_identity_store_proxy.go`.
+
+| Variable | Description |
+|----------|-------------|
+| `LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN` | Optional, and independent of demo login. When set, every call `internal/grantclient` makes — the spawn-time effective-grants reads, the create-time grant gate, the principal's instance list — carries it as `X-Grant-Store-Service-Token`, because those reads run as this server, not as a user, and an enforcing grant-store answers them 401 without it. Unset sends no such header. Never passed to a child process. |
+
+### The whole server is gated while demo login is on
+
+With `LLMBRIDGE_DEMO_LOGIN=enabled` every request is authorized before it reaches a handler (`internal/server/request_authorization.go`); with it unset nothing below applies. Every route is classified by its exact registration pattern in `routeAccessRules`. **A route with no rule is 403 `route_not_classified` naming the pattern**, to everyone except the service token, so a route added later stays closed until someone classifies it; `TestEveryRegisteredRouteIsClassified` fails the build for a `HandleFunc` in this package with no rule.
+
+| Variable | Description |
+|----------|-------------|
+| `LLMBRIDGE_SERVICE_TOKEN` | Required when demo login is enabled, at least 32 bytes; startup is refused otherwise. An internal service sends it as `X-LLM-Bridge-Service-Token` and is unrestricted on every route. A wrong token is 401, never a fall-back to the cookie. |
+
+Callers and classes:
+
+- **open** — `GET /health`, `POST /auth/demo-login`, `GET /auth/principal`, `POST /auth/logout`.
+- **harness callbacks** — keep exactly the checks their handlers already make: `POST /permission/cc-prehook/{bridge_id}`, `POST /permission/codex-prehook/{bridge_id}`, `POST /sidecar/event/{bridge_id}`, `POST /hooks/exec/{id}`, `POST /sessions/{id}/auto-rename`, `GET /api/runner/ws`, `POST /api/runner/enroll`, `GET /api/runner/install.sh`, `GET /api/runner/binary`, `/api/agent-store/`, `/api/skill-store/`, `/api/harness-proxy/{harness}/{rest...}`. ⚠️ The prehooks, the sidecar ingest, hook exec and the harness proxy authenticate nobody today, so anyone who can reach this listener can post into any session's stream through them; in deployment do not publish those paths beyond this host.
+- **principal** (a valid login cookie):
+  - `POST /sessions` creates the session as the caller; a body naming a different `principal_id` is 403 `principal_mismatch`. The grant gates still apply.
+  - Every route naming one session (`/sessions/{id}`, `/send`, `/events`, `/messages`, `/fork`, `/stop`, `/attach`, `/git`, `/signals`, …) and `POST /signals/{id}/resolve|answer` reach only sessions whose `principal_id` is the caller's; anything else — another principal's session, a session with no principal, a missing one — is the same 404.
+  - `GET /sessions`, `GET|POST /sessions/summary`, `GET /sessions/recent-bundle`, `GET|POST /sessions/validators`, `GET /signals` and the `GET /session-events` stream are narrowed to the caller's sessions.
+  - `GET /sessions/search`, `GET /sessions/aggregates` (answered by log-store across every session) and `GET /snapshots/blob/{sha}` (shared across sessions) are 403 for principals.
+  - Catalogs: `GET /harnesses`, `/harnesses/{name}/capabilities`, `/harnesses/{name}/agents`, `/images/`, `GET /session-taxonomy`, `GET /agents`, `GET /agents/{slug}` read as they are (agents are **not** narrowed by `can_run_as`); `GET /instances` is narrowed by `can_dispatch_on` with the same lenient rule as the create gate and returns no machine details.
+  - Everything else — instances, machines, credentials and hooks writes, `GET /models`, bridge-prefs, `admin/*`, conformance, folders, source-folders, `PUT /sessions/{id}/folder`, the services inventory, permission and bypass modes, agent-store's other routes, memory-store — is 403 `operator route: use the service token`.
+- **nobody** — 401 on everything but open routes and harness callbacks.
+
+Sessions a session spawns carry its principal: a fork and a promoted subagent take the parent's `principal_id` (and `bundle_id`).
+
+### Agent tool calls act as the session's principal
+
+When demo login is enabled and a session started as a principal is spawned (create with `auto_start`, send, resume, fork), its harness child gets two variables, added after the server's secrets are removed from its environment:
+
+| Variable | Value |
+|----------|-------|
+| `LLM_BRIDGE_GATEWAY_URL` | This server's base URL: `LLMBRIDGE_PUBLIC_URL` when set, otherwise the one built from `LLMBRIDGE_LISTEN_ADDR` (the same base the permission prehook URLs use). If neither gives one, the spawn fails. |
+| `LLM_BRIDGE_PRINCIPAL_TOKEN` | A **session agent token**: principal id, session id and a 24h expiry, HMAC-SHA256-signed with `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY` under its own domain separator, so it never verifies as a login cookie and a cookie never verifies as one. Minted afresh at every spawn. |
+
+An MCP server or a Bash tool call that needs the principal's boards sends the token to the gateway, never to the store:
+
+```bash
+curl -sS "$LLM_BRIDGE_GATEWAY_URL/kanban/boards" -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN"
+```
+
+The token is accepted **only** on `/kanban/` (and `/grant-store/`, below), as `Authorization: Bearer`; on any other route an `Authorization` header is 401. On every request the session it names is read from the store: it must still exist, still be started as the token's principal, and not be `completed`, `error`, `aborted` or `disconnected` — so the token stops working when its session ends. The request then reaches the store exactly as a cookie-carrying one would, with `Authorization` removed.
+
+Only the local transport can deliver these variables; a principal's session on an `ssh` or `runner` instance is refused at spawn rather than started without them.
+
+⚠️ **This binds only agents that go through the gateway.** An agent process can open any socket it likes, so in deployment **kanban-store and grant-store must not be network-reachable from agent processes**, and **no store service token may be in an agent's environment** (the ones this server knows are removed, see below; anything else an operator puts in the unit's environment is inherited).
+
+### Secrets never reach a child process
+
+Every process this server spawns — harness wrappers in events, pty and ssh mode, the OTel sidecar, `-oneshot`, `-discover` and `-import-history`, registered hook commands, `git`, and the conformance runner — gets its environment from `internal/childprocessenv`, which removes every variable `config.SecretEnvironmentVariableNames` declares: `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY`, `LLMBRIDGE_SERVICE_TOKEN`, `LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN` and `LLMBRIDGE_KANBAN_STORE_SERVICE_TOKEN`. Those processes run agents, and an agent with a shell can read its own environment; with the signing key it could mint a login cookie for any principal. A test walks the module and fails on any `exec.Command` whose `Env` is not set from that package.
+
+Scrubbing the child is not enough while the agent runs as the same Unix user, because a same-user process can read `/proc/<server pid>/environ` or ptrace the server. So with demo login enabled the server marks itself non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`) at startup and refuses to start if it cannot. That does not help against the environment *file* the unit reads its secrets from: in deployment keep it unreadable by the user agents run as, or run agents as a different user.
+
 ## Testing
 
 Three tiers, in increasing strictness about the host environment:

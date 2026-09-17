@@ -131,7 +131,7 @@ func TestThePTYSidecarIsToldTheSessionWorkingDirectory(t *testing.T) {
 		Machine:    &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal},
 	}
 
-	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "")
+	proc, err := manager.StartOnInstance(context.Background(), sess, inst, "", nil)
 	if err != nil {
 		t.Fatalf("StartOnInstance (pty): %v", err)
 	}

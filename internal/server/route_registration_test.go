@@ -83,7 +83,41 @@ func TestRoutesRegisterWithEveryStoreMounted(t *testing.T) {
 // against a temp dir. It deliberately mirrors cmd/llm-bridge-server's wiring:
 // if a new store is added there, add it here too, or route collisions from it
 // stay invisible to the test suite.
+// TestRoutesRegisterWithEveryStoreMountedAndDemoLoginEnabled is the same
+// registration check with the demo login routes and the /kanban/ proxy
+// mounted too, since those are registered only when demo login is enabled and
+// would otherwise never meet the rest of the mux under test.
+func TestRoutesRegisterWithEveryStoreMountedAndDemoLoginEnabled(t *testing.T) {
+	srv := newServerWithAllStoresConfigured(t, func(cfg *config.Config) {
+		cfg.DemoLoginSetting = config.DemoLoginEnabledValue
+		cfg.DemoLoginSigningKey = "route-registration-test-signing-key-32b"
+		cfg.ServiceToken = "route-registration-test-service-token-32b"
+		cfg.KanbanStoreURL = "http://kanban-store.invalid"
+		cfg.PrincipalStoreURL = "http://principal-store.invalid"
+		cfg.GrantStoreURL = "http://grant-store.invalid"
+	})
+	for _, route := range []struct{ method, path string }{
+		{"GET", "/auth/principal"},
+		{"GET", "/kanban/boards"},
+	} {
+		// Through ServeHTTP, not the bare mux: with demo login enabled the
+		// request authorization in front of the mux is part of the route.
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, httptest.NewRequest(route.method, route.path, nil))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s without a login cookie -> %d, want 401 from the demo login routes", route.method, route.path, w.Code)
+		}
+	}
+}
+
 func newServerWithAllStores(t *testing.T) *Server {
+	t.Helper()
+	return newServerWithAllStoresConfigured(t, func(*config.Config) {})
+}
+
+// newServerWithAllStoresConfigured is newServerWithAllStores with a hook to
+// adjust the config before New registers the routes.
+func newServerWithAllStoresConfigured(t *testing.T, adjustConfig func(*config.Config)) *Server {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -138,6 +172,8 @@ func newServerWithAllStores(t *testing.T) *Server {
 		ConformancePath: filepath.Join(dir, "conformance.json"),
 		LogStoreURL:     "http://localhost:0", // unused here
 	}
+
+	adjustConfig(cfg)
 
 	// New() calls routes(), which is where a conflicting pattern panics.
 	// A panic here fails the test with the conflict named, which is the

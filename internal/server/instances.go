@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -47,7 +48,45 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if principalID, restricted := principalRestrictingRequest(r); restricted {
+		instances, err = s.instancesPrincipalMayDispatchOn(r.Context(), principalID, instances)
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+			return
+		}
+	}
 	writeJSON(w, instances)
+}
+
+// instancesPrincipalMayDispatchOn narrows instances to the ones a principal
+// restricted by demo login may start a session on, by the same lenient rule
+// checkPrincipalMayRunHere enforces at creation: a principal holding no
+// can_dispatch_on grant is not restricted, one holding any may use only the
+// instances it names and the instances of the machines it names. Machine
+// details (hostname, SSH user and key path) are the operator's and are left
+// out; machine_id stays.
+func (s *Server) instancesPrincipalMayDispatchOn(ctx context.Context, principalID string, instances []msg.Instance) ([]msg.Instance, error) {
+	if s.grantClient == nil {
+		return nil, fmt.Errorf("instances are listed for %s by their can_dispatch_on grants, and this server has no grant-store (LLMBRIDGE_GRANT_STORE_URL)", principalID)
+	}
+	instanceIDs, err := s.grantClient.EffectiveResourceIDs(ctx, principalID, "can_dispatch_on", "instance")
+	if err != nil {
+		return nil, fmt.Errorf("could not read %s's can_dispatch_on grants: %w", principalID, err)
+	}
+	machineIDs, err := s.grantClient.EffectiveResourceIDs(ctx, principalID, "can_dispatch_on", "machine")
+	if err != nil {
+		return nil, fmt.Errorf("could not read %s's can_dispatch_on grants: %w", principalID, err)
+	}
+	restrictedByGrants := len(instanceIDs)+len(machineIDs) > 0
+	visible := make([]msg.Instance, 0, len(instances))
+	for _, instance := range instances {
+		if restrictedByGrants && !contains(instanceIDs, instance.ID) && !contains(machineIDs, instance.MachineID) {
+			continue
+		}
+		instance.Machine = nil
+		visible = append(visible, instance)
+	}
+	return visible, nil
 }
 
 func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
