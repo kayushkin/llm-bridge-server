@@ -157,7 +157,7 @@ func run(cfg config) error {
 		locator, err := mail.Append(ctx, cfg.Account, demomail.Message{
 			Subject:  got.subject,
 			From:     demomail.Address{Name: want.From.Name, Email: want.From.Email},
-			To:       []demomail.Address{{Name: "Vlad", Email: "vlad@northwind-eng.example"}},
+			To:       []demomail.Address{{Name: "Slava", Email: "slava@northwind-eng.example"}},
 			BodyText: got.body,
 		})
 		if err != nil {
