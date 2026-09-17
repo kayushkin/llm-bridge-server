@@ -41,7 +41,7 @@ func fakePrincipalDirectory(t *testing.T, recordsByID map[string]string) *httpte
 
 func standardPrincipalDirectory(t *testing.T) *httptest.Server {
 	return fakePrincipalDirectory(t, map[string]string{
-		"principal_000001": `{"id":"principal_000001","kind":"human","display_name":"Vlad","disabled_at":0,"groups":[]}`,
+		"principal_000001": `{"id":"principal_000001","kind":"human","display_name":"Slava","disabled_at":0,"groups":[]}`,
 		"principal_000006": `{"id":"principal_000006","kind":"group","display_name":"Data Team","disabled_at":0,"members":[]}`,
 		"principal_000009": `{"id":"principal_000009","kind":"human","display_name":"Gone","disabled_at":1788980427,"groups":[]}`,
 	})
@@ -192,7 +192,7 @@ func TestDemoLoginRefusesUnknownGroupDisabledAndMalformedPrincipals(t *testing.T
 		{"principal_000404", "unknown_principal"},
 		{"principal_000006", "principal_not_human"},
 		{"principal_000009", "principal_disabled"},
-		{"Vlad Kayushkin", "invalid_principal_id"},
+		{"Slava Kayushkin", "invalid_principal_id"},
 		{"principal_000001.9999999999", "invalid_principal_id"},
 	} {
 		response := demoLogin(t, server, testCase.principalID)
