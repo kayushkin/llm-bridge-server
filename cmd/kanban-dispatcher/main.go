@@ -43,6 +43,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -88,6 +89,13 @@ func main() {
 		maxDispatch  = flag.Int("max", maxDispatchPerTick, "Max sub-card dispatches per tick.")
 	)
 	flag.Parse()
+
+	// llm-bridge-server gates every route; stamp this process's calls to it
+	// with the service token. Host-scoped, so the scheduler API, noteboard and
+	// kanban-store calls below are untouched.
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL); err != nil {
+		log.Fatal(err)
+	}
 
 	if *boardID == "" {
 		log.Fatal("-board-id is required: the board owns what a dispatched session runs with, so there is no board to default to")

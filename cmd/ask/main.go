@@ -39,6 +39,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -62,6 +63,13 @@ func main() {
 		dryRun       = flag.Bool("dry-run", false, "Print the resolved instance and prompt; do not publish.")
 	)
 	flag.Parse()
+
+	// llm-bridge-server gates every route; stamp this process's calls to it
+	// with the service token. Host-scoped, so the scheduler API, noteboard and
+	// kanban-store calls below are untouched.
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL); err != nil {
+		log.Fatal(err)
+	}
 
 	question := strings.TrimSpace(strings.Join(flag.Args(), " "))
 	if question == "" {

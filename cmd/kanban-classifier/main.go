@@ -37,6 +37,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -201,6 +202,13 @@ func main() {
 			os.Exit(0)
 		}
 		os.Exit(2)
+	}
+
+	// llm-bridge-server gates every route; stamp this process's calls to it
+	// with the service token. Host-scoped, so noteboard, kanban-store and the
+	// scheduler API are untouched.
+	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL); err != nil {
+		log.Fatal(err)
 	}
 	if err := cfg.validate(); err != nil {
 		log.Fatal(err)

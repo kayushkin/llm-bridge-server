@@ -35,6 +35,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"net/http"
 	"strings"
@@ -171,7 +172,7 @@ func postJSON(url string, body any, out any) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	resp, err := bridgeauth.AuthenticateClient(&http.Client{Timeout: 60 * time.Second}).Do(req)
 	if err != nil {
 		return fmt.Errorf("%s: %w", url, err)
 	}

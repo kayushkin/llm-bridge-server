@@ -36,6 +36,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -76,6 +77,13 @@ func main() {
 		boardName    = flag.String("board", defaultBoardName, "Kanban board name to review")
 	)
 	flag.Parse()
+
+	// llm-bridge-server gates every route; stamp this process's calls to it
+	// with the service token. Host-scoped, so the scheduler API, noteboard and
+	// kanban-store calls below are untouched.
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL); err != nil {
+		log.Fatal(err)
+	}
 
 	if *registerFlag {
 		if err := registerSchedulerJob(*jobName, *boardName); err != nil {
