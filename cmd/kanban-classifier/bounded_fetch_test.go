@@ -120,19 +120,20 @@ func TestSignatures(t *testing.T) {
 	if cur != "kanban-check-sig:events=4064:state=idle:t=202609162123" {
 		t.Fatalf("sig %q", cur)
 	}
-	if !sigUnchanged(cur, cur) {
+	var noEntryTime time.Time
+	if !sigUnchanged(cur, cur, noEntryTime) {
 		t.Error("identical signature reported changed")
 	}
-	if sigUnchanged("", cur) {
+	if sigUnchanged("", cur, noEntryTime) {
 		t.Error("no prior signature reported unchanged")
 	}
-	if !sigUnchanged("kanban-check-sig:msg=37:state=idle:t=202609162123", cur) {
+	if !sigUnchanged("kanban-check-sig:msg=37:state=idle:t=202609162123", cur, noEntryTime) {
 		t.Error("an old msg= signature with the same state and minute must count as unchanged")
 	}
-	if sigUnchanged("kanban-check-sig:msg=37:state=running:t=202609162123", cur) {
+	if sigUnchanged("kanban-check-sig:msg=37:state=running:t=202609162123", cur, noEntryTime) {
 		t.Error("an old signature with another state must count as changed")
 	}
-	if sigUnchanged("kanban-check-sig:events=4000:state=idle:t=202609162123", cur) {
+	if sigUnchanged("kanban-check-sig:events=4000:state=idle:t=202609162123", cur, noEntryTime) {
 		t.Error("a new-format signature with another count must count as changed")
 	}
 
@@ -142,5 +143,51 @@ func TestSignatures(t *testing.T) {
 	}
 	if _, known := priorEventCount(map[string]bool{"kanban-check-sig:msg=37:state=idle:t=1": true}); known {
 		t.Error("an old msg= signature has no event count")
+	}
+}
+
+// On 2026-09-16 a cost backfill wrote updated_at on 4,657 finished sessions and
+// every one of them was re-classified, ten model calls a tick. A row write with
+// no new event and no new state is not activity.
+func TestARowWriteWithNoNewEventIsNotActivity(t *testing.T) {
+	afterBackfill := buildSig(167, "aborted", "2026-09-16T23:38:30Z")
+	if !sigUnchanged("kanban-check-sig:events=167:state=aborted:t=202607141530", afterBackfill, time.Time{}) {
+		t.Error("same event count and state, later updated_at: reported changed")
+	}
+	if sigUnchanged("kanban-check-sig:events=167:state=idle:t=202607141530", afterBackfill, time.Time{}) {
+		t.Error("same event count, another state: reported unchanged")
+	}
+
+	// An old msg= signature has no event count to compare, so the newest entry
+	// decides: nothing said since the signature was taken means unchanged.
+	oldFormat := "kanban-check-sig:msg=12:state=aborted:t=202607141530"
+	lastSaidBefore := time.Date(2026, 7, 14, 15, 30, 59, 0, time.UTC)
+	lastSaidAfter := time.Date(2026, 7, 14, 15, 31, 0, 0, time.UTC)
+	if !sigUnchanged(oldFormat, afterBackfill, lastSaidBefore) {
+		t.Error("newest entry inside the signature's minute: reported changed")
+	}
+	if sigUnchanged(oldFormat, afterBackfill, lastSaidAfter) {
+		t.Error("an entry newer than the old signature: reported unchanged")
+	}
+	if sigUnchanged(oldFormat, afterBackfill, time.Time{}) {
+		t.Error("no entry time to compare against an old signature: reported unchanged")
+	}
+	if sigUnchanged("kanban-check-sig:garbage", afterBackfill, lastSaidBefore) {
+		t.Error("an unreadable prior signature reported unchanged")
+	}
+}
+
+func TestNewestMessageTime(t *testing.T) {
+	newest, err := newestMessageTime([]bridgeMessage{
+		{Timestamp: "2026-09-16T21:00:00Z"}, {Timestamp: ""}, {Timestamp: "2026-09-16T21:05:00Z"}, {Timestamp: "2026-09-16T21:01:00Z"},
+	})
+	if err != nil || !newest.Equal(time.Date(2026, 9, 16, 21, 5, 0, 0, time.UTC)) {
+		t.Errorf("newest = %v, %v", newest, err)
+	}
+	if newest, err := newestMessageTime(nil); err != nil || !newest.IsZero() {
+		t.Errorf("no messages: %v, %v", newest, err)
+	}
+	if _, err := newestMessageTime([]bridgeMessage{{Timestamp: "t1"}}); err == nil {
+		t.Error("an unparseable timestamp must be an error, not a missing time")
 	}
 }

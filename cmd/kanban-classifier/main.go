@@ -24,7 +24,9 @@
 //	kanban-check-sig:events=<n>:state=<s>:t=<YYYYMMDDhhmm>
 //
 // <n> is the session's stored event count (the page's validator). Signatures
-// written before 2026-09-16 carry msg=<n> instead — see sigUnchanged.
+// written before 2026-09-16 carry msg=<n> instead — see sigUnchanged. The event
+// count and the state decide whether a session moved; t= is the row's
+// updated_at, which any write to the row advances, and is kept for the record.
 //
 // Old sigs are deleted before a new one is written. A session reaching a
 // terminal bridge state (completed/error) is marked with
@@ -44,6 +46,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -422,7 +425,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	// Compute current signature; bail if unchanged.
 	curSig := buildSig(eventCount, sess.State, sess.UpdatedAt)
 	priorSig := priorSigTag(tagSet)
-	if sigUnchanged(priorSig, curSig) {
+	if sigUnchanged(priorSig, curSig, page.newestEntryAt) {
 		if priorSig != curSig && !cfg.ExplicitSession {
 			writeSig(kc, sess, tagSet, curSig) // carry an old-format signature forward
 		}
@@ -548,34 +551,89 @@ func priorEventCount(tagSet map[string]bool) (n int, known bool) {
 
 func buildSig(eventCount int, state, updatedAt string) string {
 	t, _ := time.Parse(time.RFC3339, updatedAt)
-	minute := t.UTC().Format("200601021504")
+	minute := t.UTC().Format(sigMinuteLayout)
 	return fmt.Sprintf("%sevents=%d:state=%s:t=%s", tagCheckSigPrefix, eventCount, state, minute)
 }
 
-// sigUnchanged reports whether a session has not moved since its prior sig.
+// sigUnchanged reports whether a session's conversation has not moved since its
+// prior sig.
 //
-// A signature from before 2026-09-16 counts messages (msg=<n>) where the
-// current one counts events, so the two never compare equal. Treating that as
-// "changed" would re-classify every recent session once, at ten model calls a
-// tick, for no new information. The state and the minute of the last update
-// are the same in both formats and say whether anything happened, so an old
-// signature whose state and minute match is unchanged.
-func sigUnchanged(prior, current string) bool {
+// The t= minute is the session row's updated_at, and that is when the row was
+// last written, not when the conversation last moved. On 2026-09-16 a cost
+// backfill wrote updated_at on 4,657 finished sessions in one second; every one
+// of them then read as changed, and the classifier spent ten model calls a tick
+// for a day re-reading sessions in which nothing had been said. So t= alone
+// never decides. The state and the event count do: a conversation cannot move
+// without adding an event.
+//
+// A signature from before 2026-09-16 counts messages (msg=<n>), which cannot
+// be compared with an event count. For those, a matching minute still means
+// unchanged; a different minute means unchanged only when the session's newest
+// entry is no later than the minute the old signature was taken at. With no
+// entry time to compare, the session counts as changed and is classified once.
+func sigUnchanged(prior, current string, newestEntryAt time.Time) bool {
 	if prior == current {
 		return true
 	}
-	if !strings.HasPrefix(prior, tagCheckSigPrefix+"msg=") {
+	priorParts, ok := parseSig(prior)
+	if !ok {
 		return false
 	}
-	return sigTail(prior) == sigTail(current)
+	currentParts, ok := parseSig(current)
+	if !ok || priorParts.state != currentParts.state {
+		return false
+	}
+	if priorParts.countsEvents {
+		return priorParts.count == currentParts.count
+	}
+	if priorParts.minute == currentParts.minute {
+		return true
+	}
+	if newestEntryAt.IsZero() {
+		return false
+	}
+	takenAt, err := time.Parse(sigMinuteLayout, priorParts.minute)
+	if err != nil {
+		return false
+	}
+	return newestEntryAt.Before(takenAt.Add(time.Minute))
 }
 
-// sigTail is the state=…:t=… part of a signature.
-func sigTail(sig string) string {
-	if i := strings.Index(sig, ":state="); i >= 0 {
-		return sig[i:]
+const sigMinuteLayout = "200601021504"
+
+// sigParts is a check signature split into its fields. countsEvents is false
+// for a signature from before 2026-09-16, whose count is of messages.
+type sigParts struct {
+	countsEvents bool
+	count        int
+	state        string
+	minute       string
+}
+
+func parseSig(sig string) (sigParts, bool) {
+	if !strings.HasPrefix(sig, tagCheckSigPrefix) {
+		return sigParts{}, false
 	}
-	return ""
+	fields := strings.Split(strings.TrimPrefix(sig, tagCheckSigPrefix), ":")
+	if len(fields) != 3 {
+		return sigParts{}, false
+	}
+	var parts sigParts
+	switch {
+	case strings.HasPrefix(fields[0], "events="):
+		parts.countsEvents = true
+	case strings.HasPrefix(fields[0], "msg="):
+	default:
+		return sigParts{}, false
+	}
+	count, err := strconv.Atoi(fields[0][strings.Index(fields[0], "=")+1:])
+	if err != nil || !strings.HasPrefix(fields[1], "state=") || !strings.HasPrefix(fields[2], "t=") {
+		return sigParts{}, false
+	}
+	parts.count = count
+	parts.state = strings.TrimPrefix(fields[1], "state=")
+	parts.minute = strings.TrimPrefix(fields[2], "t=")
+	return parts, true
 }
 
 // writeSig deletes the prior check-sig tag (if any) and adds the new one.
@@ -836,6 +894,9 @@ type bridgeMessage struct {
 type sessionPage struct {
 	messages   []bridgeMessage
 	eventCount int
+	// newestEntryAt is the latest timestamp among the page's messages: when the
+	// conversation last moved. Zero when the page carries no readable timestamp.
+	newestEntryAt time.Time
 }
 
 // turnPage is the part of GET /sessions/{id}/messages?limit= the digest reads.
@@ -880,7 +941,32 @@ func getSessionPage(bridgeURL, id string) (sessionPage, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
 		return sessionPage{}, fmt.Errorf("decode messages page: %w", err)
 	}
-	return sessionPage{messages: digestMessages(page), eventCount: page.Model.Validator.EventCount}, nil
+	messages := digestMessages(page)
+	newestEntryAt, err := newestMessageTime(messages)
+	if err != nil {
+		return sessionPage{}, fmt.Errorf("session %s: %w", id, err)
+	}
+	return sessionPage{messages: messages, eventCount: page.Model.Validator.EventCount, newestEntryAt: newestEntryAt}, nil
+}
+
+// newestMessageTime is the latest timestamp among msgs, zero when none carries
+// one. A timestamp that does not parse is an error: read as "no time", it would
+// make an old-format signature compare as changed for ever.
+func newestMessageTime(msgs []bridgeMessage) (time.Time, error) {
+	var newest time.Time
+	for _, m := range msgs {
+		if m.Timestamp == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, m.Timestamp)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("entry timestamp %q: %w", m.Timestamp, err)
+		}
+		if at.After(newest) {
+			newest = at
+		}
+	}
+	return newest, nil
 }
 
 // digestMessages flattens a turn page into the messages the digest sections read,
