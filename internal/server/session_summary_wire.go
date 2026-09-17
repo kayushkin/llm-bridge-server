@@ -37,7 +37,7 @@ type SessionSummary struct {
 	// session, oneshot calls included (msg.ManagedSession.SpendUSD).
 	SpendUSD  float64 `json:"spendUsd"`
 	UpdatedAt string  `json:"updatedAt"`
-	CreatedAt        string `json:"createdAt"`
+	CreatedAt string  `json:"createdAt"`
 }
 
 // SummaryLookupRequest is the POST /sessions/summary body: the same query the

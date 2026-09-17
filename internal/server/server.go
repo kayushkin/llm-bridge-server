@@ -172,6 +172,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	}
 	srv.routes()
 	srv.syncHarnessTypes()
+	srv.syncPromptHarnessDeliveries()
 	srv.syncSourceFolderRegistry()
 	srv.startSnapshotGC()
 	return srv
@@ -351,16 +352,15 @@ func (s *Server) routes() {
 	// callbacks let agent-store nudge connected runners to reconcile when
 	// the canonical context files change.
 	if s.agentStore != nil {
-		agentstore.RegisterHandlersWithHooks(
-			s.mux,
-			s.agentStore,
-			func(f *agentstore.TrackedFile, v *agentstore.TrackedFileVersion) {
+		agentstore.RegisterHandlersWithHookSet(s.mux, s.agentStore, agentstore.HandlerHooks{
+			OnFileSaved: func(f *agentstore.TrackedFile, v *agentstore.TrackedFileVersion) {
 				s.broadcastSeedSnapshot(msg.SeedSourceAgentStore, "save")
 			},
-			func(_ *agentstore.ScanResult) {
+			OnScanCompleted: func(_ *agentstore.ScanResult) {
 				s.broadcastSeedSnapshot(msg.SeedSourceAgentStore, "scan")
 			},
-		)
+			OnPromptDriftsDetected: s.onPromptDriftsDetected,
+		})
 	}
 
 	// Memory-store routes (mounted from memory-store library)
