@@ -110,7 +110,7 @@ apiauth.
 -- mailstack/accounts.db
 CREATE TABLE accounts (
     id              TEXT PRIMARY KEY,        -- e.g. "gmail-personal", uuid or slug
-    label           TEXT NOT NULL,           -- "Vlad Personal", "Work Outlook"
+    label           TEXT NOT NULL,           -- "Slava Personal", "Work Outlook"
     provider        TEXT NOT NULL,           -- "google" | "microsoft" | "imap"
     address         TEXT NOT NULL,           -- email address (display + reply matching)
     -- OAuth accounts (google/microsoft): reference a specific apiauth credential + user-token
@@ -232,7 +232,7 @@ New table in apiauth alongside `tokens` and `credentials`:
 
 ```sql
 CREATE TABLE imap_creds (
-    name        TEXT PRIMARY KEY,         -- e.g. "privateemail-vlad"
+    name        TEXT PRIMARY KEY,         -- e.g. "privateemail-slava"
     address     TEXT NOT NULL,            -- email
     imap_host   TEXT NOT NULL,            -- mail.privateemail.com
     imap_port   INTEGER NOT NULL,         -- 993
@@ -600,7 +600,7 @@ counts. Manual refresh button forces an immediate tick. No SSE/websocket.
 ## Credential setup checklist (user action, before phase 1)
 
 ### Google (Gmail mail app)
-1. https://console.cloud.google.com → new project (suggest `vlad-mail`).
+1. https://console.cloud.google.com → new project (suggest `slava-mail`).
 2. APIs & Services → Library → enable **Gmail API**.
 3. OAuth consent screen → External → add scope `https://mail.google.com/`.
    Add yourself as test user.
@@ -611,7 +611,7 @@ counts. Manual refresh button forces an immediate tick. No SSE/websocket.
 
 ### Microsoft (Outlook mail app)
 1. https://portal.azure.com → Azure Active Directory → App registrations →
-   New registration. Name: `vlad-mail`.
+   New registration. Name: `slava-mail`.
 2. Supported account types: "Personal Microsoft accounts only" (or
    multitenant + personal if any work accounts).
 3. Redirect URI (Web): same as Google.
