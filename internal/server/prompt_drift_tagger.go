@@ -17,8 +17,7 @@ import (
 // When someone edits a rendered prompt file and adds a section, agent-store
 // holds that drift for approval. Before a person looks at it, one single-shot
 // model call labels the new sections: tags from the collection's existing
-// vocabulary where they fit, a short title, and a one-line note on what the
-// edit did. That is all the model does. The section text in the drift was cut
+// vocabulary where they fit, and a one-line note on what the edit did. That is all the model does. The section text in the drift was cut
 // out of the file by agent-store's splitter and the model's reply has no field
 // that could change it; agent-store rejects a label aimed at anything but an
 // added section.
@@ -31,7 +30,7 @@ const (
 
 const promptDriftTaggerSystemPrompt = `You label sections of an operator's system prompt for AI coding agents.
 You are given the tags already in use and the sections that were just added to a prompt file.
-For each added section, reply with its operation_index, a short plain title, and 1 to 4 tags.
+For each added section, reply with its operation_index and 1 to 4 tags.
 Reuse an existing tag whenever one fits; invent a new one only when none does. Tags are lowercase, one or two words, hyphenated.
 Also reply with note: one plain sentence saying what the edit added.
 You cannot change the sections' text and are not asked to judge it.`
@@ -48,10 +47,9 @@ func promptDriftTaggerOutputSchema() map[string]any {
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
-					"required":             []string{"operation_index", "title", "tags"},
+					"required":             []string{"operation_index", "tags"},
 					"properties": map[string]any{
 						"operation_index": map[string]any{"type": "integer"},
-						"title":           map[string]any{"type": "string"},
 						"tags":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 					},
 				},

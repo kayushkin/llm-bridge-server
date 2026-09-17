@@ -46,7 +46,7 @@ func TestPromptDriftTaggerReplyWithoutParsedOutputIsAnError(t *testing.T) {
 	if _, err := decodePromptDriftTaggerReply([]byte(`{"text":"sure!","stop_reason":"end_turn"}`)); err == nil {
 		t.Fatal("free text was accepted as labels")
 	}
-	parsed, _ := json.Marshal(map[string]any{"parsed": map[string]any{"note": "added reminders", "inserted_sections": []map[string]any{{"operation_index": 1, "title": "Reminders", "tags": []string{"scheduler"}}}}})
+	parsed, _ := json.Marshal(map[string]any{"parsed": map[string]any{"note": "added reminders", "inserted_sections": []map[string]any{{"operation_index": 1, "tags": []string{"scheduler"}}}}})
 	annotation, err := decodePromptDriftTaggerReply(parsed)
 	if err != nil {
 		t.Fatal(err)
