@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -66,202 +67,271 @@ import (
 // consulted.
 //
 // The mutation is in-memory only, matching injectHookSettings.
+// Tool offer sources, in the precedence order the comment above describes.
+const (
+	toolOfferPreset    = "mcp_config"       // the caller set mcp_config outright
+	toolOfferHandNamed = "tool_store_tools" // the caller named tools by hand
+	toolOfferBundle    = "bundle"
+	toolOfferGrants    = "grants"
+	toolOfferInstance  = "instance"
+	toolOfferNone      = "none"
+)
+
+// toolOffer is the MCP tools a session is offered and which source decided it.
+// resolveToolOffer computes it; injectMCPConfig provisions it; the effective
+// config view reports it. One decision, three readers.
+type toolOffer struct {
+	Source string
+	// Names is the hand-named list (Source toolOfferHandNamed); IDs is every
+	// other source's answer, in tool-store ids.
+	Names []string
+	IDs   []int64
+	// Notes are what was consulted and how it narrowed or did not decide.
+	Notes []string
+	// Resolution is bundle-store's answer when Source is toolOfferBundle.
+	Resolution *bundleclient.Resolution
+	// NarrowedByGrants is true when a principal's can_use grants cut the
+	// bundle's or the instance's list.
+	NarrowedByGrants bool
+}
+
+// resolveToolOffer decides which MCP tools sess is offered, by the rules in
+// the comment on injectMCPConfig, without provisioning anything. An error is
+// a spawn that must not start; a lenient failure is a note on the offer.
+func (s *Server) resolveToolOffer(ctx context.Context, sess *store.Session, cfg map[string]json.RawMessage) (*toolOffer, error) {
+	raw, named := cfg["tool_store_tools"]
+	_, preset := cfg["mcp_config"]
+	if named && preset {
+		return nil, fmt.Errorf("HarnessConfig has both mcp_config and tool_store_tools; pick one")
+	}
+	if preset {
+		return &toolOffer{Source: toolOfferPreset, Notes: []string{"the caller set harness_config.mcp_config outright; no store was consulted"}}, nil
+	}
+	if named {
+		var tools []string
+		if err := json.Unmarshal(raw, &tools); err != nil {
+			return nil, fmt.Errorf("tool_store_tools is not a string array: %w", err)
+		}
+		return &toolOffer{Source: toolOfferHandNamed, Names: tools}, nil
+	}
+	if sess.BundleID != "" {
+		return s.resolveBundleToolOffer(ctx, sess)
+	}
+	if sess.InstanceID == "" {
+		return &toolOffer{Source: toolOfferNone, Notes: []string{"the session has no instance, so there are no opt-ins to read"}}, nil
+	}
+	if sess.PrincipalID != "" {
+		offer, err := s.resolveGrantedToolOffer(ctx, sess)
+		if err != nil || offer != nil {
+			return offer, err
+		}
+	}
+	offer := &toolOffer{Source: toolOfferInstance}
+	optedIn, err := s.instanceMCPTools(ctx, sess.InstanceID)
+	if err != nil {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("instance %s's opt-ins could not be read from tool-store, so the session starts with no MCP servers: %v", sess.InstanceID, err))
+		return offer, nil
+	}
+	for _, t := range optedIn {
+		offer.IDs = append(offer.IDs, t.ID)
+	}
+	if len(offer.IDs) == 0 {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("instance %s has opted in to no MCP tools", sess.InstanceID))
+	}
+	return offer, nil
+}
+
+func (s *Server) resolveBundleToolOffer(ctx context.Context, sess *store.Session) (*toolOffer, error) {
+	if s.bundleClient == nil {
+		return nil, fmt.Errorf("session %s was started with bundle %s but this server has no bundle-store to resolve it with (LLMBRIDGE_BUNDLE_STORE_URL)", sess.SessionID, sess.BundleID)
+	}
+	resolution, err := s.bundleClient.Resolve(ctx, sess.BundleID)
+	if err != nil {
+		return nil, fmt.Errorf("session %s was started with bundle %s, which could not be resolved, so it was not started: %w", sess.SessionID, sess.BundleID, err)
+	}
+	offer := &toolOffer{Source: toolOfferBundle, Resolution: resolution, IDs: resolution.ToolIDs()}
+	if sess.PrincipalID != "" {
+		if s.grantClient == nil {
+			return nil, fmt.Errorf("session %s is started as %s but this server has no grant-store to read its grants from (LLMBRIDGE_GRANT_STORE_URL)", sess.SessionID, sess.PrincipalID)
+		}
+		grantedIDs, err := s.grantClient.EffectiveToolIDs(ctx, sess.PrincipalID)
+		if err != nil {
+			return nil, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
+		}
+		if len(grantedIDs) == 0 {
+			offer.Notes = append(offer.Notes, fmt.Sprintf("principal %s holds no can_use tool grant; the bundle's tools are offered unchanged (lenient, operator's choice 2026-09-11)", sess.PrincipalID))
+		} else {
+			granted := make(map[int64]bool, len(grantedIDs))
+			for _, id := range grantedIDs {
+				granted[id] = true
+			}
+			narrowed := make([]int64, 0, len(offer.IDs))
+			for _, id := range offer.IDs {
+				if granted[id] {
+					narrowed = append(narrowed, id)
+				}
+			}
+			if len(narrowed) < len(offer.IDs) {
+				offer.NarrowedByGrants = true
+				offer.Notes = append(offer.Notes, fmt.Sprintf("bundle %s names tools %v; %s's can_use grants allow %v; offering %v", sess.BundleID, offer.IDs, sess.PrincipalID, grantedIDs, narrowed))
+			}
+			offer.IDs = narrowed
+		}
+	}
+	if len(resolution.Skills) > 0 {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("the bundle also names %d skills, which are not provisioned per session (Claude Code lists ~/.claude/skills wholesale)", len(resolution.Skills)))
+	}
+	return offer, nil
+}
+
+// resolveGrantedToolOffer is source 3: nil with no error exactly when the
+// principal holds no can_use tool grant, so the caller falls through to the
+// instance's opt-ins.
+func (s *Server) resolveGrantedToolOffer(ctx context.Context, sess *store.Session) (*toolOffer, error) {
+	if s.grantClient == nil {
+		return nil, fmt.Errorf("session %s is started as %s but this server has no grant-store to read its grants from (LLMBRIDGE_GRANT_STORE_URL)", sess.SessionID, sess.PrincipalID)
+	}
+	grantedIDs, err := s.grantClient.EffectiveToolIDs(ctx, sess.PrincipalID)
+	if err != nil {
+		return nil, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
+	}
+	if len(grantedIDs) == 0 {
+		return nil, nil
+	}
+	offer := &toolOffer{Source: toolOfferGrants}
+	optedIn, err := s.instanceMCPTools(ctx, sess.InstanceID)
+	if err != nil {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("instance %s's opt-ins could not be read from tool-store, so the session starts with no MCP servers: %v", sess.InstanceID, err))
+		return offer, nil
+	}
+	granted := make(map[int64]bool, len(grantedIDs))
+	for _, id := range grantedIDs {
+		granted[id] = true
+	}
+	var optedInIDs []int64
+	for _, t := range optedIn {
+		optedInIDs = append(optedInIDs, t.ID)
+		if granted[t.ID] {
+			offer.IDs = append(offer.IDs, t.ID)
+		}
+	}
+	offer.NarrowedByGrants = len(offer.IDs) < len(optedInIDs)
+	if len(offer.IDs) == 0 {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("%s's granted tools %v and instance %s's opt-ins %v share nothing; the session starts with no MCP servers", sess.PrincipalID, grantedIDs, sess.InstanceID, optedInIDs))
+	} else {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("granted %v ∩ instance %s opt-ins %v", grantedIDs, sess.InstanceID, optedInIDs))
+	}
+	return offer, nil
+}
+
 func (s *Server) injectMCPConfig(sess *store.Session) error {
 	if sess == nil || sess.Harness != msg.HarnessClaudeCode {
 		return nil
 	}
-
 	cfg := map[string]json.RawMessage{}
 	if len(sess.HarnessConfig) > 0 {
 		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
 			return fmt.Errorf("HarnessConfig unparseable: %w", err)
 		}
 	}
-
-	raw, named := cfg["tool_store_tools"]
-	_, preset := cfg["mcp_config"]
-
-	// Two sources of truth for the same field. Surface loudly per "fail fast
-	// and loud".
-	if named && preset {
-		return fmt.Errorf("HarnessConfig has both mcp_config and tool_store_tools; pick one")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	offer, err := s.resolveToolOffer(ctx, sess, cfg)
+	if err != nil {
+		return err
 	}
-	if preset {
+	for _, note := range offer.Notes {
+		log.Printf("[tool-offer] session %s: %s", sess.SessionID, note)
+	}
+	switch offer.Source {
+	case toolOfferPreset, toolOfferNone:
 		return nil
-	}
-
-	if named {
-		var tools []string
-		if err := json.Unmarshal(raw, &tools); err != nil {
-			return fmt.Errorf("tool_store_tools is not a string array: %w", err)
-		}
+	case toolOfferHandNamed:
 		delete(cfg, "tool_store_tools")
-		if len(tools) == 0 {
+		if len(offer.Names) == 0 {
 			return s.replaceHarnessConfig(sess, cfg)
 		}
-		path, err := s.writeProvisionedMCPConfig(map[string]any{"tools": tools})
+		path, err := s.writeProvisionedMCPConfig(map[string]any{"tools": offer.Names})
 		if err != nil {
 			return err
 		}
 		if path == "" {
-			return fmt.Errorf("tool-store provisioned no servers for tools %v", tools)
+			return fmt.Errorf("tool-store provisioned no servers for tools %v", offer.Names)
 		}
-		return s.setMCPConfigPath(sess, cfg, path, len(tools))
-	}
-
-	if sess.BundleID != "" {
-		return s.injectBundleMCPConfig(sess, cfg)
-	}
-
-	// Instance defaults. Nothing to look up for a session with no instance.
-	if sess.InstanceID == "" {
-		return nil
-	}
-	if sess.PrincipalID != "" {
-		handled, err := s.injectGrantedMCPConfig(sess, cfg)
-		if err != nil || handled {
+		return s.setMCPConfigPath(sess, cfg, path, len(offer.Names))
+	case toolOfferBundle:
+		if len(offer.IDs) == 0 {
+			log.Printf("[bundle-store] session %s bundle %s resolves to no MCP tools (bundles %v); starting with no MCP servers",
+				sess.SessionID, sess.BundleID, offer.Resolution.Bundles)
+			return s.replaceHarnessConfig(sess, cfg)
+		}
+		path, err := s.writeProvisionedMCPConfig(map[string]any{"tool_ids": offer.IDs})
+		if err != nil {
+			return fmt.Errorf("session %s bundle %s: provisioning tools %v failed, so it was not started: %w", sess.SessionID, sess.BundleID, offer.IDs, err)
+		}
+		if path == "" {
+			return fmt.Errorf("session %s bundle %s: tool-store provisioned no servers for tools %v", sess.SessionID, sess.BundleID, offer.IDs)
+		}
+		if err := s.setMCPConfigPath(sess, cfg, path, len(offer.IDs)); err != nil {
 			return err
 		}
-	}
-	path, err := s.writeProvisionedMCPConfig(map[string]any{"instance_id": sess.InstanceID})
-	if err != nil {
-		log.Printf("[tool-store] instance %s opt-ins unavailable for session %s, starting with no MCP servers: %v",
-			sess.InstanceID, sess.SessionID, err)
+		log.Printf("[bundle-store] session %s: offered tools %v from bundle %s (bundles %v)", sess.SessionID, offer.IDs, sess.BundleID, offer.Resolution.Bundles)
 		return nil
-	}
-	if path == "" {
-		// The common case: nobody has ticked a tool for this instance.
-		return nil
-	}
-	return s.setMCPConfigPath(sess, cfg, path, 0)
-}
-
-// injectBundleMCPConfig is source 2 above: the bundle's tools, narrowed by
-// the principal's can_use grants when it holds any. Every failure aborts the
-// spawn — the caller asked for this bundle.
-func (s *Server) injectBundleMCPConfig(sess *store.Session, cfg map[string]json.RawMessage) error {
-	if s.bundleClient == nil {
-		return fmt.Errorf("session %s was started with bundle %s but this server has no bundle-store to resolve it with (LLMBRIDGE_BUNDLE_STORE_URL)", sess.SessionID, sess.BundleID)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	resolution, err := s.bundleClient.Resolve(ctx, sess.BundleID)
-	if err != nil {
-		return fmt.Errorf("session %s was started with bundle %s, which could not be resolved, so it was not started: %w", sess.SessionID, sess.BundleID, err)
-	}
-	offered := resolution.ToolIDs()
-	if sess.PrincipalID != "" {
-		if s.grantClient == nil {
-			return fmt.Errorf("session %s is started as %s but this server has no grant-store to read its grants from (LLMBRIDGE_GRANT_STORE_URL)", sess.SessionID, sess.PrincipalID)
+	case toolOfferGrants:
+		if len(offer.IDs) == 0 {
+			return nil
 		}
-		grantedIDs, err := s.grantClient.EffectiveToolIDs(ctx, sess.PrincipalID)
+		path, err := s.writeProvisionedMCPConfig(map[string]any{"tool_ids": offer.IDs})
 		if err != nil {
-			return fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
+			return fmt.Errorf("session %s as %s: provisioning granted tools %v failed, so it was not started: %w", sess.SessionID, sess.PrincipalID, offer.IDs, err)
 		}
-		if len(grantedIDs) == 0 {
-			log.Printf("[grant-store] principal %s holds no can_use tool grant; session %s is offered bundle %s's tools unchanged (lenient, operator's choice 2026-09-11)",
-				sess.PrincipalID, sess.SessionID, sess.BundleID)
-		} else {
-			granted := make(map[int64]bool, len(grantedIDs))
-			for _, id := range grantedIDs {
-				granted[id] = true
-			}
-			narrowed := offered[:0:0]
-			for _, id := range offered {
-				if granted[id] {
-					narrowed = append(narrowed, id)
-				}
-			}
-			if len(narrowed) < len(offered) {
-				log.Printf("[grant-store] session %s as %s: bundle %s names tools %v, grants allow %v, offering %v",
-					sess.SessionID, sess.PrincipalID, sess.BundleID, offered, grantedIDs, narrowed)
-			}
-			offered = narrowed
+		if path == "" {
+			return fmt.Errorf("session %s as %s: tool-store provisioned no servers for granted tools %v", sess.SessionID, sess.PrincipalID, offer.IDs)
 		}
+		if err := s.setMCPConfigPath(sess, cfg, path, len(offer.IDs)); err != nil {
+			return err
+		}
+		log.Printf("[grant-store] session %s as %s: offered tools %v", sess.SessionID, sess.PrincipalID, offer.IDs)
+		return nil
+	case toolOfferInstance:
+		// Provisioned by instance id, as before: tool-store applies the opt-in
+		// list itself, and a registry outage starts the session with nothing
+		// rather than stopping it.
+		path, err := s.writeProvisionedMCPConfig(map[string]any{"instance_id": sess.InstanceID})
+		if err != nil {
+			log.Printf("[tool-store] instance %s opt-ins unavailable for session %s, starting with no MCP servers: %v",
+				sess.InstanceID, sess.SessionID, err)
+			return nil
+		}
+		if path == "" {
+			return nil
+		}
+		return s.setMCPConfigPath(sess, cfg, path, 0)
 	}
-	if len(resolution.Skills) > 0 {
-		// Skills are recorded in the resolution but not provisioned: Claude
-		// Code lists ~/.claude/skills wholesale and there is no per-session
-		// skill set to write (see the grant-store row in ~/CLAUDE.md).
-		log.Printf("[bundle-store] session %s bundle %s names %d skills, which are not provisioned per session yet: %v",
-			sess.SessionID, sess.BundleID, len(resolution.Skills), resolution.Skills)
-	}
-	if len(offered) == 0 {
-		log.Printf("[bundle-store] session %s bundle %s resolves to no MCP tools (bundles %v); starting with no MCP servers",
-			sess.SessionID, sess.BundleID, resolution.Bundles)
-		return s.replaceHarnessConfig(sess, cfg)
-	}
-	path, err := s.writeProvisionedMCPConfig(map[string]any{"tool_ids": offered})
-	if err != nil {
-		return fmt.Errorf("session %s bundle %s: provisioning tools %v failed, so it was not started: %w", sess.SessionID, sess.BundleID, offered, err)
-	}
-	if path == "" {
-		return fmt.Errorf("session %s bundle %s: tool-store provisioned no servers for tools %v", sess.SessionID, sess.BundleID, offered)
-	}
-	if err := s.setMCPConfigPath(sess, cfg, path, len(offered)); err != nil {
-		return err
-	}
-	log.Printf("[bundle-store] session %s: offered tools %v from bundle %s (bundles %v)", sess.SessionID, offered, sess.BundleID, resolution.Bundles)
-	return nil
+	return fmt.Errorf("tool offer source %q is not one this server knows how to provision", offer.Source)
 }
 
-// injectGrantedMCPConfig is source 3 above. It reports handled=false, with no
-// error, exactly when the principal holds no can_use tool grant, so the caller
-// falls through to the instance's opt-ins.
-func (s *Server) injectGrantedMCPConfig(sess *store.Session, cfg map[string]json.RawMessage) (bool, error) {
-	if s.grantClient == nil {
-		return false, fmt.Errorf("session %s is started as %s but this server has no grant-store to read its grants from (LLMBRIDGE_GRANT_STORE_URL)", sess.SessionID, sess.PrincipalID)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	grantedIDs, err := s.grantClient.EffectiveToolIDs(ctx, sess.PrincipalID)
-	if err != nil {
-		return false, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
-	}
-	if len(grantedIDs) == 0 {
-		log.Printf("[grant-store] principal %s holds no can_use tool grant; session %s is offered instance %s's opt-ins unchanged (lenient, operator's choice 2026-09-11)",
-			sess.PrincipalID, sess.SessionID, sess.InstanceID)
-		return false, nil
-	}
-	optedInIDs, err := s.instanceMCPToolIDs(ctx, sess.InstanceID)
-	if err != nil {
-		log.Printf("[tool-store] instance %s opt-ins unavailable for session %s (started as %s), starting with no MCP servers: %v",
-			sess.InstanceID, sess.SessionID, sess.PrincipalID, err)
-		return true, nil
-	}
-	granted := make(map[int64]bool, len(grantedIDs))
-	for _, id := range grantedIDs {
-		granted[id] = true
-	}
-	var offered []int64
-	for _, id := range optedInIDs {
-		if granted[id] {
-			offered = append(offered, id)
-		}
-	}
-	if len(offered) == 0 {
-		log.Printf("[grant-store] session %s as %s: granted tools %v and instance %s's opt-ins %v share nothing; starting with no MCP servers",
-			sess.SessionID, sess.PrincipalID, grantedIDs, sess.InstanceID, optedInIDs)
-		return true, nil
-	}
-	path, err := s.writeProvisionedMCPConfig(map[string]any{"tool_ids": offered})
-	if err != nil {
-		return true, fmt.Errorf("session %s as %s: provisioning granted tools %v failed, so it was not started: %w", sess.SessionID, sess.PrincipalID, offered, err)
-	}
-	if path == "" {
-		return true, fmt.Errorf("session %s as %s: tool-store provisioned no servers for granted tools %v", sess.SessionID, sess.PrincipalID, offered)
-	}
-	if err := s.setMCPConfigPath(sess, cfg, path, len(offered)); err != nil {
-		return true, err
-	}
-	log.Printf("[grant-store] session %s as %s: offered tools %v (granted %v ∩ instance %s opt-ins %v)",
-		sess.SessionID, sess.PrincipalID, offered, grantedIDs, sess.InstanceID, optedInIDs)
-	return true, nil
+// mcpTool is one row of tool-store's per-instance opt-in list that is an MCP
+// server: the only kind a session can be handed.
+type mcpTool struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
 }
 
-// instanceMCPToolIDs reads the instance's opt-in list from tool-store and
-// returns the ids of its MCP tools — the only kind /provision can hand back.
 func (s *Server) instanceMCPToolIDs(ctx context.Context, instanceID string) ([]int64, error) {
+	tools, err := s.instanceMCPTools(ctx, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(tools))
+	for _, t := range tools {
+		ids = append(ids, t.ID)
+	}
+	return ids, nil
+}
+
+func (s *Server) instanceMCPTools(ctx context.Context, instanceID string) ([]mcpTool, error) {
 	requestURL := s.cfg.ToolStoreURL + "/instances/" + url.PathEscape(instanceID) + "/tools"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
@@ -280,20 +350,17 @@ func (s *Server) instanceMCPToolIDs(ctx context.Context, instanceID string) ([]i
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("tool-store GET %s returned %d: %s", requestURL, resp.StatusCode, string(body))
 	}
-	var tools []struct {
-		ID   int64  `json:"id"`
-		Kind string `json:"kind"`
-	}
+	var tools []mcpTool
 	if err := json.Unmarshal(body, &tools); err != nil {
 		return nil, fmt.Errorf("tool-store GET %s returned unparseable JSON: %w", requestURL, err)
 	}
-	ids := make([]int64, 0, len(tools))
+	mcp := make([]mcpTool, 0, len(tools))
 	for _, t := range tools {
 		if t.Kind == "mcp" {
-			ids = append(ids, t.ID)
+			mcp = append(mcp, t)
 		}
 	}
-	return ids, nil
+	return mcp, nil
 }
 
 // setMCPConfigPath points HarnessConfig's mcp_config at path and writes the
