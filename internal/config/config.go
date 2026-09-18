@@ -2,17 +2,24 @@ package config
 
 import (
 	"fmt"
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
-	"os"
-	"strconv"
+	"log"
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
+
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 type Config struct {
+	// Settings is the declared settings this Config was read from: what GET
+	// /settings describes, and where the stored behaviour settings are read
+	// at the time of use. Nil in a Config built as a literal, which is how
+	// tests build one; server.New then builds a registry with no environment
+	// and seeds the stored settings from the literal's own fields.
+	Settings        *servicesettings.Registry
 	ListenAddr      string
 	DBPath          string
 	AgentStoreDB    string
@@ -251,58 +258,78 @@ func (c *Config) ValidateRequestAuthorizationSettings() error {
 	return nil
 }
 
-// Load reads the process environment, falling back to the addresses in
+// Load reads the process environment through the declared settings
+// (SettingDefinitions), falling back to the addresses in
 // internal/productiondefaults for anything unset.
 //
-// Those fallbacks are what make the ordinary case work with no configuration,
+// It stops the process on a setting that cannot be read: a value that does not
+// parse as its type, or a set LLMBRIDGE_ variable that nothing declares. Both
+// used to pass in silence — a malformed timeout became the default, and a
+// misspelled variable did nothing while its author believed otherwise.
+//
+// The fallbacks are what make the ordinary case work with no configuration,
 // and they are also what would let a test open the live databases and write to
 // the live event log. Load therefore ends by asking productiondefaults whether
 // any of them survived, and panics if one did inside a `go test` binary. The
 // check is inert in a real gateway process.
 func Load() *Config {
+	cfg, err := LoadFrom(servicesettings.ProcessEnvironment())
+	if err != nil {
+		log.Fatalf("refusing to start: %v", err)
+	}
+	return cfg
+}
+
+// LoadFrom is Load over a given environment.
+func LoadFrom(environment servicesettings.Environment) (*Config, error) {
+	settings, err := NewSettingsRegistry(environment)
+	if err != nil {
+		return nil, err
+	}
 	cfg := &Config{
-		ListenAddr:                envOr("LLMBRIDGE_LISTEN_ADDR", productiondefaults.ListenAddr),
-		DBPath:                    envOr("LLMBRIDGE_DB_PATH", productiondefaults.BridgeDatabasePath()),
-		AgentStoreDB:              envOr("LLMBRIDGE_AGENT_DB", productiondefaults.AgentStoreDatabasePath()),
-		MemoryStoreDB:             envOr("LLMBRIDGE_MEMORY_DB", productiondefaults.MemoryStoreDatabasePath()),
-		HarnessStoreDB:            envOr("LLMBRIDGE_HARNESS_DB", productiondefaults.HarnessStoreDatabasePath()),
-		HookStoreDB:               envOr("LLMBRIDGE_HOOK_DB", productiondefaults.HookStoreDatabasePath()),
-		ModelStoreDB:              envOr("LLMBRIDGE_MODEL_STORE_DB", productiondefaults.ModelStoreDatabasePath()),
-		ModelStoreURL:             os.Getenv("LLMBRIDGE_MODEL_STORE_URL"),
-		AgentStoreURL:             os.Getenv("LLMBRIDGE_AGENT_STORE_URL"),
-		ImagesDir:                 envOr("LLMBRIDGE_IMAGES_DIR", "images"),
-		BridgePrefsPath:           envOr("LLMBRIDGE_BRIDGE_PREFS", productiondefaults.BridgePreferencesPath()),
-		ConformancePath:           envOr("LLMBRIDGE_CONFORMANCE_PATH", productiondefaults.ConformancePath()),
-		LogStoreURL:               envOr("LLMBRIDGE_LOG_STORE_URL", productiondefaults.LogStoreURL),
-		PublicURL:                 os.Getenv("LLMBRIDGE_PUBLIC_URL"),
-		ToolStoreURL:              envOr("LLMBRIDGE_TOOL_STORE_URL", productiondefaults.ToolStoreURL),
-		PermissionStoreURL:        envOr("LLMBRIDGE_PERMISSION_STORE_URL", productiondefaults.PermissionStoreURL),
-		GrantStoreURL:             os.Getenv("LLMBRIDGE_GRANT_STORE_URL"),
-		PrincipalStoreURL:         os.Getenv("LLMBRIDGE_PRINCIPAL_STORE_URL"),
-		BundleStoreURL:            envOr("LLMBRIDGE_BUNDLE_STORE_URL", productiondefaults.BundleStoreURL),
-		KanbanStoreURL:            os.Getenv("LLMBRIDGE_KANBAN_STORE_URL"),
-		MailstackURL:              envOr("LLMBRIDGE_MAILSTACK_URL", productiondefaults.MailstackURL),
-		MailstackToken:            os.Getenv("LLMBRIDGE_MAILSTACK_TOKEN"),
-		HealthcheckURL:            envOr("LLMBRIDGE_HEALTHCHECK_URL", productiondefaults.HealthcheckURL),
-		SnapshotStoreDB:           envOr("LLMBRIDGE_SNAPSHOT_DB", productiondefaults.SnapshotStoreDatabasePath()),
-		SnapshotStoreGit:          envOr("LLMBRIDGE_SNAPSHOT_GIT", productiondefaults.SnapshotStoreGitPath()),
-		PurposeFolders:            parsePurposeFolders(os.Getenv("LLMBRIDGE_PURPOSE_FOLDERS")),
-		PTYRingBufferBytes:        envInt("LLMBRIDGE_PTY_RING_BUFFER_BYTES", 64*1024),
-		IdleTimeout:               envDuration("LLMBRIDGE_IDLE_TIMEOUT", 15*time.Minute),
-		PTYIdleTimeout:            envDuration("LLMBRIDGE_PTY_IDLE_TIMEOUT", 60*time.Minute),
-		SignalClassifierModel:     envOr("LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL", "claude-haiku-4-5"),
-		SignalClassifierOptOut:    parseHarnessSet(os.Getenv("LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT")),
-		SignalClassifierInstance:  envOr("LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE", "inst-cc-local"),
-		PromptDriftTaggerInstance: envOr("LLMBRIDGE_PROMPT_DRIFT_TAGGER_INSTANCE", "inst-cc-local"),
-		PromptDriftTaggerModel:    envOr("LLMBRIDGE_PROMPT_DRIFT_TAGGER_MODEL", "claude-haiku-4-5"),
-		SignalClassifierTimeout:   envDuration("LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", 20*time.Second),
-		SignalClassifierMaxChars:  envInt("LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", 6000),
-		DemoLoginSigningKey:       os.Getenv(DemoLoginSigningKeyEnvironmentVariable),
-		ServiceToken:              os.Getenv(ServiceTokenEnvironmentVariable),
-		GrantStoreServiceToken:    os.Getenv(GrantStoreServiceTokenEnvironmentVariable),
+		Settings:                  settings,
+		ListenAddr:                settings.String("listen_address"),
+		DBPath:                    settings.String("database.path"),
+		AgentStoreDB:              settings.String("agent_store.database_path"),
+		MemoryStoreDB:             settings.String("memory_store.database_path"),
+		HarnessStoreDB:            settings.String("harness_store.database_path"),
+		HookStoreDB:               settings.String("hook_store.database_path"),
+		ModelStoreDB:              settings.String("model_store.database_path"),
+		ModelStoreURL:             settings.String("model_store.url"),
+		AgentStoreURL:             settings.String("agent_store.url"),
+		ImagesDir:                 settings.String("images.directory"),
+		BridgePrefsPath:           settings.String("bridge_preferences.path"),
+		ConformancePath:           settings.String("conformance.path"),
+		LogStoreURL:               settings.String("log_store.url"),
+		PublicURL:                 settings.String("public_url"),
+		ToolStoreURL:              settings.String("tool_store.url"),
+		PermissionStoreURL:        settings.String("permission_store.url"),
+		GrantStoreURL:             settings.String("grant_store.url"),
+		PrincipalStoreURL:         settings.String("principal_store.url"),
+		BundleStoreURL:            settings.String("bundle_store.url"),
+		KanbanStoreURL:            settings.String("kanban_store.url"),
+		MailstackURL:              settings.String("mailstack.url"),
+		MailstackToken:            settings.String("mailstack.token"),
+		HealthcheckURL:            settings.String("healthcheck.url"),
+		SnapshotStoreDB:           settings.String("snapshot_store.database_path"),
+		SnapshotStoreGit:          settings.String("snapshot_store.git_path"),
+		PurposeFolders:            purposeFoldersOver(settings.StringMap("session.purpose_folders")),
+		PTYRingBufferBytes:        settings.Integer("pty.ring_buffer_bytes"),
+		IdleTimeout:               settings.Duration(SettingSessionIdleTimeout),
+		PTYIdleTimeout:            settings.Duration(SettingSessionPTYIdleTimeout),
+		SignalClassifierModel:     settings.String(SettingSignalClassifierModel),
+		SignalClassifierOptOut:    harnessSetOf(settings.StringList(SettingSignalClassifierOptOutHarnesses)),
+		SignalClassifierInstance:  settings.String(SettingSignalClassifierInstance),
+		PromptDriftTaggerInstance: settings.String(SettingPromptDriftTaggerInstance),
+		PromptDriftTaggerModel:    settings.String(SettingPromptDriftTaggerModel),
+		SignalClassifierTimeout:   settings.Duration(SettingSignalClassifierTimeout),
+		SignalClassifierMaxChars:  settings.Integer(SettingSignalClassifierMaximumCharacters),
+		DemoLoginSigningKey:       settings.String("demo_login.signing_key"),
+		ServiceToken:              settings.String("service_token"),
+		GrantStoreServiceToken:    settings.String("grant_store.service_token"),
 	}
 	productiondefaults.PanicIfUsedUnderTest(cfg.GuardedAddresses())
-	return cfg
+	return cfg, nil
 }
 
 // GuardedAddresses reports the value this config holds for every field
@@ -333,48 +360,14 @@ func (c *Config) GuardedAddresses() map[string]string {
 	}
 }
 
-// parseHarnessSet parses a comma-separated harness list into a set. Empty
-// entries are skipped; names are trimmed but otherwise passed through
+// harnessSetOf turns harness ids into a set. Names are passed through
 // unchanged, so a name that matches no harness simply excludes nothing.
-func parseHarnessSet(spec string) map[msg.Harness]bool {
-	out := make(map[msg.Harness]bool)
-	for _, name := range strings.Split(spec, ",") {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
+func harnessSetOf(names []string) map[msg.Harness]bool {
+	out := make(map[msg.Harness]bool, len(names))
+	for _, name := range names {
 		out[msg.Harness(name)] = true
 	}
 	return out
-}
-
-// envDuration reads a Go duration string (e.g. "15m") from an env var,
-// falling back to def if unset or unparseable. A parsed zero or negative
-// duration is preserved — callers treat <=0 as "disabled".
-func envDuration(key string, def time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return def
-	}
-	return d
-}
-
-// envInt reads an int from an env var, falling back to def if unset or
-// unparseable.
-func envInt(key string, def int) int {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
-		return def
-	}
-	return n
 }
 
 // purposeFolderDefaults returns the purpose→folder map built from the purpose
@@ -397,30 +390,14 @@ func purposeFolderDefaults() map[string]string {
 	return out
 }
 
-// parsePurposeFolders parses "purpose:folder,purpose:folder" into a map,
-// overlaid on the registry defaults. Malformed pairs are skipped. Whitespace
-// around keys and values is trimmed. An empty spec leaves the defaults alone.
-func parsePurposeFolders(spec string) map[string]string {
+// purposeFoldersOver lays the operator's purpose:folder pairs over the
+// registry defaults. A malformed pair never reaches here: the settings
+// registry refuses LLMBRIDGE_PURPOSE_FOLDERS at startup, where the old parser
+// skipped the pair and filed those sessions nowhere.
+func purposeFoldersOver(pairs map[string]string) map[string]string {
 	out := purposeFolderDefaults()
-	for _, pair := range strings.Split(spec, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		k, v, ok := strings.Cut(pair, ":")
-		k = strings.TrimSpace(k)
-		v = strings.TrimSpace(v)
-		if !ok || k == "" || v == "" {
-			continue
-		}
-		out[k] = v
+	for purpose, folder := range pairs {
+		out[purpose] = folder
 	}
 	return out
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

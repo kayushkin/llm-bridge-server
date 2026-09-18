@@ -282,7 +282,7 @@ func TestOnTurnEndSendsTheTailOfALongTurn(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_long", msg.SessionTypeInteractive)
 	captured := stubClassifier(t, srv, map[string]any{"kind": "neither"})
-	srv.signalClassifier.maxChars = 80
+	srv.signalClassifier.tuning.maxChars = 80
 
 	question := "So which of the two should I use?"
 	srv.onTurnEnd(sess.SessionID, turnEndEvent(strings.Repeat("filler line\n", 200)+question), msg.SessionIdle)

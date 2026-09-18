@@ -11,6 +11,7 @@ import (
 	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
+	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -63,9 +64,9 @@ func promptDriftTaggerOutputSchema() map[string]any {
 // held with no labels, which the Files page shows, and a person can still
 // approve it with their own.
 func (s *Server) promptDriftTaggerOneShot(ctx context.Context, req msg.OneShotRequest) ([]byte, error) {
-	id := s.cfg.PromptDriftTaggerInstance
+	id := s.settings.String(config.SettingPromptDriftTaggerInstance)
 	if id == "" {
-		return nil, fmt.Errorf("no prompt-drift-tagger instance configured (LLMBRIDGE_PROMPT_DRIFT_TAGGER_INSTANCE)")
+		return nil, fmt.Errorf("no prompt-drift-tagger instance configured (setting prompt_drift_tagger.instance)")
 	}
 	inst, err := s.harnessStore.GetInstance(id)
 	if err != nil {
@@ -106,7 +107,7 @@ func (s *Server) annotatePromptDrift(ctx context.Context, drift agentstore.Promp
 	if err != nil {
 		return fmt.Errorf("read collection %d: %w", drift.CollectionID, err)
 	}
-	request, err := buildPromptDriftTaggerRequest(drift, view.Sections, s.cfg.PromptDriftTaggerModel)
+	request, err := buildPromptDriftTaggerRequest(drift, view.Sections, s.settings.String(config.SettingPromptDriftTaggerModel))
 	if err != nil {
 		return err
 	}
@@ -118,7 +119,7 @@ func (s *Server) annotatePromptDrift(ctx context.Context, drift agentstore.Promp
 	if err != nil {
 		return err
 	}
-	annotation.AnnotatedBy = "prompt-drift-tagger/" + s.cfg.PromptDriftTaggerModel
+	annotation.AnnotatedBy = "prompt-drift-tagger/" + s.settings.String(config.SettingPromptDriftTaggerModel)
 	if _, err := s.agentStore.SetPromptDriftAnnotation(drift.ID, *annotation); err != nil {
 		return fmt.Errorf("agent-store refused the labels: %w", err)
 	}

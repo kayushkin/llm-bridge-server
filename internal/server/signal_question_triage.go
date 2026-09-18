@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
@@ -104,8 +105,25 @@ type cardContext struct {
 // type knows nothing about the server that owns it.
 type questionTriage struct {
 	runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)
-	model      string
-	timeout    time.Duration
+
+	// model and timeout follow the signal_classifier.* settings, which the
+	// operator may change while the server runs. Read them through current.
+	tuningMutex sync.RWMutex
+	model       string
+	timeout     time.Duration
+}
+
+func (q *questionTriage) current() (model string, timeout time.Duration) {
+	q.tuningMutex.RLock()
+	defer q.tuningMutex.RUnlock()
+	return q.model, q.timeout
+}
+
+// retune puts a new model and timeout in force for the next triage.
+func (q *questionTriage) retune(model string, timeout time.Duration) {
+	q.tuningMutex.Lock()
+	defer q.tuningMutex.Unlock()
+	q.model, q.timeout = model, timeout
 }
 
 func newQuestionTriage(model string, timeout time.Duration, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *questionTriage {
@@ -118,7 +136,11 @@ func newQuestionTriage(model string, timeout time.Duration, runOneShot func(cont
 // than being denied — surfacing is the purpose's decision, triage only
 // filters.
 func (q *questionTriage) enabled() bool {
-	return q != nil && q.model != "" && q.runOneShot != nil
+	if q == nil || q.runOneShot == nil {
+		return false
+	}
+	model, _ := q.current()
+	return model != ""
 }
 
 const triageSystemPrompt = `You triage a question that an autonomous coding agent has asked while working a ticket. Nobody is watching the agent. Decide whether a person needs to see the question, and if so, who.
@@ -178,10 +200,11 @@ func (q *questionTriage) triage(ctx context.Context, question triageQuestion, ca
 	if err != nil {
 		return nil, fmt.Errorf("marshal triage schema: %w", err)
 	}
+	triageModel, _ := q.current()
 	raw, err := q.runOneShot(ctx, msg.OneShotRequest{
 		Prompt:       triagePrompt(question, card),
 		SystemPrompt: triageSystemPrompt,
-		Model:        q.model,
+		Model:        triageModel,
 		Schema:       schema,
 		MaxTokens:    triageMaxTokens,
 	})
@@ -342,7 +365,8 @@ func (s *Server) triageWithTimeout(question triageQuestion, sessionID string) (*
 	if !s.questionTriage.enabled() {
 		return nil, cardContext{}, fmt.Errorf("triage is not enabled")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), s.questionTriage.timeout)
+	_, triageTimeout := s.questionTriage.current()
+	ctx, cancel := context.WithTimeout(context.Background(), triageTimeout)
 	defer cancel()
 	card := s.cardContextForSession(ctx, sessionID)
 	verdict, err := s.questionTriage.triage(ctx, question, card)

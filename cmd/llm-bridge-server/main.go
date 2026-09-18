@@ -45,6 +45,13 @@ func main() {
 	if err := cfg.ValidateRequestAuthorizationSettings(); err != nil {
 		log.Fatalf("request authorization: %v", err)
 	}
+	// The same check, made from the declarations: every setting declared
+	// Required is in force. It is a step of the server and not of config.Load,
+	// because the operator commands of this binary run from a shell that has
+	// none of them.
+	if err := cfg.Settings.CheckRequired(); err != nil {
+		log.Fatalf("refusing to start: %v", err)
+	}
 	if err := forbidSameUserProcessesFromReadingThisProcess(); err != nil {
 		log.Fatalf("refusing to start, because an agent running as this user could read the login signing key out of this process: %v", err)
 	}

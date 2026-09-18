@@ -236,6 +236,8 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /hooks":                                  operatorRoute("hook registry"),
 	"GET /hooks":                                   operatorRoute("hook registry"),
 	"GET /hook-options":                            operatorRoute("hook registry vocabulary"),
+	"GET /settings":                                operatorRoute("this server's own configuration, with where each value came from"),
+	"PUT /settings/{key}":                          operatorRoute("changes how this server behaves"),
 	"GET /hooks/{id}":                              operatorRoute("hook registry"),
 	"PATCH /hooks/{id}":                            operatorRoute("hook registry"),
 	"DELETE /hooks/{id}":                           operatorRoute("hook registry"),

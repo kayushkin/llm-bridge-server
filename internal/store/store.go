@@ -518,6 +518,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateSignals(); err != nil {
 		return err
 	}
+	if err := s.migrateServiceSettings(); err != nil {
+		return err
+	}
 	return nil
 }
 

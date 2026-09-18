@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
@@ -81,10 +82,11 @@ type signalClassifier struct {
 	// server that owns it.
 	runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)
 
-	model    string
-	timeout  time.Duration
-	maxChars int
-	optOut   map[msg.Harness]bool
+	// tuning is what the operator may change while the server runs (the
+	// signal_classifier.* settings). Read it through currentTuning, once per
+	// use, so one classification never mixes two settings.
+	tuningMutex sync.RWMutex
+	tuning      signalClassifierTuning
 
 	// baseURL overrides the Anthropic endpoint. Empty means "take it from
 	// the resolved credential, falling back to the public API" — the
@@ -93,24 +95,48 @@ type signalClassifier struct {
 	baseURL string
 }
 
+// signalClassifierTuning is the classifier's changeable part: the model it asks
+// for (empty switches it off everywhere), how long one call may take, how much
+// of a turn's final text it sends, and the harnesses it skips.
+type signalClassifierTuning struct {
+	model    string
+	timeout  time.Duration
+	maxChars int
+	optOut   map[msg.Harness]bool
+}
+
 func newSignalClassifier(model string, timeout time.Duration, maxChars int, optOut map[msg.Harness]bool, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *signalClassifier {
 	return &signalClassifier{
-		model:      model,
-		timeout:    timeout,
-		maxChars:   maxChars,
-		optOut:     optOut,
+		tuning:     signalClassifierTuning{model: model, timeout: timeout, maxChars: maxChars, optOut: optOut},
 		runOneShot: runOneShot,
 	}
+}
+
+func (c *signalClassifier) currentTuning() signalClassifierTuning {
+	c.tuningMutex.RLock()
+	defer c.tuningMutex.RUnlock()
+	return c.tuning
+}
+
+// retune puts new settings in force for the next classification.
+func (c *signalClassifier) retune(tuning signalClassifierTuning) {
+	c.tuningMutex.Lock()
+	defer c.tuningMutex.Unlock()
+	c.tuning = tuning
 }
 
 // enabledFor reports whether the classifier runs for this harness. An empty
 // model disables it everywhere; the opt-out set is the per-harness escape
 // hatch the on-by-default decision was taken with.
 func (c *signalClassifier) enabledFor(harness msg.Harness) bool {
-	if c == nil || c.model == "" {
+	if c == nil {
 		return false
 	}
-	return !c.optOut[harness]
+	tuning := c.currentTuning()
+	if tuning.model == "" {
+		return false
+	}
+	return !tuning.optOut[harness]
 }
 
 // classifierSystemPrompt tells the model what the three verdicts mean. The
@@ -213,7 +239,7 @@ func (c *signalClassifier) classify(ctx context.Context, text string) (*turnClas
 	raw, err := c.runOneShot(ctx, msg.OneShotRequest{
 		Prompt:       "Final message of the finished turn:\n\n" + c.trim(text),
 		SystemPrompt: classifierSystemPrompt,
-		Model:        c.model,
+		Model:        c.currentTuning().model,
 		Schema:       schema,
 		MaxTokens:    classifierMaxTokens,
 	})
@@ -251,7 +277,7 @@ func (c *signalClassifier) classify(ctx context.Context, text string) (*turnClas
 // with a question preceded by a long file dump would otherwise be classified
 // from the dump; the question the human has to answer is always at the end.
 func (c *signalClassifier) trim(text string) string {
-	limit := c.maxChars
+	limit := c.currentTuning().maxChars
 	if limit <= 0 {
 		return text
 	}
@@ -301,7 +327,7 @@ func (s *Server) onTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionStat
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.signalClassifier.timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), s.signalClassifier.currentTuning().timeout)
 	defer cancel()
 
 	verdict, err := s.signalClassifier.classify(ctx, ev.Result.Text)

@@ -27,6 +27,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 	memorystore "github.com/kayushkin/memory-store"
 	modelstore "github.com/kayushkin/model-store"
 	snapshotstore "github.com/kayushkin/snapshot-store"
@@ -97,6 +98,10 @@ type Server struct {
 	// active or disabled, administrator or not — for a few seconds. See
 	// request_principal_lookup.go.
 	principalLookupCache *principalLookupCache
+	// settings is this server's declared settings, with the stored behaviour
+	// settings attached: read at the time of use, described by GET /settings,
+	// changed by PUT /settings/{key}. See service_settings.go.
+	settings *servicesettings.Registry
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
@@ -135,7 +140,8 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 			cfg.SignalClassifierOptOut,
 			nil, // wired below: it needs the server that owns it
 		),
-		cfg: cfg,
+		cfg:      cfg,
+		settings: attachServiceSettings(cfg, st),
 	}
 	// The manager promotes harness subagents to sessions below the HTTP layer,
 	// so it needs the same purpose→folder mapping the HTTP layer files
@@ -175,6 +181,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		now:        time.Now,
 	}
 	srv.principalLookupCache = newPrincipalLookupCache(srv.principalClient)
+	srv.wireServiceSettings()
 	srv.routes()
 	srv.syncHarnessTypes()
 	srv.syncPromptHarnessDeliveries()
@@ -204,6 +211,10 @@ func (s *Server) syncHarnessTypes() {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.registerLoginAndStoreProxyRoutes()
+	// This server's own settings, served the way every service serves them.
+	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
+	s.mux.Handle("GET /settings", serviceSettingsHandler)
+	s.mux.Handle("PUT /settings/{key}", serviceSettingsHandler)
 	s.mux.HandleFunc("GET /harnesses", s.handleHarnesses)
 	s.mux.HandleFunc("GET /harnesses/{name}/capabilities", s.handleHarnessCapabilities)
 	s.mux.HandleFunc("GET /harnesses/{name}/agents", s.handleHarnessAgents)
@@ -743,7 +754,7 @@ func (s *Server) reapIdleTick() {
 			continue
 		}
 
-		idle, reap := reapDecision(now, sess.Mode, msg.SessionState(sess.State), lastAt, sess.UpdatedAt, s.cfg.IdleTimeout, s.cfg.PTYIdleTimeout)
+		idle, reap := reapDecision(now, sess.Mode, msg.SessionState(sess.State), lastAt, sess.UpdatedAt, s.settings.Duration(config.SettingSessionIdleTimeout), s.settings.Duration(config.SettingSessionPTYIdleTimeout))
 		if !reap {
 			continue
 		}

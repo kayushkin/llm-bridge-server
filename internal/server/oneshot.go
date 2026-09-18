@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
+	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -117,7 +118,7 @@ func (s *Server) runOneShot(ctx context.Context, inst *msg.Instance, req msg.One
 // a working classifier and a working-but-billing classifier look identical from
 // outside.
 func (s *Server) classifierOneShot(ctx context.Context, req msg.OneShotRequest) ([]byte, error) {
-	id := s.cfg.SignalClassifierInstance
+	id := s.settings.String(config.SettingSignalClassifierInstance)
 	if id == "" {
 		return nil, fmt.Errorf("no signal-classifier instance configured")
 	}
