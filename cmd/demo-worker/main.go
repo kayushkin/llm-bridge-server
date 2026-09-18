@@ -91,6 +91,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
 		os.Exit(1)
 	}
+	// kanban-store gates every route too, and this binary writes cards with its
+	// own client as well as through kanbanclient. Host-scoped, like the above.
+	if err := kanbanclient.StampRequestsToKanbanStore(cfg.KanbanURL); err != nil {
+		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
+		os.Exit(1)
+	}
 	if err := run(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
 		os.Exit(1)

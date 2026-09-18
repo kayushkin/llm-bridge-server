@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -817,5 +818,53 @@ func (c *Client) DetachCardFromBoard(boardID, cardID string) error {
 	if resp.StatusCode != http.StatusOK {
 		return statusErr("detach card from board", resp)
 	}
+	return nil
+}
+
+// hostScopedServiceTokenTransport stamps the token only on requests to
+// kanban-store's host. A binary that calls kanban-store with its own
+// http.Client, rather than through Client above, also calls noteboard,
+// llm-bridge-server and mailstack through the same default transport, and
+// kanban-store's token has no business being sent to any of them.
+type hostScopedServiceTokenTransport struct {
+	host  string
+	token string
+	base  http.RoundTripper
+}
+
+func (t *hostScopedServiceTokenTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if !strings.EqualFold(request.URL.Host, t.host) {
+		return t.base.RoundTrip(request)
+	}
+	cloned := request.Clone(request.Context())
+	cloned.Header.Set(ServiceTokenHeader, t.token)
+	return t.base.RoundTrip(cloned)
+}
+
+// StampRequestsToKanbanStore installs that transport as the process-wide
+// default, so every call to kanban-store carries the token however it was
+// made: http.Get, http.DefaultClient, or any client that left Transport nil.
+// It is the mirror of bridgeauth.StampRequestsToBridge and composes with it;
+// call each once, early in main, with the URL the binary will use.
+//
+// demo-worker needed it: it writes cards with its own client — attributed
+// links, notes, unhold — which the thirty-odd methods of Client do not cover,
+// and until 2026-09-18 every one of those calls was answered 401 once
+// kanban-store began gating its routes.
+//
+// An unset token is not an error: the binary is then talking to a
+// kanban-store that does not gate, and a 401 names the missing header if it
+// does.
+func StampRequestsToKanbanStore(kanbanURL string) error {
+	token := os.Getenv(ServiceTokenEnvironmentVariable)
+	if token == "" {
+		return nil
+	}
+	parsed, err := url.Parse(kanbanURL)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("kanbanclient: %q is not a URL with a host, so requests to kanban-store cannot be authenticated: %v", kanbanURL, err)
+	}
+	http.DefaultTransport = &hostScopedServiceTokenTransport{host: parsed.Host, token: token, base: http.DefaultTransport}
+	http.DefaultClient.Transport = http.DefaultTransport
 	return nil
 }
