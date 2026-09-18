@@ -209,7 +209,7 @@ func TestHandleListSessionSignals(t *testing.T) {
 	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sessions/br_1/signals", nil))
+	asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sessions/br_1/signals", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -224,13 +224,13 @@ func TestHandleListSessionSignals(t *testing.T) {
 	// A session with no signals returns an empty array, never null — the
 	// frontend maps over this directly.
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sessions/br_2/signals", nil))
+	asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sessions/br_2/signals", nil))
 	if got := rec.Body.String(); got != "[]\n" && got != "[]" {
 		t.Errorf("empty result body = %q, want an empty array", got)
 	}
 
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sessions/br_missing/signals", nil))
+	asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sessions/br_missing/signals", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown session status = %d, want 404", rec.Code)
 	}
@@ -259,7 +259,7 @@ func TestHandleListSignalsAcrossSessions(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.query, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.query, nil))
+			asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.query, nil))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 			}
@@ -288,7 +288,7 @@ func TestHandleListSignalsRejectsUnknownFilterValues(t *testing.T) {
 	} {
 		t.Run(query, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, query, nil))
+			asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, query, nil))
 			if rec.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
 			}
@@ -316,7 +316,7 @@ func TestAskUserQuestionPrehookRecordsAndResolvesSignal(t *testing.T) {
 	parked := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest(
+		asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(
 			http.MethodPost, "/permission/cc-prehook/br_1", strings.NewReader(prehookBody)))
 		parked <- rec
 	}()
@@ -351,7 +351,7 @@ func TestAskUserQuestionPrehookRecordsAndResolvesSignal(t *testing.T) {
 
 	resolveBody := `{"behavior":"allow","resolved_by":"user","updated_input":{"answers":{"Ship it?":"Yes","Which branch?":"main"}}}`
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(
+	asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(
 		http.MethodPost, "/sessions/br_1/hooks/"+requestID+"/resolve", strings.NewReader(resolveBody)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("resolve status = %d, body = %s", rec.Code, rec.Body.String())
@@ -403,7 +403,7 @@ func newSignalRow(t *testing.T, st *store.Store, sig *msg.Signal) *msg.Signal {
 func resolveSignal(t *testing.T, srv *Server, signalID, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(
+	asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(
 		http.MethodPost, "/signals/"+signalID+"/resolve", strings.NewReader(body)))
 	return rec
 }

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,10 +89,14 @@ type Server struct {
 	// the list and then a schema does not walk /proc twice. See services.go.
 	serviceInventoryMu sync.Mutex
 	serviceInventory   *serviceinventory.Inventory
-	// principalSessionCookieCodec signs and verifies the demo login cookie.
-	// Nil unless LLMBRIDGE_DEMO_LOGIN=enabled, in which case the demo login
-	// routes and the /kanban/ proxy are registered. See demo_login.go.
+	// principalSessionCookieCodec signs and verifies the demo login cookie and
+	// the session agent tokens. Always present: New refuses to build a server
+	// without a signing key. See demo_login.go.
 	principalSessionCookieCodec *principalSessionCookieCodec
+	// principalLookupCache holds principal-store's answer about a caller —
+	// active or disabled, administrator or not — for a few seconds. See
+	// request_principal_lookup.go.
+	principalLookupCache *principalLookupCache
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
@@ -157,21 +162,22 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	} else {
 		srv.mailstackClient = client
 	}
-	demoLoginEnabled, err := cfg.DemoLoginEnabled()
-	if err != nil {
-		// main refuses to start on this before calling New; reaching it here
-		// means a caller skipped that check, and running without it would
-		// serve a half-configured login.
-		panic(fmt.Sprintf("demo login: %v", err))
+	// Every request this server answers is authorized first, and it cannot
+	// identify a caller without these. main refuses to start on the same
+	// check plus the store addresses; reaching this means a caller skipped it,
+	// and a server that gated nothing while looking gated is worse than one
+	// that does not start.
+	if err := cfg.ValidateRequestAuthorizationCredentials(); err != nil {
+		panic(fmt.Sprintf("request authorization: %v", err))
 	}
-	if demoLoginEnabled {
-		srv.principalSessionCookieCodec = &principalSessionCookieCodec{
-			signingKey: []byte(cfg.DemoLoginSigningKey),
-			now:        time.Now,
-		}
+	srv.principalSessionCookieCodec = &principalSessionCookieCodec{
+		signingKey: []byte(cfg.DemoLoginSigningKey),
+		now:        time.Now,
 	}
+	srv.principalLookupCache = newPrincipalLookupCache(srv.principalClient)
 	srv.routes()
 	srv.syncHarnessTypes()
+	srv.syncPromptHarnessDeliveries()
 	srv.syncSourceFolderRegistry()
 	srv.startSnapshotGC()
 	return srv
@@ -197,9 +203,7 @@ func (s *Server) syncHarnessTypes() {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
-	if s.principalSessionCookieCodec != nil {
-		s.registerDemoLoginRoutes()
-	}
+	s.registerLoginAndStoreProxyRoutes()
 	s.mux.HandleFunc("GET /harnesses", s.handleHarnesses)
 	s.mux.HandleFunc("GET /harnesses/{name}/capabilities", s.handleHarnessCapabilities)
 	s.mux.HandleFunc("GET /harnesses/{name}/agents", s.handleHarnessAgents)
@@ -351,16 +355,15 @@ func (s *Server) routes() {
 	// callbacks let agent-store nudge connected runners to reconcile when
 	// the canonical context files change.
 	if s.agentStore != nil {
-		agentstore.RegisterHandlersWithHooks(
-			s.mux,
-			s.agentStore,
-			func(f *agentstore.TrackedFile, v *agentstore.TrackedFileVersion) {
+		agentstore.RegisterHandlersWithHookSet(s.mux, s.agentStore, agentstore.HandlerHooks{
+			OnFileSaved: func(f *agentstore.TrackedFile, v *agentstore.TrackedFileVersion) {
 				s.broadcastSeedSnapshot(msg.SeedSourceAgentStore, "save")
 			},
-			func(_ *agentstore.ScanResult) {
+			OnScanCompleted: func(_ *agentstore.ScanResult) {
 				s.broadcastSeedSnapshot(msg.SeedSourceAgentStore, "scan")
 			},
-		)
+			OnPromptDriftsDetected: s.onPromptDriftsDetected,
+		})
 	}
 
 	// Memory-store routes (mounted from memory-store library)
@@ -502,14 +505,10 @@ func (s *Server) localInstancesByHarness(types []msg.Harness) map[msg.Harness]st
 	return out
 }
 
-// ServeHTTP dispatches to the mux. With demo login enabled every request is
-// authorized first (request_authorization.go); with it off, nothing is.
+// ServeHTTP authorizes every request before the mux dispatches it
+// (request_authorization.go). There is no path around it.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.principalSessionCookieCodec != nil {
-		s.authorizeAndServe(w, r)
-		return
-	}
-	s.mux.ServeHTTP(w, r)
+	s.authorizeAndServe(w, r)
 }
 
 // handleSearchSessions proxies /sessions/search to log-store's /api/v1/sessions/search.
@@ -846,6 +845,7 @@ func (s *Server) autoResume(sess store.Session) {
 		return
 	}
 	if turn == nil {
+		s.tellResumedSessionItsBackgroundTasksDied(sess)
 		return
 	}
 	// Harness subprocess needs a moment to finish its start handshake before
@@ -863,6 +863,58 @@ func (s *Server) autoResume(sess store.Session) {
 	}
 	log.Printf("[auto-resume] %s: turn was interrupted after %d tool calls; sent an interruption notice instead of replaying the instruction",
 		sess.SessionID, turn.ToolCallsAlreadyRun)
+}
+
+// tellResumedSessionItsBackgroundTasksDied handles the resume that has no
+// interrupted turn to pick up: the last turn finished, and what the restart
+// killed was the work that turn left running — subagents, backgrounded
+// commands. sess is the row as it read before the reconcile reset it, so its
+// state still says what the session was doing when the process went away.
+//
+// Those tasks do not come back with the process. The model is parked waiting
+// for them to report, and nothing ever will, so unless it is told it waits for
+// good — resumed, idle, and looking finished.
+func (s *Server) tellResumedSessionItsBackgroundTasksDied(sess store.Session) {
+	if msg.SessionState(sess.State) != msg.SessionBackgroundTasksRunning {
+		return
+	}
+	tasks, err := s.store.LastReportedBackgroundTasks(sess.SessionID)
+	if err != nil {
+		log.Printf("[auto-resume] %s: reading the background tasks it lost failed: %v", sess.SessionID, err)
+		return
+	}
+	// Same wait as the interrupted-turn send below: the start handshake.
+	time.Sleep(2 * time.Second)
+	if err := s.harness.Send(sess.SessionID, backgroundTasksLostMessage(tasks), nil); err != nil {
+		log.Printf("[auto-resume] %s: background-tasks notice send failed: %v", sess.SessionID, err)
+		return
+	}
+	log.Printf("[auto-resume] %s: its turn had finished but %d background task(s) died with the process; sent a notice naming them",
+		sess.SessionID, len(tasks))
+}
+
+// backgroundTasksLostMessage is what a resumed session is told when the restart
+// killed work its finished turn had left running. It names each task, because
+// "some tasks" leaves the model to guess which results it is still owed.
+func backgroundTasksLostMessage(tasks []msg.BackgroundTask) string {
+	var b strings.Builder
+	b.WriteString("[llm-bridge] The harness process was restarted under this session and it has just been " +
+		"resumed. Your last turn had finished, but background work it started was still running " +
+		"inside that process and was killed with it. It will never report back, so do not wait for it.\n\n")
+	if len(tasks) == 0 {
+		b.WriteString("The bridge has no list of what was running.\n\n")
+	} else {
+		b.WriteString("What was running:\n")
+		for _, task := range tasks {
+			fmt.Fprintf(&b, "- %s (%s, task %s)\n", task.Description, task.TaskType, task.TaskID)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("This notice is not a new instruction; the user's last request still stands. Your transcript " +
+		"above is intact. A subagent's partial work is lost unless it wrote files, and a backgrounded " +
+		"command may have got part way, so check the real state of anything they could have changed, " +
+		"then start again whatever you still need. Do not repeat work that already completed.")
+	return b.String()
 }
 
 // resumeMessage decides what to say to a harness that has just come back up

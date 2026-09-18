@@ -86,6 +86,7 @@ func serverWithLogStore(t *testing.T, logStoreURL string) (*Server, *store.Store
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 		LogStoreURL:     logStoreURL,
 	}
+	testAuthorizationConfig(cfg)
 	return New(st, nil, nil, nil, nil, nil, nil, cfg), st
 }
 
@@ -104,7 +105,7 @@ func TestValidatorsDoesNotForwardACallersInjectedParameter(t *testing.T) {
 	in := url.Values{"ids": {queryProbeID}}
 	req := httptest.NewRequest("GET", "/sessions/validators?"+in.Encode(), nil)
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	asInternalService(srv).ServeHTTP(w, req)
 
 	assertIDsSurvivedIntact(t, logStore.upstreamQuery(t), queryProbeID)
 }
@@ -120,7 +121,7 @@ func TestASpaceInAnIDIsNotWhatThesePinsAreAbout(t *testing.T) {
 	in := url.Values{"ids": {"br a b"}}
 	req := httptest.NewRequest("GET", "/sessions/validators?"+in.Encode(), nil)
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	asInternalService(srv).ServeHTTP(w, req)
 
 	if len(logStore.requests) != 1 {
 		t.Fatalf("a space in the id stopped the upstream request from being sent at all "+
@@ -151,7 +152,7 @@ func TestRecentBundleDoesNotForwardAStoredInjectedParameter(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/sessions/recent-bundle?n=5&turns=3", nil)
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	asInternalService(srv).ServeHTTP(w, req)
 
 	q := logStore.upstreamQuery(t)
 	assertIDsSurvivedIntact(t, q, queryProbeID)
@@ -182,7 +183,7 @@ func TestAStoredInjectionRidesAnInnocentSessionsBundle(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/sessions/recent-bundle?n=5&turns=3", nil)
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	asInternalService(srv).ServeHTTP(w, req)
 
 	q := logStore.upstreamQuery(t)
 	if got := q.Get("injected"); got != "" {
@@ -230,7 +231,7 @@ func TestCaptureLogStoreActuallyRecords(t *testing.T) {
 
 	in := url.Values{"ids": {"br_plain"}}
 	req := httptest.NewRequest("GET", "/sessions/validators?"+in.Encode(), nil)
-	srv.ServeHTTP(httptest.NewRecorder(), req)
+	asInternalService(srv).ServeHTTP(httptest.NewRecorder(), req)
 
 	if len(logStore.requests) != 1 {
 		t.Fatalf("stub recorded %d requests for one call", len(logStore.requests))

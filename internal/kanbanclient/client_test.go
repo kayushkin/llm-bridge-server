@@ -264,3 +264,32 @@ func TestLinkedTodoForSessionEscapesTheSessionIDIntoOneSegment(t *testing.T) {
 		t.Errorf("todo = %q, want empty — never another session's card", got)
 	}
 }
+
+// TestLookupsCarryTheServiceToken pins the transport: kanban-store gates every
+// route, so without the token every lookup is a 401 and every signal is minted
+// with no linked todo — a quiet loss, not a loud one.
+func TestLookupsCarryTheServiceToken(t *testing.T) {
+	const token = "bridge-test-kanban-service-token-0123456"
+	seen := make(chan string, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get(ServiceTokenHeader)
+		w.Write([]byte(`[]`))
+	}))
+	defer upstream.Close()
+
+	t.Setenv(ServiceTokenEnvironmentVariable, token)
+	if _, err := New(upstream.URL).http.Get(upstream.URL + "/api/entities/session/x/cards"); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-seen; got != token {
+		t.Fatalf("header = %q, want the service token", got)
+	}
+
+	t.Setenv(ServiceTokenEnvironmentVariable, "")
+	if _, err := New(upstream.URL).http.Get(upstream.URL + "/api/entities/session/x/cards"); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-seen; got != "" {
+		t.Fatalf("with no token configured the header must be absent, got %q", got)
+	}
+}

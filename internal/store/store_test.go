@@ -627,6 +627,52 @@ func TestUpsertDiscoveredSession(t *testing.T) {
 // TestUpsertDiscoveredSession_RejectsBridgeIDInHarnessSlot guards the
 // contract violation that produced phantom rows: a harness bridge stuffing
 // its bridge_session_id into the harness_session_id slot.
+// TestUpsertDiscoveredSessionUnchangedIsSilent pins that re-discovering a
+// session whose file has not changed writes nothing and notifies nobody. The
+// startup pass re-discovers every session on disk, and each notification is an
+// upsert frame to every open session list.
+func TestUpsertDiscoveredSessionUnchangedIsSilent(t *testing.T) {
+	s := testStore(t)
+	notifier := &countingNotifier{changed: map[string]int{}}
+	s.SetNotifier(notifier)
+	createdAt := time.Date(2026, 9, 15, 16, 46, 15, 34000000, time.UTC)
+	updatedAt := time.Date(2026, 9, 15, 16, 46, 21, 706471614, time.UTC)
+
+	bridgeID, inserted, err := s.UpsertDiscoveredSession("cc-uuid-unchanged", "", "Oneshot task", "claude_code", "inst-cc-local", "oneshot", "Oneshot", createdAt, updatedAt)
+	if err != nil || !inserted {
+		t.Fatalf("first upsert: inserted=%v err=%v", inserted, err)
+	}
+	if notifier.changed[bridgeID] != 1 {
+		t.Fatalf("first upsert notified %d times, want 1", notifier.changed[bridgeID])
+	}
+
+	// The same file, seen again by the next startup pass.
+	for pass := 0; pass < 3; pass++ {
+		again, inserted, err := s.UpsertDiscoveredSession("cc-uuid-unchanged", "", "Oneshot task", "claude_code", "inst-cc-local", "oneshot", "Oneshot", createdAt, updatedAt)
+		if err != nil || inserted || again != bridgeID {
+			t.Fatalf("pass %d: id=%s inserted=%v err=%v", pass, again, inserted, err)
+		}
+	}
+	if notifier.changed[bridgeID] != 1 {
+		t.Errorf("re-discovering an unchanged session notified %d times in total, want 1: only the insert", notifier.changed[bridgeID])
+	}
+
+	// The file grew: that is a change, and is announced once.
+	if _, _, err := s.UpsertDiscoveredSession("cc-uuid-unchanged", "", "Oneshot task", "claude_code", "inst-cc-local", "oneshot", "Oneshot", createdAt, updatedAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if notifier.changed[bridgeID] != 2 {
+		t.Errorf("a changed session notified %d times in total, want 2", notifier.changed[bridgeID])
+	}
+	sess, err := s.GetSession(bridgeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sess.UpdatedAt.Equal(updatedAt.Add(time.Minute)) {
+		t.Errorf("updated_at = %v, want the newer time", sess.UpdatedAt)
+	}
+}
+
 func TestUpsertDiscoveredSession_RejectsBridgeIDInHarnessSlot(t *testing.T) {
 	s := testStore(t)
 	now := time.Now()
@@ -849,4 +895,46 @@ func writeSessionState(s *Store, bridgeID, state string) error {
 		Status:    &msg.SessionStatus{State: msg.SessionState(state)},
 	})
 	return err
+}
+
+func TestLastReportedBackgroundTasksIsTheNewestListNotAnOlderOne(t *testing.T) {
+	s := testStore(t)
+	s.CreateSession(&Session{SessionID: "br_bg", Harness: "mock", State: "idle"})
+
+	got, err := s.LastReportedBackgroundTasks("br_bg")
+	if err != nil || got != nil {
+		t.Fatalf("no report yet = %+v, %v; want nil, nil", got, err)
+	}
+
+	report := func(tasks ...msg.BackgroundTask) {
+		t.Helper()
+		data, err := json.Marshal(msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{
+			Subtype: msg.SystemSubtypeBackgroundTasksChanged, BackgroundTasks: tasks,
+		}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if _, err := s.StoreEventReturningID("br_bg", string(msg.EventSystem), "", "", data); err != nil {
+			t.Fatalf("store: %v", err)
+		}
+	}
+	subagent := msg.BackgroundTask{TaskID: "a1", TaskType: msg.TaskTypeLocalAgent, Description: "Map dash"}
+	shell := msg.BackgroundTask{TaskID: "b1", TaskType: msg.TaskTypeLocalBash, Description: "Run the tests"}
+
+	report(subagent)
+	report(subagent, shell)
+	got, err = s.LastReportedBackgroundTasks("br_bg")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got) != 2 || got[0] != subagent || got[1] != shell {
+		t.Fatalf("got %+v, want the newest list of two", got)
+	}
+
+	// The harness saying nothing runs any more is the newest report too.
+	report()
+	got, err = s.LastReportedBackgroundTasks("br_bg")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("after an empty report = %+v, %v; want none", got, err)
+	}
 }

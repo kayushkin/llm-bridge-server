@@ -307,6 +307,11 @@ func (s *Store) migrate() error {
 	// is unsafe (callers must declare), so older rows surface as "" type.
 	// See llm-bridge MIGRATION-session-identity.md.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
+	// The summary query names sessions by summarySessionIDExpression, and an
+	// index on that same expression is what lets its session-id lookup search
+	// instead of scanning. The expression is spelled from the constant so the
+	// two cannot drift apart: SQLite matches an expression index textually.
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_summary_session_id ON sessions(" + summarySessionIDExpression + ")")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT ''")
 	// One-time backfill: populate session_id from bridge_id for any row that
 	// pre-dates this migration. New inserts write both columns directly.
@@ -1092,6 +1097,37 @@ func (s *Store) InterruptedTurn(bridgeID string) (*InterruptedTurn, error) {
 		UserMessageText:     ev.Result.Text,
 		ToolCallsAlreadyRun: toolCalls,
 	}, nil
+}
+
+// LastReportedBackgroundTasks returns the background tasks the harness listed
+// in the session's most recent background_tasks_changed event: what was
+// running inside the harness process the last time it said. Empty when the
+// last report was an empty list, and when the session never reported one.
+//
+// Auto-resume reads it after the process died, to tell the model which of its
+// subagents and backgrounded commands went down with it.
+func (s *Store) LastReportedBackgroundTasks(bridgeID string) ([]msg.BackgroundTask, error) {
+	var data string
+	err := s.db.QueryRow(
+		`SELECT data FROM events
+		  WHERE session_id=? AND type='system' AND json_extract(data,'$.system.subtype')=?
+		  ORDER BY id DESC LIMIT 1`,
+		bridgeID, msg.SystemSubtypeBackgroundTasksChanged,
+	).Scan(&data)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ev msg.Event
+	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+		return nil, err
+	}
+	if ev.System == nil {
+		return nil, nil
+	}
+	return ev.System.BackgroundTasks, nil
 }
 
 // ReconcileSessions resets every session in any of the given states to 'idle'
@@ -2096,7 +2132,8 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 
 	// Check if session already exists by harness_session_id
 	var existingBridgeID, existingInstanceID, existingDisplayName, existingSource, existingFolder string
-	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(purpose, ''), COALESCE(folder_name, '') FROM sessions WHERE harness_session_id=?`, harnessSessionID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder)
+	var existingUpdatedAt time.Time
+	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(purpose, ''), COALESCE(folder_name, ''), updated_at FROM sessions WHERE harness_session_id=?`, harnessSessionID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder, &existingUpdatedAt)
 	if err == nil {
 		// Already exists - update timestamp, display_name, instance_id, source,
 		// and folder where the existing values are empty. Existing non-empty
@@ -2117,7 +2154,17 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 		if existingFolder == "" && folderName != "" {
 			newFolder = folderName
 		}
-		s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=?, purpose=?, folder_name=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, newSource, newFolder, existingBridgeID)
+		// Nothing to write, nothing to announce. The startup discovery pass
+		// brings every session on disk through here; until 2026-09-17 each one
+		// was an UPDATE and an upsert frame to every open /session-events
+		// stream whether or not anything differed — tens of thousands of
+		// frames per restart, over rows that had not changed in days.
+		if updatedAt.Equal(existingUpdatedAt) && newInstanceID == existingInstanceID && newDisplayName == existingDisplayName && newSource == existingSource && newFolder == existingFolder {
+			return existingBridgeID, false, nil
+		}
+		if _, err := s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=?, purpose=?, folder_name=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, newSource, newFolder, existingBridgeID); err != nil {
+			return "", false, fmt.Errorf("UpsertDiscoveredSession: update %s: %w", existingBridgeID, err)
+		}
 		s.notifyChanged(existingBridgeID)
 		return existingBridgeID, false, nil
 	}

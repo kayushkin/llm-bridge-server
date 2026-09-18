@@ -699,7 +699,7 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 
 		// Update bookkeeping based on event type. SessionState row
 		// updates are owned by the derivation path (deriveAndBroadcast
-		// → UpdateSessionState) — readEvents no longer flips state on
+		// → WriteSessionStatus) — readEvents no longer flips state on
 		// EventResult/EventError directly.
 		switch event.Type {
 		case msg.EventSessionInfo:

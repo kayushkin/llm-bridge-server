@@ -14,7 +14,7 @@ import (
 func raiseSignal(t *testing.T, srv *Server, bridgeID, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(
+	asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(
 		http.MethodPost, "/sessions/"+bridgeID+"/signals", strings.NewReader(body)))
 	return rec
 }

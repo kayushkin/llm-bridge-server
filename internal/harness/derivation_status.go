@@ -167,6 +167,36 @@ func (d *derivationState) foldSystemStatus(ev *msg.Event) {
 			}
 		}
 
+	case msg.SystemSubtypeBackgroundTasksChanged:
+		// The harness's own list of everything running, whole, on every change.
+		// It decides MEMBERSHIP: a task it no longer lists is gone even if its
+		// terminal frame never arrived, and a task it lists that task_started
+		// never announced is running even so. What task_started / task_progress
+		// add — the agent role, the last tool, the promoted session — is kept
+		// for the tasks that stay.
+		listed := make(map[string]msg.BackgroundTask, len(sys.BackgroundTasks))
+		for _, task := range sys.BackgroundTasks {
+			listed[task.TaskID] = task
+		}
+		var next []msg.StatusSubagent
+		for _, task := range d.subagents {
+			if _, still := listed[task.TaskID]; still {
+				next = append(next, task)
+				delete(listed, task.TaskID)
+			}
+		}
+		for _, task := range sys.BackgroundTasks {
+			if unseen, ok := listed[task.TaskID]; ok {
+				next = append(next, msg.StatusSubagent{
+					TaskID:      unseen.TaskID,
+					TaskType:    unseen.TaskType,
+					Description: unseen.Description,
+					StartedAt:   eventTime(ev),
+				})
+			}
+		}
+		d.subagents = next
+
 	case "rate_limit":
 		switch sys.RateLimitStatus {
 		case "":

@@ -196,3 +196,50 @@ func TestStatus_RateLimitVerdictIsCarriedUntilAllowed(t *testing.T) {
 		t.Fatalf("after allowed: %+v; want the report cleared", got)
 	}
 }
+
+// The harness's own background-task list (background_tasks_changed, whole list
+// each time) decides which tasks are still running: a task it dropped is gone even
+// without a terminal frame, and one it lists that task_started never announced is
+// running even so. The details task_started gave are kept for the tasks that stay.
+func TestStatus_HarnessTaskListDecidesWhichSubagentsAreRunning(t *testing.T) {
+	d := newDerivationState()
+	statusAfter(d, userMessage(), systemEvent(msg.SystemEvent{
+		Subtype: "task_started", TaskID: "a1", ToolUseID: "toolu_a1", TaskType: msg.TaskTypeLocalAgent,
+		SubagentType: "Explore", Description: "map dash", SubagentSessionID: "br_a1",
+	}))
+	got := statusAfter(d, systemEvent(msg.SystemEvent{
+		Subtype: msg.SystemSubtypeBackgroundTasksChanged,
+		BackgroundTasks: []msg.BackgroundTask{
+			{TaskID: "a1", TaskType: msg.TaskTypeLocalAgent, Description: "map dash"},
+			{TaskID: "b1", TaskType: msg.TaskTypeLocalBash, Description: "run the tests"},
+		},
+	}))
+	if got == nil || len(got.Subagents) != 2 {
+		t.Fatalf("status = %+v; want the announced agent and the unannounced shell", got)
+	}
+	if got.Subagents[0].TaskID != "a1" || got.Subagents[0].SubagentType != "Explore" || got.Subagents[0].SessionID != "br_a1" {
+		t.Fatalf("the announced task lost its details: %+v", got.Subagents[0])
+	}
+	if got.Subagents[1].TaskID != "b1" || got.Subagents[1].TaskType != msg.TaskTypeLocalBash || got.Subagents[1].Description != "run the tests" {
+		t.Fatalf("the unannounced task: %+v", got.Subagents[1])
+	}
+
+	// The turn ends over them: background_tasks_running, both still listed.
+	got = statusAfter(d, &msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "started"}})
+	if got == nil || got.State != msg.SessionBackgroundTasksRunning || len(got.Subagents) != 2 {
+		t.Fatalf("after the result: %+v", got)
+	}
+
+	// The harness says only the shell runs now — no terminal frame for the agent.
+	got = statusAfter(d, systemEvent(msg.SystemEvent{
+		Subtype:         msg.SystemSubtypeBackgroundTasksChanged,
+		BackgroundTasks: []msg.BackgroundTask{{TaskID: "b1", TaskType: msg.TaskTypeLocalBash, Description: "run the tests"}},
+	}))
+	if got == nil || len(got.Subagents) != 1 || got.Subagents[0].TaskID != "b1" {
+		t.Fatalf("after the agent left the list: %+v", got)
+	}
+	got = statusAfter(d, systemEvent(msg.SystemEvent{Subtype: msg.SystemSubtypeBackgroundTasksChanged}))
+	if got == nil || got.State != msg.SessionIdle || len(got.Subagents) != 0 {
+		t.Fatalf("after the list emptied: %+v", got)
+	}
+}

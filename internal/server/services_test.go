@@ -77,6 +77,7 @@ func servicesTestServer(t *testing.T) (*Server, string, string) {
 		LogStoreURL:     "http://localhost:0",
 		HealthcheckURL:  healthcheck.URL,
 	}
+	testAuthorizationConfig(cfg)
 	return New(st, nil, nil, nil, nil, nil, nil, cfg), openDB, closedDB
 }
 

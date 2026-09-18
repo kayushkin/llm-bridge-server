@@ -1,11 +1,11 @@
 package server
 
-// Request authorization for a server gated by demo login.
+// Request authorization.
 //
-// With LLMBRIDGE_DEMO_LOGIN=enabled this server is the whole backend of a
-// multi-user product, and every request passes through authorizeRequest
-// before the mux dispatches it. With demo login off, ServeHTTP skips all of
-// this and behaves exactly as it always has.
+// This server is the whole backend of a multi-user product, and every request
+// passes through authorizeAndServe before the mux dispatches it. There is no
+// way to switch that off: the credentials it needs are mandatory at startup
+// (config.ValidateRequestAuthorizationSettings).
 //
 // Every route is classified in routeAccessRules, keyed by the exact pattern
 // it is registered under. The mux is asked which pattern a request matches,
@@ -18,10 +18,20 @@ package server
 //   - the internal service: X-LLM-Bridge-Service-Token equal to
 //     LLMBRIDGE_SERVICE_TOKEN. Unrestricted. A wrong token is 401 — it is never
 //     silently downgraded to a principal.
+//   - the internal service acting as a person: the same token plus
+//     X-Principal-Id. dash is the browser's front door on this host and holds
+//     the token, so it may say which of its logged-in users a request is for.
+//     The request is then that principal's in every respect. X-Principal-Id
+//     without the token is 401; it must never be believed on its own.
 //   - a principal: a valid demo login cookie, or — on the identity-carrying
 //     store proxies only — a session agent token (session_agent_token.go).
 //     What a principal may do depends on the route's class.
 //   - nobody: 401 on any route that is not open or a harness callback.
+//
+// Whatever principal a request resolves to is read from principal-store
+// before the route's rule is applied (request_principal_lookup.go): a
+// principal it does not know is 400, a disabled one is 403, and one it marks
+// is_administrator is past every per-resource check below.
 
 import (
 	"context"
@@ -44,17 +54,18 @@ const (
 	routeOpenToEveryone routeAccessClass = iota + 1
 	// routeHarnessCallback is called back by a harness child process, a
 	// sidecar or a runner on this host, which today carry no login. It keeps
-	// the behaviour it has without demo login: whatever check the handler
-	// itself makes, and nothing more.
+	// whatever check the handler itself makes, and nothing more.
 	routeHarnessCallback
-	// routeOperatorOnly needs the service token.
+	// routeOperatorOnly needs the service token, or a principal
+	// principal-store calls an administrator.
 	routeOperatorOnly
 	// routePrincipalCreatesSession is POST /sessions: the session is created
 	// as the calling principal, whatever the body says.
 	routePrincipalCreatesSession
 	// routePrincipalOwnsSession names a session in a path value; a principal
 	// reaches it only if the session's principal_id is theirs, and gets 404
-	// — the same answer as a missing session — otherwise.
+	// — the same answer as a missing session — otherwise. An administrator
+	// reaches every session, as does the service token.
 	routePrincipalOwnsSession
 	// routePrincipalOwnsSignal names a signal in a path value; a principal
 	// reaches it only if the signal's session is theirs, 404 otherwise.
@@ -244,37 +255,61 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /api/runner/seed/broadcast":              operatorRoute("tells every runner to reconcile"),
 
 	// agent-store's library routes other than the two catalog reads above.
-	"POST /agents":                           operatorRoute("agent-store write"),
-	"PUT /agents/{slug}":                     operatorRoute("agent-store write"),
-	"DELETE /agents/{slug}":                  operatorRoute("agent-store write"),
-	"GET /agents/{slug}/harnesses":           operatorRoute("agent-store harness bindings"),
-	"POST /agents/{slug}/harnesses":          operatorRoute("agent-store write"),
-	"GET /agents/{slug}/config":              operatorRoute("agent-store runtime config"),
-	"GET /configs":                           operatorRoute("agent-store runtime configs"),
-	"GET /reconcile":                         operatorRoute("agent-store reconcile"),
-	"GET /files":                             operatorRoute("agent-store tracked context files"),
-	"GET /files/{id}":                        operatorRoute("agent-store tracked context files"),
-	"GET /files/{id}/content":                operatorRoute("agent-store tracked context files"),
-	"PUT /files/{id}/content":                operatorRoute("agent-store write"),
-	"POST /files/{id}/enable":                operatorRoute("agent-store write"),
-	"POST /files/{id}/disable":               operatorRoute("agent-store write"),
-	"POST /files/scan":                       operatorRoute("agent-store scan"),
-	"GET /prompt-collections":                operatorRoute("agent-store prompts"),
-	"POST /prompt-collections":               operatorRoute("agent-store write"),
-	"POST /prompt-collections/{id}/sections": operatorRoute("agent-store write"),
-	"POST /prompt-collections/{id}/compile":  operatorRoute("agent-store write"),
-	"PUT /prompt-sections/{id}":              operatorRoute("agent-store write"),
-	"DELETE /prompt-sections/{id}":           operatorRoute("agent-store write"),
-	"GET /files/{id}/versions":               operatorRoute("agent-store tracked context files"),
-	"GET /versions/{vid}/content":            operatorRoute("agent-store tracked context files"),
-	"GET /seed/profiles":                     operatorRoute("agent-store seed"),
-	"GET /seed/profile":                      operatorRoute("agent-store seed"),
-	"PUT /seed/profile":                      operatorRoute("agent-store seed"),
-	"GET /seed/manifest":                     operatorRoute("agent-store seed"),
-	"POST /seed/observe":                     operatorRoute("agent-store seed"),
-	"POST /seed/drift":                       operatorRoute("agent-store seed"),
-	"GET /seed/state":                        operatorRoute("agent-store seed"),
-	"GET /context/resolve":                   operatorRoute("agent-store context"),
+	"POST /agents":                  operatorRoute("agent-store write"),
+	"PUT /agents/{slug}":            operatorRoute("agent-store write"),
+	"DELETE /agents/{slug}":         operatorRoute("agent-store write"),
+	"GET /agents/{slug}/harnesses":  operatorRoute("agent-store harness bindings"),
+	"POST /agents/{slug}/harnesses": operatorRoute("agent-store write"),
+	"GET /agents/{slug}/config":     operatorRoute("agent-store runtime config"),
+	"GET /configs":                  operatorRoute("agent-store runtime configs"),
+	"GET /reconcile":                operatorRoute("agent-store reconcile"),
+	"GET /files":                    operatorRoute("agent-store tracked context files"),
+	"GET /files/{id}":               operatorRoute("agent-store tracked context files"),
+	"GET /files/{id}/content":       operatorRoute("agent-store tracked context files"),
+	"PUT /files/{id}/content":       operatorRoute("agent-store write"),
+	"POST /files/{id}/enable":       operatorRoute("agent-store write"),
+	"POST /files/{id}/disable":      operatorRoute("agent-store write"),
+	"POST /files/scan":              operatorRoute("agent-store scan"),
+	// agent-store's prompt source: the host prompt every harness receives.
+	// Reading it shows the operator's whole prompt; writing it changes what
+	// every session on this host is told.
+	"GET /prompt-collections":                      operatorRoute("agent-store prompt source"),
+	"POST /prompt-collections":                     operatorRoute("agent-store write"),
+	"GET /prompt-collections/{id}":                 operatorRoute("agent-store prompt source"),
+	"POST /prompt-collections/{id}/sections":       operatorRoute("agent-store write"),
+	"POST /prompt-collections/{id}/render":         operatorRoute("agent-store write: rewrites prompt files on disk"),
+	"POST /prompt-collections/{id}/outputs":        operatorRoute("agent-store write"),
+	"GET /prompt-collections/{id}/revisions":       operatorRoute("agent-store prompt source"),
+	"POST /prompt-collections/import-untracked":    operatorRoute("agent-store write"),
+	"POST /prompt-outputs/{id}/enable":             operatorRoute("agent-store write"),
+	"POST /prompt-outputs/{id}/disable":            operatorRoute("agent-store write"),
+	"PUT /prompt-sections/{id}":                    operatorRoute("agent-store write"),
+	"DELETE /prompt-sections/{id}":                 operatorRoute("agent-store write"),
+	"GET /prompt-sections/{id}/revisions":          operatorRoute("agent-store prompt source"),
+	"GET /prompt-drifts":                           operatorRoute("agent-store prompt source"),
+	"POST /prompt-drifts/reconcile":                operatorRoute("agent-store write: may apply a file edit to the prompt"),
+	"GET /prompt-drifts/{id}":                      operatorRoute("agent-store prompt source"),
+	"GET /prompt-drifts/{id}/disk-content":         operatorRoute("agent-store prompt source"),
+	"PUT /prompt-drifts/{id}/annotation":           operatorRoute("agent-store write"),
+	"POST /prompt-drifts/{id}/apply":               operatorRoute("agent-store write: changes the prompt"),
+	"POST /prompt-drifts/{id}/dismiss":             operatorRoute("agent-store write"),
+	"GET /prompt-harness-deliveries":               operatorRoute("agent-store prompt source"),
+	"PUT /prompt-harness-deliveries/{harness}":     operatorRoute("agent-store write: decides whether a harness gets the prompt"),
+	"GET /prompt-delivery-options":                 operatorRoute("agent-store prompt source"),
+	"GET /tracked-file-ignore-rules":               operatorRoute("agent-store tracked context files"),
+	"POST /tracked-file-ignore-rules":              operatorRoute("agent-store write"),
+	"POST /tracked-file-ignore-rules/{id}/enable":  operatorRoute("agent-store write"),
+	"POST /tracked-file-ignore-rules/{id}/disable": operatorRoute("agent-store write"),
+	"GET /files/{id}/versions":                     operatorRoute("agent-store tracked context files"),
+	"GET /versions/{vid}/content":                  operatorRoute("agent-store tracked context files"),
+	"GET /seed/profiles":                           operatorRoute("agent-store seed"),
+	"GET /seed/profile":                            operatorRoute("agent-store seed"),
+	"PUT /seed/profile":                            operatorRoute("agent-store seed"),
+	"GET /seed/manifest":                           operatorRoute("agent-store seed"),
+	"POST /seed/observe":                           operatorRoute("agent-store seed"),
+	"POST /seed/drift":                             operatorRoute("agent-store seed"),
+	"GET /seed/state":                              operatorRoute("agent-store seed"),
+	"GET /context/resolve":                         operatorRoute("agent-store context"),
 
 	// memory-store's library routes.
 	"POST /memories":         operatorRoute("memory-store is not partitioned by principal"),
@@ -287,23 +322,65 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /memories/context": operatorRoute("memory-store is not partitioned by principal"),
 }
 
-// requestPrincipalContextKey carries the principal a gated request acts as.
-type requestPrincipalContextKey struct{}
+// requestCallerContextKey carries who an authorized request acts as.
+type requestCallerContextKey struct{}
+
+// requestCaller is who an authorized request acts as, as request
+// authorization established it.
+type requestCaller struct {
+	// principalID is the principal the request acts as, and empty for the
+	// internal service acting as itself.
+	principalID string
+	// isAdministrator is principal-store's own answer for principalID. An
+	// administrator is past every per-resource check: every session whoever
+	// owns it, every operator route, every list unfiltered, both store
+	// proxies.
+	isAdministrator bool
+}
+
+// narrowsToOnePrincipal reports whether this caller's answers must be limited
+// to one principal's own records. The internal service and an administrator
+// are identified but not narrowed.
+func (caller requestCaller) narrowsToOnePrincipal() bool {
+	return caller.principalID != "" && !caller.isAdministrator
+}
+
+func callerOfRequest(r *http.Request) (requestCaller, bool) {
+	caller, ok := r.Context().Value(requestCallerContextKey{}).(requestCaller)
+	return caller, ok
+}
 
 // principalRestrictingRequest returns the principal a request is restricted
-// to, and false when it is not restricted: demo login is off, or the caller
-// is the internal service. Handlers that narrow their answer to one
-// principal's sessions read it here and nowhere else.
+// to, and "" with false when it is not restricted: the caller is the internal
+// service acting as itself, or an administrator. Handlers that narrow their
+// answer to one principal's sessions read it here and nowhere else.
+//
+// The id is empty whenever the bool is false, so a caller that reads only the
+// id — a store filter where "" means every owner — cannot narrow an
+// administrator to the sessions that happen to carry their own id.
+// principalIdentityOfRequest is the one that names an administrator.
 func principalRestrictingRequest(r *http.Request) (string, bool) {
-	principalID, ok := r.Context().Value(requestPrincipalContextKey{}).(string)
-	return principalID, ok && principalID != ""
+	caller, ok := callerOfRequest(r)
+	if !ok || !caller.narrowsToOnePrincipal() {
+		return "", false
+	}
+	return caller.principalID, true
 }
 
-func withRestrictingPrincipal(r *http.Request, principalID string) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), requestPrincipalContextKey{}, principalID))
+// principalIdentityOfRequest returns who the request acts as, whether or not
+// that narrows what it may reach — an administrator is identified here and
+// restricted nowhere. The store proxies set X-Principal-Id from this, because
+// kanban-store and grant-store make their own administrator check.
+func principalIdentityOfRequest(r *http.Request) (string, bool) {
+	caller, ok := callerOfRequest(r)
+	return caller.principalID, ok && caller.principalID != ""
 }
 
-// authorizeAndServe is ServeHTTP when demo login is enabled.
+func withRequestCaller(r *http.Request, caller requestCaller) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), requestCallerContextKey{}, caller))
+}
+
+// authorizeAndServe is ServeHTTP: every request reaches the mux through here.
 func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	_, pattern := s.mux.Handler(r)
 	if pattern == "" {
@@ -318,14 +395,50 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusUnauthorized, "invalid_service_token", serviceTokenHeader+" does not match this server's service token")
 			return
 		}
-		s.mux.ServeHTTP(w, r)
+		assertedPrincipalHeaderName := principalIdentityHeaderNameIn(r.Header)
+		if assertedPrincipalHeaderName == "" {
+			// The internal service acting as itself: unrestricted, and not
+			// held to the route table, so a route added later still answers it.
+			s.mux.ServeHTTP(w, r)
+			return
+		}
+		assertedPrincipalIDs := r.Header[assertedPrincipalHeaderName]
+		if len(assertedPrincipalIDs) != 1 {
+			writeJSONError(w, http.StatusBadRequest, "ambiguous_principal_header", fmt.Sprintf(
+				"%s was sent %d times (%v); a request acts as one principal", assertedPrincipalHeaderName, len(assertedPrincipalIDs), assertedPrincipalIDs))
+			return
+		}
+		caller, credentialError := s.callerAssertedByInternalService(r.Context(), strings.TrimSpace(assertedPrincipalIDs[0]))
+		if credentialError != nil {
+			credentialError.write(w)
+			return
+		}
+		rule, classified := routeAccessRules[pattern]
+		if !classified {
+			// The fence in front of an unclassified route is not about who is
+			// calling: nobody has decided who may call it yet, and neither an
+			// asserted principal nor an administrator decides it by arriving.
+			// The service token acting as itself is the only way past.
+			refuseUnclassifiedRoute(w, pattern)
+			return
+		}
+		s.serveAsCaller(w, r, pattern, rule, caller)
+		return
+	}
+
+	// X-Principal-Id is a claim about who the caller is, and only the service
+	// token makes it believable. Refused here, before the route's class is
+	// looked at, so there is no route on which it could be believed.
+	if headerName := principalIdentityHeaderNameIn(r.Header); headerName != "" {
+		writeJSONError(w, http.StatusUnauthorized, "principal_header_without_service_token", fmt.Sprintf(
+			"%s says which principal a request acts as and is believed only from a caller presenting %s; log in with POST /auth/demo-login instead",
+			headerName, serviceTokenHeader))
 		return
 	}
 
 	rule, classified := routeAccessRules[pattern]
 	if !classified {
-		writeJSONError(w, http.StatusForbidden, "route_not_classified", fmt.Sprintf(
-			"route %q has no access rule, so with demo login enabled only the service token may call it", pattern))
+		refuseUnclassifiedRoute(w, pattern)
 		return
 	}
 	switch rule.class {
@@ -339,7 +452,36 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		credentialError.write(w)
 		return
 	}
+	caller, credentialError := s.callerActingAsPrincipal(r.Context(), principalID)
+	if credentialError != nil {
+		credentialError.write(w)
+		return
+	}
+	s.serveAsCaller(w, r, pattern, rule, caller)
+}
 
+// refuseUnclassifiedRoute answers a route nobody has written a rule for.
+func refuseUnclassifiedRoute(w http.ResponseWriter, pattern string) {
+	writeJSONError(w, http.StatusForbidden, "route_not_classified", fmt.Sprintf(
+		"route %q has no access rule, so only the service token may call it", pattern))
+}
+
+// serveAsCaller applies the route's rule to a caller acting as a principal and
+// dispatches, or writes the refusal the rule decides on.
+func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule, caller requestCaller) {
+	switch rule.class {
+	case routeOpenToEveryone, routeHarnessCallback:
+		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+		return
+	}
+	if caller.isAdministrator {
+		// principal-store says this person may do anything here, so no
+		// per-resource check applies. The identity still travels with the
+		// request: the store proxies set X-Principal-Id from it, and
+		// kanban-store and grant-store make their own administrator check.
+		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+		return
+	}
 	switch rule.class {
 	case routeOperatorOnly:
 		writeJSONError(w, http.StatusForbidden, "operator_route", fmt.Sprintf(
@@ -355,7 +497,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
-		if !s.sessionIsOwnedByPrincipal(sessionID, principalID) {
+		if !s.sessionIsOwnedByPrincipal(sessionID, caller.principalID) {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
@@ -366,7 +508,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		signal, err := s.store.GetSignal(signalID)
-		if err != nil || !s.sessionIsOwnedByPrincipal(signal.SessionID, principalID) {
+		if err != nil || !s.sessionIsOwnedByPrincipal(signal.SessionID, caller.principalID) {
 			http.Error(w, "signal not found", http.StatusNotFound)
 			return
 		}
@@ -376,7 +518,25 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf("route %q has an access class this server does not handle", pattern))
 		return
 	}
-	s.mux.ServeHTTP(w, withRestrictingPrincipal(r, principalID))
+	s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+}
+
+// principalIdentityHeaderNameIn returns the key a request carries
+// X-Principal-Id under, in whatever casing it was set, and "" when it carries
+// none. Header.Get would miss a non-canonical key set directly on the map, and
+// a header this server refuses to believe must be found however it is spelled.
+func principalIdentityHeaderNameIn(header http.Header) string {
+	for key, values := range header {
+		if !strings.EqualFold(key, principalIdentityHeader) {
+			continue
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				return key
+			}
+		}
+	}
+	return ""
 }
 
 // sessionIsOwnedByPrincipal reports whether the session exists and was

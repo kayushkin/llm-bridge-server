@@ -27,7 +27,7 @@ type SignalFilter struct {
 	LinkedTodoID string
 	// OwnedByPrincipalID narrows to the signals raised by sessions started as
 	// one principal. Set by the server from the caller's verified identity
-	// when demo login gates the server. Empty means "don't narrow".
+	// by request authorization. Empty means "don't narrow".
 	OwnedByPrincipalID string
 	// Limit caps the returned rows. Zero means no cap.
 	Limit int

@@ -45,7 +45,7 @@ type SessionSummary struct {
 	// State above is Status.State, kept for the consumers that filter on it.
 	Status *msg.SessionStatus `json:"status"`
 	UpdatedAt string  `json:"updatedAt"`
-	CreatedAt        string `json:"createdAt"`
+	CreatedAt string  `json:"createdAt"`
 }
 
 // SummaryLookupRequest is the POST /sessions/summary body: the same query the

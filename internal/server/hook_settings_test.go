@@ -219,6 +219,7 @@ func testServerWithoutHookStore(t *testing.T) *Server {
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 		LogStoreURL:     "http://localhost:0",
 	}
+	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
 	if srv.hookStore != nil {
 		t.Fatalf("precondition: hookStore should be nil")

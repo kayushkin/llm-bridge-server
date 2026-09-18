@@ -278,7 +278,9 @@ func TestGrantStoreProxyMapsEveryRouteAndCarriesOnlyThePrincipal(t *testing.T) {
 
 		request := httptest.NewRequest(route.method, route.gatewayPath, strings.NewReader(`{}`))
 		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("X-Principal-Id", secondTestPrincipalID)
+		// A client-sent X-Principal-Id never reaches here: it is 401 before
+		// the route is considered; that is its own test. What this checks is
+		// the store tokens a client might forge.
 		request.Header.Set("X-Grant-Store-Service-Token", "forged")
 		request.Header.Set("X-Kanban-Store-Service-Token", "forged")
 		request.Header["x-grant-store-service-token"] = []string{"forged-lowercase"}

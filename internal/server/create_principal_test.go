@@ -24,7 +24,7 @@ func fakePrincipalStore(t *testing.T, known string) *httptest.Server {
 			_, _ = w.Write([]byte(`{"error":"not found: principal ` + r.PathValue("id") + `"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"id":"` + known + `","kind":"human","display_name":"Vlad","disabled_at":0,"groups":[]}`))
+		_, _ = w.Write([]byte(`{"id":"` + known + `","kind":"human","display_name":"Slava","disabled_at":0,"groups":[]}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -61,7 +61,7 @@ func TestCreateSessionStoresAKnownPrincipalAndRefusesAnUnknownOne(t *testing.T) 
 		code      string
 	}{
 		{"principal_000404", 400, "unknown_principal"},
-		{"Vlad Kayushkin", 400, "invalid_principal_id"},
+		{"Slava Kayushkin", 400, "invalid_principal_id"},
 	} {
 		resp := doJSON(t, srv, "POST", "/sessions", principalRequest(instanceID, c.principal))
 		raw, _ := io.ReadAll(resp.Body)

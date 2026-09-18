@@ -53,14 +53,16 @@ const (
 	LogStoreURL        = "http://localhost:8175"
 	ToolStoreURL       = "http://localhost:8302"
 	PermissionStoreURL = "http://localhost:8304"
-	// principal-store and grant-store bind loopback only (they have no auth
-	// of their own), so their addresses are 127.0.0.1, not localhost-by-name.
-	PrincipalStoreURL = "http://127.0.0.1:8314"
-	GrantStoreURL     = "http://127.0.0.1:8315"
-	BundleStoreURL    = "http://localhost:8307"
-	KanbanStoreURL    = "http://localhost:8305"
-	MailstackURL      = "http://localhost:8195"
-	HealthcheckURL    = "http://localhost:8099"
+	BundleStoreURL     = "http://localhost:8307"
+	MailstackURL       = "http://localhost:8195"
+	HealthcheckURL     = "http://localhost:8099"
+	// kanban-store, principal-store and grant-store have no default here, and
+	// so no row in the three tables below. Request authorization reads all
+	// three on a gated request and main refuses to start without
+	// LLMBRIDGE_KANBAN_STORE_URL, LLMBRIDGE_PRINCIPAL_STORE_URL and
+	// LLMBRIDGE_GRANT_STORE_URL rather than guessing which service answers on
+	// a port. This guard exists for the fallback a test inherits without
+	// asking; a field with no fallback cannot hand one out.
 )
 
 // The on-disk state this gateway owns or shares. These are functions rather
@@ -125,7 +127,6 @@ var EnvironmentVariableByConfigField = map[string]string{
 	"LogStoreURL":        "LLMBRIDGE_LOG_STORE_URL",
 	"ToolStoreURL":       "LLMBRIDGE_TOOL_STORE_URL",
 	"PermissionStoreURL": "LLMBRIDGE_PERMISSION_STORE_URL",
-	"KanbanStoreURL":     "LLMBRIDGE_KANBAN_STORE_URL",
 	"MailstackURL":       "LLMBRIDGE_MAILSTACK_URL",
 	"HealthcheckURL":     "LLMBRIDGE_HEALTHCHECK_URL",
 	"SnapshotStoreDB":    "LLMBRIDGE_SNAPSHOT_DB",
@@ -148,7 +149,6 @@ func AddressByConfigField() map[string]string {
 		"LogStoreURL":        LogStoreURL,
 		"ToolStoreURL":       ToolStoreURL,
 		"PermissionStoreURL": PermissionStoreURL,
-		"KanbanStoreURL":     KanbanStoreURL,
 		"MailstackURL":       MailstackURL,
 		"HealthcheckURL":     HealthcheckURL,
 		"SnapshotStoreDB":    SnapshotStoreDatabasePath(),

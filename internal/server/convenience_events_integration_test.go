@@ -68,7 +68,7 @@ func TestConvenienceEventsIntegration_ClaudeCode_TurnSequence(t *testing.T) {
 	t.Cleanup(logStore.Close)
 
 	srv, _, instID := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, logStore.URL)
-	ts := httptest.NewServer(srv)
+	ts := httptest.NewServer(asInternalService(srv))
 	t.Cleanup(ts.Close)
 
 	bridgeID := createEventsSession(t, ts.URL, instID)

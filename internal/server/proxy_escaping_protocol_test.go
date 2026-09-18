@@ -55,7 +55,7 @@ func TestTheSessionIdSurvivesAsOneSegmentOnTheWire(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			up, got := recordUpstreamRequestLine(t)
 			srv, _, _ := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, up.URL)
-			ts := httptest.NewServer(srv)
+			ts := httptest.NewServer(asInternalService(srv))
 			t.Cleanup(ts.Close)
 
 			resp, err := http.Get(ts.URL + "/sessions/" + tc.id + "/messages")
@@ -85,7 +85,7 @@ func TestTheEndpointLiteralIsNotMovedByTheId(t *testing.T) {
 		t.Run(endpoint, func(t *testing.T) {
 			up, got := recordUpstreamRequestLine(t)
 			srv, _, _ := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, up.URL)
-			ts := httptest.NewServer(srv)
+			ts := httptest.NewServer(asInternalService(srv))
 			t.Cleanup(ts.Close)
 
 			resp, err := http.Get(ts.URL + "/sessions/a%2Fb%3Fx/" + endpoint)
@@ -160,7 +160,7 @@ func storeProxyRequest(t *testing.T, envKey, requestPath string) string {
 		t.Fatalf("set runner token: %v", err)
 	}
 
-	ts := httptest.NewServer(srv)
+	ts := httptest.NewServer(asInternalService(srv))
 	t.Cleanup(ts.Close)
 
 	req, err := http.NewRequest(http.MethodGet, ts.URL+requestPath, nil)
@@ -235,7 +235,7 @@ func TestCleanDoesNotResolveAnEscapedDotDotIntoATraversal(t *testing.T) {
 //   - called directly, the helper still cleans, for a caller that is not the mux.
 func TestRealDotSegmentsAreNormalisedByTheMuxNotTheHandler(t *testing.T) {
 	srv, _, _ := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, "http://unused")
-	ts := httptest.NewServer(srv)
+	ts := httptest.NewServer(asInternalService(srv))
 	t.Cleanup(ts.Close)
 
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {

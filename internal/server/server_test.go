@@ -33,6 +33,7 @@ func testServer(t *testing.T) (*Server, *store.Store) {
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 		LogStoreURL:     "http://localhost:0", // unused in unit tests
 	}
+	testAuthorizationConfig(cfg)
 
 	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
 	return srv, st
@@ -96,6 +97,7 @@ func testServerWithInstanceAndLogStore(t *testing.T, harness msg.Harness, logSto
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 		LogStoreURL:     logStoreURL,
 	}
+	testAuthorizationConfig(cfg)
 
 	srv := New(st, nil, nil, hs, nil, testModelStore(t), nil, cfg)
 	return srv, st, inst.ID
@@ -112,9 +114,43 @@ func doJSON(t *testing.T, srv http.Handler, method, path string, body any) *http
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	return w.Result()
+}
+
+// Every request this server answers is authorized first, so a test config must
+// carry the credentials that authorization needs — New refuses to build a
+// server without them — and a test request must carry one of them.
+const (
+	testSigningKey   = "test-signing-key-0123456789abcdef-32b+"
+	testServiceToken = "test-service-token-0123456789abcdef-32b"
+)
+
+// testAuthorizationConfig fills in the settings request authorization needs on
+// a config a test built for something else. The store URLs point at addresses
+// nothing answers on: a test that exercises a store replaces them.
+func testAuthorizationConfig(cfg *config.Config) {
+	cfg.DemoLoginSigningKey = testSigningKey
+	cfg.ServiceToken = testServiceToken
+	if cfg.PrincipalStoreURL == "" {
+		cfg.PrincipalStoreURL = "http://principal-store.invalid"
+	}
+	if cfg.GrantStoreURL == "" {
+		cfg.GrantStoreURL = "http://grant-store.invalid"
+	}
+}
+
+// asInternalService presents this server's service token on every request, the
+// way dash and the scheduler do, so the gate in front of the mux answers as it
+// does for an internal caller. Tests that are about authorization itself build
+// their requests by hand instead.
+func asInternalService(srv *Server) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set(serviceTokenHeader, testServiceToken)
+		srv.ServeHTTP(w, r)
+	})
 }
 
 func decodeJSON[T any](t *testing.T, resp *http.Response) T {
@@ -378,7 +414,7 @@ func TestCreateSession_InvalidBody(t *testing.T) {
 	req := httptest.NewRequest("POST", "/sessions", bytes.NewReader([]byte("not json")))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	asInternalService(srv).ServeHTTP(w, req)
 
 	if w.Code != 400 {
 		t.Errorf("status = %d, want 400", w.Code)
@@ -560,7 +596,7 @@ func TestSendMessage_InvalidBody(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/sessions/br_msg/send", bytes.NewReader([]byte("not json")))
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	asInternalService(srv).ServeHTTP(w, req)
 
 	if w.Code != 400 {
 		t.Errorf("status = %d, want 400", w.Code)
@@ -670,7 +706,7 @@ func TestConfigSession_InvalidBody(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/sessions/br_cfg/config", bytes.NewReader([]byte("not json")))
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	asInternalService(srv).ServeHTTP(w, req)
 
 	if w.Code != 400 {
 		t.Errorf("status = %d, want 400", w.Code)
@@ -762,7 +798,7 @@ func TestBridgePrefs_InvalidBody(t *testing.T) {
 
 	req := httptest.NewRequest("PUT", "/bridge-prefs", bytes.NewReader([]byte("not json")))
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	asInternalService(srv).ServeHTTP(w, req)
 
 	if w.Code != 400 {
 		t.Errorf("status = %d, want 400", w.Code)
@@ -799,7 +835,9 @@ func TestModels_NotRegistered(t *testing.T) {
 		t.Fatalf("new store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	srv := New(st, nil, nil, nil, nil, nil, nil, &config.Config{ImagesDir: filepath.Join(dir, "images"), BridgePrefsPath: filepath.Join(dir, "prefs.json"), LogStoreURL: "http://localhost:0"})
+	cfg := &config.Config{ImagesDir: filepath.Join(dir, "images"), BridgePrefsPath: filepath.Join(dir, "prefs.json"), LogStoreURL: "http://localhost:0"}
+	testAuthorizationConfig(cfg)
+	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
 
 	resp := doJSON(t, srv, "GET", "/models", nil)
 	if resp.StatusCode != 404 && resp.StatusCode != 405 {
@@ -964,6 +1002,7 @@ func TestNew_ReconcilesFolderRegistryFromSourceMappings(t *testing.T) {
 		},
 	}
 
+	testAuthorizationConfig(cfg)
 	_ = New(st, nil, nil, nil, nil, nil, nil, cfg)
 
 	got, err := st.ListFolders()

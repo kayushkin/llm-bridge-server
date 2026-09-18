@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -28,8 +29,33 @@ type Client struct {
 
 // New constructs a Client. baseURL is the kanban-store root (e.g.
 // "http://localhost:8305").
+// ServiceTokenHeader is where kanban-store reads an internal service's token,
+// and ServiceTokenEnvironmentVariable is where this server's unit carries it.
+// kanban-store gates every route: without the token every lookup here is a 401,
+// and a signal is minted with no linked todo.
+const (
+	ServiceTokenHeader              = "X-Kanban-Store-Service-Token"
+	ServiceTokenEnvironmentVariable = "KANBAN_STORE_SERVICE_TOKEN"
+)
+
+// serviceTokenTransport puts the token on every request this client makes, so a
+// lookup added later carries it too.
+type serviceTokenTransport struct {
+	token string
+	base  http.RoundTripper
+}
+
+func (t *serviceTokenTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	cloned := request.Clone(request.Context())
+	cloned.Header.Set(ServiceTokenHeader, t.token)
+	return t.base.RoundTrip(cloned)
+}
+
+// New builds a client that authenticates as an internal service with the token
+// in KANBAN_STORE_SERVICE_TOKEN. An empty token is left off rather than sent
+// blank, so kanban-store's 401 names the missing header.
 func New(baseURL string) *Client {
-	return &Client{
+	client := &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		// Loopback HTTP against a SQLite reverse index — typically
 		// sub-millisecond. The timeout is a ceiling so a wedged store fails
@@ -37,6 +63,10 @@ func New(baseURL string) *Client {
 		// signal.
 		http: &http.Client{Timeout: 3 * time.Second},
 	}
+	if token := os.Getenv(ServiceTokenEnvironmentVariable); token != "" {
+		client.http.Transport = &serviceTokenTransport{token: token, base: http.DefaultTransport}
+	}
+	return client
 }
 
 // entityCard is one row of GET /api/entities/{type}/{ref}/cards. The route
