@@ -677,11 +677,15 @@ type cardState struct {
 	// separate fact from ColumnName: kanban-store sets status when a card lands
 	// in a column with auto_status, but nothing sets the column when the status
 	// changes — reconcileStatusWithColumn is what closes that gap.
-	Status   string
-	Tags     []string
-	Category string
-	Action   string
-	Urgency  string
+	Status string
+	// HasTicket says this card already names a requester. The first requester
+	// stands: a colleague copied in on a later message does not take the
+	// ticket over.
+	HasTicket bool
+	Tags      []string
+	Category  string
+	Action    string
+	Urgency   string
 	// DueAt is the deadline this card's mail stated, nil when it stated none.
 	// The tick re-derives urgency and priority from it, so it is the one field
 	// here that keeps meaning something as time passes on its own.
@@ -745,6 +749,7 @@ func loadBoardState(kc *kanbanclient.Client, boardID string) (*boardState, error
 			}
 			card := &cardState{
 				ID:         cv.Placement.CardID,
+				HasTicket:  cv.Ticket != nil,
 				Title:      stringField(cv.Item, "title"),
 				Body:       stringField(cv.Item, "body"),
 				ColumnName: col.Column.Name,

@@ -228,6 +228,12 @@ func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[strin
 	}
 	for _, id := range filing.CardIDs {
 		add(id)
+		// Mail landing on a card that has no requester yet makes it a ticket:
+		// this is the message somebody wrote, and the card is what came of it.
+		// A card that already has one keeps it.
+		if card := a.cardState(id); card != nil {
+			a.writeTicket(id, card.ColumnName, senderAddress, senderName)
+		}
 	}
 	if spec := filing.NewCard; spec != nil && strings.TrimSpace(spec.Title) != "" {
 		// The sender decides the action axis for feeds, overriding whatever the
@@ -248,7 +254,7 @@ func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[strin
 			cardIDByTitle[key] = id
 			// The card was made for this message, so this sender is the one
 			// who asked. A card in the no-action bucket is skipped inside.
-			if card, known := a.state.Cards[id]; known {
+			if card := a.cardState(id); card != nil {
 				a.writeTicket(id, card.ColumnName, senderAddress, senderName)
 			}
 			add(id)

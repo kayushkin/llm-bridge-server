@@ -95,6 +95,13 @@ Two cards deliberately stay plain cards: a **bucket** card in the *No action*
 column, which collects mail from many senders and so has no one requester, and
 a card that already has a ticket, because the first requester stands.
 
+A card the classifier did not create becomes a ticket too, the first time mail
+lands on it. Most mail joins a card that already exists — the first live run
+filed two messages and created no card — so writing tickets only for new cards
+would leave a board's existing work without requesters for as long as those
+cards live. The board view says which cards already have one, so this costs no
+extra read.
+
 A failure writes no ticket and does not stop the filing: the card is correct
 without it, and refusing to file mail because principal-store was restarting
 would lose both. The run summary counts `tickets_written` and `tickets_failed`.

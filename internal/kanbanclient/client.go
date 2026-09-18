@@ -447,6 +447,19 @@ type CardView struct {
 	// classifier attaches every message as a link) is the difference between
 	// one request and hundreds.
 	Links []CardLink `json:"links"`
+	// Ticket is present when this card came from outside: who asked, and how
+	// they reached us. Absent on an ordinary card. Decoded here so a caller
+	// can tell a card that already has a requester from one that does not,
+	// without a read per card.
+	Ticket *Ticket `json:"ticket"`
+}
+
+// Ticket is kanban-store's ticket row. The lifecycle is deliberately not in
+// it: a ticket's state is the column its card sits in.
+type Ticket struct {
+	CardID               string `json:"card_id"`
+	RequesterPrincipalID string `json:"requester_principal_id"`
+	Channel              string `json:"channel"`
 }
 
 // ColumnView holds a column and its cards (in placement order).

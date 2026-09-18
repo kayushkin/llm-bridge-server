@@ -23,6 +23,12 @@ import (
 //   - A card that **already** has a ticket. The first requester stands: later
 //     mail from a colleague who was copied in does not take the ticket over.
 //
+// A card the classifier did not create this tick becomes a ticket too, the
+// first time mail lands on it after this shipped. Most mail joins a card that
+// already exists — the first live run filed two messages and created no card —
+// so writing tickets only for new cards would have left the board's existing
+// work without requesters for as long as those cards live.
+//
 // A failure here is logged and counted, never fatal. The card is filed and
 // correct without its ticket; refusing to file mail because principal-store
 // was restarting would lose the filing as well as the ticket.
@@ -38,6 +44,9 @@ const ticketChannelEmail = "email"
 // that address has been seen.
 func (a *applier) writeTicket(cardID, columnName, senderAddress, senderName string) {
 	if a.contacts == nil || senderAddress == "" || columnName == columnNoAction {
+		return
+	}
+	if card := a.cardState(cardID); card != nil && card.HasTicket {
 		return
 	}
 	contact, created, err := a.contacts.ResolveContact(senderAddress, senderName)
@@ -59,6 +68,9 @@ func (a *applier) writeTicket(cardID, columnName, senderAddress, senderName stri
 		return
 	}
 	a.ticketsWritten++
+	if card := a.cardState(cardID); card != nil {
+		card.HasTicket = true
+	}
 	log.Printf("[email] card %s is a ticket from %s (%s)", cardID, contact.ID, senderAddress)
 }
 
@@ -71,3 +83,12 @@ type contactResolver interface {
 // ticketWriter is the kanban-store call, named so a test can watch it without
 // a kanban-store. Nil means the real client, which is what production runs.
 type ticketWriter func(cardID, requesterPrincipalID, channel string) error
+
+// cardState is the board's record of one card, or nil when this applier has no
+// board state — which is the case in the unit tests and on the dry-run path.
+func (a *applier) cardState(cardID string) *cardState {
+	if a.state == nil {
+		return nil
+	}
+	return a.state.Cards[cardID]
+}

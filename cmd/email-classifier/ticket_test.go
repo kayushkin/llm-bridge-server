@@ -108,3 +108,44 @@ func TestNoResolverLeavesCardsAlone(t *testing.T) {
 		t.Fatal("nothing should be counted")
 	}
 }
+
+// TestACardKeepsItsFirstRequester pins the rule that makes this safe to run on
+// a board of existing cards: mail landing on a card with no requester makes it
+// a ticket, and mail landing on one that has a requester changes nothing.
+func TestACardKeepsItsFirstRequester(t *testing.T) {
+	contacts := &fakeContacts{}
+	writes := []ticketWrite{}
+	classifier := &applier{
+		contacts: contacts,
+		state: &boardState{Cards: map[string]*cardState{
+			"card-new":  {ID: "card-new", ColumnName: columnActionNeeded},
+			"card-held": {ID: "card-held", ColumnName: columnActionNeeded, HasTicket: true},
+		}},
+	}
+	classifier.putTicket = func(cardID, requester, channel string) error {
+		writes = append(writes, ticketWrite{cardID, requester, channel})
+		return nil
+	}
+
+	classifier.writeTicket("card-new", columnActionNeeded, "dana@example.com", "Dana")
+	if len(writes) != 1 || writes[0].cardID != "card-new" {
+		t.Fatalf("an existing card with no requester becomes a ticket: %+v", writes)
+	}
+	if !classifier.state.Cards["card-new"].HasTicket {
+		t.Fatal("the card should be remembered as having a ticket now")
+	}
+
+	// A second message on the same card does not re-write it.
+	classifier.writeTicket("card-new", columnActionNeeded, "someone-else@example.com", "Copied In")
+	if len(writes) != 1 {
+		t.Fatalf("the first requester stands: %+v", writes)
+	}
+	// Nor does mail on a card that already had one when the board was loaded.
+	classifier.writeTicket("card-held", columnActionNeeded, "someone-else@example.com", "Copied In")
+	if len(writes) != 1 {
+		t.Fatalf("a card that arrived with a ticket keeps it: %+v", writes)
+	}
+	if contacts.calls != 1 {
+		t.Fatalf("principal-store should be asked once, not per message: %d", contacts.calls)
+	}
+}
