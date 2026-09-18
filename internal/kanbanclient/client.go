@@ -231,3 +231,57 @@ func (c *Client) get(ctx context.Context, endpoint, what string) ([]byte, error)
 	}
 	return body, nil
 }
+
+// EffectiveDefault is one board default as kanban-store resolved it for a
+// card or a tag list, with where it came from: the board itself or a tag rule.
+type EffectiveDefault struct {
+	Value  string `json:"value"`
+	Source struct {
+		Kind         string   `json:"kind"`
+		RuleID       string   `json:"rule_id,omitempty"`
+		RuleTags     []string `json:"rule_tags,omitempty"`
+		RulePosition *int     `json:"rule_position,omitempty"`
+	} `json:"source"`
+}
+
+// EffectiveDefaults is kanban-store's answer to "what does a card on this
+// board get": each of the four defaults that anything sets, with its source.
+// A default absent from Defaults is set nowhere. The precedence lives in
+// kanban-store alone; this is a read of its answer, never a re-resolution.
+type EffectiveDefaults struct {
+	BoardID        string                      `json:"board_id"`
+	CardID         string                      `json:"card_id,omitempty"`
+	Tags           []string                    `json:"tags"`
+	MatchedRuleIDs []string                    `json:"matched_rule_ids"`
+	Defaults       map[string]EffectiveDefault `json:"defaults"`
+}
+
+// EffectiveDefaults reads a board's resolved defaults: for a card when cardID
+// is given, else for a card that would carry tags.
+func (c *Client) EffectiveDefaults(ctx context.Context, boardID, cardID string, tags []string) (*EffectiveDefaults, error) {
+	if boardID == "" {
+		return nil, fmt.Errorf("board id is required")
+	}
+	var endpoint string
+	if cardID != "" {
+		endpoint = fmt.Sprintf("%s/api/boards/%s/cards/%s/effective-defaults", c.baseURL, url.PathEscape(boardID), url.PathEscape(cardID))
+	} else {
+		query := url.Values{}
+		for _, tag := range tags {
+			query.Add("tag", tag)
+		}
+		endpoint = fmt.Sprintf("%s/api/boards/%s/effective-defaults", c.baseURL, url.PathEscape(boardID))
+		if len(query) > 0 {
+			endpoint += "?" + query.Encode()
+		}
+	}
+	body, err := c.get(ctx, endpoint, "effective defaults")
+	if err != nil {
+		return nil, err
+	}
+	var out EffectiveDefaults
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("parse effective-defaults response: %w", err)
+	}
+	return &out, nil
+}

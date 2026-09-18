@@ -264,6 +264,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/mark-done", s.handleMarkSessionDone)
 	s.mux.HandleFunc("GET /sessions/{id}/git/repos", s.handleSessionGitRepos)
 	s.mux.HandleFunc("GET /sessions/{id}/git", s.handleSessionGit)
+	s.mux.HandleFunc("GET /sessions/{id}/effective-config", s.handleSessionEffectiveConfig)
+	s.mux.HandleFunc("GET /effective-config", s.handleDryRunEffectiveConfig)
 
 	// Hook resolution — surface awaiting_resolution HookEvents and accept
 	// a decision back. Used by bridge-ui to render permission prompts and
