@@ -54,6 +54,7 @@ import (
 	"time"
 
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/principalstore"
 )
 
 const (
@@ -220,6 +221,7 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	fs.BoolVar(&c.BackfillDue, "backfill-due", false, "Recover deadlines from existing card summaries into due_at, re-score, and exit. One-off: cards filed after this store their own date.")
 	fs.StringVar(&c.RefileUnreadSince, "refile-unread-since", "", "Unfile mail attached on or after this date (YYYY-MM-DD) that was never fetched or read, and exit. Drain it with -backfill afterwards. Empty means off.")
 	fs.StringVar(&c.NoteboardURL, "noteboard-url", envOr(lookupEnvironment, "NOTEBOARD_URL", "http://localhost:8191"), "noteboard base URL, where routing notes live")
+	fs.StringVar(&c.PrincipalStoreURL, "principal-store-url", envOr(lookupEnvironment, "PRINCIPAL_STORE_URL", "http://127.0.0.1:8314"), "principal-store base URL, where a sender's address becomes the contact a ticket names as its requester")
 	fs.StringVar(&c.SenderQuery, "sender", "", "Report everything known about one email address — its routing note, the cards its mail feeds, the messages it sent — and exit. With -note, writes that note instead.")
 	fs.StringVar(&c.MessageQuery, "message", "", "Report or annotate one message by locator (account:message_id), and exit. With -note, writes that note instead.")
 	fs.StringVar(&c.NoteText, "note", "", "The routing note to store against -sender or -message. Pass \"\" with -delete-note to remove one.")
@@ -485,7 +487,11 @@ func run() int {
 		degraded.record("similar-mail search failed for %d of %d message(s)", similarSearchFailures, len(remaining))
 	}
 
-	applier := &applier{cfg: cfg, kc: kc, state: state, gate: gate}
+	// A card filed for a piece of work somebody asked for becomes a ticket, and
+	// its requester is the contact principal-store resolves the sender's
+	// address to. See ticket.go for which cards are skipped.
+	applier := &applier{cfg: cfg, kc: kc, state: state, gate: gate,
+		contacts: principalstore.New(cfg.PrincipalStoreURL)}
 	if err := applier.applyDirectRoutes(routed); err != nil {
 		log.Fatalf("apply direct routes: %v", err)
 	}
@@ -509,8 +515,9 @@ func run() int {
 	if err := applier.rewriteTouchedCardBodies(); err != nil {
 		log.Printf("[email] rewrite card bodies: %v", err)
 	}
-	log.Printf("[email] done: filed=%d cards_created=%d cards_updated=%d skipped_agent_owned=%d",
-		applier.filed, applier.cardsCreated, applier.cardsUpdated, applier.skippedAgentOwned)
+	log.Printf("[email] done: filed=%d cards_created=%d cards_updated=%d skipped_agent_owned=%d tickets_written=%d tickets_failed=%d",
+		applier.filed, applier.cardsCreated, applier.cardsUpdated, applier.skippedAgentOwned,
+		applier.ticketsWritten, applier.ticketsFailed)
 	return degraded.exitCode()
 }
 
@@ -578,6 +585,9 @@ type config struct {
 	MergePass        bool
 	BackfillDue      bool
 	NoteboardURL     string
+	// PrincipalStoreURL is where a sender's address is resolved to the contact
+	// a ticket points at. See applier.writeTicket.
+	PrincipalStoreURL string
 	// SenderQuery and MessageQuery name the entity a -sender / -message run is
 	// about. Both empty is the ordinary tick.
 	SenderQuery  string

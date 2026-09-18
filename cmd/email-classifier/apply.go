@@ -23,9 +23,17 @@ type applier struct {
 	// See session.go for which states count as working.
 	gate *sessionGate
 
-	filed        int
-	cardsCreated int
-	cardsUpdated int
+	// contacts resolves a sender's address to the contact a ticket names as
+	// its requester. Nil leaves cards as plain cards; see ticket.go.
+	contacts contactResolver
+	// putTicket writes the ticket; nil means the kanban client's own call.
+	putTicket ticketWriter
+
+	filed          int
+	cardsCreated   int
+	cardsUpdated   int
+	ticketsWritten int
+	ticketsFailed  int
 
 	// skippedAgentOwned counts cards left alone this tick because an agent held
 	// them. Reported at the end so a board that stops changing has a visible
@@ -169,7 +177,7 @@ func (a *applier) applyReport(batch []pendingEmail, report *filingReport) error 
 			continue
 		}
 
-		cardIDs := a.resolveFilingCards(filing, cardIDByTitle, senderKey(em.Meta.From))
+		cardIDs := a.resolveFilingCards(filing, cardIDByTitle, senderKey(em.Meta.From), em.Meta.From.Name)
 		if len(cardIDs) == 0 {
 			log.Printf("[email] WARNING: filing for %s (%q) named no resolvable card; sending to triage",
 				em.Locator, em.Meta.Subject)
@@ -197,7 +205,13 @@ func (a *applier) applyReport(batch []pendingEmail, report *filingReport) error 
 //
 // cardIDByTitle is mutated as cards are created, so a later filing in the same
 // batch proposing the same title reuses the card rather than making a second one.
-func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[string]string, sender string) []string {
+// resolveFilingCards turns one message's filing into card ids, creating the
+// card it names when that card does not exist yet.
+//
+// senderAddress is senderKey's output and decides the feed override below;
+// senderName is what the mail called them, and is used only when a new card
+// becomes a ticket and the sender has never been seen before.
+func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[string]string, senderAddress, senderName string) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(id string) {
@@ -220,9 +234,9 @@ func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[strin
 		// model made of this one message. Logged rather than applied silently:
 		// the override is a claim about the sender, and a wrong entry in that
 		// list would otherwise mute a real task without trace.
-		if senderIsAlwaysNoAction(sender) && spec.Action != actionNone {
+		if senderIsAlwaysNoAction(senderAddress) && spec.Action != actionNone {
 			log.Printf("[email] %s only sends feeds; filing %q as action=%s instead of %q",
-				sender, spec.Title, actionNone, spec.Action)
+				senderAddress, spec.Title, actionNone, spec.Action)
 			spec.Action = actionNone
 		}
 		key := normalizeTitle(spec.Title)
@@ -232,6 +246,11 @@ func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[strin
 			log.Printf("[email] create card %q: %v", spec.Title, err)
 		} else {
 			cardIDByTitle[key] = id
+			// The card was made for this message, so this sender is the one
+			// who asked. A card in the no-action bucket is skipped inside.
+			if card, known := a.state.Cards[id]; known {
+				a.writeTicket(id, card.ColumnName, senderAddress, senderName)
+			}
 			add(id)
 		}
 	}

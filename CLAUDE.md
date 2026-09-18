@@ -83,6 +83,26 @@ A shell job's wall-clock cap is **per-job**: `timeout_seconds` on create or PATC
 
 Shell jobs return status `success` or `error` based on exit code; `output` field in run history captures combined stdout+stderr (use `-f` with curl so 5xx becomes non-zero exit → `error` status → visible in `/runs`). Two further statuses mean the run did not finish on its own terms: `timeout` (it exceeded `timeout_seconds` and its process group was killed) and `interrupted` (the scheduler process died mid-run — a crash, an OOM kill, a deploy restart — and the run was closed out at the next startup). A run is never left in `running` by a process that is gone.
 
+## Mail becomes a ticket
+
+`email-classifier` gives a card it files for a piece of work a **ticket** in
+kanban-store: the requester and the channel. The requester is a principal-store
+**contact id**, resolved from the sender's address through
+`POST /contacts/resolve` (`PRINCIPAL_STORE_URL`), never the address itself —
+one person writes from a phone, a work account and a web form.
+
+Two cards deliberately stay plain cards: a **bucket** card in the *No action*
+column, which collects mail from many senders and so has no one requester, and
+a card that already has a ticket, because the first requester stands.
+
+A failure writes no ticket and does not stop the filing: the card is correct
+without it, and refusing to file mail because principal-store was restarting
+would lose both. The run summary counts `tickets_written` and `tickets_failed`.
+
+**There is no ticket status.** The lifecycle is the column the card sits in;
+classify a board's columns with `lifecycle_state` (kanban-store's
+`GET /api/ticket-lifecycle-states`) and moving a card is what moves its ticket.
+
 ## Reminders: one coordinator, never a new cron job
 
 `~/bin/reminder-coordinator` (scheduler job 32, `*/15`) is the **only** thing that reminds the user of anything. It materializes recurring todos, rewrites the standing **"📆 Today — personal"** note (the primary surface — always current, readable at dash `/notes`), mirrors opted-in items to Google Calendar, and sends **at most one herald session per tick**.
