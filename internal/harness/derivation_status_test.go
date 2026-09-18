@@ -135,12 +135,17 @@ func TestStatus_SubagentIsListedOnceAndNotAlsoAsATool(t *testing.T) {
 // A backgrounded shell outlives the turn that started it, and is still running.
 func TestStatus_RunningTaskSurvivesTheEndOfItsTurn(t *testing.T) {
 	d := newDerivationState()
+	// The order measured live: the harness's list names the shell, then its
+	// task_started arrives.
 	statusAfter(d, userMessage(), systemEvent(msg.SystemEvent{
+		Subtype:         msg.SystemSubtypeBackgroundTasksChanged,
+		BackgroundTasks: []msg.BackgroundTask{{TaskID: "bg1", TaskType: msg.TaskTypeLocalBash, Description: "npm run dev"}},
+	}), systemEvent(msg.SystemEvent{
 		Subtype: "task_started", TaskID: "bg1", ToolUseID: "toolu_bash", TaskType: msg.TaskTypeLocalBash, Description: "npm run dev",
 	}))
 	got := statusAfter(d, &msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "started it."}})
-	if got == nil || got.State != msg.SessionIdle || len(got.Subagents) != 1 {
-		t.Fatalf("status = %+v; want idle with the shell still listed", got)
+	if got == nil || got.State != msg.SessionBackgroundTasksRunning || len(got.Subagents) != 1 {
+		t.Fatalf("status = %+v; want background_tasks_running with the shell still listed", got)
 	}
 }
 
@@ -241,5 +246,40 @@ func TestStatus_HarnessTaskListDecidesWhichSubagentsAreRunning(t *testing.T) {
 	got = statusAfter(d, systemEvent(msg.SystemEvent{Subtype: msg.SystemSubtypeBackgroundTasksChanged}))
 	if got == nil || got.State != msg.SessionIdle || len(got.Subagents) != 0 {
 		t.Fatalf("after the list emptied: %+v", got)
+	}
+}
+
+// Claude Code sends task_started local_bash for a FOREGROUND Bash call once it has
+// run three seconds. It is still the Bash call in Tools, not a background task.
+func TestStatus_ForegroundShellCommandStaysATool(t *testing.T) {
+	d := newDerivationState()
+	statusAfter(d, userMessage(), toolCall("toolu_bash", "Bash", `{"command":"go test ./..."}`))
+	got := statusAfter(d, systemEvent(msg.SystemEvent{
+		Subtype: "task_started", TaskID: "b1", ToolUseID: "toolu_bash", TaskType: msg.TaskTypeLocalBash, Description: "go test ./...",
+	}))
+	if got != nil {
+		t.Fatalf("a foreground shell's task_started changes nothing; got %+v", got)
+	}
+	status := d.currentStatus()
+	if len(status.Tools) != 1 || status.Tools[0].Summary != "go test ./..." || len(status.Subagents) != 0 {
+		t.Fatalf("status = %+v; want the Bash call in Tools and no subagents", status)
+	}
+}
+
+// A backgrounded shell is named by the harness's list before its task_started
+// arrives (the order measured live), and is a running task.
+func TestStatus_BackgroundedShellIsARunningTask(t *testing.T) {
+	d := newDerivationState()
+	statusAfter(d, userMessage(), toolCall("toolu_bash", "Bash", `{"command":"npx playwright test","run_in_background":true}`))
+	statusAfter(d, systemEvent(msg.SystemEvent{
+		Subtype:         msg.SystemSubtypeBackgroundTasksChanged,
+		BackgroundTasks: []msg.BackgroundTask{{TaskID: "b2", TaskType: msg.TaskTypeLocalBash, Description: "npx playwright test"}},
+	}))
+	statusAfter(d, systemEvent(msg.SystemEvent{
+		Subtype: "task_started", TaskID: "b2", ToolUseID: "toolu_bash", TaskType: msg.TaskTypeLocalBash, Description: "npx playwright test",
+	}))
+	status := d.currentStatus()
+	if len(status.Subagents) != 1 || status.Subagents[0].TaskID != "b2" || len(status.Tools) != 0 {
+		t.Fatalf("status = %+v; want the backgrounded shell as the one running task", status)
 	}
 }

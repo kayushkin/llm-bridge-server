@@ -126,6 +126,19 @@ func (d *derivationState) foldSystemStatus(ev *msg.Event) {
 		if sys.TaskID == "" {
 			return
 		}
+		// Claude Code announces a task for ANY shell command that has run for
+		// three seconds, foreground ones included: measured 2026-09-18, 126 of
+		// 564 Bash calls got a `task_started local_bash`, each 3.0s after its
+		// tool_call, none with run_in_background. Such a command is the Bash
+		// call already listed in Tools — claiming it moved it to Subagents, so
+		// after three seconds the status line lost `Bash — <command>` and said
+		// "1 agent" instead. What separates the two is the harness's own
+		// background-task list: a backgrounded shell is named there BEFORE its
+		// task_started arrives, and a foreground one never is. A foreground
+		// command backgrounded later is picked up when the list names it.
+		if sys.TaskType == msg.TaskTypeLocalBash && !d.harnessListsBackgroundTask(sys.TaskID) {
+			return
+		}
 		if sys.ToolUseID != "" {
 			if d.claimedToolIDs == nil {
 				d.claimedToolIDs = make(map[string]struct{})
@@ -223,6 +236,17 @@ func (d *derivationState) foldSystemStatus(ev *msg.Event) {
 			}
 		}
 	}
+}
+
+// harnessListsBackgroundTask reports whether the harness's last
+// background_tasks_changed list names taskID. Caller holds d.mu.
+func (d *derivationState) harnessListsBackgroundTask(taskID string) bool {
+	for _, task := range d.backgroundTasks {
+		if task.TaskID == taskID {
+			return true
+		}
+	}
+	return false
 }
 
 // replaceSubagent returns a copy of tasks with element i edited. A copy,
