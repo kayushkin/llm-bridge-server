@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // The candidate walk pages the summary and stops at the first session older than
@@ -22,15 +24,7 @@ func TestListSessionsUpdatedSince_StopsAtTheCutoff(t *testing.T) {
 		}
 		page := summaryPage{}
 		add := func(id string, age time.Duration) {
-			page.Sessions = append(page.Sessions, struct {
-				SessionID   string `json:"sessionId"`
-				State       string `json:"state"`
-				Purpose     string `json:"purpose"`
-				DisplayName string `json:"displayName"`
-				Harness     string `json:"harness"`
-				CreatedAt   string `json:"createdAt"`
-				UpdatedAt   string `json:"updatedAt"`
-			}{SessionID: id, State: "idle", UpdatedAt: now.Add(-age).Format(time.RFC3339)})
+			page.Sessions = append(page.Sessions, summaryRow{SessionID: id, State: "idle", UpdatedAt: now.Add(-age).Format(time.RFC3339)})
 		}
 		switch r.URL.Query().Get("before") {
 		case "":
@@ -115,29 +109,64 @@ func TestDigestMessages_FlattensATurnPage(t *testing.T) {
 	}
 }
 
-func TestSignatures(t *testing.T) {
-	cur := buildSig(4064, "idle", "2026-09-16T21:23:57Z")
-	if cur != "kanban-check-sig:events=4064:state=idle:t=202609162123" {
-		t.Fatalf("sig %q", cur)
+// One model call per finished response: the signature names the result entry
+// that closed it, and only a signature naming the same entry says "already read".
+func TestOneClassificationPerFinishedResponse(t *testing.T) {
+	sig := buildSig("e_2729128", 8328)
+	if sig != "kanban-check-sig:result=e_2729128:events=8328" {
+		t.Fatalf("sig %q", sig)
 	}
-	var noEntryTime time.Time
-	if !sigUnchanged(cur, cur, noEntryTime) {
-		t.Error("identical signature reported changed")
+	if !responseAlreadyClassified(sig, "e_2729128") {
+		t.Error("the response the signature names was reported unread")
 	}
-	if sigUnchanged("", cur, noEntryTime) {
-		t.Error("no prior signature reported unchanged")
+	if responseAlreadyClassified(sig, "e_2730001") {
+		t.Error("a newer finished response was reported already classified")
 	}
-	if !sigUnchanged("kanban-check-sig:msg=37:state=idle:t=202609162123", cur, noEntryTime) {
-		t.Error("an old msg= signature with the same state and minute must count as unchanged")
+	if responseAlreadyClassified("", "e_2729128") {
+		t.Error("no prior signature reported already classified")
 	}
-	if sigUnchanged("kanban-check-sig:msg=37:state=running:t=202609162123", cur, noEntryTime) {
-		t.Error("an old signature with another state must count as changed")
+	if responseAlreadyClassified(sig, "") {
+		t.Error("no finished response can never be already classified")
 	}
-	if sigUnchanged("kanban-check-sig:events=4000:state=idle:t=202609162123", cur, noEntryTime) {
-		t.Error("a new-format signature with another count must count as changed")
+	if responseAlreadyClassified("kanban-check-sig:garbage", "e_2729128") {
+		t.Error("an unreadable prior signature reported already classified")
+	}
+	if responseAlreadyClassified("kanban-check-sig:result=:events=5", "e_2729128") {
+		t.Error("a signature with an empty result reported already classified")
 	}
 
-	n, known := priorEventCount(map[string]bool{cur: true})
+	n, known := priorEventCount(map[string]bool{sig: true})
+	if !known || n != 8328 {
+		t.Errorf("priorEventCount = %d %v", n, known)
+	}
+}
+
+// llm-bridge appends events to a session after its turn has ended, and a session
+// moves between idle, awaiting_user and completed with nothing new said. Neither
+// is a new response, so neither may buy another model call.
+func TestEventsAndStateChangesAfterTheTurnAreNotANewResponse(t *testing.T) {
+	classifiedAt := buildSig("e_2729128", 8328)
+	if buildSig("e_2729128", 8331) == classifiedAt {
+		t.Fatal("the control is broken: a later event count must give another signature")
+	}
+	if !responseAlreadyClassified(classifiedAt, "e_2729128") {
+		t.Error("three more events on the same finished response: reported unread")
+	}
+}
+
+// Signatures from before 2026-09-18 name no response, so they cannot say this one
+// was read. Such a session is classified once more and then carries one that can.
+func TestASignatureThatNamesNoResponseIsNotAlreadyClassified(t *testing.T) {
+	for _, old := range []string{
+		"kanban-check-sig:events=4064:state=idle:t=202609162123",
+		"kanban-check-sig:msg=37:state=idle:t=202609162123",
+	} {
+		if responseAlreadyClassified(old, "e_2729128") {
+			t.Errorf("%s reported already classified", old)
+		}
+	}
+	// The event count of the 2026-09-16 format still re-opens a do-not-track session.
+	n, known := priorEventCount(map[string]bool{"kanban-check-sig:events=4064:state=idle:t=202609162123": true})
 	if !known || n != 4064 {
 		t.Errorf("priorEventCount = %d %v", n, known)
 	}
@@ -146,34 +175,66 @@ func TestSignatures(t *testing.T) {
 	}
 }
 
-// On 2026-09-16 a cost backfill wrote updated_at on 4,657 finished sessions and
-// every one of them was re-classified, ten model calls a tick. A row write with
-// no new event and no new state is not activity.
-func TestARowWriteWithNoNewEventIsNotActivity(t *testing.T) {
-	afterBackfill := buildSig(167, "aborted", "2026-09-16T23:38:30Z")
-	if !sigUnchanged("kanban-check-sig:events=167:state=aborted:t=202607141530", afterBackfill, time.Time{}) {
-		t.Error("same event count and state, later updated_at: reported changed")
+// The final output of a turn is its result entry. A turn cut short has none, a
+// /compact leaves an empty one, and the OTel copy is a duplicate.
+func TestNewestFinishedResponseID(t *testing.T) {
+	var page turnPage
+	if err := json.Unmarshal([]byte(`{"model":{
+		"turns":[
+			{"entryIds":["e_1","e_2"]},
+			{"entryIds":["e_3","e_4","e_5"]},
+			{"entryIds":["e_6","e_7"]},
+			{"entryIds":["e_8","e_9"]}],
+		"entries":{
+			"e_1":{"role":"user","kind":"text","text":"fix it"},
+			"e_2":{"role":"assistant","kind":"result","text":"fixed"},
+			"e_3":{"role":"user","kind":"text","text":"and the other one"},
+			"e_4":{"role":"assistant","kind":"text","text":"working"},
+			"e_5":{"role":"assistant","kind":"result","text":"both fixed"},
+			"e_6":{"role":"user","kind":"text","text":"/compact"},
+			"e_7":{"role":"assistant","kind":"result","text":""},
+			"e_8":{"role":"user","kind":"text","text":"one more"},
+			"e_9":{"role":"assistant","kind":"tool_call","toolName":"Bash"}}}}`), &page); err != nil {
+		t.Fatal(err)
 	}
-	if sigUnchanged("kanban-check-sig:events=167:state=idle:t=202607141530", afterBackfill, time.Time{}) {
-		t.Error("same event count, another state: reported unchanged")
+	if got := newestFinishedResponseID(page); got != "e_5" {
+		t.Errorf("newest finished response %q, want e_5: the compact answered nothing and the last turn has not ended", got)
 	}
 
-	// An old msg= signature has no event count to compare, so the newest entry
-	// decides: nothing said since the signature was taken means unchanged.
-	oldFormat := "kanban-check-sig:msg=12:state=aborted:t=202607141530"
-	lastSaidBefore := time.Date(2026, 7, 14, 15, 30, 59, 0, time.UTC)
-	lastSaidAfter := time.Date(2026, 7, 14, 15, 31, 0, 0, time.UTC)
-	if !sigUnchanged(oldFormat, afterBackfill, lastSaidBefore) {
-		t.Error("newest entry inside the signature's minute: reported changed")
+	page.Model.Entries["e_10"] = page.Model.Entries["e_5"]
+	duplicate := page.Model.Entries["e_10"]
+	duplicate.Duplicate = true
+	page.Model.Entries["e_10"] = duplicate
+	page.Model.Turns[3].EntryIDs = append(page.Model.Turns[3].EntryIDs, "e_10")
+	if got := newestFinishedResponseID(page); got != "e_5" {
+		t.Errorf("a hidden duplicate was read as a finished response: %q", got)
 	}
-	if sigUnchanged(oldFormat, afterBackfill, lastSaidAfter) {
-		t.Error("an entry newer than the old signature: reported unchanged")
+
+	if got := newestFinishedResponseID(turnPage{}); got != "" {
+		t.Errorf("an empty page has a finished response: %q", got)
 	}
-	if sigUnchanged(oldFormat, afterBackfill, time.Time{}) {
-		t.Error("no entry time to compare against an old signature: reported unchanged")
+}
+
+// A turn that has not ended has no final output. The list of active states is
+// llm-bridge's; a permission prompt parks a session mid-turn, and awaiting_user is
+// a turn that ended.
+func TestTurnInFlight(t *testing.T) {
+	for _, state := range []msg.SessionState{
+		msg.SessionStarting, msg.SessionModelGenerating, msg.SessionToolRunning, msg.SessionCompacting,
+		msg.SessionBackgroundTasksRunning, msg.SessionRateLimited, msg.SessionRunning,
+		msg.SessionAwaitingPermission, msg.SessionWaitingApproval,
+	} {
+		if !turnInFlight(state) {
+			t.Errorf("%s: a turn is in flight", state)
+		}
 	}
-	if sigUnchanged("kanban-check-sig:garbage", afterBackfill, lastSaidBefore) {
-		t.Error("an unreadable prior signature reported unchanged")
+	for _, state := range []msg.SessionState{
+		msg.SessionIdle, msg.SessionAwaitingUser, msg.SessionCompleted, msg.SessionError,
+		msg.SessionAborted, msg.SessionDisconnected, msg.SessionPaused,
+	} {
+		if turnInFlight(state) {
+			t.Errorf("%s: no turn is in flight", state)
+		}
 	}
 }
 

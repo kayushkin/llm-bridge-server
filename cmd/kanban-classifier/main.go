@@ -1,13 +1,21 @@
 // kanban-classifier is the cheap-model curator that creates and updates
-// kanban cards on the "Agent runs" board for any active llm-bridge session.
+// kanban cards on the "Agent runs" board from interactive llm-bridge sessions.
+//
+// What it reads, and how often:
+//
+//	Only sessions a person drives (type interactive), only once a turn has
+//	fully ended, and once per finished response. It never reads a oneshot
+//	model call, its own included, nor an autonomous, system, herald or
+//	external session. See interactiveSessionsOnly, turnInFlight and
+//	newestFinishedResponseID: between them they are the whole rule.
 //
 // Cadence:
 //
 //	Registered as a scheduler shell job running every 15 minutes. On each
 //	tick, pages bridge-server's /sessions/summary newest first until the
-//	lookback cutoff, skips sessions whose check signature matches the
-//	already-recorded one (no-change short-circuit), and classifies the rest
-//	with Anthropic Haiku from a bounded page of each session's newest turns.
+//	lookback cutoff, skips sessions whose newest finished response is the one
+//	the check signature already records, and classifies the rest with
+//	Anthropic Haiku from a bounded page of each session's newest turns.
 //
 // Decisions per session:
 //
@@ -21,12 +29,15 @@
 //
 // Signature is stored as a single entity_tag on session/<bridge_id>:
 //
-//	kanban-check-sig:events=<n>:state=<s>:t=<YYYYMMDDhhmm>
+//	kanban-check-sig:result=<entry id>:events=<n>
 //
-// <n> is the session's stored event count (the page's validator). Signatures
-// written before 2026-09-16 carry msg=<n> instead — see sigUnchanged. The event
-// count and the state decide whether a session moved; t= is the row's
-// updated_at, which any write to the row advances, and is kept for the record.
+// <entry id> is log-store's id for the result entry that closed the response
+// last classified, and it alone decides whether there is anything new to read.
+// <n> is the session's stored event count (the page's validator), kept so a
+// do-not-track session can be re-opened after a large delta. Signatures written
+// before 2026-09-18 (events=<n>:state=<s>:t=<minute>, and msg=<n> before that)
+// name no response, so they count as "not yet classified" — see
+// responseAlreadyClassified.
 //
 // Old sigs are deleted before a new one is written. A session reaching a
 // terminal bridge state (completed/error) is marked with
@@ -46,7 +57,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
+	"sort"
 	"strings"
 	"time"
 
@@ -331,6 +342,7 @@ type config struct {
 type session struct {
 	SessionID   string `json:"session_id"`
 	State       string `json:"state"`
+	Type        string `json:"type"`
 	Purpose     string `json:"purpose"`
 	DisplayName string `json:"display_name"`
 	Harness     string `json:"harness"`
@@ -345,27 +357,69 @@ func selectCandidates(cfg config) ([]session, error) {
 	if err != nil {
 		return nil, err
 	}
-	candidates, skippedOneshot := withoutOneshotCalls(recent)
-	log.Printf("[classifier] skipped %d oneshot model calls (purpose %q)", skippedOneshot, msg.PurposeOneshot)
+	candidates, skippedByType := interactiveSessionsOnly(recent)
+	log.Printf("[classifier] skipped %d sessions that are not interactive: %s",
+		len(recent)-len(candidates), describeSkippedTypes(skippedByType))
 	return candidates, nil
 }
 
-// withoutOneshotCalls drops sessions whose purpose is oneshot and reports how
-// many it dropped. A oneshot session is a single stateless model call — a
-// classifier or generator run through a harness's oneshot mode, including this
-// command's own — not work anyone directed, so there is nothing to put on the
-// board. The match is on the purpose field the bridge assigned, never on the
-// name or prompt. It filters the board only: those sessions are still stored
-// and still counted everywhere usage is reported.
-func withoutOneshotCalls(sessions []session) ([]session, int) {
-	kept := make([]session, 0, len(sessions))
+// interactiveSessionsOnly keeps the sessions a person drives and reports how
+// many of each other type it dropped.
+//
+// It is an allowlist of one type on purpose. The rule it replaced dropped
+// purpose "oneshot" and kept everything else, and everything else was the
+// autoworker, the dispatcher, delegates, the renamer and subagents: on
+// 2026-09-17, the first day that rule was live, 527 of the day's 943 model calls
+// read autoworker and scheduler sessions. Before it there was no rule at all, and
+// the classifier read its own oneshot calls — 16,787 of 17,085 calls on
+// 2026-09-14 were the classifier classifying a classifier call. A new session
+// type, or a new purpose, is now out until someone decides it is in.
+//
+// The match is on the type the bridge assigned, never on the name, the purpose
+// or the prompt. A row with no type is not interactive. It filters the board
+// only: the dropped sessions are still stored and still counted wherever usage
+// is reported.
+func interactiveSessionsOnly(sessions []session) (kept []session, skippedByType map[string]int) {
+	kept = make([]session, 0, len(sessions))
+	skippedByType = map[string]int{}
 	for _, sess := range sessions {
-		if sess.Purpose == msg.PurposeOneshot {
+		if msg.SessionType(sess.Type) != msg.SessionTypeInteractive {
+			skippedByType[sess.Type]++
 			continue
 		}
 		kept = append(kept, sess)
 	}
-	return kept, len(sessions) - len(kept)
+	return kept, skippedByType
+}
+
+// describeSkippedTypes renders the dropped counts in a stable order for the log.
+func describeSkippedTypes(skippedByType map[string]int) string {
+	if len(skippedByType) == 0 {
+		return "none"
+	}
+	types := make([]string, 0, len(skippedByType))
+	for sessionType := range skippedByType {
+		types = append(types, sessionType)
+	}
+	sort.Strings(types)
+	parts := make([]string, 0, len(types))
+	for _, sessionType := range types {
+		name := sessionType
+		if name == "" {
+			name = "(no type)"
+		}
+		parts = append(parts, fmt.Sprintf("%s=%d", name, skippedByType[sessionType]))
+	}
+	return strings.Join(parts, " ")
+}
+
+// turnInFlight reports whether the session is part-way through a turn, so
+// there is no final output to read yet. The active states are llm-bridge's own
+// list. A session parked on a permission prompt is mid-turn too: IsBlockedOnUser
+// covers it, and awaiting_user is taken back out because that state means the
+// turn ended and the reply is the person's to give.
+func turnInFlight(state msg.SessionState) bool {
+	return state.IsActive() || (state.IsBlockedOnUser() && state != msg.SessionAwaitingUser)
 }
 
 // ============================ Process one session ============================
@@ -392,12 +446,30 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 			sess.SessionID)
 	}
 
+	// A turn that has not ended has no final output. The next tick after it
+	// settles reads it, once.
+	if turnInFlight(msg.SessionState(sess.State)) {
+		if !cfg.ExplicitSession {
+			return false, false
+		}
+		log.Printf("[%s] a turn is in flight (state %s) — proceeding anyway because this session was named explicitly",
+			sess.SessionID, sess.State)
+	}
+
 	page, err := getSessionPage(cfg.BridgeURL, sess.SessionID)
 	if err != nil {
 		log.Printf("[%s] get messages: %v", sess.SessionID, err)
 		return false, false
 	}
 	msgs, eventCount := page.messages, page.eventCount
+
+	if page.newestFinishedResponseID == "" {
+		if !cfg.ExplicitSession {
+			return false, false
+		}
+		log.Printf("[%s] no finished response in its newest %d turns — proceeding anyway because this session was named explicitly",
+			sess.SessionID, digestTurns)
+	}
 
 	if !cfg.ExplicitSession && saidNothingSince(page.newestEntryAt, time.Now().Add(-candidateLookback)) {
 		return false, false
@@ -411,7 +483,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 			// against. Record today's count and leave the decision standing, rather
 			// than re-classifying every do-not-track session at once.
 			if !cfg.ExplicitSession {
-				writeSig(kc, sess, tagSet, buildSig(eventCount, sess.State, sess.UpdatedAt))
+				writeSig(kc, sess, tagSet, buildSig(page.newestFinishedResponseID, eventCount))
 				return false, false
 			}
 		} else if eventCount-priorN < doNotTrackReevalEvents {
@@ -426,18 +498,15 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 		}
 	}
 
-	// Compute current signature; bail if unchanged.
-	curSig := buildSig(eventCount, sess.State, sess.UpdatedAt)
+	// One model call per finished response: bail if this one was already read.
+	curSig := buildSig(page.newestFinishedResponseID, eventCount)
 	priorSig := priorSigTag(tagSet)
-	if sigUnchanged(priorSig, curSig, page.newestEntryAt) {
-		if priorSig != curSig && !cfg.ExplicitSession {
-			writeSig(kc, sess, tagSet, curSig) // carry an old-format signature forward
-		}
+	if responseAlreadyClassified(priorSig, page.newestFinishedResponseID) {
 		if !cfg.ExplicitSession {
 			return false, false
 		}
-		log.Printf("[%s] signature unchanged (%s) — proceeding anyway because this session was named explicitly",
-			sess.SessionID, curSig)
+		log.Printf("[%s] newest finished response already classified (%s) — proceeding anyway because this session was named explicitly",
+			sess.SessionID, priorSig)
 	}
 
 	// Look up existing cards already linked to this session.
@@ -553,54 +622,43 @@ func priorEventCount(tagSet map[string]bool) (n int, known bool) {
 	return 0, false
 }
 
-func buildSig(eventCount int, state, updatedAt string) string {
-	t, _ := time.Parse(time.RFC3339, updatedAt)
-	minute := t.UTC().Format(sigMinuteLayout)
-	return fmt.Sprintf("%sevents=%d:state=%s:t=%s", tagCheckSigPrefix, eventCount, state, minute)
+func buildSig(finishedResponseID string, eventCount int) string {
+	return fmt.Sprintf("%sresult=%s:events=%d", tagCheckSigPrefix, finishedResponseID, eventCount)
 }
 
-// sigUnchanged reports whether a session's conversation has not moved since its
-// prior sig.
+// responseAlreadyClassified reports whether the prior signature records this
+// finished response, which is the whole of "once per response".
 //
-// The t= minute is the session row's updated_at, and that is when the row was
-// last written, not when the conversation last moved. On 2026-09-16 a cost
-// backfill wrote updated_at on 4,657 finished sessions in one second; every one
-// of them then read as changed, and the classifier spent ten model calls a tick
-// for a day re-reading sessions in which nothing had been said. So t= alone
-// never decides. The state and the event count do: a conversation cannot move
-// without adding an event.
+// The event count used to decide, with the state. Neither is about a response:
+// llm-bridge appends events to a session after its turn has ended (the derived
+// state the turn-end signal pass writes is one), and a session moves between
+// idle, awaiting_user and completed with nothing new said. Each of those read as
+// "changed" and bought another model call on the same final message.
 //
-// A signature from before 2026-09-16 counts messages (msg=<n>), which cannot
-// be compared with an event count. For those, a matching minute still means
-// unchanged; a different minute means unchanged only when the session's newest
-// entry is no later than the minute the old signature was taken at. With no
-// entry time to compare, the session counts as changed and is classified once.
-func sigUnchanged(prior, current string, newestEntryAt time.Time) bool {
-	if prior == current {
-		return true
-	}
-	priorParts, ok := parseSig(prior)
-	if !ok {
+// A signature from before 2026-09-18 names no response, so it cannot say this one
+// was read, and the answer is false: such a session is classified once more and
+// then carries a signature that can. So is a session with no signature at all.
+// An empty id is never "already classified" — there is nothing it could match.
+func responseAlreadyClassified(priorSig, finishedResponseID string) bool {
+	if finishedResponseID == "" {
 		return false
 	}
-	currentParts, ok := parseSig(current)
-	if !ok || priorParts.state != currentParts.state {
-		return false
+	recorded, ok := classifiedResponseID(priorSig)
+	return ok && recorded == finishedResponseID
+}
+
+// classifiedResponseID reads the result= field of a signature. ok is false for
+// no signature, an unreadable one, and the formats that predate the field.
+func classifiedResponseID(sig string) (id string, ok bool) {
+	if !strings.HasPrefix(sig, tagCheckSigPrefix) {
+		return "", false
 	}
-	if priorParts.countsEvents {
-		return priorParts.count == currentParts.count
+	for _, field := range strings.Split(strings.TrimPrefix(sig, tagCheckSigPrefix), ":") {
+		if value, found := strings.CutPrefix(field, "result="); found && value != "" {
+			return value, true
+		}
 	}
-	if priorParts.minute == currentParts.minute {
-		return true
-	}
-	if newestEntryAt.IsZero() {
-		return false
-	}
-	takenAt, err := time.Parse(sigMinuteLayout, priorParts.minute)
-	if err != nil {
-		return false
-	}
-	return newestEntryAt.Before(takenAt.Add(time.Minute))
+	return "", false
 }
 
 // saidNothingSince reports whether a session's newest entry is older than
@@ -611,43 +669,6 @@ func sigUnchanged(prior, current string, newestEntryAt time.Time) bool {
 // word. A page with no entry time is not judged here.
 func saidNothingSince(newestEntryAt, cutoff time.Time) bool {
 	return !newestEntryAt.IsZero() && newestEntryAt.Before(cutoff)
-}
-
-const sigMinuteLayout = "200601021504"
-
-// sigParts is a check signature split into its fields. countsEvents is false
-// for a signature from before 2026-09-16, whose count is of messages.
-type sigParts struct {
-	countsEvents bool
-	count        int
-	state        string
-	minute       string
-}
-
-func parseSig(sig string) (sigParts, bool) {
-	if !strings.HasPrefix(sig, tagCheckSigPrefix) {
-		return sigParts{}, false
-	}
-	fields := strings.Split(strings.TrimPrefix(sig, tagCheckSigPrefix), ":")
-	if len(fields) != 3 {
-		return sigParts{}, false
-	}
-	var parts sigParts
-	switch {
-	case strings.HasPrefix(fields[0], "events="):
-		parts.countsEvents = true
-	case strings.HasPrefix(fields[0], "msg="):
-	default:
-		return sigParts{}, false
-	}
-	count, err := strconv.Atoi(fields[0][strings.Index(fields[0], "=")+1:])
-	if err != nil || !strings.HasPrefix(fields[1], "state=") || !strings.HasPrefix(fields[2], "t=") {
-		return sigParts{}, false
-	}
-	parts.count = count
-	parts.state = strings.TrimPrefix(fields[1], "state=")
-	parts.minute = strings.TrimPrefix(fields[2], "t=")
-	return parts, true
 }
 
 // writeSig deletes the prior check-sig tag (if any) and adds the new one.
@@ -832,6 +853,7 @@ func listSessionsUpdatedSince(bridgeURL string, since time.Time) ([]session, err
 			out = append(out, session{
 				SessionID:   row.SessionID,
 				State:       row.State,
+				Type:        row.Type,
 				Purpose:     row.Purpose,
 				DisplayName: row.DisplayName,
 				Harness:     row.Harness,
@@ -847,16 +869,20 @@ func listSessionsUpdatedSince(bridgeURL string, since time.Time) ([]session, err
 }
 
 type summaryPage struct {
-	Sessions []struct {
-		SessionID   string `json:"sessionId"`
-		State       string `json:"state"`
-		Purpose     string `json:"purpose"`
-		DisplayName string `json:"displayName"`
-		Harness     string `json:"harness"`
-		CreatedAt   string `json:"createdAt"`
-		UpdatedAt   string `json:"updatedAt"`
-	} `json:"sessions"`
-	Next string `json:"next"`
+	Sessions []summaryRow `json:"sessions"`
+	Next     string       `json:"next"`
+}
+
+// summaryRow is the part of one GET /sessions/summary row the sweep reads.
+type summaryRow struct {
+	SessionID   string `json:"sessionId"`
+	State       string `json:"state"`
+	Type        string `json:"type"`
+	Purpose     string `json:"purpose"`
+	DisplayName string `json:"displayName"`
+	Harness     string `json:"harness"`
+	CreatedAt   string `json:"createdAt"`
+	UpdatedAt   string `json:"updatedAt"`
 }
 
 func getSummaryPage(pageURL string) (summaryPage, error) {
@@ -911,6 +937,9 @@ type sessionPage struct {
 	// newestEntryAt is the latest timestamp among the page's messages: when the
 	// conversation last moved. Zero when the page carries no readable timestamp.
 	newestEntryAt time.Time
+	// newestFinishedResponseID is log-store's id for the result entry that closed
+	// the newest finished response on the page. Empty when no turn on it finished.
+	newestFinishedResponseID string
 }
 
 // turnPage is the part of GET /sessions/{id}/messages?limit= the digest reads.
@@ -960,7 +989,36 @@ func getSessionPage(bridgeURL, id string) (sessionPage, error) {
 	if err != nil {
 		return sessionPage{}, fmt.Errorf("session %s: %w", id, err)
 	}
-	return sessionPage{messages: messages, eventCount: page.Model.Validator.EventCount, newestEntryAt: newestEntryAt}, nil
+	return sessionPage{
+		messages:                 messages,
+		eventCount:               page.Model.Validator.EventCount,
+		newestEntryAt:            newestEntryAt,
+		newestFinishedResponseID: newestFinishedResponseID(page),
+	}, nil
+}
+
+// newestFinishedResponseID is the id of the newest result entry that carries
+// text, or "" when the page has none.
+//
+// A result entry is what log-store writes when a turn ends on its own terms, so
+// it is the one marker of "this response is final". A turn the person cut short
+// has none, and neither does one still running. A result with no text is a turn
+// that answered nothing — /compact leaves one — and is not a response to read.
+// The id is log-store's and is carried as it came; it is never parsed.
+func newestFinishedResponseID(page turnPage) string {
+	newest := ""
+	for _, turn := range page.Model.Turns {
+		for _, id := range turn.EntryIDs {
+			e, ok := page.Model.Entries[id]
+			if !ok || e.Duplicate {
+				continue
+			}
+			if e.Role == "assistant" && e.Kind == "result" && e.Text != "" {
+				newest = id
+			}
+		}
+	}
+	return newest
 }
 
 // newestMessageTime is the latest timestamp among msgs, zero when none carries
