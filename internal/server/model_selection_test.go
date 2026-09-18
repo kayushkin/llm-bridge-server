@@ -67,7 +67,7 @@ func pinnedModel(t *testing.T, raw json.RawMessage) (string, msg.ModelSelection)
 
 func TestResolveModelSelectionSessionOverrideWins(t *testing.T) {
 	srv, _ := testServer(t)
-	sel, err := srv.resolveModelSelection(sessionWithConfig("mock", `{"model":"mock-model-alt"}`))
+	sel, err := srv.resolveModelSelection(t.Context(), sessionWithConfig("mock", `{"model":"mock-model-alt"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestResolveModelSelectionSessionOverrideWins(t *testing.T) {
 
 func TestResolveModelSelectionRoleNameOverrideRecordsTheRole(t *testing.T) {
 	srv, _ := testServer(t)
-	sel, err := srv.resolveModelSelection(sessionWithConfig("mock", `{"model":"efficient"}`))
+	sel, err := srv.resolveModelSelection(t.Context(), sessionWithConfig("mock", `{"model":"efficient"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestResolveModelSelectionRoleNameOverrideRecordsTheRole(t *testing.T) {
 
 func TestResolveModelSelectionAliasOverrideResolves(t *testing.T) {
 	srv, _ := testServer(t)
-	sel, err := srv.resolveModelSelection(sessionWithConfig("mock", `{"model":"alt"}`))
+	sel, err := srv.resolveModelSelection(t.Context(), sessionWithConfig("mock", `{"model":"alt"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestResolveModelSelectionPrefsBeatRegistryDefault(t *testing.T) {
 	srv.bridgePrefs.mu.Lock()
 	srv.bridgePrefs.data.Defaults = map[string]msg.HarnessDefaults{"mock": {Model: "mock-model-alt"}}
 	srv.bridgePrefs.mu.Unlock()
-	sel, err := srv.resolveModelSelection(sessionWithConfig("mock", ``))
+	sel, err := srv.resolveModelSelection(t.Context(), sessionWithConfig("mock", ``))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestResolveModelSelectionPrefsBeatRegistryDefault(t *testing.T) {
 
 func TestResolveModelSelectionRegistryDefaultIsTheFloor(t *testing.T) {
 	srv, _ := testServer(t)
-	sel, err := srv.resolveModelSelection(sessionWithConfig("mock", ``))
+	sel, err := srv.resolveModelSelection(t.Context(), sessionWithConfig("mock", ``))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestResolveModelSelectionRegistryDefaultIsTheFloor(t *testing.T) {
 
 func TestResolveModelSelectionUnknownModelFailsLoud(t *testing.T) {
 	srv, _ := testServer(t)
-	_, err := srv.resolveModelSelection(sessionWithConfig("mock", `{"model":"claude-imaginary"}`))
+	_, err := srv.resolveModelSelection(t.Context(), sessionWithConfig("mock", `{"model":"claude-imaginary"}`))
 	if err == nil || !strings.Contains(err.Error(), "does not know") {
 		t.Fatalf("err = %v; want a refusal naming the unknown model", err)
 	}
@@ -136,7 +136,7 @@ func TestResolveModelSelectionUnassignedDefaultRoleFailsLoud(t *testing.T) {
 	if err := srv.modelStore.RemoveRole(modelstore.RoleDefault); err != nil {
 		t.Fatal(err)
 	}
-	_, err := srv.resolveModelSelection(sessionWithConfig("mock", ``))
+	_, err := srv.resolveModelSelection(t.Context(), sessionWithConfig("mock", ``))
 	if err == nil || !strings.Contains(err.Error(), "default") {
 		t.Fatalf("err = %v; want a refusal naming the unassigned default role — never a fabricated fallback", err)
 	}
@@ -145,7 +145,7 @@ func TestResolveModelSelectionUnassignedDefaultRoleFailsLoud(t *testing.T) {
 func TestResolveModelSelectionWithoutRegistryFailsLoud(t *testing.T) {
 	srv, _ := testServer(t)
 	srv.modelStore = nil
-	_, err := srv.resolveModelSelection(sessionWithConfig("mock", `{"model":"mock-model"}`))
+	_, err := srv.resolveModelSelection(t.Context(), sessionWithConfig("mock", `{"model":"mock-model"}`))
 	if err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("err = %v; want a refusal: the registry is the only source of a model", err)
 	}
@@ -153,7 +153,7 @@ func TestResolveModelSelectionWithoutRegistryFailsLoud(t *testing.T) {
 
 func TestResolveModelSelectionUnparseableConfigIsRefused(t *testing.T) {
 	srv, _ := testServer(t)
-	if _, err := srv.resolveModelSelection(sessionWithConfig("mock", `not json`)); err == nil {
+	if _, err := srv.resolveModelSelection(t.Context(), sessionWithConfig("mock", `not json`)); err == nil {
 		t.Fatal("an unreadable harness_config resolved to something; want a refusal — it may hold the override the caller asked for")
 	}
 }

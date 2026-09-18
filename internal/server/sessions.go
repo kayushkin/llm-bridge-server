@@ -429,11 +429,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// req.HarnessConfig.
 	s.snapshotPermissionModeIntoSession(sess)
 
-	// The model is decided here, once, and pinned into the row before it
-	// exists — see model_selection.go. A session whose model cannot be
-	// resolved is not created: the alternative was a row that spawned on
-	// whatever the harness felt like while the picker showed the user's pick.
-	if err := s.snapshotModelSelectionIntoSession(sess); err != nil {
+	// Model, effort, spend ceiling and disabled tools are decided here, once,
+	// and pinned into the row before it exists: the session's own value, then
+	// its bundle, then the harness default — see session_defaults.go and
+	// model_selection.go. A session whose model cannot be resolved is not
+	// created: the alternative was a row that spawned on whatever the harness
+	// felt like while the picker showed the user's pick.
+	if err := s.snapshotSessionDefaultsIntoSession(r.Context(), sess, req.MaxBudget != nil); err != nil {
 		body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": "model_unresolvable", "message": err.Error()}})
 		http.Error(w, string(body), http.StatusUnprocessableEntity)
 		return
@@ -1064,6 +1066,16 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sess.MaxBudgetUSD = *req.MaxBudget
+		// The ceiling is now the session's own, whatever layer set it at create.
+		if relabelled, err := harnessConfigWithSettingsChosenOnSession(sess.HarnessConfig, msg.EffectiveSettingMaxBudget); err != nil {
+			http.Error(w, "record max_budget layer: "+err.Error(), http.StatusInternalServerError)
+			return
+		} else if err := s.store.UpdateSessionHarnessConfig(bridgeID, relabelled); err != nil {
+			http.Error(w, "persist harness_config: "+err.Error(), http.StatusInternalServerError)
+			return
+		} else {
+			sess.HarnessConfig = relabelled
+		}
 
 		// Raising the ceiling on a session with no live process is the
 		// normal shape of the escape hatch — the gate interrupted it, so
@@ -1181,12 +1193,20 @@ func mergeHarnessConfig(current json.RawMessage, req ConfigSessionRequest) (json
 	if err := set("effort", req.Effort); err != nil {
 		return nil, err
 	}
+	if req.Effort != "" {
+		if err := markSettingChosenOnSession(cfg, msg.EffectiveSettingEffort); err != nil {
+			return nil, err
+		}
+	}
 	if req.DisabledTools != nil {
 		raw, err := json.Marshal(req.DisabledTools)
 		if err != nil {
 			return nil, err
 		}
 		cfg["disabled_tools"] = raw
+		if err := markSettingChosenOnSession(cfg, msg.EffectiveSettingDisabledTools); err != nil {
+			return nil, err
+		}
 	}
 	return json.Marshal(cfg)
 }

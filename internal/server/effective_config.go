@@ -60,56 +60,74 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 	}
 
 	// model
-	add(s.effectiveModel(sess, cfg, harnessRecord, warn))
+	add(s.effectiveModel(ctx, sess, cfg, harnessRecord, subject.DryRun, warn))
 
-	// effort: the server never applies a default; the chat pane copies it at create.
+	// effort, max_budget, disabled_tools: decided at create by one precedence —
+	// the session's own value, then its bundle, then the harness default — and
+	// pinned with the layer that decided each (session_defaults.go).
+	pinnedLayers := settingLayersPinnedOn(cfg)
+	describePinned := func(setting *msg.EffectiveSetting, key msg.EffectiveSettingKey, sessionRecord, defaultsField, sessionDetail string) {
+		layer, recorded := pinnedLayers[key]
+		switch {
+		case !recorded:
+			setting.Layer, setting.Record, setting.Detail = msg.EffectiveLayerSession, sessionRecord, sessionDetail
+			setting.Notes = append(setting.Notes, "the row predates the record of which layer set this (2026-09-18), so it is reported as the session's own")
+		case layer == msg.EffectiveLayerBundle:
+			setting.Layer, setting.Record = layer, fmt.Sprintf("bundle-store bundle %s", sess.BundleID)
+			setting.Detail = "the creator named none, so the session's bundle decided it"
+		case layer == msg.EffectiveLayerHarnessDefault:
+			setting.Layer, setting.Record = layer, harnessRecord(defaultsField)
+			setting.Detail = "the creator named none and the bundle names none, so the harness default on the Settings page decided it"
+		default:
+			setting.Layer, setting.Record, setting.Detail = layer, sessionRecord, sessionDetail
+		}
+		if !subject.DryRun && recorded && layer != msg.EffectiveLayerSession {
+			setting.Notes = append(setting.Notes, "pinned at create; a later change to the bundle or the harness default does not move it")
+		}
+	}
+
 	{
-		setting := msg.EffectiveSetting{Key: msg.EffectiveSettingEffort, Layer: msg.EffectiveLayerNone}
-		if raw, ok := cfg["effort"]; ok {
+		setting := msg.EffectiveSetting{Key: msg.EffectiveSettingEffort, Layer: msg.EffectiveLayerNone, Detail: "nothing sets it; the harness runs at its own default effort"}
+		if raw, ok := cfg[harnessConfigKeyEffort]; ok {
 			var effort string
 			if json.Unmarshal(raw, &effort) == nil && effort != "" {
-				setting.Value, setting.Layer, setting.Record = effort, msg.EffectiveLayerSession, "harness_config.effort"
-				setting.Detail = "set on the session at create or by POST /sessions/{id}/config"
+				setting.Value = effort
+				describePinned(&setting, msg.EffectiveSettingEffort, "harness_config.effort", "effort", "set on the session at create or by POST /sessions/{id}/config")
 			}
 		}
-		if defaults.Effort != "" {
-			if setting.Layer == msg.EffectiveLayerSession && setting.Value == defaults.Effort {
-				setting.Notes = append(setting.Notes, fmt.Sprintf("equals %s, which the chat pane copies onto a session it creates", harnessRecord("effort")))
-			} else {
-				setting.Notes = append(setting.Notes, fmt.Sprintf("%s is %q; the server does not apply it — only the chat pane does, when it creates a session", harnessRecord("effort"), defaults.Effort))
-			}
-		}
-		if setting.Layer == msg.EffectiveLayerNone {
-			setting.Detail = "nothing sets it; the harness runs at its own default effort"
+		if defaults.Effort != "" && setting.Layer != msg.EffectiveLayerHarnessDefault && setting.Value != defaults.Effort {
+			setting.Notes = append(setting.Notes, fmt.Sprintf("%s is %q and was outranked", harnessRecord("effort"), defaults.Effort))
 		}
 		add(setting)
 	}
 
-	// max_budget: a column on the row.
 	{
 		setting := msg.EffectiveSetting{Key: msg.EffectiveSettingMaxBudget, Layer: msg.EffectiveLayerNone, Detail: "no ceiling"}
-		if sess.MaxBudgetUSD > 0 {
-			setting.Value, setting.Layer, setting.Record = sess.MaxBudgetUSD, msg.EffectiveLayerSession, "sessions.max_budget_usd"
-			setting.Detail = "the session's spend ceiling; the spend-ceiling guard holds the session when it is reached"
+		_, recorded := pinnedLayers[msg.EffectiveSettingMaxBudget]
+		if sess.MaxBudgetUSD > 0 || recorded {
+			setting.Value = sess.MaxBudgetUSD
+			describePinned(&setting, msg.EffectiveSettingMaxBudget, "sessions.max_budget_usd", "max_budget", "the session's spend ceiling; the spend-ceiling guard holds the session when it is reached")
+			if sess.MaxBudgetUSD == 0 {
+				setting.Notes = append(setting.Notes, "0 means no ceiling")
+			}
 		}
-		if defaults.MaxBudget != nil {
-			setting.Notes = append(setting.Notes, fmt.Sprintf("%s is %v; the chat pane sends it as max_budget when it creates a session, the server does not apply it", harnessRecord("max_budget"), *defaults.MaxBudget))
+		if defaults.MaxBudget != nil && setting.Layer != msg.EffectiveLayerHarnessDefault && setting.Value != *defaults.MaxBudget {
+			setting.Notes = append(setting.Notes, fmt.Sprintf("%s is %v and was outranked", harnessRecord("max_budget"), *defaults.MaxBudget))
 		}
 		add(setting)
 	}
 
-	// disabled_tools
 	{
 		setting := msg.EffectiveSetting{Key: msg.EffectiveSettingDisabledTools, Layer: msg.EffectiveLayerNone, Detail: "nothing disables a built-in tool"}
-		if raw, ok := cfg["disabled_tools"]; ok {
+		if raw, ok := cfg[harnessConfigKeyDisabledTools]; ok {
 			var tools []string
 			if json.Unmarshal(raw, &tools) == nil {
-				setting.Value, setting.Layer, setting.Record = tools, msg.EffectiveLayerSession, "harness_config.disabled_tools"
-				setting.Detail = "built-in tools the harness is told not to offer, set on the session"
+				setting.Value = tools
+				describePinned(&setting, msg.EffectiveSettingDisabledTools, "harness_config.disabled_tools", "disabled_tools", "built-in tools the harness is told not to offer, set on the session")
 			}
 		}
-		if len(defaults.DisabledTools) > 0 {
-			setting.Notes = append(setting.Notes, fmt.Sprintf("%s is %v; the chat pane copies it onto a session it creates, the server does not apply it", harnessRecord("disabled_tools"), defaults.DisabledTools))
+		if len(defaults.DisabledTools) > 0 && setting.Layer == msg.EffectiveLayerSession {
+			setting.Notes = append(setting.Notes, fmt.Sprintf("%s is %v; the session's own list replaces it", harnessRecord("disabled_tools"), defaults.DisabledTools))
 		}
 		add(setting)
 	}
@@ -230,7 +248,7 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 				}
 				setting.Notes = append(setting.Notes, fmt.Sprintf("resolves to bundles %s: %d tools, %d skills", strings.Join(names, ", "), len(resolution.Tools), len(resolution.Skills)))
 				if resolution.Model != "" || resolution.Effort != "" {
-					setting.Notes = append(setting.Notes, fmt.Sprintf("the bundle names model %q and effort %q; bundle-store records them and the spawn does not apply them today", resolution.Model, resolution.Effort))
+					setting.Notes = append(setting.Notes, fmt.Sprintf("the bundle names model %q and effort %q; each applies at create unless the creator named its own, and outranks the harness default", resolution.Model, resolution.Effort))
 				}
 			}
 		}
@@ -243,14 +261,14 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 	return out
 }
 
-func (s *Server) effectiveModel(sess *store.Session, cfg map[string]json.RawMessage, harnessRecord func(string) string, warn func(string, ...any)) msg.EffectiveSetting {
+func (s *Server) effectiveModel(ctx context.Context, sess *store.Session, cfg map[string]json.RawMessage, harnessRecord func(string) string, dryRun bool, warn func(string, ...any)) msg.EffectiveSetting {
 	setting := msg.EffectiveSetting{Key: msg.EffectiveSettingModel}
 	var selection msg.ModelSelection
 	pinned := false
 	if raw, ok := cfg[harnessConfigKeyModelSelection]; ok && json.Unmarshal(raw, &selection) == nil && selection.Model != "" {
 		pinned = true
 	} else {
-		resolved, err := s.resolveModelSelection(sess)
+		resolved, err := s.resolveModelSelection(ctx, sess)
 		if err != nil {
 			warn("the model could not be resolved, so a spawn would be refused: %v", err)
 			setting.Layer, setting.Detail = msg.EffectiveLayerNone, "no layer can answer"
@@ -263,18 +281,20 @@ func (s *Server) effectiveModel(sess *store.Session, cfg map[string]json.RawMess
 	switch selection.SelectedBy {
 	case msg.ModelSelectedBySession:
 		setting.Layer, setting.Record, setting.Detail = msg.EffectiveLayerSession, "harness_config.model", "the session's own choice, at create or from the chat header's picker"
+	case msg.ModelSelectedByBundle:
+		setting.Layer, setting.Record, setting.Detail = msg.EffectiveLayerBundle, fmt.Sprintf("bundle-store bundle %s", sess.BundleID), "no session choice, so the model the session's bundle names"
 	case msg.ModelSelectedByPrefs:
-		setting.Layer, setting.Record, setting.Detail = msg.EffectiveLayerHarnessDefault, harnessRecord("model"), "no session choice, so the harness default on the Settings page"
+		setting.Layer, setting.Record, setting.Detail = msg.EffectiveLayerHarnessDefault, harnessRecord("model"), "no session choice and no bundle model, so the harness default on the Settings page"
 	case msg.ModelSelectedByRole:
-		setting.Layer, setting.Record, setting.Detail = msg.EffectiveLayerRegistry, "model-store role \"default\"", "no session choice and no harness default, so the registry's default role"
+		setting.Layer, setting.Record, setting.Detail = msg.EffectiveLayerRegistry, "model-store role \"default\"", "no session choice, no bundle model and no harness default, so the registry's default role"
 	default:
 		setting.Layer, setting.Detail = msg.EffectiveLayerSession, fmt.Sprintf("selected_by %q", selection.SelectedBy)
 	}
 	if selection.Role != "" {
 		setting.Notes = append(setting.Notes, fmt.Sprintf("asked for as role %q", selection.Role))
 	}
-	if pinned {
-		setting.Notes = append(setting.Notes, "pinned into harness_config.model_selection at create; a later change to the harness default does not move it")
+	if pinned && !dryRun {
+		setting.Notes = append(setting.Notes, "pinned into harness_config.model_selection at create; a later change to the bundle or the harness default does not move it")
 	}
 	return setting
 }
@@ -506,5 +526,12 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 		PrincipalID: subject.PrincipalID, AgentID: subject.AgentID, BundleID: subject.BundleID,
 	}
 	s.snapshotPermissionModeIntoSession(sess)
-	writeJSON(w, s.effectiveConfigFor(ctx, sess, subject, origins))
+	// What POST /sessions would pin for a creator who names no model, effort,
+	// ceiling or disabled tools — which is what a dispatcher sends.
+	snapshotErr := s.snapshotSessionDefaultsIntoSession(ctx, sess, false)
+	answer := s.effectiveConfigFor(ctx, sess, subject, origins)
+	if snapshotErr != nil {
+		answer.Warnings = append(answer.Warnings, fmt.Sprintf("POST /sessions would refuse this session: %v", snapshotErr))
+	}
+	writeJSON(w, answer)
 }

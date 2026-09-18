@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 
+	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 	modelstore "github.com/kayushkin/model-store"
@@ -20,13 +22,16 @@ import (
 //  1. the session's own override — harness_config.model, set at create or by a
 //     later POST /config. A canonical role name ("efficient") is accepted here
 //     and recorded as the Role that was asked for.
-//  2. the per-harness default in bridge-prefs (what dash /settings edits).
-//  3. the registry's own `default` role.
+//  2. the model the session's bundle names, if it has a bundle and the bundle
+//     names one. A bundle is chosen for the work — by a board, a tag rule or
+//     the caller — so it outranks a default chosen for the machine.
+//  3. the per-harness default in bridge-prefs (what dash /settings edits).
+//  4. the registry's own `default` role.
 //
-// There is deliberately no fourth tier. The old behaviour — pass nothing and
+// There is deliberately no fifth tier. The old behaviour — pass nothing and
 // let the harness fall back to whatever its account default happened to be —
 // is exactly how sessions ran on a model nobody chose while every picker showed
-// the one they did. If none of the three layers can answer, the session does
+// the one they did. If none of the four layers can answer, the session does
 // not start, and the error says which layers were empty.
 //
 // The lifecycle mirrors permission_mode.go, which is why that field never had
@@ -52,8 +57,24 @@ const (
 )
 
 // resolveModelSelection decides the model for sess by the precedence above and
-// returns the typed selection. It never mutates sess.
-func (s *Server) resolveModelSelection(sess *store.Session) (msg.ModelSelection, error) {
+// returns the typed selection. It never mutates sess. It resolves the session's
+// bundle to do so; a bundle that cannot be resolved is an error, because the
+// spawn would refuse the session anyway and a model decided without the bundle
+// would be the wrong one.
+func (s *Server) resolveModelSelection(ctx context.Context, sess *store.Session) (msg.ModelSelection, error) {
+	if sess == nil {
+		return msg.ModelSelection{}, fmt.Errorf("resolve model: nil session")
+	}
+	bundle, err := s.sessionBundleResolution(ctx, sess)
+	if err != nil {
+		return msg.ModelSelection{}, fmt.Errorf("resolve model for %s: %w", sess.SessionID, err)
+	}
+	return s.resolveModelSelectionWithBundle(sess, bundle)
+}
+
+// resolveModelSelectionWithBundle is resolveModelSelection for a caller that
+// has already resolved the session's bundle (nil when it has none).
+func (s *Server) resolveModelSelectionWithBundle(sess *store.Session, bundle *bundleclient.Resolution) (msg.ModelSelection, error) {
 	if sess == nil {
 		return msg.ModelSelection{}, fmt.Errorf("resolve model: nil session")
 	}
@@ -80,17 +101,22 @@ func (s *Server) resolveModelSelection(sess *store.Session) (msg.ModelSelection,
 		}
 	}
 
-	// 2. The per-harness default in bridge-prefs.
+	// 2. The session's bundle.
+	if bundle != nil && bundle.Model != "" {
+		return s.selectionFromRequested(bundle.Model, msg.ModelSelectedByBundle)
+	}
+
+	// 3. The per-harness default in bridge-prefs.
 	if s.bridgePrefs != nil {
 		if defaults, ok := s.bridgePrefs.get().Defaults[string(sess.Harness)]; ok && defaults.Model != "" {
 			return s.selectionFromRequested(defaults.Model, msg.ModelSelectedByPrefs)
 		}
 	}
 
-	// 3. The registry's own default role — the floor.
+	// 4. The registry's own default role — the floor.
 	m, err := s.modelStore.ResolveRole(modelstore.RoleDefault)
 	if err != nil {
-		return msg.ModelSelection{}, fmt.Errorf("resolve model for %s: no session override, no bridge-prefs default for harness %q, and the registry's default role cannot answer: %w", sess.SessionID, sess.Harness, err)
+		return msg.ModelSelection{}, fmt.Errorf("resolve model for %s: no session override, no bundle model, no bridge-prefs default for harness %q, and the registry's default role cannot answer: %w", sess.SessionID, sess.Harness, err)
 	}
 	return msg.ModelSelection{
 		Model:      msg.ModelID(m.ID),
@@ -127,28 +153,15 @@ func (s *Server) selectionFromRequested(requested string, selectedBy msg.ModelSe
 	}, nil
 }
 
-// snapshotModelSelectionIntoSession pins the resolved model and its selection
-// into sess.HarnessConfig. Called once in handleCreateSession before the row is
-// inserted, so the decision is durable from the session's first millisecond and
-// a later change to bridge-prefs does not move a session that already exists.
-// A session whose model cannot be resolved is not created.
-func (s *Server) snapshotModelSelectionIntoSession(sess *store.Session) error {
-	selection, err := s.resolveModelSelection(sess)
-	if err != nil {
-		return err
-	}
-	return writeModelSelectionIntoSession(sess, selection)
-}
-
 // injectModelSelection ensures sess.HarnessConfig carries a resolved model and
 // its selection before start params are built. Rows created through
-// handleCreateSession already have the snapshot; rows that predate it, or that
+// handleCreateSession already have the snapshot (session_defaults.go); rows that predate it, or that
 // carry a bare override with no selection (a legacy row, or one written by
 // POST /config before that path recorded a selection), get resolved here so
 // the harness never spawns without a definite model. Mutation is in-memory
 // only, like the other injectors; persistence belongs to the create and config
 // paths. A failure here fails the spawn, loudly.
-func (s *Server) injectModelSelection(sess *store.Session) error {
+func (s *Server) injectModelSelection(ctx context.Context, sess *store.Session) error {
 	if sess == nil {
 		return fmt.Errorf("inject model selection: nil session")
 	}
@@ -161,7 +174,7 @@ func (s *Server) injectModelSelection(sess *store.Session) error {
 	if hasModel && hasSelection {
 		return nil // already pinned by create or config
 	}
-	selection, err := s.resolveModelSelection(sess)
+	selection, err := s.resolveModelSelection(ctx, sess)
 	if err != nil {
 		return err
 	}
