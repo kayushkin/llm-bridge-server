@@ -45,6 +45,39 @@ func (s *Server) handleCreateHook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, req)
 }
 
+// hookMatcherHelpByHarness says what Hook.Matcher means to each wired harness.
+var hookMatcherHelpByHarness = map[msg.Harness]string{
+	msg.HarnessClaudeCode: "A tool-name pattern such as Bash or Edit|Write; empty matches every tool. Only tool events (PreToolUse, PostToolUse) use it.",
+	msg.HarnessCodex:      "A regular expression over the tool name, such as .* or apply_patch; empty matches every tool.",
+}
+
+// handleHookOptions serves what a hook editor must not hardcode: the harnesses
+// the spawn wires hooks into, the scope kinds narrowest first, and each
+// harness's known events — read from harnessHookEvents, the same map
+// GET /harnesses serves as hook_events, so there is one list. A wired harness
+// with no known events (codex) is still listed: its hooks are stored and
+// wired, and its event names are typed by hand.
+func (s *Server) handleHookOptions(w http.ResponseWriter, r *http.Request) {
+	options := msg.HookOptions{
+		ScopeKinds: []msg.HookScope{msg.HookScopeSession, msg.HookScopeInstance, msg.HookScopeGlobal},
+		Harnesses:  []msg.HookHarnessOption{},
+	}
+	for _, harness := range msg.AllHarnesses {
+		configKey, wired := hookConfigKeyByHarness[harness]
+		if !wired {
+			continue
+		}
+		events := harnessHookEvents[harness]
+		if events == nil {
+			events = []string{}
+		}
+		options.Harnesses = append(options.Harnesses, msg.HookHarnessOption{
+			Harness: harness, ConfigKey: configKey, KnownEvents: events, MatcherHelp: hookMatcherHelpByHarness[harness],
+		})
+	}
+	writeJSON(w, options)
+}
+
 // handleListHooks lists hooks. Query params (all optional): harness, event,
 // scope_kind, scope_id, enabled (true|false).
 func (s *Server) handleListHooks(w http.ResponseWriter, r *http.Request) {

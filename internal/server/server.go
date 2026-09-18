@@ -394,6 +394,7 @@ func (s *Server) routes() {
 	if s.hookStore != nil {
 		s.mux.HandleFunc("POST /hooks", s.handleCreateHook)
 		s.mux.HandleFunc("GET /hooks", s.handleListHooks)
+		s.mux.HandleFunc("GET /hook-options", s.handleHookOptions)
 		s.mux.HandleFunc("GET /hooks/{id}", s.handleGetHook)
 		s.mux.HandleFunc("PATCH /hooks/{id}", s.handleUpdateHook)
 		s.mux.HandleFunc("DELETE /hooks/{id}", s.handleDeleteHook)

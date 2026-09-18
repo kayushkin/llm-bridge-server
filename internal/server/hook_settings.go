@@ -80,6 +80,16 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 // Returning early here would turn a hook-registry outage into a silent
 // permission-gate outage — main() sets the store to nil and continues when
 // hookstore.Open fails, so that path is reachable in production.
+// hookConfigKeyByHarness names the harnesses this server wires hooks into and
+// the harness_config key each one's synthesized block is written under. It is
+// what GET /hook-options serves, and TestEveryHarnessInTheHookOptionsIsWired
+// holds it to the switch below: a harness listed here that the switch does not
+// handle would be offered by the editor and never run.
+var hookConfigKeyByHarness = map[msg.Harness]string{
+	msg.HarnessClaudeCode: "settings",
+	msg.HarnessCodex:      "codex_hooks",
+}
+
 func (s *Server) injectHookSettings(sess *store.Session) {
 	if sess == nil {
 		return

@@ -235,6 +235,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /instances/{id}/oneshot":                 operatorRoute("runs a model call outside any session"),
 	"POST /hooks":                                  operatorRoute("hook registry"),
 	"GET /hooks":                                   operatorRoute("hook registry"),
+	"GET /hook-options":                            operatorRoute("hook registry vocabulary"),
 	"GET /hooks/{id}":                              operatorRoute("hook registry"),
 	"PATCH /hooks/{id}":                            operatorRoute("hook registry"),
 	"DELETE /hooks/{id}":                           operatorRoute("hook registry"),
