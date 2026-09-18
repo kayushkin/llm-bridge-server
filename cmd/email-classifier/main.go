@@ -43,6 +43,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -364,6 +365,13 @@ func run() int {
 	// One gate per run, shared by the merge pass and the filing pass, so a
 	// session is resolved against the bridge at most once per tick however many
 	// cards carry it.
+	// llm-bridge-server gates every route; stamp this process's calls to it
+	// with the service token. Host-scoped, so noteboard, kanban-store,
+	// mailstack and the scheduler API are untouched.
+	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL); err != nil {
+		log.Printf("email-classifier: %v", err)
+		return 1
+	}
 	gate := newSessionGate(cfg.BridgeURL)
 
 	if cfg.MergePass {

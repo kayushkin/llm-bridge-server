@@ -19,6 +19,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"math/rand"
 	"os"
 	"strings"
@@ -56,7 +57,14 @@ type config struct {
 }
 
 func main() {
-	if err := run(parseFlags()); err != nil {
+	configuration := parseFlags()
+	// llm-bridge-server gates every route; stamp this process's calls to it
+	// with the service token. Host-scoped, so nothing else sees the token.
+	if err := bridgeauth.StampRequestsToBridge(configuration.BridgeURL); err != nil {
+		fmt.Fprintf(os.Stderr, "demo-mail-generator: %v\n", err)
+		os.Exit(1)
+	}
+	if err := run(configuration); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-mail-generator: %v\n", err)
 		os.Exit(1)
 	}

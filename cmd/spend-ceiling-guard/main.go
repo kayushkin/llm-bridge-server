@@ -38,6 +38,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"log"
 	"net/http"
 	"os"
@@ -66,6 +67,13 @@ func main() {
 
 	kanbanURL := envOr("KANBAN_STORE_URL", "http://localhost:8305")
 	bridgeURL := envOr("LLM_BRIDGE_URL", "http://localhost:8160")
+
+	// llm-bridge-server gates every route; stamp this process's calls to it
+	// with the service token. Host-scoped, so noteboard, kanban-store and the
+	// scheduler API are untouched.
+	if err := bridgeauth.StampRequestsToBridge(bridgeURL); err != nil {
+		log.Fatal(err)
+	}
 	noteboardURL := envOr("NOTEBOARD_URL", "http://localhost:8191")
 
 	// Cost is a whole-fleet table; fetch it once rather than per item.

@@ -28,6 +28,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -79,6 +80,13 @@ func main() {
 		staleAfter   = flag.Duration("stale-after", 2*time.Hour, "Reap an In Progress card whose session is idle/gone and has had no activity for longer than this.")
 	)
 	flag.Parse()
+
+	// llm-bridge-server gates every route; stamp this process's calls to it
+	// with the service token. Host-scoped, so noteboard, kanban-store and the
+	// scheduler API are untouched.
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL); err != nil {
+		log.Fatal(err)
+	}
 
 	if *boardID == "" {
 		log.Fatal("-board-id is required; there is no board to default to")

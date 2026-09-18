@@ -29,6 +29,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"os"
 	"strings"
 	"time"
@@ -84,6 +85,12 @@ type config struct {
 
 func main() {
 	cfg := parseFlags()
+	// llm-bridge-server gates every route; stamp this process's calls to it
+	// with the service token. Host-scoped, so nothing else sees the token.
+	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL); err != nil {
+		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
+		os.Exit(1)
+	}
 	if err := run(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
 		os.Exit(1)
