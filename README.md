@@ -499,7 +499,7 @@ It takes a login cookie or a session agent token, deletes the same headers (`X-P
 
 | Variable | Description |
 |----------|-------------|
-| `LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN` | Optional, and independent of the login. When set, every call `internal/grantclient` makes — the spawn-time effective-grants reads, the create-time grant gate, the principal's instance list — carries it as `X-Grant-Store-Service-Token`, because those reads run as this server, not as a user, and an enforcing grant-store answers them 401 without it. Unset sends no such header. Never passed to a child process. |
+| `GRANT_STORE_SERVICE_TOKEN` | Optional, and independent of the login. When set, every call `internal/grantclient` makes — the spawn-time effective-grants reads, the create-time grant gate, the principal's instance list — carries it as `X-Grant-Store-Service-Token`, because those reads run as this server, not as a user, and an enforcing grant-store answers them 401 without it. Unset sends no such header. Never passed to a child process. |
 
 ### The whole server is gated
 
@@ -569,7 +569,7 @@ Only the local transport can deliver these variables; a principal's session on a
 
 ### Secrets never reach a child process
 
-Every process this server spawns — harness wrappers in events, pty and ssh mode, the OTel sidecar, `-oneshot`, `-discover` and `-import-history`, registered hook commands, `git`, and the conformance runner — gets its environment from `internal/childprocessenv`, which removes every variable `config.SecretEnvironmentVariableNames` declares: `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY`, `LLMBRIDGE_SERVICE_TOKEN`, `LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN` and `LLMBRIDGE_KANBAN_STORE_SERVICE_TOKEN`. Those processes run agents, and an agent with a shell can read its own environment; with the signing key it could mint a login cookie for any principal. A test walks the module and fails on any `exec.Command` whose `Env` is not set from that package.
+Every process this server spawns — harness wrappers in events, pty and ssh mode, the OTel sidecar, `-oneshot`, `-discover` and `-import-history`, registered hook commands, `git`, and the conformance runner — gets its environment from `internal/childprocessenv`, which removes every variable `config.SecretEnvironmentVariableNames` declares: `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY`, `LLMBRIDGE_SERVICE_TOKEN`, `GRANT_STORE_SERVICE_TOKEN` and `KANBAN_STORE_SERVICE_TOKEN`. Those processes run agents, and an agent with a shell can read its own environment; with the signing key it could mint a login cookie for any principal. A test walks the module and fails on any `exec.Command` whose `Env` is not set from that package.
 
 Scrubbing the child is not enough while the agent runs as the same Unix user, because a same-user process can read `/proc/<server pid>/environ` or ptrace the server. So the server marks itself non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`) at startup and refuses to start if it cannot. That does not help against the environment *file* the unit reads its secrets from: in deployment keep it unreadable by the user agents run as, or run agents as a different user.
 

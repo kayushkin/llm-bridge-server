@@ -18,8 +18,8 @@ func TestRemoveServerSecretsDropsEverySecretAndKeepsEverythingElse(t *testing.T)
 		"PATH=/usr/bin",
 		"LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY=signing-key",
 		"LLMBRIDGE_SERVICE_TOKEN=service-token",
-		"LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN=grant-token",
-		"LLMBRIDGE_KANBAN_STORE_SERVICE_TOKEN=kanban-token",
+		"GRANT_STORE_SERVICE_TOKEN=grant-token",
+		"KANBAN_STORE_SERVICE_TOKEN=kanban-token",
 		"LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY=a-duplicate-entry",
 		// Near-misses are not secrets and must survive: names are exact.
 		"LLMBRIDGE_SERVICE_TOKEN_HINT=not-a-secret",

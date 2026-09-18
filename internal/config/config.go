@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"os"
 	"strconv"
 	"strings"
@@ -143,7 +144,7 @@ type Config struct {
 	// GrantStoreServiceToken is sent to grant-store as
 	// X-Grant-Store-Service-Token on every call this server makes as itself
 	// (the spawn-time effective-grants read), from
-	// LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN. Optional: empty sends no token,
+	// GRANT_STORE_SERVICE_TOKEN. Optional: empty sends no token,
 	// which a grant-store that enforces per-principal access answers with 401.
 	GrantStoreServiceToken string
 }
@@ -153,10 +154,19 @@ type Config struct {
 // SecretEnvironmentVariableNames, which the child-process environment builder
 // (internal/childprocessenv) strips from every process this server spawns.
 const (
-	DemoLoginSigningKeyEnvironmentVariable     = "LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY"
-	ServiceTokenEnvironmentVariable            = "LLMBRIDGE_SERVICE_TOKEN"
-	GrantStoreServiceTokenEnvironmentVariable  = "LLMBRIDGE_GRANT_STORE_SERVICE_TOKEN"
-	KanbanStoreServiceTokenEnvironmentVariable = "LLMBRIDGE_KANBAN_STORE_SERVICE_TOKEN"
+	DemoLoginSigningKeyEnvironmentVariable = "LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY"
+	ServiceTokenEnvironmentVariable        = "LLMBRIDGE_SERVICE_TOKEN"
+	// The two store tokens carry the store's own name for them, with no
+	// LLMBRIDGE_ prefix: grant-store, kanban-store, dash and the scheduler all
+	// read GRANT_STORE_SERVICE_TOKEN and KANBAN_STORE_SERVICE_TOKEN from one
+	// host-local file (~/.config/principal-gating-tokens.env), and this server's
+	// unit loads the same file. Until 2026-09-18 these two constants named
+	// LLMBRIDGE_-prefixed variables nothing sets, which failed twice over: the
+	// grant token was read as empty, so grant-store answered every spawn-time
+	// read with 401, and the real variables were not on the strip list below,
+	// so every harness child inherited both tokens.
+	GrantStoreServiceTokenEnvironmentVariable  = "GRANT_STORE_SERVICE_TOKEN"
+	KanbanStoreServiceTokenEnvironmentVariable = kanbanclient.ServiceTokenEnvironmentVariable
 )
 
 // SecretEnvironmentVariableNames lists every environment variable that must
@@ -165,9 +175,9 @@ const (
 // read. The demo login signing key would let it mint a login cookie for any
 // principal, the service token would make it the unrestricted internal caller,
 // and a store service token would let it bypass that store's per-principal
-// enforcement. LLMBRIDGE_KANBAN_STORE_SERVICE_TOKEN is not read by this server;
-// it is listed so that an operator who puts it in the same environment file
-// does not hand it to every agent.
+// enforcement. The kanban token is read by internal/kanbanclient rather than
+// by Load, which is why its name is taken from that package: one spelling,
+// read in one place and stripped in another.
 func SecretEnvironmentVariableNames() []string {
 	return []string{
 		DemoLoginSigningKeyEnvironmentVariable,
