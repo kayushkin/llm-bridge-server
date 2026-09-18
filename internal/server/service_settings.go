@@ -25,14 +25,19 @@ import (
 // literal's own fields. Either way the record in st is the source from here on.
 func attachServiceSettings(cfg *config.Config, st *store.Store) *servicesettings.Registry {
 	settings := cfg.Settings
+	// A loaded Config seeds from what the registry already read, as written:
+	// "15m", not the "15m0s" a time.Duration prints. Only a literal has
+	// values the registry never saw.
+	var seeds map[string]string
 	if settings == nil {
 		built, err := config.NewSettingsRegistry(servicesettings.MapEnvironment(nil))
 		if err != nil {
 			panic(fmt.Sprintf("service settings: %v", err))
 		}
 		settings = built
+		seeds = cfg.StoredSettingSeeds()
 	}
-	if err := settings.AttachStoredValues(st.ServiceSettingValues(), cfg.StoredSettingSeeds()); err != nil {
+	if err := settings.AttachStoredValues(st.ServiceSettingValues(), seeds); err != nil {
 		panic(fmt.Sprintf("service settings: %v", err))
 	}
 	return settings
