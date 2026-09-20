@@ -165,6 +165,20 @@ CODE="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer wrong-
 [ "$CODE" = "401" ] || fail "GET /api/accounts with a WRONG bearer token returned $CODE, want 401"
 echo "    401 with no token and with a wrong token"
 
+step "GET /settings — behind the same gate, and it never serves a token"
+CODE="$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/settings")"
+[ "$CODE" = "401" ] || fail "GET /settings with no bearer token returned $CODE, want 401"
+SETTINGS="$(auth "$BASE/settings")"
+[ "$(jq -r '.service' <<<"$SETTINGS")" = "mailstack" ] || fail "/settings does not describe mailstack: $SETTINGS"
+# The port this run was started on reached the registry, and came from the
+# environment. A registry built but never read from would serve the default.
+[ "$(jq -r '.settings[] | select(.key == "listen_port") | .value' <<<"$SETTINGS")" = "$PORT" ] \
+  || fail "/settings does not show the port this server listens on: $SETTINGS"
+if grep -qF "$TOKEN" <<<"$SETTINGS"; then
+  fail "/settings serves the bearer token's text"
+fi
+echo "    401 with no token; 200 with it; port $PORT shown; the token's text is not in the body"
+
 step "GET /api/accounts WITH the token — and the DB is empty"
 LIST0="$(auth "$BASE/api/accounts")"
 echo "    $LIST0"

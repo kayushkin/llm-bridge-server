@@ -31,7 +31,7 @@ func localTestServer(t *testing.T) *Server {
 			t.Fatalf("save account %s: %v", a.ID, err)
 		}
 	}
-	s := NewServer(store, nil, "", WithLocalMailDB(filepath.Join(dir, "local-mail.db")))
+	s := NewServer(store, nil, testSettings(t, ""), WithLocalMailDB(filepath.Join(dir, "local-mail.db")))
 	t.Cleanup(func() { s.Shutdown(nil) })
 	return s
 }

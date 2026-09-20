@@ -38,7 +38,7 @@ func testServer(t *testing.T, token string) (*Server, *accounts.Store) {
 	}); err != nil {
 		t.Fatalf("save account: %v", err)
 	}
-	return NewServer(store, nil, token), store
+	return NewServer(store, nil, testSettings(t, token)), store
 }
 
 // do routes a request through the real mux, exactly as a client would reach it.

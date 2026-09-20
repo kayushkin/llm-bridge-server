@@ -393,6 +393,9 @@ All endpoints require the shared service token (Bearer header, env var
 `MAILSTACK_TOKEN`). dash-server forwards it. No direct browser access.
 
 ```
+# Settings
+GET    /settings                                  # every environment variable the service reads (settings.go); a token as set or unset
+
 # Accounts
 GET    /api/accounts                              # list
 POST   /api/accounts                              # add  {provider, apiauth_account, label, ...}

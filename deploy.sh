@@ -24,6 +24,18 @@ fi
 echo "==> Compiling mailstack..."
 go build -o /tmp/mailstack-build ./cmd/mailstack/
 
+# A set variable under one of the names settings.go owns that it does not
+# declare stops the new binary at boot. Ask before the old one is stopped: build
+# the registry from the running service's own environment. The test prints a
+# verdict, never a value.
+echo "==> Checking the running service's environment against the declared settings..."
+live_pid="$(systemctl --user show -p MainPID --value mailstack.service)"
+if [ -n "$live_pid" ] && [ "$live_pid" != "0" ]; then
+  go test -count=1 -run '^TestTheLiveProcessEnvironmentBuildsARegistry$' . -args -live-environment-file="/proc/$live_pid/environ"
+else
+  echo "    mailstack.service is not running, so there is no environment to check"
+fi
+
 echo "==> Pushing..."
 git push
 

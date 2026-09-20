@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/mailstack/accounts"
 	"github.com/kayushkin/mailstack/apiauth"
 	"github.com/kayushkin/mailstack/backend"
@@ -21,6 +22,7 @@ type Server struct {
 	accounts *accounts.Store
 	apiauth  *apiauth.Client
 	token    string
+	settings *servicesettings.Registry
 	mux      *http.ServeMux
 
 	imapMu       sync.Mutex
@@ -45,11 +47,19 @@ func WithLocalMailDB(path string) ServerOption {
 	return func(s *Server) { s.localDBPath = path }
 }
 
-func NewServer(store *accounts.Store, auth *apiauth.Client, bearerToken string, opts ...ServerOption) *Server {
+// NewServer builds the server. settings is what GET /settings describes and
+// where the bearer token comes from; it is required, so a second command cannot
+// forget the route, and NewServer panics without it, at boot, rather than at
+// the first read.
+func NewServer(store *accounts.Store, auth *apiauth.Client, settings *servicesettings.Registry, opts ...ServerOption) *Server {
+	if settings == nil {
+		panic("mailstack: NewServer needs the settings registry that GET /settings serves")
+	}
 	s := &Server{
 		accounts:     store,
 		apiauth:      auth,
-		token:        bearerToken,
+		token:        settings.String(SettingBearerToken),
+		settings:     settings,
 		mux:          http.NewServeMux(),
 		imapBackends: map[string]*backend.Imap{},
 	}
@@ -95,6 +105,10 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, bearerToken string, 
 	s.mux.Handle("DELETE /api/messages/{id}", s.auth(s.handleDelete))
 	s.mux.Handle("POST /api/messages/{id}/perm-delete", s.auth(s.handlePermDelete))
 	s.mux.Handle("POST /api/messages/bulk", s.auth(s.handleBulk))
+	// Settings: every environment variable the service reads, behind the same
+	// bearer as /api/*. A token is served as set or unset, never its value.
+	// PUT /settings/{key} is not mounted: no setting is Editable.
+	s.mux.Handle("GET /settings", s.auth(servicesettings.Handler(settings, "/settings").ServeHTTP))
 	return s
 }
 

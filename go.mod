@@ -1,9 +1,10 @@
 module github.com/kayushkin/mailstack
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
+	github.com/kayushkin/llm-bridge v0.0.0
 	modernc.org/sqlite v1.46.1
 )
 
@@ -21,3 +22,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/kayushkin/llm-bridge => ../llm-bridge
