@@ -595,16 +595,21 @@ type CardLink struct {
 }
 
 // AddCardLink attaches a typed pointer to an external entity.
-// PutTicket makes a card a ticket, or rewrites the one it has: who asked, and
-// how they reached us. The requester is a principal-store contact id;
-// kanban-store checks it and refuses a human or a group.
+// PutTicket makes a card a ticket, or rewrites the one it has: who asked, how
+// they reached us, and the record that made it a ticket. The requester is a
+// principal-store contact id; kanban-store checks it and refuses a human or a
+// group. The source is a registered entity type and ref — for mail, "email"
+// and the mailstack locator — and kanban-store keeps the first one it is
+// given: a different one later is a 409. Empty leaves any stored source alone.
 //
 // The lifecycle is deliberately not here. A ticket's state is the column its
 // card sits in, so filing the card is what sets it.
-func (c *Client) PutTicket(cardID, requesterPrincipalID, channel string) error {
+func (c *Client) PutTicket(cardID, requesterPrincipalID, channel, sourceEntityType, sourceEntityRef string) error {
 	body, _ := json.Marshal(map[string]string{
 		"requester_principal_id": requesterPrincipalID,
 		"channel":                channel,
+		"source_entity_type":     sourceEntityType,
+		"source_entity_ref":      sourceEntityRef,
 	})
 	req, err := http.NewRequest(http.MethodPut,
 		fmt.Sprintf("%s/api/cards/%s/ticket", c.BaseURL, cardID), bytes.NewReader(body))

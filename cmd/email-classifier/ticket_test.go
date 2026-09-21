@@ -37,21 +37,24 @@ func (f *fakeContacts) ResolveContact(email, displayName string) (principalstore
 }
 
 // recordingTicketWriter captures what writeTicket asked kanban-store for.
-type ticketWrite struct{ cardID, requester, channel string }
+type ticketWrite struct{ cardID, requester, channel, sourceType, sourceRef string }
 
 func TestOnlyWorkSomebodyAskedForBecomesATicket(t *testing.T) {
 	contacts := &fakeContacts{}
 	writes := []ticketWrite{}
 	classifier := &applier{contacts: contacts}
-	classifier.putTicket = func(cardID, requester, channel string) error {
-		writes = append(writes, ticketWrite{cardID, requester, channel})
+	classifier.putTicket = func(cardID, requester, channel, sourceType, sourceRef string) error {
+		writes = append(writes, ticketWrite{cardID, requester, channel, sourceType, sourceRef})
 		return nil
 	}
 
 	// A card in an action column is a ticket from the person who wrote in.
-	classifier.writeTicket("card-1", columnActionNeeded, "dana@example.com", "Dana Whitfield")
+	classifier.writeTicket("card-1", columnActionNeeded, "acct:msg-"+"card-1", "dana@example.com", "Dana Whitfield")
 	if len(writes) != 1 || writes[0].cardID != "card-1" || writes[0].channel != ticketChannelEmail {
 		t.Fatalf("an action card should become a ticket: %+v", writes)
+	}
+	if writes[0].sourceType != linkTypeEmail || writes[0].sourceRef != "acct:msg-card-1" {
+		t.Fatalf("the ticket should name the message it came from: %+v", writes[0])
 	}
 	if contacts.namesSeen["dana@example.com"] != "Dana Whitfield" {
 		t.Fatalf("the sender's name should reach principal-store: %+v", contacts.namesSeen)
@@ -62,13 +65,13 @@ func TestOnlyWorkSomebodyAskedForBecomesATicket(t *testing.T) {
 
 	// A bucket card in the no-action column is not one ticket: it collects mail
 	// from many senders, so it has no one requester.
-	classifier.writeTicket("card-2", columnNoAction, "newsletter@example.com", "A Newsletter")
+	classifier.writeTicket("card-2", columnNoAction, "acct:msg-"+"card-2", "newsletter@example.com", "A Newsletter")
 	if len(writes) != 1 {
 		t.Fatalf("a no-action bucket card must not become a ticket: %+v", writes)
 	}
 
 	// The same person writing again resolves to the same contact.
-	classifier.writeTicket("card-3", columnActionNeeded, "dana@example.com", "D. Whitfield")
+	classifier.writeTicket("card-3", columnActionNeeded, "acct:msg-"+"card-3", "dana@example.com", "D. Whitfield")
 	if writes[1].requester != writes[0].requester {
 		t.Fatalf("one address is one requester: %+v", writes)
 	}
@@ -77,19 +80,19 @@ func TestOnlyWorkSomebodyAskedForBecomesATicket(t *testing.T) {
 func TestAFailedResolveCostsTheTicketAndNotTheFiling(t *testing.T) {
 	contacts := &fakeContacts{failure: errors.New("principal-store is restarting")}
 	classifier := &applier{contacts: contacts}
-	classifier.putTicket = func(string, string, string) error {
+	classifier.putTicket = func(string, string, string, string, string) error {
 		t.Fatal("kanban-store must not be asked when the requester could not be resolved")
 		return nil
 	}
-	classifier.writeTicket("card-1", columnActionNeeded, "dana@example.com", "Dana")
+	classifier.writeTicket("card-1", columnActionNeeded, "acct:msg-"+"card-1", "dana@example.com", "Dana")
 	if classifier.ticketsFailed != 1 || classifier.ticketsWritten != 0 {
 		t.Fatalf("a failure is counted, not fatal: written=%d failed=%d", classifier.ticketsWritten, classifier.ticketsFailed)
 	}
 
 	// And a kanban-store refusal is counted the same way.
 	refusing := &applier{contacts: &fakeContacts{}}
-	refusing.putTicket = func(string, string, string) error { return errors.New("400 refused") }
-	refusing.writeTicket("card-1", columnActionNeeded, "dana@example.com", "Dana")
+	refusing.putTicket = func(string, string, string, string, string) error { return errors.New("400 refused") }
+	refusing.writeTicket("card-1", columnActionNeeded, "acct:msg-"+"card-1", "dana@example.com", "Dana")
 	if refusing.ticketsFailed != 1 {
 		t.Fatalf("a refused ticket is counted: %d", refusing.ticketsFailed)
 	}
@@ -99,11 +102,11 @@ func TestAFailedResolveCostsTheTicketAndNotTheFiling(t *testing.T) {
 // files mail exactly as it did before tickets existed.
 func TestNoResolverLeavesCardsAlone(t *testing.T) {
 	classifier := &applier{}
-	classifier.putTicket = func(string, string, string) error {
+	classifier.putTicket = func(string, string, string, string, string) error {
 		t.Fatal("no resolver means no ticket")
 		return nil
 	}
-	classifier.writeTicket("card-1", columnActionNeeded, "dana@example.com", "Dana")
+	classifier.writeTicket("card-1", columnActionNeeded, "acct:msg-"+"card-1", "dana@example.com", "Dana")
 	if classifier.ticketsWritten != 0 || classifier.ticketsFailed != 0 {
 		t.Fatal("nothing should be counted")
 	}
@@ -122,12 +125,12 @@ func TestACardKeepsItsFirstRequester(t *testing.T) {
 			"card-held": {ID: "card-held", ColumnName: columnActionNeeded, HasTicket: true},
 		}},
 	}
-	classifier.putTicket = func(cardID, requester, channel string) error {
-		writes = append(writes, ticketWrite{cardID, requester, channel})
+	classifier.putTicket = func(cardID, requester, channel, sourceType, sourceRef string) error {
+		writes = append(writes, ticketWrite{cardID, requester, channel, sourceType, sourceRef})
 		return nil
 	}
 
-	classifier.writeTicket("card-new", columnActionNeeded, "dana@example.com", "Dana")
+	classifier.writeTicket("card-new", columnActionNeeded, "acct:msg-"+"card-new", "dana@example.com", "Dana")
 	if len(writes) != 1 || writes[0].cardID != "card-new" {
 		t.Fatalf("an existing card with no requester becomes a ticket: %+v", writes)
 	}
@@ -136,12 +139,12 @@ func TestACardKeepsItsFirstRequester(t *testing.T) {
 	}
 
 	// A second message on the same card does not re-write it.
-	classifier.writeTicket("card-new", columnActionNeeded, "someone-else@example.com", "Copied In")
+	classifier.writeTicket("card-new", columnActionNeeded, "acct:msg-"+"card-new", "someone-else@example.com", "Copied In")
 	if len(writes) != 1 {
 		t.Fatalf("the first requester stands: %+v", writes)
 	}
 	// Nor does mail on a card that already had one when the board was loaded.
-	classifier.writeTicket("card-held", columnActionNeeded, "someone-else@example.com", "Copied In")
+	classifier.writeTicket("card-held", columnActionNeeded, "acct:msg-"+"card-held", "someone-else@example.com", "Copied In")
 	if len(writes) != 1 {
 		t.Fatalf("a card that arrived with a ticket keeps it: %+v", writes)
 	}

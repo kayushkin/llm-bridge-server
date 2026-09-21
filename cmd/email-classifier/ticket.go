@@ -37,12 +37,16 @@ import (
 // served at GET /api/ticket-channels; this is the one value this binary uses.
 const ticketChannelEmail = "email"
 
-// writeTicket gives a newly created card its requester and channel.
+// writeTicket gives a card its requester, its channel and the message that
+// made it a ticket.
 //
+// emailLocator is that message's mailstack locator, the ref its email link
+// carries; kanban-store keeps it as the ticket's source, so the ticket log can
+// say which email a ticket came from after merges have moved the links.
 // senderAddress is senderKey's output — lowercased and trimmed — and
 // senderName is what the mail called them, used only if this is the first time
 // that address has been seen.
-func (a *applier) writeTicket(cardID, columnName, senderAddress, senderName string) {
+func (a *applier) writeTicket(cardID, columnName, emailLocator, senderAddress, senderName string) {
 	if a.contacts == nil || senderAddress == "" || columnName == columnNoAction {
 		return
 	}
@@ -62,7 +66,7 @@ func (a *applier) writeTicket(cardID, columnName, senderAddress, senderName stri
 	if put == nil {
 		put = a.kc.PutTicket
 	}
-	if err := put(cardID, contact.ID, ticketChannelEmail); err != nil {
+	if err := put(cardID, contact.ID, ticketChannelEmail, linkTypeEmail, emailLocator); err != nil {
 		a.ticketsFailed++
 		log.Printf("[email] WARNING: ticket for card %s (requester %s): %v", cardID, contact.ID, err)
 		return
@@ -71,7 +75,7 @@ func (a *applier) writeTicket(cardID, columnName, senderAddress, senderName stri
 	if card := a.cardState(cardID); card != nil {
 		card.HasTicket = true
 	}
-	log.Printf("[email] card %s is a ticket from %s (%s)", cardID, contact.ID, senderAddress)
+	log.Printf("[email] card %s is a ticket from %s (%s) via %s", cardID, contact.ID, senderAddress, emailLocator)
 }
 
 // contactResolver is what writeTicket needs, so a test can stand in for
@@ -82,7 +86,7 @@ type contactResolver interface {
 
 // ticketWriter is the kanban-store call, named so a test can watch it without
 // a kanban-store. Nil means the real client, which is what production runs.
-type ticketWriter func(cardID, requesterPrincipalID, channel string) error
+type ticketWriter func(cardID, requesterPrincipalID, channel, sourceEntityType, sourceEntityRef string) error
 
 // cardState is the board's record of one card, or nil when this applier has no
 // board state — which is the case in the unit tests and on the dry-run path.

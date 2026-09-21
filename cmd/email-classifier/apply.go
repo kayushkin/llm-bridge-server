@@ -177,7 +177,7 @@ func (a *applier) applyReport(batch []pendingEmail, report *filingReport) error 
 			continue
 		}
 
-		cardIDs := a.resolveFilingCards(filing, cardIDByTitle, senderKey(em.Meta.From), em.Meta.From.Name)
+		cardIDs := a.resolveFilingCards(filing, cardIDByTitle, em.Locator, senderKey(em.Meta.From), em.Meta.From.Name)
 		if len(cardIDs) == 0 {
 			log.Printf("[email] WARNING: filing for %s (%q) named no resolvable card; sending to triage",
 				em.Locator, em.Meta.Subject)
@@ -208,10 +208,12 @@ func (a *applier) applyReport(batch []pendingEmail, report *filingReport) error 
 // resolveFilingCards turns one message's filing into card ids, creating the
 // card it names when that card does not exist yet.
 //
-// senderAddress is senderKey's output and decides the feed override below;
-// senderName is what the mail called them, and is used only when a new card
-// becomes a ticket and the sender has never been seen before.
-func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[string]string, senderAddress, senderName string) []string {
+// emailLocator is the message's mailstack locator, recorded as the source of
+// any ticket this filing makes. senderAddress is senderKey's output and decides
+// the feed override below; senderName is what the mail called them, and is
+// used only when a card becomes a ticket and the sender has never been seen
+// before.
+func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[string]string, emailLocator, senderAddress, senderName string) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(id string) {
@@ -232,7 +234,7 @@ func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[strin
 		// this is the message somebody wrote, and the card is what came of it.
 		// A card that already has one keeps it.
 		if card := a.cardState(id); card != nil {
-			a.writeTicket(id, card.ColumnName, senderAddress, senderName)
+			a.writeTicket(id, card.ColumnName, emailLocator, senderAddress, senderName)
 		}
 	}
 	if spec := filing.NewCard; spec != nil && strings.TrimSpace(spec.Title) != "" {
@@ -255,7 +257,7 @@ func (a *applier) resolveFilingCards(filing emailFiling, cardIDByTitle map[strin
 			// The card was made for this message, so this sender is the one
 			// who asked. A card in the no-action bucket is skipped inside.
 			if card := a.cardState(id); card != nil {
-				a.writeTicket(id, card.ColumnName, senderAddress, senderName)
+				a.writeTicket(id, card.ColumnName, emailLocator, senderAddress, senderName)
 			}
 			add(id)
 		}
