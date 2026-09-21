@@ -28,7 +28,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -37,6 +36,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/bridgeauth"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -70,12 +72,16 @@ const (
 )
 
 func main() {
+	settings, err := schedulerconfig.KanbanCurator.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	if err != nil {
+		log.Fatal(err)
+	}
 	var (
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit. Honors -board-id and -job-name.")
 		jobName      = flag.String("job-name", "", "Scheduler job name for -register. Defaults to kanban-curator-tick for the \"Agent runs\" board, kanban-curator-<slug of the board name>-tick otherwise.")
 		dryRun       = flag.Bool("dry-run", false, "Report decisions; do not write to kanban-store.")
-		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
+		kanbanURL    = flag.String("kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
+		bridgeURL    = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
 		boardID      = flag.String("board-id", "", "Kanban board id to curate (required). Pinned by id so a rename in the UI cannot fork a second board.")
 		staleAfter   = flag.Duration("stale-after", 2*time.Hour, "Reap an In Progress card whose session is idle/gone and has had no activity for longer than this.")
 	)
@@ -102,7 +108,7 @@ func main() {
 	}
 
 	if *registerFlag {
-		if err := registerSchedulerJob(board, *jobName); err != nil {
+		if err := registerSchedulerJob(settings.String(schedulerconfig.SettingSchedulerURL), board, *jobName); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
@@ -247,13 +253,6 @@ func main() {
 
 // ============================ helpers ============================
 
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
-
 // getSessionState fetches one session from llm-bridge-server and returns
 // (state, updated_at, notFound, err). updated_at is the most recent state
 // transition we can observe — used as an "ended at" hint when stamping the
@@ -352,8 +351,7 @@ func staleCompleted(updatedAt string) bool {
 //
 // The registered command always carries -board-id: the scheduler runs jobs as
 // `sh -c` with its own thin environment, so nothing else would deliver it.
-func registerSchedulerJob(board *kanbanclient.Board, jobName string) error {
-	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
+func registerSchedulerJob(schedURL string, board *kanbanclient.Board, jobName string) error {
 	home, _ := os.UserHomeDir()
 	bin := filepath.Join(home, "bin", "kanban-curator")
 
