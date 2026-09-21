@@ -43,7 +43,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -56,7 +55,10 @@ import (
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"github.com/slava/scheduler/internal/bridgeclient"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -80,12 +82,16 @@ const (
 )
 
 func main() {
+	settings, err := schedulerconfig.KanbanDispatcher.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	if err != nil {
+		log.Fatal(err)
+	}
 	var (
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
 		dryRun       = flag.Bool("dry-run", false, "Decide but do not publish or move cards.")
 		boardID      = flag.String("board-id", "", "Kanban board id to dispatch on (required). The board owns what a session runs with — per card, its tag rules matched against the card's tags, then its own default_instance_id, default_agent_id and default_bundle_id — and this job owns only when.")
-		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
+		kanbanURL    = flag.String("kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
+		bridgeURL    = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
 		maxDispatch  = flag.Int("max", maxDispatchPerTick, "Max sub-card dispatches per tick.")
 	)
 	flag.Parse()
@@ -102,17 +108,17 @@ func main() {
 	}
 
 	if *registerFlag {
-		if err := registerSchedulerJob(*boardID); err != nil {
+		if err := registerSchedulerJob(settings.String(schedulerconfig.SettingSchedulerURL), *boardID); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
 	}
 
-	err := run(runOptions{
+	err = run(runOptions{
 		BoardID:     *boardID,
 		KanbanURL:   *kanbanURL,
 		BridgeURL:   *bridgeURL,
-		NATSURL:     envOr("NATS_URL", "nats://localhost:4222"),
+		NATSURL:     settings.String(schedulerconfig.SettingNATSURL),
 		DryRun:      *dryRun,
 		MaxDispatch: *maxDispatch,
 	})
@@ -828,8 +834,7 @@ func getBridgeSession(bridgeURL, sessionID string) (bridgeSession, error) {
 // registerSchedulerJob creates the tick job, with the board id baked into the
 // command: the scheduler runs jobs as `sh -c` with its own thin environment,
 // so nothing else would carry it to the process.
-func registerSchedulerJob(boardID string) error {
-	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
+func registerSchedulerJob(schedURL, boardID string) error {
 	home, _ := os.UserHomeDir()
 	bin := filepath.Join(home, "bin", "kanban-dispatcher") + " -board-id " + boardID
 
@@ -876,13 +881,6 @@ func registerSchedulerJob(boardID string) error {
 }
 
 // ============================ misc ============================
-
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
 
 func stringSlice(v any) []string {
 	arr, ok := v.([]any)
