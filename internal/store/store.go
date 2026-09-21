@@ -1,10 +1,10 @@
 package store
 
 import (
-	"log"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -223,6 +223,9 @@ func (s *Store) migrate() error {
 	// The bundle-store bundle the session was started with, or '' for none.
 	// Set at creation only.
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN bundle_id TEXT NOT NULL DEFAULT ''")
+	// The kanban-store card the session works, or '' for none. Set at
+	// creation only; its tags select the context sections each spawn injects.
+	s.db.Exec("ALTER TABLE sessions ADD COLUMN card_id TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_manager ON sessions(manager_session_id) WHERE manager_session_id != ''")
 	// harness_session_id was introduced in this column under the older name
 	// `harness_id`. The rename block below handles the rename for DBs that
@@ -546,8 +549,8 @@ func (s *Store) CreateSession(sess *Session) error {
 		}
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, principal_id, bundle_id, parent_id, forked_from_session_id, manager_session_id, root_session_id, depth, controlled_by, refreshed_from_session_id, working_dir, harness_config, purpose, type, origin, folder_name, mode, max_budget_usd, spend_usd, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.SessionID, sess.SessionID, sess.HarnessSessionID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.PrincipalID, sess.BundleID, sess.ParentID, sess.ForkedFromSessionID, sess.ManagerSessionID, sess.RootSessionID, sess.Depth, sess.ControlledBy, sess.RefreshedFromSessionID, sess.WorkingDir, harnessConfig, sess.Purpose, string(sess.Type), sess.Origin, sess.FolderName, string(sess.Mode), sess.MaxBudgetUSD, sess.SpendUSD, sess.CreatedAt, sess.UpdatedAt,
+		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, principal_id, bundle_id, card_id, parent_id, forked_from_session_id, manager_session_id, root_session_id, depth, controlled_by, refreshed_from_session_id, working_dir, harness_config, purpose, type, origin, folder_name, mode, max_budget_usd, spend_usd, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sess.SessionID, sess.SessionID, sess.HarnessSessionID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.PrincipalID, sess.BundleID, sess.CardID, sess.ParentID, sess.ForkedFromSessionID, sess.ManagerSessionID, sess.RootSessionID, sess.Depth, sess.ControlledBy, sess.RefreshedFromSessionID, sess.WorkingDir, harnessConfig, sess.Purpose, string(sess.Type), sess.Origin, sess.FolderName, string(sess.Mode), sess.MaxBudgetUSD, sess.SpendUSD, sess.CreatedAt, sess.UpdatedAt,
 	); err != nil {
 		return err
 	}
@@ -561,7 +564,7 @@ func (s *Store) CreateSession(sess *Session) error {
 // sessionColumns selects the fields scanSession reads, in the order it
 // expects them. session_id is the canonical id (COALESCE falls back to
 // bridge_id for legacy rows whose session_id may be unbackfilled).
-const sessionColumns = `COALESCE(NULLIF(session_id, ''), bridge_id), COALESCE(harness_session_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, COALESCE(principal_id, ''), COALESCE(bundle_id, ''), parent_id, COALESCE(forked_from_session_id, ''), COALESCE(manager_session_id, ''), COALESCE(root_session_id, ''), COALESCE(depth, 0), COALESCE(controlled_by, ''), COALESCE(refreshed_from_session_id, ''), COALESCE(working_dir, ''), COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(purpose, ''), COALESCE(type, ''), COALESCE(origin, ''), COALESCE(mode, ''), COALESCE(max_budget_usd, 0), COALESCE(spend_usd, 0), COALESCE(status, ''), created_at, updated_at`
+const sessionColumns = `COALESCE(NULLIF(session_id, ''), bridge_id), COALESCE(harness_session_id, ''), display_name, harness, COALESCE(instance_id, ''), state, pid, agent_id, COALESCE(principal_id, ''), COALESCE(bundle_id, ''), COALESCE(card_id, ''), parent_id, COALESCE(forked_from_session_id, ''), COALESCE(manager_session_id, ''), COALESCE(root_session_id, ''), COALESCE(depth, 0), COALESCE(controlled_by, ''), COALESCE(refreshed_from_session_id, ''), COALESCE(working_dir, ''), COALESCE(harness_config, ''), COALESCE(info, ''), COALESCE(folder_name, ''), COALESCE(purpose, ''), COALESCE(type, ''), COALESCE(origin, ''), COALESCE(mode, ''), COALESCE(max_budget_usd, 0), COALESCE(spend_usd, 0), COALESCE(status, ''), created_at, updated_at`
 
 func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var sess Session
@@ -570,7 +573,7 @@ func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
 	var mode string
 	var sessionType string
 	var status string
-	err := sc.Scan(&sess.SessionID, &sess.HarnessSessionID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.PrincipalID, &sess.BundleID, &sess.ParentID, &sess.ForkedFromSessionID, &sess.ManagerSessionID, &sess.RootSessionID, &sess.Depth, &sess.ControlledBy, &sess.RefreshedFromSessionID, &sess.WorkingDir, &harnessConfig, &info, &sess.FolderName, &sess.Purpose, &sessionType, &sess.Origin, &mode, &sess.MaxBudgetUSD, &sess.SpendUSD, &status, &sess.CreatedAt, &sess.UpdatedAt)
+	err := sc.Scan(&sess.SessionID, &sess.HarnessSessionID, &sess.DisplayName, &sess.Harness, &sess.InstanceID, &sess.State, &sess.PID, &sess.AgentID, &sess.PrincipalID, &sess.BundleID, &sess.CardID, &sess.ParentID, &sess.ForkedFromSessionID, &sess.ManagerSessionID, &sess.RootSessionID, &sess.Depth, &sess.ControlledBy, &sess.RefreshedFromSessionID, &sess.WorkingDir, &harnessConfig, &info, &sess.FolderName, &sess.Purpose, &sessionType, &sess.Origin, &mode, &sess.MaxBudgetUSD, &sess.SpendUSD, &status, &sess.CreatedAt, &sess.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -2007,6 +2010,7 @@ func (s *Store) EnsureSubagentSession(parent *Session, harnessSessionID, display
 		// principal's view.
 		PrincipalID:  parent.PrincipalID,
 		BundleID:     parent.BundleID,
+		CardID:       parent.CardID,
 		Depth:        parent.Depth + 1,
 		ControlledBy: msg.ControlledByHarness,
 		Purpose:      "subagent",

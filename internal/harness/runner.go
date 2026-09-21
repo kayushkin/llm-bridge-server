@@ -461,7 +461,7 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 
 	params := buildStartParams(sess, credentialID)
 	// Not verified here — the path is on the runner's host, not on this one.
-	workDir, _ := workingDirForSession(sess, inst)
+	workDir, _ := WorkingDirForSession(sess, inst)
 
 	publicURL := m.publicServerURL
 	if publicURL == "" {

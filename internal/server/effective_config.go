@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -258,7 +259,65 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 	// tools: the same decision the spawn makes, unprovisioned
 	add(s.effectiveTools(ctx, sess, cfg, warn))
 
+	// context: the sections the spawn would inject from the card's tags
+	add(s.effectiveContext(ctx, sess, subject, inst, warn))
+
 	return out
+}
+
+// effectiveContext reports the context sections a spawn would inject: the
+// same card read and the same agent-store resolution injectPromptContext
+// makes. A dry run with no card takes the query's tags as a card's would be.
+func (s *Server) effectiveContext(ctx context.Context, sess *store.Session, subject msg.EffectiveConfigSubject, inst *msg.Instance, warn func(string, ...any)) msg.EffectiveSetting {
+	setting := msg.EffectiveSetting{Key: msg.EffectiveSettingContext, Layer: msg.EffectiveLayerNone, Detail: "no card, so no context sections"}
+	var contextTags []string
+	switch {
+	case sess.CardID != "":
+		tags, err := s.sessionContextTags(ctx, sess)
+		if err != nil {
+			warn("a spawn would start without its card's context sections: %v", err)
+			return setting
+		}
+		contextTags = tags
+		setting.Layer, setting.Record = msg.EffectiveLayerSession, "sessions.card_id → kanban-store card "+sess.CardID+" tags"
+		if subject.DryRun {
+			setting.Layer = msg.EffectiveLayerRequest
+		}
+	case subject.DryRun && len(subject.Tags) > 0:
+		contextTags = subject.Tags
+		setting.Layer, setting.Record = msg.EffectiveLayerRequest, "the query's tag parameters, as a card's tags"
+	default:
+		return setting
+	}
+	if s.agentStore == nil {
+		warn("this server has no agent-store, so no prompt or context would be injected")
+		return setting
+	}
+	if inst != nil && inst.Machine == nil && inst.MachineID != "" && s.harnessStore != nil {
+		if machine, err := s.harnessStore.GetMachine(inst.MachineID); err == nil {
+			withMachine := *inst
+			withMachine.Machine = machine
+			inst = &withMachine
+		}
+	}
+	workDir, _ := harness.WorkingDirForSession(sess, inst)
+	res, err := s.agentStore.ResolveContext(string(sess.Harness), workDir, contextTags)
+	if err != nil {
+		warn("agent-store could not resolve the prompt, so a spawn would start without it: %v", err)
+		return setting
+	}
+	matched := []map[string]any{}
+	for _, entry := range res.Manifest {
+		for _, section := range entry.MatchedSections {
+			matched = append(matched, map[string]any{"section_id": section.SectionID, "title": section.Title, "tags": section.Tags, "collection": entry.Slug})
+		}
+		for _, section := range entry.UnmatchedSections {
+			setting.Notes = append(setting.Notes, fmt.Sprintf("%s section %d %q left out: %s", entry.Slug, section.SectionID, section.Title, section.Reason))
+		}
+	}
+	setting.Value = matched
+	setting.Detail = fmt.Sprintf("tags %q select %d context sections in %q, injected as %s", contextTags, len(matched), workDir, harnessConfigKeyForInjectedPrompt(res.Delivery))
+	return setting
 }
 
 func (s *Server) effectiveModel(ctx context.Context, sess *store.Session, cfg map[string]json.RawMessage, harnessRecord func(string) string, dryRun bool, warn func(string, ...any)) msg.EffectiveSetting {
@@ -427,7 +486,7 @@ func (s *Server) handleSessionEffectiveConfig(w http.ResponseWriter, r *http.Req
 	defer cancel()
 	subject := msg.EffectiveConfigSubject{
 		SessionID: sess.SessionID, Harness: sess.Harness, InstanceID: sess.InstanceID,
-		PrincipalID: sess.PrincipalID, AgentID: sess.AgentID, BundleID: sess.BundleID,
+		PrincipalID: sess.PrincipalID, AgentID: sess.AgentID, BundleID: sess.BundleID, CardID: sess.CardID,
 	}
 	writeJSON(w, s.effectiveConfigFor(ctx, sess, subject, nil))
 }
@@ -524,6 +583,7 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 	sess := &store.Session{
 		SessionID: "(dry run)", Harness: subject.Harness, InstanceID: inst.ID,
 		PrincipalID: subject.PrincipalID, AgentID: subject.AgentID, BundleID: subject.BundleID,
+		CardID: subject.CardID,
 	}
 	s.snapshotPermissionModeIntoSession(sess)
 	// What POST /sessions would pin for a creator who names no model, effort,

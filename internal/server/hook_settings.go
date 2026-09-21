@@ -45,7 +45,7 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 		return nil, err
 	}
 	s.injectHookSettings(sess)
-	s.injectPromptContext(sess)
+	s.injectPromptContext(ctx, sess, inst)
 	s.injectPermissionModeFlag(sess)
 	if err := s.injectModelSelection(ctx, sess); err != nil {
 		return nil, fmt.Errorf("inject model selection: %w", err)

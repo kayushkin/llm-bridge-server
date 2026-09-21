@@ -12,6 +12,7 @@ package kanbanclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -226,10 +227,47 @@ func (c *Client) get(ctx context.Context, endpoint, what string) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("read %s response: %w", what, err)
 	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: kanban-store %s: status 404: %s", ErrNotFound, what, strings.TrimSpace(string(body)))
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("kanban-store %s: status %d: %s", what, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return body, nil
+}
+
+// ErrNotFound is kanban-store answering 404: the card or board is not one it
+// has. Any other failure is the store not answering, and is not this error.
+var ErrNotFound = errors.New("not found")
+
+// CardTags returns the tags of one card — its noteboard item's tags, which
+// kanban-store passes through on GET /api/cards/{id}. A card kanban-store
+// does not have, or whose noteboard item is gone, is ErrNotFound: either way
+// there are no tags to read, and an empty list would pass for "no tags".
+func (c *Client) CardTags(ctx context.Context, cardID string) ([]string, error) {
+	if cardID == "" {
+		return nil, fmt.Errorf("card id is required")
+	}
+	body, err := c.get(ctx, fmt.Sprintf("%s/api/cards/%s", c.baseURL, url.PathEscape(cardID)), "card read")
+	if err != nil {
+		return nil, err
+	}
+	var card struct {
+		CardID string `json:"card_id"`
+		Item   *struct {
+			Tags []string `json:"tags"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(body, &card); err != nil {
+		return nil, fmt.Errorf("parse card %s: %w", cardID, err)
+	}
+	if card.Item == nil {
+		return nil, fmt.Errorf("%w: card %s has no noteboard item", ErrNotFound, cardID)
+	}
+	if card.Item.Tags == nil {
+		return []string{}, nil
+	}
+	return card.Item.Tags, nil
 }
 
 // EffectiveDefault is one board default as kanban-store resolved it for a

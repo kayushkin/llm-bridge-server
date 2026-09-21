@@ -15,6 +15,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/conformance"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/textutil"
@@ -384,6 +385,28 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The card the session works. Optional; when given it must be a card
+	// kanban-store has, because every spawn reads its tags to pick the
+	// context sections it injects — a card id nobody has would leave every
+	// spawn without them, far from the request that caused it.
+	if req.CardID != "" {
+		if s.kanbanClient == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured",
+				"card_id was given but this server has no kanban-store to check it with (LLMBRIDGE_KANBAN_STORE_URL)")
+			return
+		}
+		if _, err := s.kanbanClient.CardTags(r.Context(), req.CardID); err != nil {
+			if errors.Is(err, kanbanclient.ErrNotFound) {
+				writeJSONError(w, http.StatusBadRequest, "unknown_card", fmt.Sprintf(
+					"card_id %q is not a card kanban-store has: %v", req.CardID, err))
+				return
+			}
+			writeJSONError(w, http.StatusBadGateway, "kanban_store_unavailable", fmt.Sprintf(
+				"could not confirm card_id %s with kanban-store, so the session was not created: %v", req.CardID, err))
+			return
+		}
+	}
+
 	// Caller-minted session id: workers (autoworker, scheduler, dispatcher)
 	// pass their own session_id so they can persist a kanban link or queue
 	// row before the create round-trip returns. Empty = bridge mints
@@ -413,6 +436,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		AgentID:       req.AgentID,
 		PrincipalID:   req.PrincipalID,
 		BundleID:      req.BundleID,
+		CardID:        req.CardID,
 		HarnessConfig: req.HarnessConfig,
 		Purpose:       req.Purpose,
 		Type:          req.Type,
@@ -979,12 +1003,13 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		InstanceID:  parent.InstanceID,
 		State:       string(msg.SessionIdle),
 		AgentID:     parent.AgentID,
-		// A fork runs as whoever the parent runs as, with the parent's bundle:
-		// otherwise forking would be how a principal's session sheds its
-		// owner (becoming invisible to them and ungated by their grants) or
-		// its bundle.
+		// A fork runs as whoever the parent runs as, with the parent's bundle
+		// and card: otherwise forking would be how a principal's session sheds
+		// its owner (becoming invisible to them and ungated by their grants),
+		// its bundle or its context.
 		PrincipalID: parent.PrincipalID,
 		BundleID:    parent.BundleID,
+		CardID:      parent.CardID,
 		// ParentID carries the parent's HARNESS uuid — the value `--fork` needs.
 		// ForkedFromSessionID is the honest lineage link: the parent's bridge id.
 		// Once the fork plumbing resolves the harness id from the parent row,

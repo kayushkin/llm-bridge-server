@@ -1423,7 +1423,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	// ssh and runner name a path on another host and must not be checked here.
 	// workingDirOwner names the record that supplied the path, so a refusal
 	// tells the operator which of session/instance/machine to go and edit.
-	workingDir, workingDirOwner := workingDirForSession(sess, inst)
+	workingDir, workingDirOwner := WorkingDirForSession(sess, inst)
 
 	var proc HarnessProcess
 	var err error
@@ -1604,7 +1604,7 @@ func (m *Manager) startSSH(ctx context.Context, sess *store.Session, inst *msg.I
 
 	// Remote command: cd to the resolved working dir and run the harness.
 	// Not verified here — the path is on mach, not on this host.
-	workDir, _ := workingDirForSession(sess, inst)
+	workDir, _ := WorkingDirForSession(sess, inst)
 	remoteCmd := binName
 	if workDir != "" {
 		remoteCmd = fmt.Sprintf("cd %s && %s", workDir, binName)

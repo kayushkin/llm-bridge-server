@@ -8,7 +8,7 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// workingDirForSession resolves the directory a harness session runs in, and
+// WorkingDirForSession resolves the directory a harness session runs in, and
 // names the record an operator would edit to change it.
 //
 // The cascade is four levels and it is the same rule on every transport: the
@@ -30,7 +30,7 @@ import (
 // local instance was accepted by the API, stored, shown in the UI, and then
 // silently ignored at spawn while ssh and runner both honoured theirs. Every
 // level added since is added here, to this one function, for that reason.
-func workingDirForSession(sess *store.Session, inst *msg.Instance) (dir, owner string) {
+func WorkingDirForSession(sess *store.Session, inst *msg.Instance) (dir, owner string) {
 	if sess != nil && sess.WorkingDir != "" {
 		return sess.WorkingDir, "session " + sess.SessionID
 	}
@@ -77,7 +77,7 @@ func ptyChildWorkingDir(workingDir string) string {
 // that is. Those transports therefore pass their directory through unchecked
 // and let the remote side report its own failure.
 //
-// The error names the owner workingDirForSession returned, because that is the
+// The error names the owner WorkingDirForSession returned, because that is the
 // record the operator has to go and edit; exec's own chdir error names only the
 // path, and the path is on four records at once.
 func verifyLocalWorkingDir(owner, dir string) error {

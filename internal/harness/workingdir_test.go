@@ -85,12 +85,12 @@ func TestWorkingDirForSessionAppliesTheSessionOverInstanceOverMachineCascade(t *
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, owner := workingDirForSession(tc.sess, tc.inst)
+			got, owner := WorkingDirForSession(tc.sess, tc.inst)
 			if got != tc.want {
-				t.Errorf("workingDirForSession() dir = %q, want %q", got, tc.want)
+				t.Errorf("WorkingDirForSession() dir = %q, want %q", got, tc.want)
 			}
 			if owner != tc.wantOwner {
-				t.Errorf("workingDirForSession() owner = %q, want %q", owner, tc.wantOwner)
+				t.Errorf("WorkingDirForSession() owner = %q, want %q", owner, tc.wantOwner)
 			}
 		})
 	}
