@@ -48,6 +48,16 @@ jobs read to find the scheduler, is not the service's and is left alone.
 | `LLMBRIDGE_URL` | `http://localhost:8160` | where agent jobs find a harness instance |
 | `NOTEBOARD_URL` | `http://localhost:8191` | written into an agent job's working-memory preamble |
 
+The twelve job binaries in `cmd/` (`ask`, `autoworker`, `email-classifier`,
+`reminder-coordinator` and the rest) serve no HTTP, so they are not on the
+settings page. Each declares what it reads in `internal/config/jobs.go` and
+builds its own registry at start; a test holds every environment read in the
+binary and the packages it imports to that list. A binary owns only the names
+that are its alone — `AUTOWORKER_`, `DEMO_MAIL_`, `EMAIL_CLASSIFIER_` and
+`EMAIL_BOARD_ID`, `KANBAN_CLASSIFIER_`, `KANBAN_SCOPER_`, `REMINDER_` — and a set
+variable under one of them that it does not declare stops it with exit 1. The
+shared addresses and the two service tokens are declared and owned by nobody.
+
 The job binaries in `cmd/` other than `cmd/scheduler` still read their own
 variables directly; they are not converted yet.
 
