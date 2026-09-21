@@ -36,7 +36,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -45,6 +44,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/bridgeauth"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -68,12 +70,16 @@ const (
 )
 
 func main() {
+	settings, err := schedulerconfig.AutoworkerReviewer.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	if err != nil {
+		log.Fatal(err)
+	}
 	var (
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
 		jobName      = flag.String("job-name", "autoworker-reviewer-tick", "Scheduler job name for -register.")
 		dryRun       = flag.Bool("dry-run", false, "Report decisions; do not nudge sessions or tag.")
-		kanbanURL    = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
+		kanbanURL    = flag.String("kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
+		bridgeURL    = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
 		boardName    = flag.String("board", defaultBoardName, "Kanban board name to review")
 	)
 	flag.Parse()
@@ -86,7 +92,7 @@ func main() {
 	}
 
 	if *registerFlag {
-		if err := registerSchedulerJob(*jobName, *boardName); err != nil {
+		if err := registerSchedulerJob(settings.String(schedulerconfig.SettingSchedulerURL), *jobName, *boardName); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
@@ -316,17 +322,9 @@ func sendMessage(bridgeURL, sessionID, message string) error {
 
 // ============================ helpers ============================
 
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
-
 // ============================ scheduler self-registration ============================
 
-func registerSchedulerJob(jobName, boardName string) error {
-	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
+func registerSchedulerJob(schedURL, jobName, boardName string) error {
 	home, _ := os.UserHomeDir()
 	bin := filepath.Join(home, "bin", "autoworker-reviewer")
 	command := bin
