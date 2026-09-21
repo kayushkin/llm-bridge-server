@@ -32,7 +32,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -41,6 +40,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/bridgeauth"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/oneshot"
 )
@@ -55,7 +57,6 @@ const (
 	tagSubtask       = "task-completion-loop-subtask"
 	tagScoped        = "scoped"
 	linkTypeParent   = "parent_card"
-	defaultModel     = "claude-haiku-4-5-20251001"
 	maxScopePerTick  = 5
 )
 
@@ -72,16 +73,20 @@ type config struct {
 }
 
 func main() {
+	settings, err := schedulerconfig.KanbanScoper.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	if err != nil {
+		log.Fatal(err)
+	}
 	var (
 		registerFlag    = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
 		dryRun          = flag.Bool("dry-run", false, "Decompose but do not write to kanban-store.")
 		boardID         = flag.String("board-id", "", "Kanban board id to scope (required). Pinned by id so a rename in the UI cannot fork a second board.")
-		kanbanURL       = flag.String("kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-		bridgeURL       = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
-		oneshotInstance = flag.String("oneshot-instance", envOr("ONESHOT_INSTANCE_ID", ""), "claude_code harness instance id for subscription oneshot calls (required to decompose)")
-		model           = flag.String("model", envOr("KANBAN_SCOPER_MODEL", defaultModel), "Anthropic model id")
+		kanbanURL       = flag.String("kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
+		bridgeURL       = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
+		oneshotInstance = flag.String("oneshot-instance", settings.String(schedulerconfig.SettingOneshotInstanceID), "claude_code harness instance id for subscription oneshot calls (required to decompose)")
+		model           = flag.String("model", settings.String(schedulerconfig.SettingModel), "Anthropic model id")
 		maxScope        = flag.Int("max", maxScopePerTick, "Max parents to decompose per tick.")
-		roleTags        = flag.Bool("role-tags", envBool("KANBAN_SCOPER_ROLE_TAGS", false), "TEAM-ORCHESTRATION step 1: require capability+role in decomposition and emit capability:/role: tags on sub-cards. OFF by default — when off, behavior is identical to the pre-team-orchestration scoper.")
+		roleTags        = flag.Bool("role-tags", settings.Boolean(schedulerconfig.SettingRoleTags), "TEAM-ORCHESTRATION step 1: require capability+role in decomposition and emit capability:/role: tags on sub-cards. OFF by default — when off, behavior is identical to the pre-team-orchestration scoper.")
 	)
 	flag.Parse()
 
@@ -97,7 +102,7 @@ func main() {
 	}
 
 	if *registerFlag {
-		if err := registerSchedulerJob(*boardID, *oneshotInstance); err != nil {
+		if err := registerSchedulerJob(settings.String(schedulerconfig.SettingSchedulerURL), *boardID, *oneshotInstance); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
@@ -439,8 +444,7 @@ func decompose(ctx context.Context, cfg config, digest string) (*Plan, error) {
 // jobs as `sh -c` with its own thin environment, so neither would reach the
 // process any other way. The oneshot instance is the scoper's OWN model
 // transport, not a board setting, which is why it stays a flag.
-func registerSchedulerJob(boardID, oneshotInstance string) error {
-	schedURL := envOr("SCHEDULER_URL", "http://localhost:8092")
+func registerSchedulerJob(schedURL, boardID, oneshotInstance string) error {
 	home, _ := os.UserHomeDir()
 	bin := filepath.Join(home, "bin", "kanban-scoper") + " -board-id " + boardID
 	if oneshotInstance != "" {
@@ -490,24 +494,6 @@ func registerSchedulerJob(boardID, oneshotInstance string) error {
 }
 
 // ============================ helpers ============================
-
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
-
-func envBool(k string, def bool) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(k))) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return def
-	}
-}
 
 func stringSlice(v any) []string {
 	arr, ok := v.([]any)
