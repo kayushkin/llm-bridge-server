@@ -20,7 +20,22 @@
 // claudecode harness turns mcp_config/strict_mcp_config into --mcp-config and
 // --strict-mcp-config. The server never has to understand the bundle.
 //
-//	bridge-agent --mcp browser "open dash.kayushkin.com and screenshot the board"
+// llm-bridge-server answers every session route with 401 to a caller with no
+// credential, so the CLI must say who it is, in one of two ways:
+//
+//   - LLMBRIDGE_SERVICE_TOKEN in the environment, as the scheduler's binaries
+//     do: the CLI is then the internal service, and --principal, if given, is
+//     sent as X-Principal-Id so the delegate belongs to that person. The server
+//     strips this token from every harness child, so an agent session never has
+//     it.
+//   - --principal alone: the CLI logs in through POST /auth/demo-login as that
+//     principal and the delegate is created as them. This is how an agent
+//     session runs the CLI.
+//
+// With neither, the CLI stops before it calls the server, rather than guess
+// whose delegate it is starting.
+//
+//	bridge-agent --principal principal_000001 --mcp browser "open dash.kayushkin.com and screenshot the board"
 package main
 
 import (
@@ -32,6 +47,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/signal"
@@ -48,6 +64,12 @@ const (
 	defaultServer  = "http://localhost:8160"
 	defaultHarness = "claude_code"
 	defaultTimeout = 15 * time.Minute
+
+	// serviceTokenEnvironmentVariable and serviceTokenHeader are the names
+	// llm-bridge-server's internal/config and internal/server read.
+	serviceTokenEnvironmentVariable = "LLMBRIDGE_SERVICE_TOKEN"
+	serviceTokenHeader              = "X-LLM-Bridge-Service-Token"
+	principalIDHeader               = "X-Principal-Id"
 )
 
 // bundleDir holds Claude Code MCP config files, one per bundle. The "none"
@@ -63,14 +85,15 @@ func bundleDir() string {
 
 func main() {
 	var (
-		bundle   = flag.String("mcp", "none", "MCP bundle to load — a config file name under ~/.claude/mcp (e.g. browser). \"none\" spawns with no MCP servers.")
-		server   = flag.String("server", envOr("LLMBRIDGE_SERVER", defaultServer), "llm-bridge-server base URL")
-		harness  = flag.String("harness", defaultHarness, "harness to run the delegate on")
-		instance = flag.String("instance", os.Getenv("LLMBRIDGE_INSTANCE"), "harness instance id (defaults to the server's default instance)")
-		purpose  = flag.String("purpose", msg.PurposeDelegate, "session purpose — a registered slug, not a description of the task (see -list-purposes)")
-		timeout  = flag.Duration("timeout", defaultTimeout, "give up if the turn has not finished within this duration")
-		rawJSON  = flag.Bool("json", false, "print the full result event as JSON instead of just its text")
-		keep     = flag.Bool("keep", false, "leave the delegate session running instead of stopping it after the result")
+		bundle    = flag.String("mcp", "none", "MCP bundle to load — a config file name under ~/.claude/mcp (e.g. browser). \"none\" spawns with no MCP servers.")
+		server    = flag.String("server", envOr("LLMBRIDGE_SERVER", defaultServer), "llm-bridge-server base URL")
+		harness   = flag.String("harness", defaultHarness, "harness to run the delegate on")
+		instance  = flag.String("instance", os.Getenv("LLMBRIDGE_INSTANCE"), "harness instance id (defaults to the server's default instance)")
+		purpose   = flag.String("purpose", msg.PurposeDelegate, "session purpose — a registered slug, not a description of the task (see -list-purposes)")
+		timeout   = flag.Duration("timeout", defaultTimeout, "give up if the turn has not finished within this duration")
+		rawJSON   = flag.Bool("json", false, "print the full result event as JSON instead of just its text")
+		keep      = flag.Bool("keep", false, "leave the delegate session running instead of stopping it after the result")
+		principal = flag.String("principal", "", "principal-store id (principal_000001) the delegate session belongs to. Without "+serviceTokenEnvironmentVariable+" set, the CLI logs in as this principal; one of the two is required")
 
 		listPurposes = flag.Bool("list-purposes", false, "print the registered session purposes and exit")
 	)
@@ -133,8 +156,10 @@ func main() {
 	ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
 	defer cancelTimeout()
 
-	client := &http.Client{}
-	agent := &delegate{client: client, server: strings.TrimRight(*server, "/")}
+	agent, err := authenticatedDelegate(ctx, strings.TrimRight(*server, "/"), os.Getenv(serviceTokenEnvironmentVariable), *principal)
+	if err != nil {
+		fatal("%v", err)
+	}
 
 	sessionID, err := agent.createSession(ctx, *harness, *instance, *purpose, prompt, harnessConfig)
 	if err != nil {
@@ -198,6 +223,62 @@ func loadBundle(name string) (map[string]any, error) {
 type delegate struct {
 	client *http.Client
 	server string
+	// serviceToken, when set, goes on every request as the internal service's
+	// credential, and actingPrincipalID with it. When it is empty the client's
+	// cookie jar carries the login cookie instead.
+	serviceToken      string
+	actingPrincipalID string
+}
+
+// authenticatedDelegate returns a delegate that every server route will
+// accept: the service token when the environment holds one, otherwise a demo
+// login as principalID. It fails when it has neither, and when the login is
+// refused, so a missing credential is reported before a session is attempted.
+func authenticatedDelegate(ctx context.Context, server, serviceToken, principalID string) (*delegate, error) {
+	if serviceToken != "" {
+		return &delegate{client: &http.Client{}, server: server, serviceToken: serviceToken, actingPrincipalID: principalID}, nil
+	}
+	if principalID == "" {
+		return nil, fmt.Errorf("no credential for llm-bridge-server: pass --principal <principal-store id> to log in as that person, or set " + serviceTokenEnvironmentVariable + " when running as an internal service")
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("create cookie jar: %w", err)
+	}
+	d := &delegate{client: &http.Client{Jar: jar}, server: server}
+	if err := d.demoLogin(ctx, principalID); err != nil {
+		return nil, fmt.Errorf("log in as %s: %w", principalID, err)
+	}
+	return d, nil
+}
+
+// demoLogin obtains the login cookie; the client's jar sends it on every
+// later request.
+func (d *delegate) demoLogin(ctx context.Context, principalID string) error {
+	body, err := json.Marshal(map[string]string{"principal_id": principalID})
+	if err != nil {
+		return err
+	}
+	resp, err := d.post(ctx, "/auth/demo-login", body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return httpError(resp)
+	}
+	return nil
+}
+
+// do sends a request to the server with the delegate's credential on it.
+func (d *delegate) do(req *http.Request) (*http.Response, error) {
+	if d.serviceToken != "" {
+		req.Header.Set(serviceTokenHeader, d.serviceToken)
+		if d.actingPrincipalID != "" {
+			req.Header.Set(principalIDHeader, d.actingPrincipalID)
+		}
+	}
+	return d.client.Do(req)
 }
 
 func (d *delegate) createSession(ctx context.Context, harness, instance, purpose, prompt string, harnessConfig map[string]any) (string, error) {
@@ -297,7 +378,7 @@ func (d *delegate) subscribe(ctx context.Context, sessionID string) (<-chan msg.
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
-	resp, err := d.client.Do(req)
+	resp, err := d.do(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -378,7 +459,7 @@ func (d *delegate) post(ctx context.Context, path string, body []byte) (*http.Re
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return d.client.Do(req)
+	return d.do(req)
 }
 
 func httpError(resp *http.Response) error {
