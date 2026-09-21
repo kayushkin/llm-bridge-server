@@ -5,6 +5,9 @@ import (
 	"flag"
 	"path/filepath"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 )
 
 // The defaults that ship, and the wiring that carries them to the tick.
@@ -25,16 +28,16 @@ import (
 //   - The TWO that decide spend. -model picks which model reads every digest,
 //     and -max bounds how many sessions one tick pays to classify.
 
-// noEnvironment is the lookup for a process started with none of these
+// noEnvironment is a process started with none of these
 // variables set, which is how the scheduler runs this binary: jobs run as
 // `sh -c` with only the scheduler's own thin environment.
-func noEnvironment(string) string { return "" }
+var noEnvironment = servicesettings.MapEnvironment(map[string]string{})
 
 // environmentWith answers only for the keys given to it, so a test states the
 // environment it means rather than inheriting the one the test binary happens
 // to have.
-func environmentWith(values map[string]string) environmentLookup {
-	return func(key string) string { return values[key] }
+func environmentWith(values map[string]string) servicesettings.Environment {
+	return servicesettings.MapEnvironment(values)
 }
 
 func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
@@ -127,11 +130,11 @@ func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	if cfg.Model != defaultModel {
-		t.Errorf("-model ships as %q, want the constant %q", cfg.Model, defaultModel)
+	if cfg.Model != schedulerconfig.DefaultKanbanClassifierModel {
+		t.Errorf("-model ships as %q, want the constant %q", cfg.Model, schedulerconfig.DefaultKanbanClassifierModel)
 	}
-	if defaultModel != "claude-haiku-4-5-20251001" {
-		t.Errorf("defaultModel is %q: this binary is the cheap-model curator and a drift here is a silent bill", defaultModel)
+	if schedulerconfig.DefaultKanbanClassifierModel != "claude-haiku-4-5-20251001" {
+		t.Errorf("schedulerconfig.DefaultKanbanClassifierModel is %q: this binary is the cheap-model curator and a drift here is a silent bill", schedulerconfig.DefaultKanbanClassifierModel)
 	}
 	if cfg.MaxClassify != maxClassifyPerTick {
 		t.Errorf("-max ships as %d, want the constant %d", cfg.MaxClassify, maxClassifyPerTick)
@@ -345,5 +348,14 @@ func TestTheRegisteredJobMatchesTheOneThatRuns(t *testing.T) {
 	// the first, and the box then classifies every session twice.
 	if payload["name"] != schedulerJobName {
 		t.Errorf("the payload name %v is not the constant %q the dedupe check reads", payload["name"], schedulerJobName)
+	}
+}
+
+// A misspelled KANBAN_CLASSIFIER_MODEL used to be ignored, and the binary ran
+// on the default model. It now stops the binary, and main prints why.
+func TestAMisspelledKanbanClassifierVariableIsRefused(t *testing.T) {
+	_, err := parseFlags(nil, environmentWith(map[string]string{"KANBAN_CLASSIFIER_MODLE": "claude-opus-5"}), "/home/agent")
+	if !errors.Is(err, errSettingsRefused) {
+		t.Fatalf("parseFlags = %v, want errSettingsRefused", err)
 	}
 }

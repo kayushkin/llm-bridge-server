@@ -50,7 +50,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -62,10 +61,11 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
-
-	"github.com/slava/scheduler/internal/oneshot"
-
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/bridgeauth"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/oneshot"
 )
 
 const (
@@ -91,7 +91,6 @@ const (
 	assistantTurnsBudgetShare = 0.35
 	terminalStateCompleted    = "completed"
 	terminalStateError        = "error"
-	defaultModel              = "claude-haiku-4-5-20251001"
 	candidateLookback         = 7 * 24 * time.Hour
 	// doNotTrackReevalEvents is how many new events re-open a do-not-track
 	// session. It replaced "20 new messages" when the classifier stopped
@@ -116,9 +115,10 @@ const (
 	schedulerJobTimeoutSeconds = 900
 )
 
-// environmentLookup reads one environment variable. os.Getenv in production; a
-// map in a test.
-type environmentLookup func(key string) string
+// errSettingsRefused marks a parseFlags error that came from the environment:
+// the settings registry refused a value. main prints it and exits 1, where the
+// flag package has already printed its own errors and exits 2.
+var errSettingsRefused = errors.New("settings refused")
 
 // parseFlags builds the flag set and parses args into a config.
 //
@@ -143,23 +143,29 @@ type environmentLookup func(key string) string
 // unusable. ContinueOnError is what makes it callable at all — ExitOnError
 // would take the test binary down on a bad argument instead of returning.
 //
-// lookupEnvironment is an argument because six defaults are read at
+// environment is an argument because six defaults are read at
 // flag-registration time; a test that exported KANBAN_STORE_URL to observe one
-// would race every other test in the package for a process-wide variable.
+// would race every other test in the package for a process-wide variable. It
+// is read through the binary's settings registry (internal/config), which
+// refuses a misspelled KANBAN_CLASSIFIER_ variable.
 // homeDirectory is an argument for the same reason: the registered command is
 // home-relative and a test should not have to move HOME out from under the
 // process to assert what it resolves to.
-func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirectory string) (config, error) {
+func parseFlags(args []string, environment servicesettings.Environment, homeDirectory string) (config, error) {
+	settings, err := schedulerconfig.KanbanClassifier.NewSettingsRegistry(environment)
+	if err != nil {
+		return config{}, fmt.Errorf("%w: %v", errSettingsRefused, err)
+	}
 	fs := flag.NewFlagSet("kanban-classifier", flag.ContinueOnError)
 	var c config
 	fs.BoolVar(&c.RegisterJob, "register", false, "Register/upsert this binary as a scheduler cron job and exit.")
 	fs.BoolVar(&c.DryRun, "dry-run", false, "Classify but do not write to kanban-store.")
 	fs.StringVar(&c.OneSession, "session", "", "Classify exactly one session id and exit (no candidate filtering).")
 	fs.StringVar(&c.BoardName, "board", defaultBoardName, "Kanban board name to write cards to.")
-	fs.StringVar(&c.KanbanURL, "kanban-url", envOr(lookupEnvironment, "KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-	fs.StringVar(&c.BridgeURL, "bridge-url", envOr(lookupEnvironment, "LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
-	fs.StringVar(&c.OneshotInstance, "oneshot-instance", envOr(lookupEnvironment, "ONESHOT_INSTANCE_ID", ""), "claude_code harness instance id for subscription oneshot calls (required unless -dump-digest)")
-	fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "KANBAN_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
+	fs.StringVar(&c.KanbanURL, "kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
+	fs.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
+	fs.StringVar(&c.OneshotInstance, "oneshot-instance", settings.String(schedulerconfig.SettingOneshotInstanceID), "claude_code harness instance id for subscription oneshot calls (required unless -dump-digest)")
+	fs.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingModel), "Anthropic model id")
 	fs.IntVar(&c.MaxClassify, "max", maxClassifyPerTick, "Max classifications per tick.")
 	fs.IntVar(&c.DigestBudget, "digest-budget", digestCharBudget, "Digest size in characters (~4 chars per token).")
 	fs.BoolVar(&c.DumpDigest, "dump-digest", false, "With -session: print the digest that would be sent and exit, without calling the model.")
@@ -170,7 +176,7 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	// Derived rather than registered: the dedupe gates are rationing for the
 	// cron sweep, and naming a session by id is a human overruling them.
 	c.ExplicitSession = c.OneSession != ""
-	c.SchedulerURL = envOr(lookupEnvironment, "SCHEDULER_URL", "http://localhost:8092")
+	c.SchedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
 	c.BinaryPath = filepath.Join(homeDirectory, "bin", "kanban-classifier")
 	return c, nil
 }
@@ -206,8 +212,11 @@ func main() {
 	// path that fails at exec time either way.
 	homeDirectory, _ := os.UserHomeDir()
 
-	cfg, err := parseFlags(os.Args[1:], os.Getenv, homeDirectory)
+	cfg, err := parseFlags(os.Args[1:], servicesettings.ProcessEnvironment(), homeDirectory)
 	if err != nil {
+		if errors.Is(err, errSettingsRefused) {
+			log.Fatal(err)
+		}
 		// Both codes are the ones this binary used before the flag set moved out
 		// of main(): flag.ExitOnError exited 2 on a bad argument after printing
 		// the error and the usage message, and 0 on -h. Parse has already printed
@@ -1453,13 +1462,6 @@ func registerSchedulerJob(cfg config) error {
 }
 
 // ============================ misc ============================
-
-func envOr(lookupEnvironment environmentLookup, key, fallback string) string {
-	if v := lookupEnvironment(key); v != "" {
-		return v
-	}
-	return fallback
-}
 
 // silence unused import on net/url — kept in case we need query encoding later.
 var _ = url.PathEscape

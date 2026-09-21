@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 )
 
 // serveOneshot points classify at a stub llm-bridge-server whose oneshot
@@ -18,7 +20,7 @@ func serveOneshot(t *testing.T, body any) config {
 		_ = json.NewEncoder(w).Encode(body)
 	}))
 	t.Cleanup(srv.Close)
-	return config{Model: defaultModel, BridgeURL: srv.URL, OneshotInstance: "inst-test"}
+	return config{Model: schedulerconfig.DefaultKanbanClassifierModel, BridgeURL: srv.URL, OneshotInstance: "inst-test"}
 }
 
 // A reply that stopped at max_tokens is incomplete however cleanly it parses:
