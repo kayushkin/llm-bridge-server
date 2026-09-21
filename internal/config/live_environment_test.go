@@ -16,6 +16,8 @@ import (
 // deploy.sh runs it against the running service before it stops it, because
 // an undeclared variable under SCHEDULER_PORT, SCHEDULER_DB or SCHEDULER_TOKEN
 // (SCHEDULER_DB_PATH, say) stops the new binary at boot, and with it every job.
+// It builds every job binary's registry from the same environment too, since
+// each job inherits it.
 var liveEnvironmentFile = flag.String("live-environment-file", "", "a /proc/<pid>/environ to build the settings registry from")
 
 // Only the verdict is printed, never a value: an environment holds secrets.
@@ -46,5 +48,17 @@ func TestTheLiveProcessEnvironmentBuildsARegistry(t *testing.T) {
 	if err := registry.CheckRequired(); err != nil {
 		t.Fatalf("the new binary would refuse to start in this environment: %v", err)
 	}
-	t.Logf("a registry builds from the %d variables in %s", len(variables), *liveEnvironmentFile)
+	// Every job the scheduler runs starts with this environment, and a job
+	// binary refuses a misspelling of a name it owns just as the service does.
+	for _, binary := range JobBinaries {
+		jobRegistry, err := binary.NewSettingsRegistry(servicesettings.MapEnvironment(variables))
+		if err != nil {
+			t.Errorf("%s would refuse to start in this environment: %v", binary.Name, err)
+			continue
+		}
+		if err := jobRegistry.CheckRequired(); err != nil {
+			t.Errorf("%s would refuse to start in this environment: %v", binary.Name, err)
+		}
+	}
+	t.Logf("the service's registry and %d job binaries' build from the %d variables in %s", len(JobBinaries), len(variables), *liveEnvironmentFile)
 }
