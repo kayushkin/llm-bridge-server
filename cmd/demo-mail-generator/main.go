@@ -19,12 +19,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"math/rand"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/bridgeauth"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/demomail"
 	"github.com/slava/scheduler/internal/demoteam"
 	"github.com/slava/scheduler/internal/oneshot"
@@ -33,7 +35,6 @@ import (
 const (
 	defaultRepo    = "/home/kayushkincom/repos/northwind-api"
 	defaultAccount = "demo-work"
-	defaultModel   = "claude-sonnet-4-6"
 
 	// Sized for a handful of full email bodies. Too small does not fail
 	// silently — oneshot reports truncation — but it does fail.
@@ -57,7 +58,12 @@ type config struct {
 }
 
 func main() {
-	configuration := parseFlags()
+	settings, err := schedulerconfig.DemoMailGenerator.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "demo-mail-generator: %v\n", err)
+		os.Exit(1)
+	}
+	configuration := parseFlags(settings)
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so nothing else sees the token.
 	if err := bridgeauth.StampRequestsToBridge(configuration.BridgeURL); err != nil {
@@ -70,16 +76,16 @@ func main() {
 	}
 }
 
-func parseFlags() config {
+func parseFlags(settings *servicesettings.Registry) config {
 	var c config
 	flag.StringVar(&c.Repo, "repo", defaultRepo, "Repository the mail is about.")
 	flag.StringVar(&c.Account, "account", defaultAccount, "The LOCAL mailstack account to deliver to.")
-	flag.StringVar(&c.MailURL, "mail-url", envOr("MAILSTACK_URL", "http://localhost:8195"), "mailstack base URL")
-	flag.StringVar(&c.MailToken, "mail-token", os.Getenv("MAILSTACK_TOKEN"), "mailstack bearer token")
-	flag.StringVar(&c.BridgeURL, "bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL")
-	flag.StringVar(&c.OneshotInstance, "oneshot-instance", envOr("ONESHOT_INSTANCE_ID", "inst-cc-local"),
+	flag.StringVar(&c.MailURL, "mail-url", settings.String(schedulerconfig.SettingMailstackURL), "mailstack base URL")
+	flag.StringVar(&c.MailToken, "mail-token", settings.String(schedulerconfig.SettingMailstackToken), "mailstack bearer token")
+	flag.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
+	flag.StringVar(&c.OneshotInstance, "oneshot-instance", settings.String(schedulerconfig.SettingOneshotInstanceID),
 		"claude_code harness instance for the subscription oneshot call")
-	flag.StringVar(&c.Model, "model", envOr("DEMO_MAIL_MODEL", defaultModel), "model id for the oneshot call")
+	flag.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingModel), "model id for the oneshot call")
 	flag.IntVar(&c.Count, "count", 2, "How many messages to write this tick.")
 	flag.BoolVar(&c.Purge, "purge", false, "Delete every message in the account first.")
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Print what would be sent to the model and stop.")
@@ -216,13 +222,6 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 // sendersWithMail keeps the members who have an address to send from.
