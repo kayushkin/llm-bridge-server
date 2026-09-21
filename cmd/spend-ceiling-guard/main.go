@@ -38,12 +38,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"log"
 	"net/http"
-	"os"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/bridgeauth"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/spendtree"
 )
@@ -62,11 +63,15 @@ type noteboardItem struct {
 }
 
 func main() {
+	settings, err := schedulerconfig.SpendCeilingGuard.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	if err != nil {
+		log.Fatal(err)
+	}
 	dryRun := flag.Bool("dry-run", false, "Report what would be held; change nothing.")
 	flag.Parse()
 
-	kanbanURL := envOr("KANBAN_STORE_URL", "http://localhost:8305")
-	bridgeURL := envOr("LLM_BRIDGE_URL", "http://localhost:8160")
+	kanbanURL := settings.String(schedulerconfig.SettingKanbanStoreURL)
+	bridgeURL := settings.String(schedulerconfig.SettingBridgeURL)
 
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so noteboard, kanban-store and the
@@ -74,7 +79,7 @@ func main() {
 	if err := bridgeauth.StampRequestsToBridge(bridgeURL); err != nil {
 		log.Fatal(err)
 	}
-	noteboardURL := envOr("NOTEBOARD_URL", "http://localhost:8191")
+	noteboardURL := settings.String(schedulerconfig.SettingNoteboardURL)
 
 	// Cost is a whole-fleet table; fetch it once rather than per item.
 	aggregates, err := fetchSessionAggregates(bridgeURL)
@@ -215,11 +220,4 @@ func fetchSessionAggregates(bridgeURL string) ([]sessionAggregate, error) {
 		return nil, err
 	}
 	return aggs, nil
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
