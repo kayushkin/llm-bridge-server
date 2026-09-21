@@ -6,11 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
-	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/spendtree"
 )
@@ -221,23 +218,6 @@ func cardSpendCeiling(item map[string]any) (float64, bool) {
 // what makes it reachable — it used to fire during package variable
 // initialisation, before main() ran, so no test could observe it at all.
 var errMalformedEnvironmentValue = errors.New("malformed environment value")
-
-// defaultMaxBudgetUSD reads AUTOWORKER_DEFAULT_MAX_BUDGET_USD, 0 when unset.
-// The settings library has no decimal type, so the setting is a string parsed
-// here. A malformed value is an error rather than silently ignored: this
-// configures a SPEND CAP, and a typo that quietly became "uncapped" is the
-// failure this whole mechanism exists to prevent.
-func defaultMaxBudgetUSD(settings *servicesettings.Registry) (float64, error) {
-	raw := settings.String(schedulerconfig.SettingDefaultMaxBudgetUSD)
-	if raw == "" {
-		return 0, nil
-	}
-	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%w: AUTOWORKER_DEFAULT_MAX_BUDGET_USD=%q is not a number — refusing to run uncapped on a typo", errMalformedEnvironmentValue, raw)
-	}
-	return v, nil
-}
 
 // resolveSessionBudget decides the cost cap for one dispatched session, and says
 // why. This is the money decision, so it is a function rather than a few lines

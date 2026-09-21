@@ -196,9 +196,7 @@ var Autoworker = JobBinary{Name: "autoworker", OwnedEnvironmentVariablePrefixes:
 		{Key: SettingUsageStoreURL, EnvironmentVariable: "USAGE_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultUsageStoreURL,
 			Description: "Where usage-store answers. The weekly limits and what has been used against them come from there, so a wrong address dispatches nothing."},
 		schedulerURLDefinition(),
-		// The library has no decimal type; the binary parses this and names the
-		// variable when it cannot.
-		{Key: SettingDefaultMaxBudgetUSD, EnvironmentVariable: "AUTOWORKER_DEFAULT_MAX_BUDGET_USD", Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeString,
+		{Key: SettingDefaultMaxBudgetUSD, EnvironmentVariable: "AUTOWORKER_DEFAULT_MAX_BUDGET_USD", Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeDecimal,
 			Description: "The spend cap in USD for a dispatched session whose card has no ceiling of its own; unset or 0 is uncapped. A value that is not a number stops the binary rather than run uncapped. The -default-max-budget-usd flag overrides it."},
 	}
 }}

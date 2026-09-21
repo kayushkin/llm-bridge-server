@@ -78,6 +78,8 @@ func valueOfItsType(definition servicesettings.Definition) string {
 		return "true"
 	case msg.ServiceSettingValueTypeInteger:
 		return "1"
+	case msg.ServiceSettingValueTypeDecimal:
+		return "1.5"
 	}
 	return "x"
 }

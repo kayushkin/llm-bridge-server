@@ -227,11 +227,7 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	fs.Float64Var(&c.slackPercentPoints, "slack", 15, "Percent points below target before firing.")
 	fs.StringVar(&c.prompt, "prompt", defaultPrompt, "Prompt text sent to the worker agent.")
 	fs.StringVar(&c.timezone, "tz", "America/Los_Angeles", "IANA timezone for safe-window gating.")
-	budgetDefault, err := defaultMaxBudgetUSD(settings)
-	if err != nil {
-		return config{}, err
-	}
-	fs.Float64Var(&c.defaultMaxBudgetUSD, "default-max-budget-usd", budgetDefault,
+	fs.Float64Var(&c.defaultMaxBudgetUSD, "default-max-budget-usd", settings.Decimal(schedulerconfig.SettingDefaultMaxBudgetUSD),
 		"Fleet-wide per-session spend cap in USD for sessions with no per-card ceiling (0 = off/uncapped). A card's own ceiling always wins.")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
