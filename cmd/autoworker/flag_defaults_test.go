@@ -5,6 +5,8 @@ import (
 	"flag"
 	"path/filepath"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 // The defaults that ship, and the wiring that carries them to the tick.
@@ -19,15 +21,15 @@ import (
 // exits 0, and a -default-max-budget-usd that drifted off 0 caps sessions the
 // user never asked to cap.
 
-// noEnvironment is the lookup for a process started with none of these
-// variables set, which is how the scheduler runs this binary.
-func noEnvironment(string) string { return "" }
+// noEnvironment is a process started with none of these variables set, which
+// is how the scheduler runs this binary.
+var noEnvironment = servicesettings.MapEnvironment(map[string]string{})
 
 // environmentWith answers only for the keys given to it, so a test states the
 // environment it means rather than inheriting the one the test binary happens
 // to have.
-func environmentWith(values map[string]string) environmentLookup {
-	return func(key string) string { return values[key] }
+func environmentWith(values map[string]string) servicesettings.Environment {
+	return servicesettings.MapEnvironment(values)
 }
 
 func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
@@ -134,7 +136,7 @@ func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 	}
 }
 
-// TestAnUnsetVariableFallsBackAndASetOneDoesNot pins envOr's direction. It has
+// TestAnUnsetVariableFallsBackAndASetOneDoesNot pins the default's direction. It has
 // been the wrong way round in this family before: preferring the fallback over
 // the environment leaves every endpoint on localhost no matter what the unit
 // file says, which on this box is a working configuration and therefore silent.
@@ -279,5 +281,20 @@ func TestParsingTwiceDoesNotPanic(t *testing.T) {
 	}
 	if _, err := parseFlags(nil, noEnvironment, "/home/someone"); err != nil {
 		t.Fatalf("second parse: %v", err)
+	}
+}
+
+// A misspelling of the one variable this binary owns used to be ignored, and
+// the spend cap it meant to set silently stayed off. It now stops the binary,
+// with the exit code of any other bad environment value.
+func TestAMisspelledAutoworkerVariableIsRefused(t *testing.T) {
+	_, err := parseFlags(nil, environmentWith(map[string]string{
+		"AUTOWORKER_DEFAULT_MAX_BUDGET": "5",
+	}), "/home/someone")
+	if err == nil {
+		t.Fatal("AUTOWORKER_DEFAULT_MAX_BUDGET was accepted; the cap it meant to set would be off")
+	}
+	if !errors.Is(err, errMalformedEnvironmentValue) {
+		t.Errorf("error does not carry errMalformedEnvironmentValue, so main would exit 2 rather than 1: %v", err)
 	}
 }

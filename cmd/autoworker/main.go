@@ -26,7 +26,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -38,6 +37,9 @@ import (
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/bridgeauth"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -149,13 +151,6 @@ type state struct {
 	LastFire map[string]int64 `json:"last_fire"` // provider → unix seconds
 }
 
-// environmentLookup has os.Getenv's shape. Taking it as an argument rather than
-// calling os.Getenv directly is what lets a test state which variables were set
-// without setting them: the defaults below are read at flag-registration time,
-// so a test that exported NOTEBOARD_URL to observe it would be racing every
-// other test in the package for one process-wide variable.
-type environmentLookup func(key string) string
-
 // config is every value the tick is configured with: the six flags, and the
 // endpoints and paths that used to be read from the environment at the point of
 // use, scattered across five functions.
@@ -205,11 +200,21 @@ type config struct {
 // ContinueOnError is what makes it callable at all — ExitOnError would take the
 // test binary down with it on a bad argument instead of returning the error.
 //
-// homeDirectory is an argument for the same reason as lookupEnvironment: the
-// state file and the registered command are both home-relative, and a test
-// should not have to move HOME out from under the process to assert what they
-// resolve to.
-func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirectory string) (config, error) {
+// The environment is an argument, not the process's own, so that a test states
+// which variables were set without setting them: the flag defaults are read at
+// registration time, and a test that exported NOTEBOARD_URL to observe it would
+// race every other test in the package for one process-wide variable. It is
+// read through the binary's settings registry (internal/config), which refuses
+// a misspelled AUTOWORKER_ variable.
+//
+// homeDirectory is an argument for the same reason: the state file and the
+// registered command are both home-relative, and a test should not have to
+// move HOME out from under the process to assert what they resolve to.
+func parseFlags(args []string, environment servicesettings.Environment, homeDirectory string) (config, error) {
+	settings, err := schedulerconfig.Autoworker.NewSettingsRegistry(environment)
+	if err != nil {
+		return config{}, fmt.Errorf("%w: %v", errMalformedEnvironmentValue, err)
+	}
 	fs := flag.NewFlagSet("autoworker", flag.ContinueOnError)
 	var c config
 	fs.BoolVar(&c.registerJob, "register", false, "Register (upsert) this binary as a scheduler cron job and exit.")
@@ -217,7 +222,7 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	fs.Float64Var(&c.slackPercentPoints, "slack", 15, "Percent points below target before firing.")
 	fs.StringVar(&c.prompt, "prompt", defaultPrompt, "Prompt text sent to the worker agent.")
 	fs.StringVar(&c.timezone, "tz", "America/Los_Angeles", "IANA timezone for safe-window gating.")
-	budgetDefault, err := envFloat(lookupEnvironment, "AUTOWORKER_DEFAULT_MAX_BUDGET_USD", 0)
+	budgetDefault, err := defaultMaxBudgetUSD(settings)
 	if err != nil {
 		return config{}, err
 	}
@@ -227,12 +232,12 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 		return config{}, err
 	}
 
-	c.natsURL = envOr(lookupEnvironment, "NATS_URL", "nats://localhost:4222")
-	c.kanbanStoreURL = envOr(lookupEnvironment, "KANBAN_STORE_URL", "http://localhost:8305")
-	c.llmBridgeURL = envOr(lookupEnvironment, "LLM_BRIDGE_URL", "http://localhost:8160")
-	c.noteboardURL = envOr(lookupEnvironment, "NOTEBOARD_URL", "http://localhost:8191")
-	c.usageStoreURL = envOr(lookupEnvironment, "USAGE_STORE_URL", "http://localhost:8185")
-	c.schedulerURL = envOr(lookupEnvironment, "SCHEDULER_URL", "http://localhost:8092")
+	c.natsURL = settings.String(schedulerconfig.SettingNATSURL)
+	c.kanbanStoreURL = settings.String(schedulerconfig.SettingKanbanStoreURL)
+	c.llmBridgeURL = settings.String(schedulerconfig.SettingBridgeURL)
+	c.noteboardURL = settings.String(schedulerconfig.SettingNoteboardURL)
+	c.usageStoreURL = settings.String(schedulerconfig.SettingUsageStoreURL)
+	c.schedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
 	c.statePath = filepath.Join(homeDirectory, ".config", "autoworker", "state.json")
 	c.binaryPath = filepath.Join(homeDirectory, "bin", "autoworker")
 	return c, nil
@@ -259,7 +264,7 @@ func main() {
 	// than it used to.
 	homeDirectory, _ := os.UserHomeDir()
 
-	cfg, err := parseFlags(os.Args[1:], os.Getenv, homeDirectory)
+	cfg, err := parseFlags(os.Args[1:], servicesettings.ProcessEnvironment(), homeDirectory)
 	if err != nil {
 		// A malformed environment value was a log.Fatalf during package variable
 		// initialisation and keeps that exit code; everything else here is the
@@ -930,13 +935,6 @@ func registerSchedulerJob(schedURL, bin string) error {
 	}
 	fmt.Printf("registered autoworker-tick: %s\n", strings.TrimSpace(string(body)))
 	return nil
-}
-
-func envOr(lookupEnvironment environmentLookup, key, fallback string) string {
-	if v := lookupEnvironment(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 const defaultPrompt = `You are the nightly todo-worker. The user is asleep; their subscription budget is under-utilised for this week and I am dispatching you to make useful progress on open todos without disturbing them.

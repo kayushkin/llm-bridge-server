@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/spendtree"
 )
@@ -220,18 +222,19 @@ func cardSpendCeiling(item map[string]any) (float64, bool) {
 // initialisation, before main() ran, so no test could observe it at all.
 var errMalformedEnvironmentValue = errors.New("malformed environment value")
 
-// envFloat reads a float from the environment, falling back to def when unset.
-// A malformed value is an error rather than silently ignored: this configures a
-// SPEND CAP, and a typo that quietly became "uncapped" is the failure this whole
-// mechanism exists to prevent.
-func envFloat(lookupEnvironment environmentLookup, key string, def float64) (float64, error) {
-	raw := lookupEnvironment(key)
+// defaultMaxBudgetUSD reads AUTOWORKER_DEFAULT_MAX_BUDGET_USD, 0 when unset.
+// The settings library has no decimal type, so the setting is a string parsed
+// here. A malformed value is an error rather than silently ignored: this
+// configures a SPEND CAP, and a typo that quietly became "uncapped" is the
+// failure this whole mechanism exists to prevent.
+func defaultMaxBudgetUSD(settings *servicesettings.Registry) (float64, error) {
+	raw := settings.String(schedulerconfig.SettingDefaultMaxBudgetUSD)
 	if raw == "" {
-		return def, nil
+		return 0, nil
 	}
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %s=%q is not a number — refusing to run uncapped on a typo", errMalformedEnvironmentValue, key, raw)
+		return 0, fmt.Errorf("%w: AUTOWORKER_DEFAULT_MAX_BUDGET_USD=%q is not a number — refusing to run uncapped on a typo", errMalformedEnvironmentValue, raw)
 	}
 	return v, nil
 }
