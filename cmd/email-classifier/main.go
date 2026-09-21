@@ -43,7 +43,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
@@ -53,6 +52,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/bridgeauth"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/principalstore"
 )
@@ -101,17 +103,6 @@ const (
 	// linked-email list this command rewrites. Everything above it is preserved
 	// verbatim on every pass.
 	evidenceMarker = "<!-- email-classifier:evidence -->"
-
-	// A better model than the sibling classifiers use, deliberately. The cheap
-	// affinity layer already routes bulk mail with no model at all, so what
-	// reaches the model is the novel mail — and measured across runs, 44-50% of
-	// it results in a NEW card. Card creation is therefore the median case here,
-	// not a rare one, and it is a judgement call: telling a task ("pay this
-	// rent") from a record ("another receipt") is exactly what the cheap model
-	// got wrong, naming six receipt cards after their amounts so no two could
-	// ever merge. At ~20 batch calls a month the cost difference is not the
-	// deciding factor.
-	defaultModel = "claude-sonnet-4-6"
 
 	// emailsPerModelCall bounds one batch. Emails are small, so batching is far
 	// cheaper than a call each.
@@ -164,13 +155,18 @@ const (
 	schedulerJobTimeoutSeconds = 900
 )
 
-// environmentLookup has os.Getenv's shape. Taking it as an argument rather than
-// calling os.Getenv directly is what lets a test state which variables were set
-// without setting them: nine of the twenty-three flag defaults below are read at
-// flag-registration time, so a test that exported MAILSTACK_URL to observe it
-// would be racing every other test in this package for one process-wide
-// variable. This package has more of those than any of its siblings.
-type environmentLookup func(key string) string
+// errSettingsRefused marks a parseFlags error that came from the environment:
+// the settings registry refused a value. main prints it and exits 1, where the
+// flag package has already printed its own errors and exits 2.
+var errSettingsRefused = errors.New("settings refused")
+
+// mailstackTokenWhenUnset is the -mail-token default with MAILSTACK_TOKEN
+// unset. It is mailstack's own out-of-the-box token, and the live mailstack
+// still runs on it (measured 2026-09-21): the scheduler unit does not carry
+// MAILSTACK_TOKEN, so the email-classifier job authenticates with this. The
+// settings library refuses a default on a secret, so it is not in the
+// declaration; giving the job the token and deleting this is its own change.
+const mailstackTokenWhenUnset = "changeme"
 
 // parseFlags builds the flag set and parses args into a config.
 //
@@ -198,30 +194,46 @@ type environmentLookup func(key string) string
 // ContinueOnError is what makes it callable at all — ExitOnError would take the
 // test binary down with it on a bad argument instead of returning the error.
 //
-// homeDirectory is an argument for the same reason as lookupEnvironment: the
-// registered command is home-relative, and a test should not have to move HOME
-// out from under the process to assert what it resolves to.
-func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirectory string) (config, error) {
+// The environment is an argument, not the process's own, so that a test states
+// which variables were set without setting them: nine of the twenty-three flag
+// defaults below are read at flag-registration time, so a test that exported
+// MAILSTACK_URL to observe it would be racing every other test in this package
+// for one process-wide variable. It is read through the binary's settings
+// registry (internal/config), which refuses a misspelled EMAIL_CLASSIFIER_ or
+// EMAIL_BOARD_ID variable.
+//
+// homeDirectory is an argument for the same reason: the registered command is
+// home-relative, and a test should not have to move HOME out from under the
+// process to assert what it resolves to.
+func parseFlags(args []string, environment servicesettings.Environment, homeDirectory string) (config, error) {
+	settings, err := schedulerconfig.EmailClassifier.NewSettingsRegistry(environment)
+	if err != nil {
+		return config{}, fmt.Errorf("%w: %v", errSettingsRefused, err)
+	}
+	mailToken := settings.String(schedulerconfig.SettingMailstackToken)
+	if mailToken == "" {
+		mailToken = mailstackTokenWhenUnset
+	}
 	fs := flag.NewFlagSet("email-classifier", flag.ContinueOnError)
 	var c config
 	fs.BoolVar(&c.ListVocabularies, "list-vocabularies", false, "Print the vocabulary names a board's classifier.vocabulary may carry, as a JSON array, and exit.")
 	fs.BoolVar(&c.RegisterJob, "register", false, "Register this binary as a scheduler cron job and exit.")
 	fs.BoolVar(&c.DryRun, "dry-run", false, "Classify but write nothing to kanban-store.")
 	fs.BoolVar(&c.DumpDigest, "dump-digest", false, "Print the digest that would be sent and exit, without calling the model.")
-	fs.StringVar(&c.BoardID, "board-id", envOr(lookupEnvironment, "EMAIL_BOARD_ID", ""), "Kanban board id (required except with -list-vocabularies). The board's classifier setting — vocabulary, mail_account_ids, hold_new_cards — says what this run files with.")
-	fs.StringVar(&c.KanbanURL, "kanban-url", envOr(lookupEnvironment, "KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-	fs.StringVar(&c.MailURL, "mail-url", envOr(lookupEnvironment, "MAILSTACK_URL", "http://localhost:8195"), "mailstack base URL")
-	fs.StringVar(&c.MailToken, "mail-token", envOr(lookupEnvironment, "MAILSTACK_TOKEN", "changeme"), "mailstack bearer token")
-	fs.StringVar(&c.BridgeURL, "bridge-url", envOr(lookupEnvironment, "LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL, used to tell whether an agent is still working on a card")
-	fs.StringVar(&c.OneshotInstance, "oneshot-instance", envOr(lookupEnvironment, "ONESHOT_INSTANCE_ID", ""), "claude_code harness instance id for subscription oneshot calls (required unless -dump-digest)")
-	fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "EMAIL_CLASSIFIER_MODEL", defaultModel), "Anthropic model id")
+	fs.StringVar(&c.BoardID, "board-id", settings.String(schedulerconfig.SettingEmailBoardID), "Kanban board id (required except with -list-vocabularies). The board's classifier setting — vocabulary, mail_account_ids, hold_new_cards — says what this run files with.")
+	fs.StringVar(&c.KanbanURL, "kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
+	fs.StringVar(&c.MailURL, "mail-url", settings.String(schedulerconfig.SettingMailstackURL), "mailstack base URL")
+	fs.StringVar(&c.MailToken, "mail-token", mailToken, "mailstack bearer token")
+	fs.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL, used to tell whether an agent is still working on a card")
+	fs.StringVar(&c.OneshotInstance, "oneshot-instance", settings.String(schedulerconfig.SettingOneshotInstanceID), "claude_code harness instance id for subscription oneshot calls (required unless -dump-digest)")
+	fs.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingModel), "Anthropic model id")
 	fs.IntVar(&c.MaxEmails, "max", maxEmailsPerTick, "Max emails to file per tick.")
 	fs.BoolVar(&c.Backfill, "backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
 	fs.BoolVar(&c.MergePass, "merge", false, "Run the card-merge pass over the board and exit, filing no new mail.")
 	fs.BoolVar(&c.BackfillDue, "backfill-due", false, "Recover deadlines from existing card summaries into due_at, re-score, and exit. One-off: cards filed after this store their own date.")
 	fs.StringVar(&c.RefileUnreadSince, "refile-unread-since", "", "Unfile mail attached on or after this date (YYYY-MM-DD) that was never fetched or read, and exit. Drain it with -backfill afterwards. Empty means off.")
-	fs.StringVar(&c.NoteboardURL, "noteboard-url", envOr(lookupEnvironment, "NOTEBOARD_URL", "http://localhost:8191"), "noteboard base URL, where routing notes live")
-	fs.StringVar(&c.PrincipalStoreURL, "principal-store-url", envOr(lookupEnvironment, "PRINCIPAL_STORE_URL", "http://127.0.0.1:8314"), "principal-store base URL, where a sender's address becomes the contact a ticket names as its requester")
+	fs.StringVar(&c.NoteboardURL, "noteboard-url", settings.String(schedulerconfig.SettingNoteboardURL), "noteboard base URL, where routing notes live")
+	fs.StringVar(&c.PrincipalStoreURL, "principal-store-url", settings.String(schedulerconfig.SettingPrincipalStoreURL), "principal-store base URL, where a sender's address becomes the contact a ticket names as its requester")
 	fs.StringVar(&c.SenderQuery, "sender", "", "Report everything known about one email address — its routing note, the cards its mail feeds, the messages it sent — and exit. With -note, writes that note instead.")
 	fs.StringVar(&c.MessageQuery, "message", "", "Report or annotate one message by locator (account:message_id), and exit. With -note, writes that note instead.")
 	fs.StringVar(&c.NoteText, "note", "", "The routing note to store against -sender or -message. Pass \"\" with -delete-note to remove one.")
@@ -230,7 +242,7 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 		return config{}, err
 	}
 
-	c.SchedulerURL = envOr(lookupEnvironment, "SCHEDULER_URL", "http://localhost:8092")
+	c.SchedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
 	c.BinaryPath = filepath.Join(homeDirectory, "bin", "email-classifier")
 	return c, nil
 }
@@ -274,8 +286,11 @@ func run() int {
 	// path that fails at exec time either way.
 	homeDirectory, _ := os.UserHomeDir()
 
-	cfg, err := parseFlags(os.Args[1:], os.Getenv, homeDirectory)
+	cfg, err := parseFlags(os.Args[1:], servicesettings.ProcessEnvironment(), homeDirectory)
 	if err != nil {
+		if errors.Is(err, errSettingsRefused) {
+			log.Fatal(err)
+		}
 		// Both codes are the ones this binary used before the flag set moved out
 		// of main(): flag.ExitOnError exited 2 on a bad argument after printing
 		// the error and the usage message, and 0 on -h. Parse has already printed
@@ -1209,15 +1224,4 @@ func registerSchedulerJob(cfg config) error {
 	}
 	fmt.Printf("registered %s: %s\n", schedulerJobName, strings.TrimSpace(string(body)))
 	return nil
-}
-
-// envOr takes the lookup as an argument for the same reason homeDirectory is
-// passed in: eight of the flag defaults are read at flag-registration time, so a
-// test that exported one of these variables to observe it would be racing every
-// other test in the package for one process-wide variable.
-func envOr(lookupEnvironment environmentLookup, key, fallback string) string {
-	if v := lookupEnvironment(key); v != "" {
-		return v
-	}
-	return fallback
 }

@@ -5,6 +5,9 @@ import (
 	"flag"
 	"path/filepath"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 )
 
 // The defaults that ship, and the wiring that carries them to the tick.
@@ -25,16 +28,16 @@ import (
 //   - The TWO that decide spend. -model picks which model reads every digest,
 //     and -max bounds how much mail one tick pays to classify.
 
-// noEnvironment is the lookup for a process started with none of these
+// noEnvironment is a process started with none of these
 // variables set, which is how the scheduler runs this binary: jobs run as
 // `sh -c` with only the scheduler's own thin environment.
-func noEnvironment(string) string { return "" }
+var noEnvironment = servicesettings.MapEnvironment(map[string]string{})
 
 // environmentWith answers only for the keys given to it, so a test states the
 // environment it means rather than inheriting the one the test binary happens
 // to have.
-func environmentWith(values map[string]string) environmentLookup {
-	return func(key string) string { return values[key] }
+func environmentWith(values map[string]string) servicesettings.Environment {
+	return servicesettings.MapEnvironment(values)
 }
 
 func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
@@ -169,8 +172,8 @@ func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
 	}
-	if cfg.Model != defaultModel {
-		t.Errorf("-model default = %q, want defaultModel (%q)", cfg.Model, defaultModel)
+	if cfg.Model != schedulerconfig.DefaultEmailClassifierModel {
+		t.Errorf("-model default = %q, want schedulerconfig.DefaultEmailClassifierModel (%q)", cfg.Model, schedulerconfig.DefaultEmailClassifierModel)
 	}
 	if cfg.MaxEmails != maxEmailsPerTick {
 		t.Errorf("-max default = %d, want maxEmailsPerTick (%d)", cfg.MaxEmails, maxEmailsPerTick)
@@ -220,7 +223,7 @@ func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 	}
 }
 
-// TestAnUnsetVariableFallsBackAndASetOneDoesNot pins envOr's direction. It has
+// TestAnUnsetVariableFallsBackAndASetOneDoesNot pins the default's direction. It has
 // been the wrong way round in this family before: preferring the fallback over
 // the environment leaves every endpoint on localhost no matter what the unit
 // file says, which on this box is a working configuration and therefore silent.
@@ -398,5 +401,16 @@ func TestParsingTwiceDoesNotPanic(t *testing.T) {
 	}
 	if _, err := parseFlags(nil, noEnvironment, "/home/someone"); err != nil {
 		t.Fatalf("second parse: %v", err)
+	}
+}
+
+// A misspelled EMAIL_CLASSIFIER_MODEL or EMAIL_BOARD_ID used to be ignored. It
+// now stops the binary, and main prints why.
+func TestAMisspelledEmailClassifierVariableIsRefused(t *testing.T) {
+	for _, misspelled := range []string{"EMAIL_CLASSIFIER_MODLE", "EMAIL_BOARD_IDS"} {
+		_, err := parseFlags(nil, environmentWith(map[string]string{misspelled: "x"}), "/home/someone")
+		if !errors.Is(err, errSettingsRefused) {
+			t.Errorf("%s: parseFlags = %v, want errSettingsRefused", misspelled, err)
+		}
 	}
 }

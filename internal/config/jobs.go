@@ -83,6 +83,15 @@ const (
 )
 
 // The models each classifying binary asks for with nothing set.
+//
+// email-classifier's is a better model than its siblings', deliberately. The
+// cheap affinity layer already routes bulk mail with no model at all, so what
+// reaches the model is the novel mail — and measured across runs, 44-50% of
+// it results in a NEW card. Card creation is therefore the median case there,
+// not a rare one, and it is a judgement call: telling a task ("pay this rent")
+// from a record ("another receipt") is exactly what the cheap model got wrong,
+// naming six receipt cards after their amounts so no two could ever merge. At
+// ~20 batch calls a month the cost difference is not the deciding factor.
 const (
 	DefaultEmailClassifierModel   = "claude-sonnet-4-6"
 	DefaultKanbanClassifierModel  = "claude-haiku-4-5-20251001"
