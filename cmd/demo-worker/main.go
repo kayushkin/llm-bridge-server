@@ -29,11 +29,13 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/bridgeauth"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/demoteam"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
@@ -84,7 +86,12 @@ type config struct {
 }
 
 func main() {
-	cfg := parseFlags()
+	settings, err := schedulerconfig.DemoWorker.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
+		os.Exit(1)
+	}
+	cfg := parseFlags(settings)
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so nothing else sees the token.
 	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL); err != nil {
@@ -103,7 +110,7 @@ func main() {
 	}
 }
 
-func parseFlags() config {
+func parseFlags(settings *servicesettings.Registry) config {
 	var c config
 	flag.BoolVar(&c.Promote, "promote", false, "Move eligible Work board cards onto the work board's Queued column.")
 	flag.BoolVar(&c.Dispatch, "dispatch", false, "Spawn a real agent session for queued cards.")
@@ -111,9 +118,9 @@ func parseFlags() config {
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Say what would happen and change nothing.")
 	flag.StringVar(&c.EmailBoardID, "email-board-id", "", "Id of the board the classifier files onto (required).")
 	flag.StringVar(&c.WorkBoardID, "work-board-id", "", "Id of the board the agents work from (required). Its default_instance_id says where sessions run and its default_bundle_id what they are provisioned with.")
-	flag.StringVar(&c.KanbanURL, "kanban-url", envOr("KANBAN_STORE_URL", "http://localhost:8305"), "kanban-store base URL")
-	flag.StringVar(&c.NoteboardURL, "noteboard-url", envOr("NOTEBOARD_URL", "http://localhost:8191"), "noteboard base URL")
-	flag.StringVar(&c.BridgeURL, "bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"),
+	flag.StringVar(&c.KanbanURL, "kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
+	flag.StringVar(&c.NoteboardURL, "noteboard-url", settings.String(schedulerconfig.SettingNoteboardURL), "noteboard base URL")
+	flag.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL),
 		"llm-bridge-server base URL. Sessions are created here directly rather than published to NATS, so a failure to start is an error rather than silence.")
 	flag.StringVar(&c.RepoPath, "repo", defaultRepoPath, "The repo agents work in.")
 	flag.StringVar(&c.BuilderSlug, "builder", "northwind-builder", "Identity that does the building.")
@@ -204,13 +211,6 @@ func sessionHostFromBoard(board *kanbanclient.Board) (sessionHost, error) {
 			board.Name, board.ID, board.ID)
 	}
 	return sessionHost{InstanceID: board.DefaultInstanceID, BundleID: board.DefaultBundleID}, nil
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func shortID(id string) string {
