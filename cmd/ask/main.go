@@ -39,27 +39,32 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/slava/scheduler/internal/bridgeauth"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 )
 
 func main() {
+	settings, err := schedulerconfig.Ask.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	if err != nil {
+		log.Fatal(err)
+	}
 	var (
 		instanceName = flag.String("instance", "", "Harness instance NAME to host the session. Empty = resolve the local machine's claude_code instance.")
 		from         = flag.String("from", "herald", "Originating agent — sets the message's Agent (sender) tag shown in the dash. Use the real agent name, e.g. approval-proposer.")
 		title        = flag.String("title", "", "Session display name. Defaults to a truncated form of the question.")
 		onReply      = flag.String("on-reply", "", "Instruction for what the agent should do once the user replies. Empty = just relay the alert; no action expected.")
 		reuseSession = flag.String("session", "", "Existing herald bus session id to deliver into as a new turn, instead of opening a new session. The adapter routes it to the bridge session it created for that id; -instance and -title are meaningless here and rejected.")
-		bridgeURL    = flag.String("bridge-url", envOr("LLM_BRIDGE_URL", "http://localhost:8160"), "llm-bridge-server base URL (for instance resolution).")
+		bridgeURL    = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL (for instance resolution).")
 		dryRun       = flag.Bool("dry-run", false, "Print the resolved instance and prompt; do not publish.")
 	)
 	flag.Parse()
@@ -98,7 +103,7 @@ func main() {
 			fmt.Printf("session:  %s (reused)\nfrom:     %s\n\n--- prompt ---\n%s\n", *reuseSession, *from, prompt)
 			return
 		}
-		publishInbound(messages.BridgeInbound{
+		publishInbound(settings.String(schedulerconfig.SettingNATSURL), messages.BridgeInbound{
 			BusSessionID: *reuseSession,
 			Agent:        *from,
 			Orchestrator: "claude-code",
@@ -128,7 +133,7 @@ func main() {
 	}
 
 	sessionID := fmt.Sprintf("herald-%d", now.UnixNano())
-	publishInbound(messages.BridgeInbound{
+	publishInbound(settings.String(schedulerconfig.SettingNATSURL), messages.BridgeInbound{
 		BusSessionID: sessionID,
 		Agent:        *from,
 		Orchestrator: "claude-code",
@@ -156,8 +161,7 @@ func main() {
 
 // publishInbound connects to NATS, publishes the request, and exits the process
 // on any failure — ask is a one-shot; there is nothing to clean up.
-func publishInbound(in messages.BridgeInbound) {
-	natsURL := envOr("NATS_URL", "nats://localhost:4222")
+func publishInbound(natsURL string, in messages.BridgeInbound) {
 	nc, err := natsbus.Connect(natsbus.Options{URL: natsURL, Name: "ask"})
 	if err != nil {
 		log.Fatalf("ask: nats connect: %v", err)
@@ -264,11 +268,4 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
-}
-
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
 }
