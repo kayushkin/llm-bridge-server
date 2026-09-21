@@ -4,9 +4,9 @@
 // the service from it, and a test holds every os.Getenv in the service's code
 // to it.
 //
-// It covers the service and the packages it imports, not the job binaries in
-// cmd/: each of those starts in a job's shell, reads its own variables, and is
-// converted separately.
+// It covers the service and the packages it imports. The job binaries in cmd/
+// each start in a job's shell and read their own variables; they are declared
+// in jobs.go, one registry per binary.
 package config
 
 import (
