@@ -160,7 +160,7 @@ func newTestCoordinator(t *testing.T, now time.Time, nb *fakeNoteboard) (*Coordi
 	// the binary runs with, and the working day proved it: added as a flag with a
 	// default of 8am–4:30pm, it stayed 00:00–00:00 in every test, so the suite
 	// measured a day with no work in it while the binary measured a real one.
-	config, err := parseFlags(nil, func(string) string { return "" }, "/home/someone")
+	config, err := parseFlags(nil, noEnvironment)
 	if err != nil {
 		t.Fatalf("parseFlags with no arguments should yield the shipped defaults: %v", err)
 	}
@@ -1753,20 +1753,19 @@ func TestAnEmptyCalendarStillReportsTheWorkingDay(t *testing.T) {
 // no work at all — which hands back the whole day as open time. That is the wrong
 // answer arrived at silently, so it is refused at startup instead.
 func TestAnUnusableWorkingDayIsRefusedAtStartup(t *testing.T) {
-	noEnvironment := func(string) string { return "" }
 	for _, arguments := range [][]string{
 		{"-work-start", "half-eight"},
 		{"-work-end", "25:00"},
 		{"-work-start", "16:30", "-work-end", "08:00"},
 		{"-work-start", "09:00", "-work-end", "09:00"},
 	} {
-		if _, err := parseFlags(arguments, noEnvironment, "/home/someone"); err == nil {
+		if _, err := parseFlags(arguments, noEnvironment); err == nil {
 			t.Errorf("%v was accepted; an unusable working day makes the whole day read as free", arguments)
 		}
 	}
 
 	// And the shipped default is the working day the user actually keeps.
-	config, err := parseFlags(nil, noEnvironment, "/home/someone")
+	config, err := parseFlags(nil, noEnvironment)
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
@@ -1826,7 +1825,7 @@ func TestAnUnusableWorkingDayIsReportedAndNotJustRefused(t *testing.T) {
 		t.Fatalf("Pipe: %v", err)
 	}
 	os.Stderr = write
-	_, parseErr := parseFlags([]string{"-work-end", "08:00"}, func(string) string { return "" }, "/home/someone")
+	_, parseErr := parseFlags([]string{"-work-end", "08:00"}, noEnvironment)
 	write.Close()
 	os.Stderr = realStderr
 
@@ -1875,15 +1874,14 @@ func TestTheWeekendCarriesNoWorkingDay(t *testing.T) {
 // A day list that reads as nothing would hand every day back as wide open — the
 // same silent wrong answer a backwards working day gives.
 func TestAnUnusableWorkDayListIsRefusedAtStartup(t *testing.T) {
-	noEnvironment := func(string) string { return "" }
 	for _, value := range []string{"", "Mon,Funday", "Mon,,Fri", "Mon,Tue,"} {
-		if _, err := parseFlags([]string{"-work-days", value}, noEnvironment, "/home/someone"); err == nil {
+		if _, err := parseFlags([]string{"-work-days", value}, noEnvironment); err == nil {
 			t.Errorf("-work-days %q was accepted", value)
 		}
 	}
 
 	// The shipped list is Monday to Friday, and nothing else.
-	config, err := parseFlags(nil, noEnvironment, "/home/someone")
+	config, err := parseFlags(nil, noEnvironment)
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}

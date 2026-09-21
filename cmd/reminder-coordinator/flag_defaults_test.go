@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 // The defaults that ship, and the wiring that carries them to the Coordinator.
@@ -18,19 +20,20 @@ import (
 // the user of anything, and a wrong hour does not fail, it nudges at a time
 // nobody is reading.
 
-// noEnvironment is the lookup for a process started with none of the three
-// variables set, which is how the scheduler runs this binary.
-func noEnvironment(string) string { return "" }
+// noEnvironment is a process started with none of these variables set, which
+// is how the scheduler runs this binary.
+var noEnvironment = servicesettings.MapEnvironment(map[string]string{})
 
 // environmentWith answers only for the keys given to it, so a test states the
 // environment it means rather than inheriting the one the test binary happens
 // to have.
-func environmentWith(values map[string]string) environmentLookup {
-	return func(key string) string { return values[key] }
+func environmentWith(values map[string]string) servicesettings.Environment {
+	return servicesettings.MapEnvironment(values)
 }
 
 func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
-	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
+	t.Setenv("HOME", "/home/someone")
+	cfg, err := parseFlags(nil, noEnvironment)
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
 	}
@@ -63,7 +66,7 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 // each other and read into a two-field struct. Nothing but a test distinguishes
 // 7:30 from 30:07, and the swap compiles.
 func TestTheDigestHourAndMinuteDoNotSwapOnTheWayToTheCoordinator(t *testing.T) {
-	cfg, err := parseFlags([]string{"-digest-hour", "9", "-digest-minute", "5"}, noEnvironment, "/home/someone")
+	cfg, err := parseFlags([]string{"-digest-hour", "9", "-digest-minute", "5"}, noEnvironment)
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
@@ -85,7 +88,7 @@ func TestEachBaseURLReachesTheClientItIsFor(t *testing.T) {
 		"-noteboard-url", "http://notes.example",
 		"-dash-url", "http://dash.example",
 		"-ask", "/opt/ask",
-	}, noEnvironment, "/home/someone")
+	}, noEnvironment)
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
@@ -124,7 +127,7 @@ func TestATrailingSlashOnEitherBaseURLIsTrimmedBeforeAnyRequestIsBuilt(t *testin
 	cfg, err := parseFlags([]string{
 		"-noteboard-url", "http://notes.example/",
 		"-dash-url", "http://dash.example///",
-	}, noEnvironment, "/home/someone")
+	}, noEnvironment)
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
@@ -143,7 +146,7 @@ func TestTheRemainingConfigFieldsReachTheCoordinator(t *testing.T) {
 		"-tag", "work",
 		"-lookahead", "48h",
 		"-dry-run",
-	}, noEnvironment, "/home/someone")
+	}, noEnvironment)
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
@@ -164,7 +167,7 @@ func TestTheRemainingConfigFieldsReachTheCoordinator(t *testing.T) {
 // default of "" would list every open todo on the box, which is the failure the
 // -tag flag exists to prevent.
 func TestTheDefaultScopeTagIsNotEmpty(t *testing.T) {
-	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
+	cfg, err := parseFlags(nil, noEnvironment)
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
@@ -177,7 +180,7 @@ func TestTheDefaultScopeTagIsNotEmpty(t *testing.T) {
 // load, so a typo in the default is not a wrong time — it is a binary that
 // exits at startup and reminds the user of nothing at all.
 func TestTheDefaultTimezoneNamesAZoneThatActuallyLoads(t *testing.T) {
-	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
+	cfg, err := parseFlags(nil, noEnvironment)
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
@@ -193,7 +196,7 @@ func TestTheCoordinatorsClockIsMovedIntoTheDigestZone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading the zone: %v", err)
 	}
-	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
+	cfg, err := parseFlags(nil, noEnvironment)
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
@@ -219,7 +222,7 @@ func TestTheEnvironmentSuppliesTheThreeDefaultsThatReadIt(t *testing.T) {
 		"DASH_URL":      "http://dash.from-env",
 		"ASK_BIN":       "/env/ask",
 		"REMINDER_TZ":   "Europe/Dublin",
-	}), "/home/someone")
+	}))
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
@@ -238,14 +241,14 @@ func TestTheEnvironmentSuppliesTheThreeDefaultsThatReadIt(t *testing.T) {
 	}
 }
 
-// envOr's guard reads "set and non-empty wins". Inverted, a set variable would
+// The registry's rule is "set and non-empty wins". Inverted, a set variable would
 // be discarded and an unset one would be preferred — which is invisible on a
 // box where none of the three are set, and is exactly how this binary runs.
 func TestAnEmptyEnvironmentVariableDoesNotBeatTheBuiltInDefault(t *testing.T) {
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
 		"NOTEBOARD_URL": "",
 		"DASH_URL":      "",
-	}), "/home/someone")
+	}))
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
@@ -260,8 +263,7 @@ func TestAnEmptyEnvironmentVariableDoesNotBeatTheBuiltInDefault(t *testing.T) {
 
 func TestAnExplicitFlagBeatsTheEnvironment(t *testing.T) {
 	cfg, err := parseFlags([]string{"-noteboard-url", "http://notes.from-flag"},
-		environmentWith(map[string]string{"NOTEBOARD_URL": "http://notes.from-env"}),
-		"/home/someone")
+		environmentWith(map[string]string{"NOTEBOARD_URL": "http://notes.from-env"}))
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
@@ -273,8 +275,9 @@ func TestAnExplicitFlagBeatsTheEnvironment(t *testing.T) {
 // The -ask default is the only home-relative one. It is the path to the herald
 // binary, so a wrong one means the single nudge per tick silently fails to
 // launch while the digest note still looks healthy.
-func TestTheHeraldPathDefaultsUnderTheHomeDirectoryItWasGiven(t *testing.T) {
-	cfg, err := parseFlags(nil, noEnvironment, "/var/lib/somewhere-else")
+func TestTheHeraldPathDefaultsUnderTheHomeDirectory(t *testing.T) {
+	t.Setenv("HOME", "/var/lib/somewhere-else")
+	cfg, err := parseFlags(nil, noEnvironment)
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
@@ -290,10 +293,10 @@ func TestTheHeraldPathDefaultsUnderTheHomeDirectoryItWasGiven(t *testing.T) {
 // ExitOnError a bad argument takes the test binary down, and the failure reads
 // as a crashed suite rather than as a rejected flag.
 func TestABadArgumentIsReturnedRatherThanExitingTheProcess(t *testing.T) {
-	if _, err := parseFlags([]string{"-digest-hour", "half-past"}, noEnvironment, "/home/someone"); err == nil {
+	if _, err := parseFlags([]string{"-digest-hour", "half-past"}, noEnvironment); err == nil {
 		t.Fatal("an unparseable -digest-hour was accepted")
 	}
-	if _, err := parseFlags([]string{"-no-such-flag"}, noEnvironment, "/home/someone"); err == nil {
+	if _, err := parseFlags([]string{"-no-such-flag"}, noEnvironment); err == nil {
 		t.Fatal("an unknown flag was accepted")
 	}
 }
@@ -301,7 +304,7 @@ func TestABadArgumentIsReturnedRatherThanExitingTheProcess(t *testing.T) {
 // main() maps this one error to exit code 0 and everything else to 2. If -h
 // stopped being distinguishable, asking for help would report failure.
 func TestAskingForHelpIsDistinguishableFromABadArgument(t *testing.T) {
-	_, err := parseFlags([]string{"-h"}, noEnvironment, "/home/someone")
+	_, err := parseFlags([]string{"-h"}, noEnvironment)
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("-h returned %v, want flag.ErrHelp — main() exits 2 rather than 0 without it", err)
 	}
@@ -312,8 +315,17 @@ func TestAskingForHelpIsDistinguishableFromABadArgument(t *testing.T) {
 // rather than left to the order tests happen to run in.
 func TestParseFlagsCanBeCalledMoreThanOnce(t *testing.T) {
 	for attempt := range 3 {
-		if _, err := parseFlags(nil, noEnvironment, "/home/someone"); err != nil {
+		if _, err := parseFlags(nil, noEnvironment); err != nil {
 			t.Fatalf("call %d: %v", attempt+1, err)
 		}
+	}
+}
+
+// A misspelled REMINDER_TZ used to be ignored, and the digest went out on Los
+// Angeles time. It now stops the binary, and main prints why.
+func TestAMisspelledReminderVariableIsRefused(t *testing.T) {
+	_, err := parseFlags(nil, environmentWith(map[string]string{"REMINDER_TIMEZONE": "Europe/Dublin"}))
+	if !errors.Is(err, errSettingsRefused) {
+		t.Fatalf("parseFlags = %v, want errSettingsRefused", err)
 	}
 }

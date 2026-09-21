@@ -46,12 +46,13 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/noteboard/model"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 )
 
 const (
@@ -85,14 +86,17 @@ type config struct {
 	timezone     string
 	lookahead    time.Duration
 	dryRun       bool
+
+	// Not flags: where `systemctl --user` finds this user's manager when it
+	// reads dash-server's token.
+	runtimeDirectory  string
+	sessionBusAddress string
 }
 
-// environmentLookup has os.Getenv's shape. Taking it as an argument rather than
-// calling os.Getenv directly is what lets a test state which variables were set
-// without setting them: the defaults below are read at flag-registration time,
-// so a test that exported NOTEBOARD_URL to observe it would be racing every
-// other test in the package for one process-wide variable.
-type environmentLookup func(key string) string
+// errSettingsRefused marks a parseFlags error that came from the environment:
+// the settings registry refused a value. main prints it and exits 1, where the
+// flag package has already printed its own errors and exits 2.
+var errSettingsRefused = errors.New("settings refused")
 
 // parseFlags builds the flag set and parses args into a config.
 //
@@ -110,22 +114,30 @@ type environmentLookup func(key string) string
 // ContinueOnError is what makes it callable at all — ExitOnError would take the
 // test binary down with it on a bad argument instead of returning the error.
 //
-// homeDirectory is an argument for the same reason as lookupEnvironment: the
-// -ask default is home-relative, and a test should not have to move HOME out
-// from under the process to assert what it resolves to.
-func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirectory string) (config, error) {
+// The environment is an argument, not the process's own, so that a test states
+// which variables were set without setting them: the defaults below are read
+// at flag-registration time, so a test that exported NOTEBOARD_URL to observe
+// it would be racing every other test in the package for one process-wide
+// variable. It is read through the binary's settings registry
+// (internal/config), which refuses a misspelled REMINDER_ variable. The -ask
+// default is ~/bin/ask, from the home directory the registry is built in.
+func parseFlags(args []string, environment servicesettings.Environment) (config, error) {
+	settings, err := schedulerconfig.ReminderCoordinator.NewSettingsRegistry(environment)
+	if err != nil {
+		return config{}, fmt.Errorf("%w: %v", errSettingsRefused, err)
+	}
 	fs := flag.NewFlagSet("reminder-coordinator", flag.ContinueOnError)
 	var c config
-	fs.StringVar(&c.noteboardURL, "noteboard-url", envOr(lookupEnvironment, "NOTEBOARD_URL", "http://localhost:8191"), "noteboard base URL — the source of truth for todos and their rules.")
-	fs.StringVar(&c.dashURL, "dash-url", envOr(lookupEnvironment, "DASH_URL", "http://localhost:8101"), "dash base URL, for the authenticated Google Calendar proxy.")
-	fs.StringVar(&c.askPath, "ask", envOr(lookupEnvironment, "ASK_BIN", filepath.Join(homeDirectory, "bin", "ask")), "path to the herald `ask` binary.")
+	fs.StringVar(&c.noteboardURL, "noteboard-url", settings.String(schedulerconfig.SettingNoteboardURL), "noteboard base URL — the source of truth for todos and their rules.")
+	fs.StringVar(&c.dashURL, "dash-url", settings.String(schedulerconfig.SettingDashURL), "dash base URL, for the authenticated Google Calendar proxy.")
+	fs.StringVar(&c.askPath, "ask", settings.String(schedulerconfig.SettingAskPath), "path to the herald `ask` binary.")
 	fs.StringVar(&c.scopeTag, "tag", "personal", "only items carrying this tag are coordinated. Keeps the ~40 bot/coding todos out of the digest.")
 	fs.IntVar(&c.digestHour, "digest-hour", 7, "local hour to send the daily digest nudge.")
 	fs.IntVar(&c.digestMinute, "digest-minute", 30, "local minute to send the daily digest nudge.")
 	fs.StringVar(&c.workStart, "work-start", "08:00", "local time the working day begins. Hours inside it are not open time, so they are never offered as room for a todo.")
 	fs.StringVar(&c.workEnd, "work-end", "16:30", "local time the working day ends.")
 	fs.StringVar(&c.workDays, "work-days", "Mon,Tue,Wed,Thu,Fri", "days the working hours apply to. A day not named here is free all the way from 8am.")
-	fs.StringVar(&c.timezone, "tz", envOr(lookupEnvironment, "REMINDER_TZ", "America/Los_Angeles"), "IANA zone the daily digest hour is interpreted in.")
+	fs.StringVar(&c.timezone, "tz", settings.String(schedulerconfig.SettingTimezone), "IANA zone the daily digest hour is interpreted in.")
 	fs.DurationVar(&c.lookahead, "lookahead", 7*24*time.Hour, "how far ahead to materialize occurrences of a recurring template.")
 	fs.BoolVar(&c.dryRun, "dry-run", false, "report what would change; mutate nothing, send nothing.")
 	if err := fs.Parse(args); err != nil {
@@ -160,6 +172,8 @@ func parseFlags(args []string, lookupEnvironment environmentLookup, homeDirector
 	if _, err := parseWorkDays(c.workDays); err != nil {
 		return reject("-work-days: %w", err)
 	}
+	c.runtimeDirectory = settings.String(schedulerconfig.SettingRuntimeDirectory)
+	c.sessionBusAddress = settings.String(schedulerconfig.SettingSessionBusAddress)
 	return c, nil
 }
 
@@ -225,7 +239,7 @@ func parseDailyTime(value string) (dailyTime, error) {
 func newCoordinator(c config, location *time.Location, now time.Time) *Coordinator {
 	return &Coordinator{
 		noteboard: &NoteboardClient{BaseURL: strings.TrimRight(c.noteboardURL, "/")},
-		calendar:  &GoogleCalendarMirror{DashURL: strings.TrimRight(c.dashURL, "/")},
+		calendar:  &GoogleCalendarMirror{DashURL: strings.TrimRight(c.dashURL, "/"), RuntimeDirectory: c.runtimeDirectory, SessionBusAddress: c.sessionBusAddress},
 		herald:    &Herald{AskPath: c.askPath},
 		ScopeTag:  c.scopeTag,
 		Location:  location,
@@ -261,14 +275,11 @@ func mustParseDailyTime(value string) dailyTime {
 }
 
 func main() {
-	// Errors ignored exactly as before: an unset HOME leaves this empty and the
-	// -ask default resolves relative to the working directory, which is as broken
-	// as the "/bin/ask" the old os.ExpandEnv("$HOME/bin/ask") produced. Both fail
-	// at exec time with a path the operator can read.
-	homeDirectory, _ := os.UserHomeDir()
-
-	cfg, err := parseFlags(os.Args[1:], os.Getenv, homeDirectory)
+	cfg, err := parseFlags(os.Args[1:], servicesettings.ProcessEnvironment())
 	if err != nil {
+		if errors.Is(err, errSettingsRefused) {
+			log.Fatal(err)
+		}
 		// parseFlags has already printed the error and the usage message — both
 		// for what fs.Parse rejects and for what it validates afterwards. These
 		// are the two exit codes flag.ExitOnError would have used, kept identical
@@ -291,13 +302,6 @@ func main() {
 		// with nothing to say, and you find out weeks later by missing something.
 		log.Fatalf("reminder-coordinator: %v", err)
 	}
-}
-
-func envOr(lookupEnvironment environmentLookup, key, fallback string) string {
-	if v := lookupEnvironment(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 type dailyTime struct{ Hour, Minute int }
@@ -1647,16 +1651,24 @@ func (n *NoteboardClient) do(method, path string, body, out any) error {
 
 // ------------------------------------------------------------------ calendar client
 
-type GoogleCalendarMirror struct{ DashURL string }
+type GoogleCalendarMirror struct {
+	DashURL string
+	// RuntimeDirectory and SessionBusAddress are handed to `systemctl --user`
+	// so it finds this user's manager from a job's environment.
+	RuntimeDirectory  string
+	SessionBusAddress string
+}
 
 // ResolveDashToken reads the token out of the running dash-server unit rather
 // than keeping a copy. A rotated token is picked up on the next tick, and there
 // is no second place for it to go stale.
 func (g *GoogleCalendarMirror) ResolveDashToken() (string, error) {
 	command := exec.Command("systemctl", "--user", "show", "dash-server.service", "-p", "Environment")
-	command.Env = append(os.Environ(),
-		"XDG_RUNTIME_DIR="+envOr(os.Getenv, "XDG_RUNTIME_DIR", fmt.Sprintf("/run/user/%d", os.Getuid())),
-		"DBUS_SESSION_BUS_ADDRESS="+envOr(os.Getenv, "DBUS_SESSION_BUS_ADDRESS", fmt.Sprintf("unix:path=/run/user/%d/bus", os.Getuid())),
+	// The child inherits this process's environment (command.Environ), with the
+	// two variables it needs set to the values in force.
+	command.Env = append(command.Environ(),
+		"XDG_RUNTIME_DIR="+g.RuntimeDirectory,
+		"DBUS_SESSION_BUS_ADDRESS="+g.SessionBusAddress,
 	)
 	output, err := command.Output()
 	if err != nil {
