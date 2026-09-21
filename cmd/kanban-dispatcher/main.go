@@ -99,7 +99,7 @@ func main() {
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so the scheduler API, noteboard and
 	// kanban-store calls below are untouched.
-	if err := bridgeauth.StampRequestsToBridge(*bridgeURL); err != nil {
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -115,12 +115,13 @@ func main() {
 	}
 
 	err = run(runOptions{
-		BoardID:     *boardID,
-		KanbanURL:   *kanbanURL,
-		BridgeURL:   *bridgeURL,
-		NATSURL:     settings.String(schedulerconfig.SettingNATSURL),
-		DryRun:      *dryRun,
-		MaxDispatch: *maxDispatch,
+		BoardID:            *boardID,
+		KanbanURL:          *kanbanURL,
+		KanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
+		BridgeURL:          *bridgeURL,
+		NATSURL:            settings.String(schedulerconfig.SettingNATSURL),
+		DryRun:             *dryRun,
+		MaxDispatch:        *maxDispatch,
 	})
 	if err != nil {
 		log.Fatalf("[dispatcher] %v", err)
@@ -128,12 +129,15 @@ func main() {
 }
 
 type runOptions struct {
-	BoardID     string
-	KanbanURL   string
-	BridgeURL   string
-	NATSURL     string
-	DryRun      bool
-	MaxDispatch int
+	BoardID   string
+	KanbanURL string
+	// KanbanServiceToken is what the kanban-store client presents; kanban-store
+	// gates every route.
+	KanbanServiceToken string
+	BridgeURL          string
+	NATSURL            string
+	DryRun             bool
+	MaxDispatch        int
 }
 
 // run is one tick. It returns an error — and main exits non-zero, so the
@@ -141,7 +145,7 @@ type runOptions struct {
 // when it finished but left any card undispatched for a reason a person has to
 // fix, such as a card nothing gives an instance.
 func run(options runOptions) error {
-	kc := kanbanclient.New(options.KanbanURL)
+	kc := kanbanclient.New(options.KanbanURL, options.KanbanServiceToken)
 	board, err := kc.GetBoard(options.BoardID)
 	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
 		return fmt.Errorf("board %s does not exist — refusing to create a replacement, since a second board is exactly the fork pinning the id prevents", options.BoardID)

@@ -90,7 +90,7 @@ func main() {
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so noteboard, kanban-store and the
 	// scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(*bridgeURL); err != nil {
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -98,7 +98,7 @@ func main() {
 		log.Fatal("-board-id is required; there is no board to default to")
 	}
 
-	kc := kanbanclient.New(*kanbanURL)
+	kc := kanbanclient.New(*kanbanURL, settings.String(schedulerconfig.SettingKanbanStoreServiceToken))
 	board, err := kc.GetBoard(*boardID)
 	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
 		log.Fatalf("board %s does not exist — refusing to create a replacement, since a second board is exactly the fork pinning the id prevents", *boardID)

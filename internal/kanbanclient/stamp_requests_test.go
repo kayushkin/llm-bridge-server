@@ -24,8 +24,7 @@ func TestTheStampReachesKanbanStoreAndNobodyElse(t *testing.T) {
 
 	original := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = original; http.DefaultClient.Transport = nil })
-	t.Setenv(ServiceTokenEnvironmentVariable, "the-token")
-	if err := StampRequestsToKanbanStore(kanban.URL); err != nil {
+	if err := StampRequestsToKanbanStore(kanban.URL, "the-token"); err != nil {
 		t.Fatalf("stamp: %v", err)
 	}
 
@@ -46,16 +45,14 @@ func TestTheStampReachesKanbanStoreAndNobodyElse(t *testing.T) {
 }
 
 func TestTheStampRefusesAURLWithNoHost(t *testing.T) {
-	t.Setenv(ServiceTokenEnvironmentVariable, "the-token")
-	if err := StampRequestsToKanbanStore("localhost:8305"); err == nil {
+	if err := StampRequestsToKanbanStore("localhost:8305", "the-token"); err == nil {
 		t.Fatal("a URL with no scheme has no host to scope the token to; want an error")
 	}
 }
 
 func TestNoTokenMeansNoStampAndNoError(t *testing.T) {
 	original := http.DefaultTransport
-	t.Setenv(ServiceTokenEnvironmentVariable, "")
-	if err := StampRequestsToKanbanStore("http://localhost:8305"); err != nil {
+	if err := StampRequestsToKanbanStore("http://localhost:8305", ""); err != nil {
 		t.Fatalf("unset token: %v", err)
 	}
 	if http.DefaultTransport != original {

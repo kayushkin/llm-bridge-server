@@ -76,7 +76,7 @@ func main() {
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so noteboard, kanban-store and the
 	// scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(bridgeURL); err != nil {
+	if err := bridgeauth.StampRequestsToBridge(bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
 		log.Fatal(err)
 	}
 	noteboardURL := settings.String(schedulerconfig.SettingNoteboardURL)
@@ -101,7 +101,7 @@ func main() {
 	log.Printf("loaded cost for %d sessions, %d items", len(cost), len(items))
 
 	tree := spendtree.NewTree(toTreeItems(items))
-	qc := kanbanclient.New(kanbanURL)
+	qc := kanbanclient.New(kanbanURL, settings.String(schedulerconfig.SettingKanbanStoreServiceToken))
 
 	// A card's session links are how spend is attributed to an item. Cache per
 	// item: a subtree walk asks for the same parent's links once per descendant

@@ -78,6 +78,11 @@ type config struct {
 	BridgeURL    string
 	RepoPath     string
 
+	// The tokens this binary presents as an internal service. Both stores
+	// gate every route.
+	KanbanServiceToken string
+	BridgeServiceToken string
+
 	BuilderSlug  string
 	ReviewerSlug string
 	RepoSlug     string
@@ -94,13 +99,13 @@ func main() {
 	cfg := parseFlags(settings)
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so nothing else sees the token.
-	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL); err != nil {
+	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL, cfg.BridgeServiceToken); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
 		os.Exit(1)
 	}
 	// kanban-store gates every route too, and this binary writes cards with its
 	// own client as well as through kanbanclient. Host-scoped, like the above.
-	if err := kanbanclient.StampRequestsToKanbanStore(cfg.KanbanURL); err != nil {
+	if err := kanbanclient.StampRequestsToKanbanStore(cfg.KanbanURL, cfg.KanbanServiceToken); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
 		os.Exit(1)
 	}
@@ -129,6 +134,8 @@ func parseFlags(settings *servicesettings.Registry) config {
 	flag.Float64Var(&c.MaxBudget, "max-budget-usd", 10, "Per-card spend ceiling.")
 	flag.IntVar(&c.MaxPerTick, "max", 1, "Most cards to act on in one tick.")
 	flag.Parse()
+	c.KanbanServiceToken = settings.String(schedulerconfig.SettingKanbanStoreServiceToken)
+	c.BridgeServiceToken = settings.String(schedulerconfig.SettingBridgeServiceToken)
 	return c
 }
 
@@ -149,7 +156,7 @@ func run(cfg config) error {
 		fmt.Println("DRY RUN — nothing will be written or spawned")
 	}
 
-	kc := kanbanclient.New(cfg.KanbanURL)
+	kc := kanbanclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
 	if cfg.Promote {
 		if err := promote(kc, cfg); err != nil {
 			return err

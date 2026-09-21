@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/slava/scheduler/internal/bridgeauth"
 	"io"
 	"net/http"
 	"strings"
@@ -103,7 +102,9 @@ func Call(ctx context.Context, cfg Config, system, prompt string, schema map[str
 	if timeout == 0 {
 		timeout = 3 * time.Minute
 	}
-	httpClient := bridgeauth.AuthenticateClient(&http.Client{Timeout: timeout})
+	// No Transport of its own: the request goes out through http.DefaultTransport,
+	// which main stamped with the bridge's service token (bridgeauth).
+	httpClient := &http.Client{Timeout: timeout}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("oneshot: %w", err)

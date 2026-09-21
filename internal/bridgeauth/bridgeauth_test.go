@@ -26,8 +26,7 @@ func TestOnlyTheBridgeHostGetsTheToken(t *testing.T) {
 		http.DefaultTransport, http.DefaultClient.Transport = originalTransport, originalClientTransport
 	})
 
-	t.Setenv(ServiceTokenEnvironmentVariable, token)
-	if err := StampRequestsToBridge(bridge.URL); err != nil {
+	if err := StampRequestsToBridge(bridge.URL, token); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := http.Get(bridge.URL + "/sessions"); err != nil {
@@ -42,7 +41,7 @@ func TestOnlyTheBridgeHostGetsTheToken(t *testing.T) {
 	if got := <-seen; got != "" {
 		t.Fatalf("another service must not see the bridge token, got %q", got)
 	}
-	if err := StampRequestsToBridge("not a url"); err == nil {
+	if err := StampRequestsToBridge("not a url", token); err == nil {
 		t.Fatal("a bridge URL with no host must be refused, not ignored")
 	}
 }

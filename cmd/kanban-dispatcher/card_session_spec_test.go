@@ -151,7 +151,7 @@ func productCardDefaults() kanbanclient.EffectiveDefaults {
 
 func newDispatcher(kanban *fakeKanban, kanbanURL, bridgeURL string, published *[]messages.BridgeInbound) *backlogDispatcher {
 	return &backlogDispatcher{
-		kanban:             kanbanclient.New(kanbanURL),
+		kanban:             kanbanclient.New(kanbanURL, ""),
 		bridgeURL:          bridgeURL,
 		board:              &kanban.board,
 		view:               &kanban.view,
@@ -239,7 +239,7 @@ func TestACardWhoseInstanceOrAgentTheBridgeLacksIsNotDispatched(t *testing.T) {
 	defer kanbanServer.Close()
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
-	kc := kanbanclient.New(kanbanServer.URL)
+	kc := kanbanclient.New(kanbanServer.URL, "")
 
 	_, err := resolveCardSessionSpec(kc, bridgeServer.URL, &kanban.board, "card-gone-instance")
 	if err == nil || !strings.Contains(err.Error(), "inst-gone") || !strings.Contains(err.Error(), "cat:x") {

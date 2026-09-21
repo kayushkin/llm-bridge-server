@@ -93,7 +93,7 @@ func main() {
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so noteboard, kanban-store and the
 	// scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(*bridgeURL); err != nil {
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -119,7 +119,7 @@ func main() {
 		RoleTags:        *roleTags,
 	}
 
-	kc := kanbanclient.New(cfg.KanbanURL)
+	kc := kanbanclient.New(cfg.KanbanURL, settings.String(schedulerconfig.SettingKanbanStoreServiceToken))
 	board, err := kc.EnsureBoardColumns(cfg.BoardID, defaultColumns)
 	if err != nil {
 		log.Fatalf("board %s: %v", cfg.BoardID, err)

@@ -40,7 +40,7 @@ func TestACardsEffectiveDefaultsAreReadWithTheirSources(t *testing.T) {
 	server := effectiveDefaultsServer(t)
 	defer server.Close()
 
-	resolved, err := New(server.URL).GetCardEffectiveDefaults("board-1", "card-1")
+	resolved, err := New(server.URL, "").GetCardEffectiveDefaults("board-1", "card-1")
 	if err != nil {
 		t.Fatalf("GetCardEffectiveDefaults: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestACardsEffectiveDefaultsAreReadWithTheirSources(t *testing.T) {
 func TestEffectiveDefaultsFailuresAreTold(t *testing.T) {
 	server := effectiveDefaultsServer(t)
 	defer server.Close()
-	client := New(server.URL)
+	client := New(server.URL, "")
 
 	_, err := client.GetCardEffectiveDefaults("board-1", "card-gone")
 	if !errors.Is(err, ErrCardNotFound) || !strings.Contains(err.Error(), "card-gone") {

@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -32,7 +31,9 @@ type Client struct {
 const ServiceTokenHeader = "X-Kanban-Store-Service-Token"
 
 // ServiceTokenEnvironmentVariable holds that token for every binary in this
-// repo; the scheduler unit carries it, so the jobs it runs inherit it.
+// repo; the scheduler unit carries it, so the jobs it runs inherit it. Each
+// binary declares it in its settings (internal/config) and hands the value to
+// New and StampRequestsToKanbanStore; this package reads no environment.
 const ServiceTokenEnvironmentVariable = "KANBAN_STORE_SERVICE_TOKEN"
 
 // serviceTokenTransport puts the token on every request this client makes.
@@ -50,13 +51,13 @@ func (t *serviceTokenTransport) RoundTrip(request *http.Request) (*http.Response
 	return t.base.RoundTrip(cloned)
 }
 
-// New builds a client that authenticates as an internal service with the token
-// in KANBAN_STORE_SERVICE_TOKEN. An empty token is left off rather than sent
-// blank, so the 401 names the missing header instead of a wrong token.
-func New(baseURL string) *Client {
+// New builds a client that authenticates as an internal service with
+// serviceToken. An empty token is left off rather than sent blank, so the 401
+// names the missing header instead of a wrong token.
+func New(baseURL, serviceToken string) *Client {
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	if token := os.Getenv(ServiceTokenEnvironmentVariable); token != "" {
-		httpClient.Transport = &serviceTokenTransport{token: token, base: http.DefaultTransport}
+	if serviceToken != "" {
+		httpClient.Transport = &serviceTokenTransport{token: serviceToken, base: http.DefaultTransport}
 	}
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
@@ -897,16 +898,15 @@ func (t *hostScopedServiceTokenTransport) RoundTrip(request *http.Request) (*htt
 // An unset token is not an error: the binary is then talking to a
 // kanban-store that does not gate, and a 401 names the missing header if it
 // does.
-func StampRequestsToKanbanStore(kanbanURL string) error {
-	token := os.Getenv(ServiceTokenEnvironmentVariable)
-	if token == "" {
+func StampRequestsToKanbanStore(kanbanURL, serviceToken string) error {
+	if serviceToken == "" {
 		return nil
 	}
 	parsed, err := url.Parse(kanbanURL)
 	if err != nil || parsed.Host == "" {
 		return fmt.Errorf("kanbanclient: %q is not a URL with a host, so requests to kanban-store cannot be authenticated: %v", kanbanURL, err)
 	}
-	http.DefaultTransport = &hostScopedServiceTokenTransport{host: parsed.Host, token: token, base: http.DefaultTransport}
+	http.DefaultTransport = &hostScopedServiceTokenTransport{host: parsed.Host, token: serviceToken, base: http.DefaultTransport}
 	http.DefaultClient.Transport = http.DefaultTransport
 	return nil
 }

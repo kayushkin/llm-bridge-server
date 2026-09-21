@@ -121,9 +121,16 @@ func TestTheRegistryRefusesAMisspellingAndNotTheVariableJobsUseToFindIt(t *testi
 // import is scanned the day it is added.
 func servicePackageDirectories(t *testing.T, repositoryRoot string) []string {
 	t.Helper()
+	return packageDirectoriesReachedFrom(t, repositoryRoot, "cmd/scheduler")
+}
+
+// packageDirectoriesReachedFrom is start and every package of this module it
+// imports, directly or through another.
+func packageDirectoriesReachedFrom(t *testing.T, repositoryRoot, start string) []string {
+	t.Helper()
 	const module = "github.com/slava/scheduler/"
 	seen := map[string]bool{}
-	queue := []string{"cmd/scheduler"}
+	queue := []string{start}
 	for len(queue) > 0 {
 		directory := queue[0]
 		queue = queue[1:]
@@ -211,6 +218,52 @@ func TestEveryEnvironmentVariableTheServiceReadsIsDeclared(t *testing.T) {
 	}
 }
 
+// notSettings are variables a job binary's code reads by name that configure
+// nothing: internal/demomail puts PATH into an error message when gh is not on
+// it.
+var notSettings = []string{"PATH"}
+
+// Every environment variable a job binary reads by name, in cmd/<name> or any
+// package it imports, is one that binary declares. A read that is not declared
+// escapes the startup check, and the binary's misspelling guard with it.
+func TestEveryEnvironmentVariableAJobBinaryReadsIsDeclared(t *testing.T) {
+	const repositoryRoot = "../.."
+	if _, err := os.Stat(filepath.Join(repositoryRoot, "cmd", "scheduler", "main.go")); err != nil {
+		t.Fatalf("the scan starts somewhere that is not the repository root: %v", err)
+	}
+	for _, binary := range JobBinaries {
+		declared := map[string]bool{}
+		for _, definition := range binary.SettingDefinitions() {
+			declared[definition.EnvironmentVariable] = true
+		}
+		for _, name := range notSettings {
+			declared[name] = true
+		}
+		directories := packageDirectoriesReachedFrom(t, repositoryRoot, "cmd/"+binary.Name)
+		// Every binary builds its registry from this package, so a walk that
+		// does not reach it is not following imports.
+		if !contains(directories, "internal/config") {
+			t.Errorf("%s: the scan does not reach internal/config; it reached %v", binary.Name, directories)
+		}
+		filesRead := 0
+		for _, directory := range directories {
+			for _, path := range nonTestGoFiles(t, filepath.Join(repositoryRoot, directory)) {
+				file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				filesRead++
+				for _, fault := range environmentReadFaults(file, declared) {
+					t.Errorf("%s: %s %s", binary.Name, path, fault)
+				}
+			}
+		}
+		if filesRead < 3 {
+			t.Errorf("%s: the scan read %d files; it is not looking at the binary", binary.Name, filesRead)
+		}
+	}
+}
+
 // environmentReadFaults lists every read of the environment in file that the
 // declarations cannot hold: a name nobody declared, a computed name, the whole
 // environment, or os.Getenv handed on as a value for someone else to call.
@@ -234,7 +287,7 @@ func environmentReadFaults(file *ast.File, declared map[string]bool) []string {
 		}
 		name, _ := strconv.Unquote(literal.Value)
 		if !declared[name] {
-			faults = append(faults, "reads "+name+", which SettingDefinitions does not declare")
+			faults = append(faults, "reads "+name+", which its SettingDefinitions do not declare")
 		}
 		return true
 	})

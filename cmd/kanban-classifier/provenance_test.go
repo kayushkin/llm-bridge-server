@@ -62,7 +62,7 @@ func newStubKanban(t *testing.T) (*kanbanclient.Client, *stubKanban) {
 	}))
 	t.Cleanup(srv.Close)
 
-	kc := kanbanclient.New(srv.URL)
+	kc := kanbanclient.New(srv.URL, "")
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{
 		"Backlog": "col-backlog", "In Progress": "col-inprogress",

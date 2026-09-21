@@ -66,7 +66,7 @@ func main() {
 	configuration := parseFlags(settings)
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so nothing else sees the token.
-	if err := bridgeauth.StampRequestsToBridge(configuration.BridgeURL); err != nil {
+	if err := bridgeauth.StampRequestsToBridge(configuration.BridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-mail-generator: %v\n", err)
 		os.Exit(1)
 	}

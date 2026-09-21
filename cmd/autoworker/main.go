@@ -179,6 +179,11 @@ type config struct {
 	schedulerURL   string
 	statePath      string
 	binaryPath     string
+
+	// The tokens this binary presents as an internal service. Both stores
+	// gate every route.
+	kanbanStoreServiceToken string
+	bridgeServiceToken      string
 }
 
 // parseFlags builds the flag set and parses args into a config.
@@ -238,6 +243,8 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	c.noteboardURL = settings.String(schedulerconfig.SettingNoteboardURL)
 	c.usageStoreURL = settings.String(schedulerconfig.SettingUsageStoreURL)
 	c.schedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
+	c.kanbanStoreServiceToken = settings.String(schedulerconfig.SettingKanbanStoreServiceToken)
+	c.bridgeServiceToken = settings.String(schedulerconfig.SettingBridgeServiceToken)
 	c.statePath = filepath.Join(homeDirectory, ".config", "autoworker", "state.json")
 	c.binaryPath = filepath.Join(homeDirectory, "bin", "autoworker")
 	return c, nil
@@ -283,7 +290,7 @@ func main() {
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so noteboard, kanban-store and the
 	// scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(cfg.llmBridgeURL); err != nil {
+	if err := bridgeauth.StampRequestsToBridge(cfg.llmBridgeURL, cfg.bridgeServiceToken); err != nil {
 		log.Fatal(err)
 	}
 	if err := cfg.validate(); err != nil {
@@ -344,7 +351,7 @@ func main() {
 		// the noteboard-discovery default so an empty queue doesn't waste
 		// the fire decision.
 		if !queueTried {
-			queueClient = initQueueClient(cfg.kanbanStoreURL, false)
+			queueClient = initQueueClient(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken, false)
 			queueTried = true
 		}
 		var queueCard *queueCandidate
@@ -387,7 +394,7 @@ func main() {
 		}
 
 		if kc == nil {
-			kc = kanbanclient.New(cfg.kanbanStoreURL)
+			kc = kanbanclient.New(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken)
 			if err := kc.EnsureBoard(kanbanBoardName, kanbanDefaultColumns); err != nil {
 				log.Printf("kanban: bootstrap %q failed: %v (continuing)", kanbanBoardName, err)
 				kc = nil // disable for the rest of this tick
@@ -423,7 +430,7 @@ func main() {
 	// show what would dispatch next. Bootstrap is read-only on dry-run so a
 	// fresh install doesn't quietly create the board.
 	if !queueTried {
-		if qc := initQueueClient(cfg.kanbanStoreURL, cfg.dryRun); qc != nil {
+		if qc := initQueueClient(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken, cfg.dryRun); qc != nil {
 			if cand, err := selectQueuedCard(qc, cfg); err != nil {
 				log.Printf("queue: %v", err)
 			} else if cand != nil {
@@ -449,8 +456,8 @@ func main() {
 // Returns nil (with logging) when the board is unavailable; callers are
 // expected to fall back to default behavior so kanban-store outages don't
 // break the fire path.
-func initQueueClient(kanbanStoreURL string, dryRun bool) *kanbanclient.Client {
-	qc := kanbanclient.New(kanbanStoreURL)
+func initQueueClient(kanbanStoreURL, kanbanStoreServiceToken string, dryRun bool) *kanbanclient.Client {
+	qc := kanbanclient.New(kanbanStoreURL, kanbanStoreServiceToken)
 	if dryRun {
 		board, err := qc.FindBoard(autoworkerQueueBoard)
 		if err != nil {

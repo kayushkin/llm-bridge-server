@@ -72,7 +72,7 @@ func main() {
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so the scheduler API, noteboard and
 	// kanban-store calls below are untouched.
-	if err := bridgeauth.StampRequestsToBridge(*bridgeURL); err != nil {
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
 		log.Fatal(err)
 	}
 

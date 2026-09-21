@@ -177,6 +177,8 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	// cron sweep, and naming a session by id is a human overruling them.
 	c.ExplicitSession = c.OneSession != ""
 	c.SchedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
+	c.KanbanServiceToken = settings.String(schedulerconfig.SettingKanbanStoreServiceToken)
+	c.BridgeServiceToken = settings.String(schedulerconfig.SettingBridgeServiceToken)
 	c.BinaryPath = filepath.Join(homeDirectory, "bin", "kanban-classifier")
 	return c, nil
 }
@@ -230,7 +232,7 @@ func main() {
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so noteboard, kanban-store and the
 	// scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL); err != nil {
+	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL, cfg.BridgeServiceToken); err != nil {
 		log.Fatal(err)
 	}
 	if err := cfg.validate(); err != nil {
@@ -251,7 +253,7 @@ func main() {
 		log.Fatal("-oneshot-instance is required: model calls route through llm-bridge-server's oneshot endpoint on the subscription login")
 	}
 
-	kc := kanbanclient.New(cfg.KanbanURL)
+	kc := kanbanclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
 	board, err := kc.FindBoard(cfg.BoardName)
 	if err != nil {
 		log.Fatalf("find board %q: %v", cfg.BoardName, err)
@@ -338,6 +340,11 @@ type config struct {
 	// reaching the environment.
 	SchedulerURL string
 	BinaryPath   string
+
+	// The tokens this binary presents as an internal service. Both stores
+	// gate every route.
+	KanbanServiceToken string
+	BridgeServiceToken string
 
 	// ExplicitSession is set when an operator named a single session on the
 	// command line. The dedupe gates below exist to ration the cron sweep, not

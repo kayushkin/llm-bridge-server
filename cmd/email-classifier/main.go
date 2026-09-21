@@ -243,6 +243,8 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	}
 
 	c.SchedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
+	c.KanbanServiceToken = settings.String(schedulerconfig.SettingKanbanStoreServiceToken)
+	c.BridgeServiceToken = settings.String(schedulerconfig.SettingBridgeServiceToken)
 	c.BinaryPath = filepath.Join(homeDirectory, "bin", "email-classifier")
 	return c, nil
 }
@@ -332,7 +334,7 @@ func run() int {
 	// rather than global so the failure sites stay testable in isolation.
 	degraded := &degradations{}
 
-	kc := kanbanclient.New(cfg.KanbanURL)
+	kc := kanbanclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
 	board, err := kc.GetBoard(cfg.BoardID)
 	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
 		// Fatal rather than re-created: kanban-store resolves boards by name
@@ -385,7 +387,7 @@ func run() int {
 	// llm-bridge-server gates every route; stamp this process's calls to it
 	// with the service token. Host-scoped, so noteboard, kanban-store,
 	// mailstack and the scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL); err != nil {
+	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL, cfg.BridgeServiceToken); err != nil {
 		log.Printf("email-classifier: %v", err)
 		return 1
 	}
@@ -619,6 +621,11 @@ type config struct {
 	// The wiring: where -register posts, and what it registers.
 	SchedulerURL string
 	BinaryPath   string
+
+	// The tokens this binary presents as an internal service. Both stores
+	// gate every route.
+	KanbanServiceToken string
+	BridgeServiceToken string
 
 	// Classifier is the board's classifier setting — the vocabulary, the
 	// mailstack accounts to read and whether new cards are parked — copied off

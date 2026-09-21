@@ -18,8 +18,7 @@ func TestEveryCallCarriesTheServiceToken(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	t.Setenv(ServiceTokenEnvironmentVariable, token)
-	client := New(upstream.URL)
+	client := New(upstream.URL, token)
 	if _, err := client.HTTP.Get(upstream.URL + "/api/boards"); err != nil {
 		t.Fatal(err)
 	}
@@ -27,8 +26,7 @@ func TestEveryCallCarriesTheServiceToken(t *testing.T) {
 		t.Fatalf("header = %q, want the service token", got)
 	}
 
-	t.Setenv(ServiceTokenEnvironmentVariable, "")
-	withoutToken := New(upstream.URL)
+	withoutToken := New(upstream.URL, "")
 	if _, err := withoutToken.HTTP.Get(upstream.URL + "/api/boards"); err != nil {
 		t.Fatal(err)
 	}
