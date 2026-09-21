@@ -204,6 +204,11 @@ func TestEachCardIsDispatchedWithItsOwnEffectiveDefaults(t *testing.T) {
 		t.Errorf("the untagged card must run on the board's instance with no bundle, got %+v", plain)
 	}
 
+	// Each session names its own card, whose tags pick its context sections.
+	if product != nil && product.CardID != "card-product" || plain != nil && plain.CardID != "card-plain" {
+		t.Errorf("each session must name the card it is for, got %q and %q", product.CardID, plain.CardID)
+	}
+
 	if len(undispatched) != 1 || undispatched[0].CardID != "card-nowhere" {
 		t.Fatalf("undispatched = %+v, want only card-nowhere", undispatched)
 	}

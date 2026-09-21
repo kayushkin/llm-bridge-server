@@ -628,6 +628,9 @@ type cardSessionSpec struct {
 	AgentSlug string
 	// BundleID is the card's effective default_bundle_id verbatim, or empty.
 	BundleID string
+	// CardID is the card the session is for. The bridge reads its tags at
+	// every spawn to pick the context sections it injects.
+	CardID string
 	// Defaults is kanban-store's answer the spec was read from, kept so a log
 	// line can say where each value came from.
 	Defaults *kanbanclient.EffectiveDefaults
@@ -654,7 +657,7 @@ func resolveCardSessionSpec(kc *kanbanclient.Client, bridgeURL string, board *ka
 	if err != nil {
 		return cardSessionSpec{}, fmt.Errorf("default_instance_id from %s: %w", instance.Source.Describe(), err)
 	}
-	spec := cardSessionSpec{Harness: harness, InstanceID: instance.Value, Defaults: defaults}
+	spec := cardSessionSpec{Harness: harness, InstanceID: instance.Value, CardID: cardID, Defaults: defaults}
 	if bundle, ok := defaults.Default(kanbanclient.DefaultFieldBundle); ok {
 		spec.BundleID = bundle.Value
 	}
@@ -702,6 +705,7 @@ func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec 
 			InstanceID:  spec.InstanceID,
 			AgentID:     spec.AgentSlug,
 			BundleID:    spec.BundleID,
+			CardID:      spec.CardID,
 			DisplayName: displayName,
 			Purpose:     "dispatcher",
 			Origin:      "scheduler",
