@@ -12,7 +12,7 @@ import (
 // degrades back into the stateless cron it was supposed to replace — while
 // still looking like it works.
 func TestWorkingMemoryPreambleCarriesTheContract(t *testing.T) {
-	preamble := workingMemoryPreamble("ws-123")
+	preamble := workingMemoryPreamble("http://localhost:8191", "ws-123")
 
 	for _, want := range []string{
 		"ws-123",                      // which workspace
@@ -36,7 +36,7 @@ func TestPreamblePrecedesThePrompt(t *testing.T) {
 
 	// Run without a client returns early, so exercise the composition directly —
 	// this is the exact expression Run uses.
-	composed := workingMemoryPreamble(run.WorkspaceID) + run.Prompt
+	composed := workingMemoryPreamble("http://localhost:8191", run.WorkspaceID) + run.Prompt
 
 	if !strings.HasSuffix(composed, "JUDGE THE DRIFT") {
 		t.Fatal("the job's own prompt must survive intact at the end")
@@ -56,7 +56,7 @@ func TestJobWithoutWorkspaceGetsNoPreamble(t *testing.T) {
 	run := AgentRun{Agent: "claude-code", Prompt: "classify the session"}
 	prompt := run.Prompt
 	if run.WorkspaceID != "" {
-		prompt = workingMemoryPreamble(run.WorkspaceID) + prompt
+		prompt = workingMemoryPreamble("http://localhost:8191", run.WorkspaceID) + prompt
 	}
 	if prompt != "classify the session" {
 		t.Fatalf("workspace-less job had its prompt rewritten: %q", prompt)

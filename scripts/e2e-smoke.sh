@@ -32,13 +32,11 @@
 #   * Listens on ${E2E_PORT:-19104}, never the live 8092.
 #
 # WHY A REAL nats-server IS REQUIRED (and cannot be an unreachable stub):
-#   cmd/scheduler/main.go tolerates a failed NATS connect ("running without
-#   bus") but then calls bus.NewHandler(""), which falls back to
-#   os.Getenv("NATS_URL"), re-dials the same unreachable URL, returns an error,
-#   and main log.Fatalf's on it. So the fail-soft path is dead code: with
-#   NATS_URL set to anything unreachable the process exits 1 before it ever
-#   listens. Pointing it at the live bus is not an option (see above), so the
-#   only safe way to boot it is to give it a private bus of its own.
+#   cmd/scheduler/main.go only warns when its first NATS connect fails, but
+#   bus.NewHandler then dials the same NATS_URL, returns an error, and main
+#   log.Fatalf's on it. So with NATS_URL unreachable the process exits 1 before
+#   it ever listens. Pointing it at the live bus is not an option (see above),
+#   so the only safe way to boot it is to give it a private bus of its own.
 #
 # Exits 0 on success, non-zero on the FIRST failing assertion, dumping the
 # server log to stderr.
@@ -200,6 +198,19 @@ COUNT=$(jq 'length' <<<"$JOBS")
 [ "$COUNT" = "0" ] || fail "fresh DB should hold 0 jobs but /api/jobs returned $COUNT — ABORTING, this may be a real database"
 [ -f "$DB_PATH" ] || fail "SCHEDULER_DB was not honoured — no db at $DB_PATH"
 echo "    0 jobs, db at $DB_PATH"
+
+step "GET /settings — describes the values this process started with"
+# A registry that is built and never read from would show the defaults (8092,
+# ~/.scheduler/scheduler.db), which no unit test would notice.
+SETTINGS=$(curl -fsS --max-time 10 "$BASE/settings")
+setting() { jq -c --arg k "$1" '.settings[] | select(.key == $k)' <<<"$SETTINGS"; }
+[ "$(jq -r '.service' <<<"$SETTINGS")" = "scheduler" ] || fail "/settings names another service: $SETTINGS"
+[ "$(setting port | jq -r '.value + " " + .source')" = "$PORT environment" ] || fail "/settings port is not $PORT from the environment: $(setting port)"
+[ "$(setting database_path | jq -r '.value + " " + .source')" = "$DB_PATH environment" ] || fail "/settings database_path is not $DB_PATH from the environment: $(setting database_path)"
+[ "$(setting token | jq -r '.is_set')" = "false" ] || fail "/settings says a token is set: $(setting token)"
+PUT_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -X PUT "$BASE/settings/port" -d '{"value":"1"}')
+[ "$PUT_STATUS" != "200" ] || fail "PUT /settings/port was accepted; nothing is editable"
+echo "    port $PORT and db $DB_PATH from the environment; PUT answered $PUT_STATUS"
 
 step "POST /api/jobs — create harmless shell job"
 CREATED=$(curl -fsS --max-time 10 -X POST "$BASE/api/jobs" \

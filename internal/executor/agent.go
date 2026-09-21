@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -23,20 +22,21 @@ import (
 // llm-bridge-server's GET /instances and builds a CreateSessionRequest
 // identical in shape to what bridge-ui sends.
 type AgentExecutor struct {
-	client     *natsbus.Client
-	bridgeURL  string
-	httpClient *http.Client
+	client       *natsbus.Client
+	bridgeURL    string
+	noteboardURL string
+	httpClient   *http.Client
 }
 
-func NewAgentExecutor(client *natsbus.Client) *AgentExecutor {
-	url := os.Getenv("LLMBRIDGE_URL")
-	if url == "" {
-		url = "http://localhost:8160"
-	}
+// NewAgentExecutor takes both addresses from the caller, which reads them from
+// the service's settings; this package reads no environment variable.
+// noteboardURL is where a job's agent reads and rewrites its working memory.
+func NewAgentExecutor(client *natsbus.Client, bridgeURL, noteboardURL string) *AgentExecutor {
 	return &AgentExecutor{
-		client:     client,
-		bridgeURL:  url,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
+		client:       client,
+		bridgeURL:    bridgeURL,
+		noteboardURL: strings.TrimRight(noteboardURL, "/"),
+		httpClient:   &http.Client{Timeout: 5 * time.Second},
 	}
 }
 
@@ -102,21 +102,13 @@ type AgentRun struct {
 	WorkspaceID  string
 }
 
-// noteboardURL is where an agent reads and rewrites its working memory.
-func noteboardURL() string {
-	if u := os.Getenv("NOTEBOARD_URL"); u != "" {
-		return strings.TrimRight(u, "/")
-	}
-	return "http://localhost:8191"
-}
-
 // workingMemoryPreamble prepends the job's prompt with the location of its
 // durable memory and the contract for using it. Injected here rather than
 // written into every job's prompt by hand: a convention each job re-states is
 // one every job can quietly get wrong, and the whole point of the workspace is
 // that the agent cannot silently forget it has one.
-func workingMemoryPreamble(workspaceID string) string {
-	base := noteboardURL()
+func workingMemoryPreamble(noteboardURL, workspaceID string) string {
+	base := noteboardURL
 	return fmt.Sprintf(`## Your working memory
 
 This job has a durable memory: noteboard workspace %[1]s. It is the only thing
@@ -159,7 +151,7 @@ func (e *AgentExecutor) Run(run AgentRun) Result {
 		orchestrator = "claude-code"
 	}
 	if run.WorkspaceID != "" {
-		prompt = workingMemoryPreamble(run.WorkspaceID) + prompt
+		prompt = workingMemoryPreamble(e.noteboardURL, run.WorkspaceID) + prompt
 	}
 
 	now := time.Now().UTC()

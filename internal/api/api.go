@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/robfig/cron/v3"
 	cronpkg "github.com/slava/scheduler/internal/cron"
 	"github.com/slava/scheduler/internal/db"
@@ -37,12 +38,21 @@ type Logger interface {
 	LogJobDeleted(jobID int64, jobName string)
 }
 
-func New(store *db.Store, scheduler *cronpkg.Scheduler, token string) *Server {
+// New serves the API. settings is the service's settings registry, described at
+// GET /settings behind the same bearer as /api/*; it is required, so no second
+// caller of New can forget the route.
+func New(store *db.Store, scheduler *cronpkg.Scheduler, token string, settings *servicesettings.Registry) *Server {
+	if settings == nil {
+		panic("api.New: a nil settings registry; the service must describe its settings at GET /settings")
+	}
 	s := &Server{store: store, scheduler: scheduler, token: token, mux: http.NewServeMux(), startedAt: time.Now()}
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/api/jobs", s.handleJobs)
 	s.mux.HandleFunc("/api/jobs/", s.handleJobSub)
 	s.mux.HandleFunc("/api/calendar/events", s.handleCalendarEvents)
+	// At the root, not under /api: dash sends /api/scheduler/settings here, as
+	// it does for every service's settings. Only GET: nothing is Editable.
+	s.mux.Handle("GET /settings", servicesettings.Handler(settings, "/settings"))
 	return s
 }
 

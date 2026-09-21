@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 
 	natsbus "github.com/kayushkin/bus"
 	cronpkg "github.com/slava/scheduler/internal/cron"
@@ -50,10 +49,9 @@ type Handler struct {
 	logger    *logging.Logger
 }
 
+// NewHandler connects to natsURL. An empty natsURL gives a handler that does
+// nothing; this package reads no environment variable.
 func NewHandler(natsURL string, store *db.Store, scheduler *cronpkg.Scheduler, logger *logging.Logger) (*Handler, error) {
-	if natsURL == "" {
-		natsURL = os.Getenv("NATS_URL")
-	}
 	if natsURL == "" {
 		// No NATS configured, return no-op handler
 		return &Handler{store: store, scheduler: scheduler, logger: logger}, nil

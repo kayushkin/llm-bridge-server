@@ -49,6 +49,18 @@ for command_name in "${commands[@]}"; do
   echo "    built: $(ls -lh "$BUILD_DIR/$command_name" | awk '{print $5}')"
 done
 
+# The new binary refuses to start on an undeclared SCHEDULER_PORT*, SCHEDULER_DB*
+# or SCHEDULER_TOKEN* variable, and a scheduler that does not start runs no job
+# on the box. So ask before the stop, against the running service's own
+# environment. The test prints a verdict, never a value.
+echo "==> Checking the running service's environment against the declared settings..."
+live_pid="$(systemctl --user show -p MainPID --value "$SERVICE")"
+if [ -n "$live_pid" ] && [ "$live_pid" != "0" ]; then
+  go test -count=1 -run '^TestTheLiveProcessEnvironmentBuildsARegistry$' ./internal/config -args -live-environment-file="/proc/$live_pid/environ"
+else
+  echo "    $SERVICE is not running, so there is no environment to check"
+fi
+
 echo "==> Stopping $SERVICE..."
 systemctl --user stop "$SERVICE" 2>/dev/null || true
 sleep 1

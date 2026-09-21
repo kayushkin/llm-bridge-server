@@ -25,6 +25,31 @@ Centralized job scheduler for the inber ecosystem.
 - `POST /api/jobs/:id/run` — trigger now
 - `GET /api/calendar/events` — Google Calendar events
 - `POST /api/calendar/events` — create calendar event
+- `GET /settings` — the service's settings (llm-bridge `servicesettings`): each
+  variable, its value in force and where the value came from, a secret's value
+  withheld. At the root, not under `/api`, and behind the same bearer. Nothing is
+  editable, so there is no `PUT`.
+
+## Configuration
+
+The service (`cmd/scheduler`) reads these, declared once in
+`internal/config/settings.go`. A test fails on any `os.Getenv` in the service's
+packages that the declarations do not name. A set variable starting with
+`SCHEDULER_PORT`, `SCHEDULER_DB` or `SCHEDULER_TOKEN` that is not declared (a
+misspelling such as `SCHEDULER_DB_PATH`) stops the start; `SCHEDULER_URL`, which
+jobs read to find the scheduler, is not the service's and is left alone.
+
+| variable | default | |
+|---|---|---|
+| `SCHEDULER_PORT` | `8092` | a whole number, or the start is refused |
+| `SCHEDULER_DB` | `~/.scheduler/scheduler.db` | required; with no home directory the start is refused |
+| `SCHEDULER_TOKEN` | unset | the bearer for every route but `/health` |
+| `NATS_URL` | `nats://localhost:4222` | the service does not start without it |
+| `LLMBRIDGE_URL` | `http://localhost:8160` | where agent jobs find a harness instance |
+| `NOTEBOARD_URL` | `http://localhost:8191` | written into an agent job's working-memory preamble |
+
+The job binaries in `cmd/` other than `cmd/scheduler` still read their own
+variables directly; they are not converted yet.
 
 ## Autoworker kanban contract
 

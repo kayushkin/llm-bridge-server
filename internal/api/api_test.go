@@ -27,7 +27,7 @@ func setup(t *testing.T, token string) *Server {
 	}
 	t.Cleanup(func() { store.Close() })
 	sched := cron.New(store)
-	return New(store, sched, token)
+	return New(store, sched, token, settingsRegistryForTests(t, token))
 }
 
 func TestAuthRequired(t *testing.T) {
