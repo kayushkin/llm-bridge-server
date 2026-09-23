@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
+	"github.com/kayushkin/llm-bridge-server/internal/executors/executorstest"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -20,14 +21,23 @@ import (
 // newOperationsTestServer is the gated test server with operations enabled.
 // principal_000001 belongs to the group principal_000006; principal_000002
 // belongs to nothing. Nothing runs until the test calls RunNext or Run.
-func newOperationsTestServer(t *testing.T, classifier executors.KeywordClassifier) (*gatedTestServer, *operations.Coordinator) {
+func newOperationsTestServer(t *testing.T, classifier executors.ModelClassifier) (*gatedTestServer, *operations.Coordinator) {
 	t.Helper()
 	return newOperationsTestServerWithGrants(t, classifier, nil)
 }
 
+// testModelClassifier classifies with the fake harness: an item gets the
+// values whose names appear in its text. delayPerCall slows each batch.
+func testModelClassifier(delayPerCall time.Duration) executors.ModelClassifier {
+	return executors.ModelClassifier{
+		Caller:     &executorstest.FakeOneShot{InstanceID: "inst-test", DefaultModel: "test-model", DelayPerCall: delayPerCall},
+		Taxonomies: executorstest.FakeTaxonomies{},
+	}
+}
+
 // newOperationsTestServerWithGrants is newOperationsTestServer with grant-store
 // answering from grantsByPrincipal, keyed "relation/resource_type".
-func newOperationsTestServerWithGrants(t *testing.T, classifier executors.KeywordClassifier, grantsByPrincipal map[string]map[string][]string) (*gatedTestServer, *operations.Coordinator) {
+func newOperationsTestServerWithGrants(t *testing.T, classifier executors.ModelClassifier, grantsByPrincipal map[string]map[string][]string) (*gatedTestServer, *operations.Coordinator) {
 	t.Helper()
 	gated := newGatedTestServer(t, grantsByPrincipal)
 	gated.principals.mutex.Lock()
@@ -53,8 +63,9 @@ func classificationIntentFor(organizationID, key string) map[string]any {
 		"organization_id": organizationID,
 		"idempotency_key": key,
 		"input": map[string]any{
-			"labels": []map[string]any{{"name": "billing", "keywords": []string{"invoice"}}},
-			"items":  []map[string]any{{"id": "mail_1", "text": "invoice attached"}, {"id": "mail_2", "text": "hi"}},
+			"taxonomy": map[string]any{"name": "support", "axes": []map[string]any{
+				{"name": "category", "values": []map[string]any{{"name": "billing"}, {"name": "outage"}}}}},
+			"items": []map[string]any{{"id": "mail_1", "text": "billing question"}, {"id": "mail_2", "text": "hi"}},
 		},
 	}
 }
@@ -80,7 +91,7 @@ func errorCodeOf(t *testing.T, response *httptest.ResponseRecorder) string {
 }
 
 func TestAMemberStartsAClassificationAndARepeatReturnsTheSameReceipt(t *testing.T) {
-	gated, coordinator := newOperationsTestServer(t, executors.KeywordClassifier{})
+	gated, coordinator := newOperationsTestServer(t, testModelClassifier(0))
 	cookie := gated.loginAs(t, firstTestPrincipalID)
 	intent := classificationIntentFor(groupTestPrincipalID, "email-review-1")
 	// A body naming someone else is ignored: the operation is the caller's.
@@ -120,7 +131,7 @@ func TestAMemberStartsAClassificationAndARepeatReturnsTheSameReceipt(t *testing.
 }
 
 func TestTheOrganizationIsCheckedWithPrincipalStore(t *testing.T) {
-	gated, _ := newOperationsTestServer(t, executors.KeywordClassifier{})
+	gated, _ := newOperationsTestServer(t, testModelClassifier(0))
 	member := gated.loginAs(t, firstTestPrincipalID)
 	outsider := gated.loginAs(t, secondTestPrincipalID)
 	for _, check := range []struct {
@@ -146,7 +157,7 @@ func TestTheOrganizationIsCheckedWithPrincipalStore(t *testing.T) {
 		t.Errorf("administrator: %d %s", response.Code, response.Body.String())
 	}
 	// Nor need the internal service, which starts operations as nobody.
-	request := httptest.NewRequest("POST", "/operations", strings.NewReader(`{"type":"classification.run","organization_id":"principal_000006","idempotency_key":"k-service","input":{"labels":[{"name":"a"}],"items":[{"id":"1","text":"t"}]}}`))
+	request := httptest.NewRequest("POST", "/operations", strings.NewReader(`{"type":"classification.run","organization_id":"principal_000006","idempotency_key":"k-service","input":{"taxonomy":{"name":"t","axes":[{"name":"a","values":[{"name":"b"}]}]},"items":[{"id":"1","text":"t"}]}}`))
 	request.Header.Set(serviceTokenHeader, testServiceToken)
 	response := serve(gated.server, request)
 	if response.Code != http.StatusAccepted || decodeReceipt(t, response).PrincipalID != "" {
@@ -155,7 +166,7 @@ func TestTheOrganizationIsCheckedWithPrincipalStore(t *testing.T) {
 }
 
 func TestAnOperationIsReachableOnlyByItsPrincipal(t *testing.T) {
-	gated, _ := newOperationsTestServer(t, executors.KeywordClassifier{})
+	gated, _ := newOperationsTestServer(t, testModelClassifier(0))
 	owner := gated.loginAs(t, firstTestPrincipalID)
 	other := gated.loginAs(t, secondTestPrincipalID)
 	receipt := decodeReceipt(t, gated.requestAs(t, owner, "POST", "/operations", classificationIntentFor(groupTestPrincipalID, "k1")))
@@ -188,7 +199,7 @@ func TestAnOperationIsReachableOnlyByItsPrincipal(t *testing.T) {
 }
 
 func TestCancelAQueuedOperationThenCancelAgain(t *testing.T) {
-	gated, _ := newOperationsTestServer(t, executors.KeywordClassifier{})
+	gated, _ := newOperationsTestServer(t, testModelClassifier(0))
 	cookie := gated.loginAs(t, firstTestPrincipalID)
 	receipt := decodeReceipt(t, gated.requestAs(t, cookie, "POST", "/operations", classificationIntentFor(groupTestPrincipalID, "k1")))
 	cancelled := gated.requestAs(t, cookie, "POST", "/operations/"+receipt.ID+"/cancel", nil)
@@ -202,7 +213,7 @@ func TestCancelAQueuedOperationThenCancelAgain(t *testing.T) {
 }
 
 func TestOperationTypesListsTheClassifier(t *testing.T) {
-	gated, _ := newOperationsTestServer(t, executors.KeywordClassifier{})
+	gated, _ := newOperationsTestServer(t, testModelClassifier(0))
 	var types []msg.OperationTypeDescription
 	json.Unmarshal(gated.requestAs(t, gated.loginAs(t, secondTestPrincipalID), "GET", "/operation-types", nil).Body.Bytes(), &types)
 	if len(types) != 1 || types[0].Type != msg.OperationTypeClassificationRun {
@@ -250,7 +261,7 @@ func readOperationStream(t *testing.T, url string, cookie *http.Cookie, lastEven
 // see the stream end on the terminal receipt. A second stream resumed from
 // the middle gets only what came after.
 func TestTheEventStreamFollowsAnOperationToItsEnd(t *testing.T) {
-	gated, coordinator := newOperationsTestServer(t, executors.KeywordClassifier{DelayPerItem: 50 * time.Millisecond})
+	gated, coordinator := newOperationsTestServer(t, testModelClassifier(50 * time.Millisecond))
 	listener := httptest.NewServer(gated.server)
 	t.Cleanup(listener.Close)
 	ctx, stop := context.WithCancel(context.Background())
@@ -296,7 +307,7 @@ func (gated *gatedTestServer) requestAsServiceWithBody(t *testing.T, method, pat
 
 func TestOperationGrantsAreLenientByDefaultAndStrictOnRequest(t *testing.T) {
 	const runOperation = "can_run_operation/operation_type"
-	gated, _ := newOperationsTestServerWithGrants(t, executors.KeywordClassifier{}, map[string]map[string][]string{
+	gated, _ := newOperationsTestServerWithGrants(t, testModelClassifier(0), map[string]map[string][]string{
 		firstTestPrincipalID:  {},
 		secondTestPrincipalID: {runOperation: {"llm.completion"}},
 	})
@@ -334,7 +345,7 @@ func TestOperationGrantsAreLenientByDefaultAndStrictOnRequest(t *testing.T) {
 }
 
 func TestOrganizationBudgetsAreSetByOperatorsAndStopNewWork(t *testing.T) {
-	gated, coordinator := newOperationsTestServer(t, executors.KeywordClassifier{})
+	gated, coordinator := newOperationsTestServer(t, testModelClassifier(0))
 	member := gated.loginAs(t, firstTestPrincipalID)
 	budgetPath := "/operation-budgets/" + groupTestPrincipalID
 
@@ -372,7 +383,7 @@ func TestOrganizationBudgetsAreSetByOperatorsAndStopNewWork(t *testing.T) {
 }
 
 func TestOperationTypesNeedNoCredential(t *testing.T) {
-	gated, _ := newOperationsTestServer(t, executors.KeywordClassifier{})
+	gated, _ := newOperationsTestServer(t, testModelClassifier(0))
 	response := gated.requestAs(t, nil, "GET", "/operation-types", nil)
 	var types []msg.OperationTypeDescription
 	json.Unmarshal(response.Body.Bytes(), &types)

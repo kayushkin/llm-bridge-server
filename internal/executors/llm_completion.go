@@ -86,19 +86,8 @@ func (completion LLMCompletion) Execute(ctx context.Context, intent msg.Operatio
 	if model == "" {
 		model = defaultModel
 	}
-	remainingUSD, limited, err := receipt.SpendingAllowance()
-	if err != nil {
-		return writeFailure(err)
-	}
-	if limited {
-		switch {
-		case remainingUSD <= 0:
-			return failed("budget_exhausted", fmt.Sprintf("no budget left for a model call (%.4f dollars remaining)", remainingUSD))
-		case model == "":
-			return failed("budget_unenforceable", "the operation is under a budget and names no model, and operations.completion_model is empty, so the call's price cannot be known")
-		case !receipt.ModelHasListPrice(model):
-			return failed("model_price_unknown", fmt.Sprintf("the operation is under a budget and model-store has no price for %q", model))
-		}
+	if refusal := refuseCallOverBudget(receipt, model); refusal != nil {
+		return *refusal
 	}
 	response, err := completion.Caller.RunOneShot(ctx, instanceID, msg.OneShotRequest{
 		Prompt: input.Prompt, SystemPrompt: input.SystemPrompt, Model: model, Schema: input.Schema, MaxTokens: input.MaxTokens,
@@ -132,6 +121,37 @@ func (completion LLMCompletion) Execute(ctx context.Context, intent msg.Operatio
 		return failed("result_not_encodable", err.Error())
 	}
 	return operations.Result{State: msg.OperationStateSucceeded, Result: encoded}
+}
+
+// refuseCallOverBudget is the check before every model call: nil when the
+// call may be made, the result to end the attempt with when it may not.
+func refuseCallOverBudget(receipt operations.ReceiptWriter, model string) *operations.Result {
+	remainingUSD, limited, err := receipt.SpendingAllowance()
+	if err != nil {
+		refusal := writeFailure(err)
+		return &refusal
+	}
+	if !limited {
+		return nil
+	}
+	var refusal operations.Result
+	switch {
+	case remainingUSD <= 0:
+		refusal = failed("budget_exhausted", fmt.Sprintf("no budget left for a model call (%.4f dollars remaining)", remainingUSD))
+	case model == "":
+		refusal = failed("budget_unenforceable", "the operation is under a budget and names no model, and operations.completion_model is empty, so the call's price cannot be known")
+	case !receipt.ModelHasListPrice(model):
+		refusal = failed("model_price_unknown", fmt.Sprintf("the operation is under a budget and model-store has no price for %q", model))
+	default:
+		return nil
+	}
+	return &refusal
+}
+
+// writeFailure ends an attempt whose receipt write failed, usually because
+// its lease was lost. Retryable: whoever holds the operation now decides.
+func writeFailure(err error) operations.Result {
+	return operations.Result{Error: &msg.OperationError{Code: "receipt_write_failed", Retryable: true, Message: err.Error()}}
 }
 
 func failed(code, message string) operations.Result {

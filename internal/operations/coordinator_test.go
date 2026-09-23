@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
+	"github.com/kayushkin/llm-bridge-server/internal/executors/executorstest"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -63,10 +65,24 @@ func newCoordinator(t *testing.T, store *operationstore.Store, owner string, exe
 	return coordinator
 }
 
+// supportTaxonomy is a small two-axis taxonomy the fake harness can answer:
+// it gives an item the values whose names appear in its text.
+var supportTaxonomy = msg.ClassificationTaxonomy{Name: "support", Domain: "support mail", Axes: []msg.ClassificationAxis{
+	{Name: "category", Required: true, Values: []msg.ClassificationValue{{Name: "billing"}, {Name: "outage"}}},
+	{Name: "urgency", Values: []msg.ClassificationValue{{Name: "urgent"}}},
+}}
+
+func modelClassifier() executors.ModelClassifier {
+	return executors.ModelClassifier{
+		Caller:     &executorstest.FakeOneShot{InstanceID: "inst-test", DefaultModel: "test-model"},
+		Taxonomies: executorstest.FakeTaxonomies{},
+	}
+}
+
 func classificationIntent(key string) msg.OperationIntent {
 	input, _ := json.Marshal(msg.ClassificationRunInput{
-		Labels: []msg.ClassificationLabel{{Name: "billing", Keywords: []string{"invoice"}}, {Name: "outage", Keywords: []string{"down"}}},
-		Items:  []msg.ClassificationItem{{ID: "mail_1", Text: "Your INVOICE is attached"}, {ID: "mail_2", Text: "hello"}},
+		Taxonomy: &supportTaxonomy,
+		Items:    []msg.ClassificationItem{{ID: "mail_1", Text: "Your BILLING statement is urgent"}, {ID: "mail_2", Text: "hello"}},
 	})
 	return msg.OperationIntent{Type: msg.OperationTypeClassificationRun, OrganizationID: "principal_000006",
 		PrincipalID: "principal_000004", IdempotencyKey: key, Input: input}
@@ -94,23 +110,26 @@ func get(t *testing.T, store *operationstore.Store, id string) msg.OperationRece
 	return operation.Receipt
 }
 
-func TestClassificationRunsToSuccessWithLabelsAndEvidence(t *testing.T) {
+func TestClassificationRunsToSuccessWithValuesPerAxis(t *testing.T) {
 	store, _ := openStore(t)
-	coordinator := newCoordinator(t, store, "owner-a", executors.KeywordClassifier{})
+	coordinator := newCoordinator(t, store, "owner-a", modelClassifier())
 	receipt, created, err := coordinator.Submit(classificationIntent("k1"))
 	if err != nil || !created || receipt.State != msg.OperationStateQueued || receipt.CorrelationID != receipt.ID {
 		t.Fatalf("submit: created=%v err=%v receipt=%+v", created, err, receipt)
 	}
 	runUntilIdle(t, coordinator)
 	finished := get(t, store, receipt.ID)
-	if finished.State != msg.OperationStateSucceeded || finished.Executor != "keyword-classifier" || finished.CompletedAt == nil {
+	if finished.State != msg.OperationStateSucceeded || finished.Executor != "model-classifier" || finished.CompletedAt == nil {
 		t.Fatalf("finished: %+v", finished)
 	}
 	var result msg.ClassificationRunResult
 	if err := json.Unmarshal(finished.Result, &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Items) != 2 || len(result.Items[0].Labels) != 1 || result.Items[0].Labels[0] != "billing" || len(result.Items[1].Labels) != 0 {
+	first, second := result.Items[0], result.Items[1]
+	if len(result.Items) != 2 || result.Taxonomy.Name != "support" || result.TaxonomySource != nil ||
+		strings.Join(first.Values["category"], ",") != "billing" || strings.Join(first.Values["urgency"], ",") != "urgent" || first.NeedsReview ||
+		len(second.Values["category"]) != 0 || !second.NeedsReview {
 		t.Fatalf("result: %+v", result)
 	}
 	if finished.Progress == nil || finished.Progress.Completed != 2 || finished.Progress.Total != 2 {
@@ -132,7 +151,7 @@ func TestClassificationRunsToSuccessWithLabelsAndEvidence(t *testing.T) {
 
 func TestSameKeySameIntentReturnsTheFirstReceiptAndDifferentIntentIsRefused(t *testing.T) {
 	store, _ := openStore(t)
-	coordinator := newCoordinator(t, store, "owner-a", executors.KeywordClassifier{})
+	coordinator := newCoordinator(t, store, "owner-a", modelClassifier())
 	first, _, err := coordinator.Submit(classificationIntent("k1"))
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +166,7 @@ func TestSameKeySameIntentReturnsTheFirstReceiptAndDifferentIntentIsRefused(t *t
 		t.Fatalf("repeat: created=%v err=%v id=%s want %s", created, err, second.ID, first.ID)
 	}
 	different := classificationIntent("k1")
-	different.Input = json.RawMessage(`{"labels":[{"name":"x"}],"items":[{"id":"a","text":"b"}]}`)
+	different.Input = json.RawMessage(`{"taxonomy":{"name":"x","axes":[{"name":"a","values":[{"name":"b"}]}]},"items":[{"id":"a","text":"b"}]}`)
 	if _, _, err := coordinator.Submit(different); !errors.Is(err, operationstore.ErrIdempotencyKeyReused) {
 		t.Fatalf("different intent under the same key: %v", err)
 	}
@@ -162,15 +181,15 @@ func TestSameKeySameIntentReturnsTheFirstReceiptAndDifferentIntentIsRefused(t *t
 
 func TestIntentRefusals(t *testing.T) {
 	store, _ := openStore(t)
-	coordinator := newCoordinator(t, store, "owner-a", executors.KeywordClassifier{})
+	coordinator := newCoordinator(t, store, "owner-a", modelClassifier())
 	cases := map[string]func(*msg.OperationIntent){
 		"unknown_operation_type":   func(i *msg.OperationIntent) { i.Type = "nope.run" },
 		"organization_required":    func(i *msg.OperationIntent) { i.OrganizationID = "" },
 		"idempotency_key_required": func(i *msg.OperationIntent) { i.IdempotencyKey = " " },
 		"credential_in_input": func(i *msg.OperationIntent) {
-			i.Input = json.RawMessage(`{"labels":[{"name":"a"}],"items":[{"id":"1","text":"t"}],"options":{"mailApiKey":"x"}}`)
+			i.Input = json.RawMessage(`{"taxonomy_board_id":"b","items":[{"id":"1","text":"t"}],"options":{"mailApiKey":"x"}}`)
 		},
-		"invalid_input":       func(i *msg.OperationIntent) { i.Input = json.RawMessage(`{"labels":[],"items":[]}`) },
+		"invalid_input":       func(i *msg.OperationIntent) { i.Input = json.RawMessage(`{"taxonomy_board_id":"b","items":[]}`) },
 		"parent_not_settable": func(i *msg.OperationIntent) { i.ParentOperationID = "operation_x" },
 	}
 	for code, spoil := range cases {
@@ -195,10 +214,10 @@ func TestInputKeysLikeMaxTokensAreNotCredentials(t *testing.T) {
 }
 
 // A restart leaves an operation running under a lease nobody renews. The next
-// process reconciles it, and a keyword classification is safe to run again.
+// process reconciles it, and a classification is safe to run again.
 func TestRestartRequeuesAndFinishesAnAbandonedClassification(t *testing.T) {
 	store, _ := openStore(t)
-	first := newCoordinator(t, store, "process-before-restart", executors.KeywordClassifier{})
+	first := newCoordinator(t, store, "process-before-restart", modelClassifier())
 	receipt, _, err := first.Submit(classificationIntent("k1"))
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +225,7 @@ func TestRestartRequeuesAndFinishesAnAbandonedClassification(t *testing.T) {
 	if _, found, err := store.Claim("process-before-restart", time.Minute, time.Now()); err != nil || !found {
 		t.Fatalf("claim: %v %v", found, err)
 	}
-	second := newCoordinator(t, store, "process-after-restart", executors.KeywordClassifier{})
+	second := newCoordinator(t, store, "process-after-restart", modelClassifier())
 	second.ReconcileAbandoned(context.Background())
 	if state := get(t, store, receipt.ID).State; state != msg.OperationStateQueued {
 		t.Fatalf("after reconcile: %s", state)

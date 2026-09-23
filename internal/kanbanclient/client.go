@@ -20,6 +20,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // Client is a kanban-store reverse-lookup caller. Safe for concurrent use.
@@ -322,4 +324,74 @@ func (c *Client) EffectiveDefaults(ctx context.Context, boardID, cardID string, 
 		return nil, fmt.Errorf("parse effective-defaults response: %w", err)
 	}
 	return &out, nil
+}
+
+// principalIDHeader is where kanban-store reads the principal a request acts
+// as. It is believed only without the service token, which wins when both
+// are sent — so a read as a principal goes out without the token.
+const principalIDHeader = "X-Principal-Id"
+
+// ErrBoardHasNoTaxonomy is a board kanban-store has, with no taxonomy set.
+var ErrBoardHasNoTaxonomy = errors.New("board has no taxonomy")
+
+// BoardTaxonomy reads the classification taxonomy a board keeps, and the
+// board's updated_at as the version it was read at. With a principalID the
+// read is made as that principal, so kanban-store's can_view decides: a board
+// they may not view is ErrNotFound, the same as a missing one. With none it
+// is made as this service.
+func (c *Client) BoardTaxonomy(ctx context.Context, boardID, principalID string) (msg.ClassificationTaxonomy, string, error) {
+	endpoint := c.baseURL + "/api/boards/" + url.PathEscape(boardID)
+	var body []byte
+	var err error
+	if principalID == "" {
+		body, err = c.get(ctx, endpoint, "read board "+boardID)
+	} else {
+		body, err = c.getAsPrincipal(ctx, endpoint, principalID, "read board "+boardID+" as "+principalID)
+	}
+	if err != nil {
+		return msg.ClassificationTaxonomy{}, "", err
+	}
+	var board struct {
+		ID        string                      `json:"id"`
+		Taxonomy  *msg.ClassificationTaxonomy `json:"taxonomy"`
+		UpdatedAt string                      `json:"updated_at"`
+	}
+	if err := json.Unmarshal(body, &board); err != nil {
+		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("kanban-store answered board %s with a body that is not a board: %w", boardID, err)
+	}
+	if board.ID != boardID {
+		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("kanban-store answered board %s with board %q", boardID, board.ID)
+	}
+	if board.Taxonomy == nil {
+		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("%w: board %s", ErrBoardHasNoTaxonomy, boardID)
+	}
+	if err := board.Taxonomy.Validate(); err != nil {
+		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("board %s keeps a taxonomy that does not validate: %w", boardID, err)
+	}
+	return *board.Taxonomy, board.UpdatedAt, nil
+}
+
+// getAsPrincipal is get with X-Principal-Id and without the service token.
+func (c *Client) getAsPrincipal(ctx context.Context, endpoint, principalID, what string) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build %s request: %w", what, err)
+	}
+	request.Header.Set(principalIDHeader, principalID)
+	response, err := (&http.Client{Timeout: c.http.Timeout}).Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("kanban-store %s: %w", what, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read %s response: %w", what, err)
+	}
+	switch {
+	case response.StatusCode == http.StatusNotFound, response.StatusCode == http.StatusForbidden:
+		return nil, fmt.Errorf("%w: kanban-store %s: status %d: %s", ErrNotFound, what, response.StatusCode, strings.TrimSpace(string(body)))
+	case response.StatusCode != http.StatusOK:
+		return nil, fmt.Errorf("kanban-store %s: status %d: %s", what, response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return body, nil
 }
