@@ -15,7 +15,6 @@ import (
 	harnessstore "github.com/kayushkin/harness-store"
 	hookstore "github.com/kayushkin/hook-store"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
@@ -176,8 +175,9 @@ func main() {
 		LeaseDuration: cfg.OperationsLeaseDuration,
 		// Unique per process, so a restart finds every operation the last
 		// process left running and reconciles it.
-		LeaseOwner: fmt.Sprintf("llm-bridge-server pid %d started %s", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano)),
-	}, executors.KeywordClassifier{})
+		LeaseOwner:     fmt.Sprintf("llm-bridge-server pid %d started %s", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano)),
+		ModelListPrice: srv.ModelListPrice,
+	}, srv.OperationExecutors()...)
 	if err != nil {
 		log.Fatalf("operations: %v", err)
 	}

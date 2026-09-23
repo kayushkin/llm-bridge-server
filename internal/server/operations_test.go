@@ -22,7 +22,14 @@ import (
 // belongs to nothing. Nothing runs until the test calls RunNext or Run.
 func newOperationsTestServer(t *testing.T, classifier executors.KeywordClassifier) (*gatedTestServer, *operations.Coordinator) {
 	t.Helper()
-	gated := newGatedTestServer(t, nil)
+	return newOperationsTestServerWithGrants(t, classifier, nil)
+}
+
+// newOperationsTestServerWithGrants is newOperationsTestServer with grant-store
+// answering from grantsByPrincipal, keyed "relation/resource_type".
+func newOperationsTestServerWithGrants(t *testing.T, classifier executors.KeywordClassifier, grantsByPrincipal map[string]map[string][]string) (*gatedTestServer, *operations.Coordinator) {
+	t.Helper()
+	gated := newGatedTestServer(t, grantsByPrincipal)
 	gated.principals.mutex.Lock()
 	gated.principals.groupIDsByMember = map[string][]string{firstTestPrincipalID: {groupTestPrincipalID}}
 	gated.principals.mutex.Unlock()
@@ -277,5 +284,99 @@ func TestTheEventStreamFollowsAnOperationToItsEnd(t *testing.T) {
 	// A stream opened after the end sends nothing more and closes.
 	if after := readOperationStream(t, listener.URL+"/operations/"+receipt.ID+"/events", cookie, "6"); len(after) != 0 {
 		t.Fatalf("after the end: %+v", after)
+	}
+}
+
+func (gated *gatedTestServer) requestAsServiceWithBody(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request.Header.Set(serviceTokenHeader, testServiceToken)
+	return serve(gated.server, request)
+}
+
+func TestOperationGrantsAreLenientByDefaultAndStrictOnRequest(t *testing.T) {
+	const runOperation = "can_run_operation/operation_type"
+	gated, _ := newOperationsTestServerWithGrants(t, executors.KeywordClassifier{}, map[string]map[string][]string{
+		firstTestPrincipalID:  {},
+		secondTestPrincipalID: {runOperation: {"llm.completion"}},
+	})
+	gated.principals.mutex.Lock()
+	gated.principals.groupIDsByMember[secondTestPrincipalID] = []string{groupTestPrincipalID}
+	gated.principals.mutex.Unlock()
+	ungranted := gated.loginAs(t, firstTestPrincipalID)
+	grantedOtherType := gated.loginAs(t, secondTestPrincipalID)
+	administrator := gated.loginAs(t, administratorTestPrincipalID)
+	submit := func(cookie *http.Cookie, key string) *httptest.ResponseRecorder {
+		return gated.requestAs(t, cookie, "POST", "/operations", classificationIntentFor(groupTestPrincipalID, key))
+	}
+
+	// Lenient: holding no grant of the relation restricts nothing; holding
+	// one restricts to what it names.
+	if response := submit(ungranted, "lenient-1"); response.Code != http.StatusAccepted {
+		t.Fatalf("lenient, no grants: %d %s", response.Code, response.Body.String())
+	}
+	if response := submit(grantedOtherType, "lenient-2"); response.Code != http.StatusForbidden || errorCodeOf(t, response) != "not_granted" {
+		t.Fatalf("lenient, granted another type: %d %s", response.Code, response.Body.String())
+	}
+
+	if response := gated.requestAsServiceWithBody(t, "PUT", "/settings/operations.grant_enforcement", `{"value":"sometimes"}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("a value that is neither lenient nor strict: %d %s", response.Code, response.Body.String())
+	}
+	if response := gated.requestAsServiceWithBody(t, "PUT", "/settings/operations.grant_enforcement", `{"value":"strict"}`); response.Code != http.StatusOK {
+		t.Fatalf("switch to strict: %d %s", response.Code, response.Body.String())
+	}
+	if response := submit(ungranted, "strict-1"); response.Code != http.StatusForbidden || errorCodeOf(t, response) != "not_granted" {
+		t.Fatalf("strict, no grants: %d %s", response.Code, response.Body.String())
+	}
+	if response := submit(administrator, "strict-2"); response.Code != http.StatusAccepted {
+		t.Fatalf("strict, administrator: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestOrganizationBudgetsAreSetByOperatorsAndStopNewWork(t *testing.T) {
+	gated, coordinator := newOperationsTestServer(t, executors.KeywordClassifier{})
+	member := gated.loginAs(t, firstTestPrincipalID)
+	budgetPath := "/operation-budgets/" + groupTestPrincipalID
+
+	if response := gated.requestAs(t, member, "PUT", budgetPath, map[string]any{"monthly_limit_usd": 5}); response.Code != http.StatusForbidden {
+		t.Fatalf("a principal setting a budget: %d", response.Code)
+	}
+	if response := gated.requestAsServiceWithBody(t, "PUT", "/operation-budgets/"+secondTestPrincipalID, `{"monthly_limit_usd":5}`); response.Code != http.StatusBadRequest || errorCodeOf(t, response) != "organization_not_group" {
+		t.Fatalf("a budget on a person: %d %s", response.Code, response.Body.String())
+	}
+	if response := gated.requestAsServiceWithBody(t, "PUT", budgetPath, `{"monthly_limit_usd":-1}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("a negative budget: %d", response.Code)
+	}
+	set := gated.requestAsServiceWithBody(t, "PUT", budgetPath, `{"monthly_limit_usd":0}`)
+	var budget msg.OrganizationBudget
+	json.Unmarshal(set.Body.Bytes(), &budget)
+	if set.Code != http.StatusOK || budget.OrganizationID != groupTestPrincipalID || budget.MonthStartsAt.Day() != 1 {
+		t.Fatalf("set budget: %d %s", set.Code, set.Body.String())
+	}
+	refused := gated.requestAs(t, member, "POST", "/operations", classificationIntentFor(groupTestPrincipalID, "k1"))
+	if refused.Code != http.StatusPaymentRequired || errorCodeOf(t, refused) != "organization_budget_exhausted" {
+		t.Fatalf("submit with no budget left: %d %s", refused.Code, refused.Body.String())
+	}
+	if response := gated.requestAsServiceWithBody(t, "DELETE", budgetPath, ""); response.Code != http.StatusNoContent {
+		t.Fatalf("delete budget: %d", response.Code)
+	}
+	if response := gated.requestAs(t, member, "POST", "/operations", classificationIntentFor(groupTestPrincipalID, "k1")); response.Code != http.StatusAccepted {
+		t.Fatalf("submit after the budget was removed: %d %s", response.Code, response.Body.String())
+	}
+	var listed []msg.OrganizationBudget
+	json.Unmarshal(gated.requestAsService(t, "GET", "/operation-budgets").Body.Bytes(), &listed)
+	if len(listed) != 0 {
+		t.Fatalf("budgets after delete: %+v", listed)
+	}
+	_ = coordinator
+}
+
+func TestOperationTypesNeedNoCredential(t *testing.T) {
+	gated, _ := newOperationsTestServer(t, executors.KeywordClassifier{})
+	response := gated.requestAs(t, nil, "GET", "/operation-types", nil)
+	var types []msg.OperationTypeDescription
+	json.Unmarshal(response.Body.Bytes(), &types)
+	if response.Code != http.StatusOK || len(types) != 1 {
+		t.Fatalf("anonymous /operation-types: %d %s", response.Code, response.Body.String())
 	}
 }

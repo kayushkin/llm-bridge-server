@@ -29,6 +29,15 @@ type IntentError struct {
 
 func (e *IntentError) Error() string { return e.Code + ": " + e.Message }
 
+// BudgetError is an intent refused because its organization has spent its
+// monthly budget. Answered with 402 and Code.
+type BudgetError struct {
+	Code    string
+	Message string
+}
+
+func (e *BudgetError) Error() string { return e.Code + ": " + e.Message }
+
 // Config bounds the coordinator.
 type Config struct {
 	// WorkerCount is how many operations run at once.
@@ -42,6 +51,10 @@ type Config struct {
 	LeaseOwner string
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
+	// ModelListPrice returns a model's list price in dollars per million
+	// input and output tokens, and whether it has one. Nil knows no prices,
+	// so no call under a budget can run.
+	ModelListPrice func(model string) (inputPerMillion, outputPerMillion float64, known bool)
 }
 
 // Coordinator accepts intents and carries operations to a terminal state.
@@ -72,6 +85,9 @@ func NewCoordinator(store *operationstore.Store, config Config, executors ...Exe
 	}
 	if config.Now == nil {
 		config.Now = time.Now
+	}
+	if config.ModelListPrice == nil {
+		config.ModelListPrice = func(string) (float64, float64, bool) { return 0, 0, false }
 	}
 	byType := map[msg.OperationType]Executor{}
 	for _, executor := range executors {
@@ -123,6 +139,25 @@ func (c *Coordinator) Submit(intent msg.OperationIntent) (receipt msg.OperationR
 	if err != nil {
 		return msg.OperationReceipt{}, false, err
 	}
+	budget, limited, err := c.store.OrganizationBudget(intent.OrganizationID, c.config.Now())
+	if err != nil {
+		return msg.OperationReceipt{}, false, err
+	}
+	if limited && budget.SpentUSD >= budget.MonthlyLimitUSD {
+		// A repeat of an intent already accepted goes on to Create, which
+		// answers with its receipt (or refuses a changed intent) and stores
+		// nothing new: the budget stops new work, not reading about old work.
+		_, found, err := c.store.FindByIdempotencyKey(intent)
+		if err != nil {
+			return msg.OperationReceipt{}, false, err
+		}
+		if found {
+			return c.store.Create(intent, fingerprint, c.config.Now())
+		}
+		return msg.OperationReceipt{}, false, &BudgetError{"organization_budget_exhausted", fmt.Sprintf(
+			"%s has spent $%.4f of its $%.2f budget for the month starting %s", intent.OrganizationID,
+			budget.SpentUSD, budget.MonthlyLimitUSD, budget.MonthStartsAt.Format("2006-01-02"))}
+	}
 	receipt, created, err = c.store.Create(intent, fingerprint, c.config.Now())
 	if err != nil {
 		return msg.OperationReceipt{}, false, err
@@ -143,6 +178,12 @@ func (c *Coordinator) checkIntent(intent msg.OperationIntent) (string, error) {
 	}
 	if strings.TrimSpace(intent.IdempotencyKey) == "" {
 		return "", &IntentError{"idempotency_key_required", "idempotency_key is required; see docs/OPERATIONS.md"}
+	}
+	if len(intent.RequestedCapabilities) > 0 {
+		return "", &IntentError{"unknown_capability", fmt.Sprintf("no capability is defined yet, so %v cannot be granted; leave requested_capabilities empty", intent.RequestedCapabilities)}
+	}
+	if intent.MaximumCostUSD < 0 {
+		return "", &IntentError{"invalid_maximum_cost", "maximum_cost_usd must not be negative"}
 	}
 	if len(intent.Input) > 0 {
 		var input any
@@ -249,7 +290,8 @@ func intentFingerprint(intent msg.OperationIntent) (string, error) {
 		Input                 any                      `json:"input"`
 		RequestedCapabilities []string                 `json:"requested_capabilities"`
 		PolicyRevision        string                   `json:"policy_revision"`
-	}{intent.Type, intent.OrganizationID, intent.Scope, intent.InputReferences, input, intent.RequestedCapabilities, intent.PolicyRevision})
+		MaximumCostUSD        float64                  `json:"maximum_cost_usd"`
+	}{intent.Type, intent.OrganizationID, intent.Scope, intent.InputReferences, input, intent.RequestedCapabilities, intent.PolicyRevision, intent.MaximumCostUSD})
 	if err != nil {
 		return "", fmt.Errorf("fingerprint intent: %w", err)
 	}
@@ -629,6 +671,64 @@ func (w *leasedReceiptWriter) SettleEffect(effectNumber int, outcome msg.Operati
 		effect.RecordedAt = w.coordinator.config.Now()
 		return nil
 	})
+}
+
+func (w *leasedReceiptWriter) SpendingAllowance() (float64, bool, error) {
+	return w.coordinator.spendingAllowance(w.operation.Receipt)
+}
+
+func (w *leasedReceiptWriter) ModelHasListPrice(model string) bool {
+	_, _, known := w.coordinator.config.ModelListPrice(model)
+	return model != "" && known
+}
+
+func (w *leasedReceiptWriter) RecordModelCall(model string, tokens msg.TokenUsage) error {
+	call := operationstore.ModelCall{Model: model, Tokens: tokens}
+	inputPerMillion, outputPerMillion, known := w.coordinator.config.ModelListPrice(model)
+	if known {
+		call.CostKnown = true
+		call.CostUSD = listPriceUSD(tokens, inputPerMillion, outputPerMillion)
+	} else {
+		log.Printf("operations: %s: model-store has no price for %q; the call's tokens are recorded and its cost is not", w.operation.Receipt.ID, model)
+	}
+	_, err := w.coordinator.store.RecordModelCall(w.operation.Receipt.ID, w.operation.LeaseToken, w.coordinator.config.Now(), call)
+	return err
+}
+
+// listPriceUSD prices a call's tokens. Cache reads and writes are charged at
+// the full input price: model-store holds no cache prices, and budgets need
+// a figure that errs high rather than low.
+func listPriceUSD(tokens msg.TokenUsage, inputPerMillion, outputPerMillion float64) float64 {
+	inputTokens := tokens.InputTokens + tokens.CacheReadTokens + tokens.CacheWriteTokens
+	return (float64(inputTokens)*inputPerMillion + float64(tokens.OutputTokens)*outputPerMillion) / 1e6
+}
+
+// spendingAllowance is what an operation may still spend: the lower of its
+// organization's remaining month and its root operation's remaining cap.
+// limited is false when neither applies.
+func (c *Coordinator) spendingAllowance(receipt msg.OperationReceipt) (remainingUSD float64, limited bool, err error) {
+	now := c.config.Now()
+	budget, organizationLimited, err := c.store.OrganizationBudget(receipt.OrganizationID, now)
+	if err != nil {
+		return 0, false, err
+	}
+	if organizationLimited {
+		remainingUSD, limited = budget.MonthlyLimitUSD-budget.SpentUSD, true
+	}
+	root, err := c.store.RootOf(receipt.ID)
+	if err != nil {
+		return 0, false, err
+	}
+	if root.Intent.MaximumCostUSD > 0 {
+		spent, err := c.store.TreeSpentUSD(root.Receipt.ID)
+		if err != nil {
+			return 0, false, err
+		}
+		if remaining := root.Intent.MaximumCostUSD - spent; !limited || remaining < remainingUSD {
+			remainingUSD, limited = remaining, true
+		}
+	}
+	return remainingUSD, limited, nil
 }
 
 func (w *leasedReceiptWriter) EffectHeaders(effectNumber int) http.Header {

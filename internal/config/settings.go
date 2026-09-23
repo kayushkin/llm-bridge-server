@@ -33,6 +33,9 @@ const (
 	SettingPromptDriftTaggerModel            = "prompt_drift_tagger.model"
 	SettingSessionIdleTimeout                = "session.idle_timeout"
 	SettingSessionPTYIdleTimeout             = "session.pty_idle_timeout"
+	SettingOperationsCompletionInstance      = "operations.completion_instance"
+	SettingOperationsCompletionModel         = "operations.completion_model"
+	SettingOperationsGrantEnforcement        = "operations.grant_enforcement"
 )
 
 // HarnessProxyEnvironmentVariable is the variable that names the backend the
@@ -86,6 +89,13 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "How long an events-mode session may sit with no new event before its harness process is stopped and the session marked aborted. 0s or less switches reaping off."},
 		{Key: SettingSessionPTYIdleTimeout, EnvironmentVariable: "LLMBRIDGE_PTY_IDLE_TIMEOUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "60m",
 			Description: "The same cutoff for pty-mode sessions, where a person reading output emits nothing. 0s or less switches reaping off."},
+
+		{Key: SettingOperationsCompletionInstance, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_INSTANCE", Kind: behaviour, ValueType: text, Editable: true, Default: "inst-cc-local",
+			Description: "The harness instance llm.completion operations make their one-shot model calls on. It must be an enabled instance."},
+		{Key: SettingOperationsCompletionModel, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_MODEL", Kind: behaviour, ValueType: text, Editable: true,
+			Description: "The model an llm.completion asks for when its input names none, by model-store id. Empty leaves it to the instance; an operation under a budget then cannot run, because its price is not known before the call."},
+		{Key: SettingOperationsGrantEnforcement, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_GRANT_ENFORCEMENT", Kind: behaviour, ValueType: text, Editable: true, Default: OperationsGrantEnforcementLenient,
+			Description: "How grant-store's can_run_operation grants are applied to a principal starting an operation. lenient: a principal holding no such grant may start any type, and one holding any may start only those. strict: a principal may start only the types its grants name. Administrators and the service token are never checked."},
 
 		// Behaviour read once at start.
 		{Key: "session.purpose_folders", EnvironmentVariable: "LLMBRIDGE_PURPOSE_FOLDERS", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeStringMap,
@@ -208,6 +218,16 @@ func NewSettingsRegistry(environment servicesettings.Environment) (*servicesetti
 // StoredSettingSeeds is what each stored behaviour setting starts from the
 // first time this server runs with it editable: the value Config holds, which
 // Load took from the environment or the default and a test wrote as a literal.
+// The two values operations.grant_enforcement takes.
+const (
+	OperationsGrantEnforcementLenient = "lenient"
+	OperationsGrantEnforcementStrict  = "strict"
+)
+
+// OperationsGrantEnforcementValues is every value operations.grant_enforcement
+// accepts.
+var OperationsGrantEnforcementValues = []string{OperationsGrantEnforcementLenient, OperationsGrantEnforcementStrict}
+
 func (c *Config) StoredSettingSeeds() map[string]string {
 	optOut := make([]string, 0, len(c.SignalClassifierOptOut))
 	for harness, skipped := range c.SignalClassifierOptOut {
@@ -225,6 +245,17 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 		SettingSignalClassifierTimeout:         c.SignalClassifierTimeout.String(),
 		SettingSessionIdleTimeout:              c.IdleTimeout.String(),
 		SettingSessionPTYIdleTimeout:           c.PTYIdleTimeout.String(),
+	}
+	// Seeded only when set, so a Config literal that leaves them out gets the
+	// declared defaults rather than an empty value.
+	for key, value := range map[string]string{
+		SettingOperationsCompletionInstance: c.OperationsCompletionInstance,
+		SettingOperationsCompletionModel:    c.OperationsCompletionModel,
+		SettingOperationsGrantEnforcement:   c.OperationsGrantEnforcement,
+	} {
+		if value != "" {
+			seeds[key] = value
+		}
 	}
 	if c.SignalClassifierMaxChars > 0 {
 		seeds[SettingSignalClassifierMaximumCharacters] = strconv.Itoa(c.SignalClassifierMaxChars)

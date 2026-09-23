@@ -247,7 +247,11 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/operation-types` | The operation types this server runs, with their attempt and time limits | principal |
+| `GET` | `/operation-budgets` | Every organization's monthly limit and what it has spent this UTC month | operator |
+| `DELETE` | `/operation-budgets/{organization_id}` | Remove an organization's monthly limit | operator |
+| `GET` | `/operation-budgets/{organization_id}` | One organization's monthly limit and spend | operator |
+| `PUT` | `/operation-budgets/{organization_id}` | Set an organization's monthly limit (`{"monthly_limit_usd":50}`) | operator |
+| `GET` | `/operation-types` | The operation types this server runs, with their attempt and time limits | anyone |
 | `GET` | `/operations` | Receipts, newest first (`?organization_id=&principal_id=&type=&state=&created_after=&created_before=&limit=`) | principal, own operations only |
 | `POST` | `/operations` | Accept an operation intent: 202 and a new receipt, or 200 and the first one for a repeated idempotency key | principal, as itself, in its organization |
 | `GET` | `/operations/{id}` | One operation's receipt | owner |

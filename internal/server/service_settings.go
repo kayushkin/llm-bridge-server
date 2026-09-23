@@ -48,10 +48,11 @@ func attachServiceSettings(cfg *config.Config, st *store.Store) *servicesettings
 // after the components exist.
 func (s *Server) wireServiceSettings() {
 	if s.harnessStore != nil {
-		for _, key := range []string{config.SettingSignalClassifierInstance, config.SettingPromptDriftTaggerInstance} {
+		for _, key := range []string{config.SettingSignalClassifierInstance, config.SettingPromptDriftTaggerInstance, config.SettingOperationsCompletionInstance} {
 			s.settings.SetValidator(key, s.checkSettingNamesAnEnabledInstance)
 		}
 	}
+	s.settings.SetValidator(config.SettingOperationsGrantEnforcement, checkOperationGrantEnforcementValue)
 	s.settings.OnChange(func(string) { s.retuneFromServiceSettings() })
 	s.retuneFromServiceSettings()
 }

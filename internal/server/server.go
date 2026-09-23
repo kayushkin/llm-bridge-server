@@ -318,6 +318,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /operations/{id}/cancel", s.handleCancelOperation)
 	s.mux.HandleFunc("GET /operations/{id}/children", s.handleListOperationChildren)
 	s.mux.HandleFunc("GET /operation-types", s.handleOperationTypes)
+	s.mux.HandleFunc("GET /operation-budgets", s.handleListOperationBudgets)
+	s.mux.HandleFunc("GET /operation-budgets/{organization_id}", s.handleGetOperationBudget)
+	s.mux.HandleFunc("PUT /operation-budgets/{organization_id}", s.handlePutOperationBudget)
+	s.mux.HandleFunc("DELETE /operation-budgets/{organization_id}", s.handleDeleteOperationBudget)
 
 	// The Services page: healthcheck's services joined to the SQLite files
 	// their processes hold open, and read-only reads of those files. See

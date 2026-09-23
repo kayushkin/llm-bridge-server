@@ -209,13 +209,17 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /snapshots/blob/{sha}":                        cannotBeFilteredRoute("content-addressed blob shared across sessions; nothing ties a sha to one session"),
 
 	// Operations.
-	"POST /operations":              {class: routePrincipalCreatesOperation, reason: "a principal starts operations as itself, in an organization it belongs to"},
-	"GET /operations":               {class: routePrincipalSeesOwnOperationsOnly, reason: "operation list, narrowed in the store"},
-	"GET /operations/{id}":          operationOwnedRoute("id"),
-	"GET /operations/{id}/events":   operationOwnedRoute("id"),
-	"POST /operations/{id}/cancel":  operationOwnedRoute("id"),
-	"GET /operations/{id}/children": operationOwnedRoute("id"),
-	"GET /operation-types":          catalogRoute("the operation types this server runs"),
+	"POST /operations":                            {class: routePrincipalCreatesOperation, reason: "a principal starts operations as itself, in an organization it belongs to"},
+	"GET /operations":                             {class: routePrincipalSeesOwnOperationsOnly, reason: "operation list, narrowed in the store"},
+	"GET /operations/{id}":                        operationOwnedRoute("id"),
+	"GET /operations/{id}/events":                 operationOwnedRoute("id"),
+	"POST /operations/{id}/cancel":                operationOwnedRoute("id"),
+	"GET /operations/{id}/children":               operationOwnedRoute("id"),
+	"GET /operation-types":                        openRoute("names the operation types this server runs and their limits, nothing about anyone; grant-store reads it without a credential to check an operation_type grant"),
+	"GET /operation-budgets":                      operatorRoute("every organization's spending"),
+	"GET /operation-budgets/{organization_id}":    operatorRoute("an organization's spending"),
+	"PUT /operation-budgets/{organization_id}":    operatorRoute("sets an organization's monthly limit"),
+	"DELETE /operation-budgets/{organization_id}": operatorRoute("removes an organization's monthly limit"),
 
 	// Catalogs a chat UI reads.
 	"GET /harnesses":                     catalogRoute("harness types"),

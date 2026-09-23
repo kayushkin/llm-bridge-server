@@ -76,7 +76,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("enable WAL on %s: %w", path, err)
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + spendSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create operations schema in %s: %w", path, err)
 	}
@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS operations (
 	idempotency_key      TEXT NOT NULL,
 	intent_fingerprint   TEXT NOT NULL,
 	parent_operation_id  TEXT NOT NULL,
+	root_operation_id    TEXT NOT NULL,
 	state                TEXT NOT NULL,
 	revision             INTEGER NOT NULL,
 	intent_json          TEXT NOT NULL,
@@ -171,11 +172,17 @@ func (s *Store) Create(intent msg.OperationIntent, fingerprint string, now time.
 		if err != nil {
 			return fmt.Errorf("encode receipt: %w", err)
 		}
+		rootOperationID := receipt.ID
+		if receipt.ParentOperationID != "" {
+			if err := tx.QueryRow(`SELECT root_operation_id FROM operations WHERE id = ?`, receipt.ParentOperationID).Scan(&rootOperationID); err != nil {
+				return fmt.Errorf("read root of parent %s: %w", receipt.ParentOperationID, err)
+			}
+		}
 		if _, err := tx.Exec(`INSERT INTO operations (id, type, organization_id, principal_id, idempotency_key,
-			intent_fingerprint, parent_operation_id, state, revision, intent_json, receipt_json, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			intent_fingerprint, parent_operation_id, root_operation_id, state, revision, intent_json, receipt_json, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			receipt.ID, receipt.Type, receipt.OrganizationID, receipt.PrincipalID, receipt.IdempotencyKey,
-			fingerprint, receipt.ParentOperationID, receipt.State, receipt.Revision, intentJSON, receiptJSON,
+			fingerprint, receipt.ParentOperationID, rootOperationID, receipt.State, receipt.Revision, intentJSON, receiptJSON,
 			now.UnixNano(), now.UnixNano()); err != nil {
 			return fmt.Errorf("insert operation: %w", err)
 		}
@@ -199,6 +206,19 @@ func (s *Store) Create(intent msg.OperationIntent, fingerprint string, now time.
 	}
 	s.notify(events)
 	return receipt, created, nil
+}
+
+// FindByIdempotencyKey returns the receipt stored under intent's idempotency
+// key, if any, without comparing the intent.
+func (s *Store) FindByIdempotencyKey(intent msg.OperationIntent) (msg.OperationReceipt, bool, error) {
+	var receipt msg.OperationReceipt
+	var found bool
+	err := s.inTransaction(func(tx *sql.Tx) error {
+		match, matched, err := findByIdempotencyKey(tx, intent)
+		receipt, found = match.operation.Receipt, matched
+		return err
+	})
+	return receipt, found, err
 }
 
 type storedIdempotencyMatch struct {
@@ -429,6 +449,12 @@ const AnyLeaseToken int64 = -1
 // must be the operation's current token unless it is AnyLeaseToken. A change
 // that leaves the operation terminal releases the lease.
 func (s *Store) Update(operationID string, leaseToken int64, now time.Time, change Change) (msg.OperationReceipt, error) {
+	return s.update(operationID, leaseToken, now, change, nil)
+}
+
+// update is Update with alsoWrite run in the same transaction, after the
+// change is applied and before it is written.
+func (s *Store) update(operationID string, leaseToken int64, now time.Time, change Change, alsoWrite func(tx *sql.Tx, operation Operation) error) (msg.OperationReceipt, error) {
 	var events []msg.OperationEvent
 	var receipt msg.OperationReceipt
 	err := s.inTransaction(func(tx *sql.Tx) error {
@@ -462,6 +488,11 @@ func (s *Store) Update(operationID string, leaseToken int64, now time.Time, chan
 		if operation.Receipt.State.IsTerminal() && operation.Receipt.CompletedAt == nil {
 			completedAt := now
 			operation.Receipt.CompletedAt = &completedAt
+		}
+		if alsoWrite != nil {
+			if err := alsoWrite(tx, operation); err != nil {
+				return err
+			}
 		}
 		events, err = writeReceiptChange(tx, &operation, kind, "", now)
 		receipt = operation.Receipt

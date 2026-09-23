@@ -366,3 +366,55 @@ func TestChildrenAreCountedOnTheParent(t *testing.T) {
 		t.Fatalf("list children: %v %d", err, len(children))
 	}
 }
+
+// A per-operation cap covers the whole tree: what a child spends comes out
+// of its root's allowance.
+func TestAChildsSpendingCountsAgainstItsRootsCap(t *testing.T) {
+	store, _ := openStore(t)
+	const childType msg.OperationType = "test.child"
+	var allowanceSeenBySecondChild float64
+	var limitedForSecondChild bool
+	calls := 0
+	childExecutor := &scriptedExecutor{operationType: childType,
+		execute: func(_ context.Context, _ msg.OperationIntent, receipt operations.ReceiptWriter) operations.Result {
+			calls++
+			if calls == 2 {
+				var err error
+				allowanceSeenBySecondChild, limitedForSecondChild, err = receipt.SpendingAllowance()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			// $1 per million input tokens: 1000 tokens is $0.001.
+			if err := receipt.RecordModelCall("priced-model", msg.TokenUsage{InputTokens: 1000}); err != nil {
+				t.Fatal(err)
+			}
+			return operations.Result{State: msg.OperationStateSucceeded}
+		}}
+	parentExecutor := &scriptedExecutor{operationType: scriptedType,
+		execute: func(_ context.Context, _ msg.OperationIntent, receipt operations.ReceiptWriter) operations.Result {
+			for _, key := range []string{"a", "b"} {
+				if _, err := receipt.StartChild(childType, key, nil, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return operations.Result{State: msg.OperationStateSucceeded}
+		}}
+	coordinator, err := operations.NewCoordinator(store, operations.Config{WorkerCount: 1, LeaseDuration: 3 * time.Second, LeaseOwner: "o",
+		ModelListPrice: func(model string) (float64, float64, bool) { return 1, 1, model == "priced-model" }}, parentExecutor, childExecutor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, _, err := coordinator.Submit(msg.OperationIntent{Type: scriptedType, OrganizationID: "o", IdempotencyKey: "k", MaximumCostUSD: 0.0025})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runUntilIdle(t, coordinator)
+	if !limitedForSecondChild || allowanceSeenBySecondChild < 0.0014 || allowanceSeenBySecondChild > 0.0016 {
+		t.Fatalf("second child saw allowance %v limited %v, want $0.0015 left of the root's $0.0025", allowanceSeenBySecondChild, limitedForSecondChild)
+	}
+	spent, err := store.TreeSpentUSD(parent.ID)
+	if err != nil || spent < 0.00199 || spent > 0.00201 {
+		t.Fatalf("tree spent %v (%v)", spent, err)
+	}
+}

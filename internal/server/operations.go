@@ -1,14 +1,19 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/executors"
+	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
@@ -56,11 +61,19 @@ func (s *Server) handleCreateOperation(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, status, code, message)
 		return
 	}
+	if status, code, message := s.checkOperationGrant(r, intent.Type); status != 0 {
+		writeJSONError(w, status, code, message)
+		return
+	}
 	receipt, created, err := coordinator.Submit(intent)
 	var intentError *operations.IntentError
+	var budgetError *operations.BudgetError
 	switch {
 	case errors.As(err, &intentError):
 		writeJSONError(w, http.StatusBadRequest, intentError.Code, intentError.Message)
+		return
+	case errors.As(err, &budgetError):
+		writeJSONError(w, http.StatusPaymentRequired, budgetError.Code, budgetError.Message)
 		return
 	case errors.Is(err, operationstore.ErrIdempotencyKeyReused):
 		writeJSONError(w, http.StatusConflict, "idempotency_key_reused", err.Error())
@@ -84,19 +97,8 @@ func (s *Server) handleCreateOperation(w http.ResponseWriter, r *http.Request) {
 // principal-store group and, for a principal who is not an administrator,
 // one they belong to. A zero status means it passed.
 func (s *Server) checkOperationOrganization(r *http.Request, organizationID string) (status int, code, message string) {
-	if organizationID == "" {
-		return http.StatusBadRequest, "organization_required", "organization_id is required: the principal-store group the operation runs for"
-	}
-	organization, err := s.principalClient.Get(r.Context(), organizationID)
-	switch {
-	case errors.Is(err, principalclient.ErrNotFound):
-		return http.StatusBadRequest, "unknown_organization", fmt.Sprintf("principal-store has no principal %s", organizationID)
-	case err != nil:
-		return http.StatusBadGateway, "principal_store_unavailable", err.Error()
-	case organization.Kind != "group":
-		return http.StatusBadRequest, "organization_not_group", fmt.Sprintf("%s is a %s; an organization is a principal-store group", organizationID, organization.Kind)
-	case organization.DisabledAt != 0:
-		return http.StatusBadRequest, "organization_disabled", fmt.Sprintf("%s is disabled", organizationID)
+	if status, code, message := s.checkOrganizationIsAnActiveGroup(r, organizationID); status != 0 {
+		return status, code, message
 	}
 	principalID, restricted := principalRestrictingRequest(r)
 	if !restricted {
@@ -112,6 +114,26 @@ func (s *Server) checkOperationOrganization(r *http.Request, organizationID stri
 		}
 	}
 	return http.StatusForbidden, "not_a_member_of_organization", fmt.Sprintf("%s is not a member of %s", principalID, organizationID)
+}
+
+// checkOrganizationIsAnActiveGroup makes sure principal-store has the
+// organization as an active group. A zero status means it passed.
+func (s *Server) checkOrganizationIsAnActiveGroup(r *http.Request, organizationID string) (status int, code, message string) {
+	if organizationID == "" {
+		return http.StatusBadRequest, "organization_required", "organization_id is required: the principal-store group the operation runs for"
+	}
+	organization, err := s.principalClient.Get(r.Context(), organizationID)
+	switch {
+	case errors.Is(err, principalclient.ErrNotFound):
+		return http.StatusBadRequest, "unknown_organization", fmt.Sprintf("principal-store has no principal %s", organizationID)
+	case err != nil:
+		return http.StatusBadGateway, "principal_store_unavailable", err.Error()
+	case organization.Kind != "group":
+		return http.StatusBadRequest, "organization_not_group", fmt.Sprintf("%s is a %s; an organization is a principal-store group", organizationID, organization.Kind)
+	case organization.DisabledAt != 0:
+		return http.StatusBadRequest, "organization_disabled", fmt.Sprintf("%s is disabled", organizationID)
+	}
+	return 0, "", ""
 }
 
 func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request) {
@@ -346,4 +368,174 @@ func (s *Server) operationIsOwnedByPrincipal(operationID, principalID string) bo
 	}
 	operation, err := s.operations.Store().Get(operationID)
 	return err == nil && operation.Receipt.PrincipalID == principalID
+}
+
+// OperationExecutors is every executor this server runs operations with,
+// wired to its own one-shot path. main hands them to the coordinator.
+func (s *Server) OperationExecutors() []operations.Executor {
+	return []operations.Executor{executors.KeywordClassifier{}, executors.LLMCompletion{Caller: s}}
+}
+
+// CompletionTarget implements executors.OneShotCaller from the stored
+// settings, read at the time of use.
+func (s *Server) CompletionTarget() (instanceID, defaultModel string) {
+	return s.settings.String(config.SettingOperationsCompletionInstance), s.settings.String(config.SettingOperationsCompletionModel)
+}
+
+// RunOneShot implements executors.OneShotCaller with the same one-shot path
+// the signal classifier uses: the instance's harness binary, its own login,
+// no credential in this process.
+func (s *Server) RunOneShot(ctx context.Context, instanceID string, request msg.OneShotRequest) (msg.OneShotResponse, error) {
+	if s.harnessStore == nil {
+		return msg.OneShotResponse{}, errors.New("this server has no harness-store, so it has no instances to call")
+	}
+	instance, err := s.harnessStore.GetInstance(instanceID)
+	if err != nil {
+		return msg.OneShotResponse{}, fmt.Errorf("completion instance %q: %w", instanceID, err)
+	}
+	if !instance.Enabled {
+		return msg.OneShotResponse{}, fmt.Errorf("completion instance %q is disabled", instanceID)
+	}
+	raw, status, err := s.runOneShot(ctx, instance, request)
+	if err != nil {
+		return msg.OneShotResponse{}, err
+	}
+	if status != http.StatusOK {
+		return msg.OneShotResponse{}, fmt.Errorf("instance %s answered the one-shot call with %d: %s", instanceID, status, strings.TrimSpace(string(raw)))
+	}
+	var response msg.OneShotResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return msg.OneShotResponse{}, fmt.Errorf("instance %s answered with something that is not a one-shot response: %w", instanceID, err)
+	}
+	return response, nil
+}
+
+// ModelListPrice reads a model's list price from model-store. A model it
+// does not know, or one whose prices are both zero, has no known price: a
+// zero there means nobody entered one, and budgets must not treat it as free.
+func (s *Server) ModelListPrice(model string) (inputPerMillion, outputPerMillion float64, known bool) {
+	if s.modelStore == nil || model == "" {
+		return 0, 0, false
+	}
+	resolved, err := s.modelStore.ResolveModel(model)
+	if err != nil || resolved == nil || (resolved.InputCost <= 0 && resolved.OutputCost <= 0) {
+		return 0, 0, false
+	}
+	return resolved.InputCost, resolved.OutputCost, true
+}
+
+// operationRunGrantRelation and operationTypeResourceType are how grant-store
+// spells "may start operations of this type".
+const (
+	operationRunGrantRelation = "can_run_operation"
+	operationTypeResourceType = "operation_type"
+)
+
+// checkOperationGrant applies grant-store's can_run_operation grants to a
+// principal starting an operation, as operations.grant_enforcement says. An
+// administrator and the service token are not checked. A zero status means
+// it passed.
+func (s *Server) checkOperationGrant(r *http.Request, operationType msg.OperationType) (status int, code, message string) {
+	principalID, restricted := principalRestrictingRequest(r)
+	if !restricted {
+		return 0, "", ""
+	}
+	enforcement := s.settings.String(config.SettingOperationsGrantEnforcement)
+	if enforcement != config.OperationsGrantEnforcementLenient && enforcement != config.OperationsGrantEnforcementStrict {
+		return http.StatusInternalServerError, "grant_enforcement_misconfigured", fmt.Sprintf(
+			"operations.grant_enforcement is %q, not one of %v", enforcement, config.OperationsGrantEnforcementValues)
+	}
+	granted, err := s.grantClient.EffectiveResourceIDs(r.Context(), principalID, operationRunGrantRelation, operationTypeResourceType)
+	switch {
+	case errors.Is(err, grantclient.ErrPrincipalUnknown):
+		return http.StatusBadRequest, "unknown_principal", err.Error()
+	case err != nil:
+		return http.StatusBadGateway, "grant_store_unavailable", err.Error()
+	}
+	if len(granted) == 0 && enforcement == config.OperationsGrantEnforcementLenient {
+		return 0, "", ""
+	}
+	for _, grantedType := range granted {
+		if grantedType == string(operationType) {
+			return 0, "", ""
+		}
+	}
+	return http.StatusForbidden, "not_granted", fmt.Sprintf("%s holds no %s grant on %s %s (enforcement %s; granted: %v)",
+		principalID, operationRunGrantRelation, operationTypeResourceType, operationType, enforcement, granted)
+}
+
+func (s *Server) handleListOperationBudgets(w http.ResponseWriter, r *http.Request) {
+	coordinator, ok := s.operationsOrRefuse(w)
+	if !ok {
+		return
+	}
+	budgets, err := coordinator.Store().ListOrganizationBudgets(time.Now())
+	if writeOperationStoreError(w, err) {
+		return
+	}
+	writeJSON(w, budgets)
+}
+
+func (s *Server) handleGetOperationBudget(w http.ResponseWriter, r *http.Request) {
+	coordinator, ok := s.operationsOrRefuse(w)
+	if !ok {
+		return
+	}
+	budget, found, err := coordinator.Store().OrganizationBudget(r.PathValue("organization_id"), time.Now())
+	if writeOperationStoreError(w, err) {
+		return
+	}
+	if !found {
+		http.Error(w, "organization has no budget", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, budget)
+}
+
+func (s *Server) handlePutOperationBudget(w http.ResponseWriter, r *http.Request) {
+	coordinator, ok := s.operationsOrRefuse(w)
+	if !ok {
+		return
+	}
+	var body struct {
+		MonthlyLimitUSD *float64 `json:"monthly_limit_usd"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil || body.MonthlyLimitUSD == nil || *body.MonthlyLimitUSD < 0 {
+		writeJSONError(w, http.StatusBadRequest, "invalid_budget", `body must be {"monthly_limit_usd": <dollars, 0 or more>}`)
+		return
+	}
+	organizationID := r.PathValue("organization_id")
+	if status, code, message := s.checkOrganizationIsAnActiveGroup(r, organizationID); status != 0 {
+		writeJSONError(w, status, code, message)
+		return
+	}
+	updatedBy, _ := principalIdentityOfRequest(r)
+	if err := coordinator.Store().SetOrganizationBudget(organizationID, *body.MonthlyLimitUSD, updatedBy, time.Now()); writeOperationStoreError(w, err) {
+		return
+	}
+	s.handleGetOperationBudget(w, r)
+}
+
+func (s *Server) handleDeleteOperationBudget(w http.ResponseWriter, r *http.Request) {
+	coordinator, ok := s.operationsOrRefuse(w)
+	if !ok {
+		return
+	}
+	if writeOperationStoreError(w, coordinator.Store().DeleteOrganizationBudget(r.PathValue("organization_id"))) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// checkOperationGrantEnforcementValue is the write check on
+// operations.grant_enforcement.
+func checkOperationGrantEnforcementValue(value string) error {
+	for _, allowed := range config.OperationsGrantEnforcementValues {
+		if value == allowed {
+			return nil
+		}
+	}
+	return fmt.Errorf("must be one of %v", config.OperationsGrantEnforcementValues)
 }

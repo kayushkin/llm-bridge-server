@@ -80,6 +80,18 @@ type ReceiptWriter interface {
 	RecordEffect(target msg.OperationReference, action string) (effectNumber int, err error)
 	// SettleEffect records what the target system said about an effect.
 	SettleEffect(effectNumber int, outcome msg.OperationEffectOutcome, externalOperationID string) error
+	// SpendingAllowance is what the operation may still spend in dollars:
+	// the lower of its organization's month and its own cap. limited is false
+	// when neither applies. Ask before every model call and do not make one
+	// when limited and remainingUSD <= 0. A call may overshoot the allowance
+	// by its own cost; the next one is refused.
+	SpendingAllowance() (remainingUSD float64, limited bool, err error)
+	// ModelHasListPrice reports whether model-store prices model, so a call
+	// under a budget can be accounted for. Check before calling when limited.
+	ModelHasListPrice(model string) bool
+	// RecordModelCall adds one model call's tokens, priced at list price, to
+	// the receipt and to the organization's month.
+	RecordModelCall(model string, tokens msg.TokenUsage) error
 	// EffectHeaders are the correlation, operation and idempotency headers a
 	// call making effectNumber must carry.
 	EffectHeaders(effectNumber int) http.Header
