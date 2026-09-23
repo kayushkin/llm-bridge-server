@@ -1,639 +1,334 @@
 # llm-bridge-server
 
-Central HTTP gateway and session server for the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
-
-## Design docs (in this repo)
-
-The cross-cutting design for the harness layer, agent rendering, tool/skill routing, and CLI surface lives at the root of this repo. Read in this order on first contact:
-
-| Doc | Covers |
-|---|---|
-| [`HARNESS-LAYER.md`](./HARNESS-LAYER.md) | The abstraction: `AgentReconciler` interface (`EnsureAgent` / `PrepareSession` / `CleanupAgent`), per-harness implementations, subagent routing (CC `--agents` JSON inline, cross-harness via CLI delegation). |
-| [`TOOL-ROUTING.md`](./TOOL-ROUTING.md) | Routing rule (`native > MCP > CLI > omit`), per-harness native tool catalog, capability registry, skills routing, **end-to-end setup walkthroughs for tools, skills, and agents**. |
-| [`AGENT-MANAGEMENT.md`](./AGENT-MANAGEMENT.md) | Canonical agent shape, the rendering library (`llm-bridge/render`), per-harness rendering (CC: `--agents` JSON, no file), CRUD flows, `/agents` UI vs `/files` debug surface. |
-| [`CLI-SURFACE.md`](./CLI-SURFACE.md) | Model-facing CLI surface. Unified `bridge` binary for cross-cutting capabilities (agent ask, memory, notes, bus, tools, skills); `inber` binary for runtime-specific only. Permission allowlist patterns. |
-| [`CACHE-RULES.md`](./CACHE-RULES.md) | The seven cache-busting rules. What's allowed to bust, what's not, what's outside our control, and the diagnostic flow when caching regresses. |
-| [`CC-VERIFIED.md`](./CC-VERIFIED.md) | Empirical reference for Claude Code 2.1.138 behavior — `--agents`, `--system-prompt` vs `--append`, `--bare`, `--settings`, init event surface. Sources cited from elsewhere in the design. |
-| [`CONTEXT-MIGRATION.md`](./CONTEXT-MIGRATION.md) | Plan to extract inber's per-turn assembly (`engine/turn_*.go`, `conversation/`) into `llm-bridge/assembly/` shared library. Replaces this server's `agents_context.go`. |
-| [`IMPLEMENTATION-ROADMAP.md`](./IMPLEMENTATION-ROADMAP.md) | Sequenced PRs across all affected repos. Critical path P1→P2→P3→P4→P6 (~3-4 weeks for the first end-to-end CC vertical). |
-| [`TEAM-ORCHESTRATION.md`](./TEAM-ORCHESTRATION.md) | Dynamic skill-formed agent **teams** coordinating over a kanban board as a blackboard. Generalizes the `scheduler/cmd/kanban-*` loop: planner → team-former → assigner (slow/cron) + an in-server coordination engine (fast/events). Board-per-team, `team_id`/`board_id`/`role` on sessions, `bridge kanban` agent CLI. |
-| [`SESSION-SIGNALS.md`](./SESSION-SIGNALS.md) | One canonical `signal` record for anything a session surfaces to the human — `kind:"question"` (needs an answer; blocks at `awaiting_user`) or `kind:"notification"` (FYI; non-blocking, just acknowledged) — orthogonal to session type (herald/interactive/autonomous all raise either). Producers: `source:"tool"` (`AskUserQuestion`/notify) and `source:"derived"` (kind-aware cheap-model pass on turn-ends). One frontend interface with option buttons + freeform, answerable from the raising session, the "Needs you" inbox, or a chat reference chip in another session; propagates to linked todos. The chat reference-chip linker is the delivery surface (shipped). |
-
-Operational docs:
-
-| Doc | Covers |
-|---|---|
-| [`PTY-MODE.md`](./PTY-MODE.md) | PTY-mode harness operation. |
-| [`SESSION-STATE-RELIABILITY.md`](./SESSION-STATE-RELIABILITY.md) | Hardening `SessionState` inference in `derivation.go` (seq guard, subagent-terminator suppression, settle window, suppress-only signals) + a passive terminal-scrape classifier to give PTY-mode sessions state. Adopts Herdr's reliability discipline; produces the trustworthy state `SESSION-SIGNALS.md`'s inbox renders. |
-| [`CODEX-PARITY.md`](./CODEX-PARITY.md) | Plan to bring codex sessions to feature parity with CC on permissions, hooks, and tool-store; plus codex-specific extras (`PermissionRequest`, `Stop`/`UserPromptSubmit`/`SessionStart` hooks, output-schema). |
-| [`TODO-jig-integration.md`](./TODO-jig-integration.md) | jig harness integration TODO list. |
-
-External pointers (not in this repo, referenced by the design):
-
-- `~/repos/inber/docs/cli-tool-surface.md` — `inber` CLI scope (runtime-only since the rescope; cross-harness lives in `CLI-SURFACE.md` here).
-- `~/repos/inber/docs/pro-max-auth.md` — Pro/Max OAuth dual-refresh issue affecting inber's API path. Not specific to the harness layer.
-- `~/repos/agent-store/AGENT-RENDER.md` — stub pointing at `AGENT-MANAGEMENT.md` here.
-
----
-
-
-Spawns harness bridges as subprocesses, manages their lifecycle, and streams canonical `msg.Event` output to clients over SSE. Your application connects to this server and gets a uniform API regardless of which agent is running behind the harness.
+The session server and HTTP gateway of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem. It starts harness wrappers as child processes, keeps each session's record, and streams every session's `msg.Event` output to clients over SSE, so a client gets one API whichever agent CLI runs behind the session. It is the one backend behind bridge-ui.
 
 ```
-  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
-         Your Application  (dashboard, CLI, bot, anything)
-  └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┬ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-                                        │ HTTP / SSE
-  ╔═════════════════════════════════════╪═════════════════════════════════════╗
-  ║                    llm-bridge-server                                     ║
-  ║                                     │                                    ║
-  ║   Sessions ─── lifecycle, events, history                                ║
-  ║   Instances ── harness deployment registry                               ║
-  ║   Credentials ─ API key / token management                               ║
-  ║   Stores ──── agents, memory, models, logs                               ║
-  ║                                     │                                    ║
-  ╚═════════════════════════════════════╪════════════════════════════════════╝
-           stdin/stdout NDJSON          │           stdin/stdout NDJSON
-       ┌────────────────────────────────┼──────────────────────────────┐
-       │                                │                              │
-       ▼                                ▼                              ▼
-  ┌──────────┐                   ┌──────────┐                   ┌──────────┐
-  │ harness  │                   │ harness  │                   │ harness  │
-  │ bridge   │                   │ bridge   │                   │ bridge   │
-  │          │                   │          │                   │          │
-  │claudecode│                   │  codex   │                   │ hermes   │
-  │  jig     │                   │  aider   │                   │ openclaw │
-  │          │                   │  goose   │                   │ nanoclaw │
-  └────┬─────┘                   └────┬─────┘                   └────┬─────┘
-       │ spawns/connects              │ spawns/connects              │ spawns/connects
-       ▼                              ▼                              ▼
-  ┌──────────┐                   ┌──────────┐                   ┌──────────┐
-  │  claude  │                   │  codex   │                   │  hermes  │
-  │  code    │                   │  agent   │                   │  server  │
-  │  CLI     │                   │  CLI     │                   │  (HTTP)  │
-  └──────────┘                   └──────────┘                   └──────────┘
-   subprocess                     subprocess                     HTTP/WS/Docker
+  bridge-ui, dash, scheduler, bridge-agent, …
+                  │  HTTP / SSE / WebSocket
+                  ▼
+        ┌────────────────────┐        principal-store  (who is calling)
+        │ llm-bridge-server  │ ─────► grant-store      (what they may run)
+        │       :8160        │        kanban-store     (cards, boards)
+        └────────────────────┘        log-store        (event history)
+          │ stdin/stdout NDJSON, a pty, SSH or a runner WebSocket
+          ▼
+  harness wrapper (llm-bridge-claudecode, -codex, -hermes, …)
+          │ spawns or connects to
+          ▼
+  the agent itself (claude, codex, a hermes server, …)
 ```
 
-Each harness bridge is a separate binary that the server spawns as a subprocess. The bridge in turn spawns or connects to the actual agent — whether that's a CLI subprocess, a local HTTP server, a WebSocket endpoint, or a Docker container. The bridge is the only thing that knows the agent's native protocol.
+Each harness wrapper is a separate binary. The wrapper alone speaks the agent's native protocol; the server sees only `msg.Event`.
 
-## Quick start
+## Running it
 
-### Bootstrap (first run only)
+### Build
 
-`go.mod` uses `replace ../X` directives to pull a dozen sibling libraries
-out of the parent directory rather than from the Go module proxy, so a
-fresh `git clone` of this repo cannot build standalone. Run the
-bootstrap script once to clone every sibling next to this repo:
-
-```bash
-./scripts/bootstrap.sh
-```
-
-This produces the layout the build expects:
-
-```
-<parent>/
-  llm-bridge-server/   (this repo)
-  llm-bridge/
-  log-store/
-  logstack/
-  agent-store/
-  …
-```
-
-Existing checkouts are left alone, and siblings without a public remote
-(`snapshot-store`) are skipped — the server degrades gracefully without
-those optional stores.
-
-### Build and run
+`go.mod` points ten `replace` directives at sibling checkouts (`../llm-bridge`, `../agent-store`, …), so the repo builds only next to them. On this host they already sit in `~/repos`. On a fresh machine, `./scripts/bootstrap.sh` clones them.
 
 ```bash
 go build -o llm-bridge ./cmd/llm-bridge-server
-./llm-bridge
 ```
 
-The server listens on `:8160` by default. See [`.env.example`](./.env.example)
-for every tunable.
+### Settings the server will not start without
 
-### Deploy as a systemd service
+| Variable | What it is |
+|---|---|
+| `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY` | At least 32 bytes. Signs login cookies and session agent tokens. |
+| `LLMBRIDGE_SERVICE_TOKEN` | At least 32 bytes. An internal caller sends it as `X-LLM-Bridge-Service-Token`. |
+| `LLMBRIDGE_PRINCIPAL_STORE_URL` | principal-store, which says who each caller is. |
+| `LLMBRIDGE_KANBAN_STORE_URL` | kanban-store, behind `/kanban/`. |
+| `LLMBRIDGE_GRANT_STORE_URL` | grant-store, behind `/grant-store/`. |
+
+model-store's database is also required. The other embedded stores (agent, memory, harness, hook, snapshot) are optional: one that will not open is logged and its routes are not mounted.
+
+Every other setting is declared once, in `internal/config/settings.go`, with its default and what it changes. `GET /settings` lists each value in force and what decided it. The server refuses to start on a value that does not parse, or on an `LLMBRIDGE_` variable nothing declares.
+
+### Deploy
 
 ```bash
 ./deploy.sh
 ```
 
-Builds the binary, installs to `/usr/local/bin/llm-bridge`, and restarts the `llm-bridge.service` unit. The script auto-detaches via `systemd-run` so the deploy survives `systemctl stop llm-bridge.service` (the unit it's replacing).
+Run it from the main clone on `main`. It passes `~/bin/deploy-gate`, builds, installs `/usr/local/bin/llm-bridge` and restarts the system unit `llm-bridge.service`. It runs itself in a separate systemd unit so that stopping the service does not stop the deploy, and logs to `~/.cache/llm-bridge-deploy.log`. ⚠️ A deploy ends every live bridge session, including the one that ran it.
 
-### Run with Docker (with UI)
-
-The compose stack ships a clickable end-to-end deploy: `llm-bridge-server` (full image with the upstream `claude` CLI baked in), `log-store`, and the `llmux` UI in front of it.
+### Mint a runner enrollment passphrase
 
 ```bash
-./scripts/bootstrap.sh                              # clone every sibling
-echo "LLMUX_TOKEN=$(openssl rand -hex 16)" > .env   # token gates the UI
-docker compose up --build
+llm-bridge mint-enroll -ttl 15m
 ```
 
-Default host-port mappings (deliberately offset from the canonical
-8160/8170/8175 so the stack doesn't collide with a host-side server
-that's already running):
-
-| Service | Host port | Override |
-|---|---|---|
-| `llm-bridge-server` | `:18860` | `LLM_BRIDGE_HOST_PORT` |
-| `llmux` (UI)        | `:18870` | `LLMUX_HOST_PORT` |
-| `log-store`         | `:18875` | `LOG_STORE_HOST_PORT` |
-
-Open `http://localhost:18870`, paste the `LLMUX_TOKEN` value from your `.env`, then use the UI to create a machine + instance + session. The image bakes in two `available:true` harnesses out of the box:
-
-- **`mock`** — fake responses for protocol verification, no auth needed
-- **`claude_code`** — real `claude` CLI bundled; needs your creds (next section)
-
-#### Wiring real `claude_code` auth
-
-The container ships with the upstream `claude` CLI installed, but credentials are user-specific. To share your host's existing Claude login, bind-mount `~/.claude` and override the container user so the mount lines up:
-
-```yaml
-# docker-compose.yml, llm-bridge-server service:
-    volumes:
-      - bridge-data:/data
-      - ${HOME}/.claude:/data/home/.claude        # uncomment
-    user: "${UID:-1000}:${GID:-1000}"             # uncomment + adjust if your uid ≠ 1000
-```
-
-Then `docker compose up --build` again. Without that mount the claude harness shows `available:true` (the binary is on PATH) but every actual request fails at auth — the mock harness still works fully, so the deploy is testable without any creds.
-
-#### Building images directly
-
-The multi-stage [`Dockerfile`](./Dockerfile) exposes four targets:
-
-```bash
-# distroless, mock-only (smallest)
-docker build -f llm-bridge-server/Dockerfile --target server      -t llm-bridge-server      ..
-
-# debian-slim + claude CLI + claudecode wrapper (used by compose default)
-docker build -f llm-bridge-server/Dockerfile --target server-full -t llm-bridge-server:full ..
-
-# durable event log sidecar
-docker build -f llm-bridge-server/Dockerfile --target log-store   -t log-store              ..
-
-# llmux UI (frontend dist + Go proxy with token auth)
-docker build -f llm-bridge-server/Dockerfile --target llmux       -t llmux                  ..
-```
-
-Build context for every target is the *parent* directory, since the multi-stage build copies sibling repos in as `/src/<sibling>`.
+It prints a single-use passphrase and stores only its hash in harness-store. A runner on another machine trades the passphrase for a lasting token at `POST /api/runner/enroll`.
 
 ### Start a session
 
-> **Prerequisite — enroll a harness instance first.** `POST /sessions` resolves
-> the session onto an *enabled instance* of the requested harness; with none
-> enrolled it returns `503 harness-store not configured` (no harness-store DB) or
-> `503 no enabled instance for harness: <name>`. The Docker/UI path above sets
-> this up for you — the llmux UI creates a machine + instance in a couple of
-> clicks. For the bare build/systemd path, enroll once via the API: `POST /machines`
-> then `POST /instances` (`{"name": "...", "harness_type": "claude_code",
-> "machine_id": "<id-from-POST-/machines>"}`; instances are enabled on create).
-> See the [Instances](#instances-requires-harness-store) and
-> [Machines](#machines-requires-harness-store) sections for the request shapes.
-> The harness-store DB lives at `LLMBRIDGE_HARNESS_DB`
-> (default `~/.config/harness-store/harness.db`; see [Configuration](#configuration)).
+A session runs on an enabled *instance* of its harness, so enroll a machine and an instance first (`POST /machines`, then `POST /instances` with `name`, `harness_type` and `machine_id`). Without one, `POST /sessions` answers 503.
 
 ```bash
-# Create and auto-start a session (returns {"id": "...", ...})
-# Assumes an enabled instance of the harness is enrolled (see prerequisite above).
-curl -X POST http://localhost:8160/sessions \
-  -H 'Content-Type: application/json' \
-  -d '{"harness": "claude_code", "auto_start": true}'
+H="X-LLM-Bridge-Service-Token: $LLMBRIDGE_SERVICE_TOKEN"
 
-# Send the first instruction to the running session
-curl -X POST http://localhost:8160/sessions/{id}/send \
-  -H 'Content-Type: application/json' \
-  -d '{"message": "Fix the tests"}'
+curl -s -X POST localhost:8160/sessions -H "$H" -H 'Content-Type: application/json' \
+  -d '{"harness":"claude_code","auto_start":true}'           # returns {"id": …}
 
-# Stream events
-curl -N http://localhost:8160/sessions/{id}/events
+curl -s -X POST localhost:8160/sessions/<id>/send -H "$H" -H 'Content-Type: application/json' \
+  -d '{"message":"Fix the tests"}'
+
+curl -sN localhost:8160/sessions/<id>/events -H "$H"         # SSE stream of msg.Event
 ```
 
-### Consume events (Go)
+A browser signs in with `POST /auth/demo-login` instead and sends the cookie it gets back; see [Who may call what](#who-may-call-what).
 
-```go
-import "github.com/kayushkin/llm-bridge/msg"
+`cmd/bridge-agent` wraps these calls: it hands one prompt to a new session carrying a chosen MCP bundle and prints the agent's final answer.
 
-// GET /sessions/{id}/events returns an SSE stream of msg.Event
-for event := range events {
-    switch event.Type {
-    case msg.EventResult:
-        fmt.Println(event.Result.Text)
-    case msg.EventToolCall:
-        fmt.Println("Tool:", event.ToolCall.Name)
-    case msg.EventApproval:
-        // Surface permission request to user
-    }
-}
-```
+### Read events
 
-### Consume events (TypeScript)
-
-```typescript
-import type { Event } from '@kayushkin/llm-bridge-types'
-
-const events = new EventSource(`${serverURL}/sessions/${id}/events`)
-events.onmessage = (e) => {
-    const event: Event = JSON.parse(e.data)
-}
-```
+In Go, each SSE `data:` line is one `msg.Event` from `github.com/kayushkin/llm-bridge/msg`; switch on `event.Type` (`msg.EventResult`, `msg.EventToolCall`, `msg.EventApproval`, …). In TypeScript the same type is `Event` from `@kayushkin/llm-bridge-types`. The stream replays the current turn on connect and honours `Last-Event-ID`.
 
 ## API
 
+Every route below also needs the caller to be allowed on it; see [Who may call what](#who-may-call-what). A route marked *(harness-store)*, *(hook-store)* or *(snapshot-store)* exists only when that store opened.
+
 ### Sessions
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/sessions` | List all sessions |
-| `POST` | `/sessions` | Create session (optionally auto-start) |
-| `GET` | `/sessions/search` | Full-text search across sessions (proxied to log-store) |
-| `GET` | `/sessions/discover` | Discover on-disk sessions from harness CLIs |
-| `GET` | `/sessions/{id}` | Get session details |
-| `GET` | `/sessions/{id}/events` | SSE event stream (supports `Last-Event-ID` for reconnection) |
-| `GET` | `/sessions/{id}/attach` | WebSocket pty attach (pty-mode sessions only; rejected for events-mode) |
-| `GET` | `/sessions/{id}/messages` | Message history (proxied to log-store) |
-| `GET` | `/sessions/{id}/history` | Full history (proxied to log-store) |
-| `POST` | `/sessions/{id}/send` | Send a user message |
-| `POST` | `/sessions/{id}/interrupt` | Interrupt mid-turn (SIGINT) |
-| `POST` | `/sessions/{id}/resume` | Resume a paused session |
-| `POST` | `/sessions/{id}/stop` | Terminate a session |
-| `POST` | `/sessions/{id}/compact` | Compact context to stay within token limits |
-| `POST` | `/sessions/{id}/fork` | Fork from a parent session |
-| `POST` | `/sessions/{id}/rename` | Set the session's display title |
-| `POST` | `/sessions/{id}/auto-rename` | Generate a title from session content |
-| `POST` | `/sessions/{id}/config` | Update session config on the fly |
-| `PUT` | `/sessions/{id}/folder` | Move the session into a folder |
-| `GET` | `/sessions/{id}/git/repos` | List git repos discovered for the session |
-| `GET` | `/sessions/{id}/git` | Git status/diff for a repo (`?repo=<absolute-path>`; defaults to first discovered) |
-| `GET` | `/sessions/{id}/hooks/pending` | List awaiting_resolution `HookEvent`s currently outstanding (used by UIs to hydrate the pending-hook banner without replaying the full SSE stream) |
-| `POST` | `/sessions/{id}/hooks/{request_id}/resolve` | Deliver a decision for an awaiting_resolution hook. Body: `{behavior: "allow"\|"deny", updated_input?, message?, resolved_by?}`. Forwarded to the harness as a `resolve_hook` JSON-RPC request; the harness is responsible for closing the parked permission-prompt MCP call and emitting the matching `phase:"completed"` HookEvent |
+| Method | Route | What it does |
+|---|---|---|
+| `GET` | `/sessions` | List sessions |
+| `GET` / `POST` | `/sessions/summary` | The chat sidebar's list, projected small. `POST` takes the id lists in a body, since a long query string makes nginx drop the whole HTTP/2 connection |
+| `GET` | `/sessions/recent-bundle` | Warm-up bundle of recent sessions for the chat page |
+| `GET` / `POST` | `/sessions/validators` | Cheap staleness check for a client's cached sessions |
+| `GET` | `/session-events` | SSE stream of changes to the session list |
+| `GET` | `/sessions/search` | Full-text search, answered by log-store |
+| `GET` | `/sessions/aggregates` | Totals across sessions, answered by log-store |
+| `GET` | `/sessions/discover` | Sessions the harness CLIs have on disk |
+| `POST` | `/sessions` | Create a session; `auto_start` starts it |
+| `GET` | `/sessions/{id}` | One session |
+| `GET` | `/sessions/{id}/events` | SSE stream of the session's events |
+| `GET` | `/sessions/{id}/attach` | WebSocket onto a pty-mode session's terminal |
+| `GET` | `/sessions/{id}/attach-token` | Token for the attach WebSocket |
+| `GET` | `/sessions/{id}/messages` | History, projected by log-store for reading |
+| `GET` | `/sessions/{id}/messages/raw` | History with nothing left out, about ten times larger |
+| `GET` | `/sessions/{id}/entries/{eventId}` | One history entry with its tool input and output in full |
+| `POST` | `/sessions/{id}/send` | Send a message |
+| `POST` | `/sessions/{id}/interrupt` | Stop the current turn |
+| `POST` | `/sessions/{id}/resume` | Restart a stopped session with its history |
+| `POST` | `/sessions/{id}/stop` | End the session |
+| `POST` | `/sessions/{id}/mode` | Switch between events mode and pty mode |
+| `POST` | `/sessions/{id}/compact` | Compact the context |
+| `POST` | `/sessions/{id}/fork` | Branch a new session from this one |
+| `POST` | `/sessions/{id}/rename` | Set the title |
+| `POST` | `/sessions/{id}/auto-rename` | Have a model write the title |
+| `POST` | `/sessions/{id}/config` | Change model, effort, budget or disabled tools |
+| `POST` | `/sessions/{id}/mark-done` | Mark the session done |
+| `PUT` | `/sessions/{id}/folder` | Move it into a folder |
+| `PUT` | `/sessions/{id}/permission-mode` | `ask`, `auto` or `bypass` for this session |
+| `PUT` | `/sessions/{id}/bypass-permissions` | Old boolean form of the above |
+| `GET` | `/sessions/{id}/git/repos` | Git repos found in the session's directory |
+| `GET` | `/sessions/{id}/git` | Status and diff of one of them (`?repo=`) |
+| `GET` | `/sessions/{id}/effective-config` | Every setting the session runs with, and which layer decided it |
+| `GET` | `/effective-config` | The same for a session not yet created (`?harness=&instance_id=&principal_id=&board_id=&card_id=…`) |
+| `GET` | `/sessions/{id}/hooks/pending` | Hooks waiting on a human decision |
+| `POST` | `/sessions/{id}/hooks/{request_id}/resolve` | Allow or deny one |
+| `GET` | `/sessions/{id}/tools/{tool_use_id}/snapshots` | File snapshots before and after an Edit or Write *(snapshot-store)* |
+| `GET` | `/snapshots/blob/{sha}` | One snapshot's content *(snapshot-store)* |
 
-### Folders
+### Signals
 
-Sidebar organization for sessions, plus per-source default folders (e.g. all `scheduler`-created sessions land in `Scheduled`).
+A signal is anything a session raises for a human: a question to answer or a notice to acknowledge. `SESSION-SIGNALS.md` has the design.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/folders` | List folders |
-| `POST` | `/folders` | Create folder |
-| `PUT` | `/folders/{name}` | Rename folder |
-| `DELETE` | `/folders/{name}` | Delete folder |
-| `GET` | `/source-folders` | List source-folder overrides |
-| `PUT` | `/source-folders/{source}` | Set folder for a session source |
-| `DELETE` | `/source-folders/{source}` | Remove a source-folder override |
+| Method | Route | What it does |
+|---|---|---|
+| `GET` | `/signals` | The inbox across sessions (`?state=open`) |
+| `GET` / `POST` | `/sessions/{id}/signals` | One session's signals; `POST` raises a notice |
+| `POST` | `/signals/{id}/answer` | Answer a question, whether or not its session still runs |
+| `POST` | `/signals/{id}/resolve` | Acknowledge or dismiss |
 
-### Instances (requires harness-store)
+### Machines, instances and credentials
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/instances` | List harness instances |
-| `POST` | `/instances` | Create instance (local or SSH) |
-| `GET` | `/instances/{id}` | Get instance details |
-| `PUT` | `/instances/{id}` | Update instance |
-| `DELETE` | `/instances/{id}` | Delete instance |
-| `GET` | `/instances/{id}/status` | Status with active sessions and credential availability |
-| `GET` | `/instances/{id}/sessions` | Sessions running on this instance |
-| `GET` | `/instances/{id}/credentials` | Credentials bound to this instance |
-| `POST` | `/instances/{id}/credentials` | Bind a credential |
-| `DELETE` | `/instances/{id}/credentials/{cred_id}` | Unbind a credential |
+| Method | Route | What it does |
+|---|---|---|
+| `GET` `POST` | `/machines` | List or create machines *(harness-store)* |
+| `GET` `PUT` `DELETE` | `/machines/{id}` | One machine *(harness-store)* |
+| `GET` `POST` | `/instances` | List or create instances *(harness-store)* |
+| `GET` `PUT` `DELETE` | `/instances/{id}` | One instance *(harness-store)* |
+| `GET` | `/instances/{id}/status` | Live sessions and credential state *(harness-store)* |
+| `GET` | `/instances/{id}/sessions` | Its sessions *(harness-store)* |
+| `POST` | `/instances/{id}/oneshot` | One model call on the instance, with no session *(harness-store)* |
+| `GET` `POST` | `/instances/{id}/credentials` | Bound credentials; bind one *(harness-store)* |
+| `DELETE` | `/instances/{id}/credentials/{cred_id}` | Unbind one *(harness-store)* |
+| `GET` `POST` | `/credentials` | List (keys masked) or add credentials |
+| `DELETE` | `/credentials/{id}` | Delete one |
 
-### Machines (requires harness-store)
+### Hooks
 
-Host-level configuration. Instances bind to a machine; the machine carries transport, SSH, and runner details.
+Hooks the bridge wires into a harness: an event and a matcher that run a shell command, scoped to a session, an instance or everything.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/machines` | List machines |
-| `POST` | `/machines` | Create machine |
-| `GET` | `/machines/{id}` | Get machine details |
-| `PUT` | `/machines/{id}` | Update machine |
-| `DELETE` | `/machines/{id}` | Delete machine |
+| Method | Route | What it does |
+|---|---|---|
+| `GET` `POST` | `/hooks` | List or create *(hook-store)* |
+| `GET` `PATCH` `DELETE` | `/hooks/{id}` | One hook *(hook-store)* |
+| `GET` | `/hook-options` | Which harnesses take hooks, their events and scopes *(hook-store)* |
+| `POST` | `/hooks/exec/{id}` | Run a hook; a harness calls this *(hook-store)* |
 
-### Hooks (requires hook-store)
+### Harnesses, models and settings
 
-Bridge-managed harness hooks (event/matcher → shell command), bound to global, instance, or session scope.
+| Method | Route | What it does |
+|---|---|---|
+| `GET` | `/health` | Health, harnesses present, session counts |
+| `GET` | `/harnesses` | Each harness's name, label, image, capabilities and hook events |
+| `GET` | `/harnesses/{name}/capabilities` | One harness's capabilities |
+| `GET` | `/harnesses/{name}/agents` | Its named agents |
+| `GET` | `/images/…` | Harness images |
+| `GET` | `/models` | Models there are credentials for |
+| `GET` `PUT` | `/bridge-prefs` | Stored preferences: per-harness defaults, default principal, … |
+| `POST` | `/bridge/permission-mode` | Default permission mode for new sessions |
+| `POST` | `/bridge/bypass-permissions` | Old boolean form of the above |
+| `GET` | `/settings` | Every server setting, its value and what decided it |
+| `PUT` | `/settings/{key}` | Change a stored setting without a restart |
+| `GET` | `/conformance` | Latest capability matrix across harnesses |
+| `POST` | `/conformance/run` | Start a new run |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/hooks` | List hooks (filterable by `harness`, `scope_kind`, `scope_id`, `enabled`) |
-| `POST` | `/hooks` | Create hook |
-| `GET` | `/hooks/{id}` | Get hook details |
-| `PATCH` | `/hooks/{id}` | Partial update (e.g. toggle `enabled`) |
-| `DELETE` | `/hooks/{id}` | Delete hook |
-| `POST` | `/hooks/exec/{id}` | Execute a registered hook (called by harnesses for native-observed hooks) |
+### Folders and session labels
 
-### Credentials
+| Method | Route | What it does |
+|---|---|---|
+| `GET` `POST` | `/folders` | List or create folders |
+| `PUT` `DELETE` | `/folders/{name}` | Rename or delete one |
+| `GET` | `/source-folders` | Which folder each session `source` files into |
+| `PUT` `DELETE` | `/source-folders/{source}` | Set or clear one |
+| `GET` | `/session-taxonomy` | The words sessions may be labelled with |
+| `GET` | `/session-taxonomy/report` | Sessions whose labels disagree with them |
+| `POST` | `/admin/file-inactive` | File inactive sessions; a scheduler job calls it |
+| `POST` | `/admin/archive-old` | Archive old sessions; a scheduler job calls it |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/credentials` | List stored credentials (keys masked) |
-| `POST` | `/credentials` | Create credential (API key or token) |
-| `DELETE` | `/credentials/{id}` | Delete credential |
+### Services page
 
-### Snapshots (requires snapshot-store)
+| Method | Route | What it does |
+|---|---|---|
+| `GET` | `/services` | Each service healthcheck watches, its status, processes and open SQLite files |
+| `GET` | `/services/databases/schema?path=` | Tables of one such file |
+| `GET` | `/services/databases/rows?path=&table=&filter=col:op:value` | Newest rows of one table |
 
-Point-in-time file snapshots taken before/after Edit/Write tool calls; the UI reads these to render diffs.
+Only a file some watched service holds open right now can be read; any other path is 404. Files open read-only, and a column whose name marks it as a credential comes back masked.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/sessions/{id}/tools/{tool_use_id}/snapshots` | Snapshot metadata (before/after pairs) for a tool call |
-| `GET` | `/snapshots/blob/{sha}` | Raw blob content (content-addressed by SHA; cacheable forever) |
+### Runners and harness callbacks
 
-### Conformance
-
-Capability-matrix runs across all harnesses.
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/conformance` | Latest conformance matrix and run state |
-| `POST` | `/conformance/run` | Kick off a new conformance run |
-
-### Services
-
-The bridge's Services page: which services on this host are up, which SQLite files each one holds open, and a read-only look inside those files. Health comes from healthcheck (`LLMBRIDGE_HEALTHCHECK_URL`); the process and file facts are read from `/proc` when asked, so the list is what is open *now*, not what a config says should be. A file can be read only while some listed service holds it open — the schema and rows routes refuse any other path with a 404, so this is not a general SQLite browser. Every file is opened `mode=ro` with `query_only` on. A column whose name says it holds a credential (`token`, `secret`, `password`, `api_key`, …) is listed with `masked: true` and its values come back as null.
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/services` | Every service healthcheck watches, its status, pids and open databases |
-| `GET` | `/services/databases/schema?path=` | Tables and views of one open database, with DDL, columns and row counts |
-| `GET` | `/services/databases/rows?path=&table=&limit=50&order_by=&order=desc&filter=col:op:value` | Newest rows of one table. `filter` repeats; `op` ∈ `eq ne contains gt gte lt lte null not_null`. Default order is `rowid` descending; a view or `WITHOUT ROWID` table comes back in storage order |
-
-### Runner (requires harness-store)
-
-`/api/runner/*` powers `llm-bridge-runner` daemons on remote machines. The WebSocket multiplexes harness IO; the asset and enrollment endpoints bootstrap a fresh host.
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/runner/ws` | Long-lived WebSocket from a runner (Bearer-auth against `machines.runner_token_hash`) |
-| `POST` | `/api/runner/enroll` | Exchange a single-use enrollment passphrase for a durable runner token |
+| Method | Route | What it does |
+|---|---|---|
+| `GET` | `/api/runner/ws` | A runner's WebSocket; bearer token checked against the machine |
+| `POST` | `/api/runner/enroll` | Trade a passphrase for a runner token |
 | `GET` | `/api/runner/install.sh` | Runner install script |
-| `GET` | `/api/runner/binary` | Prebuilt runner / harness wrapper binary (`?os=&arch=&name=`) |
-| `*` | `/api/harness-proxy/{harness}/{rest...}` | Reverse-proxy from runners to a service-style harness (inber, hermes…) hosted on the bridge. **No auth gate** — see the note below |
+| `GET` | `/api/runner/binary?os=&arch=&name=` | Runner and wrapper binaries |
+| `POST` | `/api/runner/seed/broadcast` | Tell every runner to re-sync agent and skill files |
+| `*` | `/api/agent-store/…`, `/api/skill-store/…` | Runners read agent-store and skill-store through these |
+| `*` | `/api/harness-proxy/{harness}/…` | Forwards to a harness backend (inber, hermes) on this host. **Checks no credential**; nothing calls it today. Todo `f4e5e1ef-f622-49a4-826a-51450319da08` |
+| `POST` | `/permission/cc-prehook/{bridge_id}` | Claude Code's permission check before each tool call |
+| `POST` | `/permission/codex-prehook/{bridge_id}` | The same for codex |
+| `POST` | `/sidecar/event/{bridge_id}` | Events from a pty-mode session's sidecar |
 
-> **`/api/harness-proxy/` runs no auth check, and it is the only ungated row here that writes.**
-> Two rows in this table are gated or trade a credential: `/api/runner/ws` checks a Bearer against
-> `machines.runner_token_hash`, and `/api/runner/enroll` exchanges a single-use passphrase. The other two,
-> `install.sh` and `binary`, are open on purpose — a fresh host needs them before it has a token — but both
-> only serve a static file. The harness proxy is neither: it forwards method, query, headers and body
-> verbatim to `localhost:8200` (inber) or `localhost:8500` (hermes) for anyone who can reach the listener.
-> Its two sibling seed proxies, `/api/agent-store/` and `/api/skill-store/`, do gate and answer 401.
-> Whether to add the gate or leave the route open on purpose is still open; the handler's doc comment in
-> `internal/server/harness_proxy.go` carries the measurement.
+### Login and store proxies
 
-### Admin
+| Method | Route | What it does |
+|---|---|---|
+| `POST` | `/auth/demo-login` | Sign in as a principal by id |
+| `GET` | `/auth/principal` | Who the cookie names |
+| `POST` | `/auth/logout` | Clear the cookie |
+| `*` | `/kanban/…` | kanban-store `/api/…`, as the caller |
+| `*` | `/grant-store/…` | grant-store `/…`, as the caller |
 
-Housekeeping endpoints intended to be driven by a periodic scheduler job.
+When agent-store and memory-store open, their own routes are mounted too, among them `/prompt-sections`, the source of every rendered prompt file on this host.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/admin/file-inactive` | File sessions that have gone inactive |
-| `POST` | `/admin/archive-old` | Archive sessions older than the request's threshold |
+## Who may call what
 
-### Other
+`AGENTS.md` has the reasons behind each rule; this is the reference.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Server health, available harnesses, session counts |
-| `GET` | `/harnesses` | Harness metadata (name, label, emoji, image, capabilities) |
-| `GET` | `/harnesses/{name}/capabilities` | Capability descriptors for a single harness |
-| `GET` | `/harnesses/{name}/agents` | Named-agent list (empty for harnesses without that concept) |
-| `GET` | `/models` | Available models with credentials (requires model-store) |
-| `GET` | `/bridge-prefs` | User preferences |
-| `PUT` | `/bridge-prefs` | Update preferences |
-| `GET` | `/images/...` | Static harness image directory |
+### Callers
 
-When agent-store and memory-store are loaded, their HTTP handlers are also mounted on the server (see each library for endpoints).
+A request is authorized before any handler sees it (`internal/server/request_authorization.go`). The server knows four kinds of caller, checked in this order:
 
-## How it works
+1. **The internal service**: `X-LLM-Bridge-Service-Token` matches. It may call anything. A wrong token is 401.
+2. **The internal service on behalf of a person**: the token plus `X-Principal-Id`. dash sends this for its logged-in user, and the request is treated as that person's. `X-Principal-Id` without the token is 401 on every route.
+3. **A principal**: a login cookie from `POST /auth/demo-login`, or, on the two store proxies only, a session agent token.
+4. **Nobody**: 401 everywhere except the open routes and the harness callbacks.
 
-### Session lifecycle
+Every principal is looked up in principal-store first: unknown is 400 `unknown_principal`, a group is 400 `principal_not_human`, disabled is 403 `principal_disabled`, and principal-store down is 502. A principal marked `is_administrator` passes every per-session and operator check. Answers are cached for 30 seconds, so disabling someone takes up to 30 seconds to bite.
 
-1. **Create** — `POST /sessions` creates a session record. With `auto_start: true`, the server spawns the harness binary as a subprocess.
-2. **Running** — The harness reads user messages from stdin (JSON) and writes `msg.Event` NDJSON to stdout. The server persists events and fans them out to SSE subscribers.
-3. **Streaming** — `GET /sessions/{id}/events` opens an SSE connection. Replays current-turn events on connect, then streams live. Supports `Last-Event-ID` for reconnection.
-4. **Interrupt** — `POST /sessions/{id}/interrupt` sends SIGINT. The session pauses and can be resumed.
-5. **Resume** — `POST /sessions/{id}/resume` restarts the harness with resume context.
-6. **Fork** — `POST /sessions/{id}/fork` creates a child session branching from a parent. The harness clones its state.
-7. **Stop** — `POST /sessions/{id}/stop` terminates the subprocess.
+### Routes
 
-### Instance concurrency cap
+Each route pattern has a rule in `routeAccessRules`. **A pattern with no rule is 403 `route_not_classified`** to everyone but the service token, and `TestEveryRegisteredRouteIsClassified` fails until the rule exists.
 
-Each instance has a `max_concurrent_sessions` field on harness-store (default 1). Currently informational — server-side enforcement is not yet wired up.
+- **Open to everyone**: `GET /health` and the three `/auth/…` routes.
+- **Harness callbacks**: the prehooks, the sidecar, `POST /hooks/exec/{id}`, `POST /sessions/{id}/auto-rename`, the `/api/runner/…` routes and the three proxies under `/api/`. These come from processes the server started or from runners, and carry no login. ⚠️ The prehooks, sidecar, hook exec and harness proxy check no credential, so do not publish them beyond this host.
+- **For a principal who is not an administrator**:
+  - `POST /sessions` creates the session as the caller; a body naming someone else is 403 `principal_mismatch`.
+  - A route naming one session or signal reaches only the caller's own. Anyone else's, one with no principal and a missing one all answer the same 404.
+  - Session lists, the summary, validators, `GET /signals` and `/session-events` show only the caller's sessions.
+  - `GET /sessions/search`, `GET /sessions/aggregates` and `GET /snapshots/blob/{sha}` are 403, since they cannot be narrowed to one person.
+  - The catalogs (`/harnesses…`, `/images/`, `/session-taxonomy`, `GET /agents…`) read as they are. `GET /instances` lists only instances the caller's `can_dispatch_on` grants allow.
+  - Everything else is 403 `operator_route`.
 
-### Auto-discovery
+A fork or a promoted subagent takes its parent's principal.
 
-On startup, the server runs the discoverable harness binaries (`claudecode`, `codex`, `hermes`) with `-discover` to find existing on-disk sessions (e.g., Claude Code sessions from `~/.claude/projects/`). Discovered sessions are imported and their history is loaded into log-store.
+### Demo login
 
-## Configuration
-
-All configuration is via environment variables with sensible defaults.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLMBRIDGE_LISTEN_ADDR` | `:8160` | HTTP listen address |
-| `LLMBRIDGE_PUBLIC_URL` | _(unset)_ | Externally-reachable bridge URL advertised to runners for binary/asset fetches; falls back to the runner's own `server_url` when empty |
-| `LLMBRIDGE_DB_PATH` | `~/.llm-bridge/bridge.db` | Bridge SQLite database |
-| `LLMBRIDGE_AGENT_DB` | `~/.config/agent-store/agents.db` | Agent store database |
-| `LLMBRIDGE_MEMORY_DB` | `~/.config/memory-store/memory.db` | Memory store database |
-| `LLMBRIDGE_HARNESS_DB` | `~/.config/harness-store/harness.db` | Harness store database |
-| `LLMBRIDGE_HOOK_DB` | `~/.config/hook-store/hooks.db` | Hook store database |
-| `LLMBRIDGE_MODEL_STORE_DB` | `~/.config/model-store/store.db` | Model store database |
-| `LLMBRIDGE_SNAPSHOT_DB` | `~/.config/snapshot-store/snapshots.db` | Snapshot store SQLite metadata |
-| `LLMBRIDGE_SNAPSHOT_GIT` | `~/.config/snapshot-store/snapshots.git` | Snapshot store git blob backend (bare repo) |
-| `LLMBRIDGE_LOG_STORE_URL` | `http://localhost:8175` | Log-store service URL |
-| `LLMBRIDGE_TOOL_STORE_URL` | `http://localhost:8302` | Tool-store service URL. A Claude Code session gets its MCP servers from `tool_store_tools` in its harness config, or, if it names none, from the tools its instance has been opted into on the Tools page. A named list that cannot be provisioned aborts the spawn; instance opt-ins that cannot be read log and the session starts without them, so a registry outage never stops the fleet |
-| `LLMBRIDGE_BRIDGE_PREFS` | `~/.config/llm-bridge/bridge-prefs.json` | User preferences file |
-| `LLMBRIDGE_CONFORMANCE_PATH` | `~/.config/llm-bridge/conformance.json` | Conformance run state file (latest matrix + active run) |
-| `LLMBRIDGE_HEALTHCHECK_URL` | `http://localhost:8099` | healthcheck service URL; its `/api/status` is the service list behind `GET /services` |
-| `LLMBRIDGE_IMAGES_DIR` | `images` | Static harness image directory |
-| `LLMBRIDGE_SOURCE_FOLDERS` | `scheduler:Scheduled,autoworker:Scheduled,healthcheck:Scheduled,renamer:Auto-rename,conformance:Conformance` | Comma-separated `source:folder` map for auto-filing new sessions by their `source` field |
-| `LLMBRIDGE_PTY_RING_BUFFER_BYTES` | `65536` | Per-session pty output ring buffer (bytes); late attachers receive a replay of this much screen state |
-| `LLMBRIDGE_RUNNER_ASSETS_DIR` | `/usr/local/lib/llm-bridge-runner-binaries` | Directory of prebuilt runner + harness binaries served by `/api/runner/binary` |
-| `LLMBRIDGE_RUNNER_INSTALL_SCRIPT` | _(unset)_ | Override path for the runner install script served by `/api/runner/install.sh` (falls back to `<assets-dir>/install.sh`, then `~/repos/llm-bridge-runner/scripts/install.sh`) |
-| `LLMBRIDGE_HARNESS_PROXY_<NAME>` | _(per-harness default: `inber`=`http://localhost:8200`, `hermes`=`http://localhost:8500`)_ | Override URL for the `/api/harness-proxy/{harness}/...` reverse target; set to empty string to disable a harness's proxy |
-
-## Demo login, route gating and the store proxies
-
-⚠️ **The login is a stand-in for real login, not a login system.** It exists so a separately deployed product with its own frontend can sign a user in and have kanban-store see who they are; the company's real login replaces it. Anyone who can reach `POST /auth/demo-login` can sign in as any active human principal by naming its id — there is no password. Never publish that route beyond a network you control.
-
-**There is no switch.** Every request is authorized before it reaches a handler, the login routes and both store proxies are always mounted, and the settings below are **required at startup**: a missing or too-short one is a startup error naming the variable, and the server does not start.
-
-| Variable | Description |
-|----------|-------------|
-| `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY` | **Required**, at least 32 bytes. HMAC-SHA256 key for the login cookie and the session agent tokens. |
-| `LLMBRIDGE_SERVICE_TOKEN` | **Required**, at least 32 bytes. See below. |
-| `LLMBRIDGE_PRINCIPAL_STORE_URL` | **Required**, no default. The principal-store every caller's principal is read from. |
-| `LLMBRIDGE_KANBAN_STORE_URL` | **Required**, no default. The kanban-store `/kanban/` forwards to. |
-| `LLMBRIDGE_GRANT_STORE_URL` | **Required**, no default. The grant-store `/grant-store/` forwards to. |
-
-`config.ValidateRequestAuthorizationSettings` is the whole check and `main` refuses to start on it; `server.New` panics on the two credentials alone, so no code path builds a server that gates nothing while looking gated.
-
-Routes:
-
-- `POST /auth/demo-login` `{"principal_id":"principal_000001"}` — checks the principal with principal-store: unknown → 400 `unknown_principal`, a `group` → 400 `principal_not_human`, disabled → 400 `principal_disabled`, principal-store unreachable → 502 `principal_store_unavailable`. On success sets the `llm_bridge_principal_session` cookie (HttpOnly, SameSite=Lax, Secure when the request arrived over TLS or with `X-Forwarded-Proto: https`) holding the principal id and a 12h expiry signed with HMAC-SHA256, and answers 200 `{principal_id, expires_at}`.
-- `GET /auth/principal` — 200 `{principal_id, expires_at}` for a valid cookie; 401 for a missing, malformed, tampered or expired one.
-- `POST /auth/logout` — clears the cookie, 204. The cookie is stateless, so a copy taken before logout stays valid until it expires.
-- `/kanban/<rest>` (any method) — requires a valid cookie or a session agent token (401 otherwise, and nothing is forwarded), then forwards to kanban-store `/api/<rest>` with the query string, method, body and headers unchanged, except: `X-Principal-Id`, `X-Kanban-Store-Service-Token`, `X-Grant-Store-Service-Token`, `X-LLM-Bridge-Service-Token` and `Authorization` from the client are **deleted**, `X-Principal-Id` is set from the verified credential, and the login cookie is removed. With the service token and no principal it is 403 `store_proxy_requires_a_principal`. kanban-store's status, headers and body come back unchanged; kanban-store unreachable → 502 `kanban_store_unavailable`.
-
-⚠️ **kanban-store trusts `X-Principal-Id`, so it must not be reachable by users except through this proxy.** A user who can reach kanban-store directly can name any principal.
-
-### The grant-store proxy and grant-store's service token
-
-`/grant-store/<rest>` (any method) is the same identity-carrying proxy as `/kanban/`, forwarding to `LLMBRIDGE_GRANT_STORE_URL` **`/<rest>`** — grant-store's routes are rooted at `/`, so the mapping is:
-
-| Gateway | grant-store |
-|---------|-------------|
-| `/grant-store/grants` | `/grants` |
-| `/grant-store/grants/{id}` | `/grants/{id}` |
-| `/grant-store/grants/{id}/revoke` | `/grants/{id}/revoke` |
-| `/grant-store/principals/{id}/effective` | `/principals/{id}/effective` |
-| `/grant-store/relations` | `/relations` |
-| `/grant-store/resource-types` | `/resource-types` |
-
-It takes a login cookie or a session agent token, deletes the same headers (`X-Principal-Id`, `X-Grant-Store-Service-Token`, `X-Kanban-Store-Service-Token`, `X-LLM-Bridge-Service-Token`, `Authorization`) and the login cookie, and sets `X-Principal-Id`. What a principal may do there is grant-store's decision. grant-store unreachable → 502 `grant_store_unavailable`. Both proxies are one function, `serveStoreProxyAsPrincipal` in `internal/server/principal_identity_store_proxy.go`.
-
-| Variable | Description |
-|----------|-------------|
-| `GRANT_STORE_SERVICE_TOKEN` | Optional, and independent of the login. When set, every call `internal/grantclient` makes — the spawn-time effective-grants reads, the create-time grant gate, the principal's instance list — carries it as `X-Grant-Store-Service-Token`, because those reads run as this server, not as a user, and an enforcing grant-store answers them 401 without it. Unset sends no such header. Never passed to a child process. |
-
-### The whole server is gated
-
-Every request is authorized before it reaches a handler (`internal/server/request_authorization.go`). Every route is classified by its exact registration pattern in `routeAccessRules`. **A route with no rule is 403 `route_not_classified` naming the pattern**, to everyone except the service token — including an administrator, because nobody has decided who may call it yet and arriving does not decide it — so a route added later stays closed until someone classifies it; `TestEveryRegisteredRouteIsClassified` fails the build for a `HandleFunc` in this package with no rule.
-
-| Variable | Description |
-|----------|-------------|
-| `LLMBRIDGE_SERVICE_TOKEN` | **Required**, at least 32 bytes. An internal service sends it as `X-LLM-Bridge-Service-Token` and is unrestricted on every route. A wrong token is 401, never a fall-back to the cookie. |
-
-### A trusted caller may say which person a request is for
-
-dash is the browser's front door on this host: it holds `LLMBRIDGE_SERVICE_TOKEN` and knows which of its users is logged in. A request carrying **the service token *and* `X-Principal-Id`** acts as that principal in every respect — narrowed lists, 404 on another principal's session, 403 on an operator route — and the administrator rule below still applies to it. The service token **without** the header stays unrestricted, as it is today.
-
-⚠️ **`X-Principal-Id` without the service token is 401 `principal_header_without_service_token`**, on every route including `/health`, in whatever casing it is spelled. It must never be believed on its own. The header sent twice is 400 `ambiguous_principal_header`; a value that is not a principal-store id is 400 `invalid_principal_id`.
-
-### Administrators
-
-principal-store serves **`is_administrator`** on `GET /principals/{id}` (humans only), and that is the only source of it: this server keeps no list and infers nothing from a name, an email or a group. Whatever principal a request resolves to — from a login cookie, a session agent token, or an asserted `X-Principal-Id` — is read from principal-store before the route's rule is applied:
-
-| principal-store says | Answer |
-|---|---|
-| no such principal | 400 `unknown_principal` |
-| a `group` | 400 `principal_not_human` |
-| `disabled_at` set | 403 `principal_disabled` — decided **before** `is_administrator` is looked at |
-| unreachable | 502 `principal_store_unavailable` — never "assume not an administrator", never "assume administrator" |
-| `is_administrator` | past every per-resource check below |
-
-An administrator reaches **every session whoever owns it** (including the sessions that carry no principal at all), **every operator route**, **every list unfiltered**, and **both store proxies**. The proxies still set `X-Principal-Id` to that administrator, because kanban-store and grant-store make their own administrator check and this server does not answer it for them.
-
-principal-store's answer is cached for **30 seconds** (`principalLookupCacheLifetime`, `internal/server/request_principal_lookup.go`), so one page load costs one lookup per principal rather than dozens. ⚠️ **That is the delay on a change made in principal-store**: disable somebody, or take their administrator flag away, and this server keeps letting them do what they could for up to 30 seconds more. The entry is not refreshed on use, so the clock starts at the read. Only answers are cached — a refusal and an unreachable store are re-asked every time.
-
-Callers and classes:
-
-- **open** — `GET /health`, `POST /auth/demo-login`, `GET /auth/principal`, `POST /auth/logout`.
-- **harness callbacks** — keep exactly the checks their handlers already make: `POST /permission/cc-prehook/{bridge_id}`, `POST /permission/codex-prehook/{bridge_id}`, `POST /sidecar/event/{bridge_id}`, `POST /hooks/exec/{id}`, `POST /sessions/{id}/auto-rename`, `GET /api/runner/ws`, `POST /api/runner/enroll`, `GET /api/runner/install.sh`, `GET /api/runner/binary`, `/api/agent-store/`, `/api/skill-store/`, `/api/harness-proxy/{harness}/{rest...}`. ⚠️ The prehooks, the sidecar ingest, hook exec and the harness proxy authenticate nobody today, so anyone who can reach this listener can post into any session's stream through them; in deployment do not publish those paths beyond this host.
-- **principal** (a valid login cookie, or a principal the service token asserted), when principal-store does not call them an administrator:
-  - `POST /sessions` creates the session as the caller; a body naming a different `principal_id` is 403 `principal_mismatch`. The grant gates still apply.
-  - Every route naming one session (`/sessions/{id}`, `/send`, `/events`, `/messages`, `/fork`, `/stop`, `/attach`, `/git`, `/signals`, …) and `POST /signals/{id}/resolve|answer` reach only sessions whose `principal_id` is the caller's; anything else — another principal's session, a session with no principal, a missing one — is the same 404.
-  - `GET /sessions`, `GET|POST /sessions/summary`, `GET /sessions/recent-bundle`, `GET|POST /sessions/validators`, `GET /signals` and the `GET /session-events` stream are narrowed to the caller's sessions.
-  - `GET /sessions/search`, `GET /sessions/aggregates` (answered by log-store across every session) and `GET /snapshots/blob/{sha}` (shared across sessions) are 403 for principals.
-  - Catalogs: `GET /harnesses`, `/harnesses/{name}/capabilities`, `/harnesses/{name}/agents`, `/images/`, `GET /session-taxonomy`, `GET /agents`, `GET /agents/{slug}` read as they are (agents are **not** narrowed by `can_run_as`); `GET /instances` is narrowed by `can_dispatch_on` with the same lenient rule as the create gate and returns no machine details.
-  - Everything else — instances, machines, credentials and hooks writes, `GET /models`, bridge-prefs, `admin/*`, conformance, folders, source-folders, `PUT /sessions/{id}/folder`, the services inventory, permission and bypass modes, agent-store's other routes, memory-store — is 403 `operator route: use the service token`.
-- **nobody** — 401 on everything but open routes and harness callbacks.
-
-Sessions a session spawns carry its principal: a fork and a promoted subagent take the parent's `principal_id` (and `bundle_id`).
-
-### Agent tool calls act as the session's principal
-
-When a session started as a principal is spawned (create with `auto_start`, send, resume, fork), its harness child gets two variables, added after the server's secrets are removed from its environment:
-
-| Variable | Value |
-|----------|-------|
-| `LLM_BRIDGE_GATEWAY_URL` | This server's base URL: `LLMBRIDGE_PUBLIC_URL` when set, otherwise the one built from `LLMBRIDGE_LISTEN_ADDR` (the same base the permission prehook URLs use). If neither gives one, the spawn fails. |
-| `LLM_BRIDGE_PRINCIPAL_TOKEN` | A **session agent token**: principal id, session id and a 24h expiry, HMAC-SHA256-signed with `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY` under its own domain separator, so it never verifies as a login cookie and a cookie never verifies as one. Minted afresh at every spawn. |
-
-An MCP server or a Bash tool call that needs the principal's boards sends the token to the gateway, never to the store:
+⚠️ **This is a stand-in for a real login, and it has no password.** Anyone who can reach `POST /auth/demo-login` can sign in as any active human principal by naming its id. Never publish it beyond a network you control.
 
 ```bash
-curl -sS "$LLM_BRIDGE_GATEWAY_URL/kanban/boards" -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN"
+curl -s -c jar -X POST localhost:8160/auth/demo-login -H 'Content-Type: application/json' \
+  -d '{"principal_id":"principal_000001"}'
 ```
 
-The token is accepted **only** on `/kanban/` (and `/grant-store/`, below), as `Authorization: Bearer`; on any other route an `Authorization` header is 401. On every request the session it names is read from the store: it must still exist, still be started as the token's principal, and not be `completed`, `error`, `aborted` or `disconnected` — so the token stops working when its session ends. The request then reaches the store exactly as a cookie-carrying one would, with `Authorization` removed.
+It sets the `llm_bridge_principal_session` cookie: the principal id and a 12-hour expiry, signed with HMAC-SHA256. The cookie holds no server state, so a copy taken before logout works until it expires.
 
-Only the local transport can deliver these variables; a principal's session on an `ssh` or `runner` instance is refused at spawn rather than started without them.
+### The store proxies
 
-⚠️ **This binds only agents that go through the gateway.** An agent process can open any socket it likes, so in deployment **kanban-store and grant-store must not be network-reachable from agent processes**, and **no store service token may be in an agent's environment** (the ones this server knows are removed, see below; anything else an operator puts in the unit's environment is inherited).
+`/kanban/<rest>` goes to kanban-store `/api/<rest>` and `/grant-store/<rest>` to grant-store `/<rest>`, both through `serveStoreProxyAsPrincipal`. Each needs a cookie or a session agent token. It deletes the caller's `X-Principal-Id`, store tokens, service token, `Authorization` header and cookie, then sets `X-Principal-Id` to the verified principal. The service token alone is 403 `store_proxy_requires_a_principal`.
+
+⚠️ **kanban-store believes `X-Principal-Id`**, so users must reach it only through this proxy.
+
+### Session agent tokens
+
+A session started as a principal gives its harness process two variables:
+
+| Variable | Value |
+|---|---|
+| `LLM_BRIDGE_GATEWAY_URL` | This server's base URL |
+| `LLM_BRIDGE_PRINCIPAL_TOKEN` | The principal and session, signed, valid 24 hours, minted at each spawn |
+
+A tool call inside the session uses them to reach the stores as that principal:
+
+```bash
+curl -s "$LLM_BRIDGE_GATEWAY_URL/kanban/boards" -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN"
+```
+
+The token works only on the two store proxies, and only while its session exists, belongs to that principal and has not ended. Only the local transport can pass these variables, so a principal's session on an SSH or runner instance is refused at spawn.
+
+⚠️ This holds only for agents that go through the gateway. In deployment, kanban-store and grant-store must not be reachable from agent processes.
 
 ### Secrets never reach a child process
 
-Every process this server spawns — harness wrappers in events, pty and ssh mode, the OTel sidecar, `-oneshot`, `-discover` and `-import-history`, registered hook commands, `git`, and the conformance runner — gets its environment from `internal/childprocessenv`, which removes every variable `config.SecretEnvironmentVariableNames` declares: `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY`, `LLMBRIDGE_SERVICE_TOKEN`, `GRANT_STORE_SERVICE_TOKEN` and `KANBAN_STORE_SERVICE_TOKEN`. Those processes run agents, and an agent with a shell can read its own environment; with the signing key it could mint a login cookie for any principal. A test walks the module and fails on any `exec.Command` whose `Env` is not set from that package.
-
-Scrubbing the child is not enough while the agent runs as the same Unix user, because a same-user process can read `/proc/<server pid>/environ` or ptrace the server. So the server marks itself non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`) at startup and refuses to start if it cannot. That does not help against the environment *file* the unit reads its secrets from: in deployment keep it unreadable by the user agents run as, or run agents as a different user.
+Every process the server starts gets its environment from `internal/childprocessenv`, which removes each variable in `config.SecretEnvironmentVariableNames`: the signing key, the service token, `GRANT_STORE_SERVICE_TOKEN` and `KANBAN_STORE_SERVICE_TOKEN`. A test fails on any `exec.Command` that skips it. The server also marks itself non-dumpable at start, so a process running as the same user cannot read its memory or `/proc/<pid>/environ`. That does not protect the environment file the unit loads; keep it unreadable by the user agents run as.
 
 ## Testing
 
-Three tiers, in increasing strictness about the host environment:
+| Command | Needs | Covers |
+|---|---|---|
+| `go test ./...` | nothing | Unit tests, and the conformance matrix against `cmd/mock-harness` |
+| `go test -tags pty_integration ./...` | `claude` and `llm-bridge-claudecode` on `PATH` | A real pty-mode session: attach, a keystroke each way, stop |
+| `go test -tags convenience_events_integration ./...` | the same, signed in | A real turn, checking the `agent_state`, `usage_total` and `turn_complete` events |
 
-| Tier | Command | Needs | What it covers |
-|---|---|---|---|
-| **Unit + conformance** | `go test ./...` | nothing (auto-builds `cmd/mock-harness`) | Every package's unit tests + the full conformance feature matrix against mock-harness. |
-| **Mock E2E** | `./scripts/e2e-smoke.sh` | go, curl, jq | Builds server + mock-harness + log-store, launches them against a temp data dir, drives a real session through HTTP/SSE, asserts the expected event stream. No LLM credentials required. |
-| **Real-claude E2E** | `./scripts/e2e-claude.sh` | above + `claude` CLI + `llm-bridge-claudecode` on PATH | Same flow but bound to the live `claude_code` harness — exercises a real LLM round-trip end-to-end. Skips cleanly when either binary is missing, so it's safe in CI. |
+The tagged tests skip when a binary is missing.
 
-Run all three to verify a deploy from scratch:
+⚠️ `scripts/e2e-smoke.sh` and `scripts/e2e-claude.sh` predate the required settings above and do not set them, so the server they start will refuse to run until they do.
 
-```bash
-./scripts/bootstrap.sh && go test ./... && ./scripts/e2e-smoke.sh && ./scripts/e2e-claude.sh
-```
+## Design notes
 
-The E2E scripts honor a couple of env knobs:
+Longer write-ups at the root of this repo:
 
-- `E2E_PORT` — server listen port (defaults: 18160 mock, 18161 claude)
-- `E2E_LOG_STORE_PORT` — log-store listen port (defaults: 18175 / 18176)
-- `E2E_KEEP=1` — leave the temp data dir + logs around for post-mortem
-- `E2E_PROMPT` (claude-tier only) — override the prompt sent to claude
-
-### Live pty-mode integration test
-
-The end-to-end pty test in `internal/server/pty_integration_test.go` spawns the real `llm-bridge-claudecode` harness — which `exec`s into the upstream `claude` CLI — inside a pseudoterminal, attaches via WebSocket, round-trips a keystroke through the pty, and stops the session. It's slow (the claude binary takes a moment to come up) and assumes both binaries are installed locally, so it lives behind a build tag and is skipped by `go test ./...`.
-
-Run it explicitly:
-
-```bash
-go test -tags pty_integration ./...
-```
-
-Prerequisites: `llm-bridge-claudecode` and `claude` must both be on `PATH`. The test skips with a clear message if either is missing — CI runners without claude installed are safe to pass the tag. The test does not assert what claude prints (an authenticated session and an auth-prompt session both produce output), only that bytes flow through the pty in both directions and the session row reaches a terminal state on `/stop`.
-
-### Live convenience-events integration test
-
-The end-to-end convenience-events test in `internal/server/convenience_events_integration_test.go` spawns a real claudecode session, sends a one-shot prompt, and asserts the derived `agent_state` / `usage_total` / `turn_complete` events flow in-band on the SSE feed alongside the raw event stream. Like the pty test, it's slow (claude takes a moment to come up) and assumes both `llm-bridge-claudecode` and `claude` are installed locally, so it lives behind a build tag and is skipped by `go test ./...`.
-
-Run it explicitly:
-
-```bash
-go test -tags convenience_events_integration ./...
-```
-
-Prerequisites: `llm-bridge-claudecode` and `claude` must both be on `PATH`, and `claude`'s credential storage must be populated (the prompt does a real LLM round-trip). The test skips cleanly when either binary is missing. Assertion contract: at least one `agent_state` transition into `tool_running` and one back to `idle`, exactly one `usage_total` carrying non-zero token counts, and one `turn_complete` whose `turn_id` matches the user_message — it does not pin the interleaving order between `usage_total` and the closing `agent_state`, since the spec leaves that ordering free for consumers.
-
-## Optional stores
-
-Every store is independently usable. The server degrades gracefully when any store is unavailable — it logs a warning and continues without that store's functionality.
-
-| Store | What it adds |
-|-------|-------------|
-| [agent-store](https://github.com/kayushkin/agent-store) | Agent identity, config, tools, limits, memories |
-| [harness-store](https://github.com/kayushkin/harness-store) | Instance registry, credential bindings, SSH transport config |
-| [hook-store](https://github.com/kayushkin/hook-store) | Bridge-managed harness hooks (event/matcher → shell command) bound to global, instance, or session scope |
-| [memory-store](https://github.com/kayushkin/memory-store) | Persistent vector memory with semantic search |
-| [model-store](https://github.com/kayushkin/model-store) | Model registry, aliases, pricing, and health tracking across providers |
-| [snapshot-store](https://github.com/kayushkin/snapshot-store) | Point-in-time file snapshots before/after tool calls (Edit/Write) for diff rendering |
-| [log-store](https://github.com/kayushkin/log-store) | Durable event log, materialized message history |
-
-## Part of the llm-bridge ecosystem
-
-This server is one component of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem. See the llm-bridge README for the full picture — harness bridges, provider bridges, stores, and example consumers.
+- `HARNESS-LAYER.md`: how one interface covers every harness
+- `TOOL-ROUTING.md`: how tools and skills reach a session
+- `AGENT-MANAGEMENT.md`: how an agent record becomes harness config
+- `SESSION-SIGNALS.md`: questions and notices a session raises
+- `SESSION-STATE-RELIABILITY.md`: how session state is worked out from events
+- `PTY-MODE.md`: pty-mode sessions
+- `CACHE-RULES.md`: what may and may not break prompt caching
+- `CONFORMANCE-GRADING.md`: how the conformance matrix is graded

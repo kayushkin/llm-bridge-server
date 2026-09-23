@@ -2,7 +2,7 @@
 
 ## What it owns
 
-`:8160`, listening on every interface. The central session server and HTTP gateway of the llm-bridge ecosystem: it manages harness lifecycle, streams session events over SSE, holds credential bindings, and runs agent-store, memory-store, harness-store, hook-store, snapshot-store and model-store as embedded libraries. agent-store is one of them, which makes this server **the path to the host prompt source** rather than standalone agent-store on `:8300`. It also serves the service inventory and the effective-config view, so it is the single backend behind bridge-ui's whole surface. README "API" is the route table; README "Demo login, route gating and the store proxies" is the reference for who may call what.
+`:8160`, listening on every interface. The central session server and HTTP gateway of the llm-bridge ecosystem: it manages harness lifecycle, streams session events over SSE, holds credential bindings, and runs agent-store, memory-store, harness-store, hook-store, snapshot-store and model-store as embedded libraries. agent-store is one of them, which makes this server **the path to the host prompt source** rather than standalone agent-store on `:8300`. It also serves the service inventory and the effective-config view, so it is the single backend behind bridge-ui's whole surface. README "API" is the route table; README "Who may call what" is the reference for who may call what.
 
 ## Where this prompt lives
 
