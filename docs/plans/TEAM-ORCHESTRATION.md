@@ -9,8 +9,8 @@ This is **not greenfield**. The `scheduler/cmd/kanban-*` loop (scoper → dispat
 curator → classifier) is already a single-board, generic-worker version of this. This doc
 generalizes it into role-aware, per-team, blackboard-coordinated orchestration.
 
-> Read after [`HARNESS-LAYER.md`](./HARNESS-LAYER.md) (session spawn contract),
-> [`AGENT-MANAGEMENT.md`](./AGENT-MANAGEMENT.md) (agent shape), and
+> Read after [`HARNESS-LAYER.md`](../HARNESS-LAYER.md) (session spawn contract),
+> [`AGENT-MANAGEMENT.md`](../AGENT-MANAGEMENT.md) (agent shape), and
 > [`CLI-SURFACE.md`](./CLI-SURFACE.md) (the `bridge` tool agents use to talk to the board).
 
 ---
@@ -1209,7 +1209,7 @@ An earlier draft of this section said "`spawner_id` → `manager_session_id`" an
 - ✅ **Lineage columns landed** (`manager_session_id`, `root_session_id`, `depth`, `controlled_by`,
   `refreshed_from_session_id`) — they persist and round-trip; migration validated against a live-DB copy.
 - ⛔ **`bridge_id` / `session_id` → `bridge_session_id` — NOT done, and not a casual rename.** It is
-  **wire-breaking**: ~12 `bridge-ui` files, dash, llmux, and the kanban cron jobs all read `session_id`.
+  **wire-breaking**: ~12 `bridge-ui` files, dash, and the kanban cron jobs all read `session_id`.
   (`Event` already uses `bridge_session_id` for the same thing, so the inconsistency is real.) Requires
   **dual-emit** — serve both keys, migrate consumers, then drop the old. Do not one-shot it.
 - Remaining net-new: `team_id`/`board_id`, `role`.

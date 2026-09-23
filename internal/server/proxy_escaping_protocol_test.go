@@ -179,7 +179,7 @@ func storeProxyRequest(t *testing.T, envKey, requestPath string) string {
 	return *got
 }
 
-// The two seed store proxies are the same shape dash and llmux carried: a
+// The two seed store proxies are the same shape dash carries: a
 // mount prefix sliced off r.URL.Path and pasted onto the upstream base.
 func TestTheStoreProxiesForwardAnEscapedSegment(t *testing.T) {
 	for _, tc := range []struct {

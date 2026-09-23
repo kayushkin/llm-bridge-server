@@ -67,7 +67,7 @@ Upgrade: websocket
 
 Bidirectional binary WebSocket. Auth is a per-session attach token (32 hex chars, 128 bits of entropy) minted at hub construction and returned in the `POST /sessions` response as `attach_token` for pty sessions. Comparison is constant-time; a missing or wrong token returns `401 Unauthorized` before the upgrade. The token lives only on the in-memory `AttachHub` — when the pty exits and the hub is dropped, the token is unreachable and no further attaches succeed against that session.
 
-Browser-facing path: dash/llmux fetch the token from the create-session response, hold it in memory, and pass it as the `?token=` query parameter on the WS URL (`Authorization` headers can't be set on WebSocket handshakes from `WebSocket` in browsers, hence the query string).
+Browser-facing path: dash fetches the token from the create-session response, holds it in memory, and passes it as the `?token=` query parameter on the WS URL (`Authorization` headers can't be set on WebSocket handshakes from `WebSocket` in browsers, hence the query string).
 
 **Wire format** — every WebSocket frame is a length-prefixed control envelope so we can interleave terminal bytes with control messages (resize, signal, etc.). Concrete shape `[OPEN]`:
 

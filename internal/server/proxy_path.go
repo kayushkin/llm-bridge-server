@@ -34,7 +34,7 @@ import (
 // different resource.
 //
 // The same repair, and the measurement above, are in dash's
-// server/proxy_target.go and llmux's server/proxy_target.go.
+// server/proxy_target.go.
 func escapedPathAfterPrefix(u *url.URL, mountPrefix string) string {
 	escaped := u.EscapedPath()
 	if mountPrefix == "" || mountPrefix == "/" {

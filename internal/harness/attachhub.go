@@ -36,7 +36,7 @@ type AttachHub struct {
 	// as ?token=… on the attach URL. In-memory only — when the pty
 	// dies and the hub is dropped, the token is unreachable, so no
 	// further attaches are possible against a session whose process is
-	// gone. See PTY-MODE.md "Auth" for the chosen posture.
+	// gone. See docs/PTY-MODE.md "Auth" for the chosen posture.
 	attachToken string
 
 	mu       sync.Mutex
@@ -58,7 +58,7 @@ type AttachHub struct {
 //
 // Whether the client currently holds the writer slot is determined at
 // the moment of Write/Resize via the hub. Role can flip silently when
-// the previous writer disconnects (per PTY-MODE.md spec).
+// the previous writer disconnects (per docs/PTY-MODE.md spec).
 type AttachClient struct {
 	hub       *AttachHub
 	out       chan []byte

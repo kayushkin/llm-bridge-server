@@ -157,7 +157,7 @@ Critical path is **P1 → P2 → P3 → P4 → P6**. Everything else either gate
 
 ### P8 — `/agents` UI + agent-store CRUD API
 
-**Repo:** `~/repos/agent-store` + `~/repos/bridge-ui` + `~/repos/dash` (+ llmux)
+**Repo:** `~/repos/agent-store` + `~/repos/bridge-ui` + `~/repos/dash`
 
 **Scope (decided 2026-05-10) — three core capabilities:**
 
@@ -175,7 +175,6 @@ Plus:
 - agent-store: REST endpoints for agent CRUD — audit current surface, fill gaps. Add `agent_skills` from P1.
 - bridge-ui: new `BridgeAgents` component. Reuse existing patterns from `BridgeFiles`, `BridgeKanban`.
 - dash: mount `/agents` route, proxy `/api/agent-store/*`.
-- llmux: same wiring (per the `Dash hosts BridgeUI chat` memory — both consumers must be wired).
 
 **Effort:** 1-2 weeks.
 

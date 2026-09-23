@@ -49,7 +49,7 @@ type request struct {
 // is why the suite looks green against the mock and fails against everything
 // that ships. Raising the timeout makes that wait longer, not truer. Fixing
 // it means deciding what `start` should assert against a harness that
-// deliberately reports nothing — see the note in CONFORMANCE-GRADING.md.
+// deliberately reports nothing — see the note in docs/CONFORMANCE-GRADING.md.
 //
 // 60s by default; override with CONFORMANCE_EVENT_TIMEOUT (any duration Go can
 // parse, e.g. "90s") when testing a slower harness.

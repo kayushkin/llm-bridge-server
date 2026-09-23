@@ -1,6 +1,6 @@
 #!/bin/bash
 # Live HTTP canary for the structured notification producer,
-# POST /sessions/{id}/signals (SESSION-SIGNALS.md, "P4 part 3 as built").
+# POST /sessions/{id}/signals (docs/SESSION-SIGNALS.md, "P4 part 3 as built").
 #
 # It drives the REAL binary over HTTP rather than a handler in a test, because
 # the two things most worth checking here are routing and status codes, and a

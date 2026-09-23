@@ -22,7 +22,7 @@ var attachUpgrader = websocket.Upgrader{
 	ReadBufferSize:  16 * 1024,
 	WriteBufferSize: 16 * 1024,
 	// Same posture as runner-ws: this server is fronted by dash; auth
-	// would belong on the proxy. Per PTY-MODE.md `[OPEN]`, the per-
+	// would belong on the proxy. Per docs/PTY-MODE.md `[OPEN]`, the per-
 	// session attach token is a child-3+ follow-up.
 	CheckOrigin: func(r *http.Request) bool { return true },
 }

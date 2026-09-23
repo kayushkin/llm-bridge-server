@@ -139,7 +139,7 @@ For `surface:"chat"` it mounts in **three** places, all reading the same record:
    primitive beyond the record + the resolve verbs below.
 
 For `surface:"kanban"` the same `SignalCard` renders on the worker's card (the kanban board
-already mounts in dash + llmux via `BridgeKanban`), so the orchestrator/user/agent answers a
+already mounts in dash via `BridgeKanban`), so the orchestrator/user/agent answers a
 blocker where they already triage worker state.
 
 ### Resolve — per kind and source

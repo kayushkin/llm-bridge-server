@@ -286,7 +286,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/hooks/{request_id}/resolve", s.handleResolveHook)
 
 	// Session signals — the canonical record of anything a session surfaces
-	// to a human (SESSION-SIGNALS.md). Rows are written by the tool path
+	// to a human (docs/SESSION-SIGNALS.md). Rows are written by the tool path
 	// when an AskUserQuestion parks and by the turn-end classifier, and are
 	// closed out by whichever path delivers the answer.
 	// /signals?state=open is the cross-session inbox; /signals/{id}/resolve

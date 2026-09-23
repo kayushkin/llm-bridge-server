@@ -202,7 +202,7 @@ func (s *Store) migrate() error {
 	// Migrations for existing DBs (old schema used 'id' as PK)
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("ALTER TABLE sessions ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''")
-	// Session lineage (TEAM-ORCHESTRATION.md §21). Idempotent ADD COLUMNs.
+	// Session lineage (docs/plans/TEAM-ORCHESTRATION.md §21). Idempotent ADD COLUMNs.
 	// forked_from_session_id is the honest replacement for parent_id: it holds the
 	// FORK PARENT'S bridge_id, where parent_id holds the parent's harness UUID (fed
 	// to --fork). parent_id stays until the fork plumbing resolves the harness id
@@ -398,8 +398,7 @@ func (s *Store) migrate() error {
 	s.db.Exec(`UPDATE sessions SET origin = 'llm-bridge-claudecode' WHERE origin = purpose AND purpose = 'subagent'`)
 	// Legacy interactive sessions: bridge-ui defaults origin='frontend' for
 	// new ones, but pre-rename rows have empty origin. Backfill so the
-	// frontend's chat sessions all attribute to "frontend" (dash/llmux split
-	// is a separate followup if we want it).
+	// frontend's chat sessions all attribute to "frontend".
 	//
 	// Keyed on purpose='chat' only. It used to also match purpose='', which
 	// credited every unclassified session to the frontend on the same faulty
@@ -1954,7 +1953,7 @@ func (s *Store) SetSessionFolder(bridgeID, folder string) error {
 // live counterpart of UpsertDiscoveredSession: the adapter demuxes a subagent's
 // frames out of the parent process's stream while the run is still in flight,
 // so the session exists before any on-disk rollout scan finds it
-// (TEAM-ORCHESTRATION.md §21.4 step 4).
+// (docs/plans/TEAM-ORCHESTRATION.md §21.4 step 4).
 //
 // harnessSessionID must be the SAME key the discovery scanner would derive for
 // this subagent — for Claude Code, "agent-<task_id>", matching the

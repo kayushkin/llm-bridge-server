@@ -142,7 +142,7 @@ func TestAttachHub_Token(t *testing.T) {
 // TestAttachHub_WriterPromotion verifies that detaching the writer
 // promotes the next remaining reader to writer so the session stays
 // usable. Important for the "writer disconnects, reader stays attached"
-// flow described in PTY-MODE.md.
+// flow described in docs/PTY-MODE.md.
 func TestAttachHub_WriterPromotion(t *testing.T) {
 	th := newTestHarness(t)
 	hub := NewAttachHub(th.pp, 4096)

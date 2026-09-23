@@ -15,7 +15,7 @@ import (
 )
 
 // The turn-end classifier is the derived producer described in
-// SESSION-SIGNALS.md: a cheap-model pass that sorts a finished turn's final
+// docs/SESSION-SIGNALS.md: a cheap-model pass that sorts a finished turn's final
 // text into question | notification | neither and, for the first two, writes
 // a source:"derived" signal.
 //

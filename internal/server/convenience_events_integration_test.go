@@ -77,7 +77,7 @@ func TestConvenienceEventsIntegration_ClaudeCode_TurnSequence(t *testing.T) {
 	// echo or its derived agent_state(idle→tool_running). The handler
 	// replays current-turn events on first connect, so a late subscriber
 	// would still catch up — but live capture is closer to how real
-	// consumers (bridge-ui, llmux) attach.
+	// consumers (bridge-ui) attach.
 	sseCtx, cancelSSE := context.WithTimeout(context.Background(), convDeriveTimeout+15*time.Second)
 	t.Cleanup(cancelSSE)
 

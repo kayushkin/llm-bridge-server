@@ -320,7 +320,7 @@ func isReadOnlyTool(name string) bool {
 // request to bridge-ui (so the banner picks the right card flavor).
 //
 // A user-input park also writes the canonical signal rows for the questions
-// it carries (SESSION-SIGNALS.md P1). sess supplies the session type the
+// it carries (docs/SESSION-SIGNALS.md P1). sess supplies the session type the
 // signal's surface is derived from; it may be nil for a session the store
 // has no row for, in which case the signal surfaces to chat.
 //
