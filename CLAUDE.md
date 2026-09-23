@@ -83,6 +83,10 @@ A shell job's wall-clock cap is **per-job**: `timeout_seconds` on create or PATC
 
 Shell jobs return status `success` or `error` based on exit code; `output` field in run history captures combined stdout+stderr (use `-f` with curl so 5xx becomes non-zero exit → `error` status → visible in `/runs`). Two further statuses mean the run did not finish on its own terms: `timeout` (it exceeded `timeout_seconds` and its process group was killed) and `interrupted` (the scheduler process died mid-run — a crash, an OOM kill, a deploy restart — and the run was closed out at the next startup). A run is never left in `running` by a process that is gone.
 
+## email-classifier's model calls are operations
+
+Every model call `email-classifier` makes — filing, the merge pass, the deadline backfill — is an `llm.completion` operation on llm-bridge-server (`internal/completionoperation`), not a call to an instance's oneshot endpoint. Each is made for the principal-store group in the board's `classifier.organization_id`, so that organization's monthly budget and grants apply; a board without one stops the run before the first call. The bridge picks the harness instance (its `operations.completion_instance` setting), so the binary takes no instance flag. A run's calls share its run id as correlation id, and each gets the idempotency key `<run id>:<call number>`. `completionoperation.ErrTruncated` and `ErrBudgetExhausted` name the two failures a caller must not retry blindly. `kanban-classifier`, `kanban-scoper` and `demo-mail-generator` still use `internal/oneshot`.
+
 ## Mail becomes a ticket
 
 `email-classifier` gives a card it files for a piece of work a **ticket** in

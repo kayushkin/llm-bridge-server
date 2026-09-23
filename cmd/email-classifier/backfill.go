@@ -48,8 +48,8 @@ type backfillReport struct {
 }
 
 // backfillSchema is the JSON Schema the model's deadline reply must conform
-// to (formerly a forced tool's input_schema; the oneshot bridge path takes
-// the bare schema).
+// to (formerly a forced tool's input_schema; an llm.completion operation
+// takes the bare schema).
 func backfillSchema() map[string]any {
 	return map[string]any{
 		"type": "object",

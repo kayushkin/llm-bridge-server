@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
-	"github.com/slava/scheduler/internal/oneshot"
+	"github.com/slava/scheduler/internal/completionoperation"
 )
 
 // ============================ taxonomy ============================
@@ -222,7 +223,7 @@ You MUST output a single JSON object conforming to the provided schema, exactly 
 
 // reportSchema is the JSON Schema the model's reply must conform to. It was
 // the input_schema of a forced tool call when this command spoke to
-// api.anthropic.com directly; the oneshot bridge path takes the bare schema.
+// api.anthropic.com directly; an llm.completion operation takes the bare schema.
 func reportSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -287,9 +288,9 @@ const stopReasonMaxTokens = "max_tokens"
 // distinct from transport and decode failures because a truncated report is
 // indistinguishable from one that simply filed fewer emails — the emails it
 // dropped would silently violate the every-email-is-filed invariant. It is
-// the package's name for oneshot.ErrTruncated so call sites read in this
+// the package's name for completionoperation.ErrTruncated so call sites read in this
 // command's vocabulary.
-var errTruncatedReport = oneshot.ErrTruncated
+var errTruncatedReport = completionoperation.ErrTruncated
 
 func classifyBatch(ctx context.Context, cfg config, digest string) (*filingReport, error) {
 	var rep filingReport
@@ -299,25 +300,37 @@ func classifyBatch(ctx context.Context, cfg config, digest string) (*filingRepor
 	return &rep, nil
 }
 
-// invokeSchema runs one schema-forced call through llm-bridge-server's
-// oneshot endpoint on the Claude Code subscription login and decodes the
-// reply into out. Replaced a direct forced-tool POST to api.anthropic.com
-// that billed an API key resolved from auth-store.
+// invokeSchema runs one schema-forced call as an llm.completion operation on
+// llm-bridge-server, made for the board's organization and counted against its
+// budget, and decodes the answer into out. The bridge makes the call through its
+// own harness instance on the subscription login. It replaced a POST to the
+// instance oneshot endpoint, which had no receipt, budget or idempotency.
 //
 // Shared by the filing pass, the merge pass and the deadline backfill so the
 // truncation guard has exactly one authoring: a reply that stopped at
-// max_tokens is refused (oneshot.ErrTruncated, aliased errTruncatedReport
-// here), because its missing entries read exactly like a model that had less
-// to say.
+// max_tokens is refused (completionoperation.ErrTruncated, aliased
+// errTruncatedReport here), because its missing entries read exactly like a
+// model that had less to say.
 func invokeSchema(ctx context.Context, cfg config, system string, schema map[string]any, digest string, out any) error {
-	return oneshot.Call(ctx, oneshot.Config{
-		BridgeURL:  cfg.BridgeURL,
-		InstanceID: cfg.OneshotInstance,
-		Model:      cfg.Model,
-		MaxTokens:  maxOutputTokens,
-		Timeout:    180 * time.Second,
+	callNumber := modelCallsThisRun.Add(1)
+	receipt, err := completionoperation.Call(ctx, completionoperation.Config{
+		BridgeURL:      cfg.BridgeURL,
+		OrganizationID: cfg.Classifier.OrganizationID,
+		IdempotencyKey: fmt.Sprintf("%s:%d", cfg.RunID, callNumber),
+		CorrelationID:  cfg.RunID,
+		Model:          cfg.Model,
+		MaxTokens:      maxOutputTokens,
+		Timeout:        6 * time.Minute,
 	}, system, digest, schema, out)
+	if receipt.ID != "" {
+		log.Printf("[email] model call %d: operation %s %s", callNumber, receipt.ID, receipt.State)
+	}
+	return err
 }
+
+// modelCallsThisRun numbers this process's model calls, for their
+// idempotency keys.
+var modelCallsThisRun atomic.Int64
 
 // classifyMerges asks which cards on the board are really one bucket.
 func classifyMerges(ctx context.Context, cfg config, digest string) (*mergeReport, error) {

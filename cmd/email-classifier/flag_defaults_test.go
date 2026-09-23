@@ -63,7 +63,6 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		{"-mail-url", cfg.MailURL, "http://localhost:8195"},
 		{"-mail-token", cfg.MailToken, "changeme"},
 		{"-bridge-url", cfg.BridgeURL, "http://localhost:8160"},
-		{"-oneshot-instance", cfg.OneshotInstance, ""},
 		{"-model", cfg.Model, "claude-sonnet-4-6"},
 		{"-max", cfg.MaxEmails, 50},
 		{"-backfill", cfg.Backfill, false},
@@ -183,7 +182,7 @@ func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 // TestEachEnvironmentVariableReachesItsOwnField is the test the flag set was
 // registered into named fields for.
 //
-// Eight variables land in this config and all of them are strings that would
+// Seven variables land in this config and all of them are strings that would
 // be accepted in each other's place. One pair is consumed positionally —
 // newMailClient takes (MailURL, MailToken) — so a swap compiles clean and
 // passes every other test in the package, because nothing else reads them. Giving each variable a distinct
@@ -195,7 +194,6 @@ func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 		"MAILSTACK_URL":          "http://mailstack.example",
 		"MAILSTACK_TOKEN":        "mail-token-value",
 		"LLM_BRIDGE_URL":         "http://bridge.example",
-		"ONESHOT_INSTANCE_ID":    "inst-from-the-environment",
 		"EMAIL_CLASSIFIER_MODEL": "model-from-the-environment",
 		"SCHEDULER_URL":          "http://scheduler.example",
 	}), "/home/someone")
@@ -213,7 +211,6 @@ func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 		{"MAILSTACK_URL", cfg.MailURL, "http://mailstack.example"},
 		{"MAILSTACK_TOKEN", cfg.MailToken, "mail-token-value"},
 		{"LLM_BRIDGE_URL", cfg.BridgeURL, "http://bridge.example"},
-		{"ONESHOT_INSTANCE_ID", cfg.OneshotInstance, "inst-from-the-environment"},
 		{"EMAIL_CLASSIFIER_MODEL", cfg.Model, "model-from-the-environment"},
 		{"SCHEDULER_URL", cfg.SchedulerURL, "http://scheduler.example"},
 	} {
@@ -323,7 +320,7 @@ func TestTheDefaultsWithABoardValidate(t *testing.T) {
 // makes one live provider round trip per message routinely outruns that, so it
 // would be killed mid-run — reported as `timeout`, with the board half-written.
 func TestTheRegisteredJobIsTheOneTheSchedulerCanActuallyRun(t *testing.T) {
-	cfg, err := parseFlags([]string{"-board-id=board-42", "-oneshot-instance=inst-cc-local"}, noEnvironment, "/home/someone")
+	cfg, err := parseFlags([]string{"-board-id=board-42"}, noEnvironment, "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
 	}
@@ -337,7 +334,7 @@ func TestTheRegisteredJobIsTheOneTheSchedulerCanActuallyRun(t *testing.T) {
 		{"schedule", "*/15 * * * *"},
 		{"type", "shell"},
 		{"timeout_seconds", 900},
-		{"command", "/home/someone/bin/email-classifier -board-id board-42 -oneshot-instance inst-cc-local"},
+		{"command", "/home/someone/bin/email-classifier -board-id board-42"},
 	} {
 		if got := payload[check.key]; got != check.want {
 			t.Errorf("registered job %s = %v, want %v", check.key, got, check.want)
@@ -354,22 +351,20 @@ func TestTheRegisteredJobIsTheOneTheSchedulerCanActuallyRun(t *testing.T) {
 // The scheduler runs jobs as `sh -c` with its own thin environment, so
 // EMAIL_BOARD_ID does not reach the process — the id has to be baked into the
 // command string or the job has no board to read its classifier setting from.
-// ONESHOT_INSTANCE_ID is the same: without it every tick dies at the first
-// model call.
 func TestAPinnedBoardIdReachesTheRegisteredCommand(t *testing.T) {
-	if got := registeredCommand("/home/someone/bin/email-classifier", "board-42", "inst-cc-local"); got != "/home/someone/bin/email-classifier -board-id board-42 -oneshot-instance inst-cc-local" {
-		t.Errorf("registered command = %q, want the board id and oneshot instance baked in", got)
+	if got := registeredCommand("/home/someone/bin/email-classifier", "board-42"); got != "/home/someone/bin/email-classifier -board-id board-42" {
+		t.Errorf("registered command = %q, want the board id baked in", got)
 	}
 
 	// And it has to arrive from the flag, not only from the environment: before
 	// the seam, registerSchedulerJob read EMAIL_BOARD_ID directly and ignored
 	// -board-id entirely, so `-register -board-id X` warned that no id was
 	// pinned and then registered a job without one.
-	cfg, err := parseFlags([]string{"-board-id=board-42", "-oneshot-instance=inst-cc-local"}, noEnvironment, "/home/someone")
+	cfg, err := parseFlags([]string{"-board-id=board-42"}, noEnvironment, "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
-	if got := schedulerJobPayload(cfg)["command"]; got != "/home/someone/bin/email-classifier -board-id board-42 -oneshot-instance inst-cc-local" {
+	if got := schedulerJobPayload(cfg)["command"]; got != "/home/someone/bin/email-classifier -board-id board-42" {
 		t.Errorf("-board-id did not reach the registered command: %v", got)
 	}
 }

@@ -225,7 +225,6 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	fs.StringVar(&c.MailURL, "mail-url", settings.String(schedulerconfig.SettingMailstackURL), "mailstack base URL")
 	fs.StringVar(&c.MailToken, "mail-token", mailToken, "mailstack bearer token")
 	fs.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL, used to tell whether an agent is still working on a card")
-	fs.StringVar(&c.OneshotInstance, "oneshot-instance", settings.String(schedulerconfig.SettingOneshotInstanceID), "claude_code harness instance id for subscription oneshot calls (required unless -dump-digest)")
 	fs.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingModel), "Anthropic model id")
 	fs.IntVar(&c.MaxEmails, "max", maxEmailsPerTick, "Max emails to file per tick.")
 	fs.BoolVar(&c.Backfill, "backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
@@ -325,11 +324,6 @@ func run() int {
 
 	ctx := context.Background()
 
-	// A digest dump never reaches the model, so it must not name an instance.
-	if !cfg.DumpDigest && cfg.OneshotInstance == "" {
-		log.Fatal("-oneshot-instance is required: model calls route through llm-bridge-server's oneshot endpoint on the subscription login")
-	}
-
 	// Collects the ways this run falls short of doing its whole job. Threaded
 	// rather than global so the failure sites stay testable in isolation.
 	degraded := &degradations{}
@@ -361,9 +355,18 @@ func run() int {
 	if err := selectVocabulary(board.Classifier.Vocabulary); err != nil {
 		log.Fatalf("board %q (%s) classifier: %v", board.Name, board.ID, err)
 	}
+	// Every model call is an llm.completion operation made for the board's
+	// organization, whose budget it spends. A digest dump makes no call, so
+	// it needs none.
+	if !cfg.DumpDigest && board.Classifier.OrganizationID == "" {
+		log.Fatalf("board %q (%s) classifier has no organization_id: model calls run as llm-bridge-server operations for a "+
+			"principal-store group, which the board must name — PATCH %s/api/boards/%s with the whole classifier object plus \"organization_id\"",
+			board.Name, board.ID, cfg.KanbanURL, board.ID)
+	}
 	cfg.Classifier = *board.Classifier
-	log.Printf("[email] board config: vocabulary=%s mail_account_ids=%v hold_new_cards=%v",
-		active.Name, cfg.Classifier.MailAccountIDs, cfg.Classifier.HoldNewCards)
+	cfg.RunID = fmt.Sprintf("email-classifier:%s:%d", time.Now().UTC().Format("20060102T150405Z"), os.Getpid())
+	log.Printf("[email] board config: vocabulary=%s mail_account_ids=%v hold_new_cards=%v organization_id=%s run=%s",
+		active.Name, cfg.Classifier.MailAccountIDs, cfg.Classifier.HoldNewCards, cfg.Classifier.OrganizationID, cfg.RunID)
 
 	cols, err := kc.ListColumns(board.ID)
 	if err != nil {
@@ -595,7 +598,6 @@ type config struct {
 	MailURL          string
 	MailToken        string
 	BridgeURL        string
-	OneshotInstance  string
 	Model            string
 	MaxEmails        int
 	Backfill         bool
@@ -633,6 +635,10 @@ type config struct {
 	// run files with, so a value here that disagreed with the board would be a
 	// second source of truth.
 	Classifier kanbanclient.ClassifierConfig
+
+	// RunID names this process's run. It is the correlation id of every
+	// model call the run makes, and the stem of each call's idempotency key.
+	RunID string
 }
 
 // ============================ mail accounts ============================
@@ -1162,17 +1168,16 @@ func bestBodyText(em pendingEmail) string {
 // registeredCommand renders the shell command the scheduler job runs.
 //
 // Both values are baked into the command rather than left to the environment:
-// scheduler runs jobs as `sh -c` with only its own thin env, so neither
-// EMAIL_BOARD_ID nor ONESHOT_INSTANCE_ID would reach the process. The board id
-// is where everything else a tick runs with is read from, and the oneshot
-// instance is the tick's own model transport — without it every tick dies at
-// the first model call.
+// scheduler runs jobs as `sh -c` with only its own thin env, so
+// EMAIL_BOARD_ID would not reach the process. The board id is where
+// everything else a tick runs with is read from, the organization its model
+// calls are made for included.
 //
 // A pure function rather than a few lines inside the POST, because this string
 // is the whole point of -register and it is written exactly once, by hand, on a
 // host nobody re-checks.
-func registeredCommand(binaryPath, boardID, oneshotInstance string) string {
-	return binaryPath + " -board-id " + boardID + " -oneshot-instance " + oneshotInstance
+func registeredCommand(binaryPath, boardID string) string {
+	return binaryPath + " -board-id " + boardID
 }
 
 // schedulerJobPayload is the job -register creates.
@@ -1182,7 +1187,7 @@ func schedulerJobPayload(cfg config) map[string]any {
 		"description": "Files incoming mail onto cards on the Email kanban board (cards are work, emails attach as links).",
 		"schedule":    schedulerJobSchedule,
 		"type":        "shell",
-		"command":     registeredCommand(cfg.BinaryPath, cfg.BoardID, cfg.OneshotInstance),
+		"command":     registeredCommand(cfg.BinaryPath, cfg.BoardID),
 		// A tick fetches messages one live provider round trip at a time, so it
 		// legitimately outruns the scheduler's 5-minute default.
 		"timeout_seconds": schedulerJobTimeoutSeconds,
@@ -1191,13 +1196,6 @@ func schedulerJobPayload(cfg config) map[string]any {
 
 func registerSchedulerJob(cfg config) error {
 	schedURL := cfg.SchedulerURL
-	// validate has already insisted on the board id. The oneshot instance is
-	// only required for a tick, but a registered job IS a tick, so a job
-	// without one would be registered only to die every fifteen minutes.
-	if cfg.OneshotInstance == "" {
-		return errors.New("-oneshot-instance is required to register: the job it creates makes model calls through it, and the scheduler's environment will not supply it")
-	}
-
 	resp, err := http.Get(schedURL + "/api/jobs")
 	if err != nil {
 		return fmt.Errorf("list jobs: %w", err)

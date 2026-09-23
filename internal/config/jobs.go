@@ -231,7 +231,6 @@ var EmailClassifier = JobBinary{Name: "email-classifier", OwnedEnvironmentVariab
 		kanbanStoreURLDefinition(), kanbanStoreServiceTokenDefinition(),
 	}, append(mailstackDefinitions(),
 		bridgeURLDefinition(), bridgeServiceTokenDefinition(),
-		oneshotInstanceIDDefinition(""),
 		modelDefinition("EMAIL_CLASSIFIER_MODEL", DefaultEmailClassifierModel),
 		noteboardURLDefinition(),
 		servicesettings.Definition{Key: SettingPrincipalStoreURL, EnvironmentVariable: "PRINCIPAL_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultPrincipalStoreURL,

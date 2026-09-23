@@ -62,8 +62,8 @@ Returning an empty merges list is a perfectly good answer. Do not invent groupin
 You MUST output a single JSON object conforming to the provided schema, exactly once.`
 
 // mergeSchema is the JSON Schema the model's merge reply must conform to
-// (formerly a forced tool's input_schema; the oneshot bridge path takes the
-// bare schema).
+// (formerly a forced tool's input_schema; an llm.completion operation takes
+// the bare schema).
 func mergeSchema() map[string]any {
 	return map[string]any{
 		"type": "object",

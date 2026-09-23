@@ -115,6 +115,10 @@ type ClassifierConfig struct {
 	// HoldNewCards parks every card the classifier creates, so an unattended
 	// worker discovering noteboard todos does not pick one up.
 	HoldNewCards bool `json:"hold_new_cards"`
+	// OrganizationID is the principal-store group the classifier's model
+	// calls are made for, as llm-bridge-server operations. kanban-store
+	// checks on write that it is an active group.
+	OrganizationID string `json:"organization_id,omitempty"`
 }
 
 // ErrBoardNotFound is returned by GetBoard when kanban-store answers 404 for
