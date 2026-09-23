@@ -112,6 +112,12 @@ func (completion LLMCompletion) Execute(ctx context.Context, intent msg.Operatio
 	if err := receipt.AddEvidence(msg.OperationEvidence{Kind: "model_call", Summary: "answered by " + answeredBy, Detail: detail}); err != nil {
 		return writeFailure(err)
 	}
+	if response.StopReason == "max_tokens" {
+		// A cut-off reply cannot be trusted, and running it again with the
+		// same limit is cut off the same way. The caller must raise
+		// max_tokens or send less.
+		return failed("reply_truncated", fmt.Sprintf("the reply stopped at the output limit (max_tokens %d, output tokens %d)", input.MaxTokens, response.Usage.OutputTokens))
+	}
 	if len(input.Schema) > 0 && len(response.Parsed) == 0 {
 		return operations.Result{Error: &msg.OperationError{Code: "schema_not_followed", Retryable: true,
 			Message: fmt.Sprintf("asked for JSON matching a schema and got none (stop reason %q)", response.StopReason)}}

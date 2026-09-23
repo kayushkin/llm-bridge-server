@@ -214,3 +214,14 @@ func TestCompletionInputIsChecked(t *testing.T) {
 		}
 	}
 }
+
+func TestATruncatedReplyFailsWithoutARetry(t *testing.T) {
+	h := newHarness(t)
+	h.caller.response.StopReason = "max_tokens"
+	receipt := h.submit(t, "k1", msg.LLMCompletionInput{Prompt: "long", MaxTokens: 100}, 0)
+	h.run(t)
+	finished := h.receipt(t, receipt.ID)
+	if finished.State != msg.OperationStateFailed || finished.Error.Code != "reply_truncated" || finished.Error.Retryable || len(h.caller.calls) != 1 {
+		t.Fatalf("state %s error %+v calls %d", finished.State, finished.Error, len(h.caller.calls))
+	}
+}
