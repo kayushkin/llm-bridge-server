@@ -32,6 +32,9 @@ var whoMayCallRoute = map[routeAccessClass]string{
 	routePrincipalReadsCatalog:                    "principal",
 	routePrincipalRefusedCannotBeFiltered:         "operator",
 	routePrincipalOrSessionAgentThroughStoreProxy: "principal or session agent",
+	routePrincipalCreatesOperation:                "principal, as itself, in its organization",
+	routePrincipalOwnsOperation:                   "owner",
+	routePrincipalSeesOwnOperationsOnly:           "principal, own operations only",
 }
 
 func TestEveryRouteHasADescriptionAndEveryDescriptionARoute(t *testing.T) {

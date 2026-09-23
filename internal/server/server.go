@@ -22,6 +22,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
+	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
@@ -102,6 +103,9 @@ type Server struct {
 	// settings attached: read at the time of use, described by GET /settings,
 	// changed by PUT /settings/{key}. See service_settings.go.
 	settings *servicesettings.Registry
+	// operations runs the operation routes. Nil until EnableOperations, and
+	// the routes answer 503 until then. See operations.go.
+	operations *operations.Coordinator
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
@@ -304,6 +308,16 @@ func (s *Server) routes() {
 	// a request_id only says a park EXISTED, and only the server knows if it
 	// is still live. See signal_answer.go.
 	s.mux.HandleFunc("POST /signals/{id}/answer", s.handleAnswerSignal)
+
+	// Operations: asynchronous work with a durable receipt. See operations.go
+	// and docs/OPERATIONS.md in llm-bridge.
+	s.mux.HandleFunc("POST /operations", s.handleCreateOperation)
+	s.mux.HandleFunc("GET /operations", s.handleListOperations)
+	s.mux.HandleFunc("GET /operations/{id}", s.handleGetOperation)
+	s.mux.HandleFunc("GET /operations/{id}/events", s.handleOperationEvents)
+	s.mux.HandleFunc("POST /operations/{id}/cancel", s.handleCancelOperation)
+	s.mux.HandleFunc("GET /operations/{id}/children", s.handleListOperationChildren)
+	s.mux.HandleFunc("GET /operation-types", s.handleOperationTypes)
 
 	// The Services page: healthcheck's services joined to the SQLite files
 	// their processes hold open, and read-only reads of those files. See

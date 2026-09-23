@@ -98,3 +98,35 @@ func (c *Client) Get(ctx context.Context, principalID string) (Principal, error)
 		return Principal{}, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
 	}
 }
+
+// GroupIDsOf returns the ids of the active groups principalID is a direct
+// member of. principal-store answers only for a human; asking about any
+// other kind is an error from the store, passed on.
+func (c *Client) GroupIDsOf(ctx context.Context, principalID string) ([]string, error) {
+	requestURL := c.url + "/principals/" + url.PathEscape(principalID) + "/groups"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build GET %s: %w", requestURL, err)
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("principal-store unreachable: GET %s: %w", requestURL, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read principal-store response: %w", err)
+	}
+	if response.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
+	}
+	var groups []Principal
+	if err := json.Unmarshal(body, &groups); err != nil {
+		return nil, fmt.Errorf("principal-store answered GET %s with a body that is not a list of principals: %w", requestURL, err)
+	}
+	ids := make([]string, 0, len(groups))
+	for _, group := range groups {
+		ids = append(ids, group.ID)
+	}
+	return ids, nil
+}

@@ -138,7 +138,9 @@ Every principal is looked up in principal-store: unknown is 400 `unknown_princip
 | principal | Any principal. `GET /instances` lists only the instances its `can_dispatch_on` grants allow |
 | principal, as itself | `POST /sessions` creates the session as the caller; naming someone else is 403 `principal_mismatch` |
 | principal, own sessions only | The answer holds only the caller's sessions |
-| owner | Only the principal who owns the session or signal. Anyone else's, one with no principal and a missing one all answer the same 404 |
+| principal, as itself, in its organization | `POST /operations` starts the operation as the caller, whatever the body says. `organization_id` must be an active principal-store group (400 `unknown_organization`, `organization_not_group`, `organization_disabled`) the caller belongs to (403 `not_a_member_of_organization`); an administrator and the service token skip the membership check |
+| principal, own operations only | The answer holds only the caller's operations |
+| owner | Only the principal who owns the session, signal or operation. Anyone else's, one with no principal and a missing one all answer the same 404 |
 | principal or session agent | A login cookie or a session agent token; the request reaches the store as that principal |
 
 A route with no rule is 403 `route_not_classified` to everyone but the service token, and `TestEveryRegisteredRouteIsClassified` fails until it has one. A fork or promoted subagent takes its parent's principal.
@@ -240,6 +242,18 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/signals` | The inbox across sessions (`?state=open`) | principal, own sessions only |
 | `POST` | `/signals/{id}/answer` | Answer a question, whether or not its session still runs | owner |
 | `POST` | `/signals/{id}/resolve` | Acknowledge or dismiss | owner |
+
+### Operations
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/operation-types` | The operation types this server runs, with their attempt and time limits | principal |
+| `GET` | `/operations` | Receipts, newest first (`?organization_id=&principal_id=&type=&state=&created_after=&created_before=&limit=`) | principal, own operations only |
+| `POST` | `/operations` | Accept an operation intent: 202 and a new receipt, or 200 and the first one for a repeated idempotency key | principal, as itself, in its organization |
+| `GET` | `/operations/{id}` | One operation's receipt | owner |
+| `POST` | `/operations/{id}/cancel` | Ask an operation to stop; 409 with the receipt when it already finished | owner |
+| `GET` | `/operations/{id}/children` | The receipts of an operation's children | owner |
+| `GET` | `/operations/{id}/events` | SSE of an operation's events, resumable with `Last-Event-ID`, closed once it and its children finish | owner |
 
 ### Machines, instances and credentials
 

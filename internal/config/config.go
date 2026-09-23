@@ -19,20 +19,26 @@ type Config struct {
 	// at the time of use. Nil in a Config built as a literal, which is how
 	// tests build one; server.New then builds a registry with no environment
 	// and seeds the stored settings from the literal's own fields.
-	Settings        *servicesettings.Registry
-	ListenAddr      string
-	DBPath          string
-	AgentStoreDB    string
-	MemoryStoreDB   string
-	HarnessStoreDB  string
-	HookStoreDB     string
-	ModelStoreDB    string
-	ModelStoreURL   string
-	AgentStoreURL   string
-	ImagesDir       string
-	BridgePrefsPath string
-	ConformancePath string
-	LogStoreURL     string
+	Settings   *servicesettings.Registry
+	ListenAddr string
+	DBPath     string
+	// OperationsDBPath is the operations database (internal/operationstore).
+	OperationsDBPath string
+	// OperationsWorkerCount and OperationsLeaseDuration bound the operations
+	// coordinator; see internal/operations.
+	OperationsWorkerCount   int
+	OperationsLeaseDuration time.Duration
+	AgentStoreDB            string
+	MemoryStoreDB           string
+	HarnessStoreDB          string
+	HookStoreDB             string
+	ModelStoreDB            string
+	ModelStoreURL           string
+	AgentStoreURL           string
+	ImagesDir               string
+	BridgePrefsPath         string
+	ConformancePath         string
+	LogStoreURL             string
 	// PublicURL is the externally-reachable bridge URL that runners use
 	// to fetch backend binaries listed in HarnessService.BinaryURL. Empty
 	// → manifests fall back to the runner's own server_url, which works
@@ -290,6 +296,9 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		Settings:                  settings,
 		ListenAddr:                settings.String("listen_address"),
 		DBPath:                    settings.String("database.path"),
+		OperationsDBPath:          settings.String("operations.database_path"),
+		OperationsWorkerCount:     settings.Integer("operations.worker_count"),
+		OperationsLeaseDuration:   settings.Duration("operations.lease_duration"),
 		AgentStoreDB:              settings.String("agent_store.database_path"),
 		MemoryStoreDB:             settings.String("memory_store.database_path"),
 		HarnessStoreDB:            settings.String("harness_store.database_path"),
@@ -357,6 +366,7 @@ func (c *Config) GuardedAddresses() map[string]string {
 		"HealthcheckURL":     c.HealthcheckURL,
 		"SnapshotStoreDB":    c.SnapshotStoreDB,
 		"SnapshotStoreGit":   c.SnapshotStoreGit,
+		"OperationsDBPath":   c.OperationsDBPath,
 	}
 }
 

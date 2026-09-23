@@ -28,6 +28,9 @@ type fakePrincipalDirectory struct {
 	// the caller's principal is read once per page load and not once per
 	// request.
 	reads int
+	// groupIDsByMember answers GET /principals/{id}/groups: the groups each
+	// human belongs to. A human missing here belongs to none.
+	groupIDsByMember map[string][]string
 }
 
 func newFakePrincipalDirectory(t *testing.T, recordsByID map[string]string) *fakePrincipalDirectory {
@@ -46,6 +49,16 @@ func newFakePrincipalDirectory(t *testing.T, recordsByID map[string]string) *fak
 			return
 		}
 		_, _ = w.Write([]byte(record))
+	})
+	mux.HandleFunc("GET /principals/{id}/groups", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		directory.mutex.Lock()
+		groups := []map[string]any{}
+		for _, groupID := range directory.groupIDsByMember[r.PathValue("id")] {
+			groups = append(groups, map[string]any{"id": groupID, "kind": "group"})
+		}
+		directory.mutex.Unlock()
+		_ = json.NewEncoder(w).Encode(groups)
 	})
 	directory.server = httptest.NewServer(mux)
 	t.Cleanup(directory.server.Close)

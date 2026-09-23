@@ -17,6 +17,7 @@ const (
 	routeGroupSessions         routeGroup = "Sessions"
 	routeGroupOneSession       routeGroup = "One session"
 	routeGroupSignals          routeGroup = "Signals"
+	routeGroupOperations       routeGroup = "Operations"
 	routeGroupMachines         routeGroup = "Machines, instances and credentials"
 	routeGroupHooks            routeGroup = "Hooks"
 	routeGroupHarnessesModels  routeGroup = "Harnesses, models and settings"
@@ -34,6 +35,7 @@ var routeGroupsInReadmeOrder = []routeGroup{
 	routeGroupSessions,
 	routeGroupOneSession,
 	routeGroupSignals,
+	routeGroupOperations,
 	routeGroupMachines,
 	routeGroupHooks,
 	routeGroupHarnessesModels,
@@ -92,11 +94,19 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /sessions/{id}/tools/{tool_use_id}/snapshots": {routeGroupOneSession, "File snapshots before and after an Edit or Write (snapshot-store)"},
 
 	// Signals.
-	"GET /signals":                {routeGroupSignals, "The inbox across sessions (`?state=open`)"},
-	"GET /sessions/{id}/signals":  {routeGroupSignals, "One session's signals"},
-	"POST /sessions/{id}/signals": {routeGroupSignals, "A session raises a notice about itself"},
-	"POST /signals/{id}/answer":   {routeGroupSignals, "Answer a question, whether or not its session still runs"},
-	"POST /signals/{id}/resolve":  {routeGroupSignals, "Acknowledge or dismiss"},
+	"GET /signals": {routeGroupSignals, "The inbox across sessions (`?state=open`)"},
+
+	"POST /operations":              {routeGroupOperations, "Accept an operation intent: 202 and a new receipt, or 200 and the first one for a repeated idempotency key"},
+	"GET /operations":               {routeGroupOperations, "Receipts, newest first (`?organization_id=&principal_id=&type=&state=&created_after=&created_before=&limit=`)"},
+	"GET /operations/{id}":          {routeGroupOperations, "One operation's receipt"},
+	"GET /operations/{id}/events":   {routeGroupOperations, "SSE of an operation's events, resumable with `Last-Event-ID`, closed once it and its children finish"},
+	"POST /operations/{id}/cancel":  {routeGroupOperations, "Ask an operation to stop; 409 with the receipt when it already finished"},
+	"GET /operations/{id}/children": {routeGroupOperations, "The receipts of an operation's children"},
+	"GET /operation-types":          {routeGroupOperations, "The operation types this server runs, with their attempt and time limits"},
+	"GET /sessions/{id}/signals":    {routeGroupSignals, "One session's signals"},
+	"POST /sessions/{id}/signals":   {routeGroupSignals, "A session raises a notice about itself"},
+	"POST /signals/{id}/answer":     {routeGroupSignals, "Answer a question, whether or not its session still runs"},
+	"POST /signals/{id}/resolve":    {routeGroupSignals, "Acknowledge or dismiss"},
 
 	// Machines, instances and credentials.
 	"GET /machines":                                {routeGroupMachines, "List machines (harness-store)"},

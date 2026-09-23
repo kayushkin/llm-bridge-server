@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -14,6 +15,9 @@ import (
 	harnessstore "github.com/kayushkin/harness-store"
 	hookstore "github.com/kayushkin/hook-store"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/executors"
+	"github.com/kayushkin/llm-bridge-server/internal/operations"
+	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	memorystore "github.com/kayushkin/memory-store"
@@ -161,6 +165,27 @@ func main() {
 	}
 
 	srv := server.New(st, as, ms, hs, hks, mds, ss, cfg)
+
+	operationStore, err := operationstore.Open(cfg.OperationsDBPath)
+	if err != nil {
+		log.Fatalf("operations db: %v", err)
+	}
+	defer operationStore.Close()
+	coordinator, err := operations.NewCoordinator(operationStore, operations.Config{
+		WorkerCount:   cfg.OperationsWorkerCount,
+		LeaseDuration: cfg.OperationsLeaseDuration,
+		// Unique per process, so a restart finds every operation the last
+		// process left running and reconciles it.
+		LeaseOwner: fmt.Sprintf("llm-bridge-server pid %d started %s", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano)),
+	}, executors.KeywordClassifier{})
+	if err != nil {
+		log.Fatalf("operations: %v", err)
+	}
+	srv.EnableOperations(coordinator)
+	operationsContext, stopOperations := context.WithCancel(context.Background())
+	defer stopOperations()
+	go coordinator.Run(operationsContext)
+	log.Printf("operations db %s | %d workers | lease %s", cfg.OperationsDBPath, cfg.OperationsWorkerCount, cfg.OperationsLeaseDuration)
 	srv.ReconcileAndResume() // Clean up stale running-state and resume recently-active sessions
 	srv.AutoDiscover()       // Import on-disk sessions from harnesses
 	srv.StartWatchdog()      // Periodic check for sessions whose harness died mid-life

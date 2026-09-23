@@ -75,6 +75,11 @@ func BridgeDatabasePath() string {
 	return filepath.Join(homeDirectory(), ".llm-bridge", "bridge.db")
 }
 
+// OperationsDatabasePath is where operations, their events and leases are kept.
+func OperationsDatabasePath() string {
+	return filepath.Join(homeDirectory(), ".llm-bridge", "operations.db")
+}
+
 func AgentStoreDatabasePath() string {
 	return filepath.Join(homeDirectory(), ".config", "agent-store", "agents.db")
 }
@@ -131,6 +136,7 @@ var EnvironmentVariableByConfigField = map[string]string{
 	"HealthcheckURL":     "LLMBRIDGE_HEALTHCHECK_URL",
 	"SnapshotStoreDB":    "LLMBRIDGE_SNAPSHOT_DB",
 	"SnapshotStoreGit":   "LLMBRIDGE_SNAPSHOT_GIT",
+	"OperationsDBPath":   "LLMBRIDGE_OPERATIONS_DB",
 }
 
 // AddressByConfigField returns the production address each guarded config
@@ -153,6 +159,7 @@ func AddressByConfigField() map[string]string {
 		"HealthcheckURL":     HealthcheckURL,
 		"SnapshotStoreDB":    SnapshotStoreDatabasePath(),
 		"SnapshotStoreGit":   SnapshotStoreGitPath(),
+		"OperationsDBPath":   OperationsDatabasePath(),
 	}
 }
 

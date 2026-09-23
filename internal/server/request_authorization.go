@@ -81,6 +81,16 @@ const (
 	// source that cannot be narrowed to one principal cheaply and correctly,
 	// so a principal is refused rather than shown other principals' data.
 	routePrincipalRefusedCannotBeFiltered
+	// routePrincipalCreatesOperation is POST /operations: the operation is
+	// the calling principal's, whatever the body says, and the handler checks
+	// the principal belongs to the organization.
+	routePrincipalCreatesOperation
+	// routePrincipalOwnsOperation names an operation in a path value; a
+	// principal reaches it only if the operation is theirs, 404 otherwise.
+	routePrincipalOwnsOperation
+	// routePrincipalSeesOwnOperationsOnly lists operations; the handler
+	// narrows the answer to the principal's own.
+	routePrincipalSeesOwnOperationsOnly
 	// routePrincipalOrSessionAgentThroughStoreProxy is an identity-carrying
 	// store proxy: a login cookie or a session agent token, and the request
 	// reaches the store as that principal.
@@ -112,6 +122,9 @@ func sessionOwnedRoute(pathValueName string) routeAccessRule {
 }
 func signalOwnedRoute(pathValueName string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalOwnsSignal, ownedResourcePathValueName: pathValueName, reason: "acts on one signal of one session"}
+}
+func operationOwnedRoute(pathValueName string) routeAccessRule {
+	return routeAccessRule{class: routePrincipalOwnsOperation, ownedResourcePathValueName: pathValueName, reason: "acts on one operation"}
 }
 func ownSessionsOnlyRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalSeesOwnSessionsOnly, reason: reason}
@@ -194,6 +207,15 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /signals/{id}/resolve":                       signalOwnedRoute("id"),
 	"POST /signals/{id}/answer":                        signalOwnedRoute("id"),
 	"GET /snapshots/blob/{sha}":                        cannotBeFilteredRoute("content-addressed blob shared across sessions; nothing ties a sha to one session"),
+
+	// Operations.
+	"POST /operations":              {class: routePrincipalCreatesOperation, reason: "a principal starts operations as itself, in an organization it belongs to"},
+	"GET /operations":               {class: routePrincipalSeesOwnOperationsOnly, reason: "operation list, narrowed in the store"},
+	"GET /operations/{id}":          operationOwnedRoute("id"),
+	"GET /operations/{id}/events":   operationOwnedRoute("id"),
+	"POST /operations/{id}/cancel":  operationOwnedRoute("id"),
+	"GET /operations/{id}/children": operationOwnedRoute("id"),
+	"GET /operation-types":          catalogRoute("the operation types this server runs"),
 
 	// Catalogs a chat UI reads.
 	"GET /harnesses":                     catalogRoute("harness types"),
@@ -517,8 +539,18 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			http.Error(w, "signal not found", http.StatusNotFound)
 			return
 		}
+	case routePrincipalOwnsOperation:
+		operationID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
+			return
+		}
+		if s.operations != nil && !s.operationIsOwnedByPrincipal(operationID, caller.principalID) {
+			http.Error(w, "operation not found", http.StatusNotFound)
+			return
+		}
 	case routePrincipalCreatesSession, routePrincipalSeesOwnSessionsOnly, routePrincipalReadsCatalog,
-		routePrincipalOrSessionAgentThroughStoreProxy:
+		routePrincipalOrSessionAgentThroughStoreProxy, routePrincipalCreatesOperation, routePrincipalSeesOwnOperationsOnly:
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf("route %q has an access class this server does not handle", pattern))
 		return
