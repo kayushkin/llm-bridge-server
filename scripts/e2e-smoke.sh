@@ -103,6 +103,15 @@ for _ in $(seq 1 50); do
 done
 
 step "launch server on :$PORT (data dir: $DATA_DIR)"
+# The server refuses to start without a login signing key, a service token and
+# the three stores a gated request is answered from. The stores are dead ports
+# and the secrets are throwaway values, so an ambient LLMBRIDGE_SERVICE_TOKEN
+# (the scheduler unit carries the live one) never reaches this server.
+SMOKE_SIGNING_KEY="e2e-smoke-throwaway-signing-key-$$-padding"
+SMOKE_SERVICE_TOKEN="e2e-smoke-throwaway-service-token-$$-padding"
+# Every route but /health is gated. The smoke calls as the internal service,
+# which is unrestricted and never asks principal-store about a principal.
+bridge_curl() { curl -H "X-LLM-Bridge-Service-Token: $SMOKE_SERVICE_TOKEN" "$@"; }
 # PATH is $SERVER_PATH so exec.LookPath("llm-bridge-mock") resolves to our
 # freshly built binary and no host-installed harness wrapper resolves at all.
 #
@@ -126,9 +135,16 @@ LLMBRIDGE_SNAPSHOT_DB="$DATA_DIR/snapshots.db" \
 LLMBRIDGE_SNAPSHOT_GIT="$DATA_DIR/snapshots.git" \
 LLMBRIDGE_BRIDGE_PREFS="$DATA_DIR/bridge-prefs.json" \
 LLMBRIDGE_CONFORMANCE_PATH="$DATA_DIR/conformance.json" \
+LLMBRIDGE_OPERATIONS_DB="$DATA_DIR/operations.db" \
+LLMBRIDGE_IMAGES_DIR="$DATA_DIR/images" \
 LLMBRIDGE_LOG_STORE_URL="$LOG_STORE_BASE" \
 LLMBRIDGE_TOOL_STORE_URL="http://127.0.0.1:1" \
 LLMBRIDGE_PERMISSION_STORE_URL="http://127.0.0.1:1" \
+LLMBRIDGE_PRINCIPAL_STORE_URL="http://127.0.0.1:1" \
+LLMBRIDGE_KANBAN_STORE_URL="http://127.0.0.1:1" \
+LLMBRIDGE_GRANT_STORE_URL="http://127.0.0.1:1" \
+LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY="$SMOKE_SIGNING_KEY" \
+LLMBRIDGE_SERVICE_TOKEN="$SMOKE_SERVICE_TOKEN" \
 PATH="$SERVER_PATH" \
   "$BIN_DIR/llm-bridge-server" >"$TMP_DIR/server.log" 2>&1 &
 SERVER_PID=$!
@@ -146,8 +162,20 @@ if ! curl -fsS "$BASE/health" >/dev/null 2>&1; then
 fi
 echo "    health OK"
 
+step "give the throwaway model registry a default model"
+# A session is not created unless its model resolves through model-store, and
+# this run's registry starts empty. The server has no write route for models,
+# so the row goes straight into the temp database the server just migrated.
+# The mock harness never calls a provider, so the model only has to exist.
+sqlite3 "$DATA_DIR/models.db" \
+  "INSERT INTO providers (id, name) VALUES ('e2e-smoke', 'e2e smoke');
+   INSERT INTO models (id, provider, name) VALUES ('e2e-smoke-model', 'e2e-smoke', 'e2e smoke model');
+   INSERT INTO model_roles (role, model_id) VALUES ('default', 'e2e-smoke-model');" \
+  || fail "could not seed the default model into $DATA_DIR/models.db"
+echo "    default role -> e2e-smoke-model"
+
 step "verify /harnesses lists mock — and ONLY mock — as available"
-HARNESSES=$(curl -fsS "$BASE/harnesses")
+HARNESSES=$(bridge_curl -fsS "$BASE/harnesses")
 H=$(jq -r '.[] | select(.name=="mock") | "\(.name) available=\(.available)"' <<<"$HARNESSES")
 [ -n "$H" ] || fail "/harnesses did not include mock"
 echo "    $H"
@@ -166,14 +194,14 @@ echo "    available harnesses: $AVAILABLE"
 step "POST /machines + /instances (local transport, harness=mock)"
 # Sessions in llm-bridge must be bound to a harness-store instance — there
 # is no local-spawn fallback. Mint a machine + instance once per smoke run.
-MACHINE=$(curl -fsS -X POST "$BASE/machines" \
+MACHINE=$(bridge_curl -fsS -X POST "$BASE/machines" \
   -H 'Content-Type: application/json' \
   -d '{"name":"e2e-local","transport":"local"}')
 MID=$(jq -r '.id' <<<"$MACHINE")
 [ -n "$MID" ] && [ "$MID" != "null" ] || fail "POST /machines did not return id: $MACHINE"
 echo "    machine id:  $MID"
 
-INSTANCE=$(curl -fsS -X POST "$BASE/instances" \
+INSTANCE=$(bridge_curl -fsS -X POST "$BASE/instances" \
   -H 'Content-Type: application/json' \
   -d "{\"name\":\"e2e-mock\",\"harness_type\":\"mock\",\"machine_id\":\"$MID\"}")
 IID=$(jq -r '.id' <<<"$INSTANCE")
@@ -184,7 +212,7 @@ step "POST /sessions { harness:mock, instance_id:$IID, auto_start:false }"
 # auto_start:false so the SSE subscriber can connect BEFORE the harness
 # starts emitting events. SSE only replays current-turn events on connect,
 # so subscribing after a finished turn yields a stale snapshot.
-CREATE=$(curl -fsS -X POST "$BASE/sessions" \
+CREATE=$(bridge_curl -fsS -X POST "$BASE/sessions" \
   -H 'Content-Type: application/json' \
   -d "{\"harness\":\"mock\",\"instance_id\":\"$IID\",\"auto_start\":false,\"type\":\"system\",\"purpose\":\"e2e\",\"origin\":\"e2e-smoke\"}")
 SID=$(jq -r '.session_id' <<<"$CREATE")
@@ -205,11 +233,11 @@ extract_field() {
 
 step "subscribe to SSE then POST /sessions/$SID/send { message:'echo me' }"
 EVENTS_FILE="$TMP_DIR/events1.ndjson"
-curl -sN --max-time 5 "$BASE/sessions/$SID/events" >"$EVENTS_FILE" 2>&1 &
+bridge_curl -sN --max-time 5 "$BASE/sessions/$SID/events" >"$EVENTS_FILE" 2>&1 &
 SSE_PID=$!
 sleep 0.3  # let the subscriber complete the SSE handshake before we send
 
-curl -fsS -X POST "$BASE/sessions/$SID/send" \
+bridge_curl -fsS -X POST "$BASE/sessions/$SID/send" \
   -H 'Content-Type: application/json' \
   -d '{"message":"echo me"}' >/dev/null
 
@@ -229,10 +257,10 @@ echo "$RESULT_TEXT" | grep -q "Mock response to: echo me" \
   || fail "result did not contain expected echo response"
 
 step "POST /sessions/$SID/stop"
-curl -fsS -X POST "$BASE/sessions/$SID/stop" >/dev/null
+bridge_curl -fsS -X POST "$BASE/sessions/$SID/stop" >/dev/null
 
 # After stop, listing should show the session in a terminal state
-STATE=$(curl -fsS "$BASE/sessions/$SID" | jq -r '.state // .session.state')
+STATE=$(bridge_curl -fsS "$BASE/sessions/$SID" | jq -r '.state // .session.state')
 echo "    state after stop: $STATE"
 case "$STATE" in
   aborted|completed|disconnected|error|idle) ;;
@@ -246,7 +274,7 @@ step "spend ceiling: a session over its ceiling is refused, raising it revives i
 # real bill, and the spend is written straight into the server's session row
 # instead. Everything downstream of that number is the shipped code path.
 
-BUDGET_SESSION=$(curl -fsS -X POST "$BASE/sessions" \
+BUDGET_SESSION=$(bridge_curl -fsS -X POST "$BASE/sessions" \
   -H 'Content-Type: application/json' \
   -d "{\"harness\":\"mock\",\"instance_id\":\"$IID\",\"auto_start\":false,\"type\":\"system\",\"purpose\":\"e2e\",\"origin\":\"e2e-smoke\",\"max_budget\":2.50}")
 BSID=$(jq -r '.session_id' <<<"$BUDGET_SESSION")
@@ -257,14 +285,14 @@ echo "    session $BSID created with a \$2.50 ceiling"
 
 # A negative ceiling must be refused outright. Accepting one and reading it as
 # "unlimited" would turn an attempt to cap spending into the absence of a cap.
-NEG_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions" \
+NEG_STATUS=$(bridge_curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions" \
   -H 'Content-Type: application/json' \
   -d "{\"harness\":\"mock\",\"instance_id\":\"$IID\",\"auto_start\":false,\"type\":\"system\",\"purpose\":\"e2e\",\"origin\":\"e2e-smoke\",\"max_budget\":-1}")
 [ "$NEG_STATUS" = "400" ] || fail "POST /sessions with max_budget=-1 returned $NEG_STATUS, want 400"
 echo "    negative ceiling rejected with 400"
 
 # Sending is allowed while the session is under its ceiling.
-UNDER_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/send" \
+UNDER_STATUS=$(bridge_curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/send" \
   -H 'Content-Type: application/json' -d '{"message":"under budget"}')
 [ "$UNDER_STATUS" != "402" ] || fail "send refused as over budget before any spend was recorded"
 echo "    send under the ceiling: HTTP $UNDER_STATUS (not refused)"
@@ -280,7 +308,7 @@ sqlite3 -cmd ".timeout 10000" "$DATA_DIR/bridge.db" \
   "UPDATE sessions SET spend_usd = 3.00 WHERE bridge_id = '$BSID';" \
   || fail "could not record spend on $BSID"
 
-OVER_BODY=$(curl -sS -o "$TMP_DIR/over-budget.json" -w '%{http_code}' -X POST "$BASE/sessions/$BSID/send" \
+OVER_BODY=$(bridge_curl -sS -o "$TMP_DIR/over-budget.json" -w '%{http_code}' -X POST "$BASE/sessions/$BSID/send" \
   -H 'Content-Type: application/json' -d '{"message":"over budget"}')
 [ "$OVER_BODY" = "402" ] || fail "send after spending \$3.00 of a \$2.50 ceiling returned $OVER_BODY, want 402"
 OVER_CODE=$(jq -r '.error.code' "$TMP_DIR/over-budget.json")
@@ -292,20 +320,20 @@ echo "    send over the ceiling: HTTP 402 budget_exceeded"
 # is the state a resume would actually be attempted from. With a process still
 # alive, resume answers 409 (nothing to resume) before it ever reaches the
 # budget check — correct, and not what this assertion is about.
-curl -fsS -X POST "$BASE/sessions/$BSID/stop" >/dev/null
-RESUME_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/resume")
+bridge_curl -fsS -X POST "$BASE/sessions/$BSID/stop" >/dev/null
+RESUME_STATUS=$(bridge_curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/resume")
 [ "$RESUME_STATUS" = "402" ] || fail "resume of a halted over-budget session returned $RESUME_STATUS, want 402"
 echo "    resume over the ceiling: HTTP 402"
 
 # Raising the ceiling is the escape hatch, and it has to work on a session with
 # no live process — which is the state the gate leaves one in.
-RAISE_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/config" \
+RAISE_STATUS=$(bridge_curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/config" \
   -H 'Content-Type: application/json' -d '{"max_budget":25}')
 [ "$RAISE_STATUS" = "200" ] || fail "raising the ceiling returned $RAISE_STATUS, want 200"
-RAISED=$(curl -fsS "$BASE/sessions/$BSID" | jq -r '.max_budget_usd')
+RAISED=$(bridge_curl -fsS "$BASE/sessions/$BSID" | jq -r '.max_budget_usd')
 [ "$RAISED" = "25" ] || fail "ceiling after the raise = $RAISED, want 25"
 
-REVIVED_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/send" \
+REVIVED_STATUS=$(bridge_curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/sessions/$BSID/send" \
   -H 'Content-Type: application/json' -d '{"message":"revived"}')
 [ "$REVIVED_STATUS" != "402" ] || fail "send still refused after the ceiling was raised above the spend"
 echo "    ceiling raised to \$25: send allowed again (HTTP $REVIVED_STATUS)"
