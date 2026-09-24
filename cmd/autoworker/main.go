@@ -370,11 +370,11 @@ func main() {
 		} else {
 			log.Printf("[%s] session is UNCAPPED — %s", d.provider, why)
 		}
-		workingDir, agentSlug := "", ""
+		workingDir, agentSlug, cardID := "", "", ""
 		if queueCard != nil {
-			workingDir, agentSlug = queueCard.workingDir, queueCard.agentSlug
+			workingDir, agentSlug, cardID = queueCard.workingDir, queueCard.agentSlug, queueCard.cardID
 		}
-		sessionID, err := publishWorker(natsClient, p, workerPrompt, maxBudgetUSD, workingDir, agentSlug)
+		sessionID, err := publishWorker(natsClient, p, workerPrompt, maxBudgetUSD, workingDir, agentSlug, cardID)
 		if err != nil {
 			log.Printf("[%s] publish failed: %v", d.provider, err)
 			continue
@@ -817,32 +817,17 @@ func applySessionSpendCeiling(create *msg.CreateSessionRequest, maxBudgetUSD flo
 //
 // maxBudgetUSD, when > 0, becomes the session's per-session cost cap on both the
 // server-side and the harness-native enforcer — see applySessionSpendCeiling.
-func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetUSD float64, workingDir, agentSlug string) (string, error) {
+func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
 	now := time.Now().UTC()
 	// Mint the canonical session_id here. Adapter passes BusSessionID through
 	// as bridge-server session_id (see llm-bridge-adapter@73c7cb5), so this
 	// value is also the bridge session_id referenced by kanban session links.
 	sessionID := fmt.Sprintf("autoworker-%s-%d", p.Name, now.UnixNano())
 
-	create := &msg.CreateSessionRequest{
-		Harness:     p.Harness,
-		InstanceID:  p.InstanceID,
-		DisplayName: fmt.Sprintf("autoworker %s %s", p.Name, now.Format("Jan 2 15:04")),
-		Purpose:     "autoworker",
-		Origin:      "scheduler",
-		Type:        msg.SessionTypeAutonomous,
-		AutoStart:   true,
-	}
-	if err := applySessionSpendCeiling(create, maxBudgetUSD); err != nil {
+	create, err := newWorkerSessionRequest(p, now, maxBudgetUSD, workingDir, agentSlug, cardID)
+	if err != nil {
 		return "", err
 	}
-	// Top of the four-level cascade: session > Instance.WorkingDir >
-	// Machine.DefaultWorkingDir > whatever the spawning process had. Left empty
-	// the instance decides, which is the previous behaviour exactly.
-	create.WorkingDir = workingDir
-	// Who this session is acting as. Empty leaves it unattributed, which is what
-	// every session has been until now.
-	create.AgentID = agentSlug
 
 	in := messages.BridgeInbound{
 		BusSessionID: sessionID,
@@ -859,6 +844,37 @@ func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetU
 		return "", err
 	}
 	return sessionID, nil
+}
+
+// newWorkerSessionRequest builds the create request for one worker session.
+// cardID is the queue card the session works, or empty when the queue was
+// empty and the worker runs on the default prompt.
+func newWorkerSessionRequest(p providerSpec, now time.Time, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (*msg.CreateSessionRequest, error) {
+	create := &msg.CreateSessionRequest{
+		Harness:     p.Harness,
+		InstanceID:  p.InstanceID,
+		DisplayName: fmt.Sprintf("autoworker %s %s", p.Name, now.Format("Jan 2 15:04")),
+		Purpose:     "autoworker",
+		Origin:      "scheduler",
+		Type:        msg.SessionTypeAutonomous,
+		AutoStart:   true,
+	}
+	if err := applySessionSpendCeiling(create, maxBudgetUSD); err != nil {
+		return nil, err
+	}
+	// Top of the four-level cascade: session > Instance.WorkingDir >
+	// Machine.DefaultWorkingDir > whatever the spawning process had. Left empty
+	// the instance decides, which is the previous behaviour exactly.
+	create.WorkingDir = workingDir
+	// Who this session is acting as. Empty leaves it unattributed, which is what
+	// every session has been until now.
+	create.AgentID = agentSlug
+	// The card the session works. llm-bridge-server reads its tags at every
+	// spawn to pick the agent-store context sections it injects, and refuses
+	// to create the session if kanban-store does not know the card. Empty
+	// sends no card, and the session gets no card context.
+	create.CardID = cardID
+	return create, nil
 }
 
 func loadState(path string) (*state, error) {

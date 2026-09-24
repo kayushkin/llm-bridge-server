@@ -87,6 +87,7 @@ func review(kc *kanbanclient.Client, cfg config) error {
 				MaxBudgetUSD: cfg.MaxBudget,
 				InstanceID:   host.InstanceID,
 				BundleID:     host.BundleID,
+				CardID:       cardID,
 			})
 			if err != nil {
 				return fmt.Errorf("dispatch reviewer for %s: %w", cardID, err)

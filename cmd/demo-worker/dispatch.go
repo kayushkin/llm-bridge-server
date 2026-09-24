@@ -80,6 +80,7 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 				MaxBudgetUSD: cfg.MaxBudget,
 				InstanceID:   host.InstanceID,
 				BundleID:     host.BundleID,
+				CardID:       cardID,
 			})
 			if err != nil {
 				return fmt.Errorf("dispatch %s: %w", cardID, err)

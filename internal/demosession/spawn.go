@@ -69,6 +69,11 @@ type Task struct {
 	// bundle_id; llm-bridge-server checks it with bundle-store and provisions
 	// the bundle's tools at spawn. Empty sends no bundle.
 	BundleID string
+	// CardID is the kanban-store card the session works, sent as card_id.
+	// llm-bridge-server reads its tags at every spawn to pick the agent-store
+	// context sections it injects, and refuses the session if kanban-store
+	// does not know the card. Empty sends no card.
+	CardID string
 	// Purpose and Origin are governed vocabularies on llm-bridge-server and are
 	// enforced at creation, so they are not free text.
 	Purpose string
@@ -112,6 +117,7 @@ func Spawn(bridgeURL string, t Task) (string, error) {
 		Harness:     harness,
 		InstanceID:  t.InstanceID,
 		BundleID:    t.BundleID,
+		CardID:      t.CardID,
 		DisplayName: t.DisplayName,
 		Purpose:     t.Purpose,
 		Origin:      t.Origin,
