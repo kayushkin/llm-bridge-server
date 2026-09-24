@@ -33,7 +33,7 @@ const (
 	SettingPromptDriftTaggerModel            = "prompt_drift_tagger.model"
 	SettingSessionIdleTimeout                = "session.idle_timeout"
 	SettingSessionPTYIdleTimeout             = "session.pty_idle_timeout"
-	SettingOperationsCompletionInstance      = "operations.completion_instance"
+	SettingOperationsCompletionInstances     = "operations.completion_instances"
 	SettingOperationsCompletionModel         = "operations.completion_model"
 	SettingOperationsGrantEnforcement        = "operations.grant_enforcement"
 )
@@ -90,10 +90,10 @@ func SettingDefinitions() []servicesettings.Definition {
 		{Key: SettingSessionPTYIdleTimeout, EnvironmentVariable: "LLMBRIDGE_PTY_IDLE_TIMEOUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "60m",
 			Description: "The same cutoff for pty-mode sessions, where a person reading output emits nothing. 0s or less switches reaping off."},
 
-		{Key: SettingOperationsCompletionInstance, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_INSTANCE", Kind: behaviour, ValueType: text, Editable: true, Default: "inst-cc-local",
-			Description: "The harness instance llm.completion operations make their one-shot model calls on. It must be an enabled instance."},
+		{Key: SettingOperationsCompletionInstances, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_INSTANCES", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeStringMap, Editable: true, Default: "anthropic:inst-cc-local,openai:inst-codex-local",
+			Description: "Which harness instance makes the one-shot calls for each model-store provider, as provider:instance pairs. An operation's model is resolved through model-store (an id, an alias, or a role such as efficient) and sent to its provider's instance; a provider named nowhere here cannot be called. Each instance must be enabled and its harness must implement -oneshot."},
 		{Key: SettingOperationsCompletionModel, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_MODEL", Kind: behaviour, ValueType: text, Editable: true,
-			Description: "The model an llm.completion asks for when its input names none, by model-store id. Empty leaves it to the instance; an operation under a budget then cannot run, because its price is not known before the call."},
+			Description: "The model an llm.completion or classification.run uses when its input names none: a model-store id, alias or role. Empty means an input must name one."},
 		{Key: SettingOperationsGrantEnforcement, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_GRANT_ENFORCEMENT", Kind: behaviour, ValueType: text, Editable: true, Default: OperationsGrantEnforcementLenient,
 			Description: "How grant-store's can_run_operation grants are applied to a principal starting an operation. lenient: a principal holding no such grant may start any type, and one holding any may start only those. strict: a principal may start only the types its grants name. Administrators and the service token are never checked."},
 
@@ -249,13 +249,24 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 	// Seeded only when set, so a Config literal that leaves them out gets the
 	// declared defaults rather than an empty value.
 	for key, value := range map[string]string{
-		SettingOperationsCompletionInstance: c.OperationsCompletionInstance,
-		SettingOperationsCompletionModel:    c.OperationsCompletionModel,
-		SettingOperationsGrantEnforcement:   c.OperationsGrantEnforcement,
+		SettingOperationsCompletionModel:  c.OperationsCompletionModel,
+		SettingOperationsGrantEnforcement: c.OperationsGrantEnforcement,
 	} {
 		if value != "" {
 			seeds[key] = value
 		}
+	}
+	if len(c.OperationsCompletionInstances) > 0 {
+		providers := make([]string, 0, len(c.OperationsCompletionInstances))
+		for provider := range c.OperationsCompletionInstances {
+			providers = append(providers, provider)
+		}
+		sort.Strings(providers)
+		pairs := make([]string, 0, len(providers))
+		for _, provider := range providers {
+			pairs = append(pairs, provider+":"+c.OperationsCompletionInstances[provider])
+		}
+		seeds[SettingOperationsCompletionInstances] = strings.Join(pairs, ",")
 	}
 	if c.SignalClassifierMaxChars > 0 {
 		seeds[SettingSignalClassifierMaximumCharacters] = strconv.Itoa(c.SignalClassifierMaxChars)

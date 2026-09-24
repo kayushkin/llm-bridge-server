@@ -15,12 +15,55 @@ import (
 // The server implements it with its one-shot path, so no provider API and no
 // credential passes through this package: the harness holds the login.
 type OneShotCaller interface {
-	// CompletionTarget is the instance to call and the model to ask for when
-	// an input names none, read from the stored settings at the time of use.
-	CompletionTarget() (instanceID, defaultModel string)
+	// CompletionTarget resolves the model an input asked for — empty for the
+	// configured default — to a concrete model and the instance that serves
+	// its provider. A failure is a *TargetError.
+	CompletionTarget(requestedModel string) (CompletionTarget, error)
 	// RunOneShot calls the instance's harness. An error means no usable
 	// answer came back.
 	RunOneShot(ctx context.Context, instanceID string, request msg.OneShotRequest) (msg.OneShotResponse, error)
+}
+
+// CompletionTarget is where one model call goes.
+type CompletionTarget struct {
+	// RequestedModel is what the input or the default setting named: an id,
+	// an alias or a role.
+	RequestedModel string
+	// ModelID is model-store's id for it, sent to the harness and priced.
+	ModelID    string
+	Provider   string
+	InstanceID string
+}
+
+// TargetError is a model that cannot be called: none named, one model-store
+// does not know, or a provider no instance serves. Retrying cannot fix it.
+type TargetError struct {
+	Code    string
+	Message string
+}
+
+func (e *TargetError) Error() string { return e.Code + ": " + e.Message }
+
+// resolveTarget asks the caller for the target and turns a failure into the
+// result that ends the attempt.
+func resolveTarget(caller OneShotCaller, requestedModel string) (CompletionTarget, *operations.Result) {
+	target, err := caller.CompletionTarget(requestedModel)
+	if err == nil {
+		return target, nil
+	}
+	var targetError *TargetError
+	if errors.As(err, &targetError) {
+		refusal := failed(targetError.Code, targetError.Message)
+		return CompletionTarget{}, &refusal
+	}
+	return CompletionTarget{}, &operations.Result{Error: &msg.OperationError{Code: "model_resolution_failed", Retryable: true, Message: err.Error()}}
+}
+
+// targetEvidence records which model the call was routed to, for diagnostics.
+func targetEvidence(target CompletionTarget, answeredBy string, durationMilliseconds int64) msg.OperationEvidence {
+	detail, _ := json.Marshal(map[string]any{"requested_model": target.RequestedModel, "model": target.ModelID, "answered_by": answeredBy,
+		"provider": target.Provider, "instance_id": target.InstanceID, "duration_ms": durationMilliseconds})
+	return msg.OperationEvidence{Kind: "model_call", Summary: fmt.Sprintf("%s (asked for %s) on %s", answeredBy, target.RequestedModel, target.InstanceID), Detail: detail}
 }
 
 // LLMCompletion runs llm.completion: one model call through a harness
@@ -78,19 +121,15 @@ func (completion LLMCompletion) Execute(ctx context.Context, intent msg.Operatio
 	if err != nil {
 		return failed("invalid_input", err.Error())
 	}
-	instanceID, defaultModel := completion.Caller.CompletionTarget()
-	if instanceID == "" {
-		return failed("completion_instance_not_configured", "operations.completion_instance is empty, so there is no harness to call")
-	}
-	model := input.Model
-	if model == "" {
-		model = defaultModel
-	}
-	if refusal := refuseCallOverBudget(receipt, model); refusal != nil {
+	target, refusal := resolveTarget(completion.Caller, input.Model)
+	if refusal != nil {
 		return *refusal
 	}
-	response, err := completion.Caller.RunOneShot(ctx, instanceID, msg.OneShotRequest{
-		Prompt: input.Prompt, SystemPrompt: input.SystemPrompt, Model: model, Schema: input.Schema, MaxTokens: input.MaxTokens,
+	if refusal := refuseCallOverBudget(receipt, target.ModelID); refusal != nil {
+		return *refusal
+	}
+	response, err := completion.Caller.RunOneShot(ctx, target.InstanceID, msg.OneShotRequest{
+		Prompt: input.Prompt, SystemPrompt: input.SystemPrompt, Model: target.ModelID, Schema: input.Schema, MaxTokens: input.MaxTokens,
 	})
 	if err != nil {
 		// A model call changes nothing outside the bridge, so trying again
@@ -103,13 +142,12 @@ func (completion LLMCompletion) Execute(ctx context.Context, intent msg.Operatio
 	}
 	answeredBy := response.Model
 	if answeredBy == "" {
-		answeredBy = model
+		answeredBy = target.ModelID
 	}
 	if err := receipt.RecordModelCall(answeredBy, response.Usage); err != nil {
 		return writeFailure(err)
 	}
-	detail, _ := json.Marshal(map[string]any{"instance_id": instanceID, "model": answeredBy, "duration_ms": response.DurationMs})
-	if err := receipt.AddEvidence(msg.OperationEvidence{Kind: "model_call", Summary: "answered by " + answeredBy, Detail: detail}); err != nil {
+	if err := receipt.AddEvidence(targetEvidence(target, answeredBy, response.DurationMs)); err != nil {
 		return writeFailure(err)
 	}
 	if response.StopReason == "max_tokens" {
@@ -144,8 +182,6 @@ func refuseCallOverBudget(receipt operations.ReceiptWriter, model string) *opera
 	switch {
 	case remainingUSD <= 0:
 		refusal = failed("budget_exhausted", fmt.Sprintf("no budget left for a model call (%.4f dollars remaining)", remainingUSD))
-	case model == "":
-		refusal = failed("budget_unenforceable", "the operation is under a budget and names no model, and operations.completion_model is empty, so the call's price cannot be known")
 	case !receipt.ModelHasListPrice(model):
 		refusal = failed("model_price_unknown", fmt.Sprintf("the operation is under a budget and model-store has no price for %q", model))
 	default:

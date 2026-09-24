@@ -117,13 +117,9 @@ func (classifier ModelClassifier) Execute(ctx context.Context, intent msg.Operat
 	if failure != nil {
 		return *failure
 	}
-	instanceID, defaultModel := classifier.Caller.CompletionTarget()
-	if instanceID == "" {
-		return failed("completion_instance_not_configured", "operations.completion_instance is empty, so there is no harness to call")
-	}
-	model := input.Model
-	if model == "" {
-		model = defaultModel
+	target, refusal := resolveTarget(classifier.Caller, input.Model)
+	if refusal != nil {
+		return *refusal
 	}
 	if source != nil {
 		detail, _ := json.Marshal(map[string]string{"taxonomy": taxonomy.Name})
@@ -140,11 +136,11 @@ func (classifier ModelClassifier) Execute(ctx context.Context, intent msg.Operat
 	result := msg.ClassificationRunResult{Taxonomy: taxonomy, TaxonomySource: source, Items: make([]msg.ClassificationItemResult, 0, total)}
 	for start := 0; start < total; start += classificationBatchSize {
 		batch := input.Items[start:min(start+classificationBatchSize, total)]
-		if refusal := refuseCallOverBudget(receipt, model); refusal != nil {
+		if refusal := refuseCallOverBudget(receipt, target.ModelID); refusal != nil {
 			return *refusal
 		}
-		response, err := classifier.Caller.RunOneShot(ctx, instanceID, msg.OneShotRequest{
-			Prompt: classificationBatchPrompt(batch), SystemPrompt: system, Model: model,
+		response, err := classifier.Caller.RunOneShot(ctx, target.InstanceID, msg.OneShotRequest{
+			Prompt: classificationBatchPrompt(batch), SystemPrompt: system, Model: target.ModelID,
 			Schema: classificationSchema(taxonomy, batch), MaxTokens: classificationMaximumOutputTokens,
 		})
 		if err != nil {
@@ -157,10 +153,15 @@ func (classifier ModelClassifier) Execute(ctx context.Context, intent msg.Operat
 		}
 		answeredBy := response.Model
 		if answeredBy == "" {
-			answeredBy = model
+			answeredBy = target.ModelID
 		}
 		if err := receipt.RecordModelCall(answeredBy, response.Usage); err != nil {
 			return writeFailure(err)
+		}
+		if start == 0 {
+			if err := receipt.AddEvidence(targetEvidence(target, answeredBy, response.DurationMs)); err != nil {
+				return writeFailure(err)
+			}
 		}
 		if len(response.Parsed) == 0 {
 			return operations.Result{Error: &msg.OperationError{Code: "schema_not_followed", Retryable: true,

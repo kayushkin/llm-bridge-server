@@ -18,6 +18,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 // The operation routes. The coordinator (internal/operations) does the work;
@@ -376,10 +377,71 @@ func (s *Server) OperationExecutors() []operations.Executor {
 	return []operations.Executor{executors.ModelClassifier{Caller: s, Taxonomies: s}, executors.LLMCompletion{Caller: s}}
 }
 
-// CompletionTarget implements executors.OneShotCaller from the stored
-// settings, read at the time of use.
-func (s *Server) CompletionTarget() (instanceID, defaultModel string) {
-	return s.settings.String(config.SettingOperationsCompletionInstance), s.settings.String(config.SettingOperationsCompletionModel)
+// CompletionTarget implements executors.OneShotCaller. The model an input
+// named, or operations.completion_model when it named none, is resolved
+// through model-store — an id, an alias or a role — and sent to the instance
+// operations.completion_instances names for its provider. Both settings are
+// read at the time of use.
+func (s *Server) CompletionTarget(requestedModel string) (executors.CompletionTarget, error) {
+	if requestedModel == "" {
+		requestedModel = s.settings.String(config.SettingOperationsCompletionModel)
+	}
+	if requestedModel == "" {
+		return executors.CompletionTarget{}, &executors.TargetError{Code: "no_model",
+			Message: "the input names no model and operations.completion_model is empty"}
+	}
+	if s.modelStore == nil {
+		return executors.CompletionTarget{}, errors.New("this server has no model-store, so no model can be resolved")
+	}
+	model, err := s.modelStore.ResolveModel(requestedModel)
+	if err != nil {
+		return executors.CompletionTarget{}, &executors.TargetError{Code: "unknown_model",
+			Message: fmt.Sprintf("model-store cannot resolve %q to a model: %v", requestedModel, err)}
+	}
+	instanceID := s.settings.StringMap(config.SettingOperationsCompletionInstances)[model.Provider]
+	if instanceID == "" {
+		return executors.CompletionTarget{}, &executors.TargetError{Code: "no_instance_for_provider",
+			Message: fmt.Sprintf("%q resolves to %s, a %s model, and operations.completion_instances names no instance for %s", requestedModel, model.ID, model.Provider, model.Provider)}
+	}
+	return executors.CompletionTarget{RequestedModel: requestedModel, ModelID: model.ID, Provider: model.Provider, InstanceID: instanceID}, nil
+}
+
+// checkCompletionInstances is the write check on
+// operations.completion_instances: each provider must be one model-store
+// knows, and each instance one harness-store has enabled.
+func (s *Server) checkCompletionInstances(value string) error {
+	pairs := map[string]string{}
+	for _, pair := range strings.Split(value, ",") {
+		provider, instanceID, found := strings.Cut(strings.TrimSpace(pair), ":")
+		if strings.TrimSpace(pair) == "" {
+			continue
+		}
+		if !found || provider == "" || instanceID == "" {
+			return fmt.Errorf("%q is not provider:instance", pair)
+		}
+		pairs[provider] = instanceID
+	}
+	if s.modelStore != nil {
+		providers, err := s.modelStore.Providers()
+		if err != nil {
+			return fmt.Errorf("%w: model-store: %v", servicesettings.ErrSettingOwnerUnavailable, err)
+		}
+		known := map[string]bool{}
+		for _, provider := range providers {
+			known[provider.ID] = true
+		}
+		for provider := range pairs {
+			if !known[provider] {
+				return fmt.Errorf("model-store has no provider %q", provider)
+			}
+		}
+	}
+	for _, instanceID := range pairs {
+		if err := s.checkSettingNamesAnEnabledInstance(instanceID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RunOneShot implements executors.OneShotCaller with the same one-shot path

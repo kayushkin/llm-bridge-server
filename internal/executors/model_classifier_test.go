@@ -133,7 +133,9 @@ func TestItemsGoToTheModelInBatches(t *testing.T) {
 // scriptedAnswer answers every call with the same parsed JSON.
 type scriptedAnswer struct{ parsed string }
 
-func (s scriptedAnswer) CompletionTarget() (string, string) { return "inst", "m" }
+func (s scriptedAnswer) CompletionTarget(string) (executors.CompletionTarget, error) {
+	return executors.CompletionTarget{RequestedModel: "m", ModelID: "m", Provider: "test", InstanceID: "inst"}, nil
+}
 func (s scriptedAnswer) RunOneShot(context.Context, string, msg.OneShotRequest) (msg.OneShotResponse, error) {
 	return msg.OneShotResponse{Parsed: json.RawMessage(s.parsed), Model: "m"}, nil
 }

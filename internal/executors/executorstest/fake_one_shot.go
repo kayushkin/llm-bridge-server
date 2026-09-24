@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -33,8 +34,19 @@ type FakeOneShot struct {
 	calls []msg.OneShotRequest
 }
 
-// CompletionTarget implements executors.OneShotCaller.
-func (f *FakeOneShot) CompletionTarget() (string, string) { return f.InstanceID, f.DefaultModel }
+// CompletionTarget implements executors.OneShotCaller: the requested model,
+// or DefaultModel, sent to InstanceID. It resolves nothing — a name is its
+// own id — so a test of resolution uses the server's.
+func (f *FakeOneShot) CompletionTarget(requestedModel string) (executors.CompletionTarget, error) {
+	model := requestedModel
+	if model == "" {
+		model = f.DefaultModel
+	}
+	if model == "" {
+		return executors.CompletionTarget{}, &executors.TargetError{Code: "no_model", Message: "the fake has no default model"}
+	}
+	return executors.CompletionTarget{RequestedModel: model, ModelID: model, Provider: "test", InstanceID: f.InstanceID}, nil
+}
 
 // Calls returns the requests made so far.
 func (f *FakeOneShot) Calls() []msg.OneShotRequest {

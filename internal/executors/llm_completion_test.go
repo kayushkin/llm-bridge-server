@@ -24,7 +24,16 @@ type fakeOneShot struct {
 	calls        []msg.OneShotRequest
 }
 
-func (f *fakeOneShot) CompletionTarget() (string, string) { return f.instanceID, f.defaultModel }
+func (f *fakeOneShot) CompletionTarget(requestedModel string) (executors.CompletionTarget, error) {
+	model := requestedModel
+	if model == "" {
+		model = f.defaultModel
+	}
+	if model == "unresolvable" {
+		return executors.CompletionTarget{}, &executors.TargetError{Code: "unknown_model", Message: "no such model"}
+	}
+	return executors.CompletionTarget{RequestedModel: requestedModel, ModelID: model, Provider: "anthropic", InstanceID: f.instanceID}, nil
+}
 func (f *fakeOneShot) RunOneShot(_ context.Context, instanceID string, request msg.OneShotRequest) (msg.OneShotResponse, error) {
 	if instanceID != f.instanceID {
 		return msg.OneShotResponse{}, errors.New("wrong instance " + instanceID)
@@ -222,6 +231,16 @@ func TestATruncatedReplyFailsWithoutARetry(t *testing.T) {
 	h.run(t)
 	finished := h.receipt(t, receipt.ID)
 	if finished.State != msg.OperationStateFailed || finished.Error.Code != "reply_truncated" || finished.Error.Retryable || len(h.caller.calls) != 1 {
+		t.Fatalf("state %s error %+v calls %d", finished.State, finished.Error, len(h.caller.calls))
+	}
+}
+
+func TestAModelThatCannotBeResolvedFailsBeforeAnyCall(t *testing.T) {
+	h := newHarness(t)
+	receipt := h.submit(t, "k1", msg.LLMCompletionInput{Prompt: "p", Model: "unresolvable"}, 0)
+	h.run(t)
+	finished := h.receipt(t, receipt.ID)
+	if finished.State != msg.OperationStateFailed || finished.Error.Code != "unknown_model" || finished.Error.Retryable || len(h.caller.calls) != 0 {
 		t.Fatalf("state %s error %+v calls %d", finished.State, finished.Error, len(h.caller.calls))
 	}
 }

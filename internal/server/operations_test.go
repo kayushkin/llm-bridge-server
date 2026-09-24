@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge/msg"
+	modelstore "github.com/kayushkin/model-store"
 )
 
 // newOperationsTestServer is the gated test server with operations enabled.
@@ -261,7 +263,7 @@ func readOperationStream(t *testing.T, url string, cookie *http.Cookie, lastEven
 // see the stream end on the terminal receipt. A second stream resumed from
 // the middle gets only what came after.
 func TestTheEventStreamFollowsAnOperationToItsEnd(t *testing.T) {
-	gated, coordinator := newOperationsTestServer(t, testModelClassifier(50 * time.Millisecond))
+	gated, coordinator := newOperationsTestServer(t, testModelClassifier(50*time.Millisecond))
 	listener := httptest.NewServer(gated.server)
 	t.Cleanup(listener.Close)
 	ctx, stop := context.WithCancel(context.Background())
@@ -279,7 +281,7 @@ func TestTheEventStreamFollowsAnOperationToItsEnd(t *testing.T) {
 			t.Fatalf("event %d has sequence %d", index, event.Sequence)
 		}
 	}
-	want := "accepted started progress progress progress succeeded"
+	want := "accepted started progress progress progress progress succeeded"
 	if strings.Join(kinds, " ") != want {
 		t.Fatalf("events %s, want %s", strings.Join(kinds, " "), want)
 	}
@@ -288,12 +290,12 @@ func TestTheEventStreamFollowsAnOperationToItsEnd(t *testing.T) {
 		t.Fatalf("last receipt %+v", last)
 	}
 
-	resumed := readOperationStream(t, listener.URL+"/operations/"+receipt.ID+"/events", cookie, "4")
-	if len(resumed) != 2 || resumed[0].Sequence != 5 || resumed[1].Kind != msg.OperationEventSucceeded {
+	resumed := readOperationStream(t, listener.URL+"/operations/"+receipt.ID+"/events", cookie, "5")
+	if len(resumed) != 2 || resumed[0].Sequence != 6 || resumed[1].Kind != msg.OperationEventSucceeded {
 		t.Fatalf("resumed %+v", resumed)
 	}
 	// A stream opened after the end sends nothing more and closes.
-	if after := readOperationStream(t, listener.URL+"/operations/"+receipt.ID+"/events", cookie, "6"); len(after) != 0 {
+	if after := readOperationStream(t, listener.URL+"/operations/"+receipt.ID+"/events", cookie, "7"); len(after) != 0 {
 		t.Fatalf("after the end: %+v", after)
 	}
 }
@@ -389,5 +391,51 @@ func TestOperationTypesNeedNoCredential(t *testing.T) {
 	json.Unmarshal(response.Body.Bytes(), &types)
 	if response.Code != http.StatusOK || len(types) != 1 {
 		t.Fatalf("anonymous /operation-types: %d %s", response.Code, response.Body.String())
+	}
+}
+
+// A model is resolved through model-store — id, alias or role — and routed
+// to the instance its provider maps to; the harness always gets the id.
+func TestCompletionTargetResolvesTheModelAndRoutesByProvider(t *testing.T) {
+	gated, _ := newOperationsTestServer(t, testModelClassifier(0))
+	server := gated.server
+	server.modelStore = testModelStore(t)
+	if err := server.modelStore.AddProvider(modelstore.Provider{ID: "other", Name: "Other"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.modelStore.AddModel(modelstore.Model{ID: "other-model", Provider: "other", Name: "o", MaxTokens: 10, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	set := func(key, value string) {
+		t.Helper()
+		if response := gated.requestAsServiceWithBody(t, "PUT", "/settings/"+key, `{"value":"`+value+`"}`); response.Code != http.StatusOK {
+			t.Fatalf("set %s=%s: %d %s", key, value, response.Code, response.Body.String())
+		}
+	}
+	set("operations.completion_instances", "mock:inst_test")
+
+	for requested, want := range map[string]string{"efficient": "mock-model-alt", "alt": "mock-model-alt", "mock-model": "mock-model"} {
+		target, err := server.CompletionTarget(requested)
+		if err != nil || target.ModelID != want || target.InstanceID != "inst_test" || target.Provider != "mock" || target.RequestedModel != requested {
+			t.Errorf("%s: %+v %v", requested, target, err)
+		}
+	}
+	for requested, code := range map[string]string{"no-such-model": "unknown_model", "other-model": "no_instance_for_provider", "": "no_model"} {
+		_, err := server.CompletionTarget(requested)
+		var targetError *executors.TargetError
+		if !errors.As(err, &targetError) || targetError.Code != code {
+			t.Errorf("%q: %v, want %s", requested, err, code)
+		}
+	}
+	set("operations.completion_model", "efficient")
+	if target, err := server.CompletionTarget(""); err != nil || target.ModelID != "mock-model-alt" {
+		t.Errorf("default model: %+v %v", target, err)
+	}
+
+	for value, says := range map[string]string{"nobody:inst_test": "no provider", "mock:inst-missing": "no instance", "mock": "key:value"} {
+		response := gated.requestAsServiceWithBody(t, "PUT", "/settings/operations.completion_instances", `{"value":"`+value+`"}`)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), says) {
+			t.Errorf("%s: %d %s", value, response.Code, response.Body.String())
+		}
 	}
 }
