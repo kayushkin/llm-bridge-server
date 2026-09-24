@@ -155,6 +155,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	// The classifier reacts to turn-ends, so it hangs off the manager's
 	// observer rather than reaching into the derivation state machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
+	srv.harness.SetSessionInfoObserver(srv.onSessionInfo)
 	// The classifier runs its call on a harness instance rather than against
 	// api.anthropic.com, so it needs the server's oneshot runner. Wired here
 	// because the runner is a method on the server the classifier hangs off.

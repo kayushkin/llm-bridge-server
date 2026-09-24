@@ -64,6 +64,7 @@ type Manager struct {
 	localBridgeURL  string          // localhost URL the per-session OTel sidecar POSTs translated events to; derived from ListenAddr at startup
 	ptyRingBytes    int             // configured ring buffer size for pty late-attach replay
 	turnEnd         TurnEndObserver // optional; notified after each turn-end event is derived and fanned out
+	sessionInfo     SessionInfoObserver // optional; notified when a harness reports its session info
 
 	// folderResolver maps a session purpose to its sidebar folder, using the
 	// same env-defaults-plus-DB-overrides mapping the HTTP layer uses. Owned by
@@ -106,6 +107,19 @@ func (m *Manager) SetTurnEndObserver(fn TurnEndObserver) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.turnEnd = fn
+}
+
+// SessionInfoObserver is called when a harness reports its session info
+// (Claude Code's init: tools, model, cwd…), after the info is persisted. It
+// runs on its own goroutine, so a slow observer never stalls the stream.
+type SessionInfoObserver func(bridgeID string, info *msg.SessionInfo)
+
+// SetSessionInfoObserver registers the session-info observer. Passing nil
+// clears it. Called once at wiring time, before any session starts.
+func (m *Manager) SetSessionInfoObserver(fn SessionInfoObserver) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessionInfo = fn
 }
 
 // ApplyDerivedSessionState writes a session state decided outside the raw
@@ -713,6 +727,12 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 			if event.Info != nil {
 				if err := m.store.SetSessionInfo(routeID, event.Info); err != nil {
 					log.Printf("[harness] failed to persist session info: %v", err)
+				}
+				m.mu.RLock()
+				observer := m.sessionInfo
+				m.mu.RUnlock()
+				if observer != nil {
+					go observer(routeID, event.Info)
 				}
 			}
 		case msg.EventHook:
