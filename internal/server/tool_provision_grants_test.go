@@ -59,6 +59,20 @@ func fakeToolStoreWithOptIns(t *testing.T, optIns map[string][]map[string]any) (
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(rows)
 	})
+	mux.HandleFunc("GET /tools", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("kind") != harnessToolKind {
+			http.Error(w, "the fake serves kind=harness only", 400)
+			return
+		}
+		rows := []map[string]any{}
+		for _, row := range harnessToolRowsForTests {
+			if harness := r.URL.Query().Get("harness"); harness == "" || row["harness"] == harness {
+				rows = append(rows, row)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(rows)
+	})
 	mux.HandleFunc("POST /provision", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -85,6 +99,15 @@ func fakeToolStoreWithOptIns(t *testing.T, optIns map[string][]map[string]any) (
 
 func newServerWithGrants(toolStoreURL, grantStoreURL string) *Server {
 	return &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, grantClient: grantclient.New(grantStoreURL, "")}
+}
+
+// harnessToolRowsForTests is the fake tool-store's harness tools, in
+// tool-store's shape: Read and Bash (which runs commands) for claude_code and
+// shell_tool for codex, all enabled.
+var harnessToolRowsForTests = []map[string]any{
+	{"id": 101, "name": "claude_code.Read", "kind": "harness", "harness": "claude_code", "harness_tool_name": "Read", "enabled": true, "tags": []string{"read-only"}},
+	{"id": 102, "name": "claude_code.Bash", "kind": "harness", "harness": "claude_code", "harness_tool_name": "Bash", "enabled": true, "tags": []string{"effects", "runs-commands"}},
+	{"id": 103, "name": "codex.shell_tool", "kind": "harness", "harness": "codex", "harness_tool_name": "shell_tool", "enabled": true, "tags": []string{"effects", "runs-commands"}},
 }
 
 var mcpTool13 = map[string]any{"id": 13, "name": "playwright", "kind": "mcp"}

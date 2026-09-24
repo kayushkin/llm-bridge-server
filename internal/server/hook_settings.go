@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 
 	hookstore "github.com/kayushkin/hook-store"
@@ -44,7 +43,9 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 	if err := s.checkPrincipalMayRunHere(ctx, sess, inst); err != nil {
 		return nil, err
 	}
-	s.injectHookSettings(sess)
+	if err := s.injectHookSettings(sess); err != nil {
+		return nil, fmt.Errorf("inject hook settings: %w", err)
+	}
 	s.injectPromptContext(ctx, sess, inst)
 	s.injectPermissionModeFlag(sess)
 	if err := s.injectModelSelection(ctx, sess); err != nil {
@@ -90,56 +91,60 @@ var hookConfigKeyByHarness = map[msg.Harness]string{
 	msg.HarnessCodex:      "codex_hooks",
 }
 
-func (s *Server) injectHookSettings(sess *store.Session) {
+func (s *Server) injectHookSettings(sess *store.Session) error {
 	if sess == nil {
-		return
+		return nil
 	}
 
 	switch sess.Harness {
 	case msg.HarnessClaudeCode:
-		s.injectClaudeCodeHookSettings(sess)
+		return s.injectClaudeCodeHookSettings(sess)
 	case msg.HarnessCodex:
-		s.injectCodexHookSettings(sess)
+		return s.injectCodexHookSettings(sess)
 	}
+	return nil
 }
 
-func (s *Server) injectClaudeCodeHookSettings(sess *store.Session) {
-	var cfg map[string]json.RawMessage
+func (s *Server) injectClaudeCodeHookSettings(sess *store.Session) error {
+	cfg := map[string]json.RawMessage{}
 	if len(sess.HarnessConfig) > 0 {
 		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
-			log.Printf("[hooks] HarnessConfig unparseable for %s: %v", sess.SessionID, err)
-			return
+			return fmt.Errorf("harness_config of %s is unparseable: %w", sess.SessionID, err)
 		}
 	}
-	if cfg == nil {
-		cfg = make(map[string]json.RawMessage)
-	}
 	if _, ok := cfg["settings"]; ok {
-		// Explicit user override — don't clobber.
-		return
+		// Explicit user override — don't clobber. But the Read deny rules
+		// live in the settings this would have written, so a session whose
+		// bundle denies paths cannot take an override.
+		paths, err := deniedReadPathsPinnedOn(cfg)
+		if err != nil {
+			return err
+		}
+		if len(paths) > 0 {
+			return fmt.Errorf("session %s set harness_config.settings itself, which would drop the Read deny rules for %v its bundle requires", sess.SessionID, paths)
+		}
+		return nil
 	}
 
 	settings, err := s.buildClaudeCodeSettings(sess)
 	if err != nil {
-		log.Printf("[hooks] synthesize settings for %s: %v", sess.SessionID, err)
-		return
+		return fmt.Errorf("synthesize settings for %s: %w", sess.SessionID, err)
 	}
 	if settings == "" {
-		return
+		return nil
 	}
 	encoded, err := json.Marshal(settings)
 	if err != nil {
-		log.Printf("[hooks] encode settings for %s: %v", sess.SessionID, err)
-		return
+		return fmt.Errorf("encode settings for %s: %w", sess.SessionID, err)
 	}
 	cfg["settings"] = encoded
 
 	merged, err := json.Marshal(cfg)
 	if err != nil {
-		log.Printf("[hooks] re-marshal HarnessConfig for %s: %v", sess.SessionID, err)
-		return
+		return fmt.Errorf("re-marshal harness_config for %s: %w", sess.SessionID, err)
 	}
 	sess.HarnessConfig = merged
+	return nil
 }
 
 // injectCodexHookSettings writes a codex-shaped hooks tree into
@@ -150,42 +155,36 @@ func (s *Server) injectClaudeCodeHookSettings(sess *store.Session) {
 //
 // Like the CC variant, if a caller has already populated codex_hooks
 // (explicit user override) we leave it alone.
-func (s *Server) injectCodexHookSettings(sess *store.Session) {
-	var cfg map[string]json.RawMessage
+func (s *Server) injectCodexHookSettings(sess *store.Session) error {
+	cfg := map[string]json.RawMessage{}
 	if len(sess.HarnessConfig) > 0 {
 		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
-			log.Printf("[hooks] HarnessConfig unparseable for %s: %v", sess.SessionID, err)
-			return
+			return fmt.Errorf("harness_config of %s is unparseable: %w", sess.SessionID, err)
 		}
 	}
-	if cfg == nil {
-		cfg = make(map[string]json.RawMessage)
-	}
 	if _, ok := cfg["codex_hooks"]; ok {
-		return
+		return nil
 	}
 
 	tree, err := s.buildCodexHookConfig(sess)
 	if err != nil {
-		log.Printf("[hooks] synthesize codex hooks for %s: %v", sess.SessionID, err)
-		return
+		return fmt.Errorf("synthesize codex hooks for %s: %w", sess.SessionID, err)
 	}
 	if tree == nil {
-		return
+		return nil
 	}
 	encoded, err := json.Marshal(tree)
 	if err != nil {
-		log.Printf("[hooks] encode codex hooks for %s: %v", sess.SessionID, err)
-		return
+		return fmt.Errorf("encode codex hooks for %s: %w", sess.SessionID, err)
 	}
 	cfg["codex_hooks"] = encoded
 
 	merged, err := json.Marshal(cfg)
 	if err != nil {
-		log.Printf("[hooks] re-marshal HarnessConfig for %s: %v", sess.SessionID, err)
-		return
+		return fmt.Errorf("re-marshal harness_config for %s: %w", sess.SessionID, err)
 	}
 	sess.HarnessConfig = merged
+	return nil
 }
 
 // buildClaudeCodeSettings reads the hook-store, selects every enabled
@@ -259,11 +258,28 @@ func (s *Server) buildClaudeCodeSettings(sess *store.Session) (string, error) {
 		}
 	}
 
-	if len(byEvent) == 0 {
+	settings := map[string]any{}
+	if len(byEvent) > 0 {
+		settings["hooks"] = byEvent
+	}
+	// Read deny rules for the paths the session's bundle denies. Claude Code
+	// enforces them under every permission mode, bypassPermissions included.
+	paths, err := sessionDeniedReadPaths(sess)
+	if err != nil {
+		return "", err
+	}
+	if len(paths) > 0 {
+		rules, err := claudeCodeReadDenyRules(paths)
+		if err != nil {
+			return "", err
+		}
+		settings["permissions"] = map[string]any{"deny": rules}
+	}
+	if len(settings) == 0 {
 		return "", nil
 	}
 
-	out, err := json.Marshal(map[string]any{"hooks": byEvent})
+	out, err := json.Marshal(settings)
 	if err != nil {
 		return "", err
 	}

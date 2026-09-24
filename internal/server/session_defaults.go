@@ -140,13 +140,58 @@ func (s *Server) snapshotSessionDefaultsIntoSession(ctx context.Context, sess *s
 	}
 
 	// disabled tools: a sent list, even an empty one, is the creator's answer
-	if _, sent := cfg[harnessConfigKeyDisabledTools]; sent {
-		layers[msg.EffectiveSettingDisabledTools] = msg.EffectiveLayerSession
+	// and outranks the harness default. What the bundle denies and what
+	// tool-store has switched off are unioned in whatever the creator sent: a
+	// deny the caller could undo would not be a deny.
+	byLayer := map[msg.EffectiveConfigLayer][]string{}
+	var chosen []string
+	raw, sent := cfg[harnessConfigKeyDisabledTools]
+	if sent {
+		if err := json.Unmarshal(raw, &chosen); err != nil {
+			return fmt.Errorf("harness_config.disabled_tools is not a string array: %w", err)
+		}
+		byLayer[msg.EffectiveLayerSession] = chosen
 	} else if len(defaults.DisabledTools) > 0 {
-		if err := pin(harnessConfigKeyDisabledTools, defaults.DisabledTools); err != nil {
+		chosen = defaults.DisabledTools
+		byLayer[msg.EffectiveLayerHarnessDefault] = chosen
+	}
+	denials, err := s.decideHarnessToolDenials(ctx, sess.Harness, bundle)
+	if err != nil {
+		return err
+	}
+	if len(denials.Bundle) > 0 {
+		byLayer[msg.EffectiveLayerBundle] = denials.Bundle
+	}
+	if len(denials.ToolStore) > 0 {
+		byLayer[msg.EffectiveLayerToolStore] = denials.ToolStore
+	}
+	disabled := unionInOrder(chosen, denials.Bundle, denials.ToolStore)
+	var deniedReadPaths []string
+	if bundle != nil {
+		deniedReadPaths = bundle.DeniedReadPaths
+	}
+	if err := checkDeniedReadPathsAreEnforceable(sess.Harness, deniedReadPaths, disabled, denials.CommandRunningTools); err != nil {
+		return err
+	}
+	for _, layer := range []msg.EffectiveConfigLayer{msg.EffectiveLayerSession, msg.EffectiveLayerBundle, msg.EffectiveLayerHarnessDefault, msg.EffectiveLayerToolStore} {
+		if _, contributed := byLayer[layer]; contributed {
+			layers[msg.EffectiveSettingDisabledTools] = layer
+			break
+		}
+	}
+	if sent || len(disabled) > 0 {
+		if err := pin(harnessConfigKeyDisabledTools, disabled); err != nil {
 			return err
 		}
-		layers[msg.EffectiveSettingDisabledTools] = msg.EffectiveLayerHarnessDefault
+		if err := pin(harnessConfigKeyDisabledToolsByLayer, byLayer); err != nil {
+			return err
+		}
+	}
+	if len(deniedReadPaths) > 0 {
+		if err := pin(harnessConfigKeyDeniedReadPaths, deniedReadPaths); err != nil {
+			return err
+		}
+		layers[msg.EffectiveSettingDeniedReadPaths] = msg.EffectiveLayerBundle
 	}
 
 	if err := pin(harnessConfigKeySettingLayers, layers); err != nil {

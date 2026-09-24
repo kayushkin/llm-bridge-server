@@ -52,7 +52,9 @@ func TestEveryHarnessInTheHookOptionsIsWired(t *testing.T) {
 	srv, _ := testServer(t)
 	for harness, configKey := range hookConfigKeyByHarness {
 		sess := &store.Session{SessionID: "br_hook_options_test", Harness: harness}
-		srv.injectHookSettings(sess)
+		if err := srv.injectHookSettings(sess); err != nil {
+			t.Fatal(err)
+		}
 		var cfg map[string]json.RawMessage
 		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
 			t.Fatalf("%s: harness_config after injectHookSettings: %v (%s)", harness, err, string(sess.HarnessConfig))

@@ -170,7 +170,9 @@ func TestInjectHookSettings_RespectsUserOverride(t *testing.T) {
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: []byte(`{"settings":"/path/to/user.json"}`),
 	}
-	srv.injectHookSettings(sess)
+	if err := srv.injectHookSettings(sess); err != nil {
+		t.Fatal(err)
+	}
 
 	var cfg map[string]any
 	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
@@ -186,7 +188,9 @@ func TestInjectHookSettings_WritesSettingsStringForStartParams(t *testing.T) {
 	seedHook(t, hks, "g1", "PreToolUse", "Edit|Write", msg.HookScopeGlobal, "")
 
 	sess := &store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode}
-	srv.injectHookSettings(sess)
+	if err := srv.injectHookSettings(sess); err != nil {
+		t.Fatal(err)
+	}
 
 	var cfg map[string]any
 	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
@@ -234,7 +238,9 @@ func TestInjectHookSettings_NilHookStoreKeepsTheClaudeCodePermissionGate(t *test
 	srv := testServerWithoutHookStore(t)
 
 	sess := &store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode}
-	srv.injectHookSettings(sess)
+	if err := srv.injectHookSettings(sess); err != nil {
+		t.Fatal(err)
+	}
 
 	var cfg map[string]any
 	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
@@ -255,7 +261,9 @@ func TestInjectHookSettings_NilHookStoreKeepsTheCodexPermissionGate(t *testing.T
 	srv := testServerWithoutHookStore(t)
 
 	sess := &store.Session{SessionID: "b2", Harness: msg.HarnessCodex}
-	srv.injectHookSettings(sess)
+	if err := srv.injectHookSettings(sess); err != nil {
+		t.Fatal(err)
+	}
 
 	var cfg map[string]any
 	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
@@ -283,7 +291,9 @@ func TestInjectHookSettings_NilHookStoreStillWritesNothingWithoutASessionID(t *t
 	srv := testServerWithoutHookStore(t)
 
 	sess := &store.Session{SessionID: "", Harness: msg.HarnessClaudeCode}
-	srv.injectHookSettings(sess)
+	if err := srv.injectHookSettings(sess); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(sess.HarnessConfig) != 0 {
 		t.Errorf("HarnessConfig should stay empty when there is no session id, got %q", sess.HarnessConfig)
@@ -300,7 +310,9 @@ func TestInjectHookSettings_NilHookStoreStillRespectsAUserOverride(t *testing.T)
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: []byte(`{"settings":"/path/to/user.json"}`),
 	}
-	srv.injectHookSettings(sess)
+	if err := srv.injectHookSettings(sess); err != nil {
+		t.Fatal(err)
+	}
 
 	var cfg map[string]any
 	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {

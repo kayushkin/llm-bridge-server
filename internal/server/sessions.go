@@ -1224,7 +1224,25 @@ func mergeHarnessConfig(current json.RawMessage, req ConfigSessionRequest) (json
 		}
 	}
 	if req.DisabledTools != nil {
-		raw, err := json.Marshal(req.DisabledTools)
+		// The new list replaces the creator's own and the harness default,
+		// never what the bundle denies or tool-store has switched off.
+		var byLayer map[msg.EffectiveConfigLayer][]string
+		if raw, ok := cfg[harnessConfigKeyDisabledToolsByLayer]; ok {
+			if err := json.Unmarshal(raw, &byLayer); err != nil {
+				return nil, fmt.Errorf("harness_config.disabled_tools_by_layer is unreadable: %w", err)
+			}
+		}
+		if byLayer == nil {
+			byLayer = map[msg.EffectiveConfigLayer][]string{}
+		}
+		delete(byLayer, msg.EffectiveLayerHarnessDefault)
+		byLayer[msg.EffectiveLayerSession] = req.DisabledTools
+		rawByLayer, err := json.Marshal(byLayer)
+		if err != nil {
+			return nil, err
+		}
+		cfg[harnessConfigKeyDisabledToolsByLayer] = rawByLayer
+		raw, err := json.Marshal(unionInOrder(req.DisabledTools, byLayer[msg.EffectiveLayerBundle], byLayer[msg.EffectiveLayerToolStore]))
 		if err != nil {
 			return nil, err
 		}

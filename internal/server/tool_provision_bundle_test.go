@@ -59,6 +59,7 @@ func fakeBundleStore(t *testing.T, bundleID string, toolIDs []int64, skillIDs []
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"bundles": []map[string]any{{"id": 1, "name": "base"}, {"id": 6, "name": "docker"}},
 			"skills":  skills, "tools": tools,
+			"denied_tools": []map[string]any{}, "denied_read_paths": []string{},
 		})
 	})
 	srv := httptest.NewServer(mux)

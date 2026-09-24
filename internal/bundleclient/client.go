@@ -53,8 +53,27 @@ type Resolution struct {
 		ID   int64  `json:"id"`
 		Name string `json:"name"`
 	} `json:"tools"`
-	Model  string `json:"model,omitempty"`
-	Effort string `json:"effort,omitempty"`
+	// DeniedTools is every tool a bundle in the resolved set denies. A deny
+	// anywhere wins, so bundle-store has already taken these out of Tools; a
+	// harness tool among them is one the session's harness must not offer.
+	DeniedTools []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	} `json:"denied_tools"`
+	// DeniedReadPaths is the paths the session may not read: absolute
+	// ("/proc/**") or home-relative ("~/.config/**"), never a harness rule.
+	DeniedReadPaths []string `json:"denied_read_paths"`
+	Model           string   `json:"model,omitempty"`
+	Effort          string   `json:"effort,omitempty"`
+}
+
+// DeniedToolIDs is the tool-store ids the resolution denies.
+func (r *Resolution) DeniedToolIDs() []int64 {
+	ids := make([]int64, 0, len(r.DeniedTools))
+	for _, t := range r.DeniedTools {
+		ids = append(ids, t.ID)
+	}
+	return ids
 }
 
 // ToolIDs is the tool-store ids the resolution names, in bundle order.
@@ -132,6 +151,17 @@ func (c *Client) Resolve(ctx context.Context, bundleID string) (*Resolution, err
 	var resolution Resolution
 	if err := json.Unmarshal(body, &resolution); err != nil {
 		return nil, fmt.Errorf("bundle-store POST %s answered a body that is not a resolution: %w", requestURL, err)
+	}
+	// A bundle-store too old to send the denials would read as "denies
+	// nothing", which starts a session with tools its bundle took away.
+	var present map[string]json.RawMessage
+	if err := json.Unmarshal(body, &present); err != nil {
+		return nil, fmt.Errorf("bundle-store POST %s answered a body that is not an object: %w", requestURL, err)
+	}
+	for _, field := range []string{"denied_tools", "denied_read_paths"} {
+		if _, ok := present[field]; !ok {
+			return nil, fmt.Errorf("bundle-store POST %s answered no %s; it predates bundle denials, so bundle %s cannot be applied safely", requestURL, field, bundleID)
+		}
 	}
 	return &resolution, nil
 }

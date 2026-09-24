@@ -150,6 +150,27 @@ func (s *Server) resolveBundleToolOffer(ctx context.Context, sess *store.Session
 		return nil, fmt.Errorf("session %s was started with bundle %s, which could not be resolved, so it was not started: %w", sess.SessionID, sess.BundleID, err)
 	}
 	offer := &toolOffer{Source: toolOfferBundle, Resolution: resolution, IDs: resolution.ToolIDs()}
+	if len(offer.IDs) > 0 {
+		// A harness tool the bundle includes is one the harness already has
+		// (they are on unless denied); tool-store provisions MCP servers only.
+		harnessIDs, err := s.harnessToolIDs(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("session %s bundle %s: could not tell its harness tools from its MCP tools, so it was not started: %w", sess.SessionID, sess.BundleID, err)
+		}
+		mcpIDs := make([]int64, 0, len(offer.IDs))
+		var included []string
+		for _, id := range offer.IDs {
+			if name, isHarnessTool := harnessIDs[id]; isHarnessTool {
+				included = append(included, name)
+				continue
+			}
+			mcpIDs = append(mcpIDs, id)
+		}
+		if len(included) > 0 {
+			offer.Notes = append(offer.Notes, fmt.Sprintf("the bundle includes harness tools %v; a harness offers its own tools unless denied, so nothing is provisioned for them", included))
+		}
+		offer.IDs = mcpIDs
+	}
 	if sess.PrincipalID != "" {
 		if s.grantClient == nil {
 			return nil, fmt.Errorf("session %s is started as %s but this server has no grant-store to read its grants from (LLMBRIDGE_GRANT_STORE_URL)", sess.SessionID, sess.PrincipalID)

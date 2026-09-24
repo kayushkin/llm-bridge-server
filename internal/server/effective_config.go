@@ -127,8 +127,48 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 				describePinned(&setting, msg.EffectiveSettingDisabledTools, "harness_config.disabled_tools", "disabled_tools", "built-in tools the harness is told not to offer, set on the session")
 			}
 		}
+		var byLayer map[msg.EffectiveConfigLayer][]string
+		if raw, ok := cfg[harnessConfigKeyDisabledToolsByLayer]; ok {
+			if err := json.Unmarshal(raw, &byLayer); err != nil {
+				warn("harness_config.disabled_tools_by_layer could not be read: %v", err)
+			}
+		}
+		if byLayer != nil {
+			setting.Record = "harness_config.disabled_tools"
+			setting.Detail = "the creator's list or the harness default, unioned with what the bundle denies and tool-store has switched off; a caller cannot give back a denied tool"
+		}
+		for _, contribution := range []struct {
+			layer  msg.EffectiveConfigLayer
+			record string
+		}{
+			{msg.EffectiveLayerSession, "the creator's own list"},
+			{msg.EffectiveLayerBundle, fmt.Sprintf("bundle-store bundle %s denies", sess.BundleID)},
+			{msg.EffectiveLayerHarnessDefault, harnessRecord("disabled_tools")},
+			{msg.EffectiveLayerToolStore, "tool-store has switched off"},
+		} {
+			if names := byLayer[contribution.layer]; len(names) > 0 {
+				setting.Notes = append(setting.Notes, fmt.Sprintf("%s: %v", contribution.record, names))
+			}
+		}
 		if len(defaults.DisabledTools) > 0 && setting.Layer == msg.EffectiveLayerSession {
 			setting.Notes = append(setting.Notes, fmt.Sprintf("%s is %v; the session's own list replaces it", harnessRecord("disabled_tools"), defaults.DisabledTools))
+		}
+		add(setting)
+	}
+
+	{
+		setting := msg.EffectiveSetting{Key: msg.EffectiveSettingDeniedReadPaths, Layer: msg.EffectiveLayerNone, Detail: "no bundle denies reading a path"}
+		paths, err := deniedReadPathsPinnedOn(cfg)
+		if err != nil {
+			warn("%v", err)
+		}
+		if len(paths) > 0 {
+			setting.Value = paths
+			setting.Layer, setting.Record = msg.EffectiveLayerBundle, fmt.Sprintf("bundle-store bundle %s", sess.BundleID)
+			setting.Detail = "Claude Code is given a Read deny rule for each, which also hides the path from Glob and Grep; the session was refused at create unless every command-running tool is off"
+			if !subject.DryRun {
+				setting.Notes = append(setting.Notes, "pinned into harness_config.denied_read_paths at create; a later change to the bundle does not move it")
+			}
 		}
 		add(setting)
 	}

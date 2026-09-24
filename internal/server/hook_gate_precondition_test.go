@@ -88,7 +88,9 @@ func injectsClaudeCodeSettings(t *testing.T, h msg.Harness) bool {
 	srv, _ := testServerWithHookStore(t)
 
 	sess := &store.Session{SessionID: "gate-precondition", Harness: h}
-	srv.injectHookSettings(sess)
+	if err := srv.injectHookSettings(sess); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(sess.HarnessConfig) == 0 {
 		return false
