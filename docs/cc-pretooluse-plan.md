@@ -417,4 +417,4 @@ After each step, confirm:
 - existing snapshot hooks still fire on Edit|Write
 - no orphaned parked requests after harness restart
 - tests pass: `permission-store`, `llm-bridge-claudecode`,
-  `bridge-ui`, `dash`, `llmux`
+  `bridge-ui`, `dash`
