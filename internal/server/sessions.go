@@ -254,6 +254,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid harness", http.StatusBadRequest)
 		return
 	}
+	if reason, oneShotOnly := oneShotOnlyHarnesses[h]; oneShotOnly {
+		writeJSONError(w, http.StatusBadRequest, "harness_has_no_sessions", reason)
+		return
+	}
 
 	// Classification. Type and Origin are rejected when absent or unknown;
 	// Purpose is checked against the registry but never rejected.

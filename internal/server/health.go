@@ -49,6 +49,7 @@ var harnessMetadata = map[msg.Harness]harnessMeta{
 	msg.HarnessOpenCode:   {Label: "OpenCode", Emoji: "🔓", Image: "opencode.svg", Tint: "#8b5cf6"},
 	msg.HarnessForgecode:  {Label: "ForgeCode", Emoji: "🔥", Image: "forgecode.png", Tint: "#ef4444"},
 	msg.HarnessGemini:     {Label: "Gemini", Emoji: "✨", Tint: "#4285f4"},
+	msg.HarnessDatabricks: {Label: "Databricks", Emoji: "🧱", Tint: "#ff3621"},
 	msg.HarnessMock:       {Label: "Mock", Emoji: "🧪", Tint: "#6b7280"},
 }
 
@@ -59,6 +60,14 @@ var harnessSupportedProviders = map[msg.Harness][]string{
 	msg.HarnessCodex:      {"openai"},
 	msg.HarnessJig:        {"anthropic"},
 	msg.HarnessAutohand:   {"anthropic"},
+	msg.HarnessDatabricks: {"databricks"},
+}
+
+// oneShotOnlyHarnesses names harnesses whose wrapper makes single calls and
+// cannot hold a session. The value is why, and it is what a caller asking for
+// a session on one is told.
+var oneShotOnlyHarnesses = map[msg.Harness]string{
+	msg.HarnessDatabricks: "llm-bridge-databricks calls a Databricks serving endpoint once per process (-oneshot, -invoke) and has no session mode",
 }
 
 // harnessHookEvents lists the hook lifecycle events each harness can register
@@ -283,6 +292,7 @@ var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessOpenCode:   {},
 	msg.HarnessForgecode:  {},
 	msg.HarnessGemini:     {},
+	msg.HarnessDatabricks: {},
 	msg.HarnessMock:       {"compact", "tools", "system_prompt"},
 }
 

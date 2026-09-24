@@ -174,7 +174,7 @@ func harnessTableKeys[V any](name string, table map[msg.Harness]V) harnessKeyedT
 }
 
 // harnessKeyedTables is every table in health.go keyed by msg.Harness. All
-// eight are listed. A ninth added later and left out of this list would be
+// nine are listed. A tenth added later and left out of this list would be
 // unguarded — which is the state seven of these eight were in until
 // 2026-08-14 — so TestEveryHarnessKeyedTableIsListedHere reads the source and
 // goes red rather than leaving that as a sentence nobody re-checks.
@@ -188,6 +188,7 @@ func harnessKeyedTables() []harnessKeyedTable {
 		harnessTableKeys("harnessSupportedPermissionModes", harnessSupportedPermissionModes),
 		harnessTableKeys("harnessCapabilities", harnessCapabilities),
 		harnessTableKeys("disabledHarnesses", disabledHarnesses),
+		harnessTableKeys("oneShotOnlyHarnesses", oneShotOnlyHarnesses),
 	}
 }
 
