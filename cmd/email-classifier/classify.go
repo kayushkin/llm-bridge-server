@@ -335,7 +335,7 @@ var modelCallsThisRun atomic.Int64
 // classifyMerges asks which cards on the board are really one bucket.
 func classifyMerges(ctx context.Context, cfg config, digest string) (*mergeReport, error) {
 	var rep mergeReport
-	if err := invokeSchema(ctx, cfg, mergeSystemPrompt, mergeSchema(), digest, &rep); err != nil {
+	if err := invokeSchema(ctx, cfg, mergeSystemPrompt+mergeBatchInstructions, mergeSchema(), digest, &rep); err != nil {
 		return nil, err
 	}
 	return &rep, nil

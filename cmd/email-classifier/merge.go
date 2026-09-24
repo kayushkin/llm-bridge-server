@@ -92,8 +92,9 @@ func mergeSchema() map[string]any {
 
 // buildMergeDigest renders the whole board. Unlike the filing digest this is
 // never truncated: a merge decision is precisely a whole-board judgement, and a
-// board trimmed to fit would hide the very duplicate being looked for. At ~90
-// cards of one line each this is a few thousand tokens.
+// board trimmed to fit would hide the very duplicate being looked for. It runs
+// about 200 characters a card — some 12,000 tokens at 180 cards — and every
+// batched call carries all of it (merge_batches.go).
 func buildMergeDigest(state *boardState, gate *sessionGate) string {
 	cards := make([]*cardState, 0, len(state.Cards))
 	for _, c := range state.Cards {
@@ -133,19 +134,24 @@ func runMergePass(ctx context.Context, cfg config, kc *kanbanclient.Client, stat
 		fmt.Println(digest)
 		return nil
 	}
-	log.Printf("[merge] considering %d cards", len(state.Cards))
+	askable := cardsAMergeCouldTouch(state, gate)
+	log.Printf("[merge] %d cards on the board, %d a merge could touch, asked about %d at a time",
+		len(state.Cards), len(askable), mergeCardsPerCall)
 
-	report, err := classifyMerges(ctx, cfg, digest)
-	if err != nil {
-		return err
+	proposed, failures := proposeMergesInBatches(ctx, digest, askable, func(ctx context.Context, prompt string) (*mergeReport, error) {
+		return classifyMerges(ctx, cfg, prompt)
+	})
+	for _, failure := range failures {
+		log.Printf("[merge] batch %d failed, and the cards it was asked about were not considered: %v", failure.batchNumber, failure.err)
 	}
-	if len(report.Merges) == 0 {
-		log.Printf("[merge] nothing to merge")
-		return nil
+	groups, refusedGroups := combineMergeGroups(proposed)
+	for _, refusal := range refusedGroups {
+		log.Printf("[merge] refused: %s", refusal)
 	}
+	log.Printf("[merge] %d group(s) proposed, %d after combining", len(proposed), len(groups))
 
 	applied := 0
-	for _, g := range report.Merges {
+	for _, g := range groups {
 		ok, err := applyMerge(cfg, kc, state, g, gate)
 		if err != nil {
 			// One bad group must not abort the pass; the others are independent.
@@ -157,6 +163,9 @@ func runMergePass(ctx context.Context, cfg config, kc *kanbanclient.Client, stat
 		}
 	}
 	log.Printf("[merge] done: %d group(s) merged", applied)
+	if len(failures) > 0 {
+		return fmt.Errorf("%d of the merge pass's batches failed; the merges from the others were applied", len(failures))
+	}
 	return nil
 }
 
