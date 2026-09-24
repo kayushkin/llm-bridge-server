@@ -294,7 +294,7 @@ var errTruncatedReport = completionoperation.ErrTruncated
 
 func classifyBatch(ctx context.Context, cfg config, digest string) (*filingReport, error) {
 	var rep filingReport
-	if err := invokeSchema(ctx, cfg, buildSystemPrompt(), reportSchema(), digest, &rep); err != nil {
+	if err := invokeSchema(ctx, cfg, cfg.Model, buildSystemPrompt(), reportSchema(), digest, &rep); err != nil {
 		return nil, err
 	}
 	return &rep, nil
@@ -311,14 +311,14 @@ func classifyBatch(ctx context.Context, cfg config, digest string) (*filingRepor
 // max_tokens is refused (completionoperation.ErrTruncated, aliased
 // errTruncatedReport here), because its missing entries read exactly like a
 // model that had less to say.
-func invokeSchema(ctx context.Context, cfg config, system string, schema map[string]any, digest string, out any) error {
+func invokeSchema(ctx context.Context, cfg config, model, system string, schema map[string]any, digest string, out any) error {
 	callNumber := modelCallsThisRun.Add(1)
 	receipt, err := completionoperation.Call(ctx, completionoperation.Config{
 		BridgeURL:      cfg.BridgeURL,
 		OrganizationID: cfg.Classifier.OrganizationID,
 		IdempotencyKey: fmt.Sprintf("%s:%d", cfg.RunID, callNumber),
 		CorrelationID:  cfg.RunID,
-		Model:          cfg.Model,
+		Model:          model,
 		MaxTokens:      maxOutputTokens,
 		Timeout:        6 * time.Minute,
 	}, system, digest, schema, out)
@@ -335,7 +335,7 @@ var modelCallsThisRun atomic.Int64
 // classifyMerges asks which cards on the board are really one bucket.
 func classifyMerges(ctx context.Context, cfg config, digest string) (*mergeReport, error) {
 	var rep mergeReport
-	if err := invokeSchema(ctx, cfg, mergeSystemPrompt+mergeBatchInstructions, mergeSchema(), digest, &rep); err != nil {
+	if err := invokeSchema(ctx, cfg, cfg.MergeModel, mergeSystemPrompt+mergeBatchInstructions, mergeSchema(), digest, &rep); err != nil {
 		return nil, err
 	}
 	return &rep, nil

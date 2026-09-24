@@ -64,6 +64,7 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		{"-mail-token", cfg.MailToken, "changeme"},
 		{"-bridge-url", cfg.BridgeURL, "http://localhost:8160"},
 		{"-model", cfg.Model, "claude-sonnet-4-6"},
+		{"-merge-model", cfg.MergeModel, "efficient"},
 		{"-max", cfg.MaxEmails, 50},
 		{"-backfill", cfg.Backfill, false},
 		{"-merge", cfg.MergePass, false},

@@ -225,7 +225,8 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	fs.StringVar(&c.MailURL, "mail-url", settings.String(schedulerconfig.SettingMailstackURL), "mailstack base URL")
 	fs.StringVar(&c.MailToken, "mail-token", mailToken, "mailstack bearer token")
 	fs.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL, used to tell whether an agent is still working on a card")
-	fs.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingModel), "Anthropic model id")
+	fs.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingModel), "Model for filing and the deadline backfill: a model-store id, alias or role")
+	fs.StringVar(&c.MergeModel, "merge-model", settings.String(schedulerconfig.SettingMergeModel), "Model for the card-merge pass: a model-store id, alias or role")
 	fs.IntVar(&c.MaxEmails, "max", maxEmailsPerTick, "Max emails to file per tick.")
 	fs.BoolVar(&c.Backfill, "backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
 	fs.BoolVar(&c.MergePass, "merge", false, "Run the card-merge pass over the board and exit, filing no new mail.")
@@ -599,11 +600,14 @@ type config struct {
 	MailToken        string
 	BridgeURL        string
 	Model            string
-	MaxEmails        int
-	Backfill         bool
-	MergePass        bool
-	BackfillDue      bool
-	NoteboardURL     string
+	// MergeModel is what the card-merge pass asks for, apart from Model
+	// because it is called once per fifty cards.
+	MergeModel   string
+	MaxEmails    int
+	Backfill     bool
+	MergePass    bool
+	BackfillDue  bool
+	NoteboardURL string
 	// PrincipalStoreURL is where a sender's address is resolved to the contact
 	// a ticket points at. See applier.writeTicket.
 	PrincipalStoreURL string

@@ -62,6 +62,7 @@ const (
 	SettingMailstackToken          = "mailstack_token"
 	SettingDashURL                 = "dash_url"
 	SettingOneshotInstanceID       = "oneshot_instance_id"
+	SettingMergeModel              = "merge_model"
 	SettingModel                   = "model"
 	SettingEmailBoardID            = "email_board_id"
 	SettingRoleTags                = "role_tags"
@@ -93,10 +94,14 @@ const (
 // naming six receipt cards after their amounts so no two could ever merge. At
 // ~20 batch calls a month the cost difference is not the deciding factor.
 const (
-	DefaultEmailClassifierModel   = "claude-sonnet-4-6"
-	DefaultKanbanClassifierModel  = "claude-haiku-4-5-20251001"
-	DefaultKanbanScoperModel      = "claude-haiku-4-5-20251001"
-	DefaultDemoMailGeneratorModel = "claude-sonnet-4-6"
+	DefaultEmailClassifierModel = "claude-sonnet-4-6"
+	// DefaultEmailClassifierMergeModel is model-store's efficient role, not a
+	// model id: the merge pass asks about every card on the board, and the
+	// role lets the operator move it to a cheaper model without a rebuild.
+	DefaultEmailClassifierMergeModel = "efficient"
+	DefaultKanbanClassifierModel     = "claude-haiku-4-5-20251001"
+	DefaultKanbanScoperModel         = "claude-haiku-4-5-20251001"
+	DefaultDemoMailGeneratorModel    = "claude-sonnet-4-6"
 )
 
 // DefaultDemoMailGeneratorOneshotInstanceID is the harness instance
@@ -232,6 +237,8 @@ var EmailClassifier = JobBinary{Name: "email-classifier", OwnedEnvironmentVariab
 	}, append(mailstackDefinitions(),
 		bridgeURLDefinition(), bridgeServiceTokenDefinition(),
 		modelDefinition("EMAIL_CLASSIFIER_MODEL", DefaultEmailClassifierModel),
+		servicesettings.Definition{Key: SettingMergeModel, EnvironmentVariable: "EMAIL_CLASSIFIER_MERGE_MODEL", Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultEmailClassifierMergeModel,
+			Description: "The model the card-merge pass asks for: a model-store id, alias or role, which llm-bridge-server resolves and routes to its provider's instance. The merge pass makes one call per fifty cards, so it is where a cheaper model pays most. The -merge-model flag overrides it."},
 		noteboardURLDefinition(),
 		servicesettings.Definition{Key: SettingPrincipalStoreURL, EnvironmentVariable: "PRINCIPAL_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultPrincipalStoreURL,
 			Description: "Where principal-store answers. A sender's address becomes the contact a ticket names as its requester there. The -principal-store-url flag overrides it."},
