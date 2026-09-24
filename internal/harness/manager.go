@@ -655,7 +655,14 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 					System:           &msg.SystemEvent{Subtype: "harness_id_set", Message: harnessID},
 				}
 				if data, err := json.Marshal(idEvent); err == nil {
-					rowID, _ := m.store.StoreEventReturningID(bridgeID, string(idEvent.Type), "", "", data)
+					rowID, err := m.store.StoreEventReturningID(bridgeID, string(idEvent.Type), "", "", data)
+					if err != nil {
+						log.Printf("[harness] failed to store harness_id_set event for %s: %v", bridgeID, err)
+					}
+					// log-store keeps the durable copy of every event; it is
+					// queued ahead of the event that carried the id, the same
+					// order bridge.db holds them in.
+					m.logStoreWrites.Enqueue(bridgeID, "event", idEvent)
 					stored := StoredEvent{Event: idEvent, RowID: rowID}
 					m.mu.RLock()
 					for _, ch := range m.subscribers[bridgeID] {
