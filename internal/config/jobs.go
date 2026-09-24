@@ -95,10 +95,12 @@ const (
 // ~20 batch calls a month the cost difference is not the deciding factor.
 const (
 	DefaultEmailClassifierModel = "claude-sonnet-4-6"
-	// DefaultEmailClassifierMergeModel is model-store's efficient role, not a
+	// DefaultEmailClassifierMergeModel is model-store's balanced role, not a
 	// model id: the merge pass asks about every card on the board, and the
-	// role lets the operator move it to a cheaper model without a rebuild.
-	DefaultEmailClassifierMergeModel = "efficient"
+	// role lets the operator move it without a rebuild. Not efficient: on
+	// 2026-09-24 the efficient tier answered fifty-card batches with an empty
+	// list and found one group where balanced found four.
+	DefaultEmailClassifierMergeModel = "balanced"
 	DefaultKanbanClassifierModel     = "claude-haiku-4-5-20251001"
 	DefaultKanbanScoperModel         = "claude-haiku-4-5-20251001"
 	DefaultDemoMailGeneratorModel    = "claude-sonnet-4-6"
