@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	_ "github.com/emersion/go-message/charset"
+	gomail "github.com/emersion/go-message/mail"
 )
 
 // FolderMapStore caches SPECIAL-USE resolutions so we don't reprobe per request.
@@ -411,18 +414,16 @@ func (b *Imap) Get(ctx context.Context, id string) (Message, error) {
 		Headers: map[string]string{},
 	}
 
-	// Parse the raw RFC822 via net/mail for headers and body. Multipart body
-	// parsing and attachment extraction is deferred to a later pass — v1
-	// shows plaintext or raw content and lists attachments separately.
+	// Headers come from net/mail; the body comes from decodeMessageBodies,
+	// which walks the MIME tree and undoes the transfer encoding and charset.
 	for _, bs := range m.BodySection {
 		raw := bs.Bytes
 		if len(raw) == 0 {
 			continue
 		}
-		msg, err := mail.ReadMessage(strings.NewReader(string(raw)))
+		msg, err := mail.ReadMessage(bytes.NewReader(raw))
 		if err != nil {
-			out.BodyText = string(raw)
-			continue
+			return Message{}, fmt.Errorf("imap uid %d: parse headers: %w", uidN, err)
 		}
 		for k, vs := range msg.Header {
 			if len(vs) > 0 {
@@ -430,19 +431,61 @@ func (b *Imap) Get(ctx context.Context, id string) (Message, error) {
 			}
 		}
 		out.InReplyTo = msg.Header.Get("In-Reply-To")
-		body, _ := io.ReadAll(msg.Body)
-		ct := msg.Header.Get("Content-Type")
-		switch {
-		case strings.HasPrefix(strings.ToLower(ct), "text/html"):
-			out.BodyHTML = string(body)
-		case strings.HasPrefix(strings.ToLower(ct), "text/plain"), ct == "":
-			out.BodyText = string(body)
-		default:
-			out.BodyText = string(body)
+		out.BodyText, out.BodyHTML, err = decodeMessageBodies(raw)
+		if err != nil {
+			return Message{}, fmt.Errorf("imap uid %d: %w", uidN, err)
 		}
 	}
 
 	return out, nil
+}
+
+// decodeMessageBodies returns the first inline text/plain part and the first
+// inline text/html part of a raw RFC 5322 message, decoded to UTF-8. It walks
+// nested multiparts and skips parts marked as attachments. go-message undoes
+// quoted-printable and base64 as it reads, and the imported charset package
+// converts non-UTF-8 charsets.
+func decodeMessageBodies(raw []byte) (bodyText, bodyHTML string, err error) {
+	reader, err := gomail.CreateReader(bytes.NewReader(raw))
+	if err != nil {
+		return "", "", fmt.Errorf("read MIME structure: %w", err)
+	}
+	defer reader.Close()
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			return bodyText, bodyHTML, nil
+		}
+		if err != nil {
+			return "", "", fmt.Errorf("read MIME part: %w", err)
+		}
+		inlineHeader, isInline := part.Header.(*gomail.InlineHeader)
+		if !isInline {
+			continue
+		}
+		contentType, _, err := inlineHeader.ContentType()
+		if err != nil {
+			return "", "", fmt.Errorf("parse part Content-Type: %w", err)
+		}
+		if contentType == "" {
+			contentType = "text/plain"
+		}
+		if contentType != "text/plain" && contentType != "text/html" {
+			continue
+		}
+		if (contentType == "text/plain" && bodyText != "") || (contentType == "text/html" && bodyHTML != "") {
+			continue
+		}
+		content, err := io.ReadAll(part.Body)
+		if err != nil {
+			return "", "", fmt.Errorf("decode %s part: %w", contentType, err)
+		}
+		if contentType == "text/plain" {
+			bodyText = string(content)
+		} else {
+			bodyHTML = string(content)
+		}
+	}
 }
 
 // ─── Write stubs ──────────────────────────────────────────────────────
