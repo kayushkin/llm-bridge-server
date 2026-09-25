@@ -1,18 +1,14 @@
 // Package runstatus holds the vocabulary of states a job run can be in.
 //
 // The vocabulary was spelled out as string literals in the places that happened
-// to need one, and those places did not agree. On this branch the executor
-// writes "success" and "error", the database writes "running", and the finish
-// logger asked whether a run was "error" or "failed" — a status nothing in the
-// repository has ever written.
-//
-// The dead literal matters because of what sits behind it. The deployed
-// scheduler binary also ends runs as "timeout" (the run outlived its
-// timeout_seconds cap and its process group was killed) and "interrupted" (the
-// scheduler died while the run was in flight); both are documented service
-// behaviour and both are on unmerged branches rather than here. Against a
-// hand-listed pair of failure statuses, each of those lands at info level: a
-// job killed by its own cap is filed indistinguishably from one that succeeded.
+// to need one, and those places did not agree. The finish logger asked whether a
+// run was "error" or "failed" — a status nothing in the repository has ever
+// written — while the executor also ends runs as "timeout" (the run outlived its
+// timeout_seconds cap and its process group was killed) and startup
+// reconciliation ends them as "interrupted" (the scheduler died while the run
+// was in flight). Against a hand-listed pair of failure statuses, each of those
+// lands at info level: a job killed by its own cap is filed indistinguishably
+// from one that succeeded.
 //
 // So this package is the one place the vocabulary is written down, and the
 // question "did this run fail?" is asked of it rather than of a literal list at
@@ -30,14 +26,13 @@ const (
 	Error = "error"
 
 	// Timeout means the run exceeded its timeout_seconds cap and its process
-	// group was killed. Written by the deployed executor; not yet on this
-	// branch.
+	// group was killed. Written by the executor.
 	Timeout = "timeout"
 
 	// Interrupted means the scheduler process died while the run was in flight,
 	// and the run was closed out at the next startup. Written by startup
-	// reconciliation rather than by the executor, so it never reaches the finish
-	// logger. Written by the deployed scheduler; not yet on this branch.
+	// reconciliation rather than by the executor, which publishes each such run
+	// through the finish logger itself (cmd/scheduler publishInterruptedRuns).
 	Interrupted = "interrupted"
 )
 
