@@ -30,13 +30,14 @@ type stubKanban struct {
 	t         *testing.T
 	boardName string
 	cards     []stubCard
-	settled   map[string]bool   // session id -> reviewer has signed off
-	failLinks int               // status to answer GET /api/cards/{id}/links with
-	failTags  int               // status to answer GET /api/entities/session/{id}/tags with
-	failPatch int               // status to answer PATCH /api/cards/{id} with
-	failMove  int               // status to answer POST /api/cards/{id}/move with
-	moved     map[string]string // card id -> column id it was moved to
-	patched   map[string]string // card id -> body it was patched with
+	settled   map[string]bool     // session id -> reviewer has signed off
+	otherTags map[string][]string // session id -> tags on it that are not the sign-off
+	failLinks int                 // status to answer GET /api/cards/{id}/links with
+	failTags  int                 // status to answer GET /api/entities/session/{id}/tags with
+	failPatch int                 // status to answer PATCH /api/cards/{id} with
+	failMove  int                 // status to answer POST /api/cards/{id}/move with
+	moved     map[string]string   // card id -> column id it was moved to
+	patched   map[string]string   // card id -> body it was patched with
 	server    *httptest.Server
 }
 
@@ -77,6 +78,9 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		ref := strings.TrimSuffix(strings.TrimPrefix(p, "/api/entities/session/"), "/tags")
 		var tags []map[string]string
+		for _, tag := range k.otherTags[ref] {
+			tags = append(tags, map[string]string{"tag": tag})
+		}
 		if k.settled[ref] {
 			tags = append(tags, map[string]string{"tag": tagReviewSettled})
 		}
