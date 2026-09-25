@@ -134,14 +134,15 @@ const (
 
 // stubQueueCard is one card in the Queued column as autoworker meets it.
 type stubQueueCard struct {
-	cardID  string
-	title   string
-	body    string
-	noItem  bool     // the placement resolves to no noteboard item
-	heldAt  string   // non-empty parks the card behind the hold gate
-	agents  []string // "agent" entity links
-	repos   []string // "repo" entity links
-	ceiling float64  // auto_hold_at_usd on the noteboard item; 0 = no ceiling
+	cardID   string
+	title    string
+	body     string
+	noItem   bool     // the placement resolves to no noteboard item
+	heldAt   string   // non-empty parks the card behind the hold gate
+	agents   []string // "agent" entity links
+	repos    []string // "repo" entity links
+	ceiling  float64  // auto_hold_at_usd on the noteboard item; 0 = no ceiling
+	sessions []string // "session" links, which is what the spend ceiling counts
 }
 
 type stubKanban struct {
@@ -206,6 +207,19 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 		title, _ := req["title"].(string)
 		k.created = append(k.created, title)
 		writeStubJSON(w, 201, map[string]any{"item": map[string]any{"id": "run-card-1"}})
+
+	case strings.HasSuffix(p, "/links") && r.Method == "GET":
+		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/links")
+		links := []map[string]any{}
+		for _, c := range k.cards {
+			if c.cardID != cardID {
+				continue
+			}
+			for _, s := range c.sessions {
+				links = append(links, map[string]any{"card_id": c.cardID, "entity_type": "session", "entity_ref": s})
+			}
+		}
+		writeStubJSON(w, 200, links)
 
 	case strings.HasSuffix(p, "/links") && r.Method == "POST":
 		if k.failLink != 0 {
@@ -322,7 +336,14 @@ func (s *stubSpend) URL() string { return s.server.URL }
 func (s *stubSpend) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(r.URL.Path, "/api/items"):
-		writeStubJSON(w, 200, map[string]any{"items": s.items})
+		// A bare array, as noteboard sends it. This used to be wrapped in
+		// {"items": …}, which fetchNoteboardItems cannot decode, so every tick
+		// through this stub read the spend tree as unreadable.
+		items := s.items
+		if items == nil {
+			items = []map[string]any{}
+		}
+		writeStubJSON(w, 200, items)
 	case r.URL.Path == "/sessions/aggregates":
 		writeStubJSON(w, 200, s.aggs)
 	default:

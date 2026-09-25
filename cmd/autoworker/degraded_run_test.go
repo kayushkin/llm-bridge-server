@@ -182,14 +182,14 @@ func TestAnUnreadableQueueIsAShortfall(t *testing.T) {
 // not parked"; the exit code did not.
 func TestAnUnparkedOverCeilingCardIsAShortfall(t *testing.T) {
 	usage := newStubUsage(t, firingLimits())
-	kanban := newStubKanban(t, stubQueueCard{cardID: "card-broke", title: "expensive work", ceiling: 1})
+	kanban := newStubKanban(t, stubQueueCard{cardID: "card-broke", title: "expensive work", ceiling: 1, sessions: []string{"s1"}})
 	kanban.failHold = 503
 	spend := newStubSpend(t)
 	spend.items = []map[string]any{
 		{"id": "card-broke", "title": "expensive work", "auto_hold_at_usd": 1.0},
 	}
 	spend.aggs = []map[string]any{
-		{"session_id": "s1", "total_cost_usd": 99.0},
+		{"session_id": "s1", "cost_usd": 99.0},
 	}
 	cfg := tickConfig(t, usage.URL(), kanban.URL(), spend.URL())
 
@@ -197,7 +197,7 @@ func TestAnUnparkedOverCeilingCardIsAShortfall(t *testing.T) {
 	out := captureLog(t, func() { code = run(cfg, (&recordingPublisher{}).publish) })
 
 	if !strings.Contains(out, "hold FAILED") {
-		t.Skipf("fixture did not reach the ceiling branch; log was:\n%s", out)
+		t.Fatalf("fixture did not reach the ceiling branch; log was:\n%s", out)
 	}
 	if code != 1 {
 		t.Errorf("an over-ceiling card that was not parked exited %d, want 1", code)
