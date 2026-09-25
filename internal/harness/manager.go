@@ -1037,7 +1037,13 @@ func (m *Manager) storeAndFanOutDerived(bridgeID string, ev *msg.Event, logStore
 		// store.WriteSessionStatus. Nothing else writes a session's state.
 		rowID, storeErr = m.store.WriteSessionStatus(bridgeID, ev)
 		if storeErr != nil {
-			log.Printf("[harness] failed to write session status for %s: %v", bridgeID, storeErr)
+			// The write rolled back, and its AsOf names the row id it would
+			// have had, which bridge.db hands to the next event. Sent on, the
+			// status would claim to be as of a row that says something else,
+			// in log-store and on every subscriber, so it goes nowhere.
+			// Hook-only sessions (no sessions row) hit this on every status.
+			log.Printf("[harness] failed to write session status for %s, not sent to log-store or subscribers: %v", bridgeID, storeErr)
+			return storeErr
 		}
 	} else if data, err := json.Marshal(ev); err == nil {
 		rowID, storeErr = m.store.StoreEventReturningID(bridgeID, string(ev.Type), "", "", data)
