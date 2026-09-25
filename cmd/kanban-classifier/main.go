@@ -66,6 +66,7 @@ import (
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/oneshot"
+	"github.com/slava/scheduler/internal/textcut"
 )
 
 const (
@@ -564,7 +565,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 	}
 	log.Printf("[%s] trackable=%v existing=%d new=%d summary=%q",
 		sess.SessionID, report.Trackable, len(report.ExistingCards), len(report.NewTasks),
-		truncate(report.SessionSummary, 100))
+		textcut.TruncateToRuneLimit(report.SessionSummary, 100))
 
 	if cfg.DryRun {
 		return true, false
@@ -767,7 +768,7 @@ func applyNew(kc *kanbanclient.Client, sess session, existingCards []kanbanclien
 		// repeat means even that failed.
 		if filed[normalizeTitle(nt.Title)] {
 			log.Printf("[%s] skipping new task %q — a card with that title is already linked to this session",
-				sess.SessionID, truncate(nt.Title, 80))
+				sess.SessionID, textcut.TruncateToRuneLimit(nt.Title, 80))
 			continue
 		}
 		filed[normalizeTitle(nt.Title)] = true
@@ -783,7 +784,9 @@ func applyNew(kc *kanbanclient.Client, sess session, existingCards []kanbanclien
 			// 80 is the hard cut and matches the schema's maxLength; the prompt's
 			// "≤60 chars" is advice, not this number badly copied. See the note on
 			// systemPrompt. prompt_vocabulary_test.go holds the two together.
-			Title:     truncate(nt.Title, 80),
+			// Cut in characters, because maxLength counts code points: a byte cut
+			// would shorten a non-ASCII title that obeyed the bound.
+			Title:     textcut.TruncateToRuneLimit(nt.Title, 80),
 			Body:      body,
 			Tags:      []string{cardSourceClassifier, sess.Harness, sess.Purpose},
 			SessionID: "", // classifier adds its own session link with label "classifier" below
@@ -1172,10 +1175,13 @@ func buildExistingCardsSection(existingCards []kanbanclient.EntityCardEntry, bud
 		title, _ := ec.Item["title"].(string)
 		status, _ := ec.Item["status"].(string)
 		body, _ := ec.Item["body"].(string)
+		// Digest space, so these bounds are byte budgets. This 80 is not the
+		// schema's 80, which counts characters; the two only share a number.
+		digestTitle := textcut.TruncateToByteBudgetOnRuneBoundary(title, 80)
 		withBodies = append(withBodies, fmt.Sprintf("- card_id=%s title=%q status=%s\n  body=%q\n",
-			ec.CardID, truncate(title, 80), status, truncate(body, 400)))
+			ec.CardID, digestTitle, status, textcut.TruncateToByteBudgetOnRuneBoundary(body, 400)))
 		titlesOnly = append(titlesOnly, fmt.Sprintf("- card_id=%s title=%q status=%s\n",
-			ec.CardID, truncate(title, 80), status))
+			ec.CardID, digestTitle, status))
 	}
 
 	entries := withBodies
@@ -1190,7 +1196,7 @@ func buildUserPromptsSection(msgs []bridgeMessage, budget int) string {
 	entries := []string{}
 	for _, m := range msgs {
 		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
-			entries = append(entries, fmt.Sprintf("%d. %s\n", len(entries)+1, truncate(m.Content, 1500)))
+			entries = append(entries, fmt.Sprintf("%d. %s\n", len(entries)+1, textcut.TruncateToByteBudgetOnRuneBoundary(m.Content, 1500)))
 		}
 	}
 	if len(entries) == 0 {
@@ -1216,7 +1222,7 @@ func buildAssistantTurnsSection(msgs []bridgeMessage, budget int) string {
 	}
 	entries := make([]string, 0, len(withText))
 	for i, m := range withText {
-		entries = append(entries, fmt.Sprintf("  turn %d (%s):\n  %s\n\n", i+1, m.Timestamp, truncate(m.Content, 600)))
+		entries = append(entries, fmt.Sprintf("  turn %d (%s):\n  %s\n\n", i+1, m.Timestamp, textcut.TruncateToByteBudgetOnRuneBoundary(m.Content, 600)))
 	}
 	return header + fitKeepingNewest(entries, budget-len(header), "earlier turn(s) omitted") + "\n"
 }
@@ -1290,13 +1296,6 @@ func totalLen(entries []string) int {
 	return n
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
-
 // ============================ Anthropic call ============================
 
 // Report mirrors the report_classification tool's input schema.
@@ -1323,7 +1322,7 @@ type NewRec struct {
 
 // systemPrompt is the fourth place the state vocabulary is written down and the third
 // place the title bound is. The other three of each are data — the two schema enums,
-// the schema's maxLength, and applyNew's truncate call — so a walk of the schema
+// the schema's maxLength, and applyNew's title cut — so a walk of the schema
 // reaches them and this one it cannot: it is prose inside a const.
 //
 // That asymmetry is why the drift is worth a test. A state the SCHEMA rejects costs a

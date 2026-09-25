@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
@@ -234,28 +235,23 @@ func TestThePromptsTitleAdviceFitsInsideTheBoundTheSchemaAdvertises(t *testing.T
 	}
 }
 
-// The third authoring of the bound is the applier's own truncate call, and it is the
-// one that decides what the board actually stores. Measured THROUGH applyNew against a
-// fake kanban-store rather than restated, so a change to the truncate call is caught
-// even though nothing imports the number.
+// The third authoring of the bound is the applier's own cut, and it is the one that
+// decides what the board actually stores. Measured THROUGH applyNew against a fake
+// kanban-store rather than restated, so a change to the cut is caught even though
+// nothing imports the number.
 //
-// What is asserted is the CUT POSITION, not the stored length. truncate appends a
-// one-rune ellipsis after cutting, so the stored title is one rune longer than the
-// bound the model was given. Asserting the stored length instead would bake that
-// overrun in as the expected answer, and the next reader would take it for the
-// contract.
-//
-// ⚠️ The overrun is the small half of a real defect. The schema's maxLength counts
-// CHARACTERS and truncate counts BYTES, so a title that obeys the bound is still cut
-// whenever it holds non-ASCII text — measured: an 80-character title survives as 41
-// characters in Latin-1 accents, 29 in Japanese, 21 in emoji, and the Japanese case
-// stores invalid UTF-8 because the byte cut lands mid-rune. That is filed separately;
-// it is not fixable here without moving truncate's other four call sites.
+// The schema's maxLength counts CHARACTERS, so the cut has to as well. Two titles per
+// script: one of exactly the bound, which obeys the promise and must be stored
+// untouched, and one far over it, which must come back marked and no longer than the
+// bound. A byte cut failed the first half for every non-ASCII script — an 80-character
+// title survived as 41 characters in Latin-1 accents, 29 in Japanese, 21 in emoji —
+// and landed mid-rune in the Japanese case. The shift slides the wide runes across
+// the cut, because 80 is divisible by every rune width and a fixture aligned at zero
+// hides a mid-rune cut.
 func TestTheTitleBoundTheBoardEnforcesIsTheOneTheSchemaAdvertises(t *testing.T) {
 	hard := schemaTitleMaxLength(t)
 
-	var createdTitle string
-	var sawCreate bool
+	var createdTitles []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cards"):
@@ -267,8 +263,7 @@ func TestTheTitleBoundTheBoardEnforcesIsTheOneTheSchemaAdvertises(t *testing.T) 
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			createdTitle = payload.Title
-			sawCreate = true
+			createdTitles = append(createdTitles, payload.Title)
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprint(w, `{"item":{"id":"card-1"}}`)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/links"):
@@ -288,35 +283,49 @@ func TestTheTitleBoundTheBoardEnforcesIsTheOneTheSchemaAdvertises(t *testing.T) 
 		kc.ColumnsByName[stateToColumn(s)] = "col-" + s
 	}
 
-	// Longer than any plausible bound, and every rune one byte so a length in bytes
-	// and a length in runes cannot disagree and hide the answer. The unit mismatch is
-	// a separate finding; this test is about WHERE the cut lands, and an ASCII input
-	// is the only input that isolates that question.
-	overLong := strings.Repeat("a", hard*3)
-
-	applyNew(kc, session{SessionID: "sess-1"}, nil, &Report{
-		NewTasks: []NewRec{{
-			Title:   overLong,
-			State:   schemaStateEnum(t, "new_tasks")[0],
-			Summary: "summary",
-		}},
-	})
-
-	if !sawCreate {
-		t.Fatal("applyNew never created a card, so the bound was never measured. " +
-			"An over-long title must still produce a card — a test that reaches no create " +
-			"call passes for the wrong reason.")
+	store := func(title string) string {
+		t.Helper()
+		createdTitles = nil
+		applyNew(kc, session{SessionID: "sess-1"}, nil, &Report{
+			NewTasks: []NewRec{{
+				Title:   title,
+				State:   schemaStateEnum(t, "new_tasks")[0],
+				Summary: "summary",
+			}},
+		})
+		if len(createdTitles) != 1 {
+			t.Fatalf("applyNew created %d cards for one new task, want 1 — a test that reaches "+
+				"no create call passes for the wrong reason", len(createdTitles))
+		}
+		return createdTitles[0]
 	}
-	// The cut position: everything before the ellipsis the applier appended.
-	cut := strings.TrimSuffix(createdTitle, "…")
-	if cut == createdTitle {
-		t.Fatalf("the applier stored a title with no truncation marker (%d chars) for an "+
-			"input of %d chars — the bound is no longer being applied at all",
-			len([]rune(createdTitle)), len([]rune(overLong)))
-	}
-	if got := len([]rune(cut)); got != hard {
-		t.Errorf("the schema advertises a %d-character title bound and the applier cuts at %d. "+
-			"The model is told one bound and the board enforces another, so a title the model "+
-			"believes fits is silently shortened.", hard, got)
+
+	for _, script := range []struct{ name, rune_ string }{
+		{"ascii", "a"}, {"latin1-accent", "é"}, {"japanese", "日"}, {"emoji", "🟢"},
+	} {
+		for _, shift := range []int{0, 1, 2} {
+			prefix := strings.Repeat("x", shift)
+
+			atBound := prefix + strings.Repeat(script.rune_, hard-shift)
+			if got := store(atBound); got != atBound {
+				t.Errorf("%s shift=%d: a title of exactly the advertised %d characters was stored "+
+					"as %d characters (%q). The model obeyed the bound and was cut anyway.",
+					script.name, shift, hard, utf8.RuneCountInString(got), got)
+			}
+
+			overLong := prefix + strings.Repeat(script.rune_, hard*3)
+			got := store(overLong)
+			if !utf8.ValidString(got) || strings.ContainsRune(got, utf8.RuneError) {
+				t.Errorf("%s shift=%d: the stored title holds a split rune: %q", script.name, shift, got)
+			}
+			if !strings.HasSuffix(got, "…") {
+				t.Errorf("%s shift=%d: the applier stored a title with no truncation marker for an "+
+					"over-long input — the bound is no longer being applied at all", script.name, shift)
+			}
+			if n := utf8.RuneCountInString(got); n != hard {
+				t.Errorf("%s shift=%d: the schema advertises a %d-character title bound and the board "+
+					"stored %d characters for an over-long title", script.name, shift, hard, n)
+			}
+		}
 	}
 }

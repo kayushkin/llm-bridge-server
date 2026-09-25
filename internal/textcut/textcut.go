@@ -49,3 +49,31 @@ func TruncateToRuneLimit(s string, maxRunes int) string {
 	}
 	return s
 }
+
+// TruncateToByteBudgetOnRuneBoundary caps s at maxBytes BYTES, the ellipsis
+// included, and moves the cut back to the last rune boundary at or below that.
+// It returns s unchanged when it already fits.
+//
+// Use it where the bound is a size budget rather than a count somebody reads —
+// text packed into a prompt against a token budget, say. Counting such a bound
+// in runes would let non-ASCII text cost up to four times its budgeted size, so
+// bytes are the right unit; cutting mid-rune never was.
+func TruncateToByteBudgetOnRuneBoundary(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	budget := maxBytes - len(Ellipsis)
+	if budget <= 0 {
+		return ""
+	}
+	cut := 0
+	// Each index is a rune START, so s[:cut] ends on a boundary; the last start
+	// at or below budget is the longest prefix that fits.
+	for i := range s {
+		if i > budget {
+			break
+		}
+		cut = i
+	}
+	return s[:cut] + Ellipsis
+}

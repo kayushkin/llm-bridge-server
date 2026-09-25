@@ -233,3 +233,55 @@ func TestTruncateToRuneLimit_SurvivesTheJSONEncodingItIsAboutToGoThrough(t *test
 		}
 	}
 }
+
+func TestTruncateToByteBudgetOnRuneBoundary_LeavesAValueThatAlreadyFitsAlone(t *testing.T) {
+	for _, w := range wideRunes {
+		s := strings.Repeat(w.rune_, 10)
+		if got := TruncateToByteBudgetOnRuneBoundary(s, len(s)); got != s {
+			t.Errorf("%s: a value of exactly the budget came back changed: %q", w.name, got)
+		}
+	}
+}
+
+// The three properties that make a byte budget safe to spend, swept over every
+// width, shift and budget: the result never exceeds the budget, never splits a
+// rune, and never gives back more than a rune's worth of it. The last one is the
+// reason for sweeping: a cut that backs off two runes instead of one is valid
+// UTF-8 inside the budget, and only a lower bound catches it.
+func TestTruncateToByteBudgetOnRuneBoundary_FitsTheBudgetOnARuneBoundary(t *testing.T) {
+	for _, w := range wideRunes {
+		for _, shift := range shifts {
+			s := strings.Repeat("a", shift) + distinctRunesOfWidth(w.bytes, 200)
+			for budget := len(Ellipsis) + 1; budget <= 64; budget++ {
+				got := TruncateToByteBudgetOnRuneBoundary(s, budget)
+				if !utf8.ValidString(got) {
+					t.Errorf("%s shift=%d budget=%d: produced invalid UTF-8: %q", w.name, shift, budget, got)
+				}
+				if len(got) > budget {
+					t.Errorf("%s shift=%d budget=%d: returned %d bytes, over the budget", w.name, shift, budget, len(got))
+				}
+				if len(got) <= budget-w.bytes {
+					t.Errorf("%s shift=%d budget=%d: returned %d bytes, leaving room for another whole rune",
+						w.name, shift, budget, len(got))
+				}
+				kept := strings.TrimSuffix(got, Ellipsis)
+				if kept == got {
+					t.Errorf("%s shift=%d budget=%d: shortened value does not end in the ellipsis: %q", w.name, shift, budget, got)
+				}
+				if !strings.HasPrefix(s, kept) {
+					t.Errorf("%s shift=%d budget=%d: kept text is not a prefix of the input: %q", w.name, shift, budget, kept)
+				}
+			}
+		}
+	}
+}
+
+// A budget with no room for text beside the ellipsis is not a panic and not a
+// value over the budget.
+func TestTruncateToByteBudgetOnRuneBoundary_ABudgetWithNoRoomYieldsNothing(t *testing.T) {
+	for _, budget := range []int{len(Ellipsis), 1, 0, -1} {
+		if got := TruncateToByteBudgetOnRuneBoundary("日本語のとても長い質問", budget); got != "" {
+			t.Errorf("budget=%d: returned %q, want the empty string", budget, got)
+		}
+	}
+}
