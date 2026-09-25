@@ -96,6 +96,14 @@ it is meant to pin asserts only that the constant equals itself. The five names
 are now spelled out literally, and a second test ties the set to the two column
 constants the binary later addresses by name — which is the invariant that was
 actually at risk, since those live in a different declaration entirely.
+
+---- 2026-09-25: six dead rows re-aimed or deleted ----
+
+Main moved this binary's configuration into internal/config's settings
+registry, so six rows named code that no longer existed and the whole file
+aborted (card 2d1112ca). Four are re-aimed at parseFlags, where the registry is
+read; two are deleted because what they edited now lives in llm-bridge's
+servicesettings, outside both targets.
 """
 
 import sys
@@ -147,7 +155,9 @@ CASES = [
     ),
     Case(
         "-default-max-budget-usd drifts 0 -> 5: caps sessions the user never asked to cap",
-        [('"AUTOWORKER_DEFAULT_MAX_BUDGET_USD", 0)', '"AUTOWORKER_DEFAULT_MAX_BUDGET_USD", 5)')],
+        # Re-aimed 2026-09-25: the default moved into internal/config's settings
+        # registry, so the drift that can happen HERE is the flag not reading it.
+        [('settings.Decimal(schedulerconfig.SettingDefaultMaxBudgetUSD),', '5,')],
     ),
     Case(
         "-prompt default emptied: the dispatched worker gets no instructions at all",
@@ -161,17 +171,17 @@ CASES = [
     # side by side, where a swap compiles clean and is read by nothing else.
     Case(
         "llmBridgeURL and noteboardURL swapped: budgetForCard asks each service the other's question",
-        [('c.llmBridgeURL = envOr(lookupEnvironment, "LLM_BRIDGE_URL", "http://localhost:8160")',
-          'c.llmBridgeURL = envOr(lookupEnvironment, "NOTEBOARD_URL", "http://localhost:8191")')],
+        [('c.llmBridgeURL = settings.String(schedulerconfig.SettingBridgeURL)',
+          'c.llmBridgeURL = settings.String(schedulerconfig.SettingNoteboardURL)')],
     ),
     Case(
         "usageStoreURL points at kanban-store's port: the limits fetch that gates every fire",
-        [('"USAGE_STORE_URL", "http://localhost:8185"', '"USAGE_STORE_URL", "http://localhost:8305"')],
+        [('c.usageStoreURL = settings.String(schedulerconfig.SettingUsageStoreURL)',
+          'c.usageStoreURL = settings.String(schedulerconfig.SettingKanbanStoreURL)')],
     ),
-    Case(
-        "envOr prefers its fallback over the environment: every endpoint pins to localhost",
-        [('if v := lookupEnvironment(key); v != "" {', 'if v := lookupEnvironment(key); v == "" {')],
-    ),
+    # Deleted 2026-09-25: "envOr prefers its fallback over the environment".
+    # envOr is gone; which of the environment and the default wins is decided
+    # by llm-bridge's servicesettings, outside both targets.
     Case(
         "the state path loses its .config segment: no last-fire time, so the cooldown is always expired",
         [('filepath.Join(homeDirectory, ".config", "autoworker", "state.json")',
@@ -187,15 +197,13 @@ CASES = [
     #
     # This family is why the binary was worth scoring. Each of these turns a
     # refusal into a number, and the number they turn into is "uncapped".
+    # Deleted 2026-09-25: "a malformed spend cap silently becomes the default".
+    # The number is parsed by servicesettings now, outside both targets; the
+    # half of the refusal that lives here is the sentinel, below.
     Case(
-        "a malformed spend cap silently becomes the default: runs uncapped on a typo",
-        [('return 0, fmt.Errorf("%w: %s=%q is not a number — refusing to run uncapped on a typo", errMalformedEnvironmentValue, key, raw)',
-          'return def, nil')],
-    ),
-    Case(
-        "a malformed spend cap loses its sentinel: main exits 2 where it used to exit 1",
-        [('return 0, fmt.Errorf("%w: %s=%q is not a number — refusing to run uncapped on a typo", errMalformedEnvironmentValue, key, raw)',
-          'return 0, fmt.Errorf("%s=%q is not a number", key, raw)')],
+        "a malformed setting loses its sentinel: main exits 2 where it used to exit 1",
+        [('return config{}, fmt.Errorf("%w: %v", errMalformedEnvironmentValue, err)',
+          'return config{}, fmt.Errorf("%v", err)')],
     ),
     Case(
         "a negative spend cap validates: the guard that rejects it is dead",
@@ -297,6 +305,7 @@ CASES = [
         [('var kanbanDefaultColumns = []string{"Queued", "In Progress", "Blocked", "Done", "Failed"}',
           'var kanbanDefaultColumns = []string{"Queued", "Blocked", "Done", "Failed"}')],
     ),
+
 ]
 
 
