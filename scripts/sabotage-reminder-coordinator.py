@@ -258,6 +258,13 @@ CASES = [
     ),
 
     # ---- nags: fire until done, once per firing ----
+    # Two floors in this block. This row mutates the default taken when an item
+    # has never nagged (ported from b92b34f1); the next one mutates `last != nil`.
+    Case(
+        "the never-nagged floor widens to a year, so a first nag replays every firing since the anchor",
+        [("\t\tfrom := c.Now.Add(-24 * time.Hour)\n\t\tif last := item.Schedule.LastNaggedAt; last != nil {",
+          "\t\tfrom := c.Now.AddDate(-1, 0, 0)\n\t\tif last := item.Schedule.LastNaggedAt; last != nil {")],
+    ),
     Case(
         "the last-nagged floor drifts back a year, so a nag re-fires on every 15-minute tick",
         [("from = last.Add(time.Second)\n\t\t}\n\n\t\toccurrences, err := item.Schedule.NagOccurrences(",
@@ -365,6 +372,37 @@ CASES = [
     Case(
         "today's schedule swallows tomorrow's events",
         [("if !start.Before(dayEnd) {", "if !start.Before(dayEnd.AddDate(0, 0, 1)) {")],
+    ),
+
+    # ---- all-day calendar events: a civil-date window, EXCLUSIVE at the end ----
+    # Ported from 20a3178b with the all-day window (3644d4c9). One case per test,
+    # so the cross-table attributes them.
+    Case(
+        "all-day events are not bounded to today, so next month's conference is on today's schedule",
+        [("if !civilDate(event.Start).After(today) && today.Before(allDayEnd(event)) {",
+          "if !civilDate(event.Start).After(today.AddDate(0, 0, 1)) && today.Before(allDayEnd(event)) {")],
+    ),
+    Case(
+        "the all-day end bound is read as INCLUSIVE, so a trip that ended last night is still on today",
+        [("if !civilDate(event.Start).After(today) && today.Before(allDayEnd(event)) {",
+          "if !civilDate(event.Start).After(today) && !today.After(allDayEnd(event)) {")],
+    ),
+    Case(
+        "an all-day event with no end.date covers nothing, so it drops out of its own day",
+        [("\t\treturn civilDate(event.Start).AddDate(0, 0, 1)",
+          "\t\treturn civilDate(event.Start)")],
+    ),
+    # Mutating civilDate itself to time.Local would score whatever zone the box
+    # is in. The call site carries the same claim and is deterministic: dayStart
+    # is a midnight in c.Location, which every test sets.
+    Case(
+        "the all-day window compares a LOCAL midnight against UTC civil dates, so the bound drifts east of UTC",
+        [("\ttoday := civilDate(dayStart)", "\ttoday := dayStart")],
+    ),
+    Case(
+        "ListEvents converts Google's exclusive end.date to an inclusive one, so the two halves disagree by a day",
+        [("\t\t\t\tevent.End = end\n\t\t\t}\n\t\tdefault:",
+          "\t\t\t\tevent.End = end.AddDate(0, 0, -1)\n\t\t\t}\n\t\tdefault:")],
     ),
     Case(
         "the waking-day window shrinks, so day-load over-reports how booked the day is",
