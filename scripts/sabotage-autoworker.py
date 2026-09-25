@@ -226,13 +226,13 @@ CASES = [
     # -- the switch itself --
     Case(
         "the dry-run gate inverts: a dry run bootstraps the board and a real tick refuses to",
-        [("\tqc := kanbanclient.New(kanbanStoreURL)\n\tif dryRun {",
-          "\tqc := kanbanclient.New(kanbanStoreURL)\n\tif !dryRun {")],
+        [("\tqc := kanbanclient.New(kanbanStoreURL, kanbanStoreServiceToken)\n\tif dryRun {",
+          "\tqc := kanbanclient.New(kanbanStoreURL, kanbanStoreServiceToken)\n\tif !dryRun {")],
     ),
     Case(
         "the dry-run gate is dead: -dry-run creates the queue board on a fresh install",
-        [("\tqc := kanbanclient.New(kanbanStoreURL)\n\tif dryRun {",
-          "\tqc := kanbanclient.New(kanbanStoreURL)\n\tif false {")],
+        [("\tqc := kanbanclient.New(kanbanStoreURL, kanbanStoreServiceToken)\n\tif dryRun {",
+          "\tqc := kanbanclient.New(kanbanStoreURL, kanbanStoreServiceToken)\n\tif false {")],
     ),
 
     # -- a dry run that resolves nothing prints as a fresh install --

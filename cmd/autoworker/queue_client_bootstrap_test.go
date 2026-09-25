@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -166,24 +164,6 @@ func boardIDFromColumnsPath(path string) string {
 	return parts[2]
 }
 
-// captureLog collects what initQueueClient logged during fn. On a nil return
-// the log line is the only thing that distinguishes "no board yet" from "the
-// store is down", and the caller acts differently on each.
-func captureLog(t *testing.T, fn func()) string {
-	t.Helper()
-	var buf bytes.Buffer
-	previousOutput := log.Writer()
-	previousFlags := log.Flags()
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(previousOutput)
-		log.SetFlags(previousFlags)
-	})
-	fn()
-	return buf.String()
-}
-
 // ============================ dry-run: the writes that must not happen ============================
 
 func TestADryRunNeverCreatesTheQueueBoard(t *testing.T) {
@@ -191,7 +171,7 @@ func TestADryRunNeverCreatesTheQueueBoard(t *testing.T) {
 	url := store.start(t)
 
 	var client *kanbanclient.Client
-	logged := captureLog(t, func() { client = initQueueClient(url, true) })
+	logged := captureLog(t, func() { client, _ = initQueueClient(url, "", true) })
 
 	if client != nil {
 		t.Fatalf("dry-run against a store with no queue board returned a client; want nil")
@@ -209,7 +189,7 @@ func TestADryRunResolvesTheBoardItFindsInsteadOfReportingNothing(t *testing.T) {
 	store := newFakeKanbanStore().withBoard("queue-1", autoworkerQueueBoard, kanbanDefaultColumns...)
 	url := store.start(t)
 
-	client := initQueueClient(url, true)
+	client, _ := initQueueClient(url, "", true)
 
 	if client == nil {
 		t.Fatal("dry-run against an existing, fully-columned board returned nil")
@@ -235,7 +215,7 @@ func TestADryRunDoesNotBackfillAMissingColumn(t *testing.T) {
 	store := newFakeKanbanStore().withBoard("queue-1", autoworkerQueueBoard, "Queued")
 	url := store.start(t)
 
-	client := initQueueClient(url, true)
+	client, _ := initQueueClient(url, "", true)
 
 	if client == nil {
 		t.Fatal("dry-run against a partially-columned board returned nil")
@@ -254,10 +234,10 @@ func TestADryRunDoesNotBackfillAMissingColumn(t *testing.T) {
 // store, the same absent board, the two values — one writes, one does not.
 func TestTheSameEmptyStoreIsBootstrappedOnlyWhenNotDryRunning(t *testing.T) {
 	dryStore := newFakeKanbanStore()
-	dryClient := initQueueClient(dryStore.start(t), true)
+	dryClient, _ := initQueueClient(dryStore.start(t), "", true)
 
 	realStore := newFakeKanbanStore()
-	realClient := initQueueClient(realStore.start(t), false)
+	realClient, _ := initQueueClient(realStore.start(t), "", false)
 
 	if dryClient != nil {
 		t.Error("dry-run bootstrapped the board")
@@ -279,7 +259,7 @@ func TestARealRunCreatesTheBoardAndEveryColumnItNeeds(t *testing.T) {
 	store := newFakeKanbanStore()
 	url := store.start(t)
 
-	client := initQueueClient(url, false)
+	client, _ := initQueueClient(url, "", false)
 
 	if client == nil {
 		t.Fatal("bootstrapping a fresh install returned nil")
@@ -324,7 +304,7 @@ func TestEveryColumnTheBinaryAddressesIsOneItCreates(t *testing.T) {
 	store := newFakeKanbanStore()
 	url := store.start(t)
 
-	client := initQueueClient(url, false)
+	client, _ := initQueueClient(url, "", false)
 	if client == nil {
 		t.Fatal("bootstrapping a fresh install returned nil")
 	}
@@ -341,7 +321,7 @@ func TestARealRunAgainstAReadyBoardCreatesNothing(t *testing.T) {
 	store := newFakeKanbanStore().withBoard("queue-1", autoworkerQueueBoard, kanbanDefaultColumns...)
 	url := store.start(t)
 
-	client := initQueueClient(url, false)
+	client, _ := initQueueClient(url, "", false)
 
 	if client == nil {
 		t.Fatal("a ready board returned nil")
@@ -358,7 +338,7 @@ func TestARealRunBackfillsOnlyTheColumnsThatAreMissing(t *testing.T) {
 	store := newFakeKanbanStore().withBoard("queue-1", autoworkerQueueBoard, "Queued", "In Progress")
 	url := store.start(t)
 
-	client := initQueueClient(url, false)
+	client, _ := initQueueClient(url, "", false)
 
 	if client == nil {
 		t.Fatal("a partially-columned board returned nil")
@@ -393,7 +373,7 @@ func TestAnUnreadableStoreIsReportedAsAnErrorAndNotAsAnAbsentBoard(t *testing.T)
 
 	for _, dryRun := range []bool{true, false} {
 		var client *kanbanclient.Client
-		logged := captureLog(t, func() { client = initQueueClient(url, dryRun) })
+		logged := captureLog(t, func() { client, _ = initQueueClient(url, "", dryRun) })
 
 		if client != nil {
 			t.Errorf("dryRun=%v: a store that cannot list boards produced a usable client", dryRun)
@@ -417,7 +397,7 @@ func TestADryRunThatCannotListColumnsReturnsNothingRatherThanAHalfConfiguredClie
 	url := store.start(t)
 
 	var client *kanbanclient.Client
-	logged := captureLog(t, func() { client = initQueueClient(url, true) })
+	logged := captureLog(t, func() { client, _ = initQueueClient(url, "", true) })
 
 	if client != nil {
 		t.Fatalf("got a client with columns=%v; want nil", client.ColumnsByName)
@@ -433,7 +413,7 @@ func TestAnUnreachableStoreIsSurvivedRatherThanFatal(t *testing.T) {
 	const nowhere = "http://127.0.0.1:1"
 
 	for _, dryRun := range []bool{true, false} {
-		if client := initQueueClient(nowhere, dryRun); client != nil {
+		if client, _ := initQueueClient(nowhere, "", dryRun); client != nil {
 			t.Errorf("dryRun=%v: an unreachable store produced a client", dryRun)
 		}
 	}
@@ -451,7 +431,7 @@ func TestTheQueueBoardIsResolvedByItsOwnNameAndNotTheTelemetryBoard(t *testing.T
 	url := store.start(t)
 
 	for _, dryRun := range []bool{true, false} {
-		client := initQueueClient(url, dryRun)
+		client, _ := initQueueClient(url, "", dryRun)
 		if client == nil {
 			t.Fatalf("dryRun=%v: returned nil with the queue board present", dryRun)
 		}
