@@ -3,11 +3,11 @@ package main
 // Pins the curator's ONE call into bridgesession.URL.
 //
 // internal/bridgesession is thoroughly tested on its own. What nothing tested
-// until now is that getSessionState still calls it. Reverting line 247 to the
+// until now is that getSession still calls it. Reverting that call to the
 // fmt.Sprintf interpolation it replaced left the whole suite green, because
 // cmd/kanban-curator had no test file at all.
 //
-// The stakes are higher here than at the other four call sites. getSessionState
+// The stakes are higher here than at the other four call sites. getSession
 // reports notFound on a 404, and the caller treats notFound as a REAPABLE
 // TERMINAL CONDITION: the card is moved to Failed with "reaped: bridge session
 // not found (archived/pruned)". Every other error only skips the card until the
@@ -100,7 +100,7 @@ func stubCuratorBridge(t *testing.T, seen *[]curatorBridgeRequest, sessionBody s
 	return srv
 }
 
-const aCompletedSession = `{"state":"completed","updated_at":"2026-08-14T12:00:00Z"}`
+const aCompletedSession = `{"state":"completed","updated_at":"2026-08-14T12:00:00Z","purpose":"autoworker"}`
 
 // A session id that spells a neighbouring route must still address the session
 // itself. The expected request targets are written out as literals rather than
@@ -120,7 +120,7 @@ func TestASessionIDThatNamesANeighbouringRouteDoesNotReachIt(t *testing.T) {
 			var seen []curatorBridgeRequest
 			srv := stubCuratorBridge(t, &seen, aCompletedSession)
 
-			state, _, notFound, err := getSessionState(srv.URL, tc.sessionID)
+			state, _, notFound, err := sessionStateOf(srv.URL, tc.sessionID)
 
 			if len(seen) != 1 {
 				t.Fatalf("expected exactly 1 bridge request, got %d: %+v", len(seen), seen)
@@ -140,7 +140,7 @@ func TestASessionIDThatNamesANeighbouringRouteDoesNotReachIt(t *testing.T) {
 					"the curator would move the card to Failed under %q", tc.sessionID)
 			}
 			if err != nil {
-				t.Errorf("getSessionState: %v", err)
+				t.Errorf("reading the session: %v", err)
 			}
 			if state != "completed" {
 				t.Errorf("state = %q, want %q", state, "completed")
@@ -158,9 +158,9 @@ func TestASessionIDIsNotCutShortByAQuerySeparator(t *testing.T) {
 	var seen []curatorBridgeRequest
 	srv := stubCuratorBridge(t, &seen, aCompletedSession)
 
-	_, _, _, err := getSessionState(srv.URL, sessionID)
+	_, _, _, err := sessionStateOf(srv.URL, sessionID)
 	if err != nil {
-		t.Fatalf("getSessionState: %v", err)
+		t.Fatalf("reading the session: %v", err)
 	}
 	if len(seen) != 1 {
 		t.Fatalf("expected exactly 1 bridge request, got %d: %+v", len(seen), seen)
@@ -182,9 +182,9 @@ func TestAnOrdinarySessionIDIsSentUnchanged(t *testing.T) {
 	var seen []curatorBridgeRequest
 	srv := stubCuratorBridge(t, &seen, aCompletedSession)
 
-	state, updatedAt, notFound, err := getSessionState(srv.URL, "autoworker-1755230000")
+	state, updatedAt, notFound, err := sessionStateOf(srv.URL, "autoworker-1755230000")
 	if err != nil {
-		t.Fatalf("getSessionState: %v", err)
+		t.Fatalf("reading the session: %v", err)
 	}
 	if len(seen) != 1 {
 		t.Fatalf("expected exactly 1 bridge request, got %d: %+v", len(seen), seen)
@@ -234,7 +234,7 @@ func TestAnUnaddressableSessionIDIsRefusedAndNeverReachesTheBridge(t *testing.T)
 			var seen []curatorBridgeRequest
 			srv := stubCuratorBridge(t, &seen, aCompletedSession)
 
-			_, _, notFound, err := getSessionState(srv.URL, tc.sessionID)
+			_, _, notFound, err := sessionStateOf(srv.URL, tc.sessionID)
 
 			if err == nil {
 				t.Fatalf("session id %q was accepted; it addresses the collection or a "+
@@ -255,4 +255,11 @@ func TestAnUnaddressableSessionIDIsRefusedAndNeverReachesTheBridge(t *testing.T)
 			}
 		})
 	}
+}
+
+// sessionStateOf reads the fields these tests pin off getSession, which
+// replaced getSession when the curator started gating on purpose.
+func sessionStateOf(bridgeURL, sessionID string) (state, updatedAt string, notFound bool, err error) {
+	sess, notFound, err := getSession(bridgeURL, sessionID)
+	return sess.State, sess.UpdatedAt, notFound, err
 }

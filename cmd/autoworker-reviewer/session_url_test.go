@@ -10,8 +10,8 @@ package main
 // The two sites do not carry the same risk, and the second is the reason this
 // binary was pinned before cmd/kanban-dispatcher:
 //
-//	getSessionState  GET  /sessions/{id}         — reads a state
-//	sendMessage      POST /sessions/{id}/send    — DELIVERS A PROMPT TO AN AGENT
+//	getSession   GET  /sessions/{id}         — reads a state
+//	sendMessage  POST /sessions/{id}/send    — DELIVERS A PROMPT TO AN AGENT
 //
 // A session id that wanders on the read site produces a wrong answer that the
 // caller can at least act cautiously on: every non-200 becomes an error, and an
@@ -115,7 +115,7 @@ func stubReviewerBridge(t *testing.T, seen *[]reviewerBridgeRequest, sessionBody
 	return srv
 }
 
-const aCompletedAutoworkerSession = `{"state":"completed","updated_at":"2026-08-14T12:00:00Z"}`
+const aCompletedAutoworkerSession = `{"state":"completed","updated_at":"2026-08-14T12:00:00Z","purpose":"autoworker"}`
 
 // ======================= the read site: GET /sessions/{id} =======================
 
@@ -137,7 +137,7 @@ func TestASessionIDThatNamesANeighbouringRouteDoesNotReachItOnTheReadSite(t *tes
 			var seen []reviewerBridgeRequest
 			srv := stubReviewerBridge(t, &seen, aCompletedAutoworkerSession)
 
-			state, _, err := getSessionState(srv.URL, tc.sessionID)
+			state, _, err := sessionStateOf(srv.URL, tc.sessionID)
 
 			if len(seen) != 1 {
 				t.Fatalf("expected exactly 1 bridge request, got %d: %+v", len(seen), seen)
@@ -153,7 +153,7 @@ func TestASessionIDThatNamesANeighbouringRouteDoesNotReachItOnTheReadSite(t *tes
 				t.Errorf("the router read the id as %q, want the whole ref %q", seen[0].id, tc.sessionID)
 			}
 			if err != nil {
-				t.Errorf("getSessionState: %v", err)
+				t.Errorf("reading the session: %v", err)
 			}
 			if state != "completed" {
 				t.Errorf("state = %q, want %q", state, "completed")
@@ -176,9 +176,9 @@ func TestASessionIDIsNotCutShortByAQuerySeparator(t *testing.T) {
 	var seen []reviewerBridgeRequest
 	srv := stubReviewerBridge(t, &seen, aCompletedAutoworkerSession)
 
-	_, _, err := getSessionState(srv.URL, sessionID)
+	_, _, err := sessionStateOf(srv.URL, sessionID)
 	if err != nil {
-		t.Fatalf("getSessionState: %v", err)
+		t.Fatalf("reading the session: %v", err)
 	}
 	if len(seen) != 1 {
 		t.Fatalf("expected exactly 1 bridge request, got %d: %+v", len(seen), seen)
@@ -200,9 +200,9 @@ func TestAnOrdinarySessionIDIsSentUnchangedOnTheReadSite(t *testing.T) {
 	var seen []reviewerBridgeRequest
 	srv := stubReviewerBridge(t, &seen, aCompletedAutoworkerSession)
 
-	state, updatedAt, err := getSessionState(srv.URL, "autoworker-nightly-1755230000")
+	state, updatedAt, err := sessionStateOf(srv.URL, "autoworker-nightly-1755230000")
 	if err != nil {
-		t.Fatalf("getSessionState: %v", err)
+		t.Fatalf("reading the session: %v", err)
 	}
 	if len(seen) != 1 {
 		t.Fatalf("expected exactly 1 bridge request, got %d: %+v", len(seen), seen)
@@ -369,7 +369,7 @@ func TestAnUnaddressableSessionIDIsRefusedAndNeverReachesTheBridge(t *testing.T)
 			var seen []reviewerBridgeRequest
 			srv := stubReviewerBridge(t, &seen, aCompletedAutoworkerSession)
 
-			state, _, err := getSessionState(srv.URL, tc.sessionID)
+			state, _, err := sessionStateOf(srv.URL, tc.sessionID)
 
 			if err == nil {
 				t.Fatalf("session id %q was accepted; it addresses the collection or a "+
@@ -409,4 +409,11 @@ func TestAnUnaddressableSessionIDIsRefusedAndNeverReachesTheBridge(t *testing.T)
 			}
 		})
 	}
+}
+
+// sessionStateOf reads the fields these tests pin off getSession, which
+// replaced getSession when the reviewer started gating on purpose.
+func sessionStateOf(bridgeURL, sessionID string) (state, updatedAt string, err error) {
+	sess, err := getSession(bridgeURL, sessionID)
+	return sess.State, sess.UpdatedAt, err
 }

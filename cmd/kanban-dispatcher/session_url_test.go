@@ -8,7 +8,7 @@ package main
 // because cmd/kanban-dispatcher had no test file at all — the last of the three
 // bare binaries named by the parent card.
 //
-//	getSessionState  GET /sessions/{id}  — reads a sibling session's state
+//	getBridgeSession  GET /sessions/{id}  — reads a sibling session's state
 //
 // One site, and it is a guard rather than an action, which makes it easy to
 // read as the harmless one of the three. It is not. decideReuse walks the
@@ -152,7 +152,7 @@ func TestASessionIDThatNamesANeighbouringRouteDoesNotReachItOnTheReadSite(t *tes
 			var seen []dispatcherBridgeRequest
 			srv := stubDispatcherBridge(t, &seen, anIdleSiblingSession)
 
-			state, _, err := getSessionState(srv.URL, tc.sessionID)
+			state, _, err := sessionStateOf(srv.URL, tc.sessionID)
 
 			if len(seen) != 1 {
 				t.Fatalf("expected exactly 1 bridge request, got %d: %+v", len(seen), seen)
@@ -168,7 +168,7 @@ func TestASessionIDThatNamesANeighbouringRouteDoesNotReachItOnTheReadSite(t *tes
 				t.Errorf("the router read the id as %q, want the whole ref %q", seen[0].id, tc.sessionID)
 			}
 			if err != nil {
-				t.Errorf("getSessionState: %v", err)
+				t.Errorf("reading the session: %v", err)
 			}
 			if state != "idle" {
 				t.Errorf("state = %q, want %q", state, "idle")
@@ -191,9 +191,9 @@ func TestASessionIDIsNotCutShortByAQuerySeparator(t *testing.T) {
 	var seen []dispatcherBridgeRequest
 	srv := stubDispatcherBridge(t, &seen, anIdleSiblingSession)
 
-	_, _, err := getSessionState(srv.URL, sessionID)
+	_, _, err := sessionStateOf(srv.URL, sessionID)
 	if err != nil {
-		t.Fatalf("getSessionState: %v", err)
+		t.Fatalf("reading the session: %v", err)
 	}
 	if len(seen) != 1 {
 		t.Fatalf("expected exactly 1 bridge request, got %d: %+v", len(seen), seen)
@@ -224,7 +224,7 @@ func TestASessionIDWithADotSegmentDoesNotReadAnotherSessionsState(t *testing.T) 
 	var seen []dispatcherBridgeRequest
 	srv := stubDispatcherBridge(t, &seen, anIdleSiblingSession)
 
-	_, _, err := getSessionState(srv.URL, sessionID)
+	_, _, err := sessionStateOf(srv.URL, sessionID)
 
 	if len(seen) != 1 {
 		t.Fatalf("expected exactly 1 bridge request, got %d: %+v", len(seen), seen)
@@ -244,7 +244,7 @@ func TestASessionIDWithADotSegmentDoesNotReadAnotherSessionsState(t *testing.T) 
 		t.Errorf("the router read the id as %q, want the whole ref %q", seen[0].id, sessionID)
 	}
 	if err != nil {
-		t.Errorf("getSessionState: %v", err)
+		t.Errorf("reading the session: %v", err)
 	}
 }
 
@@ -261,9 +261,9 @@ func TestAnOrdinarySessionIDIsSentUnchangedOnTheReadSite(t *testing.T) {
 	var seen []dispatcherBridgeRequest
 	srv := stubDispatcherBridge(t, &seen, anIdleSiblingSession)
 
-	state, updatedAt, err := getSessionState(srv.URL, "br_1777573132534000506")
+	state, updatedAt, err := sessionStateOf(srv.URL, "br_1777573132534000506")
 	if err != nil {
-		t.Fatalf("getSessionState: %v", err)
+		t.Fatalf("reading the session: %v", err)
 	}
 	if len(seen) != 1 {
 		t.Fatalf("expected exactly 1 bridge request, got %d: %+v", len(seen), seen)
@@ -313,7 +313,7 @@ func TestAnUnaddressableSessionIDIsRefusedAndNeverReachesTheBridge(t *testing.T)
 			var seen []dispatcherBridgeRequest
 			srv := stubDispatcherBridge(t, &seen, anIdleSiblingSession)
 
-			state, updatedAt, err := getSessionState(srv.URL, tc.sessionID)
+			state, updatedAt, err := sessionStateOf(srv.URL, tc.sessionID)
 
 			if err == nil {
 				t.Fatalf("session id %q was accepted; it addresses the collection or a "+
@@ -336,4 +336,11 @@ func TestAnUnaddressableSessionIDIsRefusedAndNeverReachesTheBridge(t *testing.T)
 			}
 		})
 	}
+}
+
+// sessionStateOf reads the fields these tests pin off getBridgeSession, which
+// replaced getBridgeSession.
+func sessionStateOf(bridgeURL, sessionID string) (state, updatedAt string, err error) {
+	sess, err := getBridgeSession(bridgeURL, sessionID)
+	return sess.State, sess.UpdatedAt, err
 }
