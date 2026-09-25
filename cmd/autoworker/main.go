@@ -946,11 +946,25 @@ func applySessionSpendCeiling(create *msg.CreateSessionRequest, maxBudgetUSD flo
 	return nil
 }
 
+// busPublisher is the whole of what publishWorker needs from the NATS client.
+//
+// It is an interface so a test can read the message autoworker actually put on
+// the bus. The session id, the session type and the spend ceiling are WIRE
+// values — nothing downstream re-derives them, and a session id that differs by
+// one character from the one returned leaves the kanban link pointing at a
+// session that does not exist. A test that cannot see the wire pins none of it.
+type busPublisher interface {
+	Publish(subject string, data any) error
+}
+
+// *natsbus.Client is the only production implementation.
+var _ busPublisher = (*natsbus.Client)(nil)
+
 // publishWorker dispatches a worker session.
 //
 // maxBudgetUSD, when > 0, becomes the session's per-session cost cap on both the
 // server-side and the harness-native enforcer — see applySessionSpendCeiling.
-func publishWorker(nc *natsbus.Client, p providerSpec, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
+func publishWorker(nc busPublisher, p providerSpec, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
 	now := time.Now().UTC()
 	// Mint the canonical session_id here. Adapter passes BusSessionID through
 	// as bridge-server session_id (see llm-bridge-adapter@73c7cb5), so this
