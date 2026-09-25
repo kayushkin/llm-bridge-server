@@ -25,7 +25,8 @@ Case-writing rules learned the expensive way, and re-earned here:
     behavioural no-op, or a fake in the test file that swallows the value the
     mutation moved. Both appear below, named, with expected_unnoticed set.
 
-Score: 91/97, exit 0 — 91 real mechanisms caught and six cases carrying an
+Score: 111/122, exit 0 on 2026-09-25 — see the dated section at the end of this
+docstring. Before that: 91/97, exit 0 — 91 real mechanisms caught and six cases carrying an
 `expected_unnoticed`. Was 69/75 until the nudge stopped being three counts and
 started naming the work, then 78/84; the fifteen cases at the end of the list are
 those two passes' mechanisms. One of them (booked hours printed where the line
@@ -160,6 +161,24 @@ a template anchored 81 days back, an item two days overdue and another completed
 four days early, a stamp that disagrees with its due date, an event at 00:15
 tomorrow. When a case scores UNNOTICED, ask what two values the mechanism compares
 and check whether the fixture ever made them differ.
+
+---- 2026-09-25: thirteen dead rows re-aimed or deleted, two bundles split ----
+
+Main moved this binary's defaults into internal/config's settings registry,
+moved the -h exit code into run(), and rewrote the Herald argv, the relay
+markers and the client paths, so 13 rows named code that no longer existed and
+the engine aborted the whole file (card 2d1112ca). Twelve are re-aimed at main's
+code; envOr's row is deleted, because the environment-versus-default choice now
+lives in llm-bridge's servicesettings, outside the target.
+
+The two "ENTIRE concrete client" rows went CAUGHT once re-aimed, because main's
+noteboard_protocol_test.go and calendar_protocol_test.go now drive both clients
+at httptest servers. That made their declarations stale and told us nothing per
+edit, so each is split into one row per edit: 17 rows, 10 CAUGHT, and 7
+UNNOTICED. The seven are real holes on main. The parked branch
+test/concrete-clients-speak-the-real-protocol pins all seven in
+client_protocol_test.go, so each carries a declaration that names that branch.
+Porting it should turn those declarations STALE.
 """
 
 import sys
@@ -280,7 +299,10 @@ CASES = [
     ),
     Case(
         "marking the digest sent keeps the old markers and drops every other link",
-        [('if !strings.HasPrefix(link, "digest-sent:") {', 'if strings.HasPrefix(link, "digest-sent:") {')],
+        # Re-aimed 2026-09-25: the markers are rewritten in one pass now
+        # (recordRelayMarkers), so the drift is the digest-sent branch inverting.
+        [('if digestSent && strings.HasPrefix(link, "digest-sent:") {',
+          'if digestSent && !strings.HasPrefix(link, "digest-sent:") {')],
     ),
 
     # ---- rolling items ----
@@ -331,8 +353,10 @@ CASES = [
     # ---- the digest note itself ----
     Case(
         "a calendar read failure takes the whole digest down with it",
-        [('\tevents, calErr := c.todaysCalendar()\n\tif calErr != nil {\n\t\tlog.Printf("reminder-coordinator: calendar read failed, digest will note it: %v", calErr)\n\t}',
-          '\tevents, calErr := c.todaysCalendar()\n\tif calErr != nil {\n\t\treturn fmt.Errorf("calendar: %w", calErr)\n\t}')],
+        # Re-aimed 2026-09-25: main added a comment and a Degraded.Record under the
+        # log line, so the needle is the log line alone.
+        [('\t\tlog.Printf("reminder-coordinator: calendar read failed, digest will note it: %v", calErr)\n',
+          '\t\treturn fmt.Errorf("calendar: %w", calErr)\n')],
     ),
     Case(
         "the digest note is found by a tag nothing wrote, so each tick creates a second note",
@@ -462,13 +486,17 @@ CASES = [
     ),
     Case(
         "the default noteboard port moves off 8191, so the source of truth is unreachable",
-        [('"noteboard-url", envOr(lookupEnvironment, "NOTEBOARD_URL", "http://localhost:8191")',
-          '"noteboard-url", envOr(lookupEnvironment, "NOTEBOARD_URL", "http://localhost:8192")')],
+        # Re-aimed 2026-09-25: the default moved into internal/config's settings
+        # registry, so the drift that can happen HERE is the flag not reading it.
+        [('"noteboard-url", settings.String(schedulerconfig.SettingNoteboardURL),',
+          '"noteboard-url", "http://localhost:8192",')],
     ),
     Case(
         "the default dash port moves off 8101, so the calendar mirror talks to nothing",
-        [('"dash-url", envOr(lookupEnvironment, "DASH_URL", "http://localhost:8101")',
-          '"dash-url", envOr(lookupEnvironment, "DASH_URL", "http://localhost:8100")')],
+        # Re-aimed 2026-09-25: the default moved into internal/config's settings
+        # registry, so the drift that can happen HERE is the flag not reading it.
+        [('"dash-url", settings.String(schedulerconfig.SettingDashURL),',
+          '"dash-url", "http://localhost:8100",')],
     ),
     Case(
         "the default scope tag empties, so every open todo on the box is pulled into the personal digest",
@@ -477,8 +505,10 @@ CASES = [
     Case(
         "the default timezone stops naming a loadable zone, so the binary log.Fatalf's on startup "
         "and reminds the user of nothing at all",
-        [('"tz", envOr(lookupEnvironment, "REMINDER_TZ", "America/Los_Angeles")',
-          '"tz", envOr(lookupEnvironment, "REMINDER_TZ", "America/Los_Angles")')],
+        # Re-aimed 2026-09-25: the default moved into internal/config's settings
+        # registry, so the drift that can happen HERE is the flag not reading it.
+        [('"tz", settings.String(schedulerconfig.SettingTimezone),',
+          '"tz", "America/Los_Angles",')],
     ),
     Case(
         "the default lookahead shrinks to a day, so a weekly template materializes nothing until "
@@ -494,13 +524,14 @@ CASES = [
     Case(
         "the herald binary's default path drops the bin/ directory, so the one nudge per tick "
         "fails to launch while the digest note still looks healthy",
-        [('"ASK_BIN", filepath.Join(homeDirectory, "bin", "ask")',
-          '"ASK_BIN", filepath.Join(homeDirectory, "ask")')],
+        # Re-aimed 2026-09-25: the default moved into internal/config's settings
+        # registry, so the drift that can happen HERE is the flag not reading it.
+        [('"ask", settings.String(schedulerconfig.SettingAskPath),',
+          '"ask", strings.TrimSuffix(settings.String(schedulerconfig.SettingAskPath), "bin/ask")+"ask",')],
     ),
-    Case(
-        "envOr prefers its fallback over the environment",
-        [('if v := lookupEnvironment(key); v != "" {', 'if v := lookupEnvironment(key); v == "" {')],
-    ),
+    # Deleted 2026-09-25: "envOr prefers its fallback over the environment".
+    # envOr is gone; which of the environment and the default wins is decided
+    # by llm-bridge's servicesettings, outside the target.
     Case(
         "the digest hour and minute swap on the way to the coordinator, so 7:30 becomes 30:07",
         [("DigestAt:  dailyTime{Hour: c.digestHour, Minute: c.digestMinute},",
@@ -508,8 +539,12 @@ CASES = [
     ),
     Case(
         "the two base URLs swap, so the coordinator asks noteboard for calendar events and dash for todos",
-        [('noteboard: &NoteboardClient{BaseURL: strings.TrimRight(c.noteboardURL, "/")},\n\t\tcalendar:  &GoogleCalendarMirror{DashURL: strings.TrimRight(c.dashURL, "/")},',
-          'noteboard: &NoteboardClient{BaseURL: strings.TrimRight(c.dashURL, "/")},\n\t\tcalendar:  &GoogleCalendarMirror{DashURL: strings.TrimRight(c.noteboardURL, "/")},')],
+        # Re-aimed 2026-09-25: the mirror literal gained two fields, so the swap is
+        # two edits, one per client.
+        [('&NoteboardClient{BaseURL: strings.TrimRight(c.noteboardURL, "/")}',
+          '&NoteboardClient{BaseURL: strings.TrimRight(c.dashURL, "/")}'),
+         ('&GoogleCalendarMirror{DashURL: strings.TrimRight(c.dashURL, "/"),',
+          '&GoogleCalendarMirror{DashURL: strings.TrimRight(c.noteboardURL, "/"),')],
     ),
     Case(
         "the noteboard base URL keeps its trailing slash, so every request path doubles its first slash",
@@ -518,8 +553,8 @@ CASES = [
     ),
     Case(
         "the dash base URL keeps its trailing slash",
-        [('&GoogleCalendarMirror{DashURL: strings.TrimRight(c.dashURL, "/")}',
-          '&GoogleCalendarMirror{DashURL: c.dashURL}')],
+        [('&GoogleCalendarMirror{DashURL: strings.TrimRight(c.dashURL, "/"),',
+          '&GoogleCalendarMirror{DashURL: c.dashURL,')],
     ),
     Case(
         "the coordinator's clock is left in UTC instead of the digest zone, so the day rolls over "
@@ -565,7 +600,8 @@ CASES = [
     ),
     Case(
         "main maps -h to the failure exit code",
-        [("if errors.Is(err, flag.ErrHelp) {\n\t\t\tos.Exit(0)", "if errors.Is(err, flag.ErrHelp) {\n\t\t\tos.Exit(2)")],
+        # Re-aimed 2026-09-25: main moved the exit-code mapping into run().
+        [("if errors.Is(err, flag.ErrHelp) {\n\t\t\treturn 0", "if errors.Is(err, flag.ErrHelp) {\n\t\t\treturn 2")],
         expected_unnoticed="what main() still holds after the seam: the mapping from parseFlags's "
                            "error to an exit code, and its choice of os.Getenv and os.UserHomeDir as "
                            "the real arguments. Nothing in a test can call main, so this is the "
@@ -583,62 +619,136 @@ CASES = [
     ),
     Case(
         "the whole Herald process launch is scrambled — the -from and -title flags swap",
-        [('command := exec.Command(h.AskPath, "-from", from, "-title", title, message)',
-          'command := exec.Command(h.AskPath, "-title", from, "-from", title, message)')],
+        # Re-aimed 2026-09-25: Relay builds its argv in steps now (-session or
+        # -title), so the swap is two edits.
+        [('arguments := []string{"-from", from}', 'arguments := []string{"-title", from}'),
+         ('arguments = append(arguments, "-title", title)', 'arguments = append(arguments, "-from", title)')],
         expected_unnoticed="the suite injects fakeHerald through the heraldRelay interface; the "
                            "concrete Herald never runs, so it cannot spawn `ask` wrongly in a test. "
                            "Falsified by a test that points AskPath at a script and reads its argv.",
     ),
+    # Split 2026-09-25: this was ONE case declared unnoticed because the concrete
+    # noteboard client never ran in a test. Main's noteboard_protocol_test.go drives it at an
+    # httptest server now, the bundle went CAUGHT and its declaration went stale,
+    # and a bundle that goes red says nothing about each of its edits, so each
+    # edit is its own row.
     Case(
-        "the ENTIRE concrete NoteboardClient is broken at once — every list path, "
-        "every write verb, and the request builder under them",
-        [
-            ('"/api/items?type=todo&status=open&tag=%s&limit=500"', '"/api/items?type=todo&status=open&tag=%s&limit=5"'),
-            ('for _, status := range []string{"open", "done", "archived"} {', 'for _, status := range []string{"open"} {'),
-            ("\t\tif item.Schedule != nil {\n\t\t\tscheduled = append(scheduled, item)",
-             "\t\tif item.Schedule == nil {\n\t\t\tscheduled = append(scheduled, item)"),
-            ('return n.list("/api/items?parent_id=" + parentID + "&limit=500")',
-             'return n.list("/api/items?parent_id=" + parentID + "&limit=1")'),
-            ("return items[0], nil", "return items[len(items)-1], nil"),
-            ('if err := n.do("POST", "/api/items", req, &created); err != nil {',
-             'if err := n.do("PUT", "/api/items", req, &created); err != nil {'),
-            ('return n.do("PATCH", "/api/items/"+id, fields, nil)', 'return n.do("POST", "/api/items/"+id, fields, nil)'),
-            ('return n.Patch(id, map[string]any{"schedule": schedule})', 'return n.Patch(id, map[string]any{"schedules": schedule})'),
-            ('if err := n.do("GET", path, nil, &items); err != nil {', 'if err := n.do("HEAD", path, nil, &items); err != nil {'),
-            ("request, err := http.NewRequest(method, n.BaseURL+path, payload)",
-             'request, err := http.NewRequest(method, n.BaseURL+path+"&broken=1", payload)'),
-        ],
-        expected_unnoticed="every one of these ten methods reaches the coordinator through the "
-                           "noteboardAPI interface, and the suite passes fakeNoteboard. The concrete "
-                           "client is never constructed in a test, so nothing here can go red — "
-                           "including the SetSchedule key `schedules`, which noteboard would decode "
-                           "non-strictly and answer 200 to. This is deliberately ONE case rather than "
-                           "ten: the claim is about the whole client, and ten identical declarations "
-                           "would read as ten separate measurements. Falsified by any test that builds "
-                           "a NoteboardClient against an httptest server — which is exactly what card "
-                           "d80db401 and branch test/concrete-clients-speak-the-real-protocol are for.",
+        'NoteboardClient: ListOpen asks for 5 items, not 500, so a board past five open todos is silently cut',
+        [('"type": {"todo"}, "status": {"open"}, "tag": {tag}, "limit": {"500"},',
+          '"type": {"todo"}, "status": {"open"}, "tag": {tag}, "limit": {"5"},')],
     ),
     Case(
-        "the ENTIRE concrete GoogleCalendarMirror is broken at once — token resolution, "
-        "the list decoder, both write verbs, the payload and the authorization header",
-        [
-            ('if token, found := strings.CutPrefix(field, "DASH_TOKEN="); found {',
-             'if token, found := strings.CutPrefix(field, "DASH_TOKENS="); found {'),
-            ('if resp.Error != "" {', 'if resp.Error == "" {'),
-            ('if created.ID == "" {', 'if created.ID != "" {'),
-            ('return g.do(token, "PUT", "/api/calendar/google/"+eventID, eventPayload(item), nil)',
-             'return g.do(token, "POST", "/api/calendar/google/"+eventID, eventPayload(item), nil)'),
-            ('httpErr.StatusCode == http.StatusGone ||', 'httpErr.StatusCode == http.StatusBadRequest ||'),
-            ('"summary": "📋 " + item.Title,', '"summary": item.Title,'),
-            ('request.Header.Set("Authorization", "Bearer "+token)', 'request.Header.Set("Authorization", "Bearer"+token)'),
-        ],
-        expected_unnoticed="same shape as the NoteboardClient case: the coordinator holds a "
-                           "calendarMirror interface and the suite passes fakeCalendar, whose "
-                           "ResolveDashToken returns a constant and whose ListEvents ignores its "
-                           "window. The concrete mirror never runs, so a missing Bearer space and a "
-                           "410 that is no longer treated as already-deleted are both invisible. "
-                           "Falsified by a test that drives GoogleCalendarMirror at an httptest "
-                           "server standing in for the dash proxy.",
+        'NoteboardClient: ListAllStatuses reads only open items, so done and archived ones vanish',
+        [('for _, status := range []string{"open", "done", "archived"} {',
+          'for _, status := range []string{"open"} {')],
+    ),
+    Case(
+        'NoteboardClient: ListScheduled keeps the items WITHOUT a schedule',
+        [('\t\tif item.Schedule != nil {\n\t\t\tscheduled = append(scheduled, item)',
+          '\t\tif item.Schedule == nil {\n\t\t\tscheduled = append(scheduled, item)')],
+        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
+                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
+                           "pins it in client_protocol_test.go; porting that file should turn this "
+                           "declaration STALE, and the row then loses it.",
+    ),
+    Case(
+        "NoteboardClient: ListChildren asks for one child, so a template's second occurrence is invisible",
+        [('"parent_id": {parentID}, "limit": {"500"},',
+          '"parent_id": {parentID}, "limit": {"1"},')],
+    ),
+    Case(
+        'NoteboardClient: FindByTag returns the last match instead of the first',
+        [('return items[0], nil',
+          'return items[len(items)-1], nil')],
+        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
+                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
+                           "pins it in client_protocol_test.go; porting that file should turn this "
+                           "declaration STALE, and the row then loses it.",
+    ),
+    Case(
+        'NoteboardClient: CreateItem sends PUT, not POST',
+        [('if err := n.do("POST", "/api/items", req, &created); err != nil {',
+          'if err := n.do("PUT", "/api/items", req, &created); err != nil {')],
+    ),
+    Case(
+        'NoteboardClient: Patch sends POST, not PATCH',
+        [('return n.do("PATCH", itemPath(id), fields, nil)',
+          'return n.do("POST", itemPath(id), fields, nil)')],
+    ),
+    Case(
+        'NoteboardClient: SetSchedule writes the key `schedules`, which noteboard ignores and answers 200 to',
+        [('return n.Patch(id, map[string]any{"schedule": schedule})',
+          'return n.Patch(id, map[string]any{"schedules": schedule})')],
+        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
+                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
+                           "pins it in client_protocol_test.go; porting that file should turn this "
+                           "declaration STALE, and the row then loses it.",
+    ),
+    Case(
+        'NoteboardClient: list sends HEAD, not GET',
+        [('if err := n.do("GET", path, nil, &items); err != nil {',
+          'if err := n.do("HEAD", path, nil, &items); err != nil {')],
+    ),
+    Case(
+        'NoteboardClient: the request builder appends a stray query parameter to every path',
+        [('request, err := http.NewRequest(method, n.BaseURL+path, payload)',
+          'request, err := http.NewRequest(method, n.BaseURL+path+"&broken=1", payload)')],
+    ),
+    # Split 2026-09-25: this was ONE case declared unnoticed because the concrete
+    # calendar client never ran in a test. Main's calendar_protocol_test.go drives it at an
+    # httptest server now, the bundle went CAUGHT and its declaration went stale,
+    # and a bundle that goes red says nothing about each of its edits, so each
+    # edit is its own row.
+    Case(
+        'GoogleCalendarMirror: token resolution looks for DASH_TOKENS=, so it never finds the token',
+        [('if token, found := strings.CutPrefix(field, "DASH_TOKEN="); found {',
+          'if token, found := strings.CutPrefix(field, "DASH_TOKENS="); found {')],
+        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
+                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
+                           "pins it in client_protocol_test.go; porting that file should turn this "
+                           "declaration STALE, and the row then loses it.",
+    ),
+    Case(
+        'GoogleCalendarMirror: the list decoder treats an error response as success and success as an error',
+        [('if resp.Error != "" {',
+          'if resp.Error == "" {')],
+    ),
+    Case(
+        'GoogleCalendarMirror: CreateEvent refuses every event that came back WITH an id',
+        [('if created.ID == "" {',
+          'if created.ID != "" {')],
+    ),
+    Case(
+        'GoogleCalendarMirror: UpdateEvent sends POST, not PUT',
+        [('return g.do(token, "PUT", calendarEventPath(eventID), eventPayload(item), nil)',
+          'return g.do(token, "POST", calendarEventPath(eventID), eventPayload(item), nil)')],
+        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
+                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
+                           "pins it in client_protocol_test.go; porting that file should turn this "
+                           "declaration STALE, and the row then loses it.",
+    ),
+    Case(
+        'GoogleCalendarMirror: DeleteEvent stops treating 410 Gone as already deleted',
+        [('httpErr.StatusCode == http.StatusGone ||',
+          'httpErr.StatusCode == http.StatusBadRequest ||')],
+    ),
+    Case(
+        "GoogleCalendarMirror: the event payload loses its 📋 prefix, so mirrored todos read like the user's own events",
+        [('"summary": "📋 " + item.Title,',
+          '"summary": item.Title,')],
+        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
+                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
+                           "pins it in client_protocol_test.go; porting that file should turn this "
+                           "declaration STALE, and the row then loses it.",
+    ),
+    Case(
+        'GoogleCalendarMirror: the authorization header loses the space after Bearer',
+        [('request.Header.Set("Authorization", "Bearer "+token)',
+          'request.Header.Set("Authorization", "Bearer"+token)')],
+        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
+                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
+                           "pins it in client_protocol_test.go; porting that file should turn this "
+                           "declaration STALE, and the row then loses it.",
     ),
 
     # ---- what the herald nudge says, and what it is allowed to leave out ----
