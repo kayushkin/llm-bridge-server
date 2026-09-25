@@ -749,11 +749,34 @@ func (c *Client) ListCardLinks(cardID string) ([]CardLink, error) {
 	return links, nil
 }
 
+// MoveResult reports what a move did beyond relocating the card.
+//
+// When the destination column has auto_status set, kanban-store also PATCHes
+// the noteboard item's status to match. It treats a failure there as
+// non-fatal — the move itself succeeded on the board — so it answers 200 and
+// names the failure in the body instead. AutoStatusApplied carries the status
+// it set; AutoStatusError carries what went wrong.
+//
+// Both are empty for a column with no auto_status, which is the ordinary case
+// (Backlog and In Progress carry none). So an empty AutoStatusApplied does not
+// mean the patch failed — only a non-empty AutoStatusError does.
+//
+// A caller that ignores AutoStatusError leaves the two stores disagreeing with
+// nothing reporting it: the card sits in Done on the board while the noteboard
+// item, which is the source of truth for card content, is still open.
+type MoveResult struct {
+	AutoStatusApplied string `json:"auto_status_applied"`
+	AutoStatusError   string `json:"auto_status_error"`
+}
+
 // MoveCard moves a card to a different column on the given board. position
 // defaults to 0 (top); pass 0 if you don't care about relative ordering.
-// If the destination column has auto_status set, the response will indicate
-// whether the noteboard status patch succeeded.
-func (c *Client) MoveCard(cardID, boardID, columnID string, position float64) error {
+//
+// The returned error covers the move itself, including kanban-store's 409 when
+// the destination column is at its WIP limit. A failed auto-status patch is
+// NOT an error — the move succeeded — and is reported in the MoveResult, which
+// the caller must check.
+func (c *Client) MoveCard(cardID, boardID, columnID string, position float64) (MoveResult, error) {
 	payload := map[string]any{
 		"board_id":  boardID,
 		"column_id": columnID,
@@ -764,13 +787,19 @@ func (c *Client) MoveCard(cardID, boardID, columnID string, position float64) er
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return MoveResult{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return statusErr("move card", resp)
+		return MoveResult{}, statusErr("move card", resp)
 	}
-	return nil
+	var result MoveResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		// The move landed; only the report of what else it did is unreadable.
+		// Say so rather than claim the auto-status patch was clean.
+		return MoveResult{}, fmt.Errorf("move card succeeded but its response could not be read: %w", err)
+	}
+	return result, nil
 }
 
 // PatchCard updates fields on the noteboard item behind a card. kanban-store

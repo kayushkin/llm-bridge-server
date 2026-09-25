@@ -241,10 +241,14 @@ func main() {
 				}
 			}
 		}
-		if err := kc.MoveCard(c.Placement.CardID, board.ID, target, 0); err != nil {
+		moveResult, err := kc.MoveCard(c.Placement.CardID, board.ID, target, 0)
+		if err != nil {
 			log.Printf("[%s] move card: %v", title, err)
 			errors++
 			continue
+		}
+		if moveResult.AutoStatusError != "" {
+			log.Printf("[%s] moved card but its noteboard status was not set to match: %s", title, moveResult.AutoStatusError)
 		}
 		moved++
 	}

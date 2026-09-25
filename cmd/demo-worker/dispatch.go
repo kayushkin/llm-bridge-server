@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/slava/scheduler/internal/demosession"
@@ -97,8 +98,12 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 				"demo-worker", actorPrefixAgent+identity.Slug); err != nil {
 				return fmt.Errorf("link session %s: %w", sessionID, err)
 			}
-			if err := kc.MoveCard(cardID, workBoard.ID, inProgress, 0); err != nil {
+			moveResult, err := kc.MoveCard(cardID, workBoard.ID, inProgress, 0)
+			if err != nil {
 				return fmt.Errorf("move %s: %w", cardID, err)
+			}
+			if moveResult.AutoStatusError != "" {
+				fmt.Fprintf(os.Stderr, "      WARNING moved %s to In Progress but its noteboard status was not set to match: %s\n", shortID(cardID), moveResult.AutoStatusError)
 			}
 			fmt.Printf("      session %s\n", sessionID)
 			fired++

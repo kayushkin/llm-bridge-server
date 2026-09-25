@@ -524,8 +524,12 @@ func markQueueCardDispatched(qc *kanbanclient.Client, cand *queueCandidate, p pr
 	if err := qc.AddCardLink(cand.cardID, "session", sessionID, kanbanCardOrigin); err != nil {
 		return fmt.Errorf("add session link: %w", err)
 	}
-	if err := qc.MoveCard(cand.cardID, qc.BoardID, inProgressID, 0); err != nil {
+	moveResult, err := qc.MoveCard(cand.cardID, qc.BoardID, inProgressID, 0)
+	if err != nil {
 		return fmt.Errorf("move to In Progress: %w", err)
+	}
+	if moveResult.AutoStatusError != "" {
+		log.Printf("[%s] moved to In Progress but its noteboard status was not set to match: %s", cand.cardID, moveResult.AutoStatusError)
 	}
 	note := fmt.Sprintf(
 		"\n\n---\n_Dispatched by autoworker at %s — provider=%s harness=%s instance=%s session=`%s`_\n",

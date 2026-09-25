@@ -739,9 +739,13 @@ func applyExisting(kc *kanbanclient.Client, sess session, report *Report) {
 			log.Printf("[%s] column %q missing for existing card update; skipping", sess.SessionID, colName)
 			continue
 		}
-		if err := kc.MoveCard(ec.CardID, kc.BoardID, colID, 0); err != nil {
+		moveResult, err := kc.MoveCard(ec.CardID, kc.BoardID, colID, 0)
+		if err != nil {
 			log.Printf("[%s] move card %s → %s: %v", sess.SessionID, ec.CardID, colName, err)
 			continue
+		}
+		if moveResult.AutoStatusError != "" {
+			log.Printf("[%s] moved card %s to %s but its noteboard status was not set to match: %s", sess.SessionID, ec.CardID, colName, moveResult.AutoStatusError)
 		}
 		body := ec.Summary
 		if ec.Blocker != "" {

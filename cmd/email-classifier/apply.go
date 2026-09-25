@@ -455,8 +455,12 @@ func (a *applier) applyCardUpdate(upd cardUpdate) error {
 		if !ok {
 			return fmt.Errorf("column %q missing on board", wantColumn)
 		}
-		if err := a.kc.MoveCard(card.ID, a.kc.BoardID, colID, 0); err != nil {
+		moveResult, err := a.kc.MoveCard(card.ID, a.kc.BoardID, colID, 0)
+		if err != nil {
 			return fmt.Errorf("move to %s: %w", wantColumn, err)
+		}
+		if moveResult.AutoStatusError != "" {
+			log.Printf("[email] moved card %q to %s but its noteboard status was not set to match: %s", card.Title, wantColumn, moveResult.AutoStatusError)
 		}
 		log.Printf("[email] moved card %q: %s -> %s", card.Title, card.ColumnName, wantColumn)
 		card.ColumnName = wantColumn

@@ -230,9 +230,13 @@ func run(options runOptions) error {
 			if options.DryRun {
 				continue
 			}
-			if err := kc.MoveCard(e.CardID, board.ID, targetCol, 0); err != nil {
+			moveResult, err := kc.MoveCard(e.CardID, board.ID, targetCol, 0)
+			if err != nil {
 				log.Printf("[%s] move child to %s: %v", p.title(), targetName, err)
 				continue
+			}
+			if moveResult.AutoStatusError != "" {
+				log.Printf("[%s] moved child %s to %s but its noteboard status was not set to match: %s", p.title(), shortID(e.CardID), targetName, moveResult.AutoStatusError)
 			}
 			closed++
 		}
@@ -255,9 +259,13 @@ func run(options runOptions) error {
 		if err := kc.PatchCardBody(p.cardID, body+suffix); err != nil {
 			log.Printf("[%s] patch parent body: %v (continuing to move)", p.title(), err)
 		}
-		if err := kc.MoveCard(p.cardID, board.ID, colByName[columnDone], 0); err != nil {
+		moveResult, err := kc.MoveCard(p.cardID, board.ID, colByName[columnDone], 0)
+		if err != nil {
 			log.Printf("[%s] move parent to Done: %v", p.title(), err)
 			continue
+		}
+		if moveResult.AutoStatusError != "" {
+			log.Printf("[%s] moved parent to Done but its noteboard status was not set to match: %s", p.title(), moveResult.AutoStatusError)
 		}
 		rolled++
 	}
@@ -376,9 +384,13 @@ func (d *backlogDispatcher) dispatchBacklog(parents []scopedParent) (dispatched 
 				notDispatched(fmt.Errorf("session %s was published but linking it to the card failed: %w", sessionID, err))
 				continue
 			}
-			if err := d.kanban.MoveCard(childID, d.board.ID, d.inProgressColumnID, 0); err != nil {
+			moveResult, err := d.kanban.MoveCard(childID, d.board.ID, d.inProgressColumnID, 0)
+			if err != nil {
 				notDispatched(fmt.Errorf("session %s was published and linked but moving the card to In Progress failed: %w", sessionID, err))
 				continue
+			}
+			if moveResult.AutoStatusError != "" {
+				log.Printf("moved %s to In Progress but its noteboard status was not set to match: %s", shortID(childID), moveResult.AutoStatusError)
 			}
 			dispatched++
 		}

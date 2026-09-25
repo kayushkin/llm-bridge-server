@@ -204,10 +204,14 @@ func reconcileStatusWithColumn(kc *kanbanclient.Client, state *boardState, gate 
 			result.Skipped++
 			continue
 		}
-		if err := kc.MoveCard(card.ID, kc.BoardID, colID, 0); err != nil {
+		moveResult, err := kc.MoveCard(card.ID, kc.BoardID, colID, 0)
+		if err != nil {
 			log.Printf("[email] reconcile: move %q to %s failed: %v", card.Title, wantColumn, err)
 			result.Skipped++
 			continue
+		}
+		if moveResult.AutoStatusError != "" {
+			log.Printf("[email] reconcile: moved %q to %s but its noteboard status was not set to match: %s", card.Title, wantColumn, moveResult.AutoStatusError)
 		}
 		log.Printf("[email] reconcile: %q status=%s, moved %s -> %s",
 			card.Title, card.Status, card.ColumnName, wantColumn)
