@@ -425,6 +425,249 @@ CASES = [
         "the cooldown state is written somewhere the next tick does not read",
         [("os.WriteFile(path, data, 0644)", 'os.WriteFile(path+".tmp", data, 0644)')],
     ),
+
+    # ================= the queue, the spend ceiling, publish, limits, register =================
+    #
+    # Ported from e0f686a5, 4e4a0b93 and 145c5bae: the branch's rows re-aimed
+    # at main's code. Main names the kanban vocabulary with its own constants
+    # (autoworkerQueueColumnFrom, "session") rather than internal/kanbanvocab.
+
+    # -- the hold gate: the one place the queue path re-applies it --
+    Case(
+        "the hold gate stops firing, so a card the user parked is dispatched anyway",
+        [('if heldAt, _ := c.Item["held_at"].(string); heldAt != "" {',
+          'if heldAt, _ := c.Item["held_at"].(string); heldAt == "" && false {')],
+    ),
+    Case(
+        "the hold gate reads a key nothing writes, so every card looks unheld",
+        [('c.Item["held_at"].(string); heldAt != ""', 'c.Item["hold_at"].(string); heldAt != ""')],
+    ),
+    Case(
+        "a held card is skipped but the loop returns it anyway instead of moving on",
+        [('log.Printf("queue: skip card %s — HELD since %s (%s)", c.Placement.CardID, heldAt, reason)\n\t\t\tcontinue',
+          'log.Printf("queue: skip card %s — HELD since %s (%s)", c.Placement.CardID, heldAt, reason)')],
+    ),
+
+    # -- selection --
+    Case(
+        "a card with no noteboard item is dispatched, so the prompt has no task in it",
+        [("if c.Item == nil {", "if c.Item == nil && false {")],
+        expected_unnoticed="a behavioural no-op, not a coverage hole. Indexing a nil map in "
+                           "Go yields the zero value rather than panicking, so a card with no "
+                           "item has an empty title and the NEXT guard skips it for that "
+                           "reason instead. Only the log line tells the two guards apart",
+    ),
+    Case(
+        "a card with a blank title is dispatched",
+        [('if strings.TrimSpace(title) == "" {', 'if strings.TrimSpace(title) == "" && false {')],
+    ),
+    Case(
+        "selection reads the wrong column, so anything already In Progress is re-dispatched",
+        [("if cv.Column.Name == autoworkerQueueColumnFrom {",
+          "if cv.Column.Name == autoworkerQueueColumnInProgress {")],
+    ),
+    Case(
+        "a card over its ceiling is skipped but never held, so it is re-examined every tick forever",
+        [('if err := qc.HoldCard(cand.cardID, "spend ceiling reached"); err != nil {',
+          'if err := error(nil); err != nil {')],
+    ),
+    Case(
+        "the resolved remaining budget is dropped, so a capped card dispatches uncapped",
+        [("\t\tcand.maxBudgetUSD = budget\n\t\treturn cand, nil", "\t\t_ = budget\n\t\treturn cand, nil")],
+    ),
+
+    # -- the spend ceiling: the money path --
+    Case(
+        "a spent-out ceiling still dispatches, because the remaining check drifts",
+        [("if remaining <= 0 {", "if remaining < -1000 {")],
+    ),
+    Case(
+        "spend is counted over the CARD's subtree, not the ceiling owner's, so each sibling gets the whole pot",
+        [("spent, err := tree.SubtreeSpendUSD(ownerID, sessionsForItem(qc), cost)",
+          "spent, err := tree.SubtreeSpendUSD(cand.cardID, sessionsForItem(qc), cost)")],
+    ),
+    Case(
+        "already-spent money stops being subtracted, so every session gets the full ceiling again",
+        [("remaining := ceiling - spent", "remaining := ceiling - spent*0")],
+    ),
+    Case(
+        "an unreadable spend tree dispatches a CAPPED card uncapped instead of holding it",
+        [("if _, hasOwn := cardSpendCeiling(cand.item); !hasOwn {",
+          "if _, hasOwn := cardSpendCeiling(cand.item); hasOwn || !hasOwn {")],
+    ),
+    Case(
+        "an unreadable spend tree holds work that never had a ceiling to honour",
+        [("\t\t\treturn 0, true\n\t\t}\n\t\tlog.Printf(\"queue: card %s is capped but the spend tree is unreadable",
+          "\t\t\treturn 0, false\n\t\t}\n\t\tlog.Printf(\"queue: card %s is capped but the spend tree is unreadable")],
+    ),
+    Case(
+        "an unreadable SPEND (tree fine, links not) dispatches uncapped instead of holding",
+        [("\t\t\tcand.cardID, ceiling, err)\n\t\treturn 0, false", "\t\t\tcand.cardID, ceiling, err)\n\t\treturn 0, true")],
+    ),
+    Case(
+        "the ancestor walk is skipped, so an inherited ceiling stops applying to a child",
+        [("ceiling, ownerID, ok := tree.EffectiveCeiling(cand.cardID)",
+          "ceiling, ownerID, ok := tree.EffectiveCeiling(cand.cardID)\n\tif ownerID != cand.cardID {\n\t\treturn 0, true\n\t}")],
+    ),
+    Case(
+        "held ancestors drop out of the tree, so a held parent's ceiling stops covering its children",
+        [('noteboardURL + "/api/items?include_held=true&limit=10000"', 'noteboardURL + "/api/items?limit=10000"')],
+    ),
+    Case(
+        "the item page shrinks to noteboard's default, so most of the parent chain is missing",
+        [("include_held=true&limit=10000", "include_held=true&limit=50")],
+    ),
+    Case(
+        "the parent chain is dropped, so a child never inherits its ancestor's ceiling",
+        [("\t\tif it.ParentID != nil {\n\t\t\tparent = *it.ParentID\n\t\t}", "\t\t_ = it.ParentID")],
+    ),
+    Case(
+        "a bridge that cannot report spend is read as a bridge reporting no spend",
+        [("\tif resp.StatusCode != http.StatusOK {\n\t\treturn nil, fmt.Errorf(\"bridge aggregates: %s\", resp.Status)",
+          "\tif resp.StatusCode != http.StatusOK && false {\n\t\treturn nil, fmt.Errorf(\"bridge aggregates: %s\", resp.Status)")],
+    ),
+    Case(
+        "the spend read asks llm-bridge for a route it does not serve",
+        [('bridgeURL + "/sessions/aggregates"', 'bridgeURL + "/sessions/aggregate"')],
+    ),
+    Case(
+        "a card's own ceiling of null reads as a ceiling of zero",
+        [("\tif !ok || raw == nil {\n\t\treturn 0, false\n\t}", "\tif !ok {\n\t\treturn 0, false\n\t}")],
+        expected_unnoticed="a behavioural no-op. A JSON null decodes to a nil interface, which "
+                           "fails the float64 assertion two lines down and returns the same "
+                           "(0, false); no test can tell the two spellings apart",
+    ),
+    Case(
+        # 4e4a0b93: the fixture must give the non-session link a cost of its own,
+        # or the sum deduplicates and the mutation walks through.
+        "links of every kind are counted as sessions, so unrelated links inflate the spend",
+        [('if l.EntityType == "session" {', 'if l.EntityType != "" {')],
+    ),
+
+    # -- resolveSessionBudget precedence --
+    Case(
+        "the fleet default overrides the card's own ceiling",
+        [("if cand != nil && cand.maxBudgetUSD > 0 {\n\t\treturn cand.maxBudgetUSD,",
+          "if cand != nil && cand.maxBudgetUSD > 0 && fleetDefaultUSD == 0 {\n\t\treturn cand.maxBudgetUSD,")],
+    ),
+
+    # -- applySessionSpendCeiling: both enforcers, never a zero --
+    Case(
+        "only the harness-native ceiling is written, so codex sessions run uncapped",
+        [("\tcreate.MaxBudget = &maxBudgetUSD\n", "")],
+    ),
+    Case(
+        "only the server-side ceiling is written, so Claude Code never stops itself mid-call",
+        [("\tcreate.HarnessConfig = harnessConfig\n", "\t_ = harnessConfig\n")],
+    ),
+    Case(
+        "a zero ceiling is written through, which both enforcers read as UNLIMITED",
+        [("if maxBudgetUSD <= 0 {", "if maxBudgetUSD < 0 {")],
+    ),
+    Case(
+        "the harness-native ceiling is spelled with a key llm-bridge-claudecode does not read",
+        [('map[string]any{"max_budget_usd": maxBudgetUSD}', 'map[string]any{"maxBudgetUSD": maxBudgetUSD}')],
+    ),
+
+    # -- the dispatched prompt and the session it mints --
+    Case(
+        "the queue prompt loses the card id, so the worker cannot close what it was given",
+        [("\t\tc.cardID, c.title, body, c.cardID)", "\t\t\"\", c.title, body, \"\")")],
+    ),
+    Case(
+        "the queue prompt loses the card body, so only the title survives",
+        [("\tbody := strings.TrimSpace(c.body)", "\tbody := \"\"")],
+    ),
+    Case(
+        "an empty card body renders as nothing instead of saying so",
+        [('body = "(no body — see title)"', 'body = ""')],
+    ),
+    Case(
+        "the minted session id loses the nanosecond, so two fires in one second collide",
+        [('fmt.Sprintf("autoworker-%s-%d", p.Name, now.UnixNano())',
+          'fmt.Sprintf("autoworker-%s-%d", p.Name, now.Unix())')],
+    ),
+    Case(
+        "the published session is not marked autonomous, so it is filed as a session a human is watching",
+        [("Type:        msg.SessionTypeAutonomous,", "Type:        msg.SessionTypeInteractive,")],
+    ),
+    Case(
+        "the session id published on the bus is not the one returned, so the kanban link points at nothing",
+        [("\t\treturn \"\", err\n\t}\n\treturn sessionID, nil", "\t\treturn \"\", err\n\t}\n\treturn sessionID + \"-published\", nil")],
+    ),
+
+    # -- fetchLimits: the numbers every fire is decided on --
+    Case(
+        "usage-store answering an error is read as a set of limits, so the tick fires on nothing",
+        [("\tif resp.StatusCode != 200 {\n\t\treturn nil, fmt.Errorf(\"usage-store returned %d: %s\", resp.StatusCode, string(body))",
+          "\tif resp.StatusCode != 200 && false {\n\t\treturn nil, fmt.Errorf(\"usage-store returned %d: %s\", resp.StatusCode, string(body))")],
+    ),
+    Case(
+        "the limits read asks for a route usage-store does not serve",
+        [('url := usageStoreURL + "/api/usage/limits"', 'url := usageStoreURL + "/api/usage/limit"')],
+    ),
+    Case(
+        "a 200 carrying something other than limits is read as a set of limits",
+        [("\tif err := json.Unmarshal(body, &lim); err != nil {\n\t\treturn nil, fmt.Errorf(\"unmarshal: %w\", err)",
+          "\tif err := json.Unmarshal(body, &lim); err != nil && false {\n\t\treturn nil, fmt.Errorf(\"unmarshal: %w\", err)")],
+    ),
+
+    # -- markQueueCardDispatched: recording that the fire happened --
+    Case(
+        "a dispatched card is not moved out of Queued, so the next tick dispatches it again",
+        [("inProgressID, ok := qc.ColumnsByName[autoworkerQueueColumnInProgress]",
+          "inProgressID, ok := qc.ColumnsByName[autoworkerQueueColumnFrom]")],
+    ),
+    Case(
+        "the dispatch attaches a link the spend tree does not count, so the session is free",
+        [('qc.AddCardLink(cand.cardID, "session", sessionID, kanbanCardOrigin)',
+          'qc.AddCardLink(cand.cardID, "autoworker_provider", sessionID, kanbanCardOrigin)')],
+    ),
+    Case(
+        "the dispatch note replaces the card body instead of appending, destroying the task",
+        [("qc.PatchCardBody(cand.cardID, cand.body+note)", "qc.PatchCardBody(cand.cardID, note)")],
+    ),
+    Case(
+        "a session link that could not be attached is reported as a clean dispatch",
+        [("\tif err := qc.AddCardLink(cand.cardID, \"session\", sessionID, kanbanCardOrigin); err != nil {\n\t\treturn fmt.Errorf(\"add session link: %w\", err)\n\t}",
+          "\t_ = qc.AddCardLink(cand.cardID, \"session\", sessionID, kanbanCardOrigin)")],
+    ),
+    Case(
+        "a card that could not be moved out of Queued is reported as a clean dispatch",
+        [("\tmoveResult, err := qc.MoveCard(cand.cardID, qc.BoardID, inProgressID, 0)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"move to In Progress: %w\", err)\n\t}",
+          "\tmoveResult, _ := qc.MoveCard(cand.cardID, qc.BoardID, inProgressID, 0)")],
+    ),
+    Case(
+        "the fire is stamped on the local clock, so the audit trail cannot be lined up with the bridge",
+        [("now.UTC().Format(time.RFC3339)", "now.Format(time.RFC3339)")],
+    ),
+    Case(
+        "the log id for a fire with no queue card renders empty instead of naming the absence",
+        [('\tif c == nil {\n\t\treturn "(none)"', '\tif c == nil {\n\t\treturn ""')],
+    ),
+
+    # -- -register: how this binary gets onto cron at all --
+    Case(
+        "-register registers under a name a later -register will not recognise",
+        [('"name":        "autoworker-tick",', '"name":        "autoworker-tick-v2",')],
+    ),
+    Case(
+        "-register is no longer idempotent, so every deploy adds another dispatcher",
+        [('if j.Name == "autoworker-tick" {', 'if j.Name == "autoworker-tick" && false {')],
+    ),
+    Case(
+        "the idempotence check matches loosely, so a neighbouring job reads as proof this one is registered",
+        [('if j.Name == "autoworker-tick" {', 'if strings.HasPrefix(j.Name, "autoworker") {')],
+    ),
+    Case(
+        "the tick is registered on a cadence the gates were not written for",
+        [('"schedule":    "*/30 * * * *",', '"schedule":    "*/5 * * * *",')],
+    ),
+    Case(
+        "a scheduler that refuses the job is reported as a successful registration",
+        [("\tif resp.StatusCode >= 300 {\n\t\treturn fmt.Errorf(\"scheduler returned %d: %s\", resp.StatusCode, string(body))",
+          "\tif resp.StatusCode >= 300 && false {\n\t\treturn fmt.Errorf(\"scheduler returned %d: %s\", resp.StatusCode, string(body))")],
+    ),
 ]
 
 
