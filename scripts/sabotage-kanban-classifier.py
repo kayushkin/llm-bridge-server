@@ -45,6 +45,15 @@ defaults in internal/config, which setting feeds which field in main.go — and
 three are deleted with their mechanism (the auth-store key resolve and envOr).
 Score after: 26/26 real mechanisms caught, both controls behaved, exit 0.
 
+Same night, C3b (card d1b06dd2) ported the rows the scorer branches wrote
+between 2026-08-08 and 2026-08-14 — the per-tick cap, -register, the bridge
+readers, the digest and schema, the boundary values and the quiet side — each
+re-aimed at main. The "ONE target" and "region not covered" paragraphs above
+describe the 199th pass's list; the sections below them now cover the tick.
+Score after: 86/87 real mechanisms caught, the one miss declared (budgetShare's
+unreachable guard), both controls behaved, exit 0. `--crosstable` has still not
+been taken on main.
+
 That 29 is worth reading against the card that asked for this work, which
 counted 12 flags and 8 environment reads. THE FLAGS WERE RIGHT AND THE
 ENVIRONMENT READS WERE NOT — there are six envOr call sites over six distinct
