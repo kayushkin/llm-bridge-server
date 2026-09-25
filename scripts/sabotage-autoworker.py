@@ -381,6 +381,50 @@ CASES = [
         "interpolate reads the segment above the fraction, so target runs a day ahead",
         [("if frac <= targetCurve[i].frac {", "if frac <= targetCurve[i-1].frac {")],
     ),
+
+    # ================= dry run and the cooldown file =================
+    #
+    # Ported from 3fec1ffd and e0f686a5. On the branch the first three rows were
+    # declared unnoticed because the guards sat in main() with no seam; main's
+    # run(cfg, publish) is that seam, and dryrun_test.go pins them through it.
+    Case(
+        "dry-run publishes and updates state, so a rehearsal spends money",
+        [("\t\tif !d.fire || cfg.dryRun {", "\t\tif !d.fire {")],
+    ),
+    Case(
+        "dry-run writes the cooldown state, so a rehearsal suppresses the next real fire",
+        [("\tif !cfg.dryRun {\n\t\tif err := saveState(cfg.statePath, st); err != nil {",
+          "\tif true {\n\t\tif err := saveState(cfg.statePath, st); err != nil {")],
+    ),
+    Case(
+        "dry-run bootstraps the queue board at the call site in run()",
+        [("initQueueClient(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken, cfg.dryRun)",
+          "initQueueClient(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken, false)")],
+    ),
+    Case(
+        "a real tick never saves the cooldown, so every tick fires another session",
+        [("\tif !cfg.dryRun {\n\t\tif err := saveState(cfg.statePath, st); err != nil {",
+          "\tif false {\n\t\tif err := saveState(cfg.statePath, st); err != nil {")],
+    ),
+    Case(
+        "a missing state file is an error instead of an empty state, so a fresh install never fires",
+        [("\tif os.IsNotExist(err) {\n\t\treturn &state{LastFire: map[string]int64{}}, nil\n\t}",
+          "\tif os.IsNotExist(err) {\n\t\treturn nil, err\n\t}")],
+    ),
+    Case(
+        "a state file with a null map is not repaired, so the first fire panics on write",
+        [("\tif st.LastFire == nil {\n\t\tst.LastFire = map[string]int64{}\n\t}\n\treturn &st, nil",
+          "\treturn &st, nil")],
+    ),
+    Case(
+        "a corrupt state file loads as an empty one, so every tick fires",
+        [("\tif err := json.Unmarshal(data, &st); err != nil {\n\t\treturn nil, err\n\t}\n\tif st.LastFire == nil",
+          "\t_ = json.Unmarshal(data, &st)\n\tif st.LastFire == nil")],
+    ),
+    Case(
+        "the cooldown state is written somewhere the next tick does not read",
+        [("os.WriteFile(path, data, 0644)", 'os.WriteFile(path+".tmp", data, 0644)')],
+    ),
 ]
 
 
