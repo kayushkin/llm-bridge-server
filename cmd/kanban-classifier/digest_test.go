@@ -208,3 +208,81 @@ func TestNormalizeTitle(t *testing.T) {
 		t.Error("distinct titles must not collapse — a fuzzy match would suppress real tasks")
 	}
 }
+
+// Ported from 0530193e and 59414aad (test/first-tests-for-kanban-classifier).
+//
+// Section ORDER is the fix for the original defect, not a rendering choice. The
+// budget is spent front to back, so whatever is emitted last is what falls off —
+// and the section that must never fall off is the one the model dedupes against.
+func TestBuildDigest_PutsExistingCardsAheadOfTheConversation(t *testing.T) {
+	msgs := append(longSession(40, 1400), toolCall("Bash"))
+	digest := buildDigest(session{SessionID: "br_1"}, msgs,
+		[]kanbanclient.EntityCardEntry{card("card-1", "Existing work", "b")}, digestCharBudget)
+
+	cardsAt := strings.Index(digest, "[EXISTING CARDS")
+	if cardsAt < 0 {
+		t.Fatal("the existing-cards section is missing entirely")
+	}
+	for _, later := range []string{"[USER PROMPTS", "[ASSISTANT TURNS", "[TOOL ACTIVITY"} {
+		at := strings.Index(digest, later)
+		if at < 0 {
+			t.Errorf("%s missing from the digest", later)
+			continue
+		}
+		if at < cardsAt {
+			t.Errorf("%s is emitted before [EXISTING CARDS]; the dedupe-critical section must come first "+
+				"or it is what the budget drops", later)
+		}
+	}
+}
+
+// A caller that asks for no budget at all gets the default rather than a digest
+// fitted into zero characters. `-digest-budget 0` is the reachable way in.
+//
+// It has to be asked on a LONG session. fitKeepingNewest keeps one entry however
+// small the budget, so on a short session a zero budget and the default produce
+// the same digest and the fallback is invisible.
+func TestBuildDigest_ZeroBudgetFallsBackToTheDefault(t *testing.T) {
+	msgs := longSession(40, 200)
+
+	whole := buildDigest(session{SessionID: "br_1"}, msgs, nil, digestCharBudget)
+	zero := buildDigest(session{SessionID: "br_1"}, msgs, nil, 0)
+
+	if zero != whole {
+		t.Fatalf("a zero budget produced a %d-byte digest where the default produces %d; "+
+			"0 must mean the default, not a digest fitted into nothing", len(zero), len(whole))
+	}
+	if !strings.Contains(zero, "prompt-0 ") {
+		t.Error("the zero-budget digest dropped prompts the default keeps")
+	}
+}
+
+func toolCall(name string) bridgeMessage {
+	return bridgeMessage{Role: "assistant", Events: []map[string]any{
+		{"type": "tool_call", "tool_name": name},
+	}}
+}
+
+// The tool list is the "what is it actually doing right now" signal, so it is the
+// last calls that carry it. Keeping the first fifteen describes how the session
+// opened, which the prompts already cover.
+func TestBuildToolActivitySection_KeepsTheMostRecentCalls(t *testing.T) {
+	msgs := []bridgeMessage{}
+	for i := 0; i < 20; i++ {
+		msgs = append(msgs, toolCall(fmt.Sprintf("tool-%02d", i)))
+	}
+	section := buildToolActivitySection(msgs)
+
+	if !strings.Contains(section, "tool-19") {
+		t.Error("the most recent tool call is missing")
+	}
+	if strings.Contains(section, "tool-00") {
+		t.Error("the oldest tool call survived; the section kept the first calls, not the last")
+	}
+}
+
+func TestBuildToolActivitySection_NoToolCalls(t *testing.T) {
+	if got := buildToolActivitySection([]bridgeMessage{{Role: "user", Content: "hi"}}); !strings.Contains(got, "(none)") {
+		t.Errorf("a session with no tool calls should render (none), got %q", got)
+	}
+}
