@@ -80,11 +80,32 @@ type fakeKanban struct {
 	linked  []string // card ids given a session link
 	moved   []string // card ids moved
 	patched []string // card ids whose body was patched
+	// sent is the decoded body of each write, keyed "link:<card>",
+	// "move:<card>" or "patch:<card>"; a later write to the same key replaces
+	// an earlier one.
+	sent map[string]map[string]any
+}
+
+// record keeps the decoded body of one write under kind:cardID.
+func (f *fakeKanban) record(kind, cardID string, r *http.Request) {
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		f.t.Errorf("%s %s: undecodable body: %v", kind, cardID, err)
+	}
+	if f.sent == nil {
+		f.sent = map[string]map[string]any{}
+	}
+	f.sent[kind+":"+cardID] = body
 }
 
 // fakeKanbanRoute names the kind of request a failure can be injected into.
 func fakeKanbanRoute(method, path string) string {
+	boardPath := strings.TrimPrefix(path, "/api/boards/")
 	switch {
+	case method == "GET" && strings.HasPrefix(path, "/api/boards/") && !strings.Contains(boardPath, "/"):
+		return "board"
+	case method == "GET" && strings.HasPrefix(path, "/api/boards/") && strings.HasSuffix(path, "/cards") && strings.Count(boardPath, "/") == 1:
+		return "view"
 	case method == "GET" && strings.HasPrefix(path, "/api/entities/note/") && strings.HasSuffix(path, "/tags"):
 		return "tags"
 	case method == "GET" && strings.HasPrefix(path, "/api/entities/parent_card/"):
@@ -158,10 +179,12 @@ func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(links)
 	case r.Method == "POST" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/links"):
 		f.linked = append(f.linked, strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/links"))
+		f.record("link", strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/links"), r)
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{}`))
 	case r.Method == "POST" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/move"):
 		f.moved = append(f.moved, strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/move"))
+		f.record("move", strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/move"), r)
 		w.Write([]byte(`{}`))
 	case r.Method == "GET" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/placements"):
 		placements := f.placements[strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/placements")]
@@ -171,6 +194,7 @@ func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(placements)
 	case r.Method == "PATCH" && strings.HasPrefix(path, "/api/cards/"):
 		f.patched = append(f.patched, strings.TrimPrefix(path, "/api/cards/"))
+		f.record("patch", strings.TrimPrefix(path, "/api/cards/"), r)
 		w.Write([]byte(`{}`))
 	default:
 		f.t.Errorf("unexpected kanban-store request %s %s", r.Method, path)
