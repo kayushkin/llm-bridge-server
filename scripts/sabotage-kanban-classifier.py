@@ -37,6 +37,14 @@ email-classifier plans:
 Score when filed by the 199th pass: 29/29 real mechanisms caught, both controls
 behaved, exit 0. 31 cases in the list: 29 real plus the two controls.
 
+Re-aimed 2026-09-25 (card 7e51e288): main moved configuration to
+llm-bridge/servicesettings and the model call to llm-bridge-server's oneshot
+route, so 11 rows and the known-negative control named code that was gone and
+the run aborted on its second row. Nine rows now edit main's equivalent — the
+defaults in internal/config, which setting feeds which field in main.go — and
+three are deleted with their mechanism (the auth-store key resolve and envOr).
+Score after: 26/26 real mechanisms caught, both controls behaved, exit 0.
+
 That 29 is worth reading against the card that asked for this work, which
 counted 12 flags and 8 environment reads. THE FLAGS WERE RIGHT AND THE
 ENVIRONMENT READS WERE NOT — there are six envOr call sites over six distinct
@@ -66,7 +74,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sabotage import REPO, Case, score  # noqa: E402
 
-TARGETS = [REPO / "cmd/kanban-classifier/main.go"]
+# The defaults and the variable names this binary starts with live in
+# internal/config since configuration moved to llm-bridge/servicesettings, so a
+# row about a shipped value has to edit them there. PACKAGES stays the one
+# binary: the question is whether ITS tests notice, not internal/config's.
+TARGETS = [
+    REPO / "cmd/kanban-classifier/main.go",
+    REPO / "internal/config/jobs.go",
+    REPO / "internal/config/settings.go",
+]
 PACKAGES = ["./cmd/kanban-classifier/"]
 
 
@@ -77,8 +93,8 @@ CASES = [
         [('defaultBoardName     = kanbanvocab.BoardAgentRuns', 'defaultBoardName     = "Agent run"')],
     ),
     Case(
-        "CONTROL known-negative: reword the -auth-token usage string",
-        [('"auth-store bearer token"', '"Bearer token presented to auth-store when resolving the Anthropic key."')],
+        "CONTROL known-negative: reword the -board usage string",
+        [('"Kanban board name to write cards to."', '"Name of the kanban board this binary files every session card onto."')],
         expected_unnoticed="flag usage text for a human reading -h. No test reads it and nothing "
                            "downstream parses it. This control is what proves the rows below redden "
                            "on the VALUES that ship and not on the source lines carrying them. "
@@ -107,13 +123,15 @@ CASES = [
 
     # ---- the values that decide what a tick costs ----
     Case(
-        "-model drifts to a frontier model: the cheap-model curator quietly bills like a premium one",
-        [('fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "KANBAN_CLASSIFIER_MODEL", defaultModel)',
-          'fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "KANBAN_CLASSIFIER_MODEL", "claude-opus-4-1")')],
+        "the model's environment variable is renamed: a host's KANBAN_CLASSIFIER_MODEL override "
+        "is refused as a misspelling and the job stops",
+        [('modelDefinition("KANBAN_CLASSIFIER_MODEL", DefaultKanbanClassifierModel)',
+          'modelDefinition("KANBAN_CLASSIFIER_MODEL_ID", DefaultKanbanClassifierModel)')],
     ),
     Case(
-        "defaultModel itself drifts to a frontier model: same work, many times the bill, nothing fails",
-        [('defaultModel              = "claude-haiku-4-5-20251001"', 'defaultModel              = "claude-opus-4-1"')],
+        "the default model drifts to a frontier model: same work, many times the bill, nothing fails",
+        [('DefaultKanbanClassifierModel     = "claude-haiku-4-5-20251001"',
+          'DefaultKanbanClassifierModel     = "claude-opus-4-1"')],
     ),
     Case(
         "-max drifts 10 -> 2: the session backlog drains five times slower and every tick reports success",
@@ -145,51 +163,44 @@ CASES = [
     ),
     Case(
         "-kanban-url points at noteboard: every card read and write goes to the wrong service",
-        [('"KANBAN_STORE_URL", "http://localhost:8305"', '"KANBAN_STORE_URL", "http://localhost:8191"')],
+        [('DefaultKanbanStoreURL    = "http://localhost:8305"', 'DefaultKanbanStoreURL    = "http://localhost:8191"')],
     ),
     Case(
         "-bridge-url points at kanban-store: no session is ever listed, so no tick classifies anything",
-        [('"LLM_BRIDGE_URL", "http://localhost:8160"', '"LLM_BRIDGE_URL", "http://localhost:8305"')],
+        [('DefaultBridgeURL    = "http://localhost:8160"', 'DefaultBridgeURL    = "http://localhost:8305"')],
     ),
-    Case(
-        "-auth-store-url points at the legacy apiauth port: the Anthropic key resolve fails on every tick",
-        [('"AUTH_STORE_URL", "http://localhost:8303"', '"AUTH_STORE_URL", "http://localhost:8190"')],
-    ),
-    Case(
-        "-auth-token ships as a real-looking token instead of the placeholder: "
-        "a host that never set one now sends a wrong credential rather than an obvious one",
-        [('"AUTH_STORE_TOKEN", "changeme"', '"AUTH_STORE_TOKEN", "sk-auth-store"')],
-    ),
+    # Two rows deleted on 2026-09-25 with their mechanism: -auth-store-url and
+    # -auth-token existed to resolve an Anthropic key for a direct API call, and
+    # bd8c36a replaced that call with llm-bridge-server's oneshot route.
     Case(
         "SCHEDULER_URL's default drifts to the kanban-store port: -register POSTs the job to the wrong service",
-        [('"SCHEDULER_URL", "http://localhost:8092"', '"SCHEDULER_URL", "http://localhost:8305"')],
+        [('DefaultSchedulerURL      = "http://localhost:8092"', 'DefaultSchedulerURL      = "http://localhost:8305"')],
     ),
 
-    # ---- the environment wiring: six variables, five of them interchangeable strings ----
+    # ---- the wiring: which setting feeds which field ----
     #
-    # Nothing downstream would reject a swap. kanbanclient.New takes the kanban
-    # URL positionally, resolveAnthropicKey takes AuthStoreURL and AuthToken off
-    # the same struct, and listSessions takes the bridge URL — all strings.
+    # Nothing downstream would reject a swap. Every setting is read with
+    # settings.String and lands in a string field, so the compiler cannot tell
+    # the kanban-store URL from the bridge URL or the model id.
     Case(
-        "KANBAN_STORE_URL and LLM_BRIDGE_URL swap: both are base URLs and the compiler cannot tell them apart",
-        [('fs.StringVar(&c.KanbanURL, "kanban-url", envOr(lookupEnvironment, "KANBAN_STORE_URL"',
-          'fs.StringVar(&c.KanbanURL, "kanban-url", envOr(lookupEnvironment, "LLM_BRIDGE_URL"')],
+        "-kanban-url reads the bridge URL setting: both are base URLs and the compiler cannot tell them apart",
+        [('settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL"',
+          'settings.String(schedulerconfig.SettingBridgeURL), "kanban-store base URL"')],
     ),
     Case(
-        "the auth-store URL is read from AUTH_STORE_TOKEN: the key resolve targets a token string as a host",
-        [('fs.StringVar(&c.AuthStoreURL, "auth-store-url", envOr(lookupEnvironment, "AUTH_STORE_URL"',
-          'fs.StringVar(&c.AuthStoreURL, "auth-store-url", envOr(lookupEnvironment, "AUTH_STORE_TOKEN"')],
+        "-register's scheduler URL is read from the kanban-store setting: the job is POSTed to kanban-store",
+        [('c.SchedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)',
+          'c.SchedulerURL = settings.String(schedulerconfig.SettingKanbanStoreURL)')],
     ),
     Case(
-        "the model id is read from KANBAN_STORE_URL: every classify call names a URL as its model",
-        [('fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "KANBAN_CLASSIFIER_MODEL"',
-          'fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "KANBAN_STORE_URL"')],
+        "the model id is read from the kanban-store URL setting: every classify call names a URL as its model",
+        [('fs.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingModel)',
+          'fs.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingKanbanStoreURL)')],
     ),
-    Case(
-        "envOr tests for PRESENCE instead of emptiness: an exported-but-empty variable "
-        "now beats the built-in default and every URL becomes the empty string",
-        [("	if v := lookupEnvironment(key); v != \"\" {", "	if _, v := true, lookupEnvironment(key); true {")],
-    ),
+    # envOr's presence-versus-emptiness row was deleted on 2026-09-25: envOr is
+    # gone, and an empty variable is now treated as unset inside
+    # llm-bridge/servicesettings, another repo this scorer cannot edit.
+    # TestAnEmptyEnvironmentVariableIsTreatedAsUnset still pins it from here.
 
     # ---- the derived values, which no flag registers and nothing else would catch ----
     Case(
