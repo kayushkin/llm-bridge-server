@@ -12,6 +12,7 @@
 #
 # Tunables:
 #   E2E_PORT       — listen port (default 18160)
+#   E2E_TOOL_STORE_PORT — stub tool-store port (default 18102)
 #   E2E_KEEP       — set to "1" to leave $TMP_DIR around after the run
 
 set -euo pipefail
@@ -21,9 +22,11 @@ PORT="${E2E_PORT:-18160}"
 LOG_STORE_PORT="${E2E_LOG_STORE_PORT:-18175}"
 BASE="http://127.0.0.1:$PORT"
 LOG_STORE_BASE="http://127.0.0.1:$LOG_STORE_PORT"
+TOOL_STORE_PORT="${E2E_TOOL_STORE_PORT:-18102}"
+TOOL_STORE_BASE="http://127.0.0.1:$TOOL_STORE_PORT"
 LOG_STORE_REPO="$(dirname "$REPO_DIR")/log-store"
 
-for bin in go curl jq sqlite3; do
+for bin in go curl jq sqlite3 python3; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "ERROR: required tool '$bin' not found on PATH" >&2
     exit 2
@@ -52,8 +55,9 @@ SERVER_PATH="$BIN_DIR:/usr/bin:/bin"
 
 SERVER_PID=""
 LOG_STORE_PID=""
+TOOL_STORE_PID=""
 cleanup() {
-  for pid in "$SERVER_PID" "$LOG_STORE_PID"; do
+  for pid in "$SERVER_PID" "$LOG_STORE_PID" "$TOOL_STORE_PID"; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -102,6 +106,53 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 
+step "launch stub tool-store on :$TOOL_STORE_PORT"
+# POST /sessions reads tool-store's harness tools to pin disabled_tools, and
+# refuses the session when it cannot (a master switch it cannot read is not
+# known to be off). A dead port therefore fails every create. The real
+# tool-store is not a replace-sibling, so the build audit's clean workspace has
+# no clone of it to build; and the live one must not be used, because the
+# server also POSTs the tools a harness reports, which tool-store registers.
+# The stub answers the two routes a mock session reaches with "no harness
+# tools" and "nothing new", and 500s on anything else so a new call shows up
+# in server.log instead of passing.
+python3 - "$TOOL_STORE_PORT" >"$TMP_DIR/tool-store.log" 2>&1 <<'PY' &
+import json, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
+
+class StubToolStore(BaseHTTPRequestHandler):
+    def answer(self, status, body):
+        raw = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        if urlsplit(self.path).path == "/tools":
+            self.answer(200, [])
+        else:
+            self.answer(500, {"error": "stub tool-store has no GET " + self.path})
+
+    def do_POST(self):
+        if urlsplit(self.path).path == "/harness-tools/observed":
+            self.answer(200, {"created": []})
+        else:
+            self.answer(500, {"error": "stub tool-store has no POST " + self.path})
+
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), StubToolStore).serve_forever()
+PY
+TOOL_STORE_PID=$!
+echo "    pid: $TOOL_STORE_PID"
+for _ in $(seq 1 50); do
+  if curl -fsS -o /dev/null "$TOOL_STORE_BASE/tools" 2>/dev/null; then break; fi
+  sleep 0.1
+done
+curl -fsS -o /dev/null "$TOOL_STORE_BASE/tools" \
+  || fail "stub tool-store did not come up on $TOOL_STORE_BASE: $(cat "$TMP_DIR/tool-store.log")"
+
 step "launch server on :$PORT (data dir: $DATA_DIR)"
 # The server refuses to start without a login signing key, a service token and
 # the three stores a gated request is answered from. The stores are dead ports
@@ -138,7 +189,7 @@ LLMBRIDGE_CONFORMANCE_PATH="$DATA_DIR/conformance.json" \
 LLMBRIDGE_OPERATIONS_DB="$DATA_DIR/operations.db" \
 LLMBRIDGE_IMAGES_DIR="$DATA_DIR/images" \
 LLMBRIDGE_LOG_STORE_URL="$LOG_STORE_BASE" \
-LLMBRIDGE_TOOL_STORE_URL="http://127.0.0.1:1" \
+LLMBRIDGE_TOOL_STORE_URL="$TOOL_STORE_BASE" \
 LLMBRIDGE_PERMISSION_STORE_URL="http://127.0.0.1:1" \
 LLMBRIDGE_PRINCIPAL_STORE_URL="http://127.0.0.1:1" \
 LLMBRIDGE_KANBAN_STORE_URL="http://127.0.0.1:1" \
