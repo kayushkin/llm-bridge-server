@@ -294,6 +294,95 @@ CASES = [
         "GATE: the per-tick cap fires unconditionally, so the classifier never runs at all",
         [("\t\tif classified >= maxClassifications {", "\t\tif classified >= maxClassifications || true {")],
     ),
+
+    # ---- what -register reads back, and the columns that decide whether the binary runs ----
+    #
+    # Ported 2026-09-25 from 348e0589. That commit's rows for the job's name,
+    # cadence and command are left out: the rows above already edit the
+    # constants they come from. Its envOr rows went with envOr.
+    Case(
+        "the registered job is a type the scheduler cannot run",
+        [('"type":        "shell",', '"type":        "agent",')],
+    ),
+    Case(
+        "an existing tick is not recognised, so -register stacks a second one on every deploy",
+        [("if j.Name == schedulerJobName {", 'if j.Name == schedulerJobName+"-hourly" {')],
+    ),
+    Case(
+        "the job-name check matches by prefix, so a neighbouring job proves the tick is registered",
+        [("if j.Name == schedulerJobName {", 'if strings.HasPrefix(j.Name, "kanban-classifier") {')],
+    ),
+    Case(
+        "a scheduler that refuses the job is reported as a successful registration",
+        [('if resp.StatusCode >= 300 {\n\t\treturn fmt.Errorf("scheduler returned %d: %s", resp.StatusCode, string(body))\n\t}',
+          "")],
+    ),
+    # The finding 348e0589 was filed for. An unreadable job list left `jobs`
+    # empty, which is byte-identical to "no classifier tick on this box" — and
+    # the next statement registers one.
+    Case(
+        "a job list answered 500 is read as a box with no classifier tick on it",
+        [('if resp.StatusCode != http.StatusOK {\n\t\treturn fmt.Errorf("list jobs: scheduler returned %d: %s",\n\t\t\tresp.StatusCode, strings.TrimSpace(string(body)))\n\t}',
+          "")],
+    ),
+    Case(
+        "a job list that is not a JSON array is read as a box with no classifier tick on it",
+        [('if err := json.Unmarshal(body, &jobs); err != nil {\n\t\treturn fmt.Errorf("list jobs: %w", err)\n\t}',
+          "_ = json.Unmarshal(body, &jobs)")],
+    ),
+    Case(
+        "the scheduler is reached at a path it does not serve",
+        [('resp, err := http.Get(schedURL + "/api/jobs")', 'resp, err := http.Get(schedURL + "/api/job")')],
+    ),
+    Case(
+        "a board missing a lifecycle column is accepted, so a classification has nowhere to go",
+        [('if kc.ColumnsByName[n] == "" {', "if false {")],
+    ),
+    Case(
+        "the missing-column error does not say which column, on a four-column check",
+        [('return fmt.Errorf("column %q missing on board %s", n, kc.BoardID)',
+          'return fmt.Errorf("board %s is missing a required column", kc.BoardID)')],
+    ),
+
+    # ---- the bridge client: three reads that check a status, then decode ----
+    #
+    # Ported from 348e0589 onto main's readers. Delete any status check below
+    # and the call still fails, one step later, on the decode, so a test
+    # asserting only `err != nil` is green on all three. getSession's route is
+    # built in internal/bridgesession, which session_url_test.go pins.
+    Case(
+        "a bridge answering 500 with a valid session body is classified anyway",
+        [('if resp.StatusCode != http.StatusOK {\n\t\tbody, _ := io.ReadAll(resp.Body)\n\t\treturn s, fmt.Errorf("get session %s: %s — %s", id, resp.Status, string(body))\n\t}',
+          "")],
+    ),
+    Case(
+        "a session list answered 500 is read as a box with no sessions on it",
+        [('if resp.StatusCode != http.StatusOK {\n\t\tbody, _ := io.ReadAll(resp.Body)\n\t\treturn page, fmt.Errorf("list sessions: %s — %s", resp.Status, string(body))\n\t}',
+          "")],
+    ),
+    Case(
+        "an unreadable transcript is read as a session with no messages, and paid for",
+        [('if resp.StatusCode != http.StatusOK {\n\t\tbody, _ := io.ReadAll(resp.Body)\n\t\treturn sessionPage{}, fmt.Errorf("get messages: %s — %s", resp.Status, string(body))\n\t}',
+          "")],
+    ),
+    Case(
+        "a session answered without an id leaves every later write keyed on the empty string",
+        [('if s.SessionID == "" {\n\t\ts.SessionID = id\n\t}', "")],
+    ),
+    Case(
+        "the session list is asked for at a route the bridge does not serve",
+        [('base := strings.TrimRight(bridgeURL, "/") + "/sessions/summary?limit=100"',
+          'base := strings.TrimRight(bridgeURL, "/") + "/session/summary?limit=100"')],
+    ),
+    Case(
+        "the transcript is asked for at a route the bridge does not serve",
+        [('bridgesession.SubresourceURL(bridgeURL, id, "messages")', 'bridgesession.SubresourceURL(bridgeURL, id, "history")')],
+    ),
+    Case(
+        "a base URL with a trailing slash doubles the separator in the session list's path",
+        [('base := strings.TrimRight(bridgeURL, "/") + "/sessions/summary?limit=100"',
+          'base := bridgeURL + "/sessions/summary?limit=100"')],
+    ),
 ]
 
 

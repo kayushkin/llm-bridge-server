@@ -296,7 +296,9 @@ func run() int {
 			kc.ColumnsByName[col.Name] = col.ID
 		}
 	}
-	requireColumns(kc, []string{kanbanvocab.ColumnInProgress, kanbanvocab.ColumnBlocked, kanbanvocab.ColumnDone, kanbanvocab.ColumnFailed})
+	if err := requireColumns(kc, []string{kanbanvocab.ColumnInProgress, kanbanvocab.ColumnBlocked, kanbanvocab.ColumnDone, kanbanvocab.ColumnFailed}); err != nil {
+		log.Fatalf("%v", err)
+	}
 
 	if cfg.OneSession != "" {
 		sess, err := getSession(cfg.BridgeURL, cfg.OneSession)
@@ -977,12 +979,20 @@ func stateToColumn(state string) string {
 	}
 }
 
-func requireColumns(kc *kanbanclient.Client, names []string) {
+// requireColumns reports the first lifecycle column the board is missing.
+//
+// It returns an error where it used to log.Fatalf: a function that ends the
+// process has no seam a test can reach, so the check that decides whether this
+// binary runs at all was the one thing in it nothing could score. run() still
+// exits — the column set is not something a tick can work around — but it
+// exits at a call site that says so.
+func requireColumns(kc *kanbanclient.Client, names []string) error {
 	for _, n := range names {
 		if kc.ColumnsByName[n] == "" {
-			log.Fatalf("column %q missing on board %s", n, kc.BoardID)
+			return fmt.Errorf("column %q missing on board %s", n, kc.BoardID)
 		}
 	}
+	return nil
 }
 
 // ============================ Bridge-server client ============================
@@ -1665,10 +1675,23 @@ func registerSchedulerJob(cfg config) error {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	// The list is read to decide whether the job is ALREADY there, so a list
+	// that could not be read must abort. Both of these used to be discarded: a
+	// scheduler answering 500, or answering anything that is not a JSON array,
+	// left `jobs` empty, which reads exactly like "not registered yet" — and
+	// the next statement registers it. Run -register twice against a sick
+	// scheduler and the box gets two classifier ticks, which pays a model call
+	// per session twice over.
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("list jobs: scheduler returned %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	var jobs []struct {
 		Name string `json:"name"`
 	}
-	_ = json.Unmarshal(body, &jobs)
+	if err := json.Unmarshal(body, &jobs); err != nil {
+		return fmt.Errorf("list jobs: %w", err)
+	}
 	for _, j := range jobs {
 		if j.Name == schedulerJobName {
 			fmt.Println(schedulerJobName + " already registered; no changes made")
