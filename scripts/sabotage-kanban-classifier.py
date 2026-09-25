@@ -249,6 +249,51 @@ CASES = [
         [('flag.NewFlagSet("kanban-classifier", flag.ContinueOnError)',
           'flag.NewFlagSet("kanban-classifier", flag.ExitOnError)')],
     ),
+
+    # ---- the per-tick spend cap (classifyTick) ----
+    #
+    # Ported 2026-09-25 from 99db69ad and 00a10531. The flag rows above pin the
+    # cap's VALUE; these pin the loop that enforces it. It bounds a whole tick,
+    # and selectCandidates returns everything updated in the last seven days, so
+    # with it gone one tick classifies every session on the box instead of ten,
+    # ninety-six times a day. It was unscoreable until it left run() for
+    # classifyTick.
+    Case(
+        "GATE: the per-tick cap stops firing, so one tick bills for every candidate on the box",
+        [("\t\tif classified >= maxClassifications {", "\t\tif classified >= maxClassifications && false {")],
+    ),
+    Case(
+        "GATE: the per-tick cap is off by one, so every tick buys one classification it was not budgeted",
+        [("\t\tif classified >= maxClassifications {", "\t\tif classified > maxClassifications {")],
+    ),
+    Case(
+        "GATE: the per-tick cap fires one early, so the tick under-spends and defers work it had budget for",
+        [("\t\tif classified >= maxClassifications {", "\t\tif classified+1 >= maxClassifications {")],
+    ),
+    Case(
+        "a session a gate SKIPPED consumes the tick's budget, so a run of unchanged sessions eats the whole tick",
+        [("\t\tif classifyOneSession(sess) {\n\t\t\tclassified++\n\t\t}",
+          "\t\tclassifyOneSession(sess)\n\t\tclassified++")],
+    ),
+    Case(
+        "the tick spends its budget on the TAIL of the candidate list, undoing the newest-first sort",
+        [("\tfor i, sess := range candidates {",
+          "\tfor i := range candidates {\n\t\tsess := candidates[len(candidates)-1-i]")],
+    ),
+    # Two edits: counting from `classified` orphans the loop index, and a
+    # `declared and not used` compile error scores nothing at all.
+    Case(
+        "the deferral count is measured from the spend, inflating it by every session the gates skipped",
+        [("\tfor i, sess := range candidates {", "\tfor _, sess := range candidates {"),
+         ("len(candidates)-i", "len(candidates)-classified")],
+    ),
+    # The over-eager direction. The rows above break the cap by letting spend
+    # through; this one stops the binary dead, and a classifier that classifies
+    # nothing reads in journalctl exactly like a box with nothing to classify.
+    Case(
+        "GATE: the per-tick cap fires unconditionally, so the classifier never runs at all",
+        [("\t\tif classified >= maxClassifications {", "\t\tif classified >= maxClassifications || true {")],
+    ),
 ]
 
 

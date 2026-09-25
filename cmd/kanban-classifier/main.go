@@ -198,7 +198,7 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 // candidate sweep is a working debug path rather than a mistake.
 func (c config) validate() error {
 	if c.MaxClassify < 1 {
-		// The cap is checked as `classified >= cfg.MaxClassify` before the first
+		// classifyTick checks `classified >= maxClassifications` before the first
 		// session, so zero breaks the loop immediately. It does log "hit per-tick
 		// cap (0)" — loud enough to find once someone looks, and indistinguishable
 		// from a normal capped tick in a run history nobody reads.
@@ -313,23 +313,54 @@ func run() int {
 	}
 	log.Printf("[classifier] candidates=%d", len(candidates))
 
-	classified := 0
-	for _, sess := range candidates {
-		if classified >= cfg.MaxClassify {
-			log.Printf("[classifier] hit per-tick cap (%d); deferring %d sessions to next tick",
-				cfg.MaxClassify, len(candidates)-classified)
-			break
-		}
-		if processSession(ctx, cfg, kc, sess, degraded) {
-			classified++
-		}
-	}
+	classified := classifyTick(candidates, cfg.MaxClassify, func(sess session) bool {
+		return processSession(ctx, cfg, kc, sess, degraded)
+	})
 	log.Printf("[classifier] done: classified=%d", classified)
 	// Fail loud: a tick that could not classify must not report success. This
 	// exact loop once logged "classifier failed" every 15 minutes for a dead
 	// credential while the scheduler recorded success on every run. A failed
 	// model call is one of the shortfalls the recorder holds.
 	return degraded.ExitCode()
+}
+
+// ============================ The per-tick spend cap ============================
+
+// classifyTick walks the candidates in the order given and classifies at most
+// maxClassifications of them, returning how many it classified.
+//
+// This is the ceiling on what one tick can spend, and it is the only one of the
+// classifier's skip gates that is not per-session: the others each save one
+// model call for one session, while this one bounds the whole tick.
+// selectCandidates returns everything updated in the last seven days, so with
+// the cap gone a single tick classifies every session on the box instead of ten
+// — ninety-six times a day.
+//
+// It lives out of run() so a test can call it and a sabotage case can break it.
+//
+// classifyOneSession reports whether it actually classified the session, as
+// opposed to skipping it at one of the per-session gates. Only a classification
+// consumes budget — the cap counts paid model calls, not sessions looked at.
+func classifyTick(candidates []session, maxClassifications int, classifyOneSession func(session) bool) int {
+	classified := 0
+	for i, sess := range candidates {
+		if classified >= maxClassifications {
+			// Count the candidates never looked at, not everything the tick
+			// declined to classify. A candidate a gate skipped was decided, not
+			// deferred: it cost nothing and next tick will skip it again for
+			// nothing. Counting from `classified` instead of from the loop
+			// position inflates this by exactly the number of sessions the
+			// gates skipped, and this line is the operator's only signal that a
+			// real backlog is building.
+			log.Printf("[classifier] hit per-tick cap (%d); deferring %d sessions to next tick",
+				maxClassifications, len(candidates)-i)
+			break
+		}
+		if classifyOneSession(sess) {
+			classified++
+		}
+	}
+	return classified
 }
 
 type config struct {
