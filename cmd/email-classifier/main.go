@@ -55,6 +55,7 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/boundedtext"
 	"github.com/slava/scheduler/internal/bridgeauth"
+	"github.com/slava/scheduler/internal/completionoperation"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
@@ -551,13 +552,21 @@ func run() int {
 }
 
 // classifyAndApply classifies one batch and applies it, halving the batch and
-// retrying whichever half fails when the model returns something undecodable.
+// retrying whichever half fails when a smaller batch could succeed.
 //
 // A plain retry would not work: a decode failure here is deterministic, since
 // the same digest reproduces the same malformed reply, so repeating the request
 // only spends money to fail identically. What varies is the size of the reply —
 // the batches that failed on live mail were the ones with the most new cards to
 // describe — so the retry shrinks the reply rather than repeating the request.
+//
+// That reasoning is the whole warrant for the split, and it only covers failures
+// about SIZE; completionoperation.SmallerRequestMayHelp holds the code to it. An
+// exhausted budget, a missing instance or an unreachable bridge fails the same
+// way however small the batch gets, so those fail the batch once and leave every
+// email in it unfiled — the same end state the recursion reaches, without
+// spending 19 calls on a batch of 10 to get there. That happened on 2026-08-29,
+// when the credit balance ran out.
 //
 // Recursion bottoms out at a single email, which is then left unfiled. That is
 // the safe end state: an email with no card link is exactly what the next tick
@@ -577,6 +586,14 @@ func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *board
 		degraded.Record("model could not classify %s, left unfiled", batch[0].Locator)
 		log.Printf("[email] classify failed for %s (%q): %v — leaving it unfiled for the next tick",
 			batch[0].Locator, batch[0].Meta.Subject, err)
+		return
+	}
+	if !completionoperation.SmallerRequestMayHelp(err) {
+		for _, email := range batch {
+			degraded.Record("model could not classify %s, left unfiled", email.Locator)
+		}
+		log.Printf("[email] classify failed for a batch of %d and a smaller batch cannot help, leaving all %d unfiled for the next tick: %v",
+			len(batch), len(batch), err)
 		return
 	}
 	mid := len(batch) / 2

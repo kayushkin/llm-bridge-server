@@ -34,7 +34,58 @@ var (
 	// ErrBudgetExhausted: the organization has spent its month, or the call
 	// would have gone past a budget. Nothing more will run until it is raised.
 	ErrBudgetExhausted = errors.New("completion operation: budget exhausted")
+	// ErrNoUsableAnswer: the call finished but left no answer that decodes
+	// into the schema — the bridge said the model did not follow it
+	// (schema_not_followed), or the parsed answer was empty or would not
+	// decode into the caller's type.
+	ErrNoUsableAnswer = errors.New("completion operation: no answer that fits the schema")
+	// ErrPromptTooLong: the model refused the request because the input did
+	// not fit, not because of the account. Sending less is the only fix.
+	ErrPromptTooLong = errors.New("completion operation: prompt too long for the model")
 )
+
+// SmallerRequestMayHelp reports whether sending the same work in smaller
+// pieces could change the outcome of a failed Call. The same prompt
+// reproduces the same answer, so only failures about SIZE qualify: a reply
+// cut off at the output limit, an answer that did not fit the schema, and a
+// prompt the model would not take. A budget refusal, a missing instance, a
+// cancelled operation or an unreachable bridge fails the same way at any size.
+func SmallerRequestMayHelp(err error) bool {
+	return errors.Is(err, ErrTruncated) || errors.Is(err, ErrNoUsableAnswer) || errors.Is(err, ErrPromptTooLong)
+}
+
+// promptTooLongMarkers are the phrases a provider puts in a model call's
+// error when the input, rather than the account, is the problem. Anthropic
+// answers both "prompt is too long" and "credit balance is too low" with a
+// 400 invalid_request_error, so the message is the only thing that separates
+// them, and reading it is what stops a billing refusal being treated as a
+// size failure.
+var promptTooLongMarkers = []string{
+	"prompt is too long",
+	"input length and `max_tokens` exceed context limit",
+	"exceeds the maximum",
+	"too many tokens",
+}
+
+// modelCallFailureCodes are the operation error codes whose message carries
+// the provider's own words, and so may carry a prompt-too-long marker.
+var modelCallFailureCodes = map[string]bool{
+	"model_call_failed":  true,
+	"attempts_exhausted": true,
+}
+
+func promptWasTooLong(code, message string) bool {
+	if !modelCallFailureCodes[code] {
+		return false
+	}
+	lowered := strings.ToLower(message)
+	for _, marker := range promptTooLongMarkers {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
+}
 
 // Config is one call's worth of settings.
 type Config struct {
@@ -146,6 +197,11 @@ func decodeAnswer(receipt msg.OperationReceipt, out any) error {
 			return fmt.Errorf("%w: %v", ErrTruncated, failure)
 		case "budget_exhausted", "model_price_unknown", "budget_unenforceable":
 			return fmt.Errorf("%w: %v", ErrBudgetExhausted, failure)
+		case "schema_not_followed":
+			return fmt.Errorf("%w: %v", ErrNoUsableAnswer, failure)
+		}
+		if promptWasTooLong(code, message) {
+			return fmt.Errorf("%w: %v", ErrPromptTooLong, failure)
 		}
 		return failure
 	}
@@ -154,10 +210,10 @@ func decodeAnswer(receipt msg.OperationReceipt, out any) error {
 		return fmt.Errorf("completion operation %s: result is not an llm.completion result: %w", receipt.ID, err)
 	}
 	if len(result.Parsed) == 0 {
-		return fmt.Errorf("completion operation %s succeeded with no parsed answer (stop reason %q)", receipt.ID, result.StopReason)
+		return fmt.Errorf("%w: completion operation %s succeeded with no parsed answer (stop reason %q)", ErrNoUsableAnswer, receipt.ID, result.StopReason)
 	}
 	if err := json.Unmarshal(result.Parsed, out); err != nil {
-		return fmt.Errorf("completion operation %s: decode answer: %w", receipt.ID, err)
+		return fmt.Errorf("%w: completion operation %s: decode answer: %w", ErrNoUsableAnswer, receipt.ID, err)
 	}
 	return nil
 }
@@ -176,6 +232,8 @@ func submit(ctx context.Context, base string, intent []byte) (msg.OperationRecei
 	case http.StatusAccepted, http.StatusOK:
 	case http.StatusPaymentRequired:
 		return msg.OperationReceipt{}, fmt.Errorf("%w: POST %s/operations: %s", ErrBudgetExhausted, base, strings.TrimSpace(string(body)))
+	case http.StatusRequestEntityTooLarge:
+		return msg.OperationReceipt{}, fmt.Errorf("%w: POST %s/operations answered %s: %s", ErrPromptTooLong, base, response.Status, strings.TrimSpace(string(body)))
 	default:
 		return msg.OperationReceipt{}, fmt.Errorf("completion operation: POST %s/operations answered %s: %s", base, response.Status, strings.TrimSpace(string(body)))
 	}
