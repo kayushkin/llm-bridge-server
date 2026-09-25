@@ -1230,6 +1230,32 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 	return rowID, nil
 }
 
+// ReconcileStaleSessions resets every session a previous process left in an
+// active state to idle, and sends the status event each reset stored to
+// log-store as well, so both copies of the session's events hold it. It
+// returns the sessions it reset.
+//
+// The log-store pushes run on one goroutine of their own, in order: a session
+// with no process has no open queue, so each push happens on the calling
+// goroutine with up to the queue's retry deadline, and startup must not wait
+// behind a log-store that is down.
+func (m *Manager) ReconcileStaleSessions() ([]store.Session, error) {
+	reconciled, err := m.store.ReconcileSessions(msg.ActiveSessionStates()...)
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]store.Session, len(reconciled))
+	for i := range reconciled {
+		sessions[i] = reconciled[i].Session
+	}
+	go func() {
+		for _, r := range reconciled {
+			m.logStoreWrites.Enqueue(r.SessionID, "startup reconcile status", r.Status)
+		}
+	}()
+	return sessions, nil
+}
+
 // FlushLogStoreWrites blocks until every event queued for bridgeID has
 // reached log-store. The manager's own read-backs call this internally;
 // it is exported for the HTTP layer, which proxies a session's message

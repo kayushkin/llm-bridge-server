@@ -1135,8 +1135,19 @@ func (s *Store) LastReportedBackgroundTasks(bridgeID string) ([]msg.BackgroundTa
 	return ev.System.BackgroundTasks, nil
 }
 
+// ReconciledSession is a session ReconcileSessions reset, and the idle
+// session_status event it stored for it, carrying that row's id as AsOf.
+// The event is returned so the caller can hand the same bytes to log-store:
+// the store has no log-store client, and until 2026-09-25 this status reached
+// bridge.db only, one row per stale session on every restart.
+type ReconciledSession struct {
+	Session
+	Status msg.Event
+}
+
 // ReconcileSessions resets every session in any of the given states to 'idle'
-// with pid=0 and returns the sessions that were reconciled. Called at startup:
+// with pid=0 and returns the sessions that were reconciled, each with the
+// status event it wrote. Called at startup:
 // the harness subprocess can only exist in memory, so any row marked with an
 // active state from a previous server lifetime is stale. updated_at is
 // intentionally NOT bumped so FileInactive / ArchiveOld can still see the
@@ -1145,7 +1156,7 @@ func (s *Store) LastReportedBackgroundTasks(bridgeID string) ([]msg.BackgroundTa
 //
 // Pass msg.ActiveSessionStates() to cover every state implying a live
 // subprocess. The variadic shape lets tests target a subset.
-func (s *Store) ReconcileSessions(states ...msg.SessionState) ([]Session, error) {
+func (s *Store) ReconcileSessions(states ...msg.SessionState) ([]ReconciledSession, error) {
 	if len(states) == 0 {
 		return nil, nil
 	}
@@ -1182,6 +1193,7 @@ func (s *Store) ReconcileSessions(states ...msg.SessionState) ([]Session, error)
 	// One status per session rather than one UPDATE for the lot: a client
 	// may be holding this session's last status from before the restart, and
 	// only a status with a larger AsOf — its own event row — replaces it.
+	reconciled := make([]ReconciledSession, 0, len(sessions))
 	for i := range sessions {
 		ev := &msg.Event{
 			Type:            msg.EventSessionStatus,
@@ -1193,8 +1205,9 @@ func (s *Store) ReconcileSessions(states ...msg.SessionState) ([]Session, error)
 		if _, err := s.writeSessionStatus(sessions[i].SessionID, ev, false); err != nil {
 			return nil, fmt.Errorf("reconcile session %s: %w", sessions[i].SessionID, err)
 		}
+		reconciled = append(reconciled, ReconciledSession{Session: sessions[i], Status: *ev})
 	}
-	return sessions, nil
+	return reconciled, nil
 }
 
 // LastActivityAt returns the timestamp of the most recent event logged for

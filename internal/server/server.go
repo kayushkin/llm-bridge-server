@@ -660,7 +660,7 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 // activity was inside autoResumeWindow. Sessions that went quiet before the
 // window are left idle — the user can resume them on demand.
 func (s *Server) ReconcileAndResume() {
-	sessions, err := s.store.ReconcileSessions(msg.ActiveSessionStates()...)
+	sessions, err := s.harness.ReconcileStaleSessions()
 	if err != nil {
 		log.Printf("[reconcile] %v", err)
 		return
