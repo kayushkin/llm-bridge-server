@@ -60,6 +60,7 @@ import (
 	"github.com/slava/scheduler/internal/bridgeclient"
 	"github.com/slava/scheduler/internal/bridgesession"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -139,13 +140,36 @@ type runOptions struct {
 	NATSURL            string
 	DryRun             bool
 	MaxDispatch        int
+	// Publish sends one BridgeInbound. Left nil, run connects to NATSURL and
+	// publishes there. A test sets it, because a test that reached the write
+	// path through the real bus would dispatch a real agent session and spend
+	// real money.
+	Publish func(messages.BridgeInbound) error
 }
 
 // run is one tick. It returns an error — and main exits non-zero, so the
 // scheduler records the run as `error` — when the tick cannot start, and also
-// when it finished but left any card undispatched for a reason a person has to
-// fix, such as a card nothing gives an instance.
+// when it finished but fell short of its job: a card left undispatched for a
+// reason a person has to fix, such as a card nothing gives an instance, or any
+// read or write the tick needed and could not make.
+//
+// ==================== a tick that fell short is not a success ====================
+//
+// Job 16 answered `success` on every retained run, and before the shortfalls
+// were recorded it would have done so through any of them, because the answer
+// to each is `continue`. The worst is a Goals card whose `scoped` tag cannot be
+// read: it is dropped inside scopedParents, before the caller counts what came
+// back, so `scoped-parents=0` prints the same for a quiet board and a blind one.
+// The quietest is the rollup: a refused PatchCardBody is followed by the move to
+// Done anyway, so the parent lands finished with no record of what its children
+// did, on a card nothing will revisit.
+//
+// Having nothing to do is not a shortfall, and none of these is recorded: an
+// empty board, a goal with no Backlog children, the per-tick cap, a sibling
+// session that is busy, stale or gone, a child that has not settled, a child
+// already on its target column or not on this board, and a dry run.
 func run(options runOptions) error {
+	degraded := degradations.New("dispatcher")
 	kc := kanbanclient.New(options.KanbanURL, options.KanbanServiceToken)
 	board, err := kc.GetBoard(options.BoardID)
 	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
@@ -173,8 +197,8 @@ func run(options runOptions) error {
 		}
 	}
 
-	var publish func(messages.BridgeInbound) error
-	if !options.DryRun {
+	publish := options.Publish
+	if publish == nil && !options.DryRun {
 		natsClient, err := natsbus.Connect(natsbus.Options{URL: options.NATSURL, Name: "kanban-dispatcher"})
 		if err != nil {
 			return fmt.Errorf("nats connect: %w", err)
@@ -185,7 +209,7 @@ func run(options runOptions) error {
 		}
 	}
 
-	parents := scopedParents(view, kc)
+	parents := scopedParents(view, kc, degraded)
 	log.Printf("[dispatcher] board=%q scoped-parents=%d", board.Name, len(parents))
 
 	dispatcher := &backlogDispatcher{
@@ -197,6 +221,7 @@ func run(options runOptions) error {
 		publish:            publish,
 		dryRun:             options.DryRun,
 		maxDispatch:        options.MaxDispatch,
+		degraded:           degraded,
 	}
 	dispatched, undispatched := dispatcher.dispatchBacklog(parents)
 
@@ -210,6 +235,8 @@ func run(options runOptions) error {
 		entries, err := kc.ListCardsForEntity(linkTypeParent, p.cardID)
 		if err != nil {
 			log.Printf("[%s] list children for closure: %v", p.title(), err)
+			degraded.Record("goal %s (%s): its children could not be listed for the closure pass (%v), so no settled child of it was moved out of In Progress and it cannot roll up",
+				p.cardID, p.title(), err)
 			continue
 		}
 		for _, e := range entries {
@@ -221,10 +248,23 @@ func run(options runOptions) error {
 			case "archived":
 				targetCol, targetName = colByName[columnFailed], columnFailed
 			default:
+				// Still being worked on.
 				continue
 			}
-			placement, err := currentPlacement(kc.BaseURL, e.CardID, board.ID)
-			if err != nil || placement == "" || placement == targetCol {
+			placement, err := currentPlacement(kc, e.CardID, board.ID)
+			if err != nil {
+				log.Printf("[%s] closure: read placement of child %s: %v", p.title(), shortID(e.CardID), err)
+				degraded.Record("goal %s (%s): child %s is %s but its placement could not be read (%v), so it was left where it is and the parent cannot roll up",
+					p.cardID, p.title(), e.CardID, status, err)
+				continue
+			}
+			if placement == "" {
+				// Not on this board, so there is no placement here to correct.
+				// Logged because it used to read the same as a failed read.
+				log.Printf("[%s] closure: child %s is %s but is not placed on this board — nothing to move", p.title(), shortID(e.CardID), status)
+				continue
+			}
+			if placement == targetCol {
 				continue
 			}
 			log.Printf("[%s] closure: child %s status=%s → %s", p.title(), shortID(e.CardID), status, targetName)
@@ -234,6 +274,8 @@ func run(options runOptions) error {
 			moveResult, err := kc.MoveCard(e.CardID, board.ID, targetCol, 0)
 			if err != nil {
 				log.Printf("[%s] move child to %s: %v", p.title(), targetName, err)
+				degraded.Record("goal %s (%s): child %s is %s but the board refused to move it to %s (%v), so it stays in In Progress and the parent cannot roll up",
+					p.cardID, p.title(), e.CardID, status, targetName, err)
 				continue
 			}
 			if moveResult.AutoStatusError != "" {
@@ -246,7 +288,13 @@ func run(options runOptions) error {
 	// Parent rollup: any scoped parent whose children are all settled → move to Done.
 	rolled := 0
 	for _, p := range parents {
-		settled, total, summary := childrenSettlement(kc, p.cardID)
+		settled, total, summary, err := childrenSettlement(kc, p.cardID)
+		if err != nil {
+			log.Printf("[%s] rollup: list children: %v", p.title(), err)
+			degraded.Record("goal %s (%s): its children could not be listed for the rollup (%v), so it was not rolled up whether or not it was finished",
+				p.cardID, p.title(), err)
+			continue
+		}
 		if total == 0 || settled < total {
 			continue
 		}
@@ -259,10 +307,14 @@ func run(options runOptions) error {
 			time.Now().UTC().Format(time.RFC3339), summary)
 		if err := kc.PatchCardBody(p.cardID, body+suffix); err != nil {
 			log.Printf("[%s] patch parent body: %v (continuing to move)", p.title(), err)
+			degraded.Record("goal %s (%s): the board refused its rollup note (%v) and it is moved to Done regardless, so it lands finished with no record of what its %d children did",
+				p.cardID, p.title(), err, total)
 		}
 		moveResult, err := kc.MoveCard(p.cardID, board.ID, colByName[columnDone], 0)
 		if err != nil {
 			log.Printf("[%s] move parent to Done: %v", p.title(), err)
+			degraded.Record("goal %s (%s): all %d of its children are settled but the board refused to move it to Done (%v), so it stays in Goals and every later tick re-walks it",
+				p.cardID, p.title(), total, err)
 			continue
 		}
 		if moveResult.AutoStatusError != "" {
@@ -272,34 +324,26 @@ func run(options runOptions) error {
 	}
 
 	log.Printf("[dispatcher] done: dispatched=%d closed=%d rolled-up=%d not-dispatched=%d", dispatched, closed, rolled, len(undispatched))
-	if len(undispatched) > 0 {
-		described := make([]string, 0, len(undispatched))
-		for _, card := range undispatched {
-			described = append(described, fmt.Sprintf("%s %q (%v)", card.CardID, card.Title, card.Reason))
-		}
-		return fmt.Errorf("%d card(s) were not dispatched: %s", len(undispatched), strings.Join(described, "; "))
+	for _, card := range undispatched {
+		degraded.Record("card %s %q was not dispatched (%v)", card.CardID, card.Title, card.Reason)
+	}
+	if degraded.HasShortfall() {
+		reasons := degraded.Reasons()
+		return fmt.Errorf("run degraded: %d shortfall(s) — %s", len(reasons), strings.Join(reasons, "; "))
 	}
 	return nil
 }
 
 // currentPlacement returns the column id this card is on for the given board.
 // Empty string means the card is not placed on this board (orphaned).
-func currentPlacement(kanbanURL, cardID, boardID string) (string, error) {
-	url := fmt.Sprintf("%s/api/cards/%s/placements", strings.TrimRight(kanbanURL, "/"), cardID)
-	resp, err := http.Get(url)
+//
+// It reads through the kanban client so the request carries the service token.
+// It used to be a bare http.Get, which kanban-store answers 401 — and because
+// the closure pass treated a failed read as "nothing to move", every closure
+// was skipped in silence.
+func currentPlacement(kc *kanbanclient.Client, cardID, boardID string) (string, error) {
+	placements, err := kc.ListCardPlacements(cardID)
 	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("HTTP %s — %s", resp.Status, strings.TrimSpace(string(raw)))
-	}
-	var placements []struct {
-		BoardID  string `json:"board_id"`
-		ColumnID string `json:"column_id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&placements); err != nil {
 		return "", err
 	}
 	for _, p := range placements {
@@ -323,6 +367,9 @@ type backlogDispatcher struct {
 	publish     func(messages.BridgeInbound) error
 	dryRun      bool
 	maxDispatch int
+	// degraded collects the reads this pass needed and could not make. A card
+	// it chose and could not dispatch is returned as undispatchedCard instead.
+	degraded *degradations.Recorder
 }
 
 // undispatchedCard is a Backlog card this tick chose to dispatch and could not.
@@ -343,7 +390,7 @@ func (d *backlogDispatcher) dispatchBacklog(parents []scopedParent) (dispatched 
 		if dispatched >= d.maxDispatch {
 			break
 		}
-		groups := backlogGroups(d.kanban, d.view, p.cardID)
+		groups := backlogGroups(d.kanban, d.view, p.cardID, d.degraded)
 		for _, g := range groups {
 			if dispatched >= d.maxDispatch {
 				break
@@ -361,7 +408,7 @@ func (d *backlogDispatcher) dispatchBacklog(parents []scopedParent) (dispatched 
 				notDispatched(err)
 				continue
 			}
-			reusedSessionID := reusableSiblingSession(d.kanban, d.bridgeURL, d.view, g, spec)
+			reusedSessionID := reusableSiblingSession(d.kanban, d.bridgeURL, d.view, g, spec, d.degraded)
 			sessionID := reusedSessionID
 			if sessionID == "" {
 				sessionID = mintSessionID(p.cardID, g.key)
@@ -415,7 +462,10 @@ func (p scopedParent) title() string {
 }
 
 // scopedParents returns Goals-column cards that have the scoped entity_tag.
-func scopedParents(view *kanbanclient.BoardView, kc *kanbanclient.Client) []scopedParent {
+// A Goals card whose tags cannot be read is dropped here, before the caller
+// counts what came back, so the count alone cannot tell "nothing is scoped"
+// from "nothing could be read"; the shortfall is recorded instead.
+func scopedParents(view *kanbanclient.BoardView, kc *kanbanclient.Client, degraded *degradations.Recorder) []scopedParent {
 	var goalsCards []kanbanclient.CardView
 	for _, cv := range view.Columns {
 		if cv.Column.Name == columnGoals {
@@ -431,6 +481,8 @@ func scopedParents(view *kanbanclient.BoardView, kc *kanbanclient.Client) []scop
 		etags, err := kc.ListEntityTags("note", c.Placement.CardID)
 		if err != nil {
 			log.Printf("[%s] list entity tags: %v — skip", c.Placement.CardID, err)
+			degraded.Record("goal %s (%q): its scoped tag could not be read (%v), so it was never considered and none of its Backlog children were dispatched",
+				c.Placement.CardID, childTitle(c), err)
 			continue
 		}
 		if !anyTagEquals(etags, tagScoped) {
@@ -451,7 +503,7 @@ type backlogGroup struct {
 // A child counts as "in this parent" when it has a card_link with
 // entity_type=parent_card pointing to parent_id. Group key comes from a
 // "group:<key>" tag; missing group → key "".
-func backlogGroups(kc *kanbanclient.Client, view *kanbanclient.BoardView, parentID string) []backlogGroup {
+func backlogGroups(kc *kanbanclient.Client, view *kanbanclient.BoardView, parentID string, degraded *degradations.Recorder) []backlogGroup {
 	var backlogCards []kanbanclient.CardView
 	for _, cv := range view.Columns {
 		if cv.Column.Name == columnBacklog {
@@ -466,6 +518,8 @@ func backlogGroups(kc *kanbanclient.Client, view *kanbanclient.BoardView, parent
 	childIDs, err := listChildCardIDs(kc, parentID)
 	if err != nil {
 		log.Printf("[%s] list children: %v", parentID, err)
+		degraded.Record("goal %s: its children could not be listed (%v), so its whole Backlog was invisible to this tick and nothing under it was dispatched",
+			parentID, err)
 		return nil
 	}
 	for _, id := range childIDs {
@@ -527,9 +581,14 @@ func groupKey(item map[string]any) string {
 // another bundle would run it under that identity or without its bundle's
 // tools — each a way of ignoring the tag rule that gave the card its defaults.
 // A fresh session costs some context; the wrong session costs correctness.
-func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kanbanclient.BoardView, g backlogGroup, spec cardSessionSpec) string {
+//
+// A sibling whose links or session state cannot be read is a sibling that
+// cannot be revived, so the group may pay for a fresh session it did not need;
+// that is recorded. A sibling session that is busy, stale or gone is the answer
+// working, and is not.
+func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kanbanclient.BoardView, g backlogGroup, spec cardSessionSpec, degraded *degradations.Recorder) string {
 	candidateID := g.cards[0].Placement.CardID
-	siblings := groupSiblings(kc, view, g.parentID, g.key)
+	siblings := groupSiblings(kc, view, g.parentID, g.key, degraded)
 	now := time.Now()
 	for _, sibling := range siblings {
 		// Skip the candidate itself (still in Backlog with no link yet).
@@ -539,6 +598,8 @@ func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kan
 		links, err := kc.ListCardLinks(sibling.Placement.CardID)
 		if err != nil {
 			log.Printf("[reuse] card %s: sibling %s links unreadable, not reusing its session: %v", candidateID, sibling.Placement.CardID, err)
+			degraded.Record("goal %s group %q: sibling card %s could not be read for an idle session to revive (%v), so card %s may pay for a fresh session it did not need",
+				g.parentID, g.key, sibling.Placement.CardID, err, candidateID)
 			continue
 		}
 		var sid string
@@ -552,8 +613,14 @@ func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kan
 			continue
 		}
 		session, err := getBridgeSession(bridgeURL, sid)
+		if errors.Is(err, errSessionGone) {
+			// Nothing to revive; minting a fresh session is right.
+			continue
+		}
 		if err != nil {
 			log.Printf("[reuse] card %s: sibling session %s unreadable, not reusing it: %v", candidateID, sid, err)
+			degraded.Record("goal %s group %q: the state of sibling session %s could not be read (%v), so card %s may pay for a fresh session it did not need",
+				g.parentID, g.key, sid, err, candidateID)
 			continue
 		}
 		if session.State != "idle" {
@@ -578,11 +645,13 @@ func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kan
 // groupSiblings returns ALL cards on the board that share the parent_card
 // link and the same group:<key> tag — across every column, so we can find a
 // freshly-completed sibling whose session is still idle.
-func groupSiblings(kc *kanbanclient.Client, view *kanbanclient.BoardView, parentID, key string) []kanbanclient.CardView {
+func groupSiblings(kc *kanbanclient.Client, view *kanbanclient.BoardView, parentID, key string, degraded *degradations.Recorder) []kanbanclient.CardView {
 	parentChildren := map[string]bool{}
 	childIDs, err := listChildCardIDs(kc, parentID)
 	if err != nil {
 		log.Printf("[%s] list children for reuse: %v — no sibling session will be reused", parentID, err)
+		degraded.Record("goal %s group %q: its sibling cards could not be listed (%v), so no idle session could be found to revive and the group pays for a fresh one",
+			parentID, key, err)
 		return nil
 	}
 	for _, id := range childIDs {
@@ -774,13 +843,17 @@ func childTitle(c kanbanclient.CardView) string {
 
 // childrenSettlement returns (settled, total, summary) for a parent card.
 // A child counts as settled if its noteboard status is "done" or "archived".
-func childrenSettlement(kc *kanbanclient.Client, parentID string) (int, int, string) {
+//
+// A failed read is returned as an error, not folded into the summary: the
+// caller reads total == 0 as "nothing to roll up", so (0, 0, "rollup error: …")
+// made a failed read look like a parent with no children.
+func childrenSettlement(kc *kanbanclient.Client, parentID string) (int, int, string, error) {
 	entries, err := kc.ListCardsForEntity(linkTypeParent, parentID)
 	if err != nil {
-		return 0, 0, fmt.Sprintf("rollup error: %v", err)
+		return 0, 0, "", err
 	}
 	if len(entries) == 0 {
-		return 0, 0, "no children"
+		return 0, 0, "no children", nil
 	}
 	var done, archived, other int
 	for _, e := range entries {
@@ -797,10 +870,14 @@ func childrenSettlement(kc *kanbanclient.Client, parentID string) (int, int, str
 	settled := done + archived
 	total := len(entries)
 	summary := fmt.Sprintf("children: done=%d failed=%d open=%d", done, archived, other)
-	return settled, total, summary
+	return settled, total, summary, nil
 }
 
 // ============================ HTTP / NATS helpers ============================
+
+// errSessionGone is getBridgeSession's answer to a 404. A session that no
+// longer exists is not one the tick failed to read: there is nothing to revive.
+var errSessionGone = errors.New("session no longer exists")
 
 // bridgeSession is the part of llm-bridge-server's GET /sessions/{id} the
 // revive decision reads.
@@ -840,7 +917,7 @@ func getBridgeSession(bridgeURL, sessionID string) (bridgeSession, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return bridgeSession{}, fmt.Errorf("not found")
+		return bridgeSession{}, errSessionGone
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

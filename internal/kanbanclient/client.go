@@ -749,6 +749,32 @@ func (c *Client) ListCardLinks(cardID string) ([]CardLink, error) {
 	return links, nil
 }
 
+// CardPlacement is one row of GET /api/cards/{id}/placements: where the card
+// sits on one board.
+type CardPlacement struct {
+	CardID   string  `json:"card_id"`
+	BoardID  string  `json:"board_id"`
+	ColumnID string  `json:"column_id"`
+	Position float64 `json:"position"`
+}
+
+// ListCardPlacements returns every board placement a card has.
+func (c *Client) ListCardPlacements(cardID string) ([]CardPlacement, error) {
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/cards/%s/placements", c.BaseURL, escapePathSegment(cardID)))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusErr("list card placements", resp)
+	}
+	var placements []CardPlacement
+	if err := json.NewDecoder(resp.Body).Decode(&placements); err != nil {
+		return nil, err
+	}
+	return placements, nil
+}
+
 // MoveResult reports what a move did beyond relocating the card.
 //
 // When the destination column has auto_status set, kanban-store also PATCHes

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
 
@@ -19,6 +20,8 @@ const testBoardID = "board-tcl"
 
 // fakeBridge answers the two instances and the agents llm-bridge-server listed
 // on 2026-09-11, plus whatever sessions a test gives it by id.
+// A session whose body is sessionUnreadable answers 500, the way a bridge that
+// is up but failing does.
 func fakeBridge(t *testing.T, sessions map[string]string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -35,12 +38,18 @@ func fakeBridge(t *testing.T, sessions map[string]string) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
+			if body == sessionUnreadable {
+				http.Error(w, `{"error":"injected"}`, http.StatusInternalServerError)
+				return
+			}
 			w.Write([]byte(body))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 }
+
+const sessionUnreadable = "<unreadable>"
 
 // fakeKanban is the part of kanban-store a tick reads and writes.
 type fakeKanban struct {
@@ -53,10 +62,45 @@ type fakeKanban struct {
 	children  map[string][]string // parent card id → child card ids
 	scoped    map[string]bool
 	links     map[string][]kanbanclient.CardLink
+	// status is a child's noteboard status as the parent_card listing reports
+	// it; a child absent here is "open".
+	status map[string]string
+	// placements is what GET /api/cards/{id}/placements answers per card; a
+	// card absent here has none.
+	placements map[string][]kanbanclient.CardPlacement
+	// failures makes one kind of request answer with the given status, keyed
+	// by the names fakeKanbanRoute returns.
+	failures map[string]int
+	// failAfter lets that many requests of a failing route succeed first, so a
+	// test can fail the second of two reads of one route.
+	failAfter map[string]int
+	requests  map[string]int
 
-	mu     sync.Mutex
-	linked []string // card ids given a session link
-	moved  []string // card ids moved
+	mu      sync.Mutex
+	linked  []string // card ids given a session link
+	moved   []string // card ids moved
+	patched []string // card ids whose body was patched
+}
+
+// fakeKanbanRoute names the kind of request a failure can be injected into.
+func fakeKanbanRoute(method, path string) string {
+	switch {
+	case method == "GET" && strings.HasPrefix(path, "/api/entities/note/") && strings.HasSuffix(path, "/tags"):
+		return "tags"
+	case method == "GET" && strings.HasPrefix(path, "/api/entities/parent_card/"):
+		return "children"
+	case method == "GET" && strings.HasSuffix(path, "/links"):
+		return "links"
+	case method == "POST" && strings.HasSuffix(path, "/links"):
+		return "link"
+	case method == "POST" && strings.HasSuffix(path, "/move"):
+		return "move"
+	case method == "GET" && strings.HasSuffix(path, "/placements"):
+		return "placements"
+	case method == "PATCH" && strings.HasPrefix(path, "/api/cards/"):
+		return "patch"
+	}
+	return ""
 }
 
 func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +109,15 @@ func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	boardPrefix := "/api/boards/" + f.board.ID
 	writeJSON := func(v any) { json.NewEncoder(w).Encode(v) }
+	route := fakeKanbanRoute(r.Method, path)
+	if f.requests == nil {
+		f.requests = map[string]int{}
+	}
+	f.requests[route]++
+	if code := f.failures[route]; code != 0 && f.requests[route] > f.failAfter[route] {
+		http.Error(w, `{"error":"injected"}`, code)
+		return
+	}
 	switch {
 	case r.Method == "GET" && path == boardPrefix:
 		writeJSON(f.board)
@@ -90,7 +143,11 @@ func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		parentID := strings.TrimSuffix(strings.TrimPrefix(path, "/api/entities/parent_card/"), "/cards")
 		entries := []kanbanclient.EntityCardEntry{}
 		for _, id := range f.children[parentID] {
-			entries = append(entries, kanbanclient.EntityCardEntry{CardID: id, Item: map[string]any{"id": id, "status": "open"}})
+			status := f.status[id]
+			if status == "" {
+				status = "open"
+			}
+			entries = append(entries, kanbanclient.EntityCardEntry{CardID: id, Item: map[string]any{"id": id, "status": status}})
 		}
 		writeJSON(entries)
 	case r.Method == "GET" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/links"):
@@ -107,7 +164,14 @@ func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.moved = append(f.moved, strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/move"))
 		w.Write([]byte(`{}`))
 	case r.Method == "GET" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/placements"):
-		w.Write([]byte(`[]`))
+		placements := f.placements[strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/placements")]
+		if placements == nil {
+			placements = []kanbanclient.CardPlacement{}
+		}
+		writeJSON(placements)
+	case r.Method == "PATCH" && strings.HasPrefix(path, "/api/cards/"):
+		f.patched = append(f.patched, strings.TrimPrefix(path, "/api/cards/"))
+		w.Write([]byte(`{}`))
 	default:
 		f.t.Errorf("unexpected kanban-store request %s %s", r.Method, path)
 		http.NotFound(w, r)
@@ -161,6 +225,7 @@ func newDispatcher(kanban *fakeKanban, kanbanURL, bridgeURL string, published *[
 			return nil
 		},
 		maxDispatch: 10,
+		degraded:    degradations.New("dispatcher"),
 	}
 }
 

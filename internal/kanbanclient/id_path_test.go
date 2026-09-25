@@ -114,6 +114,10 @@ func TestAKanbanIDOrTagStaysOnePathSegment(t *testing.T) {
 			c.ListCardLinks(p)
 			return []string{"api", "cards", p, "links"}
 		}},
+		{"ListCardPlacements/cardID", func(c *Client, p string) []string {
+			c.ListCardPlacements(p)
+			return []string{"api", "cards", p, "placements"}
+		}},
 		{"MoveCard/cardID", func(c *Client, p string) []string {
 			c.MoveCard(p, "b1", "col1", 1)
 			return []string{"api", "cards", p, "move"}
