@@ -57,6 +57,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -539,7 +540,12 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 
 	// One model call per finished response: bail if this one was already read.
 	curSig := buildSig(page.newestFinishedResponseID, eventCount)
-	priorSig := priorSigTag(tagSet)
+	priorSig, priorSigCount := priorSigTag(tagSet)
+	if priorSigCount > 1 {
+		log.Printf("[%s] WARNING: %d check signatures on one session, want 1 — using the newest (%s); "+
+			"an earlier tick failed to delete the one it replaced",
+			sess.SessionID, priorSigCount, priorSig)
+	}
 	if responseAlreadyClassified(priorSig, page.newestFinishedResponseID) {
 		if !cfg.ExplicitSession {
 			return false
@@ -639,27 +645,65 @@ func tagSet(tags []kanbanclient.EntityTag) map[string]bool {
 	return out
 }
 
-func priorSigTag(tagSet map[string]bool) string {
+// priorSigTag returns the newest check signature on a session, and how many it
+// found. The caller that knows the session warns when there is more than one.
+//
+// Only one should exist, because writeSig deletes the others; a second one means
+// a delete failed on an earlier tick. Taking whichever one a map range reaches
+// first let the skip gate flip between ticks, since Go randomises map order: the
+// same unchanged session skipped on one tick and bought a model call on the next.
+//
+// Newest is the one with the highest event count, since a session's events only
+// ever grow. A signature with no readable count (the msg= format) sorts below any
+// that has one, and equal counts fall back to string order so the pick never
+// depends on the map. Newest-wins is also the direction that cannot cause a wrong
+// skip: a stale pick can only fail to match and classify once more.
+//
+// Ported from fe081af, which ordered by a t= stamp the signature no longer has.
+func priorSigTag(tagSet map[string]bool) (sig string, found int) {
 	for tag := range tagSet {
-		if strings.HasPrefix(tag, tagCheckSigPrefix) {
-			return tag
+		if !strings.HasPrefix(tag, tagCheckSigPrefix) {
+			continue
+		}
+		found++
+		if found == 1 || newerSig(tag, sig) {
+			sig = tag
 		}
 	}
-	return ""
+	return sig, found
+}
+
+// newerSig reports whether signature a was written after signature b.
+func newerSig(a, b string) bool {
+	countA, knownA := sigEventCount(a)
+	countB, knownB := sigEventCount(b)
+	if knownA != knownB {
+		return knownA
+	}
+	if countA != countB {
+		return countA > countB
+	}
+	return a > b
 }
 
 // priorEventCount parses the events= component from the prior sig. known is
 // false when there is no prior sig or it predates event counts (msg=).
 func priorEventCount(tagSet map[string]bool) (n int, known bool) {
-	sig := priorSigTag(tagSet)
-	if sig == "" {
+	sig, _ := priorSigTag(tagSet)
+	return sigEventCount(sig)
+}
+
+// sigEventCount reads the events= component of one signature. known is false
+// when it is absent or is not a whole number: strconv.Atoi refuses "12abc",
+// which fmt.Sscanf read as 12.
+func sigEventCount(sig string) (n int, known bool) {
+	if !strings.HasPrefix(sig, tagCheckSigPrefix) {
 		return 0, false
 	}
 	for _, part := range strings.Split(strings.TrimPrefix(sig, tagCheckSigPrefix), ":") {
-		if strings.HasPrefix(part, "events=") {
-			if _, err := fmt.Sscanf(part, "events=%d", &n); err == nil {
-				return n, true
-			}
+		if value, found := strings.CutPrefix(part, "events="); found {
+			n, err := strconv.Atoi(value)
+			return n, err == nil
 		}
 	}
 	return 0, false
@@ -714,7 +758,7 @@ func saidNothingSince(newestEntryAt, cutoff time.Time) bool {
 	return !newestEntryAt.IsZero() && newestEntryAt.Before(cutoff)
 }
 
-// writeSig deletes the prior check-sig tag (if any) and adds the new one.
+// writeSig deletes the prior check-sig tags (if any) and adds the new one.
 //
 // A failure to write the signature is a shortfall and not a cosmetic one: the
 // signature is the whole dedupe gate, so a session whose tag did not land is
@@ -723,7 +767,13 @@ func saidNothingSince(newestEntryAt, cutoff time.Time) bool {
 func writeSig(kc *kanbanclient.Client, sess session, oldTags map[string]bool, sig string, degraded *degradations.Recorder) {
 	for tag := range oldTags {
 		if strings.HasPrefix(tag, tagCheckSigPrefix) && tag != sig {
-			_ = kc.DeleteEntityTag(cardLinkSession, sess.SessionID, tag)
+			// A delete that fails leaves two signatures behind. priorSigTag reads
+			// the newest, so the gate still works, but the next write is the only
+			// thing that will retry the delete, and before this nothing said so.
+			if err := kc.DeleteEntityTag(cardLinkSession, sess.SessionID, tag); err != nil {
+				log.Printf("[%s] delete superseded check sig %q: %v", sess.SessionID, tag, err)
+				degraded.Record("session %s: superseded check signature not deleted, it now carries more than one", sess.SessionID)
+			}
 		}
 	}
 	if err := kc.AddEntityTag(cardLinkSession, sess.SessionID, sig); err != nil {
@@ -735,9 +785,9 @@ func writeSig(kc *kanbanclient.Client, sess session, oldTags map[string]bool, si
 // applyDoNotTrack tags a session so it is never classified again.
 //
 // It does NOT record the message count the session was tagged at, though it used to
-// take one. writeSig does, on the line after every call site, by writing msg=N into
-// the check-sig tag — and priorMsgCount reads it back out to measure the
-// doNotTrackReevalDelta. The coupling is real and invisible, so keep the writeSig
+// take one. writeSig does, on the line after every call site, by writing events=N
+// into the check-sig tag — and priorEventCount reads it back out to measure the
+// doNotTrackReevalEvents delta. The coupling is real and invisible, so keep the writeSig
 // call next to the applyDoNotTrack call.
 func applyDoNotTrack(kc *kanbanclient.Client, sess session, degraded *degradations.Recorder) {
 	if err := kc.AddEntityTag(cardLinkSession, sess.SessionID, tagDoNotTrack); err != nil {

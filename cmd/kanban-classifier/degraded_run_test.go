@@ -32,6 +32,8 @@ type bridgeAndBoard struct {
 	moveStatus int
 	// tagWriteStatus is the status the entity-tag write answers with.
 	tagWriteStatus int
+	// tagDeleteStatus is the status the entity-tag delete answers with.
+	tagDeleteStatus int
 	// tagReadStatus is the status the entity-tag read answers with. The board is
 	// a separate service and this is the first thing processSession asks it.
 	tagReadStatus int
@@ -57,6 +59,9 @@ func (b *bridgeAndBoard) start(t *testing.T) (config, *kanbanclient.Client) {
 	if b.tagWriteStatus == 0 {
 		b.tagWriteStatus = http.StatusCreated
 	}
+	if b.tagDeleteStatus == 0 {
+		b.tagDeleteStatus = http.StatusOK
+	}
 	if b.tagReadStatus == 0 {
 		b.tagReadStatus = http.StatusOK
 	}
@@ -79,7 +84,7 @@ func (b *bridgeAndBoard) start(t *testing.T) (config, *kanbanclient.Client) {
 			w.WriteHeader(b.tagWriteStatus)
 			_, _ = w.Write([]byte(`{}`))
 		case r.Method == http.MethodDelete:
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(b.tagDeleteStatus)
 		case r.Method == http.MethodGet && strings.HasSuffix(path, "/cards"):
 			if b.cards == nil {
 				b.cards = []map[string]any{}
