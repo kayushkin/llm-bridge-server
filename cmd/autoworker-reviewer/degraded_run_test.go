@@ -404,3 +404,29 @@ func TestALoopGuardSettleThatLandedIsGreen(t *testing.T) {
 		t.Errorf("the settle tag was not added; added %v", k.added[awSession])
 	}
 }
+
+// A link of another type is not a session, even when its ref names one the
+// bridge would answer for. The decoy sits ahead of no session link at all, so
+// a reviewer that took the first link of any type would nudge it. Ported from
+// a44e030a's TestASessionLinkOfTheWrongTypeIsNotASession.
+func TestALinkOfAnotherTypeIsNotASession(t *testing.T) {
+	k := newStubKanban(t, stubCard{
+		cardID: "card-1", title: "linked to a prediction",
+		otherLinks: []map[string]any{{"card_id": "card-1", "entity_type": "prediction", "entity_ref": awSession}},
+	})
+	b := newStubBridge(t)
+	b.states[awSession] = "completed"
+	b.purposes[awSession] = purposeAutoworker
+	var code int
+	out := captureLog(t, func() { code = run(newRun(k, b)) })
+	if code != 0 {
+		t.Fatalf("exit %d, want 0", code)
+	}
+	requireNoShortfall(t, out)
+	if b.sent[awSession] != 0 {
+		t.Errorf("a prediction link was read as the card's session and nudged")
+	}
+	if !strings.Contains(out, "no session link") {
+		t.Errorf("the card was not reported as having no session link:\n%s", out)
+	}
+}

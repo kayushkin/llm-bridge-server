@@ -20,6 +20,10 @@ type fleet struct {
 	cost  map[string]float64
 	// links maps an item id to the session ids the board says worked it.
 	links map[string][]string
+	// otherLinks maps an item id to link rows served as written, after its
+	// session links. They exist to be ignored: a card links to predictions,
+	// notes and PRs through the same route.
+	otherLinks map[string][]map[string]any
 
 	// linksStatus, when not 200, is what the links route answers with. This is
 	// the read that prices a subtree.
@@ -32,6 +36,10 @@ type fleet struct {
 
 	mu        sync.Mutex
 	holdCalls []string
+	// holdReasons maps an item id to the reason its hold was sent with.
+	holdReasons map[string]string
+	// linksAskedOf records the id of every card whose links were read.
+	linksAskedOf []string
 	// itemRequests records the offset of every page requested, in order.
 	itemRequests []string
 }
@@ -93,21 +101,33 @@ func (f *fleet) start(t *testing.T) config {
 		path := strings.TrimPrefix(r.URL.Path, "/api/cards/")
 		switch {
 		case strings.HasSuffix(path, "/links"):
+			id := strings.TrimSuffix(path, "/links")
+			f.mu.Lock()
+			f.linksAskedOf = append(f.linksAskedOf, id)
+			f.mu.Unlock()
 			if f.linksStatus != http.StatusOK {
 				w.WriteHeader(f.linksStatus)
 				_, _ = w.Write([]byte(`{"error":"board unavailable"}`))
 				return
 			}
-			id := strings.TrimSuffix(path, "/links")
 			out := []map[string]any{}
 			for _, sid := range f.links[id] {
 				out = append(out, map[string]any{"entity_type": "session", "entity_ref": sid})
 			}
+			out = append(out, f.otherLinks[id]...)
 			_ = json.NewEncoder(w).Encode(out)
 		case strings.HasSuffix(path, "/hold"):
 			id := strings.TrimSuffix(path, "/hold")
+			var payload struct {
+				Reason string `json:"reason"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
 			f.mu.Lock()
 			f.holdCalls = append(f.holdCalls, id)
+			if f.holdReasons == nil {
+				f.holdReasons = map[string]string{}
+			}
+			f.holdReasons[id] = payload.Reason
 			f.mu.Unlock()
 			w.WriteHeader(f.holdStatus)
 			_, _ = w.Write([]byte(`{}`))

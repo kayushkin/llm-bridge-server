@@ -19,9 +19,12 @@ type stubCard struct {
 	cardID    string
 	title     string
 	body      string
-	noItem    bool     // the placement resolves to no noteboard item
-	sessionID string   // "" attaches no session link at all
-	tags      []string // entity tags already on that session
+	noItem    bool   // the placement resolves to no noteboard item
+	sessionID string // "" attaches no session link at all
+	// otherLinks are link rows served as written, ahead of the session link.
+	// A card links to predictions, notes and PRs through the same route.
+	otherLinks []map[string]any
+	tags       []string // entity tags already on that session
 }
 
 type stubKanban struct {
@@ -45,11 +48,19 @@ type stubKanban struct {
 const (
 	stubBoardID   = "board-1"
 	stubColInProg = "col-inprogress"
+
+	// The board and column names are the rows already in kanban-store, written
+	// as wire literals. Built from defaultBoardName and columnInProgress, the
+	// stub would follow a drifted constant and stay green, while the live board
+	// answers FindBoard with nil and the reviewer logs the "nothing to review"
+	// of a fresh box. (Ported from a44e030a.)
+	liveBoardName        = "Agent runs"
+	liveInProgressColumn = "In Progress"
 )
 
 func newStubKanban(t *testing.T, cards ...stubCard) *stubKanban {
 	k := &stubKanban{
-		t: t, boardName: defaultBoardName, cards: cards,
+		t: t, boardName: liveBoardName, cards: cards,
 		added:   map[string][]string{},
 		patched: map[string]string{},
 	}
@@ -125,7 +136,11 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/links")
 		var links []map[string]any
-		if c := k.card(cardID); c != nil && c.sessionID != "" {
+		c := k.card(cardID)
+		if c != nil {
+			links = append(links, c.otherLinks...)
+		}
+		if c != nil && c.sessionID != "" {
 			links = append(links, map[string]any{
 				"card_id": cardID, "entity_type": "session", "entity_ref": c.sessionID,
 			})
@@ -167,7 +182,7 @@ func (k *stubKanban) boardView() map[string]any {
 	return map[string]any{
 		"board": map[string]any{"id": stubBoardID, "name": k.boardName},
 		"columns": []map[string]any{{
-			"column": map[string]any{"id": stubColInProg, "board_id": stubBoardID, "name": columnInProgress},
+			"column": map[string]any{"id": stubColInProg, "board_id": stubBoardID, "name": liveInProgressColumn},
 			"cards":  cards,
 		}},
 	}
