@@ -97,7 +97,13 @@ are now spelled out literally, and a second test ties the set to the two column
 constants the binary later addresses by name — which is the invariant that was
 actually at risk, since those live in a different declaration entirely.
 
----- 2026-09-25: six dead rows re-aimed or deleted ----
+---- 2026-09-25: evaluate is scored; six dead rows re-aimed or deleted ----
+
+The region note above no longer holds for evaluate, elapsedFraction, interpolate,
+inSafeWindow or the cooldown comparison. fire_test.go, ported from e0f686a5,
+pins them, and the family at the foot of CASES scores them: the same 41 cases
+were 30/41 on main before the port and 41/41 after. selectQueuedCard,
+buildQueuePrompt and markQueueCardDispatched are still not scored here.
 
 Main moved this binary's configuration into internal/config's settings
 registry, so six rows named code that no longer existed and the whole file
@@ -306,6 +312,75 @@ CASES = [
           'var kanbanDefaultColumns = []string{"Queued", "Blocked", "Done", "Failed"}')],
     ),
 
+    # ================= evaluate: usage against the reset curve =================
+    #
+    # Ported from e0f686a5 (test/first-tests-for-autoworker), whose fire_test.go
+    # compiled on main unchanged. These are the rows the region note in the
+    # docstring excluded: evaluate, the curve, the safe window and the cooldown.
+    Case(
+        "the slack gate inverts, so it fires only when usage is ALREADY above target",
+        [("if d.actual >= d.target-slackPP {", "if d.actual < d.target-slackPP {")],
+    ),
+    Case(
+        "slack is ignored, so a session fires for a hair under target on every tick",
+        [("if d.actual >= d.target-slackPP {", "if d.actual >= d.target {")],
+    ),
+    Case(
+        "the cooldown stops applying, so every tick fires another session",
+        [("if time.Since(time.Unix(last, 0)) < p.Cooldown {",
+          "if time.Since(time.Unix(last, 0)) < 0 {")],
+    ),
+    Case(
+        "the safe window stops applying, so codex fires in the middle of the working day",
+        [("if !inSafeWindow(p, nowLocal) {", "if false && !inSafeWindow(p, nowLocal) {")],
+    ),
+    Case(
+        "the safe window's end is inclusive, so a window ending at 06:00 fires at 06:00",
+        [("return minutesOfDay >= p.SafeStart && minutesOfDay < p.SafeEnd",
+          "return minutesOfDay >= p.SafeStart && minutesOfDay <= p.SafeEnd")],
+    ),
+    Case(
+        "the safe window's start is exclusive, so a window opening at 22:00 stays shut at 22:00",
+        [("return minutesOfDay >= p.SafeStart && minutesOfDay < p.SafeEnd",
+          "return minutesOfDay > p.SafeStart && minutesOfDay < p.SafeEnd")],
+    ),
+    Case(
+        "the weekday-only window fires at weekends too",
+        [("if wd == time.Saturday || wd == time.Sunday {", "if wd == time.Sunday && false {")],
+    ),
+    Case(
+        "a stale snapshot is treated as current, so it budgets against numbers from days ago",
+        [("if lim.StaleAfter != nil && time.Now().Unix() > *lim.StaleAfter {",
+          "if lim.StaleAfter != nil && time.Now().Unix() > *lim.StaleAfter+86400 {")],
+    ),
+    Case(
+        "a missing provider snapshot fires instead of skipping",
+        [("\tif lim == nil {\n\t\td.reason = \"no snapshot available — skip\"\n\t\treturn d\n\t}",
+          "\tif lim == nil {\n\t\td.reason = \"no snapshot available — skip\"\n\t\td.fire = true\n\t\treturn d\n\t}")],
+    ),
+    Case(
+        "elapsedFraction measures from the wrong end, so a fresh week reads as a spent one",
+        [("windowStart := resetsAt - weekSec", "windowStart := resetsAt + weekSec")],
+    ),
+    Case(
+        # e0f686a5 declared this expected_unnoticed; 4acd749e struck the
+        # declaration once TestElapsedFractionStaysInsideTheCurvesDomain existed.
+        "elapsedFraction returns 1.0 at the boundary, so the curve reads past its last anchor",
+        [("\t\treturn 0.999", "\t\treturn 1.0")],
+    ),
+    Case(
+        "the curve's quiet opening is deleted, so day 1 of the week already budgets",
+        [("\t{0.286, 0},  // ~day 2    → still blank", "\t{0.286, 40}, // ~day 2    → still blank")],
+    ),
+    Case(
+        # `return a.pct` alone orphans b and t and reports a compile error.
+        "interpolate returns the segment's lower anchor, so target lags a whole day behind",
+        [("return a.pct + t*(b.pct-a.pct)", "return a.pct + 0*t*(b.pct-a.pct)")],
+    ),
+    Case(
+        "interpolate reads the segment above the fraction, so target runs a day ahead",
+        [("if frac <= targetCurve[i].frac {", "if frac <= targetCurve[i-1].frac {")],
+    ),
 ]
 
 
