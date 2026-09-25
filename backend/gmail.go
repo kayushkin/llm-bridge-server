@@ -31,6 +31,10 @@ type Gmail struct {
 	apiauthAccount  string
 	tokens          TokenSource
 	http            *http.Client
+	// base is the Gmail API root every request is built on. It is a field
+	// rather than the gmailBase constant so a test can point this client at a
+	// stand-in server and judge the wire traffic against Gmail's published API.
+	base string
 }
 
 func NewGmail(accountID, apiauthProvider, apiauthAccount string, tokens TokenSource) *Gmail {
@@ -40,6 +44,7 @@ func NewGmail(accountID, apiauthProvider, apiauthAccount string, tokens TokenSou
 		apiauthAccount:  apiauthAccount,
 		tokens:          tokens,
 		http:            &http.Client{Timeout: 30 * time.Second},
+		base:            gmailBase,
 	}
 }
 
@@ -56,7 +61,7 @@ func (g *Gmail) do(ctx context.Context, method, path string, body io.Reader) (*h
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, gmailBase+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, g.base+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +98,7 @@ func (g *Gmail) do(ctx context.Context, method, path string, body io.Reader) (*h
 		if err != nil {
 			return nil, err
 		}
-		retryReq, err := http.NewRequestWithContext(ctx, method, gmailBase+path, retryBody)
+		retryReq, err := http.NewRequestWithContext(ctx, method, g.base+path, retryBody)
 		if err != nil {
 			return nil, err
 		}
@@ -452,24 +457,44 @@ func (g *Gmail) Get(ctx context.Context, id string) (Message, error) {
 	}
 	out.InReplyTo = out.Headers["In-Reply-To"]
 
-	walkParts(&m.Payload, &out)
+	if err := walkParts(&m.Payload, &out); err != nil {
+		return Message{}, fmt.Errorf("gmail messages.get(%s): %w", id, err)
+	}
 	return out, nil
 }
 
-func walkParts(p *gmailPayload, out *Message) {
+// decodeGmailBodyData decodes the base64url payload Gmail puts in a part's
+// body. Gmail documents the field as base64url and does not promise padding,
+// so both spellings are accepted; anything else is a real error rather than an
+// empty message body.
+func decodeGmailBodyData(data string) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(strings.TrimRight(data, "="))
+}
+
+// walkParts flattens a Gmail payload tree into the message's body and
+// attachment list. A part that fails to decode is reported: it used to be
+// dropped, which rendered as a message with an empty body — indistinguishable
+// from a message that genuinely has one.
+func walkParts(p *gmailPayload, out *Message) error {
 	switch {
 	case strings.HasPrefix(p.MimeType, "multipart/"):
 		for i := range p.Parts {
-			walkParts(&p.Parts[i], out)
+			if err := walkParts(&p.Parts[i], out); err != nil {
+				return err
+			}
 		}
 	case p.MimeType == "text/html":
-		if data, err := base64.URLEncoding.DecodeString(p.Body.Data); err == nil {
-			out.BodyHTML = string(data)
+		data, err := decodeGmailBodyData(p.Body.Data)
+		if err != nil {
+			return fmt.Errorf("decoding the text/html part: %w", err)
 		}
+		out.BodyHTML = string(data)
 	case p.MimeType == "text/plain":
-		if data, err := base64.URLEncoding.DecodeString(p.Body.Data); err == nil {
-			out.BodyText = string(data)
+		data, err := decodeGmailBodyData(p.Body.Data)
+		if err != nil {
+			return fmt.Errorf("decoding the text/plain part: %w", err)
 		}
+		out.BodyText = string(data)
 	case p.Filename != "" && p.Body.AttachmentID != "":
 		att := Attachment{
 			ID:       p.Body.AttachmentID,
@@ -485,6 +510,7 @@ func walkParts(p *gmailPayload, out *Message) {
 		out.Attachments = append(out.Attachments, att)
 		out.Meta.HasAttach = true
 	}
+	return nil
 }
 
 var errNotImplemented = errors.New("not implemented yet")
