@@ -30,17 +30,16 @@ const outputSnippetBudget = 500
 // truncationMarker is appended to a snippet that did not fit.
 const truncationMarker = "... (truncated)"
 
-// entryPublisher is the sink a Logger writes to. *natsbus.Client satisfies it.
+// EntryPublisher is the sink a Logger writes to. *natsbus.Client satisfies it.
 // It is an interface so that a test can read back the entry a Log* call
-// produced; with a concrete client nothing in this package could observe the
-// level a finished run was filed at, which is how the timeout case went
-// unnoticed.
-type entryPublisher interface {
+// produced; with a concrete client nothing could observe the level a finished
+// run was filed at, which is how the timeout case went unnoticed.
+type EntryPublisher interface {
 	Publish(subject string, data any) error
 }
 
 type Logger struct {
-	client entryPublisher
+	client EntryPublisher
 }
 
 func New(natsClient *natsbus.Client) *Logger {
@@ -50,6 +49,13 @@ func New(natsClient *natsbus.Client) *Logger {
 		return &Logger{}
 	}
 	return &Logger{client: natsClient}
+}
+
+// NewPublishingTo builds a Logger over any sink. It exists so that a package
+// holding a *Logger it did not build — cmd/scheduler hands one to the cron
+// loop, the bus handler and the API — can read back what was published.
+func NewPublishingTo(publisher EntryPublisher) *Logger {
+	return &Logger{client: publisher}
 }
 
 func (l *Logger) publish(entry LogEntry) {
