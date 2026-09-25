@@ -6,6 +6,7 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -64,7 +65,9 @@ func TestDiscoverAnnouncesLogStoreBeforeImporting(t *testing.T) {
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
 
-	var captured bytes.Buffer
+	// Discovery's imports go on logging from their own goroutine after the
+	// response returns, so the capture is shared and has to be locked.
+	var captured lockedLogCapture
 	previousOutput := log.Writer()
 	previousFlags := log.Flags()
 	log.SetOutput(&captured)
@@ -134,4 +137,23 @@ func TestDiscoverAnnouncesLogStoreBeforeImporting(t *testing.T) {
 		t.Errorf("import line %d precedes the log-store announcement at line %d — the warning is useless after the write; got:\n%s",
 			firstImportLine, announcementLine, captured.String())
 	}
+}
+
+// lockedLogCapture is a bytes.Buffer the log package can write to from any
+// goroutine while the test reads it.
+type lockedLogCapture struct {
+	mutex  sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (capture *lockedLogCapture) Write(p []byte) (int, error) {
+	capture.mutex.Lock()
+	defer capture.mutex.Unlock()
+	return capture.buffer.Write(p)
+}
+
+func (capture *lockedLogCapture) String() string {
+	capture.mutex.Lock()
+	defer capture.mutex.Unlock()
+	return capture.buffer.String()
 }
