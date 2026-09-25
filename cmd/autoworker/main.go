@@ -42,22 +42,21 @@ import (
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 )
 
 const (
-	kanbanBoardName    = "Agent runs"
-	kanbanColumnTarget = "In Progress"
+	kanbanBoardName    = kanbanvocab.BoardAgentRuns
+	kanbanColumnTarget = kanbanvocab.ColumnInProgress
 	kanbanCardOrigin   = "autoworker"
 
 	// Queue-backed dispatch source: human (or curator) drops cards into the
 	// Queued column; the worker picks the top eligible card on each fire and
 	// uses its title/body as the worker prompt.
-	autoworkerQueueBoard            = "Autoworker queue"
-	autoworkerQueueColumnFrom       = "Queued"
-	autoworkerQueueColumnInProgress = "In Progress"
+	autoworkerQueueBoard            = kanbanvocab.BoardAutoworkerQueue
+	autoworkerQueueColumnFrom       = kanbanvocab.ColumnQueued
+	autoworkerQueueColumnInProgress = kanbanvocab.ColumnInProgress
 )
-
-var kanbanDefaultColumns = []string{"Queued", "In Progress", "Blocked", "Done", "Failed"}
 
 type limitWindow struct {
 	UsedPercent   float64 `json:"used_percent"`
@@ -472,7 +471,7 @@ func run(cfg config, publish workerPublisher) int {
 
 		if kc == nil {
 			kc = kanbanclient.New(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken)
-			if err := kc.EnsureBoard(kanbanBoardName, kanbanDefaultColumns); err != nil {
+			if err := kc.EnsureBoard(kanbanBoardName, kanbanvocab.AgentRunsColumns()); err != nil {
 				log.Printf("kanban: bootstrap %q failed: %v (continuing)", kanbanBoardName, err)
 				degraded.Record("the %q board could not be reached (%v), so this tick's dispatches have no telemetry card", kanbanBoardName, err)
 				kc = nil // disable for the rest of this tick
@@ -580,7 +579,7 @@ func initQueueClient(kanbanStoreURL, kanbanStoreServiceToken string, dryRun bool
 		}
 		return qc, ""
 	}
-	if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanDefaultColumns); err != nil {
+	if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanvocab.AutoworkerQueueColumns()); err != nil {
 		log.Printf("queue: bootstrap %q: %v (using default prompt)", autoworkerQueueBoard, err)
 		return nil, fmt.Sprintf("the %q board could not be reached (%v), so this tick dispatches the default prompt instead of queued work", autoworkerQueueBoard, err)
 	}
@@ -629,7 +628,7 @@ func markQueueCardDispatched(qc *kanbanclient.Client, cand *queueCandidate, p pr
 	if !ok {
 		return fmt.Errorf("column %q missing on queue board", autoworkerQueueColumnInProgress)
 	}
-	if err := qc.AddCardLink(cand.cardID, "session", sessionID, kanbanCardOrigin); err != nil {
+	if err := qc.AddCardLink(cand.cardID, kanbanvocab.LinkTypeSession, sessionID, kanbanCardOrigin); err != nil {
 		return fmt.Errorf("add session link: %w", err)
 	}
 	moveResult, err := qc.MoveCard(cand.cardID, qc.BoardID, inProgressID, 0)

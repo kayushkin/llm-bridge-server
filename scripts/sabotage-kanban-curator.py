@@ -56,23 +56,23 @@ CASES = [
     # ---- wire values another program wrote ----
     Case(
         "the In Progress column name drifts",
-        [('columnInProgress   = "In Progress"', 'columnInProgress   = "In progress"')],
+        [('columnInProgress   = kanbanvocab.ColumnInProgress', 'columnInProgress   = "In progress"')],
     ),
     Case(
         "the Done column name drifts",
-        [('columnDone         = "Done"', 'columnDone         = "done"')],
+        [('columnDone         = kanbanvocab.ColumnDone', 'columnDone         = "done"')],
     ),
     Case(
         "the Failed column name drifts",
-        [('columnFailed       = "Failed"', 'columnFailed       = "Error"')],
+        [('columnFailed       = kanbanvocab.ColumnFailed', 'columnFailed       = "Error"')],
     ),
     Case(
         "the card-link entity type drifts",
-        [('linkTypeSession    = "session"', 'linkTypeSession    = "bus_session"')],
+        [('linkTypeSession    = kanbanvocab.LinkTypeSession', 'linkTypeSession    = "bus_session"')],
     ),
     Case(
         "the entity type the review tag hangs on drifts",
-        [('entityTypeSession = "session"', 'entityTypeSession = "sessions"')],
+        [('entityTypeSession = kanbanvocab.EntityTypeSession', 'entityTypeSession = "sessions"')],
     ),
     Case(
         "the review-settled tag drifts from what the reviewer writes",

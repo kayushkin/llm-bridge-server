@@ -32,11 +32,12 @@ import (
 
 	"github.com/slava/scheduler/internal/boundedtext"
 	"github.com/slava/scheduler/internal/bridgesession"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 )
 
 // linkTypeSession is the entity_type that autoworker, kanban-dispatcher and the
 // dash dispatch button all write when they hand a card to an agent.
-const linkTypeSession = "session"
+const linkTypeSession = kanbanvocab.LinkTypeSession
 
 // terminalSessionStates are the states that mean the agent is done and the card
 // is the classifier's again. Taken from kanban-curator, which already owns this

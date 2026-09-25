@@ -298,18 +298,18 @@ CASES = [
     ),
     Case(
         "the real run bootstraps the telemetry board: dispatch reads the board it writes to",
-        [("if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanDefaultColumns); err != nil {",
-          "if err := qc.EnsureBoard(kanbanBoardName, kanbanDefaultColumns); err != nil {")],
+        [("if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanvocab.AutoworkerQueueColumns()); err != nil {",
+          "if err := qc.EnsureBoard(kanbanBoardName, kanbanvocab.AutoworkerQueueColumns()); err != nil {")],
     ),
     Case(
         "the queue board is created with no columns: nothing can ever be queued on it",
-        [("if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanDefaultColumns); err != nil {",
+        [("if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanvocab.AutoworkerQueueColumns()); err != nil {",
           "if err := qc.EnsureBoard(autoworkerQueueBoard, nil); err != nil {")],
     ),
     Case(
-        "the column a dispatched card moves to is dropped from the default set",
-        [('var kanbanDefaultColumns = []string{"Queued", "In Progress", "Blocked", "Done", "Failed"}',
-          'var kanbanDefaultColumns = []string{"Queued", "Blocked", "Done", "Failed"}')],
+        "the column a dispatched card moves to is dropped from the queue board's column set",
+        [("if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanvocab.AutoworkerQueueColumns()); err != nil {",
+          "if err := qc.EnsureBoard(autoworkerQueueBoard, []string{kanbanvocab.ColumnQueued, kanbanvocab.ColumnBlocked, kanbanvocab.ColumnDone, kanbanvocab.ColumnFailed}); err != nil {")],
     ),
 
     # ================= evaluate: usage against the reset curve =================
@@ -541,7 +541,7 @@ CASES = [
         # 4e4a0b93: the fixture must give the non-session link a cost of its own,
         # or the sum deduplicates and the mutation walks through.
         "links of every kind are counted as sessions, so unrelated links inflate the spend",
-        [('if l.EntityType == "session" {', 'if l.EntityType != "" {')],
+        [('if l.EntityType == kanbanvocab.LinkTypeSession {', 'if l.EntityType != "" {')],
     ),
 
     # -- resolveSessionBudget precedence --
@@ -620,7 +620,7 @@ CASES = [
     ),
     Case(
         "the dispatch attaches a link the spend tree does not count, so the session is free",
-        [('qc.AddCardLink(cand.cardID, "session", sessionID, kanbanCardOrigin)',
+        [('qc.AddCardLink(cand.cardID, kanbanvocab.LinkTypeSession, sessionID, kanbanCardOrigin)',
           'qc.AddCardLink(cand.cardID, "autoworker_provider", sessionID, kanbanCardOrigin)')],
     ),
     Case(
@@ -629,8 +629,8 @@ CASES = [
     ),
     Case(
         "a session link that could not be attached is reported as a clean dispatch",
-        [("\tif err := qc.AddCardLink(cand.cardID, \"session\", sessionID, kanbanCardOrigin); err != nil {\n\t\treturn fmt.Errorf(\"add session link: %w\", err)\n\t}",
-          "\t_ = qc.AddCardLink(cand.cardID, \"session\", sessionID, kanbanCardOrigin)")],
+        [("\tif err := qc.AddCardLink(cand.cardID, kanbanvocab.LinkTypeSession, sessionID, kanbanCardOrigin); err != nil {\n\t\treturn fmt.Errorf(\"add session link: %w\", err)\n\t}",
+          "\t_ = qc.AddCardLink(cand.cardID, kanbanvocab.LinkTypeSession, sessionID, kanbanCardOrigin)")],
     ),
     Case(
         "a card that could not be moved out of Queued is reported as a clean dispatch",

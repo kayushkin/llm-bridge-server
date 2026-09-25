@@ -68,12 +68,13 @@ import (
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 	"github.com/slava/scheduler/internal/oneshot"
 	"github.com/slava/scheduler/internal/textcut"
 )
 
 const (
-	defaultBoardName     = "Agent runs"
+	defaultBoardName     = kanbanvocab.BoardAgentRuns
 	tagDoNotTrack        = "kanban-do-not-track"
 	tagFinalClassified   = "kanban-final-classified"
 	tagCheckSigPrefix    = "kanban-check-sig:"
@@ -279,7 +280,7 @@ func run() int {
 	}
 	if board == nil {
 		// First-ever invocation: bootstrap the board so cards have somewhere to go.
-		if err := kc.EnsureBoard(cfg.BoardName, []string{"Queued", "In Progress", "Blocked", "Done", "Failed"}); err != nil {
+		if err := kc.EnsureBoard(cfg.BoardName, kanbanvocab.AgentRunsColumns()); err != nil {
 			log.Fatalf("bootstrap board: %v", err)
 		}
 		board = &kanbanclient.Board{ID: kc.BoardID, Name: cfg.BoardName}
@@ -295,7 +296,7 @@ func run() int {
 			kc.ColumnsByName[col.Name] = col.ID
 		}
 	}
-	requireColumns(kc, []string{"In Progress", "Blocked", "Done", "Failed"})
+	requireColumns(kc, []string{kanbanvocab.ColumnInProgress, kanbanvocab.ColumnBlocked, kanbanvocab.ColumnDone, kanbanvocab.ColumnFailed})
 
 	if cfg.OneSession != "" {
 		sess, err := getSession(cfg.BridgeURL, cfg.OneSession)
@@ -933,15 +934,15 @@ func normalizeTitle(title string) string {
 func stateToColumn(state string) string {
 	switch state {
 	case "in_progress":
-		return "In Progress"
+		return kanbanvocab.ColumnInProgress
 	case "blocked":
-		return "Blocked"
+		return kanbanvocab.ColumnBlocked
 	case "done":
-		return "Done"
+		return kanbanvocab.ColumnDone
 	case "abandoned":
-		return "Failed"
+		return kanbanvocab.ColumnFailed
 	default:
-		return "In Progress"
+		return kanbanvocab.ColumnInProgress
 	}
 }
 

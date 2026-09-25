@@ -48,6 +48,7 @@ import (
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 	"github.com/slava/scheduler/internal/spendtree"
 )
 
@@ -156,7 +157,7 @@ func run(cfg config) int {
 		}
 		var sessions []string
 		for _, l := range links {
-			if l.EntityType == "session" {
+			if l.EntityType == kanbanvocab.LinkTypeSession {
 				sessions = append(sessions, l.EntityRef)
 			}
 		}

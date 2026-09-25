@@ -42,6 +42,7 @@ import (
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 )
 
 const (
@@ -51,12 +52,12 @@ const (
 	// job for that board keeps its original name ("kanban-curator-tick") and
 	// updates in place rather than registering a second job beside it. It is
 	// never used to find a board — boards are found by id.
-	agentRunsBoardName = "Agent runs"
-	columnInProgress   = "In Progress"
-	columnDone         = "Done"
-	columnFailed       = "Failed"
+	agentRunsBoardName = kanbanvocab.BoardAgentRuns
+	columnInProgress   = kanbanvocab.ColumnInProgress
+	columnDone         = kanbanvocab.ColumnDone
+	columnFailed       = kanbanvocab.ColumnFailed
 	tagAutoworker      = "autoworker"
-	linkTypeSession    = "session"
+	linkTypeSession    = kanbanvocab.LinkTypeSession
 
 	// purposeAutoworker is the value llm-bridge-server stores in a session's
 	// "purpose" field for a session autoworker created. Cards whose session
@@ -74,7 +75,7 @@ const (
 	// 2026-04-23 and 2026-06-03, so the id convention changed under the gate
 	// once already and nothing here could see it happen.
 	purposeAutoworker = "autoworker"
-	entityTypeSession = "session"
+	entityTypeSession = kanbanvocab.EntityTypeSession
 	tagReviewSettled  = "review-settled"
 
 	// reviewGrace is how long a completed autoworker session may sit unsettled

@@ -62,6 +62,7 @@ import (
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 )
 
 // linkTypeSession is the canonical session card-link entity_type. Pre-2026-05
@@ -69,16 +70,16 @@ import (
 // "session" once bus_session_id became the bridge session_id.
 
 const (
-	columnGoals        = "Goals"
-	columnBacklog      = "Backlog"
-	columnInProgress   = "In Progress"
-	columnDone         = "Done"
-	columnFailed       = "Failed"
-	tagSubtask         = "task-completion-loop-subtask"
-	tagScoped          = "scoped"
-	tagGroupPrefix     = "group:"
-	linkTypeParent     = "parent_card"
-	linkTypeSession    = "session"
+	columnGoals        = kanbanvocab.ColumnGoals
+	columnBacklog      = kanbanvocab.ColumnBacklog
+	columnInProgress   = kanbanvocab.ColumnInProgress
+	columnDone         = kanbanvocab.ColumnDone
+	columnFailed       = kanbanvocab.ColumnFailed
+	tagSubtask         = kanbanvocab.TagSubtask
+	tagScoped          = kanbanvocab.TagScoped
+	tagGroupPrefix     = kanbanvocab.TagGroupPrefix
+	linkTypeParent     = kanbanvocab.LinkTypeParentCard
+	linkTypeSession    = kanbanvocab.LinkTypeSession
 	reviveWindow       = time.Hour
 	maxDispatchPerTick = 3
 )
@@ -478,7 +479,7 @@ func scopedParents(view *kanbanclient.BoardView, kc *kanbanclient.Client, degrad
 		if c.Item == nil {
 			continue
 		}
-		etags, err := kc.ListEntityTags("note", c.Placement.CardID)
+		etags, err := kc.ListEntityTags(kanbanvocab.EntityTypeNote, c.Placement.CardID)
 		if err != nil {
 			log.Printf("[%s] list entity tags: %v — skip", c.Placement.CardID, err)
 			degraded.Record("goal %s (%q): its scoped tag could not be read (%v), so it was never considered and none of its Backlog children were dispatched",

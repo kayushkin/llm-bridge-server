@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 )
 
 // initQueueClient was executed by no test at all — a panic() written at its
@@ -186,7 +187,7 @@ func TestADryRunNeverCreatesTheQueueBoard(t *testing.T) {
 }
 
 func TestADryRunResolvesTheBoardItFindsInsteadOfReportingNothing(t *testing.T) {
-	store := newFakeKanbanStore().withBoard("queue-1", autoworkerQueueBoard, kanbanDefaultColumns...)
+	store := newFakeKanbanStore().withBoard("queue-1", autoworkerQueueBoard, kanbanvocab.AutoworkerQueueColumns()...)
 	url := store.start(t)
 
 	client, _ := initQueueClient(url, "", true)
@@ -199,7 +200,7 @@ func TestADryRunResolvesTheBoardItFindsInsteadOfReportingNothing(t *testing.T) {
 	}
 	// "Wrote nothing and counted nothing" prints the same as a quiet board, so
 	// the columns actually have to arrive.
-	for _, want := range kanbanDefaultColumns {
+	for _, want := range kanbanvocab.AutoworkerQueueColumns() {
 		if _, ok := client.ColumnsByName[want]; !ok {
 			t.Errorf("column %q missing from the resolved client; got %v", want, client.ColumnsByName)
 		}
@@ -267,7 +268,7 @@ func TestARealRunCreatesTheBoardAndEveryColumnItNeeds(t *testing.T) {
 	if client.BoardID == "" {
 		t.Error("client came back with no BoardID")
 	}
-	// Spelled out rather than ranged over kanbanDefaultColumns. A test that
+	// Spelled out rather than ranged over AutoworkerQueueColumns. A test that
 	// reads the same constant it is meant to pin moves with it: dropping a
 	// column from that slice deleted the expectation along with the behaviour,
 	// and this assertion passed while a fresh board came up missing the column
@@ -318,7 +319,7 @@ func TestEveryColumnTheBinaryAddressesIsOneItCreates(t *testing.T) {
 }
 
 func TestARealRunAgainstAReadyBoardCreatesNothing(t *testing.T) {
-	store := newFakeKanbanStore().withBoard("queue-1", autoworkerQueueBoard, kanbanDefaultColumns...)
+	store := newFakeKanbanStore().withBoard("queue-1", autoworkerQueueBoard, kanbanvocab.AutoworkerQueueColumns()...)
 	url := store.start(t)
 
 	client, _ := initQueueClient(url, "", false)
@@ -392,7 +393,7 @@ func TestADryRunThatCannotListColumnsReturnsNothingRatherThanAHalfConfiguredClie
 	// hand the caller a BoardID with an empty column map, and the first
 	// ColumnsByName lookup downstream reports the column as missing from the
 	// board — blaming the board for an outage.
-	store := newFakeKanbanStore().withBoard("queue-1", autoworkerQueueBoard, kanbanDefaultColumns...)
+	store := newFakeKanbanStore().withBoard("queue-1", autoworkerQueueBoard, kanbanvocab.AutoworkerQueueColumns()...)
 	store.failListColumns = true
 	url := store.start(t)
 
@@ -426,8 +427,8 @@ func TestTheQueueBoardIsResolvedByItsOwnNameAndNotTheTelemetryBoard(t *testing.T
 	// the wrong one would dispatch cards from the "Agent runs" telemetry board,
 	// which autoworker itself writes to — a feedback loop.
 	store := newFakeKanbanStore().
-		withBoard("telemetry", kanbanBoardName, kanbanDefaultColumns...).
-		withBoard("queue-1", autoworkerQueueBoard, kanbanDefaultColumns...)
+		withBoard("telemetry", kanbanBoardName, kanbanvocab.AgentRunsColumns()...).
+		withBoard("queue-1", autoworkerQueueBoard, kanbanvocab.AutoworkerQueueColumns()...)
 	url := store.start(t)
 
 	for _, dryRun := range []bool{true, false} {

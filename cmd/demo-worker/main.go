@@ -38,13 +38,14 @@ import (
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/demoteam"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 )
 
 const (
 	defaultRepoPath = "/home/kayushkincom/repos/northwind-api"
 
-	columnQueued     = "Queued"
-	columnInProgress = "In Progress"
+	columnQueued     = kanbanvocab.ColumnQueued
+	columnInProgress = kanbanvocab.ColumnInProgress
 	columnActionNeed = "Action needed"
 
 	// tagWorkNotStarted is the seam email-classifier already writes on every

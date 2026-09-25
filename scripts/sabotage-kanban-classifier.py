@@ -74,7 +74,7 @@ CASES = [
     # ---- controls ----
     Case(
         "CONTROL known-positive: the board this binary writes every card to is renamed",
-        [('defaultBoardName     = "Agent runs"', 'defaultBoardName     = "Agent run"')],
+        [('defaultBoardName     = kanbanvocab.BoardAgentRuns', 'defaultBoardName     = "Agent run"')],
     ),
     Case(
         "CONTROL known-negative: reword the -auth-token usage string",

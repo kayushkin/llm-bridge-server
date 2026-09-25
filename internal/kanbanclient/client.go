@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/slava/scheduler/internal/kanbanvocab"
 )
 
 type Client struct {
@@ -343,10 +345,10 @@ func (c *Client) ensureColumns(boardID string, wantColumns []string) error {
 		}
 		var autoStatus *string
 		switch want {
-		case "Done":
+		case kanbanvocab.ColumnDone:
 			s := "done"
 			autoStatus = &s
-		case "Failed":
+		case kanbanvocab.ColumnFailed:
 			s := "archived"
 			autoStatus = &s
 		}
@@ -595,7 +597,7 @@ func (c *Client) CreateCard(a CreateCardArgs) (cardID string, err error) {
 
 	type linkSpec struct{ entityType, entityRef, label string }
 	links := []linkSpec{
-		{"session", a.SessionID, "autoworker"},
+		{kanbanvocab.LinkTypeSession, a.SessionID, "autoworker"},
 		{"autoworker_provider", a.Provider, ""},
 	}
 	for _, l := range links {

@@ -8,6 +8,7 @@ import (
 	"github.com/slava/scheduler/internal/demosession"
 	"github.com/slava/scheduler/internal/demoteam"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 )
 
 // dispatch turns queued cards into real agent sessions.
@@ -99,7 +100,7 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 			//
 			// The actor rides on the query string, which is how kanban-store reads
 			// it, so the one event has both who acted and what it acted on.
-			if err := linkAs(cfg.KanbanURL, cardID, "session", sessionID,
+			if err := linkAs(cfg.KanbanURL, cardID, kanbanvocab.LinkTypeSession, sessionID,
 				"demo-worker", actorPrefixAgent+identity.Slug); err != nil {
 				return fmt.Errorf("link session %s: %w", sessionID, err)
 			}
@@ -122,7 +123,7 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 
 func hasSession(card kanbanclient.CardView) bool {
 	for _, l := range card.Links {
-		if l.EntityType == "session" {
+		if l.EntityType == kanbanvocab.LinkTypeSession {
 			return true
 		}
 	}

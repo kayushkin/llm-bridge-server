@@ -60,13 +60,14 @@ import (
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 )
 
 const (
-	defaultBoardName  = "Agent runs"
-	columnInProgress  = "In Progress"
-	linkTypeSession   = "session"
-	entityTypeSession = "session"
+	defaultBoardName  = kanbanvocab.BoardAgentRuns
+	columnInProgress  = kanbanvocab.ColumnInProgress
+	linkTypeSession   = kanbanvocab.LinkTypeSession
+	entityTypeSession = kanbanvocab.EntityTypeSession
 
 	// purposeAutoworker is the value llm-bridge-server stores in a session's
 	// "purpose" field for a session autoworker created. It is the origin gate:

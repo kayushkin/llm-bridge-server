@@ -8,6 +8,7 @@ import (
 
 	"github.com/slava/scheduler/internal/demoteam"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 )
 
 // review dispatches a reviewer for work that has produced a pull request and
@@ -100,7 +101,7 @@ func review(kc *kanbanclient.Client, cfg config) error {
 			// Linking the session records the dispatch, attributed to the
 			// reviewer — the same one call that carries both who acted and what
 			// they acted on.
-			if err := linkAs(cfg.KanbanURL, cardID, "session", sessionID,
+			if err := linkAs(cfg.KanbanURL, cardID, kanbanvocab.LinkTypeSession, sessionID,
 				"demo-worker review", actorPrefixAgent+reviewer.Slug); err != nil {
 				return fmt.Errorf("link reviewer session: %w", err)
 			}

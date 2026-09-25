@@ -46,24 +46,25 @@ import (
 	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 	"github.com/slava/scheduler/internal/oneshot"
 )
 
 const (
-	columnGoals      = "Goals"
-	columnBacklog    = "Backlog"
-	columnInProgress = "In Progress"
-	columnDone       = "Done"
-	columnFailed     = "Failed"
-	tagTrigger       = "task-completion-loop"
-	tagSubtask       = "task-completion-loop-subtask"
+	columnGoals      = kanbanvocab.ColumnGoals
+	columnBacklog    = kanbanvocab.ColumnBacklog
+	columnInProgress = kanbanvocab.ColumnInProgress
+	columnDone       = kanbanvocab.ColumnDone
+	columnFailed     = kanbanvocab.ColumnFailed
+	tagTrigger       = kanbanvocab.TagTrigger
+	tagSubtask       = kanbanvocab.TagSubtask
 	tagScoped        = "scoped"
 	// tagGroupPrefix must stay identical to kanban-dispatcher's constant of the
 	// same name — this is the wire format between the two binaries. It is spelled
 	// out in both rather than shared, along with every other constant in this
 	// block; see the residual filed alongside this change.
-	tagGroupPrefix  = "group:"
-	linkTypeParent  = "parent_card"
+	tagGroupPrefix  = kanbanvocab.TagGroupPrefix
+	linkTypeParent  = kanbanvocab.LinkTypeParentCard
 	maxScopePerTick = 5
 )
 
@@ -252,7 +253,7 @@ func pickParents(view *kanbanclient.BoardView, kc *kanbanclient.Client, degraded
 			continue
 		}
 		// Check entity_tags for "scoped".
-		etags, err := kc.ListEntityTags("note", c.Placement.CardID)
+		etags, err := kc.ListEntityTags(kanbanvocab.EntityTypeNote, c.Placement.CardID)
 		if err != nil {
 			log.Printf("[%s] list entity tags: %v — skip", c.Placement.CardID, err)
 			degraded.Record("goal card %s (%s): its scoped tag could not be read (%v), so it was never considered for decomposition",
@@ -339,7 +340,7 @@ func scopeParent(ctx context.Context, cfg config, kc *kanbanclient.Client, p par
 		log.Printf("[%s] subcard %s → %q", p.title(), childID, draft.Title)
 	}
 
-	if err := kc.AddEntityTag("note", p.cardID, tagScoped); err != nil {
+	if err := kc.AddEntityTag(kanbanvocab.EntityTypeNote, p.cardID, tagScoped); err != nil {
 		degraded.Record("goal card %s (%s): its %d sub-cards were written but the scoped stamp was refused (%v), so every later tick decomposes it again and writes a duplicate set",
 			p.cardID, p.title(), len(plan.Subtasks), err)
 		return fmt.Errorf("mark scoped: %w", err)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/slava/scheduler/internal/demoteam"
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 )
 
 // buildableActions are the work-vocabulary actions an agent can actually carry
@@ -119,7 +120,7 @@ func eligible(card kanbanclient.CardView) (string, bool) {
 		return "action=" + action + " needs a person", false
 	}
 	for _, l := range card.Links {
-		if l.EntityType == "session" {
+		if l.EntityType == kanbanvocab.LinkTypeSession {
 			return "already has a session", false
 		}
 	}

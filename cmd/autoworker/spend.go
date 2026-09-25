@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/kanbanvocab"
 	"github.com/slava/scheduler/internal/spendtree"
 )
 
@@ -119,7 +120,7 @@ func sessionsForItem(qc *kanbanclient.Client) func(string) ([]string, error) {
 		}
 		var sessions []string
 		for _, l := range links {
-			if l.EntityType == "session" {
+			if l.EntityType == kanbanvocab.LinkTypeSession {
 				sessions = append(sessions, l.EntityRef)
 			}
 		}
