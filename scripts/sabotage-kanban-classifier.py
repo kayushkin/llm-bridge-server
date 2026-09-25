@@ -554,6 +554,65 @@ CASES = [
         "which no assertion on length alone can see",
         [("\treturn s[:cut] + Ellipsis", "\treturn s[len(s)-cut:] + Ellipsis")],
     ),
+
+    # ---- THE QUIET SIDE ----
+    #
+    # Ported 2026-09-25 from 3aa6a3fc, which found that a case list scoring
+    # 72/72 left 13 of 88 tests reddened by no case, and all 13 pinned the
+    # quiet direction: the empty input, the zero, the boundary that should be
+    # KEPT, the tick that should cost nothing. A case list inherits the worry
+    # of the card that drafted it, so its blind side is the far side of that
+    # worry. A classifier that classifies nothing logs `classified=0`, which is
+    # also what a box with nothing to do logs.
+    #
+    # Four of its rows are not ported. The signature lost its minute stamp, so
+    # the seconds row has nothing to edit. priorSigTag's and priorMsgCount's
+    # no-signature rows would be equivalent mutants on main: a bare prefix and
+    # an empty signature both parse as "no result, no count", and callers read
+    # an event count only when `known` is true. The truncation guard moved into
+    # internal/oneshot, which this scorer does not target.
+    Case(
+        "the lookback narrows to five days, so sessions still being worked on stop being candidates",
+        [("candidateLookback         = 7 * 24 * time.Hour",
+          "candidateLookback         = 5 * 24 * time.Hour")],
+    ),
+    Case(
+        "the do-not-track delta turns inclusive, so a session that grew by exactly the threshold is still skipped",
+        [("} else if eventCount-priorN < doNotTrackReevalEvents {",
+          "} else if eventCount-priorN <= doNotTrackReevalEvents {")],
+    ),
+    Case(
+        "the once-per-response gate skips any session whose signature names a response, not just this one",
+        [("\treturn ok && recorded == finishedResponseID", "\treturn ok && (recorded == finishedResponseID || true)")],
+    ),
+    Case(
+        "the once-per-response gate also skips the never-signed, so no session is ever classified a first time",
+        [("\treturn ok && recorded == finishedResponseID", "\treturn !ok || recorded == finishedResponseID")],
+    ),
+    Case(
+        "any session with a state at all is retired as final-classified, including one still running",
+        [("if sess.State == terminalStateCompleted || sess.State == terminalStateError {",
+          'if sess.State != "" {')],
+    ),
+    Case(
+        "an empty card list renders no (none), so a session with no cards reads like a digest missing its cards section",
+        [('if len(existingCards) == 0 {\n\t\treturn header + "(none)\\n\\n"\n\t}',
+          'if len(existingCards) == 0 {\n\t\treturn header + "\\n"\n\t}')],
+    ),
+    Case(
+        "a session with no tool calls renders no (none), so it reads like a digest missing its tool section",
+        [('fmt.Fprintf(&b, "(none)\\n")', 'fmt.Fprintf(&b, "\\n")')],
+    ),
+    Case(
+        "fitKeepingNewest stops one short, so it sheds the oldest entry and announces an omission on a digest that fitted",
+        [("for i := len(entries) - 1; i >= 0; i-- {",
+          "for i := len(entries) - 1; i >= 1; i-- {")],
+    ),
+    Case(
+        "the tick's spend counter starts at one, so every tick reports a classification it never made",
+        [("classifyOneSession func(session) bool) int {\n\tclassified := 0",
+          "classifyOneSession func(session) bool) int {\n\tclassified := 1")],
+    ),
 ]
 
 
