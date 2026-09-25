@@ -383,6 +383,125 @@ CASES = [
         [('base := strings.TrimRight(bridgeURL, "/") + "/sessions/summary?limit=100"',
           'base := bridgeURL + "/sessions/summary?limit=100"')],
     ),
+
+    # ---- the digest block, the schema, and the two tag helpers beside them ----
+    #
+    # Ported 2026-09-25 from d9ba6aa5 (test/classifier-digest-block-is-scored).
+    # These functions are executed by the suite on its way to other assertions
+    # and were observed by none of them. The digest is the prompt this binary
+    # pays for; tagSet and applyDoNotTrack decide whether a session is ever
+    # classified again. That commit's tool-name row is not ported: main sends
+    # the schema to the oneshot route, and there is no tool to name.
+    Case(
+        "tagSet records every tag as ABSENT, so all three per-session gates read a session as never seen",
+        [("\t\tout[t.Tag] = true", "\t\tout[t.Tag] = false")],
+    ),
+    Case(
+        "tagSet returns an empty set, so a session's whole history — gates and signature alike — is invisible",
+        [("\tfor _, t := range tags {\n\t\tout[t.Tag] = true\n\t}\n\treturn out",
+          "\tfor _, t := range tags {\n\t\t_ = t\n\t}\n\treturn out")],
+    ),
+    Case(
+        "an untrackable session is tagged final-classified instead of do-not-track, so it is never re-evaluated",
+        [("if err := kc.AddEntityTag(cardLinkSession, sess.SessionID, tagDoNotTrack); err != nil {",
+          "if err := kc.AddEntityTag(cardLinkSession, sess.SessionID, tagFinalClassified); err != nil {")],
+    ),
+    Case(
+        "budgetShare hands back the WHOLE budget instead of its share, so one section can claim all of it",
+        [("\treturn int(float64(total) * fraction)", "\treturn total")],
+    ),
+    Case(
+        "budgetShare ignores the total and always reserves the default budget's share",
+        [("\treturn int(float64(total) * fraction)",
+          "\treturn int(float64(digestCharBudget) * fraction)")],
+    ),
+    Case(
+        "budgetShare's non-positive guard stops firing",
+        [("\tif total <= 0 {\n\t\treturn 0\n\t}", "\tif total <= 0 && false {\n\t\treturn 0\n\t}")],
+        expected_unnoticed="redundant with the line below it, and unreachable besides. At total=0 both "
+                           "paths return 0. Only total<0 differs, and no call site can pass one: "
+                           "buildDigest replaces a non-positive charBudget with digestCharBudget and "
+                           "clamps `remaining` to 0 before calling budgetShare. Falsified the day a "
+                           "third caller passes an unclamped difference — then this becomes a real case.",
+    ),
+    Case(
+        "the digest stops naming the session's bridge id, so the model cannot tell which session it is reading",
+        [('\tfmt.Fprintf(&b, "bridge_id: %s\\n", sess.SessionID)\n', "")],
+    ),
+    Case(
+        "the meta section reports the session's purpose where its state belongs, so a finished session reads as running",
+        [('\tfmt.Fprintf(&b, "state: %s\\n", sess.State)',
+          '\tfmt.Fprintf(&b, "state: %s\\n", sess.Purpose)')],
+    ),
+    Case(
+        "messages_shown always reads zero, so every session looks like it has said nothing",
+        [('\tfmt.Fprintf(&b, "messages_shown: %d\\n\\n", msgCount)',
+          '\tfmt.Fprintf(&b, "messages_shown: %d\\n\\n", 0)')],
+    ),
+    Case(
+        "the meta section loses its trailing blank line, so it runs into the section after it",
+        [('\tfmt.Fprintf(&b, "messages_shown: %d\\n\\n", msgCount)',
+          '\tfmt.Fprintf(&b, "messages_shown: %d\\n", msgCount)')],
+    ),
+    Case(
+        "the USER PROMPTS section is filled with assistant turns, so the model reads its own replies as the ask",
+        [('\t\tif m.Role == "user" && strings.TrimSpace(m.Content) != "" {',
+          '\t\tif m.Role == "assistant" && strings.TrimSpace(m.Content) != "" {')],
+    ),
+    Case(
+        "an empty user message is rendered as a prompt, so the section fills with blanks the budget still pays for",
+        [('\t\tif m.Role == "user" && strings.TrimSpace(m.Content) != "" {',
+          '\t\tif m.Role == "user" {')],
+    ),
+    Case(
+        "a user prompt is no longer bounded, so one pasted log can swallow the whole section",
+        [("textcut.TruncateToByteBudgetOnRuneBoundary(m.Content, 1500)", "m.Content")],
+    ),
+    Case(
+        "a session with no user prompts renders an EMPTY section instead of saying (none)",
+        [('\tif len(entries) == 0 {\n\t\treturn header + "(none)\\n\\n"\n\t}\n'
+          '\treturn renderSectionKeepingNewest(header, entries, budget, "earlier prompt(s) omitted")',
+          '\tif len(entries) == 0 {\n\t\treturn ""\n\t}\n'
+          '\treturn renderSectionKeepingNewest(header, entries, budget, "earlier prompt(s) omitted")')],
+    ),
+    # Both of these need the loop variable to stay referenced — `n += 0` and
+    # `n++` orphan `e` and score `compile error`, which is not a score.
+    Case(
+        "totalLen reports zero, so card bodies are never shed and EXISTING CARDS overruns its reserve",
+        [("\t\tn += len(e)", "\t\tn += 0 * len(e)")],
+    ),
+    Case(
+        "totalLen counts entries rather than characters, so the shed decision is made on the wrong scale",
+        [("\tfor _, e := range entries {\n\t\tn += len(e)\n\t}", "\tfor range entries {\n\t\tn++\n\t}")],
+    ),
+    Case(
+        "the schema stops REQUIRING trackable, so a reply that omits it is read as untrackable and tags the session off",
+        [('\t\t"required": []string{"trackable"},', '\t\t"required": []string{},')],
+    ),
+    Case(
+        "existing_cards stops demanding EVERY card back, so the model may answer on a subset and the rest stay in the column they were filed in",
+        [('"description": "One entry per pre-existing card on this session. Required: include every card you were given."',
+          '"description": "One entry per pre-existing card on this session."')],
+    ),
+    Case(
+        "a new task's state may be any string the model likes, so a state the applier cannot map reaches the board",
+        [('\t\t\t\t\t\t"title":   map[string]any{"type": "string", "maxLength": 80},\n'
+          '\t\t\t\t\t\t"state":   map[string]any{"type": "string", "enum": []string{"in_progress", "blocked", "done", "abandoned"}},',
+          '\t\t\t\t\t\t"title":   map[string]any{"type": "string", "maxLength": 80},\n'
+          '\t\t\t\t\t\t"state":   map[string]any{"type": "string"},')],
+    ),
+    Case(
+        "an existing card's state may be any string the model likes, so a card is moved nowhere it was asked to go",
+        [('\t\t\t\t\t\t"card_id": map[string]any{"type": "string"},\n'
+          '\t\t\t\t\t\t"state":   map[string]any{"type": "string", "enum": []string{"in_progress", "blocked", "done", "abandoned"}},',
+          '\t\t\t\t\t\t"card_id": map[string]any{"type": "string"},\n'
+          '\t\t\t\t\t\t"state":   map[string]any{"type": "string"},')],
+    ),
+    Case(
+        "a new task's title loses its length bound in the schema the model is shown",
+        [('"title":   map[string]any{"type": "string", "maxLength": 80},',
+          '"title":   map[string]any{"type": "string"},')],
+    ),
 ]
 
 
