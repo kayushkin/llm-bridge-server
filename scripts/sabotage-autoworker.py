@@ -541,7 +541,7 @@ CASES = [
         # 4e4a0b93: the fixture must give the non-session link a cost of its own,
         # or the sum deduplicates and the mutation walks through.
         "links of every kind are counted as sessions, so unrelated links inflate the spend",
-        [('if l.EntityType == kanbanvocab.LinkTypeSession {', 'if l.EntityType != "" {')],
+        [('if l.EntityType == kanbanvocab.LinkTypeSession {', 'if l.EntityType == kanbanvocab.LinkTypeSession || l.EntityType != "" {')],
     ),
 
     # -- resolveSessionBudget precedence --
