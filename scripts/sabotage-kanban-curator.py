@@ -20,6 +20,14 @@ is fatal instead of an error returned from curateBoard. Dropped, because main
 has no such code: the board-name drift, envOr, the board LIST read, "a board
 that does not exist yet", and the -board flag. e4e46f95's exit-status fix is in
 the shared engine already.
+
+Measured 2026-09-25 on main: before the ported tests 26/50; with them 50/50,
+both controls behaved, exit 0. --crosstable: 8 of 43 tests are reddened by no
+case here, and they are the four shortfall tests score-curator-degradations.py
+arms (links unreadable, no noteboard item, empty board, running session) and
+the four in session_url_test.go, which pin bridgesession.URL's call site. They
+are NOT declared `unreddened`: those are tests another scorer or no scorer
+covers yet, not guards no single mutation can isolate.
 """
 
 import sys
