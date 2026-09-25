@@ -82,6 +82,9 @@ TARGETS = [
     REPO / "cmd/kanban-classifier/main.go",
     REPO / "internal/config/jobs.go",
     REPO / "internal/config/settings.go",
+    # The digest's cuts are all textcut.TruncateToByteBudgetOnRuneBoundary, so
+    # the row that cuts from the wrong end has to edit it there.
+    REPO / "internal/textcut/textcut.go",
 ]
 PACKAGES = ["./cmd/kanban-classifier/"]
 
@@ -501,6 +504,55 @@ CASES = [
         "a new task's title loses its length bound in the schema the model is shown",
         [('"title":   map[string]any{"type": "string", "maxLength": 80},',
           '"title":   map[string]any{"type": "string"},')],
+    ),
+
+    # ---- digest boundary VALUES ----
+    #
+    # Ported 2026-09-25 from c6e9e67f. Every digest row above moves a DIRECTION
+    # or deletes a mechanism; none moves a boundary to a different NUMBER, and
+    # measured 2026-08-14 all seven below were UNNOTICED. The cause was
+    # homogeneous fixtures: a cut that never fires or always fires hides its
+    # value. digest_boundaries_test.go straddles each bound with two rows one
+    # byte apart.
+    Case(
+        "the user-prompt bound loosens to 1900, so a prompt overruns the reserve the section was sized for",
+        [("textcut.TruncateToByteBudgetOnRuneBoundary(m.Content, 1500)", "textcut.TruncateToByteBudgetOnRuneBoundary(m.Content, 1900)")],
+    ),
+    Case(
+        "the user-prompt bound tightens to 400, so the verbatim record of what was asked is cut to a quarter",
+        [("textcut.TruncateToByteBudgetOnRuneBoundary(m.Content, 1500)", "textcut.TruncateToByteBudgetOnRuneBoundary(m.Content, 400)")],
+    ),
+    Case(
+        "the assistant-turn bound loosens to 900, so ten turns can crowd out the prompts they answer",
+        [("textcut.TruncateToByteBudgetOnRuneBoundary(m.Content, 600)", "textcut.TruncateToByteBudgetOnRuneBoundary(m.Content, 900)")],
+    ),
+    Case(
+        "the existing-card body bound tightens to 200, halving how much of a card the model sees "
+        "before it is asked to rewrite that card's body",
+        [("textcut.TruncateToByteBudgetOnRuneBoundary(body, 400)", "textcut.TruncateToByteBudgetOnRuneBoundary(body, 200)")],
+    ),
+    Case(
+        "the digest renders card titles cut at 40 while the schema and the applier still use 80, "
+        "so two different cards can render as one string",
+        [("textcut.TruncateToByteBudgetOnRuneBoundary(title, 80)", "textcut.TruncateToByteBudgetOnRuneBoundary(title, 40)")],
+    ),
+    Case(
+        "the assistant-turn cap slips to 11, so every classified session bills for one turn more than the cap says",
+        [("if len(withText) > 10 {\n\t\twithText = withText[len(withText)-10:]",
+          "if len(withText) > 11 {\n\t\twithText = withText[len(withText)-11:]")],
+    ),
+    Case(
+        "the tool-call cap slips to 16 in the one section that is handed no budget at all",
+        [("if len(tools) > 15 {\n\t\ttools = tools[len(tools)-15:]",
+          "if len(tools) > 16 {\n\t\ttools = tools[len(tools)-16:]")],
+    ),
+    # The boundary tests assert on a marked LAST CHARACTER, not on a length. A
+    # cut that keeps the wrong end of the string produces a result of exactly
+    # the right length, so a length-only assertion reports green.
+    Case(
+        "the cut keeps the END of an over-long value instead of its beginning, "
+        "which no assertion on length alone can see",
+        [("\treturn s[:cut] + Ellipsis", "\treturn s[len(s)-cut:] + Ellipsis")],
     ),
 ]
 
