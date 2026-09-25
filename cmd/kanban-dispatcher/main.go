@@ -627,12 +627,22 @@ func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kan
 		if session.State != "idle" {
 			continue
 		}
-		if session.UpdatedAt != "" {
-			if t, err := time.Parse(time.RFC3339, session.UpdatedAt); err == nil {
-				if now.Sub(t) > reviveWindow {
-					continue
-				}
-			}
+		// A timestamp that cannot be read is not evidence of freshness. Both of
+		// these used to fall through to the reuse, so a bridge that omitted
+		// updated_at, or wrote it in a format time.Parse does not accept,
+		// revived a session of ANY age and gave it a new sub-task. Ported from
+		// f119a711.
+		if session.UpdatedAt == "" {
+			log.Printf("[reuse] card %s: sibling session %s reports no updated_at — not reviving on an unknown age", candidateID, sid)
+			continue
+		}
+		updatedAt, err := time.Parse(time.RFC3339, session.UpdatedAt)
+		if err != nil {
+			log.Printf("[reuse] card %s: sibling session %s has an unreadable updated_at %q: %v — not reviving", candidateID, sid, session.UpdatedAt, err)
+			continue
+		}
+		if now.Sub(updatedAt) > reviveWindow {
+			continue
 		}
 		if difference := session.differenceFrom(spec); difference != "" {
 			log.Printf("[reuse] card %s: not reusing idle sibling session %s — %s", candidateID, sid, difference)
@@ -946,10 +956,21 @@ func registerSchedulerJob(schedURL, boardID string) error {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	// The list is read to decide whether the job is ALREADY there, so a list
+	// that could not be read must stop the registration. Both of these used to
+	// be discarded: a scheduler answering 500, or answering anything that is not
+	// a JSON array, left `jobs` empty, which reads exactly like "not registered
+	// yet" — and the POST below then adds a second tick that double-dispatches
+	// every card. Ported from f119a711.
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("list jobs: scheduler returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	var jobs []struct {
 		Name string `json:"name"`
 	}
-	_ = json.Unmarshal(body, &jobs)
+	if err := json.Unmarshal(body, &jobs); err != nil {
+		return fmt.Errorf("list jobs: %w", err)
+	}
 	for _, j := range jobs {
 		if j.Name == "kanban-dispatcher-tick" {
 			fmt.Println("kanban-dispatcher-tick already registered; no changes made")
