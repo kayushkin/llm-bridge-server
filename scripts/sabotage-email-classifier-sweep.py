@@ -81,7 +81,8 @@ CASES = [
     # ---- controls ----
     Case(
         "CONTROL known-positive: the sweep reports an empty summary whatever it did",
-        [("\treturn result\n}", "\treturn sweepResult{}\n}")],
+        [("\t\t\tresult.Repriced++\n\t\t}\n\t}\n\n\treturn result\n}",
+          "\t\t\tresult.Repriced++\n\t\t}\n\t}\n\n\treturn sweepResult{}\n}")],
     ),
     Case(
         "CONTROL known-negative: reword the dry-run log line a human reads",
@@ -96,7 +97,7 @@ CASES = [
     # ---- -dry-run: the switch whose whole job is to not write ----
     Case(
         "the dry-run gate inverts: a dry run writes the board and a real tick writes nothing",
-        [("\t\tif dryRun {", "\t\tif !dryRun {")],
+        [("\t\tif dryRun {\n\t\t\t// The urgency clause", "\t\tif !dryRun {\n\t\t\t// The urgency clause")],
     ),
     Case(
         "a dry run reports nothing: the summary is what a board with no work to do prints",
@@ -120,13 +121,13 @@ CASES = [
     ),
     Case(
         "the agent gate inverts: the sweep retags exactly the cards a live session is editing",
-        [("if owned, session := gate.agentOwns(card); owned {",
-          "if owned, session := gate.agentOwns(card); !owned {")],
+        [("}\n\t\tif owned, session := gate.agentOwns(card); owned {",
+          "}\n\t\tif owned, session := gate.agentOwns(card); !owned {")],
     ),
     Case(
         "the agent gate is dead: a card an agent holds is retagged underneath it",
-        [("if owned, session := gate.agentOwns(card); owned {",
-          "if _, session := gate.agentOwns(card); false {")],
+        [("}\n\t\tif owned, session := gate.agentOwns(card); owned {",
+          "}\n\t\tif _, session := gate.agentOwns(card); false {")],
     ),
 
     # ---- what counts as a change worth writing ----

@@ -363,44 +363,51 @@ func TestACardWithNoDeadlineIsRepricedButKeepsTheModelsUrgencyTag(t *testing.T) 
 // would ever recover. The failed card's OWN reprice is given up for this tick,
 // which is why nothing is counted for it at all.
 func TestAFailedRetagAbandonsThatCardsRepriceAndNotTheBoard(t *testing.T) {
-	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
-	kanban := newFakeKanban(t)
-	kanban.failField = "tags"
+	// rescoreBoard ranges over a map, so on any one run the failing card may
+	// come last, and then a loop that stops at the first failure writes the
+	// healthy card anyway. One run caught a `break` about 4 times in 5
+	// (measured 2026-09-25). Repeating the scenario makes an order that hides
+	// the defect on every attempt too unlikely to happen.
+	for attempt := 0; attempt < 32; attempt++ {
+		now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+		kanban := newFakeKanban(t)
+		kanban.failField = "tags"
 
-	failing := overdueRentCard("card-rent", now)
-	// A second card that needs only a reprice, so it is written through a field
-	// the fake is not failing and proves the loop carried on.
-	healthy := &cardState{
-		ID:         "card-undated",
-		Title:      "Verify your account",
-		ColumnName: columnActionNeeded,
-		Tags:       []string{"email", "cat:personal", "urgency:critical"},
-		Category:   "personal",
-		Action:     "verify",
-		Urgency:    "critical",
-		Priority:   1,
-	}
+		failing := overdueRentCard("card-rent", now)
+		// A second card that needs only a reprice, so it is written through a
+		// field the fake is not failing and proves the loop carried on.
+		healthy := &cardState{
+			ID:         "card-undated",
+			Title:      "Verify your account",
+			ColumnName: columnActionNeeded,
+			Tags:       []string{"email", "cat:personal", "urgency:critical"},
+			Category:   "personal",
+			Action:     "verify",
+			Urgency:    "critical",
+			Priority:   1,
+		}
 
-	result := rescoreBoard(kanban.client(), boardOf(failing, healthy), idleGate(), now, false)
+		result := rescoreBoard(kanban.client(), boardOf(failing, healthy), idleGate(), now, false)
 
-	if got := kanban.patchesFor("card-rent"); len(got) != 0 {
-		t.Errorf("the failing card recorded %d accepted write(s), want 0: %+v", len(got), got)
-	}
-	if got := kanban.patchesFor("card-undated"); len(got) != 1 {
-		t.Fatalf("the healthy card got %d write(s), want 1: one card's failure must not abandon the board", len(got))
-	}
-	if result.Retagged != 0 {
-		t.Errorf("Retagged=%d, want 0: a write that failed is not a retag", result.Retagged)
-	}
-	if result.Repriced != 1 {
-		t.Errorf("Repriced=%d, want 1 — the healthy card only. The failing card's reprice is given up with its retag", result.Repriced)
-	}
-	if result.Scanned != 2 {
-		t.Errorf("Scanned=%d, want 2", result.Scanned)
-	}
-	if failing.Priority != 2 || failing.Urgency != "normal" {
-		t.Errorf("the failing card was advanced in memory to priority=%d urgency=%q despite writing nothing",
-			failing.Priority, failing.Urgency)
+		if got := kanban.patchesFor("card-rent"); len(got) != 0 {
+			t.Errorf("attempt %d: the failing card recorded %d accepted write(s), want 0: %+v", attempt, len(got), got)
+		}
+		if got := kanban.patchesFor("card-undated"); len(got) != 1 {
+			t.Fatalf("attempt %d: the healthy card got %d write(s), want 1: one card's failure must not abandon the board", attempt, len(got))
+		}
+		if result.Retagged != 0 {
+			t.Errorf("attempt %d: Retagged=%d, want 0: a write that failed is not a retag", attempt, result.Retagged)
+		}
+		if result.Repriced != 1 {
+			t.Errorf("attempt %d: Repriced=%d, want 1 — the healthy card only. The failing card's reprice is given up with its retag", attempt, result.Repriced)
+		}
+		if result.Scanned != 2 {
+			t.Errorf("attempt %d: Scanned=%d, want 2", attempt, result.Scanned)
+		}
+		if failing.Priority != 2 || failing.Urgency != "normal" {
+			t.Errorf("attempt %d: the failing card was advanced in memory to priority=%d urgency=%q despite writing nothing",
+				attempt, failing.Priority, failing.Urgency)
+		}
 	}
 }
 
