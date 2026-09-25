@@ -925,11 +925,19 @@ func (c *Coordinator) splitTodaysEvents(events []CalendarEvent) (timed, allDay [
 	dayStart := dateOf(c.Now.In(c.Location))
 	dayEnd := dayStart.AddDate(0, 0, 1)
 
+	// All-day events are bounded by the same window, in civil dates rather than
+	// instants. They used to be exempt, which read as "an all-day event is always
+	// today" — but a trip and a holiday are as capable of being next month as a
+	// meeting is, and the heading counts them.
+	today := civilDate(dayStart)
+
 	timed = []CalendarEvent{}
 	allDay = []CalendarEvent{}
 	for _, event := range events {
 		if event.AllDay {
-			allDay = append(allDay, event)
+			if !civilDate(event.Start).After(today) && today.Before(allDayEnd(event)) {
+				allDay = append(allDay, event)
+			}
 			continue
 		}
 		start := event.Start.In(c.Location)
@@ -1507,6 +1515,23 @@ func dateOf(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
+// civilDate reduces an instant to the calendar date it names, anchored in UTC so
+// that two civil dates compare to each other and never to a wall clock. All-day
+// calendar events carry no timezone — comparing their UTC-midnight bounds against
+// a local midnight would land them a day out for any calendar east of UTC.
+func civilDate(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// allDayEnd is an all-day event's EXCLUSIVE end date, matching Google's own
+// convention. An event with no end.date at all is one day long.
+func allDayEnd(event CalendarEvent) time.Time {
+	if event.End.IsZero() {
+		return civilDate(event.Start).AddDate(0, 0, 1)
+	}
+	return civilDate(event.End)
+}
+
 func sortByDue(items []*model.Item) {
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].DueAt == nil || items[j].DueAt == nil {
@@ -1817,6 +1842,10 @@ func (g *GoogleCalendarMirror) ListEvents(token string, timeMin, timeMax time.Ti
 				event.End = end
 			}
 		case e.Start.Date != "":
+			// An all-day event is a range of civil dates, not an instant, so both
+			// bounds parse to UTC midnight and are only ever compared against other
+			// civil dates (see civilDate). Google's end.date is EXCLUSIVE: a
+			// single-day event on the 8th comes back as 08-08 -> 08-09.
 			event.AllDay = true
 			day, err := time.Parse("2006-01-02", e.Start.Date)
 			if err != nil {
@@ -1824,6 +1853,14 @@ func (g *GoogleCalendarMirror) ListEvents(token string, timeMin, timeMax time.Ti
 					boundedtext.Value(e.Summary), boundedtext.Value(e.Start.Date), boundedtext.ErrorMessage(err))
 			}
 			event.Start = day
+			if e.End.Date != "" {
+				end, err := time.Parse("2006-01-02", e.End.Date)
+				if err != nil {
+					return nil, fmt.Errorf("event %q end date %q: %v",
+						boundedtext.Value(e.Summary), boundedtext.Value(e.End.Date), boundedtext.ErrorMessage(err))
+				}
+				event.End = end
+			}
 		default:
 			continue // an event with no start is nothing we can place
 		}

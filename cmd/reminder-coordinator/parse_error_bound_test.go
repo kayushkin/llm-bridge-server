@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// ListEvents parses three timestamps out of the calendar payload with
+// ListEvents parses four timestamps out of the calendar payload with
 // time.Parse and wraps the parser's error with %w beside the raw value and the
 // event summary. All three of those strings come from Google via the dash
 // proxy, and nothing in this process bounds any of them.
@@ -81,6 +81,18 @@ func TestAnUnreadableAllDayDateIsBoundedInTheError(t *testing.T) {
 			oversizedFieldLength, len(rendered), calendarErrorCeiling)
 	}
 	if !strings.Contains(rendered, "date") {
+		t.Errorf("the bounded error %q no longer says which field failed", rendered)
+	}
+}
+
+func TestAnUnreadableAllDayEndDateIsBoundedInTheError(t *testing.T) {
+	// A valid start.date so the handler reaches the end.date branch.
+	rendered := listEventsError(t, `{"events":[{"summary":"holiday","start":{"date":"2026-01-01"},"end":{"date":"`+oversizedField()+`"}}]}`)
+	if len(rendered) > calendarErrorCeiling {
+		t.Errorf("a %d-byte all-day end date produced a %d-byte error (ceiling %d)",
+			oversizedFieldLength, len(rendered), calendarErrorCeiling)
+	}
+	if !strings.Contains(rendered, "end date") {
 		t.Errorf("the bounded error %q no longer says which field failed", rendered)
 	}
 }

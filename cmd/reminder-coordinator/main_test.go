@@ -1093,6 +1093,54 @@ func TestALongIdleTemplateBackfillsOneDay(t *testing.T) {
 	}
 }
 
+// The twin of the materializer's floor, one function away and spelled the same.
+// An item that has never nagged has no last_nagged_at to expand from, so the nag
+// window falls back to the last day — otherwise the first tick after the nag is
+// added replays every firing since the anchor and opens a session for a weekday
+// rule that has been "firing" unheard for months.
+//
+// The weekend is what makes this visible: a weekday nag has a 72-hour gap across
+// it, so on a Sunday the most recent firing is well outside the floor and a
+// correct coordinator stays quiet.
+//
+// Ported from b92b34f1.
+func TestAnItemThatHasNeverNaggedFiresOnlyForARecentOccurrence(t *testing.T) {
+	loc := pacific(t)
+	due := time.Date(2026, 6, 30, 9, 0, 0, 0, loc)
+	item := &model.Item{
+		ID: "never-nagged", Type: "todo", Title: "Call the tag agency", Status: "open",
+		Tags: []string{"personal"}, DueAt: &due,
+		Schedule: &model.Schedule{
+			TZID:   "America/Los_Angeles",
+			Remind: &model.Remind{Nag: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=10;BYMINUTE=0;BYSECOND=0"},
+		},
+	}
+	nb := newFakeNoteboard(item)
+
+	// Sunday noon. The last weekday firing was Friday at 10am, 50 hours back.
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 12, 12, 0, 0, 0, loc), nb)
+	firing, err := coordinator.nagsFiringNow()
+	if err != nil {
+		t.Fatalf("nagsFiringNow: %v", err)
+	}
+	if len(firing) != 0 {
+		t.Fatalf("a never-nagged item fired on a Sunday for a Friday occurrence — the floor is "+
+			"not holding, so the first tick replays the item's whole nag history (%d firing)", len(firing))
+	}
+
+	// And the floor is a floor, not a mute: the same item on Monday morning, still
+	// never nagged, must speak.
+	coordinator, _, _ = newTestCoordinator(t, time.Date(2026, 7, 13, 10, 30, 0, 0, loc), nb)
+	firing, err = coordinator.nagsFiringNow()
+	if err != nil {
+		t.Fatalf("nagsFiringNow: %v", err)
+	}
+	if len(firing) != 1 {
+		t.Fatalf("%d items firing 30 minutes after the 10am nag, want 1 — the floor has "+
+			"stopped the nag working at all", len(firing))
+	}
+}
+
 // The roll anchor is `max(now, item.DueAt)`, and both halves of that max are load
 // bearing. TestRollingItemAdvancesToItsNextOccurrenceWhenDone cannot see either:
 // its item is due 9am, the tick is 10am the same day, and the rule is monthly — so
@@ -1318,6 +1366,178 @@ func TestTomorrowsEventsAreNotFoldedIntoTodaysSchedule(t *testing.T) {
 	}
 	if !contains(rendered, "Today's schedule (1)") {
 		t.Errorf("the schedule count should read 1, the single event that starts today:\n%s", rendered)
+	}
+}
+
+// ListEvents used to read start.date for an all-day event and drop end.date, so
+// every all-day event arrived one day long whatever its real span, and the
+// schedule's window had nothing to test a multi-day trip against.
+//
+// Google's end.date is exclusive, and this asserts it is carried through as sent
+// rather than adjusted in the adapter — the window arithmetic that reads it lives
+// in splitTodaysEvents, and two places converting one convention drift apart.
+//
+// Ported from 3644d4c9.
+func TestListEventsCarriesAnAllDayEventsExclusiveEndDate(t *testing.T) {
+	mirror := calendarServing(t, `{"events":[
+		{"summary":"Trip","start":{"date":"2026-07-18"},"end":{"date":"2026-07-25"}},
+		{"summary":"Standup","start":{"dateTime":"2026-07-20T09:00:00-07:00"},"end":{"dateTime":"2026-07-20T09:15:00-07:00"}}
+	]}`)
+	events, err := mirror.ListEvents("test-token", time.Now(), time.Now())
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2 — the fixture is not reaching the parser", len(events))
+	}
+
+	trip := events[0]
+	if !trip.AllDay {
+		t.Errorf("an event with start.date did not come back as all-day")
+	}
+	if want := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC); !trip.Start.Equal(want) {
+		t.Errorf("trip start = %s, want %s", trip.Start, want)
+	}
+	if want := time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC); !trip.End.Equal(want) {
+		t.Errorf("trip end = %s, want %s — end.date dropped, so a week-long trip reads as one day", trip.End, want)
+	}
+	if events[1].AllDay {
+		t.Errorf("an event with start.dateTime came back as all-day")
+	}
+}
+
+// allDayEvent builds a fixture the way ListEvents does: an all-day event is a
+// range of civil dates parsed to UTC midnight, and its end is EXCLUSIVE. The
+// dates are literals rather than derived from the coordinator's clock, so the
+// fixture cannot agree with the filter by construction.
+func allDayEvent(summary, start, end string) CalendarEvent {
+	event := CalendarEvent{Summary: summary, AllDay: true}
+	parsed, err := time.Parse("2006-01-02", start)
+	if err != nil {
+		panic(err)
+	}
+	event.Start = parsed
+	if end != "" {
+		parsed, err = time.Parse("2006-01-02", end)
+		if err != nil {
+			panic(err)
+		}
+		event.End = parsed
+	}
+	return event
+}
+
+// The sibling of TestTomorrowsEventsAreNotFoldedIntoTodaysSchedule, for the other
+// half of the same window. splitTodaysEvents used to `continue` on event.AllDay
+// before any date check ran, which read as "an all-day event is always today" —
+// but a holiday and a trip are as capable of being next month as a meeting is,
+// and the heading counts them either way.
+//
+// Ported from 3644d4c9 and 9f910416. "Conference tomorrow" is the near side of
+// the start bound: without it, moving the bound by a day changed no test.
+func TestTodaysScheduleBoundsAllDayEventsToToday(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, loc)
+	coordinator, _, _ := newTestCoordinator(t, now, newFakeNoteboard())
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+
+	events := []CalendarEvent{
+		allDayEvent("Bank holiday", "2026-07-20", "2026-07-21"),          // today, single day
+		allDayEvent("Trip through the week", "2026-07-18", "2026-07-25"), // began Saturday, still on
+		allDayEvent("Conference tomorrow", "2026-07-21", "2026-07-22"),   // the near side of the bound
+		allDayEvent("Conference next month", "2026-08-20", "2026-08-21"),
+		allDayEvent("Holiday last year", "2025-01-15", "2025-01-16"),
+		// Ends the instant today begins. Google's end.date is exclusive, so this
+		// one's last real day was the 19th — it is over.
+		allDayEvent("Trip that ended yesterday", "2026-07-10", "2026-07-20"),
+	}
+	rendered := coordinator.renderDigest(board, events, nil)
+
+	for _, elsewhere := range []string{"Conference tomorrow", "Conference next month", "Holiday last year", "Trip that ended yesterday"} {
+		if contains(rendered, elsewhere) {
+			t.Errorf("all-day event %q is listed under today's schedule:\n%s", elsewhere, rendered)
+		}
+	}
+	for _, today := range []string{"Bank holiday", "Trip through the week"} {
+		if !contains(rendered, today) {
+			t.Errorf("all-day event %q covers today and is missing from the schedule:\n%s", today, rendered)
+		}
+	}
+	// The heading counts all-day events alongside timed ones, so a filter that
+	// dropped the strays from the list but still counted them would read as a
+	// busier day.
+	if !contains(rendered, "Today's schedule (2)") {
+		t.Errorf("schedule heading does not count exactly today's two all-day events:\n%s", rendered)
+	}
+}
+
+// civilDate anchors both sides of the all-day comparison in UTC, and this is the
+// test that earns that word. An all-day event carries no zone, so its bounds
+// parse to UTC midnight; the coordinator's day starts at midnight where the user
+// is. Compare the two as instants and the day boundary lands wherever the offset
+// puts it.
+//
+// Pacific hides this: it is behind UTC, so the right and wrong comparisons agree
+// there. East of UTC they do not, and a trip that ended last night stays on
+// today's schedule.
+//
+// Ported from 9f910416.
+func TestAllDayWindowDoesNotDriftInAZoneEastOfUTC(t *testing.T) {
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	coordinator, _, _ := newTestCoordinator(t, time.Time{}, newFakeNoteboard())
+	coordinator.Location = tokyo
+	coordinator.Now = time.Date(2026, 7, 20, 8, 0, 0, 0, tokyo)
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+
+	rendered := coordinator.renderDigest(board, []CalendarEvent{
+		// Exclusive end of the 20th: its last real day was the 19th, so in Tokyo
+		// it ended last night.
+		allDayEvent("Trip that ended last night", "2026-07-10", "2026-07-20"),
+		allDayEvent("Bank holiday", "2026-07-20", "2026-07-21"),
+	}, nil)
+
+	if contains(rendered, "Trip that ended last night") {
+		t.Errorf("a trip that ended last night is on today's schedule in Tokyo — the all-day "+
+			"bound is comparing a UTC midnight against a local one:\n%s", rendered)
+	}
+	if !contains(rendered, "Bank holiday") {
+		t.Errorf("today's all-day event is missing from the schedule in Tokyo:\n%s", rendered)
+	}
+}
+
+// An all-day event with no end.date is one day long. Reading a missing end as
+// zero would put the event's end at the start of time and drop it from every
+// window.
+//
+// Ported from 3644d4c9.
+func TestAllDayEventWithNoEndDateCoversItsOwnDay(t *testing.T) {
+	loc := pacific(t)
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, loc)
+	coordinator, _, _ := newTestCoordinator(t, now, newFakeNoteboard())
+	board, err := coordinator.buildBoard()
+	if err != nil {
+		t.Fatalf("buildBoard: %v", err)
+	}
+
+	rendered := coordinator.renderDigest(board, []CalendarEvent{
+		allDayEvent("Endless holiday", "2026-07-20", ""),
+		allDayEvent("Yesterday, endless", "2026-07-19", ""),
+	}, nil)
+
+	if !contains(rendered, "Endless holiday") {
+		t.Errorf("an all-day event today with no end.date was dropped:\n%s", rendered)
+	}
+	if contains(rendered, "Yesterday, endless") {
+		t.Errorf("an all-day event from yesterday with no end.date is listed under today:\n%s", rendered)
 	}
 }
 
