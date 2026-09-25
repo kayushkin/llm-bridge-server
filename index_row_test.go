@@ -262,12 +262,12 @@ func newIndexedServer(t *testing.T, provider accounts.Provider) *Server {
 	if err := store.Save(&accounts.Account{ID: "acct-1", Label: "test", Provider: provider, Address: "me@x.com"}); err != nil {
 		t.Fatalf("save account: %v", err)
 	}
-	return NewServer(store, nil, "")
+	return NewServer(store, nil, testSettings(t, ""))
 }
 
-func TestIndexFullMessageCarriesTheHeadersThatAreTheGetPathsWholeAdvantage(t *testing.T) {
+func TestRecordFullMessageCarriesTheHeadersThatAreTheGetPathsWholeAdvantage(t *testing.T) {
 	// indexRow being pinned does not pin its callers, which is the same shape
-	// one level up: indexFullMessage exists precisely because the get path has
+	// one level up: recordFullMessage exists precisely because the get path has
 	// headers the list path does not, and it hands them to indexRow as an
 	// argument. Passing nil there compiles, keeps every indexRow test green,
 	// and silently reduces the richer path to the poorer one.
@@ -288,7 +288,7 @@ func TestIndexFullMessageCarriesTheHeadersThatAreTheGetPathsWholeAdvantage(t *te
 			"References": "<only-in-the-headers@x.com> <parent@x.com>",
 		},
 	}
-	s.indexFullMessage("acct-1", msg)
+	s.recordFullMessage("acct-1", msg)
 
 	got, err := s.accounts.MessageByLocator("acct-1", "", "uid-42")
 	if err != nil {
@@ -345,7 +345,7 @@ func TestLookupByMessageIDNormalisesTheBracketedFormCallersActuallySend(t *testi
 	// Driven through the real mux rather than by calling the handler, because
 	// the path value has to survive routing and percent-decoding to get here.
 	s := newIndexedServer(t, accounts.ProviderGoogle)
-	s.indexFullMessage("acct-1", backend.Message{
+	s.recordFullMessage("acct-1", backend.Message{
 		Meta: backend.MessageMeta{ID: "uid-7", AccountID: "acct-1", FolderID: "INBOX", MessageID: "stored@x.com"},
 	})
 
