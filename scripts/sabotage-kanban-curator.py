@@ -274,6 +274,16 @@ CASES = [
           "return nil")],
     ),
     Case(
+        "a job list the scheduler could not serve is read as no jobs, so a re-run registers a second curator",
+        [("if resp.StatusCode != http.StatusOK {\n\t\treturn fmt.Errorf(\"list jobs: scheduler returned",
+          "if false {\n\t\treturn fmt.Errorf(\"list jobs: scheduler returned")],
+    ),
+    Case(
+        "a job list that does not decode is read as no jobs, so a re-run registers a second curator",
+        [("if err := json.Unmarshal(body, &jobs); err != nil {\n\t\treturn fmt.Errorf(\"list jobs: decode job list: %w\", err)",
+          "if err := json.Unmarshal(body, &jobs); err != nil && false {\n\t\treturn fmt.Errorf(\"list jobs: decode job list: %w\", err)")],
+    ),
+    Case(
         "the job-name slug drops digits, so two boards can collapse onto one job",
         [("case r >= 'a' && r <= 'z', r >= '0' && r <= '9':", "case r >= 'a' && r <= 'z':")],
     ),

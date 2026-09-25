@@ -20,6 +20,8 @@ import (
 type stubScheduler struct {
 	existing []string // names of jobs already registered
 	refuse   bool     // answer POST /api/jobs with 500
+	failList int      // answer GET /api/jobs with this status instead of the job list
+	listBody string   // answer GET /api/jobs 200 with this body instead of the job list
 	posted   []map[string]any
 	url      string
 }
@@ -29,6 +31,15 @@ func newStubScheduler(t *testing.T, s *stubScheduler) *stubScheduler {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/jobs" && r.Method == http.MethodGet:
+			if s.failList != 0 {
+				http.Error(w, "the scheduler could not list its jobs", s.failList)
+				return
+			}
+			if s.listBody != "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(s.listBody))
+				return
+			}
 			rows := make([]map[string]any, 0, len(s.existing))
 			for _, name := range s.existing {
 				rows = append(rows, map[string]any{"name": name})
@@ -132,6 +143,43 @@ func TestASchedulerThatRefusesTheJobIsReportedAsAnError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "500") {
 		t.Errorf("the error does not carry what the scheduler said: %v", err)
+	}
+}
+
+// The duplicate check reads the job list, so a list it could not read must stop
+// -register. Read as "no jobs", a 500 lets a re-run register a second curator
+// beside the first, and the board is then curated twice every tick.
+func TestAJobListTheSchedulerCouldNotServeIsNotReadAsNoJobs(t *testing.T) {
+	s := newStubScheduler(t, &stubScheduler{failList: http.StatusInternalServerError})
+
+	board := &kanbanclient.Board{ID: "board-7", Name: "Agent runs"}
+	err := registerSchedulerJob(s.url, board, "")
+	if err == nil {
+		t.Fatal("no error from a scheduler that could not list its jobs; -register went on as if none existed")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("the error does not carry the status the scheduler answered: %v", err)
+	}
+	if len(s.posted) != 0 {
+		t.Errorf("registered a job without knowing whether one already exists: %v", s.posted)
+	}
+}
+
+// A 200 whose body is not a job list is the same unknown as a 500: whatever
+// answered, it did not say which jobs exist.
+func TestAJobListThatIsNotAJSONArrayIsNotReadAsNoJobs(t *testing.T) {
+	s := newStubScheduler(t, &stubScheduler{listBody: `{"error":"not a list"}`})
+
+	board := &kanbanclient.Board{ID: "board-7", Name: "Agent runs"}
+	err := registerSchedulerJob(s.url, board, "")
+	if err == nil {
+		t.Fatal("no error from a job list that did not decode; -register went on as if no jobs existed")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Errorf("the error does not say the job list failed to decode: %v", err)
+	}
+	if len(s.posted) != 0 {
+		t.Errorf("registered a job without knowing whether one already exists: %v", s.posted)
 	}
 }
 

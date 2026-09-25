@@ -517,11 +517,21 @@ func registerSchedulerJob(schedURL string, board *kanbanclient.Board, jobName st
 		return fmt.Errorf("list jobs: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("list jobs: read body: %w", err)
+	}
+	// The duplicate check below is only as good as this list: a list read as
+	// empty lets a re-run register a second curator beside the first.
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("list jobs: scheduler returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	var jobs []struct {
 		Name string `json:"name"`
 	}
-	_ = json.Unmarshal(body, &jobs)
+	if err := json.Unmarshal(body, &jobs); err != nil {
+		return fmt.Errorf("list jobs: decode job list: %w", err)
+	}
 	for _, j := range jobs {
 		if j.Name == jobName {
 			fmt.Printf("%s already registered; no changes made\n", jobName)
