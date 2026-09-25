@@ -42,6 +42,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -55,6 +56,52 @@ import (
 	"github.com/slava/scheduler/internal/textcut"
 )
 
+// Wire values another program reads back, and the --from default, declared once
+// at package level. A test drives these declarations rather than passing its own
+// copy in: a fixture that supplies the value under test agrees with itself and
+// stays green through the value's drift.
+const (
+	// defaultFromTag is the Agent (sender) tag when a caller names no agent.
+	defaultFromTag = "herald"
+	// heraldSessionPrefix marks a relay session. kanban-curator's idle-reaper is
+	// scoped to the autoworker- prefix, so a herald session is left alone.
+	heraldSessionPrefix = "herald-"
+	// heraldChannel is the bus channel a relay session is published on.
+	heraldChannel = "herald"
+	// heraldPurpose is the session Purpose llm-bridge-server stores.
+	heraldPurpose = "herald"
+	// askOrigin names this binary as the session's creator, and names its NATS
+	// connection.
+	askOrigin = "ask"
+	// orchestratorClaudeCode is the orchestrator the relay session runs under.
+	orchestratorClaudeCode = "claude-code"
+)
+
+// askConfig carries everything one run needs, so the run is a function of its
+// arguments rather than of package state and process flags.
+type askConfig struct {
+	instanceName string
+	from         string
+	title        string
+	onReply      string
+	reuseSession string
+	bridgeURL    string
+	question     string
+	dryRun       bool
+	now          time.Time
+}
+
+// heraldPublisher is the seam a test stands in at to observe the dispatch
+// decision — the half of this binary that spends money on a session.
+type heraldPublisher interface {
+	Publish(subject string, data any) error
+	Close()
+}
+
+// connectFunc opens the publisher. It is a function rather than a value so a
+// dry run never opens a connection, which is what the flag has always meant.
+type connectFunc func() (heraldPublisher, error)
+
 func main() {
 	settings, err := schedulerconfig.Ask.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
@@ -62,7 +109,7 @@ func main() {
 	}
 	var (
 		instanceName = flag.String("instance", "", "Harness instance NAME to host the session. Empty = resolve the local machine's claude_code instance.")
-		from         = flag.String("from", "herald", "Originating agent — sets the message's Agent (sender) tag. Use the real agent name, e.g. approval-proposer. Must already be one line of nothing but text: a name carrying control, bidi or line-breaking characters is refused, not rewritten, because ask will not invent an attribution.")
+		from         = flag.String("from", defaultFromTag, "Originating agent — sets the message's Agent (sender) tag. Use the real agent name, e.g. approval-proposer. Must already be one line of nothing but text: a name carrying control, bidi or line-breaking characters is refused, not rewritten, because ask will not invent an attribution.")
 		title        = flag.String("title", "", "Session display name. Put on one line with control characters removed, but kept at whatever length you give it. Defaults to a truncated form of the question.")
 		onReply      = flag.String("on-reply", "", "Instruction for what the agent should do once the user replies. Empty = just relay the alert; no action expected.")
 		reuseSession = flag.String("session", "", "Existing herald bus session id to deliver into as a new turn, instead of opening a new session. The adapter routes it to the bridge session it created for that id; -instance and -title are meaningless here and rejected.")
@@ -78,103 +125,142 @@ func main() {
 		log.Fatal(err)
 	}
 
-	question := strings.TrimSpace(strings.Join(flag.Args(), " "))
-	if !hasReadableText(question) {
-		log.Fatal("ask: a question/alert message is required (positional argument), and it must contain readable text — a message of only whitespace and control characters has nothing to relay and nothing to name the session with")
+	cfg := askConfig{
+		instanceName: *instanceName,
+		from:         *from,
+		title:        *title,
+		onReply:      *onReply,
+		reuseSession: *reuseSession,
+		bridgeURL:    *bridgeURL,
+		question:     strings.TrimSpace(strings.Join(flag.Args(), " ")),
+		dryRun:       *dryRun,
+		now:          time.Now().UTC(),
 	}
-	if err := validateAgentName(*from); err != nil {
-		log.Fatalf("ask: %v", err)
+	natsURL := settings.String(schedulerconfig.SettingNATSURL)
+	connect := func() (heraldPublisher, error) {
+		return natsbus.Connect(natsbus.Options{URL: natsURL, Name: askOrigin})
 	}
 
-	now := time.Now().UTC()
-	prompt := buildPrompt(*from, question, *onReply)
+	sessionID, err := runAsk(cfg, connect, os.Stdout)
+	if err != nil {
+		log.Fatalf("ask: %v", err)
+	}
+	if sessionID != "" {
+		fmt.Println(sessionID)
+	}
+}
+
+// runAsk relays one question: into the existing herald session cfg.reuseSession
+// names, or into a new one on the resolved instance. It returns the bus session
+// id the message went to. A dry run writes what it would have sent to out,
+// returns an empty id and opens no connection.
+//
+// Every failure is returned rather than fatal, so the caller decides — main
+// still exits non-zero on all of them.
+func runAsk(cfg askConfig, connect connectFunc, out io.Writer) (string, error) {
+	if !hasReadableText(cfg.question) {
+		return "", fmt.Errorf("a question/alert message is required (positional argument), and it must contain readable text — a message of only whitespace and control characters has nothing to relay and nothing to name the session with")
+	}
+	if err := validateAgentName(cfg.from); err != nil {
+		return "", err
+	}
+
+	prompt := buildPrompt(cfg.from, cfg.question, cfg.onReply)
 
 	// Reuse: deliver into an existing herald session as a new turn. The adapter
 	// keeps a persisted bus_session_id → bridge session mapping and reuses it
 	// for a Send with no Create, so the message lands in the same chat session
 	// the earlier ask opened. Create-time knobs cannot apply to a session that
 	// already exists, so passing one is an error, not something to ignore.
-	if *reuseSession != "" {
-		if *instanceName != "" {
-			log.Fatal("ask: -instance sets where a NEW session is hosted; it cannot apply with -session")
+	if cfg.reuseSession != "" {
+		if cfg.instanceName != "" {
+			return "", fmt.Errorf("-instance sets where a NEW session is hosted; it cannot apply with -session")
 		}
-		if *title != "" {
-			log.Fatal("ask: -title names a NEW session at creation; it cannot apply with -session")
+		if cfg.title != "" {
+			return "", fmt.Errorf("-title names a NEW session at creation; it cannot apply with -session")
 		}
-		if *dryRun {
-			fmt.Printf("session:  %s (reused)\nfrom:     %s\n\n--- prompt ---\n%s\n", *reuseSession, *from, prompt)
-			return
+		if cfg.dryRun {
+			fmt.Fprintf(out, "session:  %s (reused)\nfrom:     %s\n\n--- prompt ---\n%s\n", cfg.reuseSession, cfg.from, prompt)
+			return "", nil
 		}
-		publishInbound(settings.String(schedulerconfig.SettingNATSURL), messages.BridgeInbound{
-			BusSessionID: *reuseSession,
-			Agent:        *from,
-			Orchestrator: "claude-code",
-			Channel:      "herald",
-			Timestamp:    now,
+		err := publishInbound(connect, messages.BridgeInbound{
+			BusSessionID: cfg.reuseSession,
+			Agent:        cfg.from,
+			Orchestrator: orchestratorClaudeCode,
+			Channel:      heraldChannel,
+			Timestamp:    cfg.now,
 			Send: &msg.SendMessageRequest{
 				Message: prompt,
 			},
 		})
-		fmt.Println(*reuseSession)
-		return
+		if err != nil {
+			return "", err
+		}
+		return cfg.reuseSession, nil
 	}
 
-	instanceID, err := resolveInstance(*bridgeURL, *instanceName)
+	instanceID, err := resolveInstance(cfg.bridgeURL, cfg.instanceName)
 	if err != nil {
-		log.Fatalf("ask: resolve instance: %v", err)
+		return "", fmt.Errorf("resolve instance: %w", err)
 	}
 
-	displayName, titleHeldNoReadableText := resolveDisplayName(*title, question)
+	displayName, titleHeldNoReadableText := resolveDisplayName(cfg.title, cfg.question)
 	if titleHeldNoReadableText {
 		// %q rather than %s on purpose: the reason this title was refused is that
 		// it is made of control characters, and printing it raw would write that
 		// ESC to the terminal reading the warning.
-		log.Printf("ask: --title %q holds no readable text once control characters are removed — naming the session from the question instead", *title)
+		log.Printf("ask: --title %q holds no readable text once control characters are removed — naming the session from the question instead", cfg.title)
 	}
 
-	if *dryRun {
-		fmt.Printf("instance: %s\nfrom:     %s\nsession:  herald-<ns>\ndisplay:  %s\n\n--- prompt ---\n%s\n", instanceID, *from, displayName, prompt)
-		return
+	if cfg.dryRun {
+		fmt.Fprintf(out, "instance: %s\nfrom:     %s\nsession:  %s<ns>\ndisplay:  %s\n\n--- prompt ---\n%s\n",
+			instanceID, cfg.from, heraldSessionPrefix, displayName, prompt)
+		return "", nil
 	}
 
-	sessionID := fmt.Sprintf("herald-%d", now.UnixNano())
-	publishInbound(settings.String(schedulerconfig.SettingNATSURL), messages.BridgeInbound{
+	sessionID := fmt.Sprintf("%s%d", heraldSessionPrefix, cfg.now.UnixNano())
+	err = publishInbound(connect, messages.BridgeInbound{
 		BusSessionID: sessionID,
-		Agent:        *from,
-		Orchestrator: "claude-code",
-		Channel:      "herald",
-		Timestamp:    now,
+		Agent:        cfg.from,
+		Orchestrator: orchestratorClaudeCode,
+		Channel:      heraldChannel,
+		Timestamp:    cfg.now,
 		Create: &msg.CreateSessionRequest{
 			Harness:     msg.HarnessClaudeCode,
 			InstanceID:  instanceID,
 			DisplayName: displayName,
-			Purpose:     "herald",
+			Purpose:     heraldPurpose,
 			// herald is unattended for the relay turn (no human resolves a tool
 			// prehook until the user replies), so llm-bridge-server's
 			// isUnattendedSession auto-allows tool calls while keeping deny
 			// guardrails — no permission_mode=bypass needed.
 			Type:      msg.SessionTypeHerald,
-			Origin:    "ask",
+			Origin:    askOrigin,
 			AutoStart: true,
 		},
 		Send: &msg.SendMessageRequest{
 			Message: prompt,
 		},
 	})
-	fmt.Println(sessionID)
+	if err != nil {
+		return "", err
+	}
+	return sessionID, nil
 }
 
-// publishInbound connects to NATS, publishes the request, and exits the process
-// on any failure — ask is a one-shot; there is nothing to clean up.
-func publishInbound(natsURL string, in messages.BridgeInbound) {
-	nc, err := natsbus.Connect(natsbus.Options{URL: natsURL, Name: "ask"})
+// publishInbound opens one connection, publishes the request on the bridge's
+// inbound subject, and closes the connection. ask is a one-shot; there is
+// nothing else to clean up.
+func publishInbound(connect connectFunc, in messages.BridgeInbound) error {
+	pub, err := connect()
 	if err != nil {
-		log.Fatalf("ask: nats connect: %v", err)
+		return fmt.Errorf("nats connect: %w", err)
 	}
-	defer nc.Close()
-	if err := nc.Publish(messages.BridgeInboundSubject, in); err != nil {
-		log.Fatalf("ask: publish: %v", err)
+	defer pub.Close()
+	if err := pub.Publish(messages.BridgeInboundSubject, in); err != nil {
+		return fmt.Errorf("publish: %w", err)
 	}
+	return nil
 }
 
 // buildPrompt frames the spawned agent as a relay: present the message
