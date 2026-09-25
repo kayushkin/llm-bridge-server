@@ -28,6 +28,10 @@ arms (links unreadable, no noteboard item, empty board, running session) and
 the four in session_url_test.go, which pin bridgesession.URL's call site. They
 are NOT declared `unreddened`: those are tests another scorer or no scorer
 covers yet, not guards no single mutation can isolate.
+
+Re-measured 2026-09-25 after reader_protocol_test.go and its two rows (the
+401 fold and the missing updated_at): 54/54, both controls behaved, and
+--crosstable 8 of 47 — the same eight as above.
 """
 
 import sys
@@ -201,8 +205,19 @@ CASES = [
           'return bridgeSession{}, false, fmt.Errorf("not found")')],
     ),
     Case(
+        # Narrower than the 500 row above: only the auth refusal is folded in,
+        # which is what an expired service token would look like.
+        "a bridge 401 is read as a session that no longer exists",
+        [("if resp.StatusCode == http.StatusNotFound {",
+          "if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnauthorized {")],
+    ),
+    Case(
         "a session with no purpose is accepted as somebody else's",
         [('if s.Purpose == "" {', 'if false && s.Purpose == "" {')],
+    ),
+    Case(
+        "a session with no updated_at is refused instead of read",
+        [('if s.Purpose == "" {', 'if s.Purpose == "" || s.UpdatedAt == "" {')],
     ),
     Case(
         "createdByAutoworker goes back to matching the session id",
