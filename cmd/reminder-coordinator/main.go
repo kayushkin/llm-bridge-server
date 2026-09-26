@@ -1769,9 +1769,34 @@ func (g *GoogleCalendarMirror) ResolveDashToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read dash-server.service environment: %w", err)
 	}
-	for _, field := range strings.Fields(string(output)) {
-		if token, found := strings.CutPrefix(field, "DASH_TOKEN="); found {
-			return token, nil
+	return dashTokenFromSystemdEnvironmentProperty(string(output))
+}
+
+// dashTokenFromSystemdEnvironmentProperty pulls DASH_TOKEN out of what
+// `systemctl show -p Environment` prints. That is one line per property, and the
+// whole space-separated variable list is the VALUE of a single `Environment=`
+// property:
+//
+//	Environment=DASH_PORT=8101 DASH_TOKEN=abc HOME=/home/…
+//
+// So the first field is `Environment=DASH_PORT=8101`, not `DASH_PORT=8101`.
+// Splitting on whitespace and asking each field for a `DASH_TOKEN=` prefix
+// cannot see the token when it is the FIRST variable in the unit — that one
+// field is `Environment=DASH_TOKEN=abc`. It works on this host only because
+// DASH_PORT happens to be declared first, which nothing guarantees: reorder the
+// unit file and every calendar read and write stops, reporting a unit that
+// "declares no DASH_TOKEN" while the unit plainly declares one. Strip the
+// property name first, then split.
+func dashTokenFromSystemdEnvironmentProperty(output string) (string, error) {
+	for _, line := range strings.Split(output, "\n") {
+		value, isEnvironment := strings.CutPrefix(strings.TrimSpace(line), "Environment=")
+		if !isEnvironment {
+			continue
+		}
+		for _, field := range strings.Fields(value) {
+			if token, found := strings.CutPrefix(field, "DASH_TOKEN="); found {
+				return token, nil
+			}
 		}
 	}
 	// Loud: without this, every calendar call would 401 and the mirror would look
@@ -1818,8 +1843,12 @@ func (g *GoogleCalendarMirror) ListEvents(token string, timeMin, timeMax time.Ti
 	if err := g.do(token, "GET", path, nil, &resp); err != nil {
 		return nil, err
 	}
-	// The proxy answers 200 with an {error, events:[]} body when a single calendar
-	// fails; treat that as loud, not as "no events today".
+	// The proxy answers 200 with a populated `error` field when it could not read
+	// one of the user's calendars, and still returns the events that did arrive
+	// (dash 05fc2b6; before it, the multi-calendar branch this client takes
+	// dropped the error). So a set error means the list is PARTIAL, not empty.
+	// Treat it as loud either way: a partial day printed as the whole day is a
+	// false statement in the note the user reads before getting up.
 	if resp.Error != "" {
 		return nil, fmt.Errorf("calendar list: %s", resp.Error)
 	}
