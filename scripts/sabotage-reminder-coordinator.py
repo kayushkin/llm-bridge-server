@@ -25,7 +25,10 @@ Case-writing rules learned the expensive way, and re-earned here:
     behavioural no-op, or a fake in the test file that swallows the value the
     mutation moved. Both appear below, named, with expected_unnoticed set.
 
-Score: 117/128, exit 0 on 2026-09-25, after six rows for the all-day window
+Score: 122/132, exit 0 on 2026-09-26, after the undated-item sort fix and four
+rows for sortByDue, dryPrefix and roundDuration's hour boundary (card
+`526ea345`); the dry-run prefix row stopped being a declaration then. Before
+that: 117/128, exit 0 on 2026-09-25, after six rows for the all-day window
 and the never-nagged floor (a05c967). Before them: 111/122 — see the dated
 section at the end of this docstring. Before that: 91/97, exit 0 — 91 real mechanisms caught and six cases carrying an
 `expected_unnoticed`. Was 69/75 until the nudge stopped being three counts and
@@ -96,7 +99,8 @@ The 37 split cleanly in two, and only one half was a coverage hole:
     bucket, so with one item per bucket every sort is correct).
   - **Eighteen cannot be observed by this suite at all**, and are declared rather
     than deleted. `main` is flag parsing; `envOr` is reached only from it and
-    from ResolveDashToken; `dryPrefix` only ever reaches a log line. The other
+    from ResolveDashToken; `dryPrefix` only ever reaches a log line (expired
+    2026-09-26: `unnamed_behaviour_test.go` now asserts it directly). The other
     fifteen are the CONCRETE clients — NoteboardClient, GoogleCalendarMirror,
     Herald — which the coordinator holds behind interfaces and the suite replaces
     with fakes wholesale. Those three are declared as **one case each covering
@@ -650,11 +654,11 @@ CASES = [
     ),
     Case(
         "the dry-run log prefix is reworded",
+        # Was declared unnoticed ("no test reads the log"). The declaration
+        # expired 2026-09-26 when TestDryPrefix_MarksARehearsalAndOnlyARehearsal
+        # (unnamed_behaviour_test.go, card `526ea345`) began asserting the
+        # prefix itself; the scorer reported it STALE and it is a real row now.
         [('return "[dry-run] "', 'return "[DRY RUN] "')],
-        expected_unnoticed="the string only ever reaches log.Printf and the dry-run fmt.Println. No "
-                           "test reads the log and nothing downstream parses it — the same standing "
-                           "reason as the known-negative control. Falsified by a test that captures "
-                           "log output, or by anything that greps journalctl for the prefix.",
     ),
     Case(
         "the whole Herald process launch is scrambled — the -from and -title flags swap",
@@ -987,6 +991,46 @@ CASES = [
         "VALUE the materialization lookahead default doubles 7d -> 14d",
         [('fs.DurationVar(&c.lookahead, "lookahead", 7*24*time.Hour,',
           'fs.DurationVar(&c.lookahead, "lookahead", 14*24*time.Hour,')],
+    ),
+    # ---- the three helpers every reminder surface is rendered through ----
+    # Written 2026-08-30 on test/the-coordinator-silent-column-is-closed and
+    # ported 2026-09-26 (card `526ea345`), closing the silent column
+    # `--crosstable` found there: all four tests in unnamed_behaviour_test.go
+    # were reddened by NO case. This list is drafted from worries about the digest
+    # DECIDING WRONGLY — what is due, what nags, what reaches the calendar — and
+    # has no vocabulary for the helpers that decide how the answer is ORDERED,
+    # MARKED and MEASURED. Card `6e66450b` item 1.
+    #
+    # One case per test, aimed at a mechanism only that test holds: a single
+    # mutation to sortByDue would redden both of its tests and leave neither
+    # separately pinned (card `2920becb`).
+    Case(
+        "undated items sort to the FRONT, so the digest opens on items with no date",
+        [("return items[i].DueAt != nil && items[j].DueAt == nil",
+          "return items[i].DueAt == nil && items[j].DueAt != nil")],
+    ),
+    Case(
+        "the sort invents an order for undated items instead of leaving them alone",
+        [("""\t\tif items[i].DueAt == nil || items[j].DueAt == nil {
+\t\t\treturn items[i].DueAt != nil && items[j].DueAt == nil
+\t\t}""",
+          """\t\tif items[i].DueAt == nil || items[j].DueAt == nil {
+\t\t\tif items[i].DueAt == nil && items[j].DueAt == nil {
+\t\t\t\treturn items[i].Title > items[j].Title
+\t\t\t}
+\t\t\treturn items[i].DueAt != nil && items[j].DueAt == nil
+\t\t}""")],
+    ),
+    Case(
+        "a real run is marked as a rehearsal and a rehearsal is not",
+        [('''func dryPrefix(dryRun bool) string {
+\tif dryRun {''',
+          '''func dryPrefix(dryRun bool) string {
+\tif !dryRun {''')],
+    ),
+    Case(
+        "the hour boundary is inclusive, so exactly one hour overdue reports as 60m",
+        [("\tif d < time.Hour {", "\tif d <= time.Hour {")],
     ),
 ]
 
