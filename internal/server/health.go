@@ -235,7 +235,7 @@ func supportedPermissionModesFor(h msg.Harness) []string {
 // taste: a capability is granted when the control it gates changes something
 // for a session that is already running. Storing a value and applying it at
 // the next spawn counts (jig) — the user's choice takes effect. Refusing it
-// and keeping the old value does not (claude_code effort / max_budget /
+// and keeping the old value does not (claude_code max_budget /
 // disabled_tools, which answer "spawn-time only, unchanged" and return an
 // error), and neither does parsing a field and never reading it (mock's fork,
 // nanoclaw's, aider's, forgecode's).
@@ -252,8 +252,10 @@ func supportedPermissionModesFor(h msg.Harness) []string {
 //     kilo_code and nanoclaw plumb no model at all, forgecode's own README says
 //     the -m it passes is inert, aider fixes the model at start, and the six
 //     scaffolds have no config: branch.
-//   - effort: codex, inber, jig. claude_code takes --effort at spawn and says
-//     so; cline refuses it by name.
+//   - effort: claude_code (handleSessionConfig -> handleSetEffort, live:
+//     apply_flag_settings with effortLevel; granted back on 2026-09-26 after
+//     measuring Claude Code 2.1.282 accept it mid-session), codex, inber, jig.
+//     cline refuses it by name.
 //   - tools: this one column gates two different controls, and no harness
 //     earns both halves — the chat pane's Tools button reads SessionInfo.Tools,
 //     the settings pane's grid writes disabled_tools. Granted where either
@@ -291,7 +293,7 @@ func supportedPermissionModesFor(h msg.Harness) []string {
 // granting the cell before it lands advertises a Model dropdown that drops
 // what the user picks.
 var harnessCapabilities = map[msg.Harness][]string{
-	msg.HarnessClaudeCode: {"compact", "fork", "model", "tools", "system_prompt"},
+	msg.HarnessClaudeCode: {"compact", "fork", "model", "effort", "tools", "system_prompt"},
 	msg.HarnessCodex:      {"compact", "fork", "model", "effort"},
 	msg.HarnessOpenClaw:   {},
 	msg.HarnessInber:      {"compact", "fork", "model", "effort", "tools"},

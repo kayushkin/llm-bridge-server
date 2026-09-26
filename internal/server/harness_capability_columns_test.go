@@ -68,16 +68,16 @@ var auditedColumns = []capabilityColumn{
 	{
 		name: "effort",
 		has: map[msg.Harness]string{
-			msg.HarnessCodex: "HandleConfig -> cfg.Effort, passed on the next TurnStart",
-			msg.HarnessInber: "config -> Engine.SetThinkingBudget",
-			msg.HarnessJig:   "handleConfig patches profile.Effort, --effort on the next spawn",
+			msg.HarnessClaudeCode: "handleSessionConfig -> handleSetEffort: apply_flag_settings {effortLevel} to the live process",
+			msg.HarnessCodex:      "HandleConfig -> cfg.Effort, passed on the next TurnStart",
+			msg.HarnessInber:      "config -> Engine.SetThinkingBudget",
+			msg.HarnessJig:        "handleConfig patches profile.Effort, --effort on the next spawn",
 		},
 		lacks: map[msg.Harness]string{
-			msg.HarnessClaudeCode: `--effort is a spawn flag; handleSessionConfig answers "spawn-time only, unchanged"`,
-			msg.HarnessCline:      "handleConfig names effort as unsupported and returns an error",
-			msg.HarnessHermes:     "handleConfig names effort as unsupported: responsesRequest carries no effort field",
-			msg.HarnessOpenClaw:   "no effort or reasoning field exists anywhere in the harness",
-			msg.HarnessMock:       "never unmarshals the config payload",
+			msg.HarnessCline:    "handleConfig names effort as unsupported and returns an error",
+			msg.HarnessHermes:   "handleConfig names effort as unsupported: responsesRequest carries no effort field",
+			msg.HarnessOpenClaw: "no effort or reasoning field exists anywhere in the harness",
+			msg.HarnessMock:     "never unmarshals the config payload",
 		},
 	},
 	{
