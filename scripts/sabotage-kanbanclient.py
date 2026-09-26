@@ -44,14 +44,24 @@ are superseded by these, taken on main at d075058 plus this port:
         exit 1, naming the timeout case and no other.
     Cross-table: 13 of 32 tests reddened by no case, exit 1.
 
-⚠️ **The cross-table's 13 are a gap in THIS CASE LIST, not in the suite.** They
-are main's tests for code the branch never had: MoveCard's MoveResult and its
-auto-status report (four tests), the service-token stamp (four), effective
-defaults, the orphan row ListCardsForEntity keeps, the read decoders' field
-names, Unwrap on a transport error, and a card that was never created. They
-are NOT declared `unreddened` — that is for tests no single mutation can
-isolate, and each of these has a mechanism a case could break. The branch's
-"0 of 25" below no longer holds; the cases are still to be written.
+## The cross-table's 13 closed 2026-09-26 (card 9106aa50)
+
+Those 13 were a gap in THIS CASE LIST, not in the suite: main's tests for code
+the branch never had. Fourteen cases now break that code, one per mechanism:
+MoveResult's two keys, a column id reported as an applied status, and an
+unreadable move response called clean (four); New's token transport, and the
+process-wide stamp's host check, its install on DefaultTransport, its refusal
+of a hostless URL and its early return for no token (five); the effective
+defaults' source kind, the entity tag's key, the orphan row, Unwrap, and
+StrandedCardID (five). All are in client.go, so TARGET did not change. None is
+declared `unreddened`, and each reddens exactly the test named after it. Taken
+on main at 4f8e175 plus these cases:
+
+    Score: 47/47 real mechanisms caught, both controls behaved, exit 0.
+    Cross-table: 0 of 32 tests reddened by no case, exit 0.
+    Guard split: 48 CAUGHT rows, 0 guard-fired only, 0 unreadable, exit 0.
+    Seen red: deleting the assertion in TestUnwrapReachesTheTransportError
+        gives 46/47, exit 1, naming the Unwrap case and no other.
 
 ## Why this package has a scorer of its own
 
@@ -1188,6 +1198,82 @@ CASES = [
         "the reverse card lookup reads a route the store does not serve, so no card is ever anybody's child",
         [('resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/entities/%s/%s/cards",',
           'resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/entities/%s/%s/links",')],
+    ),
+
+    # ---- what a move reports beyond the move (card 9106aa50) ----
+    # kanban-store answers a move 200 even when the auto-status patch behind it
+    # failed, and names the failure in the body. The status code cannot show it.
+    Case(
+        "a failed auto-status patch is read from a key the store does not send, so the move reads as clean",
+        [('`json:"auto_status_error"`', '`json:"auto_status_failure"`')],
+    ),
+    Case(
+        "the auto-status a move applied is read from a key the store does not send",
+        [('`json:"auto_status_applied"`', '`json:"auto_status"`')],
+    ),
+    Case(
+        "a move to a column with no auto_status reports the column id as the status it applied",
+        [("var result MoveResult", "result := MoveResult{AutoStatusApplied: columnID}")],
+    ),
+    Case(
+        "a move whose response cannot be read is reported as a clean move",
+        [('return MoveResult{}, fmt.Errorf("move card succeeded but its response could not be read: %w", err)',
+          "_ = err\n\t\treturn MoveResult{}, nil")],
+    ),
+
+    # ---- the service token (card 9106aa50) ----
+    Case(
+        "New stops installing the token transport, so every call reaches kanban-store unauthenticated",
+        [("httpClient.Transport = &serviceTokenTransport{token: serviceToken, base: http.DefaultTransport}",
+          "_ = serviceTokenTransport{token: serviceToken, base: http.DefaultTransport}")],
+    ),
+    Case(
+        "the process-wide stamp drops its host check, so kanban-store's token goes to every service",
+        [("if !strings.EqualFold(request.URL.Host, t.host) {",
+          "if false && !strings.EqualFold(request.URL.Host, t.host) {")],
+    ),
+    Case(
+        "the process-wide stamp is put on http.DefaultClient only, so a client left on the default transport sends no token",
+        [("http.DefaultTransport = &hostScopedServiceTokenTransport{host: parsed.Host, token: serviceToken, base: http.DefaultTransport}\n"
+          "\thttp.DefaultClient.Transport = http.DefaultTransport",
+          "http.DefaultClient.Transport = &hostScopedServiceTokenTransport{host: parsed.Host, token: serviceToken, base: http.DefaultTransport}")],
+    ),
+    Case(
+        "the stamp accepts a URL with no host, and scopes the token to the empty host",
+        [('if err != nil || parsed.Host == "" {', "if err != nil {")],
+    ),
+    Case(
+        "an unset token still replaces the default transport",
+        [('func StampRequestsToKanbanStore(kanbanURL, serviceToken string) error {\n\tif serviceToken == "" {\n\t\treturn nil\n\t}\n',
+          "func StampRequestsToKanbanStore(kanbanURL, serviceToken string) error {\n")],
+    ),
+
+    # ---- reads the dispatcher and callers decide on (card 9106aa50) ----
+    Case(
+        "a resolved default's source kind is read from a key the store does not send, so no default says where it came from",
+        [('`json:"kind"`', '`json:"source_kind"`')],
+    ),
+    Case(
+        "an entity tag is decoded from a key the store does not send, so every tag reads as blank",
+        [('`json:"tag"`', '`json:"name"`')],
+    ),
+    Case(
+        "a card whose noteboard item was deleted is dropped from the reverse lookup instead of returned as an orphan",
+        [("var entries []EntityCardEntry\n\tif err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {\n\t\treturn nil, err\n\t}\n\treturn entries, nil",
+          "var entries []EntityCardEntry\n\tif err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {\n\t\treturn nil, err\n\t}\n"
+          "\tkept := entries[:0]\n\tfor _, e := range entries {\n\t\tif e.Item != nil {\n\t\t\tkept = append(kept, e)\n\t\t}\n\t}\n\treturn kept, nil")],
+    ),
+
+    # ---- the stranded-card error (card 9106aa50) ----
+    Case(
+        "the stranded-card error hides its cause, so errors.Is cannot see the transport error behind it",
+        [("func (e *CardCreatedWithoutAllLinksError) Unwrap() error { return e.Cause }",
+          "func (e *CardCreatedWithoutAllLinksError) Unwrap() error { return nil }")],
+    ),
+    Case(
+        "any CreateCard error is read as a stranded card, including one where nothing was created",
+        [('\t\treturn partial.CardID, true\n\t}\n\treturn "", false',
+          '\t\treturn partial.CardID, true\n\t}\n\treturn "", err != nil')],
     ),
 
     # ---- transport ----
