@@ -141,6 +141,11 @@ func TestShortIDKeepsEightBytes(t *testing.T) {
 	if got := shortID("abc"); got != "abc" {
 		t.Errorf("shortID(abc) = %q", got)
 	}
+	// Nine bytes is the one length that tells `len(id) <= 8` from `<= 9`: at
+	// eight and below the guard and the cut return the same string.
+	if got := shortID("123456789"); got != "12345678" {
+		t.Errorf("shortID(123456789) = %q, want the first 8 bytes", got)
+	}
 }
 
 // ============================ reading tags ============================

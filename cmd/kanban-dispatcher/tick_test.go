@@ -97,6 +97,11 @@ func TestADispatchedCardIsLinkedToItsSessionAndMovedToInProgress(t *testing.T) {
 	if move["column_id"] != "col-in-progress" || move["board_id"] != testBoardID {
 		t.Errorf("move = %v, want In Progress (col-in-progress) on %s", move, testBoardID)
 	}
+	// Position 0 is the top of the column, where a person looking at the board
+	// sees the card arrive.
+	if move["position"] != float64(0) {
+		t.Errorf("the dispatched card moved to position %v, want 0 (the top of In Progress)", move["position"])
+	}
 }
 
 func TestACardWhoseSessionLinkFailedIsNotMoved(t *testing.T) {
@@ -180,6 +185,11 @@ func TestTheClosurePassMovesEachSettledChildToItsOwnColumn(t *testing.T) {
 	if got := kanban.sent["move:card-archived"]["column_id"]; got != "col-failed" {
 		t.Errorf("an archived child moved to %v, want col-failed", got)
 	}
+	for _, card := range []string{"card-done", "card-archived"} {
+		if got := kanban.sent["move:"+card]["position"]; got != float64(0) {
+			t.Errorf("%s moved to position %v, want 0 (the top of its column)", card, got)
+		}
+	}
 	if _, moved := kanban.sent["move:card-open"]; moved {
 		t.Error("a child still being worked on must not be moved")
 	}
@@ -202,6 +212,9 @@ func TestTheRollupAppendsItsNoteAndCountsFailedChildrenApart(t *testing.T) {
 	}
 	if got := kanban.sent["move:parent"]["column_id"]; got != "col-done" {
 		t.Errorf("the goal moved to %v, want col-done", got)
+	}
+	if got := kanban.sent["move:parent"]["position"]; got != float64(0) {
+		t.Errorf("the goal moved to position %v, want 0 (the top of Done)", got)
 	}
 }
 

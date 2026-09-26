@@ -331,6 +331,40 @@ ARMS = [
     ("the-scheduler-is-read-at-a-path-it-does-not-serve",
      'resp, err := http.Get(schedURL + "/api/jobs")', 'resp, err := http.Get(schedURL + "/api/job")', "caught"),
 
+    # ------------------------------------------------ boundary values
+    # Ported from 081b8ac6. Every arm above moves a direction, renames a wire
+    # string or deletes a mechanism; none moves a NUMBER by one unit. Fixtures
+    # written in terms of the constant (`-2*reviveWindow`) sit on the right
+    # side of it whatever its value, so each value needs a fixture that quotes
+    # the number itself. The compiled-in ports 081b8ac6 also moved now live in
+    # internal/config, outside this file's one target. shortID's `<= 7` is not
+    # armed: it differs from `<= 8` only at length 8, where the guard and the
+    # cut return the same string, so no input can tell them apart.
+    ("the-revive-window-grows-by-a-minute",
+     "reviveWindow       = time.Hour\n", "reviveWindow       = time.Hour + time.Minute\n", "caught"),
+    ("the-revive-window-shrinks-by-a-minute",
+     "reviveWindow       = time.Hour\n", "reviveWindow       = time.Hour - time.Minute\n", "caught"),
+    ("the-per-tick-dispatch-cap-grows-by-one",
+     "maxDispatchPerTick = 3\n", "maxDispatchPerTick = 4\n", "caught"),
+    ("the-per-tick-dispatch-cap-shrinks-by-one",
+     "maxDispatchPerTick = 3\n", "maxDispatchPerTick = 2\n", "caught"),
+    ("the-register-success-threshold-moves-up-one-status",
+     "if resp.StatusCode >= 300 {", "if resp.StatusCode >= 301 {", "caught"),
+    ("the-register-success-threshold-moves-down-one-status",
+     "if resp.StatusCode >= 300 {", "if resp.StatusCode >= 299 {", "caught"),
+    ("shortid-keeps-one-more-byte-whole",
+     "if len(id) <= 8 {", "if len(id) <= 9 {", "caught"),
+    ("a-dispatched-card-lands-one-row-down-in-progress",
+     "d.kanban.MoveCard(childID, d.board.ID, d.inProgressColumnID, 0)",
+     "d.kanban.MoveCard(childID, d.board.ID, d.inProgressColumnID, 1)", "caught"),
+    ("a-closed-child-lands-one-row-down-its-column",
+     "kc.MoveCard(e.CardID, board.ID, targetCol, 0)", "kc.MoveCard(e.CardID, board.ID, targetCol, 1)", "caught"),
+    ("a-rolled-up-parent-lands-one-row-down-done",
+     "kc.MoveCard(p.cardID, board.ID, colByName[columnDone], 0)",
+     "kc.MoveCard(p.cardID, board.ID, colByName[columnDone], 1)", "caught"),
+    ("the-noteboard-port-in-the-prompt-drifts-by-one",
+     "PATCH http://localhost:8191/api/items/%s", "PATCH http://localhost:8192/api/items/%s", "caught"),
+
     # ------------------------------------------------ controls
     ("control-reword-the-rollup-progress-line",
      '"[%s] rollup: %d/%d children settled"', '"[%s] rollup ready: %d of %d children settled"', "survives"),
