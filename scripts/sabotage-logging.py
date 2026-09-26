@@ -147,14 +147,20 @@ CASES = [
         edits=[('Level:   "info",\n\t\tType:    "job_execution",\n\t\tContent: fmt.Sprintf("Job \'%s\' started execution", jobName),',
                 'Level:   "error",\n\t\tType:    "job_execution",\n\t\tContent: fmt.Sprintf("Job \'%s\' started execution", jobName),')],
     ),
+    # The cut moved into truncateAtRuneBoundary at 60f4831, and the 500 became
+    # outputSnippetBudget. The two rows below aimed at the inline slice until
+    # 2026-09-26 and aborted on a needle that no longer existed.
     Case(
         name="truncation-boundary-moves: the cut lands at 600 instead of 500",
-        edits=[("if len(output) > 500 {", "if len(output) > 600 {")],
+        edits=[("const outputSnippetBudget = 500", "const outputSnippetBudget = 600")],
     ),
     Case(
         name="truncation-keeps-the-wrong-end-of-the-output",
-        edits=[('outputSnippet = output[:500] + "... (truncated)"',
-                'outputSnippet = output[len(output)-500:] + "... (truncated)"')],
+        edits=[("\treturn s[:cut]\n", "\treturn s[len(s)-cut:]\n")],
+    ),
+    Case(
+        name="truncation-cuts-inside-a-rune: the walk back to a rune start is dead",
+        edits=[("for cut > 0 && !utf8.RuneStart(s[cut]) {", "for false && !utf8.RuneStart(s[cut]) {")],
     ),
     Case(
         name="new-drops-the-typed-nil-guard",

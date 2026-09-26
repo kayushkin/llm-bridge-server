@@ -288,9 +288,13 @@ func TestExplicitArgumentsBeatBothTheEnvironmentAndTheDefault(t *testing.T) {
 // collectUnfiled's budget check is `len(out) >= cfg.MaxEmails`, which is already
 // true at zero — so a -max of 0 walks no page, reads no message, logs "nothing
 // new to file" and exits 0, every 15 minutes, while mail piles up.
+//
+// The board id is given so that -max is the only thing wrong. Without it,
+// validate refuses the missing board instead, and the test stays green with
+// the -max guard deleted.
 func TestATickWithNoBudgetIsRefusedRatherThanReportingSuccess(t *testing.T) {
 	for _, max := range []string{"-max=0", "-max=-1"} {
-		cfg, err := parseFlags([]string{max}, noEnvironment, "/home/someone")
+		cfg, err := parseFlags([]string{"-board-id=board-42", max}, noEnvironment, "/home/someone")
 		if err != nil {
 			t.Fatalf("parsing %s: %v", max, err)
 		}

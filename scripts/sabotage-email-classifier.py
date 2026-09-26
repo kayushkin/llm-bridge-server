@@ -78,6 +78,23 @@ Score under the split, taken 2026-08-17 by the 281st pass:
 **30 rows, 29 CAUGHT, 0 guard-fired only, 1 runtime-fired, 0 unreadable**, and
 the known-negative control still UNNOTICED.
 
+Re-aimed 2026-09-26 (card `d55e0a3a`). e6bcf96 moved the flag defaults and the
+environment wiring into the settings registry in internal/config, and 14
+needles stopped matching, the known-positive control among them, so the scorer
+had aborted on its first row since then. Eleven rows now aim at where each value
+lives; three are deleted with a line saying why (-account, -auth-store-url,
+envOr). Re-aiming found a real hole: TestATickWithNoBudgetIsRefused... passed
+no board id, so validate refused the missing board and the -max guard could be
+deleted with the test green. The test now names a board.
+
+Score after the re-aim: **25/25 real mechanisms CAUGHT, both controls behaved,
+exit 0.** Under the split: 26 CAUGHT rows, 0 guard-fired only, 0 runtime-fired,
+**1 unreadable**, so `--guard-split` exits 1. The unreadable row is ExitOnError:
+TestTheFlagsTheBoardReplacedAreGone now passes a removed flag before the `-h`
+test runs, so the binary exits 2 on that bad argument and prints no failure line
+and no panic. The 281st's runtime-fired verdict depended on `-h` being the first
+bad input the binary met.
+
 Why this binary is worth a scorer: it has the largest flag set of the 21 cmd
 mains on this box (seventeen), it reads the environment in ten places, and its
 loudest failures are not its worst ones. FIVE of the seventeen switches turn a
@@ -139,15 +156,23 @@ from sabotage import (  # noqa: E402
     REPO, Case, _apply_case, _run_tests, _sabotage_session, score,
 )
 
-TARGETS = [REPO / "cmd/email-classifier/main.go"]
+# The flag defaults and the environment wiring moved out of main.go into the
+# settings registry at e6bcf96, so the two internal/config files that declare
+# them are targets too. PACKAGES stays this binary's own: the rows ask whether
+# ITS tests notice a drifted value, not whether internal/config's do.
+TARGETS = [
+    REPO / "cmd/email-classifier/main.go",
+    REPO / "internal/config/jobs.go",
+    REPO / "internal/config/settings.go",
+]
 PACKAGES = ["./cmd/email-classifier/"]
 
 
 CASES = [
     # ---- controls ----
     Case(
-        "CONTROL known-positive: the board this binary looks for is renamed",
-        [('defaultBoardName = "Email"', 'defaultBoardName = "Emails"')],
+        "CONTROL known-positive: a run with no board id is let through",
+        [('if !c.ListVocabularies && c.BoardID == "" {', 'if false && c.BoardID == "" {')],
     ),
     Case(
         "CONTROL known-negative: reword the -mail-token usage string",
@@ -187,12 +212,11 @@ CASES = [
     # ---- the two values that decide what a tick costs ----
     Case(
         "-model drifts to the cheap model the sibling classifiers use: quality falls, nothing fails",
-        [('fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "EMAIL_CLASSIFIER_MODEL", defaultModel)',
-          'fs.StringVar(&c.Model, "model", envOr(lookupEnvironment, "EMAIL_CLASSIFIER_MODEL", "claude-haiku-4-5")')],
+        [('"model", settings.String(schedulerconfig.SettingModel)', '"model", "claude-haiku-4-5"')],
     ),
     Case(
-        "defaultModel itself drifts to a more expensive model: same work, several times the bill",
-        [('defaultModel = "claude-sonnet-4-6"', 'defaultModel = "claude-opus-4-1"')],
+        "DefaultEmailClassifierModel itself drifts to a more expensive model: same work, several times the bill",
+        [('DefaultEmailClassifierModel = "claude-sonnet-4-6"', 'DefaultEmailClassifierModel = "claude-opus-4-1"')],
     ),
     Case(
         "-max drifts 50 -> 5: the backlog drains ten times slower and no tick ever says so",
@@ -208,54 +232,56 @@ CASES = [
         "-backfill ships ON: every tick walks the whole archive instead of stopping at the caught-up page",
         [('fs.BoolVar(&c.Backfill, "backfill", false,', 'fs.BoolVar(&c.Backfill, "backfill", true,')],
     ),
-    Case(
-        "-account ships pinned to one mailbox: every other account is silently skipped forever",
-        [('fs.StringVar(&c.OnlyAccount, "account", "",', 'fs.StringVar(&c.OnlyAccount, "account", "gmail",')],
-    ),
+    # "-account ships pinned to one mailbox" was deleted 2026-09-26: the flag is
+    # gone and the board's classifier.mail_account_ids says which accounts a run
+    # reads. TestTheFlagsTheBoardReplacedAreGone pins that it stays gone.
     Case(
         "-board-id ships with a value: every host pins the same board, which exists on none of them",
-        [('fs.StringVar(&c.BoardID, "board-id", envOr(lookupEnvironment, "EMAIL_BOARD_ID", "")',
-          'fs.StringVar(&c.BoardID, "board-id", envOr(lookupEnvironment, "EMAIL_BOARD_ID", "email-board")')],
+        [('"board-id", settings.String(schedulerconfig.SettingEmailBoardID)', '"board-id", "email-board"')],
     ),
     Case(
         "-kanban-url points at noteboard: the board read that every other step depends on",
-        [('"KANBAN_STORE_URL", "http://localhost:8305"', '"KANBAN_STORE_URL", "http://localhost:8191"')],
+        [('DefaultKanbanStoreURL    = "http://localhost:8305"', 'DefaultKanbanStoreURL    = "http://localhost:8191"')],
     ),
     Case(
         "-mail-url points at kanban-store: no message is ever fetched",
-        [('"MAILSTACK_URL", "http://localhost:8195"', '"MAILSTACK_URL", "http://localhost:8305"')],
+        [('DefaultMailstackURL      = "http://localhost:8195"', 'DefaultMailstackURL      = "http://localhost:8305"')],
     ),
     Case(
         "-bridge-url points at auth-store: the agent-ownership gate cannot resolve a session",
-        [('"LLM_BRIDGE_URL", "http://localhost:8160"', '"LLM_BRIDGE_URL", "http://localhost:8303"')],
+        [('DefaultBridgeURL    = "http://localhost:8160"', 'DefaultBridgeURL    = "http://localhost:8303"')],
     ),
-    Case(
-        "-auth-store-url points at llm-bridge: the Anthropic key resolve that every model call needs",
-        [('"AUTH_STORE_URL", "http://localhost:8303"', '"AUTH_STORE_URL", "http://localhost:8160"')],
-    ),
+    # "-auth-store-url points at llm-bridge" was deleted 2026-09-26: the binary
+    # no longer resolves a provider key itself. Model calls go through
+    # llm-bridge-server, so there is no auth-store address left to drift.
 
     # ---- the wiring: nine variables, seven of them interchangeable strings ----
     Case(
-        "the two bearer tokens are swapped: both default to changeme, so on this host it is invisible",
-        [('fs.StringVar(&c.MailToken, "mail-token", envOr(lookupEnvironment, "MAILSTACK_TOKEN", "changeme")',
-          'fs.StringVar(&c.MailToken, "mail-token", envOr(lookupEnvironment, "AUTH_STORE_TOKEN", "changeme")')],
+        "the mailstack token is read from the kanban service token: mailstack answers every fetch 401",
+        [('mailToken := settings.String(schedulerconfig.SettingMailstackToken)',
+          'mailToken := settings.String(schedulerconfig.SettingKanbanStoreServiceToken)')],
     ),
     Case(
         "MAILSTACK_URL is read into the kanban field: the two endpoints trade places",
-        [('fs.StringVar(&c.KanbanURL, "kanban-url", envOr(lookupEnvironment, "KANBAN_STORE_URL", "http://localhost:8305")',
-          'fs.StringVar(&c.KanbanURL, "kanban-url", envOr(lookupEnvironment, "MAILSTACK_URL", "http://localhost:8305")')],
+        [('"kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL)',
+          '"kanban-url", settings.String(schedulerconfig.SettingMailstackURL)')],
     ),
     Case(
         "the board id is read from the wrong variable: a pinned board silently unpins",
-        [('envOr(lookupEnvironment, "EMAIL_BOARD_ID", "")', 'envOr(lookupEnvironment, "EMAIL_BOARD", "")')],
+        # Both edits, or the registry refuses the old name as a misspelling under
+        # the owned prefix and the row fires only the parse guard. Renamed with
+        # its prefix, EMAIL_BOARD_ID is simply ignored, which is the silent case.
+        [('Key: SettingEmailBoardID, EnvironmentVariable: "EMAIL_BOARD_ID"', 'Key: SettingEmailBoardID, EnvironmentVariable: "BOARD_ID"'),
+         ('OwnedEnvironmentVariablePrefixes: []string{"EMAIL_CLASSIFIER_", "EMAIL_BOARD_ID"}',
+          'OwnedEnvironmentVariablePrefixes: []string{"EMAIL_CLASSIFIER_", "BOARD_ID"}')],
     ),
-    Case(
-        "envOr prefers its fallback over the environment: every endpoint pins to localhost",
-        [('if v := lookupEnvironment(key); v != "" {', 'if v := lookupEnvironment(key); v == "" {')],
-    ),
+    # "envOr prefers its fallback over the environment" was deleted 2026-09-26:
+    # envOr is gone, and the lookup that replaced it lives in llm-bridge's
+    # servicesettings, outside this repo. TestAnUnsetVariableFallsBackAndASetOneDoesNot
+    # still pins the behaviour from this side.
     Case(
         "SCHEDULER_URL falls back to the kanban port: -register posts the job to the wrong service",
-        [('"SCHEDULER_URL", "http://localhost:8092"', '"SCHEDULER_URL", "http://localhost:8305"')],
+        [('DefaultSchedulerURL      = "http://localhost:8092"', 'DefaultSchedulerURL      = "http://localhost:8305"')],
     ),
     Case(
         "the registered command loses its bin segment: the job scheduler creates cannot exec",
