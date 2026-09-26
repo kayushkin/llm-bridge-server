@@ -43,6 +43,7 @@ import (
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
+	"github.com/slava/scheduler/internal/schedulerjobs"
 )
 
 const (
@@ -510,59 +511,12 @@ func registerSchedulerJob(schedURL string, board *kanbanclient.Board, jobName st
 	if jobName == "" {
 		jobName = defaultJobName(board.Name)
 	}
-	command := bin + " -board-id " + board.ID
-	boardName := board.Name
-
-	resp, err := http.Get(schedURL + "/api/jobs")
-	if err != nil {
-		return fmt.Errorf("list jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("list jobs: read body: %w", err)
-	}
-	// The duplicate check below is only as good as this list: a list read as
-	// empty lets a re-run register a second curator beside the first.
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("list jobs: scheduler returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var jobs []struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(body, &jobs); err != nil {
-		return fmt.Errorf("list jobs: decode job list: %w", err)
-	}
-	for _, j := range jobs {
-		if j.Name == jobName {
-			fmt.Printf("%s already registered; no changes made\n", jobName)
-			return nil
-		}
-	}
-	payload := map[string]any{
-		"name":        jobName,
-		"description": fmt.Sprintf("Closes autoworker kanban cards on board %q when their bridge sessions reach a terminal state.", boardName),
-		"schedule":    "*/5 * * * *",
-		"type":        "shell",
-		"command":     command,
-	}
-	data, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", schedURL+"/api/jobs", strings.NewReader(string(data)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("POST /api/jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ = io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("scheduler returned %d: %s", resp.StatusCode, string(body))
-	}
-	fmt.Printf("registered %s: %s\n", jobName, strings.TrimSpace(string(body)))
-	return nil
+	return schedulerjobs.RegisterIfAbsent(schedURL, schedulerjobs.Job{
+		Name:        jobName,
+		Description: fmt.Sprintf("Closes autoworker kanban cards on board %q when their bridge sessions reach a terminal state.", board.Name),
+		Schedule:    "*/5 * * * *",
+		Command:     bin + " -board-id " + board.ID,
+	})
 }
 
 // defaultJobName is the job-name rule registerSchedulerJob applies when no

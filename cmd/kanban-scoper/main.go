@@ -48,6 +48,7 @@ import (
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
 	"github.com/slava/scheduler/internal/oneshot"
+	"github.com/slava/scheduler/internal/schedulerjobs"
 )
 
 const (
@@ -623,51 +624,16 @@ func decompose(ctx context.Context, cfg config, digest string) (*Plan, error) {
 // transport, not a board setting, which is why it stays a flag.
 func registerSchedulerJob(schedURL, boardID, oneshotInstance string) error {
 	home, _ := os.UserHomeDir()
-	bin := filepath.Join(home, "bin", "kanban-scoper") + " -board-id " + boardID
+	command := filepath.Join(home, "bin", "kanban-scoper") + " -board-id " + boardID
 	if oneshotInstance != "" {
-		bin += " -oneshot-instance " + oneshotInstance
+		command += " -oneshot-instance " + oneshotInstance
 	}
-
-	resp, err := http.Get(schedURL + "/api/jobs")
-	if err != nil {
-		return fmt.Errorf("list jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	var jobs []struct {
-		Name string `json:"name"`
-	}
-	_ = json.Unmarshal(body, &jobs)
-	for _, j := range jobs {
-		if j.Name == "kanban-scoper-tick" {
-			fmt.Println("kanban-scoper-tick already registered; no changes made")
-			return nil
-		}
-	}
-	payload := map[string]any{
-		"name":        "kanban-scoper-tick",
-		"description": "Decomposes task-completion-loop parent cards into sub-cards via Haiku.",
-		"schedule":    "*/5 * * * *",
-		"type":        "shell",
-		"command":     bin,
-	}
-	data, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", schedURL+"/api/jobs", strings.NewReader(string(data)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("POST /api/jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ = io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("scheduler returned %d: %s", resp.StatusCode, string(body))
-	}
-	fmt.Printf("registered kanban-scoper-tick: %s\n", strings.TrimSpace(string(body)))
-	return nil
+	return schedulerjobs.RegisterIfAbsent(schedURL, schedulerjobs.Job{
+		Name:        "kanban-scoper-tick",
+		Description: "Decomposes task-completion-loop parent cards into sub-cards via Haiku.",
+		Schedule:    "*/5 * * * *",
+		Command:     command,
+	})
 }
 
 // ============================ helpers ============================

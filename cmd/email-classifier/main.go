@@ -43,9 +43,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -60,6 +58,7 @@ import (
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/principalstore"
+	"github.com/slava/scheduler/internal/schedulerjobs"
 )
 
 const (
@@ -1214,53 +1213,19 @@ func registeredCommand(binaryPath, boardID string) string {
 	return binaryPath + " -board-id " + boardID
 }
 
-// schedulerJobPayload is the job -register creates.
-func schedulerJobPayload(cfg config) map[string]any {
-	return map[string]any{
-		"name":        schedulerJobName,
-		"description": "Files incoming mail onto cards on the Email kanban board (cards are work, emails attach as links).",
-		"schedule":    schedulerJobSchedule,
-		"type":        "shell",
-		"command":     registeredCommand(cfg.BinaryPath, cfg.BoardID),
+// schedulerJob is the job -register creates.
+func schedulerJob(cfg config) schedulerjobs.Job {
+	return schedulerjobs.Job{
+		Name:        schedulerJobName,
+		Description: "Files incoming mail onto cards on the Email kanban board (cards are work, emails attach as links).",
+		Schedule:    schedulerJobSchedule,
+		Command:     registeredCommand(cfg.BinaryPath, cfg.BoardID),
 		// A tick fetches messages one live provider round trip at a time, so it
 		// legitimately outruns the scheduler's 5-minute default.
-		"timeout_seconds": schedulerJobTimeoutSeconds,
+		TimeoutSeconds: schedulerJobTimeoutSeconds,
 	}
 }
 
 func registerSchedulerJob(cfg config) error {
-	schedURL := cfg.SchedulerURL
-	resp, err := http.Get(schedURL + "/api/jobs")
-	if err != nil {
-		return fmt.Errorf("list jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	var jobs []struct {
-		Name string `json:"name"`
-	}
-	_ = json.Unmarshal(body, &jobs)
-	for _, j := range jobs {
-		if j.Name == schedulerJobName {
-			fmt.Println(schedulerJobName + " already registered; no changes made")
-			return nil
-		}
-	}
-	data, _ := json.Marshal(schedulerJobPayload(cfg))
-	req, err := http.NewRequest("POST", schedURL+"/api/jobs", strings.NewReader(string(data)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp2, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("POST /api/jobs: %w", err)
-	}
-	defer resp2.Body.Close()
-	body, _ = io.ReadAll(resp2.Body)
-	if resp2.StatusCode >= 300 {
-		return fmt.Errorf("scheduler returned %d: %s", resp2.StatusCode, string(body))
-	}
-	fmt.Printf("registered %s: %s\n", schedulerJobName, strings.TrimSpace(string(body)))
-	return nil
+	return schedulerjobs.RegisterIfAbsent(cfg.SchedulerURL, schedulerJob(cfg))
 }

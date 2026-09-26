@@ -70,6 +70,7 @@ import (
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
 	"github.com/slava/scheduler/internal/oneshot"
+	"github.com/slava/scheduler/internal/schedulerjobs"
 	"github.com/slava/scheduler/internal/textcut"
 )
 
@@ -1648,73 +1649,25 @@ func classify(ctx context.Context, cfg config, digest string) (*Report, error) {
 
 // ============================ Scheduler self-registration ============================
 
-// schedulerJobPayload is the job -register creates.
+// schedulerJob is the job -register creates.
 //
 // A function rather than a literal inside the POST because this payload is the
 // whole point of -register: it is written once per host and the scheduler API
 // drops `command` on PATCH, so there is no correcting it later through the API.
-func schedulerJobPayload(cfg config) map[string]any {
-	return map[string]any{
-		"name":        schedulerJobName,
-		"description": "Cheap-model classifier that creates and updates kanban cards from bridge sessions.",
-		"schedule":    schedulerJobSchedule,
-		"type":        "shell",
-		"command":     cfg.BinaryPath,
+func schedulerJob(cfg config) schedulerjobs.Job {
+	return schedulerjobs.Job{
+		Name:        schedulerJobName,
+		Description: "Cheap-model classifier that creates and updates kanban cards from bridge sessions.",
+		Schedule:    schedulerJobSchedule,
+		Command:     cfg.BinaryPath,
 		// Was absent, so a fresh host registered this job with the scheduler's
 		// 5-minute default while the host it was written on runs 900.
-		"timeout_seconds": schedulerJobTimeoutSeconds,
+		TimeoutSeconds: schedulerJobTimeoutSeconds,
 	}
 }
 
 func registerSchedulerJob(cfg config) error {
-	schedURL := cfg.SchedulerURL
-
-	resp, err := http.Get(schedURL + "/api/jobs")
-	if err != nil {
-		return fmt.Errorf("list jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	// The list is read to decide whether the job is ALREADY there, so a list
-	// that could not be read must abort. Both of these used to be discarded: a
-	// scheduler answering 500, or answering anything that is not a JSON array,
-	// left `jobs` empty, which reads exactly like "not registered yet" — and
-	// the next statement registers it. Run -register twice against a sick
-	// scheduler and the box gets two classifier ticks, which pays a model call
-	// per session twice over.
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("list jobs: scheduler returned %d: %s",
-			resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var jobs []struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(body, &jobs); err != nil {
-		return fmt.Errorf("list jobs: %w", err)
-	}
-	for _, j := range jobs {
-		if j.Name == schedulerJobName {
-			fmt.Println(schedulerJobName + " already registered; no changes made")
-			return nil
-		}
-	}
-	data, _ := json.Marshal(schedulerJobPayload(cfg))
-	req, err := http.NewRequest("POST", schedURL+"/api/jobs", strings.NewReader(string(data)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("POST /api/jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ = io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("scheduler returned %d: %s", resp.StatusCode, string(body))
-	}
-	fmt.Printf("registered %s: %s\n", schedulerJobName, strings.TrimSpace(string(body)))
-	return nil
+	return schedulerjobs.RegisterIfAbsent(cfg.SchedulerURL, schedulerJob(cfg))
 }
 
 // ============================ misc ============================

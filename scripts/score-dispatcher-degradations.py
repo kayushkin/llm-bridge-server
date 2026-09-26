@@ -306,30 +306,20 @@ ARMS = [
 
     # ------------------------------------------------ -register
     ("the-registered-job-name-drifts",
-     '"name":        "kanban-dispatcher-tick",', '"name":        "kanban-dispatcher",', "caught"),
+     'Name:        "kanban-dispatcher-tick",', 'Name:        "kanban-dispatcher",', "caught"),
     ("the-registered-cadence-drifts",
-     '"schedule":    "*/5 * * * *",', '"schedule":    "*/30 * * * *",', "caught"),
+     'Schedule:    "*/5 * * * *",', 'Schedule:    "*/30 * * * *",', "caught"),
     ("the-registered-command-names-another-binary",
-     'bin := filepath.Join(home, "bin", "kanban-dispatcher") + " -board-id " + boardID',
-     'bin := filepath.Join(home, "bin", "kanban-curator") + " -board-id " + boardID', "caught"),
+     'filepath.Join(home, "bin", "kanban-dispatcher") + " -board-id "',
+     'filepath.Join(home, "bin", "kanban-curator") + " -board-id "', "caught"),
     ("the-registered-command-drops-the-board",
-     'bin := filepath.Join(home, "bin", "kanban-dispatcher") + " -board-id " + boardID',
-     'bin := filepath.Join(home, "bin", "kanban-dispatcher") + boardID[:0]', "caught"),
-    ("the-registered-job-is-a-type-the-scheduler-cannot-run",
-     '"type":        "shell",', '"type":        "agent",', "caught"),
-    ("an-existing-tick-is-not-recognised",
-     'if j.Name == "kanban-dispatcher-tick" {', 'if j.Name == "kanban-dispatcher-tick-hourly" {', "caught"),
-    ("the-job-name-check-matches-by-prefix",
-     'if j.Name == "kanban-dispatcher-tick" {', 'if strings.HasPrefix(j.Name, "kanban-dispatcher") {', "caught"),
-    ("a-refused-registration-is-reported-as-success",
-     "if resp.StatusCode >= 300 {", "if false && resp.StatusCode >= 300 {", "caught"),
-    ("a-job-list-answered-500-reads-as-no-tick",
-     "if resp.StatusCode != http.StatusOK {\n\t\treturn fmt.Errorf(\"list jobs: scheduler returned",
-     "if false && resp.StatusCode != http.StatusOK {\n\t\treturn fmt.Errorf(\"list jobs: scheduler returned", "caught"),
-    ("a-job-list-that-is-not-json-reads-as-no-tick",
-     "if err := json.Unmarshal(body, &jobs); err != nil {", "if err := json.Unmarshal(body, &jobs); false && err != nil {", "caught"),
-    ("the-scheduler-is-read-at-a-path-it-does-not-serve",
-     'resp, err := http.Get(schedURL + "/api/jobs")', 'resp, err := http.Get(schedURL + "/api/job")', "caught"),
+     '"kanban-dispatcher") + " -board-id " + boardID,',
+     '"kanban-dispatcher") + boardID[:0],', "caught"),
+    # The registration mechanism itself (the duplicate check, the list-read
+    # guards, the refusal boundary, the routes and the job type) is shared
+    # with six other binaries since 2026-09-26 and scored once, in
+    # scripts/sabotage-schedulerjobs.py. The rows here pin this binary's own
+    # literals.
 
     # ------------------------------------------------ boundary values
     # Ported from 081b8ac6. Every arm above moves a direction, renames a wire
@@ -348,10 +338,6 @@ ARMS = [
      "maxDispatchPerTick = 3\n", "maxDispatchPerTick = 4\n", "caught"),
     ("the-per-tick-dispatch-cap-shrinks-by-one",
      "maxDispatchPerTick = 3\n", "maxDispatchPerTick = 2\n", "caught"),
-    ("the-register-success-threshold-moves-up-one-status",
-     "if resp.StatusCode >= 300 {", "if resp.StatusCode >= 301 {", "caught"),
-    ("the-register-success-threshold-moves-down-one-status",
-     "if resp.StatusCode >= 300 {", "if resp.StatusCode >= 299 {", "caught"),
     ("shortid-keeps-one-more-byte-whole",
      "textcut.PrefixWithinByteBudgetOnRuneBoundary(id, 8)",
      "textcut.PrefixWithinByteBudgetOnRuneBoundary(id, 9)", "caught"),

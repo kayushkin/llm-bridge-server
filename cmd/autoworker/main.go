@@ -43,6 +43,7 @@ import (
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
+	"github.com/slava/scheduler/internal/schedulerjobs"
 )
 
 const (
@@ -1058,48 +1059,12 @@ func saveState(path string, st *state) error {
 // with the same name already exists, leaves it alone (the scheduler has no
 // PUT-by-name primitive; users edit via the API or UI).
 func registerSchedulerJob(schedURL, bin string) error {
-	// See if a job with this name already exists.
-	resp, err := http.Get(schedURL + "/api/jobs")
-	if err != nil {
-		return fmt.Errorf("list jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	var jobs []struct {
-		Name string `json:"name"`
-	}
-	_ = json.Unmarshal(body, &jobs)
-	for _, j := range jobs {
-		if j.Name == "autoworker-tick" {
-			fmt.Println("autoworker-tick already registered; no changes made")
-			return nil
-		}
-	}
-
-	payload := map[string]any{
-		"name":        "autoworker-tick",
-		"description": "Gated todo-worker dispatcher. Fires budgeted agents when usage is below the weekly-reset curve.",
-		"schedule":    "*/30 * * * *",
-		"type":        "shell",
-		"command":     bin,
-	}
-	data, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", schedURL+"/api/jobs", strings.NewReader(string(data)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("POST /api/jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ = io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("scheduler returned %d: %s", resp.StatusCode, string(body))
-	}
-	fmt.Printf("registered autoworker-tick: %s\n", strings.TrimSpace(string(body)))
-	return nil
+	return schedulerjobs.RegisterIfAbsent(schedURL, schedulerjobs.Job{
+		Name:        "autoworker-tick",
+		Description: "Gated todo-worker dispatcher. Fires budgeted agents when usage is below the weekly-reset curve.",
+		Schedule:    "*/30 * * * *",
+		Command:     bin,
+	})
 }
 
 const defaultPrompt = `You are the nightly todo-worker. The user is asleep; their subscription budget is under-utilised for this week and I am dispatching you to make useful progress on open todos without disturbing them.

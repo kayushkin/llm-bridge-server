@@ -61,6 +61,7 @@ import (
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
+	"github.com/slava/scheduler/internal/schedulerjobs"
 )
 
 const (
@@ -637,45 +638,10 @@ func registerSchedulerJob(schedURL, jobName, boardName string) error {
 	if boardName != defaultBoardName {
 		command = fmt.Sprintf("%s -board=%q", bin, boardName)
 	}
-
-	resp, err := http.Get(schedURL + "/api/jobs")
-	if err != nil {
-		return fmt.Errorf("list jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	var jobs []struct {
-		Name string `json:"name"`
-	}
-	_ = json.Unmarshal(body, &jobs)
-	for _, j := range jobs {
-		if j.Name == jobName {
-			fmt.Printf("%s already registered; no changes made\n", jobName)
-			return nil
-		}
-	}
-	payload := map[string]any{
-		"name":        jobName,
-		"description": "Nudges completed autoworker sessions to finish obvious remaining work before kanban-curator closes their cards.",
-		"schedule":    "*/5 * * * *",
-		"type":        "shell",
-		"command":     command,
-	}
-	data, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", schedURL+"/api/jobs", bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("POST /api/jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ = io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("scheduler returned %d: %s", resp.StatusCode, string(body))
-	}
-	fmt.Printf("registered %s: %s\n", jobName, strings.TrimSpace(string(body)))
-	return nil
+	return schedulerjobs.RegisterIfAbsent(schedURL, schedulerjobs.Job{
+		Name:        jobName,
+		Description: "Nudges completed autoworker sessions to finish obvious remaining work before kanban-curator closes their cards.",
+		Schedule:    "*/5 * * * *",
+		Command:     command,
+	})
 }

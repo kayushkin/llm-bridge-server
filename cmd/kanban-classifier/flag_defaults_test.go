@@ -323,7 +323,7 @@ func TestTheRegisteredJobMatchesTheOneThatRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	payload := schedulerJobPayload(cfg)
+	payload := schedulerJob(cfg).Payload()
 
 	for _, row := range []struct {
 		key  string

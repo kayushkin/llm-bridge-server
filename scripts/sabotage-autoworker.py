@@ -647,26 +647,18 @@ CASES = [
     ),
 
     # -- -register: how this binary gets onto cron at all --
+    # The registration mechanism itself (the duplicate check, the list-read
+    # guards, the refusal boundary, the routes and the job type) is shared
+    # with six other binaries since 2026-09-26 and scored once, in
+    # scripts/sabotage-schedulerjobs.py. The rows here pin this binary's own
+    # literals.
     Case(
         "-register registers under a name a later -register will not recognise",
-        [('"name":        "autoworker-tick",', '"name":        "autoworker-tick-v2",')],
-    ),
-    Case(
-        "-register is no longer idempotent, so every deploy adds another dispatcher",
-        [('if j.Name == "autoworker-tick" {', 'if j.Name == "autoworker-tick" && false {')],
-    ),
-    Case(
-        "the idempotence check matches loosely, so a neighbouring job reads as proof this one is registered",
-        [('if j.Name == "autoworker-tick" {', 'if strings.HasPrefix(j.Name, "autoworker") {')],
+        [('Name:        "autoworker-tick",', 'Name:        "autoworker-tick-v2",')],
     ),
     Case(
         "the tick is registered on a cadence the gates were not written for",
-        [('"schedule":    "*/30 * * * *",', '"schedule":    "*/5 * * * *",')],
-    ),
-    Case(
-        "a scheduler that refuses the job is reported as a successful registration",
-        [("\tif resp.StatusCode >= 300 {\n\t\treturn fmt.Errorf(\"scheduler returned %d: %s\", resp.StatusCode, string(body))",
-          "\tif resp.StatusCode >= 300 && false {\n\t\treturn fmt.Errorf(\"scheduler returned %d: %s\", resp.StatusCode, string(body))")],
+        [('Schedule:    "*/30 * * * *",', 'Schedule:    "*/5 * * * *",')],
     ),
 
     # -- three guards from b305c9de's cross-table: a fresh snapshot missing its

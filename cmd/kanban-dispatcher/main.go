@@ -63,6 +63,7 @@ import (
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
+	"github.com/slava/scheduler/internal/schedulerjobs"
 	"github.com/slava/scheduler/internal/textcut"
 )
 
@@ -949,59 +950,12 @@ func getBridgeSession(bridgeURL, sessionID string) (bridgeSession, error) {
 // so nothing else would carry it to the process.
 func registerSchedulerJob(schedURL, boardID string) error {
 	home, _ := os.UserHomeDir()
-	bin := filepath.Join(home, "bin", "kanban-dispatcher") + " -board-id " + boardID
-
-	resp, err := http.Get(schedURL + "/api/jobs")
-	if err != nil {
-		return fmt.Errorf("list jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	// The list is read to decide whether the job is ALREADY there, so a list
-	// that could not be read must stop the registration. Both of these used to
-	// be discarded: a scheduler answering 500, or answering anything that is not
-	// a JSON array, left `jobs` empty, which reads exactly like "not registered
-	// yet" — and the POST below then adds a second tick that double-dispatches
-	// every card. Ported from f119a711.
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("list jobs: scheduler returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var jobs []struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(body, &jobs); err != nil {
-		return fmt.Errorf("list jobs: %w", err)
-	}
-	for _, j := range jobs {
-		if j.Name == "kanban-dispatcher-tick" {
-			fmt.Println("kanban-dispatcher-tick already registered; no changes made")
-			return nil
-		}
-	}
-	payload := map[string]any{
-		"name":        "kanban-dispatcher-tick",
-		"description": "Picks Backlog sub-cards under scoped parents, reuses idle sibling sessions or spawns new ones, rolls up parents.",
-		"schedule":    "*/5 * * * *",
-		"type":        "shell",
-		"command":     bin,
-	}
-	data, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", schedURL+"/api/jobs", strings.NewReader(string(data)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("POST /api/jobs: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ = io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("scheduler returned %d: %s", resp.StatusCode, string(body))
-	}
-	fmt.Printf("registered kanban-dispatcher-tick: %s\n", strings.TrimSpace(string(body)))
-	return nil
+	return schedulerjobs.RegisterIfAbsent(schedURL, schedulerjobs.Job{
+		Name:        "kanban-dispatcher-tick",
+		Description: "Picks Backlog sub-cards under scoped parents, reuses idle sibling sessions or spawns new ones, rolls up parents.",
+		Schedule:    "*/5 * * * *",
+		Command:     filepath.Join(home, "bin", "kanban-dispatcher") + " -board-id " + boardID,
+	})
 }
 
 // ============================ misc ============================

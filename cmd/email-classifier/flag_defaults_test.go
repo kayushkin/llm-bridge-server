@@ -325,7 +325,7 @@ func TestTheRegisteredJobIsTheOneTheSchedulerCanActuallyRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
 	}
-	payload := schedulerJobPayload(cfg)
+	payload := schedulerJob(cfg).Payload()
 
 	for _, check := range []struct {
 		key  string
@@ -365,7 +365,7 @@ func TestAPinnedBoardIdReachesTheRegisteredCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
-	if got := schedulerJobPayload(cfg)["command"]; got != "/home/someone/bin/email-classifier -board-id board-42" {
+	if got := schedulerJob(cfg).Payload()["command"]; got != "/home/someone/bin/email-classifier -board-id board-42" {
 		t.Errorf("-board-id did not reach the registered command: %v", got)
 	}
 }

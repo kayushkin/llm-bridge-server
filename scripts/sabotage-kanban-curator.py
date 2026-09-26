@@ -286,6 +286,11 @@ CASES = [
     ),
 
     # ---- -register ----
+    # The registration mechanism itself (the duplicate check, the list-read
+    # guards, the refusal boundary, the routes and the job type) is shared
+    # with six other binaries since 2026-09-26 and scored once, in
+    # scripts/sabotage-schedulerjobs.py. The rows here pin this binary's own
+    # literals.
     Case(
         "the Agent runs board's job loses its original name",
         [('return "kanban-curator-tick"', 'return "kanban-curator-agent-runs-tick"')],
@@ -296,38 +301,11 @@ CASES = [
     ),
     Case(
         "the registered command loses -board-id, so the job cannot run at all",
-        [('command := bin + " -board-id " + board.ID', "command := bin")],
-    ),
-    Case(
-        "-register is no longer idempotent: a re-run registers a second job beside the first",
-        [("if j.Name == jobName {", "if j.Name == jobName && false {")],
+        [('Command:     bin + " -board-id " + board.ID,', "Command:     bin,")],
     ),
     Case(
         "the registered cron job runs on a different cadence than the curator is designed for",
-        [('"schedule":    "*/5 * * * *",', '"schedule":    "*/5 * * * 1",')],
-    ),
-    Case(
-        "the registered job is an agent job, not a shell job",
-        [('"type":        "shell",', '"type":        "agent",')],
-    ),
-    Case(
-        "a scheduler that refuses the job is reported as a successful registration",
-        [('return fmt.Errorf("scheduler returned %d: %s", resp.StatusCode, string(body))',
-          "return nil")],
-    ),
-    Case(
-        "300 stops being a refusal, so the one status on the boundary reads as success",
-        [("if resp.StatusCode >= 300 {", "if resp.StatusCode >= 301 {")],
-    ),
-    Case(
-        "a job list the scheduler could not serve is read as no jobs, so a re-run registers a second curator",
-        [("if resp.StatusCode != http.StatusOK {\n\t\treturn fmt.Errorf(\"list jobs: scheduler returned",
-          "if false {\n\t\treturn fmt.Errorf(\"list jobs: scheduler returned")],
-    ),
-    Case(
-        "a job list that does not decode is read as no jobs, so a re-run registers a second curator",
-        [("if err := json.Unmarshal(body, &jobs); err != nil {\n\t\treturn fmt.Errorf(\"list jobs: decode job list: %w\", err)",
-          "if err := json.Unmarshal(body, &jobs); err != nil && false {\n\t\treturn fmt.Errorf(\"list jobs: decode job list: %w\", err)")],
+        [('Schedule:    "*/5 * * * *",', 'Schedule:    "*/5 * * * 1",')],
     ),
     Case(
         "the job-name slug drops digits, so two boards can collapse onto one job",
