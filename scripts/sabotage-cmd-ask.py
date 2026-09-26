@@ -13,17 +13,21 @@ moved display-name shaping into its own functions. Dropped: the truncate and
 envOr cases (main has neither function; display_name_test.go pins the display
 name). Added: the reuse path's cases.
 
-Scope is runAsk, publishInbound, resolveInstance and buildPrompt. The display
-name and the --from guard have their own tests and no cases here yet.
+Scope is runAsk, publishInbound, resolveInstance and buildPrompt, and since
+2026-09-26 the display name (displayNameFromQuestion, displayNameFromTitle,
+resolveDisplayName and the shaping under them) and the --from guard
+(validateAgentName).
 
-Measured 2026-09-25 on main: plain score 43/43, both controls behaved, exit 0.
---crosstable exits 1, deliberately: 40 of 70 tests are reddened by no case,
-and they are exactly the tests in display_name_test.go and agent_name_test.go.
-Every test in relay_test.go (and TestBuildPrompt_Attribution…) is reddened by
-at least one case. The 40 are NOT declared `unreddened`: that argument is for a
-guard no single mutation can isolate, and these are simply functions this list
-has no cases for yet. Declaring them would turn a gap into a green run. Adding
-those cases is its own card.
+Measured 2026-09-25 on main 26178ce, before the display-name cases: plain score
+43/43, both controls behaved; --crosstable exited 1 with 40 of 70 tests reddened
+by no case — exactly the tests in display_name_test.go and agent_name_test.go.
+
+Measured 2026-09-26 after adding 33 cases for those functions: plain score
+76/76, both controls behaved. --crosstable left one test silent,
+TestWhitespaceSweep_CoversTheWholeClass, which calls nothing in main.go and is
+declared in UNREDDENED with that reason. Every other test is reddened by at
+least one case. Re-run the mode rather than trusting this paragraph; it is a
+record of a measurement, not the measurement.
 """
 
 import sys
@@ -253,8 +257,192 @@ CASES = [
          ("`, from)", "`)")],
     ),
 
+    # ---- the display name derived from a question ----
+    Case(
+        "the display-name bound drifts off sixty characters",
+        [("const displayNameRuneLimit = 60", "const displayNameRuneLimit = 61")],
+    ),
+    Case(
+        "the bound grows past any question a caller writes, so no fixture straddles it",
+        [("const displayNameRuneLimit = 60", "const displayNameRuneLimit = 1000")],
+    ),
+    Case(
+        # The constant stays 60 here, so only a test that measures the name can
+        # tell. Cutting at a huge limit rather than deleting the call keeps the
+        # textcut import in use.
+        "a derived name is never cut",
+        [("return textcut.TruncateToRuneLimit(shapeIntoOneLineOfText(question), displayNameRuneLimit)",
+          "return textcut.TruncateToRuneLimit(shapeIntoOneLineOfText(question), 1<<30)")],
+    ),
+    Case(
+        # The byte-count defect this test was written for lives in textcut, which
+        # is not a TARGET here. At this call site the nearest break is a cut that
+        # spends one character less than the bound, so a question of exactly 60
+        # characters comes back shortened.
+        "a derived name is cut one character short of the bound",
+        [("return textcut.TruncateToRuneLimit(shapeIntoOneLineOfText(question), displayNameRuneLimit)",
+          "return textcut.TruncateToRuneLimit(shapeIntoOneLineOfText(question), displayNameRuneLimit-1)")],
+    ),
+    Case(
+        "the cut runs before the shaping, so whitespace spends the reading budget",
+        [("return textcut.TruncateToRuneLimit(shapeIntoOneLineOfText(question), displayNameRuneLimit)",
+          "return shapeIntoOneLineOfText(textcut.TruncateToRuneLimit(question, displayNameRuneLimit))")],
+    ),
+    Case(
+        "a derived name is cut but never shaped",
+        [("return textcut.TruncateToRuneLimit(shapeIntoOneLineOfText(question), displayNameRuneLimit)",
+          "return textcut.TruncateToRuneLimit(question, displayNameRuneLimit)")],
+    ),
+
+    # ---- the display name stated with --title ----
+    Case(
+        "a --title is stored exactly as typed",
+        [("\treturn shapeIntoOneLineOfText(title)", "\treturn title")],
+    ),
+    Case(
+        "a --title is cut at the derived name's bound",
+        [("\treturn shapeIntoOneLineOfText(title)",
+          "\treturn textcut.TruncateToRuneLimit(shapeIntoOneLineOfText(title), displayNameRuneLimit)")],
+    ),
+
+    # ---- which name wins ----
+    Case(
+        "the choice is made on the raw title, so a title of only control characters wins",
+        [('if shaped := displayNameFromTitle(title); shaped != "" {',
+          'if shaped := displayNameFromTitle(title); title != "" {')],
+    ),
+    Case(
+        "a stated title loses to the question",
+        [("\t\treturn shaped, false", "\t\treturn displayNameFromQuestion(question), false")],
+    ),
+    Case(
+        "a good title is reported as holding no readable text",
+        [("\t\treturn shaped, false", "\t\treturn shaped, true")],
+    ),
+    Case(
+        "a title that shaped away to nothing is replaced without saying so",
+        [('return displayNameFromQuestion(question), title != ""',
+          "return displayNameFromQuestion(question), false")],
+    ),
+    Case(
+        "no title at all is reported as a rejected title",
+        [('return displayNameFromQuestion(question), title != ""',
+          "return displayNameFromQuestion(question), true")],
+    ),
+
+    # ---- the shaping every name gets ----
+    Case(
+        # The guard main used before non-text removal existed. unicode.IsSpace is
+        # false for every rune spaceOutNonText removes, so "\x00\x00" passes it.
+        "the blank guard goes back to TrimSpace and disagrees with the shaping",
+        [('return shapeIntoOneLineOfText(s) != ""', 'return strings.TrimSpace(s) != ""')],
+    ),
+    Case(
+        "the collapse runs before the removal, so a removed character widens a gap",
+        [("return collapseWhitespaceRuns(spaceOutNonText(s))",
+          "return spaceOutNonText(collapseWhitespaceRuns(s))")],
+    ),
+    Case(
+        "the shaping forgets to remove non-text characters",
+        [("return collapseWhitespaceRuns(spaceOutNonText(s))", "return collapseWhitespaceRuns(s)")],
+    ),
+    Case(
+        "a removed character is dropped, welding the words either side into one",
+        [("\t\tif isNonText(r) {\n\t\t\treturn ' '", "\t\tif isNonText(r) {\n\t\t\treturn -1")],
+    ),
+    Case(
+        "the bidi controls stop counting as non-text, so an override reorders the row",
+        [("return (unicode.IsControl(r) && !unicode.IsSpace(r)) || unicode.Is(unicode.Bidi_Control, r)",
+          "return unicode.IsControl(r) && !unicode.IsSpace(r)")],
+    ),
+    Case(
+        "the rule takes all of category Cf, so the join controls are torn out of text",
+        [("return (unicode.IsControl(r) && !unicode.IsSpace(r)) || unicode.Is(unicode.Bidi_Control, r)",
+          "return (unicode.IsControl(r) && !unicode.IsSpace(r)) || unicode.Is(unicode.Cf, r)")],
+    ),
+    Case(
+        "the whitespace controls are counted as non-text too",
+        [("return (unicode.IsControl(r) && !unicode.IsSpace(r)) || unicode.Is(unicode.Bidi_Control, r)",
+          "return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r)")],
+    ),
+    Case(
+        # What the code did before it split on unicode.IsSpace.
+        "only \\n is put on one line",
+        [('return strings.Join(strings.Fields(s), " ")',
+          'return strings.TrimSpace(strings.ReplaceAll(s, "\\n", " "))')],
+    ),
+    Case(
+        "each whitespace character becomes a space, but a run is not collapsed",
+        [('return strings.Join(strings.Fields(s), " ")',
+          "return strings.TrimSpace(strings.Map(func(r rune) rune {\n"
+          "\t\tif unicode.IsSpace(r) {\n\t\t\treturn ' '\n\t\t}\n\t\treturn r\n\t}, s))")],
+    ),
+    Case(
+        "the words are joined with no separator",
+        [('return strings.Join(strings.Fields(s), " ")', 'return strings.Join(strings.Fields(s), "")')],
+    ),
+    Case(
+        "leading whitespace survives as one space",
+        [('return strings.Join(strings.Fields(s), " ")',
+          'if s != "" && unicode.IsSpace([]rune(s)[0]) {\n'
+          '\t\treturn " " + strings.Join(strings.Fields(s), " ")\n\t}\n'
+          '\treturn strings.Join(strings.Fields(s), " ")')],
+    ),
+    Case(
+        "a repeated word is dropped",
+        [('return strings.Join(strings.Fields(s), " ")',
+          "seen := map[string]bool{}\n\tvar words []string\n"
+          "\tfor _, w := range strings.Fields(s) {\n"
+          "\t\tif !seen[w] {\n\t\t\tseen[w] = true\n\t\t\twords = append(words, w)\n\t\t}\n\t}\n"
+          '\treturn strings.Join(words, " ")')],
+    ),
+
+    # ---- the --from guard ----
+    Case(
+        "the no-readable-text refusal is skipped, so an empty --from is accepted",
+        [("\tif !hasReadableText(from) {\n\t\treturn fmt.Errorf(\"--from %q holds",
+          "\tif false {\n\t\treturn fmt.Errorf(\"--from %q holds")],
+    ),
+    Case(
+        "a --from that is not one line of text is accepted",
+        [("if shaped := shapeIntoOneLineOfText(from); shaped != from {",
+          "if shaped := shapeIntoOneLineOfText(from); false {")],
+    ),
+    Case(
+        "a --from padded with spaces is accepted, because the guard compares after trimming",
+        [("if shaped := shapeIntoOneLineOfText(from); shaped != from {",
+          "if shaped := shapeIntoOneLineOfText(from); shaped != strings.TrimSpace(from) {")],
+    ),
+    Case(
+        "every --from is refused, including the names real callers pass",
+        [("from, shaped)\n\t}\n\treturn nil", 'from, shaped)\n\t}\n\treturn fmt.Errorf("--from %q refused", from)')],
+    ),
+    Case(
+        "the rewrite refusal stops naming the --from flag",
+        [('return fmt.Errorf("--from %q is not one line of text', 'return fmt.Errorf("agent name %q is not one line of text')],
+    ),
+    Case(
+        "the rewrite refusal names the refused value where the rewrite belongs",
+        [("from, shaped)\n\t}\n\treturn nil", "from, from)\n\t}\n\treturn nil")],
+    ),
+    Case(
+        "the rewrite refusal writes the refused value raw to the terminal",
+        [('return fmt.Errorf("--from %q is not one line of text', 'return fmt.Errorf("--from %s is not one line of text')],
+    ),
+    Case(
+        "the no-readable-text refusal writes the refused value raw to the terminal",
+        [('return fmt.Errorf("--from %q holds no readable text', 'return fmt.Errorf("--from %s holds no readable text')],
+    ),
 ]
 
 
+# A test in this column asserts on something no edit to main.go can change.
+UNREDDENED = {
+    "TestWhitespaceSweep_CoversTheWholeClass":
+        "checks the test's own sweep of Go's unicode tables and calls nothing in main.go; "
+        "it guards the fixture every whitespace test uses, so only a change to Go can redden it",
+}
+
+
 if __name__ == "__main__":
-    sys.exit(score(TARGET, PACKAGES, CASES))
+    sys.exit(score(TARGET, PACKAGES, CASES, UNREDDENED))
