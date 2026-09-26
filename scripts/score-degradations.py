@@ -106,5 +106,6 @@ for name, verdict, detail in results:
 caught = sum(1 for _, v, _ in results if v == "CAUGHT")
 missed = sum(1 for _, v, _ in results if v == "MISSED")
 aborted = sum(1 for _, v, _ in results if v == "ABORTED")
-print(f"\nCAUGHT {caught}  MISSED {missed}  ABORTED {aborted}  of {len(results)} arms")
+print(f"\nscored in {REPO}")
+print(f"CAUGHT {caught}  MISSED {missed}  ABORTED {aborted}  of {len(results)} arms")
 sys.exit(0)

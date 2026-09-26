@@ -8,8 +8,9 @@ red — so nothing was measured). An ABORT scored as a catch is the guard defect
 card 03789f03 records, and it is reported separately here.
 
 The repository is resolved from this file's own location rather than named as a
-constant. score-degradations.py hardcodes one worktree path, so running it from
-any other checkout silently scores a different tree than the one being edited.
+constant, so the script scores the checkout it was run from and prints which
+one. A named worktree path would silently score a different tree than the one
+being edited (card cdb2e1fc).
 """
 import pathlib, subprocess, sys
 
