@@ -36,6 +36,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -447,8 +448,10 @@ func createSubcard(kc *kanbanclient.Client, columnID, title, body string, tags [
 		"parent_id": parentID,
 	}
 	bs, _ := json.Marshal(payload)
-	url := fmt.Sprintf("%s/api/boards/%s/cards", kc.BaseURL, kc.BoardID)
-	resp, err := kc.HTTP.Post(url, "application/json", bytes.NewReader(bs))
+	// PathEscape keeps the board id one path segment, as kanbanclient does for
+	// every board id it sends.
+	createCardURL := fmt.Sprintf("%s/api/boards/%s/cards", kc.BaseURL, url.PathEscape(kc.BoardID))
+	resp, err := kc.HTTP.Post(createCardURL, "application/json", bytes.NewReader(bs))
 	if err != nil {
 		return "", err
 	}
