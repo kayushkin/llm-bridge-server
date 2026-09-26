@@ -269,6 +269,18 @@ func TestElapsedFractionStaysInsideTheCurvesDomain(t *testing.T) {
 	if got := elapsedFraction(now-weekSeconds, now); got < 0 || got >= 1 {
 		t.Errorf("a reset already past must clamp into [0,1): got %v", got)
 	}
+	// And the clamp's VALUE, not only that it landed in range. 0.999 is the last
+	// fraction inside the curve's domain; anything lower quietly budgets the end
+	// of the week against an earlier day than it has reached.
+	if got := elapsedFraction(now-weekSeconds, now); got != 0.999 {
+		t.Errorf("a reset already past clamps to 0.999, got %v", got)
+	}
+	// A reset exactly now is the instant the window ends: elapsed is exactly one
+	// week. It is the only input that separates a clamp written >= from one
+	// written >, and the latter reads 1.0 — off the end of the anchor table.
+	if got := elapsedFraction(now, now); got != 0.999 {
+		t.Errorf("a reset exactly now is the end of the window and clamps to 0.999, got %v", got)
+	}
 }
 
 // The curve's opening is deliberately flat: the user asked for the first couple
@@ -280,6 +292,18 @@ func TestTheCurveStaysBlankForTheFirstTwoDays(t *testing.T) {
 			t.Errorf("day %.0f of 7 (frac %.3f): target %.0f%%, want 0%% — the curve's "+
 				"opening is flat on purpose", day, frac, got)
 		}
+	}
+
+	// Where the flat opening ENDS. Days 0–2 above all sit just under that anchor
+	// (2/7 is 0.2857), so they redden it if it slides down and cannot see it slide
+	// up — the flat stretch could swallow another day with every assertion above
+	// still green. This pair straddles it.
+	if got := interpolate(0.2855); got != 0 {
+		t.Errorf("frac 0.2855 is still inside the flat opening: target %.4f%%, want 0%%", got)
+	}
+	if got := interpolate(0.2865); got <= 0 {
+		t.Errorf("frac 0.2865 is past the end of the flat opening, so the curve has "+
+			"begun to ramp: target %.4f%%, want more than 0%%", got)
 	}
 }
 

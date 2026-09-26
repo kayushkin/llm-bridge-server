@@ -668,6 +668,184 @@ CASES = [
         [("\tif resp.StatusCode >= 300 {\n\t\treturn fmt.Errorf(\"scheduler returned %d: %s\", resp.StatusCode, string(body))",
           "\tif resp.StatusCode >= 300 && false {\n\t\treturn fmt.Errorf(\"scheduler returned %d: %s\", resp.StatusCode, string(body))")],
     ),
+
+    # -- three guards from b305c9de's cross-table: a fresh snapshot missing its
+    # -- window, or its resets_at, is a shortfall with its own cause; an empty
+    # -- queue is a quiet night, not an error.
+    Case(
+        "a window with no resets_at is scored anyway, dividing the curve by a zero anchor",
+        [("\tif win.ResetsAt == nil {\n\t\td.reason = \"weekly window has no resets_at — skip\"\n\t\td.shortfall = fmt.Sprintf(\"%s was never evaluated: its %q window has no resets_at, so the elapsed fraction is uncomputable\", p.Name, p.WindowKey)\n\t\treturn d\n\t}",
+           "\tif win.ResetsAt == nil {\n\t\tzero := int64(0)\n\t\twin.ResetsAt = &zero\n\t}")],
+    ),
+    Case(
+        "a snapshot with no seven-day window at all is scored on an empty one, so the report names the wrong reason and the operator chases the wrong bug",
+        [("\tif !ok || win == nil {\n\t\td.reason = fmt.Sprintf(\"weekly window %q not in snapshot — skip\", p.WindowKey)\n\t\td.shortfall = fmt.Sprintf(\"%s was never evaluated: its snapshot is fresh but carries no %q window\", p.Name, p.WindowKey)\n\t\treturn d\n\t}",
+           "\tif !ok || win == nil {\n\t\twin = &limitWindow{}\n\t}\n\t_ = ok")],
+    ),
+    Case(
+        "an empty queue is an error rather than a quiet night, so a tick with nothing to do reports a broken one",
+        [("\tif len(queued) == 0 {\n\t\tlog.Printf(\"queue: %q column empty\", autoworkerQueueColumnFrom)\n\t\treturn nil, nil\n\t}",
+           "\tif len(queued) == 0 {\n\t\treturn nil, fmt.Errorf(\"queue: %q column empty\", autoworkerQueueColumnFrom)\n\t}")],
+    ),
+
+    # ---- boundary VALUES ------------------------------------------------------
+    #
+    # Ported from df8f26f8 (branch test/autoworker-boundary-values-are-pinned).
+    # Its port and flag-default rows are not carried: those values now live in
+    # parseFlags and internal/config, and flag_defaults_test.go pins them.
+    #
+    # Every case above this line asks whether a MECHANISM is observed. None of
+    # them asks whether the NUMBER it compares against is the number anybody
+    # chose. The list scored 68/73 with both controls behaving and printed "every
+    # real mechanism is pinned" — truthfully — while 29 of the 36 literals below
+    # could each move one unit with the suite green.
+    #
+    # Rules these rows are written to, and they are not interchangeable:
+    #
+    #   - Move the literal by ONE unit. A far move (22h → 18h, >= 3 → >= 300)
+    #     proves the mechanism runs and pins the bound to a band, not a value.
+    #   - Where a value is read by an INEQUALITY, the fixture pair has to straddle
+    #     it by half a unit. A pair spaced a full unit apart catches the cut
+    #     narrowing and misses it widening, because the far fixture then sits
+    #     exactly ON the mutated boundary and the comparison's strictness decides
+    #     it. Measured here: 14m/16m around a 15-minute cooldown scored UNNOTICED
+    #     for 15m → 16m; 14m30s/15m30s catches both directions.
+    #   - Where a value is QUOTED IN FULL by an equality (the curve's anchors), one row is enough: an adjacent move and a far move
+    #     redden the same assertion, so a second direction scores one line twice.
+    #
+    # Expect insurance, not bugs. Every hole below was a correct value that
+    # nothing was holding in place; cmd/autoworker/main.go and spend.go are
+    # unchanged. This is not a defect count.
+
+    # -- the shipped provider table. Every gate test in fire_test.go builds its
+    # -- own providerSpec, on purpose, so that some other gate cannot decide the
+    # -- outcome. Nothing read the two specs the binary actually runs on.
+    Case(
+        "anthropic's catch-up window loses its last minute, so the hour before the reset is shut",
+        [("SafeEnd:      24 * 60, // 24:00 PT", "SafeEnd:      24*60 - 1, // 24:00 PT")],
+    ),
+    Case(
+        "codex's overnight window runs a minute into the working day",
+        [("SafeEnd:      6 * 60, // 06:00 PT", "SafeEnd:      6*60 + 1, // 06:00 PT")],
+    ),
+    Case(
+        "codex's overnight window closes a minute early",
+        [("SafeEnd:      6 * 60, // 06:00 PT", "SafeEnd:      6*60 - 1, // 06:00 PT")],
+    ),
+    # Both directions kept for the cooldowns: narrowing one is the direction that
+    # costs money, since the cooldown is the only thing between an under-used week
+    # and a stream of sessions.
+    Case(
+        "anthropic's cooldown widens, so a week that should catch up dispatches less often",
+        [("Cooldown:     15 * time.Minute,", "Cooldown:     16 * time.Minute,")],
+    ),
+    Case(
+        "anthropic's cooldown narrows, so sessions come closer together than the design allows",
+        [("Cooldown:     15 * time.Minute,", "Cooldown:     14 * time.Minute,")],
+    ),
+    Case(
+        "codex's cooldown widens past the two hours it was given",
+        [("Cooldown:     2 * time.Hour,", "Cooldown:     2*time.Hour + time.Minute,")],
+    ),
+    Case(
+        "codex's cooldown narrows, so the overnight window fits an extra session",
+        [("Cooldown:     2 * time.Hour,", "Cooldown:     2*time.Hour - time.Minute,")],
+    ),
+
+    # -- the target curve. The four existing curve tests assert that it starts
+    # -- flat, rises, interpolates rather than snapping, and clamps at both ends.
+    # -- All four hold with every percentage on it moved a point.
+    Case(
+        "the curve's flat opening swallows another day, so the week starts budgeting late",
+        [("{0.286, 0},", "{0.287, 0},")],
+    ),
+    Case(
+        "the curve's flat opening ends early, so an untouched week is already behind",
+        [("{0.286, 0},", "{0.285, 0},")],
+    ),
+    Case(
+        "the day-3 anchor asks for a point more budget than it was given",
+        [("{0.429, 25},", "{0.429, 26},")],
+    ),
+    Case(
+        "the day-3 anchor moves later in the week",
+        [("{0.429, 25},", "{0.430, 25},")],
+    ),
+    Case(
+        "the day-4 anchor asks for a point more budget than it was given",
+        [("{0.571, 50},", "{0.571, 51},")],
+    ),
+    Case(
+        "the day-5 anchor asks for a point more budget than it was given",
+        [("{0.714, 70},", "{0.714, 71},")],
+    ),
+    Case(
+        "the day-6 anchor asks for a point more budget than it was given",
+        [("{0.857, 85},", "{0.857, 86},")],
+    ),
+
+    # -- elapsedFraction's clamp, which keeps the curve's domain closed
+    Case(
+        "the clamp lands short of the curve's last fraction, so the reset reads as an earlier day",
+        [("return 0.999", "return 0.998")],
+    ),
+    Case(
+        "the clamp stops applying at the instant the window ends, so the fraction reads 1.0",
+        [("if elapsed >= weekSec {", "if elapsed > weekSec {")],
+    ),
+
+    # -- the fire gate
+    Case(
+        "usage level with the band edge fires, so the quietest possible week dispatches",
+        [("if d.actual >= d.target-slackPP {", "if d.actual > d.target-slackPP {")],
+    ),
+
+    # -- the money. Both of these hand the harness a cap of 0, which
+    # -- llm-bridge-claudecode omits from the command line and the CLI reads as
+    # -- UNLIMITED: the tightest imaginable ceiling and no ceiling are one wire
+    # -- value. The existing spent-out fixture overshoots its ceiling by a dollar,
+    # -- so it never reached the input that separates "spent" from "exactly spent".
+    Case(
+        "a card that has spent EXACTLY its ceiling is dispatched, at a cap of 0, which means uncapped",
+        [("\tif remaining <= 0 {", "\tif remaining < 0 {")],
+    ),
+    Case(
+        "an unarmed fleet default reports itself as an armed one, so an uncapped session reads as capped",
+        [("\tif fleetDefaultUSD > 0 {", "\tif fleetDefaultUSD >= 0 {")],
+    ),
+
+    # -- the dispatched card's landing position, which the recorder captured all
+    # -- along and no assertion read
+    Case(
+        "a dispatched card lands somewhere other than the head of In Progress",
+        [("qc.MoveCard(cand.cardID, qc.BoardID, inProgressID, 0)",
+          "qc.MoveCard(cand.cardID, qc.BoardID, inProgressID, 1)")],
+    ),
+
+    # -- the fire path's announcement of the cap. The C3 branch declared this row
+    # -- unreachable because the line sat inside main()'s tick loop; main has since
+    # -- become run(cfg, publish), and TestTheFirePathAnnouncesAnUncappedSessionAsUncapped
+    # -- reaches it.
+    Case(
+        "the fire path logs an uncapped session as a capped one",
+        [("\t\tif maxBudgetUSD > 0 {", "\t\tif maxBudgetUSD >= 0 {")],
+    ),
+
+    # -- declared: values this suite genuinely cannot see
+    Case(
+        "the noteboard read's timeout drifts by a second",
+        [("http.Client{Timeout: 30 * time.Second}", "http.Client{Timeout: 31 * time.Second}")],
+        expected_unnoticed="an httptest server answers in microseconds, so no fixture can tell "
+                           "a 30-second client timeout from a 31-second one. A fixture that "
+                           "could would have to sleep for thirty seconds, trading a real "
+                           "half-minute of suite time for a bound that only matters when "
+                           "noteboard hangs. Falsified by a fake clock on the http client",
+    ),
+    Case(
+        "the bridge read's timeout drifts by a second",
+        [("http.Client{Timeout: 15 * time.Second}", "http.Client{Timeout: 16 * time.Second}")],
+        expected_unnoticed="the same reason as the noteboard timeout above",
+    ),
 ]
 
 

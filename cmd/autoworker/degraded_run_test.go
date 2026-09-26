@@ -46,6 +46,12 @@ func TestAWindowMissingFromAFreshSnapshotIsAShortfall(t *testing.T) {
 	if !strings.Contains(line, "anthropic") || !strings.Contains(line, "seven_day") {
 		t.Errorf("the report does not name the provider and the window it wanted: %s", line)
 	}
+	// The window's own absence is the cause, not a missing resets_at inside it.
+	// Scoring an empty stand-in window falls through to the resets_at check, whose
+	// report also names the provider and the window, so only this tells them apart.
+	if strings.Contains(line, "resets_at") {
+		t.Errorf("the report blames a missing resets_at on a snapshot with no window at all: %s", line)
+	}
 }
 
 // TestAWindowWithNoResetsAtIsAShortfall — the elapsed fraction is computed from

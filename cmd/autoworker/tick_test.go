@@ -203,6 +203,13 @@ func TestADispatchedCardLeavesTheQueue(t *testing.T) {
 	if len(d.moves) != 1 {
 		t.Fatalf("made %d moves, want exactly 1: %v", len(d.moves), d.moves)
 	}
+	// The position the card lands at, which the recorder has always captured and
+	// nothing has ever read. 0 is the head of the column: a dispatched card is the
+	// most recent thing that happened and the operator should see it first.
+	if got := d.moves[0]["position"]; got != float64(0) {
+		t.Errorf("moved to position %v, want 0 — a dispatched card goes to the head of "+
+			"In Progress, not wherever the payload happened to say", got)
+	}
 	if got := d.moves[0]["column_id"]; got != "col-wip" {
 		t.Errorf("moved to column %v, want col-wip — In Progress is the only column "+
 			"selection does not read from", got)
