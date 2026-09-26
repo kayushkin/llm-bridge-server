@@ -67,7 +67,7 @@ func TestThePromptCarriesTheSubTaskAndTellsTheWorkerToCloseItsOwnCard(t *testing
 	child := testCard("child-7")
 	child.Item["body"] = "Fix the flaky test in foo_test.go."
 
-	prompt := buildPrompt(parent, child, "a", "")
+	prompt := buildPrompt(parent, child, groupOf("goal-1", child), "")
 	if !strings.Contains(prompt, "Fix the flaky test in foo_test.go.") {
 		t.Errorf("the prompt must carry the card's body — it is the task:\n%s", prompt)
 	}
@@ -81,7 +81,7 @@ func TestThePromptCarriesTheSubTaskAndTellsTheWorkerToCloseItsOwnCard(t *testing
 		t.Errorf("a fresh session must be introduced to the workflow:\n%s", prompt)
 	}
 
-	revived := buildPrompt(parent, child, "a", "sess-sibling")
+	revived := buildPrompt(parent, child, groupOf("goal-1", child), "sess-sibling")
 	if !strings.Contains(revived, "you already have context from a sibling task") {
 		t.Errorf("a revived session must be told its context comes from a sibling:\n%s", revived)
 	}
@@ -89,7 +89,7 @@ func TestThePromptCarriesTheSubTaskAndTellsTheWorkerToCloseItsOwnCard(t *testing
 
 func TestABodylessCardSaysSoInsteadOfLeavingABlank(t *testing.T) {
 	child := testCard("child-7")
-	prompt := buildPrompt(scopedParent{cardID: "goal-1"}, child, "a", "")
+	prompt := buildPrompt(scopedParent{cardID: "goal-1"}, child, groupOf("goal-1", child), "")
 	if !strings.Contains(prompt, "(no body — see title)") {
 		t.Errorf("a card with no body must say so where the task goes:\n%s", prompt)
 	}
@@ -128,21 +128,32 @@ func TestAnUntitledCardIsNamedByItsID(t *testing.T) {
 const longParentID = "0f8e2a1c-4b5d-4e6f-8a9b-0c1d2e3f4a5b"
 
 func TestAMintedSessionIDNamesItsParentAndGroup(t *testing.T) {
-	id := mintSessionID(longParentID, "api work")
+	id := mintSessionID(longParentID, groupOf(longParentID, testCard("child-7", "group:api work")))
 	if !regexp.MustCompile(`^tcl-0f8e2a1c-api-work-\d+$`).MatchString(id) {
 		t.Errorf("minted %q, want tcl-<first 8 of the parent>-<group, spaces as dashes>-<nanoseconds>", id)
 	}
 }
 
-func TestAnUngroupedCardMintsTheDefaultGroup(t *testing.T) {
-	id := mintSessionID(longParentID, "")
-	if !regexp.MustCompile(`^tcl-0f8e2a1c-default-\d+$`).MatchString(id) {
-		t.Errorf("minted %q, want the group segment to read default rather than be empty", id)
+// An ungrouped card is a group of its own, and its session id says so rather
+// than naming a shared "default" group every ungrouped card would read as.
+func TestAnUngroupedCardMintsItsOwnIDAsTheGroup(t *testing.T) {
+	id := mintSessionID(longParentID, groupOf(longParentID, testCard("9a8b7c6d-1111-2222-3333-444455556666")))
+	if !regexp.MustCompile(`^tcl-0f8e2a1c-ungrouped-9a8b7c6d-\d+$`).MatchString(id) {
+		t.Errorf("minted %q, want the group segment to read ungrouped-<first 8 of the card id>", id)
+	}
+}
+
+// A display key can carry a colon or a space, and neither belongs in a session
+// id; each run of them becomes one dash.
+func TestASessionIDCarriesNoColonOrSpace(t *testing.T) {
+	id := mintSessionID("p1", groupOf("p1", testCard("child-7", "group:api: v2")))
+	if !regexp.MustCompile(`^tcl-p1-api-v2-\d+$`).MatchString(id) {
+		t.Errorf("minted %q, want the colon and space in the group collapsed to one dash", id)
 	}
 }
 
 func TestAShortParentIDIsMintedWhole(t *testing.T) {
-	id := mintSessionID("p1", "a")
+	id := mintSessionID("p1", groupOf("p1", testCard("child-7", "group:a")))
 	if !regexp.MustCompile(`^tcl-p1-a-\d+$`).MatchString(id) {
 		t.Errorf("minted %q from a 2-byte parent id", id)
 	}
@@ -162,7 +173,7 @@ func TestShortIDKeepsEightBytes(t *testing.T) {
 	}
 	// Ported from e74e77b8, at the call site whose result leaves the process: a
 	// four-byte rune across byte 8 is dropped whole, not split.
-	if got := mintSessionID("abcde\U0001D11Exyz", "a"); !strings.HasPrefix(got, "tcl-abcde-a-") {
+	if got := mintSessionID("abcde\U0001D11Exyz", groupOf("p1", testCard("child-7", "group:a"))); !strings.HasPrefix(got, "tcl-abcde-a-") {
 		t.Errorf("mintSessionID = %+q, want the parent cut back to %q before the rune", got, "abcde")
 	}
 }
@@ -174,8 +185,10 @@ func TestATagThatIsNotAStringDoesNotHideTheTagsAfterIt(t *testing.T) {
 	if strings.Join(got, ",") != "cat:x,group:a" {
 		t.Errorf("stringSlice = %v, want the two strings either side of the number", got)
 	}
-	if groupKey(map[string]any{"tags": []any{nil, "group:a"}}) != "a" {
-		t.Error("a card whose first tag is not a string must still find its group")
+	card := testCard("child-7")
+	card.Item["tags"] = []any{nil, "group:a"}
+	if key, substituted := contextGroupKey(card); key != "tag:a" || substituted {
+		t.Errorf("contextGroupKey = %q/%v, want tag:a/false — a card whose first tag is not a string must still find its group", key, substituted)
 	}
 }
 
@@ -190,7 +203,7 @@ func TestTheScopedTagMatchesWhole(t *testing.T) {
 }
 
 func TestTheGroupTagPrefixIsGroupColon(t *testing.T) {
-	if got := groupKey(map[string]any{"tags": []any{"cat:x", "group:api"}}); got != "api" {
-		t.Errorf("groupKey = %q, want api", got)
+	if key, _ := contextGroupKey(testCard("child-7", "cat:x", "group:api")); key != "tag:api" {
+		t.Errorf("contextGroupKey = %q, want tag:api", key)
 	}
 }

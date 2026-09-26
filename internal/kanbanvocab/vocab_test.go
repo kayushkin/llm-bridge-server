@@ -153,7 +153,8 @@ func TestColumnSetsReturnFreshSlices(t *testing.T) {
 // TestGroupTagRoundTrip is the scoper -> kanban-store -> dispatcher path for the
 // grouping tag, which is the single most drift-sensitive string in the package.
 // The construction below mirrors kanban-scoper and the parse mirrors
-// kanban-dispatcher's groupKeyOf.
+// kanban-dispatcher's contextGroupKey (less its namespacing and its
+// substitution for a card with no group tag).
 func TestGroupTagRoundTrip(t *testing.T) {
 	parse := func(tags []string) string {
 		for _, tag := range tags {

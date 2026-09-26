@@ -158,7 +158,7 @@ func TestGroupSiblingsAreTheParentsCardsInTheSameGroupOnly(t *testing.T) {
 	}
 	server := httptest.NewServer(kanban)
 	defer server.Close()
-	got := groupSiblings(kanbanclient.New(server.URL, ""), &kanban.view, "parent", "a", degradations.New("dispatcher"))
+	got := groupSiblings(kanbanclient.New(server.URL, ""), &kanban.view, groupOf("parent", testCard("card-next", "group:a")), degradations.New("dispatcher"))
 	var ids []string
 	for _, c := range got {
 		ids = append(ids, c.Placement.CardID)

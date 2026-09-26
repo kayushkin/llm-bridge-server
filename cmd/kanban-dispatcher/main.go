@@ -10,7 +10,9 @@
 //	  1. Walk the board.
 //	  2. For each parent in Goals (with the "scoped" entity_tag):
 //	     a. Find Backlog children for that parent (no session link yet).
-//	     b. Group them by their group:<key> tag.
+//	     b. Group them by their group:<key> tag, substituting the card's own id
+//	        when it carries none, so an ungrouped child is a group of one and
+//	        never shares a session (see contextGroupKey).
 //	     c. For each group, pick the first eligible child:
 //	        - Ask kanban-store for the child's effective defaults: the board's
 //	          tag rules matched against the child's tags, falling through to
@@ -48,6 +50,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -84,6 +87,25 @@ const (
 	linkTypeSession    = kanbanvocab.LinkTypeSession
 	reviveWindow       = time.Hour
 	maxDispatchPerTick = 3
+
+	// A context group key (see contextGroupKey) comes from one of two sources,
+	// and each carries the namespace of its source. A substituted key is built
+	// from a card id, and card ids are caller-supplied strings — so without
+	// namespaces a card hand-tagged "group:card-a" would produce the same key
+	// as the substitution for the card whose id is "card-a", and the two would
+	// share a session. Prefixing both sides means no tag value can ever land in
+	// the substituted space, whatever the tag says.
+	//
+	// These are dispatcher-internal identity machinery, not wire vocabulary:
+	// they are never sent to kanban-store and never parsed back off a card, so
+	// they stay here rather than in internal/kanbanvocab.
+	contextKeyNamespaceTag  = "tag:"
+	contextKeyNamespaceCard = "card:"
+	// ungroupedDisplayPrefix labels a substituted key in output — log lines,
+	// the session display name — so a reader can tell it from a key the scoper
+	// chose. It is a display form, never an identity; do not compare keys with
+	// it.
+	ungroupedDisplayPrefix = "ungrouped:"
 )
 
 func main() {
@@ -402,7 +424,7 @@ func (d *backlogDispatcher) dispatchBacklog(parents []scopedParent) (dispatched 
 			childID := child.Placement.CardID
 			notDispatched := func(reason error) {
 				log.Printf("[%s] NOT DISPATCHED card %s %q group=%s: %v — it stays where it is and the rest of its group waits behind it",
-					p.title(), childID, childTitle(child), g.key, reason)
+					p.title(), childID, childTitle(child), g.displayKey(), reason)
 				undispatched = append(undispatched, undispatchedCard{CardID: childID, Title: childTitle(child), Reason: reason})
 			}
 
@@ -414,13 +436,17 @@ func (d *backlogDispatcher) dispatchBacklog(parents []scopedParent) (dispatched 
 			reusedSessionID := reusableSiblingSession(d.kanban, d.bridgeURL, d.view, g, spec, d.degraded)
 			sessionID := reusedSessionID
 			if sessionID == "" {
-				sessionID = mintSessionID(p.cardID, g.key)
+				sessionID = mintSessionID(p.cardID, g)
 			}
-			prompt := buildPrompt(p, child, g.key, reusedSessionID)
-			displayName := fmt.Sprintf("tcl %s · %s", g.key, time.Now().Format("Jan 2 15:04"))
+			prompt := buildPrompt(p, child, g, reusedSessionID)
+			displayName := fmt.Sprintf("tcl %s · %s", g.displayKey(), time.Now().Format("Jan 2 15:04"))
 
-			log.Printf("[%s] dispatching %q card=%s group=%s reuse=%v session=%s %s",
-				p.title(), childTitle(child), childID, g.key, reusedSessionID != "", sessionID, spec.describe())
+			groupNote := ""
+			if g.keyWasSubstituted {
+				groupNote = " (ungrouped — its own group of one)"
+			}
+			log.Printf("[%s] dispatching %q card=%s group=%s%s reuse=%v session=%s %s",
+				p.title(), childTitle(child), childID, g.displayKey(), groupNote, reusedSessionID != "", sessionID, spec.describe())
 			if d.dryRun {
 				dispatched++
 				continue
@@ -499,13 +525,28 @@ func scopedParents(view *kanbanclient.BoardView, kc *kanbanclient.Client, degrad
 type backlogGroup struct {
 	parentID string
 	key      string
-	cards    []kanbanclient.CardView // sorted by placement position
+	// keyWasSubstituted means key is the leading card's own id rather than a
+	// group: tag the scoper wrote — see contextGroupKey. Such a group always
+	// holds exactly one card and can never match a sibling.
+	keyWasSubstituted bool
+	cards             []kanbanclient.CardView // sorted by placement position
+}
+
+// displayKey renders the group key for people: log lines, the session display
+// name, and the prompt handed to the worker. It strips the identity namespace,
+// which is machinery rather than something a reader needs, and marks a
+// substituted key so it does not read as a group the scoper chose.
+func (g backlogGroup) displayKey() string {
+	if g.keyWasSubstituted {
+		return ungroupedDisplayPrefix + shortID(strings.TrimPrefix(g.key, contextKeyNamespaceCard))
+	}
+	return strings.TrimPrefix(g.key, contextKeyNamespaceTag)
 }
 
 // backlogGroups returns groups of Backlog children for a given parent.
 // A child counts as "in this parent" when it has a card_link with
-// entity_type=parent_card pointing to parent_id. Group key comes from a
-// "group:<key>" tag; missing group → key "".
+// entity_type=parent_card pointing to parent_id. The group key comes from
+// contextGroupKey, so a child with no group: tag is a group of its own.
 func backlogGroups(kc *kanbanclient.Client, view *kanbanclient.BoardView, parentID string, degraded *degradations.Recorder) []backlogGroup {
 	var backlogCards []kanbanclient.CardView
 	for _, cv := range view.Columns {
@@ -515,6 +556,7 @@ func backlogGroups(kc *kanbanclient.Client, view *kanbanclient.BoardView, parent
 		}
 	}
 	byKey := map[string][]kanbanclient.CardView{}
+	substitutedKeys := map[string]bool{}
 	// List the cards linked to this parent_card entity, then intersect with
 	// Backlog placements in the view.
 	parentChildren := map[string]bool{}
@@ -532,17 +574,29 @@ func backlogGroups(kc *kanbanclient.Client, view *kanbanclient.BoardView, parent
 		if c.Item == nil || !parentChildren[c.Placement.CardID] {
 			continue
 		}
-		key := groupKey(c.Item)
+		key, substituted := contextGroupKey(c)
 		byKey[key] = append(byKey[key], c)
+		substitutedKeys[key] = substituted
 	}
 	var out []backlogGroup
 	for k, cards := range byKey {
 		sort.Slice(cards, func(i, j int) bool {
 			return cards[i].Placement.Position < cards[j].Placement.Position
 		})
-		out = append(out, backlogGroup{parentID: parentID, key: k, cards: cards})
+		out = append(out, backlogGroup{parentID: parentID, key: k, keyWasSubstituted: substitutedKeys[k], cards: cards})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].key < out[j].key })
+	// Order groups by where their leading card sits on the board, so the
+	// scoper's sub-task order survives. Ordering by key was tolerable while
+	// every ungrouped child shared one key; now that each carries a key built
+	// from its uuid, it would dispatch ungrouped sub-tasks in uuid order. Key
+	// breaks position ties so the order is total.
+	sort.Slice(out, func(i, j int) bool {
+		leftPosition, rightPosition := out[i].cards[0].Placement.Position, out[j].cards[0].Placement.Position
+		if leftPosition != rightPosition {
+			return leftPosition < rightPosition
+		}
+		return out[i].key < out[j].key
+	})
 	return out
 }
 
@@ -560,13 +614,38 @@ func listChildCardIDs(kc *kanbanclient.Client, parentID string) ([]string, error
 	return out, nil
 }
 
-func groupKey(item map[string]any) string {
-	for _, t := range stringSlice(item["tags"]) {
-		if strings.HasPrefix(t, tagGroupPrefix) {
-			return strings.TrimPrefix(t, tagGroupPrefix)
+// contextGroupKey returns the identity that decides which sub-tasks may share
+// one bridge session: cards with equal keys are grouped together and may reuse
+// each other's session, cards with different keys may not.
+//
+// A card carrying a non-empty group:<key> tag keys on that key. A card without
+// one keys on its own card id, because the absence of a group is not a group —
+// an ungrouped sub-task shares context with nobody. Each key carries the
+// namespace of where it came from, so the two spaces cannot collide.
+//
+// It used to return the empty string for an ungrouped card, and that value was
+// an identity in two places, so every ungrouped child of one parent formed a
+// single group: reusableSiblingSession handed card B the live session minted
+// for unrelated card A, and the one-card-per-group-per-tick rule made N
+// ungrouped children wait N-1 ticks. Neither is what group_key means; the
+// scoper's own tool schema calls it "context grouping".
+//
+// substituted reports whether the card id stood in for a missing tag, so
+// callers can name the substitution in their output instead of presenting it
+// as a key the scoper chose.
+func contextGroupKey(c kanbanclient.CardView) (key string, substituted bool) {
+	for _, t := range stringSlice(c.Item["tags"]) {
+		if !strings.HasPrefix(t, tagGroupPrefix) {
+			continue
+		}
+		// A bare "group:" tag names no group. The scoper will not write one,
+		// but a hand-made Backlog card can carry anything, and treating it as
+		// a key would bring back the empty-string collapse described above.
+		if k := strings.TrimPrefix(t, tagGroupPrefix); k != "" {
+			return contextKeyNamespaceTag + k, false
 		}
 	}
-	return ""
+	return contextKeyNamespaceCard + c.Placement.CardID, true
 }
 
 // ============================ Revive decision ============================
@@ -591,7 +670,7 @@ func groupKey(item map[string]any) string {
 // working, and is not.
 func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kanbanclient.BoardView, g backlogGroup, spec cardSessionSpec, degraded *degradations.Recorder) string {
 	candidateID := g.cards[0].Placement.CardID
-	siblings := groupSiblings(kc, view, g.parentID, g.key, degraded)
+	siblings := groupSiblings(kc, view, g, degraded)
 	now := time.Now()
 	for _, sibling := range siblings {
 		// Skip the candidate itself (still in Backlog with no link yet).
@@ -602,7 +681,7 @@ func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kan
 		if err != nil {
 			log.Printf("[reuse] card %s: sibling %s links unreadable, not reusing its session: %v", candidateID, sibling.Placement.CardID, err)
 			degraded.Record("goal %s group %q: sibling card %s could not be read for an idle session to revive (%v), so card %s may pay for a fresh session it did not need",
-				g.parentID, g.key, sibling.Placement.CardID, err, candidateID)
+				g.parentID, g.displayKey(), sibling.Placement.CardID, err, candidateID)
 			continue
 		}
 		var sid string
@@ -623,7 +702,7 @@ func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kan
 		if err != nil {
 			log.Printf("[reuse] card %s: sibling session %s unreadable, not reusing it: %v", candidateID, sid, err)
 			degraded.Record("goal %s group %q: the state of sibling session %s could not be read (%v), so card %s may pay for a fresh session it did not need",
-				g.parentID, g.key, sid, err, candidateID)
+				g.parentID, g.displayKey(), sid, err, candidateID)
 			continue
 		}
 		if session.State != "idle" {
@@ -656,15 +735,17 @@ func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kan
 }
 
 // groupSiblings returns ALL cards on the board that share the parent_card
-// link and the same group:<key> tag — across every column, so we can find a
-// freshly-completed sibling whose session is still idle.
-func groupSiblings(kc *kanbanclient.Client, view *kanbanclient.BoardView, parentID, key string, degraded *degradations.Recorder) []kanbanclient.CardView {
+// link and the group's context key — across every column, so we can find a
+// freshly-completed sibling whose session is still idle. An ungrouped card's
+// key is its own id, so its only sibling is itself.
+func groupSiblings(kc *kanbanclient.Client, view *kanbanclient.BoardView, g backlogGroup, degraded *degradations.Recorder) []kanbanclient.CardView {
+	parentID := g.parentID
 	parentChildren := map[string]bool{}
 	childIDs, err := listChildCardIDs(kc, parentID)
 	if err != nil {
 		log.Printf("[%s] list children for reuse: %v — no sibling session will be reused", parentID, err)
 		degraded.Record("goal %s group %q: its sibling cards could not be listed (%v), so no idle session could be found to revive and the group pays for a fresh one",
-			parentID, key, err)
+			parentID, g.displayKey(), err)
 		return nil
 	}
 	for _, id := range childIDs {
@@ -679,7 +760,11 @@ func groupSiblings(kc *kanbanclient.Client, view *kanbanclient.BoardView, parent
 			if c.Item == nil {
 				continue
 			}
-			if groupKey(c.Item) != key {
+			// Derive the sibling's key through contextGroupKey rather than
+			// reading the group: tag directly. Keys are namespaced, so a raw
+			// tag value would never equal the group's key and reuse inside a
+			// real group would silently stop.
+			if siblingKey, _ := contextGroupKey(c); siblingKey != g.key {
 				continue
 			}
 			out = append(out, c)
@@ -690,14 +775,17 @@ func groupSiblings(kc *kanbanclient.Client, view *kanbanclient.BoardView, parent
 
 // ============================ Bridge inbound ============================
 
-func mintSessionID(parentID, groupKey string) string {
+func mintSessionID(parentID string, g backlogGroup) string {
 	now := time.Now().UTC().UnixNano()
-	safeGroup := strings.ReplaceAll(groupKey, " ", "-")
-	if safeGroup == "" {
-		safeGroup = "default"
-	}
+	safeGroup := sessionLabelUnsafe.ReplaceAllString(g.displayKey(), "-")
 	return fmt.Sprintf("tcl-%s-%s-%d", shortID(parentID), safeGroup, now)
 }
+
+// sessionLabelUnsafe matches every run of characters that must not appear in a
+// session id. What reaches here is a display key, which is either a
+// scoper-written tag value or displayKey's "ungrouped:<short card id>", so it
+// can hold spaces and colons.
+var sessionLabelUnsafe = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 
 // shortID returns at most the first 8 bytes of an id, cut on a rune boundary;
 // useful for human-readable session keys without collision risk at this scale.
@@ -811,7 +899,7 @@ func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec 
 	return in
 }
 
-func buildPrompt(p scopedParent, child kanbanclient.CardView, group string, reusedSessionID string) string {
+func buildPrompt(p scopedParent, child kanbanclient.CardView, g backlogGroup, reusedSessionID string) string {
 	childID := child.Placement.CardID
 	title := childTitle(child)
 	body, _ := child.Item["body"].(string)
@@ -821,6 +909,13 @@ func buildPrompt(p scopedParent, child kanbanclient.CardView, group string, reus
 	header := "You are picking up a sub-task in the **task-completion-loop** workflow."
 	if reusedSessionID != "" {
 		header = "Picking up another sub-task in the same group — you already have context from a sibling task in this session."
+	}
+	// Name the substitution rather than printing a key the scoper never wrote.
+	// A worker told "Group: ungrouped:2f1ab3c4" could reasonably read it as a
+	// group it might share with someone.
+	group := g.displayKey()
+	if g.keyWasSubstituted {
+		group = "none — this sub-task was not grouped with any sibling, so this session is yours alone"
 	}
 	return fmt.Sprintf(`%s
 
