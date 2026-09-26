@@ -313,9 +313,9 @@ func TestValidateRefusesTheConfigurationsThatClassifyNothingForever(t *testing.T
 
 // TestTheRegisteredJobMatchesTheOneThatRuns pins the payload -register writes.
 //
-// This string is written exactly once per host, by hand, and the scheduler
-// binary serving :8092 drops `command` on PATCH — so a wrong value here cannot
-// be corrected through the API afterwards. Every field below was compared
+// This payload is written once per host, and -register never rewrites an
+// existing job, so a wrong value here stays until someone PATCHes the live job
+// by hand. Every field below was compared
 // against scheduler job 14 as it actually runs on this host, not inferred from
 // this source.
 func TestTheRegisteredJobMatchesTheOneThatRuns(t *testing.T) {

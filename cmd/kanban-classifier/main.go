@@ -108,9 +108,9 @@ const (
 	// character budget, so a longer transcript was downloaded and thrown away.
 	digestTurns = 15
 
-	// The scheduler job -register creates. These are written exactly once per
-	// host, by hand, and the scheduler binary serving :8092 drops `command` on
-	// PATCH — so a wrong one here has no second chance through the API.
+	// The scheduler job -register creates. -register posts it only when no job
+	// of this name exists and never rewrites one, so a wrong value here stays
+	// until someone PATCHes the live job by hand.
 	schedulerJobName     = "kanban-classifier-tick"
 	schedulerJobSchedule = "*/15 * * * *"
 	// A tick walks every candidate session, fetches its messages from
@@ -1652,8 +1652,8 @@ func classify(ctx context.Context, cfg config, digest string) (*Report, error) {
 // schedulerJob is the job -register creates.
 //
 // A function rather than a literal inside the POST because this payload is the
-// whole point of -register: it is written once per host and the scheduler API
-// drops `command` on PATCH, so there is no correcting it later through the API.
+// whole point of -register: it is written once per host and -register never
+// rewrites an existing job, so a mistake here needs a hand PATCH to fix.
 func schedulerJob(cfg config) schedulerjobs.Job {
 	return schedulerjobs.Job{
 		Name:        schedulerJobName,
