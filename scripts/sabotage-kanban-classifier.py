@@ -54,6 +54,12 @@ Score after: 86/87 real mechanisms caught, the one miss declared (budgetShare's
 unreachable guard), both controls behaved, exit 0. `--crosstable` has still not
 been taken on main.
 
+Score now (2026-09-26, main after cd3920a, measured by the C3 close-out, card
+2fab79e5): 80/81, the same one miss declared, both controls behaved, exit 0,
+0 aborted. The list is smaller than 86/87 on purpose: C3h (5fc9368) moved the
+seven registration-mechanism rows to scripts/sabotage-schedulerjobs.py with
+the code, and the close-out added one row (the bridge's own session id is kept).
+
 That 29 is worth reading against the card that asked for this work, which
 counted 12 flags and 8 environment reads. THE FLAGS WERE RIGHT AND THE
 ENVIRONMENT READS WERE NOT — there are six envOr call sites over six distinct
@@ -352,6 +358,18 @@ CASES = [
     Case(
         "a session answered without an id leaves every later write keyed on the empty string",
         [('if s.SessionID == "" {\n\t\ts.SessionID = id\n\t}', "")],
+    ),
+    # The other direction of the same fallback. The case above deletes it and so
+    # only asks the EMPTY direction; nothing asked what happens when the bridge
+    # DOES supply an id. Making the assignment unconditional throws the bridge's
+    # canonical id away on every read, and the classifier then keys its
+    # signature, card link and do-not-track tag on whatever alias the caller
+    # passed. Reddens TestASessionAnsweredWithAnIDKeepsTheBridgesOwn and no other
+    # test. Found uncommitted in the scheduler-wt-pass148 worktree (2026-08-31)
+    # and ported by the C3 close-out, card 2fab79e5.
+    Case(
+        "an id the bridge supplied is overwritten by the one it was asked for, so an alias becomes the key",
+        [('if s.SessionID == "" {\n\t\ts.SessionID = id\n\t}', "s.SessionID = id")],
     ),
     Case(
         "the session list is asked for at a route the bridge does not serve",
