@@ -38,6 +38,20 @@ are superseded by these, taken on main at d075058 plus this port:
 
     Score: 33/33 real mechanisms caught, both controls behaved, exit 0.
     Guard split: 34 CAUGHT rows, 0 guard-fired only, 0 unreadable, exit 0.
+    Self-sabotage set: 7 rows, all behaving, exit 0.
+    Seen red: deleting the assertion in
+        TestNewSetsARequestTimeoutSoAWedgedStoreCannotHangATick gives 32/33,
+        exit 1, naming the timeout case and no other.
+    Cross-table: 13 of 32 tests reddened by no case, exit 1.
+
+⚠️ **The cross-table's 13 are a gap in THIS CASE LIST, not in the suite.** They
+are main's tests for code the branch never had: MoveCard's MoveResult and its
+auto-status report (four tests), the service-token stamp (four), effective
+defaults, the orphan row ListCardsForEntity keeps, the read decoders' field
+names, Unwrap on a transport error, and a card that was never created. They
+are NOT declared `unreddened` — that is for tests no single mutation can
+isolate, and each of these has a mechanism a case could break. The branch's
+"0 of 25" below no longer holds; the cases are still to be written.
 
 ## Why this package has a scorer of its own
 
