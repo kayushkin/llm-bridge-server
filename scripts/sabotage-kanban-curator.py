@@ -32,6 +32,11 @@ covers yet, not guards no single mutation can isolate.
 Re-measured 2026-09-25 after reader_protocol_test.go and its two rows (the
 401 fold and the missing updated_at): 54/54, both controls behaved, and
 --crosstable 8 of 47 — the same eight as above.
+
+Re-measured 2026-09-26 after C3d (8e6f84e5) ported the boundary values from
+63a7f704 and stateLabel's test from 07db1186: 62/63 real mechanisms caught, the
+one left being the declared stale-after flag default, both controls behaved.
+--crosstable 8 of 51, the same eight again; each new test is reddened.
 """
 
 import sys
@@ -192,6 +197,21 @@ CASES = [
         [("moveResult, err := kc.MoveCard(c.Placement.CardID, board.ID, target, 0)",
           "_ = target\n\t\tmoveResult, err := kc.MoveCard(c.Placement.CardID, board.ID, colByName[columnInProgress], 0)")],
     ),
+    Case(
+        "a closed card is filed second in its column instead of first",
+        [("moveResult, err := kc.MoveCard(c.Placement.CardID, board.ID, target, 0)",
+          "moveResult, err := kc.MoveCard(c.Placement.CardID, board.ID, target, 1)")],
+    ),
+    Case(
+        "stateLabel: a vanished session is not marked as such in the log",
+        [('if notFound {\n\t\treturn "not-found"\n\t}\n\treturn state',
+          'if notFound {\n\t\treturn state + ""\n\t}\n\treturn state')],
+    ),
+    Case(
+        "stateLabel: notFound loses to a stale state string, so a vanished session still reads as running",
+        [('if notFound {\n\t\treturn "not-found"\n\t}\n\treturn state',
+          'if notFound && state == "" {\n\t\treturn "not-found"\n\t}\n\treturn state')],
+    ),
 
     # ---- the reads the tick makes ----
     Case(
@@ -237,6 +257,13 @@ CASES = [
     Case(
         "staleSince has its comparison backwards: fresh waiters are reaped, old ones kept",
         [("return time.Since(t) > d", "return time.Since(t) < d")],
+    ),
+    Case(
+        "the stale window's default is a minute longer, so a waiter is reaped a minute late",
+        [('flag.Duration("stale-after", 2*time.Hour,', 'flag.Duration("stale-after", 2*time.Hour+time.Minute,')],
+        expected_unnoticed="the default is written inline in main()'s flag declarations, which no test "
+        "runs; every tick test passes its own staleAfter through testConfig. Falsified by a test that "
+        "parses main's flags, which needs main() split so its flag set can be built without running it",
     ),
     Case(
         "a completed session with no timestamp skips the reviewer",
@@ -289,6 +316,10 @@ CASES = [
           "return nil")],
     ),
     Case(
+        "300 stops being a refusal, so the one status on the boundary reads as success",
+        [("if resp.StatusCode >= 300 {", "if resp.StatusCode >= 301 {")],
+    ),
+    Case(
         "a job list the scheduler could not serve is read as no jobs, so a re-run registers a second curator",
         [("if resp.StatusCode != http.StatusOK {\n\t\treturn fmt.Errorf(\"list jobs: scheduler returned",
           "if false {\n\t\treturn fmt.Errorf(\"list jobs: scheduler returned")],
@@ -301,6 +332,22 @@ CASES = [
     Case(
         "the job-name slug drops digits, so two boards can collapse onto one job",
         [("case r >= 'a' && r <= 'z', r >= '0' && r <= '9':", "case r >= 'a' && r <= 'z':")],
+    ),
+    Case(
+        "the slug's digit class stops one short of '9'",
+        [("case r >= 'a' && r <= 'z', r >= '0' && r <= '9':", "case r >= 'a' && r <= 'z', r >= '0' && r <= '8':")],
+    ),
+    Case(
+        "the slug's letter class stops one short of 'z'",
+        [("case r >= 'a' && r <= 'z', r >= '0' && r <= '9':", "case r >= 'a' && r <= 'y', r >= '0' && r <= '9':")],
+    ),
+    Case(
+        "the slug's digit class runs one past '9' and keeps ':'",
+        [("case r >= 'a' && r <= 'z', r >= '0' && r <= '9':", "case r >= 'a' && r <= 'z', r >= '0' && r <= ':':")],
+    ),
+    Case(
+        "the slug's letter class runs one past 'z' and keeps '{'",
+        [("case r >= 'a' && r <= 'z', r >= '0' && r <= '9':", "case r >= 'a' && r <= '{', r >= '0' && r <= '9':")],
     ),
     Case(
         "the job-name slug keeps its leading and trailing dashes",

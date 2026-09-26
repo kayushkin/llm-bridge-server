@@ -149,3 +149,24 @@ func TestStaleSinceTreatsAnUnparseableTimestampAsNotStale(t *testing.T) {
 		t.Error("a genuinely old timestamp is stale")
 	}
 }
+
+// A session the bridge no longer knows and a session whose state is empty are
+// different facts, and stateLabel is where the reap log line tells them apart.
+// notFound must win even when a stale state string came back with it. Ported
+// from the curator third of 07db1186.
+func TestStateLabelMarksAVanishedSessionWhateverStateCameWithIt(t *testing.T) {
+	for _, check := range []struct {
+		state    string
+		notFound bool
+		want     string
+	}{
+		{"running", false, "running"},
+		{"", false, ""},
+		{"running", true, "not-found"},
+		{"", true, "not-found"},
+	} {
+		if got := stateLabel(check.state, check.notFound); got != check.want {
+			t.Errorf("stateLabel(%q, notFound=%v) = %q, want %q", check.state, check.notFound, got, check.want)
+		}
+	}
+}

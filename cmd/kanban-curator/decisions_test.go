@@ -191,3 +191,24 @@ func TestABoardThatNoLongerExistsIsRefusedNotReplaced(t *testing.T) {
 		t.Errorf("the error does not name the board id: %v", err)
 	}
 }
+
+// The curator passes position 0 on every move, which files the card it just
+// closed at the top of Done or Failed: the most recently closed card is the one
+// worth seeing first, and those columns run to hundreds of cards. The position
+// rides on the same request as the column id, and a test that reads only the
+// column would pass with the card filed anywhere. Ported from 63a7f704.
+func TestAClosedCardIsFiledAtTheTopOfItsColumn(t *testing.T) {
+	k := newStubKanban(t, "Agent runs", stubCard{cardID: "card-1", title: "a dispatch", sessionID: "s1"})
+	b := newStubBridge(t)
+	b.states["s1"] = "completed"
+
+	captureLog(t, func() { run(testConfig(k, b)) })
+
+	position, moved := k.movedPos["card-1"]
+	if !moved {
+		t.Fatal("the card was never moved, so there is no position to check")
+	}
+	if position != 0 {
+		t.Errorf("filed at position %v, want 0: a closed card belongs at the top of its column", position)
+	}
+}

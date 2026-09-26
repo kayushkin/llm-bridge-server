@@ -37,6 +37,7 @@ type stubKanban struct {
 	failPatch int                 // status to answer PATCH /api/cards/{id} with
 	failMove  int                 // status to answer POST /api/cards/{id}/move with
 	moved     map[string]string   // card id -> column id it was moved to
+	movedPos  map[string]float64  // card id -> position within that column
 	patched   map[string]string   // card id -> body it was patched with
 	server    *httptest.Server
 }
@@ -51,9 +52,10 @@ const (
 func newStubKanban(t *testing.T, boardName string, cards ...stubCard) *stubKanban {
 	k := &stubKanban{
 		t: t, boardName: boardName, cards: cards,
-		settled: map[string]bool{},
-		moved:   map[string]string{},
-		patched: map[string]string{},
+		settled:  map[string]bool{},
+		moved:    map[string]string{},
+		movedPos: map[string]float64{},
+		patched:  map[string]string{},
 	}
 	k.server = httptest.NewServer(http.HandlerFunc(k.serve))
 	t.Cleanup(k.server.Close)
@@ -108,10 +110,13 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			ColumnID string `json:"column_id"`
+			ColumnID string  `json:"column_id"`
+			Position float64 `json:"position"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		k.moved[strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/move")] = req.ColumnID
+		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/move")
+		k.moved[cardID] = req.ColumnID
+		k.movedPos[cardID] = req.Position
 		writeStubJSON(w, 200, map[string]string{"status": "ok"})
 
 	case strings.HasPrefix(p, "/api/cards/") && r.Method == "PATCH":

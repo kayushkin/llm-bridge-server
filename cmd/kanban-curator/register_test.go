@@ -20,10 +20,15 @@ import (
 type stubScheduler struct {
 	existing []string // names of jobs already registered
 	refuse   bool     // answer POST /api/jobs with 500
-	failList int      // answer GET /api/jobs with this status instead of the job list
-	listBody string   // answer GET /api/jobs 200 with this body instead of the job list
-	posted   []map[string]any
-	url      string
+	// postStatus is the status an accepted POST /api/jobs answers with; zero
+	// means 201. registerSchedulerJob reads anything >= 300 as a refusal, and a
+	// stub that only ever answers 201 and 500 cannot tell that threshold from
+	// any other value between them.
+	postStatus int
+	failList   int    // answer GET /api/jobs with this status instead of the job list
+	listBody   string // answer GET /api/jobs 200 with this body instead of the job list
+	posted     []map[string]any
+	url        string
 }
 
 func newStubScheduler(t *testing.T, s *stubScheduler) *stubScheduler {
@@ -55,7 +60,11 @@ func newStubScheduler(t *testing.T, s *stubScheduler) *stubScheduler {
 				t.Errorf("POST /api/jobs body is not JSON: %v", err)
 			}
 			s.posted = append(s.posted, payload)
-			writeStubJSON(w, 201, map[string]any{"id": 99})
+			status := s.postStatus
+			if status == 0 {
+				status = http.StatusCreated
+			}
+			writeStubJSON(w, status, map[string]any{"id": 99})
 		default:
 			t.Errorf("stub scheduler: unexpected %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -195,6 +204,48 @@ func TestABoardNameBecomesAJobNameSlug(t *testing.T) {
 	} {
 		if got := slugify(check.board); got != check.want {
 			t.Errorf("slugify(%q) = %q, want %q", check.board, got, check.want)
+		}
+	}
+}
+
+// 300 is the first status registerSchedulerJob reads as a refusal, and the only
+// one its threshold can be tested at: a check that slipped to 301 still rejects
+// every 4xx and 5xx the other tests serve. Ported from 63a7f704.
+func TestThreeHundredIsAlreadyARefusal(t *testing.T) {
+	board := &kanbanclient.Board{ID: "board-7", Name: "Agent runs"}
+
+	t.Run("300 is refused", func(t *testing.T) {
+		s := newStubScheduler(t, &stubScheduler{postStatus: 300})
+		if err := registerSchedulerJob(s.url, board, ""); err == nil {
+			t.Error("no error from a scheduler answering 300; -register would exit 0 having registered nothing")
+		}
+	})
+
+	t.Run("299 is accepted", func(t *testing.T) {
+		s := newStubScheduler(t, &stubScheduler{postStatus: 299})
+		if err := registerSchedulerJob(s.url, board, ""); err != nil {
+			t.Errorf("a scheduler answering 299 was read as a refusal: %v", err)
+		}
+		s.only(t)
+	})
+}
+
+// TestABoardNameBecomesAJobNameSlug proves both character classes survive, but
+// "Sprint 42" never reaches '9' and no name in it has a 'z'. An end of either
+// class that moves in by one drops a character from two boards' job names and
+// can collapse them onto one job. Each row sits on one side of one end of a
+// class. Ported from 63a7f704.
+func TestTheSlugCharacterClassesRunToTheirLastCharacter(t *testing.T) {
+	for _, check := range []struct{ board, want, why string }{
+		{"Zone 9", "zone-9", "'z' and '9' are the last characters of the two classes"},
+		{"Aim 0", "aim-0", "'a' and '0' are the first characters of the two classes"},
+		{"x`y", "x-y", "'`' is the character before 'a' and must not be kept"},
+		{"a{b", "a-b", "'{' is the character after 'z' and must not be kept"},
+		{"1:2", "1-2", "':' is the character after '9' and must not be kept"},
+		{"1/2", "1-2", "'/' is the character before '0' and must not be kept"},
+	} {
+		if got := slugify(check.board); got != check.want {
+			t.Errorf("slugify(%q) = %q, want %q: %s", check.board, got, check.want, check.why)
 		}
 	}
 }
