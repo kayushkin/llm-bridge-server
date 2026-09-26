@@ -1,9 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -119,7 +124,7 @@ func TestThereIsNoBoardToDefaultTo(t *testing.T) {
 // ignored in favour of the board's — which would look like the flag working.
 func TestTheFlagsTheBoardReplacedAreGone(t *testing.T) {
 	for _, removed := range []string{"-board=Email", "-vocabulary=work", "-account=demo-work", "-hold-new-cards"} {
-		if _, err := parseFlags([]string{removed}, noEnvironment, "/home/someone"); err == nil {
+		if outcome := parseFlagsInChildProcess(t, removed); !outcome.Failed {
 			t.Errorf("%s still parses; the board's classifier setting owns it now", removed)
 		}
 	}
@@ -377,18 +382,92 @@ func TestAPinnedBoardIdReachesTheRegisteredCommand(t *testing.T) {
 // TestHelpIsDistinguishableFromABadArgument pins the two error shapes main maps
 // to different exit codes. Without the sentinel check, `-h` would exit 2.
 func TestHelpIsDistinguishableFromABadArgument(t *testing.T) {
-	_, err := parseFlags([]string{"-h"}, noEnvironment, "/home/someone")
-	if !errors.Is(err, flag.ErrHelp) {
-		t.Fatalf("-h did not return flag.ErrHelp, so main would exit 2 rather than 0: %v", err)
+	help := parseFlagsInChildProcess(t, "-h")
+	if !help.Help {
+		t.Fatalf("-h did not return flag.ErrHelp, so main would exit 2 rather than 0: %s", help.Message)
 	}
 
-	_, err = parseFlags([]string{"-nonsense"}, noEnvironment, "/home/someone")
-	if err == nil {
+	unknown := parseFlagsInChildProcess(t, "-nonsense")
+	if !unknown.Failed {
 		t.Fatal("an unknown flag parsed cleanly")
 	}
-	if errors.Is(err, flag.ErrHelp) {
+	if unknown.Help {
 		t.Fatal("an unknown flag was reported as help, so main would exit 0 on a typo")
 	}
+}
+
+// parseFlagsOutcome is what parseFlags returned in the child process: whether
+// it returned an error, the error's text, and whether that error was
+// flag.ErrHelp.
+type parseFlagsOutcome struct {
+	Failed  bool
+	Message string
+	Help    bool
+}
+
+const (
+	parseFlagsChildArgumentsVariable = "PARSE_FLAGS_CHILD_ARGUMENTS"
+	parseFlagsChildOutcomePrefix     = "parse-flags-child-outcome: "
+)
+
+// parseFlagsInChildProcess runs parseFlags on args in a fresh copy of this test
+// binary and reports what it returned.
+//
+// Every test that hands parseFlags a bad argument goes through here. If the
+// flag set goes back to ExitOnError, a bad argument calls os.Exit, and
+// in-process that ends the whole test binary: whichever bad-argument test runs
+// first takes every later test with it and prints no failure line naming
+// itself. In a child the exit ends only the child, and the parent reports it
+// as this test's failure.
+func parseFlagsInChildProcess(t *testing.T, args ...string) parseFlagsOutcome {
+	t.Helper()
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("encoding %q for the child process: %v", args, err)
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestParseFlagsAsTheChildProcess$")
+	child.Env = append(os.Environ(), parseFlagsChildArgumentsVariable+"="+string(encoded))
+	output, runErr := child.CombinedOutput()
+	for _, line := range strings.Split(string(output), "\n") {
+		if reported, found := strings.CutPrefix(line, parseFlagsChildOutcomePrefix); found {
+			var outcome parseFlagsOutcome
+			if err := json.Unmarshal([]byte(reported), &outcome); err != nil {
+				t.Fatalf("reading the child's outcome %q: %v", reported, err)
+			}
+			return outcome
+		}
+	}
+	childExit := fmt.Sprint(runErr)
+	if runErr == nil {
+		childExit = child.ProcessState.String()
+	}
+	t.Fatalf("parseFlags(%q) ended the process instead of returning an error (%s), "+
+		"so main's exit codes are the flag package's and any caller dies with it:\n%s",
+		args, childExit, output)
+	return parseFlagsOutcome{}
+}
+
+// TestParseFlagsAsTheChildProcess is the child half of parseFlagsInChildProcess.
+// Run directly, it skips.
+func TestParseFlagsAsTheChildProcess(t *testing.T) {
+	encoded, isChild := os.LookupEnv(parseFlagsChildArgumentsVariable)
+	if !isChild {
+		t.Skip("runs only as the child of parseFlagsInChildProcess")
+	}
+	var args []string
+	if err := json.Unmarshal([]byte(encoded), &args); err != nil {
+		t.Fatalf("reading the arguments %q: %v", encoded, err)
+	}
+	_, err := parseFlags(args, noEnvironment, "/home/someone")
+	outcome := parseFlagsOutcome{Failed: err != nil, Help: errors.Is(err, flag.ErrHelp)}
+	if err != nil {
+		outcome.Message = err.Error()
+	}
+	reported, err := json.Marshal(outcome)
+	if err != nil {
+		t.Fatalf("encoding the outcome: %v", err)
+	}
+	fmt.Println(parseFlagsChildOutcomePrefix + string(reported))
 }
 
 // TestParsingTwiceDoesNotPanic is the property that makes every test above

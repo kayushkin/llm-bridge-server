@@ -95,6 +95,15 @@ test runs, so the binary exits 2 on that bad argument and prints no failure line
 and no panic. The 281st's runtime-fired verdict depended on `-h` being the first
 bad input the binary met.
 
+Fixed 2026-09-26 (card `fbb0f344`). Every test that hands parseFlags a bad
+argument now calls it through parseFlagsInChildProcess, which runs it in a
+re-executed copy of the test binary. An os.Exit under ExitOnError ends the child
+only, and the parent reports it as a `flag_defaults_test.go:NN:` assertion in
+the test that passed the argument. Under the split: **26 CAUGHT rows, 0
+guard-fired only, 0 runtime-fired, 0 unreadable, exit 0.** The row no longer
+depends on which bad-argument test runs first. RUNTIME_KILLS stays: any other
+panic out of the code under test still needs it.
+
 Why this binary is worth a scorer: it has the largest flag set of the 21 cmd
 mains on this box (seventeen), it reads the environment in ten places, and its
 loudest failures are not its worst ones. FIVE of the seventeen switches turn a
