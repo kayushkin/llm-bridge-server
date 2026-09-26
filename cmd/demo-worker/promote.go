@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"strings"
 
 	"github.com/slava/scheduler/internal/demoteam"
@@ -189,6 +190,6 @@ func truncate(s string, n int) string {
 // would create a second noteboard item and the two boards would drift apart.
 func attachCard(kanbanURL, boardID, cardID, columnID string) error {
 	return doJSON(http.MethodPut,
-		fmt.Sprintf("%s/api/boards/%s/cards/%s", strings.TrimRight(kanbanURL, "/"), boardID, cardID),
+		fmt.Sprintf("%s/api/boards/%s/cards/%s", strings.TrimRight(kanbanURL, "/"), neturl.PathEscape(boardID), neturl.PathEscape(cardID)),
 		map[string]any{"column_id": columnID}, http.StatusCreated, http.StatusOK, http.StatusConflict)
 }

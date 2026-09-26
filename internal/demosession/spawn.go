@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 
@@ -155,7 +156,7 @@ func Spawn(bridgeURL string, t Task) (string, error) {
 		return "", fmt.Errorf("demosession: asked for session %q and the server made %q", sessionID, created.SessionID)
 	}
 
-	if err := postJSON(base+"/sessions/"+sessionID+"/send",
+	if err := postJSON(base+"/sessions/"+neturl.PathEscape(sessionID)+"/send",
 		msg.SendMessageRequest{Message: t.Prompt}, nil); err != nil {
 		return "", fmt.Errorf("demosession: session %s started but the prompt did not reach it: %w", sessionID, err)
 	}

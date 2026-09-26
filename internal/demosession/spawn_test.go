@@ -63,3 +63,34 @@ func TestASessionForNoCardSendsNoCardID(t *testing.T) {
 		t.Errorf("card_id present in the create body: %v", created["card_id"])
 	}
 }
+
+// The session id embeds the agent slug, which comes from outside this
+// process. A slug holding "/" or "?" must still reach /send as one segment.
+func TestTheSendCallKeepsTheSessionIDOnePathSegment(t *testing.T) {
+	var sendPath, sendQuery string
+	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/instances/inst-test":
+			w.Write([]byte(`{"id":"inst-test","harness_type":"claude_code"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/sessions":
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"state":"running"}`))
+		default:
+			sendPath, sendQuery = r.URL.EscapedPath(), r.URL.RawQuery
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer bridge.Close()
+
+	sessionID, err := Spawn(bridge.URL, Task{Prompt: "do it", AgentSlug: "bad/slug?x", InstanceID: "inst-test"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	wantPrefix := "/sessions/demo-bad%2Fslug%3Fx-"
+	if !strings.HasPrefix(sendPath, wantPrefix) || !strings.HasSuffix(sendPath, "/send") {
+		t.Errorf("send path = %q, want %s<nanos>/send (session %q)", sendPath, wantPrefix, sessionID)
+	}
+	if sendQuery != "" {
+		t.Errorf("send carried query %q; the session id leaked past the path", sendQuery)
+	}
+}
