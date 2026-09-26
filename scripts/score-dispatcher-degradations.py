@@ -209,8 +209,8 @@ ARMS = [
     ("an-ungrouped-card-mints-an-empty-segment",
      'if safeGroup == "" {\n\t\tsafeGroup = "default"\n\t}', "", "caught"),
     ("shortid-stops-shortening",
-     "\tif len(id) <= 8 {\n\t\treturn id\n\t}\n\treturn id[:8]",
-     "\tif len(id) <= 8 {\n\t\treturn id\n\t}\n\treturn id", "caught"),
+     "textcut.PrefixWithinByteBudgetOnRuneBoundary(id, 8)",
+     "textcut.PrefixWithinByteBudgetOnRuneBoundary(id, len(id))", "caught"),
     ("the-mint-site-takes-a-raw-byte-cut",
      'return fmt.Sprintf("tcl-%s-%s-%d", shortID(parentID), safeGroup, now)',
      'return fmt.Sprintf("tcl-%s-%s-%d", parentID[:8], safeGroup, now)', "caught"),
@@ -338,7 +338,7 @@ ARMS = [
     # side of it whatever its value, so each value needs a fixture that quotes
     # the number itself. The compiled-in ports 081b8ac6 also moved now live in
     # internal/config, outside this file's one target. shortID's `<= 7` is not
-    # armed: it differs from `<= 8` only at length 8, where the guard and the
+    # armed: a budget of 7 differs from 8 only at length 8, where the guard and the
     # cut return the same string, so no input can tell them apart.
     ("the-revive-window-grows-by-a-minute",
      "reviveWindow       = time.Hour\n", "reviveWindow       = time.Hour + time.Minute\n", "caught"),
@@ -353,7 +353,8 @@ ARMS = [
     ("the-register-success-threshold-moves-down-one-status",
      "if resp.StatusCode >= 300 {", "if resp.StatusCode >= 299 {", "caught"),
     ("shortid-keeps-one-more-byte-whole",
-     "if len(id) <= 8 {", "if len(id) <= 9 {", "caught"),
+     "textcut.PrefixWithinByteBudgetOnRuneBoundary(id, 8)",
+     "textcut.PrefixWithinByteBudgetOnRuneBoundary(id, 9)", "caught"),
     ("a-dispatched-card-lands-one-row-down-in-progress",
      "d.kanban.MoveCard(childID, d.board.ID, d.inProgressColumnID, 0)",
      "d.kanban.MoveCard(childID, d.board.ID, d.inProgressColumnID, 1)", "caught"),
@@ -364,6 +365,12 @@ ARMS = [
      "kc.MoveCard(p.cardID, board.ID, colByName[columnDone], 1)", "caught"),
     ("the-noteboard-port-in-the-prompt-drifts-by-one",
      "PATCH http://localhost:8191/api/items/%s", "PATCH http://localhost:8192/api/items/%s", "caught"),
+
+    ("shortid-cuts-mid-rune",
+     "textcut.PrefixWithinByteBudgetOnRuneBoundary(id, 8)",
+     "func() string { _ = textcut.Ellipsis; if len(id) <= 8 { return id }; return id[:8] }()", "caught"),
+    ("a-titled-child-is-named-by-its-id",
+     "\tif t == \"\" {\n\t\tt = c.Placement.CardID", "\tif true {\n\t\tt = c.Placement.CardID", "caught"),
 
     # ------------------------------------------------ controls
     ("control-reword-the-rollup-progress-line",

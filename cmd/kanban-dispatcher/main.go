@@ -63,6 +63,7 @@ import (
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
+	"github.com/slava/scheduler/internal/textcut"
 )
 
 // linkTypeSession is the canonical session card-link entity_type. Pre-2026-05
@@ -697,13 +698,13 @@ func mintSessionID(parentID, groupKey string) string {
 	return fmt.Sprintf("tcl-%s-%s-%d", shortID(parentID), safeGroup, now)
 }
 
-// shortID returns the leading characters of an id; useful for human-readable
-// session keys without collision risk at this scale.
+// shortID returns at most the first 8 bytes of an id, cut on a rune boundary;
+// useful for human-readable session keys without collision risk at this scale.
+// A byte cut would split a rune, and mintSessionID's result crosses JSON, where
+// encoding/json swaps the broken bytes for U+FFFD and returns no error. Latent:
+// kanban-store mints every card id as a uuid.
 func shortID(id string) string {
-	if len(id) <= 8 {
-		return id
-	}
-	return id[:8]
+	return textcut.PrefixWithinByteBudgetOnRuneBoundary(id, 8)
 }
 
 // errCardHasNoInstance marks a card whose effective defaults name no instance:

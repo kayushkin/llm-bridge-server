@@ -104,6 +104,20 @@ func TestAnUntitledCardIsNamedByItsID(t *testing.T) {
 	if got := childTitle(untitled); got != "child-7" {
 		t.Errorf("an untitled child's title = %q, want its id", got)
 	}
+	// Ported from ef5bee2a: an empty or non-string title falls back to the id
+	// too, and a real one is used as written.
+	for name, title := range map[string]any{"empty": "", "non-string": 42} {
+		card := kanbanclient.CardView{Item: map[string]any{"title": title}}
+		card.Placement.CardID = "child-8"
+		if got := childTitle(card); got != "child-8" {
+			t.Errorf("a child with a %s title is called %q, want its id", name, got)
+		}
+	}
+	titled := kanbanclient.CardView{Item: map[string]any{"title": "Port the sidebar"}}
+	titled.Placement.CardID = "child-9"
+	if got := childTitle(titled); got != "Port the sidebar" {
+		t.Errorf("a titled child is called %q, want its title", got)
+	}
 }
 
 // ============================ the mint site ============================
@@ -145,6 +159,11 @@ func TestShortIDKeepsEightBytes(t *testing.T) {
 	// eight and below the guard and the cut return the same string.
 	if got := shortID("123456789"); got != "12345678" {
 		t.Errorf("shortID(123456789) = %q, want the first 8 bytes", got)
+	}
+	// Ported from e74e77b8, at the call site whose result leaves the process: a
+	// four-byte rune across byte 8 is dropped whole, not split.
+	if got := mintSessionID("abcde\U0001D11Exyz", "a"); !strings.HasPrefix(got, "tcl-abcde-a-") {
+		t.Errorf("mintSessionID = %+q, want the parent cut back to %q before the rune", got, "abcde")
 	}
 }
 

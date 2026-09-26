@@ -285,3 +285,43 @@ func TestTruncateToByteBudgetOnRuneBoundary_ABudgetWithNoRoomYieldsNothing(t *te
 		}
 	}
 }
+
+// A four-byte rune slides across the cut one byte at a time. Offsets 5, 6 and
+// 7 straddle byte 8; 4 and 8 land on it and must keep all eight bytes, so a
+// failure means the cut split a rune, not merely that the input was not ASCII.
+func TestPrefixWithinByteBudgetOnRuneBoundary_NeverCutsARuneInHalf(t *testing.T) {
+	const clef = "\U0001D11E"
+	const budget = 8
+	for _, lead := range []int{4, 5, 6, 7, 8} {
+		s := strings.Repeat("a", lead) + clef + strings.Repeat("b", budget)
+		got := PrefixWithinByteBudgetOnRuneBoundary(s, budget)
+		if !utf8.ValidString(got) || !strings.HasPrefix(s, got) || len(got) > budget {
+			t.Errorf("lead %d: got %+q, want a valid prefix of at most %d bytes", lead, got, budget)
+		}
+		// "" passes every check above, so the length is pinned too.
+		straddles := lead < budget && lead+len(clef) > budget
+		if want := lead; straddles && len(got) != want {
+			t.Errorf("lead %d: got %d bytes, want %d — the cut walks back to the rune's start and no further", lead, len(got), want)
+		}
+		if !straddles && len(got) != budget {
+			t.Errorf("lead %d: got %d bytes, want %d — this offset is already a boundary", lead, len(got), budget)
+		}
+	}
+}
+
+func TestPrefixWithinByteBudgetOnRuneBoundary_AddsNoMarkerAndLeavesAFittingValueAlone(t *testing.T) {
+	if got := PrefixWithinByteBudgetOnRuneBoundary("0f8e2a1c-4b7d-4e1a-9c3f-2d6b8a1e5f70", 8); got != "0f8e2a1c" {
+		t.Errorf("got %q, want the first 8 bytes and no ellipsis", got)
+	}
+	for _, s := range []string{"", "abc", "12345678"} {
+		if got := PrefixWithinByteBudgetOnRuneBoundary(s, 8); got != s {
+			t.Errorf("PrefixWithinByteBudgetOnRuneBoundary(%q, 8) = %q, want it unchanged", s, got)
+		}
+	}
+	if got := PrefixWithinByteBudgetOnRuneBoundary("123456789", 8); got != "12345678" {
+		t.Errorf("a nine-byte value: got %q, want the first 8 bytes", got)
+	}
+	if got := PrefixWithinByteBudgetOnRuneBoundary("abc", 0); got != "" {
+		t.Errorf("a budget of 0: got %q, want nothing", got)
+	}
+}

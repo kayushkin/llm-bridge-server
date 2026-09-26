@@ -77,3 +77,24 @@ func TruncateToByteBudgetOnRuneBoundary(s string, maxBytes int) string {
 	}
 	return s[:cut] + Ellipsis
 }
+
+// PrefixWithinByteBudgetOnRuneBoundary returns the longest prefix of s that is
+// at most maxBytes bytes and ends on a rune boundary, with NO ellipsis.
+//
+// Use it where the result is a key rather than text somebody reads as cut off —
+// the head of an id inside a session id, say — so a marker would only change
+// the key. It keeps at least maxBytes-3 bytes of a longer s: the rune across
+// the cut is at most four bytes wide.
+func PrefixWithinByteBudgetOnRuneBoundary(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	if maxBytes <= 0 {
+		return ""
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
