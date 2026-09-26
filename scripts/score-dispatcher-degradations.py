@@ -369,6 +369,8 @@ ARMS = [
     ("shortid-cuts-mid-rune",
      "textcut.PrefixWithinByteBudgetOnRuneBoundary(id, 8)",
      "func() string { _ = textcut.Ellipsis; if len(id) <= 8 { return id }; return id[:8] }()", "caught"),
+    ("the-title-key-drifts",
+     't, _ := c.Item["title"].(string)', 't, _ := c.Item["name"].(string)', "caught"),
     ("a-titled-child-is-named-by-its-id",
      "\tif t == \"\" {\n\t\tt = c.Placement.CardID", "\tif true {\n\t\tt = c.Placement.CardID", "caught"),
 
