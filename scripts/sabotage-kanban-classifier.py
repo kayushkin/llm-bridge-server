@@ -69,18 +69,15 @@ This is the second consecutive binary where the flag count was exact and the
 number derived from grepping a helper's name was one too high; the 198th pass
 predicted this card would break the same way, and it did.
 
-⚠️ `--crosstable` has NOT been taken for this binary, and no `unreddened`
-declaration is made below, because an empty one would read as "measured and
-found none" rather than "not measured". The next pass on this binary owns that.
-Expect it to be a large table with mostly silent columns: three of the four test
-files in this package cover code no case here touches, and that is not a
-finding.
-
-⚠️ Region this plan does NOT cover, declared rather than left to be
-rediscovered: every case below edits configuration. selectCandidates' lookback
-and sort, processSession's dedupe-signature short-circuit, the do-not-track
-re-evaluation delta, buildDigest's section budgets, classify's truncated-report
-rejection and both card write paths are NOT sabotaged here.
+`--crosstable` was first taken on main on 2026-09-27 (bff5fc4, card 68161ab4):
+58 of 159 tests were reddened by no case, because every case then edited
+configuration or the parts of the tick C3b had ported. The section THE TICK'S
+OWN LOGIC below adds 55 rows aimed at those 58 — selectCandidates and the
+per-session gates, the signature helpers, the recorded shortfalls, the bridge
+readers, the model call and prompt, the digest builder, both card write paths,
+run() and main(). Score after (6cea0fc): 137/138, the same one miss declared,
+both controls behaved, exit 0; `--crosstable` 140 cases x 159 tests, 0 tests
+reddened by no case, exit 0. No `unreddened` declaration is needed.
 """
 
 import sys
