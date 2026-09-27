@@ -50,10 +50,7 @@ type curatorBridgeRequest struct {
 // session id carrying a slash would reach if it were interpolated raw.
 //
 // Deliberately not shared with cmd/email-classifier's stubBridge — that one
-// lives in a different package. It is also deliberately named differently from
-// the scriptedBridge on test/kanban-clients-speak-the-real-protocol, which
-// tests this same function on a diverged lineage that does not carry the
-// bridgesession fix; the two files are complementary and can both land.
+// lives in a different package.
 func stubCuratorBridge(t *testing.T, seen *[]curatorBridgeRequest, sessionBody string) *httptest.Server {
 	t.Helper()
 	record := func(route string) http.HandlerFunc {
@@ -68,7 +65,9 @@ func stubCuratorBridge(t *testing.T, seen *[]curatorBridgeRequest, sessionBody s
 			case "GET /sessions/{id}":
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, sessionBody)
-			case "GET /sessions/{id}/messages", "GET /sessions":
+			case "GET /sessions/{id}/messages":
+				fmt.Fprint(w, `{"model":{},"stream":{"head":0}}`)
+			case "GET /sessions":
 				fmt.Fprint(w, `[]`)
 			case "GET /sessions/{id}/attach-token":
 				http.Error(w, "session has no live pty hub", http.StatusNotFound)
@@ -114,7 +113,7 @@ func TestASessionIDThatNamesANeighbouringRouteDoesNotReachIt(t *testing.T) {
 	}{
 		{"s-1/attach-token", "/sessions/s-1%2Fattach-token", "a 404 that reaps a live card to Failed"},
 		{"s-1/send", "/sessions/s-1%2Fsend", "a 405 on the send route"},
-		{"s-1/messages", "/sessions/s-1%2Fmessages", "a JSON array that decodes into an empty state"},
+		{"s-1/messages", "/sessions/s-1%2Fmessages", "a 200 object with no state field"},
 	} {
 		t.Run(tc.sessionID, func(t *testing.T) {
 			var seen []curatorBridgeRequest
@@ -258,7 +257,7 @@ func TestAnUnaddressableSessionIDIsRefusedAndNeverReachesTheBridge(t *testing.T)
 }
 
 // sessionStateOf reads the fields these tests pin off getSession, which
-// replaced getSession when the curator started gating on purpose.
+// replaced getSessionState when the curator started gating on purpose.
 func sessionStateOf(bridgeURL, sessionID string) (state, updatedAt string, notFound bool, err error) {
 	sess, notFound, err := getSession(bridgeURL, sessionID)
 	return sess.State, sess.UpdatedAt, notFound, err

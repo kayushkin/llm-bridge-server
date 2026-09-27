@@ -95,7 +95,9 @@ func stubDispatcherBridge(t *testing.T, seen *[]dispatcherBridgeRequest, session
 			case "GET /sessions/{id}":
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, sessionBody)
-			case "GET /sessions/{id}/messages", "GET /sessions":
+			case "GET /sessions/{id}/messages":
+				fmt.Fprint(w, `{"model":{},"stream":{"head":0}}`)
+			case "GET /sessions":
 				fmt.Fprint(w, `[]`)
 			case "GET /sessions/{id}/attach-token":
 				http.Error(w, "session has no live pty hub", http.StatusNotFound)
@@ -111,7 +113,6 @@ func stubDispatcherBridge(t *testing.T, seen *[]dispatcherBridgeRequest, session
 		"GET /sessions/{id}/messages",
 		"GET /sessions/{id}/attach-token",
 		"POST /sessions/{id}/send",
-		"POST /sessions/{id}/messages",
 	} {
 		mux.HandleFunc(route, record(route))
 	}
@@ -146,7 +147,7 @@ func TestASessionIDThatNamesANeighbouringRouteDoesNotReachItOnTheReadSite(t *tes
 	}{
 		{"tcl-1/attach-token", "/sessions/tcl-1%2Fattach-token", "a 404 the dispatcher reports as \"not found\""},
 		{"tcl-1/send", "/sessions/tcl-1%2Fsend", "a 405 on the send route"},
-		{"tcl-1/messages", "/sessions/tcl-1%2Fmessages", "a JSON array that decodes into no state at all"},
+		{"tcl-1/messages", "/sessions/tcl-1%2Fmessages", "a 200 object with no state field"},
 	} {
 		t.Run(tc.sessionID, func(t *testing.T) {
 			var seen []dispatcherBridgeRequest

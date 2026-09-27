@@ -80,7 +80,9 @@ func stubReviewerBridge(t *testing.T, seen *[]reviewerBridgeRequest, sessionBody
 			case "POST /sessions/{id}/send":
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, `{"ok":true}`)
-			case "GET /sessions/{id}/messages", "GET /sessions":
+			case "GET /sessions/{id}/messages":
+				fmt.Fprint(w, `{"model":{},"stream":{"head":0}}`)
+			case "GET /sessions":
 				fmt.Fprint(w, `[]`)
 			case "GET /sessions/{id}/attach-token":
 				http.Error(w, "session has no live pty hub", http.StatusNotFound)
@@ -96,7 +98,6 @@ func stubReviewerBridge(t *testing.T, seen *[]reviewerBridgeRequest, sessionBody
 		"GET /sessions/{id}/messages",
 		"GET /sessions/{id}/attach-token",
 		"POST /sessions/{id}/send",
-		"POST /sessions/{id}/messages",
 	} {
 		mux.HandleFunc(route, record(route))
 	}
@@ -131,7 +132,7 @@ func TestASessionIDThatNamesANeighbouringRouteDoesNotReachItOnTheReadSite(t *tes
 	}{
 		{"s-1/attach-token", "/sessions/s-1%2Fattach-token", "a 404 the reviewer reports as \"not found\""},
 		{"s-1/send", "/sessions/s-1%2Fsend", "a 405 on the send route"},
-		{"s-1/messages", "/sessions/s-1%2Fmessages", "a JSON array that decodes into an empty state"},
+		{"s-1/messages", "/sessions/s-1%2Fmessages", "a 200 object with no state field"},
 	} {
 		t.Run(tc.sessionID, func(t *testing.T) {
 			var seen []reviewerBridgeRequest
@@ -228,9 +229,9 @@ func TestAnOrdinarySessionIDIsSentUnchangedOnTheReadSite(t *testing.T) {
 // every other row here while the reviewer nudges nobody.
 //
 // The subresource is asserted through the route rather than the path text
-// alone. "send" and "messages" are both real routes on the bridge and both
-// accept a POST; addressing the wrong one of the RIGHT session drops the nudge
-// into the transcript instead of delivering it to the agent.
+// alone. "send" and "messages" are both real routes on the bridge, but
+// "messages" is GET-only, so a nudge POSTed there is a 405 and never reaches
+// the agent.
 func TestAMessageIsPostedToTheSendRouteOfTheSessionNamed(t *testing.T) {
 	var seen []reviewerBridgeRequest
 	srv := stubReviewerBridge(t, &seen, aCompletedAutoworkerSession)
@@ -412,7 +413,7 @@ func TestAnUnaddressableSessionIDIsRefusedAndNeverReachesTheBridge(t *testing.T)
 }
 
 // sessionStateOf reads the fields these tests pin off getSession, which
-// replaced getSession when the reviewer started gating on purpose.
+// replaced getSessionState when the reviewer started gating on purpose.
 func sessionStateOf(bridgeURL, sessionID string) (state, updatedAt string, err error) {
 	sess, err := getSession(bridgeURL, sessionID)
 	return sess.State, sess.UpdatedAt, err
