@@ -197,6 +197,20 @@ type Process struct {
 	done      chan struct{}
 }
 
+// BridgeSessionIDEnvironmentVariable carries the bridge's id for the session
+// (br_…) into every local harness child, and through it into every command
+// the agent runs. The harness's own id (CLAUDE_CODE_SESSION_ID) is not enough:
+// only Claude Code sets one, and the bridge's routes are keyed by this id.
+// What reads it: deploy-gate, whose detached deploys send their outcome to
+// the session that started them, because the restart they cause can leave
+// that session idle with nothing to wake it.
+//
+// It goes in here, on the local spawns only, and not in the session
+// environment that StartOnInstance refuses on ssh and runner transports: it
+// is an address, not a credential, and a remote session is no worse for
+// lacking it.
+const BridgeSessionIDEnvironmentVariable = "LLM_BRIDGE_SESSION_ID"
+
 // StartProcess spawns a harness bridge subprocess.
 // If credentialID is non-empty, it's passed to the subprocess via LLMBRIDGE_CREDENTIAL_ID env var.
 //
@@ -213,7 +227,7 @@ type Process struct {
 func StartProcess(ctx context.Context, binPath string, sess *store.Session, credentialID string, sessionEnvironment []string, workingDir string) (*Process, error) {
 	cmd := exec.Command(binPath)
 	cmd.Dir = workingDir
-	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
+	cmd.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(), BridgeSessionIDEnvironmentVariable+"="+sess.SessionID)
 	if credentialID != "" {
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_CREDENTIAL_ID="+credentialID)
 	}
@@ -454,7 +468,7 @@ type PTYProcess struct {
 func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, credentialID string, extraEnv []string, workingDir string) (*PTYProcess, error) {
 	cmd := exec.Command(binPath)
 	cmd.Dir = workingDir
-	cmd.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(), "LLMBRIDGE_PTY_MODE=1")
+	cmd.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(), "LLMBRIDGE_PTY_MODE=1", BridgeSessionIDEnvironmentVariable+"="+sess.SessionID)
 	if credentialID != "" {
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_CREDENTIAL_ID="+credentialID)
 	}

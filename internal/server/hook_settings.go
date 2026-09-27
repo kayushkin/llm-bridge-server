@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
+	"sync"
 
 	hookstore "github.com/kayushkin/hook-store"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
@@ -19,7 +21,24 @@ import (
 // delegates to the harness manager. Every spawn path (create, resume,
 // auto-resume, fork) calls through here so hook wiring and machine
 // resolution stay consistent.
+//
+// Two callers may reach here for one session at once, and only one may
+// spawn. At startup auto-resume starts every session a restart interrupted
+// in a goroutine, while the server is already answering; a message sent to
+// the same session in that gap found no process yet and started a second
+// one, and the manager's map kept whichever registered last while the other
+// ran on unsupervised. A deploy that reports back to the session that
+// started it sends exactly such a message, seconds after the restart. So the
+// spawn holds a lock per session, and a caller that finds a process already
+// running is handed that process instead of a second one.
 func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credID string) (harness.HarnessProcess, error) {
+	harnessStartLock, _ := s.harnessStartLockBySessionID.LoadOrStore(sess.SessionID, &sync.Mutex{})
+	harnessStartLock.(*sync.Mutex).Lock()
+	defer harnessStartLock.(*sync.Mutex).Unlock()
+	if running := s.harness.Get(sess.SessionID); running != nil {
+		log.Printf("[spawn] %s: a harness process is already running; using it instead of starting a second", sess.SessionID)
+		return running, nil
+	}
 	// A session that has spent its ceiling does not get a process, whichever
 	// path asked for one. The individual handlers check this too, because
 	// only they can return a decent HTTP status for it — but the check

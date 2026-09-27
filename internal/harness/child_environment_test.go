@@ -70,6 +70,9 @@ func TestAnEventsModeHarnessChildDoesNotReceiveServerSecrets(t *testing.T) {
 	if !containsEntry(environment, "LLMBRIDGE_CREDENTIAL_ID=cred-1") {
 		t.Errorf("the credential id the spawn adds is missing; the scrubbed environment replaced too much")
 	}
+	if !containsEntry(environment, BridgeSessionIDEnvironmentVariable+"=sess-environment") {
+		t.Errorf("the child was not told its bridge session id, so a deploy it starts cannot report back to it: %v", environment)
+	}
 }
 
 func TestAPTYModeHarnessChildDoesNotReceiveServerSecrets(t *testing.T) {
@@ -82,7 +85,8 @@ func TestAPTYModeHarnessChildDoesNotReceiveServerSecrets(t *testing.T) {
 	defer proc.Kill()
 	environment := waitForRecordedEnvironment(t, recordTo)
 	assertNoSecretInEnvironment(t, environment)
-	if !containsEntry(environment, "LLMBRIDGE_PTY_MODE=1") || !containsEntry(environment, "EXTRA_FROM_CALLER=1") {
+	if !containsEntry(environment, "LLMBRIDGE_PTY_MODE=1") || !containsEntry(environment, "EXTRA_FROM_CALLER=1") ||
+		!containsEntry(environment, BridgeSessionIDEnvironmentVariable+"=sess-environment-pty") {
 		t.Errorf("pty child lost the variables the spawn adds: %v", environment)
 	}
 }

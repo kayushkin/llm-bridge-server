@@ -6,45 +6,17 @@ set -euo pipefail
 # It lives in healthcheck/scripts/deploy-gate.sh. Do not inline or copy it.
 ( cd "$(dirname "$0")" && "$HOME/bin/deploy-gate" check )
 
-# Re-exec inside a fresh systemd transient unit so the deploy survives
-# `systemctl stop llm-bridge.service`. When the deploy is triggered by an
-# agent running inside llm-bridge.service, the agent's bash is in the
-# service's cgroup; `setsid nohup` does NOT escape systemd's control-group
-# kill, so the stop takes the deploy with it. A transient unit lives in
-# its own cgroup under system.slice and is untouched by the service stop.
+# The deploy stops llm-bridge.service, and an agent that runs this from a bridge
+# session is inside that service's cgroup, so the stop would kill the deploy
+# with the agent. deploy-gate detach re-runs this script in a transient unit
+# outside that cgroup and returns at once; when the deploy ends, pass or fail,
+# it sends the outcome to the session that started it, which the restart may
+# have left idle with nothing else to wake it.
 if [ -z "${DEPLOY_DETACHED:-}" ]; then
-  # Log lives under $HOME (not /tmp) because systemd transient units get a
-  # PrivateTmp namespace, so the unit can't write to the host's /tmp.
-  LOG="$HOME/.cache/llm-bridge-deploy.log"
-  mkdir -p "$(dirname "$LOG")"
-  : >"$LOG"
-  UNIT="llm-bridge-deploy-$$.service"
-  # Resolve $0 to an absolute path — the transient unit doesn't inherit our
-  # working directory, so a relative ./deploy.sh would fail to find itself.
-  SCRIPT="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-  sudo systemd-run \
-    --collect \
-    --unit="$UNIT" \
-    --description="llm-bridge deploy ($USER)" \
-    --uid="$(id -u)" \
-    --gid="$(id -g)" \
-    --setenv=DEPLOY_DETACHED=1 \
-    ${DEPLOY_GATE_OVERRIDE:+--setenv=DEPLOY_GATE_OVERRIDE="$DEPLOY_GATE_OVERRIDE"} \
-    ${CLAUDE_CODE_SESSION_ID:+--setenv=CLAUDE_CODE_SESSION_ID="$CLAUDE_CODE_SESSION_ID"} \
-    ${AI_AGENT:+--setenv=AI_AGENT="$AI_AGENT"} \
-    --setenv=HOME="$HOME" \
-    --setenv=PATH="$PATH" \
-    --setenv=AUTH_STORE_URL="${AUTH_STORE_URL:-}" \
-    --setenv=AUTH_STORE_TOKEN="${AUTH_STORE_TOKEN:-}" \
-    --setenv=LLMBRIDGE_MAILSTACK_TOKEN="${LLMBRIDGE_MAILSTACK_TOKEN:-}" \
-    --setenv=GOWORK="${GOWORK:-}" \
-    --property=StandardOutput=append:"$LOG" \
-    --property=StandardError=append:"$LOG" \
-    bash "$SCRIPT" "$@" >/dev/null
-  echo "detached deploy (unit=$UNIT), tail -f $LOG"
-  echo "  status: systemctl status $UNIT"
-  echo "  logs:   journalctl -u $UNIT -f"
-  exit 0
+  cd "$(dirname "$0")"
+  exec "$HOME/bin/deploy-gate" detach "$HOME/.cache/llm-bridge-deploy.log" \
+    --setenv AUTH_STORE_URL --setenv AUTH_STORE_TOKEN --setenv LLMBRIDGE_MAILSTACK_TOKEN --setenv GOWORK \
+    -- bash "$(pwd)/$(basename "$0")" "$@"
 fi
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -57,8 +57,11 @@ type Server struct {
 	modelStore    *modelstore.Store
 	snapshotStore *snapshotstore.Store
 	harness       *harness.Manager
-	authClient    *authstoreclient.Client
-	permClient    *permclient.Client
+	// harnessStartLockBySessionID holds a *sync.Mutex per session id, so
+	// startOnInstance spawns at most one harness process per session.
+	harnessStartLockBySessionID sync.Map
+	authClient                  *authstoreclient.Client
+	permClient                  *permclient.Client
 	// grantClient reads a session principal's effective grants at spawn;
 	// principalClient checks a principal_id at creation. See tool_provision.go
 	// and handleCreateSession.
