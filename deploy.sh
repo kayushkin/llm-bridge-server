@@ -32,6 +32,13 @@ DROPIN="$DROPIN_DIR/local.conf"
 STAMP="$(date +%Y%m%dT%H%M%S)"
 BACKUP_BIN="$SYSTEM_BIN.backup-$STAMP"
 BACKUP_DROPIN=""
+# file-store.conf gives the server file-store's address and token (session files).
+# Tracked separately because a rollback must also take it AWAY when this run is the
+# one that added it: a binary from before session files refuses to start on
+# LLMBRIDGE_FILE_STORE_URL, an LLMBRIDGE_ variable it does not declare, and does not
+# strip FILE_STORE_SERVICE_TOKEN from its harness children.
+FILE_STORE_DROPIN="$DROPIN_DIR/file-store.conf"
+BACKUP_FILE_STORE_DROPIN=""
 
 # rollback restores the binary and drop-in this run replaced, restarts, and
 # confirms the service actually answers again. Called from the failure paths
@@ -47,6 +54,11 @@ rollback() {
   sudo cp -p "$BACKUP_BIN" "$SYSTEM_BIN"
   if [ -n "$BACKUP_DROPIN" ] && [ -f "$BACKUP_DROPIN" ]; then
     sudo cp -p "$BACKUP_DROPIN" "$DROPIN"
+  fi
+  if [ -n "$BACKUP_FILE_STORE_DROPIN" ] && [ -f "$BACKUP_FILE_STORE_DROPIN" ]; then
+    sudo cp -p "$BACKUP_FILE_STORE_DROPIN" "$FILE_STORE_DROPIN"
+  else
+    sudo rm -f "$FILE_STORE_DROPIN"
   fi
   sudo systemctl daemon-reload
   sudo systemctl start "$SERVICE"
@@ -112,6 +124,11 @@ if [ -f "$DROPIN" ]; then
   BACKUP_DROPIN="$DROPIN.backup-$STAMP"
   sudo cp -p "$DROPIN" "$BACKUP_DROPIN"
   echo "    drop-in -> $BACKUP_DROPIN"
+fi
+if [ -f "$FILE_STORE_DROPIN" ]; then
+  BACKUP_FILE_STORE_DROPIN="$FILE_STORE_DROPIN.backup-$STAMP"
+  sudo cp -p "$FILE_STORE_DROPIN" "$BACKUP_FILE_STORE_DROPIN"
+  echo "    file-store drop-in -> $BACKUP_FILE_STORE_DROPIN"
 fi
 
 echo "==> Stopping $SERVICE..."
@@ -197,6 +214,29 @@ sudo cp "$TMP_DROPIN" "$DROPIN_DIR/local.conf"
 rm -f "$TMP_DROPIN"
 # Remove the hand-rolled drop-in left over from before deploy.sh owned this.
 sudo rm -f "$DROPIN_DIR/path.conf"
+
+# Session files: file-store's address from file-store's own unit, and its token from
+# its own host-local file -- never the shared principal-gating file. Either missing
+# leaves session files off (their routes answer 503) rather than failing the deploy.
+FILE_STORE_TOKENS="$HOME/.config/file-store-tokens.env"
+FILE_STORE_UNIT="$HOME/.config/systemd/user/file-store.service"
+FILE_STORE_ADDR="$(grep -oP '^Environment=FILE_STORE_ADDR=\K.*' "$FILE_STORE_UNIT" 2>/dev/null || true)"
+if [ -f "$FILE_STORE_TOKENS" ] && [ -n "$FILE_STORE_ADDR" ]; then
+  if [ "$(stat -c '%a' "$FILE_STORE_TOKENS")" != "600" ]; then
+    echo "ERROR: $FILE_STORE_TOKENS must be mode 600: its token reads every file file-store holds."
+    rollback
+    exit 1
+  fi
+  TMP_FILE_STORE_DROPIN=$(mktemp)
+  printf '[Service]\nEnvironmentFile=%s\nEnvironment=LLMBRIDGE_FILE_STORE_URL=http://%s\n' \
+    "$FILE_STORE_TOKENS" "$FILE_STORE_ADDR" > "$TMP_FILE_STORE_DROPIN"
+  sudo cp "$TMP_FILE_STORE_DROPIN" "$FILE_STORE_DROPIN"
+  rm -f "$TMP_FILE_STORE_DROPIN"
+  echo "    file-store drop-in: LLMBRIDGE_FILE_STORE_URL=http://$FILE_STORE_ADDR, token from $FILE_STORE_TOKENS"
+else
+  echo "WARNING: no $FILE_STORE_TOKENS or no FILE_STORE_ADDR in $FILE_STORE_UNIT; session files stay off"
+  sudo rm -f "$FILE_STORE_DROPIN"
+fi
 
 sudo systemctl daemon-reload
 
