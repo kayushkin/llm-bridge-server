@@ -484,8 +484,10 @@ func TestManager_NonAgentTaskCarriesNoSubagentSessionID(t *testing.T) {
 // taskNotification models the frame that actually closes a backgrounded shell.
 // Taken from a live capture (log-store events 1770747/1770748): a local_bash
 // task_started, then a task_notification naming the same task_id and tool_use_id
-// and carrying status "completed". A shell is never closed by a task_updated,
-// which is why the fixture is not the one the subagent tests use.
+// and carrying status "completed". Since 2026-09-12 Claude Code usually sends a
+// terminal task_updated for the same shell as well, and now and then that frame
+// is the only one to arrive. So a shell can be closed by either frame; this
+// fixture builds the task_notification one.
 func taskNotification(bridgeID, toolUseID, taskID, status string) msg.Event {
 	raw, _ := json.Marshal(map[string]any{
 		"type": "system", "subtype": "task_notification",
