@@ -78,6 +78,7 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 	if err != nil {
 		return nil, err
 	}
+	sessionEnvironment = append(sessionEnvironment, s.sessionFileSharingEnvironment(sess)...)
 	return s.harness.StartOnInstance(ctx, sess, inst, credID, sessionEnvironment)
 }
 

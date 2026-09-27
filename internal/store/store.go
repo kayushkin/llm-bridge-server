@@ -523,6 +523,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateServiceSettings(); err != nil {
 		return err
 	}
+	if err := s.migrateSessionFiles(); err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -493,6 +493,21 @@ func (s *Server) supersedeStaleQuestions(bridgeID string) {
 	}
 }
 
+// onUnpromptedTurnStart retires the questions a turn the harness opened by
+// itself has moved past.
+//
+// Measured on br_1790362479778008348 (2026-09-25): a turn settled with a
+// background agent still running, the classifier raised "Ready for
+// dialog-wording check" from its last message, and two minutes later the
+// agent finished and Claude Code opened a new turn with its
+// <task-notification>. Nothing closed the question until that turn ENDED, so
+// for the whole of a long turn the user was asked about a state the session
+// had already left. An answer sent now would land after the new turn's output,
+// which is the thread argument supersedeStaleQuestions makes for a turn-end.
+func (s *Server) onUnpromptedTurnStart(bridgeID string, _ *msg.Event) {
+	s.supersedeStaleQuestions(bridgeID)
+}
+
 // closeQuestionsAnsweredByMessage closes the session's open questions with the
 // message the user just sent.
 //

@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"bufio"
 	"bytes"
 	"context"
@@ -9,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"log"
 	"os"
 	"os/exec"
@@ -16,12 +16,12 @@ import (
 	"sync"
 	"time"
 
-	logstore "github.com/kayushkin/log-store/client"
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
+	logstore "github.com/kayushkin/log-store/client"
 )
 
 // sessionMsgState tracks per-session message-id assignment for the manager.
@@ -29,13 +29,13 @@ import (
 // is the right place to mint canonical bridge MessageIDs and reconcile them
 // against harness-native ids on resume/replay.
 type sessionMsgState struct {
-	bridgeMsgID      string                            // currently-open assistant bridge id, "" between turns
-	harnessMsgID     string                            // last-seen harness id for the open bridge message
-	harnessToBridge  map[string]string                 // harness id → bridge id, for resume reconciliation
-	toolUseToMessage map[string]store.ToolUseBinding   // tool_use_id → bubble ids, for task_progress correlation
-	clientRequestID  string                            // caller's per-turn id from the latest user_message, "" between turns
-	turnID           string                            // bridge-minted per-turn id, "" between turns
-	turnPromptText   string                            // text of the prompt that opened the current turn, "" between turns; used to recognise Claude Code's OTel echo of that prompt
+	bridgeMsgID      string                          // currently-open assistant bridge id, "" between turns
+	harnessMsgID     string                          // last-seen harness id for the open bridge message
+	harnessToBridge  map[string]string               // harness id → bridge id, for resume reconciliation
+	toolUseToMessage map[string]store.ToolUseBinding // tool_use_id → bubble ids, for task_progress correlation
+	clientRequestID  string                          // caller's per-turn id from the latest user_message, "" between turns
+	turnID           string                          // bridge-minted per-turn id, "" between turns
+	turnPromptText   string                          // text of the prompt that opened the current turn, "" between turns; used to recognise Claude Code's OTel echo of that prompt
 }
 
 // StoredEvent pairs an event with its database row ID, assigned at insert time.
@@ -46,25 +46,26 @@ type StoredEvent struct {
 
 // Manager handles harness subprocess lifecycle.
 type Manager struct {
-	mu              sync.RWMutex
-	processes       map[string]HarnessProcess     // sessionID → process
-	subscribers     map[string][]chan StoredEvent // sessionID → SSE subscriber channels
-	msgState        map[string]*sessionMsgState   // sessionID → message-id assignment state
-	attachHubs      map[string]*AttachHub         // sessionID → fan-out hub for pty sessions
-	derivation      map[string]*derivationState   // sessionID → convenience-event derivation state
-	budgetHalted    map[string]bool               // sessionID → already announced this session's spend-ceiling breach (see budget.go)
-	otelSidecars    map[string]*otelSidecar       // sessionID → per-PTY OTel sidecar (nil for non-PTY sessions)
-	pending         *pendingHooks                 // awaiting_resolution hooks indexed by sessionID, request_id
-	store           *store.Store
-	logStore        *logstore.Client
-	logStoreWrites  *logStoreQueue  // ordered per-session writer; keeps the log-store POST off the SSE fan-out path
-	runners         *RunnerRegistry // optional; nil disables TransportRunner spawns
-	authClient      *authstoreclient.Client
-	publicServerURL string          // public bridge URL runners use for /api/runner/binary fetches
-	localBridgeURL  string          // localhost URL the per-session OTel sidecar POSTs translated events to; derived from ListenAddr at startup
-	ptyRingBytes    int             // configured ring buffer size for pty late-attach replay
-	turnEnd         TurnEndObserver // optional; notified after each turn-end event is derived and fanned out
-	sessionInfo     SessionInfoObserver // optional; notified when a harness reports its session info
+	mu                  sync.RWMutex
+	processes           map[string]HarnessProcess     // sessionID → process
+	subscribers         map[string][]chan StoredEvent // sessionID → SSE subscriber channels
+	msgState            map[string]*sessionMsgState   // sessionID → message-id assignment state
+	attachHubs          map[string]*AttachHub         // sessionID → fan-out hub for pty sessions
+	derivation          map[string]*derivationState   // sessionID → convenience-event derivation state
+	budgetHalted        map[string]bool               // sessionID → already announced this session's spend-ceiling breach (see budget.go)
+	otelSidecars        map[string]*otelSidecar       // sessionID → per-PTY OTel sidecar (nil for non-PTY sessions)
+	pending             *pendingHooks                 // awaiting_resolution hooks indexed by sessionID, request_id
+	store               *store.Store
+	logStore            *logstore.Client
+	logStoreWrites      *logStoreQueue  // ordered per-session writer; keeps the log-store POST off the SSE fan-out path
+	runners             *RunnerRegistry // optional; nil disables TransportRunner spawns
+	authClient          *authstoreclient.Client
+	publicServerURL     string                      // public bridge URL runners use for /api/runner/binary fetches
+	localBridgeURL      string                      // localhost URL the per-session OTel sidecar POSTs translated events to; derived from ListenAddr at startup
+	ptyRingBytes        int                         // configured ring buffer size for pty late-attach replay
+	turnEnd             TurnEndObserver             // optional; notified after each turn-end event is derived and fanned out
+	unpromptedTurnStart UnpromptedTurnStartObserver // optional; notified when the harness opens a turn nobody sent
+	sessionInfo         SessionInfoObserver         // optional; notified when a harness reports its session info
 
 	// folderResolver maps a session purpose to its sidebar folder, using the
 	// same env-defaults-plus-DB-overrides mapping the HTTP layer uses. Owned by
@@ -107,6 +108,36 @@ func (m *Manager) SetTurnEndObserver(fn TurnEndObserver) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.turnEnd = fn
+}
+
+// UnpromptedTurnStartObserver is called when the harness itself opens a turn:
+// a user_message that came out of the harness process rather than through
+// POST /sessions/{id}/send. Claude Code does this when a background agent
+// finishes and its <task-notification> is fed back in.
+//
+// A turn started by /send is deliberately NOT reported: that handler closes
+// the session's open questions itself, as answered with the message, and an
+// observer racing it would record them as dismissed instead. Nor is a
+// user_message replayed from a pty rollout (Extensions["source"]="rollout"),
+// which re-reads history on every resume and would close questions that no new
+// turn has passed.
+//
+// Runs on its own goroutine, after the event and its derivations are out.
+type UnpromptedTurnStartObserver func(bridgeID string, ev *msg.Event)
+
+// SetUnpromptedTurnStartObserver registers it. Passing nil clears it. Called
+// once at wiring time, before any session starts.
+func (m *Manager) SetUnpromptedTurnStartObserver(fn UnpromptedTurnStartObserver) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.unpromptedTurnStart = fn
+}
+
+// isRolloutReplay reports whether a harness event was read back from a pty
+// rollout file rather than observed as it happened.
+func isRolloutReplay(ev *msg.Event) bool {
+	source, ok := ev.Extensions["source"]
+	return ok && string(source) == `"rollout"`
 }
 
 // SessionInfoObserver is called when a harness reports its session info
@@ -796,6 +827,16 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 		// been fanned out so subscribers see cause before effect on
 		// Last-Event-ID replay. See msg/CONVENIENCE-EVENTS.md.
 		m.deriveAndBroadcast(routeID, &event)
+
+		if event.Type == msg.EventUserMessage && !isRolloutReplay(&event) {
+			m.mu.RLock()
+			observer := m.unpromptedTurnStart
+			m.mu.RUnlock()
+			if observer != nil {
+				startedTurn := event
+				go observer(routeID, &startedTurn)
+			}
+		}
 	}
 
 	// Process exited — drain everything still queued for log-store before

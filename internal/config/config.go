@@ -41,9 +41,16 @@ type Config struct {
 	ModelStoreURL                 string
 	AgentStoreURL                 string
 	ImagesDir                     string
-	BridgePrefsPath               string
-	ConformancePath               string
-	LogStoreURL                   string
+	// SessionFilesDir is where a file shared into a session is copied for its
+	// agent to read: <dir>/<session id>/<file id>/<filename>.
+	SessionFilesDir string
+	// FileStoreURL is file-store's base URL. Empty switches session files off.
+	FileStoreURL string
+	// FileStoreServiceToken is sent to file-store as X-File-Store-Service-Token.
+	FileStoreServiceToken string
+	BridgePrefsPath       string
+	ConformancePath       string
+	LogStoreURL           string
 	// PublicURL is the externally-reachable bridge URL that runners use
 	// to fetch backend binaries listed in HarnessService.BinaryURL. Empty
 	// → manifests fall back to the runner's own server_url, which works
@@ -185,6 +192,10 @@ const (
 	// so every harness child inherited both tokens.
 	GrantStoreServiceTokenEnvironmentVariable  = "GRANT_STORE_SERVICE_TOKEN"
 	KanbanStoreServiceTokenEnvironmentVariable = kanbanclient.ServiceTokenEnvironmentVariable
+	// file-store's token is file-store's own name for it, loaded from its own
+	// host-local file (~/.config/file-store-tokens.env) — never the shared
+	// principal-gating file. It reads every file file-store holds.
+	FileStoreServiceTokenEnvironmentVariable = "FILE_STORE_SERVICE_TOKEN"
 )
 
 // SecretEnvironmentVariableNames lists every environment variable that must
@@ -202,6 +213,7 @@ func SecretEnvironmentVariableNames() []string {
 		ServiceTokenEnvironmentVariable,
 		GrantStoreServiceTokenEnvironmentVariable,
 		KanbanStoreServiceTokenEnvironmentVariable,
+		FileStoreServiceTokenEnvironmentVariable,
 	}
 }
 
@@ -315,6 +327,9 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		ModelStoreURL:                 settings.String("model_store.url"),
 		AgentStoreURL:                 settings.String("agent_store.url"),
 		ImagesDir:                     settings.String("images.directory"),
+		SessionFilesDir:               settings.String("session_files.directory"),
+		FileStoreURL:                  settings.String("file_store.url"),
+		FileStoreServiceToken:         settings.String("file_store.service_token"),
 		BridgePrefsPath:               settings.String("bridge_preferences.path"),
 		ConformancePath:               settings.String("conformance.path"),
 		LogStoreURL:                   settings.String("log_store.url"),

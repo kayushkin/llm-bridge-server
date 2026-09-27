@@ -121,6 +121,12 @@ sleep 1
 echo "==> Installing binary to $SYSTEM_BIN..."
 sudo cp "$BIN_NAME" "$SYSTEM_BIN"
 
+echo "==> Installing bridge-share-file..."
+# How an agent shows the user a file: it uploads into the agent's own session
+# with the token every harness child is given. On PATH for every child because
+# the unit's PATH is the deploying user's, which holds ~/bin.
+install -m 755 "$REPO_DIR/scripts/bridge-share-file" "$HOME/bin/bridge-share-file"
+
 echo "==> Installing service file..."
 # The committed unit file uses __USER__ / __HOME__ placeholders so the repo
 # stays portable. Expand them for the local machine before installing.

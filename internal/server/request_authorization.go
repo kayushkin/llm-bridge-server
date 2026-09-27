@@ -95,6 +95,12 @@ const (
 	// store proxy: a login cookie or a session agent token, and the request
 	// reaches the store as that principal.
 	routePrincipalOrSessionAgentThroughStoreProxy
+	// routeSessionOwnerOrItsAgentSharesFile puts a file into the session in a
+	// path value. A principal reaches it as on routePrincipalOwnsSession. So
+	// does the session's own agent, presenting its session file token
+	// (session_file_token.go) as a Bearer token — for that session and no
+	// other. The token is accepted on no other class.
+	routeSessionOwnerOrItsAgentSharesFile
 )
 
 // routeAccessRule is one route's classification.
@@ -116,6 +122,10 @@ func harnessCallbackRoute(reason string) routeAccessRule {
 }
 func operatorRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routeOperatorOnly, reason: reason}
+}
+func sessionFileSharingRoute(pathValueName string) routeAccessRule {
+	return routeAccessRule{class: routeSessionOwnerOrItsAgentSharesFile, ownedResourcePathValueName: pathValueName,
+		reason: "shares a file into one session, as its owner or as its own agent"}
 }
 func sessionOwnedRoute(pathValueName string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalOwnsSession, ownedResourcePathValueName: pathValueName, reason: "acts on one session"}
@@ -176,37 +186,41 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /sessions/aggregates":    cannotBeFilteredRoute("aggregates computed by log-store across every session"),
 	"GET /sessions/discover":      operatorRoute("imports sessions found on this host's disk"),
 
-	"GET /sessions/{id}":                               sessionOwnedRoute("id"),
-	"POST /sessions/{id}/send":                         sessionOwnedRoute("id"),
-	"GET /sessions/{id}/events":                        sessionOwnedRoute("id"),
-	"GET /sessions/{id}/attach":                        sessionOwnedRoute("id"),
-	"GET /sessions/{id}/attach-token":                  sessionOwnedRoute("id"),
-	"GET /sessions/{id}/messages":                      sessionOwnedRoute("id"),
-	"GET /sessions/{id}/messages/raw":                  sessionOwnedRoute("id"),
-	"GET /sessions/{id}/entries/{eventId}":             sessionOwnedRoute("id"),
-	"POST /sessions/{id}/interrupt":                    sessionOwnedRoute("id"),
-	"POST /sessions/{id}/resume":                       sessionOwnedRoute("id"),
-	"POST /sessions/{id}/stop":                         sessionOwnedRoute("id"),
-	"POST /sessions/{id}/mode":                         sessionOwnedRoute("id"),
-	"POST /sessions/{id}/compact":                      sessionOwnedRoute("id"),
-	"POST /sessions/{id}/fork":                         sessionOwnedRoute("id"),
-	"POST /sessions/{id}/rename":                       sessionOwnedRoute("id"),
-	"POST /sessions/{id}/config":                       sessionOwnedRoute("id"),
-	"POST /sessions/{id}/mark-done":                    sessionOwnedRoute("id"),
-	"GET /sessions/{id}/git/repos":                     sessionOwnedRoute("id"),
-	"GET /sessions/{id}/git":                           sessionOwnedRoute("id"),
-	"GET /sessions/{id}/effective-config":              sessionOwnedRoute("id"),
-	"GET /sessions/{id}/hooks/pending":                 sessionOwnedRoute("id"),
-	"POST /sessions/{id}/hooks/{request_id}/resolve":   sessionOwnedRoute("id"),
-	"GET /sessions/{id}/signals":                       sessionOwnedRoute("id"),
-	"POST /sessions/{id}/signals":                      sessionOwnedRoute("id"),
-	"GET /sessions/{id}/tools/{tool_use_id}/snapshots": sessionOwnedRoute("id"),
-	"PUT /sessions/{id}/folder":                        operatorRoute("files a session into the shared folder registry"),
-	"PUT /sessions/{id}/permission-mode":               operatorRoute("can switch a session to bypass, skipping permission-store"),
-	"PUT /sessions/{id}/bypass-permissions":            operatorRoute("can switch a session to bypass, skipping permission-store"),
-	"POST /signals/{id}/resolve":                       signalOwnedRoute("id"),
-	"POST /signals/{id}/answer":                        signalOwnedRoute("id"),
-	"GET /snapshots/blob/{sha}":                        cannotBeFilteredRoute("content-addressed blob shared across sessions; nothing ties a sha to one session"),
+	"GET /sessions/{id}":                                  sessionOwnedRoute("id"),
+	"POST /sessions/{id}/send":                            sessionOwnedRoute("id"),
+	"POST /sessions/{id}/files":                           sessionFileSharingRoute("id"),
+	"GET /sessions/{id}/files":                            sessionOwnedRoute("id"),
+	"GET /sessions/{id}/files/{file_id}/content":          sessionOwnedRoute("id"),
+	"GET /sessions/{id}/events":                           sessionOwnedRoute("id"),
+	"GET /sessions/{id}/attach":                           sessionOwnedRoute("id"),
+	"GET /sessions/{id}/attach-token":                     sessionOwnedRoute("id"),
+	"GET /sessions/{id}/messages":                         sessionOwnedRoute("id"),
+	"GET /sessions/{id}/messages/raw":                     sessionOwnedRoute("id"),
+	"GET /sessions/{id}/entries/{eventId}":                sessionOwnedRoute("id"),
+	"GET /sessions/{id}/entries/{eventId}/images/{index}": sessionOwnedRoute("id"),
+	"POST /sessions/{id}/interrupt":                       sessionOwnedRoute("id"),
+	"POST /sessions/{id}/resume":                          sessionOwnedRoute("id"),
+	"POST /sessions/{id}/stop":                            sessionOwnedRoute("id"),
+	"POST /sessions/{id}/mode":                            sessionOwnedRoute("id"),
+	"POST /sessions/{id}/compact":                         sessionOwnedRoute("id"),
+	"POST /sessions/{id}/fork":                            sessionOwnedRoute("id"),
+	"POST /sessions/{id}/rename":                          sessionOwnedRoute("id"),
+	"POST /sessions/{id}/config":                          sessionOwnedRoute("id"),
+	"POST /sessions/{id}/mark-done":                       sessionOwnedRoute("id"),
+	"GET /sessions/{id}/git/repos":                        sessionOwnedRoute("id"),
+	"GET /sessions/{id}/git":                              sessionOwnedRoute("id"),
+	"GET /sessions/{id}/effective-config":                 sessionOwnedRoute("id"),
+	"GET /sessions/{id}/hooks/pending":                    sessionOwnedRoute("id"),
+	"POST /sessions/{id}/hooks/{request_id}/resolve":      sessionOwnedRoute("id"),
+	"GET /sessions/{id}/signals":                          sessionOwnedRoute("id"),
+	"POST /sessions/{id}/signals":                         sessionOwnedRoute("id"),
+	"GET /sessions/{id}/tools/{tool_use_id}/snapshots":    sessionOwnedRoute("id"),
+	"PUT /sessions/{id}/folder":                           operatorRoute("files a session into the shared folder registry"),
+	"PUT /sessions/{id}/permission-mode":                  operatorRoute("can switch a session to bypass, skipping permission-store"),
+	"PUT /sessions/{id}/bypass-permissions":               operatorRoute("can switch a session to bypass, skipping permission-store"),
+	"POST /signals/{id}/resolve":                          signalOwnedRoute("id"),
+	"POST /signals/{id}/answer":                           signalOwnedRoute("id"),
+	"GET /snapshots/blob/{sha}":                           cannotBeFilteredRoute("content-addressed blob shared across sessions; nothing ties a sha to one session"),
 
 	// Operations.
 	"POST /operations":                            {class: routePrincipalCreatesOperation, reason: "a principal starts operations as itself, in an organization it belongs to"},
@@ -367,6 +381,10 @@ type requestCaller struct {
 	// owns it, every operator route, every list unfiltered, both store
 	// proxies.
 	isAdministrator bool
+	// fileSharingAgentOfSessionID is set, and nothing else is, when the caller
+	// is a session's own agent presenting its session file token. It reaches
+	// only routeSessionOwnerOrItsAgentSharesFile, for this session.
+	fileSharingAgentOfSessionID string
 }
 
 // narrowsToOnePrincipal reports whether this caller's answers must be limited
@@ -478,6 +496,16 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization && rule.class == routeSessionOwnerOrItsAgentSharesFile {
+		caller, credentialError := s.fileSharingAgentOfRequest(r, pattern, rule)
+		if credentialError != nil {
+			credentialError.write(w)
+			return
+		}
+		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+		return
+	}
+
 	principalID, credentialError := s.principalOfRequest(r, rule)
 	if credentialError != nil {
 		credentialError.write(w)
@@ -522,7 +550,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 		writeJSONError(w, http.StatusForbidden, "route_not_available_to_principals", fmt.Sprintf(
 			"%s cannot be narrowed to one principal's sessions (%s), so it is refused rather than answered across principals; use the service token", pattern, rule.reason))
 		return
-	case routePrincipalOwnsSession:
+	case routePrincipalOwnsSession, routeSessionOwnerOrItsAgentSharesFile:
 		sessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
@@ -627,6 +655,30 @@ func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (stri
 		return "", &requestCredentialError{http.StatusUnauthorized, "not_logged_in", err.Error()}
 	}
 	return session.PrincipalID, nil
+}
+
+// fileSharingAgentOfRequest verifies a session file token and holds it to the
+// session in the path. A token for another session is 404, the same answer a
+// principal gets for a session that is not theirs.
+func (s *Server) fileSharingAgentOfRequest(r *http.Request, pattern string, rule routeAccessRule) (requestCaller, *requestCredentialError) {
+	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+	if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
+		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "invalid_session_file_token",
+			"the Authorization header must be \"Bearer <session file token>\""}
+	}
+	tokenSessionID, err := s.principalSessionCookieCodec.decodeSessionFileToken(strings.TrimSpace(token))
+	if err != nil {
+		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "invalid_session_file_token", err.Error()}
+	}
+	pathSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
+	if err != nil {
+		return requestCaller{}, &requestCredentialError{http.StatusInternalServerError, "route_rule_invalid", err.Error()}
+	}
+	session, err := s.store.GetSession(pathSessionID)
+	if err != nil || session.SessionID != tokenSessionID {
+		return requestCaller{}, &requestCredentialError{http.StatusNotFound, "session_not_found", "session not found"}
+	}
+	return requestCaller{fileSharingAgentOfSessionID: tokenSessionID}, nil
 }
 
 // pathValueForPattern extracts the named wildcard from an escaped request path

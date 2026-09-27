@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# bridge-share-file — show files to the person in this bridge session's chat.
+#
+#   bridge-share-file chart.png report.pdf
+#
+# Each file is uploaded into the session the agent is running in and appears in
+# the chat at this point in the conversation; an image is drawn there. Prints
+# each file's record as llm-bridge-server answered it.
+#
+# Works in any session llm-bridge-server spawned on this host: it gives every
+# harness child LLM_BRIDGE_SESSION_FILES_URL and a token that can share into
+# that one session and do nothing else (internal/server/session_file_token.go).
+set -euo pipefail
+
+if [ $# -eq 0 ]; then
+  echo "usage: bridge-share-file <file> [<file>...]" >&2
+  exit 2
+fi
+: "${LLM_BRIDGE_SESSION_FILES_URL:?is unset: this process was not started by llm-bridge-server with file sharing on}"
+: "${LLM_BRIDGE_SESSION_FILE_TOKEN:?is unset: this process was not started by llm-bridge-server with file sharing on}"
+
+for path in "$@"; do
+  if [ ! -f "$path" ]; then
+    echo "bridge-share-file: not a file: $path" >&2
+    exit 1
+  fi
+  name=$(basename -- "$path")
+  media_type=$(file --brief --mime-type -- "$path")
+  encoded_name=$(jq -rn --arg name "$name" '$name | @uri')
+  curl --fail-with-body --silent --show-error -X POST \
+    "$LLM_BRIDGE_SESSION_FILES_URL?filename=$encoded_name" \
+    -H "Authorization: Bearer $LLM_BRIDGE_SESSION_FILE_TOKEN" \
+    -H "Content-Type: $media_type" \
+    --data-binary "@$path"
+  echo
+done

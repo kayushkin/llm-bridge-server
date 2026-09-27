@@ -35,6 +35,7 @@ var whoMayCallRoute = map[routeAccessClass]string{
 	routePrincipalCreatesOperation:                "principal, as itself, in its organization",
 	routePrincipalOwnsOperation:                   "owner",
 	routePrincipalSeesOwnOperationsOnly:           "principal, own operations only",
+	routeSessionOwnerOrItsAgentSharesFile:         "owner, or the session's own agent",
 }
 
 func TestEveryRouteHasADescriptionAndEveryDescriptionARoute(t *testing.T) {

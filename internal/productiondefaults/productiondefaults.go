@@ -75,6 +75,12 @@ func BridgeDatabasePath() string {
 	return filepath.Join(homeDirectory(), ".llm-bridge", "bridge.db")
 }
 
+// SessionFilesDirectory is where files shared into sessions are copied for
+// their agents to read.
+func SessionFilesDirectory() string {
+	return filepath.Join(homeDirectory(), ".llm-bridge", "session-files")
+}
+
 // OperationsDatabasePath is where operations, their events and leases are kept.
 func OperationsDatabasePath() string {
 	return filepath.Join(homeDirectory(), ".llm-bridge", "operations.db")

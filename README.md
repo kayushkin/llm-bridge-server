@@ -214,7 +214,11 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/sessions/{id}/config` | Change model, effort, budget or disabled tools | owner |
 | `GET` | `/sessions/{id}/effective-config` | Every setting the session runs with, and which layer decided it | owner |
 | `GET` | `/sessions/{id}/entries/{eventId}` | One history entry with its tool input and output in full | owner |
+| `GET` | `/sessions/{id}/entries/{eventId}/images/{index}` | One image a tool result carries, relayed from log-store | owner |
 | `GET` | `/sessions/{id}/events` | SSE stream of `msg.Event`; replays the current turn and honours `Last-Event-ID` | owner |
+| `GET` | `/sessions/{id}/files` | Files shared into the session | owner |
+| `POST` | `/sessions/{id}/files` | Share a file into the session (its owner, or its own agent with LLM_BRIDGE_SESSION_FILE_TOKEN) | owner, or the session's own agent |
+| `GET` | `/sessions/{id}/files/{file_id}/content` | One shared file's bytes, relayed from file-store | owner |
 | `PUT` | `/sessions/{id}/folder` | Move into a folder | operator |
 | `POST` | `/sessions/{id}/fork` | Branch a new session from this one | owner |
 | `GET` | `/sessions/{id}/git` | Status and diff of one of them (`?repo=`) | owner |

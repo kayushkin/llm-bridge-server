@@ -18,6 +18,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/filestoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
@@ -72,7 +73,10 @@ type Server struct {
 	// kanbanClient answers "which noteboard todo is this session linked
 	// to?" when a signal is minted. Nil when kanban-store has no configured
 	// URL, which leaves every signal unlinked rather than guessing.
-	kanbanClient  *kanbanclient.Client
+	kanbanClient *kanbanclient.Client
+	// fileStore keeps the bytes of files shared into sessions. Nil when
+	// file-store is not wired, which switches session files off.
+	fileStore     *filestoreclient.Client
 	bridgePrefs   *bridgePrefsStore
 	cfState       *conformanceState
 	sessionHub    *sessionHub
@@ -158,6 +162,12 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	// The classifier reacts to turn-ends, so it hangs off the manager's
 	// observer rather than reaching into the derivation state machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
+	srv.harness.SetUnpromptedTurnStartObserver(srv.onUnpromptedTurnStart)
+	if cfg.FileStoreURL != "" {
+		srv.fileStore = filestoreclient.New(cfg.FileStoreURL, cfg.FileStoreServiceToken)
+	} else {
+		log.Printf("[session-files] LLMBRIDGE_FILE_STORE_URL is not set; session files are off")
+	}
 	srv.harness.SetSessionInfoObserver(srv.onSessionInfo)
 	// The classifier runs its call on a harness instance rather than against
 	// api.anthropic.com, so it needs the server's oneshot runner. Wired here
@@ -250,6 +260,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
 	s.mux.HandleFunc("POST /sessions/{id}/send", s.handleSendMessage)
+	s.mux.HandleFunc("POST /sessions/{id}/files", s.handleShareSessionFile)
+	s.mux.HandleFunc("GET /sessions/{id}/files", s.handleListSessionFiles)
+	s.mux.HandleFunc("GET /sessions/{id}/files/{file_id}/content", s.handleSessionFileContent)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleSessionEvents)
 	// Pty-mode session attach. Bidirectional WebSocket bound to the
 	// session's pseudoterminal fd; rejected for sessions started in
@@ -270,6 +283,7 @@ func (s *Server) routes() {
 	// entries carry tool payloads shortened to 2 KB (`payload=preview`, log-store
 	// stored_turns.go); a card that is opened fetches the whole entry here.
 	s.mux.HandleFunc("GET /sessions/{id}/entries/{eventId}", s.proxyToLogStore)
+	s.mux.HandleFunc("GET /sessions/{id}/entries/{eventId}/images/{index}", s.proxyToLogStore)
 	s.mux.HandleFunc("POST /sessions/{id}/interrupt", s.handleInterruptSession)
 	s.mux.HandleFunc("POST /sessions/{id}/resume", s.handleResumeSession)
 	s.mux.HandleFunc("POST /sessions/{id}/stop", s.handleStopSession)
