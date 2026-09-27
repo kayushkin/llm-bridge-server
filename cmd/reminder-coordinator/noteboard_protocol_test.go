@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -43,6 +44,8 @@ type noteboardStub struct {
 	knownID string
 	// lastQuery is the raw query of the last list request, for the caller to read.
 	lastQuery string
+	// listRequests counts GETs on the list route, so a test can see the paging.
+	listRequests int
 }
 
 func (n *noteboardStub) server(t *testing.T) *httptest.Server {
@@ -54,9 +57,19 @@ func (n *noteboardStub) server(t *testing.T) *httptest.Server {
 		switch r.Method {
 		case http.MethodGet:
 			n.lastQuery = r.URL.RawQuery
+			n.listRequests++
 			body := n.items
 			if body == nil {
 				body = []map[string]any{}
+			}
+			// noteboard caps a page at `limit` and skips `offset` rows first, and
+			// says nothing about what it left behind; the stub does the same so a
+			// client that stops after one page is caught here.
+			if offset, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil {
+				body = body[min(offset, len(body)):]
+			}
+			if limit, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+				body = body[:min(limit, len(body))]
 			}
 			json.NewEncoder(w).Encode(body)
 		case http.MethodPost:
@@ -175,40 +188,79 @@ func TestAnEmptyListIsAnEmptyArray(t *testing.T) {
 
 // ---------------------------------------------------------------- characterised
 
-// ⚠️ This test asserts a DEFECT is present. It is here so that the day somebody
-// repairs it, the suite says so instead of going quietly green.
-//
 // noteboard caps a page at the `limit` asked for and says nothing about what it
 // left behind — measured on :8191, where limit=500 returned exactly 500 open
-// todos and limit=5000 returned 1114. Every list method here asks for a fixed
-// 500 and none checks whether it got exactly that many back, so a full page and
-// a truncated one are the same value.
-//
-// Latent for the scope tag today (40 open `personal` todos), and NOT latent for
-// ListChildren: an instance-mode template accumulates one child per occurrence
-// for as long as it runs.
-func TestAFullPageIsIndistinguishableFromATruncatedOne(t *testing.T) {
-	full := make([]map[string]any, 500)
-	for i := range full {
-		full[i] = map[string]any{"id": fmt.Sprintf("item-%03d", i), "type": "todo", "title": "x"}
-	}
-	stub := &noteboardStub{items: full, knownID: "the-item"}
+// todos and limit=5000 returned 1114. The list methods used to ask for a fixed
+// 500, so a full page and a truncated one were the same value. They page now,
+// and this is the 1114 that was measured.
+func TestListOpenReadsPastTheFirstFullPage(t *testing.T) {
+	stub := &noteboardStub{items: numberedItems(1114), knownID: "the-item"}
 	client := &NoteboardClient{BaseURL: stub.server(t).URL}
 
 	items, err := client.ListOpen("personal")
 	if err != nil {
 		t.Fatalf("ListOpen: %v", err)
 	}
-	if len(items) != 500 {
-		t.Fatalf("stub returned %d items, want the 500 the client asked for", len(items))
+	if len(items) != 1114 {
+		t.Fatalf("got %d items, want all 1114 — the read stopped at a page boundary", len(items))
 	}
-	if !strings.Contains(stub.lastQuery, "limit=500") {
-		t.Fatalf("the client asked for a limit other than 500: %q", stub.lastQuery)
+	if stub.listRequests != 3 {
+		t.Errorf("made %d list requests, want 3 pages of 500 for 1114 items", stub.listRequests)
 	}
-	// The characterisation: a page that is exactly as long as the limit is
-	// returned with a nil error and no signal of any kind.
-	t.Log("characterised: 500 of 500 returned with no error and no short-read check — " +
-		"see the card on b9b8dafc; the repair is a paging decision, not a patch")
+}
+
+// ListChildren is the list that grows by itself: an instance-mode template keeps
+// one child per occurrence. hasChildDueAt reads it to avoid a duplicate, so a
+// child past the first page must still be in the answer.
+func TestListChildrenReadsPastTheFirstFullPage(t *testing.T) {
+	stub := &noteboardStub{items: numberedItems(501), knownID: "the-item"}
+	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+
+	items, err := client.ListChildren("the-template")
+	if err != nil {
+		t.Fatalf("ListChildren: %v", err)
+	}
+	if len(items) != 501 || items[500].ID != "item-00500" {
+		t.Fatalf("got %d children, want 501 ending in item-00500", len(items))
+	}
+}
+
+// A list that exactly fills its last page costs one more request, which comes
+// back empty. That empty page is what separates "500 of 500" from "500 of more".
+func TestAnExactlyFullPageIsFollowedByAnEmptyOne(t *testing.T) {
+	stub := &noteboardStub{items: numberedItems(500), knownID: "the-item"}
+	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+
+	items, err := client.ListOpen("personal")
+	if err != nil {
+		t.Fatalf("ListOpen: %v", err)
+	}
+	if len(items) != 500 || stub.listRequests != 2 {
+		t.Fatalf("got %d items in %d requests, want 500 in 2", len(items), stub.listRequests)
+	}
+}
+
+// The page bound is the one place the read can still stop early, so it must stop
+// loudly: a partial list returned as a whole one is the defect paging replaced.
+func TestAListLongerThanThePageBoundIsAnError(t *testing.T) {
+	stub := &noteboardStub{items: numberedItems(noteboardPageSize*noteboardMaxPages + 1), knownID: "the-item"}
+	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+
+	items, err := client.ListOpen("personal")
+	if err == nil {
+		t.Fatalf("got %d items and no error from a list longer than the page bound", len(items))
+	}
+	if !strings.Contains(err.Error(), "partial list") {
+		t.Errorf("error does not say the list was partial: %v", err)
+	}
+}
+
+func numberedItems(count int) []map[string]any {
+	items := make([]map[string]any, count)
+	for i := range items {
+		items[i] = map[string]any{"id": fmt.Sprintf("item-%05d", i), "type": "todo", "title": "x"}
+	}
+	return items
 }
 
 // ⚠️ Also a characterisation. noteboard answers 200 and echoes the whole item for

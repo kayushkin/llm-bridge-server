@@ -69,7 +69,7 @@ func TestListOpenSendsTheTagItWasGiven(t *testing.T) {
 		t.Fatalf("ListOpen: %v", err)
 	}
 	assertParametersAreExactly(t, *seen, map[string]string{
-		"type": "todo", "status": "open", "tag": probeTag, "limit": "500",
+		"type": "todo", "status": "open", "tag": probeTag, "limit": "500", "offset": "0",
 	})
 }
 
@@ -82,7 +82,7 @@ func TestListAllStatusesSendsTheTagItWasGiven(t *testing.T) {
 	}
 	// The loop's last status is "archived"; the tag is the value under test.
 	assertParametersAreExactly(t, *seen, map[string]string{
-		"type": "todo", "status": "archived", "tag": probeTag, "limit": "500",
+		"type": "todo", "status": "archived", "tag": probeTag, "limit": "500", "offset": "0",
 	})
 }
 
@@ -94,7 +94,7 @@ func TestListChildrenSendsTheParentIDItWasGiven(t *testing.T) {
 		t.Fatalf("ListChildren: %v", err)
 	}
 	assertParametersAreExactly(t, *seen, map[string]string{
-		"parent_id": probeParentID, "limit": "500",
+		"parent_id": probeParentID, "limit": "500", "offset": "0",
 	})
 }
 

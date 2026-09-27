@@ -47,6 +47,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1601,9 +1602,7 @@ func (h *Herald) Relay(from, title, message, reuseSessionID string) (string, err
 type NoteboardClient struct{ BaseURL string }
 
 func (n *NoteboardClient) ListOpen(tag string) ([]*model.Item, error) {
-	return n.list("/api/items?" + url.Values{
-		"type": {"todo"}, "status": {"open"}, "tag": {tag}, "limit": {"500"},
-	}.Encode())
+	return n.listEveryPage(url.Values{"type": {"todo"}, "status": {"open"}, "tag": {tag}})
 }
 
 // ListAllStatuses covers the calendar teardown path: an item that was completed
@@ -1611,9 +1610,7 @@ func (n *NoteboardClient) ListOpen(tag string) ([]*model.Item, error) {
 func (n *NoteboardClient) ListAllStatuses(tag string) ([]*model.Item, error) {
 	all := []*model.Item{}
 	for _, status := range []string{"open", "done", "archived"} {
-		items, err := n.list("/api/items?" + url.Values{
-			"type": {"todo"}, "status": {status}, "tag": {tag}, "limit": {"500"},
-		}.Encode())
+		items, err := n.listEveryPage(url.Values{"type": {"todo"}, "status": {status}, "tag": {tag}})
 		if err != nil {
 			return nil, err
 		}
@@ -1639,10 +1636,13 @@ func (n *NoteboardClient) ListScheduled(tag string) ([]*model.Item, error) {
 	return scheduled, nil
 }
 
+// ListChildren feeds hasChildDueAt, one of the two guards against spawning a
+// duplicate occurrence. An instance-mode template keeps one child per occurrence
+// and never retires them, so this is the list that grows without anyone deciding
+// it should — and a guard that reads only some of the children cannot see a
+// duplicate among the rest.
 func (n *NoteboardClient) ListChildren(parentID string) ([]*model.Item, error) {
-	return n.list("/api/items?" + url.Values{
-		"parent_id": {parentID}, "limit": {"500"},
-	}.Encode())
+	return n.listEveryPage(url.Values{"parent_id": {parentID}})
 }
 
 func (n *NoteboardClient) FindByTag(itemType, tag string) (*model.Item, error) {
@@ -1699,6 +1699,56 @@ func (n *NoteboardClient) SetSchedule(id string, schedule *model.Schedule, dryRu
 		return nil
 	}
 	return n.Patch(id, map[string]any{"schedule": schedule})
+}
+
+// noteboardPageSize and noteboardMaxPages bound listEveryPage. noteboard caps a
+// page at the limit it is asked for and says nothing about what it left behind,
+// so each list method used to ask for a fixed 500 and could not tell 500 of 500
+// from 500 of 1,114 (measured on :8191, 2026-09-07). Raising the constant would
+// have bought the same defect a later date, so the read pages instead, and the
+// one remaining bound is an error rather than a silent cut.
+const (
+	noteboardPageSize = 500
+	noteboardMaxPages = 200
+)
+
+// listEveryPage reads every item matching query, one page at a time, and fails
+// if the list is still going after noteboardMaxPages pages.
+//
+// noteboard orders by `created_at DESC, id`, a total order, and honours offset
+// together with type, status, tag and parent_id (checked on :8191, 2026-09-27).
+// An item created mid-read pushes rows toward later pages and can hand one back
+// twice, which the dedupe absorbs; an item deleted mid-read can drop one, which
+// the next run reads again.
+func (n *NoteboardClient) listEveryPage(query url.Values) ([]*model.Item, error) {
+	all := []*model.Item{}
+	seen := map[string]bool{}
+	for page := 0; page < noteboardMaxPages; page++ {
+		pageQuery := url.Values{}
+		for name, values := range query {
+			pageQuery[name] = values
+		}
+		pageQuery.Set("limit", strconv.Itoa(noteboardPageSize))
+		pageQuery.Set("offset", strconv.Itoa(page*noteboardPageSize))
+		batch, err := n.list("/api/items?" + pageQuery.Encode())
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range batch {
+			if seen[item.ID] {
+				continue
+			}
+			seen[item.ID] = true
+			all = append(all, item)
+		}
+		// A page shorter than the limit is the end of the list, and the only
+		// normal way out of this loop.
+		if len(batch) < noteboardPageSize {
+			return all, nil
+		}
+	}
+	return nil, fmt.Errorf("noteboard list %s: still full after %d pages of %d — refusing to act on a partial list",
+		query.Encode(), noteboardMaxPages, noteboardPageSize)
 }
 
 func (n *NoteboardClient) list(path string) ([]*model.Item, error) {
