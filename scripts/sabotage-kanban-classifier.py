@@ -612,6 +612,315 @@ CASES = [
         [("classifyOneSession func(session) bool) int {\n\tclassified := 0",
           "classifyOneSession func(session) bool) int {\n\tclassified := 1")],
     ),
+    # ---- THE TICK'S OWN LOGIC ----
+    #
+    # Added 2026-09-27 (card 68161ab4). The first --crosstable taken on main
+    # (bff5fc4) found 58 of 159 tests reddened by no case: the per-session gates,
+    # the signature helpers, the card apply path, the bridge readers, the model
+    # call and part of the digest had no row since C3b re-aimed the list. Each
+    # row below was aimed at one of those 58 and checked against main's code,
+    # not copied from the 08-31 branch: most of that branch's needles named code
+    # that has since moved (the Anthropic call, auth-store, registration).
+
+    # ---- the card apply path: dedupe, columns, links and the provenance trailer ----
+    Case(
+        'the last-resort dedupe stops firing, so a task already on the board is filed again',
+        [('\t\tif filed[normalizeTitle(nt.Title)] {\n\t\t\tlog.Printf(',
+          '\t\tif false && filed[normalizeTitle(nt.Title)] {\n\t\t\tlog.Printf(')],
+    ),
+    Case(
+        'a task filed this tick is not remembered, so one report naming it twice files it twice',
+        [('\t\tfiled[normalizeTitle(nt.Title)] = true\n\n\t\tcolName := stateToColumn(nt.State)',
+          '\t\t_ = filed\n\n\t\tcolName := stateToColumn(nt.State)')],
+    ),
+    Case(
+        'the source link is written with no value, so a classifier card cannot be told from a hand-filed one',
+        [('kc.AddCardLink(cardID, cardLinkSource, cardSourceClassifier, "")',
+          'kc.AddCardLink(cardID, cardLinkSource, "", "")')],
+    ),
+    Case(
+        'the id-keyed session link carries the display name, so nothing can join a created card to its session',
+        [('kc.AddCardLink(cardID, cardLinkSession, sess.SessionID, "classifier")',
+          'kc.AddCardLink(cardID, cardLinkSession, sess.DisplayName, "classifier")')],
+    ),
+    Case(
+        'an unrecognised state lands in Done instead of defaulting to In Progress',
+        [('\tcase "abandoned":\n\t\treturn kanbanvocab.ColumnFailed\n\tdefault:\n\t\treturn kanbanvocab.ColumnInProgress',
+          '\tcase "abandoned":\n\t\treturn kanbanvocab.ColumnFailed\n\tdefault:\n\t\treturn kanbanvocab.ColumnDone')],
+    ),
+    Case(
+        'normalizeTitle drops digits, so two titles differing only by a number dedupe into one',
+        [("case r >= 'a' && r <= 'z', r >= '0' && r <= '9':",
+          "case r >= 'a' && r <= 'z':")],
+    ),
+    Case(
+        'normalizeTitle stops folding case, so Fix X and fix x are two different tasks',
+        [('for _, r := range strings.ToLower(strings.TrimSpace(title)) {',
+          'for _, r := range strings.TrimSpace(title) {')],
+    ),
+    Case(
+        'a card whose column is missing is moved anyway instead of being skipped',
+        [('\t\tif !ok {\n\t\t\tlog.Printf("[%s] column %q missing for existing card update; skipping"',
+          '\t\tif !ok && false {\n\t\t\tlog.Printf("[%s] column %q missing for existing card update; skipping"')],
+    ),
+    Case(
+        'a card whose move failed has its body rewritten anyway, so the body and the column disagree',
+        [('degraded.Record("session %s: card %s not moved to %q", sess.SessionID, ec.CardID, colName)\n\t\t\tcontinue',
+          'degraded.Record("session %s: card %s not moved to %q", sess.SessionID, ec.CardID, colName)')],
+    ),
+    Case(
+        'a card that could not be moved is logged and not recorded, so the run reports success',
+        [('degraded.Record("session %s: card %s not moved to %q", sess.SessionID, ec.CardID, colName)\n',
+          '\n')],
+    ),
+    Case(
+        "an updated card body drops the model's summary and keeps only the trailer",
+        [('\t\tbody := ec.Summary\n\t\tif ec.Blocker',
+          '\t\tbody := ""\n\t\tif ec.Blocker')],
+    ),
+    Case(
+        "an update carries the summary twice, so the body is no longer this tick's summary and trailer alone",
+        [('body += "\\n\\n" + provenanceTrailer("updated by", sess.SessionID, ec.State) + "\\n"',
+          'body += "\\n\\n" + provenanceTrailer("updated by", sess.SessionID, ec.State) + "\\n" + ec.Summary')],
+    ),
+    Case(
+        'the update trailer names the display name where the session id belongs',
+        [('provenanceTrailer("updated by", sess.SessionID, ec.State)',
+          'provenanceTrailer("updated by", sess.DisplayName, ec.State)')],
+    ),
+    Case(
+        'the create trailer names the display name where the session id belongs',
+        [('provenanceTrailer("created by", sess.SessionID, nt.State)',
+          'provenanceTrailer("created by", sess.DisplayName, nt.State)')],
+    ),
+    Case(
+        'the provenance trailer drops its state field',
+        [('return fmt.Sprintf("_%s classifier @ %s · session=%s · state=%s_",\n\t\taction, time.Now().UTC().Format(time.RFC3339), sessionID, state)',
+          'return fmt.Sprintf("_%s classifier @ %s · session=%s_",\n\t\taction, time.Now().UTC().Format(time.RFC3339), sessionID)')],
+    ),
+    Case(
+        'an update reads the card back before replacing it',
+        [('\t\tbody := ec.Summary\n\t\tif ec.Blocker',
+          '\t\t_, _ = kc.ListCardsForEntity(cardLinkSession, sess.SessionID)\n\t\tbody := ec.Summary\n\t\tif ec.Blocker')],
+    ),
+
+    # ---- signatures and the per-session gates ----
+    Case(
+        'newerSig prefers the signature with FEWER events, so the stale one wins',
+        [('\tif countA != countB {\n\t\treturn countA > countB',
+          '\tif countA != countB {\n\t\treturn countA < countB')],
+    ),
+    Case(
+        'newerSig ranks a signature with no event count above one that has a count',
+        [('\tif knownA != knownB {\n\t\treturn knownA',
+          '\tif knownA != knownB {\n\t\treturn knownB')],
+    ),
+    Case(
+        'equal event counts no longer break the tie, so the pick depends on map order',
+        [('\t\treturn countA > countB\n\t}\n\treturn a > b',
+          '\t\treturn countA > countB\n\t}\n\treturn true')],
+    ),
+    Case(
+        'priorSigTag counts every tag as a signature, so a session with none reports one',
+        [('\t\tif !strings.HasPrefix(tag, tagCheckSigPrefix) {\n\t\t\tcontinue\n\t\t}\n\t\tfound++',
+          '\t\tfound++')],
+    ),
+    Case(
+        'a signature delete that fails is logged and not recorded',
+        [('\t\t\t\tdegraded.Record("session %s: superseded check signature not deleted, it now carries more than one", sess.SessionID)\n',
+          '')],
+    ),
+    Case(
+        'a signature that did not land is logged and not recorded',
+        [('\t\tdegraded.Record("session %s: check signature not written, it will be re-classified and re-billed next tick", sess.SessionID)\n',
+          '')],
+    ),
+    Case(
+        'a session mid-turn is classified anyway, so a half-finished answer is billed',
+        [('\treturn state.IsActive() || (state.IsBlockedOnUser() && state != msg.SessionAwaitingUser)',
+          '\treturn state.IsActive()')],
+    ),
+    Case(
+        "the lookback measures the row's updated_at only, so a backfilled row reads as a live conversation",
+        [('\treturn !newestEntryAt.IsZero() && newestEntryAt.Before(cutoff)',
+          '\treturn false')],
+    ),
+    Case(
+        'the interactive filter keeps every session type',
+        [('\t\tif msg.SessionType(sess.Type) != msg.SessionTypeInteractive {\n\t\t\tskippedByType[sess.Type]++',
+          '\t\tif false {\n\t\t\tskippedByType[sess.Type]++')],
+    ),
+    Case(
+        'the dropped sessions are all counted under no type',
+        [('\t\t\tskippedByType[sess.Type]++',
+          '\t\t\tskippedByType[""]++')],
+    ),
+    Case(
+        'an event count with trailing garbage is read as a number',
+        [('\t\t\tn, err := strconv.Atoi(value)\n\t\t\treturn n, err == nil',
+          "\t\t\tn, err := strconv.Atoi(strings.TrimRightFunc(value, func(r rune) bool { return r < '0' || r > '9' }))\n\t\t\treturn n, err == nil")],
+    ),
+    Case(
+        'the processSession mid-turn gate stops firing, so a session part-way through a turn is billed',
+        [('\tif turnInFlight(msg.SessionState(sess.State)) {',
+          '\tif false && turnInFlight(msg.SessionState(sess.State)) {')],
+    ),
+    Case(
+        'the once-per-response gate reads the whole signature as the response id, so a later event count reads as a new response',
+        [('\t\tif value, found := strings.CutPrefix(field, "result="); found && value != "" {\n\t\t\treturn value, true',
+          '\t\tif value, found := strings.CutPrefix(field, "result="); found && value != "" {\n\t\t\treturn value + strings.TrimPrefix(sig, tagCheckSigPrefix+"result="+value), true')],
+    ),
+
+    # ---- shortfalls a tick must record ----
+    Case(
+        'an unreadable session page is logged and not recorded',
+        [('\t\tdegraded.Record("session %s not classified: reading its messages failed", sess.SessionID)\n',
+          '')],
+    ),
+    Case(
+        'a board whose tags cannot be read is logged and not recorded',
+        [('\t\tdegraded.Record("session %s not classified: list tags failed", sess.SessionID)\n',
+          '')],
+    ),
+
+    # ---- the bridge readers ----
+    Case(
+        'the newest finished response is the FIRST result on the page, not the last',
+        [('\t\t\tif e.Role == "assistant" && e.Kind == "result" && e.Text != "" {\n\t\t\t\tnewest = id',
+          '\t\t\tif e.Role == "assistant" && e.Kind == "result" && e.Text != "" && newest == "" {\n\t\t\t\tnewest = id')],
+    ),
+    Case(
+        'a result with no text counts as a finished response',
+        [('\t\t\tif e.Role == "assistant" && e.Kind == "result" && e.Text != "" {\n\t\t\t\tnewest = id',
+          '\t\t\tif e.Role == "assistant" && e.Kind == "result" {\n\t\t\t\tnewest = id')],
+    ),
+    Case(
+        'newestMessageTime keeps the oldest timestamp',
+        [('\t\tif at.After(newest) {\n\t\t\tnewest = at',
+          '\t\tif newest.IsZero() {\n\t\t\tnewest = at')],
+    ),
+    Case(
+        'an unparseable entry timestamp is skipped instead of refused',
+        [('\t\t\treturn time.Time{}, fmt.Errorf("entry timestamp %q: %w", m.Timestamp, err)',
+          '\t\t\tcontinue')],
+    ),
+    Case(
+        'digestMessages keeps the hidden duplicate copy of a prompt',
+        [('\t\t\tif !ok || e.Duplicate {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tswitch {',
+          '\t\t\tif !ok {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tswitch {')],
+    ),
+    Case(
+        'digestMessages drops tool calls',
+        [('\t\t\tcase e.Kind == "tool_call" && e.ToolName != "":',
+          '\t\t\tcase false:')],
+    ),
+    Case(
+        'getSession fills in the asked-for id when the bridge answers with no session',
+        [('\tif s.SessionID == "" {\n\t\ts.SessionID = id\n\t}\n\treturn s, nil',
+          '\tif s.SessionID == "" {\n\t\ts.SessionID = id\n\t}\n\ts.SessionID = id\n\treturn s, nil')],
+    ),
+    Case(
+        'getSession accepts a non-200 answer',
+        [('\t\treturn s, fmt.Errorf("get session %s: %s — %s", id, resp.Status, string(body))',
+          '\t\t_ = body')],
+    ),
+    Case(
+        'the single-session read builds its URL by hand, so an id is not escaped and an empty one is sent',
+        [('\tsessionURL, err := bridgesession.URL(bridgeURL, id)',
+          '\tsessionURL, err := strings.TrimRight(bridgeURL, "/")+"/sessions/"+id, error(nil)')],
+    ),
+    Case(
+        'the messages read builds its URL by hand, so an id that names no session is sent anyway',
+        [('\tmessagesURL, err := bridgesession.SubresourceURL(bridgeURL, id, "messages")',
+          '\tmessagesURL, err := strings.TrimRight(bridgeURL, "/")+"/sessions/"+id+"/messages", error(nil)')],
+    ),
+
+    # ---- the model call and what the model is told ----
+    Case(
+        'the system prompt is sent as the user message and the digest as the system prompt',
+        [('\t}, systemPrompt, digest, reportSchema(), &rep); err != nil {',
+          '\t}, digest, systemPrompt, reportSchema(), &rep); err != nil {')],
+    ),
+    Case(
+        'the report schema sent is empty',
+        [('\t}, systemPrompt, digest, reportSchema(), &rep); err != nil {',
+          '\t}, systemPrompt, digest, map[string]any{}, &rep); err != nil {')],
+    ),
+    Case(
+        'max_tokens is sent as something other than the constant the truncation warning quotes',
+        [('\t\tMaxTokens:  maxOutputTokens,',
+          '\t\tMaxTokens:  maxOutputTokens / 2,')],
+    ),
+    Case(
+        'a truncated report is no longer recognised as one, so it reads as an ordinary failure',
+        [('var errTruncatedReport = oneshot.ErrTruncated',
+          'var errTruncatedReport = errors.New("report truncated")')],
+    ),
+    Case(
+        'a failed model call returns an error that names no HTTP status',
+        [('\t}, systemPrompt, digest, reportSchema(), &rep); err != nil {\n\t\treturn nil, err',
+          '\t}, systemPrompt, digest, reportSchema(), &rep); err != nil {\n\t\treturn nil, errors.New("classify failed")')],
+    ),
+    Case(
+        'the prompt stops promising the model the card bodies',
+        [('- Any cards already linked to this session, with their current state and body',
+          '- Any cards already linked to this session, with their current state')],
+    ),
+    Case(
+        'summary stops being required on an existing-card record, so a model can decline to replace a body',
+        [('"required": []string{"card_id", "state", "summary"},',
+          '"required": []string{"card_id", "state"},')],
+    ),
+    Case(
+        'the existing-card record grows a prior-body field',
+        [('\tBlocker string `json:"blocker,omitempty"`\n}\n\ntype NewRec struct {',
+          '\tBlocker string `json:"blocker,omitempty"`\n\tBody    string `json:"body,omitempty"`\n}\n\ntype NewRec struct {')],
+    ),
+    Case(
+        'classify refuses a complete report that carries no existing cards, as if emptiness meant truncation',
+        [('\t\treturn nil, err\n\t}\n\treturn &rep, nil\n}',
+          '\t\treturn nil, err\n\t}\n\tif len(rep.ExistingCards) == 0 {\n\t\treturn nil, errTruncatedReport\n\t}\n\treturn &rep, nil\n}')],
+    ),
+
+    # ---- the digest builder ----
+    Case(
+        'fitKeepingNewest drops the newest entry when it alone exceeds the budget',
+        [('\t\tif costOfKeeping > budget && i != len(entries)-1 {',
+          '\t\tif costOfKeeping > budget {')],
+    ),
+    Case(
+        'the existing-cards section goes back to the END of the digest, where it falls off',
+        [('\treturn meta + cards + prompts + turns + tools',
+          '\treturn meta + prompts + turns + tools + cards')],
+    ),
+    Case(
+        'the tool section keeps the first fifteen calls instead of the last fifteen',
+        [('\t\ttools = tools[len(tools)-15:]',
+          '\t\ttools = tools[:15]')],
+    ),
+    Case(
+        'a session with no assistant text renders an empty section',
+        [('return header + "(no assistant text content)\\n\\n"',
+          'return header + "\\n"')],
+    ),
+
+    # ---- run, main and the settings refusal ----
+    Case(
+        'the single-session path exits 0 whatever it recorded',
+        [('\t\tprocessSession(ctx, cfg, kc, sess, degraded)\n\t\treturn degraded.ExitCode()',
+          '\t\tprocessSession(ctx, cfg, kc, sess, degraded)\n\t\treturn 0')],
+    ),
+    Case(
+        "main discards run's status",
+        [('\tos.Exit(run())',
+          '\trun()')],
+    ),
+    Case(
+        'a refused settings registry is no longer marked as a refusal',
+        [('return config{}, fmt.Errorf("%w: %v", errSettingsRefused, err)',
+          'return config{}, fmt.Errorf("settings: %v", err)')],
+    ),
+
 ]
 
 
