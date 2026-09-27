@@ -23,13 +23,16 @@ import (
 // arrives as a timeout panic naming whichever innocent test happened to be
 // running.
 //
-// The isolation is HOME rather than CLAUDE_CONFIG_DIR on purpose.
-// llm-bridge-claudecode documents CLAUDE_CONFIG_DIR as the override, but
-// only its transcript path honours it; discover.go re-derives
-// `~/.claude/projects` from os.UserHomeDir() and ignores the variable, and
-// the state.db that records which rollouts are already known hangs off the
-// home directory too. HOME moves all three at once. Measured against the
-// real binary: 4,440 sessions in 141s before, 1 session in 0.035s after.
+// The isolation sets HOME and CLAUDE_CONFIG_DIR together. discover.go reads
+// the projects tree from CLAUDE_CONFIG_DIR when it is set and from
+// `$HOME/.claude` otherwise (llm-bridge-claudecode b5cb704), while the
+// state.db that records which rollouts are already known always hangs off
+// HOME. Setting HOME alone was enough until b5cb704 landed; after it, a run
+// with CLAUDE_CONFIG_DIR in the environment walked that tree instead of the
+// fixture — measured 2026-09-27 with it pointed at an empty directory:
+// TestDiscoverAnnouncesLogStoreBeforeImporting skipped, and pointed at a
+// real one it would walk every rollout again. Measured against the real
+// binary: 4,440 sessions in 141s before, 1 session in 0.035s after.
 //
 // The planted rollout is also what makes the discovery tests assert
 // anything. Both of them skip when discovery comes back empty, so on a host
@@ -52,5 +55,6 @@ func isolateHarnessSessionDiscovery(t *testing.T) string {
 	}
 
 	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
 	return sessionID
 }
