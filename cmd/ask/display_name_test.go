@@ -54,8 +54,8 @@ func whitespaceRunes() []rune {
 
 func TestWhitespaceSweep_CoversTheWholeClass(t *testing.T) {
 	rs := whitespaceRunes()
-	if len(rs) < 20 {
-		t.Fatalf("swept %d whitespace runes, want at least 20 — the sweep is not finding the class", len(rs))
+	if len(rs) != 25 {
+		t.Fatalf("swept %d whitespace runes, want 25 (delta %+d) — Go's whitespace table changed, or the sweep is not finding the class", len(rs), len(rs)-25)
 	}
 	// The characters the defect was actually reported with must be in there.
 	for _, r := range []rune{'\t', '\n', '\v', '\f', '\r', ' ', 0x0085, 0x00A0, 0x3000} {

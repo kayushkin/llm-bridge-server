@@ -26,7 +26,7 @@ type bridgeRequest struct {
 // real route on the running server, and each was measured 2026-08-14:
 //
 //	GET  /sessions/{id}/send          405 — registered POST-only
-//	GET  /sessions/{id}/messages      200, a JSON array
+//	GET  /sessions/{id}/messages      200, an object {"model","stream"} (since llm-bridge-server db4265d)
 //	GET  /sessions/{id}/attach-token  404, for a session that EXISTS and may be running
 //
 // The last one is why this stub has to route. A 404 is the single reply that
@@ -42,7 +42,9 @@ func stubBridge(t *testing.T, seen *[]bridgeRequest, body func() string) *httpte
 			case "GET /sessions/{id}":
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, body())
-			case "GET /sessions/{id}/messages", "GET /sessions":
+			case "GET /sessions/{id}/messages":
+				fmt.Fprint(w, `{"model":{},"stream":{"head":0}}`)
+			case "GET /sessions":
 				fmt.Fprint(w, `[]`)
 			case "GET /sessions/{id}/attach-token":
 				http.Error(w, "session has no live pty hub", http.StatusNotFound)
