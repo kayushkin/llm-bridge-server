@@ -2,13 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/slava/scheduler/internal/noteboarditems"
 )
 
 // Ported from e0f686a5 and 4e4a0b93 (test/first-tests-for-autoworker). Main has
@@ -109,9 +112,11 @@ func (f *fakeKanban) start(t *testing.T) *kanbanclient.Client {
 	return qc
 }
 
-// serveNoteboardItems stands in for noteboard's /api/items and records the query
-// it was asked. The query matters: the parent chain has to be complete, which
-// means held ancestors and a page big enough to hold the box's whole item list.
+// serveNoteboardItems stands in for noteboard's /api/items and records the last
+// query it was asked. The query matters: the parent chain has to be complete,
+// which means held ancestors and every page of the list. It honours limit and
+// offset as noteboard does, so a list longer than one page takes more than one
+// request to read.
 //
 // It answers on the real route and 404s everything else. A catch-all handler
 // answers whatever the client asks for, so it agrees with a client that has the
@@ -129,10 +134,42 @@ func serveNoteboardItems(t *testing.T, items []map[string]any) (url string, last
 		mu.Lock()
 		seen = r.URL.RawQuery
 		mu.Unlock()
-		writeFakeJSON(w, items)
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		page := []map[string]any{}
+		for i := offset; i < offset+limit && i < len(items); i++ {
+			page = append(page, items[i])
+		}
+		writeFakeJSON(w, page)
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL, &seen
+}
+
+// serveEndlessNoteboardItems is a board that never runs out: every page comes
+// back exactly full, so the read can only stop at its own page bound. The first
+// page holds the given items; the rest is filler.
+func serveEndlessNoteboardItems(t *testing.T, items []map[string]any) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/items" {
+			http.NotFound(w, r)
+			return
+		}
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		page := make([]map[string]any, 0, limit)
+		for i := offset; i < offset+limit; i++ {
+			if i < len(items) {
+				page = append(page, items[i])
+				continue
+			}
+			page = append(page, map[string]any{"id": fmt.Sprintf("filler-%d", i)})
+		}
+		writeFakeJSON(w, page)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 func serveBridgeAggregates(t *testing.T, costs map[string]float64) string {
@@ -467,7 +504,7 @@ func TestAChildInheritsItsAncestorsCeiling(t *testing.T) {
 // A held ancestor still owns its subtree's pot, so the item fetch has to ask for
 // held items. Noteboard hides them by default, and a parent missing from the tree
 // takes its ceiling with it.
-func TestTheItemFetchAsksForHeldAncestorsAndAFullPage(t *testing.T) {
+func TestTheItemFetchAsksForHeldAncestors(t *testing.T) {
 	f := &fakeKanban{queued: []kanbanclient.CardView{
 		card("child", map[string]any{"title": "child of a parked parent"}),
 	}}
@@ -489,9 +526,54 @@ func TestTheItemFetchAsksForHeldAncestorsAndAFullPage(t *testing.T) {
 		t.Errorf("item query %q does not ask for held items; a held ancestor still owns "+
 			"its subtree's ceiling, and noteboard hides held items by default", *query)
 	}
-	if strings.Contains(*query, "limit=50") || !strings.Contains(*query, "limit=10000") {
-		t.Errorf("item query %q does not ask for a page big enough to hold the whole "+
-			"parent chain; a truncated page silently drops ancestors", *query)
+}
+
+// A ceiling owner older than the first page is still the child's ceiling owner.
+// The fetch used to be one request for limit=10000; measured 2026-09-27 the
+// board held 13,042 items, so the oldest ~3,000 never reached the tree, and
+// EffectiveCeiling reads a missing ancestor as one that sets no ceiling. The
+// child then went out with no --max-budget-usd at all.
+func TestACeilingOwnerPastTheFirstPageStillCapsItsChild(t *testing.T) {
+	f := &fakeKanban{queued: []kanbanclient.CardView{
+		card("child", map[string]any{"title": "child of an old parent"}),
+	}}
+	qc := f.start(t)
+	items := []map[string]any{{"id": "child", "parent_id": "old-parent"}}
+	for i := 0; i < noteboarditems.PageSize; i++ {
+		items = append(items, map[string]any{"id": fmt.Sprintf("newer-%d", i)})
+	}
+	items = append(items, map[string]any{"id": "old-parent", "auto_hold_at_usd": 7.0})
+	nb, _ := serveNoteboardItems(t, items)
+	cfg := pointAtFakes(t, serveBridgeAggregates(t, nil), nb)
+
+	got, err := selectQueuedCard(qc, cfg, nil)
+	if err != nil {
+		t.Fatalf("selectQueuedCard: %v", err)
+	}
+	if got == nil || got.maxBudgetUSD != 7.00 {
+		t.Errorf("the $7.00 ceiling on the second page did not reach its child: %v", got)
+	}
+}
+
+// When the read stops at its page bound, the autoworker must NOT dispatch — not
+// even a card with no ceiling of its own, because its owner may be past the
+// bound. Asserting only that the read is complete would leave this unpinned: the
+// guard reports a truncated read, the autoworker has to refuse to act on one.
+func TestATruncatedItemReadDispatchesNothing(t *testing.T) {
+	f := &fakeKanban{queued: []kanbanclient.CardView{
+		card("child", map[string]any{"title": "no ceiling of its own"}),
+	}}
+	qc := f.start(t)
+	nb := serveEndlessNoteboardItems(t, []map[string]any{{"id": "child", "parent_id": "unseen-parent"}})
+	cfg := pointAtFakes(t, serveBridgeAggregates(t, nil), nb)
+
+	got, err := selectQueuedCard(qc, cfg, nil)
+	if err != nil {
+		t.Fatalf("selectQueuedCard: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("dispatched %q with cap $%.2f from an item read that stopped at its page bound; "+
+			"its ceiling owner could be past the bound, so this may be uncapped work", got.cardID, got.maxBudgetUSD)
 	}
 }
 

@@ -49,6 +49,7 @@ import (
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
+	"github.com/slava/scheduler/internal/noteboarditems"
 	"github.com/slava/scheduler/internal/spendtree"
 )
 
@@ -57,13 +58,7 @@ type sessionAggregate struct {
 	CostUSD   float64 `json:"cost_usd"`
 }
 
-type noteboardItem struct {
-	ID            string   `json:"id"`
-	Title         string   `json:"title"`
-	ParentID      *string  `json:"parent_id"`
-	HeldAt        *string  `json:"held_at"`
-	AutoHoldAtUSD *float64 `json:"auto_hold_at_usd"`
-}
+type noteboardItem = noteboarditems.Item
 
 // config names the three services this guard reads and whether it is allowed to
 // write. It exists so run can be given stubs by a test; main fills it from the
@@ -126,7 +121,7 @@ func run(cfg config) int {
 	// include_held=true: we must see parked items to build the tree. A held
 	// ancestor is exactly the thing whose descendants we need to reason about,
 	// and noteboard hides held items from discovery by default.
-	items, truncated, err := fetchItems(cfg.noteboardURL)
+	items, truncated, err := noteboarditems.FetchEveryItemIncludingHeld(cfg.noteboardURL)
 	if err != nil {
 		log.Fatalf("noteboard items: %v", err)
 	}
@@ -136,7 +131,7 @@ func run(cfg config) int {
 		// own, so a short read prices every ceiling too low — in the direction
 		// that lets a task keep running.
 		degraded.Record("read only %d noteboard items before hitting the %d-page safety bound: the spend tree is incomplete and every ceiling below it is priced too LOW",
-			len(items), maxItemPages)
+			len(items), noteboarditems.MaxPages)
 	}
 	log.Printf("loaded cost for %d sessions, %d items", len(cost), len(items))
 
@@ -231,74 +226,6 @@ func toTreeItems(items []noteboardItem) []spendtree.Item {
 		})
 	}
 	return out
-}
-
-// itemPageSize and maxItemPages bound the paged read below. The product is the
-// point at which the guard gives up and says so: a bound that is never reached
-// is a bound nobody has to think about, and one that is reached silently is the
-// defect this replaced.
-const (
-	itemPageSize = 1000
-	maxItemPages = 200
-)
-
-// fetchItems reads EVERY noteboard item, and reports whether it failed to.
-//
-// It used to ask for `limit=10000` in one request and hand back whatever came.
-// That number was already too small: measured 2026-08-29 the board held 10,309
-// items with `include_held` unset alone, and every one of the last 100 ticks
-// logged "10000 items" — the limit, exactly. The rows that fell off the end are
-// invisible to the tree, so a descendant out there adds nothing to its
-// ancestor's subtree total and an owner out there is never priced at all. A
-// short read can only under-price a ceiling, never over-price one, which is the
-// direction that lets a task past its cap.
-//
-// Raising the constant would have bought the same defect a later date. So the
-// read pages instead, and the only remaining bound is loud.
-//
-// include_held is required and is not the caller's own search: the tree needs
-// held ancestors in it or a parent edge dangles, and noteboard hides held items
-// by default.
-//
-// Ordering is `created_at DESC, id`, a total order, so the window is stable
-// across pages. An item created mid-read shifts rows toward later pages and can
-// hand the same id back twice, which the dedupe below absorbs; an item DELETED
-// mid-read shifts them the other way and can drop one, which it cannot. That is
-// accepted: the guard runs every five minutes and the next tick sees the row.
-func fetchItems(noteboardURL string) (items []noteboardItem, truncated bool, err error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	seen := map[string]bool{}
-	for page := 0; page < maxItemPages; page++ {
-		url := fmt.Sprintf("%s/api/items?include_held=true&limit=%d&offset=%d",
-			noteboardURL, itemPageSize, page*itemPageSize)
-		resp, err := client.Get(url)
-		if err != nil {
-			return nil, false, err
-		}
-		var batch []noteboardItem
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			return nil, false, fmt.Errorf("noteboard items: %s", resp.Status)
-		}
-		decodeErr := json.NewDecoder(resp.Body).Decode(&batch)
-		resp.Body.Close()
-		if decodeErr != nil {
-			return nil, false, decodeErr
-		}
-		for _, it := range batch {
-			if seen[it.ID] {
-				continue
-			}
-			seen[it.ID] = true
-			items = append(items, it)
-		}
-		// A page shorter than it asked for is the end of the list. This is the
-		// normal exit, and it is the only one that returns truncated=false.
-		if len(batch) < itemPageSize {
-			return items, false, nil
-		}
-	}
-	return items, true, nil
 }
 
 func fetchSessionAggregates(bridgeURL string) ([]sessionAggregate, error) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
+	"github.com/slava/scheduler/internal/noteboarditems"
 	"github.com/slava/scheduler/internal/spendtree"
 )
 
@@ -40,12 +41,6 @@ type sessionAggregate struct {
 	CostUSD   float64 `json:"cost_usd"`
 }
 
-type noteboardItem struct {
-	ID            string   `json:"id"`
-	ParentID      *string  `json:"parent_id"`
-	AutoHoldAtUSD *float64 `json:"auto_hold_at_usd"`
-}
-
 // budgetForCard resolves the per-session cap to hand the harness.
 //
 // Returns (cap, ok). ok=false means "do not dispatch this card": its ceiling is
@@ -62,6 +57,14 @@ type noteboardItem struct {
 // at all — is the one failure mode here that spends real money.
 func budgetForCard(qc *kanbanclient.Client, bridgeURL, noteboardURL string, cand *queueCandidate) (float64, bool) {
 	tree, cost, err := loadSpendTree(bridgeURL, noteboardURL)
+	if errors.Is(err, errSpendTreeTruncated) {
+		// Unlike an unreadable tree, a truncated one says nothing about whether
+		// this card inherits a ceiling: its owner may be among the rows the read
+		// never reached, and EffectiveCeiling cannot tell a missing ancestor from
+		// one that sets no ceiling. Dispatching would send it out uncapped.
+		log.Printf("queue: card %s not dispatched — %v", cand.cardID, err)
+		return 0, false
+	}
 	if err != nil {
 		// Fail closed, but only for work that actually has a ceiling to honour: an
 		// unreadable tree must not park uncapped work that never had one.
@@ -129,10 +132,19 @@ func sessionsForItem(qc *kanbanclient.Client) func(string) ([]string, error) {
 	}
 }
 
+// errSpendTreeTruncated means the item read hit its page bound before the end of
+// the list. It is not an ordinary read failure, and budgetForCard does not treat
+// it as one.
+var errSpendTreeTruncated = errors.New("spend tree truncated")
+
 func loadSpendTree(bridgeURL, noteboardURL string) (*spendtree.Tree, map[string]float64, error) {
-	items, err := fetchNoteboardItems(noteboardURL)
+	items, truncated, err := noteboarditems.FetchEveryItemIncludingHeld(noteboardURL)
 	if err != nil {
 		return nil, nil, err
+	}
+	if truncated {
+		return nil, nil, fmt.Errorf("%w: read %d noteboard items and stopped at the %d-page bound; a ceiling owner past it would be invisible",
+			errSpendTreeTruncated, len(items), noteboarditems.MaxPages)
 	}
 	aggs, err := fetchSessionAggregates(bridgeURL)
 	if err != nil {
@@ -155,26 +167,6 @@ func loadSpendTree(bridgeURL, noteboardURL string) (*spendtree.Tree, map[string]
 		})
 	}
 	return spendtree.NewTree(treeItems), cost, nil
-}
-
-// fetchNoteboardItems pulls every item so the parent chain is complete.
-// include_held is required: a held ancestor still owns its subtree's ceiling, and
-// noteboard hides held items from discovery by default.
-func fetchNoteboardItems(noteboardURL string) ([]noteboardItem, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(noteboardURL + "/api/items?include_held=true&limit=10000")
-	if err != nil {
-		return nil, fmt.Errorf("noteboard items: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("noteboard items: %s", resp.Status)
-	}
-	var items []noteboardItem
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-		return nil, fmt.Errorf("decode items: %w", err)
-	}
-	return items, nil
 }
 
 func fetchSessionAggregates(bridgeURL string) ([]sessionAggregate, error) {
