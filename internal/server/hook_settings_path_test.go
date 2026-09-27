@@ -75,9 +75,11 @@ func pathProbes() []pathProbe {
 // a URL whose id had moved.
 //
 // It reads EscapedPath rather than Path deliberately: Path is the decoded
-// form, so a %2F that must stay inside one segment has already turned back
-// into a separator by the time you read it, and the assertion passes on
-// unrepaired code.
+// form, so a correctly escaped %2F reads back as a separator and the segment
+// count fails on REPAIRED code. EscapedPath has its own blind spot: when the
+// raw path is not validly encoded it escapes it again, so a literal space
+// reads as %20 and an unescaped id would pass. So the path must also appear
+// verbatim in rawURL.
 func assertSegments(t *testing.T, label, rawURL, id string, template ...string) {
 	t.Helper()
 	u, err := url.Parse(rawURL)
@@ -88,6 +90,10 @@ func assertSegments(t *testing.T, label, rawURL, id string, template ...string) 
 	if u.RawQuery != "" || u.Fragment != "" {
 		t.Errorf("%s: the id escaped its path segment into the query or fragment: %q (query=%q fragment=%q)",
 			label, rawURL, u.RawQuery, u.Fragment)
+		return
+	}
+	if !strings.Contains(rawURL, u.EscapedPath()) {
+		t.Errorf("%s: the path is not validly escaped on the wire: %q (escaped form %q)", label, rawURL, u.EscapedPath())
 		return
 	}
 	segments := strings.Split(strings.TrimPrefix(u.EscapedPath(), "/"), "/")
