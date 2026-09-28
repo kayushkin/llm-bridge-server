@@ -17,7 +17,7 @@ import (
 // TaxonomyReader reads the taxonomy a kanban-store board keeps. The server
 // implements it with its kanban client.
 type TaxonomyReader interface {
-	// BoardTaxonomy returns the board's taxonomy and the version it was read
+	// BoardTaxonomy returns the board's taxonomy and the revision it was read
 	// at, read as principalID when set. A board that is missing or not
 	// visible to the principal is kanbanclient.ErrNotFound; a board with no
 	// taxonomy is kanbanclient.ErrBoardHasNoTaxonomy.
@@ -113,10 +113,13 @@ func (classifier ModelClassifier) Execute(ctx context.Context, intent msg.Operat
 	if err != nil {
 		return failed("invalid_input", err.Error())
 	}
-	taxonomy, source, failure := classifier.resolveTaxonomy(ctx, input, intent.PrincipalID)
+	stored, source, failure := classifier.resolveTaxonomy(ctx, input, intent.PrincipalID)
 	if failure != nil {
 		return *failure
 	}
+	// Archived axes and values stay in a board's taxonomy so its history
+	// resolves; nothing new may be labelled with them.
+	taxonomy := stored.Selectable()
 	target, refusal := resolveTarget(classifier.Caller, input.Model)
 	if refusal != nil {
 		return *refusal

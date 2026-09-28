@@ -116,6 +116,33 @@ func TestABoardsTaxonomyIsReadAsTheOperationsPrincipalAndRecorded(t *testing.T) 
 	}
 }
 
+func TestArchivedAxesAndValuesAreNeverOfferedToTheModel(t *testing.T) {
+	caller := &executorstest.FakeOneShot{InstanceID: "inst", DefaultModel: "claude-haiku-4-5", Usage: msg.TokenUsage{InputTokens: 100, OutputTokens: 10}}
+	withRetired := boardTaxonomy
+	withRetired.Axes = append([]msg.ClassificationAxis(nil), boardTaxonomy.Axes...)
+	withRetired.Axes[0].Values = append(append([]msg.ClassificationValue(nil), boardTaxonomy.Axes[0].Values...),
+		msg.ClassificationValue{Name: "retired-freight-class", Description: "no longer used", Archived: true})
+	withRetired.Axes = append(withRetired.Axes, msg.ClassificationAxis{Name: "retired-axis", Archived: true,
+		Values: []msg.ClassificationValue{{Name: "gone"}}})
+	h := newClassifierHarness(t, caller, executorstest.FakeTaxonomies{Boards: map[string]*msg.ClassificationTaxonomy{"board-support": &withRetired}})
+
+	receipt := h.classify(t, "principal_000004", msg.ClassificationRunInput{TaxonomyBoardID: "board-support",
+		Items: []msg.ClassificationItem{{ID: "m1", Text: "Pallet stuck in customs"}}})
+	if receipt.State != msg.OperationStateSucceeded {
+		t.Fatalf("receipt %s %+v", receipt.State, receipt.Error)
+	}
+	call := caller.Calls()[0]
+	for _, retired := range []string{"retired-freight-class", "retired-axis"} {
+		if strings.Contains(call.SystemPrompt, retired) || strings.Contains(string(call.Schema), retired) {
+			t.Fatalf("%s reached the model", retired)
+		}
+	}
+	result := decodeClassification(t, receipt)
+	if _, present := result.Items[0].Values["retired-axis"]; present || len(result.Taxonomy.Axes) != len(boardTaxonomy.Axes) {
+		t.Fatalf("the result carries the archived axis: %+v", result)
+	}
+}
+
 func TestItemsGoToTheModelInBatches(t *testing.T) {
 	caller := &executorstest.FakeOneShot{InstanceID: "inst", DefaultModel: "m"}
 	h := newClassifierHarness(t, caller, executorstest.FakeTaxonomies{})

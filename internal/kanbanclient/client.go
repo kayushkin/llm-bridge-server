@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -334,41 +335,39 @@ const principalIDHeader = "X-Principal-Id"
 // ErrBoardHasNoTaxonomy is a board kanban-store has, with no taxonomy set.
 var ErrBoardHasNoTaxonomy = errors.New("board has no taxonomy")
 
-// BoardTaxonomy reads the classification taxonomy a board keeps, and the
-// board's updated_at as the version it was read at. With a principalID the
-// read is made as that principal, so kanban-store's can_view decides: a board
-// they may not view is ErrNotFound, the same as a missing one. With none it
-// is made as this service.
+// BoardTaxonomy reads the classification taxonomy a board keeps, archived
+// entries included, from GET /api/boards/{id}/classification, and its
+// taxonomy revision as the version it was read at. The revision moves only
+// when the taxonomy does, not when anything else on the board is edited. With
+// a principalID the read is made as that principal, so kanban-store's can_view
+// decides: a board they may not view is ErrNotFound, the same as a missing
+// one. With none it is made as this service.
 func (c *Client) BoardTaxonomy(ctx context.Context, boardID, principalID string) (msg.ClassificationTaxonomy, string, error) {
-	endpoint := c.baseURL + "/api/boards/" + url.PathEscape(boardID)
+	endpoint := c.baseURL + "/api/boards/" + url.PathEscape(boardID) + "/classification"
 	var body []byte
 	var err error
 	if principalID == "" {
-		body, err = c.get(ctx, endpoint, "read board "+boardID)
+		body, err = c.get(ctx, endpoint, "read board "+boardID+" classification")
 	} else {
-		body, err = c.getAsPrincipal(ctx, endpoint, principalID, "read board "+boardID+" as "+principalID)
+		body, err = c.getAsPrincipal(ctx, endpoint, principalID, "read board "+boardID+" classification as "+principalID)
 	}
 	if err != nil {
 		return msg.ClassificationTaxonomy{}, "", err
 	}
-	var board struct {
-		ID        string                      `json:"id"`
-		Taxonomy  *msg.ClassificationTaxonomy `json:"taxonomy"`
-		UpdatedAt string                      `json:"updated_at"`
+	var classification msg.BoardClassification
+	if err := json.Unmarshal(body, &classification); err != nil {
+		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("kanban-store answered board %s classification with a body that is not one: %w", boardID, err)
 	}
-	if err := json.Unmarshal(body, &board); err != nil {
-		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("kanban-store answered board %s with a body that is not a board: %w", boardID, err)
+	if classification.BoardID != boardID {
+		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("kanban-store answered board %s with board %q", boardID, classification.BoardID)
 	}
-	if board.ID != boardID {
-		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("kanban-store answered board %s with board %q", boardID, board.ID)
-	}
-	if board.Taxonomy == nil {
+	if classification.Taxonomy == nil {
 		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("%w: board %s", ErrBoardHasNoTaxonomy, boardID)
 	}
-	if err := board.Taxonomy.Validate(); err != nil {
+	if err := classification.Taxonomy.Validate(); err != nil {
 		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("board %s keeps a taxonomy that does not validate: %w", boardID, err)
 	}
-	return *board.Taxonomy, board.UpdatedAt, nil
+	return *classification.Taxonomy, strconv.FormatInt(classification.TaxonomyRevision, 10), nil
 }
 
 // getAsPrincipal is get with X-Principal-Id and without the service token.
