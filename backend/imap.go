@@ -372,7 +372,10 @@ func containsFlag(flags []imap.Flag, want imap.Flag) bool {
 
 // ─── Get ─────────────────────────────────────────────────────────────
 
-func (b *Imap) Get(ctx context.Context, id string) (Message, error) {
+func (b *Imap) Get(ctx context.Context, folderID, id string) (Message, error) {
+	if folderID == "" {
+		folderID = "INBOX"
+	}
 	uidN, err := strconv.ParseUint(id, 10, 32)
 	if err != nil {
 		return Message{}, fmt.Errorf("imap Get: id must be UID, got %q", id)
@@ -383,13 +386,10 @@ func (b *Imap) Get(ctx context.Context, id string) (Message, error) {
 	if err != nil {
 		return Message{}, err
 	}
-	// Caller is expected to have run List or Folders recently so a mailbox
-	// is selected; if not, default to INBOX.
-	if b.selected == "" {
-		if _, err := c.Select("INBOX", nil).Wait(); err != nil {
-			return Message{}, fmt.Errorf("imap select INBOX: %w", err)
-		}
-		b.selected = "INBOX"
+	// A UID names a message only within one mailbox, so open the one the
+	// caller named rather than whichever the connection last opened.
+	if err := b.selectMailbox(c, folderID); err != nil {
+		return Message{}, err
 	}
 
 	uidSet := imap.UIDSetNum(imap.UID(uidN))
@@ -402,15 +402,15 @@ func (b *Imap) Get(ctx context.Context, id string) (Message, error) {
 	}
 	msgs, err := c.Fetch(uidSet, fetchOpts).Collect()
 	if err != nil {
-		return Message{}, fmt.Errorf("imap fetch uid %d: %w", uidN, err)
+		return Message{}, fmt.Errorf("imap fetch uid %d in %q: %w", uidN, folderID, err)
 	}
 	if len(msgs) == 0 {
-		return Message{}, fmt.Errorf("imap message uid %d not found", uidN)
+		return Message{}, fmt.Errorf("imap message uid %d not found in %q", uidN, folderID)
 	}
 	m := msgs[0]
 
 	out := Message{
-		Meta:    b.toMeta(b.selected, m),
+		Meta:    b.toMeta(folderID, m),
 		Headers: map[string]string{},
 	}
 

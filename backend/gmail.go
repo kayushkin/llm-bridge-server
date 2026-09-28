@@ -431,7 +431,7 @@ func parseAddressList(raw string) []Address {
 	return out
 }
 
-func (g *Gmail) Get(ctx context.Context, id string) (Message, error) {
+func (g *Gmail) Get(ctx context.Context, _, id string) (Message, error) {
 	q := url.Values{}
 	q.Set("format", "full")
 	resp, err := g.do(ctx, "GET", "/users/me/messages/"+url.PathEscape(id)+"?"+q.Encode(), nil)

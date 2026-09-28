@@ -409,7 +409,7 @@ GET    /api/folders?account=all                   # all enabled accounts, groupe
 
 # Messages
 GET    /api/messages?account=ID&folder=FID&cursor=&limit=50
-GET    /api/messages/:id?account=ID
+GET    /api/messages/:id?account=ID[&folder=FID] # IMAP: UIDs are per mailbox; no folder means INBOX
 POST   /api/messages/:id/read?account=ID          # body: {read: bool}
 POST   /api/messages/:id/flag?account=ID          # body: {flagged: bool}
 POST   /api/messages/:id/move?account=ID          # body: {folder: "FID"}

@@ -462,7 +462,7 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	msg, err := b.Get(r.Context(), id)
+	msg, err := b.Get(r.Context(), r.URL.Query().Get("folder"), id)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return

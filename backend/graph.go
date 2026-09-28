@@ -336,7 +336,7 @@ func (g *Graph) toMeta(m *graphMessage) MessageMeta {
 	return meta
 }
 
-func (g *Graph) Get(ctx context.Context, id string) (Message, error) {
+func (g *Graph) Get(ctx context.Context, _, id string) (Message, error) {
 	q := url.Values{}
 	q.Set("$select",
 		"id,subject,bodyPreview,receivedDateTime,from,toRecipients,ccRecipients,"+

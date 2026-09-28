@@ -148,7 +148,11 @@ type DraftAttachment struct {
 type Backend interface {
 	Folders(ctx context.Context) ([]Folder, error)
 	List(ctx context.Context, folderID, cursor string, limit int) (msgs []MessageMeta, next string, err error)
-	Get(ctx context.Context, id string) (Message, error)
+	// Get reads one message. folderID names the folder that holds it; a
+	// backend whose ids are unique across the whole mailbox ignores it, and
+	// IMAP, whose UIDs are unique only within one mailbox, reads INBOX when it
+	// is empty.
+	Get(ctx context.Context, folderID, id string) (Message, error)
 
 	MarkRead(ctx context.Context, id string, read bool) error
 	Flag(ctx context.Context, id string, flagged bool) error

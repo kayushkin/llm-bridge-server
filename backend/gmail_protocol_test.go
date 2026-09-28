@@ -201,7 +201,7 @@ func TestGmailGetAsksForTheFullMessageAndDecodesBothBodyParts(t *testing.T) {
 			{"mimeType":"text/html","body":{"data":"`+html+`"}}
 		]}}`)
 
-	msg, err := newRecordedGmail(t, api, &fakeTokenSource{}).Get(context.Background(), "m1")
+	msg, err := newRecordedGmail(t, api, &fakeTokenSource{}).Get(context.Background(), "", "m1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestGmailGetAcceptsPaddedAndUnpaddedBase64URLBodies(t *testing.T) {
 			api.route("/users/me/messages/m1", http.StatusOK,
 				`{"id":"m1","payload":{"mimeType":"text/plain","body":{"data":"`+encoded+`"}}}`)
 
-			msg, err := newRecordedGmail(t, api, &fakeTokenSource{}).Get(context.Background(), "m1")
+			msg, err := newRecordedGmail(t, api, &fakeTokenSource{}).Get(context.Background(), "", "m1")
 			if err != nil {
 				t.Fatalf("Get: %v", err)
 			}
@@ -252,7 +252,7 @@ func TestGmailGetReportsAnUndecodableBodyRatherThanReturningAnEmptyOne(t *testin
 	api.route("/users/me/messages/m1", http.StatusOK,
 		`{"id":"m1","payload":{"mimeType":"text/plain","body":{"data":"!!!not base64!!!"}}}`)
 
-	msg, err := newRecordedGmail(t, api, &fakeTokenSource{}).Get(context.Background(), "m1")
+	msg, err := newRecordedGmail(t, api, &fakeTokenSource{}).Get(context.Background(), "", "m1")
 	if err == nil {
 		t.Fatalf("an undecodable body must be an error, got message %+v", msg)
 	}
@@ -271,7 +271,7 @@ func TestGmailGetEscapesTheMessageIDIntoThePath(t *testing.T) {
 	api.route("/users/me/messages/a/b", http.StatusOK, `{"id":"a/b","payload":{}}`)
 
 	if _, err := newRecordedGmail(t, api, &fakeTokenSource{}).
-		Get(context.Background(), "a/b"); err != nil {
+		Get(context.Background(), "", "a/b"); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	// Asserting the decoded Path would pass whether or not the id was escaped,
@@ -409,7 +409,7 @@ func TestGmailReportsTheFarStatusInEveryError(t *testing.T) {
 			return err
 		}},
 		{"Get", "/users/me/messages/m1", func(g *Gmail) error {
-			_, err := g.Get(context.Background(), "m1")
+			_, err := g.Get(context.Background(), "", "m1")
 			return err
 		}},
 		{"MarkRead", "/users/me/messages/m1/modify", func(g *Gmail) error {

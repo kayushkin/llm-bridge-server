@@ -204,7 +204,7 @@ func TestGraphGetReadsTheBodyAndFansOutToAttachmentsOnlyWhenThereAreSome(t *test
 			{"id":"a1","name":"invoice.pdf","contentType":"application/pdf","size":1024,"contentId":"cid1"}
 		]}`)
 
-		msg, err := newRecordedGraph(t, api, &fakeTokenSource{}).Get(context.Background(), "m1")
+		msg, err := newRecordedGraph(t, api, &fakeTokenSource{}).Get(context.Background(), "", "m1")
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -232,7 +232,7 @@ func TestGraphGetReadsTheBodyAndFansOutToAttachmentsOnlyWhenThereAreSome(t *test
 		api.route("/me/messages/m1", http.StatusOK,
 			`{"id":"m1","hasAttachments":false,"body":{"contentType":"text","content":"plain"}}`)
 
-		msg, err := newRecordedGraph(t, api, &fakeTokenSource{}).Get(context.Background(), "m1")
+		msg, err := newRecordedGraph(t, api, &fakeTokenSource{}).Get(context.Background(), "", "m1")
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -256,7 +256,7 @@ func TestGraphEscapesIDsIntoThePath(t *testing.T) {
 		api.route("/me/messages/AAMk/QBGAAA=", http.StatusOK, `{"id":"AAMk/QBGAAA="}`)
 
 		if _, err := newRecordedGraph(t, api, &fakeTokenSource{}).
-			Get(context.Background(), "AAMk/QBGAAA="); err != nil {
+			Get(context.Background(), "", "AAMk/QBGAAA="); err != nil {
 			t.Fatalf("Get: %v", err)
 		}
 		if got := api.only().RawRequestURI; !strings.HasPrefix(got, "/me/messages/AAMk%2FQBGAAA=?") {
@@ -293,7 +293,7 @@ func TestGraphReportsTheFarStatusInEveryError(t *testing.T) {
 			return err
 		}},
 		{"Get", "/me/messages/m1", func(g *Graph) error {
-			_, err := g.Get(context.Background(), "m1")
+			_, err := g.Get(context.Background(), "", "m1")
 			return err
 		}},
 	} {

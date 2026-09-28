@@ -49,7 +49,7 @@ func (l *Local) List(ctx context.Context, folderID, cursor string, limit int) ([
 	return l.store.List(ctx, l.accountID, folderID, cursor, limit)
 }
 
-func (l *Local) Get(ctx context.Context, id string) (Message, error) {
+func (l *Local) Get(ctx context.Context, _, id string) (Message, error) {
 	return l.store.Get(ctx, l.accountID, id)
 }
 
