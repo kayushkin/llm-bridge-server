@@ -3,7 +3,7 @@ package server
 // Session actions: buttons a session's agent puts in the chat, which this
 // server runs when a person confirms one.
 //
-// The agent offers one of a fixed set of action types (msg.SessionActionTypes)
+// The agent offers one of a fixed set of action types (msg.OfferableSessionActionTypes)
 // with its label and the one argument its type needs; it never supplies a
 // command. This server writes Command — exactly what a confirm runs — from the
 // offer, and the chat shows it under the button. Confirming takes the
@@ -243,9 +243,13 @@ func sessionActionOfferProblem(offer msg.SessionActionOffer) string {
 	case strings.IndexFunc(offer.Label, unicode.IsControl) >= 0:
 		return "label cannot contain a control character"
 	}
-	if !slices.Contains(msg.SessionActionTypes, offer.Type) {
-		names := make([]string, len(msg.SessionActionTypes))
-		for index, actionType := range msg.SessionActionTypes {
+	if offer.Type == msg.SessionActionSendMessage {
+		return "send_message buttons are no longer offered: a button that sends a reply only repeats a question. " +
+			"Ask the user with AskUserQuestion, whose options the chat draws as one-click answers, or ask in words"
+	}
+	if !slices.Contains(msg.OfferableSessionActionTypes, offer.Type) {
+		names := make([]string, len(msg.OfferableSessionActionTypes))
+		for index, actionType := range msg.OfferableSessionActionTypes {
 			names[index] = string(actionType)
 		}
 		return fmt.Sprintf("type %q is not an action type; it must be one of %s", offer.Type, strings.Join(names, ", "))
