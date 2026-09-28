@@ -526,6 +526,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateSessionFiles(); err != nil {
 		return err
 	}
+	if err := s.migrateSessionActions(); err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -203,6 +203,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	srv.routes()
 	srv.syncHarnessTypes()
 	srv.syncPromptHarnessDeliveries()
+	srv.settleSessionActionsLeftRunning()
 	srv.syncSourceFolderRegistry()
 	srv.startSnapshotGC()
 	return srv
@@ -263,6 +264,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/files", s.handleShareSessionFile)
 	s.mux.HandleFunc("GET /sessions/{id}/files", s.handleListSessionFiles)
 	s.mux.HandleFunc("GET /sessions/{id}/files/{file_id}/content", s.handleSessionFileContent)
+	s.mux.HandleFunc("POST /sessions/{id}/actions", s.handleOfferSessionAction)
+	s.mux.HandleFunc("GET /sessions/{id}/actions", s.handleListSessionActions)
+	s.mux.HandleFunc("POST /sessions/{id}/actions/{action_id}/run", s.handleRunSessionAction)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleSessionEvents)
 	// Pty-mode session attach. Bidirectional WebSocket bound to the
 	// session's pseudoterminal fd; rejected for sessions started in

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# bridge-button — put a button in this bridge session's chat. When the person
+# confirms it, llm-bridge-server does the work itself; no agent turn runs.
+#
+#   bridge-button "Deploy dash"          --deploy <repo-store repo id>
+#   bridge-button "Run the digest"       --scheduler-job <scheduler job id>
+#   bridge-button "Yes, migrate"         --send "go ahead with the migration"
+#   bridge-button "Fix the flaky test"   --fork "fix TestX and nothing else"
+#   bridge-button "Tidy old worktrees"   --new-session "remove merged worktrees in dash"
+#
+# The label is the button's text. The chat shows, under it, exactly what a
+# confirm runs, as the server describes it; the button runs once. --fork starts
+# a copy of this session with its history; --new-session starts a fresh one set
+# up like this one. Find a repo's id with repo-store's GET /repos/by-name/{name}.
+# Prints the action's record as llm-bridge-server answered it.
+#
+# Works in any session llm-bridge-server spawned on this host: it gives every
+# harness child LLM_BRIDGE_SESSION_ACTIONS_URL and a token that can post into
+# that one session and nothing else (internal/server/session_posting_token.go).
+# The token cannot confirm the button: only the person can.
+set -euo pipefail
+
+usage() {
+  echo 'usage: bridge-button "<label>" (--deploy <repo id> | --scheduler-job <job id> | --send <text> | --fork <text> | --new-session <text>)' >&2
+  exit 2
+}
+[ $# -eq 3 ] || usage
+: "${LLM_BRIDGE_SESSION_ACTIONS_URL:?is unset: this process was not started by llm-bridge-server with actions on}"
+: "${LLM_BRIDGE_SESSION_POSTING_TOKEN:?is unset: this process was not started by llm-bridge-server with actions on}"
+
+label="$1" option="$2" value="$3"
+case "$option" in
+  --deploy)        body=$(jq -n --arg label "$label" --argjson id "$value" '{label:$label, type:"deploy", repo_id:$id}') ;;
+  --scheduler-job) body=$(jq -n --arg label "$label" --argjson id "$value" '{label:$label, type:"run_scheduler_job", scheduler_job_id:$id}') ;;
+  --send)          body=$(jq -n --arg label "$label" --arg text "$value" '{label:$label, type:"send_message", message:$text}') ;;
+  --fork)          body=$(jq -n --arg label "$label" --arg text "$value" '{label:$label, type:"fork_and_send", message:$text}') ;;
+  --new-session)   body=$(jq -n --arg label "$label" --arg text "$value" '{label:$label, type:"new_session_and_send", message:$text}') ;;
+  *) usage ;;
+esac
+
+curl --fail-with-body --silent --show-error -X POST "$LLM_BRIDGE_SESSION_ACTIONS_URL" \
+  -H "Authorization: Bearer $LLM_BRIDGE_SESSION_POSTING_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary "$body"
+echo

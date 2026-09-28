@@ -58,7 +58,7 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 	}
 
 	sharedBy := msg.SessionFileSharedByUser
-	if caller, ok := callerOfRequest(r); ok && caller.fileSharingAgentOfSessionID != "" {
+	if caller, ok := callerOfRequest(r); ok && caller.postingAgentOfSessionID != "" {
 		sharedBy = msg.SessionFileSharedByAgent
 	}
 

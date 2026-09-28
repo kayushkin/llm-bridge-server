@@ -206,6 +206,9 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
 | `GET` | `/sessions/{id}` | The session record | owner |
+| `GET` | `/sessions/{id}/actions` | Actions offered in the session, and who ran each and how it ended | owner |
+| `POST` | `/sessions/{id}/actions` | Offer an action the person can confirm from the chat (its owner, or its own agent with LLM_BRIDGE_SESSION_POSTING_TOKEN) | owner, or the session's own agent |
+| `POST` | `/sessions/{id}/actions/{action_id}/run` | Confirm an action: the server runs it (owner only, never the agent) | owner |
 | `GET` | `/sessions/{id}/attach` | WebSocket onto a pty-mode session's terminal | owner |
 | `GET` | `/sessions/{id}/attach-token` | The token the attach WebSocket needs | owner |
 | `POST` | `/sessions/{id}/auto-rename` | The renamer session posts the title it wrote | harness callback |
@@ -217,7 +220,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/sessions/{id}/entries/{eventId}/images/{index}` | One image a tool result carries, relayed from log-store | owner |
 | `GET` | `/sessions/{id}/events` | SSE stream of `msg.Event`; replays the current turn and honours `Last-Event-ID` | owner |
 | `GET` | `/sessions/{id}/files` | Files shared into the session | owner |
-| `POST` | `/sessions/{id}/files` | Share a file into the session (its owner, or its own agent with LLM_BRIDGE_SESSION_FILE_TOKEN) | owner, or the session's own agent |
+| `POST` | `/sessions/{id}/files` | Share a file into the session (its owner, or its own agent with LLM_BRIDGE_SESSION_POSTING_TOKEN) | owner, or the session's own agent |
 | `GET` | `/sessions/{id}/files/{file_id}/content` | One shared file's bytes, relayed from file-store | owner |
 | `PUT` | `/sessions/{id}/folder` | Move into a folder | operator |
 | `POST` | `/sessions/{id}/fork` | Branch a new session from this one | owner |

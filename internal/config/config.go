@@ -46,6 +46,12 @@ type Config struct {
 	SessionFilesDir string
 	// FileStoreURL is file-store's base URL. Empty switches session files off.
 	FileStoreURL string
+	// RepoStoreURL is repo-store's base URL, where a deploy action finds its
+	// repo's directory. Empty refuses deploy actions.
+	RepoStoreURL string
+	// SchedulerURL is the scheduler's base URL, which runs a scheduler job
+	// action. Empty refuses those actions.
+	SchedulerURL string
 	// FileStoreServiceToken is sent to file-store as X-File-Store-Service-Token.
 	FileStoreServiceToken string
 	BridgePrefsPath       string
@@ -329,6 +335,8 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		ImagesDir:                     settings.String("images.directory"),
 		SessionFilesDir:               settings.String("session_files.directory"),
 		FileStoreURL:                  settings.String("file_store.url"),
+		RepoStoreURL:                  settings.String("repo_store.url"),
+		SchedulerURL:                  settings.String("scheduler.url"),
 		FileStoreServiceToken:         settings.String("file_store.service_token"),
 		BridgePrefsPath:               settings.String("bridge_preferences.path"),
 		ConformancePath:               settings.String("conformance.path"),

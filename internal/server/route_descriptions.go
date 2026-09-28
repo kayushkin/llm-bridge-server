@@ -67,9 +67,12 @@ var routeDescriptions = map[string]routeDescription{
 	// One session.
 	"GET /sessions/{id}":                                  {routeGroupOneSession, "The session record"},
 	"POST /sessions/{id}/send":                            {routeGroupOneSession, "Send a message"},
-	"POST /sessions/{id}/files":                           {routeGroupOneSession, "Share a file into the session (its owner, or its own agent with LLM_BRIDGE_SESSION_FILE_TOKEN)"},
+	"POST /sessions/{id}/files":                           {routeGroupOneSession, "Share a file into the session (its owner, or its own agent with LLM_BRIDGE_SESSION_POSTING_TOKEN)"},
 	"GET /sessions/{id}/files":                            {routeGroupOneSession, "Files shared into the session"},
 	"GET /sessions/{id}/files/{file_id}/content":          {routeGroupOneSession, "One shared file's bytes, relayed from file-store"},
+	"POST /sessions/{id}/actions":                         {routeGroupOneSession, "Offer an action the person can confirm from the chat (its owner, or its own agent with LLM_BRIDGE_SESSION_POSTING_TOKEN)"},
+	"GET /sessions/{id}/actions":                          {routeGroupOneSession, "Actions offered in the session, and who ran each and how it ended"},
+	"POST /sessions/{id}/actions/{action_id}/run":         {routeGroupOneSession, "Confirm an action: the server runs it (owner only, never the agent)"},
 	"GET /sessions/{id}/events":                           {routeGroupOneSession, "SSE stream of `msg.Event`; replays the current turn and honours `Last-Event-ID`"},
 	"GET /sessions/{id}/attach":                           {routeGroupOneSession, "WebSocket onto a pty-mode session's terminal"},
 	"GET /sessions/{id}/attach-token":                     {routeGroupOneSession, "The token the attach WebSocket needs"},

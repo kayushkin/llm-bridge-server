@@ -39,6 +39,12 @@ BACKUP_DROPIN=""
 # strip FILE_STORE_SERVICE_TOKEN from its harness children.
 FILE_STORE_DROPIN="$DROPIN_DIR/file-store.conf"
 BACKUP_FILE_STORE_DROPIN=""
+# session-actions.conf gives the server repo-store's and the scheduler's
+# addresses, read from their own units, for the deploy and scheduler job
+# actions. Rolled back the same way, and for the same reason: a binary from
+# before session actions refuses to start on LLMBRIDGE_REPO_STORE_URL.
+SESSION_ACTIONS_DROPIN="$DROPIN_DIR/session-actions.conf"
+BACKUP_SESSION_ACTIONS_DROPIN=""
 
 # rollback restores the binary and drop-in this run replaced, restarts, and
 # confirms the service actually answers again. Called from the failure paths
@@ -59,6 +65,11 @@ rollback() {
     sudo cp -p "$BACKUP_FILE_STORE_DROPIN" "$FILE_STORE_DROPIN"
   else
     sudo rm -f "$FILE_STORE_DROPIN"
+  fi
+  if [ -n "$BACKUP_SESSION_ACTIONS_DROPIN" ] && [ -f "$BACKUP_SESSION_ACTIONS_DROPIN" ]; then
+    sudo cp -p "$BACKUP_SESSION_ACTIONS_DROPIN" "$SESSION_ACTIONS_DROPIN"
+  else
+    sudo rm -f "$SESSION_ACTIONS_DROPIN"
   fi
   sudo systemctl daemon-reload
   sudo systemctl start "$SERVICE"
@@ -130,6 +141,11 @@ if [ -f "$FILE_STORE_DROPIN" ]; then
   sudo cp -p "$FILE_STORE_DROPIN" "$BACKUP_FILE_STORE_DROPIN"
   echo "    file-store drop-in -> $BACKUP_FILE_STORE_DROPIN"
 fi
+if [ -f "$SESSION_ACTIONS_DROPIN" ]; then
+  BACKUP_SESSION_ACTIONS_DROPIN="$SESSION_ACTIONS_DROPIN.backup-$STAMP"
+  sudo cp -p "$SESSION_ACTIONS_DROPIN" "$BACKUP_SESSION_ACTIONS_DROPIN"
+  echo "    session-actions drop-in -> $BACKUP_SESSION_ACTIONS_DROPIN"
+fi
 
 echo "==> Stopping $SERVICE..."
 sudo systemctl stop "$SERVICE" 2>/dev/null || true
@@ -143,6 +159,10 @@ echo "==> Installing bridge-share-file..."
 # with the token every harness child is given. On PATH for every child because
 # the unit's PATH is the deploying user's, which holds ~/bin.
 install -m 755 "$REPO_DIR/scripts/bridge-share-file" "$HOME/bin/bridge-share-file"
+
+echo "==> Installing bridge-button..."
+# How an agent puts a button in the chat, with the same token.
+install -m 755 "$REPO_DIR/scripts/bridge-button" "$HOME/bin/bridge-button"
 
 echo "==> Installing service file..."
 # The committed unit file uses __USER__ / __HOME__ placeholders so the repo
@@ -237,6 +257,30 @@ else
   echo "WARNING: no $FILE_STORE_TOKENS or no FILE_STORE_ADDR in $FILE_STORE_UNIT; session files stay off"
   sudo rm -f "$FILE_STORE_DROPIN"
 fi
+
+# The deploy and scheduler job actions need repo-store's and the scheduler's
+# addresses; each is read from that service's own unit, never written here.
+REPO_STORE_ADDR="$(grep -oP '^Environment=REPO_STORE_ADDR=\K.*' "$HOME/.config/systemd/user/repo-store.service" 2>/dev/null || true)"
+SCHEDULER_PORT="$(grep -oP '^Environment=SCHEDULER_PORT=\K.*' "$HOME/.config/systemd/user/scheduler.service" 2>/dev/null || true)"
+TMP_SESSION_ACTIONS_DROPIN=$(mktemp)
+printf '[Service]\n' > "$TMP_SESSION_ACTIONS_DROPIN"
+if [ -n "$REPO_STORE_ADDR" ]; then
+  # REPO_STORE_ADDR is a listen address such as :8306; an empty host is this machine.
+  REPO_STORE_HOST_PORT="$REPO_STORE_ADDR"
+  case "$REPO_STORE_HOST_PORT" in :*) REPO_STORE_HOST_PORT="localhost$REPO_STORE_HOST_PORT" ;; esac
+  printf 'Environment=LLMBRIDGE_REPO_STORE_URL=http://%s\n' "$REPO_STORE_HOST_PORT" >> "$TMP_SESSION_ACTIONS_DROPIN"
+  echo "    session-actions drop-in: LLMBRIDGE_REPO_STORE_URL=http://$REPO_STORE_HOST_PORT"
+else
+  echo "WARNING: no REPO_STORE_ADDR in repo-store's unit; deploy actions are refused"
+fi
+if [ -n "$SCHEDULER_PORT" ]; then
+  printf 'Environment=LLMBRIDGE_SCHEDULER_URL=http://localhost:%s\n' "$SCHEDULER_PORT" >> "$TMP_SESSION_ACTIONS_DROPIN"
+  echo "    session-actions drop-in: LLMBRIDGE_SCHEDULER_URL=http://localhost:$SCHEDULER_PORT"
+else
+  echo "WARNING: no SCHEDULER_PORT in the scheduler's unit; scheduler job actions are refused"
+fi
+sudo cp "$TMP_SESSION_ACTIONS_DROPIN" "$SESSION_ACTIONS_DROPIN"
+rm -f "$TMP_SESSION_ACTIONS_DROPIN"
 
 sudo systemctl daemon-reload
 

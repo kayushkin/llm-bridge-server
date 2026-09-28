@@ -9,7 +9,7 @@
 #
 # Works in any session llm-bridge-server spawned on this host: it gives every
 # harness child LLM_BRIDGE_SESSION_FILES_URL and a token that can share into
-# that one session and do nothing else (internal/server/session_file_token.go).
+# that one session and do nothing else (internal/server/session_posting_token.go).
 set -euo pipefail
 
 if [ $# -eq 0 ]; then
@@ -17,7 +17,7 @@ if [ $# -eq 0 ]; then
   exit 2
 fi
 : "${LLM_BRIDGE_SESSION_FILES_URL:?is unset: this process was not started by llm-bridge-server with file sharing on}"
-: "${LLM_BRIDGE_SESSION_FILE_TOKEN:?is unset: this process was not started by llm-bridge-server with file sharing on}"
+: "${LLM_BRIDGE_SESSION_POSTING_TOKEN:?is unset: this process was not started by llm-bridge-server with posting on}"
 
 for path in "$@"; do
   if [ ! -f "$path" ]; then
@@ -29,7 +29,7 @@ for path in "$@"; do
   encoded_name=$(jq -rn --arg name "$name" '$name | @uri')
   curl --fail-with-body --silent --show-error -X POST \
     "$LLM_BRIDGE_SESSION_FILES_URL?filename=$encoded_name" \
-    -H "Authorization: Bearer $LLM_BRIDGE_SESSION_FILE_TOKEN" \
+    -H "Authorization: Bearer $LLM_BRIDGE_SESSION_POSTING_TOKEN" \
     -H "Content-Type: $media_type" \
     --data-binary "@$path"
   echo
