@@ -36,6 +36,7 @@ const (
 	SettingOperationsCompletionInstances     = "operations.completion_instances"
 	SettingOperationsCompletionModel         = "operations.completion_model"
 	SettingOperationsGrantEnforcement        = "operations.grant_enforcement"
+	SettingSessionActionsReviewModel         = "session_actions.review_model"
 )
 
 // HarnessProxyEnvironmentVariable is the variable that names the backend the
@@ -94,6 +95,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "Which harness instance makes the one-shot calls for each model-store provider, as provider:instance pairs. An operation's model is resolved through model-store (an id, an alias, or a role such as efficient) and sent to its provider's instance; a provider named nowhere here cannot be called. Each instance must be enabled and its harness must implement -oneshot."},
 		{Key: SettingOperationsCompletionModel, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_MODEL", Kind: behaviour, ValueType: text, Editable: true,
 			Description: "The model an llm.completion or classification.run uses when its input names none: a model-store id, alias or role. Empty means an input must name one."},
+		{Key: SettingSessionActionsReviewModel, EnvironmentVariable: "LLMBRIDGE_SESSION_ACTIONS_REVIEW_MODEL", Kind: behaviour, ValueType: text, Editable: true, Default: "balanced",
+			Description: "The model that reviews a run_command button's command when an agent offers it, and whose verdict the button shows: a model-store id, alias or role, called through operations.completion_instances. A command it rejects cannot be run; a model that cannot be called refuses the offer."},
 		{Key: SettingOperationsGrantEnforcement, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_GRANT_ENFORCEMENT", Kind: behaviour, ValueType: text, Editable: true, Default: OperationsGrantEnforcementLenient,
 			Description: "How grant-store's can_run_operation grants are applied to a principal starting an operation. lenient: a principal holding no such grant may start any type, and one holding any may start only those. strict: a principal may start only the types its grants name. Administrators and the service token are never checked."},
 
@@ -261,6 +264,7 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 	for key, value := range map[string]string{
 		SettingOperationsCompletionModel:  c.OperationsCompletionModel,
 		SettingOperationsGrantEnforcement: c.OperationsGrantEnforcement,
+		SettingSessionActionsReviewModel:  c.SessionActionsReviewModel,
 	} {
 		if value != "" {
 			seeds[key] = value

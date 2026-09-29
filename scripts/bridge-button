@@ -1,18 +1,29 @@
 #!/usr/bin/env bash
 # bridge-button — put a button in this bridge session's chat. When the person
-# confirms it, llm-bridge-server does the work itself; no agent turn runs.
+# confirms it, llm-bridge-server does the work itself, and what comes back
+# shows under the button.
 #
-#   bridge-button "Deploy dash"          --deploy <repo-store repo id>
-#   bridge-button "Run the digest"       --scheduler-job <scheduler job id>
-#   bridge-button "Fix the flaky test"   --fork "fix TestX and nothing else"
-#   bridge-button "Tidy old worktrees"   --new-session "remove merged worktrees in dash"
+#   bridge-button "Deploy dash"            --deploy <repo-store repo id>
+#   bridge-button "Run the digest"         --scheduler-job <scheduler job id>
+#   bridge-button "List attendees"         --run "<shell command>" [--in <dir>] [--markdown]
+#   bridge-button "Find tech events"       --ask "<question>" --model <model> --max-cost <usd>
+#   bridge-button "Research venues"        --agent "<task>" --max-cost <usd> [--model <model>]
+#   bridge-button "Fix the flaky test"     --fork "<task>"
+#   bridge-button "Tidy old worktrees"     --new-session "<task>"
 #
 # Then write the action id it prints (session_action_…) in your reply where the
 # button should be; the chat draws the button there. The label is the button's
-# text. The chat shows, beside it, exactly what a confirm runs, as the server
-# describes it; the button runs once. --fork starts a copy of this session with
-# its history; --new-session starts a fresh one set up like this one. Find a
-# repo's id with repo-store's GET /repos/by-name/{name}.
+# text, and the chat shows exactly what a confirm runs; the button runs once.
+#
+# --run runs the command with bash -l -c, in --in or this session's working
+# directory; a reviewer model reads it first, and its verdict shows on the
+# button (a command it rejects cannot be pressed). The command's output shows
+# under the button, as markdown with --markdown. --ask asks one model one
+# question, with no tools; --agent starts a session set up like this one and
+# shows its final reply. Both need --max-cost, the most they may spend at list
+# price, which the button shows; --model is a model-store id, alias or role.
+# --fork starts a copy of this session with its history; --new-session starts a
+# fresh one. Find a repo's id with repo-store's GET /repos/by-name/{name}.
 #
 # A button is for work the server does, never for answering a question: ask with
 # AskUserQuestion, whose options the chat already draws as one-click answers.
@@ -24,28 +35,43 @@
 set -euo pipefail
 
 usage() {
-  echo 'usage: bridge-button "<label>" (--deploy <repo id> | --scheduler-job <job id> | --fork <text> | --new-session <text>)' >&2
+  sed -n '6,12p' "$0" | sed 's/^#   /usage: /' >&2
   exit 2
 }
-[ $# -eq 3 ] || usage
+[ $# -ge 3 ] || usage
 : "${LLM_BRIDGE_SESSION_ACTIONS_URL:?is unset: this process was not started by llm-bridge-server with actions on}"
 : "${LLM_BRIDGE_SESSION_POSTING_TOKEN:?is unset: this process was not started by llm-bridge-server with actions on}"
 
-label="$1" option="$2" value="$3"
-case "$option" in
-  --deploy)        body=$(jq -n --arg label "$label" --argjson id "$value" '{label:$label, type:"deploy", repo_id:$id}') ;;
-  --scheduler-job) body=$(jq -n --arg label "$label" --argjson id "$value" '{label:$label, type:"run_scheduler_job", scheduler_job_id:$id}') ;;
-  --fork)          body=$(jq -n --arg label "$label" --arg text "$value" '{label:$label, type:"fork_and_send", message:$text}') ;;
-  --new-session)   body=$(jq -n --arg label "$label" --arg text "$value" '{label:$label, type:"new_session_and_send", message:$text}') ;;
-  *) usage ;;
-esac
+label="$1"; shift
+offer=$(jq -n --arg label "$label" '{label:$label}')
+set_field() { offer=$(jq --arg key "$1" --arg value "$2" '.[$key]=$value' <<<"$offer"); }
+set_number() { offer=$(jq --arg key "$1" --argjson value "$2" '.[$key]=$value' <<<"$offer"); }
+while [ $# -gt 0 ]; do
+  [ $# -ge 1 ] || usage
+  case "$1" in
+    --deploy)        set_field type deploy;               set_number repo_id "$2"; shift 2 ;;
+    --scheduler-job) set_field type run_scheduler_job;    set_number scheduler_job_id "$2"; shift 2 ;;
+    --run)           set_field type run_command;          set_field shell_command "$2"; shift 2 ;;
+    --ask)           set_field type model_call;           set_field message "$2"; shift 2 ;;
+    --agent)         set_field type background_agent;     set_field message "$2"; shift 2 ;;
+    --fork)          set_field type fork_and_send;        set_field message "$2"; shift 2 ;;
+    --new-session)   set_field type new_session_and_send; set_field message "$2"; shift 2 ;;
+    --in)            set_field working_directory "$2"; shift 2 ;;
+    --markdown)      set_field result_format markdown; shift ;;
+    --model)         set_field model "$2"; shift 2 ;;
+    --max-cost)      set_number maximum_cost_usd "$2"; shift 2 ;;
+    *) usage ;;
+  esac
+done
 
 if ! record=$(curl --fail-with-body --silent --show-error -X POST "$LLM_BRIDGE_SESSION_ACTIONS_URL" \
   -H "Authorization: Bearer $LLM_BRIDGE_SESSION_POSTING_TOKEN" \
   -H "Content-Type: application/json" \
-  --data-binary "$body"); then
+  --data-binary "$offer"); then
   echo "bridge-button: the button was not offered: $record" >&2
   exit 1
 fi
 echo "$record"
+review=$(jq -r 'if .review then "reviewer (\(.review.model)): \(.review.verdict) — \(.review.reasons)" else empty end' <<<"$record")
+[ -z "$review" ] || echo "bridge-button: $review" >&2
 echo "bridge-button: write $(jq -r .action_id <<<"$record") in your reply where the button should appear" >&2

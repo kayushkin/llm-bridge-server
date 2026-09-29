@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +16,8 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/executors"
+	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -359,5 +364,229 @@ func TestTheChildEnvironmentCarriesTheActionsAddressWithoutFileStore(t *testing.
 	}
 	if _, has := environment[sessionFilesURLEnvironmentVariable]; has {
 		t.Errorf("a files address with no file-store: %v", environment)
+	}
+}
+
+// fakeSessionActionModels resolves any named model, answers a review with a
+// set verdict and any other call with a set answer, and prices every model at
+// $1 in and $10 out per million tokens.
+type fakeSessionActionModels struct {
+	mu            sync.Mutex
+	verdict       string
+	reviewFails   bool
+	answer        string
+	requests      []msg.OneShotRequest
+	instanceCalls []string
+}
+
+func (fake *fakeSessionActionModels) CompletionTarget(requestedModel string) (executors.CompletionTarget, error) {
+	if requestedModel == "" {
+		return executors.CompletionTarget{}, &executors.TargetError{Code: "no_model", Message: "no model named"}
+	}
+	return executors.CompletionTarget{RequestedModel: requestedModel, ModelID: requestedModel + "-resolved", Provider: "mock", InstanceID: "inst-fake"}, nil
+}
+
+func (fake *fakeSessionActionModels) RunOneShot(ctx context.Context, instanceID string, request msg.OneShotRequest) (msg.OneShotResponse, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	fake.requests = append(fake.requests, request)
+	fake.instanceCalls = append(fake.instanceCalls, instanceID)
+	if len(request.Schema) > 0 {
+		if fake.reviewFails {
+			return msg.OneShotResponse{}, errors.New("reviewer unreachable")
+		}
+		return msg.OneShotResponse{Parsed: json.RawMessage(fmt.Sprintf(`{"verdict":%q,"reasons":"it lists two lines"}`, fake.verdict))}, nil
+	}
+	return msg.OneShotResponse{Text: fake.answer, Usage: msg.TokenUsage{InputTokens: 100, OutputTokens: 200}}, nil
+}
+
+func (fake *fakeSessionActionModels) ModelListPrice(model string) (float64, float64, bool) {
+	return 1, 10, true
+}
+
+func withFakeSessionActionModels(srv *Server, verdict string) *fakeSessionActionModels {
+	fake := &fakeSessionActionModels{verdict: verdict, answer: "## Tech events\n- Go meetup, Thursday"}
+	srv.sessionActionModels = fake
+	return fake
+}
+
+func offerAsInternalService(t *testing.T, srv *Server, sessionID string, offer map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	asInternalService(srv).ServeHTTP(recorder, offerRequest(sessionID, offer))
+	return recorder
+}
+
+func TestARunCommandIsReviewedWhenOfferedAndItsOutputIsItsResult(t *testing.T) {
+	srv, st, _ := testServerForSessionActions(t)
+	newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
+	models := withFakeSessionActionModels(srv, "approve")
+	directory := t.TempDir()
+
+	recorder := offerAsInternalService(t, srv, "br_buttons", map[string]any{
+		"label": "List attendees", "type": "run_command", "shell_command": "printf -- '- Ana\\n- Bo\\n'",
+		"working_directory": directory, "result_format": "markdown",
+	})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("offer: %d %s", recorder.Code, recorder.Body)
+	}
+	var offered msg.SessionAction
+	json.Unmarshal(recorder.Body.Bytes(), &offered)
+	if offered.Review == nil || offered.Review.Verdict != msg.SessionActionReviewApprove || offered.Review.Model != "balanced-resolved" {
+		t.Fatalf("review = %+v", offered.Review)
+	}
+	if !strings.Contains(models.requests[0].Prompt, "printf -- '- Ana") || !strings.Contains(models.requests[0].Prompt, directory) {
+		t.Errorf("the reviewer was not shown the command and its directory: %q", models.requests[0].Prompt)
+	}
+	if want := "in " + directory + ", run with `bash -l -c`:\nprintf -- '- Ana\\n- Bo\\n'"; offered.Command != want {
+		t.Errorf("command = %q, want %q", offered.Command, want)
+	}
+
+	recorder = httptest.NewRecorder()
+	asInternalService(srv).ServeHTTP(recorder, runRequest("br_buttons", offered.ActionID))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("run: %d %s", recorder.Code, recorder.Body)
+	}
+	finished := waitForSessionActionToEnd(t, st, "br_buttons", offered.ActionID)
+	if finished.State != msg.SessionActionSucceeded || finished.Output != "- Ana\n- Bo\n" || finished.Offer.ResultFormat != msg.SessionActionResultMarkdown || finished.Review == nil {
+		t.Errorf("finished = %+v", finished)
+	}
+}
+
+func TestACommandTheReviewerRejectsCannotBeRun(t *testing.T) {
+	srv, st, _ := testServerForSessionActions(t)
+	newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
+	withFakeSessionActionModels(srv, "reject")
+	directory := t.TempDir()
+
+	recorder := offerAsInternalService(t, srv, "br_buttons", map[string]any{
+		"label": "Tidy up", "type": "run_command", "shell_command": "touch ran.txt", "working_directory": directory,
+	})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("offer: %d %s", recorder.Code, recorder.Body)
+	}
+	var offered msg.SessionAction
+	json.Unmarshal(recorder.Body.Bytes(), &offered)
+	recorder = httptest.NewRecorder()
+	asInternalService(srv).ServeHTTP(recorder, runRequest("br_buttons", offered.ActionID))
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "session_action_rejected_by_review") {
+		t.Errorf("run: %d %s, want 409 session_action_rejected_by_review", recorder.Code, recorder.Body)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "ran.txt")); err == nil {
+		t.Error("a rejected command ran")
+	}
+}
+
+func TestACommandIsNotOfferedWhenItCannotBeReviewed(t *testing.T) {
+	srv, st, _ := testServerForSessionActions(t)
+	newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
+	withFakeSessionActionModels(srv, "approve").reviewFails = true
+
+	recorder := offerAsInternalService(t, srv, "br_buttons", map[string]any{
+		"label": "List", "type": "run_command", "shell_command": "ls", "working_directory": t.TempDir(),
+	})
+	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), "review_failed") {
+		t.Errorf("offer: %d %s, want 502 review_failed", recorder.Code, recorder.Body)
+	}
+	recorder = offerAsInternalService(t, srv, "br_buttons", map[string]any{"label": "List", "type": "run_command", "shell_command": "ls"})
+	if recorder.Code != http.StatusUnprocessableEntity || !strings.Contains(recorder.Body.String(), "no_working_directory") {
+		t.Errorf("offer with no directory anywhere: %d %s, want 422 no_working_directory", recorder.Code, recorder.Body)
+	}
+	if listed, _ := st.ListSessionActions("br_buttons"); len(listed) != 0 {
+		t.Errorf("refused offers were stored: %+v", listed)
+	}
+}
+
+func TestAModelCallKeepsToItsCostLimitAndItsAnswerIsItsResult(t *testing.T) {
+	srv, st, _ := testServerForSessionActions(t)
+	newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
+	models := withFakeSessionActionModels(srv, "approve")
+
+	// $0.01 at $10 per million output tokens buys 1,000 tokens; the 38-byte prompt,
+	// counted as 13.7 tokens at $1 per million, leaves 998.
+	recorder := offerAsInternalService(t, srv, "br_buttons", map[string]any{
+		"label": "Find tech events", "type": "model_call", "model": "balanced", "maximum_cost_usd": 0.01,
+		"message": "List tech events in Seattle this week.",
+	})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("offer: %d %s", recorder.Code, recorder.Body)
+	}
+	var offered msg.SessionAction
+	json.Unmarshal(recorder.Body.Bytes(), &offered)
+	if !strings.Contains(offered.Command, "balanced-resolved") || !strings.Contains(offered.Command, "$0.01") || !strings.Contains(offered.Command, "at most 998 output tokens") {
+		t.Errorf("command = %q", offered.Command)
+	}
+
+	recorder = httptest.NewRecorder()
+	asInternalService(srv).ServeHTTP(recorder, runRequest("br_buttons", offered.ActionID))
+	finished := waitForSessionActionToEnd(t, st, "br_buttons", offered.ActionID)
+	if finished.State != msg.SessionActionSucceeded || finished.Output != models.answer {
+		t.Fatalf("finished = %+v", finished)
+	}
+	if want := 100*1/1e6 + 200*10/1e6; math.Abs(finished.CostUSD-want) > 1e-12 {
+		t.Errorf("cost = %v, want %v", finished.CostUSD, want)
+	}
+	last := models.requests[len(models.requests)-1]
+	if last.MaxTokens != 998 || last.Model != "balanced-resolved" || models.instanceCalls[len(models.instanceCalls)-1] != "inst-fake" {
+		t.Errorf("model request = %+v", last)
+	}
+
+	recorder = offerAsInternalService(t, srv, "br_buttons", map[string]any{
+		"label": "Too cheap", "type": "model_call", "model": "balanced", "maximum_cost_usd": 0.0001, "message": "hi",
+	})
+	if recorder.Code != http.StatusUnprocessableEntity || !strings.Contains(recorder.Body.String(), "cost_limit_too_low") {
+		t.Errorf("cheap offer: %d %s, want 422 cost_limit_too_low", recorder.Code, recorder.Body)
+	}
+}
+
+func TestEachNewKindTakesOnlyItsOwnFields(t *testing.T) {
+	srv, st, _ := testServerForSessionActions(t)
+	newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
+	withFakeSessionActionModels(srv, "approve")
+	cases := []struct {
+		name  string
+		offer map[string]any
+		want  string
+	}{
+		{"a model call with no cost limit", map[string]any{"label": "x", "type": "model_call", "model": "m", "message": "hi"}, "needs maximum_cost_usd"},
+		{"a model call with no model", map[string]any{"label": "x", "type": "model_call", "maximum_cost_usd": 1, "message": "hi"}, "needs model"},
+		{"a background agent with no cost limit", map[string]any{"label": "x", "type": "background_agent", "message": "go"}, "needs maximum_cost_usd"},
+		{"a command with a message", map[string]any{"label": "x", "type": "run_command", "shell_command": "ls", "message": "hi"}, "message is not used by a run_command"},
+		{"a deploy with a command", map[string]any{"label": "x", "type": "deploy", "repo_id": 1, "shell_command": "ls"}, "shell_command is not used by a deploy"},
+		{"a relative directory", map[string]any{"label": "x", "type": "run_command", "shell_command": "ls", "working_directory": "repos"}, "absolute path"},
+		{"an unknown result format", map[string]any{"label": "x", "type": "run_command", "shell_command": "ls", "result_format": "html"}, "neither text nor markdown"},
+	}
+	for _, testCase := range cases {
+		recorder := offerAsInternalService(t, srv, "br_buttons", testCase.offer)
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), testCase.want) {
+			t.Errorf("%s: %d %s, want 400 %q", testCase.name, recorder.Code, recorder.Body, testCase.want)
+		}
+	}
+}
+
+func TestABackgroundAgentsFinalReplyIsItsResult(t *testing.T) {
+	srv, _, _ := testServerForSessionActions(t)
+	events := make(chan harness.StoredEvent, 8)
+	events <- harness.StoredEvent{Event: msg.Event{Type: msg.EventStream}}
+	events <- harness.StoredEvent{Event: msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "Found 3 events"}}}
+	outcome := srv.waitForFinalReply("br_background", events)
+	if outcome.err != nil || outcome.output != "Found 3 events" || outcome.resultSessionID != "br_background" {
+		t.Errorf("outcome = %+v", outcome)
+	}
+
+	events = make(chan harness.StoredEvent, 8)
+	events <- harness.StoredEvent{Event: msg.Event{Type: msg.EventTurnComplete}}
+	if outcome := srv.waitForFinalReply("br_background", events); outcome.err == nil {
+		t.Error("a turn that ended with no reply seen counted as a success")
+	}
+
+	config, err := harnessConfigWithModel(json.RawMessage(`{"permission_mode":"bypassPermissions","model":"old","model_selection":{"model":"old"}}`), "efficient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	json.Unmarshal(config, &fields)
+	if fields["model"] != "efficient" || fields["model_selection"] != nil || fields["permission_mode"] != "bypassPermissions" {
+		t.Errorf("config = %s", config)
 	}
 }

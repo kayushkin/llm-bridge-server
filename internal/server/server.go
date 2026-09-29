@@ -113,6 +113,10 @@ type Server struct {
 	// operations runs the operation routes. Nil until EnableOperations, and
 	// the routes answer 503 until then. See operations.go.
 	operations *operations.Coordinator
+
+	// sessionActionModels resolves, calls and prices the models session
+	// actions use. The server itself, except in tests.
+	sessionActionModels sessionActionModels
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
@@ -199,6 +203,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		now:        time.Now,
 	}
 	srv.principalLookupCache = newPrincipalLookupCache(srv.principalClient)
+	srv.sessionActionModels = srv
 	srv.wireServiceSettings()
 	srv.routes()
 	srv.syncHarnessTypes()

@@ -32,15 +32,17 @@ type Config struct {
 	// them at the time of use from Settings, never from here.
 	OperationsCompletionInstances map[string]string
 	OperationsCompletionModel     string
-	OperationsGrantEnforcement    string
-	AgentStoreDB                  string
-	MemoryStoreDB                 string
-	HarnessStoreDB                string
-	HookStoreDB                   string
-	ModelStoreDB                  string
-	ModelStoreURL                 string
-	AgentStoreURL                 string
-	ImagesDir                     string
+	// SessionActionsReviewModel seeds session_actions.review_model.
+	SessionActionsReviewModel  string
+	OperationsGrantEnforcement string
+	AgentStoreDB               string
+	MemoryStoreDB              string
+	HarnessStoreDB             string
+	HookStoreDB                string
+	ModelStoreDB               string
+	ModelStoreURL              string
+	AgentStoreURL              string
+	ImagesDir                  string
 	// SessionFilesDir is where a file shared into a session is copied for its
 	// agent to read: <dir>/<session id>/<file id>/<filename>.
 	SessionFilesDir string
@@ -324,6 +326,7 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		OperationsLeaseDuration:       settings.Duration("operations.lease_duration"),
 		OperationsCompletionInstances: settings.StringMap(SettingOperationsCompletionInstances),
 		OperationsCompletionModel:     settings.String(SettingOperationsCompletionModel),
+		SessionActionsReviewModel:     settings.String(SettingSessionActionsReviewModel),
 		OperationsGrantEnforcement:    settings.String(SettingOperationsGrantEnforcement),
 		AgentStoreDB:                  settings.String("agent_store.database_path"),
 		MemoryStoreDB:                 settings.String("memory_store.database_path"),

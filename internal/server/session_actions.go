@@ -26,14 +26,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 	"unicode"
 
-	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -45,9 +43,6 @@ const (
 	// maximumSessionActionOfferBytes bounds an offer's body. A message to
 	// send is the only long field.
 	maximumSessionActionOfferBytes = 256 << 10
-	// sessionActionDeployTimeout is how long a deploy may run before it is
-	// killed and recorded as failed.
-	sessionActionDeployTimeout = 30 * time.Minute
 	// sessionActionStoreRequestTimeout bounds each call to repo-store and the
 	// scheduler.
 	sessionActionStoreRequestTimeout = 30 * time.Second
@@ -78,18 +73,32 @@ func (s *Server) handleOfferSessionAction(w http.ResponseWriter, r *http.Request
 		refusal.write(w)
 		return
 	}
+	var review *msg.SessionActionReview
+	if offer.Type == msg.SessionActionRunCommand {
+		directory, refusal := s.sessionActionWorkingDirectory(session, offer)
+		if refusal != nil {
+			refusal.write(w)
+			return
+		}
+		review, refusal = s.reviewSessionActionCommand(r.Context(), session, offer, directory)
+		if refusal != nil {
+			refusal.write(w)
+			return
+		}
+	}
 	action := store.SessionAction{
 		SessionID: session.SessionID,
 		Offer:     offer,
 		Command:   command,
 		State:     msg.SessionActionOffered,
 		OfferedAt: time.Now().UTC(),
+		Review:    review,
 	}
 	if err := s.store.InsertSessionAction(&action); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "record_session_action", err.Error())
 		return
 	}
-	log.Printf("[session-actions] %s offered in %s: %q, %s", action.ActionID, session.SessionID, offer.Label, command)
+	log.Printf("[session-actions] %s offered in %s: %q, %s%s", action.ActionID, session.SessionID, offer.Label, command, describeReviewForLog(review))
 	if err := s.broadcastSessionAction(action); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "record_session_action_event", fmt.Sprintf(
 			"%s is stored and listed at GET /sessions/%s/actions, but its session_action event was not written, so the chat does not show it: %v",
@@ -147,6 +156,11 @@ func (s *Server) handleRunSessionAction(w http.ResponseWriter, r *http.Request) 
 		refusal.write(w)
 		return
 	}
+	if offered.Review != nil && offered.Review.Verdict == msg.SessionActionReviewReject {
+		writeJSONError(w, http.StatusConflict, "session_action_rejected_by_review", fmt.Sprintf(
+			"%s's command was rejected by its reviewer (%s): %s", actionID, offered.Review.Model, offered.Review.Reasons))
+		return
+	}
 	if command != offered.Command {
 		writeJSONError(w, http.StatusConflict, "session_action_changed", fmt.Sprintf(
 			"what %s would run has changed since it was offered, so it was not run. It was offered as: %s. It would now run: %s. Ask the agent to offer it again.",
@@ -195,7 +209,9 @@ func (s *Server) runSessionAction(session *store.Session, action store.SessionAc
 	if outcome.err != nil {
 		errorText = outcome.err.Error()
 	}
-	finished, err := s.store.FinishSessionAction(session.SessionID, action.ActionID, state, outcome.output, errorText, outcome.resultSessionID, time.Now().UTC())
+	finished, err := s.store.FinishSessionAction(session.SessionID, action.ActionID, store.SessionActionEnd{
+		State: state, Output: outcome.output, Error: errorText, ResultSessionID: outcome.resultSessionID, CostUSD: outcome.costUSD,
+	}, time.Now().UTC())
 	if err != nil {
 		log.Printf("[session-actions] ERROR %s in %s ended %s (%s) but the end was not recorded: %v", action.ActionID, session.SessionID, state, errorText, err)
 		return
@@ -209,6 +225,7 @@ func (s *Server) runSessionAction(session *store.Session, action store.SessionAc
 type sessionActionOutcome struct {
 	output          string
 	resultSessionID string
+	costUSD         float64
 	err             error
 }
 
@@ -226,6 +243,12 @@ func (s *Server) performSessionAction(session *store.Session, action store.Sessi
 		return s.forkAndSendAction(session, offer)
 	case msg.SessionActionNewSessionAndSend:
 		return s.newSessionAndSendAction(session, offer)
+	case msg.SessionActionRunCommand:
+		return s.runCommandAction(session, action)
+	case msg.SessionActionModelCall:
+		return s.modelCallAction(offer)
+	case msg.SessionActionBackgroundAgent:
+		return s.backgroundAgentAction(session, action)
 	}
 	return sessionActionOutcome{err: fmt.Errorf("unknown action type %q", offer.Type)}
 }
@@ -254,29 +277,70 @@ func sessionActionOfferProblem(offer msg.SessionActionOffer) string {
 		}
 		return fmt.Sprintf("type %q is not an action type; it must be one of %s", offer.Type, strings.Join(names, ", "))
 	}
-	needsRepo := offer.Type == msg.SessionActionDeploy
-	needsJob := offer.Type == msg.SessionActionRunSchedulerJob
-	needsMessage := !needsRepo && !needsJob
+	fields := sessionActionOfferFields(offer)
+	uses := sessionActionFieldsByType[offer.Type]
+	for _, field := range fields {
+		if field.set && !uses.allows(field.name) {
+			return fmt.Sprintf("%s is not used by a %s action", field.name, offer.Type)
+		}
+	}
+	for _, name := range uses.required {
+		for _, field := range fields {
+			if field.name == name && !field.set {
+				return fmt.Sprintf("a %s action needs %s", offer.Type, name)
+			}
+		}
+	}
 	switch {
-	case needsRepo != (offer.RepoID != 0):
-		if needsRepo {
-			return "a deploy action needs repo_id, repo-store's id of the repo"
-		}
-		return fmt.Sprintf("repo_id is only for a deploy action, not %s", offer.Type)
-	case needsJob != (offer.SchedulerJobID != 0):
-		if needsJob {
-			return "a run_scheduler_job action needs scheduler_job_id, the scheduler's id of the job"
-		}
-		return fmt.Sprintf("scheduler_job_id is only for a run_scheduler_job action, not %s", offer.Type)
-	case needsMessage != (strings.TrimSpace(offer.Message) != ""):
-		if needsMessage {
-			return fmt.Sprintf("a %s action needs message, the text to send", offer.Type)
-		}
-		return fmt.Sprintf("message is not used by a %s action", offer.Type)
 	case offer.RepoID < 0 || offer.SchedulerJobID < 0:
 		return "repo_id and scheduler_job_id are positive ids"
+	case offer.MaximumCostUSD < 0:
+		return "maximum_cost_usd cannot be negative"
+	case offer.WorkingDirectory != "" && !filepath.IsAbs(offer.WorkingDirectory):
+		return "working_directory must be an absolute path"
+	case offer.ResultFormat != "" && offer.ResultFormat != msg.SessionActionResultText && offer.ResultFormat != msg.SessionActionResultMarkdown:
+		return fmt.Sprintf("result_format %q is neither text nor markdown", offer.ResultFormat)
 	}
 	return ""
+}
+
+// sessionActionFieldUse is which offer fields one action type reads, and which
+// of those it cannot do without.
+type sessionActionFieldUse struct {
+	required []string
+	optional []string
+}
+
+func (use sessionActionFieldUse) allows(name string) bool {
+	return slices.Contains(use.required, name) || slices.Contains(use.optional, name)
+}
+
+var sessionActionFieldsByType = map[msg.SessionActionType]sessionActionFieldUse{
+	msg.SessionActionDeploy:            {required: []string{"repo_id"}},
+	msg.SessionActionRunSchedulerJob:   {required: []string{"scheduler_job_id"}},
+	msg.SessionActionRunCommand:        {required: []string{"shell_command"}, optional: []string{"working_directory", "result_format"}},
+	msg.SessionActionModelCall:         {required: []string{"message", "model", "maximum_cost_usd"}},
+	msg.SessionActionBackgroundAgent:   {required: []string{"message", "maximum_cost_usd"}, optional: []string{"model"}},
+	msg.SessionActionForkAndSend:       {required: []string{"message"}},
+	msg.SessionActionNewSessionAndSend: {required: []string{"message"}},
+}
+
+type sessionActionOfferField struct {
+	name string
+	set  bool
+}
+
+func sessionActionOfferFields(offer msg.SessionActionOffer) []sessionActionOfferField {
+	return []sessionActionOfferField{
+		{"repo_id", offer.RepoID != 0},
+		{"scheduler_job_id", offer.SchedulerJobID != 0},
+		{"message", strings.TrimSpace(offer.Message) != ""},
+		{"shell_command", strings.TrimSpace(offer.ShellCommand) != ""},
+		{"working_directory", offer.WorkingDirectory != ""},
+		{"result_format", offer.ResultFormat != ""},
+		{"model", offer.Model != ""},
+		{"maximum_cost_usd", offer.MaximumCostUSD > 0},
+	}
 }
 
 // sessionActionRefusal is why an action cannot be described, and so cannot be
@@ -316,6 +380,34 @@ func (s *Server) describeSessionAction(ctx context.Context, session *store.Sessi
 		return fmt.Sprintf("send session %s this message: %s", session.SessionID, offer.Message), nil
 	case msg.SessionActionForkAndSend:
 		return fmt.Sprintf("fork session %s into a new session named %q, and send the fork this message: %s", session.SessionID, offer.Label, offer.Message), nil
+	case msg.SessionActionRunCommand:
+		directory, refusal := s.sessionActionWorkingDirectory(session, offer)
+		if refusal != nil {
+			return "", refusal
+		}
+		return fmt.Sprintf("in %s, run with `bash -l -c`:\n%s", directory, offer.ShellCommand), nil
+	case msg.SessionActionModelCall:
+		call, refusal := s.sessionActionModelCall(offer)
+		if refusal != nil {
+			return "", refusal
+		}
+		return fmt.Sprintf("ask %s (%q, on instance %s) this, with no tools, spending at most $%.2f at list price (at most %d output tokens):\n%s",
+			call.target.ModelID, offer.Model, call.target.InstanceID, offer.MaximumCostUSD, call.maximumOutputTokens, offer.Message), nil
+	case msg.SessionActionBackgroundAgent:
+		model := "this session's model"
+		if offer.Model != "" {
+			if s.modelStore == nil {
+				return "", &sessionActionRefusal{http.StatusServiceUnavailable, "model_store_not_configured", "this server has no model-store to resolve model with"}
+			}
+			resolved, err := s.modelStore.ResolveModel(offer.Model)
+			if err != nil {
+				return "", &sessionActionRefusal{http.StatusUnprocessableEntity, "unknown_model", fmt.Sprintf("model-store cannot resolve %q: %v", offer.Model, err)}
+			}
+			model = resolved.ID
+		}
+		return fmt.Sprintf("start a background session named %q — %s harness, instance %s, agent %s, principal %s, working directory %s, model %s, spend ceiling $%.2f, none of session %s's history — send it this, and show its final reply here:\n%s",
+			offer.Label, session.Harness, orNone(session.InstanceID), orNone(session.AgentID), orNone(session.PrincipalID), orInstanceDefault(session.WorkingDir),
+			model, offer.MaximumCostUSD, session.SessionID, offer.Message), nil
 	case msg.SessionActionNewSessionAndSend:
 		return fmt.Sprintf("start a new session named %q — %s harness, instance %s, agent %s, principal %s, working directory %s, none of session %s's history — and send it this message: %s",
 			offer.Label, session.Harness, orNone(session.InstanceID), orNone(session.AgentID), orNone(session.PrincipalID), orInstanceDefault(session.WorkingDir),
@@ -416,32 +508,15 @@ func (s *Server) getJSONForSessionAction(ctx context.Context, address, storeName
 }
 
 // runDeployAction runs the repo's deploy.sh, which runs deploy-gate like any
-// other deploy. The child gets this server's environment without its secrets,
-// as a harness child does, plus LLM_BRIDGE_SESSION_ID — so a deploy that
-// detaches, as llm-bridge-server's own does, reports its outcome to the
-// session — and AI_AGENT, which deploy-gate writes into the deploy ledger as
-// who deployed.
+// other deploy.
 func (s *Server) runDeployAction(session *store.Session, action store.SessionAction) sessionActionOutcome {
-	ctx, cancel := context.WithTimeout(context.Background(), sessionActionDeployTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionActionStoreRequestTimeout)
 	defer cancel()
 	repo, refusal := s.deployableRepo(ctx, action.Offer.RepoID)
 	if refusal != nil {
 		return sessionActionOutcome{err: errors.New(refusal.message)}
 	}
-	command := exec.CommandContext(ctx, "bash", "-l", "-c", "./deploy.sh")
-	command.Dir = repo.Path
-	command.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(),
-		"LLM_BRIDGE_SESSION_ID="+session.SessionID,
-		fmt.Sprintf("AI_AGENT=chat button %s confirmed by %s", action.ActionID, describePrincipalForLog(action.RunByPrincipalID)),
-	)
-	output, err := command.CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		return sessionActionOutcome{output: string(output), err: fmt.Errorf("deploy.sh ran longer than %s and was killed", sessionActionDeployTimeout)}
-	}
-	if err != nil {
-		return sessionActionOutcome{output: string(output), err: fmt.Errorf("deploy.sh in %s failed: %w", repo.Path, err)}
-	}
-	return sessionActionOutcome{output: string(output)}
+	return s.runShellForSessionAction(session, action, repo.Path, "./deploy.sh")
 }
 
 func (s *Server) runSchedulerJobAction(jobID int64) sessionActionOutcome {
@@ -572,6 +647,13 @@ func (s *Server) settleSessionActionsLeftRunning() {
 			log.Printf("[session-actions] ERROR %s: outcome_unknown event not written: %v", action.ActionID, err)
 		}
 	}
+}
+
+func describeReviewForLog(review *msg.SessionActionReview) string {
+	if review == nil {
+		return ""
+	}
+	return fmt.Sprintf(" (review by %s: %s)", review.Model, review.Verdict)
 }
 
 func describePrincipalForLog(principalID string) string {
