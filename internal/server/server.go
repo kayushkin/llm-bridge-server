@@ -796,7 +796,19 @@ func (s *Server) reapIdleTick() {
 			continue
 		}
 
-		quiet, reap := reapDecision(now, sess.Mode, msg.SessionState(sess.State), lastAt, sess.UpdatedAt, s.settings.Duration(config.SettingSessionIdleTimeout), s.settings.Duration(config.SettingSessionPTYIdleTimeout))
+		// A session that left ListActiveSessions since the list was taken
+		// has no process to reap.
+		processStartedAt, running := s.harness.ProcessStartedAt(id)
+		if !running {
+			continue
+		}
+		wakeupDueAt, err := s.store.PendingWakeupDueAt(id, processStartedAt)
+		if err != nil {
+			log.Printf("[reaper] %s: pending-wakeup lookup failed: %v", id, err)
+			continue
+		}
+
+		quiet, reap := reapDecision(now, sess.Mode, msg.SessionState(sess.State), lastAt, sess.UpdatedAt, wakeupDueAt, s.settings.Duration(config.SettingSessionIdleTimeout), s.settings.Duration(config.SettingSessionPTYIdleTimeout))
 		if !reap {
 			continue
 		}
@@ -844,7 +856,14 @@ func (s *Server) reapIdleTick() {
 //     tick instead of giving it the grace gap it is owed.
 //   - Otherwise idle is measured from the last event, falling back to
 //     updatedAt when no event has landed yet.
-func reapDecision(now time.Time, mode msg.SessionMode, state msg.SessionState, lastActivity, updatedAt time.Time, idleTimeout, ptyTimeout time.Duration) (time.Duration, bool) {
+//   - A pending wakeup counts as activity at the time it comes due, so the
+//     clock runs from whichever is later. An agent that ends its turn with a
+//     ScheduleWakeup is waiting, not done, and the wakeup's timer lives in its
+//     process: reaping it before the wakeup comes due loses the wakeup with
+//     no error anywhere (br_1790185922026535143, 2026-09-28, reaped two
+//     minutes before its 20-minute check). A wakeup that comes due and does
+//     not fire leaves the session reaped one timeout later, as usual.
+func reapDecision(now time.Time, mode msg.SessionMode, state msg.SessionState, lastActivity, updatedAt, pendingWakeupDueAt time.Time, idleTimeout, ptyTimeout time.Duration) (time.Duration, bool) {
 	isPTY := mode == msg.SessionModePTY
 	timeout := idleTimeout
 	if isPTY {
@@ -860,6 +879,9 @@ func reapDecision(now time.Time, mode msg.SessionMode, state msg.SessionState, l
 	ref := lastActivity
 	if starting || ref.IsZero() {
 		ref = updatedAt
+	}
+	if !starting && pendingWakeupDueAt.After(ref) {
+		ref = pendingWakeupDueAt
 	}
 	quiet := now.Sub(ref)
 	return quiet, quiet >= timeout

@@ -16,14 +16,15 @@ func TestReapDecision(t *testing.T) {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 
 	tests := []struct {
-		name      string
-		mode      msg.SessionMode
-		state     msg.SessionState
-		lastAct   time.Time
-		updatedAt time.Time
-		idleTO    time.Duration
-		ptyTO     time.Duration
-		wantReap  bool
+		name        string
+		mode        msg.SessionMode
+		state       msg.SessionState
+		lastAct     time.Time
+		updatedAt   time.Time
+		wakeupDueAt time.Time
+		idleTO      time.Duration
+		ptyTO       time.Duration
+		wantReap    bool
 	}{
 		{
 			name:     "events idle past timeout is reaped",
@@ -222,6 +223,56 @@ func TestReapDecision(t *testing.T) {
 			wantReap:  false,
 		},
 		{
+			name:        "idle past timeout with a wakeup still to come is kept",
+			mode:        msg.SessionModeEvents,
+			state:       msg.SessionIdle,
+			lastAct:     ago(16 * time.Minute), // the br_1790185922026535143 case
+			wakeupDueAt: now.Add(2 * time.Minute),
+			idleTO:      idleTimeout,
+			ptyTO:       ptyTimeout,
+			wantReap:    false,
+		},
+		{
+			name:        "wakeup that came due recently holds the session one more timeout",
+			mode:        msg.SessionModeEvents,
+			state:       msg.SessionIdle,
+			lastAct:     ago(50 * time.Minute),
+			wakeupDueAt: ago(10 * time.Minute),
+			idleTO:      idleTimeout,
+			ptyTO:       ptyTimeout,
+			wantReap:    false,
+		},
+		{
+			name:        "wakeup that came due a timeout ago and never fired is reaped",
+			mode:        msg.SessionModeEvents,
+			state:       msg.SessionIdle,
+			lastAct:     ago(50 * time.Minute),
+			wakeupDueAt: ago(16 * time.Minute),
+			idleTO:      idleTimeout,
+			ptyTO:       ptyTimeout,
+			wantReap:    true,
+		},
+		{
+			name:        "wakeup earlier than the last event changes nothing",
+			mode:        msg.SessionModeEvents,
+			state:       msg.SessionIdle,
+			lastAct:     ago(20 * time.Minute),
+			wakeupDueAt: ago(40 * time.Minute),
+			idleTO:      idleTimeout,
+			ptyTO:       ptyTimeout,
+			wantReap:    true,
+		},
+		{
+			name:        "starting ignores a wakeup left by the previous process",
+			mode:        msg.SessionModeEvents,
+			state:       msg.SessionStarting,
+			updatedAt:   ago(20 * time.Minute),
+			wakeupDueAt: now.Add(30 * time.Minute),
+			idleTO:      idleTimeout,
+			ptyTO:       ptyTimeout,
+			wantReap:    true,
+		},
+		{
 			name:     "empty mode is treated as events",
 			mode:     msg.SessionMode(""),
 			state:    msg.SessionIdle,
@@ -234,7 +285,7 @@ func TestReapDecision(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, reap := reapDecision(now, tt.mode, tt.state, tt.lastAct, tt.updatedAt, tt.idleTO, tt.ptyTO)
+			_, reap := reapDecision(now, tt.mode, tt.state, tt.lastAct, tt.updatedAt, tt.wakeupDueAt, tt.idleTO, tt.ptyTO)
 			if reap != tt.wantReap {
 				t.Errorf("reapDecision() = %v, want %v", reap, tt.wantReap)
 			}

@@ -48,6 +48,7 @@ type StoredEvent struct {
 type Manager struct {
 	mu                  sync.RWMutex
 	processes           map[string]HarnessProcess     // sessionID → process
+	processStartedAt    map[string]time.Time          // sessionID → when its current process was registered (see ProcessStartedAt)
 	subscribers         map[string][]chan StoredEvent // sessionID → SSE subscriber channels
 	msgState            map[string]*sessionMsgState   // sessionID → message-id assignment state
 	attachHubs          map[string]*AttachHub         // sessionID → fan-out hub for pty sessions
@@ -200,21 +201,22 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL st
 
 	ls := logstore.New(logStoreURL)
 	m := &Manager{
-		processes:       make(map[string]HarnessProcess),
-		subscribers:     make(map[string][]chan StoredEvent),
-		msgState:        make(map[string]*sessionMsgState),
-		attachHubs:      make(map[string]*AttachHub),
-		derivation:      make(map[string]*derivationState),
-		budgetHalted:    make(map[string]bool),
-		otelSidecars:    make(map[string]*otelSidecar),
-		pending:         newPendingHooks(),
-		store:           st,
-		logStore:        ls,
-		runners:         NewRunnerRegistry(),
-		authClient:      authClient,
-		publicServerURL: publicServerURL,
-		localBridgeURL:  localBridgeURL,
-		ptyRingBytes:    ptyRingBytes,
+		processes:        make(map[string]HarnessProcess),
+		processStartedAt: make(map[string]time.Time),
+		subscribers:      make(map[string][]chan StoredEvent),
+		msgState:         make(map[string]*sessionMsgState),
+		attachHubs:       make(map[string]*AttachHub),
+		derivation:       make(map[string]*derivationState),
+		budgetHalted:     make(map[string]bool),
+		otelSidecars:     make(map[string]*otelSidecar),
+		pending:          newPendingHooks(),
+		store:            st,
+		logStore:         ls,
+		runners:          NewRunnerRegistry(),
+		authClient:       authClient,
+		publicServerURL:  publicServerURL,
+		localBridgeURL:   localBridgeURL,
+		ptyRingBytes:     ptyRingBytes,
 	}
 	m.logStoreWrites = newLogStoreQueue(ls.PushEvent)
 	return m
@@ -511,6 +513,7 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 
 	m.mu.Lock()
 	m.processes[sess.SessionID] = proc
+	m.processStartedAt[sess.SessionID] = time.Now()
 	m.mu.Unlock()
 
 	// Update session with PID. `starting` — the subprocess exists and has not
@@ -550,6 +553,7 @@ func (m *Manager) Kill(sessionID string) error {
 
 	m.mu.Lock()
 	delete(m.processes, sessionID)
+	delete(m.processStartedAt, sessionID)
 	m.mu.Unlock()
 
 	return proc.Kill()
@@ -627,6 +631,17 @@ func (m *Manager) ListActiveSessions() []string {
 		out = append(out, id)
 	}
 	return out
+}
+
+// ProcessStartedAt reports when the session's current process was
+// registered, and false when it has none. Anything the harness holds in
+// memory, such as a pending ScheduleWakeup, belongs to this process only:
+// an event logged before this time came from a process that is gone.
+func (m *Manager) ProcessStartedAt(sessionID string) (time.Time, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	startedAt, ok := m.processStartedAt[sessionID]
+	return startedAt, ok
 }
 
 // readEvents reads events from process, persists them, updates state,
@@ -855,6 +870,7 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 		}
 		delete(m.subscribers, id)
 		delete(m.processes, id)
+		delete(m.processStartedAt, id)
 		delete(m.msgState, id)
 		delete(m.derivation, id)
 	}
@@ -1645,6 +1661,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 
 	m.mu.Lock()
 	m.processes[sess.SessionID] = proc
+	m.processStartedAt[sess.SessionID] = time.Now()
 	m.mu.Unlock()
 
 	m.store.UpdateSessionPID(sess.SessionID, proc.PID())
@@ -1684,6 +1701,7 @@ func (m *Manager) watchPTYExit(p *PTYProcess) {
 
 	m.mu.Lock()
 	delete(m.processes, bridgeID)
+	delete(m.processStartedAt, bridgeID)
 	delete(m.msgState, bridgeID)
 	delete(m.attachHubs, bridgeID)
 	sidecar := m.otelSidecars[bridgeID]
