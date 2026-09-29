@@ -1480,6 +1480,40 @@ func (m *Manager) ListToolCallInputs(bridgeID string) ([]json.RawMessage, error)
 	return out, nil
 }
 
+// ToolEventInOrder is one tool_call or tool_result of a session; exactly one
+// of the two is set.
+type ToolEventInOrder struct {
+	Call   *msg.ToolCallEvent
+	Result *msg.ToolResultEvent
+}
+
+// ListToolEventsInOrder returns every tool_call and tool_result in the
+// session, oldest first, as log-store holds them.
+func (m *Manager) ListToolEventsInOrder(bridgeID string) ([]ToolEventInOrder, error) {
+	m.logStoreWrites.Flush(bridgeID)
+	events, err := m.logStore.ListEvents(bridgeID, 0, []string{"tool_call", "tool_result"})
+	if err != nil {
+		return nil, fmt.Errorf("tool events: %w", err)
+	}
+	out := make([]ToolEventInOrder, 0, len(events))
+	for _, raw := range events {
+		var holder struct {
+			ToolCall   *msg.ToolCallEvent   `json:"tool_call"`
+			ToolResult *msg.ToolResultEvent `json:"tool_result"`
+		}
+		if err := json.Unmarshal(raw, &holder); err != nil {
+			return nil, fmt.Errorf("decode tool event: %w", err)
+		}
+		switch {
+		case holder.ToolCall != nil:
+			out = append(out, ToolEventInOrder{Call: holder.ToolCall})
+		case holder.ToolResult != nil:
+			out = append(out, ToolEventInOrder{Result: holder.ToolResult})
+		}
+	}
+	return out, nil
+}
+
 func truncateRunes(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {

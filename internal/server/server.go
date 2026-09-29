@@ -264,6 +264,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/files", s.handleShareSessionFile)
 	s.mux.HandleFunc("GET /sessions/{id}/files", s.handleListSessionFiles)
 	s.mux.HandleFunc("GET /sessions/{id}/files/{file_id}/content", s.handleSessionFileContent)
+	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools", s.handleFilesNamedByTools)
+	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/content", s.handleFileNamedByToolsContent)
 	s.mux.HandleFunc("POST /sessions/{id}/actions", s.handleOfferSessionAction)
 	s.mux.HandleFunc("GET /sessions/{id}/actions", s.handleListSessionActions)
 	s.mux.HandleFunc("POST /sessions/{id}/actions/{action_id}/run", s.handleRunSessionAction)

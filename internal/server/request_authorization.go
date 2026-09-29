@@ -191,6 +191,8 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /sessions/{id}/files":                           sessionAgentPostingRoute("id", "shares a file into one session, as its owner or as its own agent"),
 	"GET /sessions/{id}/files":                            sessionOwnedRoute("id"),
 	"GET /sessions/{id}/files/{file_id}/content":          sessionOwnedRoute("id"),
+	"GET /sessions/{id}/files-named-by-tools":             sessionOwnedRoute("id"),
+	"GET /sessions/{id}/files-named-by-tools/content":     sessionOwnedRoute("id"),
 	"POST /sessions/{id}/actions":                         sessionAgentPostingRoute("id", "offers an action in one session, as its owner or as its own agent"),
 	"GET /sessions/{id}/actions":                          sessionOwnedRoute("id"),
 	"POST /sessions/{id}/actions/{action_id}/run":         sessionOwnedRoute("id"),
