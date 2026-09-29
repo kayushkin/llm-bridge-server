@@ -42,12 +42,13 @@ func TestLoadReadsTheSameValuesItAlwaysDid(t *testing.T) {
 		t.Fatal(err)
 	}
 	want = Config{
-		Port:         19104,
-		DatabasePath: "/srv/scheduler.db",
-		Token:        "a-token",
-		NATSURL:      "nats://127.0.0.1:14222",
-		BridgeURL:    "http://bridge.test:1",
-		NoteboardURL: "http://noteboard.test:2",
+		Port:               19104,
+		DatabasePath:       "/srv/scheduler.db",
+		Token:              "a-token",
+		NATSURL:            "nats://127.0.0.1:14222",
+		BridgeURL:          "http://bridge.test:1",
+		BridgeServiceToken: "a-bridge-token",
+		NoteboardURL:       "http://noteboard.test:2",
 	}
 	if got := Load(set); got != want {
 		t.Errorf("Load = %+v, want %+v", got, want)
@@ -65,12 +66,13 @@ func TestLoadReadsTheSameValuesItAlwaysDid(t *testing.T) {
 }
 
 var everyVariableSetToItsOwnValue = map[string]string{
-	"SCHEDULER_PORT":  "19104",
-	"SCHEDULER_DB":    "/srv/scheduler.db",
-	"SCHEDULER_TOKEN": "a-token",
-	"NATS_URL":        "nats://127.0.0.1:14222",
-	"LLMBRIDGE_URL":   "http://bridge.test:1",
-	"NOTEBOARD_URL":   "http://noteboard.test:2",
+	"SCHEDULER_PORT":          "19104",
+	"SCHEDULER_DB":            "/srv/scheduler.db",
+	"SCHEDULER_TOKEN":         "a-token",
+	"NATS_URL":                "nats://127.0.0.1:14222",
+	"LLMBRIDGE_URL":           "http://bridge.test:1",
+	"LLMBRIDGE_SERVICE_TOKEN": "a-bridge-token",
+	"NOTEBOARD_URL":           "http://noteboard.test:2",
 }
 
 // The same-values test sets every declared variable. A definition added

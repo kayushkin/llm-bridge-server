@@ -31,6 +31,7 @@ import (
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/api"
+	"github.com/slava/scheduler/internal/bridgeauth"
 	"github.com/slava/scheduler/internal/bus"
 	"github.com/slava/scheduler/internal/config"
 	cronpkg "github.com/slava/scheduler/internal/cron"
@@ -93,6 +94,11 @@ func main() {
 		log.Fatalf("settings: %v", err)
 	}
 	cfg := config.Load(settings)
+	// Agent jobs call llm-bridge-server, which answers 401 to a request
+	// without the service token.
+	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL, cfg.BridgeServiceToken); err != nil {
+		log.Fatalf("bridge auth: %v", err)
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

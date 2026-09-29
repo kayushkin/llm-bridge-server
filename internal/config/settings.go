@@ -58,7 +58,10 @@ type Config struct {
 	Token        string
 	NATSURL      string
 	BridgeURL    string
-	NoteboardURL string
+	// BridgeServiceToken is what the daemon presents to llm-bridge-server when
+	// an agent job asks it for an instance and starts a session.
+	BridgeServiceToken string
+	NoteboardURL       string
 }
 
 // DefaultDatabasePath is the database the service opens with SCHEDULER_DB
@@ -89,6 +92,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The NATS server for the bus commands, agent jobs and logging. The service does not start when it cannot reach it. Jobs inherit this variable."},
 		{Key: SettingBridgeURL, EnvironmentVariable: "LLMBRIDGE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultBridgeURL,
 			Description: "Where llm-bridge-server answers. An agent job asks it for the harness instance to start its first turn on; a wrong address fails every new agent job."},
+		{Key: SettingBridgeServiceToken, EnvironmentVariable: "LLMBRIDGE_SERVICE_TOKEN", Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,
+			Description: "The token the daemon presents to llm-bridge-server as an internal service, on requests to the bridge's host only. The bridge gates every route, so unset, every agent job fails with a 401 when it asks for an instance. Jobs inherit this variable."},
 		{Key: SettingNoteboardURL, EnvironmentVariable: "NOTEBOARD_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultNoteboardURL,
 			Description: "The noteboard address written into an agent job's prompt, for reading and rewriting its workspace. A wrong address sends every such agent to a memory it cannot reach. Jobs inherit this variable."},
 	}
@@ -103,11 +108,12 @@ func NewSettingsRegistry(environment servicesettings.Environment) (*servicesetti
 // Load reads the service's configuration from registry.
 func Load(registry *servicesettings.Registry) Config {
 	return Config{
-		Port:         registry.Integer(SettingPort),
-		DatabasePath: registry.String(SettingDatabasePath),
-		Token:        registry.String(SettingToken),
-		NATSURL:      registry.String(SettingNATSURL),
-		BridgeURL:    registry.String(SettingBridgeURL),
-		NoteboardURL: registry.String(SettingNoteboardURL),
+		Port:               registry.Integer(SettingPort),
+		DatabasePath:       registry.String(SettingDatabasePath),
+		Token:              registry.String(SettingToken),
+		NATSURL:            registry.String(SettingNATSURL),
+		BridgeURL:          registry.String(SettingBridgeURL),
+		BridgeServiceToken: registry.String(SettingBridgeServiceToken),
+		NoteboardURL:       registry.String(SettingNoteboardURL),
 	}
 }
