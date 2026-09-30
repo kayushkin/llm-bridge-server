@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
@@ -128,11 +127,10 @@ func (b *bridgeAndBoard) start(t *testing.T) (config, *kanbanclient.Client) {
 		"Done": "col-done", "Failed": "col-failed",
 	}
 	return config{
-		BridgeURL:       bridge.URL,
-		OneshotInstance: "inst-test",
-		Model:           schedulerconfig.DefaultKanbanClassifierModel,
-		DigestBudget:    4000,
-		MaxClassify:     10,
+		BridgeURL:    bridge.URL,
+		ModelRole:    "efficient",
+		DigestBudget: 4000,
+		MaxClassify:  10,
 	}, kc
 }
 

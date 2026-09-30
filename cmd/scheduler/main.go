@@ -38,6 +38,7 @@ import (
 	"github.com/slava/scheduler/internal/db"
 	"github.com/slava/scheduler/internal/executor"
 	"github.com/slava/scheduler/internal/logging"
+	"github.com/slava/scheduler/internal/modelstoreroles"
 	"github.com/slava/scheduler/internal/runstatus"
 )
 
@@ -159,6 +160,11 @@ func runScheduler(cfg config.Config, settings *servicesettings.Registry, d deps)
 	}
 	defer store.Close()
 
+	if err := attachStoredSettings(settings, store, modelstoreroles.New(cfg.ModelStoreURL)); err != nil {
+		logger.LogError("startup_error", err.Error(), nil)
+		return err
+	}
+
 	// Any run still marked "running" belongs to a process that is now gone —
 	// this one has not started a job yet. Close them out here rather than in
 	// Scheduler.Start, which Reload also calls, and which would therefore kill
@@ -234,6 +240,20 @@ func runScheduler(cfg config.Config, settings *servicesettings.Registry, d deps)
 		logger.LogSchedulerLifecycle("shutting_down")
 		return nil
 	}
+}
+
+// attachStoredSettings makes the database the record of the service's editable
+// settings — the model role each job binary asks for — and checks every new
+// role with model-store before it is stored. A job binary reads its role from
+// GET /settings when it starts, so a PUT takes effect on its next run.
+func attachStoredSettings(settings *servicesettings.Registry, store *db.Store, roles modelstoreroles.Checker) error {
+	if err := settings.AttachStoredValues(store.ServiceSettingValues(), nil); err != nil {
+		return fmt.Errorf("stored settings: %w", err)
+	}
+	for _, key := range config.ModelRoleSettingKeys {
+		settings.SetValidator(key, roles.CheckRole)
+	}
+	return nil
 }
 
 // interruptedRunLogger is the part of *logging.Logger that reporting a

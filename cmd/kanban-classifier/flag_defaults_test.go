@@ -55,8 +55,6 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 			{"-board", cfg.BoardName, "Agent runs"},
 			{"-kanban-url", cfg.KanbanURL, "http://localhost:8305"},
 			{"-bridge-url", cfg.BridgeURL, "http://localhost:8160"},
-			{"-oneshot-instance", cfg.OneshotInstance, ""},
-			{"-model", cfg.Model, "claude-haiku-4-5-20251001"},
 			{"-session", cfg.OneSession, ""},
 		} {
 			if row.got != row.want {
@@ -121,20 +119,27 @@ func TestEveryNoOpSwitchShipsOff(t *testing.T) {
 
 // TestTheTwoValuesThatDecideSpend covers what one tick can cost.
 //
-// -model is the larger of the two. This binary is the cheap-model curator by
-// design — its package comment says so — so a default that drifted to a
-// frontier model would multiply the bill for the same work with nothing
-// failing, and the drift would be invisible until someone read a usage report.
+// The model role is the larger of the two. This binary is the cheap-model
+// curator by design — its package comment says so — so a seed that drifted to
+// a frontier role would multiply the bill for the same work with nothing
+// failing. The role is the scheduler's stored setting, seeded from the
+// constant; no flag or variable of this binary can name a model any more.
 func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 	cfg, err := parseFlags(nil, noEnvironment, "/home/agent")
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	if cfg.Model != schedulerconfig.DefaultKanbanClassifierModel {
-		t.Errorf("-model ships as %q, want the constant %q", cfg.Model, schedulerconfig.DefaultKanbanClassifierModel)
+	if cfg.ModelRole != "" {
+		t.Errorf("parseFlags set the model role to %q; only run, reading the scheduler's settings, may", cfg.ModelRole)
 	}
-	if schedulerconfig.DefaultKanbanClassifierModel != "claude-haiku-4-5-20251001" {
-		t.Errorf("schedulerconfig.DefaultKanbanClassifierModel is %q: this binary is the cheap-model curator and a drift here is a silent bill", schedulerconfig.DefaultKanbanClassifierModel)
+	if schedulerconfig.DefaultKanbanClassifierModelRole != "efficient" {
+		t.Errorf("schedulerconfig.DefaultKanbanClassifierModelRole is %q: this binary is the cheap-model curator and a drift here is a silent bill", schedulerconfig.DefaultKanbanClassifierModelRole)
+	}
+	if _, err := parseFlags([]string{"-model", "claude-haiku-4-5-20251001"}, noEnvironment, "/home/agent"); err == nil {
+		t.Error("-model was accepted: a flag would be a second source that silently beats the settings page")
+	}
+	if _, err := parseFlags(nil, environmentWith(map[string]string{"KANBAN_CLASSIFIER_MODEL": "claude-haiku-4-5-20251001"}), "/home/agent"); !errors.Is(err, errSettingsRefused) {
+		t.Errorf("KANBAN_CLASSIFIER_MODEL left set = %v, want the settings refusal", err)
 	}
 	if cfg.MaxClassify != maxClassifyPerTick {
 		t.Errorf("-max ships as %d, want the constant %d", cfg.MaxClassify, maxClassifyPerTick)
@@ -147,20 +152,17 @@ func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 // TestEachEnvironmentVariableReachesItsOwnField is the test the flag set was
 // registered into named fields for.
 //
-// Five variables land in this config and most are strings that would be
-// accepted in each other's place — base URLs, an instance id and a model id.
-// Nothing downstream would reject a swap: kanbanclient.New takes the kanban
-// URL positionally, oneshot.Call takes BridgeURL and OneshotInstance off the
-// same struct, and listSessions takes the bridge URL. Giving each variable a
+// Three variables land in this config and all are strings that would be
+// accepted in each other's place — base URLs. Nothing downstream would reject
+// a swap: kanbanclient.New takes the kanban URL positionally, and oneshot.Call
+// and listSessions both take the bridge URL. Giving each variable a
 // distinct value and asserting the field it lands in is what makes a swap
 // fail.
 func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
-		"KANBAN_STORE_URL":        "http://kanban.example",
-		"LLM_BRIDGE_URL":          "http://bridge.example",
-		"ONESHOT_INSTANCE_ID":     "inst-from-environment",
-		"KANBAN_CLASSIFIER_MODEL": "model-from-environment",
-		"SCHEDULER_URL":           "http://scheduler.example",
+		"KANBAN_STORE_URL": "http://kanban.example",
+		"LLM_BRIDGE_URL":   "http://bridge.example",
+		"SCHEDULER_URL":    "http://scheduler.example",
 	}), "/home/agent")
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
@@ -172,8 +174,6 @@ func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 	}{
 		{"KANBAN_STORE_URL", cfg.KanbanURL, "http://kanban.example"},
 		{"LLM_BRIDGE_URL", cfg.BridgeURL, "http://bridge.example"},
-		{"ONESHOT_INSTANCE_ID", cfg.OneshotInstance, "inst-from-environment"},
-		{"KANBAN_CLASSIFIER_MODEL", cfg.Model, "model-from-environment"},
 		{"SCHEDULER_URL", cfg.SchedulerURL, "http://scheduler.example"},
 	} {
 		if row.got != row.want {

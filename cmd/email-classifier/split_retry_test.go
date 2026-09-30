@@ -51,10 +51,10 @@ func countingBridge(t *testing.T, operationError msg.OperationError) (string, fu
 
 func bridgeConfig(bridgeURL string) config {
 	return config{
-		BridgeURL:  bridgeURL,
-		Model:      "claude-sonnet-4-5",
-		RunID:      "email-classifier:test:1",
-		Classifier: kanbanclient.ClassifierConfig{OrganizationID: "principal_000023"},
+		BridgeURL:       bridgeURL,
+		FilingModelRole: "default",
+		RunID:           "email-classifier:test:1",
+		Classifier:      kanbanclient.ClassifierConfig{OrganizationID: "principal_000023"},
 	}
 }
 

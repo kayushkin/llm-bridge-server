@@ -62,6 +62,8 @@ type Config struct {
 	// an agent job asks it for an instance and starts a session.
 	BridgeServiceToken string
 	NoteboardURL       string
+	// ModelStoreURL is where a new model role is checked before it is stored.
+	ModelStoreURL string
 }
 
 // DefaultDatabasePath is the database the service opens with SCHEDULER_DB
@@ -78,10 +80,13 @@ func DefaultDatabasePath() string {
 
 // SettingDefinitions declares every environment variable the service reads.
 //
-// Nothing here is Editable: GET /settings sits behind the same bearer as
-// /api/*, which is no gate at all while SCHEDULER_TOKEN is unset.
+// The model-role settings (model_roles.go) are Editable: the service stores
+// them and PUT /settings/{key} changes them. That route sits behind the same
+// bearer as /api/*, which is no gate at all while SCHEDULER_TOKEN is unset —
+// but so is POST /api/jobs, which runs any shell command, so a model role is
+// not the weakest door.
 func SettingDefinitions() []servicesettings.Definition {
-	return []servicesettings.Definition{
+	return append([]servicesettings.Definition{
 		{Key: SettingPort, EnvironmentVariable: "SCHEDULER_PORT", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeInteger, Default: DefaultPort,
 			Description: "The port the HTTP API listens on, on every interface. Changing it moves the service: every SCHEDULER_URL, dash's scheduler proxy and healthcheck must be told the new port."},
 		{Key: SettingDatabasePath, EnvironmentVariable: "SCHEDULER_DB", Kind: msg.ServiceSettingKindPath, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultDatabasePath(), Required: true,
@@ -96,7 +101,7 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The token the daemon presents to llm-bridge-server as an internal service, on requests to the bridge's host only. The bridge gates every route, so unset, every agent job fails with a 401 when it asks for an instance. Jobs inherit this variable."},
 		{Key: SettingNoteboardURL, EnvironmentVariable: "NOTEBOARD_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultNoteboardURL,
 			Description: "The noteboard address written into an agent job's prompt, for reading and rewriting its workspace. A wrong address sends every such agent to a memory it cannot reach. Jobs inherit this variable."},
-	}
+	}, modelRoleDefinitions()...)
 }
 
 // NewSettingsRegistry reads this service's settings from environment. It fails
@@ -115,5 +120,6 @@ func Load(registry *servicesettings.Registry) Config {
 		BridgeURL:          registry.String(SettingBridgeURL),
 		BridgeServiceToken: registry.String(SettingBridgeServiceToken),
 		NoteboardURL:       registry.String(SettingNoteboardURL),
+		ModelStoreURL:      registry.String(SettingModelStoreURL),
 	}
 }

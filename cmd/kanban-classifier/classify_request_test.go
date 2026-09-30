@@ -8,8 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	schedulerconfig "github.com/slava/scheduler/internal/config"
 )
 
 // Ported from 0530193e and 59414aad (test/first-tests-for-kanban-classifier),
@@ -34,7 +32,7 @@ func captureRequest(t *testing.T, digest string) map[string]any {
 	}))
 	t.Cleanup(srv.Close)
 
-	cfg := config{Model: schedulerconfig.DefaultKanbanClassifierModel, BridgeURL: srv.URL, OneshotInstance: "inst-test"}
+	cfg := config{ModelRole: "efficient", BridgeURL: srv.URL}
 	if _, err := classify(context.Background(), cfg, digest); err != nil {
 		t.Fatalf("classify: %v", err)
 	}
@@ -104,7 +102,7 @@ func TestAnHTTPErrorFromTheBridgeIsReportedAsOne(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	cfg := config{Model: schedulerconfig.DefaultKanbanClassifierModel, BridgeURL: srv.URL, OneshotInstance: "inst-test"}
+	cfg := config{ModelRole: "efficient", BridgeURL: srv.URL}
 	_, err := classify(context.Background(), cfg, "digest")
 	if err == nil {
 		t.Fatal("a 429 was accepted as a classification")

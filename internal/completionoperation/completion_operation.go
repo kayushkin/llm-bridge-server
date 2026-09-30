@@ -100,8 +100,10 @@ type Config struct {
 	IdempotencyKey string
 	// CorrelationID ties the call to the caller's own run, e.g. one tick.
 	CorrelationID string
-	// Model is a model-store id.
-	Model string
+	// ModelRole is the model-store role the call asks for ("balanced"). It is
+	// sent in the operation input's model field, which the bridge resolves as
+	// an id, an alias or a role; the bridge calls the role's first model.
+	ModelRole string
 	// MaxTokens caps the reply, thinking included.
 	MaxTokens int
 	// Timeout bounds the wait for the receipt. On timeout the operation is
@@ -120,8 +122,8 @@ func (c Config) validate() error {
 		return errors.New("completion operation: OrganizationID is required (a principal-store group)")
 	case c.IdempotencyKey == "":
 		return errors.New("completion operation: IdempotencyKey is required")
-	case c.Model == "":
-		return errors.New("completion operation: Model is required")
+	case c.ModelRole == "":
+		return errors.New("completion operation: ModelRole is required (a model-store role such as balanced)")
 	case c.MaxTokens <= 0:
 		return errors.New("completion operation: MaxTokens must be positive")
 	case c.Timeout <= 0:
@@ -141,7 +143,7 @@ func Call(ctx context.Context, config Config, system, prompt string, schema map[
 	if err != nil {
 		return msg.OperationReceipt{}, fmt.Errorf("completion operation: encode schema: %w", err)
 	}
-	input, err := json.Marshal(msg.LLMCompletionInput{Prompt: prompt, SystemPrompt: system, Model: config.Model, Schema: schemaJSON, MaxTokens: config.MaxTokens})
+	input, err := json.Marshal(msg.LLMCompletionInput{Prompt: prompt, SystemPrompt: system, Model: config.ModelRole, Schema: schemaJSON, MaxTokens: config.MaxTokens})
 	if err != nil {
 		return msg.OperationReceipt{}, fmt.Errorf("completion operation: encode input: %w", err)
 	}

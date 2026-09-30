@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge/msg"
+	schedulerconfig "github.com/slava/scheduler/internal/config"
 )
 
 // The stubs below stand in for kanban-store and llm-bridge-server's oneshot
@@ -20,7 +23,9 @@ const (
 	stubColGoals   = "col-goals"
 	stubColBacklog = "col-backlog"
 	stubBoardName  = "Task completion loop"
-	stubInstanceID = "inst-test"
+	// stubModelRole is the role the stub scheduler holds and the stub model
+	// expects to be asked for.
+	stubModelRole = "balanced"
 )
 
 // stubGoal is one card in the Goals column as the scoper meets it: a placement,
@@ -179,10 +184,21 @@ type stubModel struct {
 func newStubModel(t *testing.T, subtasks ...Subtask) *stubModel {
 	m := &stubModel{t: t, subtasks: subtasks}
 	m.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/instances/"+stubInstanceID+"/oneshot" {
+		if r.Method != "POST" || r.URL.Path != "/oneshot" {
 			t.Errorf("stub model: unexpected %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(500)
 			return
+		}
+		var request struct {
+			ModelRole string `json:"model_role"`
+			Caller    string `json:"caller"`
+			Model     string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("stub model: body: %v", err)
+		}
+		if request.ModelRole != stubModelRole || request.Caller != "kanban-scoper" || request.Model != "" {
+			t.Errorf("stub model: request = %+v, want role %s from kanban-scoper and no model", request, stubModelRole)
 		}
 		m.calls++
 		if m.status != 0 {
@@ -209,15 +225,31 @@ func newStubModel(t *testing.T, subtasks ...Subtask) *stubModel {
 
 func (m *stubModel) URL() string { return m.server.URL }
 
-// testConfig wires a run at the two stubs and nowhere else.
+// newStubScheduler answers GET /settings with the scoper's model role, as the
+// scheduler service does.
+func newStubScheduler(t *testing.T) *httptest.Server {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/settings" {
+			t.Errorf("stub scheduler: unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(500)
+			return
+		}
+		writeJSON(w, 200, msg.ServiceSettings{Service: "scheduler", Settings: []msg.ServiceSetting{{
+			Key: schedulerconfig.SettingKanbanScoperModelRole, ValueType: msg.ServiceSettingValueTypeModelRole, Value: stubModelRole,
+		}}})
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// testConfig wires a run at the three stubs and nowhere else.
 func testConfig(k *stubKanban, decomposer *stubModel) config {
 	return config{
-		KanbanURL:       k.URL(),
-		BridgeURL:       decomposer.URL(),
-		OneshotInstance: stubInstanceID,
-		Model:           "claude-haiku-4-5-20251001",
-		BoardID:         stubBoardID,
-		MaxScope:        maxScopePerTick,
+		KanbanURL:    k.URL(),
+		BridgeURL:    decomposer.URL(),
+		SchedulerURL: newStubScheduler(decomposer.t).URL,
+		BoardID:      stubBoardID,
+		MaxScope:     maxScopePerTick,
 	}
 }
 

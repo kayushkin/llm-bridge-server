@@ -131,7 +131,7 @@ func runBackfillPass(ctx context.Context, cfg config, kc *kanbanclient.Client, s
 	}
 
 	var report backfillReport
-	if err := invokeSchema(ctx, cfg, cfg.Model, backfillSystemPrompt, backfillSchema(), digest, &report); err != nil {
+	if err := invokeSchema(ctx, cfg, cfg.FilingModelRole, backfillSystemPrompt, backfillSchema(), digest, &report); err != nil {
 		return fmt.Errorf("backfill model call: %w", err)
 	}
 	log.Printf("[email] backfill: model reported %d deadlines", len(report.Deadlines))

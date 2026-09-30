@@ -59,6 +59,7 @@ import (
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/principalstore"
 	"github.com/slava/scheduler/internal/schedulerjobs"
+	"github.com/slava/scheduler/internal/schedulersettings"
 )
 
 const (
@@ -182,8 +183,9 @@ const mailstackTokenWhenUnset = "changeme"
 // -dump-digest) and a ninth (-dry-run) neuters the writes. Any one of them
 // shipping ON leaves a tick that reads the board, reports success and files no
 // mail — which from outside is indistinguishable from a quiet mailbox. The two
-// that decide spend are -model, which picks which model reads the digest, and
-// -max, which bounds how much mail one tick pays to classify.
+// that decide spend are the model roles, which the scheduler's settings hold
+// and run reads, and -max, which bounds how much mail one tick pays to
+// classify.
 //
 // What a run files WITH — the vocabulary, the mailstack accounts it reads and
 // whether new cards are parked — is not a flag at all. The board owns it, as
@@ -227,8 +229,6 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	fs.StringVar(&c.MailURL, "mail-url", settings.String(schedulerconfig.SettingMailstackURL), "mailstack base URL")
 	fs.StringVar(&c.MailToken, "mail-token", mailToken, "mailstack bearer token")
 	fs.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL, used to tell whether an agent is still working on a card")
-	fs.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingModel), "Model for filing and the deadline backfill: a model-store id, alias or role")
-	fs.StringVar(&c.MergeModel, "merge-model", settings.String(schedulerconfig.SettingMergeModel), "Model for the card-merge pass: a model-store id, alias or role")
 	fs.IntVar(&c.MaxEmails, "max", maxEmailsPerTick, "Max emails to file per tick.")
 	fs.BoolVar(&c.Backfill, "backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
 	fs.BoolVar(&c.MergePass, "merge", false, "Run the card-merge pass over the board and exit, filing no new mail.")
@@ -367,9 +367,19 @@ func run() int {
 			board.Name, board.ID, cfg.KanbanURL, board.ID)
 	}
 	cfg.Classifier = *board.Classifier
+	// The operator changes these on the scheduler's settings page. A digest
+	// dump makes no call, so it needs neither.
+	if !cfg.DumpDigest {
+		if cfg.FilingModelRole, err = schedulersettings.ReadModelRole(ctx, cfg.SchedulerURL, schedulerconfig.SettingEmailClassifierModelRole); err != nil {
+			log.Fatal(err)
+		}
+		if cfg.MergeModelRole, err = schedulersettings.ReadModelRole(ctx, cfg.SchedulerURL, schedulerconfig.SettingEmailClassifierMergeModelRole); err != nil {
+			log.Fatal(err)
+		}
+	}
 	cfg.RunID = fmt.Sprintf("email-classifier:%s:%d", time.Now().UTC().Format("20060102T150405Z"), os.Getpid())
-	log.Printf("[email] board config: vocabulary=%s mail_account_ids=%v hold_new_cards=%v organization_id=%s run=%s",
-		active.Name, cfg.Classifier.MailAccountIDs, cfg.Classifier.HoldNewCards, cfg.Classifier.OrganizationID, cfg.RunID)
+	log.Printf("[email] board config: vocabulary=%s mail_account_ids=%v hold_new_cards=%v organization_id=%s run=%s filing_model_role=%s merge_model_role=%s",
+		active.Name, cfg.Classifier.MailAccountIDs, cfg.Classifier.HoldNewCards, cfg.Classifier.OrganizationID, cfg.RunID, cfg.FilingModelRole, cfg.MergeModelRole)
 
 	cols, err := kc.ListColumns(board.ID)
 	if err != nil {
@@ -623,15 +633,17 @@ type config struct {
 	MailURL          string
 	MailToken        string
 	BridgeURL        string
-	Model            string
-	// MergeModel is what the card-merge pass asks for, apart from Model
-	// because it is called once per fifty cards.
-	MergeModel   string
-	MaxEmails    int
-	Backfill     bool
-	MergePass    bool
-	BackfillDue  bool
-	NoteboardURL string
+	// FilingModelRole is the model-store role the filing pass and the
+	// deadline backfill ask for, and MergeModelRole the one the card-merge
+	// pass asks for, apart because it is called once per fifty cards. Both
+	// are the scheduler's stored settings, read by run; neither is a flag.
+	FilingModelRole string
+	MergeModelRole  string
+	MaxEmails       int
+	Backfill        bool
+	MergePass       bool
+	BackfillDue     bool
+	NoteboardURL    string
 	// PrincipalStoreURL is where a sender's address is resolved to the contact
 	// a ticket points at. See applier.writeTicket.
 	PrincipalStoreURL string

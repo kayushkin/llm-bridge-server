@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	schedulerconfig "github.com/slava/scheduler/internal/config"
 	"github.com/slava/scheduler/internal/degradations"
 	"github.com/slava/scheduler/internal/kanbanclient"
 )
@@ -173,10 +172,9 @@ func newWorld(t *testing.T) *classifierWorld {
 		"Done": "col-done", "Failed": "col-failed",
 	}
 	w.cfg = config{
-		BridgeURL:       bridge.URL,
-		OneshotInstance: "inst-test",
-		Model:           schedulerconfig.DefaultKanbanClassifierModel,
-		DigestBudget:    digestCharBudget,
+		BridgeURL:    bridge.URL,
+		ModelRole:    "efficient",
+		DigestBudget: digestCharBudget,
 	}
 	w.degraded = degradations.New("kanban-classifier")
 	return w

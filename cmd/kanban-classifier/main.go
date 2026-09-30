@@ -71,6 +71,7 @@ import (
 	"github.com/slava/scheduler/internal/kanbanvocab"
 	"github.com/slava/scheduler/internal/oneshot"
 	"github.com/slava/scheduler/internal/schedulerjobs"
+	"github.com/slava/scheduler/internal/schedulersettings"
 	"github.com/slava/scheduler/internal/textcut"
 )
 
@@ -170,8 +171,6 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	fs.StringVar(&c.BoardName, "board", defaultBoardName, "Kanban board name to write cards to.")
 	fs.StringVar(&c.KanbanURL, "kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
 	fs.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
-	fs.StringVar(&c.OneshotInstance, "oneshot-instance", settings.String(schedulerconfig.SettingOneshotInstanceID), "claude_code harness instance id for subscription oneshot calls (required unless -dump-digest)")
-	fs.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingModel), "Anthropic model id")
 	fs.IntVar(&c.MaxClassify, "max", maxClassifyPerTick, "Max classifications per tick.")
 	fs.IntVar(&c.DigestBudget, "digest-budget", digestCharBudget, "Digest size in characters (~4 chars per token).")
 	fs.BoolVar(&c.DumpDigest, "dump-digest", false, "With -session: print the digest that would be sent and exit, without calling the model.")
@@ -269,9 +268,12 @@ func run() int {
 	// of scheduler run history sees one voice.
 	degraded := degradations.New("classifier")
 
-	// A digest dump never reaches the model, so it must not name an instance.
-	if !cfg.DumpDigest && cfg.OneshotInstance == "" {
-		log.Fatal("-oneshot-instance is required: model calls route through llm-bridge-server's oneshot endpoint on the subscription login")
+	// The model role is the scheduler's stored setting, changed on its
+	// settings page. A digest dump never reaches the model, so it needs none.
+	if !cfg.DumpDigest {
+		if cfg.ModelRole, err = schedulersettings.ReadModelRole(ctx, cfg.SchedulerURL, schedulerconfig.SettingKanbanClassifierModelRole); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	kc := kanbanclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
@@ -367,14 +369,15 @@ func classifyTick(candidates []session, maxClassifications int, classifyOneSessi
 }
 
 type config struct {
-	KanbanURL       string
-	BridgeURL       string
-	OneshotInstance string
-	Model           string
-	BoardName       string
-	DryRun          bool
-	DigestBudget    int
-	DumpDigest      bool
+	KanbanURL string
+	BridgeURL string
+	// ModelRole is the model-store role classify asks for. run reads it from
+	// the scheduler's stored settings; it is not a flag.
+	ModelRole    string
+	BoardName    string
+	DryRun       bool
+	DigestBudget int
+	DumpDigest   bool
 
 	// RegisterJob and OneSession are the two mode switches. Both exit before the
 	// candidate sweep runs.
@@ -1630,20 +1633,22 @@ const maxOutputTokens = 8192
 // command's vocabulary.
 var errTruncatedReport = oneshot.ErrTruncated
 
-// classify runs one schema-forced call through llm-bridge-server's oneshot
-// endpoint on the Claude Code subscription login. Replaced a direct POST to
-// api.anthropic.com that billed an API key resolved from auth-store.
+// classify runs one schema-forced call through llm-bridge-server's POST
+// /oneshot, asking for the configured model-store role; the bridge picks the
+// model and the instance.
 func classify(ctx context.Context, cfg config, digest string) (*Report, error) {
 	var rep Report
-	if err := oneshot.Call(ctx, oneshot.Config{
-		BridgeURL:  cfg.BridgeURL,
-		InstanceID: cfg.OneshotInstance,
-		Model:      cfg.Model,
-		MaxTokens:  maxOutputTokens,
-		Timeout:    120 * time.Second,
-	}, systemPrompt, digest, reportSchema(), &rep); err != nil {
+	answer, err := oneshot.Call(ctx, oneshot.Config{
+		BridgeURL: cfg.BridgeURL,
+		ModelRole: cfg.ModelRole,
+		Caller:    "kanban-classifier",
+		MaxTokens: maxOutputTokens,
+		Timeout:   180 * time.Second,
+	}, systemPrompt, digest, reportSchema(), &rep)
+	if err != nil {
 		return nil, err
 	}
+	log.Printf("[classifier] classified with role %s: %s", cfg.ModelRole, answer)
 	return &rep, nil
 }
 

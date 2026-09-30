@@ -1,7 +1,10 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +13,8 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/cron"
+	"github.com/slava/scheduler/internal/db"
 )
 
 // settingsRegistryForTests builds the service's registry with token as
@@ -71,19 +76,105 @@ func TestSettingsAnswersAtTheRootBehindTheBearerAndWithholdsTheToken(t *testing.
 	}
 }
 
-// Nothing is Editable, so no write is mounted.
-func TestSettingsTakesNoWrite(t *testing.T) {
+// A setting read where the process is started is refused a write; only the
+// stored model roles take one.
+func TestSettingsRefusesAWriteToASettingItDoesNotStore(t *testing.T) {
 	server := setup(t, "")
 	request := httptest.NewRequest(http.MethodPut, "/settings/port", strings.NewReader(`{"value":"1"}`))
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, request)
-	if recorder.Code == http.StatusOK {
-		t.Fatalf("PUT /settings/port = 200: %s", recorder.Body)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("PUT /settings/port = %d, want 409: %s", recorder.Code, recorder.Body)
 	}
-	for _, definition := range config.SettingDefinitions() {
-		if definition.Editable {
-			t.Errorf("%s is Editable, and the service stores no setting", definition.EnvironmentVariable)
+}
+
+// storedSettingsServer is the API over a registry whose model roles are stored
+// in the API's own database and checked by validate, as cmd/scheduler wires
+// it.
+func storedSettingsServer(t *testing.T, validate func(string) error) *Server {
+	t.Helper()
+	d, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.NewWithDB(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	registry := settingsRegistryForTests(t, "")
+	if err := registry.AttachStoredValues(store.ServiceSettingValues(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range config.ModelRoleSettingKeys {
+		registry.SetValidator(key, validate)
+	}
+	return New(store, cron.New(store), "", registry)
+}
+
+func putSetting(server *Server, key, value string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPut, "/settings/"+key, strings.NewReader(`{"value":"`+value+`"}`))
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func describedSetting(t *testing.T, server *Server, key string) msg.ServiceSetting {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/settings", nil))
+	var described msg.ServiceSettings
+	if err := json.Unmarshal(recorder.Body.Bytes(), &described); err != nil {
+		t.Fatal(err)
+	}
+	for _, setting := range described.Settings {
+		if setting.Key == key {
+			return setting
 		}
+	}
+	t.Fatalf("GET /settings does not describe %s", key)
+	return msg.ServiceSetting{}
+}
+
+func TestAModelRoleIsStoredByPutAndServedByGet(t *testing.T) {
+	var checked []string
+	server := storedSettingsServer(t, func(role string) error { checked = append(checked, role); return nil })
+
+	seeded := describedSetting(t, server, config.SettingKanbanScoperModelRole)
+	if seeded.Value != config.DefaultKanbanScoperModelRole || seeded.Source != msg.ServiceSettingSourceStored || !seeded.Editable {
+		t.Fatalf("before any PUT = %+v, want the default, stored and editable", seeded)
+	}
+
+	if recorder := putSetting(server, config.SettingKanbanScoperModelRole, "balanced"); recorder.Code != http.StatusOK {
+		t.Fatalf("PUT = %d: %s", recorder.Code, recorder.Body)
+	}
+	if got := describedSetting(t, server, config.SettingKanbanScoperModelRole); got.Value != "balanced" {
+		t.Errorf("after PUT = %+v, want balanced", got)
+	}
+	if len(checked) != 1 || checked[0] != "balanced" {
+		t.Errorf("the validator saw %v, want [balanced]", checked)
+	}
+}
+
+func TestAModelRoleTheValidatorRefusesIsNotStored(t *testing.T) {
+	server := storedSettingsServer(t, func(role string) error { return errors.New("model-store has no role " + role) })
+	if recorder := putSetting(server, config.SettingKanbanScoperModelRole, "cheapest"); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("PUT an unknown role = %d, want 400: %s", recorder.Code, recorder.Body)
+	}
+	if recorder := putSetting(server, config.SettingKanbanScoperModelRole, ""); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("PUT an empty role = %d, want 400 (the setting is required): %s", recorder.Code, recorder.Body)
+	}
+	if got := describedSetting(t, server, config.SettingKanbanScoperModelRole); got.Value != config.DefaultKanbanScoperModelRole {
+		t.Errorf("after refused PUTs = %q, want the default untouched", got.Value)
+	}
+}
+
+func TestAModelRoleIsNotStoredWhileModelStoreCannotBeAsked(t *testing.T) {
+	server := storedSettingsServer(t, func(string) error {
+		return fmt.Errorf("%w: model-store: connection refused", servicesettings.ErrSettingOwnerUnavailable)
+	})
+	if recorder := putSetting(server, config.SettingKanbanScoperModelRole, "balanced"); recorder.Code != http.StatusBadGateway {
+		t.Fatalf("PUT with model-store down = %d, want 502: %s", recorder.Code, recorder.Body)
 	}
 }
 

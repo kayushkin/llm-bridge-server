@@ -1,5 +1,5 @@
 // kanban-scoper decomposes a top-level "task-completion-loop" card into
-// actionable sub-cards using Anthropic Haiku.
+// actionable sub-cards with one model call per goal.
 //
 // Cadence:
 //
@@ -9,7 +9,7 @@
 //	  2. Pick parent cards in the "Goals" column tagged with the trigger tag
 //	     ("task-completion-loop") that don't already carry the "scoped"
 //	     entity_tag.
-//	  3. Call Haiku to decompose the goal into sub-tasks grouped by context.
+//	  3. Call the model to decompose the goal into sub-tasks grouped by context.
 //	  4. For each sub-task, create a card in the "Backlog" column linked
 //	     back to the parent (entity_type=parent_card) and tagged with the
 //	     subtask + group:<key> markers, plus capability:<x> + role:<r>
@@ -50,6 +50,7 @@ import (
 	"github.com/slava/scheduler/internal/kanbanvocab"
 	"github.com/slava/scheduler/internal/oneshot"
 	"github.com/slava/scheduler/internal/schedulerjobs"
+	"github.com/slava/scheduler/internal/schedulersettings"
 )
 
 const (
@@ -76,12 +77,16 @@ type config struct {
 	KanbanURL          string
 	KanbanServiceToken string
 	BridgeURL          string
-	OneshotInstance    string
-	Model              string
-	BoardID            string
-	MaxScope           int
-	DryRun             bool
-	RoleTags           bool // TEAM-ORCHESTRATION step 1: emit capability:/role: tags. OFF by default.
+	// SchedulerURL is where run reads the model role from.
+	SchedulerURL string
+	// ModelRole is the model-store role decomposition asks for. run reads it
+	// from the scheduler's stored settings once a tick has a parent to scope;
+	// the operator changes it on the scheduler's settings page.
+	ModelRole string
+	BoardID   string
+	MaxScope  int
+	DryRun    bool
+	RoleTags  bool // TEAM-ORCHESTRATION step 1: emit capability:/role: tags. OFF by default.
 }
 
 func main() {
@@ -90,15 +95,13 @@ func main() {
 		log.Fatal(err)
 	}
 	var (
-		registerFlag    = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
-		dryRun          = flag.Bool("dry-run", false, "Decompose but do not write to kanban-store.")
-		boardID         = flag.String("board-id", "", "Kanban board id to scope (required). Pinned by id so a rename in the UI cannot fork a second board.")
-		kanbanURL       = flag.String("kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
-		bridgeURL       = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
-		oneshotInstance = flag.String("oneshot-instance", settings.String(schedulerconfig.SettingOneshotInstanceID), "claude_code harness instance id for subscription oneshot calls (required to decompose)")
-		model           = flag.String("model", settings.String(schedulerconfig.SettingModel), "Anthropic model id")
-		maxScope        = flag.Int("max", maxScopePerTick, "Max parents to decompose per tick.")
-		roleTags        = flag.Bool("role-tags", settings.Boolean(schedulerconfig.SettingRoleTags), "TEAM-ORCHESTRATION step 1: require capability+role in decomposition and emit capability:/role: tags on sub-cards. OFF by default — when off, behavior is identical to the pre-team-orchestration scoper.")
+		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
+		dryRun       = flag.Bool("dry-run", false, "Decompose but do not write to kanban-store.")
+		boardID      = flag.String("board-id", "", "Kanban board id to scope (required). Pinned by id so a rename in the UI cannot fork a second board.")
+		kanbanURL    = flag.String("kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
+		bridgeURL    = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
+		maxScope     = flag.Int("max", maxScopePerTick, "Max parents to decompose per tick.")
+		roleTags     = flag.Bool("role-tags", settings.Boolean(schedulerconfig.SettingRoleTags), "TEAM-ORCHESTRATION step 1: require capability+role in decomposition and emit capability:/role: tags on sub-cards. OFF by default — when off, behavior is identical to the pre-team-orchestration scoper.")
 	)
 	flag.Parse()
 
@@ -114,7 +117,7 @@ func main() {
 	}
 
 	if *registerFlag {
-		if err := registerSchedulerJob(settings.String(schedulerconfig.SettingSchedulerURL), *boardID, *oneshotInstance); err != nil {
+		if err := registerSchedulerJob(settings.String(schedulerconfig.SettingSchedulerURL), *boardID); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
@@ -124,8 +127,7 @@ func main() {
 		KanbanURL:          *kanbanURL,
 		KanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
 		BridgeURL:          *bridgeURL,
-		OneshotInstance:    *oneshotInstance,
-		Model:              *model,
+		SchedulerURL:       settings.String(schedulerconfig.SettingSchedulerURL),
 		BoardID:            *boardID,
 		MaxScope:           *maxScope,
 		DryRun:             *dryRun,
@@ -138,7 +140,7 @@ func main() {
 // ==================== a tick that scoped nothing it meant to ====================
 //
 // Everything that can stop the whole tick is still fatal: with no board, no board
-// view and no oneshot instance there is no tick to have, and exiting 1 already
+// view and no model role there is no tick to have, and exiting 1 already
 // says so. What this adds is the ways the scoper used to fall short of its job
 // PER PARENT or PER SUB-TASK and still exit 0, because the answer to every one of
 // them is `continue`.
@@ -188,8 +190,8 @@ func run(cfg config) int {
 		return degraded.ExitCode()
 	}
 
-	if cfg.OneshotInstance == "" {
-		log.Fatal("-oneshot-instance is required: decomposition routes through llm-bridge-server's oneshot endpoint on the subscription login")
+	if cfg.ModelRole, err = schedulersettings.ReadModelRole(ctx, cfg.SchedulerURL, schedulerconfig.SettingKanbanScoperModelRole); err != nil {
+		log.Fatal(err)
 	}
 
 	scoped := 0
@@ -597,43 +599,41 @@ func decomposeSchema(roleTags bool) map[string]any {
 	}
 }
 
-// decompose runs one schema-forced call through llm-bridge-server's oneshot
-// endpoint on the Claude Code subscription login. Replaced a direct POST to
-// api.anthropic.com that billed an API key resolved from auth-store.
+// decompose runs one schema-forced call through llm-bridge-server's POST
+// /oneshot, asking for the configured model-store role; the bridge picks the
+// model and the instance.
 func decompose(ctx context.Context, cfg config, digest string) (*Plan, error) {
 	sys := systemPrompt
 	if cfg.RoleTags {
 		sys += "\n\n" + roleTagsInstructions
 	}
 	var p Plan
-	if err := oneshot.Call(ctx, oneshot.Config{
-		BridgeURL:  cfg.BridgeURL,
-		InstanceID: cfg.OneshotInstance,
-		Model:      cfg.Model,
-		MaxTokens:  4096,
-		Timeout:    120 * time.Second,
-	}, sys, digest, decomposeSchema(cfg.RoleTags), &p); err != nil {
+	answer, err := oneshot.Call(ctx, oneshot.Config{
+		BridgeURL: cfg.BridgeURL,
+		ModelRole: cfg.ModelRole,
+		Caller:    "kanban-scoper",
+		MaxTokens: 4096,
+		Timeout:   180 * time.Second,
+	}, sys, digest, decomposeSchema(cfg.RoleTags), &p)
+	if err != nil {
 		return nil, err
 	}
+	log.Printf("[scoper] decomposed with role %s: %s", cfg.ModelRole, answer)
 	return &p, nil
 }
 
 // ============================ Scheduler self-registration ============================
 
-// registerSchedulerJob creates the tick job with the board id — and the
-// oneshot instance, when given — baked into the command: the scheduler runs
-// jobs as `sh -c` with its own thin environment, so neither would reach the
-// process any other way. The oneshot instance is the scoper's OWN model
-// transport, not a board setting, which is why it stays a flag.
-func registerSchedulerJob(schedURL, boardID, oneshotInstance string) error {
+// registerSchedulerJob creates the tick job with the board id baked into the
+// command: the scheduler runs jobs as `sh -c` with its own thin environment,
+// so it would reach the process no other way. The model role is not in the
+// command; the scoper reads it from the scheduler's settings each tick.
+func registerSchedulerJob(schedURL, boardID string) error {
 	home, _ := os.UserHomeDir()
 	command := filepath.Join(home, "bin", "kanban-scoper") + " -board-id " + boardID
-	if oneshotInstance != "" {
-		command += " -oneshot-instance " + oneshotInstance
-	}
 	return schedulerjobs.RegisterIfAbsent(schedURL, schedulerjobs.Job{
 		Name:        "kanban-scoper-tick",
-		Description: "Decomposes task-completion-loop parent cards into sub-cards via Haiku.",
+		Description: "Decomposes task-completion-loop parent cards into sub-cards.",
 		Schedule:    "*/5 * * * *",
 		Command:     command,
 	})

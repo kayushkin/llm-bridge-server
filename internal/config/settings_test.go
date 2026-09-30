@@ -6,11 +6,13 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
@@ -23,12 +25,13 @@ func TestLoadReadsTheSameValuesItAlwaysDid(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Config{
-		Port:         8092,
-		DatabasePath: "/home/someone/.scheduler/scheduler.db",
-		Token:        "",
-		NATSURL:      "nats://localhost:4222",
-		BridgeURL:    "http://localhost:8160",
-		NoteboardURL: "http://localhost:8191",
+		Port:          8092,
+		DatabasePath:  "/home/someone/.scheduler/scheduler.db",
+		Token:         "",
+		NATSURL:       "nats://localhost:4222",
+		BridgeURL:     "http://localhost:8160",
+		NoteboardURL:  "http://localhost:8191",
+		ModelStoreURL: "http://localhost:8155",
 	}
 	if got := Load(unset); got != want {
 		t.Errorf("Load with nothing set = %+v, want %+v", got, want)
@@ -49,9 +52,21 @@ func TestLoadReadsTheSameValuesItAlwaysDid(t *testing.T) {
 		BridgeURL:          "http://bridge.test:1",
 		BridgeServiceToken: "a-bridge-token",
 		NoteboardURL:       "http://noteboard.test:2",
+		ModelStoreURL:      "http://model-store.test:3",
 	}
 	if got := Load(set); got != want {
 		t.Errorf("Load = %+v, want %+v", got, want)
+	}
+	for key, want := range map[string]string{
+		SettingEmailClassifierModelRole:      "best",
+		SettingEmailClassifierMergeModelRole: "balanced",
+		SettingKanbanClassifierModelRole:     "efficient",
+		SettingKanbanScoperModelRole:         "default",
+		SettingDemoMailGeneratorModelRole:    "best",
+	} {
+		if got := set.ModelRole(key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
 	}
 
 	// A variable set to the empty string is the same as unset, as it was when
@@ -73,6 +88,41 @@ var everyVariableSetToItsOwnValue = map[string]string{
 	"LLMBRIDGE_URL":           "http://bridge.test:1",
 	"LLMBRIDGE_SERVICE_TOKEN": "a-bridge-token",
 	"NOTEBOARD_URL":           "http://noteboard.test:2",
+	"MODEL_STORE_URL":         "http://model-store.test:3",
+	// The model roles are seeded from these once, then stored by the service.
+	"SCHEDULER_EMAIL_CLASSIFIER_MODEL_ROLE":       "best",
+	"SCHEDULER_EMAIL_CLASSIFIER_MERGE_MODEL_ROLE": "balanced",
+	"SCHEDULER_KANBAN_CLASSIFIER_MODEL_ROLE":      "efficient",
+	"SCHEDULER_KANBAN_SCOPER_MODEL_ROLE":          "default",
+	"SCHEDULER_DEMO_MAIL_GENERATOR_MODEL_ROLE":    "best",
+}
+
+// Every model-role setting is a stored, editable, required model_role, and
+// each model-calling job binary's role is one of them. A role setting that was
+// not Editable could only be changed where the service is started.
+func TestEveryModelRoleSettingIsAStoredModelRole(t *testing.T) {
+	declared := map[string]servicesettings.Definition{}
+	for _, definition := range SettingDefinitions() {
+		declared[definition.Key] = definition
+	}
+	for _, key := range ModelRoleSettingKeys {
+		definition, ok := declared[key]
+		if !ok {
+			t.Errorf("%s is in ModelRoleSettingKeys and not declared", key)
+			continue
+		}
+		if !definition.Editable || !definition.Required || definition.ValueType != msg.ServiceSettingValueTypeModelRole || definition.Kind != msg.ServiceSettingKindBehaviour {
+			t.Errorf("%s = %+v, want an editable, required behaviour setting of type model_role", key, definition)
+		}
+		if !slices.Contains(msg.CanonicalModelRoles, msg.ModelRole(definition.Default)) {
+			t.Errorf("%s defaults to %q, which is no canonical role", key, definition.Default)
+		}
+	}
+	for _, definition := range SettingDefinitions() {
+		if definition.ValueType == msg.ServiceSettingValueTypeModelRole && !slices.Contains(ModelRoleSettingKeys, definition.Key) {
+			t.Errorf("%s is a model role missing from ModelRoleSettingKeys, so model-store never checks it", definition.Key)
+		}
+	}
 }
 
 // The same-values test sets every declared variable. A definition added

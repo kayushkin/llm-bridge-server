@@ -52,8 +52,12 @@ func New(store *db.Store, scheduler *cronpkg.Scheduler, token string, settings *
 	s.mux.HandleFunc("/api/jobs/", s.handleJobSub)
 	s.mux.HandleFunc("/api/calendar/events", s.handleCalendarEvents)
 	// At the root, not under /api: dash sends /api/scheduler/settings here, as
-	// it does for every service's settings. Only GET: nothing is Editable.
-	s.mux.Handle("GET /settings", servicesettings.Handler(settings, "/settings"))
+	// it does for every service's settings. GET describes every setting; PUT
+	// /settings/{key} changes one the service stores (the job binaries' model
+	// roles) and is refused for the rest.
+	settingsHandler := servicesettings.Handler(settings, "/settings")
+	s.mux.Handle("GET /settings", settingsHandler)
+	s.mux.Handle("PUT /settings/{key}", settingsHandler)
 	return s
 }
 
@@ -64,7 +68,7 @@ func (s *Server) SetLogger(logger Logger) {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 	if r.Method == http.MethodOptions {
 		return

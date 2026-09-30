@@ -119,3 +119,20 @@ func TestKanbanScoperRefusesARoleTagsValueThatIsNotABoolean(t *testing.T) {
 		t.Error("KANBAN_SCOPER_ROLE_TAGS=true read as false")
 	}
 }
+
+// A model or model role left in the environment under a name a binary owns
+// stops that binary: the role is the scheduler's stored setting now, and a
+// variable that looked like it chose the model would be a second source that
+// silently does nothing.
+func TestAJobBinaryRefusesTheModelVariablesItNoLongerReads(t *testing.T) {
+	for binary, leftover := range map[*JobBinary]string{
+		&DemoMailGenerator: "DEMO_MAIL_MODEL",
+		&EmailClassifier:   "EMAIL_CLASSIFIER_MERGE_MODEL",
+		&KanbanClassifier:  "KANBAN_CLASSIFIER_MODEL",
+		&KanbanScoper:      "KANBAN_SCOPER_MODEL",
+	} {
+		if _, err := binary.NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{leftover: "claude-haiku-4-5-20251001"})); err == nil {
+			t.Errorf("%s started with %s set", binary.Name, leftover)
+		}
+	}
+}

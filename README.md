@@ -27,8 +27,11 @@ Centralized job scheduler for the inber ecosystem.
 - `POST /api/calendar/events` — create calendar event
 - `GET /settings` — the service's settings (llm-bridge `servicesettings`): each
   variable, its value in force and where the value came from, a secret's value
-  withheld. At the root, not under `/api`, and behind the same bearer. Nothing is
-  editable, so there is no `PUT`.
+  withheld. At the root, not under `/api`, and behind the same bearer.
+- `PUT /settings/{key}` with `{"value":"balanced"}` — change a stored setting:
+  the model role a job binary asks for. 409 for a setting read where the
+  process starts, 400 for a role model-store does not list, 502 while
+  model-store cannot be asked.
 
 ## Configuration
 
@@ -47,6 +50,35 @@ jobs read to find the scheduler, is not the service's and is left alone.
 | `NATS_URL` | `nats://localhost:4222` | the service does not start without it |
 | `LLMBRIDGE_URL` | `http://localhost:8160` | where agent jobs find a harness instance |
 | `NOTEBOARD_URL` | `http://localhost:8191` | written into an agent job's working-memory preamble |
+| `MODEL_STORE_URL` | `http://localhost:8155` | where a new model role is checked (`GET /api/roles`) before it is stored |
+
+### Model roles: stored by the service, read by the jobs
+
+Each job binary that calls a model asks for a model-store **role** (`best`,
+`default`, `balanced`, `efficient`), never a model or an instance. The
+scheduler service stores the role in its database (`service_settings`), shows
+it at `GET /settings` and changes it at `PUT /settings/{key}`; dash's settings
+page reaches both through `/api/scheduler/settings`. The binary reads its role
+from `GET $SCHEDULER_URL/settings` each time it starts, so a change takes
+effect on its next run. No flag or variable of a binary names a model: an old
+one such as `KANBAN_SCOPER_MODEL`, left set, stops the binary.
+
+The `SCHEDULER_…_MODEL_ROLE` variable seeds the stored value once, on the first
+start after the setting exists; after that it is ignored, and `GET /settings`
+says so in the setting's notes.
+
+| key (variable to seed it) | seeded with | asked for before | used by |
+|---|---|---|---|
+| `email_classifier_model_role` (`SCHEDULER_EMAIL_CLASSIFIER_MODEL_ROLE`) | `default` | `claude-sonnet-4-6` | email-classifier filing and deadline backfill, as `llm.completion` operations |
+| `email_classifier_merge_model_role` (`SCHEDULER_EMAIL_CLASSIFIER_MERGE_MODEL_ROLE`) | `balanced` | `balanced` | email-classifier card-merge pass, as `llm.completion` operations |
+| `kanban_classifier_model_role` (`SCHEDULER_KANBAN_CLASSIFIER_MODEL_ROLE`) | `efficient` | `claude-haiku-4-5-20251001` on `-oneshot-instance` | kanban-classifier, through the bridge's `POST /oneshot` |
+| `kanban_scoper_model_role` (`SCHEDULER_KANBAN_SCOPER_MODEL_ROLE`) | `efficient` | `claude-haiku-4-5-20251001` on `-oneshot-instance` | kanban-scoper, through `POST /oneshot` |
+| `demo_mail_generator_model_role` (`SCHEDULER_DEMO_MAIL_GENERATOR_MODEL_ROLE`) | `default` | `claude-sonnet-4-6` on `inst-cc-local` | demo-mail-generator, through `POST /oneshot` |
+
+`POST /oneshot` tries the role's models in order, each on the instance that
+serves its provider, and names every attempt when all fail. An `llm.completion`
+operation calls the role's first model only, and holds the call to the board
+organization's budget.
 
 The twelve job binaries in `cmd/` (`ask`, `autoworker`, `email-classifier`,
 `reminder-coordinator` and the rest) serve no HTTP, so they are not on the
@@ -58,8 +90,6 @@ that are its alone — `AUTOWORKER_`, `DEMO_MAIL_`, `EMAIL_CLASSIFIER_` and
 variable under one of them that it does not declare stops it with exit 1. The
 shared addresses and the two service tokens are declared and owned by nobody.
 
-The job binaries in `cmd/` other than `cmd/scheduler` still read their own
-variables directly; they are not converted yet.
 
 ## Autoworker kanban contract
 

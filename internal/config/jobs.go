@@ -61,9 +61,6 @@ const (
 	SettingMailstackURL            = "mailstack_url"
 	SettingMailstackToken          = "mailstack_token"
 	SettingDashURL                 = "dash_url"
-	SettingOneshotInstanceID       = "oneshot_instance_id"
-	SettingMergeModel              = "merge_model"
-	SettingModel                   = "model"
 	SettingEmailBoardID            = "email_board_id"
 	SettingRoleTags                = "role_tags"
 	SettingDefaultMaxBudgetUSD     = "default_max_budget_usd"
@@ -82,34 +79,6 @@ const (
 	DefaultMailstackURL      = "http://localhost:8195"
 	DefaultDashURL           = "http://localhost:8101"
 )
-
-// The models each classifying binary asks for with nothing set.
-//
-// email-classifier's is a better model than its siblings', deliberately. The
-// cheap affinity layer already routes bulk mail with no model at all, so what
-// reaches the model is the novel mail — and measured across runs, 44-50% of
-// it results in a NEW card. Card creation is therefore the median case there,
-// not a rare one, and it is a judgement call: telling a task ("pay this rent")
-// from a record ("another receipt") is exactly what the cheap model got wrong,
-// naming six receipt cards after their amounts so no two could ever merge. At
-// ~20 batch calls a month the cost difference is not the deciding factor.
-const (
-	DefaultEmailClassifierModel = "claude-sonnet-4-6"
-	// DefaultEmailClassifierMergeModel is model-store's balanced role, not a
-	// model id: the merge pass asks about every card on the board, and the
-	// role lets the operator move it without a rebuild. Not efficient: on
-	// 2026-09-24 the efficient tier answered fifty-card batches with an empty
-	// list and found one group where balanced found four.
-	DefaultEmailClassifierMergeModel = "balanced"
-	DefaultKanbanClassifierModel     = "claude-haiku-4-5-20251001"
-	DefaultKanbanScoperModel         = "claude-haiku-4-5-20251001"
-	DefaultDemoMailGeneratorModel    = "claude-sonnet-4-6"
-)
-
-// DefaultDemoMailGeneratorOneshotInstanceID is the harness instance
-// demo-mail-generator makes its oneshot call on with ONESHOT_INSTANCE_ID unset.
-// The other binaries have no default and refuse to classify without one.
-const DefaultDemoMailGeneratorOneshotInstanceID = "inst-cc-local"
 
 // DefaultReminderTimezone is the zone reminder-coordinator reads the digest
 // hour in with REMINDER_TZ unset.
@@ -157,7 +126,7 @@ func bridgeServiceTokenDefinition() servicesettings.Definition {
 
 func schedulerURLDefinition() servicesettings.Definition {
 	return servicesettings.Definition{Key: SettingSchedulerURL, EnvironmentVariable: "SCHEDULER_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultSchedulerURL,
-		Description: "Where the scheduler's API answers. -register creates or updates the binary's own cron job there."}
+		Description: "Where the scheduler's API answers. -register creates or updates the binary's own cron job there, and a binary that calls a model reads its model role from the scheduler's stored settings there each time it starts."}
 }
 
 func natsURLDefinition() servicesettings.Definition {
@@ -168,16 +137,6 @@ func natsURLDefinition() servicesettings.Definition {
 func noteboardURLDefinition() servicesettings.Definition {
 	return servicesettings.Definition{Key: SettingNoteboardURL, EnvironmentVariable: "NOTEBOARD_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultNoteboardURL,
 		Description: "Where noteboard answers. The -noteboard-url flag, where the binary has one, overrides it."}
-}
-
-func oneshotInstanceIDDefinition(defaultInstanceID string) servicesettings.Definition {
-	return servicesettings.Definition{Key: SettingOneshotInstanceID, EnvironmentVariable: "ONESHOT_INSTANCE_ID", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: defaultInstanceID,
-		Description: "The claude_code harness instance the binary makes its oneshot model calls on, which bills the subscription. The -oneshot-instance flag overrides it."}
-}
-
-func modelDefinition(variable, defaultModel string) servicesettings.Definition {
-	return servicesettings.Definition{Key: SettingModel, EnvironmentVariable: variable, Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeString, Default: defaultModel,
-		Description: "The model the binary's oneshot calls ask for; it decides what each tick costs. The -model flag overrides it."}
 }
 
 func mailstackDefinitions() []servicesettings.Definition {
@@ -219,8 +178,7 @@ var AutoworkerReviewer = JobBinary{Name: "autoworker-reviewer", settingDefinitio
 var DemoMailGenerator = JobBinary{Name: "demo-mail-generator", OwnedEnvironmentVariablePrefixes: []string{"DEMO_MAIL_"}, settingDefinitions: func() []servicesettings.Definition {
 	return append(mailstackDefinitions(),
 		bridgeURLDefinition(), bridgeServiceTokenDefinition(),
-		oneshotInstanceIDDefinition(DefaultDemoMailGeneratorOneshotInstanceID),
-		modelDefinition("DEMO_MAIL_MODEL", DefaultDemoMailGeneratorModel),
+		schedulerURLDefinition(),
 	)
 }}
 
@@ -238,9 +196,6 @@ var EmailClassifier = JobBinary{Name: "email-classifier", OwnedEnvironmentVariab
 		kanbanStoreURLDefinition(), kanbanStoreServiceTokenDefinition(),
 	}, append(mailstackDefinitions(),
 		bridgeURLDefinition(), bridgeServiceTokenDefinition(),
-		modelDefinition("EMAIL_CLASSIFIER_MODEL", DefaultEmailClassifierModel),
-		servicesettings.Definition{Key: SettingMergeModel, EnvironmentVariable: "EMAIL_CLASSIFIER_MERGE_MODEL", Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultEmailClassifierMergeModel,
-			Description: "The model the card-merge pass asks for: a model-store id, alias or role, which llm-bridge-server resolves and routes to its provider's instance. The merge pass makes one call per fifty cards, so it is where a cheaper model pays most. The -merge-model flag overrides it."},
 		noteboardURLDefinition(),
 		servicesettings.Definition{Key: SettingPrincipalStoreURL, EnvironmentVariable: "PRINCIPAL_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultPrincipalStoreURL,
 			Description: "Where principal-store answers. A sender's address becomes the contact a ticket names as its requester there. The -principal-store-url flag overrides it."},
@@ -253,8 +208,6 @@ var EmailClassifier = JobBinary{Name: "email-classifier", OwnedEnvironmentVariab
 var KanbanClassifier = JobBinary{Name: "kanban-classifier", OwnedEnvironmentVariablePrefixes: []string{"KANBAN_CLASSIFIER_"}, settingDefinitions: func() []servicesettings.Definition {
 	return []servicesettings.Definition{
 		kanbanStoreURLDefinition(), kanbanStoreServiceTokenDefinition(), bridgeURLDefinition(), bridgeServiceTokenDefinition(),
-		oneshotInstanceIDDefinition(""),
-		modelDefinition("KANBAN_CLASSIFIER_MODEL", DefaultKanbanClassifierModel),
 		schedulerURLDefinition(),
 	}
 }}
@@ -274,8 +227,6 @@ var KanbanDispatcher = JobBinary{Name: "kanban-dispatcher", settingDefinitions: 
 var KanbanScoper = JobBinary{Name: "kanban-scoper", OwnedEnvironmentVariablePrefixes: []string{"KANBAN_SCOPER_"}, settingDefinitions: func() []servicesettings.Definition {
 	return []servicesettings.Definition{
 		kanbanStoreURLDefinition(), kanbanStoreServiceTokenDefinition(), bridgeURLDefinition(), bridgeServiceTokenDefinition(),
-		oneshotInstanceIDDefinition(""),
-		modelDefinition("KANBAN_SCOPER_MODEL", DefaultKanbanScoperModel),
 		{Key: SettingRoleTags, EnvironmentVariable: "KANBAN_SCOPER_ROLE_TAGS", Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "false",
 			Description: "Require a capability and a role in each decomposition and tag sub-cards capability:/role:. The -role-tags flag overrides it. A value that is not true or false stops the binary."},
 		schedulerURLDefinition(),

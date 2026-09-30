@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	schedulerconfig "github.com/slava/scheduler/internal/config"
 )
 
 // The defaults that ship, and the wiring that carries them to the tick.
@@ -30,8 +29,9 @@ import (
 //     (-dry-run) neuters the writes. Any one of them shipping ON leaves a binary that runs
 //     every 15 minutes, reads the board, logs, exits 0 and files nothing — which
 //     from outside is a quiet mailbox.
-//   - The TWO that decide spend. -model picks which model reads every digest,
-//     and -max bounds how much mail one tick pays to classify.
+//   - The TWO that decide spend. The model role picks which models read every
+//     digest — the scheduler's stored setting, not a flag — and -max bounds
+//     how much mail one tick pays to classify.
 
 // noEnvironment is a process started with none of these
 // variables set, which is how the scheduler runs this binary: jobs run as
@@ -68,8 +68,6 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		{"-mail-url", cfg.MailURL, "http://localhost:8195"},
 		{"-mail-token", cfg.MailToken, "changeme"},
 		{"-bridge-url", cfg.BridgeURL, "http://localhost:8160"},
-		{"-model", cfg.Model, "claude-sonnet-4-6"},
-		{"-merge-model", cfg.MergeModel, "balanced"},
 		{"-max", cfg.MaxEmails, 50},
 		{"-backfill", cfg.Backfill, false},
 		{"-merge", cfg.MergePass, false},
@@ -167,18 +165,26 @@ func TestEveryNoOpSwitchShipsOff(t *testing.T) {
 
 // TestTheTwoValuesThatDecideSpend covers what one tick can cost.
 //
-// -model is the larger of the two: this binary deliberately uses a better model
-// than its sibling classifiers, and the reason is written down in the constant's
-// comment. A default that drifted to a cheaper model would degrade filing
-// quality with nothing failing, and one that drifted to a more expensive model
-// would multiply the bill for the same work.
+// The model role is the larger of the two. It is the scheduler's stored
+// setting, read by run, so no flag or variable of this binary may set it: a
+// second source would silently beat the settings page.
 func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
 	}
-	if cfg.Model != schedulerconfig.DefaultEmailClassifierModel {
-		t.Errorf("-model default = %q, want schedulerconfig.DefaultEmailClassifierModel (%q)", cfg.Model, schedulerconfig.DefaultEmailClassifierModel)
+	if cfg.FilingModelRole != "" || cfg.MergeModelRole != "" {
+		t.Errorf("parseFlags set a model role (%q, %q); only run, reading the scheduler's settings, may", cfg.FilingModelRole, cfg.MergeModelRole)
+	}
+	for _, flagName := range []string{"-model", "-merge-model"} {
+		if _, err := parseFlags([]string{flagName, "balanced"}, noEnvironment, "/home/someone"); err == nil {
+			t.Errorf("%s was accepted", flagName)
+		}
+	}
+	for _, variable := range []string{"EMAIL_CLASSIFIER_MODEL", "EMAIL_CLASSIFIER_MERGE_MODEL"} {
+		if _, err := parseFlags(nil, environmentWith(map[string]string{variable: "balanced"}), "/home/someone"); !errors.Is(err, errSettingsRefused) {
+			t.Errorf("%s left set = %v, want the settings refusal", variable, err)
+		}
 	}
 	if cfg.MaxEmails != maxEmailsPerTick {
 		t.Errorf("-max default = %d, want maxEmailsPerTick (%d)", cfg.MaxEmails, maxEmailsPerTick)
@@ -188,20 +194,19 @@ func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 // TestEachEnvironmentVariableReachesItsOwnField is the test the flag set was
 // registered into named fields for.
 //
-// Seven variables land in this config and all of them are strings that would
+// Six variables land in this config and all of them are strings that would
 // be accepted in each other's place. One pair is consumed positionally —
 // newMailClient takes (MailURL, MailToken) — so a swap compiles clean and
 // passes every other test in the package, because nothing else reads them. Giving each variable a distinct
 // value and asserting the field it lands in is what makes a swap fail.
 func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
-		"EMAIL_BOARD_ID":         "board-from-the-environment",
-		"KANBAN_STORE_URL":       "http://kanban.example",
-		"MAILSTACK_URL":          "http://mailstack.example",
-		"MAILSTACK_TOKEN":        "mail-token-value",
-		"LLM_BRIDGE_URL":         "http://bridge.example",
-		"EMAIL_CLASSIFIER_MODEL": "model-from-the-environment",
-		"SCHEDULER_URL":          "http://scheduler.example",
+		"EMAIL_BOARD_ID":   "board-from-the-environment",
+		"KANBAN_STORE_URL": "http://kanban.example",
+		"MAILSTACK_URL":    "http://mailstack.example",
+		"MAILSTACK_TOKEN":  "mail-token-value",
+		"LLM_BRIDGE_URL":   "http://bridge.example",
+		"SCHEDULER_URL":    "http://scheduler.example",
 	}), "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
@@ -217,7 +222,6 @@ func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 		{"MAILSTACK_URL", cfg.MailURL, "http://mailstack.example"},
 		{"MAILSTACK_TOKEN", cfg.MailToken, "mail-token-value"},
 		{"LLM_BRIDGE_URL", cfg.BridgeURL, "http://bridge.example"},
-		{"EMAIL_CLASSIFIER_MODEL", cfg.Model, "model-from-the-environment"},
 		{"SCHEDULER_URL", cfg.SchedulerURL, "http://scheduler.example"},
 	} {
 		if check.got != check.want {
@@ -259,10 +263,9 @@ func TestTheRegisteredCommandIsBuiltFromTheGivenHome(t *testing.T) {
 
 func TestExplicitArgumentsBeatBothTheEnvironmentAndTheDefault(t *testing.T) {
 	cfg, err := parseFlags(
-		[]string{"-dry-run", "-max=7", "-model=claude-haiku-4-5", "-board-id=from-the-argument"},
+		[]string{"-dry-run", "-max=7", "-board-id=from-the-argument"},
 		environmentWith(map[string]string{
-			"EMAIL_CLASSIFIER_MODEL": "from-the-environment",
-			"EMAIL_BOARD_ID":         "from-the-environment",
+			"EMAIL_BOARD_ID": "from-the-environment",
 		}),
 		"/home/someone",
 	)
@@ -275,13 +278,10 @@ func TestExplicitArgumentsBeatBothTheEnvironmentAndTheDefault(t *testing.T) {
 	if cfg.MaxEmails != 7 {
 		t.Errorf("-max = %d, want 7", cfg.MaxEmails)
 	}
-	// These two have to win over the variable, not merely over the built-in
-	// default: the variable is what supplies each flag's default, so a precedence
-	// bug here looks like the flag being ignored only on hosts that set it — and
-	// this host sets EMAIL_BOARD_ID.
-	if cfg.Model != "claude-haiku-4-5" {
-		t.Errorf("-model = %q, want the argument, not the environment", cfg.Model)
-	}
+	// This has to win over the variable, not merely over the built-in
+	// default: the variable is what supplies the flag's default, so a
+	// precedence bug here looks like the flag being ignored only on hosts that
+	// set it — and this host sets EMAIL_BOARD_ID.
 	if cfg.BoardID != "from-the-argument" {
 		t.Errorf("-board-id = %q, want the argument, not the environment", cfg.BoardID)
 	}

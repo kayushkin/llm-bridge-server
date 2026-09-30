@@ -294,7 +294,7 @@ var errTruncatedReport = completionoperation.ErrTruncated
 
 func classifyBatch(ctx context.Context, cfg config, digest string) (*filingReport, error) {
 	var rep filingReport
-	if err := invokeSchema(ctx, cfg, cfg.Model, buildSystemPrompt(), reportSchema(), digest, &rep); err != nil {
+	if err := invokeSchema(ctx, cfg, cfg.FilingModelRole, buildSystemPrompt(), reportSchema(), digest, &rep); err != nil {
 		return nil, err
 	}
 	return &rep, nil
@@ -302,23 +302,26 @@ func classifyBatch(ctx context.Context, cfg config, digest string) (*filingRepor
 
 // invokeSchema runs one schema-forced call as an llm.completion operation on
 // llm-bridge-server, made for the board's organization and counted against its
-// budget, and decodes the answer into out. The bridge makes the call through its
-// own harness instance on the subscription login. It replaced a POST to the
-// instance oneshot endpoint, which had no receipt, budget or idempotency.
+// budget, and decodes the answer into out. modelRole is a model-store role; the
+// bridge calls the role's first model on the harness instance that serves its
+// provider. It replaced a POST to the instance oneshot endpoint, which had no
+// receipt, budget or idempotency. It stays an operation, not a call to the
+// bridge's POST /oneshot, because the operation holds the call to the board
+// organization's budget and grants.
 //
 // Shared by the filing pass, the merge pass and the deadline backfill so the
 // truncation guard has exactly one authoring: a reply that stopped at
 // max_tokens is refused (completionoperation.ErrTruncated, aliased
 // errTruncatedReport here), because its missing entries read exactly like a
 // model that had less to say.
-func invokeSchema(ctx context.Context, cfg config, model, system string, schema map[string]any, digest string, out any) error {
+func invokeSchema(ctx context.Context, cfg config, modelRole, system string, schema map[string]any, digest string, out any) error {
 	callNumber := modelCallsThisRun.Add(1)
 	receipt, err := completionoperation.Call(ctx, completionoperation.Config{
 		BridgeURL:      cfg.BridgeURL,
 		OrganizationID: cfg.Classifier.OrganizationID,
 		IdempotencyKey: fmt.Sprintf("%s:%d", cfg.RunID, callNumber),
 		CorrelationID:  cfg.RunID,
-		Model:          model,
+		ModelRole:      modelRole,
 		MaxTokens:      maxOutputTokens,
 		Timeout:        6 * time.Minute,
 	}, system, digest, schema, out)
@@ -335,7 +338,7 @@ var modelCallsThisRun atomic.Int64
 // classifyMerges asks which cards on the board are really one bucket.
 func classifyMerges(ctx context.Context, cfg config, digest string) (*mergeReport, error) {
 	var rep mergeReport
-	if err := invokeSchema(ctx, cfg, cfg.MergeModel, mergeSystemPrompt+mergeBatchInstructions, mergeSchema(), digest, &rep); err != nil {
+	if err := invokeSchema(ctx, cfg, cfg.MergeModelRole, mergeSystemPrompt+mergeBatchInstructions, mergeSchema(), digest, &rep); err != nil {
 		return nil, err
 	}
 	return &rep, nil

@@ -57,7 +57,7 @@ func (f *fakeBridge) server(t *testing.T) *httptest.Server {
 
 func config(url string) Config {
 	return Config{BridgeURL: url, OrganizationID: "principal_000023", IdempotencyKey: "email-classifier:run:1", CorrelationID: "run",
-		Model: "claude-sonnet-4-5", MaxTokens: 1000, Timeout: 5 * time.Second, PollInterval: time.Millisecond}
+		ModelRole: "balanced", MaxTokens: 1000, Timeout: 5 * time.Second, PollInterval: time.Millisecond}
 }
 
 func succeeded(parsed string, stopReason string) msg.OperationReceipt {
@@ -76,7 +76,7 @@ func TestACallWaitsForTheReceiptAndDecodesTheAnswer(t *testing.T) {
 	var input msg.LLMCompletionInput
 	json.Unmarshal(bridge.intent.Input, &input)
 	if bridge.intent.Type != msg.OperationTypeLLMCompletion || bridge.intent.OrganizationID != "principal_000023" ||
-		bridge.intent.IdempotencyKey != "email-classifier:run:1" || input.Model != "claude-sonnet-4-5" || input.MaxTokens != 1000 ||
+		bridge.intent.IdempotencyKey != "email-classifier:run:1" || input.Model != "balanced" || input.MaxTokens != 1000 ||
 		input.SystemPrompt != "system" || string(input.Schema) != `{"type":"object"}` {
 		t.Fatalf("intent %+v input %+v", bridge.intent, input)
 	}

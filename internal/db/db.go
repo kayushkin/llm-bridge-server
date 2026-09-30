@@ -174,7 +174,7 @@ func (s *Store) migrate() error {
 	} {
 		s.db.Exec(col)
 	}
-	return nil
+	return s.migrateServiceSettings()
 }
 
 // InterruptedRunOutput is stored as the output of a run that startup

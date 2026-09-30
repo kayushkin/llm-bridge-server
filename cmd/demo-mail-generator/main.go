@@ -30,6 +30,7 @@ import (
 	"github.com/slava/scheduler/internal/demomail"
 	"github.com/slava/scheduler/internal/demoteam"
 	"github.com/slava/scheduler/internal/oneshot"
+	"github.com/slava/scheduler/internal/schedulersettings"
 )
 
 const (
@@ -47,9 +48,9 @@ type config struct {
 	MailURL   string
 	MailToken string
 
-	BridgeURL       string
-	OneshotInstance string
-	Model           string
+	BridgeURL string
+	// SchedulerURL is where run reads the model role from.
+	SchedulerURL string
 
 	Count  int
 	Purge  bool
@@ -83,14 +84,12 @@ func parseFlags(settings *servicesettings.Registry) config {
 	flag.StringVar(&c.MailURL, "mail-url", settings.String(schedulerconfig.SettingMailstackURL), "mailstack base URL")
 	flag.StringVar(&c.MailToken, "mail-token", settings.String(schedulerconfig.SettingMailstackToken), "mailstack bearer token")
 	flag.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
-	flag.StringVar(&c.OneshotInstance, "oneshot-instance", settings.String(schedulerconfig.SettingOneshotInstanceID),
-		"claude_code harness instance for the subscription oneshot call")
-	flag.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingModel), "model id for the oneshot call")
 	flag.IntVar(&c.Count, "count", 2, "How many messages to write this tick.")
 	flag.BoolVar(&c.Purge, "purge", false, "Delete every message in the account first.")
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Print what would be sent to the model and stop.")
 	flag.Int64Var(&c.Seed, "seed", 0, "Sender/kind seed. 0 uses the clock, so consecutive ticks differ.")
 	flag.Parse()
+	c.SchedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
 	return c
 }
 
@@ -136,23 +135,29 @@ func run(cfg config) error {
 			Body    string `json:"body"`
 		} `json:"messages"`
 	}
-	// Composed through llm-bridge's oneshot endpoint, which forces the schema
-	// and runs on the Claude Code subscription login. No credential passes
-	// through here at all.
+	// Composed through llm-bridge-server's POST /oneshot, which forces the
+	// schema and picks the model for the role the scheduler's settings hold.
+	// No credential passes through here at all.
 	//
 	// The composing is the model's job and the DELIVERY is not: an agent asked
 	// to curl its own output has to get shell quoting right on a body full of
 	// newlines and apostrophes, and a body mangled that way looks delivered.
 	// Go posts it instead.
-	if err := oneshot.Call(ctx, oneshot.Config{
-		BridgeURL:  cfg.BridgeURL,
-		InstanceID: cfg.OneshotInstance,
-		Model:      cfg.Model,
-		MaxTokens:  maxOutputTokens,
-		Timeout:    300 * time.Second,
-	}, systemPrompt, buildBrief(project, plan), writeSchema(), &written); err != nil {
+	modelRole, err := schedulersettings.ReadModelRole(ctx, cfg.SchedulerURL, schedulerconfig.SettingDemoMailGeneratorModelRole)
+	if err != nil {
 		return err
 	}
+	answer, err := oneshot.Call(ctx, oneshot.Config{
+		BridgeURL: cfg.BridgeURL,
+		ModelRole: modelRole,
+		Caller:    "demo-mail-generator",
+		MaxTokens: maxOutputTokens,
+		Timeout:   300 * time.Second,
+	}, systemPrompt, buildBrief(project, plan), writeSchema(), &written)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("written with role %s: %s\n", modelRole, answer)
 
 	byKey := map[string]struct{ subject, body string }{}
 	for _, m := range written.Messages {
