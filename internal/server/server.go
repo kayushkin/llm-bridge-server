@@ -807,10 +807,16 @@ func (s *Server) reapIdleTick() {
 		if !running {
 			continue
 		}
-		wakeupDueAt, err := s.store.PendingWakeupDueAt(id, processStartedAt)
+		// Only this process's wakeup counts: one set by an earlier process
+		// died with it, and redeliverWakeupsLostInRestart owns that case.
+		wakeup, err := s.store.LatestScheduledWakeup(id, processStartedAt)
 		if err != nil {
 			log.Printf("[reaper] %s: pending-wakeup lookup failed: %v", id, err)
 			continue
+		}
+		var wakeupDueAt time.Time
+		if wakeup != nil {
+			wakeupDueAt = wakeup.DueAt
 		}
 
 		quiet, reap := reapDecision(now, sess.Mode, msg.SessionState(sess.State), lastAt, sess.UpdatedAt, wakeupDueAt, s.settings.Duration(config.SettingSessionIdleTimeout), s.settings.Duration(config.SettingSessionPTYIdleTimeout))

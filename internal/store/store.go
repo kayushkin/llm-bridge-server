@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -1240,58 +1239,6 @@ func (s *Store) LastActivityAt(bridgeID string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 	return time.ParseInLocation("2006-01-02 15:04:05", raw.String, time.UTC)
-}
-
-// claudeCodeScheduleWakeupToolName is Claude Code's tool for waking its own
-// session later. The timer lives inside the claude process, so the process
-// must be alive when it comes due.
-const claudeCodeScheduleWakeupToolName = "ScheduleWakeup"
-
-// PendingWakeupDueAt returns when the session's pending ScheduleWakeup comes
-// due, or the zero time when none is pending. It reads the result of the
-// session's most recent ScheduleWakeup call, because each call replaces the
-// wakeup before it (measured on Claude Code 2.1.283: two schedules then a stop
-// reported "cancelled 1 pending wakeup"). That result carries
-// `tool_use_result.scheduledFor` in epoch milliseconds, the time Claude Code
-// itself will fire at; a stop reports 0. A due time already past is returned
-// as it is: the caller decides what a past wakeup means. A call with no
-// result yet is still running and returns the zero time.
-//
-// The timer lives in the claude process, so only calls logged since
-// processStartedAt count: a wakeup set by an earlier process died with it.
-// events.created_at has whole seconds, so the comparison takes the second
-// the process started in, which can admit a call from the second before.
-func (s *Store) PendingWakeupDueAt(bridgeID string, processStartedAt time.Time) (time.Time, error) {
-	var scheduledForMilliseconds sql.NullInt64
-	err := s.db.QueryRow(`
-		SELECT json_extract(result.data, '$.raw.tool_use_result.scheduledFor')
-		FROM events result
-		WHERE result.session_id = ?
-		  AND result.type = 'tool_result'
-		  AND json_extract(result.data, '$.raw.tool_use_result') IS NOT NULL
-		  AND json_extract(result.data, '$.tool_result.tool_id') = (
-			SELECT json_extract(call.data, '$.tool_call.tool_id')
-			FROM events call
-			WHERE call.session_id = ?
-			  AND call.type = 'tool_call'
-			  AND call.created_at >= ?
-			  AND json_extract(call.data, '$.tool_call.name') = ?
-			ORDER BY call.id DESC
-			LIMIT 1)
-		ORDER BY result.id DESC
-		LIMIT 1`,
-		bridgeID, bridgeID, processStartedAt.UTC().Format("2006-01-02 15:04:05"), claudeCodeScheduleWakeupToolName,
-	).Scan(&scheduledForMilliseconds)
-	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, nil
-	}
-	if err != nil {
-		return time.Time{}, err
-	}
-	if !scheduledForMilliseconds.Valid || scheduledForMilliseconds.Int64 <= 0 {
-		return time.Time{}, nil
-	}
-	return time.UnixMilli(scheduledForMilliseconds.Int64).UTC(), nil
 }
 
 // SetHarnessSessionID fills in the harness-reported session ID on a session.

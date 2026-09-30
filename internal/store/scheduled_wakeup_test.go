@@ -31,30 +31,31 @@ func storeWakeupResult(t *testing.T, s *Store, sessionID, toolID, toolUseResult 
 	}
 }
 
-func TestPendingWakeupDueAt(t *testing.T) {
-	processStartedAt := time.Now().Add(-time.Minute)
+func TestLatestScheduledWakeup(t *testing.T) {
+	callsLoggedSince := time.Now().Add(-time.Minute)
 	const dueMilliseconds = 1790697420000
 
 	t.Run("no wakeup call", func(t *testing.T) {
 		s := testStore(t)
 		s.CreateSession(&Session{SessionID: "br_w", Harness: "claude_code", State: "idle"})
-		due, err := s.PendingWakeupDueAt("br_w", processStartedAt)
-		if err != nil || !due.IsZero() {
-			t.Fatalf("got %v, %v; want zero time", due, err)
+		wakeup, err := s.LatestScheduledWakeup("br_w", callsLoggedSince)
+		if err != nil || wakeup != nil {
+			t.Fatalf("got %+v, %v; want none", wakeup, err)
 		}
 	})
 
 	t.Run("scheduled wakeup", func(t *testing.T) {
 		s := testStore(t)
 		s.CreateSession(&Session{SessionID: "br_w", Harness: "claude_code", State: "idle"})
-		storeWakeupCall(t, s, "br_w", "toolu_a", `{"delaySeconds":60}`)
-		storeWakeupResult(t, s, "br_w", "toolu_a", fmt.Sprintf(`{"scheduledFor":%d,"clampedDelaySeconds":60}`, dueMilliseconds))
-		due, err := s.PendingWakeupDueAt("br_w", processStartedAt)
+		storeWakeupCall(t, s, "br_w", "toolu_b", `{"delaySeconds":60,"prompt":"check the backfill"}`)
+		storeWakeupResult(t, s, "br_w", "toolu_b", fmt.Sprintf(`{"scheduledFor":%d,"clampedDelaySeconds":60}`, dueMilliseconds))
+		wakeup, err := s.LatestScheduledWakeup("br_w", callsLoggedSince)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := time.UnixMilli(dueMilliseconds).UTC(); !due.Equal(want) {
-			t.Fatalf("due = %v, want %v", due, want)
+		want := ScheduledWakeup{SessionID: "br_w", ToolID: "toolu_b", Prompt: "check the backfill", DueAt: time.UnixMilli(dueMilliseconds).UTC()}
+		if wakeup == nil || *wakeup != want {
+			t.Fatalf("got %+v, want %+v", wakeup, want)
 		}
 	})
 
@@ -63,14 +64,15 @@ func TestPendingWakeupDueAt(t *testing.T) {
 		s.CreateSession(&Session{SessionID: "br_w", Harness: "claude_code", State: "idle"})
 		storeWakeupCall(t, s, "br_w", "toolu_a", `{"delaySeconds":900}`)
 		storeWakeupResult(t, s, "br_w", "toolu_a", `{"scheduledFor":1790698440000}`)
-		storeWakeupCall(t, s, "br_w", "toolu_b", `{"delaySeconds":300}`)
+		storeWakeupCall(t, s, "br_w", "toolu_b", `{"delaySeconds":300,"prompt":"check the backfill"}`)
 		storeWakeupResult(t, s, "br_w", "toolu_b", fmt.Sprintf(`{"scheduledFor":%d}`, dueMilliseconds))
-		due, err := s.PendingWakeupDueAt("br_w", processStartedAt)
+		wakeup, err := s.LatestScheduledWakeup("br_w", callsLoggedSince)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := time.UnixMilli(dueMilliseconds).UTC(); !due.Equal(want) {
-			t.Fatalf("due = %v, want %v", due, want)
+		want := ScheduledWakeup{SessionID: "br_w", ToolID: "toolu_b", Prompt: "check the backfill", DueAt: time.UnixMilli(dueMilliseconds).UTC()}
+		if wakeup == nil || *wakeup != want {
+			t.Fatalf("got %+v, want %+v", wakeup, want)
 		}
 	})
 
@@ -81,9 +83,9 @@ func TestPendingWakeupDueAt(t *testing.T) {
 		storeWakeupResult(t, s, "br_w", "toolu_a", `{"scheduledFor":1790698140000}`)
 		storeWakeupCall(t, s, "br_w", "toolu_b", `{"stop":true}`)
 		storeWakeupResult(t, s, "br_w", "toolu_b", `{"scheduledFor":0,"stopped":true,"cancelledWakeups":1}`)
-		due, err := s.PendingWakeupDueAt("br_w", processStartedAt)
-		if err != nil || !due.IsZero() {
-			t.Fatalf("got %v, %v; want zero time", due, err)
+		wakeup, err := s.LatestScheduledWakeup("br_w", callsLoggedSince)
+		if err != nil || wakeup != nil {
+			t.Fatalf("got %+v, %v; want none", wakeup, err)
 		}
 	})
 
@@ -91,9 +93,9 @@ func TestPendingWakeupDueAt(t *testing.T) {
 		s := testStore(t)
 		s.CreateSession(&Session{SessionID: "br_w", Harness: "claude_code", State: "idle"})
 		storeWakeupCall(t, s, "br_w", "toolu_a", `{"delaySeconds":600}`)
-		due, err := s.PendingWakeupDueAt("br_w", processStartedAt)
-		if err != nil || !due.IsZero() {
-			t.Fatalf("got %v, %v; want zero time", due, err)
+		wakeup, err := s.LatestScheduledWakeup("br_w", callsLoggedSince)
+		if err != nil || wakeup != nil {
+			t.Fatalf("got %+v, %v; want none", wakeup, err)
 		}
 	})
 
@@ -102,9 +104,9 @@ func TestPendingWakeupDueAt(t *testing.T) {
 		s.CreateSession(&Session{SessionID: "br_w", Harness: "claude_code", State: "idle"})
 		storeWakeupCall(t, s, "br_w", "toolu_a", `{"delaySeconds":600}`)
 		storeWakeupResult(t, s, "br_w", "toolu_a", fmt.Sprintf(`{"scheduledFor":%d}`, dueMilliseconds))
-		due, err := s.PendingWakeupDueAt("br_w", time.Now().Add(time.Minute))
-		if err != nil || !due.IsZero() {
-			t.Fatalf("got %v, %v; want zero time", due, err)
+		wakeup, err := s.LatestScheduledWakeup("br_w", time.Now().Add(time.Minute))
+		if err != nil || wakeup != nil {
+			t.Fatalf("got %+v, %v; want none", wakeup, err)
 		}
 	})
 
@@ -114,9 +116,38 @@ func TestPendingWakeupDueAt(t *testing.T) {
 		s.CreateSession(&Session{SessionID: "br_other", Harness: "claude_code", State: "idle"})
 		storeWakeupCall(t, s, "br_other", "toolu_a", `{"delaySeconds":600}`)
 		storeWakeupResult(t, s, "br_other", "toolu_a", fmt.Sprintf(`{"scheduledFor":%d}`, dueMilliseconds))
-		due, err := s.PendingWakeupDueAt("br_w", processStartedAt)
-		if err != nil || !due.IsZero() {
-			t.Fatalf("got %v, %v; want zero time", due, err)
+		wakeup, err := s.LatestScheduledWakeup("br_w", callsLoggedSince)
+		if err != nil || wakeup != nil {
+			t.Fatalf("got %+v, %v; want none", wakeup, err)
 		}
 	})
+}
+
+func TestUserMessageLoggedSince(t *testing.T) {
+	s := testStore(t)
+	s.CreateSession(&Session{SessionID: "br_w", Harness: "claude_code", State: "idle"})
+	if err := s.StoreEvent("br_w", "user_message", "", "", []byte(`{"type":"user_message"}`)); err != nil {
+		t.Fatal(err)
+	}
+	found, err := s.UserMessageLoggedSince("br_w", time.Now().Add(-time.Minute))
+	if err != nil || !found {
+		t.Fatalf("message logged just now: got %v, %v; want true", found, err)
+	}
+	found, err = s.UserMessageLoggedSince("br_w", time.Now().Add(time.Minute))
+	if err != nil || found {
+		t.Fatalf("no message after a future time: got %v, %v; want false", found, err)
+	}
+}
+
+func TestListSessionIDsUpdatedSince(t *testing.T) {
+	s := testStore(t)
+	s.CreateSession(&Session{SessionID: "br_w", Harness: "claude_code", State: "idle"})
+	sessionIDs, err := s.ListSessionIDsUpdatedSince(time.Now().Add(-time.Minute))
+	if err != nil || len(sessionIDs) != 1 || sessionIDs[0] != "br_w" {
+		t.Fatalf("session made just now: got %v, %v; want [br_w]", sessionIDs, err)
+	}
+	sessionIDs, err = s.ListSessionIDsUpdatedSince(time.Now().Add(time.Minute))
+	if err != nil || len(sessionIDs) != 0 {
+		t.Fatalf("nothing updated after a future time: got %v, %v; want none", sessionIDs, err)
+	}
 }

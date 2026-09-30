@@ -187,8 +187,9 @@ func main() {
 	go coordinator.Run(operationsContext)
 	log.Printf("operations db %s | %d workers | lease %s", cfg.OperationsDBPath, cfg.OperationsWorkerCount, cfg.OperationsLeaseDuration)
 	srv.ReconcileAndResume() // Clean up stale running-state and resume recently-active sessions
-	srv.AutoDiscover()       // Import on-disk sessions from harnesses
-	srv.StartWatchdog()      // Periodic check for sessions whose harness died mid-life
+	srv.RedeliverWakeupsLostInRestart()
+	srv.AutoDiscover()  // Import on-disk sessions from harnesses
+	srv.StartWatchdog() // Periodic check for sessions whose harness died mid-life
 
 	go func() {
 		log.Printf("llm-bridge-server listening on %s", cfg.ListenAddr)
