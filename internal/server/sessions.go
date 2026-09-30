@@ -561,8 +561,9 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// User-set name wins. Drop any in-flight renamer reservation so its eventual
-	// /auto-rename callback no-ops (ApplyAutoRename will see the cleared slot).
+	// User-set name wins. Drop any in-flight renamer reservation so a title
+	// call still running stores nothing (ApplyAutoRename will see the cleared
+	// slot).
 	if err := s.store.ClearRenamerSlot(bridgeID); err != nil {
 		log.Printf("[session] clear renamer slot on rename: %v", err)
 	}

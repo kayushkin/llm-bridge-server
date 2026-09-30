@@ -37,6 +37,9 @@ func attachServiceSettings(cfg *config.Config, st *store.Store) *servicesettings
 		settings = built
 		seeds = cfg.StoredSettingSeeds()
 	}
+	if err := st.MoveServiceSettingKeys(config.RenamedStoredSettingKeys, config.RetiredStoredSettingKeys); err != nil {
+		panic(fmt.Sprintf("service settings: %v", err))
+	}
 	if err := settings.AttachStoredValues(st.ServiceSettingValues(), seeds); err != nil {
 		panic(fmt.Sprintf("service settings: %v", err))
 	}
@@ -48,10 +51,10 @@ func attachServiceSettings(cfg *config.Config, st *store.Store) *servicesettings
 // after the components exist.
 func (s *Server) wireServiceSettings() {
 	if s.harnessStore != nil {
-		for _, key := range []string{config.SettingSignalClassifierInstance, config.SettingPromptDriftTaggerInstance} {
-			s.settings.SetValidator(key, s.checkSettingNamesAnEnabledInstance)
-		}
-		s.settings.SetValidator(config.SettingOperationsCompletionInstances, s.checkCompletionInstances)
+		s.settings.SetValidator(config.SettingOneShotInstanceByProvider, s.checkOneShotInstanceByProvider)
+	}
+	for _, key := range config.ModelRoleSettings {
+		s.settings.SetValidator(key, s.checkSettingNamesAnAssignedModelRole)
 	}
 	s.settings.SetValidator(config.SettingOperationsGrantEnforcement, checkOperationGrantEnforcementValue)
 	s.settings.OnChange(func(string) { s.retuneFromServiceSettings() })
@@ -83,15 +86,15 @@ func (s *Server) retuneFromServiceSettings() {
 		optOut[msg.Harness(harnessName)] = true
 	}
 	tuning := signalClassifierTuning{
-		model:    s.settings.String(config.SettingSignalClassifierModel),
-		timeout:  s.settings.Duration(config.SettingSignalClassifierTimeout),
-		maxChars: s.settings.Integer(config.SettingSignalClassifierMaximumCharacters),
-		optOut:   optOut,
+		modelRole: s.settings.ModelRole(config.SettingSignalClassifierModelRole),
+		timeout:   s.settings.Duration(config.SettingSignalClassifierTimeout),
+		maxChars:  s.settings.Integer(config.SettingSignalClassifierMaximumCharacters),
+		optOut:    optOut,
 	}
 	if s.signalClassifier != nil {
 		s.signalClassifier.retune(tuning)
 	}
 	if s.questionTriage != nil {
-		s.questionTriage.retune(tuning.model, tuning.timeout)
+		s.questionTriage.retune(tuning.modelRole, tuning.timeout)
 	}
 }

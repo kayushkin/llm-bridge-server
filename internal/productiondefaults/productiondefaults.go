@@ -56,6 +56,7 @@ const (
 	BundleStoreURL     = "http://localhost:8307"
 	MailstackURL       = "http://localhost:8195"
 	HealthcheckURL     = "http://localhost:8099"
+	UsageStoreURL      = "http://localhost:8185"
 	// kanban-store, principal-store and grant-store have no default here, and
 	// so no row in the three tables below. Request authorization reads all
 	// three on a gated request and main refuses to start without
@@ -140,6 +141,7 @@ var EnvironmentVariableByConfigField = map[string]string{
 	"PermissionStoreURL": "LLMBRIDGE_PERMISSION_STORE_URL",
 	"MailstackURL":       "LLMBRIDGE_MAILSTACK_URL",
 	"HealthcheckURL":     "LLMBRIDGE_HEALTHCHECK_URL",
+	"UsageStoreURL":      "LLMBRIDGE_USAGE_STORE_URL",
 	"SnapshotStoreDB":    "LLMBRIDGE_SNAPSHOT_DB",
 	"SnapshotStoreGit":   "LLMBRIDGE_SNAPSHOT_GIT",
 	"OperationsDBPath":   "LLMBRIDGE_OPERATIONS_DB",
@@ -163,6 +165,7 @@ func AddressByConfigField() map[string]string {
 		"PermissionStoreURL": PermissionStoreURL,
 		"MailstackURL":       MailstackURL,
 		"HealthcheckURL":     HealthcheckURL,
+		"UsageStoreURL":      UsageStoreURL,
 		"SnapshotStoreDB":    SnapshotStoreDatabasePath(),
 		"SnapshotStoreGit":   SnapshotStoreGitPath(),
 		"OperationsDBPath":   OperationsDatabasePath(),

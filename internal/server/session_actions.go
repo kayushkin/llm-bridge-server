@@ -391,8 +391,12 @@ func (s *Server) describeSessionAction(ctx context.Context, session *store.Sessi
 		if refusal != nil {
 			return "", refusal
 		}
-		return fmt.Sprintf("ask %s (%q, on instance %s) this, with no tools, spending at most $%.2f at list price (at most %d output tokens):\n%s",
-			call.target.ModelID, offer.Model, call.target.InstanceID, offer.MaximumCostUSD, call.maximumOutputTokens, offer.Message), nil
+		models := make([]string, 0, len(call.route.Candidates))
+		for _, candidate := range call.route.Candidates {
+			models = append(models, candidate.ModelID)
+		}
+		return fmt.Sprintf("ask %q (the first of %s that answers) this, with no tools, spending at most $%.2f at list price (at most %d output tokens):\n%s",
+			offer.Model, strings.Join(models, ", then "), offer.MaximumCostUSD, call.maximumOutputTokens, offer.Message), nil
 	case msg.SessionActionBackgroundAgent:
 		model := "this session's model"
 		if offer.Model != "" {

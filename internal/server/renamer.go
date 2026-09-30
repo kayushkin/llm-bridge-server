@@ -5,14 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/textutil"
 	"github.com/kayushkin/llm-bridge/msg"
 )
+
+// The session renamer gives a session whose name nobody chose a sidebar title
+// drawn from its recent turns: one routed one-shot call on the
+// session_renamer.model_role role. Until 2026-09-30 it started a whole Claude
+// Code session on the target's own instance, with no model named, which told
+// the new session to curl its title back — about a hundred sessions a week,
+// each on whatever model the harness defaulted to.
 
 const (
 	// renameFirstAfter triggers the very first auto-rename pass once a session
@@ -27,61 +34,54 @@ const (
 	// recentTurnsForRename caps how many turns of transcript get included in
 	// the renamer's prompt. Each text is also truncated by the store helper.
 	recentTurnsForRename = 12
-	// renamerSourceTag is stamped on Source so the renamer's own session
-	// (a) gets auto-filed via LLMBRIDGE_SOURCE_FOLDERS, and (b) is excluded
-	// from the auto-rename trigger so it doesn't recurse on itself.
+	// renamerSourceTag is the purpose the renamer's own sessions carried
+	// before it became a one-shot call. Their rows remain, and their turns
+	// are still neither renamed nor classified.
 	renamerSourceTag = "renamer"
-	// renamerStartDelay matches the autoResume wait — Claude Code needs a
-	// moment to finish its start handshake before stdin sends will land.
-	renamerStartDelay = 2 * time.Second
+	// renamerSlotPrefix starts the id a title call reserves the target's
+	// renamer slot under.
+	renamerSlotPrefix = "rename-call-"
+	// renamerTimeout bounds one title call, fallbacks included.
+	renamerTimeout = 2 * time.Minute
+	// renamerMaxTokens bounds the title call's answer.
+	renamerMaxTokens = 256
 	// maxAutoRenameRunes caps the rune length of an auto-generated title.
 	// Sized for the sidebar at 100% zoom (~18 average-width characters fit;
 	// allow a few more to accommodate narrow letters before truncating).
 	maxAutoRenameRunes = 24
 )
 
-// AutoRenameRequest is the body posted by a renamer session back to
-// POST /sessions/{id}/auto-rename. RenamerSessionID is required so the server
-// can verify the caller still owns the renamer slot — guards against stale
-// renamers clobbering a name the user has since manually set.
-type AutoRenameRequest struct {
-	DisplayName      string `json:"display_name"`
-	RenamerSessionID string `json:"renamer_session_id"`
-}
+// renamerTitleSchema forces the title call's answer into one field.
+var renamerTitleSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {"title": {"type": "string"}},
+  "required": ["title"],
+  "additionalProperties": false
+}`)
 
-func (s *Server) handleAutoRenameSession(w http.ResponseWriter, r *http.Request) {
-	bridgeID := r.PathValue("id")
-	var req AutoRenameRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	name := strings.TrimSpace(req.DisplayName)
+const renamerSystemPrompt = `You write the sidebar title of a chat session from its transcript. Say what the session is about — its topic, task or problem — not its literal first message. The sidebar is narrow: aim for about 18 characters, never more than 24. Prefer a short noun phrase ("auth bug fix", "deploy script") to a sentence. No quotes.`
+
+// applyAutoRename stores a title the renamer wrote, if slot still holds the
+// session's renamer slot, and tells connected clients. A slot the user
+// cleared by renaming the session by hand leaves the name alone.
+func (s *Server) applyAutoRename(bridgeID, slot, title string) error {
+	name := textutil.TruncateToRuneLimit(strings.TrimSpace(title), maxAutoRenameRunes)
 	if name == "" {
-		http.Error(w, "display_name is required", http.StatusBadRequest)
-		return
+		return fmt.Errorf("the title is empty")
 	}
-	if req.RenamerSessionID == "" {
-		http.Error(w, "renamer_session_id is required", http.StatusBadRequest)
-		return
-	}
-	name = textutil.TruncateToRuneLimit(name, maxAutoRenameRunes)
 	turnCount, err := s.store.CountUserMessages(bridgeID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("count user messages: %w", err)
 	}
-	if err := s.store.ApplyAutoRename(bridgeID, req.RenamerSessionID, name, turnCount); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
+	if err := s.store.ApplyAutoRename(bridgeID, slot, name, turnCount); err != nil {
+		return fmt.Errorf("store the title: %w", err)
 	}
 	sess, err := s.store.GetSession(bridgeID)
 	if err != nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
+		return fmt.Errorf("read the renamed session: %w", err)
 	}
 	s.broadcastDisplayNameChanged(bridgeID, sess.DisplayName)
-	writeJSON(w, sess)
+	return nil
 }
 
 // broadcastDisplayNameChanged emits a system event on the target session's
@@ -104,32 +104,26 @@ func (s *Server) broadcastDisplayNameChanged(bridgeID, displayName string) {
 }
 
 // maybeAutoRename inspects the target session and, when conditions are met,
-// spawns a Claude Code renamer session that will produce a sidebar-friendly
-// title and POST it back via /sessions/{id}/auto-rename. Always called as a
+// asks the renamer role for a sidebar title and stores it. Always called as a
 // goroutine — long-running, must never block the /send response.
 //
 // Conditions to fire:
-//   - Source != "renamer"  (don't recurse on the helper itself)
-//   - InstanceID is bound and the harness is Claude Code
+//   - session_renamer.model_role is set
+//   - Purpose != "renamer"  (a helper session from before the one-shot renamer)
 //   - display_name is autogenerated (user hasn't manually renamed)
-//   - no renamer is already in flight for this target
+//   - no title call is already in flight for this target
 //   - first run: turn_count >= renameFirstAfter
 //   - subsequent runs: turn_count - named_at_turn >= renameEvery
 func (s *Server) maybeAutoRename(bridgeID string) {
+	modelRole := s.settings.ModelRole(config.SettingSessionRenamerModelRole)
+	if modelRole == "" {
+		return
+	}
 	target, err := s.store.GetSession(bridgeID)
 	if err != nil {
 		return
 	}
 	if target.Purpose == renamerSourceTag {
-		return
-	}
-	if target.InstanceID == "" || s.harnessStore == nil {
-		return
-	}
-	// Renamer is Claude-Code-only for now. Other harnesses can be added once
-	// we have an equivalent way to spawn a side session that calls back via
-	// curl.
-	if target.Harness != msg.HarnessClaudeCode {
 		return
 	}
 
@@ -142,14 +136,13 @@ func (s *Server) maybeAutoRename(bridgeID string) {
 		return
 	}
 	if inFlight != "" {
-		// Recover stuck slots when the renamer session is no longer in a state
-		// that could plausibly produce a result.
-		if !s.renamerStillAlive(inFlight) {
-			if err := s.store.ClearRenamerSlot(bridgeID); err != nil {
-				log.Printf("[renamer] %s: clear stale slot: %v", bridgeID, err)
-				return
-			}
-		} else {
+		if s.renamerStillAlive(inFlight) {
+			return
+		}
+		// A slot no call in this process holds was left by a call a restart
+		// killed, or by a renamer session from before the one-shot renamer.
+		if err := s.store.ClearRenamerSlot(bridgeID); err != nil {
+			log.Printf("[renamer] %s: clear stale slot: %v", bridgeID, err)
 			return
 		}
 	}
@@ -176,116 +169,68 @@ func (s *Server) maybeAutoRename(bridgeID string) {
 		return
 	}
 
-	if err := s.spawnRenamerSession(target, turns); err != nil {
-		log.Printf("[renamer] %s: spawn failed: %v", bridgeID, err)
+	if err := s.renameFromTranscript(target, turns, modelRole); err != nil {
+		log.Printf("[renamer] %s: %v", bridgeID, err)
 	}
 }
 
-// renamerStillAlive returns true when a renamer session row exists and is in
-// a state that may still produce a result. Used to recover from crashed or
-// orphaned renamers.
-func (s *Server) renamerStillAlive(renamerID string) bool {
-	sess, err := s.store.GetSession(renamerID)
-	if err != nil {
-		return false
-	}
-	// Active OR idle. Listing the two literal strings read a renamer that had
-	// reached tool_running — the normal state for one actually doing its job —
-	// as dead, and killed it. IsActive covers every in-flight state including
-	// the legacy `running` still on older rows, so this stops needing an edit
-	// each time the enum gains a value.
-	st := msg.SessionState(sess.State)
-	return st.IsActive() || st == msg.SessionIdle
+// renamerStillAlive reports whether a title call in this process holds the
+// slot.
+func (s *Server) renamerStillAlive(slot string) bool {
+	_, running := s.renamesInFlight.Load(slot)
+	return running
 }
 
-// spawnRenamerSession creates a fresh Claude Code session bound to the same
-// instance as the target, reserves the renamer slot, starts the harness, and
-// pushes the renamer prompt onto its stdin.
-func (s *Server) spawnRenamerSession(target *store.Session, turns []store.TurnText) error {
-	inst, err := s.harnessStore.GetInstance(target.InstanceID)
+// renameFromTranscript reserves the target's renamer slot, asks modelRole for
+// a title, and stores it. Losing the slot to another call is not an error.
+func (s *Server) renameFromTranscript(target *store.Session, turns []store.TurnText, modelRole string) error {
+	slot := renamerSlotPrefix + generateBridgeID()
+	reserved, err := s.store.ReserveRenamerSlot(target.SessionID, slot)
 	if err != nil {
-		return fmt.Errorf("lookup instance: %w", err)
-	}
-	if !inst.Enabled {
-		return fmt.Errorf("instance %s disabled", inst.ID)
-	}
-
-	// Intentionally NOT setting ParentID: in this codebase parent_id is
-	// CC-fork plumbing (process.go maps it to params.Fork → "--resume <id>
-	// --fork-session"), and the renamer must be a brand-new conversation,
-	// not a fork of the target. The forward link (target → renamer) lives
-	// on target.renamer_session_id, which is enough to trace the relationship.
-	renamerID := generateBridgeID()
-	renamer := &store.Session{
-		SessionID:   renamerID,
-		DisplayName: fmt.Sprintf("rename %s", target.SessionID),
-		Harness:     msg.HarnessClaudeCode,
-		InstanceID:  inst.ID,
-		State:       string(msg.SessionIdle),
-		AgentID:     "session-renamer",
-		Purpose:     renamerSourceTag,
-		Type:        msg.SessionTypeSystem,
-		Origin:      "llm-bridge-server",
-		FolderName:  s.folderForPurpose(renamerSourceTag),
-	}
-	if err := s.store.CreateSession(renamer); err != nil {
-		return fmt.Errorf("create session: %w", err)
-	}
-
-	ok, err := s.store.ReserveRenamerSlot(target.SessionID, renamer.SessionID)
-	if err != nil {
-		s.store.DeleteSession(renamer.SessionID)
 		return fmt.Errorf("reserve slot: %w", err)
 	}
-	if !ok {
-		// Lost the race to another goroutine; drop the just-created session
-		// so we don't leak an empty CC process.
-		s.store.DeleteSession(renamer.SessionID)
+	if !reserved {
 		return nil
 	}
+	s.renamesInFlight.Store(slot, true)
+	defer s.renamesInFlight.Delete(slot)
 
-	credID := resolveCredential(s.harnessStore, inst.ID)
-	if _, err := s.startOnInstance(context.Background(), renamer, inst, credID); err != nil {
-		s.store.ClearRenamerSlot(target.SessionID)
-		s.store.DeleteSession(renamer.SessionID)
-		return fmt.Errorf("start: %w", err)
+	ctx, cancel := context.WithTimeout(context.Background(), renamerTimeout)
+	defer cancel()
+	reply, err := s.oneShotRouter.RunRole(ctx, msg.OneShotRequest{
+		Prompt:       buildRenamerPrompt(target, turns),
+		SystemPrompt: renamerSystemPrompt,
+		ModelRole:    modelRole,
+		Caller:       oneShotCallerSessionRenamer,
+		Schema:       renamerTitleSchema,
+		MaxTokens:    renamerMaxTokens,
+	})
+	if err == nil && len(reply.Parsed) == 0 {
+		err = fmt.Errorf("%s answered with no title (stop reason %q)", reply.Model, reply.StopReason)
 	}
-
-	prompt := buildRenamerPrompt(target, renamer.SessionID, turns, publicBaseURL(s.cfg.ListenAddr))
-
-	// Mirror handleSendMessage: broadcast the user_message so the bubble
-	// shows up in the renamer's UI/SSE stream, then write the prompt onto
-	// the harness stdin. BroadcastEvent now forwards to log-store directly.
-	userEvent := msg.Event{
-		Type:            msg.EventUserMessage,
-		BridgeSessionID: renamer.SessionID,
-		Timestamp:       time.Now(),
-		Result:          &msg.ResultEvent{Text: prompt},
+	var answer struct {
+		Title string `json:"title"`
 	}
-	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
-		log.Printf("[renamer] %s: broadcast user_message: %v", renamer.SessionID, err)
+	if err == nil {
+		err = json.Unmarshal(reply.Parsed, &answer)
 	}
-
-	time.Sleep(renamerStartDelay)
-	if err := s.harness.Send(renamer.SessionID, prompt, nil); err != nil {
-		s.store.ClearRenamerSlot(target.SessionID)
-		return fmt.Errorf("send prompt: %w", err)
+	if err == nil {
+		err = s.applyAutoRename(target.SessionID, slot, answer.Title)
 	}
-
-	log.Printf("[renamer] %s: spawned %s (turns=%d)", target.SessionID, renamer.SessionID, len(turns))
+	if err != nil {
+		if clearErr := s.store.ClearRenamerSlot(target.SessionID); clearErr != nil {
+			log.Printf("[renamer] %s: clear slot after a failed title: %v", target.SessionID, clearErr)
+		}
+		return fmt.Errorf("title: %w", err)
+	}
+	log.Printf("[renamer] %s: titled by %s on %s (turns=%d)", target.SessionID, reply.Model, reply.InstanceID, len(turns))
 	return nil
 }
 
-// buildRenamerPrompt produces the single-shot prompt sent to the renamer's
-// Claude Code session. It explains the job, embeds the recent transcript,
-// and gives the exact curl call the renamer should make on completion.
-func buildRenamerPrompt(target *store.Session, renamerID string, turns []store.TurnText, baseURL string) string {
+// buildRenamerPrompt is the transcript the title is written from.
+func buildRenamerPrompt(target *store.Session, turns []store.TurnText) string {
 	var b strings.Builder
-	b.WriteString("You are an auto-rename helper for a chat session. Read the transcript below and produce a very concise sidebar title for the SOURCE SESSION (not yourself). Describe what the session is about — topic, task, or problem — not the literal first message. The sidebar is narrow: aim for ~18 characters, hard limit 24. Prefer short noun phrases (\"auth bug fix\", \"deploy script\") over full sentences. Do not wrap in quotes.\n\n")
-	fmt.Fprintf(&b, "SOURCE SESSION bridge_id: %s\n", target.SessionID)
-	fmt.Fprintf(&b, "Current display name: %q\n", target.DisplayName)
-	fmt.Fprintf(&b, "Your renamer bridge_id: %s\n\n", renamerID)
-	b.WriteString("Transcript (oldest first):\n---\n")
+	fmt.Fprintf(&b, "Current title: %q\n\nTranscript (oldest first):\n---\n", target.DisplayName)
 	for i, t := range turns {
 		fmt.Fprintf(&b, "Turn %d\n", i+1)
 		if t.User != "" {
@@ -296,29 +241,6 @@ func buildRenamerPrompt(target *store.Session, renamerID string, turns []store.T
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("---\n\n")
-	b.WriteString("When you have decided on a title, post it back via curl:\n\n")
-	// Both ids are session ids, so both are caller-choosable (sessions.go
-	// takes req.SessionID off the POST body verbatim), and this string is a
-	// shell command an agent is being told to run. The URL is escaped for the
-	// path AND quoted as one shell word; the payload is JSON-encoded for the
-	// body AND quoted as one shell word. See the note on shellSingleQuote in
-	// hook_settings.go for why escaping alone is not enough here.
-	//
-	// <TITLE> stays a literal placeholder: the agent substitutes it, so it
-	// cannot be encoded now.
-	encodedRenamerID, err := json.Marshal(renamerID)
-	if err != nil {
-		// Marshalling a string cannot fail; if it somehow does, emit no
-		// renamer id rather than an unquoted one.
-		encodedRenamerID = []byte(`""`)
-	}
-	renameURL := fmt.Sprintf("%s/sessions/%s/auto-rename", baseURL, escapePathSegment(target.SessionID))
-	renamePayload := fmt.Sprintf(`{"display_name":"<TITLE>","renamer_session_id":%s}`, encodedRenamerID)
-	fmt.Fprintf(&b,
-		"curl -sfS -X POST %s -H 'Content-Type: application/json' -d %s\n\n",
-		shellSingleQuote(renameURL), shellSingleQuote(renamePayload),
-	)
-	b.WriteString("After the curl returns 200 you are completely done — do not do any further work, do not summarize, do not produce any extra output. Just give a single short confirmation and stop.")
+	b.WriteString("---\n")
 	return b.String()
 }

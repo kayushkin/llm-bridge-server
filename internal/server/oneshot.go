@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
-	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -108,33 +106,4 @@ func (s *Server) runOneShot(ctx context.Context, inst *msg.Instance, req msg.One
 			fmt.Errorf("exec %s -oneshot: %v (stderr: %s)", binPath, err, stderr.String())
 	}
 	return stdout.Bytes(), http.StatusOK, nil
-}
-
-// classifierOneShot runs the signal classifier's call on the configured harness
-// instance.
-//
-// A missing or disabled instance is an error rather than a fallback to the API:
-// falling back is how the drain this replaced went unnoticed for months, since
-// a working classifier and a working-but-billing classifier look identical from
-// outside.
-func (s *Server) classifierOneShot(ctx context.Context, req msg.OneShotRequest) ([]byte, error) {
-	id := s.settings.String(config.SettingSignalClassifierInstance)
-	if id == "" {
-		return nil, fmt.Errorf("no signal-classifier instance configured")
-	}
-	inst, err := s.harnessStore.GetInstance(id)
-	if err != nil {
-		return nil, fmt.Errorf("signal-classifier instance %q: %w", id, err)
-	}
-	if !inst.Enabled {
-		return nil, fmt.Errorf("signal-classifier instance %q is disabled", id)
-	}
-	raw, status, err := s.runOneShot(ctx, inst, req)
-	if err != nil {
-		return nil, err
-	}
-	if status != http.StatusOK {
-		return nil, fmt.Errorf("signal-classifier oneshot returned %d: %s", status, strings.TrimSpace(string(raw)))
-	}
-	return raw, nil
 }

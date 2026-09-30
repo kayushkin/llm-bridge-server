@@ -120,7 +120,7 @@ func (classifier ModelClassifier) Execute(ctx context.Context, intent msg.Operat
 	// Archived axes and values stay in a board's taxonomy so its history
 	// resolves; nothing new may be labelled with them.
 	taxonomy := stored.Selectable()
-	target, refusal := resolveTarget(classifier.Caller, input.Model)
+	route, refusal := resolveRoute(classifier.Caller, input.Model)
 	if refusal != nil {
 		return *refusal
 	}
@@ -139,30 +139,22 @@ func (classifier ModelClassifier) Execute(ctx context.Context, intent msg.Operat
 	result := msg.ClassificationRunResult{Taxonomy: taxonomy, TaxonomySource: source, Items: make([]msg.ClassificationItemResult, 0, total)}
 	for start := 0; start < total; start += classificationBatchSize {
 		batch := input.Items[start:min(start+classificationBatchSize, total)]
-		if refusal := refuseCallOverBudget(receipt, target.ModelID); refusal != nil {
+		gate, refusal := openBudgetGate(receipt)
+		if refusal != nil {
 			return *refusal
 		}
-		response, err := classifier.Caller.RunOneShot(ctx, target.InstanceID, msg.OneShotRequest{
-			Prompt: classificationBatchPrompt(batch), SystemPrompt: system, Model: target.ModelID,
-			Schema: classificationSchema(taxonomy, batch), MaxTokens: classificationMaximumOutputTokens,
-		})
+		response, err := classifier.Caller.RunOneShotRoute(ctx, route, msg.OneShotRequest{
+			Prompt: classificationBatchPrompt(batch), SystemPrompt: system,
+			Schema: classificationSchema(taxonomy, batch), MaxTokens: classificationMaximumOutputTokens, Caller: callerModelClassifier,
+		}, gate.admit)
 		if err != nil {
-			code := "model_call_failed"
-			if ctx.Err() != nil {
-				code = "attempt_interrupted"
-			}
-			return operations.Result{Error: &msg.OperationError{Code: code, Retryable: true,
-				Message: fmt.Sprintf("batch starting at item %d of %d: %v", start+1, total, err)}}
+			return gate.callFailure(ctx, err, fmt.Sprintf("batch starting at item %d of %d: ", start+1, total))
 		}
-		answeredBy := response.Model
-		if answeredBy == "" {
-			answeredBy = target.ModelID
-		}
-		if err := receipt.RecordModelCall(answeredBy, response.Usage); err != nil {
+		if err := receipt.RecordModelCall(response.Model, response.Usage); err != nil {
 			return writeFailure(err)
 		}
 		if start == 0 {
-			if err := receipt.AddEvidence(targetEvidence(target, answeredBy, response.DurationMs)); err != nil {
+			if err := receipt.AddEvidence(routeEvidence(route, response)); err != nil {
 				return writeFailure(err)
 			}
 		}

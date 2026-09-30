@@ -1,10 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -139,14 +141,14 @@ func TestDisplayNameForDiscoveredSessionCapIsExactly100Runes(t *testing.T) {
 	}
 }
 
-// TestAutoRenameHandlerNeverStoresASplitRune is the call-site test. A helper
+// TestTheRenamerNeverStoresASplitRune is the call-site test. A helper
 // with green tests proves nothing about the places that call it, so this drives
-// the real HTTP handler and reads the name back out of the store.
-func TestAutoRenameHandlerNeverStoresASplitRune(t *testing.T) {
+// the real renamer and reads the name back out of the store.
+func TestTheRenamerNeverStoresASplitRune(t *testing.T) {
 	// Put the four-byte rune across the byte offset the cut used to use.
 	name := strings.Repeat("a", maxAutoRenameRunes-1) + fourByteRune + strings.Repeat("b", 40)
 
-	stored := storeNameViaAutoRenameHandler(t, name)
+	stored := storeNameViaRenamer(t, name)
 	if !utf8.ValidString(stored) {
 		t.Errorf("stored display_name is not valid UTF-8: %q", stored)
 	}
@@ -172,23 +174,24 @@ func TestAutoRenameCapIsExactly24Runes(t *testing.T) {
 		t.Fatalf("fixture is %d runes, want 24 — the test no longer reaches the defect", n)
 	}
 
-	if stored := storeNameViaAutoRenameHandler(t, exactly24); stored != exactly24 {
+	if stored := storeNameViaRenamer(t, exactly24); stored != exactly24 {
 		t.Errorf("a 24-rune title must be stored whole:\n got %q\nwant %q", stored, exactly24)
 	}
-	if stored := storeNameViaAutoRenameHandler(t, exactly24+"b"); stored != exactly24 {
+	if stored := storeNameViaRenamer(t, exactly24+"b"); stored != exactly24 {
 		t.Errorf("a 25-rune title must be cut to 24:\n got %q\nwant %q", stored, exactly24)
 	}
 }
 
-// storeNameViaAutoRenameHandler drives the real auto-rename HTTP handler with
-// one display name and returns what came to rest in the store. A helper with
-// green tests proves nothing about the places that call it, so these tests go
-// through the handler rather than calling the truncation directly.
+// storeNameViaRenamer runs the real renamer against a session, with
+// a router whose one model answers displayName as the title, and returns what
+// came to rest in the store. A helper with green tests proves nothing about
+// the places that call it, so these tests go through the renamer rather than
+// calling the truncation directly.
 //
 // Each call gets its own server and session: ApplyAutoRename is guarded by the
 // renamer slot, and reusing a session across two renames would make the second
 // call's result depend on the first.
-func storeNameViaAutoRenameHandler(t *testing.T, displayName string) string {
+func storeNameViaRenamer(t *testing.T, displayName string) string {
 	t.Helper()
 
 	srv, st, instID := testServerWithInstance(t, msg.HarnessClaudeCode)
@@ -203,21 +206,18 @@ func storeNameViaAutoRenameHandler(t *testing.T, displayName string) string {
 		t.Fatalf("create session: status %d", resp.StatusCode)
 	}
 	created := decodeJSON[msg.ManagedSession](t, resp)
-
-	// The handler verifies the caller still owns the renamer slot, so claim it
-	// the way spawnRenamerSession would.
-	if ok, err := st.ReserveRenamerSlot(created.SessionID, "renamer-1"); err != nil || !ok {
-		t.Fatalf("reserve renamer slot: ok=%v err=%v", ok, err)
-	}
-
-	resp = doJSON(t, srv, "POST", "/sessions/"+created.SessionID+"/auto-rename", AutoRenameRequest{
-		DisplayName:      displayName,
-		RenamerSessionID: "renamer-1",
+	srv.oneShotRouter = routerAnsweringEveryCall(t, srv, instID, func(msg.OneShotRequest) (msg.OneShotResponse, error) {
+		title, _ := json.Marshal(map[string]string{"title": displayName})
+		return msg.OneShotResponse{Parsed: title}, nil
 	})
-	if resp.StatusCode != 200 {
-		t.Fatalf("auto-rename: status %d, want 200", resp.StatusCode)
-	}
 
+	target, err := st.GetSession(created.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if err := srv.renameFromTranscript(target, []store.TurnText{{User: "hi", Assistant: "hello"}}, "efficient"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
 	sess, err := st.GetSession(created.SessionID)
 	if err != nil {
 		t.Fatalf("get session: %v", err)

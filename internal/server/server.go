@@ -23,6 +23,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
+	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
@@ -117,6 +118,15 @@ type Server struct {
 	// sessionActionModels resolves, calls and prices the models session
 	// actions use. The server itself, except in tests.
 	sessionActionModels sessionActionModels
+
+	// oneShotRouter is where every background model call goes: a model-store
+	// role in, the first of its models that answers out. See
+	// oneshot_routing.go.
+	oneShotRouter *oneshotrouting.Router
+	// renamesInFlight holds the renamer slot ids of the title calls this
+	// process is making, so a slot left by a call a restart killed reads as
+	// free. See renamer.go.
+	renamesInFlight sync.Map
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
@@ -149,7 +159,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		parkedAsks:      newParkedAsks(),
 		responseCache:   respCache,
 		signalClassifier: newSignalClassifier(
-			cfg.SignalClassifierModel,
+			cfg.SignalClassifierModelRole,
 			cfg.SignalClassifierTimeout,
 			cfg.SignalClassifierMaxChars,
 			cfg.SignalClassifierOptOut,
@@ -173,16 +183,15 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		log.Printf("[session-files] LLMBRIDGE_FILE_STORE_URL is not set; session files are off")
 	}
 	srv.harness.SetSessionInfoObserver(srv.onSessionInfo)
-	// The classifier runs its call on a harness instance rather than against
-	// api.anthropic.com, so it needs the server's oneshot runner. Wired here
-	// because the runner is a method on the server the classifier hangs off.
+	// The classifier runs its call through the server's one-shot router, so
+	// it is wired here, after the server that owns the router exists.
+	srv.oneShotRouter = srv.newOneShotRouter()
 	if srv.signalClassifier != nil {
-		srv.signalClassifier.runOneShot = srv.classifierOneShot
+		srv.signalClassifier.runOneShot = srv.routedOneShotJSON
 	}
-	// Triage shares the classifier's model, timeout and oneshot path: it is
-	// the same kind of cheap call, on the same subscription login, and one
-	// switch turns both off.
-	srv.questionTriage = newQuestionTriage(cfg.SignalClassifierModel, cfg.SignalClassifierTimeout, srv.classifierOneShot)
+	// Triage shares the classifier's role, timeout and router: it is the
+	// same kind of cheap call, and one switch turns both off.
+	srv.questionTriage = newQuestionTriage(cfg.SignalClassifierModelRole, cfg.SignalClassifierTimeout, srv.routedOneShotJSON)
 	if cfg.MailstackToken == "" {
 		log.Printf("[triage] LLMBRIDGE_MAILSTACK_TOKEN is not set: customer reply drafts will carry no recipient")
 	} else if client, err := mailstackclient.New(cfg.MailstackURL, cfg.MailstackToken); err != nil {
@@ -302,7 +311,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/compact", s.handleCompactSession)
 	s.mux.HandleFunc("POST /sessions/{id}/fork", s.handleForkSession)
 	s.mux.HandleFunc("POST /sessions/{id}/rename", s.handleRenameSession)
-	s.mux.HandleFunc("POST /sessions/{id}/auto-rename", s.handleAutoRenameSession)
 	s.mux.HandleFunc("POST /sessions/{id}/config", s.handleConfigSession)
 	s.mux.HandleFunc("PUT /sessions/{id}/folder", s.handleSetSessionFolder)
 	s.mux.HandleFunc("POST /sessions/{id}/mark-done", s.handleMarkSessionDone)
@@ -445,6 +453,7 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("DELETE /instances/{id}/credentials/{cred_id}", s.handleUnbindCredential)
 		s.mux.HandleFunc("POST /instances/{id}/oneshot", s.handleInstanceOneShot)
 	}
+	s.mux.HandleFunc("POST /oneshot", s.handleRoutedOneShot)
 
 	// Hook registry routes (mounted only when hook-store is loaded).
 	// /hooks/exec/{id} is always registered because the hook-store is

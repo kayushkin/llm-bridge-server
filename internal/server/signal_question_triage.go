@@ -106,31 +106,32 @@ type cardContext struct {
 type questionTriage struct {
 	runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)
 
-	// model and timeout follow the signal_classifier.* settings, which the
-	// operator may change while the server runs. Read them through current.
+	// modelRole and timeout follow the signal_classifier.* settings, which
+	// the operator may change while the server runs. Read them through
+	// current.
 	tuningMutex sync.RWMutex
-	model       string
+	modelRole   string
 	timeout     time.Duration
 }
 
-func (q *questionTriage) current() (model string, timeout time.Duration) {
+func (q *questionTriage) current() (modelRole string, timeout time.Duration) {
 	q.tuningMutex.RLock()
 	defer q.tuningMutex.RUnlock()
-	return q.model, q.timeout
+	return q.modelRole, q.timeout
 }
 
-// retune puts a new model and timeout in force for the next triage.
-func (q *questionTriage) retune(model string, timeout time.Duration) {
+// retune puts a new model role and timeout in force for the next triage.
+func (q *questionTriage) retune(modelRole string, timeout time.Duration) {
 	q.tuningMutex.Lock()
 	defer q.tuningMutex.Unlock()
-	q.model, q.timeout = model, timeout
+	q.modelRole, q.timeout = modelRole, timeout
 }
 
-func newQuestionTriage(model string, timeout time.Duration, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *questionTriage {
-	return &questionTriage{model: model, timeout: timeout, runOneShot: runOneShot}
+func newQuestionTriage(modelRole string, timeout time.Duration, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *questionTriage {
+	return &questionTriage{modelRole: modelRole, timeout: timeout, runOneShot: runOneShot}
 }
 
-// enabled reports whether triage can run at all. Off when there is no model:
+// enabled reports whether triage can run at all. Off when there is no role:
 // the same switch that turns the turn-end classifier off turns this off, and
 // with it off a surfacing worker's question reaches the card untriaged rather
 // than being denied — surfacing is the purpose's decision, triage only
@@ -139,8 +140,8 @@ func (q *questionTriage) enabled() bool {
 	if q == nil || q.runOneShot == nil {
 		return false
 	}
-	model, _ := q.current()
-	return model != ""
+	modelRole, _ := q.current()
+	return modelRole != ""
 }
 
 const triageSystemPrompt = `You triage a question that an autonomous coding agent has asked while working a ticket. Nobody is watching the agent. Decide whether a person needs to see the question, and if so, who.
@@ -200,11 +201,12 @@ func (q *questionTriage) triage(ctx context.Context, question triageQuestion, ca
 	if err != nil {
 		return nil, fmt.Errorf("marshal triage schema: %w", err)
 	}
-	triageModel, _ := q.current()
+	triageModelRole, _ := q.current()
 	raw, err := q.runOneShot(ctx, msg.OneShotRequest{
 		Prompt:       triagePrompt(question, card),
 		SystemPrompt: triageSystemPrompt,
-		Model:        triageModel,
+		ModelRole:    triageModelRole,
+		Caller:       oneShotCallerQuestionTriage,
 		Schema:       schema,
 		MaxTokens:    triageMaxTokens,
 	})

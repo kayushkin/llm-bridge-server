@@ -28,21 +28,27 @@ type Config struct {
 	// coordinator; see internal/operations.
 	OperationsWorkerCount   int
 	OperationsLeaseDuration time.Duration
-	// The stored operations settings, as the environment seeded them. Read
-	// them at the time of use from Settings, never from here.
-	OperationsCompletionInstances map[string]string
-	OperationsCompletionModel     string
-	// SessionActionsReviewModel seeds session_actions.review_model.
-	SessionActionsReviewModel  string
+	// The stored one-shot and operations settings, as the environment seeded
+	// them. Read them at the time of use from Settings, never from here.
+	OneShotInstanceByProvider     map[string]string
+	OperationsCompletionModelRole string
+	// SessionActionsReviewModelRole seeds session_actions.review_model_role.
+	SessionActionsReviewModelRole string
+	// SessionRenamerModelRole seeds session_renamer.model_role; empty in a
+	// Config literal switches automatic titles off.
+	SessionRenamerModelRole    string
 	OperationsGrantEnforcement string
-	AgentStoreDB               string
-	MemoryStoreDB              string
-	HarnessStoreDB             string
-	HookStoreDB                string
-	ModelStoreDB               string
-	ModelStoreURL              string
-	AgentStoreURL              string
-	ImagesDir                  string
+	// UsageStoreURL is usage-store, read for subscription limits before a
+	// routed one-shot call. Empty switches the check off.
+	UsageStoreURL  string
+	AgentStoreDB   string
+	MemoryStoreDB  string
+	HarnessStoreDB string
+	HookStoreDB    string
+	ModelStoreDB   string
+	ModelStoreURL  string
+	AgentStoreURL  string
+	ImagesDir      string
 	// SessionFilesDir is where a file shared into a session is copied for its
 	// agent to read: <dir>/<session id>/<file id>/<filename>.
 	SessionFilesDir string
@@ -130,13 +136,12 @@ type Config struct {
 	// defaults much higher than IdleTimeout. Configured via
 	// LLMBRIDGE_PTY_IDLE_TIMEOUT; <=0 disables reaping for pty sessions.
 	PTYIdleTimeout time.Duration
-	// SignalClassifierModel is the cheap model the turn-end signal
-	// classifier calls to sort a finished turn into question |
-	// notification | neither. Configured via
-	// LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL; empty turns the classifier off
-	// everywhere, leaving the looksLikeQuestion heuristic as the only
-	// awaiting_user signal and minting no derived signals.
-	SignalClassifierModel string
+	// SignalClassifierModelRole is the model-store role the turn-end signal
+	// classifier asks to sort a finished turn into question | notification |
+	// neither. Empty turns the classifier off everywhere, leaving the
+	// looksLikeQuestion heuristic as the only awaiting_user signal and
+	// minting no derived signals.
+	SignalClassifierModelRole string
 	// SignalClassifierOptOut is the set of harnesses the classifier skips
 	// — the per-harness escape hatch the on-by-default decision was taken
 	// with. Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT as a
@@ -151,17 +156,11 @@ type Config struct {
 	// from its tail, which is where a question or a sign-off lives.
 	// Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS.
 	SignalClassifierMaxChars int
-	// SignalClassifierInstance is the harness instance the classifier runs its
-	// call on. It must be a claude_code instance with no bound credential —
-	// that is what puts the call on the Claude Code subscription login instead
-	// of on an API key. Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE.
-	SignalClassifierInstance string
-	// PromptDriftTaggerInstance is the harness instance that labels the
-	// sections a prompt-file edit adds (one single-shot call per held drift),
-	// and PromptDriftTaggerModel the model it asks for. An empty instance
-	// turns labelling off: drifts are still detected and held, unlabelled.
-	PromptDriftTaggerInstance string
-	PromptDriftTaggerModel    string
+	// PromptDriftTaggerModelRole is the model-store role that labels the
+	// sections a prompt-file edit adds (one single-shot call per held drift).
+	// Empty turns labelling off: drifts are still detected and held,
+	// unlabelled.
+	PromptDriftTaggerModelRole string
 	// DemoLoginSigningKey is the HMAC-SHA256 key that signs the demo login
 	// cookie and the session agent tokens, from
 	// LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY. Required, and at least
@@ -324,9 +323,11 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		OperationsDBPath:              settings.String("operations.database_path"),
 		OperationsWorkerCount:         settings.Integer("operations.worker_count"),
 		OperationsLeaseDuration:       settings.Duration("operations.lease_duration"),
-		OperationsCompletionInstances: settings.StringMap(SettingOperationsCompletionInstances),
-		OperationsCompletionModel:     settings.String(SettingOperationsCompletionModel),
-		SessionActionsReviewModel:     settings.String(SettingSessionActionsReviewModel),
+		OneShotInstanceByProvider:     settings.StringMap(SettingOneShotInstanceByProvider),
+		OperationsCompletionModelRole: settings.ModelRole(SettingOperationsCompletionModelRole),
+		SessionActionsReviewModelRole: settings.ModelRole(SettingSessionActionsReviewModelRole),
+		SessionRenamerModelRole:       settings.ModelRole(SettingSessionRenamerModelRole),
+		UsageStoreURL:                 settings.String("usage_store.url"),
 		OperationsGrantEnforcement:    settings.String(SettingOperationsGrantEnforcement),
 		AgentStoreDB:                  settings.String("agent_store.database_path"),
 		MemoryStoreDB:                 settings.String("memory_store.database_path"),
@@ -360,11 +361,9 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		PTYRingBufferBytes:            settings.Integer("pty.ring_buffer_bytes"),
 		IdleTimeout:                   settings.Duration(SettingSessionIdleTimeout),
 		PTYIdleTimeout:                settings.Duration(SettingSessionPTYIdleTimeout),
-		SignalClassifierModel:         settings.String(SettingSignalClassifierModel),
+		SignalClassifierModelRole:     settings.ModelRole(SettingSignalClassifierModelRole),
 		SignalClassifierOptOut:        harnessSetOf(settings.StringList(SettingSignalClassifierOptOutHarnesses)),
-		SignalClassifierInstance:      settings.String(SettingSignalClassifierInstance),
-		PromptDriftTaggerInstance:     settings.String(SettingPromptDriftTaggerInstance),
-		PromptDriftTaggerModel:        settings.String(SettingPromptDriftTaggerModel),
+		PromptDriftTaggerModelRole:    settings.ModelRole(SettingPromptDriftTaggerModelRole),
 		SignalClassifierTimeout:       settings.Duration(SettingSignalClassifierTimeout),
 		SignalClassifierMaxChars:      settings.Integer(SettingSignalClassifierMaximumCharacters),
 		DemoLoginSigningKey:           settings.String("demo_login.signing_key"),
@@ -398,6 +397,7 @@ func (c *Config) GuardedAddresses() map[string]string {
 		"PermissionStoreURL": c.PermissionStoreURL,
 		"MailstackURL":       c.MailstackURL,
 		"HealthcheckURL":     c.HealthcheckURL,
+		"UsageStoreURL":      c.UsageStoreURL,
 		"SnapshotStoreDB":    c.SnapshotStoreDB,
 		"SnapshotStoreGit":   c.SnapshotStoreGit,
 		"OperationsDBPath":   c.OperationsDBPath,

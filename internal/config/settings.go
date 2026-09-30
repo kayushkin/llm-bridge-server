@@ -24,20 +24,49 @@ const OwnedEnvironmentVariablePrefix = "LLMBRIDGE_"
 // Keys of the behaviour settings the server stores and reads at the time of
 // use. Everything else is read once, from the environment, into Config.
 const (
-	SettingSignalClassifierModel             = "signal_classifier.model"
-	SettingSignalClassifierInstance          = "signal_classifier.instance"
+	SettingSignalClassifierModelRole         = "signal_classifier.model_role"
 	SettingSignalClassifierTimeout           = "signal_classifier.timeout"
 	SettingSignalClassifierMaximumCharacters = "signal_classifier.maximum_characters"
 	SettingSignalClassifierOptOutHarnesses   = "signal_classifier.opt_out_harnesses"
-	SettingPromptDriftTaggerInstance         = "prompt_drift_tagger.instance"
-	SettingPromptDriftTaggerModel            = "prompt_drift_tagger.model"
+	SettingPromptDriftTaggerModelRole        = "prompt_drift_tagger.model_role"
+	SettingSessionRenamerModelRole           = "session_renamer.model_role"
 	SettingSessionIdleTimeout                = "session.idle_timeout"
 	SettingSessionPTYIdleTimeout             = "session.pty_idle_timeout"
-	SettingOperationsCompletionInstances     = "operations.completion_instances"
-	SettingOperationsCompletionModel         = "operations.completion_model"
+	SettingOneShotInstanceByProvider         = "oneshot.instance_by_provider"
+	SettingOperationsCompletionModelRole     = "operations.completion_model_role"
 	SettingOperationsGrantEnforcement        = "operations.grant_enforcement"
-	SettingSessionActionsReviewModel         = "session_actions.review_model"
+	SettingSessionActionsReviewModelRole     = "session_actions.review_model_role"
 )
+
+// ModelRoleSettings are the stored settings whose value is a model-store role:
+// each is checked with model-store on write.
+var ModelRoleSettings = []string{
+	SettingSignalClassifierModelRole,
+	SettingPromptDriftTaggerModelRole,
+	SettingSessionRenamerModelRole,
+	SettingOperationsCompletionModelRole,
+	SettingSessionActionsReviewModelRole,
+}
+
+// RetiredStoredSettingKeys are service_settings rows an earlier build wrote
+// under keys no setting has now. The store deletes them at start, after
+// copying the one that was renamed (see RenamedStoredSettingKeys).
+var RetiredStoredSettingKeys = []string{
+	"signal_classifier.model",
+	"signal_classifier.instance",
+	"prompt_drift_tagger.instance",
+	"prompt_drift_tagger.model",
+	"operations.completion_model",
+	"operations.completion_instance",
+	"operations.completion_instances",
+	"session_actions.review_model",
+}
+
+// RenamedStoredSettingKeys maps an old stored key to the key that carries its
+// value now. The value moves only when the new key holds no row yet.
+var RenamedStoredSettingKeys = map[string]string{
+	"operations.completion_instances": SettingOneShotInstanceByProvider,
+}
 
 // HarnessProxyEnvironmentVariable is the variable that names the backend the
 // /harness/{name}/ proxy forwards to for one harness.
@@ -69,34 +98,33 @@ func SettingDefinitions() []servicesettings.Definition {
 		secret    = msg.ServiceSettingKindSecret
 		behaviour = msg.ServiceSettingKindBehaviour
 		text      = msg.ServiceSettingValueTypeString
+		role      = msg.ServiceSettingValueTypeModelRole
 	)
 	definitions := []servicesettings.Definition{
 		// Behaviour the server stores: changed on the settings page, no restart.
-		{Key: SettingSignalClassifierModel, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL", Kind: behaviour, ValueType: text, Editable: true, Default: "claude-haiku-4-5",
-			Description: "The model the turn-end signal classifier and question triage ask for. Empty switches both off: no derived signals, and a worker's question reaches its card untriaged."},
-		{Key: SettingSignalClassifierInstance, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_INSTANCE", Kind: behaviour, ValueType: text, Editable: true, Default: "inst-cc-local",
-			Description: "The harness instance the classifier and triage run their one-shot calls on. It must be an enabled instance; a claude_code instance with no bound credential puts the calls on the subscription login rather than an API key."},
+		{Key: SettingSignalClassifierModelRole, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "balanced",
+			Description: "The model-store role the turn-end signal classifier and question triage ask. Its models are tried in order, each on the instance oneshot.instance_by_provider names for its provider. Empty switches both off: no derived signals, and a worker's question reaches its card untriaged."},
 		{Key: SettingSignalClassifierTimeout, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "20s",
 			Description: "How long one classify or triage call may take. On timeout the turn keeps the state the heuristic gave it and no signal is written."},
 		{Key: SettingSignalClassifierMaximumCharacters, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "6000",
 			Description: "How much of a turn's final text is sent to the classifier, counted from the end, where a question or a sign-off lives."},
 		{Key: SettingSignalClassifierOptOutHarnesses, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeStringList, Editable: true,
 			Description: "Harnesses whose turns the classifier skips, comma-separated by harness id."},
-		{Key: SettingPromptDriftTaggerInstance, EnvironmentVariable: "LLMBRIDGE_PROMPT_DRIFT_TAGGER_INSTANCE", Kind: behaviour, ValueType: text, Editable: true, Default: "inst-cc-local",
-			Description: "The harness instance that proposes tags for sections a prompt-file edit adds, one call per held drift. Empty switches labelling off: drifts are still detected and held, unlabelled."},
-		{Key: SettingPromptDriftTaggerModel, EnvironmentVariable: "LLMBRIDGE_PROMPT_DRIFT_TAGGER_MODEL", Kind: behaviour, ValueType: text, Editable: true, Default: "claude-haiku-4-5",
-			Description: "The model the prompt drift tagger asks for."},
+		{Key: SettingPromptDriftTaggerModelRole, EnvironmentVariable: "LLMBRIDGE_PROMPT_DRIFT_TAGGER_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "balanced",
+			Description: "The model-store role that proposes tags for sections a prompt-file edit adds, one call per held drift. Empty switches labelling off: drifts are still detected and held, unlabelled."},
+		{Key: SettingSessionRenamerModelRole, EnvironmentVariable: "LLMBRIDGE_SESSION_RENAMER_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "efficient",
+			Description: "The model-store role that writes a session's sidebar title from its recent turns. Empty switches automatic titles off."},
 		{Key: SettingSessionIdleTimeout, EnvironmentVariable: "LLMBRIDGE_IDLE_TIMEOUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "15m",
 			Description: "How long an events-mode session may sit with no new event before its harness process is stopped and the session marked aborted. 0s or less switches reaping off."},
 		{Key: SettingSessionPTYIdleTimeout, EnvironmentVariable: "LLMBRIDGE_PTY_IDLE_TIMEOUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "60m",
 			Description: "The same cutoff for pty-mode sessions, where a person reading output emits nothing. 0s or less switches reaping off."},
 
-		{Key: SettingOperationsCompletionInstances, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_INSTANCES", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeStringMap, Editable: true, Default: "anthropic:inst-cc-local,openai:inst-codex-local",
-			Description: "Which harness instance makes the one-shot calls for each model-store provider, as provider:instance pairs. An operation's model is resolved through model-store (an id, an alias, or a role such as efficient) and sent to its provider's instance; a provider named nowhere here cannot be called. Each instance must be enabled and its harness must implement -oneshot."},
-		{Key: SettingOperationsCompletionModel, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_MODEL", Kind: behaviour, ValueType: text, Editable: true,
-			Description: "The model an llm.completion or classification.run uses when its input names none: a model-store id, alias or role. Empty means an input must name one."},
-		{Key: SettingSessionActionsReviewModel, EnvironmentVariable: "LLMBRIDGE_SESSION_ACTIONS_REVIEW_MODEL", Kind: behaviour, ValueType: text, Editable: true, Default: "balanced",
-			Description: "The model that reviews a run_command button's command when an agent offers it, and whose verdict the button shows: a model-store id, alias or role, called through operations.completion_instances. A command it rejects cannot be run; a model that cannot be called refuses the offer."},
+		{Key: SettingOneShotInstanceByProvider, EnvironmentVariable: "LLMBRIDGE_ONESHOT_INSTANCE_BY_PROVIDER", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeStringMap, Editable: true, Default: "anthropic:inst-cc-local,openai:inst-codex-local",
+			Description: "Which harness instance makes every one-shot call this server routes — the classifier, triage, the drift tagger, the renamer, the command reviewer, operations and POST /oneshot — for each model-store provider, as provider:instance pairs. A model whose provider is named nowhere here is an attempt that fails, and the role's next model is tried. Each instance must be enabled and its harness must implement -oneshot."},
+		{Key: SettingOperationsCompletionModelRole, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true,
+			Description: "The model-store role an llm.completion or classification.run uses when its input names no model. Empty means an input must name one: a role, a model id or an alias."},
+		{Key: SettingSessionActionsReviewModelRole, EnvironmentVariable: "LLMBRIDGE_SESSION_ACTIONS_REVIEW_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "balanced",
+			Description: "The model-store role that reviews a run_command button's command when an agent offers it, and whose verdict the button shows. A command it rejects cannot be run; a role none of whose models answers refuses the offer."},
 		{Key: SettingOperationsGrantEnforcement, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_GRANT_ENFORCEMENT", Kind: behaviour, ValueType: text, Editable: true, Default: OperationsGrantEnforcementLenient,
 			Description: "How grant-store's can_run_operation grants are applied to a principal starting an operation. lenient: a principal holding no such grant may start any type, and one holding any may start only those. strict: a principal may start only the types its grants name. Administrators and the service token are never checked."},
 
@@ -149,6 +177,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "Where /api/agent-store/ forwards to."},
 		{Key: "skill_store_proxy.url", EnvironmentVariable: "SKILL_STORE_URL", Kind: wiring, ValueType: text, Default: "http://localhost:8301",
 			Description: "Where /api/skill-store/ forwards to."},
+		{Key: "usage_store.url", EnvironmentVariable: "LLMBRIDGE_USAGE_STORE_URL", Kind: wiring, ValueType: text, Default: productiondefaults.UsageStoreURL,
+			Description: "usage-store, asked before each routed one-shot call whether the subscription the call would bill is used up; a model on a full, fresh window is skipped for the role's next. Empty switches the check off."},
 		{Key: "auth_store.url", EnvironmentVariable: "AUTH_STORE_URL", Kind: wiring, ValueType: text, Default: "http://127.0.0.1:8303",
 			Description: "auth-store, which resolves the credentials bound to a harness instance."},
 
@@ -250,11 +280,10 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 	}
 	sort.Strings(optOut)
 	seeds := map[string]string{
-		SettingSignalClassifierModel:           c.SignalClassifierModel,
-		SettingSignalClassifierInstance:        c.SignalClassifierInstance,
+		SettingSignalClassifierModelRole:       c.SignalClassifierModelRole,
 		SettingSignalClassifierOptOutHarnesses: strings.Join(optOut, ","),
-		SettingPromptDriftTaggerInstance:       c.PromptDriftTaggerInstance,
-		SettingPromptDriftTaggerModel:          c.PromptDriftTaggerModel,
+		SettingPromptDriftTaggerModelRole:      c.PromptDriftTaggerModelRole,
+		SettingSessionRenamerModelRole:         c.SessionRenamerModelRole,
 		SettingSignalClassifierTimeout:         c.SignalClassifierTimeout.String(),
 		SettingSessionIdleTimeout:              c.IdleTimeout.String(),
 		SettingSessionPTYIdleTimeout:           c.PTYIdleTimeout.String(),
@@ -262,25 +291,25 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 	// Seeded only when set, so a Config literal that leaves them out gets the
 	// declared defaults rather than an empty value.
 	for key, value := range map[string]string{
-		SettingOperationsCompletionModel:  c.OperationsCompletionModel,
-		SettingOperationsGrantEnforcement: c.OperationsGrantEnforcement,
-		SettingSessionActionsReviewModel:  c.SessionActionsReviewModel,
+		SettingOperationsCompletionModelRole: c.OperationsCompletionModelRole,
+		SettingOperationsGrantEnforcement:    c.OperationsGrantEnforcement,
+		SettingSessionActionsReviewModelRole: c.SessionActionsReviewModelRole,
 	} {
 		if value != "" {
 			seeds[key] = value
 		}
 	}
-	if len(c.OperationsCompletionInstances) > 0 {
-		providers := make([]string, 0, len(c.OperationsCompletionInstances))
-		for provider := range c.OperationsCompletionInstances {
+	if len(c.OneShotInstanceByProvider) > 0 {
+		providers := make([]string, 0, len(c.OneShotInstanceByProvider))
+		for provider := range c.OneShotInstanceByProvider {
 			providers = append(providers, provider)
 		}
 		sort.Strings(providers)
 		pairs := make([]string, 0, len(providers))
 		for _, provider := range providers {
-			pairs = append(pairs, provider+":"+c.OperationsCompletionInstances[provider])
+			pairs = append(pairs, provider+":"+c.OneShotInstanceByProvider[provider])
 		}
-		seeds[SettingOperationsCompletionInstances] = strings.Join(pairs, ",")
+		seeds[SettingOneShotInstanceByProvider] = strings.Join(pairs, ",")
 	}
 	if c.SignalClassifierMaxChars > 0 {
 		seeds[SettingSignalClassifierMaximumCharacters] = strconv.Itoa(c.SignalClassifierMaxChars)

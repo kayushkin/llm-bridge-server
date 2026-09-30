@@ -15,7 +15,7 @@
 #              ('br_worker','claude_code','running','autonomous');"
 #   LLMBRIDGE_LISTEN_ADDR=:18777 LLMBRIDGE_DB_PATH=/tmp/nc/bridge.db \
 #   LLMBRIDGE_IMAGES_DIR=/tmp/nc/images LLMBRIDGE_BRIDGE_PREFS_PATH=/tmp/nc/prefs.json \
-#   LLMBRIDGE_KANBAN_STORE_URL= LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL= /tmp/bridge-notify-test &
+#   LLMBRIDGE_KANBAN_STORE_URL= LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL_ROLE= /tmp/bridge-notify-test &
 #
 # The two empty env vars matter: they turn the kanban lookup and the classifier
 # off, so every assertion below is about this route and not about a service

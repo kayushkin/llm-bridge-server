@@ -5,13 +5,13 @@ package executorstest
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -34,18 +34,18 @@ type FakeOneShot struct {
 	calls []msg.OneShotRequest
 }
 
-// CompletionTarget implements executors.OneShotCaller: the requested model,
-// or DefaultModel, sent to InstanceID. It resolves nothing — a name is its
-// own id — so a test of resolution uses the server's.
-func (f *FakeOneShot) CompletionTarget(requestedModel string) (executors.CompletionTarget, error) {
+// OneShotRoute implements executors.OneShotCaller: the requested model, or
+// DefaultModel, as a route of one. It resolves nothing — a name is its own id
+// — so a test of resolution uses the server's.
+func (f *FakeOneShot) OneShotRoute(requestedModel string) (oneshotrouting.Route, error) {
 	model := requestedModel
 	if model == "" {
 		model = f.DefaultModel
 	}
 	if model == "" {
-		return executors.CompletionTarget{}, &executors.TargetError{Code: "no_model", Message: "the fake has no default model"}
+		return oneshotrouting.Route{}, &executors.TargetError{Code: "no_model", Message: "the fake has no default model"}
 	}
-	return executors.CompletionTarget{RequestedModel: model, ModelID: model, Provider: "test", InstanceID: f.InstanceID}, nil
+	return oneshotrouting.Route{Requested: model, Candidates: []oneshotrouting.Candidate{{ModelID: model, Provider: "test"}}}, nil
 }
 
 // Calls returns the requests made so far.
@@ -55,14 +55,33 @@ func (f *FakeOneShot) Calls() []msg.OneShotRequest {
 	return append([]msg.OneShotRequest(nil), f.calls...)
 }
 
-// RunOneShot implements executors.OneShotCaller.
-func (f *FakeOneShot) RunOneShot(ctx context.Context, instanceID string, request msg.OneShotRequest) (msg.OneShotResponse, error) {
+// RunOneShotRoute implements executors.OneShotCaller: each model the route
+// names and admit lets through is answered on InstanceID, the first one wins.
+func (f *FakeOneShot) RunOneShotRoute(ctx context.Context, route oneshotrouting.Route, request msg.OneShotRequest, admit func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error) {
+	var attempts []msg.OneShotAttempt
+	for _, candidate := range route.Candidates {
+		if admit != nil {
+			if reason := admit(candidate); reason != "" {
+				attempts = append(attempts, msg.OneShotAttempt{Model: candidate.ModelID, Skipped: reason})
+				continue
+			}
+		}
+		request.Model = candidate.ModelID
+		response, err := f.answer(ctx, request)
+		if err != nil {
+			attempts = append(attempts, msg.OneShotAttempt{Model: candidate.ModelID, InstanceID: f.InstanceID, Error: err.Error()})
+			continue
+		}
+		response.InstanceID, response.Attempts = f.InstanceID, attempts
+		return response, nil
+	}
+	return msg.OneShotResponse{}, &oneshotrouting.AllModelsFailedError{Caller: request.Caller, Route: route, Attempts: attempts}
+}
+
+func (f *FakeOneShot) answer(ctx context.Context, request msg.OneShotRequest) (msg.OneShotResponse, error) {
 	f.mutex.Lock()
 	f.calls = append(f.calls, request)
 	f.mutex.Unlock()
-	if instanceID != f.InstanceID {
-		return msg.OneShotResponse{}, errors.New("no such instance " + instanceID)
-	}
 	if f.DelayPerCall > 0 {
 		select {
 		case <-ctx.Done():

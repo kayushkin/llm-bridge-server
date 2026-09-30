@@ -8,16 +8,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/executors/executorstest"
+	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge/msg"
-	modelstore "github.com/kayushkin/model-store"
 )
 
 // newOperationsTestServer is the gated test server with operations enabled.
@@ -394,46 +396,45 @@ func TestOperationTypesNeedNoCredential(t *testing.T) {
 	}
 }
 
-// A model is resolved through model-store — id, alias or role — and routed
-// to the instance its provider maps to; the harness always gets the id.
-func TestCompletionTargetResolvesTheModelAndRoutesByProvider(t *testing.T) {
+// An operation's model is resolved through model-store: a role to its whole
+// list, an id or an alias to that one model; empty to
+// operations.completion_model_role.
+func TestOneShotRouteResolvesRolesModelsAndAliases(t *testing.T) {
 	gated, _ := newOperationsTestServer(t, testModelClassifier(0))
 	server := gated.server
 	server.modelStore = testModelStore(t)
-	if err := server.modelStore.AddProvider(modelstore.Provider{ID: "other", Name: "Other"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := server.modelStore.AddModel(modelstore.Model{ID: "other-model", Provider: "other", Name: "o", MaxTokens: 10, Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
-	set := func(key, value string) {
+	server.oneShotRouter = server.newOneShotRouter()
+	set := func(key, value string) *httptest.ResponseRecorder {
 		t.Helper()
-		if response := gated.requestAsServiceWithBody(t, "PUT", "/settings/"+key, `{"value":"`+value+`"}`); response.Code != http.StatusOK {
-			t.Fatalf("set %s=%s: %d %s", key, value, response.Code, response.Body.String())
-		}
+		return gated.requestAsServiceWithBody(t, "PUT", "/settings/"+key, `{"value":"`+value+`"}`)
 	}
-	set("operations.completion_instances", "mock:inst_test")
 
-	for requested, want := range map[string]string{"efficient": "mock-model-alt", "alt": "mock-model-alt", "mock-model": "mock-model"} {
-		target, err := server.CompletionTarget(requested)
-		if err != nil || target.ModelID != want || target.InstanceID != "inst_test" || target.Provider != "mock" || target.RequestedModel != requested {
-			t.Errorf("%s: %+v %v", requested, target, err)
+	for requested, want := range map[string]oneshotrouting.Route{
+		"efficient":  {Requested: "efficient", Role: "efficient", Candidates: []oneshotrouting.Candidate{{ModelID: "mock-model-alt", Provider: "mock"}}},
+		"alt":        {Requested: "alt", Candidates: []oneshotrouting.Candidate{{ModelID: "mock-model-alt", Provider: "mock"}}},
+		"mock-model": {Requested: "mock-model", Candidates: []oneshotrouting.Candidate{{ModelID: "mock-model", Provider: "mock"}}},
+	} {
+		route, err := server.OneShotRoute(requested)
+		if err != nil || !reflect.DeepEqual(route, want) {
+			t.Errorf("%s: %+v %v", requested, route, err)
 		}
 	}
-	for requested, code := range map[string]string{"no-such-model": "unknown_model", "other-model": "no_instance_for_provider", "": "no_model"} {
-		_, err := server.CompletionTarget(requested)
+	for requested, code := range map[string]string{"no-such-model": "unknown_model", "": "no_model", "balanced": "model_role_unresolvable"} {
+		_, err := server.OneShotRoute(requested)
 		var targetError *executors.TargetError
 		if !errors.As(err, &targetError) || targetError.Code != code {
 			t.Errorf("%q: %v, want %s", requested, err, code)
 		}
 	}
-	set("operations.completion_model", "efficient")
-	if target, err := server.CompletionTarget(""); err != nil || target.ModelID != "mock-model-alt" {
-		t.Errorf("default model: %+v %v", target, err)
+	if response := set(config.SettingOperationsCompletionModelRole, "efficient"); response.Code != http.StatusOK {
+		t.Fatalf("set the default role: %d %s", response.Code, response.Body.String())
+	}
+	if route, err := server.OneShotRoute(""); err != nil || route.Role != "efficient" {
+		t.Errorf("default role: %+v %v", route, err)
 	}
 
 	for value, says := range map[string]string{"nobody:inst_test": "no provider", "mock:inst-missing": "no instance", "mock": "key:value"} {
-		response := gated.requestAsServiceWithBody(t, "PUT", "/settings/operations.completion_instances", `{"value":"`+value+`"}`)
+		response := set(config.SettingOneShotInstanceByProvider, value)
 		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), says) {
 			t.Errorf("%s: %d %s", value, response.Code, response.Body.String())
 		}

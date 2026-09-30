@@ -340,7 +340,9 @@ for the first two. On by default (decision 1), with a per-harness opt-out.
 | Config + escape hatch | `internal/config/config.go` |
 | Client half | `bridge-ui` `feat/session-signals-p3` (`c35a7da`) |
 
-Env: `LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL` (default `claude-haiku-4-5`; **empty turns the
+Stored settings (PUT /settings/{key}; the variables seed each row once):
+`signal_classifier.model_role` (`LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL_ROLE`, a model-store
+role, default `balanced`, called through the one-shot router; **empty turns the
 classifier off everywhere**), `LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT` (comma-separated
 harness names — the escape hatch), `LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT` (20s),
 `LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS` (6000).

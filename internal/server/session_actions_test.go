@@ -18,6 +18,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -379,25 +380,27 @@ type fakeSessionActionModels struct {
 	instanceCalls []string
 }
 
-func (fake *fakeSessionActionModels) CompletionTarget(requestedModel string) (executors.CompletionTarget, error) {
+func (fake *fakeSessionActionModels) OneShotRoute(requestedModel string) (oneshotrouting.Route, error) {
 	if requestedModel == "" {
-		return executors.CompletionTarget{}, &executors.TargetError{Code: "no_model", Message: "no model named"}
+		return oneshotrouting.Route{}, &executors.TargetError{Code: "no_model", Message: "no model named"}
 	}
-	return executors.CompletionTarget{RequestedModel: requestedModel, ModelID: requestedModel + "-resolved", Provider: "mock", InstanceID: "inst-fake"}, nil
+	return oneshotrouting.Route{Requested: requestedModel, Role: requestedModel,
+		Candidates: []oneshotrouting.Candidate{{ModelID: requestedModel + "-resolved", Provider: "mock"}}}, nil
 }
 
-func (fake *fakeSessionActionModels) RunOneShot(ctx context.Context, instanceID string, request msg.OneShotRequest) (msg.OneShotResponse, error) {
+func (fake *fakeSessionActionModels) RunOneShotRoute(ctx context.Context, route oneshotrouting.Route, request msg.OneShotRequest, admit func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
+	request.Model = route.Candidates[0].ModelID
 	fake.requests = append(fake.requests, request)
-	fake.instanceCalls = append(fake.instanceCalls, instanceID)
+	fake.instanceCalls = append(fake.instanceCalls, "inst-fake")
 	if len(request.Schema) > 0 {
 		if fake.reviewFails {
 			return msg.OneShotResponse{}, errors.New("reviewer unreachable")
 		}
-		return msg.OneShotResponse{Parsed: json.RawMessage(fmt.Sprintf(`{"verdict":%q,"reasons":"it lists two lines"}`, fake.verdict))}, nil
+		return msg.OneShotResponse{Model: request.Model, InstanceID: "inst-fake", Parsed: json.RawMessage(fmt.Sprintf(`{"verdict":%q,"reasons":"it lists two lines"}`, fake.verdict))}, nil
 	}
-	return msg.OneShotResponse{Text: fake.answer, Usage: msg.TokenUsage{InputTokens: 100, OutputTokens: 200}}, nil
+	return msg.OneShotResponse{Model: request.Model, InstanceID: "inst-fake", Text: fake.answer, Usage: msg.TokenUsage{InputTokens: 100, OutputTokens: 200}}, nil
 }
 
 func (fake *fakeSessionActionModels) ModelListPrice(model string) (float64, float64, bool) {

@@ -211,7 +211,6 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/sessions/{id}/actions/{action_id}/run` | Confirm an action: the server runs it (owner only, never the agent) | owner |
 | `GET` | `/sessions/{id}/attach` | WebSocket onto a pty-mode session's terminal | owner |
 | `GET` | `/sessions/{id}/attach-token` | The token the attach WebSocket needs | owner |
-| `POST` | `/sessions/{id}/auto-rename` | The renamer session posts the title it wrote | harness callback |
 | `PUT` | `/sessions/{id}/bypass-permissions` | Old boolean form of the above | operator |
 | `POST` | `/sessions/{id}/compact` | Compact the context | owner |
 | `POST` | `/sessions/{id}/config` | Change model, effort, budget or disabled tools | owner |
@@ -319,6 +318,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/health` | Health, harnesses present, session counts | anyone |
 | `*` | `/images/` | Harness images | principal |
 | `GET` | `/models` | Models there are credentials for | operator |
+| `POST` | `/oneshot` | One model call for a model-store role, with no session; the server picks the model, the instance and the fallbacks | operator |
 | `GET` | `/settings` | Every server setting, its value and what decided it | operator |
 | `PUT` | `/settings/{key}` | Change a stored setting without a restart | operator |
 

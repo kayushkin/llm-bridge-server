@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
+	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -24,22 +25,37 @@ type fakeOneShot struct {
 	calls        []msg.OneShotRequest
 }
 
-func (f *fakeOneShot) CompletionTarget(requestedModel string) (executors.CompletionTarget, error) {
+func (f *fakeOneShot) OneShotRoute(requestedModel string) (oneshotrouting.Route, error) {
 	model := requestedModel
 	if model == "" {
 		model = f.defaultModel
 	}
 	if model == "unresolvable" {
-		return executors.CompletionTarget{}, &executors.TargetError{Code: "unknown_model", Message: "no such model"}
+		return oneshotrouting.Route{}, &executors.TargetError{Code: "unknown_model", Message: "no such model"}
 	}
-	return executors.CompletionTarget{RequestedModel: requestedModel, ModelID: model, Provider: "anthropic", InstanceID: f.instanceID}, nil
+	return oneshotrouting.Route{Requested: requestedModel, Candidates: []oneshotrouting.Candidate{{ModelID: model, Provider: "anthropic"}}}, nil
 }
-func (f *fakeOneShot) RunOneShot(_ context.Context, instanceID string, request msg.OneShotRequest) (msg.OneShotResponse, error) {
-	if instanceID != f.instanceID {
-		return msg.OneShotResponse{}, errors.New("wrong instance " + instanceID)
+func (f *fakeOneShot) RunOneShotRoute(_ context.Context, route oneshotrouting.Route, request msg.OneShotRequest, admit func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error) {
+	var attempts []msg.OneShotAttempt
+	for _, candidate := range route.Candidates {
+		if reason := admit(candidate); reason != "" {
+			attempts = append(attempts, msg.OneShotAttempt{Model: candidate.ModelID, Skipped: reason})
+			continue
+		}
+		request.Model = candidate.ModelID
+		f.calls = append(f.calls, request)
+		if f.err != nil {
+			attempts = append(attempts, msg.OneShotAttempt{Model: candidate.ModelID, InstanceID: f.instanceID, Error: f.err.Error()})
+			continue
+		}
+		response := f.response
+		response.InstanceID, response.Attempts = f.instanceID, attempts
+		if response.Model == "" {
+			response.Model = candidate.ModelID
+		}
+		return response, nil
 	}
-	f.calls = append(f.calls, request)
-	return f.response, f.err
+	return msg.OneShotResponse{}, &oneshotrouting.AllModelsFailedError{Caller: request.Caller, Route: route, Attempts: attempts}
 }
 
 // Prices in dollars per million tokens: haiku is known, mystery is not.

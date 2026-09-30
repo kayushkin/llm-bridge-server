@@ -12,6 +12,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/executors/executorstest"
+	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -160,11 +161,11 @@ func TestItemsGoToTheModelInBatches(t *testing.T) {
 // scriptedAnswer answers every call with the same parsed JSON.
 type scriptedAnswer struct{ parsed string }
 
-func (s scriptedAnswer) CompletionTarget(string) (executors.CompletionTarget, error) {
-	return executors.CompletionTarget{RequestedModel: "m", ModelID: "m", Provider: "test", InstanceID: "inst"}, nil
+func (s scriptedAnswer) OneShotRoute(string) (oneshotrouting.Route, error) {
+	return oneshotrouting.Route{Requested: "m", Candidates: []oneshotrouting.Candidate{{ModelID: "m", Provider: "test"}}}, nil
 }
-func (s scriptedAnswer) RunOneShot(context.Context, string, msg.OneShotRequest) (msg.OneShotResponse, error) {
-	return msg.OneShotResponse{Parsed: json.RawMessage(s.parsed), Model: "m"}, nil
+func (s scriptedAnswer) RunOneShotRoute(context.Context, oneshotrouting.Route, msg.OneShotRequest, func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error) {
+	return msg.OneShotResponse{Parsed: json.RawMessage(s.parsed), Model: "m", InstanceID: "inst"}, nil
 }
 
 func TestAnswersOutsideTheTaxonomyAreDroppedAndMarkedForReview(t *testing.T) {

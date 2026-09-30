@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	agentstore "github.com/kayushkin/agent-store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 func TestPromptDriftTaggerRequestNamesOnlyAddedSectionsAndExistingTags(t *testing.T) {
@@ -14,7 +15,7 @@ func TestPromptDriftTaggerRequestNamesOnlyAddedSectionsAndExistingTags(t *testin
 		{Kind: agentstore.PromptMarkdownEditInsert, Heading: "## Reminders", Body: strings.Repeat("x", 5000)},
 	}}
 	sections := []agentstore.PromptSection{{Tags: []string{"scheduler", "stores"}}, {Tags: []string{"stores"}}}
-	request, err := buildPromptDriftTaggerRequest(drift, sections, "some-model")
+	request, err := buildPromptDriftTaggerRequest(drift, sections, "balanced")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +31,7 @@ func TestPromptDriftTaggerRequestNamesOnlyAddedSectionsAndExistingTags(t *testin
 	if len(request.Prompt) > 3000 {
 		t.Fatalf("a 5000-char body was not cut down: prompt is %d chars", len(request.Prompt))
 	}
-	if request.Model != "some-model" || len(request.Schema) == 0 {
+	if request.ModelRole != "balanced" || request.Model != "" || len(request.Schema) == 0 {
 		t.Fatal("model or schema not set")
 	}
 }
@@ -43,11 +44,11 @@ func TestPromptDriftTaggerRequestRefusesADriftThatAddsNothing(t *testing.T) {
 }
 
 func TestPromptDriftTaggerReplyWithoutParsedOutputIsAnError(t *testing.T) {
-	if _, err := decodePromptDriftTaggerReply([]byte(`{"text":"sure!","stop_reason":"end_turn"}`)); err == nil {
+	if _, err := decodePromptDriftTaggerReply(msg.OneShotResponse{Text: "sure!", StopReason: "end_turn"}); err == nil {
 		t.Fatal("free text was accepted as labels")
 	}
-	parsed, _ := json.Marshal(map[string]any{"parsed": map[string]any{"note": "added reminders", "inserted_sections": []map[string]any{{"operation_index": 1, "tags": []string{"scheduler"}}}}})
-	annotation, err := decodePromptDriftTaggerReply(parsed)
+	parsed, _ := json.Marshal(map[string]any{"note": "added reminders", "inserted_sections": []map[string]any{{"operation_index": 1, "tags": []string{"scheduler"}}}})
+	annotation, err := decodePromptDriftTaggerReply(msg.OneShotResponse{Parsed: parsed})
 	if err != nil {
 		t.Fatal(err)
 	}

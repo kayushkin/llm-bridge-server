@@ -71,8 +71,8 @@ func TestLoadReadsTheSameValuesItAlwaysDid(t *testing.T) {
 	if cfg.PurposeFolders["herald"] != "Nudges" {
 		t.Errorf("the operator's pair did not land over the registry default: %v", cfg.PurposeFolders["herald"])
 	}
-	if cfg.SignalClassifierModel != "claude-haiku-4-5" || cfg.SignalClassifierInstance != "inst-cc-local" || cfg.SignalClassifierTimeout != 20*time.Second {
-		t.Errorf("classifier defaults moved: %q %q %v", cfg.SignalClassifierModel, cfg.SignalClassifierInstance, cfg.SignalClassifierTimeout)
+	if cfg.SignalClassifierModelRole != "balanced" || cfg.SignalClassifierTimeout != 20*time.Second {
+		t.Errorf("classifier defaults moved: %q %v", cfg.SignalClassifierModelRole, cfg.SignalClassifierTimeout)
 	}
 	if err := cfg.Settings.CheckRequired(); err == nil || !strings.Contains(err.Error(), "LLMBRIDGE_PRINCIPAL_STORE_URL") {
 		t.Errorf("CheckRequired = %v, want it to name the unset principal-store URL", err)
@@ -100,7 +100,7 @@ func TestStoredSettingSeedsNameOnlyEditableSettings(t *testing.T) {
 			editable[definition.Key] = true
 		}
 	}
-	seeds := (&Config{SignalClassifierMaxChars: 10, OperationsCompletionInstances: map[string]string{"anthropic": "i"}, OperationsCompletionModel: "m", OperationsGrantEnforcement: "lenient", SessionActionsReviewModel: "m"}).StoredSettingSeeds()
+	seeds := (&Config{SignalClassifierMaxChars: 10, OneShotInstanceByProvider: map[string]string{"anthropic": "i"}, OperationsCompletionModelRole: "balanced", OperationsGrantEnforcement: "lenient", SessionActionsReviewModelRole: "balanced"}).StoredSettingSeeds()
 	for key := range seeds {
 		if !editable[key] {
 			t.Errorf("a seed names %s, which is not an editable setting", key)

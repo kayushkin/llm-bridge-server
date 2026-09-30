@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -59,32 +58,6 @@ func promptDriftTaggerOutputSchema() map[string]any {
 	}
 }
 
-// promptDriftTaggerOneShot runs the tagger's call on its configured harness
-// instance. A missing or disabled instance is an error: the drift then stays
-// held with no labels, which the Files page shows, and a person can still
-// approve it with their own.
-func (s *Server) promptDriftTaggerOneShot(ctx context.Context, req msg.OneShotRequest) ([]byte, error) {
-	id := s.settings.String(config.SettingPromptDriftTaggerInstance)
-	if id == "" {
-		return nil, fmt.Errorf("no prompt-drift-tagger instance configured (setting prompt_drift_tagger.instance)")
-	}
-	inst, err := s.harnessStore.GetInstance(id)
-	if err != nil {
-		return nil, fmt.Errorf("prompt-drift-tagger instance %q: %w", id, err)
-	}
-	if !inst.Enabled {
-		return nil, fmt.Errorf("prompt-drift-tagger instance %q is disabled", id)
-	}
-	raw, status, err := s.runOneShot(ctx, inst, req)
-	if err != nil {
-		return nil, err
-	}
-	if status != http.StatusOK {
-		return nil, fmt.Errorf("prompt-drift-tagger oneshot returned %d: %s", status, strings.TrimSpace(string(raw)))
-	}
-	return raw, nil
-}
-
 // onPromptDriftsDetected is agent-store's hook. It returns at once; labelling
 // runs in the background so a scan never waits on a model.
 func (s *Server) onPromptDriftsDetected(drifts []agentstore.PromptDrift) {
@@ -107,19 +80,23 @@ func (s *Server) annotatePromptDrift(ctx context.Context, drift agentstore.Promp
 	if err != nil {
 		return fmt.Errorf("read collection %d: %w", drift.CollectionID, err)
 	}
-	request, err := buildPromptDriftTaggerRequest(drift, view.Sections, s.settings.String(config.SettingPromptDriftTaggerModel))
+	modelRole := s.settings.ModelRole(config.SettingPromptDriftTaggerModelRole)
+	if modelRole == "" {
+		return fmt.Errorf("prompt_drift_tagger.model_role is empty, so labelling is off")
+	}
+	request, err := buildPromptDriftTaggerRequest(drift, view.Sections, modelRole)
 	if err != nil {
 		return err
 	}
-	raw, err := s.promptDriftTaggerOneShot(ctx, request)
+	reply, err := s.oneShotRouter.RunRole(ctx, request)
 	if err != nil {
 		return err
 	}
-	annotation, err := decodePromptDriftTaggerReply(raw)
+	annotation, err := decodePromptDriftTaggerReply(reply)
 	if err != nil {
 		return err
 	}
-	annotation.AnnotatedBy = "prompt-drift-tagger/" + s.settings.String(config.SettingPromptDriftTaggerModel)
+	annotation.AnnotatedBy = "prompt-drift-tagger/" + reply.Model
 	if _, err := s.agentStore.SetPromptDriftAnnotation(drift.ID, *annotation); err != nil {
 		return fmt.Errorf("agent-store refused the labels: %w", err)
 	}
@@ -127,7 +104,7 @@ func (s *Server) annotatePromptDrift(ctx context.Context, drift agentstore.Promp
 	return nil
 }
 
-func buildPromptDriftTaggerRequest(drift agentstore.PromptDrift, sections []agentstore.PromptSection, model string) (msg.OneShotRequest, error) {
+func buildPromptDriftTaggerRequest(drift agentstore.PromptDrift, sections []agentstore.PromptSection, modelRole string) (msg.OneShotRequest, error) {
 	tagSet := map[string]bool{}
 	for _, section := range sections {
 		for _, tag := range section.Tags {
@@ -164,17 +141,14 @@ func buildPromptDriftTaggerRequest(drift agentstore.PromptDrift, sections []agen
 	return msg.OneShotRequest{
 		Prompt:       prompt.String(),
 		SystemPrompt: promptDriftTaggerSystemPrompt,
-		Model:        model,
+		ModelRole:    modelRole,
+		Caller:       oneShotCallerPromptDriftTagger,
 		Schema:       schema,
 		MaxTokens:    promptDriftTaggerMaxTokens,
 	}, nil
 }
 
-func decodePromptDriftTaggerReply(raw []byte) (*agentstore.PromptDriftAnnotation, error) {
-	var reply msg.OneShotResponse
-	if err := json.Unmarshal(raw, &reply); err != nil {
-		return nil, fmt.Errorf("decode oneshot reply: %w", err)
-	}
+func decodePromptDriftTaggerReply(reply msg.OneShotResponse) (*agentstore.PromptDriftAnnotation, error) {
 	if len(reply.Parsed) == 0 {
 		return nil, fmt.Errorf("oneshot returned no schema-conformant output (stop_reason=%q)", reply.StopReason)
 	}

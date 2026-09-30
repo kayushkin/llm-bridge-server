@@ -22,6 +22,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -46,7 +47,7 @@ const (
 )
 
 // sessionActionModels is what model_call and the command reviewer need from
-// the model side: resolve a model, call it once, and price it. The server is
+// the model side: resolve a role or model to a route, call it, and price it. The server is
 // its own; a test hands in a fake.
 type sessionActionModels interface {
 	executors.OneShotCaller
@@ -112,20 +113,22 @@ func (s *Server) runShellForSessionAction(session *store.Session, action store.S
 	return sessionActionOutcome{output: string(output)}
 }
 
-// sessionActionModelCallPlan is a model_call resolved: where it goes and how
-// many output tokens its cap buys.
+// sessionActionModelCallPlan is a model_call resolved: the models it may
+// try, their prices, and how many output tokens its cap buys on the dearest.
 type sessionActionModelCallPlan struct {
-	target                executors.CompletionTarget
-	inputPricePerMillion  float64
-	outputPricePerMillion float64
-	maximumOutputTokens   int
+	route               oneshotrouting.Route
+	listPricesByModel   map[string][2]float64
+	maximumOutputTokens int
 }
 
-// sessionActionModelCall resolves a model_call's model and turns its dollar
-// cap into an output-token limit at list price. The prompt's input is counted
-// at one token per three bytes, which overcounts English, so the cap holds.
+// sessionActionModelCall resolves a model_call's model — a role, id or alias —
+// and turns its dollar cap into an output-token limit at list price. A role
+// may fall back to another model, so every model on the route must have a
+// price and the limit is what the cap buys on the dearest of them. The
+// prompt's input is counted at one token per three bytes, which overcounts
+// English, so the cap holds.
 func (s *Server) sessionActionModelCall(offer msg.SessionActionOffer) (sessionActionModelCallPlan, *sessionActionRefusal) {
-	target, err := s.sessionActionModels.CompletionTarget(offer.Model)
+	route, err := s.sessionActionModels.OneShotRoute(offer.Model)
 	if err != nil {
 		var targetError *executors.TargetError
 		if errors.As(err, &targetError) {
@@ -133,29 +136,36 @@ func (s *Server) sessionActionModelCall(offer msg.SessionActionOffer) (sessionAc
 		}
 		return sessionActionModelCallPlan{}, &sessionActionRefusal{http.StatusServiceUnavailable, "model_unresolvable", err.Error()}
 	}
-	inputPrice, outputPrice, known := s.sessionActionModels.ModelListPrice(target.ModelID)
-	if !known || outputPrice <= 0 {
-		return sessionActionModelCallPlan{}, &sessionActionRefusal{http.StatusUnprocessableEntity, "model_has_no_price",
-			fmt.Sprintf("model-store has no list price for %s, so a spending limit on it cannot be kept", target.ModelID)}
-	}
+	plan := sessionActionModelCallPlan{route: route, listPricesByModel: map[string][2]float64{}, maximumOutputTokens: sessionActionModelCallMaximumOutputTokens}
 	estimatedInputTokens := float64(len(offer.Message))/3 + 1
-	remainingUSD := offer.MaximumCostUSD - estimatedInputTokens*inputPrice/1e6
-	outputTokens := int(math.Floor(remainingUSD * 1e6 / outputPrice))
-	if outputTokens > sessionActionModelCallMaximumOutputTokens {
-		outputTokens = sessionActionModelCallMaximumOutputTokens
+	for _, candidate := range route.Candidates {
+		inputPrice, outputPrice, known := s.sessionActionModels.ModelListPrice(candidate.ModelID)
+		if !known || outputPrice <= 0 {
+			return sessionActionModelCallPlan{}, &sessionActionRefusal{http.StatusUnprocessableEntity, "model_has_no_price",
+				fmt.Sprintf("model-store has no list price for %s, so a spending limit on it cannot be kept", candidate.ModelID)}
+		}
+		plan.listPricesByModel[candidate.ModelID] = [2]float64{inputPrice, outputPrice}
+		remainingUSD := offer.MaximumCostUSD - estimatedInputTokens*inputPrice/1e6
+		outputTokens := int(math.Floor(remainingUSD * 1e6 / outputPrice))
+		if outputTokens < sessionActionModelCallMinimumOutputTokens {
+			return sessionActionModelCallPlan{}, &sessionActionRefusal{http.StatusUnprocessableEntity, "cost_limit_too_low",
+				fmt.Sprintf("$%.4f buys fewer than %d output tokens of %s after this prompt; raise maximum_cost_usd", offer.MaximumCostUSD, sessionActionModelCallMinimumOutputTokens, candidate.ModelID)}
+		}
+		plan.maximumOutputTokens = min(plan.maximumOutputTokens, outputTokens)
 	}
-	if outputTokens < sessionActionModelCallMinimumOutputTokens {
-		return sessionActionModelCallPlan{}, &sessionActionRefusal{http.StatusUnprocessableEntity, "cost_limit_too_low",
-			fmt.Sprintf("$%.4f buys fewer than %d output tokens of %s after this prompt; raise maximum_cost_usd", offer.MaximumCostUSD, sessionActionModelCallMinimumOutputTokens, target.ModelID)}
-	}
-	return sessionActionModelCallPlan{target: target, inputPricePerMillion: inputPrice, outputPricePerMillion: outputPrice, maximumOutputTokens: outputTokens}, nil
+	return plan, nil
 }
 
-// listPriceOf is what a call's tokens cost at list price. Cache tokens are
-// priced as input: model-store holds no cache prices.
-func (plan sessionActionModelCallPlan) listPriceOf(usage msg.TokenUsage) float64 {
+// listPriceOf is what a call's tokens cost at list price on the model that
+// answered. Cache tokens are priced as input: model-store holds no cache
+// prices.
+func (plan sessionActionModelCallPlan) listPriceOf(modelID string, usage msg.TokenUsage) (float64, error) {
+	prices, known := plan.listPricesByModel[modelID]
+	if !known {
+		return 0, fmt.Errorf("%s answered, and it is not a model this call was priced for", modelID)
+	}
 	inputTokens := usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens
-	return float64(inputTokens)*plan.inputPricePerMillion/1e6 + float64(usage.OutputTokens)*plan.outputPricePerMillion/1e6
+	return float64(inputTokens)*prices[0]/1e6 + float64(usage.OutputTokens)*prices[1]/1e6, nil
 }
 
 func (s *Server) modelCallAction(offer msg.SessionActionOffer) sessionActionOutcome {
@@ -165,15 +175,19 @@ func (s *Server) modelCallAction(offer msg.SessionActionOffer) sessionActionOutc
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
-	response, err := s.sessionActionModels.RunOneShot(ctx, plan.target.InstanceID, msg.OneShotRequest{
+	response, err := s.sessionActionModels.RunOneShotRoute(ctx, plan.route, msg.OneShotRequest{
 		Prompt:    offer.Message,
-		Model:     plan.target.ModelID,
 		MaxTokens: plan.maximumOutputTokens,
-	})
+		Caller:    oneShotCallerSessionActionModel,
+	}, nil)
 	if err != nil {
 		return sessionActionOutcome{err: err}
 	}
-	return sessionActionOutcome{output: response.Text, costUSD: plan.listPriceOf(response.Usage)}
+	costUSD, err := plan.listPriceOf(response.Model, response.Usage)
+	if err != nil {
+		return sessionActionOutcome{output: response.Text, err: err}
+	}
+	return sessionActionOutcome{output: response.Text, costUSD: costUSD}
 }
 
 // sessionActionReviewSchema forces the reviewer's answer into a verdict and
@@ -202,26 +216,26 @@ Reasons: two or three plain sentences a busy person reads in ten seconds.`
 // run_command. A reviewer that cannot be reached refuses the offer: a command
 // shown with no review would look reviewed.
 func (s *Server) reviewSessionActionCommand(ctx context.Context, session *store.Session, offer msg.SessionActionOffer, directory string) (*msg.SessionActionReview, *sessionActionRefusal) {
-	requestedModel := s.settings.String(config.SettingSessionActionsReviewModel)
-	if requestedModel == "" {
+	modelRole := s.settings.ModelRole(config.SettingSessionActionsReviewModelRole)
+	if modelRole == "" {
 		return nil, &sessionActionRefusal{http.StatusServiceUnavailable, "no_review_model",
-			"session_actions.review_model is empty, so no command can be reviewed, and an unreviewed command is not offered"}
+			"session_actions.review_model_role is empty, so no command can be reviewed, and an unreviewed command is not offered"}
 	}
-	target, err := s.sessionActionModels.CompletionTarget(requestedModel)
+	route, err := s.sessionActionModels.OneShotRoute(modelRole)
 	if err != nil {
 		return nil, &sessionActionRefusal{http.StatusServiceUnavailable, "review_model_unresolvable", err.Error()}
 	}
 	ctx, cancel := context.WithTimeout(ctx, sessionActionReviewTimeout)
 	defer cancel()
 	prompt := fmt.Sprintf("Label: %s\nDirectory: %s\nSession: %s\nCommand:\n%s", offer.Label, directory, session.SessionID, offer.ShellCommand)
-	response, err := s.sessionActionModels.RunOneShot(ctx, target.InstanceID, msg.OneShotRequest{
+	response, err := s.sessionActionModels.RunOneShotRoute(ctx, route, msg.OneShotRequest{
 		Prompt:       prompt,
 		SystemPrompt: sessionActionReviewInstructions,
-		Model:        target.ModelID,
 		Schema:       sessionActionReviewSchema,
-	})
+		Caller:       oneShotCallerSessionActionsReview,
+	}, nil)
 	if err != nil {
-		return nil, &sessionActionRefusal{http.StatusBadGateway, "review_failed", fmt.Sprintf("the reviewer (%s) could not be asked: %v", target.ModelID, err)}
+		return nil, &sessionActionRefusal{http.StatusBadGateway, "review_failed", fmt.Sprintf("the reviewer (role %s) could not be asked: %v", modelRole, err)}
 	}
 	var answer struct {
 		Verdict msg.SessionActionReviewVerdict `json:"verdict"`
@@ -235,7 +249,7 @@ func (s *Server) reviewSessionActionCommand(ctx context.Context, session *store.
 	default:
 		return nil, &sessionActionRefusal{http.StatusBadGateway, "review_unreadable", fmt.Sprintf("the reviewer answered verdict %q", answer.Verdict)}
 	}
-	return &msg.SessionActionReview{Verdict: answer.Verdict, Reasons: strings.TrimSpace(answer.Reasons), Model: target.ModelID, ReviewedAt: time.Now().UTC()}, nil
+	return &msg.SessionActionReview{Verdict: answer.Verdict, Reasons: strings.TrimSpace(answer.Reasons), Model: response.Model, ReviewedAt: time.Now().UTC()}, nil
 }
 
 // backgroundAgentAction starts a session set up as this one is — harness,

@@ -77,9 +77,9 @@ type turnClassification struct {
 // signalClassifier calls a cheap model to classify a turn-end. Zero value is
 // unusable; build it with newSignalClassifier.
 type signalClassifier struct {
-	// runOneShot executes one schema-forced call on a harness instance. Injected
-	// rather than reached for, so this type still knows nothing about the
-	// server that owns it.
+	// runOneShot executes one schema-forced call through the server's one-shot
+	// router. Injected rather than reached for, so this type still knows
+	// nothing about the server that owns it.
 	runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)
 
 	// tuning is what the operator may change while the server runs (the
@@ -95,19 +95,19 @@ type signalClassifier struct {
 	baseURL string
 }
 
-// signalClassifierTuning is the classifier's changeable part: the model it asks
-// for (empty switches it off everywhere), how long one call may take, how much
-// of a turn's final text it sends, and the harnesses it skips.
+// signalClassifierTuning is the classifier's changeable part: the model-store
+// role it asks (empty switches it off everywhere), how long one call may take,
+// how much of a turn's final text it sends, and the harnesses it skips.
 type signalClassifierTuning struct {
-	model    string
-	timeout  time.Duration
-	maxChars int
-	optOut   map[msg.Harness]bool
+	modelRole string
+	timeout   time.Duration
+	maxChars  int
+	optOut    map[msg.Harness]bool
 }
 
-func newSignalClassifier(model string, timeout time.Duration, maxChars int, optOut map[msg.Harness]bool, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *signalClassifier {
+func newSignalClassifier(modelRole string, timeout time.Duration, maxChars int, optOut map[msg.Harness]bool, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *signalClassifier {
 	return &signalClassifier{
-		tuning:     signalClassifierTuning{model: model, timeout: timeout, maxChars: maxChars, optOut: optOut},
+		tuning:     signalClassifierTuning{modelRole: modelRole, timeout: timeout, maxChars: maxChars, optOut: optOut},
 		runOneShot: runOneShot,
 	}
 }
@@ -126,14 +126,14 @@ func (c *signalClassifier) retune(tuning signalClassifierTuning) {
 }
 
 // enabledFor reports whether the classifier runs for this harness. An empty
-// model disables it everywhere; the opt-out set is the per-harness escape
+// model role disables it everywhere; the opt-out set is the per-harness escape
 // hatch the on-by-default decision was taken with.
 func (c *signalClassifier) enabledFor(harness msg.Harness) bool {
 	if c == nil {
 		return false
 	}
 	tuning := c.currentTuning()
-	if tuning.model == "" {
+	if tuning.modelRole == "" {
 		return false
 	}
 	return !tuning.optOut[harness]
@@ -239,7 +239,8 @@ func (c *signalClassifier) classify(ctx context.Context, text string) (*turnClas
 	raw, err := c.runOneShot(ctx, msg.OneShotRequest{
 		Prompt:       "Final message of the finished turn:\n\n" + c.trim(text),
 		SystemPrompt: classifierSystemPrompt,
-		Model:        c.currentTuning().model,
+		ModelRole:    c.currentTuning().modelRole,
+		Caller:       oneShotCallerSignalClassifier,
 		Schema:       schema,
 		MaxTokens:    classifierMaxTokens,
 	})

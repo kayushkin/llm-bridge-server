@@ -7,36 +7,36 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// OneShotCaller makes one stateless model call through a harness instance.
-// The server implements it with its one-shot path, so no provider API and no
+// OneShotCaller makes stateless model calls through harness instances. The
+// server implements it with its one-shot router, so no provider API and no
 // credential passes through this package: the harness holds the login.
 type OneShotCaller interface {
-	// CompletionTarget resolves the model an input asked for — empty for the
-	// configured default — to a concrete model and the instance that serves
-	// its provider. A failure is a *TargetError.
-	CompletionTarget(requestedModel string) (CompletionTarget, error)
-	// RunOneShot calls the instance's harness. An error means no usable
-	// answer came back.
-	RunOneShot(ctx context.Context, instanceID string, request msg.OneShotRequest) (msg.OneShotResponse, error)
+	// OneShotRoute resolves what an input asked for — a model-store role, a
+	// model id or an alias; empty for the configured default role — to the
+	// models to try, in order. A failure is a *TargetError.
+	OneShotRoute(requestedModel string) (oneshotrouting.Route, error)
+	// RunOneShotRoute tries the route's models in order, each on the
+	// instance configured for its provider, until one answers. admit is asked
+	// about each model first; a reason skips it. The response names the model
+	// and instance that answered and the attempts before it; an error means
+	// no model answered (an *oneshotrouting.AllModelsFailedError).
+	RunOneShotRoute(ctx context.Context, route oneshotrouting.Route, request msg.OneShotRequest, admit func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error)
 }
 
-// CompletionTarget is where one model call goes.
-type CompletionTarget struct {
-	// RequestedModel is what the input or the default setting named: an id,
-	// an alias or a role.
-	RequestedModel string
-	// ModelID is model-store's id for it, sent to the harness and priced.
-	ModelID    string
-	Provider   string
-	InstanceID string
-}
+// Callers named on the executors' one-shot requests, for logs.
+const (
+	callerLLMCompletion    = "operations-llm-completion"
+	callerModelClassifier  = "operations-classification-run"
+	priceUnknownSkipPrefix = "model-store has no price for "
+)
 
-// TargetError is a model that cannot be called: none named, one model-store
-// does not know, or a provider no instance serves. Retrying cannot fix it.
+// TargetError is a route that cannot be built: no model named, one
+// model-store does not know, a role with no models. Retrying cannot fix it.
 type TargetError struct {
 	Code    string
 	Message string
@@ -44,26 +44,72 @@ type TargetError struct {
 
 func (e *TargetError) Error() string { return e.Code + ": " + e.Message }
 
-// resolveTarget asks the caller for the target and turns a failure into the
+// resolveRoute asks the caller for the route and turns a failure into the
 // result that ends the attempt.
-func resolveTarget(caller OneShotCaller, requestedModel string) (CompletionTarget, *operations.Result) {
-	target, err := caller.CompletionTarget(requestedModel)
+func resolveRoute(caller OneShotCaller, requestedModel string) (oneshotrouting.Route, *operations.Result) {
+	route, err := caller.OneShotRoute(requestedModel)
 	if err == nil {
-		return target, nil
+		return route, nil
 	}
 	var targetError *TargetError
 	if errors.As(err, &targetError) {
 		refusal := failed(targetError.Code, targetError.Message)
-		return CompletionTarget{}, &refusal
+		return oneshotrouting.Route{}, &refusal
 	}
-	return CompletionTarget{}, &operations.Result{Error: &msg.OperationError{Code: "model_resolution_failed", Retryable: true, Message: err.Error()}}
+	return oneshotrouting.Route{}, &operations.Result{Error: &msg.OperationError{Code: "model_resolution_failed", Retryable: true, Message: err.Error()}}
 }
 
-// targetEvidence records which model the call was routed to, for diagnostics.
-func targetEvidence(target CompletionTarget, answeredBy string, durationMilliseconds int64) msg.OperationEvidence {
-	detail, _ := json.Marshal(map[string]any{"requested_model": target.RequestedModel, "model": target.ModelID, "answered_by": answeredBy,
-		"provider": target.Provider, "instance_id": target.InstanceID, "duration_ms": durationMilliseconds})
-	return msg.OperationEvidence{Kind: "model_call", Summary: fmt.Sprintf("%s (asked for %s) on %s", answeredBy, target.RequestedModel, target.InstanceID), Detail: detail}
+// routeEvidence records which model answered and where, for diagnostics.
+func routeEvidence(route oneshotrouting.Route, response msg.OneShotResponse) msg.OperationEvidence {
+	detail, _ := json.Marshal(map[string]any{"requested_model": route.Requested, "role": route.Role, "answered_by": response.Model,
+		"instance_id": response.InstanceID, "attempts": response.Attempts, "duration_ms": response.DurationMs})
+	return msg.OperationEvidence{Kind: "model_call", Summary: fmt.Sprintf("%s (asked for %s) on %s", response.Model, route.Requested, response.InstanceID), Detail: detail}
+}
+
+// budgetGate is the budget check around one routed call. Before the call it
+// refuses when nothing is left; during it, admit skips a model with no list
+// price when the operation is under a budget.
+type budgetGate struct {
+	receipt    operations.ReceiptWriter
+	limited    bool
+	priceSkips int
+}
+
+// openBudgetGate is nil and a refusal when the budget is spent.
+func openBudgetGate(receipt operations.ReceiptWriter) (*budgetGate, *operations.Result) {
+	remainingUSD, limited, err := receipt.SpendingAllowance()
+	if err != nil {
+		refusal := writeFailure(err)
+		return nil, &refusal
+	}
+	if limited && remainingUSD <= 0 {
+		refusal := failed("budget_exhausted", fmt.Sprintf("no budget left for a model call (%.4f dollars remaining)", remainingUSD))
+		return nil, &refusal
+	}
+	return &budgetGate{receipt: receipt, limited: limited}, nil
+}
+
+func (gate *budgetGate) admit(candidate oneshotrouting.Candidate) string {
+	if gate.limited && !gate.receipt.ModelHasListPrice(candidate.ModelID) {
+		gate.priceSkips++
+		return priceUnknownSkipPrefix + candidate.ModelID + " and the operation is under a budget"
+	}
+	return ""
+}
+
+// callFailure is the result for a routed call that got no answer.
+func (gate *budgetGate) callFailure(ctx context.Context, err error, context string) operations.Result {
+	var allFailed *oneshotrouting.AllModelsFailedError
+	if errors.As(err, &allFailed) && gate.priceSkips > 0 && gate.priceSkips == len(allFailed.Attempts) {
+		return failed("model_price_unknown", context+err.Error())
+	}
+	// A model call changes nothing outside the bridge, so trying again is
+	// safe; the coordinator decides whether attempts remain.
+	code := "model_call_failed"
+	if ctx.Err() != nil {
+		code = "attempt_interrupted"
+	}
+	return operations.Result{Error: &msg.OperationError{Code: code, Message: context + err.Error(), Retryable: true}}
 }
 
 // LLMCompletion runs llm.completion: one model call through a harness
@@ -121,33 +167,24 @@ func (completion LLMCompletion) Execute(ctx context.Context, intent msg.Operatio
 	if err != nil {
 		return failed("invalid_input", err.Error())
 	}
-	target, refusal := resolveTarget(completion.Caller, input.Model)
+	route, refusal := resolveRoute(completion.Caller, input.Model)
 	if refusal != nil {
 		return *refusal
 	}
-	if refusal := refuseCallOverBudget(receipt, target.ModelID); refusal != nil {
+	gate, refusal := openBudgetGate(receipt)
+	if refusal != nil {
 		return *refusal
 	}
-	response, err := completion.Caller.RunOneShot(ctx, target.InstanceID, msg.OneShotRequest{
-		Prompt: input.Prompt, SystemPrompt: input.SystemPrompt, Model: target.ModelID, Schema: input.Schema, MaxTokens: input.MaxTokens,
-	})
+	response, err := completion.Caller.RunOneShotRoute(ctx, route, msg.OneShotRequest{
+		Prompt: input.Prompt, SystemPrompt: input.SystemPrompt, Schema: input.Schema, MaxTokens: input.MaxTokens, Caller: callerLLMCompletion,
+	}, gate.admit)
 	if err != nil {
-		// A model call changes nothing outside the bridge, so trying again
-		// is safe; the coordinator decides whether attempts remain.
-		code := "model_call_failed"
-		if ctx.Err() != nil {
-			code = "attempt_interrupted"
-		}
-		return operations.Result{Error: &msg.OperationError{Code: code, Message: err.Error(), Retryable: true}}
+		return gate.callFailure(ctx, err, "")
 	}
-	answeredBy := response.Model
-	if answeredBy == "" {
-		answeredBy = target.ModelID
-	}
-	if err := receipt.RecordModelCall(answeredBy, response.Usage); err != nil {
+	if err := receipt.RecordModelCall(response.Model, response.Usage); err != nil {
 		return writeFailure(err)
 	}
-	if err := receipt.AddEvidence(targetEvidence(target, answeredBy, response.DurationMs)); err != nil {
+	if err := receipt.AddEvidence(routeEvidence(route, response)); err != nil {
 		return writeFailure(err)
 	}
 	if response.StopReason == "max_tokens" {
@@ -165,29 +202,6 @@ func (completion LLMCompletion) Execute(ctx context.Context, intent msg.Operatio
 		return failed("result_not_encodable", err.Error())
 	}
 	return operations.Result{State: msg.OperationStateSucceeded, Result: encoded}
-}
-
-// refuseCallOverBudget is the check before every model call: nil when the
-// call may be made, the result to end the attempt with when it may not.
-func refuseCallOverBudget(receipt operations.ReceiptWriter, model string) *operations.Result {
-	remainingUSD, limited, err := receipt.SpendingAllowance()
-	if err != nil {
-		refusal := writeFailure(err)
-		return &refusal
-	}
-	if !limited {
-		return nil
-	}
-	var refusal operations.Result
-	switch {
-	case remainingUSD <= 0:
-		refusal = failed("budget_exhausted", fmt.Sprintf("no budget left for a model call (%.4f dollars remaining)", remainingUSD))
-	case !receipt.ModelHasListPrice(model):
-		refusal = failed("model_price_unknown", fmt.Sprintf("the operation is under a budget and model-store has no price for %q", model))
-	default:
-		return nil
-	}
-	return &refusal
 }
 
 // writeFailure ends an attempt whose receipt write failed, usually because

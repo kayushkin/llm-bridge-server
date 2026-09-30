@@ -56,3 +56,30 @@ func (v ServiceSettingValues) Save(key, value string) error {
 	}
 	return nil
 }
+
+// MoveServiceSettingKeys carries stored rows over a change of keys, in one
+// transaction: each renamed key's value is copied to its new key when the new
+// key holds no row yet, then every retired key's row is deleted. Run it
+// before the rows are loaded, so the settings registry never sees an old key
+// and a renamed setting keeps the value it was given rather than its default.
+func (s *Store) MoveServiceSettingKeys(renamed map[string]string, retired []string) error {
+	transaction, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("move service_settings keys: %w", err)
+	}
+	defer transaction.Rollback()
+	for oldKey, newKey := range renamed {
+		if _, err := transaction.Exec(`
+			INSERT INTO service_settings (key, value, updated_at)
+			SELECT ?, value, CURRENT_TIMESTAMP FROM service_settings WHERE key = ?
+			ON CONFLICT(key) DO NOTHING`, newKey, oldKey); err != nil {
+			return fmt.Errorf("move service_settings %s to %s: %w", oldKey, newKey, err)
+		}
+	}
+	for _, key := range retired {
+		if _, err := transaction.Exec(`DELETE FROM service_settings WHERE key = ?`, key); err != nil {
+			return fmt.Errorf("delete retired service_settings %s: %w", key, err)
+		}
+	}
+	return transaction.Commit()
+}
