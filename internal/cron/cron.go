@@ -253,6 +253,7 @@ func (s *Scheduler) executeJob(job db.Job) *db.Run {
 				Orchestrator: job.Orchestrator,
 				SessionID:    job.SessionID,
 				WorkspaceID:  job.WorkspaceID,
+				ModelRole:    job.ModelRole,
 			})
 		}
 	} else {

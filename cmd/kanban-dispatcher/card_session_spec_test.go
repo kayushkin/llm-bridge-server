@@ -250,6 +250,8 @@ func newDispatcher(kanban *fakeKanban, kanbanURL, bridgeURL string, published *[
 		},
 		maxDispatch: 10,
 		degraded:    degradations.New("dispatcher"),
+		modelRole:   "default",
+		modelRoles:  stubModelRoles{},
 	}
 }
 
@@ -436,7 +438,7 @@ func TestARunThatLeftACardUndispatchedFails(t *testing.T) {
 	kanban := build(false)
 	kanbanServer := httptest.NewServer(kanban)
 	defer kanbanServer.Close()
-	err := run(runOptions{BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, DryRun: true, MaxDispatch: 10})
+	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{}, BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, DryRun: true, MaxDispatch: 10})
 	if err == nil || !strings.Contains(err.Error(), "card-nowhere") || strings.Contains(err.Error(), "card-plain") {
 		t.Errorf("a run with a card nothing gives an instance must fail naming only that card, got %v", err)
 	}
@@ -444,7 +446,7 @@ func TestARunThatLeftACardUndispatchedFails(t *testing.T) {
 	resolvedKanban := build(true)
 	resolvedServer := httptest.NewServer(resolvedKanban)
 	defer resolvedServer.Close()
-	if err := run(runOptions{BoardID: testBoardID, KanbanURL: resolvedServer.URL, BridgeURL: bridgeServer.URL, DryRun: true, MaxDispatch: 10}); err != nil {
+	if err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{}, BoardID: testBoardID, KanbanURL: resolvedServer.URL, BridgeURL: bridgeServer.URL, DryRun: true, MaxDispatch: 10}); err != nil {
 		t.Errorf("a run where every card resolves an instance must succeed — the board itself needs none: %v", err)
 	}
 }

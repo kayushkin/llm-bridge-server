@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/servicesettings"
 	_ "modernc.org/sqlite"
 
 	"github.com/slava/scheduler/internal/cron"
@@ -27,7 +29,19 @@ func setup(t *testing.T, token string) *Server {
 	}
 	t.Cleanup(func() { store.Close() })
 	sched := cron.New(store)
-	return New(store, sched, token, settingsRegistryForTests(t, token))
+	return New(store, sched, token, settingsRegistryForTests(t, token), checkModelRoleForTests)
+}
+
+// checkModelRoleForTests stands in for model-store: it knows two roles, and
+// answers "down" for a role named "model-store-down".
+func checkModelRoleForTests(role string) error {
+	switch role {
+	case "default", "balanced":
+		return nil
+	case "model-store-down":
+		return fmt.Errorf("%w: model-store: connection refused", servicesettings.ErrSettingOwnerUnavailable)
+	}
+	return fmt.Errorf("model-store has no role %q", role)
 }
 
 func TestAuthRequired(t *testing.T) {

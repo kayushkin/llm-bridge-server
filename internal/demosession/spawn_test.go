@@ -2,11 +2,53 @@ package demosession
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/slava/scheduler/internal/sessionmodelrole"
 )
+
+// anyHarnessRuns stands in for model-store and the bridge's harness table:
+// every harness runs the default role, and no harness runs "refused".
+type anyHarnessRuns struct{}
+
+func (anyHarnessRuns) Check(role string, harness msg.Harness) (sessionmodelrole.Model, error) {
+	if role == "refused" {
+		return sessionmodelrole.Model{}, fmt.Errorf("harness %s cannot run it", harness)
+	}
+	return sessionmodelrole.Model{ID: "model-test", Provider: "test"}, nil
+}
+
+// The session names its role beside its ceiling, and a role the instance's
+// harness cannot run creates nothing.
+func TestASessionNamesItsModelRole(t *testing.T) {
+	var created map[string]any
+	bridge := stubBridge(t, &created)
+	defer bridge.Close()
+
+	if _, err := Spawn(bridge.URL, anyHarnessRuns{}, Task{ModelRole: "default", Prompt: "do it", AgentSlug: "builder", InstanceID: "inst-test", MaxBudgetUSD: 2}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	config, _ := created["harness_config"].(map[string]any)
+	if config["model"] != "default" || config["max_budget_usd"] != 2.0 {
+		t.Errorf("harness_config = %v, want the role beside the ceiling", created["harness_config"])
+	}
+
+	created = nil
+	if _, err := Spawn(bridge.URL, anyHarnessRuns{}, Task{ModelRole: "refused", Prompt: "do it", AgentSlug: "builder", InstanceID: "inst-test"}); err == nil || !strings.Contains(err.Error(), "cannot run") {
+		t.Errorf("err = %v, want the harness refusal", err)
+	}
+	if created != nil {
+		t.Errorf("a session was created on a model its harness cannot run: %v", created)
+	}
+	if _, err := Spawn(bridge.URL, anyHarnessRuns{}, Task{Prompt: "do it", AgentSlug: "builder", InstanceID: "inst-test"}); err == nil {
+		t.Error("a session was spawned with no role")
+	}
+}
 
 // stubBridge answers the three calls Spawn makes and keeps the create body.
 func stubBridge(t *testing.T, created *map[string]any) *httptest.Server {
@@ -37,7 +79,7 @@ func TestASessionForACardNamesTheCard(t *testing.T) {
 	bridge := stubBridge(t, &created)
 	defer bridge.Close()
 
-	if _, err := Spawn(bridge.URL, Task{
+	if _, err := Spawn(bridge.URL, anyHarnessRuns{}, Task{ModelRole: "default",
 		Prompt: "do it", AgentSlug: "builder", InstanceID: "inst-test", CardID: "card-42",
 	}); err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -54,7 +96,7 @@ func TestASessionForNoCardSendsNoCardID(t *testing.T) {
 	bridge := stubBridge(t, &created)
 	defer bridge.Close()
 
-	if _, err := Spawn(bridge.URL, Task{
+	if _, err := Spawn(bridge.URL, anyHarnessRuns{}, Task{ModelRole: "default",
 		Prompt: "do it", AgentSlug: "builder", InstanceID: "inst-test",
 	}); err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -82,7 +124,7 @@ func TestTheSendCallKeepsTheSessionIDOnePathSegment(t *testing.T) {
 	}))
 	defer bridge.Close()
 
-	sessionID, err := Spawn(bridge.URL, Task{Prompt: "do it", AgentSlug: "bad/slug?x", InstanceID: "inst-test"})
+	sessionID, err := Spawn(bridge.URL, anyHarnessRuns{}, Task{ModelRole: "default", Prompt: "do it", AgentSlug: "bad/slug?x", InstanceID: "inst-test"})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}

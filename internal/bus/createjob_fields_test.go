@@ -63,12 +63,12 @@ var creationRequests = []creationRequest{
 		body: `{
 			"action":"create_job","name":"j","description":"a description",
 			"schedule":"0 3 * * *","type":"agent","agent":"claude-code","prompt":"hi",
-			"model":"sonnet","orchestrator":"claude-code","session_id":"sess-1",
+			"model_role":"default","orchestrator":"claude-code","session_id":"sess-1",
 			"workspace_id":"ws-123","timeout_seconds":3600
 		}`,
 		want: map[string]any{
 			"Name": "j", "Description": "a description", "Schedule": "0 3 * * *",
-			"Type": "agent", "Agent": "claude-code", "Prompt": "hi", "Model": "sonnet",
+			"Type": "agent", "Agent": "claude-code", "Prompt": "hi", "ModelRole": "default",
 			"Orchestrator": "claude-code", "SessionID": "sess-1",
 			"WorkspaceID": "ws-123", "TimeoutSecs": 3600,
 		},

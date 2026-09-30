@@ -24,7 +24,7 @@ func TestUpdateJobWritesOnlyTheFieldsThePatchSets(t *testing.T) {
 	store := patchTestStore(t)
 	created, err := store.CreateJobFull(Job{
 		Name: "agent-job", Schedule: "0 5 * * *", Type: "agent",
-		Agent: "claude-code", Prompt: "old", Model: "sonnet", TimeoutSecs: 60,
+		Agent: "claude-code", Prompt: "old", ModelRole: "default", TimeoutSecs: 60,
 		Enabled: true,
 	})
 	if err != nil {
@@ -44,7 +44,7 @@ func TestUpdateJobWritesOnlyTheFieldsThePatchSets(t *testing.T) {
 		t.Errorf("prompt = %q, want %q", got.Prompt, "new")
 	}
 	// Everything the patch did not name must be exactly as it was.
-	if got.Model != "sonnet" || got.Agent != "claude-code" || got.TimeoutSecs != 60 ||
+	if got.ModelRole != "default" || got.Agent != "claude-code" || got.TimeoutSecs != 60 ||
 		got.Name != "agent-job" || got.Schedule != "0 5 * * *" || !got.Enabled {
 		t.Errorf("a one-field patch disturbed another column: %+v", got)
 	}
@@ -83,12 +83,12 @@ func TestUpdateJobWritesEveryPatchableColumn(t *testing.T) {
 	created, _ := store.CreateJobFull(Job{Name: "j", Schedule: "* * * * *", Command: "echo", Enabled: true})
 
 	name, description, schedule, command := "renamed", "desc", "0 1 * * *", "echo two"
-	jobType, agent, prompt, model := "agent", "claude-code", "p", "opus"
+	jobType, agent, prompt, modelRole := "agent", "claude-code", "p", "balanced"
 	orchestrator, sessionID, workspaceID := "inber", "sess", "ws"
 	timeout, enabled := 1800, false
 	patch := JobPatch{
 		Name: &name, Description: &description, Schedule: &schedule, Command: &command,
-		Type: &jobType, Agent: &agent, Prompt: &prompt, Model: &model,
+		Type: &jobType, Agent: &agent, Prompt: &prompt, ModelRole: &modelRole,
 		Orchestrator: &orchestrator, SessionID: &sessionID, WorkspaceID: &workspaceID,
 		TimeoutSecs: &timeout, Enabled: &enabled,
 	}
@@ -102,7 +102,7 @@ func TestUpdateJobWritesEveryPatchableColumn(t *testing.T) {
 	got, _ := store.GetJob(created.ID)
 	want := Job{
 		ID: created.ID, Name: name, Description: description, Schedule: schedule,
-		Command: command, Type: jobType, Agent: agent, Prompt: prompt, Model: model,
+		Command: command, Type: jobType, Agent: agent, Prompt: prompt, ModelRole: modelRole,
 		Orchestrator: orchestrator, SessionID: sessionID, WorkspaceID: workspaceID,
 		TimeoutSecs: timeout, Enabled: enabled,
 	}

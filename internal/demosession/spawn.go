@@ -43,6 +43,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/slava/scheduler/internal/bridgeclient"
+	"github.com/slava/scheduler/internal/sessionmodelrole"
 )
 
 // Task is one piece of work to hand an agent.
@@ -79,13 +80,19 @@ type Task struct {
 	// enforced at creation, so they are not free text.
 	Purpose string
 	Origin  string
+	// ModelRole is the model-store role the session runs on, sent as its own
+	// model choice. Required: a session that names none runs on whatever the
+	// bridge's per-harness default is that day.
+	ModelRole string
 }
 
-// Spawn creates the session, starts it, and sends it the prompt.
+// Spawn creates the session, starts it, and sends it the prompt. modelRoles
+// checks that the instance's harness can run the model t.ModelRole resolves to
+// before anything is created.
 //
 // It returns the session id only once the harness is actually running. A
 // caller can therefore link the id to a card knowing it refers to something.
-func Spawn(bridgeURL string, t Task) (string, error) {
+func Spawn(bridgeURL string, modelRoles sessionmodelrole.RoleChecker, t Task) (string, error) {
 	if t.Prompt == "" {
 		return "", fmt.Errorf("demosession: a task with no prompt would spawn an agent with nothing to do")
 	}
@@ -98,6 +105,9 @@ func Spawn(bridgeURL string, t Task) (string, error) {
 	if t.InstanceID == "" {
 		return "", fmt.Errorf("demosession: no instance id — the board's default_instance_id is unset, and there is no fallback instance")
 	}
+	if t.ModelRole == "" || modelRoles == nil {
+		return "", fmt.Errorf("demosession: no model role — the session would run on whatever the bridge's harness default is")
+	}
 	if t.Purpose == "" {
 		t.Purpose = "autoworker"
 	}
@@ -108,6 +118,9 @@ func Spawn(bridgeURL string, t Task) (string, error) {
 	harness, err := bridgeclient.InstanceHarnessType(bridgeURL, t.InstanceID)
 	if err != nil {
 		return "", fmt.Errorf("demosession: %w", err)
+	}
+	if _, err := modelRoles.Check(t.ModelRole, harness); err != nil {
+		return "", fmt.Errorf("demosession: model role %q on instance %s: %w", t.ModelRole, t.InstanceID, err)
 	}
 
 	now := time.Now().UTC()
@@ -134,6 +147,9 @@ func Spawn(bridgeURL string, t Task) (string, error) {
 		// notices a breach afterwards is not a control: the fastest session
 		// observed on this host burned $29.22 a minute.
 		create.HarnessConfig = []byte(fmt.Sprintf(`{"max_budget_usd":%.2f}`, budget))
+	}
+	if err := sessionmodelrole.SetModelRole(&create, t.ModelRole); err != nil {
+		return "", fmt.Errorf("demosession: %w", err)
 	}
 
 	base := strings.TrimRight(bridgeURL, "/")

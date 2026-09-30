@@ -20,14 +20,14 @@ import (
 // every "did not happen" assertion.
 //
 // Ported from 3fec1ffd, whose run(runConfig) extraction main already has in
-// its own shape: run(cfg, publish).
+// its own shape: run(cfg, modelRoleFor, publish).
 
 func TestADryRunWritesNoCooldown(t *testing.T) {
 	usage := newStubUsage(t, firingLimits())
 	cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 	cfg.dryRun = true
 
-	captureLog(t, func() { run(cfg, (&recordingPublisher{}).publish) })
+	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
 
 	if _, err := os.Stat(cfg.statePath); !os.IsNotExist(err) {
 		t.Errorf("a dry run wrote the cooldown state (stat err=%v); the next real tick "+
@@ -39,7 +39,7 @@ func TestARealDispatchWritesTheCooldown(t *testing.T) {
 	usage := newStubUsage(t, firingLimits())
 	cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 
-	captureLog(t, func() { run(cfg, (&recordingPublisher{}).publish) })
+	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
 
 	st, err := loadState(cfg.statePath)
 	if err != nil {
@@ -86,7 +86,7 @@ func TestADryRunCreatesNoQueueBoard(t *testing.T) {
 	cfg := tickConfig(t, newStubUsage(t, quietLimits()).URL(), kanban, newStubSpend(t).URL())
 	cfg.dryRun = true
 
-	captureLog(t, func() { run(cfg, (&recordingPublisher{}).publish) })
+	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
 
 	if n := writes(); n != 0 {
 		t.Errorf("a dry run sent %d writes to kanban-store; on a fresh install it would "+
@@ -98,7 +98,7 @@ func TestAQuietRealTickBootstrapsTheQueueBoard(t *testing.T) {
 	kanban, writes := writeCountingBoards(t)
 	cfg := tickConfig(t, newStubUsage(t, quietLimits()).URL(), kanban, newStubSpend(t).URL())
 
-	captureLog(t, func() { run(cfg, (&recordingPublisher{}).publish) })
+	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
 
 	if writes() == 0 {
 		t.Error("a real tick against a store with no queue board never tried to create it; " +

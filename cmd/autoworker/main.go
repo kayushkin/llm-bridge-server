@@ -12,7 +12,11 @@
 //     - Skip unless local PT time is inside the provider's safe window.
 //     - Skip unless we're outside the cooldown since the last fire.
 //     - Skip unless actual used_percent < target − slack (default 15pp).
-//  3. When all gates pass, publish a BridgeInbound message on NATS
+//  3. When all gates pass, read the lane's model role from the scheduler's
+//     stored settings (autoworker_anthropic_model_role,
+//     autoworker_codex_model_role) and check that the lane's harness can run
+//     the model the role resolves to; a lane that cannot dispatches nothing.
+//  4. Publish a BridgeInbound message on NATS
 //     bridge.inbound targeting the configured llm-bridge instance_id, so the
 //     fresh session shows up in the dash chat UI alongside the user's manual
 //     sessions for that harness instance.
@@ -22,6 +26,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -44,6 +49,8 @@ import (
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
 	"github.com/slava/scheduler/internal/schedulerjobs"
+	"github.com/slava/scheduler/internal/schedulersettings"
+	"github.com/slava/scheduler/internal/sessionmodelrole"
 )
 
 const (
@@ -96,6 +103,11 @@ type providerSpec struct {
 	SafeEnd      int           // minutes past local midnight, exclusive
 	WeekdayOnly  bool          // if true, safe window only applies Mon–Fri
 	Cooldown     time.Duration // minimum time between fires
+	// ModelRoleSetting is the scheduler setting holding the model-store role
+	// this lane's sessions run on. One per lane, because a lane's harness runs
+	// one provider's models: a role whose first model is an OpenAI model cannot
+	// start a claude_code session, and the other way round.
+	ModelRoleSetting string
 }
 
 var providers = []providerSpec{
@@ -109,6 +121,8 @@ var providers = []providerSpec{
 		SafeStart:    0,       // 00:00 PT
 		SafeEnd:      24 * 60, // 24:00 PT — whole day (catch-up before reset)
 		Cooldown:     15 * time.Minute,
+
+		ModelRoleSetting: schedulerconfig.SettingAutoworkerAnthropicModelRole,
 	},
 	{
 		Name:         "codex",
@@ -120,6 +134,8 @@ var providers = []providerSpec{
 		SafeStart:    0,      // 00:00 PT
 		SafeEnd:      6 * 60, // 06:00 PT
 		Cooldown:     2 * time.Hour,
+
+		ModelRoleSetting: schedulerconfig.SettingAutoworkerCodexModelRole,
 	},
 }
 
@@ -193,6 +209,7 @@ type config struct {
 	noteboardURL   string
 	usageStoreURL  string
 	schedulerURL   string
+	modelStoreURL  string
 	statePath      string
 	binaryPath     string
 
@@ -255,6 +272,7 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	c.noteboardURL = settings.String(schedulerconfig.SettingNoteboardURL)
 	c.usageStoreURL = settings.String(schedulerconfig.SettingUsageStoreURL)
 	c.schedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
+	c.modelStoreURL = settings.String(schedulerconfig.SettingModelStoreURL)
 	c.kanbanStoreServiceToken = settings.String(schedulerconfig.SettingKanbanStoreServiceToken)
 	c.bridgeServiceToken = settings.String(schedulerconfig.SettingBridgeServiceToken)
 	c.statePath = filepath.Join(homeDirectory, ".config", "autoworker", "state.json")
@@ -285,7 +303,31 @@ func (c config) validate() error {
 // connected to the real bus to reach the write path would dispatch a real agent
 // session and spend real money. So the bus crosses this seam and nothing else
 // needs to.
-type workerPublisher func(p providerSpec, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error)
+type workerPublisher func(p providerSpec, modelRole, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error)
+
+// laneModelRoleReader returns the model-store role a lane's next session runs
+// on, already checked against what the lane's harness can run. It is a seam
+// for the same reason workerPublisher is: a tick test drives the dispatch
+// path without standing up the scheduler, model-store and the bridge's
+// harness table as well.
+type laneModelRoleReader func(p providerSpec) (string, error)
+
+// readLaneModelRole is the production laneModelRoleReader: the role in the
+// lane's scheduler setting, checked with model-store and llm-bridge-server.
+func readLaneModelRole(schedulerURL string, checker sessionmodelrole.Checker) laneModelRoleReader {
+	return func(p providerSpec) (string, error) {
+		role, err := schedulersettings.ReadModelRole(context.Background(), schedulerURL, p.ModelRoleSetting)
+		if err != nil {
+			return "", err
+		}
+		model, err := checker.Check(role, p.Harness)
+		if err != nil {
+			return "", fmt.Errorf("%s %q: %w", p.ModelRoleSetting, role, err)
+		}
+		log.Printf("[%s] session runs on role %s (%s from %s)", p.Name, role, model.ID, p.ModelRoleSetting)
+		return role, nil
+	}
+}
 
 func main() {
 	// Error ignored exactly as before: an unset HOME leaves this empty and the
@@ -331,7 +373,7 @@ func main() {
 	// continues past the dispatch on cfg.dryRun. The stub is here so that a
 	// publisher is never nil, because a nil one would turn a missed guard into a
 	// panic rather than into the error the caller already handles.
-	publish := workerPublisher(func(providerSpec, string, float64, string, string, string) (string, error) {
+	publish := workerPublisher(func(providerSpec, string, string, float64, string, string, string) (string, error) {
 		return "", errors.New("dry run: nothing is published")
 	})
 	closeBus := func() {}
@@ -341,15 +383,15 @@ func main() {
 			log.Fatalf("nats connect: %v", err)
 		}
 		closeBus = nc.Close
-		publish = func(p providerSpec, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
-			return publishWorker(nc, p, prompt, maxBudgetUSD, workingDir, agentSlug, cardID)
+		publish = func(p providerSpec, modelRole, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
+			return publishWorker(nc, p, modelRole, prompt, maxBudgetUSD, workingDir, agentSlug, cardID)
 		}
 	}
 
 	// The bus is closed before the exit rather than deferred, because os.Exit
 	// does not run deferred functions and a silently unclosed connection is the
 	// kind of thing that looks fine until the bus runs out of them.
-	code := run(cfg, publish)
+	code := run(cfg, readLaneModelRole(cfg.schedulerURL, sessionmodelrole.New(cfg.modelStoreURL, cfg.llmBridgeURL)), publish)
 	closeBus()
 	os.Exit(code)
 }
@@ -366,7 +408,7 @@ func main() {
 // no work at all — no timezone, no limits, no state — and exiting 1 already
 // makes those visible. Everything after them is partial, which is what
 // degradations exists for.
-func run(cfg config, publish workerPublisher) int {
+func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) int {
 	degraded := degradations.New("autoworker")
 
 	loc, err := time.LoadLocation(cfg.timezone)
@@ -402,6 +444,15 @@ func run(cfg config, publish workerPublisher) int {
 			degraded.Record("%s", d.shortfall)
 		}
 		if !d.fire || cfg.dryRun {
+			continue
+		}
+
+		// Before the queue is read, so a lane that cannot start a session
+		// takes no card off the queue.
+		modelRole, err := modelRoleFor(p)
+		if err != nil {
+			log.Printf("[%s] model role: %v", d.provider, err)
+			degraded.Record("%s passed every gate and no worker was dispatched: its model role cannot start a %s session (%v)", d.provider, p.Harness, err)
 			continue
 		}
 
@@ -445,7 +496,7 @@ func run(cfg config, publish workerPublisher) int {
 		if queueCard != nil {
 			workingDir, agentSlug, cardID = queueCard.workingDir, queueCard.agentSlug, queueCard.cardID
 		}
-		sessionID, err := publish(p, workerPrompt, maxBudgetUSD, workingDir, agentSlug, cardID)
+		sessionID, err := publish(p, modelRole, workerPrompt, maxBudgetUSD, workingDir, agentSlug, cardID)
 		if err != nil {
 			// Every gate opened and no worker exists. This is the one shortfall
 			// here that loses the whole point of the tick.
@@ -454,8 +505,8 @@ func run(cfg config, publish workerPublisher) int {
 			continue
 		}
 		st.LastFire[p.Name] = now.Unix()
-		log.Printf("[%s] FIRED worker → bridge.inbound (harness=%s instance=%s target=%.0f%% actual=%.0f%% queue_card=%s)",
-			d.provider, p.Harness, p.InstanceID, d.target, d.actual, queueCardLogID(queueCard))
+		log.Printf("[%s] FIRED worker → bridge.inbound (harness=%s instance=%s role=%s target=%.0f%% actual=%.0f%% queue_card=%s)",
+			d.provider, p.Harness, p.InstanceID, modelRole, d.target, d.actual, queueCardLogID(queueCard))
 
 		if queueCard != nil && queueClient != nil {
 			if err := markQueueCardDispatched(queueClient, queueCard, p, sessionID, now); err != nil {
@@ -481,8 +532,8 @@ func run(cfg config, publish workerPublisher) int {
 		if kc != nil {
 			title := fmt.Sprintf("autoworker · %s · %s", p.Name, now.Format("Jan 2 15:04"))
 			body := fmt.Sprintf(
-				"Dispatched by autoworker.\n\n- provider: %s\n- harness: %s\n- instance: %s\n- session_id: `%s`\n- target/actual: %.0f%% / %.0f%%\n",
-				p.Name, p.Harness, p.InstanceID, sessionID, d.target, d.actual,
+				"Dispatched by autoworker.\n\n- provider: %s\n- harness: %s\n- instance: %s\n- model role: %s\n- session_id: `%s`\n- target/actual: %.0f%% / %.0f%%\n",
+				p.Name, p.Harness, p.InstanceID, modelRole, sessionID, d.target, d.actual,
 			)
 			if queueCard != nil {
 				body += fmt.Sprintf("- queue_card: `%s` — %s\n", queueCard.cardID, queueCard.title)
@@ -962,16 +1013,17 @@ var _ busPublisher = (*natsbus.Client)(nil)
 
 // publishWorker dispatches a worker session.
 //
-// maxBudgetUSD, when > 0, becomes the session's per-session cost cap on both the
-// server-side and the harness-native enforcer — see applySessionSpendCeiling.
-func publishWorker(nc busPublisher, p providerSpec, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
+// modelRole is the model-store role the session runs on. maxBudgetUSD, when
+// > 0, becomes the session's per-session cost cap on both the server-side and
+// the harness-native enforcer — see applySessionSpendCeiling.
+func publishWorker(nc busPublisher, p providerSpec, modelRole, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
 	now := time.Now().UTC()
 	// Mint the canonical session_id here. Adapter passes BusSessionID through
 	// as bridge-server session_id (see llm-bridge-adapter@73c7cb5), so this
 	// value is also the bridge session_id referenced by kanban session links.
 	sessionID := fmt.Sprintf("autoworker-%s-%d", p.Name, now.UnixNano())
 
-	create, err := newWorkerSessionRequest(p, now, maxBudgetUSD, workingDir, agentSlug, cardID)
+	create, err := newWorkerSessionRequest(p, now, modelRole, maxBudgetUSD, workingDir, agentSlug, cardID)
 	if err != nil {
 		return "", err
 	}
@@ -995,8 +1047,10 @@ func publishWorker(nc busPublisher, p providerSpec, prompt string, maxBudgetUSD 
 
 // newWorkerSessionRequest builds the create request for one worker session.
 // cardID is the queue card the session works, or empty when the queue was
-// empty and the worker runs on the default prompt.
-func newWorkerSessionRequest(p providerSpec, now time.Time, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (*msg.CreateSessionRequest, error) {
+// empty and the worker runs on the default prompt. modelRole goes into
+// harness_config.model, where llm-bridge-server takes it as the session's own
+// choice, so the bridge's per-harness default never decides the model.
+func newWorkerSessionRequest(p providerSpec, now time.Time, modelRole string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (*msg.CreateSessionRequest, error) {
 	create := &msg.CreateSessionRequest{
 		Harness:     p.Harness,
 		InstanceID:  p.InstanceID,
@@ -1007,6 +1061,10 @@ func newWorkerSessionRequest(p providerSpec, now time.Time, maxBudgetUSD float64
 		AutoStart:   true,
 	}
 	if err := applySessionSpendCeiling(create, maxBudgetUSD); err != nil {
+		return nil, err
+	}
+	// After the ceiling, which writes harness_config whole.
+	if err := sessionmodelrole.SetModelRole(create, modelRole); err != nil {
 		return nil, err
 	}
 	// Top of the four-level cascade: session > Instance.WorkingDir >

@@ -109,7 +109,7 @@ func storedSettingsServer(t *testing.T, validate func(string) error) *Server {
 	for _, key := range config.ModelRoleSettingKeys {
 		registry.SetValidator(key, validate)
 	}
-	return New(store, cron.New(store), "", registry)
+	return New(store, cron.New(store), "", registry, checkModelRoleForTests)
 }
 
 func putSetting(server *Server, key, value string) *httptest.ResponseRecorder {
@@ -184,5 +184,14 @@ func TestNewRefusesANilSettingsRegistry(t *testing.T) {
 			t.Fatal("api.New with a nil registry did not panic")
 		}
 	}()
-	New(nil, nil, "", nil)
+	New(nil, nil, "", nil, checkModelRoleForTests)
+}
+
+func TestNewRefusesANilModelRoleChecker(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("api.New with no model-role checker did not panic")
+		}
+	}()
+	New(nil, nil, "", settingsRegistryForTests(t, ""), nil)
 }

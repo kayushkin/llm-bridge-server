@@ -126,7 +126,12 @@ func bridgeServiceTokenDefinition() servicesettings.Definition {
 
 func schedulerURLDefinition() servicesettings.Definition {
 	return servicesettings.Definition{Key: SettingSchedulerURL, EnvironmentVariable: "SCHEDULER_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultSchedulerURL,
-		Description: "Where the scheduler's API answers. -register creates or updates the binary's own cron job there, and a binary that calls a model reads its model role from the scheduler's stored settings there each time it starts."}
+		Description: "Where the scheduler's API answers. -register creates or updates the binary's own cron job there, and a binary that calls a model or starts a session reads its model role from the scheduler's stored settings there."}
+}
+
+func modelStoreURLDefinition() servicesettings.Definition {
+	return servicesettings.Definition{Key: SettingModelStoreURL, EnvironmentVariable: "MODEL_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultModelStoreURL,
+		Description: "Where model-store answers. Before the binary starts a session it asks there which model the session's role resolves to, so that a harness is never handed a model it cannot run."}
 }
 
 func natsURLDefinition() servicesettings.Definition {
@@ -151,7 +156,7 @@ func mailstackDefinitions() []servicesettings.Definition {
 // Ask is cmd/ask: it opens or continues a session with an alert or question
 // for the user. Agents and other jobs run it from their own shells.
 var Ask = JobBinary{Name: "ask", settingDefinitions: func() []servicesettings.Definition {
-	return []servicesettings.Definition{bridgeURLDefinition(), bridgeServiceTokenDefinition(), natsURLDefinition()}
+	return []servicesettings.Definition{bridgeURLDefinition(), bridgeServiceTokenDefinition(), natsURLDefinition(), schedulerURLDefinition(), modelStoreURLDefinition()}
 }}
 
 // Autoworker is cmd/autoworker: it dispatches an unattended worker when a
@@ -161,7 +166,7 @@ var Autoworker = JobBinary{Name: "autoworker", OwnedEnvironmentVariablePrefixes:
 		natsURLDefinition(), kanbanStoreURLDefinition(), kanbanStoreServiceTokenDefinition(), bridgeURLDefinition(), bridgeServiceTokenDefinition(), noteboardURLDefinition(),
 		{Key: SettingUsageStoreURL, EnvironmentVariable: "USAGE_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultUsageStoreURL,
 			Description: "Where usage-store answers. The weekly limits and what has been used against them come from there, so a wrong address dispatches nothing."},
-		schedulerURLDefinition(),
+		schedulerURLDefinition(), modelStoreURLDefinition(),
 		{Key: SettingDefaultMaxBudgetUSD, EnvironmentVariable: "AUTOWORKER_DEFAULT_MAX_BUDGET_USD", Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeDecimal,
 			Description: "The spend cap in USD for a dispatched session whose card has no ceiling of its own; unset or 0 is uncapped. A value that is not a number stops the binary rather than run uncapped. The -default-max-budget-usd flag overrides it."},
 	}
@@ -185,7 +190,7 @@ var DemoMailGenerator = JobBinary{Name: "demo-mail-generator", OwnedEnvironmentV
 // DemoWorker is cmd/demo-worker: it promotes, dispatches and reviews the demo
 // work board's cards.
 var DemoWorker = JobBinary{Name: "demo-worker", settingDefinitions: func() []servicesettings.Definition {
-	return []servicesettings.Definition{kanbanStoreURLDefinition(), kanbanStoreServiceTokenDefinition(), noteboardURLDefinition(), bridgeURLDefinition(), bridgeServiceTokenDefinition()}
+	return []servicesettings.Definition{kanbanStoreURLDefinition(), kanbanStoreServiceTokenDefinition(), noteboardURLDefinition(), bridgeURLDefinition(), bridgeServiceTokenDefinition(), schedulerURLDefinition(), modelStoreURLDefinition()}
 }}
 
 // EmailClassifier is cmd/email-classifier: it files mail onto a kanban board.
@@ -220,7 +225,7 @@ var KanbanCurator = JobBinary{Name: "kanban-curator", settingDefinitions: func()
 // KanbanDispatcher is cmd/kanban-dispatcher: it starts sessions for a board's
 // queued cards.
 var KanbanDispatcher = JobBinary{Name: "kanban-dispatcher", settingDefinitions: func() []servicesettings.Definition {
-	return []servicesettings.Definition{kanbanStoreURLDefinition(), kanbanStoreServiceTokenDefinition(), bridgeURLDefinition(), bridgeServiceTokenDefinition(), natsURLDefinition(), schedulerURLDefinition()}
+	return []servicesettings.Definition{kanbanStoreURLDefinition(), kanbanStoreServiceTokenDefinition(), bridgeURLDefinition(), bridgeServiceTokenDefinition(), natsURLDefinition(), schedulerURLDefinition(), modelStoreURLDefinition()}
 }}
 
 // KanbanScoper is cmd/kanban-scoper: it decomposes a board's parent cards.

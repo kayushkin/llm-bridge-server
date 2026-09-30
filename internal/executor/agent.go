@@ -13,6 +13,7 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 
 	"github.com/slava/scheduler/internal/runstatus"
+	"github.com/slava/scheduler/internal/sessionmodelrole"
 )
 
 // AgentExecutor runs agent turns by publishing a BridgeInbound message on
@@ -22,23 +23,32 @@ import (
 // For the first turn (empty BusSessionID) the executor looks up the first
 // enabled harness instance matching the job's orchestrator via
 // llm-bridge-server's GET /instances and builds a CreateSessionRequest
-// identical in shape to what bridge-ui sends.
+// identical in shape to what bridge-ui sends, naming the model-store role the
+// session runs on: the job's model_role, or the agent_job_model_role setting.
 type AgentExecutor struct {
 	client       *natsbus.Client
 	bridgeURL    string
 	noteboardURL string
 	httpClient   *http.Client
+	// defaultModelRole reads the agent_job_model_role setting when a run
+	// starts, so a change on the settings page applies to the next session.
+	defaultModelRole func() string
+	modelRoles       sessionmodelrole.RoleChecker
 }
 
 // NewAgentExecutor takes both addresses from the caller, which reads them from
 // the service's settings; this package reads no environment variable.
 // noteboardURL is where a job's agent reads and rewrites its working memory.
-func NewAgentExecutor(client *natsbus.Client, bridgeURL, noteboardURL string) *AgentExecutor {
+// defaultModelRole returns the role a job that names none starts its session
+// on, and modelRoles checks that the session's harness can run it.
+func NewAgentExecutor(client *natsbus.Client, bridgeURL, noteboardURL string, defaultModelRole func() string, modelRoles sessionmodelrole.RoleChecker) *AgentExecutor {
 	return &AgentExecutor{
-		client:       client,
-		bridgeURL:    bridgeURL,
-		noteboardURL: strings.TrimRight(noteboardURL, "/"),
-		httpClient:   &http.Client{Timeout: 5 * time.Second},
+		client:           client,
+		bridgeURL:        bridgeURL,
+		noteboardURL:     strings.TrimRight(noteboardURL, "/"),
+		httpClient:       &http.Client{Timeout: 5 * time.Second},
+		defaultModelRole: defaultModelRole,
+		modelRoles:       modelRoles,
 	}
 }
 
@@ -102,6 +112,10 @@ type AgentRun struct {
 	Orchestrator string
 	SessionID    string
 	WorkspaceID  string
+	// ModelRole is the model-store role a new session starts on. Empty takes
+	// the executor's default. A run that continues SessionID starts no
+	// session, and the session keeps the model it was created on.
+	ModelRole string
 }
 
 // workingMemoryPreamble prepends the job's prompt with the location of its
@@ -162,21 +176,14 @@ func (e *AgentExecutor) Run(run AgentRun) Result {
 
 	// First turn: no BusSessionID yet → look up an instance and emit Create.
 	// Subsequent turns reuse the adapter's bus_session_id → bridge_id mapping.
+	var startsOn string
 	if busSessionID == "" {
-		h := orchestratorHarness(orchestrator)
-		instanceID, err := e.firstEnabledInstance(h)
+		var err error
+		create, startsOn, err = e.newSessionRequest(agent, orchestrator, run.ModelRole)
 		if err != nil {
 			return Result{Status: runstatus.Error, Output: err.Error()}
 		}
 		busSessionID = fmt.Sprintf("scheduler-%s-%d", orchestrator, now.UnixNano())
-		create = &msg.CreateSessionRequest{
-			Harness:    h,
-			InstanceID: instanceID,
-			AgentID:    agent,
-			Purpose:    "scheduled-task",
-			Origin:     "scheduler",
-			Type:       msg.SessionTypeAutonomous,
-		}
 	}
 
 	in := messages.BridgeInbound{
@@ -195,5 +202,43 @@ func (e *AgentExecutor) Run(run AgentRun) Result {
 		return Result{Status: runstatus.Error, Output: fmt.Sprintf("publish failed: %v", err)}
 	}
 
-	return Result{Status: runstatus.Success, Output: fmt.Sprintf("published to %s (bus_session=%s)", messages.BridgeInboundSubject, busSessionID)}
+	return Result{Status: runstatus.Success, Output: fmt.Sprintf("published to %s (bus_session=%s%s)", messages.BridgeInboundSubject, busSessionID, startsOn)}
+}
+
+// newSessionRequest builds the create request for a job's first turn: the
+// first enabled instance of the orchestrator's harness, and the model role the
+// session runs on, checked against what that harness can run. The second value
+// says which role and model, for the run's output.
+func (e *AgentExecutor) newSessionRequest(agent, orchestrator, jobModelRole string) (*msg.CreateSessionRequest, string, error) {
+	if e.defaultModelRole == nil || e.modelRoles == nil {
+		return nil, "", fmt.Errorf("the agent executor has no model role to start a session on")
+	}
+	role, from := jobModelRole, "the job's model_role"
+	if role == "" {
+		role, from = e.defaultModelRole(), "the agent_job_model_role setting"
+	}
+	if role == "" {
+		return nil, "", fmt.Errorf("no model role: the job names none and the agent_job_model_role setting is empty")
+	}
+	h := orchestratorHarness(orchestrator)
+	model, err := e.modelRoles.Check(role, h)
+	if err != nil {
+		return nil, "", fmt.Errorf("model role %q from %s: %w", role, from, err)
+	}
+	instanceID, err := e.firstEnabledInstance(h)
+	if err != nil {
+		return nil, "", err
+	}
+	create := &msg.CreateSessionRequest{
+		Harness:    h,
+		InstanceID: instanceID,
+		AgentID:    agent,
+		Purpose:    "scheduled-task",
+		Origin:     "scheduler",
+		Type:       msg.SessionTypeAutonomous,
+	}
+	if err := sessionmodelrole.SetModelRole(create, role); err != nil {
+		return nil, "", err
+	}
+	return create, fmt.Sprintf(" role=%s from %s, model=%s", role, from, model.ID), nil
 }

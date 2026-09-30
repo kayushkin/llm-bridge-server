@@ -28,7 +28,7 @@ type Command struct {
 	Type         string `json:"type,omitempty"`
 	Agent        string `json:"agent,omitempty"`
 	Prompt       string `json:"prompt,omitempty"`
-	Model        string `json:"model,omitempty"`
+	ModelRole    string `json:"model_role,omitempty"`
 	Orchestrator string `json:"orchestrator,omitempty"`
 	SessionID    string `json:"session_id,omitempty"`
 	WorkspaceID  string `json:"workspace_id,omitempty"`
@@ -57,14 +57,22 @@ type Handler struct {
 	store     *db.Store
 	scheduler *cronpkg.Scheduler
 	logger    *logging.Logger
+	// checkModelRole asks model-store whether a job's model_role exists, as
+	// POST /api/jobs does.
+	checkModelRole func(role string) error
 }
 
 // NewHandler connects to natsURL. An empty natsURL gives a handler that does
-// nothing; this package reads no environment variable.
-func NewHandler(natsURL string, store *db.Store, scheduler *cronpkg.Scheduler, logger *logging.Logger) (*Handler, error) {
+// nothing; this package reads no environment variable. checkModelRole is
+// required: create_job takes a model_role, and one nobody checked would start
+// no session when the job ran.
+func NewHandler(natsURL string, store *db.Store, scheduler *cronpkg.Scheduler, logger *logging.Logger, checkModelRole func(role string) error) (*Handler, error) {
+	if checkModelRole == nil {
+		return nil, fmt.Errorf("bus: no model-role checker, so a create_job carrying model_role could not be checked")
+	}
 	if natsURL == "" {
 		// No NATS configured, return no-op handler
-		return &Handler{store: store, scheduler: scheduler, logger: logger}, nil
+		return &Handler{store: store, scheduler: scheduler, logger: logger, checkModelRole: checkModelRole}, nil
 	}
 
 	client, err := natsbus.Connect(natsbus.Options{
@@ -76,10 +84,11 @@ func NewHandler(natsURL string, store *db.Store, scheduler *cronpkg.Scheduler, l
 	}
 
 	return &Handler{
-		client:    client,
-		store:     store,
-		scheduler: scheduler,
-		logger:    logger,
+		client:         client,
+		store:          store,
+		scheduler:      scheduler,
+		logger:         logger,
+		checkModelRole: checkModelRole,
 	}, nil
 }
 
@@ -180,7 +189,7 @@ func (h *Handler) handleCreateJob(cmd Command) (any, error) {
 		Type:         jobType,
 		Agent:        cmd.Agent,
 		Prompt:       cmd.Prompt,
-		Model:        cmd.Model,
+		ModelRole:    cmd.ModelRole,
 		Orchestrator: cmd.Orchestrator,
 		SessionID:    cmd.SessionID,
 		WorkspaceID:  cmd.WorkspaceID,
@@ -197,6 +206,11 @@ func (h *Handler) handleCreateJob(cmd Command) (any, error) {
 	// database. Both edges share the rule now; a check added there reaches here.
 	if problem := db.ValidateJob(job); problem != "" {
 		return nil, fmt.Errorf("%s", problem)
+	}
+	if job.ModelRole != "" {
+		if err := h.checkModelRole(job.ModelRole); err != nil {
+			return nil, fmt.Errorf("model_role: %w", err)
+		}
 	}
 
 	created, err := h.store.CreateJobFull(job)

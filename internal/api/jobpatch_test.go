@@ -56,11 +56,11 @@ func TestPatchWritesEveryPatchableField(t *testing.T) {
 		"name":            "renamed",
 		"description":     "new description",
 		"schedule":        "30 6 * * *",
-		"type":            "shell",
+		"type":            "agent",
 		"command":         "echo hi",
-		"agent":           "",
+		"agent":           "another-agent",
 		"prompt":          "new prompt",
-		"model":           "opus",
+		"model_role":      "balanced",
 		"orchestrator":    "inber",
 		"session_id":      "sess-1",
 		"workspace_id":    "ws-1",
@@ -81,11 +81,11 @@ func TestPatchWritesEveryPatchableField(t *testing.T) {
 		{"name", updated.Name, "renamed"},
 		{"description", updated.Description, "new description"},
 		{"schedule", updated.Schedule, "30 6 * * *"},
-		{"type", updated.Type, "shell"},
+		{"type", updated.Type, "agent"},
 		{"command", updated.Command, "echo hi"},
-		{"agent", updated.Agent, ""},
+		{"agent", updated.Agent, "another-agent"},
 		{"prompt", updated.Prompt, "new prompt"},
-		{"model", updated.Model, "opus"},
+		{"model_role", updated.ModelRole, "balanced"},
 		{"orchestrator", updated.Orchestrator, "inber"},
 		{"session_id", updated.SessionID, "sess-1"},
 		{"workspace_id", updated.WorkspaceID, "ws-1"},
@@ -106,17 +106,17 @@ func TestPatchLeavesUnnamedFieldsAlone(t *testing.T) {
 	srv := setup(t, "")
 	job := createJob(t, srv, map[string]any{
 		"name": "agent-job", "schedule": "0 5 * * *",
-		"type": "agent", "agent": "claude-code", "prompt": "keep me", "model": "sonnet",
+		"type": "agent", "agent": "claude-code", "prompt": "keep me", "model_role": "default",
 	})
 
-	w := patchJob(t, srv, job.ID, map[string]any{"model": ""})
+	w := patchJob(t, srv, job.ID, map[string]any{"model_role": ""})
 	if w.Code != 200 {
 		t.Fatalf("patch: %d %s", w.Code, w.Body.String())
 	}
 	var updated db.Job
 	json.NewDecoder(w.Body).Decode(&updated)
-	if updated.Model != "" {
-		t.Errorf("model = %q, want cleared", updated.Model)
+	if updated.ModelRole != "" {
+		t.Errorf("model_role = %q, want cleared", updated.ModelRole)
 	}
 	if updated.Prompt != "keep me" {
 		t.Errorf("prompt = %q, want it untouched", updated.Prompt)
@@ -276,5 +276,66 @@ func TestCreateRejectsUnknownJobType(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "type must be one of") {
 		t.Errorf("refused for the wrong reason: %s", w.Body.String())
+	}
+}
+
+// TestModelRoleIsCheckedWithModelStore pins the edge of model_role: a role
+// model-store does not know is a 400 on POST and PATCH and is not stored, a
+// model-store that cannot be asked is a 502, a role on a shell job is a 400,
+// and the old model field is gone rather than silently accepted.
+func TestModelRoleIsCheckedWithModelStore(t *testing.T) {
+	srv := setup(t, "")
+	agentJob := map[string]any{"name": "a", "schedule": "0 5 * * *", "type": "agent", "agent": "claude-code", "prompt": "p"}
+	withRole := func(role string) map[string]any {
+		body := map[string]any{}
+		for key, value := range agentJob {
+			body[key] = value
+		}
+		body["model_role"] = role
+		return body
+	}
+	post := func(body map[string]any) *httptest.ResponseRecorder {
+		encoded, _ := json.Marshal(body)
+		request := httptest.NewRequest(http.MethodPost, "/api/jobs", bytes.NewReader(encoded))
+		recorder := httptest.NewRecorder()
+		srv.ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	if w := post(withRole("sonnet")); w.Code != http.StatusBadRequest {
+		t.Errorf("POST an unknown role: %d %s, want 400", w.Code, w.Body.String())
+	}
+	if w := post(withRole("model-store-down")); w.Code != http.StatusBadGateway {
+		t.Errorf("POST with model-store down: %d %s, want 502", w.Code, w.Body.String())
+	}
+	legacy := withRole("default")
+	delete(legacy, "model_role")
+	legacy["model"] = "claude-opus"
+	if w := post(legacy); w.Code != http.StatusBadRequest {
+		t.Errorf("POST the old model field: %d %s, want 400", w.Code, w.Body.String())
+	}
+	if w := post(map[string]any{"name": "s", "schedule": "0 5 * * *", "type": "shell", "command": "true", "model_role": "default"}); w.Code != http.StatusBadRequest {
+		t.Errorf("POST a role on a shell job: %d %s, want 400", w.Code, w.Body.String())
+	}
+
+	job := createJob(t, srv, withRole("default"))
+	if job.ModelRole != "default" {
+		t.Fatalf("created model_role = %q, want default", job.ModelRole)
+	}
+	if w := patchJob(t, srv, job.ID, map[string]any{"model_role": "sonnet"}); w.Code != http.StatusBadRequest {
+		t.Errorf("PATCH an unknown role: %d %s, want 400", w.Code, w.Body.String())
+	}
+	if w := patchJob(t, srv, job.ID, map[string]any{"model_role": "model-store-down"}); w.Code != http.StatusBadGateway {
+		t.Errorf("PATCH with model-store down: %d %s, want 502", w.Code, w.Body.String())
+	}
+	stored, err := srv.store.GetJob(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ModelRole != "default" {
+		t.Errorf("a refused PATCH changed model_role to %q", stored.ModelRole)
+	}
+	if w := patchJob(t, srv, job.ID, map[string]any{"model_role": "balanced"}); w.Code != http.StatusOK {
+		t.Errorf("PATCH a known role: %d %s, want 200", w.Code, w.Body.String())
 	}
 }

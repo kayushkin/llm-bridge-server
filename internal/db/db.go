@@ -21,7 +21,7 @@ type Job struct {
 	Type         string     `json:"type"`                   // "shell" or "agent"
 	Agent        string     `json:"agent,omitempty"`        // agent name (for type=agent)
 	Prompt       string     `json:"prompt,omitempty"`       // prompt text (for type=agent)
-	Model        string     `json:"model,omitempty"`        // model override (for type=agent)
+	ModelRole    string     `json:"model_role,omitempty"`   // model-store role the session starts on (for type=agent); empty takes the agent_job_model_role setting
 	Orchestrator string     `json:"orchestrator,omitempty"` // "claude-code", "inber", etc. (for type=agent)
 	SessionID    string     `json:"session_id,omitempty"`   // session to resume (for type=agent)
 	WorkspaceID  string     `json:"workspace_id,omitempty"` // noteboard workspace holding this job's working memory (for type=agent)
@@ -133,7 +133,7 @@ func (s *Store) migrate() error {
 			type TEXT NOT NULL DEFAULT 'shell',
 			agent TEXT NOT NULL DEFAULT '',
 			prompt TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL DEFAULT '',
+			model_role TEXT NOT NULL DEFAULT '',
 			orchestrator TEXT NOT NULL DEFAULT '',
 			session_id TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
@@ -157,7 +157,6 @@ func (s *Store) migrate() error {
 		"ALTER TABLE jobs ADD COLUMN type TEXT NOT NULL DEFAULT 'shell'",
 		"ALTER TABLE jobs ADD COLUMN agent TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE jobs ADD COLUMN prompt TEXT NOT NULL DEFAULT ''",
-		"ALTER TABLE jobs ADD COLUMN model TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE jobs ADD COLUMN orchestrator TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE jobs ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
 		// A recurring agent job's DURABLE memory, as a noteboard workspace id.
@@ -173,6 +172,9 @@ func (s *Store) migrate() error {
 		"ALTER TABLE jobs ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 0",
 	} {
 		s.db.Exec(col)
+	}
+	if err := s.migrateModelToModelRole(); err != nil {
+		return err
 	}
 	return s.migrateServiceSettings()
 }
@@ -326,8 +328,8 @@ func (s *Store) CreateJobFull(j Job) (*Job, error) {
 		j.Type = "shell"
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO jobs (name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, timeout_seconds, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		j.Name, j.Description, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.Model, j.Orchestrator, j.SessionID, j.WorkspaceID, j.TimeoutSecs, j.Enabled, now, now,
+		`INSERT INTO jobs (name, description, schedule, command, type, agent, prompt, model_role, orchestrator, session_id, workspace_id, timeout_seconds, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		j.Name, j.Description, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.ModelRole, j.Orchestrator, j.SessionID, j.WorkspaceID, j.TimeoutSecs, j.Enabled, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -340,7 +342,7 @@ func (s *Store) CreateJobFull(j Job) (*Job, error) {
 }
 
 func (s *Store) ListJobs() ([]Job, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, timeout_seconds, enabled, hold_until, created_at, updated_at FROM jobs ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, description, schedule, command, type, agent, prompt, model_role, orchestrator, session_id, workspace_id, timeout_seconds, enabled, hold_until, created_at, updated_at FROM jobs ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +351,7 @@ func (s *Store) ListJobs() ([]Job, error) {
 	for rows.Next() {
 		var j Job
 		var enabled int
-		if err := rows.Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &j.TimeoutSecs, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		if err := rows.Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.ModelRole, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &j.TimeoutSecs, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt); err != nil {
 			return nil, err
 		}
 		j.Enabled = enabled != 0
@@ -361,8 +363,8 @@ func (s *Store) ListJobs() ([]Job, error) {
 func (s *Store) GetJob(id int64) (*Job, error) {
 	var j Job
 	var enabled int
-	err := s.db.QueryRow(`SELECT id, name, description, schedule, command, type, agent, prompt, model, orchestrator, session_id, workspace_id, timeout_seconds, enabled, hold_until, created_at, updated_at FROM jobs WHERE id=?`, id).
-		Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.Model, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &j.TimeoutSecs, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, name, description, schedule, command, type, agent, prompt, model_role, orchestrator, session_id, workspace_id, timeout_seconds, enabled, hold_until, created_at, updated_at FROM jobs WHERE id=?`, id).
+		Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.ModelRole, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &j.TimeoutSecs, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -389,7 +391,7 @@ type JobPatch struct {
 	Type         *string
 	Agent        *string
 	Prompt       *string
-	Model        *string
+	ModelRole    *string
 	Orchestrator *string
 	SessionID    *string
 	WorkspaceID  *string
@@ -414,7 +416,7 @@ var patchColumns = []struct {
 	{"type", func(p JobPatch) (any, bool) { return patchValue(p.Type) }},
 	{"agent", func(p JobPatch) (any, bool) { return patchValue(p.Agent) }},
 	{"prompt", func(p JobPatch) (any, bool) { return patchValue(p.Prompt) }},
-	{"model", func(p JobPatch) (any, bool) { return patchValue(p.Model) }},
+	{"model_role", func(p JobPatch) (any, bool) { return patchValue(p.ModelRole) }},
 	{"orchestrator", func(p JobPatch) (any, bool) { return patchValue(p.Orchestrator) }},
 	{"session_id", func(p JobPatch) (any, bool) { return patchValue(p.SessionID) }},
 	{"workspace_id", func(p JobPatch) (any, bool) { return patchValue(p.WorkspaceID) }},

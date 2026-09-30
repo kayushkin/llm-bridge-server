@@ -41,6 +41,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -67,6 +68,8 @@ import (
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
 	"github.com/slava/scheduler/internal/schedulerjobs"
+	"github.com/slava/scheduler/internal/schedulersettings"
+	"github.com/slava/scheduler/internal/sessionmodelrole"
 	"github.com/slava/scheduler/internal/textcut"
 )
 
@@ -141,7 +144,15 @@ func main() {
 		return
 	}
 
+	// Read once per tick: every fresh session this tick starts runs on it.
+	modelRole, err := schedulersettings.ReadModelRole(context.Background(), settings.String(schedulerconfig.SettingSchedulerURL), schedulerconfig.SettingKanbanDispatcherModelRole)
+	if err != nil {
+		log.Fatalf("[dispatcher] %v", err)
+	}
+
 	err = run(runOptions{
+		ModelRole:          modelRole,
+		ModelRoles:         sessionmodelrole.New(settings.String(schedulerconfig.SettingModelStoreURL), *bridgeURL),
 		BoardID:            *boardID,
 		KanbanURL:          *kanbanURL,
 		KanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
@@ -156,8 +167,14 @@ func main() {
 }
 
 type runOptions struct {
-	BoardID   string
-	KanbanURL string
+	// ModelRole is the model-store role every fresh session this tick starts
+	// runs on: the scheduler's kanban_dispatcher_model_role setting.
+	ModelRole string
+	// ModelRoles checks, per card, that the card's harness can run the model
+	// ModelRole resolves to.
+	ModelRoles sessionmodelrole.RoleChecker
+	BoardID    string
+	KanbanURL  string
 	// KanbanServiceToken is what the kanban-store client presents; kanban-store
 	// gates every route.
 	KanbanServiceToken string
@@ -194,6 +211,9 @@ type runOptions struct {
 // session that is busy, stale or gone, a child that has not settled, a child
 // already on its target column or not on this board, and a dry run.
 func run(options runOptions) error {
+	if options.ModelRole == "" || options.ModelRoles == nil {
+		return fmt.Errorf("no model role to start sessions on: a session that names none runs on whatever the bridge's harness default is")
+	}
 	degraded := degradations.New("dispatcher")
 	kc := kanbanclient.New(options.KanbanURL, options.KanbanServiceToken)
 	board, err := kc.GetBoard(options.BoardID)
@@ -247,6 +267,8 @@ func run(options runOptions) error {
 		dryRun:             options.DryRun,
 		maxDispatch:        options.MaxDispatch,
 		degraded:           degraded,
+		modelRole:          options.ModelRole,
+		modelRoles:         options.ModelRoles,
 	}
 	dispatched, undispatched := dispatcher.dispatchBacklog(parents)
 
@@ -395,6 +417,10 @@ type backlogDispatcher struct {
 	// degraded collects the reads this pass needed and could not make. A card
 	// it chose and could not dispatch is returned as undispatchedCard instead.
 	degraded *degradations.Recorder
+	// modelRole is the role a fresh session runs on; modelRoles checks it
+	// against the card's harness before the session is published.
+	modelRole  string
+	modelRoles sessionmodelrole.RoleChecker
 }
 
 // undispatchedCard is a Backlog card this tick chose to dispatch and could not.
@@ -434,6 +460,14 @@ func (d *backlogDispatcher) dispatchBacklog(parents []scopedParent) (dispatched 
 				continue
 			}
 			reusedSessionID := reusableSiblingSession(d.kanban, d.bridgeURL, d.view, g, spec, d.degraded)
+			if reusedSessionID == "" {
+				// A revived session keeps the model it was created on; only a
+				// fresh one is started on the role.
+				if _, err := d.modelRoles.Check(d.modelRole, spec.Harness); err != nil {
+					notDispatched(fmt.Errorf("kanban_dispatcher_model_role %q: %w", d.modelRole, err))
+					continue
+				}
+			}
 			sessionID := reusedSessionID
 			if sessionID == "" {
 				sessionID = mintSessionID(p.cardID, g)
@@ -452,7 +486,11 @@ func (d *backlogDispatcher) dispatchBacklog(parents []scopedParent) (dispatched 
 				continue
 			}
 
-			in := buildBridgeInbound(sessionID, displayName, prompt, reusedSessionID == "", spec)
+			in, err := buildBridgeInbound(sessionID, displayName, prompt, reusedSessionID == "", spec, d.modelRole)
+			if err != nil {
+				notDispatched(err)
+				continue
+			}
 			if err := d.publish(in); err != nil {
 				notDispatched(fmt.Errorf("nats publish: %w", err))
 				continue
@@ -871,7 +909,9 @@ func (s cardSessionSpec) describe() string {
 	return strings.Join(parts, " ")
 }
 
-func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec cardSessionSpec) messages.BridgeInbound {
+// buildBridgeInbound builds the message for one dispatch. A fresh session is
+// created on modelRole, sent as its own model choice.
+func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec cardSessionSpec, modelRole string) (messages.BridgeInbound, error) {
 	in := messages.BridgeInbound{
 		BusSessionID: sessionID,
 		Agent:        "tcl-worker",
@@ -895,8 +935,11 @@ func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec 
 			Type:        msg.SessionTypeAutonomous,
 			AutoStart:   true,
 		}
+		if err := sessionmodelrole.SetModelRole(in.Create, modelRole); err != nil {
+			return messages.BridgeInbound{}, err
+		}
 	}
-	return in
+	return in, nil
 }
 
 func buildPrompt(p scopedParent, child kanbanclient.CardView, g backlogGroup, reusedSessionID string) string {

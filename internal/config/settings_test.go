@@ -63,6 +63,12 @@ func TestLoadReadsTheSameValuesItAlwaysDid(t *testing.T) {
 		SettingKanbanClassifierModelRole:     "efficient",
 		SettingKanbanScoperModelRole:         "default",
 		SettingDemoMailGeneratorModelRole:    "best",
+		SettingAutoworkerAnthropicModelRole:  "best",
+		SettingAutoworkerCodexModelRole:      "efficient",
+		SettingAgentJobModelRole:             "balanced",
+		SettingHeraldModelRole:               "efficient",
+		SettingKanbanDispatcherModelRole:     "best",
+		SettingDemoWorkerModelRole:           "balanced",
 	} {
 		if got := set.ModelRole(key); got != want {
 			t.Errorf("%s = %q, want %q", key, got, want)
@@ -95,6 +101,12 @@ var everyVariableSetToItsOwnValue = map[string]string{
 	"SCHEDULER_KANBAN_CLASSIFIER_MODEL_ROLE":      "efficient",
 	"SCHEDULER_KANBAN_SCOPER_MODEL_ROLE":          "default",
 	"SCHEDULER_DEMO_MAIL_GENERATOR_MODEL_ROLE":    "best",
+	"SCHEDULER_AUTOWORKER_ANTHROPIC_MODEL_ROLE":   "best",
+	"SCHEDULER_AUTOWORKER_CODEX_MODEL_ROLE":       "efficient",
+	"SCHEDULER_AGENT_JOB_MODEL_ROLE":              "balanced",
+	"SCHEDULER_HERALD_MODEL_ROLE":                 "efficient",
+	"SCHEDULER_KANBAN_DISPATCHER_MODEL_ROLE":      "best",
+	"SCHEDULER_DEMO_WORKER_MODEL_ROLE":            "balanced",
 }
 
 // Every model-role setting is a stored, editable, required model_role, and

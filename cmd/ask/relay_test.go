@@ -20,6 +20,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/bus/messages"
+	"github.com/slava/scheduler/internal/sessionmodelrole"
 )
 
 // ---------------------------------------------------------------- fixtures
@@ -107,6 +109,9 @@ func baseConfig(bridgeURL string) askConfig {
 		bridgeURL: bridgeURL,
 		question:  "Approve the update?",
 		now:       time.Date(2026, 8, 8, 12, 0, 0, 123456789, time.UTC),
+		heraldModelRole: func() (string, string, error) {
+			return "default", "claude-test", nil
+		},
 	}
 }
 
@@ -774,5 +779,74 @@ func TestRunAsk_ReuseReportsAFailedConnectionAndARefusedPublish(t *testing.T) {
 	}
 	if refused.pub.closed != 1 {
 		t.Errorf("closed the connection %d times on the failure path, want 1", refused.pub.closed)
+	}
+}
+
+// ------------------------------------------------------------ model role
+
+// A new herald session names the herald_model_role role as its own model, so
+// the bridge's per-harness default never decides what it runs on.
+func TestRunAsk_NewSessionNamesTheHeraldModelRole(t *testing.T) {
+	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
+	c := newConnector()
+	if _, err := runAsk(baseConfig(srv.URL), c.connect, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	in := decodeInbound(t, c.pub.published[0])
+	if string(in.Create.HarnessConfig) != `{"model":"default"}` {
+		t.Errorf("harness_config = %s, want the role as the session's model", in.Create.HarnessConfig)
+	}
+}
+
+// A role that cannot be read or that claude_code cannot run opens nothing.
+func TestRunAsk_AnUnusableModelRolePublishesNothing(t *testing.T) {
+	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
+	c := newConnector()
+	cfg := baseConfig(srv.URL)
+	cfg.heraldModelRole = func() (string, string, error) {
+		return "", "", fmt.Errorf("role \"balanced\" starts a session on gpt-test, and harness claude_code runs only anthropic models")
+	}
+	_, err := runAsk(cfg, c.connect, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "runs only anthropic") {
+		t.Fatalf("err = %v, want the harness refusal", err)
+	}
+	if c.calls != 0 {
+		t.Errorf("opened %d connections for a session that must not start", c.calls)
+	}
+	cfg.heraldModelRole = nil
+	if _, err := runAsk(cfg, c.connect, io.Discard); err == nil || c.calls != 0 {
+		t.Errorf("no role reader: err = %v, connections = %d", err, c.calls)
+	}
+}
+
+// readHeraldModelRole reads the scheduler's setting and checks it against
+// claude_code with model-store and the bridge.
+func TestReadHeraldModelRole(t *testing.T) {
+	role := "default"
+	services := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/settings":
+			fmt.Fprintf(w, `{"service":"scheduler","settings":[{"key":"herald_model_role","value_type":"model_role","value":%q}]}`, role)
+		case "/api/roles/default":
+			fmt.Fprint(w, `{"id":"claude-test","provider":"anthropic"}`)
+		case "/api/roles/balanced":
+			fmt.Fprint(w, `{"id":"gpt-test","provider":"openai"}`)
+		case "/harnesses":
+			fmt.Fprint(w, `[{"name":"claude_code","supported_providers":["anthropic"]}]`)
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer services.Close()
+	checker := sessionmodelrole.New(services.URL, services.URL)
+
+	gotRole, gotModel, err := readHeraldModelRole(context.Background(), services.URL, checker)
+	if err != nil || gotRole != "default" || gotModel != "claude-test" {
+		t.Fatalf("got %q %q %v, want default claude-test", gotRole, gotModel, err)
+	}
+	role = "balanced"
+	if _, _, err := readHeraldModelRole(context.Background(), services.URL, checker); err == nil || !strings.Contains(err.Error(), "herald_model_role") {
+		t.Errorf("err = %v, want a refusal naming the setting", err)
 	}
 }

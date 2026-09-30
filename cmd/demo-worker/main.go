@@ -27,6 +27,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -39,6 +40,8 @@ import (
 	"github.com/slava/scheduler/internal/demoteam"
 	"github.com/slava/scheduler/internal/kanbanclient"
 	"github.com/slava/scheduler/internal/kanbanvocab"
+	"github.com/slava/scheduler/internal/schedulersettings"
+	"github.com/slava/scheduler/internal/sessionmodelrole"
 )
 
 const (
@@ -89,6 +92,13 @@ type config struct {
 	RepoSlug     string
 	MaxBudget    float64
 	MaxPerTick   int
+
+	// ModelRole is the model-store role every session this run starts runs
+	// on: the scheduler's demo_worker_model_role setting, read at start when
+	// the run dispatches or reviews. ModelRoles checks it against each
+	// session's harness.
+	ModelRole  string
+	ModelRoles sessionmodelrole.RoleChecker
 }
 
 func main() {
@@ -109,6 +119,14 @@ func main() {
 	if err := kanbanclient.StampRequestsToKanbanStore(cfg.KanbanURL, cfg.KanbanServiceToken); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
 		os.Exit(1)
+	}
+	if cfg.Dispatch || cfg.Review {
+		cfg.ModelRole, err = schedulersettings.ReadModelRole(context.Background(), settings.String(schedulerconfig.SettingSchedulerURL), schedulerconfig.SettingDemoWorkerModelRole)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
+			os.Exit(1)
+		}
+		cfg.ModelRoles = sessionmodelrole.New(settings.String(schedulerconfig.SettingModelStoreURL), cfg.BridgeURL)
 	}
 	if err := run(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
@@ -152,6 +170,9 @@ func run(cfg config) error {
 		// Zero is not "no ceiling" to a harness, it is "unlimited" — the exact
 		// confusion autoworker's spend code warns about.
 		return fmt.Errorf("-max-budget-usd must be positive; 0 reads as UNLIMITED to the harness")
+	}
+	if (cfg.Dispatch || cfg.Review) && (cfg.ModelRole == "" || cfg.ModelRoles == nil) {
+		return fmt.Errorf("no model role to start sessions on: a session that names none runs on whatever the bridge's harness default is")
 	}
 	if cfg.DryRun {
 		fmt.Println("DRY RUN — nothing will be written or spawned")

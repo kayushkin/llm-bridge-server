@@ -83,6 +83,11 @@ func ValidateJob(job Job) string {
 	if missing {
 		return fmt.Sprintf("%s is required for %s jobs", strings.Join(names, " and "), job.Type)
 	}
+	// Only an agent job starts a session, so a role on any other job would be
+	// stored, shown and never used — the fate of the model column it replaced.
+	if job.ModelRole != "" && job.Type != "agent" {
+		return fmt.Sprintf("model_role is only for agent jobs; a %s job starts no session", job.Type)
+	}
 	return ""
 }
 

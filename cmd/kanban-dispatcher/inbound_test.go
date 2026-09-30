@@ -20,7 +20,10 @@ import (
 
 func TestAFreshSessionIsCreatedWithTheValuesTheBridgeFilesItUnder(t *testing.T) {
 	spec := cardSessionSpec{Harness: msg.HarnessCodex, InstanceID: "inst-codex-local", AgentSlug: "northwind-builder", BundleID: "6", CardID: "card-a"}
-	in := buildBridgeInbound("tcl-sess", "tcl a · Sep 25 22:00", "do the thing", true, spec)
+	in, err := buildBridgeInbound("tcl-sess", "tcl a · Sep 25 22:00", "do the thing", true, spec, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if in.BusSessionID != "tcl-sess" || in.Send == nil || in.Send.Message != "do the thing" {
 		t.Errorf("the message must carry the session id and the prompt, got session %q send %+v", in.BusSessionID, in.Send)
@@ -53,7 +56,10 @@ func TestAFreshSessionIsCreatedWithTheValuesTheBridgeFilesItUnder(t *testing.T) 
 }
 
 func TestARevivedSessionIsSentToAndNotCreatedAgain(t *testing.T) {
-	in := buildBridgeInbound("sess-sibling", "x", "next task", false, cardSessionSpec{InstanceID: "inst-cc-local"})
+	in, err := buildBridgeInbound("sess-sibling", "x", "next task", false, cardSessionSpec{InstanceID: "inst-cc-local"}, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if in.Create != nil {
 		t.Errorf("a revived session exists already; asking the bridge to create it again is wrong, got %+v", in.Create)
 	}

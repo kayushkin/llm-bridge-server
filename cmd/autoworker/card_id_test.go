@@ -13,7 +13,7 @@ import (
 // must survive the JSON the adapter forwards, not only the Go struct.
 func TestAWorkerForAQueueCardNamesTheCard(t *testing.T) {
 	p := providerSpec{Name: "anthropic", Harness: msg.HarnessClaudeCode, InstanceID: "inst-test"}
-	create, err := newWorkerSessionRequest(p, time.Now(), 0, "", "", "card-queued")
+	create, err := newWorkerSessionRequest(p, time.Now(), "default", 0, "", "", "card-queued")
 	if err != nil {
 		t.Fatalf("newWorkerSessionRequest: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestAWorkerForAQueueCardNamesTheCard(t *testing.T) {
 // card. Sending a card id then would make the bridge refuse the session.
 func TestAWorkerWithNoQueueCardNamesNoCard(t *testing.T) {
 	p := providerSpec{Name: "anthropic", Harness: msg.HarnessClaudeCode, InstanceID: "inst-test"}
-	create, err := newWorkerSessionRequest(p, time.Now(), 0, "", "", "")
+	create, err := newWorkerSessionRequest(p, time.Now(), "default", 0, "", "", "")
 	if err != nil {
 		t.Fatalf("newWorkerSessionRequest: %v", err)
 	}

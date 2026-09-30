@@ -35,12 +35,38 @@ func setupTest() (*db.Store, *cronpkg.Scheduler, *logging.Logger, *Handler, erro
 	logger := logging.New(nil) // nil NATS client = no-op
 
 	// Create handler without NATS (no-op)
-	handler, err := NewHandler("", dbStore, scheduler, logger)
+	handler, err := NewHandler("", dbStore, scheduler, logger, checkModelRoleForTests)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
 	return dbStore, scheduler, logger, handler, nil
+}
+
+// checkModelRoleForTests stands in for model-store: it knows two roles.
+func checkModelRoleForTests(role string) error {
+	if role == "default" || role == "balanced" {
+		return nil
+	}
+	return fmt.Errorf("model-store has no role %q", role)
+}
+
+func TestCreateJobRefusesAModelRoleModelStoreDoesNotKnow(t *testing.T) {
+	store, _, _, handler, err := setupTest()
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+	_, err = handler.handleRequest([]byte(`{"action":"create_job","name":"j","schedule":"0 3 * * *","type":"agent","agent":"claude-code","prompt":"hi","model_role":"sonnet"}`))
+	if err == nil || !strings.Contains(err.Error(), "no role") {
+		t.Fatalf("err = %v, want model-store's refusal", err)
+	}
+	jobs, _ := store.ListJobs()
+	if len(jobs) != 0 {
+		t.Errorf("a refused job was stored: %+v", jobs)
+	}
+	if _, err := NewHandler("", store, nil, nil, nil); err == nil {
+		t.Error("a handler with no model-role checker was built")
+	}
 }
 
 func TestHandleListJobs(t *testing.T) {

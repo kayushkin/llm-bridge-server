@@ -56,7 +56,7 @@ func anthropicSpec() providerSpec {
 // card pointing at nothing — silently, because both halves succeed.
 func TestTheReturnedSessionIDIsTheOnePublished(t *testing.T) {
 	bus := &recordingBus{}
-	got, err := publishWorker(bus, anthropicSpec(), "do the work", 0, "", "", "")
+	got, err := publishWorker(bus, anthropicSpec(), "default", "do the work", 0, "", "", "")
 	if err != nil {
 		t.Fatalf("publishWorker: %v", err)
 	}
@@ -73,11 +73,11 @@ func TestTheReturnedSessionIDIsTheOnePublished(t *testing.T) {
 // Two fires inside one second must not collide. The id is minted here rather than
 // by the server, so uniqueness is this function's job.
 func TestTwoFiresInTheSameSecondGetDifferentSessionIDs(t *testing.T) {
-	first, err := publishWorker(&recordingBus{}, anthropicSpec(), "prompt", 0, "", "", "")
+	first, err := publishWorker(&recordingBus{}, anthropicSpec(), "default", "prompt", 0, "", "", "")
 	if err != nil {
 		t.Fatalf("publishWorker: %v", err)
 	}
-	second, err := publishWorker(&recordingBus{}, anthropicSpec(), "prompt", 0, "", "", "")
+	second, err := publishWorker(&recordingBus{}, anthropicSpec(), "default", "prompt", 0, "", "", "")
 	if err != nil {
 		t.Fatalf("publishWorker: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestTwoFiresInTheSameSecondGetDifferentSessionIDs(t *testing.T) {
 
 func TestTheWorkerIsPublishedOnTheBridgeInboundSubject(t *testing.T) {
 	bus := &recordingBus{}
-	if _, err := publishWorker(bus, anthropicSpec(), "prompt", 0, "", "", ""); err != nil {
+	if _, err := publishWorker(bus, anthropicSpec(), "default", "prompt", 0, "", "", ""); err != nil {
 		t.Fatalf("publishWorker: %v", err)
 	}
 	if bus.subject != messages.BridgeInboundSubject {
@@ -103,7 +103,7 @@ func TestTheWorkerIsPublishedOnTheBridgeInboundSubject(t *testing.T) {
 // opened by hand.
 func TestTheDispatchedSessionIsAutonomousAndStartsItself(t *testing.T) {
 	bus := &recordingBus{}
-	if _, err := publishWorker(bus, anthropicSpec(), "prompt", 0, "", "", ""); err != nil {
+	if _, err := publishWorker(bus, anthropicSpec(), "default", "prompt", 0, "", "", ""); err != nil {
 		t.Fatalf("publishWorker: %v", err)
 	}
 	create := bus.inbound.Create
@@ -124,7 +124,7 @@ func TestTheDispatchedSessionIsAutonomousAndStartsItself(t *testing.T) {
 func TestTheDispatchedSessionCarriesTheProvidersHarnessAndInstance(t *testing.T) {
 	bus := &recordingBus{}
 	p := anthropicSpec()
-	if _, err := publishWorker(bus, p, "prompt", 0, "", "", ""); err != nil {
+	if _, err := publishWorker(bus, p, "default", "prompt", 0, "", "", ""); err != nil {
 		t.Fatalf("publishWorker: %v", err)
 	}
 	if bus.inbound.Create.Harness != p.Harness {
@@ -143,7 +143,7 @@ func TestTheDispatchedSessionCarriesTheProvidersHarnessAndInstance(t *testing.T)
 func TestThePromptReachesTheSession(t *testing.T) {
 	bus := &recordingBus{}
 	const prompt = "Rename the thing in four places."
-	if _, err := publishWorker(bus, anthropicSpec(), prompt, 0, "", "", ""); err != nil {
+	if _, err := publishWorker(bus, anthropicSpec(), "default", prompt, 0, "", "", ""); err != nil {
 		t.Fatalf("publishWorker: %v", err)
 	}
 	if bus.inbound.Send == nil {
@@ -159,7 +159,7 @@ func TestThePromptReachesTheSession(t *testing.T) {
 // the outside, from having no ceiling at all.
 func TestTheResolvedCeilingIsPublishedOnBothEnforcers(t *testing.T) {
 	bus := &recordingBus{}
-	if _, err := publishWorker(bus, anthropicSpec(), "prompt", 3.50, "", "", ""); err != nil {
+	if _, err := publishWorker(bus, anthropicSpec(), "default", "prompt", 3.50, "", "", ""); err != nil {
 		t.Fatalf("publishWorker: %v", err)
 	}
 	create := bus.inbound.Create
@@ -183,16 +183,58 @@ func TestTheResolvedCeilingIsPublishedOnBothEnforcers(t *testing.T) {
 // of nothing", and the distinction is the whole of this mechanism.
 func TestAnUncappedFirePublishesNoCeilingAtAll(t *testing.T) {
 	bus := &recordingBus{}
-	if _, err := publishWorker(bus, anthropicSpec(), "prompt", 0, "", "", ""); err != nil {
+	if _, err := publishWorker(bus, anthropicSpec(), "default", "prompt", 0, "", "", ""); err != nil {
 		t.Fatalf("publishWorker: %v", err)
 	}
 	if bus.inbound.Create.MaxBudget != nil {
 		t.Errorf("published a server-side ceiling of %v for an uncapped fire",
 			*bus.inbound.Create.MaxBudget)
 	}
-	if bus.inbound.Create.HarnessConfig != nil {
-		t.Errorf("published a harness config %q for an uncapped fire",
+	var harnessConfig map[string]any
+	if err := json.Unmarshal(bus.inbound.Create.HarnessConfig, &harnessConfig); err != nil {
+		t.Fatalf("harness config is not an object: %v", err)
+	}
+	if _, has := harnessConfig["max_budget_usd"]; has {
+		t.Errorf("published a harness config %q with a ceiling for an uncapped fire",
 			string(bus.inbound.Create.HarnessConfig))
+	}
+}
+
+// The lane's model role goes on the wire as the session's own model, beside the
+// ceiling, so the bridge's per-harness default never decides what a worker runs
+// on.
+func TestTheModelRoleIsPublishedBesideTheCeiling(t *testing.T) {
+	bus := &recordingBus{}
+	if _, err := publishWorker(bus, anthropicSpec(), "best", "prompt", 3.50, "", "", ""); err != nil {
+		t.Fatalf("publishWorker: %v", err)
+	}
+	var harnessConfig struct {
+		Model        string  `json:"model"`
+		MaxBudgetUSD float64 `json:"max_budget_usd"`
+	}
+	if err := json.Unmarshal(bus.inbound.Create.HarnessConfig, &harnessConfig); err != nil {
+		t.Fatalf("harness config is not an object: %v", err)
+	}
+	if harnessConfig.Model != "best" || harnessConfig.MaxBudgetUSD != 3.50 {
+		t.Errorf("harness config %s, want model best and the 3.50 ceiling", bus.inbound.Create.HarnessConfig)
+	}
+	if _, err := publishWorker(&recordingBus{}, anthropicSpec(), "", "prompt", 0, "", "", ""); err == nil {
+		t.Error("a worker was published with no model role")
+	}
+}
+
+// Each lane reads its own setting. One setting for both would put an OpenAI
+// model on the claude_code lane or the other way round.
+func TestEachLaneReadsItsOwnModelRoleSetting(t *testing.T) {
+	seen := map[string]bool{}
+	for _, lane := range providers {
+		if lane.ModelRoleSetting == "" {
+			t.Errorf("lane %s names no model role setting", lane.Name)
+		}
+		if seen[lane.ModelRoleSetting] {
+			t.Errorf("lane %s shares setting %s with another lane", lane.Name, lane.ModelRoleSetting)
+		}
+		seen[lane.ModelRoleSetting] = true
 	}
 }
 
@@ -200,7 +242,7 @@ func TestAnUncappedFirePublishesNoCeilingAtAll(t *testing.T) {
 // stamps the cooldown and links a kanban card on the strength of this return.
 func TestAFailedPublishReturnsNoSessionID(t *testing.T) {
 	bus := &recordingBus{err: errTestPublish}
-	got, err := publishWorker(bus, anthropicSpec(), "prompt", 0, "", "", "")
+	got, err := publishWorker(bus, anthropicSpec(), "default", "prompt", 0, "", "", "")
 	if err == nil {
 		t.Fatal("a failed publish was reported as a successful fire")
 	}

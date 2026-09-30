@@ -380,7 +380,7 @@ type recordingPublisher struct {
 	budgets []float64
 }
 
-func (p *recordingPublisher) publish(_ providerSpec, prompt string, maxBudgetUSD float64, _, _, _ string) (string, error) {
+func (p *recordingPublisher) publish(_ providerSpec, _ string, prompt string, maxBudgetUSD float64, _, _, _ string) (string, error) {
 	p.calls++
 	p.prompts = append(p.prompts, prompt)
 	p.budgets = append(p.budgets, maxBudgetUSD)
@@ -402,3 +402,7 @@ func newStubEmptyBoards(t *testing.T) string {
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
+
+// defaultLaneModelRole is a laneModelRoleReader for a tick test that is about
+// something other than the model role: every lane runs on default.
+func defaultLaneModelRole(providerSpec) (string, error) { return "default", nil }

@@ -29,7 +29,7 @@ Centralized job scheduler for the inber ecosystem.
   variable, its value in force and where the value came from, a secret's value
   withheld. At the root, not under `/api`, and behind the same bearer.
 - `PUT /settings/{key}` with `{"value":"balanced"}` — change a stored setting:
-  the model role a job binary asks for. 409 for a setting read where the
+  the model role a job binary asks for or a session starts on. 409 for a setting read where the
   process starts, 400 for a role model-store does not list, 502 while
   model-store cannot be asked.
 
@@ -50,7 +50,7 @@ jobs read to find the scheduler, is not the service's and is left alone.
 | `NATS_URL` | `nats://localhost:4222` | the service does not start without it |
 | `LLMBRIDGE_URL` | `http://localhost:8160` | where agent jobs find a harness instance |
 | `NOTEBOARD_URL` | `http://localhost:8191` | written into an agent job's working-memory preamble |
-| `MODEL_STORE_URL` | `http://localhost:8155` | where a new model role is checked (`GET /api/roles`) before it is stored |
+| `MODEL_STORE_URL` | `http://localhost:8155` | where a new model role is checked (`GET /api/roles`) before it is stored, and where an agent job's role is resolved (`GET /api/roles/{role}`) before its session starts. `ask`, `autoworker`, `kanban-dispatcher` and `demo-worker` read the same variable |
 
 ### Model roles: stored by the service, read by the jobs
 
@@ -80,6 +80,44 @@ serves its provider, and names every attempt when all fail. An `llm.completion`
 operation calls the role's first model only, and holds the call to the board
 organization's budget.
 
+### Model roles for the sessions the scheduler starts
+
+A session started without naming a model runs on the bridge's per-harness
+default (`bridge-prefs.defaults.<harness>.model` on the bridge's Settings
+page), one value shared by every session on that harness; on 2026-09-30 it was
+set to Haiku for 14 hours and the agent jobs and herald ran on Haiku with
+nothing here saying so. So every session the scheduler starts names a role, sent
+as `harness_config.model`. The bridge pins the session to the role's **first**
+model and never falls back to the rest, and it does not check at create that
+the harness can run that model, so the scheduler checks first: it resolves the
+role with model-store (`GET /api/roles/{role}`), reads the harness's
+`supported_providers` from the bridge's `GET /harnesses`, and starts no session
+when the harness cannot run the model's provider. The run fails, or the
+autoworker lane records a shortfall, naming the role, the model and the harness.
+
+| key (variable to seed it) | seeded with | ran on before (the bridge's harness default) | used by |
+|---|---|---|---|
+| `autoworker_anthropic_model_role` (`SCHEDULER_AUTOWORKER_ANTHROPIC_MODEL_ROLE`) | `default` | `claude-opus-5-5` | autoworker's anthropic lane (claude_code, `autoworker-anthropic-…`), read when the lane fires |
+| `autoworker_codex_model_role` (`SCHEDULER_AUTOWORKER_CODEX_MODEL_ROLE`) | `balanced` | `gpt-5.6-terra` | autoworker's codex lane (codex runs only openai models, `autoworker-codex-…`), read when the lane fires |
+| `agent_job_model_role` (`SCHEDULER_AGENT_JOB_MODEL_ROLE`) | `default` | `claude-opus-5-5` | every `type: agent` job that names no `model_role`, read when the job runs |
+| `herald_model_role` (`SCHEDULER_HERALD_MODEL_ROLE`) | `default` | `claude-opus-5-5` | `ask`'s new `herald-…` sessions; a reused `-session` keeps its model |
+| `kanban_dispatcher_model_role` (`SCHEDULER_KANBAN_DISPATCHER_MODEL_ROLE`) | `default` | `claude-opus-5-5` (board instance `inst-cc-local`, no bundle model) | kanban-dispatcher's fresh `tcl-…` sessions, read once per tick; a revived sibling session keeps its model |
+| `demo_worker_model_role` (`SCHEDULER_DEMO_WORKER_MODEL_ROLE`) | `default` | `claude-opus-5-5` (board instance `inst-cc-local`, bundle 9 names no model) | demo-worker's `demo-…` dispatch and review sessions, read at start |
+
+An agent job's own `model_role` field (POST, PATCH, and the bus's
+`create_job`) outranks `agent_job_model_role`. It is checked against
+model-store's roles when it is written: 400 for a role model-store does not
+list, 502 while model-store cannot be asked, 400 on a shell job. It replaced the
+job's `model` field, which was stored and shown but never sent to a session;
+the database column was renamed, and a request that still sends `model` is a
+400. A run that continues a job's `session_id` starts no session and keeps the
+model that session was created on.
+
+kanban-dispatcher and demo-worker take their instance and bundle from the
+board. The role is the session's own choice, so it outranks a model the bundle
+names; on 2026-09-30 no bundle in bundle-store named one. A card whose
+instance's harness cannot run the role's first model is not dispatched.
+
 The twelve job binaries in `cmd/` (`ask`, `autoworker`, `email-classifier`,
 `reminder-coordinator` and the rest) serve no HTTP, so they are not on the
 settings page. Each declares what it reads in `internal/config/jobs.go` and
@@ -102,7 +140,7 @@ status aligned with the terminal column.
 | Board                 | Owner               | Role                                                                 |
 |-----------------------|---------------------|----------------------------------------------------------------------|
 | `Autoworker queue`    | `cmd/autoworker`    | Dispatch source. The worker selects the head of `Queued`, attaches a `bus_session` link, and moves the card to `In Progress`. |
-| `Agent runs`          | `cmd/autoworker`    | Per-fire telemetry card created on each dispatch (provider, harness, instance, queue card id, target/actual). |
+| `Agent runs`          | `cmd/autoworker`    | Per-fire telemetry card created on each dispatch (provider, harness, instance, model role, queue card id, target/actual). |
 
 The `cmd/kanban-curator` job watches `In Progress` cards on a single board and
 moves them when the linked bridge session reaches a terminal state. Each board

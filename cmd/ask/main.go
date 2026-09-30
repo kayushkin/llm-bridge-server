@@ -12,7 +12,9 @@
 //
 // Design notes:
 //   - Runs on the machine's existing claude_code instance (resolved by harness
-//     type + local machine, or --instance by name). There is NO dedicated CC
+//     type + local machine, or --instance by name), on the model-store role in
+//     the scheduler's herald_model_role setting, checked against what
+//     claude_code can run before the session is created. There is NO dedicated CC
 //     instance — one per machine is enough; "herald" is a role, marked by the
 //     herald- session-id prefix and Purpose="herald", not a separate instance.
 //   - Type=herald: llm-bridge-server's isUnattendedSession treats herald like
@@ -36,6 +38,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -53,6 +56,8 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/slava/scheduler/internal/bridgeauth"
 	schedulerconfig "github.com/slava/scheduler/internal/config"
+	"github.com/slava/scheduler/internal/schedulersettings"
+	"github.com/slava/scheduler/internal/sessionmodelrole"
 	"github.com/slava/scheduler/internal/textcut"
 )
 
@@ -89,6 +94,10 @@ type askConfig struct {
 	question     string
 	dryRun       bool
 	now          time.Time
+	// heraldModelRole returns the model-store role a new herald session starts
+	// on, already checked against what claude_code can run, and the model it
+	// resolves to. It is called only when a new session is opened.
+	heraldModelRole func() (role, model string, err error)
 }
 
 // heraldPublisher is the seam a test stands in at to observe the dispatch
@@ -135,6 +144,11 @@ func main() {
 		question:     strings.TrimSpace(strings.Join(flag.Args(), " ")),
 		dryRun:       *dryRun,
 		now:          time.Now().UTC(),
+		heraldModelRole: func() (string, string, error) {
+			return readHeraldModelRole(context.Background(),
+				settings.String(schedulerconfig.SettingSchedulerURL),
+				sessionmodelrole.New(settings.String(schedulerconfig.SettingModelStoreURL), *bridgeURL))
+		},
 	}
 	natsURL := settings.String(schedulerconfig.SettingNATSURL)
 	connect := func() (heraldPublisher, error) {
@@ -203,6 +217,13 @@ func runAsk(cfg askConfig, connect connectFunc, out io.Writer) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve instance: %w", err)
 	}
+	if cfg.heraldModelRole == nil {
+		return "", fmt.Errorf("no herald model role reader: a new session would run on whatever the bridge's claude_code default is")
+	}
+	modelRole, model, err := cfg.heraldModelRole()
+	if err != nil {
+		return "", fmt.Errorf("herald model role: %w", err)
+	}
 
 	displayName, titleHeldNoReadableText := resolveDisplayName(cfg.title, cfg.question)
 	if titleHeldNoReadableText {
@@ -213,31 +234,35 @@ func runAsk(cfg askConfig, connect connectFunc, out io.Writer) (string, error) {
 	}
 
 	if cfg.dryRun {
-		fmt.Fprintf(out, "instance: %s\nfrom:     %s\nsession:  %s<ns>\ndisplay:  %s\n\n--- prompt ---\n%s\n",
-			instanceID, cfg.from, heraldSessionPrefix, displayName, prompt)
+		fmt.Fprintf(out, "instance: %s\nrole:     %s (%s)\nfrom:     %s\nsession:  %s<ns>\ndisplay:  %s\n\n--- prompt ---\n%s\n",
+			instanceID, modelRole, model, cfg.from, heraldSessionPrefix, displayName, prompt)
 		return "", nil
 	}
 
 	sessionID := fmt.Sprintf("%s%d", heraldSessionPrefix, cfg.now.UnixNano())
+	create := &msg.CreateSessionRequest{
+		Harness:     msg.HarnessClaudeCode,
+		InstanceID:  instanceID,
+		DisplayName: displayName,
+		Purpose:     heraldPurpose,
+		// herald is unattended for the relay turn (no human resolves a tool
+		// prehook until the user replies), so llm-bridge-server's
+		// isUnattendedSession auto-allows tool calls while keeping deny
+		// guardrails — no permission_mode=bypass needed.
+		Type:      msg.SessionTypeHerald,
+		Origin:    askOrigin,
+		AutoStart: true,
+	}
+	if err := sessionmodelrole.SetModelRole(create, modelRole); err != nil {
+		return "", err
+	}
 	err = publishInbound(connect, messages.BridgeInbound{
 		BusSessionID: sessionID,
 		Agent:        cfg.from,
 		Orchestrator: orchestratorClaudeCode,
 		Channel:      heraldChannel,
 		Timestamp:    cfg.now,
-		Create: &msg.CreateSessionRequest{
-			Harness:     msg.HarnessClaudeCode,
-			InstanceID:  instanceID,
-			DisplayName: displayName,
-			Purpose:     heraldPurpose,
-			// herald is unattended for the relay turn (no human resolves a tool
-			// prehook until the user replies), so llm-bridge-server's
-			// isUnattendedSession auto-allows tool calls while keeping deny
-			// guardrails — no permission_mode=bypass needed.
-			Type:      msg.SessionTypeHerald,
-			Origin:    askOrigin,
-			AutoStart: true,
-		},
+		Create:       create,
 		Send: &msg.SendMessageRequest{
 			Message: prompt,
 		},
@@ -246,6 +271,21 @@ func runAsk(cfg askConfig, connect connectFunc, out io.Writer) (string, error) {
 		return "", err
 	}
 	return sessionID, nil
+}
+
+// readHeraldModelRole reads the herald_model_role setting from the scheduler
+// and checks that claude_code can run the model it resolves to. It returns the
+// role and that model.
+func readHeraldModelRole(ctx context.Context, schedulerURL string, checker sessionmodelrole.Checker) (string, string, error) {
+	role, err := schedulersettings.ReadModelRole(ctx, schedulerURL, schedulerconfig.SettingHeraldModelRole)
+	if err != nil {
+		return "", "", err
+	}
+	model, err := checker.Check(role, msg.HarnessClaudeCode)
+	if err != nil {
+		return "", "", fmt.Errorf("%s %q: %w", schedulerconfig.SettingHeraldModelRole, role, err)
+	}
+	return role, model.ID, nil
 }
 
 // publishInbound opens one connection, publishes the request on the bridge's

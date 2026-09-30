@@ -60,7 +60,7 @@ func tick(t *testing.T, kanban *fakeKanban, sessions map[string]string) (error, 
 	bridgeServer := fakeBridge(t, sessions)
 	defer bridgeServer.Close()
 	var published []messages.BridgeInbound
-	err := run(runOptions{
+	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{},
 		BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, MaxDispatch: 10,
 		Publish: func(in messages.BridgeInbound) error {
 			published = append(published, in)
@@ -172,7 +172,7 @@ func TestARefusedPublishFailsTheRun(t *testing.T) {
 	defer kanbanServer.Close()
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
-	err := run(runOptions{
+	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{},
 		BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, MaxDispatch: 10,
 		Publish: func(messages.BridgeInbound) error { return errors.New("bus down") },
 	})
@@ -334,7 +334,7 @@ func TestThePerTickCapIsNotAShortfall(t *testing.T) {
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
 	var published []messages.BridgeInbound
-	err := run(runOptions{
+	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{},
 		BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, MaxDispatch: 1,
 		Publish: func(in messages.BridgeInbound) error {
 			published = append(published, in)
@@ -360,7 +360,7 @@ func TestADryRunWritesNothing(t *testing.T) {
 	defer kanbanServer.Close()
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
-	if err := run(runOptions{BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, MaxDispatch: 10, DryRun: true}); err != nil {
+	if err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{}, BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, MaxDispatch: 10, DryRun: true}); err != nil {
 		t.Fatalf("a dry run over a settled goal must succeed, got %v", err)
 	}
 	if len(kanban.moved) != 0 || len(kanban.patched) != 0 || len(kanban.linked) != 0 {

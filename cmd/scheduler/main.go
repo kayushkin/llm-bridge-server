@@ -40,6 +40,7 @@ import (
 	"github.com/slava/scheduler/internal/logging"
 	"github.com/slava/scheduler/internal/modelstoreroles"
 	"github.com/slava/scheduler/internal/runstatus"
+	"github.com/slava/scheduler/internal/sessionmodelrole"
 )
 
 // natsClientName is how this process identifies itself on the bus.
@@ -104,7 +105,7 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
-	if err := runScheduler(cfg, settings, productionDeps(cfg, sig)); err != nil {
+	if err := runScheduler(cfg, settings, productionDeps(cfg, settings, sig)); err != nil {
 		log.Fatalf("%v", err)
 	}
 }
@@ -112,7 +113,7 @@ func main() {
 // productionDeps wires the real world. The NATS connection is captured here
 // rather than passed back through the seams, so nothing downstream has to
 // assert its way from the interface back to the concrete client.
-func productionDeps(cfg config.Config, signals <-chan os.Signal) deps {
+func productionDeps(cfg config.Config, settings *servicesettings.Registry, signals <-chan os.Signal) deps {
 	var client *natsbus.Client
 	return deps{
 		connectNATS: func(url, name string) (busConnection, error) {
@@ -125,11 +126,13 @@ func productionDeps(cfg config.Config, signals <-chan os.Signal) deps {
 		},
 		newLogger: func() *logging.Logger { return logging.New(client) },
 		newAgentExecutor: func() *executor.AgentExecutor {
-			return executor.NewAgentExecutor(client, cfg.BridgeURL, cfg.NoteboardURL)
+			return executor.NewAgentExecutor(client, cfg.BridgeURL, cfg.NoteboardURL,
+				func() string { return settings.ModelRole(config.SettingAgentJobModelRole) },
+				sessionmodelrole.New(cfg.ModelStoreURL, cfg.BridgeURL))
 		},
 		openStore: db.New,
 		newBusHandler: func(natsURL string, store *db.Store, scheduler *cronpkg.Scheduler, logger *logging.Logger) (busService, error) {
-			return bus.NewHandler(natsURL, store, scheduler, logger)
+			return bus.NewHandler(natsURL, store, scheduler, logger, modelstoreroles.New(cfg.ModelStoreURL).CheckRole)
 		},
 		listenAndServe: http.ListenAndServe,
 		signals:        signals,
@@ -220,7 +223,7 @@ func runScheduler(cfg config.Config, settings *servicesettings.Registry, d deps)
 		d.logf("warning: bus handler failed to start: %v", err)
 	}
 
-	srv := api.New(store, scheduler, cfg.Token, settings)
+	srv := api.New(store, scheduler, cfg.Token, settings, modelstoreroles.New(cfg.ModelStoreURL).CheckRole)
 	srv.SetLogger(logger)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)

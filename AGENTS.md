@@ -49,7 +49,7 @@ curl -s -X PATCH http://localhost:8092/api/jobs/<id> \
 curl -s -X PATCH http://localhost:8092/api/jobs/<id> \
   -H "Content-Type: application/json" -d '{"timeout_seconds":3600}'
 
-# Edit any other field — prompt, schedule, command, agent, model, workspace_id …
+# Edit any other field — prompt, schedule, command, agent, model_role, workspace_id …
 curl -s -X PATCH http://localhost:8092/api/jobs/<id> \
   -H "Content-Type: application/json" -d '{"prompt":"…","schedule":"0 6 * * *"}'
 
@@ -90,6 +90,10 @@ Every model call `email-classifier` makes — filing, the merge pass, the deadli
 ## Model roles are the scheduler's stored settings
 
 No job binary names a model or a harness instance. Each that calls a model asks for a model-store role (`best`, `default`, `balanced`, `efficient`), and the role is a setting the **scheduler service** stores in its database, not a flag or a variable of the binary: `email_classifier_model_role`, `email_classifier_merge_model_role`, `kanban_classifier_model_role`, `kanban_scoper_model_role`, `demo_mail_generator_model_role`. Read them at `GET /settings`, change one with `PUT /settings/{key} {"value":"balanced"}` (dash: `/api/scheduler/settings`); a new role is checked against model-store's `GET /api/roles` first, so an unknown role is a 400 and a down model-store a 502. Each binary reads its role from `GET $SCHEDULER_URL/settings` when it starts (`internal/schedulersettings`), so a change takes effect on its next run, and a scheduler that does not declare the key stops the binary. `kanban-classifier`, `kanban-scoper` and `demo-mail-generator` call llm-bridge-server's `POST /oneshot` with `model_role` and `caller` (`internal/oneshot`), which tries the role's models in order; `email-classifier` stays on `llm.completion` operations for the budget. A `SCHEDULER_…_MODEL_ROLE` variable seeds the stored value once and is ignored after; the old `-model`, `-merge-model` and `-oneshot-instance` flags and the `*_MODEL` / `ONESHOT_INSTANCE_ID` variables are gone, and a leftover `*_MODEL` under a binary's own prefix stops it. The README has the table of what each role replaced.
+
+## Every session the scheduler starts names a role
+
+A session started without a model runs on the bridge's per-harness default (`bridge-prefs.defaults.<harness>.model`), one value for every session on that harness; on 2026-09-30 it sat on Haiku for 14 hours and every agent job and herald ran on Haiku. So each session-starting path sends a model-store role as `harness_config.model`, from a stored setting read when the session starts: `agent_job_model_role` (agent-type jobs; a job's own `model_role` field outranks it), `herald_model_role` (`ask`), `autoworker_anthropic_model_role` and `autoworker_codex_model_role` (one per lane, because claude_code runs only anthropic models and codex only openai), `kanban_dispatcher_model_role`, `demo_worker_model_role`. The bridge pins a session to the role's **first** model with no fallback, and does **not** refuse at create a model the harness cannot run (measured 2026-09-30: `balanced` → gpt-5.6-terra was accepted on a claude_code session), so `internal/sessionmodelrole` checks first — model-store `GET /api/roles/{role}` for the first model's provider, the bridge's `GET /harnesses` for the harness's `supported_providers` — and starts nothing on a mismatch. A job's `model_role` is checked with model-store on POST, PATCH and the bus's `create_job` (unknown role 400, model-store down 502, a role on a shell job 400); it replaced the `model` field, which was stored and never sent, and `{"model":…}` is now a 400. A run that continues a job's `session_id` keeps that session's model.
 
 ## Mail becomes a ticket
 

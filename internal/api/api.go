@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -30,6 +31,10 @@ type Server struct {
 	mux       *http.ServeMux
 	startedAt time.Time
 	logger    Logger
+	// checkModelRole asks model-store whether an agent job's model_role
+	// exists. Its error wraps servicesettings.ErrSettingOwnerUnavailable when
+	// model-store could not be asked.
+	checkModelRole func(role string) error
 }
 
 // Logger interface for logging events
@@ -41,12 +46,17 @@ type Logger interface {
 
 // New serves the API. settings is the service's settings registry, described at
 // GET /settings behind the same bearer as /api/*; it is required, so no second
-// caller of New can forget the route.
-func New(store *db.Store, scheduler *cronpkg.Scheduler, token string, settings *servicesettings.Registry) *Server {
+// caller of New can forget the route. checkModelRole is required too: POST and
+// PATCH take an agent job's model_role, and one nobody checked would start no
+// session when the job ran.
+func New(store *db.Store, scheduler *cronpkg.Scheduler, token string, settings *servicesettings.Registry, checkModelRole func(role string) error) *Server {
 	if settings == nil {
 		panic("api.New: a nil settings registry; the service must describe its settings at GET /settings")
 	}
-	s := &Server{store: store, scheduler: scheduler, token: token, mux: http.NewServeMux(), startedAt: time.Now()}
+	if checkModelRole == nil {
+		panic("api.New: a nil model-role checker; an agent job's model_role must be checked with model-store")
+	}
+	s := &Server{store: store, scheduler: scheduler, token: token, mux: http.NewServeMux(), startedAt: time.Now(), checkModelRole: checkModelRole}
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/api/jobs", s.handleJobs)
 	s.mux.HandleFunc("/api/jobs/", s.handleJobSub)
@@ -121,7 +131,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			Type         string `json:"type"`
 			Agent        string `json:"agent"`
 			Prompt       string `json:"prompt"`
-			Model        string `json:"model"`
+			ModelRole    string `json:"model_role"`
 			Orchestrator string `json:"orchestrator"`
 			SessionID    string `json:"session_id"`
 			WorkspaceID  string `json:"workspace_id"`
@@ -147,9 +157,13 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			Type:        jobType,
 			Agent:       req.Agent,
 			Prompt:      req.Prompt,
+			ModelRole:   req.ModelRole,
 			TimeoutSecs: req.TimeoutSecs,
 		}); problem != "" {
 			writeError(w, 400, problem, "")
+			return
+		}
+		if !s.modelRoleIsKnown(w, req.ModelRole) {
 			return
 		}
 		job, err := s.store.CreateJobFull(db.Job{
@@ -160,7 +174,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			Type:         jobType,
 			Agent:        req.Agent,
 			Prompt:       req.Prompt,
-			Model:        req.Model,
+			ModelRole:    req.ModelRole,
 			Orchestrator: req.Orchestrator,
 			SessionID:    req.SessionID,
 			WorkspaceID:  req.WorkspaceID,
@@ -187,6 +201,26 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, 405, "method not allowed", "")
 	}
+}
+
+// modelRoleIsKnown checks an agent job's model_role with model-store and
+// writes the refusal when it fails: 400 for a role model-store does not know,
+// 502 when model-store could not be asked. An empty role is known: the job
+// then takes the agent_job_model_role setting.
+func (s *Server) modelRoleIsKnown(w http.ResponseWriter, role string) bool {
+	if role == "" {
+		return true
+	}
+	err := s.checkModelRole(role)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, servicesettings.ErrSettingOwnerUnavailable) {
+		writeError(w, http.StatusBadGateway, "model_role could not be checked", err.Error())
+		return false
+	}
+	writeError(w, http.StatusBadRequest, "model_role is not a model-store role", err.Error())
+	return false
 }
 
 func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
@@ -232,6 +266,9 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 			// the type it already has, and a patch read on its own cannot see that.
 			if problem := db.ValidateJob(applyJobPatch(*currentJob, patch)); problem != "" {
 				writeError(w, 400, problem, "")
+				return
+			}
+			if patch.ModelRole != nil && !s.modelRoleIsKnown(w, *patch.ModelRole) {
 				return
 			}
 			changes := patch.Changes()

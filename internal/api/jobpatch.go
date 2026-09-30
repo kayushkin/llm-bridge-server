@@ -9,7 +9,7 @@ import (
 
 // jobPatchRequest is the JSON body of PATCH /api/jobs/{id}. Every field is a
 // pointer so an absent field ("leave it alone") is distinguishable from a zero
-// value ("set it to empty") — clearing a job's model or session id is a real
+// value ("set it to empty") — clearing a job's model role or session id is a real
 // edit and has to be expressible.
 //
 // It must name every column db.PatchableColumns() reports; a column the request
@@ -23,7 +23,7 @@ type jobPatchRequest struct {
 	Type         *string `json:"type"`
 	Agent        *string `json:"agent"`
 	Prompt       *string `json:"prompt"`
-	Model        *string `json:"model"`
+	ModelRole    *string `json:"model_role"`
 	Orchestrator *string `json:"orchestrator"`
 	SessionID    *string `json:"session_id"`
 	WorkspaceID  *string `json:"workspace_id"`
@@ -40,7 +40,7 @@ func (r jobPatchRequest) toJobPatch() db.JobPatch {
 		Type:         r.Type,
 		Agent:        r.Agent,
 		Prompt:       r.Prompt,
-		Model:        r.Model,
+		ModelRole:    r.ModelRole,
 		Orchestrator: r.Orchestrator,
 		SessionID:    r.SessionID,
 		WorkspaceID:  r.WorkspaceID,
@@ -60,7 +60,7 @@ func applyJobPatch(job db.Job, patch db.JobPatch) db.Job {
 	assign(&job.Type, patch.Type)
 	assign(&job.Agent, patch.Agent)
 	assign(&job.Prompt, patch.Prompt)
-	assign(&job.Model, patch.Model)
+	assign(&job.ModelRole, patch.ModelRole)
 	assign(&job.Orchestrator, patch.Orchestrator)
 	assign(&job.SessionID, patch.SessionID)
 	assign(&job.WorkspaceID, patch.WorkspaceID)

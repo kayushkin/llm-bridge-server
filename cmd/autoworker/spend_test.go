@@ -73,7 +73,7 @@ func TestNoDefaultMeansUncapped(t *testing.T) {
 
 // The fire path's announcement of the cap, through run(). The branch that wrote
 // the boundary-value rows declared this line unreachable because it sat inside
-// main()'s tick loop; main has since become run(cfg, publish), so it is not.
+// main()'s tick loop; main has since become run(cfg, modelRoleFor, publish), so it is not.
 //
 // With no fleet default and no queue card, the session goes out uncapped, and a
 // `> 0` drifted to `>= 0` would announce it as "capped at $0.00" — a cap of zero
@@ -86,7 +86,7 @@ func TestTheFirePathAnnouncesAnUncappedSessionAsUncapped(t *testing.T) {
 		cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 		cfg.defaultMaxBudgetUSD = fleetDefaultUSD
 		publisher := &recordingPublisher{}
-		out := captureLog(t, func() { run(cfg, publisher.publish) })
+		out := captureLog(t, func() { run(cfg, defaultLaneModelRole, publisher.publish) })
 		return out, publisher
 	}
 
