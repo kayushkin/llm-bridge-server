@@ -565,6 +565,21 @@ func TestCreateSessionNamingAnotherPrincipalIsRefused(t *testing.T) {
 	}
 }
 
+func TestCreateSessionUnderAnotherPrincipalsSessionIsRefused(t *testing.T) {
+	gated := newGatedTestServer(t, nil)
+	if err := gated.store.CreateSession(&store.Session{SessionID: "br_someone_elses", Harness: msg.HarnessMock, InstanceID: "inst_test", State: string(msg.SessionIdle), PrincipalID: secondTestPrincipalID}); err != nil {
+		t.Fatal(err)
+	}
+	cookie := loginCookieFrom(t, demoLogin(t, gated.server, firstTestPrincipalID))
+	response := gated.requestAs(t, cookie, "POST", "/sessions", msg.CreateSessionRequest{
+		Type: msg.SessionTypeAutonomous, Purpose: msg.PurposeDelegate, Origin: "test",
+		Harness: msg.HarnessMock, InstanceID: "inst_test", ManagerSessionID: "br_someone_elses",
+	})
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "unknown_manager_session") {
+		t.Fatalf("create under another principal's session = %d %s, want 400 unknown_manager_session", response.Code, response.Body.String())
+	}
+}
+
 func TestCreateSessionAsAPrincipalStillAppliesTheGrantGates(t *testing.T) {
 	gated := newGatedTestServer(t, map[string]map[string][]string{
 		firstTestPrincipalID: {"can_dispatch_on/instance": {"inst_second"}},

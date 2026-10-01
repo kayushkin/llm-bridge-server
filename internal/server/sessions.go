@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -411,6 +412,29 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The session that started this one. A principal may name only a session
+	// of its own; someone else's gets the same answer as a missing one.
+	var managerSession *store.Session
+	if req.ManagerSessionID != "" {
+		parent, err := s.store.GetSession(req.ManagerSessionID)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
+				"manager_session_id %q is not a session this server has", req.ManagerSessionID))
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "manager_session_lookup_failed", fmt.Sprintf(
+				"could not read manager_session_id %s, so the session was not created: %v", req.ManagerSessionID, err))
+			return
+		}
+		if callerPrincipalID, restricted := principalRestrictingRequest(r); restricted && parent.PrincipalID != callerPrincipalID {
+			writeJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
+				"manager_session_id %q is not a session this server has", req.ManagerSessionID))
+			return
+		}
+		managerSession = parent
+	}
+
 	// Caller-minted session id: workers (autoworker, scheduler, dispatcher)
 	// pass their own session_id so they can persist a kanban link or queue
 	// row before the create round-trip returns. Empty = bridge mints
@@ -449,6 +473,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Mode:          mode,
 		MaxBudgetUSD:  maxBudgetUSD,
 		WorkingDir:    req.WorkingDir,
+	}
+	if managerSession != nil {
+		sess.ManagerSessionID = managerSession.SessionID
+		sess.RootSessionID = managerSession.RootSessionID
+		if sess.RootSessionID == "" {
+			sess.RootSessionID = managerSession.SessionID
+		}
+		sess.Depth = managerSession.Depth + 1
 	}
 
 	// Snapshot the global permission mode into the session so the

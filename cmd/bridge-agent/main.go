@@ -89,6 +89,7 @@ func main() {
 		server    = flag.String("server", envOr("LLMBRIDGE_SERVER", defaultServer), "llm-bridge-server base URL")
 		harness   = flag.String("harness", defaultHarness, "harness to run the delegate on")
 		instance  = flag.String("instance", os.Getenv("LLMBRIDGE_INSTANCE"), "harness instance id (defaults to the server's default instance)")
+		manager   = flag.String("manager-session", os.Getenv("LLM_BRIDGE_SESSION_ID"), "bridge session id the delegate sits under in the session tree (defaults to the session this command runs in)")
 		purpose   = flag.String("purpose", msg.PurposeDelegate, "session purpose — a registered slug, not a description of the task (see -list-purposes)")
 		timeout   = flag.Duration("timeout", defaultTimeout, "give up if the turn has not finished within this duration")
 		rawJSON   = flag.Bool("json", false, "print the full result event as JSON instead of just its text")
@@ -161,7 +162,7 @@ func main() {
 		fatal("%v", err)
 	}
 
-	sessionID, err := agent.createSession(ctx, *harness, *instance, *purpose, prompt, harnessConfig)
+	sessionID, err := agent.createSession(ctx, *harness, *instance, *manager, *purpose, prompt, harnessConfig)
 	if err != nil {
 		fatal("create delegate session: %v", err)
 	}
@@ -281,20 +282,21 @@ func (d *delegate) do(req *http.Request) (*http.Response, error) {
 	return d.client.Do(req)
 }
 
-func (d *delegate) createSession(ctx context.Context, harness, instance, purpose, prompt string, harnessConfig map[string]any) (string, error) {
+func (d *delegate) createSession(ctx context.Context, harness, instance, managerSessionID, purpose, prompt string, harnessConfig map[string]any) (string, error) {
 	cfg, err := json.Marshal(harnessConfig)
 	if err != nil {
 		return "", fmt.Errorf("marshal harness config: %w", err)
 	}
 	body, err := json.Marshal(msg.CreateSessionRequest{
-		Harness:       msg.Harness(harness),
-		InstanceID:    instance,
-		DisplayName:   displayName(prompt),
-		Type:          msg.SessionTypeAutonomous,
-		Purpose:       purpose,
-		Origin:        "bridge-agent",
-		AutoStart:     true,
-		HarnessConfig: cfg,
+		Harness:          msg.Harness(harness),
+		InstanceID:       instance,
+		ManagerSessionID: managerSessionID,
+		DisplayName:      displayName(prompt),
+		Type:             msg.SessionTypeAutonomous,
+		Purpose:          purpose,
+		Origin:           "bridge-agent",
+		AutoStart:        true,
+		HarnessConfig:    cfg,
 	})
 	if err != nil {
 		return "", err
