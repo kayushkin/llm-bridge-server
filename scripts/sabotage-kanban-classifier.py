@@ -60,6 +60,14 @@ Score now (2026-09-26, main after cd3920a, measured by the C3 close-out, card
 seven registration-mechanism rows to scripts/sabotage-schedulerjobs.py with
 the code, and the close-out added one row (the bridge's own session id is kept).
 
+Re-aimed 2026-10-02 (card 4041b9ad): 3129e69 replaced the model flag and
+variable with a model-store role the scheduler stores, and reformatted the
+oneshot call, so 8 needles named code that was gone. Five rows only needed the
+new text. Three moved to the role: the seeded default (model_roles.go, now a
+target), the KANBAN_CLASSIFIER_ prefix that refuses a leftover *_MODEL, and the
+key run reads the role under. That last one is declared: no test reaches it.
+Score after: 136/138, the two misses declared, both controls behaved.
+
 That 29 is worth reading against the card that asked for this work, which
 counted 12 flags and 8 environment reads. THE FLAGS WERE RIGHT AND THE
 ENVIRONMENT READS WERE NOT — there are six envOr call sites over six distinct
@@ -93,6 +101,7 @@ from sabotage import REPO, Case, score  # noqa: E402
 TARGETS = [
     REPO / "cmd/kanban-classifier/main.go",
     REPO / "internal/config/jobs.go",
+    REPO / "internal/config/model_roles.go",
     REPO / "internal/config/settings.go",
     # The digest's cuts are all textcut.TruncateToByteBudgetOnRuneBoundary, so
     # the row that cuts from the wrong end has to edit it there.
@@ -138,15 +147,15 @@ CASES = [
 
     # ---- the values that decide what a tick costs ----
     Case(
-        "the model's environment variable is renamed: a host's KANBAN_CLASSIFIER_MODEL override "
-        "is refused as a misspelling and the job stops",
-        [('modelDefinition("KANBAN_CLASSIFIER_MODEL", DefaultKanbanClassifierModel)',
-          'modelDefinition("KANBAN_CLASSIFIER_MODEL_ID", DefaultKanbanClassifierModel)')],
+        "the binary stops owning the KANBAN_CLASSIFIER_ prefix: a leftover KANBAN_CLASSIFIER_MODEL "
+        "is no longer refused, and the host that sets it believes it still picks the model",
+        [('OwnedEnvironmentVariablePrefixes: []string{"KANBAN_CLASSIFIER_"}',
+          'OwnedEnvironmentVariablePrefixes: []string{"KANBAN_CLASSIFY_"}')],
     ),
     Case(
-        "the default model drifts to a frontier model: same work, many times the bill, nothing fails",
-        [('DefaultKanbanClassifierModel     = "claude-haiku-4-5-20251001"',
-          'DefaultKanbanClassifierModel     = "claude-opus-4-1"')],
+        "the seeded model role drifts from efficient to best: same work, many times the bill, nothing fails",
+        [('DefaultKanbanClassifierModelRole = string(msg.ModelRoleEfficient)',
+          'DefaultKanbanClassifierModelRole = string(msg.ModelRoleBest)')],
     ),
     Case(
         "-max drifts 10 -> 2: the session backlog drains five times slower and every tick reports success",
@@ -208,9 +217,16 @@ CASES = [
           'c.SchedulerURL = settings.String(schedulerconfig.SettingKanbanStoreURL)')],
     ),
     Case(
-        "the model id is read from the kanban-store URL setting: every classify call names a URL as its model",
-        [('fs.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingModel)',
-          'fs.StringVar(&c.Model, "model", settings.String(schedulerconfig.SettingKanbanStoreURL)')],
+        "run reads the email classifier's stored role instead of its own: every classify call "
+        "asks for the default tier, and a change on the settings page moves the wrong binary",
+        [('schedulersettings.ReadModelRole(ctx, cfg.SchedulerURL, schedulerconfig.SettingKanbanClassifierModelRole)',
+          'schedulersettings.ReadModelRole(ctx, cfg.SchedulerURL, schedulerconfig.SettingEmailClassifierModelRole)')],
+        expected_unnoticed="no test enters the part of run that reads the role: it is an HTTP read of "
+                           "the scheduler's stored settings, done after the flags parse and before the "
+                           "sweep, and the tests drive parseFlags and classify around it. A real hole, "
+                           "declared rather than hidden; closing it means moving the key choice somewhere "
+                           "a test can reach, which is a production change. Falsified by a test that runs "
+                           "run, or the read, against a fake scheduler and checks which key it asked for.",
     ),
     # envOr's presence-versus-emptiness row was deleted on 2026-09-25: envOr is
     # gone, and an empty variable is now treated as unset inside
@@ -835,18 +851,18 @@ CASES = [
     # ---- the model call and what the model is told ----
     Case(
         'the system prompt is sent as the user message and the digest as the system prompt',
-        [('\t}, systemPrompt, digest, reportSchema(), &rep); err != nil {',
-          '\t}, digest, systemPrompt, reportSchema(), &rep); err != nil {')],
+        [('\t}, systemPrompt, digest, reportSchema(), &rep)\n\tif err != nil {',
+          '\t}, digest, systemPrompt, reportSchema(), &rep)\n\tif err != nil {')],
     ),
     Case(
         'the report schema sent is empty',
-        [('\t}, systemPrompt, digest, reportSchema(), &rep); err != nil {',
-          '\t}, systemPrompt, digest, map[string]any{}, &rep); err != nil {')],
+        [('\t}, systemPrompt, digest, reportSchema(), &rep)\n\tif err != nil {',
+          '\t}, systemPrompt, digest, map[string]any{}, &rep)\n\tif err != nil {')],
     ),
     Case(
         'max_tokens is sent as something other than the constant the truncation warning quotes',
-        [('\t\tMaxTokens:  maxOutputTokens,',
-          '\t\tMaxTokens:  maxOutputTokens / 2,')],
+        [('\t\tMaxTokens: maxOutputTokens,',
+          '\t\tMaxTokens: maxOutputTokens / 2,')],
     ),
     Case(
         'a truncated report is no longer recognised as one, so it reads as an ordinary failure',
@@ -855,8 +871,8 @@ CASES = [
     ),
     Case(
         'a failed model call returns an error that names no HTTP status',
-        [('\t}, systemPrompt, digest, reportSchema(), &rep); err != nil {\n\t\treturn nil, err',
-          '\t}, systemPrompt, digest, reportSchema(), &rep); err != nil {\n\t\treturn nil, errors.New("classify failed")')],
+        [('\t}, systemPrompt, digest, reportSchema(), &rep)\n\tif err != nil {\n\t\treturn nil, err',
+          '\t}, systemPrompt, digest, reportSchema(), &rep)\n\tif err != nil {\n\t\treturn nil, errors.New("classify failed")')],
     ),
     Case(
         'the prompt stops promising the model the card bodies',
@@ -875,8 +891,8 @@ CASES = [
     ),
     Case(
         'classify refuses a complete report that carries no existing cards, as if emptiness meant truncation',
-        [('\t\treturn nil, err\n\t}\n\treturn &rep, nil\n}',
-          '\t\treturn nil, err\n\t}\n\tif len(rep.ExistingCards) == 0 {\n\t\treturn nil, errTruncatedReport\n\t}\n\treturn &rep, nil\n}')],
+        [('\t\treturn nil, err\n\t}\n\tlog.Printf("[classifier] classified with role %s: %s", cfg.ModelRole, answer)\n\treturn &rep, nil\n}',
+          '\t\treturn nil, err\n\t}\n\tif len(rep.ExistingCards) == 0 {\n\t\treturn nil, errTruncatedReport\n\t}\n\tlog.Printf("[classifier] classified with role %s: %s", cfg.ModelRole, answer)\n\treturn &rep, nil\n}')],
     ),
 
     # ---- the digest builder ----
