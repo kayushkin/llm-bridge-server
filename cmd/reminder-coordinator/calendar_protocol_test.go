@@ -41,6 +41,9 @@ type dashCalendarStub struct {
 	// requireBearer mirrors dash's auth middleware, which runs BEFORE the method
 	// check — measured: an unauthenticated PATCH is 401, not 405.
 	requireBearer string
+	// lastMethod and lastBody record the last request that got past the auth check.
+	lastMethod string
+	lastBody   map[string]any
 }
 
 func (d *dashCalendarStub) server(t *testing.T) *httptest.Server {
@@ -55,6 +58,9 @@ func (d *dashCalendarStub) server(t *testing.T) *httptest.Server {
 				w.Write([]byte(`{"error":"unauthorized"}`))
 				return
 			}
+			d.lastMethod = r.Method
+			d.lastBody = map[string]any{}
+			json.NewDecoder(r.Body).Decode(&d.lastBody)
 			next(w, r)
 		}
 	}
@@ -282,5 +288,45 @@ func TestListEventsTreatsA200CarryingAnErrorFieldAsAFailure(t *testing.T) {
 	events, err := mirror.ListEvents("token", time.Now(), time.Now().Add(time.Hour))
 	if err == nil {
 		t.Fatalf("a partial calendar read was reported as a day with no events (%d events)", len(events))
+	}
+}
+
+// ---------------------------------------------------------------- what the mirror sends
+
+// dash's event route takes PUT to change an event and refuses POST with 405.
+func TestUpdateEventPutsToTheEventPath(t *testing.T) {
+	stub := &dashCalendarStub{}
+	mirror := &GoogleCalendarMirror{DashURL: stub.server(t).URL}
+
+	if err := mirror.UpdateEvent("token", ordinaryID, probeMirrorItem()); err != nil {
+		t.Fatalf("UpdateEvent: %v", err)
+	}
+	if stub.lastMethod != http.MethodPut {
+		t.Errorf("UpdateEvent sent %s, want PUT", stub.lastMethod)
+	}
+}
+
+// The 📋 prefix is the only thing on the user's calendar that tells a mirrored
+// todo from an event they made themselves.
+func TestCreateEventMarksTheSummaryAsAMirroredTodo(t *testing.T) {
+	stub := &dashCalendarStub{}
+	mirror := &GoogleCalendarMirror{DashURL: stub.server(t).URL}
+
+	if _, err := mirror.CreateEvent("token", probeMirrorItem()); err != nil {
+		t.Fatalf("CreateEvent: %v", err)
+	}
+	if summary := stub.lastBody["summary"]; summary != "📋 Water the plants" {
+		t.Errorf("summary was %q, want %q", summary, "📋 Water the plants")
+	}
+}
+
+// The refusal test above sends the wrong token. This one sends the right token and
+// expects it to be accepted, so a malformed Authorization header fails here.
+func TestTheMirrorsBearerHeaderIsAcceptedWithTheRightToken(t *testing.T) {
+	stub := &dashCalendarStub{requireBearer: "the-real-token"}
+	mirror := &GoogleCalendarMirror{DashURL: stub.server(t).URL}
+
+	if _, err := mirror.ListEvents("the-real-token", time.Now(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("dash refused the right token: %v", err)
 	}
 }

@@ -46,6 +46,8 @@ type noteboardStub struct {
 	lastQuery string
 	// listRequests counts GETs on the list route, so a test can see the paging.
 	listRequests int
+	// lastPatch is the decoded body of the last PATCH on the known item.
+	lastPatch map[string]any
 }
 
 func (n *noteboardStub) server(t *testing.T) *httptest.Server {
@@ -96,6 +98,10 @@ func (n *noteboardStub) server(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(`{"error":"not found"}`))
 			return
+		}
+		if r.Method == http.MethodPatch {
+			n.lastPatch = map[string]any{}
+			json.NewDecoder(r.Body).Decode(&n.lastPatch)
 		}
 		switch r.Method {
 		case http.MethodGet, http.MethodPatch, http.MethodDelete:
@@ -280,4 +286,63 @@ func TestAPatchReturnsNilForAFieldNoteboardDropped(t *testing.T) {
 	}
 	t.Log("characterised: a misspelled PATCH field is a 200 and a no-op — the only " +
 		"evidence a write landed is reading the value back")
+}
+
+// ---------------------------------------------------------------- what the client keeps and writes
+
+// ListScheduled is the roll and materialize steps' whole view of the board: an
+// item it drops is never rolled, and an item it wrongly keeps reaches code that
+// reads its rule.
+func TestListScheduledKeepsOnlyItemsCarryingARule(t *testing.T) {
+	stub := &noteboardStub{knownID: "the-item", items: []map[string]any{
+		{"id": "with-rule", "type": "todo", "title": "x", "schedule": map[string]any{"rrule": "FREQ=WEEKLY", "tzid": "UTC"}},
+		{"id": "without-rule", "type": "todo", "title": "x"},
+	}}
+	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+
+	items, err := client.ListScheduled("personal")
+	if err != nil {
+		t.Fatalf("ListScheduled: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("ListScheduled dropped the item that carries a rule")
+	}
+	for _, item := range items {
+		if item.ID != "with-rule" {
+			t.Errorf("ListScheduled kept %q, which carries no rule", item.ID)
+		}
+	}
+}
+
+// noteboard answers newest first, so the first match is the newest item with the
+// tag, and that is the one FindByTag's callers rewrite.
+func TestFindByTagReturnsTheFirstMatchNoteboardAnswers(t *testing.T) {
+	stub := &noteboardStub{knownID: "the-item", items: []map[string]any{
+		{"id": "newest", "type": "note", "title": "x"},
+		{"id": "older", "type": "note", "title": "x"},
+	}}
+	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+
+	item, err := client.FindByTag("note", "personal-digest")
+	if err != nil {
+		t.Fatalf("FindByTag: %v", err)
+	}
+	if item == nil || item.ID != "newest" {
+		t.Fatalf("FindByTag returned %+v, want the first item noteboard answered, %q", item, "newest")
+	}
+}
+
+// noteboard drops a PATCH key it does not know and still answers 200 (see
+// TestAPatchReturnsNilForAFieldNoteboardDropped), so a misspelled key loses the
+// coordinator's bookkeeping with no error anywhere. The key must be `schedule`.
+func TestSetScheduleWritesTheScheduleKey(t *testing.T) {
+	stub := &noteboardStub{knownID: "the-item"}
+	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+
+	if err := client.SetSchedule("the-item", &model.Schedule{RRule: "FREQ=DAILY", TZID: "UTC"}, false); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	if _, found := stub.lastPatch["schedule"]; !found || len(stub.lastPatch) != 1 {
+		t.Fatalf("PATCH body was %v, want exactly the key \"schedule\"", stub.lastPatch)
+	}
 }

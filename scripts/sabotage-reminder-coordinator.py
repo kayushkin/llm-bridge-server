@@ -25,7 +25,7 @@ Case-writing rules learned the expensive way, and re-earned here:
     behavioural no-op, or a fake in the test file that swallows the value the
     mutation moved. Both appear below, named, with expected_unnoticed set.
 
-Score: 126/135, exit 0 on 2026-10-05 — see the last dated section. Before
+Score: 132/135, exit 0 on 2026-10-05 — see the last dated section. Before
 that: 122/132, exit 0 on 2026-09-26, after the undated-item sort fix and four
 rows for sortByDue, dryPrefix and roundDuration's hour boundary (card
 `526ea345`); the dry-run prefix row stopped being a declaration then. Before
@@ -201,8 +201,11 @@ tagged it superseded/test/concrete-clients-speak-the-real-protocol on
 client_protocol_test.go covered by main's protocol tests. That judgement was
 wrong for six of the seven rows: measured today, only the DASH_TOKENS row is
 CAUGHT, and ListScheduled's filter, FindByTag's first match, SetSchedule's
-key, UpdateEvent's verb, the 📋 prefix and the Bearer header are still
-UNNOTICED. Their declarations now say so.
+key, UpdateEvent's verb, the 📋 prefix and the Bearer header were still
+UNNOTICED (126/135). Six new tests in noteboard_protocol_test.go and
+calendar_protocol_test.go now catch them, one each, and their declarations
+are gone: 132/135. The three left are declared above: HasActionable, -h's
+exit code and the Herald argv.
 """
 
 import sys
@@ -712,10 +715,6 @@ CASES = [
         'NoteboardClient: ListScheduled keeps the items WITHOUT a schedule',
         [('\t\tif item.Schedule != nil {\n\t\t\tscheduled = append(scheduled, item)',
           '\t\tif item.Schedule == nil {\n\t\t\tscheduled = append(scheduled, item)')],
-        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
-                           "drives this edit. The branch meant to pin it was tagged "
-                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
-                           "ported, so nothing is coming to close this.",
     ),
     # Re-aimed 2026-10-05, as ListOpen above.
     Case(
@@ -744,10 +743,6 @@ CASES = [
         'NoteboardClient: FindByTag returns the last match instead of the first',
         [('return items[0], nil',
           'return items[len(items)-1], nil')],
-        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
-                           "drives this edit. The branch meant to pin it was tagged "
-                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
-                           "ported, so nothing is coming to close this.",
     ),
     Case(
         'NoteboardClient: CreateItem sends PUT, not POST',
@@ -763,10 +758,6 @@ CASES = [
         'NoteboardClient: SetSchedule writes the key `schedules`, which noteboard ignores and answers 200 to',
         [('return n.Patch(id, map[string]any{"schedule": schedule})',
           'return n.Patch(id, map[string]any{"schedules": schedule})')],
-        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
-                           "drives this edit. The branch meant to pin it was tagged "
-                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
-                           "ported, so nothing is coming to close this.",
     ),
     Case(
         'NoteboardClient: list sends HEAD, not GET',
@@ -804,10 +795,6 @@ CASES = [
         'GoogleCalendarMirror: UpdateEvent sends POST, not PUT',
         [('return g.do(token, "PUT", calendarEventPath(eventID), eventPayload(item), nil)',
           'return g.do(token, "POST", calendarEventPath(eventID), eventPayload(item), nil)')],
-        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
-                           "drives this edit. The branch meant to pin it was tagged "
-                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
-                           "ported, so nothing is coming to close this.",
     ),
     Case(
         'GoogleCalendarMirror: DeleteEvent stops treating 410 Gone as already deleted',
@@ -818,19 +805,11 @@ CASES = [
         "GoogleCalendarMirror: the event payload loses its 📋 prefix, so mirrored todos read like the user's own events",
         [('"summary": "📋 " + item.Title,',
           '"summary": item.Title,')],
-        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
-                           "drives this edit. The branch meant to pin it was tagged "
-                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
-                           "ported, so nothing is coming to close this.",
     ),
     Case(
         'GoogleCalendarMirror: the authorization header loses the space after Bearer',
         [('request.Header.Set("Authorization", "Bearer "+token)',
           'request.Header.Set("Authorization", "Bearer"+token)')],
-        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
-                           "drives this edit. The branch meant to pin it was tagged "
-                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
-                           "ported, so nothing is coming to close this.",
     ),
 
     # ---- what the herald nudge says, and what it is allowed to leave out ----
