@@ -25,7 +25,8 @@ Case-writing rules learned the expensive way, and re-earned here:
     behavioural no-op, or a fake in the test file that swallows the value the
     mutation moved. Both appear below, named, with expected_unnoticed set.
 
-Score: 122/132, exit 0 on 2026-09-26, after the undated-item sort fix and four
+Score: 126/135, exit 0 on 2026-10-05 — see the last dated section. Before
+that: 122/132, exit 0 on 2026-09-26, after the undated-item sort fix and four
 rows for sortByDue, dryPrefix and roundDuration's hour boundary (card
 `526ea345`); the dry-run prefix row stopped being a declaration then. Before
 that: 117/128, exit 0 on 2026-09-25, after six rows for the all-day window
@@ -184,6 +185,24 @@ UNNOTICED. The seven are real holes on main. The parked branch
 test/concrete-clients-speak-the-real-protocol pins all seven in
 client_protocol_test.go, so each carries a declaration that names that branch.
 Porting it should turn those declarations STALE.
+
+---- 2026-10-05: two rows re-aimed at the pager, three added, the port is off ----
+
+8fcbdda replaced the fixed limit=500 reads with listEveryPage, so the ListOpen
+and ListChildren rows named code that no longer existed and the file aborted
+again. Both now pin what 8fcbdda fixed, a read that stops after one full page,
+and three new rows pin the pager's bounds: the offset advances, a full page is
+not the end, and the page bound is an error rather than a partial list. All
+five are CAUGHT.
+
+The parked branch was never ported. The scheduler C3 close-out (card 2fab79e5)
+tagged it superseded/test/concrete-clients-speak-the-real-protocol on
+2026-09-26, ported only its DASH_TOKEN fix (cd3920a), and judged the rest of
+client_protocol_test.go covered by main's protocol tests. That judgement was
+wrong for six of the seven rows: measured today, only the DASH_TOKENS row is
+CAUGHT, and ListScheduled's filter, FindByTag's first match, SetSchedule's
+key, UpdateEvent's verb, the 📋 prefix and the Bearer header are still
+UNNOTICED. Their declarations now say so.
 """
 
 import sys
@@ -675,10 +694,14 @@ CASES = [
     # httptest server now, the bundle went CAUGHT and its declaration went stale,
     # and a bundle that goes red says nothing about each of its edits, so each
     # edit is its own row.
+    # Re-aimed 2026-10-05: 8fcbdda replaced the three fixed limit=500 reads with
+    # listEveryPage, so the old needle was gone and the file aborted here. The
+    # defect worth pinning now is the one 8fcbdda fixed: a read that stops at
+    # one full page and calls it the whole board.
     Case(
-        'NoteboardClient: ListOpen asks for 5 items, not 500, so a board past five open todos is silently cut',
-        [('"type": {"todo"}, "status": {"open"}, "tag": {tag}, "limit": {"500"},',
-          '"type": {"todo"}, "status": {"open"}, "tag": {tag}, "limit": {"5"},')],
+        'NoteboardClient: ListOpen reads one page and stops, so a board past 500 open todos is silently cut',
+        [('return n.listEveryPage(url.Values{"type": {"todo"}, "status": {"open"}, "tag": {tag}})',
+          'return n.list("/api/items?" + url.Values{"type": {"todo"}, "status": {"open"}, "tag": {tag}, "limit": {"500"}}.Encode())')],
     ),
     Case(
         'NoteboardClient: ListAllStatuses reads only open items, so done and archived ones vanish',
@@ -689,24 +712,42 @@ CASES = [
         'NoteboardClient: ListScheduled keeps the items WITHOUT a schedule',
         [('\t\tif item.Schedule != nil {\n\t\t\tscheduled = append(scheduled, item)',
           '\t\tif item.Schedule == nil {\n\t\t\tscheduled = append(scheduled, item)')],
-        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
-                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
-                           "pins it in client_protocol_test.go; porting that file should turn this "
-                           "declaration STALE, and the row then loses it.",
+        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
+                           "drives this edit. The branch meant to pin it was tagged "
+                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
+                           "ported, so nothing is coming to close this.",
+    ),
+    # Re-aimed 2026-10-05, as ListOpen above.
+    Case(
+        "NoteboardClient: ListChildren reads one page and stops, so a template's 501st occurrence is invisible",
+        [('return n.listEveryPage(url.Values{"parent_id": {parentID}})',
+          'return n.list("/api/items?" + url.Values{"parent_id": {parentID}, "limit": {"500"}}.Encode())')],
+    ),
+    # Added 2026-10-05: listEveryPage is the pager 8fcbdda put under ListOpen,
+    # ListAllStatuses and ListChildren, and these are its three bounds.
+    Case(
+        'NoteboardClient: the pager never advances its offset, so every page re-reads the first',
+        [('pageQuery.Set("offset", strconv.Itoa(page*noteboardPageSize))',
+          'pageQuery.Set("offset", strconv.Itoa(0*noteboardPageSize))')],
     ),
     Case(
-        "NoteboardClient: ListChildren asks for one child, so a template's second occurrence is invisible",
-        [('"parent_id": {parentID}, "limit": {"500"},',
-          '"parent_id": {parentID}, "limit": {"1"},')],
+        'NoteboardClient: the pager stops on a full page instead of a short one, so it reads one page and returns',
+        [('if len(batch) < noteboardPageSize {',
+          'if len(batch) <= noteboardPageSize {')],
+    ),
+    Case(
+        'NoteboardClient: the pager hands back a partial list as the whole board once it hits the page bound',
+        [('if len(batch) < noteboardPageSize {',
+          'if len(batch) < noteboardPageSize || page == noteboardMaxPages-1 {')],
     ),
     Case(
         'NoteboardClient: FindByTag returns the last match instead of the first',
         [('return items[0], nil',
           'return items[len(items)-1], nil')],
-        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
-                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
-                           "pins it in client_protocol_test.go; porting that file should turn this "
-                           "declaration STALE, and the row then loses it.",
+        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
+                           "drives this edit. The branch meant to pin it was tagged "
+                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
+                           "ported, so nothing is coming to close this.",
     ),
     Case(
         'NoteboardClient: CreateItem sends PUT, not POST',
@@ -722,10 +763,10 @@ CASES = [
         'NoteboardClient: SetSchedule writes the key `schedules`, which noteboard ignores and answers 200 to',
         [('return n.Patch(id, map[string]any{"schedule": schedule})',
           'return n.Patch(id, map[string]any{"schedules": schedule})')],
-        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
-                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
-                           "pins it in client_protocol_test.go; porting that file should turn this "
-                           "declaration STALE, and the row then loses it.",
+        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
+                           "drives this edit. The branch meant to pin it was tagged "
+                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
+                           "ported, so nothing is coming to close this.",
     ),
     Case(
         'NoteboardClient: list sends HEAD, not GET',
@@ -744,12 +785,10 @@ CASES = [
     # edit is its own row.
     Case(
         'GoogleCalendarMirror: token resolution looks for DASH_TOKENS=, so it never finds the token',
+        # Caught since cd3920a ported dash_token_test.go; its declaration went
+        # STALE on 2026-10-05 and is gone.
         [('if token, found := strings.CutPrefix(field, "DASH_TOKEN="); found {',
           'if token, found := strings.CutPrefix(field, "DASH_TOKENS="); found {')],
-        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
-                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
-                           "pins it in client_protocol_test.go; porting that file should turn this "
-                           "declaration STALE, and the row then loses it.",
     ),
     Case(
         'GoogleCalendarMirror: the list decoder treats an error response as success and success as an error',
@@ -765,10 +804,10 @@ CASES = [
         'GoogleCalendarMirror: UpdateEvent sends POST, not PUT',
         [('return g.do(token, "PUT", calendarEventPath(eventID), eventPayload(item), nil)',
           'return g.do(token, "POST", calendarEventPath(eventID), eventPayload(item), nil)')],
-        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
-                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
-                           "pins it in client_protocol_test.go; porting that file should turn this "
-                           "declaration STALE, and the row then loses it.",
+        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
+                           "drives this edit. The branch meant to pin it was tagged "
+                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
+                           "ported, so nothing is coming to close this.",
     ),
     Case(
         'GoogleCalendarMirror: DeleteEvent stops treating 410 Gone as already deleted',
@@ -779,19 +818,19 @@ CASES = [
         "GoogleCalendarMirror: the event payload loses its 📋 prefix, so mirrored todos read like the user's own events",
         [('"summary": "📋 " + item.Title,',
           '"summary": item.Title,')],
-        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
-                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
-                           "pins it in client_protocol_test.go; porting that file should turn this "
-                           "declaration STALE, and the row then loses it.",
+        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
+                           "drives this edit. The branch meant to pin it was tagged "
+                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
+                           "ported, so nothing is coming to close this.",
     ),
     Case(
         'GoogleCalendarMirror: the authorization header loses the space after Bearer',
         [('request.Header.Set("Authorization", "Bearer "+token)',
           'request.Header.Set("Authorization", "Bearer"+token)')],
-        expected_unnoticed="measured 2026-09-25 on main: no protocol test on main drives this "
-                           "edit. The parked branch test/concrete-clients-speak-the-real-protocol "
-                           "pins it in client_protocol_test.go; porting that file should turn this "
-                           "declaration STALE, and the row then loses it.",
+        expected_unnoticed="measured 2026-09-25 and again 2026-10-05 on main: no protocol test "
+                           "drives this edit. The branch meant to pin it was tagged "
+                           "superseded/test/concrete-clients-speak-the-real-protocol and never "
+                           "ported, so nothing is coming to close this.",
     ),
 
     # ---- what the herald nudge says, and what it is allowed to leave out ----
