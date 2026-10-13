@@ -33,6 +33,7 @@ import (
 	"strings"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // Names of the variables every local harness child receives for posting into
@@ -78,6 +79,24 @@ func (codec *principalSessionCookieCodec) decodeSessionPostingToken(token string
 		return "", errors.New("session posting token names a malformed session id")
 	}
 	return string(sessionID), nil
+}
+
+// sessionPostingEnvironmentForInstance is sessionPostingEnvironment for a spawn
+// on inst. Only a local child can receive environment variables: the ssh and
+// runner transports have no way to deliver them, and StartOnInstance refuses a
+// session that carries any. Posting is an extra, so on those transports the
+// session starts without it and the log says so. Until this existed every
+// session carried these, and no session could start on a runner machine at all.
+func (s *Server) sessionPostingEnvironmentForInstance(session *store.Session, inst *msg.Instance) []string {
+	if inst.Machine == nil || inst.Machine.Transport != msg.TransportLocal {
+		transport := msg.Transport("unknown")
+		if inst.Machine != nil {
+			transport = inst.Machine.Transport
+		}
+		log.Printf("[session-posting] %s: instance %s uses the %s transport, which cannot deliver environment variables; the agent cannot share files or offer actions", session.SessionID, inst.ID, transport)
+		return nil
+	}
+	return s.sessionPostingEnvironment(session)
 }
 
 // sessionPostingEnvironment returns the variables that let a session's agent
