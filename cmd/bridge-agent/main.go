@@ -205,18 +205,31 @@ func main() {
 // MCP servers in the named bundle. strict_mcp_config makes the harness ignore
 // every other MCP configuration source (user scope, project scope), so the
 // bundle is the whole truth about what the delegate can reach.
+//
+// mcp_config carries the bundle's JSON itself, not its path: Claude Code's
+// --mcp-config takes either, and a path on this host means nothing to a
+// session on a runner machine, where Claude Code stopped with "MCP config
+// file not found: /home/kayushkincom/.claude/mcp/none.json"
+// (br_1792016058819150718, 2026-10-14).
 func loadBundle(name string) (map[string]any, error) {
 	path := filepath.Join(bundleDir(), name+".json")
-	if _, err := os.Stat(path); err != nil {
+	content, err := os.ReadFile(path)
+	if err != nil {
 		available, _ := filepath.Glob(filepath.Join(bundleDir(), "*.json"))
 		for i, a := range available {
 			available[i] = strings.TrimSuffix(filepath.Base(a), ".json")
 		}
-		return nil, fmt.Errorf("no MCP bundle %q at %s (available: %s)",
-			name, path, strings.Join(available, ", "))
+		return nil, fmt.Errorf("no MCP bundle %q at %s (available: %s): %w",
+			name, path, strings.Join(available, ", "), err)
+	}
+	var bundle struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(content, &bundle); err != nil || bundle.MCPServers == nil {
+		return nil, fmt.Errorf("MCP bundle %s is not a Claude Code MCP config with an mcpServers object (%v)", path, err)
 	}
 	return map[string]any{
-		"mcp_config":        path,
+		"mcp_config":        string(content),
 		"strict_mcp_config": true,
 	}, nil
 }
