@@ -87,7 +87,7 @@ func TestARunnerSpawnCarriesTheSessionWorkingDirectory(t *testing.T) {
 		Machine:    &msg.Machine{ID: "m_remote", Name: "remote", Transport: msg.TransportRunner},
 	}
 
-	if _, err := manager.startRunner(context.Background(), sess, inst, ""); err != nil {
+	if _, err := manager.startRunner(context.Background(), sess, inst, "", nil); err != nil {
 		t.Fatalf("startRunner: %v", err)
 	}
 
@@ -190,4 +190,41 @@ func waitForRecordedFile(t *testing.T, recordTo string) string {
 	}
 	t.Fatalf("nothing was recorded at %s", recordTo)
 	return ""
+}
+
+// A runner spawn carries the session's environment, which the runner applies
+// to the wrapper, and says whether the session was given computer use.
+func TestARunnerSpawnCarriesTheSessionEnvironmentAndComputerUse(t *testing.T) {
+	manager := newManagerForWorkingDirTest(t)
+	registry := NewRunnerRegistry()
+	conn := &RunnerConnection{
+		MachineName: "remote",
+		Hello: &msg.RunnerHello{OS: "linux", Arch: "amd64",
+			ComputerUse: &msg.ComputerUseTool{Command: "/mnt/c/x/llm-bridge-computer-use.exe"}},
+		registry: registry,
+		outgoing: make(chan *msg.RunnerMessage, 4),
+		sessions: map[string]*RunnerProcess{},
+	}
+	registry.register(conn)
+	manager.runners = registry
+
+	if tool := manager.RunnerComputerUse("remote"); tool == nil || tool.Command != "/mnt/c/x/llm-bridge-computer-use.exe" {
+		t.Errorf("RunnerComputerUse = %+v", tool)
+	}
+	if tool := manager.RunnerComputerUse("absent"); tool != nil {
+		t.Errorf("a machine with no runner reported %+v", tool)
+	}
+
+	sess := &store.Session{SessionID: "sess-env", Harness: msg.HarnessClaudeCode, HarnessConfig: []byte(`{"computer_use":true}`)}
+	inst := &msg.Instance{ID: "inst-cc-runner", Machine: &msg.Machine{ID: "m_remote", Name: "remote", Transport: msg.TransportRunner}}
+	if _, err := manager.startRunner(context.Background(), sess, inst, "", []string{"LLM_BRIDGE_SESSION_POSTING_TOKEN=t"}); err != nil {
+		t.Fatalf("startRunner: %v", err)
+	}
+	m := <-conn.outgoing
+	if len(m.Spawn.Env) != 1 || m.Spawn.Env[0] != "LLM_BRIDGE_SESSION_POSTING_TOKEN=t" {
+		t.Errorf("spawn env = %v", m.Spawn.Env)
+	}
+	if !m.Spawn.ComputerUse {
+		t.Error("spawn does not say the session has computer use")
+	}
 }

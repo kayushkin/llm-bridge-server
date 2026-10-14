@@ -504,6 +504,7 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("POST /machines", s.handleCreateMachine)
 		s.mux.HandleFunc("GET /machines/{id}", s.handleGetMachine)
 		s.mux.HandleFunc("PUT /machines/{id}", s.handleUpdateMachine)
+		s.mux.HandleFunc("PUT /machines/{id}/computer-use", s.handleSetMachineComputerUse)
 		s.mux.HandleFunc("DELETE /machines/{id}", s.handleDeleteMachine)
 	}
 

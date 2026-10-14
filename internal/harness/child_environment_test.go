@@ -100,13 +100,18 @@ func containsEntry(environment []string, entry string) bool {
 	return false
 }
 
-func TestSessionEnvironmentIsRefusedOnTransportsThatCannotDeliverIt(t *testing.T) {
+func TestSessionEnvironmentIsRefusedOverSSHOnly(t *testing.T) {
 	manager := NewManager(nil, "", "", "", 0, nil)
-	for _, transport := range []msg.Transport{msg.TransportSSH, msg.TransportRunner} {
-		_, err := manager.StartOnInstance(t.Context(), &store.Session{SessionID: "sess-remote", Harness: msg.HarnessMock},
-			&msg.Instance{ID: "inst-remote", Machine: &msg.Machine{ID: "m-remote", Transport: transport}}, "", []string{"LLM_BRIDGE_PRINCIPAL_TOKEN=token"})
-		if err == nil || !strings.Contains(err.Error(), "cannot deliver") {
-			t.Errorf("%s transport with a session environment: err = %v, want a refusal", transport, err)
-		}
+	_, err := manager.StartOnInstance(t.Context(), &store.Session{SessionID: "sess-remote", Harness: msg.HarnessMock},
+		&msg.Instance{ID: "inst-remote", Machine: &msg.Machine{ID: "m-remote", Transport: msg.TransportSSH}}, "", []string{"LLM_BRIDGE_PRINCIPAL_TOKEN=token"})
+	if err == nil || !strings.Contains(err.Error(), "cannot deliver") {
+		t.Errorf("ssh transport with a session environment: err = %v, want a refusal", err)
+	}
+	// A runner delivers it through RunnerSpawn.Env, so it is not refused for
+	// that; with no runner registry it fails for the want of a runner instead.
+	_, err = manager.StartOnInstance(t.Context(), &store.Session{SessionID: "sess-runner", Harness: msg.HarnessMock},
+		&msg.Instance{ID: "inst-runner", Machine: &msg.Machine{ID: "m-runner", Transport: msg.TransportRunner}}, "", []string{"LLM_BRIDGE_PRINCIPAL_TOKEN=token"})
+	if err == nil || strings.Contains(err.Error(), "cannot deliver") {
+		t.Errorf("runner transport with a session environment: err = %v, want no environment refusal", err)
 	}
 }

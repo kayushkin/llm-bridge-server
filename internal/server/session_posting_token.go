@@ -82,13 +82,13 @@ func (codec *principalSessionCookieCodec) decodeSessionPostingToken(token string
 }
 
 // sessionPostingEnvironmentForInstance is sessionPostingEnvironment for a spawn
-// on inst. Only a local child can receive environment variables: the ssh and
-// runner transports have no way to deliver them, and StartOnInstance refuses a
-// session that carries any. Posting is an extra, so on those transports the
-// session starts without it and the log says so. Until this existed every
-// session carried these, and no session could start on a runner machine at all.
+// on inst. A local child receives environment variables directly and a runner
+// child through RunnerSpawn.Env; the ssh transport has no way to deliver them,
+// and StartOnInstance refuses a session that carries any there. Posting is an
+// extra, so on ssh the session starts without it and the log says so. The
+// addresses are this server's, which a runner reaches through its tunnel.
 func (s *Server) sessionPostingEnvironmentForInstance(session *store.Session, inst *msg.Instance) []string {
-	if inst.Machine == nil || inst.Machine.Transport != msg.TransportLocal {
+	if inst.Machine == nil || inst.Machine.Transport == msg.TransportSSH {
 		transport := msg.Transport("unknown")
 		if inst.Machine != nil {
 			transport = inst.Machine.Transport

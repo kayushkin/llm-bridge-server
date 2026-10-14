@@ -447,7 +447,7 @@ func (p *RunnerProcess) closeEvents() {
 // service is installed and running before forking the wrapper, so an
 // instance on a remote machine actually deploys the harness's stack
 // there rather than expecting it to already exist.
-func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string) (HarnessProcess, error) {
+func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string, sessionEnvironment []string) (HarnessProcess, error) {
 	if m.runners == nil {
 		return nil, fmt.Errorf("runner registry not configured")
 	}
@@ -505,6 +505,8 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 			WorkingDir:  workDir,
 			StartParams: params,
 			Provision:   provision,
+			Env:         sessionEnvironment,
+			ComputerUse: sessionHasComputerUse(sess),
 		},
 	}
 	if err := conn.Send(spawn); err != nil {
@@ -513,4 +515,29 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 	}
 
 	return rp, nil
+}
+
+// RunnerComputerUse is the computer-use tool the runner on machineName
+// reported when it connected, or nil when it is not connected or reported none.
+func (m *Manager) RunnerComputerUse(machineName string) *msg.ComputerUseTool {
+	if m.runners == nil {
+		return nil
+	}
+	conn := m.runners.Get(machineName)
+	if conn == nil || conn.Hello == nil {
+		return nil
+	}
+	return conn.Hello.ComputerUse
+}
+
+// sessionHasComputerUse reads harness_config "computer_use", which the server
+// set to true only after giving the session the runner's tool.
+func sessionHasComputerUse(sess *store.Session) bool {
+	var cfg struct {
+		ComputerUse bool `json:"computer_use"`
+	}
+	if len(sess.HarnessConfig) == 0 || json.Unmarshal(sess.HarnessConfig, &cfg) != nil {
+		return false
+	}
+	return cfg.ComputerUse
 }

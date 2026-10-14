@@ -1555,15 +1555,15 @@ func (m *Manager) ActiveCount() int {
 //
 // sessionEnvironment holds variables for this session's harness child only
 // (the session agent token and the gateway URL, when the session acts for a
-// principal). A local child receives them in its environment. Neither the ssh
-// nor the runner transport has a way to deliver them, so a session that has
-// any is refused on those transports rather than started without them.
+// principal). A local child receives them in its environment, and a runner
+// child through RunnerSpawn.Env. The ssh transport has no way to deliver them,
+// so a session that has any is refused there rather than started without them.
 func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credentialID string, sessionEnvironment []string) (HarnessProcess, error) {
 	if inst.Machine == nil {
 		return nil, fmt.Errorf("instance %s missing Machine; caller must populate it before StartOnInstance", inst.ID)
 	}
-	if len(sessionEnvironment) > 0 && inst.Machine.Transport != msg.TransportLocal {
-		return nil, fmt.Errorf("session %s needs %d session environment variables in its harness child, and instance %s uses the %s transport, which cannot deliver them; start it on a local instance",
+	if len(sessionEnvironment) > 0 && inst.Machine.Transport == msg.TransportSSH {
+		return nil, fmt.Errorf("session %s needs %d session environment variables in its harness child, and instance %s uses the %s transport, which cannot deliver them; start it on a local or runner instance",
 			sess.SessionID, len(sessionEnvironment), inst.ID, inst.Machine.Transport)
 	}
 	h := msg.Harness(sess.Harness)
@@ -1641,7 +1641,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 		case msg.TransportSSH:
 			proc, err = m.startSSH(ctx, sess, inst, credentialID)
 		case msg.TransportRunner:
-			proc, err = m.startRunner(ctx, sess, inst, credentialID)
+			proc, err = m.startRunner(ctx, sess, inst, credentialID, sessionEnvironment)
 		default:
 			// Local transport
 			binPath, ok := Available(h)

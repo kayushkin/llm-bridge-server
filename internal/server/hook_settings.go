@@ -74,6 +74,12 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 	if err := s.injectMCPConfig(sess); err != nil {
 		return nil, fmt.Errorf("inject mcp config: %w", err)
 	}
+	if err := s.inlineMCPConfigForRunner(sess, inst); err != nil {
+		return nil, fmt.Errorf("inline mcp config for runner: %w", err)
+	}
+	if err := s.injectComputerUse(sess, inst, s.harness.RunnerComputerUse); err != nil {
+		return nil, fmt.Errorf("computer use: %w", err)
+	}
 	sessionEnvironment, err := s.sessionAgentEnvironment(sess)
 	if err != nil {
 		return nil, err

@@ -290,6 +290,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `DELETE` | `/machines/{id}` | Remove a machine (harness-store) | operator |
 | `GET` | `/machines/{id}` | One machine (harness-store) | operator |
 | `PUT` | `/machines/{id}` | Change a machine (harness-store) | operator |
+| `PUT` | `/machines/{id}/computer-use` | Switch computer use on or off for a machine's sessions (`{"allowed": bool}`) | operator |
 
 ### Hooks
 

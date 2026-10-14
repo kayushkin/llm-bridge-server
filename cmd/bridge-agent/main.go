@@ -85,16 +85,17 @@ func bundleDir() string {
 
 func main() {
 	var (
-		bundle    = flag.String("mcp", "none", "MCP bundle to load — a config file name under ~/.claude/mcp (e.g. browser). \"none\" spawns with no MCP servers.")
-		server    = flag.String("server", envOr("LLMBRIDGE_SERVER", defaultServer), "llm-bridge-server base URL")
-		harness   = flag.String("harness", defaultHarness, "harness to run the delegate on")
-		instance  = flag.String("instance", os.Getenv("LLMBRIDGE_INSTANCE"), "harness instance id (defaults to the server's default instance)")
-		manager   = flag.String("manager-session", os.Getenv("LLM_BRIDGE_SESSION_ID"), "bridge session id the delegate sits under in the session tree (defaults to the session this command runs in)")
-		purpose   = flag.String("purpose", msg.PurposeDelegate, "session purpose — a registered slug, not a description of the task (see -list-purposes)")
-		timeout   = flag.Duration("timeout", defaultTimeout, "give up if the turn has not finished within this duration")
-		rawJSON   = flag.Bool("json", false, "print the full result event as JSON instead of just its text")
-		keep      = flag.Bool("keep", false, "leave the delegate session running instead of stopping it after the result")
-		principal = flag.String("principal", "", "principal-store id (principal_000001) the delegate session belongs to. Without "+serviceTokenEnvironmentVariable+" set, the CLI logs in as this principal; one of the two is required")
+		bundle      = flag.String("mcp", "none", "MCP bundle to load — a config file name under ~/.claude/mcp (e.g. browser). \"none\" spawns with no MCP servers.")
+		server      = flag.String("server", envOr("LLMBRIDGE_SERVER", defaultServer), "llm-bridge-server base URL")
+		harness     = flag.String("harness", defaultHarness, "harness to run the delegate on")
+		instance    = flag.String("instance", os.Getenv("LLMBRIDGE_INSTANCE"), "harness instance id (defaults to the server's default instance)")
+		manager     = flag.String("manager-session", os.Getenv("LLM_BRIDGE_SESSION_ID"), "bridge session id the delegate sits under in the session tree (defaults to the session this command runs in)")
+		purpose     = flag.String("purpose", msg.PurposeDelegate, "session purpose — a registered slug, not a description of the task (see -list-purposes)")
+		timeout     = flag.Duration("timeout", defaultTimeout, "give up if the turn has not finished within this duration")
+		rawJSON     = flag.Bool("json", false, "print the full result event as JSON instead of just its text")
+		computerUse = flag.Bool("computer-use", false, "give the delegate its runner machine's computer-use tool (mcp__llm-bridge-computer-use__computer); the instance must be on a runner machine whose owner switched computer use on")
+		keep        = flag.Bool("keep", false, "leave the delegate session running instead of stopping it after the result")
+		principal   = flag.String("principal", "", "principal-store id (principal_000001) the delegate session belongs to. Without "+serviceTokenEnvironmentVariable+" set, the CLI logs in as this principal; one of the two is required")
 
 		listPurposes = flag.Bool("list-purposes", false, "print the registered session purposes and exit")
 	)
@@ -148,6 +149,9 @@ func main() {
 	}
 
 	harnessConfig, err := loadBundle(*bundle)
+	if err == nil && *computerUse {
+		harnessConfig["computer_use"] = true
+	}
 	if err != nil {
 		fatal("%v", err)
 	}

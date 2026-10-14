@@ -301,6 +301,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /machines":                               operatorRoute("machine registry"),
 	"GET /machines/{id}":                           operatorRoute("machine registry"),
 	"PUT /machines/{id}":                           operatorRoute("machine registry"),
+	"PUT /machines/{id}/computer-use":              operatorRoute("machine registry"),
 	"DELETE /machines/{id}":                        operatorRoute("machine registry"),
 	"POST /api/runner/seed/broadcast":              operatorRoute("tells every runner to reconcile"),
 
