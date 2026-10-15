@@ -229,6 +229,7 @@ func (s *Server) runSessionAction(session *store.Session, action store.SessionAc
 	if err := s.broadcastSessionAction(finished); err != nil {
 		log.Printf("[session-actions] ERROR %s: %s event not written: %v", action.ActionID, state, err)
 	}
+	s.reportSessionActionToItsSession(finished)
 }
 
 type sessionActionOutcome struct {
@@ -660,6 +661,7 @@ func (s *Server) settleSessionActionsLeftRunning() {
 		if err := s.broadcastSessionAction(action); err != nil {
 			log.Printf("[session-actions] ERROR %s: outcome_unknown event not written: %v", action.ActionID, err)
 		}
+		s.reportSessionActionToItsSession(action)
 	}
 }
 
