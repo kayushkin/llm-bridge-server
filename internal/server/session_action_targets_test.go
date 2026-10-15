@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -179,5 +181,39 @@ func TestTypedValuesTakeThePlacesTheMessageNamesThem(t *testing.T) {
 	got := fillSessionActionMessageInputs(message, map[string]string{"A": "one", "A_B": "two"})
 	if want := "a=one b=twoc and again one."; got != want {
 		t.Errorf("filled = %q, want %q", got, want)
+	}
+}
+
+// An administrator's session reaches any session, as the routes let an
+// administrator reach any; a session of anyone else reaches only its own
+// principal's. Producer's orchestrator runs as the operator, an
+// administrator, and most sessions it manages have no principal at all.
+func TestATargetSessionActionFollowsTheRoutesRuleForAdministrators(t *testing.T) {
+	srv, st := sessionsForTargetActions(t)
+	principalsByID := map[string]principalclient.Principal{
+		"principal_000001": {ID: "principal_000001", Kind: "human", IsAdministrator: true},
+		"principal_000002": {ID: "principal_000002", Kind: "human"},
+	}
+	srv.principalLookupCache.readFromUpstream = func(_ context.Context, principalID string) (principalclient.Principal, error) {
+		principal, found := principalsByID[principalID]
+		if !found {
+			return principalclient.Principal{}, principalclient.ErrNotFound
+		}
+		return principal, nil
+	}
+	for _, session := range []*store.Session{
+		{SessionID: "br_administrators", Harness: msg.HarnessMock, State: string(msg.SessionIdle), PrincipalID: "principal_000001"},
+		{SessionID: "br_someone_elses", Harness: msg.HarnessMock, State: string(msg.SessionIdle), PrincipalID: "principal_000002"},
+	} {
+		if err := st.CreateSession(session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stopTarget := map[string]any{"label": "Stop it", "type": "stop_session", "target_session_id": "br_target"}
+	if recorder := offerAsInternalService(t, srv, "br_administrators", stopTarget); recorder.Code != http.StatusCreated {
+		t.Errorf("administrator's session offering on an unowned session: %d %s, want 201", recorder.Code, recorder.Body)
+	}
+	if recorder := offerAsInternalService(t, srv, "br_someone_elses", stopTarget); recorder.Code != http.StatusNotFound {
+		t.Errorf("another principal's session offering on an unowned session: %d %s, want 404", recorder.Code, recorder.Body)
 	}
 }

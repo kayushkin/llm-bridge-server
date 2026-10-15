@@ -6,12 +6,14 @@ package server
 // can approve the next step in one of them with a press.
 //
 // The target is named by its id and checked at offer and again at confirm: it
-// must exist, must not be the session the button is in, and must belong to
-// the same principal as that session, so a button can reach no session its
-// own session's owner could not reach. Its display name is in Command for the
+// must exist, must not be the session the button is in, and must be one the
+// button's session's principal could reach through the routes: its own, or
+// any session when principal-store says that principal is an administrator.
+// So a button can reach no session its own session's owner could not. Its display name is in Command for the
 // person to read, never used to find it.
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -29,7 +31,7 @@ func sessionActionTypeActsOnAnotherSession(actionType msg.SessionActionType) boo
 
 // targetSessionOfAction reads the session an offer names and holds it to the
 // rules above.
-func (s *Server) targetSessionOfAction(session *store.Session, offer msg.SessionActionOffer) (*store.Session, *sessionActionRefusal) {
+func (s *Server) targetSessionOfAction(ctx context.Context, session *store.Session, offer msg.SessionActionOffer) (*store.Session, *sessionActionRefusal) {
 	if offer.TargetSessionID == session.SessionID {
 		return nil, &sessionActionRefusal{http.StatusBadRequest, "target_is_this_session", fmt.Sprintf(
 			"target_session_id %s is the session the button is in; a %s button acts on another session", offer.TargetSessionID, offer.Type)}
@@ -41,11 +43,15 @@ func (s *Server) targetSessionOfAction(session *store.Session, offer msg.Session
 	if err != nil {
 		return nil, &sessionActionRefusal{http.StatusInternalServerError, "read_target_session", fmt.Sprintf("session %s could not be read: %v", offer.TargetSessionID, err)}
 	}
-	if target.PrincipalID != session.PrincipalID {
+	reachable, refusal := s.sessionPrincipalMayReachTarget(ctx, session, target)
+	if refusal != nil {
+		return nil, refusal
+	}
+	if !reachable {
 		// The same answer as a missing session, as the routes give a principal
 		// who reaches someone else's.
 		return nil, &sessionActionRefusal{http.StatusNotFound, "unknown_target_session", fmt.Sprintf(
-			"there is no session %s belonging to %s, the principal of session %s", offer.TargetSessionID, orNone(session.PrincipalID), session.SessionID)}
+			"there is no session %s that %s, the principal of session %s, may reach", offer.TargetSessionID, orNone(session.PrincipalID), session.SessionID)}
 	}
 	if offer.Type == msg.SessionActionSendToSession && target.ControlledBy == msg.ControlledByHarness {
 		return nil, &sessionActionRefusal{http.StatusConflict, "target_not_bridge_controlled", fmt.Sprintf(
@@ -54,10 +60,29 @@ func (s *Server) targetSessionOfAction(session *store.Session, offer msg.Session
 	return target, nil
 }
 
+// sessionPrincipalMayReachTarget applies the routes' rule to the principal
+// of the session the button is in: a session reaches a target with its own
+// principal, and an administrator's session reaches any target. Whether a
+// principal is an administrator is principal-store's answer, read through
+// the same cache the request gate uses.
+func (s *Server) sessionPrincipalMayReachTarget(ctx context.Context, session, target *store.Session) (bool, *sessionActionRefusal) {
+	if target.PrincipalID == session.PrincipalID {
+		return true, nil
+	}
+	if session.PrincipalID == "" {
+		return false, nil
+	}
+	owner, credentialError := s.callerForPrincipalID(ctx, session.PrincipalID, "session "+session.SessionID+" belongs to")
+	if credentialError != nil {
+		return false, &sessionActionRefusal{credentialError.status, credentialError.code, credentialError.message}
+	}
+	return owner.isAdministrator, nil
+}
+
 // describeTargetSessionAction writes Command for a send_to_session or
 // stop_session: the target's id and name, and the message.
-func (s *Server) describeTargetSessionAction(session *store.Session, offer msg.SessionActionOffer) (string, *sessionActionRefusal) {
-	target, refusal := s.targetSessionOfAction(session, offer)
+func (s *Server) describeTargetSessionAction(ctx context.Context, session *store.Session, offer msg.SessionActionOffer) (string, *sessionActionRefusal) {
+	target, refusal := s.targetSessionOfAction(ctx, session, offer)
 	if refusal != nil {
 		return "", refusal
 	}

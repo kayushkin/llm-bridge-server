@@ -446,7 +446,7 @@ func (s *Server) describeSessionAction(ctx context.Context, session *store.Sessi
 			offer.Label, session.Harness, orNone(session.InstanceID), orNone(session.AgentID), orNone(session.PrincipalID), orInstanceDefault(session.WorkingDir),
 			session.SessionID, offer.Message), nil
 	case msg.SessionActionSendToSession, msg.SessionActionStopSession:
-		return s.describeTargetSessionAction(session, offer)
+		return s.describeTargetSessionAction(ctx, session, offer)
 	}
 	return "", &sessionActionRefusal{http.StatusBadRequest, "invalid_session_action_offer", fmt.Sprintf("type %q is not an action type", offer.Type)}
 }
