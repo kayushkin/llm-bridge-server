@@ -25,6 +25,14 @@
 # --fork starts a copy of this session with its history; --new-session starts a
 # fresh one. Find a repo's id with repo-store's GET /repos/by-name/{name}.
 #
+# --input NAME "Label" and --secret-input NAME "Label" put text boxes on a --run
+# button (up to five; NAME is upper case, digits and underscores). What the
+# person types reaches the command only as $BRIDGE_INPUT_NAME, never in its
+# text, and the server stores it nowhere; a secret box is a password field and
+# its value is blanked in the output. Pass a secret on, never print it:
+#   bridge-button "Save the Mac password" --secret-input PASSWORD "Mac login password" \
+#     --run 'jq -n --arg p "$BRIDGE_INPUT_PASSWORD" ... | curl ... -d @- >/dev/null && echo saved'
+#
 # A button is for work the server does, never for answering a question: ask with
 # AskUserQuestion, whose options the chat already draws as one-click answers.
 #
@@ -60,6 +68,11 @@ while [ $# -gt 0 ]; do
     --markdown)      set_field result_format markdown; shift ;;
     --model)         set_field model "$2"; shift 2 ;;
     --max-cost)      set_number maximum_cost_usd "$2"; shift 2 ;;
+    --input|--secret-input)
+      [ $# -ge 3 ] || usage
+      offer=$(jq --arg name "$2" --arg label "$3" --argjson secret "$([ "$1" = --secret-input ] && echo true || echo false)" \
+        '.inputs += [{name:$name, label:$label} + (if $secret then {secret:true} else {} end)]' <<<"$offer")
+      shift 3 ;;
     *) usage ;;
   esac
 done

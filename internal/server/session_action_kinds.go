@@ -81,20 +81,21 @@ func (s *Server) sessionActionWorkingDirectory(session *store.Session, offer msg
 }
 
 // runCommandAction runs a run_command's shell command in its directory.
-func (s *Server) runCommandAction(session *store.Session, action store.SessionAction) sessionActionOutcome {
+func (s *Server) runCommandAction(session *store.Session, action store.SessionAction, inputValues map[string]string) sessionActionOutcome {
 	directory, refusal := s.sessionActionWorkingDirectory(session, action.Offer)
 	if refusal != nil {
 		return sessionActionOutcome{err: errors.New(refusal.message)}
 	}
-	return s.runShellForSessionAction(session, action, directory, action.Offer.ShellCommand)
+	return s.runShellForSessionAction(session, action, directory, action.Offer.ShellCommand, sessionActionInputEnvironment(inputValues))
 }
 
 // runShellForSessionAction runs script with bash -l -c in directory. The child
 // gets this server's environment without its secrets, as a harness child
 // does, plus LLM_BRIDGE_SESSION_ID — so a deploy that detaches, as
 // llm-bridge-server's own does, reports its outcome to the session — and
-// AI_AGENT, which deploy-gate writes into the deploy ledger as who deployed.
-func (s *Server) runShellForSessionAction(session *store.Session, action store.SessionAction, directory, script string) sessionActionOutcome {
+// AI_AGENT, which deploy-gate writes into the deploy ledger as who deployed,
+// plus inputEnvironment: what the person typed into the button's boxes.
+func (s *Server) runShellForSessionAction(session *store.Session, action store.SessionAction, directory, script string, inputEnvironment []string) sessionActionOutcome {
 	ctx, cancel := context.WithTimeout(context.Background(), sessionActionCommandTimeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, "bash", "-l", "-c", script)
@@ -103,6 +104,7 @@ func (s *Server) runShellForSessionAction(session *store.Session, action store.S
 		"LLM_BRIDGE_SESSION_ID="+session.SessionID,
 		fmt.Sprintf("AI_AGENT=chat button %s confirmed by %s", action.ActionID, describePrincipalForLog(action.RunByPrincipalID)),
 	)
+	command.Env = append(command.Env, inputEnvironment...)
 	output, err := command.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return sessionActionOutcome{output: string(output), err: fmt.Errorf("it ran longer than %s and was killed", sessionActionCommandTimeout)}
@@ -210,6 +212,8 @@ Judge two things: does the command do what the label says, and could it do harm 
 - caution: it does what the label says, but it changes something that matters — commits, pushes, deploys, deletes, restarts a service, sends a message to a person, spends money. Say exactly what it changes.
 - reject: it does not do what the label says, hides what it does, fetches and runs code from the internet, reads or prints credentials, deletes data it has no reason to, or you cannot tell what it does.
 
+A button may have text boxes. What the person types reaches the command only as environment variables named $BRIDGE_INPUT_<NAME>, listed after the command with whether each is secret. A command that hands a typed value to where its label says — a password stored in the credential store, a value written to the file it names — is doing what it says; that is not reading credentials. A command that prints a secret input, writes it to a log or file the label does not name, or sends it anywhere the label does not name is reject.
+
 Reasons: two or three plain sentences a busy person reads in ten seconds.`
 
 // reviewSessionActionCommand asks the reviewer model what it makes of a
@@ -227,7 +231,7 @@ func (s *Server) reviewSessionActionCommand(ctx context.Context, session *store.
 	}
 	ctx, cancel := context.WithTimeout(ctx, sessionActionReviewTimeout)
 	defer cancel()
-	prompt := fmt.Sprintf("Label: %s\nDirectory: %s\nSession: %s\nCommand:\n%s", offer.Label, directory, session.SessionID, offer.ShellCommand)
+	prompt := fmt.Sprintf("Label: %s\nDirectory: %s\nSession: %s\nCommand:\n%s%s", offer.Label, directory, session.SessionID, offer.ShellCommand, describeSessionActionInputs(offer.Inputs))
 	response, err := s.sessionActionModels.RunOneShotRoute(ctx, route, msg.OneShotRequest{
 		Prompt:       prompt,
 		SystemPrompt: sessionActionReviewInstructions,

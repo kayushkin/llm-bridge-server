@@ -81,6 +81,9 @@ func (s *Store) migrateSessionActions() error {
 		{"maximum_cost_usd", "REAL NOT NULL DEFAULT 0"},
 		{"review", "TEXT NOT NULL DEFAULT ''"},
 		{"cost_usd", "REAL NOT NULL DEFAULT 0"},
+		// The offer's text boxes as JSON: names, labels, which are secret. What
+		// a person types into them is never stored.
+		{"inputs", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if existing[column.name] {
 			continue
@@ -99,13 +102,21 @@ func (s *Store) InsertSessionAction(action *SessionAction) error {
 		return err
 	}
 	offer := action.Offer
+	inputs := ""
+	if len(offer.Inputs) > 0 {
+		encoded, err := json.Marshal(offer.Inputs)
+		if err != nil {
+			return fmt.Errorf("encode session action inputs: %w", err)
+		}
+		inputs = string(encoded)
+	}
 	result, err := s.db.Exec(
 		`INSERT INTO session_actions (session_id, label, type, repo_id, scheduler_job_id, message, shell_command, working_directory,
-		 result_format, model, maximum_cost_usd, command, state, offered_at, review)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 result_format, model, maximum_cost_usd, command, state, offered_at, review, inputs)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		action.SessionID, offer.Label, string(offer.Type), offer.RepoID, offer.SchedulerJobID, offer.Message, offer.ShellCommand,
 		offer.WorkingDirectory, string(offer.ResultFormat), offer.Model, offer.MaximumCostUSD,
-		action.Command, string(action.State), action.OfferedAt.UTC(), review,
+		action.Command, string(action.State), action.OfferedAt.UTC(), review, inputs,
 	)
 	if err != nil {
 		return fmt.Errorf("insert session action for %s: %w", action.SessionID, err)
@@ -264,7 +275,7 @@ func (s *Store) MarkRunningSessionActionsOutcomeUnknown(explanation string, now 
 
 const sessionActionSelect = `SELECT id, session_id, label, type, repo_id, scheduler_job_id, message, shell_command, working_directory,
 	result_format, model, maximum_cost_usd, command, state, offered_at, run_by_principal_id, started_at, finished_at, output, error,
-	result_session_id, review, cost_usd FROM session_actions`
+	result_session_id, review, cost_usd, inputs FROM session_actions`
 
 func sessionActionIDOf(rowID int64) string {
 	return fmt.Sprintf("%s%06d", sessionActionIDPrefix, rowID)
@@ -286,14 +297,19 @@ type sessionActionScanner interface {
 func scanSessionAction(scanner sessionActionScanner) (SessionAction, error) {
 	var action SessionAction
 	var rowID int64
-	var actionType, resultFormat, state, review string
+	var actionType, resultFormat, state, review, inputs string
 	var offeredAt time.Time
 	var startedAt, finishedAt sql.NullTime
 	if err := scanner.Scan(&rowID, &action.SessionID, &action.Offer.Label, &actionType, &action.Offer.RepoID, &action.Offer.SchedulerJobID,
 		&action.Offer.Message, &action.Offer.ShellCommand, &action.Offer.WorkingDirectory, &resultFormat, &action.Offer.Model,
 		&action.Offer.MaximumCostUSD, &action.Command, &state, &offeredAt, &action.RunByPrincipalID, &startedAt, &finishedAt,
-		&action.Output, &action.Error, &action.ResultSessionID, &review, &action.CostUSD); err != nil {
+		&action.Output, &action.Error, &action.ResultSessionID, &review, &action.CostUSD, &inputs); err != nil {
 		return SessionAction{}, err
+	}
+	if inputs != "" {
+		if err := json.Unmarshal([]byte(inputs), &action.Offer.Inputs); err != nil {
+			return SessionAction{}, fmt.Errorf("decode the inputs of %s: %w", sessionActionIDOf(rowID), err)
+		}
 	}
 	action.ActionID = sessionActionIDOf(rowID)
 	action.Offer.Type = msg.SessionActionType(actionType)

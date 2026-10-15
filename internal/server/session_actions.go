@@ -167,6 +167,13 @@ func (s *Server) handleRunSessionAction(w http.ResponseWriter, r *http.Request) 
 			actionID, offered.Command, command))
 		return
 	}
+	// The typed values, checked before the action is marked running, so a
+	// missing one is a refusal the person can fix rather than a failed run.
+	inputValues, err := readSessionActionRunInputs(r, w, offered.Offer.Inputs)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_session_action_inputs", err.Error())
+		return
+	}
 
 	runByPrincipalID, _ := principalIdentityOfRequest(r)
 	running, err := s.store.StartSessionAction(session.SessionID, actionID, runByPrincipalID, time.Now().UTC())
@@ -189,7 +196,7 @@ func (s *Server) handleRunSessionAction(w http.ResponseWriter, r *http.Request) 
 		log.Printf("[session-actions] ERROR %s: running event not written: %v", actionID, err)
 	}
 
-	go s.runSessionAction(session, running)
+	go s.runSessionAction(session, running, inputValues)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
@@ -199,8 +206,10 @@ func (s *Server) handleRunSessionAction(w http.ResponseWriter, r *http.Request) 
 }
 
 // runSessionAction does a confirmed action's work and records how it ended.
-func (s *Server) runSessionAction(session *store.Session, action store.SessionAction) {
-	outcome := s.performSessionAction(session, action)
+// inputValues are what the person typed into the button's boxes; they go to
+// the command and are blanked from what is recorded.
+func (s *Server) runSessionAction(session *store.Session, action store.SessionAction, inputValues map[string]string) {
+	outcome := blankSecretSessionActionInputs(s.performSessionAction(session, action, inputValues), action.Offer.Inputs, inputValues)
 	state := msg.SessionActionSucceeded
 	if outcome.err != nil {
 		state = msg.SessionActionFailed
@@ -229,7 +238,7 @@ type sessionActionOutcome struct {
 	err             error
 }
 
-func (s *Server) performSessionAction(session *store.Session, action store.SessionAction) sessionActionOutcome {
+func (s *Server) performSessionAction(session *store.Session, action store.SessionAction, inputValues map[string]string) sessionActionOutcome {
 	offer := action.Offer
 	switch offer.Type {
 	case msg.SessionActionDeploy:
@@ -244,7 +253,7 @@ func (s *Server) performSessionAction(session *store.Session, action store.Sessi
 	case msg.SessionActionNewSessionAndSend:
 		return s.newSessionAndSendAction(session, offer)
 	case msg.SessionActionRunCommand:
-		return s.runCommandAction(session, action)
+		return s.runCommandAction(session, action, inputValues)
 	case msg.SessionActionModelCall:
 		return s.modelCallAction(offer)
 	case msg.SessionActionBackgroundAgent:
@@ -301,7 +310,7 @@ func sessionActionOfferProblem(offer msg.SessionActionOffer) string {
 	case offer.ResultFormat != "" && offer.ResultFormat != msg.SessionActionResultText && offer.ResultFormat != msg.SessionActionResultMarkdown:
 		return fmt.Sprintf("result_format %q is neither text nor markdown", offer.ResultFormat)
 	}
-	return ""
+	return sessionActionInputsProblem(offer.Inputs)
 }
 
 // sessionActionFieldUse is which offer fields one action type reads, and which
@@ -318,7 +327,7 @@ func (use sessionActionFieldUse) allows(name string) bool {
 var sessionActionFieldsByType = map[msg.SessionActionType]sessionActionFieldUse{
 	msg.SessionActionDeploy:            {required: []string{"repo_id"}},
 	msg.SessionActionRunSchedulerJob:   {required: []string{"scheduler_job_id"}},
-	msg.SessionActionRunCommand:        {required: []string{"shell_command"}, optional: []string{"working_directory", "result_format"}},
+	msg.SessionActionRunCommand:        {required: []string{"shell_command"}, optional: []string{"working_directory", "result_format", "inputs"}},
 	msg.SessionActionModelCall:         {required: []string{"message", "model", "maximum_cost_usd"}},
 	msg.SessionActionBackgroundAgent:   {required: []string{"message", "maximum_cost_usd"}, optional: []string{"model"}},
 	msg.SessionActionForkAndSend:       {required: []string{"message"}},
@@ -340,6 +349,7 @@ func sessionActionOfferFields(offer msg.SessionActionOffer) []sessionActionOffer
 		{"result_format", offer.ResultFormat != ""},
 		{"model", offer.Model != ""},
 		{"maximum_cost_usd", offer.MaximumCostUSD > 0},
+		{"inputs", len(offer.Inputs) > 0},
 	}
 }
 
@@ -385,7 +395,7 @@ func (s *Server) describeSessionAction(ctx context.Context, session *store.Sessi
 		if refusal != nil {
 			return "", refusal
 		}
-		return fmt.Sprintf("in %s, run with `bash -l -c`:\n%s", directory, offer.ShellCommand), nil
+		return fmt.Sprintf("in %s, run with `bash -l -c`:\n%s%s", directory, offer.ShellCommand, describeSessionActionInputs(offer.Inputs)), nil
 	case msg.SessionActionModelCall:
 		call, refusal := s.sessionActionModelCall(offer)
 		if refusal != nil {
@@ -520,7 +530,7 @@ func (s *Server) runDeployAction(session *store.Session, action store.SessionAct
 	if refusal != nil {
 		return sessionActionOutcome{err: errors.New(refusal.message)}
 	}
-	return s.runShellForSessionAction(session, action, repo.Path, "./deploy.sh")
+	return s.runShellForSessionAction(session, action, repo.Path, "./deploy.sh", nil)
 }
 
 func (s *Server) runSchedulerJobAction(jobID int64) sessionActionOutcome {
