@@ -10,6 +10,8 @@
 #   bridge-button "Research venues"        --agent "<task>" --max-cost <usd> [--model <model>]
 #   bridge-button "Fix the flaky test"     --fork "<task>"
 #   bridge-button "Tidy old worktrees"     --new-session "<task>"
+#   bridge-button "Answer the test chat"   --send-to <session id> "<message>"
+#   bridge-button "Stop the test chat"     --stop-session <session id>
 #
 # Then write the action id it prints (session_action_…) in your reply where the
 # button should be; the chat draws the button there. The label is the button's
@@ -24,6 +26,14 @@
 # price, which the button shows; --model is a model-store id, alias or role.
 # --fork starts a copy of this session with its history; --new-session starts a
 # fresh one. Find a repo's id with repo-store's GET /repos/by-name/{name}.
+#
+# --send-to sends another session (br_…) a message, as if the person had typed
+# it there; --stop-session stops another session. Either target must exist,
+# must not be this session, and must belong to this session's principal; the
+# button shows the target's id and name. --input works on --send-to too: name
+# the box in the message as $BRIDGE_INPUT_NAME (single-quote it), and what the
+# person types takes its place. Such a box cannot be secret.
+#   bridge-button "Answer it" --send-to br_123 'The operator says: $BRIDGE_INPUT_REPLY' --input REPLY "Your reply"
 #
 # --input NAME "Label" and --secret-input NAME "Label" put text boxes on a --run
 # button (up to five; NAME is upper case, digits and underscores). What the
@@ -43,7 +53,7 @@
 set -euo pipefail
 
 usage() {
-  sed -n '6,12p' "$0" | sed 's/^#   /usage: /' >&2
+  sed -n '6,14p' "$0" | sed 's/^#   /usage: /' >&2
   exit 2
 }
 [ $# -ge 3 ] || usage
@@ -64,6 +74,10 @@ while [ $# -gt 0 ]; do
     --agent)         set_field type background_agent;     set_field message "$2"; shift 2 ;;
     --fork)          set_field type fork_and_send;        set_field message "$2"; shift 2 ;;
     --new-session)   set_field type new_session_and_send; set_field message "$2"; shift 2 ;;
+    --send-to)
+      [ $# -ge 3 ] || usage
+      set_field type send_to_session; set_field target_session_id "$2"; set_field message "$3"; shift 3 ;;
+    --stop-session)  set_field type stop_session;         set_field target_session_id "$2"; shift 2 ;;
     --in)            set_field working_directory "$2"; shift 2 ;;
     --markdown)      set_field result_format markdown; shift ;;
     --model)         set_field model "$2"; shift 2 ;;

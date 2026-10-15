@@ -615,18 +615,22 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-
-	if err := s.harness.Kill(bridgeID); err != nil {
-		// Process might not be running, just update state
-	}
-
-	if _, err := s.harness.ForceSessionState(bridgeID, msg.SessionAborted, "killed"); err != nil {
+	if err := s.stopSession(bridgeID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	sess.State = string(msg.SessionAborted)
 	writeJSON(w, sess)
+}
+
+// stopSession kills a session's harness process and marks it aborted. It is
+// what POST /sessions/{id}/stop does, and what a stop_session action runs.
+func (s *Server) stopSession(bridgeID string) error {
+	if err := s.harness.Kill(bridgeID); err != nil {
+		// Process might not be running, just update state
+	}
+	_, err := s.harness.ForceSessionState(bridgeID, msg.SessionAborted, "killed")
+	return err
 }
 
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {

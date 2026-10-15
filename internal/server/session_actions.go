@@ -161,7 +161,12 @@ func (s *Server) handleRunSessionAction(w http.ResponseWriter, r *http.Request) 
 			"%s's command was rejected by its reviewer (%s): %s", actionID, offered.Review.Model, offered.Review.Reasons))
 		return
 	}
-	if command != offered.Command {
+	// A target session's display name is in Command only for the person to
+	// read, and the renamer may change it after the offer; what a send or stop
+	// acts on is the target's id, which comes from the offer and cannot. The
+	// describe above has already checked the target is still there and still
+	// the offering session's principal's.
+	if command != offered.Command && !sessionActionTypeActsOnAnotherSession(offered.Offer.Type) {
 		writeJSONError(w, http.StatusConflict, "session_action_changed", fmt.Sprintf(
 			"what %s would run has changed since it was offered, so it was not run. It was offered as: %s. It would now run: %s. Ask the agent to offer it again.",
 			actionID, offered.Command, command))
@@ -259,6 +264,10 @@ func (s *Server) performSessionAction(session *store.Session, action store.Sessi
 		return s.modelCallAction(offer)
 	case msg.SessionActionBackgroundAgent:
 		return s.backgroundAgentAction(session, action)
+	case msg.SessionActionSendToSession:
+		return s.sendToSessionAction(offer, inputValues)
+	case msg.SessionActionStopSession:
+		return s.stopSessionAction(offer)
 	}
 	return sessionActionOutcome{err: fmt.Errorf("unknown action type %q", offer.Type)}
 }
@@ -311,7 +320,13 @@ func sessionActionOfferProblem(offer msg.SessionActionOffer) string {
 	case offer.ResultFormat != "" && offer.ResultFormat != msg.SessionActionResultText && offer.ResultFormat != msg.SessionActionResultMarkdown:
 		return fmt.Sprintf("result_format %q is neither text nor markdown", offer.ResultFormat)
 	}
-	return sessionActionInputsProblem(offer.Inputs)
+	if problem := sessionActionInputsProblem(offer.Inputs); problem != "" {
+		return problem
+	}
+	if offer.Type == msg.SessionActionSendToSession {
+		return sessionActionMessageInputsProblem(offer.Message, offer.Inputs)
+	}
+	return ""
 }
 
 // sessionActionFieldUse is which offer fields one action type reads, and which
@@ -333,6 +348,8 @@ var sessionActionFieldsByType = map[msg.SessionActionType]sessionActionFieldUse{
 	msg.SessionActionBackgroundAgent:   {required: []string{"message", "maximum_cost_usd"}, optional: []string{"model"}},
 	msg.SessionActionForkAndSend:       {required: []string{"message"}},
 	msg.SessionActionNewSessionAndSend: {required: []string{"message"}},
+	msg.SessionActionSendToSession:     {required: []string{"target_session_id", "message"}, optional: []string{"inputs"}},
+	msg.SessionActionStopSession:       {required: []string{"target_session_id"}},
 }
 
 type sessionActionOfferField struct {
@@ -351,6 +368,7 @@ func sessionActionOfferFields(offer msg.SessionActionOffer) []sessionActionOffer
 		{"model", offer.Model != ""},
 		{"maximum_cost_usd", offer.MaximumCostUSD > 0},
 		{"inputs", len(offer.Inputs) > 0},
+		{"target_session_id", strings.TrimSpace(offer.TargetSessionID) != ""},
 	}
 }
 
@@ -427,6 +445,8 @@ func (s *Server) describeSessionAction(ctx context.Context, session *store.Sessi
 		return fmt.Sprintf("start a new session named %q — %s harness, instance %s, agent %s, principal %s, working directory %s, none of session %s's history — and send it this message: %s",
 			offer.Label, session.Harness, orNone(session.InstanceID), orNone(session.AgentID), orNone(session.PrincipalID), orInstanceDefault(session.WorkingDir),
 			session.SessionID, offer.Message), nil
+	case msg.SessionActionSendToSession, msg.SessionActionStopSession:
+		return s.describeTargetSessionAction(session, offer)
 	}
 	return "", &sessionActionRefusal{http.StatusBadRequest, "invalid_session_action_offer", fmt.Sprintf("type %q is not an action type", offer.Type)}
 }

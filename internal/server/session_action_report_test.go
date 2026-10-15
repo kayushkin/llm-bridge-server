@@ -40,7 +40,7 @@ func TestADeployIsNotReportedTwice(t *testing.T) {
 		t.Error("deploy-gate already reports a deploy; the server must not report it again")
 	}
 	for _, kind := range []msg.SessionActionType{msg.SessionActionRunCommand, msg.SessionActionModelCall, msg.SessionActionBackgroundAgent,
-		msg.SessionActionRunSchedulerJob, msg.SessionActionForkAndSend, msg.SessionActionNewSessionAndSend} {
+		msg.SessionActionRunSchedulerJob, msg.SessionActionForkAndSend, msg.SessionActionNewSessionAndSend, msg.SessionActionSendToSession, msg.SessionActionStopSession} {
 		if !sessionActionReportsToItsSession(kind) {
 			t.Errorf("%s is not reported", kind)
 		}

@@ -84,6 +84,9 @@ func (s *Store) migrateSessionActions() error {
 		// The offer's text boxes as JSON: names, labels, which are secret. What
 		// a person types into them is never stored.
 		{"inputs", "TEXT NOT NULL DEFAULT ''"},
+		// The session a send_to_session or stop_session acts on, added on
+		// 2026-10-15.
+		{"target_session_id", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if existing[column.name] {
 			continue
@@ -112,11 +115,11 @@ func (s *Store) InsertSessionAction(action *SessionAction) error {
 	}
 	result, err := s.db.Exec(
 		`INSERT INTO session_actions (session_id, label, type, repo_id, scheduler_job_id, message, shell_command, working_directory,
-		 result_format, model, maximum_cost_usd, command, state, offered_at, review, inputs)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 result_format, model, maximum_cost_usd, command, state, offered_at, review, inputs, target_session_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		action.SessionID, offer.Label, string(offer.Type), offer.RepoID, offer.SchedulerJobID, offer.Message, offer.ShellCommand,
 		offer.WorkingDirectory, string(offer.ResultFormat), offer.Model, offer.MaximumCostUSD,
-		action.Command, string(action.State), action.OfferedAt.UTC(), review, inputs,
+		action.Command, string(action.State), action.OfferedAt.UTC(), review, inputs, offer.TargetSessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("insert session action for %s: %w", action.SessionID, err)
@@ -275,7 +278,7 @@ func (s *Store) MarkRunningSessionActionsOutcomeUnknown(explanation string, now 
 
 const sessionActionSelect = `SELECT id, session_id, label, type, repo_id, scheduler_job_id, message, shell_command, working_directory,
 	result_format, model, maximum_cost_usd, command, state, offered_at, run_by_principal_id, started_at, finished_at, output, error,
-	result_session_id, review, cost_usd, inputs FROM session_actions`
+	result_session_id, review, cost_usd, inputs, target_session_id FROM session_actions`
 
 func sessionActionIDOf(rowID int64) string {
 	return fmt.Sprintf("%s%06d", sessionActionIDPrefix, rowID)
@@ -303,7 +306,7 @@ func scanSessionAction(scanner sessionActionScanner) (SessionAction, error) {
 	if err := scanner.Scan(&rowID, &action.SessionID, &action.Offer.Label, &actionType, &action.Offer.RepoID, &action.Offer.SchedulerJobID,
 		&action.Offer.Message, &action.Offer.ShellCommand, &action.Offer.WorkingDirectory, &resultFormat, &action.Offer.Model,
 		&action.Offer.MaximumCostUSD, &action.Command, &state, &offeredAt, &action.RunByPrincipalID, &startedAt, &finishedAt,
-		&action.Output, &action.Error, &action.ResultSessionID, &review, &action.CostUSD, &inputs); err != nil {
+		&action.Output, &action.Error, &action.ResultSessionID, &review, &action.CostUSD, &inputs, &action.Offer.TargetSessionID); err != nil {
 		return SessionAction{}, err
 	}
 	if inputs != "" {

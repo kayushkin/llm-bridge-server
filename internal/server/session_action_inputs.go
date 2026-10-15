@@ -1,6 +1,6 @@
 package server
 
-// Text boxes on a run_command button (msg.SessionActionInput).
+// Text boxes on a run_command or send_to_session button (msg.SessionActionInput).
 //
 // The offer declares the boxes; the person types into them and the confirm
 // carries the values (msg.SessionActionRunRequest). The values reach the
@@ -9,6 +9,12 @@ package server
 // writes — never holds them. They are kept nowhere: not in session_actions,
 // not in an event, not in a log line. A secret value is also blanked wherever
 // it appears in the command's output or error, in case the command prints it.
+//
+// On a send_to_session button the message names each box as
+// $BRIDGE_INPUT_<name> (or ${BRIDGE_INPUT_<name>}), and the typed value takes
+// that place in the message sent. The value is then in the target session's
+// conversation, which is the point, so such a box cannot be secret; it is
+// still kept nowhere in session_actions, its events or this server's log.
 
 import (
 	"encoding/json"
@@ -138,4 +144,65 @@ func blankSecretSessionActionInputs(outcome sessionActionOutcome, inputs []msg.S
 		}
 	}
 	return outcome
+}
+
+// sessionActionMessageInputReferencePattern finds $BRIDGE_INPUT_NAME and
+// ${BRIDGE_INPUT_NAME} in a send_to_session message.
+var sessionActionMessageInputReferencePattern = regexp.MustCompile(
+	`\$\{` + msg.SessionActionInputEnvironmentPrefix + `([A-Z][A-Z0-9_]*)\}|\$` + msg.SessionActionInputEnvironmentPrefix + `([A-Z][A-Z0-9_]*)`)
+
+func sessionActionMessageInputReferenceName(submatches []string) string {
+	if submatches[1] != "" {
+		return submatches[1]
+	}
+	return submatches[2]
+}
+
+// sessionActionMessageInputsProblem says what is wrong with a send_to_session
+// message and its boxes, or "": no box may be secret, every box must be named
+// in the message, and the message may name no box the button does not have.
+func sessionActionMessageInputsProblem(message string, inputs []msg.SessionActionInput) string {
+	declared := map[string]bool{}
+	for _, input := range inputs {
+		if input.Secret {
+			return fmt.Sprintf("input %s cannot be secret: a send_to_session value is written into the target session's conversation", input.Name)
+		}
+		declared[input.Name] = true
+	}
+	referenced := map[string]bool{}
+	for _, submatches := range sessionActionMessageInputReferencePattern.FindAllStringSubmatch(message, -1) {
+		name := sessionActionMessageInputReferenceName(submatches)
+		if !declared[name] {
+			return fmt.Sprintf("the message names $%s%s, but the button has no input %s", msg.SessionActionInputEnvironmentPrefix, name, name)
+		}
+		referenced[name] = true
+	}
+	for _, input := range inputs {
+		if !referenced[input.Name] {
+			return fmt.Sprintf("input %s is never used: name it in the message as $%s%s, where the typed value goes", input.Name, msg.SessionActionInputEnvironmentPrefix, input.Name)
+		}
+	}
+	return ""
+}
+
+// fillSessionActionMessageInputs puts each typed value in the place the
+// message names it. The offer was checked to name only its own boxes, and the
+// confirm to fill every one.
+func fillSessionActionMessageInputs(message string, values map[string]string) string {
+	return sessionActionMessageInputReferencePattern.ReplaceAllStringFunc(message, func(reference string) string {
+		return values[sessionActionMessageInputReferenceName(sessionActionMessageInputReferencePattern.FindStringSubmatch(reference))]
+	})
+}
+
+// describeSessionActionMessageInputs is the part of a send_to_session Command
+// that names the boxes and where their values go.
+func describeSessionActionMessageInputs(inputs []msg.SessionActionInput) string {
+	if len(inputs) == 0 {
+		return ""
+	}
+	parts := make([]string, len(inputs))
+	for index, input := range inputs {
+		parts[index] = fmt.Sprintf("what the person types into %q replaces $%s%s", input.Label, msg.SessionActionInputEnvironmentPrefix, input.Name)
+	}
+	return "\n(" + strings.Join(parts, "; ") + ")"
 }
