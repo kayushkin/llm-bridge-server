@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -99,6 +100,7 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, settings *serviceset
 	s.mux.Handle("GET /api/messages/{id}/thread", s.auth(s.handleMessageThread))
 	s.mux.Handle("GET /api/index/stats", s.auth(s.handleIndexStats))
 	s.mux.Handle("GET /api/messages/{id}", s.auth(s.handleGetMessage))
+	s.mux.Handle("GET /api/messages/{id}/attachments/{attachment_id}", s.auth(s.handleGetAttachment))
 	s.mux.Handle("POST /api/messages/{id}/read", s.auth(s.handleMarkRead))
 	s.mux.Handle("POST /api/messages/{id}/flag", s.auth(s.handleFlag))
 	s.mux.Handle("POST /api/messages/{id}/move", s.auth(s.handleMove))
@@ -473,6 +475,37 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 	// recorded for search.
 	s.recordFullMessage(acct, msg)
 	writeJSON(w, http.StatusOK, msg)
+}
+
+// handleGetAttachment answers one attachment's bytes, with the content type
+// the provider gave the part. attachment_id is an id from the message's
+// attachments list. Only Gmail implements it so far; the other backends
+// answer an error saying so.
+func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
+	acct := r.URL.Query().Get("account")
+	if acct == "" {
+		writeError(w, http.StatusBadRequest, errors.New("account query param required"))
+		return
+	}
+	b, _, err := s.backendFor(acct)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	body, contentType, err := b.Attachment(r.Context(), r.PathValue("id"), r.PathValue("attachment_id"))
+	if errors.Is(err, backend.ErrAttachmentNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	defer body.Close()
+	w.Header().Set("Content-Type", contentType)
+	if _, err := io.Copy(w, body); err != nil {
+		log.Printf("mailstack: writing attachment %s of message %s: %v", r.PathValue("attachment_id"), r.PathValue("id"), err)
+	}
 }
 
 // ─── Write ops ─────────────────────────────────────────────────────────

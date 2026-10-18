@@ -431,20 +431,29 @@ func parseAddressList(raw string) []Address {
 	return out
 }
 
-func (g *Gmail) Get(ctx context.Context, _, id string) (Message, error) {
+// getFull reads one message with its whole part tree.
+func (g *Gmail) getFull(ctx context.Context, id string) (gmailMessage, error) {
 	q := url.Values{}
 	q.Set("format", "full")
 	resp, err := g.do(ctx, "GET", "/users/me/messages/"+url.PathEscape(id)+"?"+q.Encode(), nil)
 	if err != nil {
-		return Message{}, err
+		return gmailMessage{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return Message{}, fmt.Errorf("gmail messages.get(%s) %d: %s", id, resp.StatusCode, string(b))
+		return gmailMessage{}, fmt.Errorf("gmail messages.get(%s) %d: %s", id, resp.StatusCode, string(b))
 	}
 	var m gmailMessage
 	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return gmailMessage{}, err
+	}
+	return m, nil
+}
+
+func (g *Gmail) Get(ctx context.Context, _, id string) (Message, error) {
+	m, err := g.getFull(ctx, id)
+	if err != nil {
 		return Message{}, err
 	}
 
@@ -475,8 +484,31 @@ func decodeGmailBodyData(data string) ([]byte, error) {
 // attachment list. A part that fails to decode is reported: it used to be
 // dropped, which rendered as a message with an empty body — indistinguishable
 // from a message that genuinely has one.
+//
+// A part with a file name is an attachment whatever its type. It is checked
+// before text/plain and text/html because an attached .txt file is a
+// text/plain part: checked after, each one replaced the message body, and an
+// email carrying 85 text files showed an empty body and no attachments.
+//
+// An attachment's ID is its partId, not Gmail's attachmentId: Gmail hands out
+// a different attachmentId on every messages.get, so one read from an earlier
+// listing could never be matched again. partId is stable for the message.
 func walkParts(p *gmailPayload, out *Message) error {
 	switch {
+	case p.Filename != "":
+		att := Attachment{
+			ID:       p.PartID,
+			Filename: p.Filename,
+			MimeType: p.MimeType,
+			Size:     int64(p.Body.Size),
+		}
+		for _, h := range p.Headers {
+			if strings.EqualFold(h.Name, "Content-ID") {
+				att.InlineCID = strings.Trim(h.Value, "<>")
+			}
+		}
+		out.Attachments = append(out.Attachments, att)
+		out.Meta.HasAttach = true
 	case strings.HasPrefix(p.MimeType, "multipart/"):
 		for i := range p.Parts {
 			if err := walkParts(&p.Parts[i], out); err != nil {
@@ -495,20 +527,19 @@ func walkParts(p *gmailPayload, out *Message) error {
 			return fmt.Errorf("decoding the text/plain part: %w", err)
 		}
 		out.BodyText = string(data)
-	case p.Filename != "" && p.Body.AttachmentID != "":
-		att := Attachment{
-			ID:       p.Body.AttachmentID,
-			Filename: p.Filename,
-			MimeType: p.MimeType,
-			Size:     int64(p.Body.Size),
+	}
+	return nil
+}
+
+// findPart returns the part with this partId anywhere in the tree, or nil.
+func findPart(p *gmailPayload, partID string) *gmailPayload {
+	if p.PartID == partID {
+		return p
+	}
+	for i := range p.Parts {
+		if found := findPart(&p.Parts[i], partID); found != nil {
+			return found
 		}
-		for _, h := range p.Headers {
-			if strings.EqualFold(h.Name, "Content-ID") {
-				att.InlineCID = strings.Trim(h.Value, "<>")
-			}
-		}
-		out.Attachments = append(out.Attachments, att)
-		out.Meta.HasAttach = true
 	}
 	return nil
 }
@@ -592,6 +623,41 @@ func (g *Gmail) Send(ctx context.Context, d Draft) (string, error) { return "", 
 func (g *Gmail) SaveDraft(ctx context.Context, d Draft, existingID string) (string, error) {
 	return "", errNotImplemented
 }
+
+// Attachment reads one attachment's bytes. attID is the partId Get listed it
+// under. The message is read again to find the part, because the
+// attachmentId attachments.get needs is only good as handed out by a fresh
+// messages.get. A small part may carry its bytes inline, with no
+// attachmentId, and is answered from the message itself.
 func (g *Gmail) Attachment(ctx context.Context, msgID, attID string) (io.ReadCloser, string, error) {
-	return nil, "", errNotImplemented
+	m, err := g.getFull(ctx, msgID)
+	if err != nil {
+		return nil, "", err
+	}
+	part := findPart(&m.Payload, attID)
+	if part == nil || part.Filename == "" {
+		return nil, "", fmt.Errorf("gmail message %s has no attachment with part id %q: %w", msgID, attID, ErrAttachmentNotFound)
+	}
+	encoded := part.Body.Data
+	if part.Body.AttachmentID != "" {
+		resp, err := g.do(ctx, "GET", "/users/me/messages/"+url.PathEscape(msgID)+"/attachments/"+url.PathEscape(part.Body.AttachmentID), nil)
+		if err != nil {
+			return nil, "", err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			return nil, "", fmt.Errorf("gmail messages.attachments.get(%s, part %s) %d: %s", msgID, attID, resp.StatusCode, string(b))
+		}
+		var body gmailBody
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			return nil, "", fmt.Errorf("gmail messages.attachments.get(%s, part %s): %w", msgID, attID, err)
+		}
+		encoded = body.Data
+	}
+	data, err := decodeGmailBodyData(encoded)
+	if err != nil {
+		return nil, "", fmt.Errorf("decoding attachment part %s of gmail message %s: %w", attID, msgID, err)
+	}
+	return io.NopCloser(bytes.NewReader(data)), part.MimeType, nil
 }

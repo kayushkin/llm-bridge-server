@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"time"
@@ -114,6 +115,10 @@ type Attachment struct {
 	Size      int64  `json:"size"`
 	InlineCID string `json:"inline_cid,omitempty"`
 }
+
+// ErrAttachmentNotFound is wrapped by Attachment when the message has no
+// attachment with the id asked for.
+var ErrAttachmentNotFound = errors.New("attachment not found")
 
 type Message struct {
 	Meta        MessageMeta       `json:"meta"`
