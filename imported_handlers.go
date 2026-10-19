@@ -1,6 +1,7 @@
 package mailstack
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -286,8 +287,48 @@ func (s *Server) handleResolveMessages(w http.ResponseWriter, r *http.Request) {
 			results[i].Status, results[i].ETag, results[i].Message = resolveFound, stored.MetadataETag(), &stored
 		}
 	}
+	if access := principalAccessOfRequest(r); access != nil && !access.administrator {
+		if refused := s.narrowResolveToPrincipal(r.Context(), access, results); refused != nil {
+			writeCodedError(w, refused.status, refused.code, refused)
+			return
+		}
+	}
 	setStoreTiming(w, started)
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// narrowResolveToPrincipal keeps the results a person may see: those in an
+// account they hold can_read_mail on, and those a ticket shows them, asked of
+// kanban-store in one call. Every other result becomes not_found, with no
+// error text — an unknown account and a message they may not read look the
+// same, so the answer reveals nothing about what exists.
+func (s *Server) narrowResolveToPrincipal(ctx context.Context, access *principalAccess, results []resolveResult) *accessRefusal {
+	var candidates []string
+	for i := range results {
+		result := &results[i]
+		if result.Status == resolveInvalid {
+			continue
+		}
+		if result.Message != nil && access.mayReadAccount(result.Message.AccountID) {
+			continue
+		}
+		if result.Status == resolveFound {
+			candidates = append(candidates, result.Message.Locator)
+			continue
+		}
+		*result = resolveResult{Ref: result.Ref, Status: resolveNotFound}
+	}
+	visible, refused := s.visibleThroughTickets(ctx, access, candidates)
+	if refused != nil {
+		return refused
+	}
+	for i := range results {
+		result := &results[i]
+		if result.Status == resolveFound && !access.mayReadAccount(result.Message.AccountID) && !visible[result.Message.Locator] {
+			*result = resolveResult{Ref: result.Ref, Status: resolveNotFound}
+		}
+	}
+	return nil
 }
 
 // parts splits a ref into the account and exactly one of the store id or the

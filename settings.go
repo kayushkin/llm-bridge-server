@@ -36,6 +36,12 @@ const (
 	SettingAuthStoreBearerToken  = "auth_store_bearer_token"
 	SettingFileStoreURL          = "file_store_url"
 	SettingFileStoreServiceToken = "file_store_service_token"
+	// The three stores a person's access is read from. See principal_access.go.
+	SettingPrincipalStoreURL       = "principal_store_url"
+	SettingGrantStoreURL           = "grant_store_url"
+	SettingGrantStoreServiceToken  = "grant_store_service_token"
+	SettingKanbanStoreURL          = "kanban_store_url"
+	SettingKanbanStoreServiceToken = "kanban_store_service_token"
 )
 
 // DefaultListenPort is the loopback port the service listens on with nothing
@@ -83,6 +89,16 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "Where file-store answers. Imported attachments keep their bytes there. Unset, an import that carries an attachment is refused with 503 and reading one answers 503; mail without attachments is unaffected."},
 		{Key: SettingFileStoreServiceToken, EnvironmentVariable: "FILE_STORE_SERVICE_TOKEN", Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,
 			Description: "The token file-store asks of every caller. The service refuses to start when FILE_STORE_URL is set and this is not. It reads every file, so it reaches the unit through a host-local drop-in from ~/.config/file-store-tokens.env, never the tracked unit and never the shared principal-gating file, whose variables every agent session inherits."},
+		{Key: SettingPrincipalStoreURL, EnvironmentVariable: "PRINCIPAL_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: "http://127.0.0.1:8314",
+			Description: "Where principal-store answers. A request that names a person in X-Principal-Id is checked there, on every call, for an active human and whether they are an administrator."},
+		{Key: SettingGrantStoreURL, EnvironmentVariable: "GRANT_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: "http://127.0.0.1:8315",
+			Description: "Where grant-store answers. A person's can_read_mail and can_import_mail grants on mail accounts are read there on every call."},
+		{Key: SettingGrantStoreServiceToken, EnvironmentVariable: "GRANT_STORE_SERVICE_TOKEN", Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,
+			Description: "The token mailstack presents to grant-store. Unset, together with the kanban-store token, mailstack serves services only and refuses every request that names a person with 503."},
+		{Key: SettingKanbanStoreURL, EnvironmentVariable: "KANBAN_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: "http://127.0.0.1:8305",
+			Description: "Where kanban-store answers. It says which messages a person sees through a ticket they may view."},
+		{Key: SettingKanbanStoreServiceToken, EnvironmentVariable: "KANBAN_STORE_SERVICE_TOKEN", Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,
+			Description: "The token mailstack presents to kanban-store. Unset, together with the grant-store token, mailstack serves services only and refuses every request that names a person with 503."},
 	}
 }
 

@@ -41,6 +41,10 @@ type Server struct {
 	// files holds imported attachments' bytes. Nil when FILE_STORE_URL is
 	// unset, and then attachments on local accounts are refused with 503.
 	files *filestore.Client
+
+	// principalStores are where a person's access is read. Nil refuses every
+	// request that names a principal; see principal_access.go.
+	principalStores *PrincipalAccessStores
 }
 
 // ServerOption adjusts a Server at construction. Variadic so that adding one
@@ -78,62 +82,62 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, settings *serviceset
 		opt(s)
 	}
 	s.mux.HandleFunc("GET /health", s.handleHealth)
-	s.mux.Handle("GET /api/accounts", s.auth(s.handleListAccounts))
-	s.mux.Handle("POST /api/accounts", s.auth(s.handleCreateAccount))
-	s.mux.Handle("GET /api/accounts/{id}", s.auth(s.handleGetAccount))
-	s.mux.Handle("PATCH /api/accounts/{id}", s.auth(s.handlePatchAccount))
-	s.mux.Handle("DELETE /api/accounts/{id}", s.auth(s.handleDeleteAccount))
+	s.mux.Handle("GET /api/accounts", s.routeFor(ruleHandlerFilters, 0, s.handleListAccounts))
+	s.mux.Handle("POST /api/accounts", s.routeFor(ruleServicesOnly, 0, s.handleCreateAccount))
+	s.mux.Handle("GET /api/accounts/{id}", s.routeFor(ruleReadAccount, accountInPath, s.handleGetAccount))
+	s.mux.Handle("PATCH /api/accounts/{id}", s.routeFor(ruleServicesOnly, 0, s.handlePatchAccount))
+	s.mux.Handle("DELETE /api/accounts/{id}", s.routeFor(ruleServicesOnly, 0, s.handleDeleteAccount))
 	// Appending a message is only meaningful for an account this host owns. It
 	// is scoped under the account rather than sitting at /api/messages because
 	// it is not a mail operation that any provider could answer — see the
 	// handler.
-	s.mux.Handle("POST /api/accounts/{id}/messages", s.auth(s.handleAppendLocalMessage))
+	s.mux.Handle("POST /api/accounts/{id}/messages", s.routeFor(ruleImportAccount, accountInPath, s.handleAppendLocalMessage))
 	// Imported mail: an export's messages put into a local account by the id
 	// the source gave them, idempotently. See imported_handlers.go.
-	s.mux.Handle("POST /api/accounts/{id}/messages/import", s.auth(s.handleImportMessages))
-	s.mux.Handle("GET /api/accounts/{id}/import-sources", s.auth(s.handleListImportSources))
-	s.mux.Handle("GET /api/imap/creds", s.auth(s.handleListImapCreds))
-	s.mux.Handle("POST /api/imap/creds", s.auth(s.handleSaveImapCred))
-	s.mux.Handle("GET /api/imap/creds/{name}", s.auth(s.handleGetImapCred))
-	s.mux.Handle("PUT /api/imap/creds/{name}", s.auth(s.handleSaveImapCred))
-	s.mux.Handle("DELETE /api/imap/creds/{name}", s.auth(s.handleDeleteImapCred))
-	s.mux.Handle("GET /api/folders", s.auth(s.handleFolders))
-	s.mux.Handle("GET /api/messages", s.auth(s.handleListMessages))
+	s.mux.Handle("POST /api/accounts/{id}/messages/import", s.routeFor(ruleImportAccount, accountInPath, s.handleImportMessages))
+	s.mux.Handle("GET /api/accounts/{id}/import-sources", s.routeFor(ruleImportAccount, accountInPath, s.handleListImportSources))
+	s.mux.Handle("GET /api/imap/creds", s.routeFor(ruleServicesOnly, 0, s.handleListImapCreds))
+	s.mux.Handle("POST /api/imap/creds", s.routeFor(ruleServicesOnly, 0, s.handleSaveImapCred))
+	s.mux.Handle("GET /api/imap/creds/{name}", s.routeFor(ruleServicesOnly, 0, s.handleGetImapCred))
+	s.mux.Handle("PUT /api/imap/creds/{name}", s.routeFor(ruleServicesOnly, 0, s.handleSaveImapCred))
+	s.mux.Handle("DELETE /api/imap/creds/{name}", s.routeFor(ruleServicesOnly, 0, s.handleDeleteImapCred))
+	s.mux.Handle("GET /api/folders", s.routeFor(ruleReadAccount, accountInQuery, s.handleFolders))
+	s.mux.Handle("GET /api/messages", s.routeFor(ruleReadAccount, accountInQuery, s.handleListMessages))
 	// Resolution lives under its own /api/lookup/ namespace rather than under
 	// /api/messages/. Both spellings are four segments, so
 	// "/api/messages/by-message-id/{messageID}" and "/api/messages/{id}/thread"
 	// are genuinely ambiguous for the path "/api/messages/by-message-id/thread"
 	// and Go's mux panics at registration rather than guessing. Caught by the
 	// e2e smoke, which exists for precisely this.
-	s.mux.Handle("GET /api/lookup/message-id/{messageID}", s.auth(s.handleLocatorsForMessageID))
+	s.mux.Handle("GET /api/lookup/message-id/{messageID}", s.routeFor(ruleServicesOnly, 0, s.handleLocatorsForMessageID))
 	// Search runs over recorded payloads only (see accounts.MessageBody): a
 	// message never fetched through GET /api/messages/{id} is invisible to it.
 	// /api/index/stats reports the coverage gap as messages − bodies_stored.
-	s.mux.Handle("GET /api/search", s.auth(s.handleSearchMessages))
-	s.mux.Handle("POST /api/search/similar", s.auth(s.handleSimilarMessages))
-	s.mux.Handle("GET /api/messages/{id}/thread", s.auth(s.handleMessageThread))
-	s.mux.Handle("GET /api/index/stats", s.auth(s.handleIndexStats))
-	s.mux.Handle("GET /api/messages/{id}", s.auth(s.handleGetMessage))
+	s.mux.Handle("GET /api/search", s.routeFor(ruleServicesOnly, 0, s.handleSearchMessages))
+	s.mux.Handle("POST /api/search/similar", s.routeFor(ruleServicesOnly, 0, s.handleSimilarMessages))
+	s.mux.Handle("GET /api/messages/{id}/thread", s.routeFor(ruleReadAccount, accountInQuery, s.handleMessageThread))
+	s.mux.Handle("GET /api/index/stats", s.routeFor(ruleServicesOnly, 0, s.handleIndexStats))
+	s.mux.Handle("GET /api/messages/{id}", s.routeFor(ruleReadMessage, accountInQuery, s.handleGetMessage))
 	// Split reads for local accounts: metadata without bodies, one body format
 	// at a time, and a bounded batch of metadata in one call.
-	s.mux.Handle("GET /api/messages/{id}/metadata", s.auth(s.handleGetMessageMetadata))
-	s.mux.Handle("GET /api/messages/{id}/body", s.auth(s.handleGetMessageBody))
-	s.mux.Handle("GET /api/messages/{id}/revisions", s.auth(s.handleListRevisions))
-	s.mux.Handle("GET /api/messages/{id}/revisions/{revision}", s.auth(s.handleGetRevisionMetadata))
-	s.mux.Handle("GET /api/messages/{id}/revisions/{revision}/body", s.auth(s.handleGetRevisionBody))
-	s.mux.Handle("GET /api/messages/{id}/revisions/{revision}/attachments/{attachment_id}", s.auth(s.handleGetRevisionAttachment))
-	s.mux.Handle("POST /api/messages/resolve", s.auth(s.handleResolveMessages))
-	s.mux.Handle("GET /api/messages/{id}/attachments/{attachment_id}", s.auth(s.handleGetAttachment))
-	s.mux.Handle("POST /api/messages/{id}/read", s.auth(s.handleMarkRead))
-	s.mux.Handle("POST /api/messages/{id}/flag", s.auth(s.handleFlag))
-	s.mux.Handle("POST /api/messages/{id}/move", s.auth(s.handleMove))
-	s.mux.Handle("DELETE /api/messages/{id}", s.auth(s.handleDelete))
-	s.mux.Handle("POST /api/messages/{id}/perm-delete", s.auth(s.handlePermDelete))
-	s.mux.Handle("POST /api/messages/bulk", s.auth(s.handleBulk))
+	s.mux.Handle("GET /api/messages/{id}/metadata", s.routeFor(ruleReadMessage, accountInQuery, s.handleGetMessageMetadata))
+	s.mux.Handle("GET /api/messages/{id}/body", s.routeFor(ruleReadMessage, accountInQuery, s.handleGetMessageBody))
+	s.mux.Handle("GET /api/messages/{id}/revisions", s.routeFor(ruleReadMessage, accountInQuery, s.handleListRevisions))
+	s.mux.Handle("GET /api/messages/{id}/revisions/{revision}", s.routeFor(ruleReadMessage, accountInQuery, s.handleGetRevisionMetadata))
+	s.mux.Handle("GET /api/messages/{id}/revisions/{revision}/body", s.routeFor(ruleReadMessage, accountInQuery, s.handleGetRevisionBody))
+	s.mux.Handle("GET /api/messages/{id}/revisions/{revision}/attachments/{attachment_id}", s.routeFor(ruleReadMessage, accountInQuery, s.handleGetRevisionAttachment))
+	s.mux.Handle("POST /api/messages/resolve", s.routeFor(ruleHandlerFilters, 0, s.handleResolveMessages))
+	s.mux.Handle("GET /api/messages/{id}/attachments/{attachment_id}", s.routeFor(ruleReadMessage, accountInQuery, s.handleGetAttachment))
+	s.mux.Handle("POST /api/messages/{id}/read", s.routeFor(ruleImportAccount, accountInQuery, s.handleMarkRead))
+	s.mux.Handle("POST /api/messages/{id}/flag", s.routeFor(ruleImportAccount, accountInQuery, s.handleFlag))
+	s.mux.Handle("POST /api/messages/{id}/move", s.routeFor(ruleImportAccount, accountInQuery, s.handleMove))
+	s.mux.Handle("DELETE /api/messages/{id}", s.routeFor(ruleImportAccount, accountInQuery, s.handleDelete))
+	s.mux.Handle("POST /api/messages/{id}/perm-delete", s.routeFor(ruleServicesOnly, 0, s.handlePermDelete))
+	s.mux.Handle("POST /api/messages/bulk", s.routeFor(ruleImportAccount, accountInQuery, s.handleBulk))
 	// Settings: every environment variable the service reads, behind the same
 	// bearer as /api/*. A token is served as set or unset, never its value.
 	// PUT /settings/{key} is not mounted: no setting is Editable.
-	s.mux.Handle("GET /settings", s.auth(servicesettings.Handler(settings, "/settings").ServeHTTP))
+	s.mux.Handle("GET /settings", s.routeFor(ruleServicesOnly, 0, servicesettings.Handler(settings, "/settings").ServeHTTP))
 	return s
 }
 
@@ -165,6 +169,18 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	// A person sees the accounts they hold a mail grant on. A message read
+	// through a ticket does not show its account here: the ticket grants the
+	// message, not the mailbox.
+	if access := principalAccessOfRequest(r); access != nil && !access.administrator {
+		visible := list[:0:0]
+		for _, a := range list {
+			if access.mayReadAccount(a.ID) {
+				visible = append(visible, a)
+			}
+		}
+		list = visible
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": list})
 }

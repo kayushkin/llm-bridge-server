@@ -59,6 +59,21 @@ func main() {
 	} else {
 		log.Println("FILE_STORE_URL not set — imports with attachments and attachment reads on local accounts answer 503")
 	}
+	grantStoreToken, kanbanStoreToken := settings.String(mailstack.SettingGrantStoreServiceToken), settings.String(mailstack.SettingKanbanStoreServiceToken)
+	switch {
+	case grantStoreToken != "" && kanbanStoreToken != "":
+		options = append(options, mailstack.WithPrincipalAccess(mailstack.PrincipalAccessStores{
+			PrincipalStoreURL:       settings.String(mailstack.SettingPrincipalStoreURL),
+			GrantStoreURL:           settings.String(mailstack.SettingGrantStoreURL),
+			GrantStoreServiceToken:  grantStoreToken,
+			KanbanStoreURL:          settings.String(mailstack.SettingKanbanStoreURL),
+			KanbanStoreServiceToken: kanbanStoreToken,
+		}))
+	case grantStoreToken != "" || kanbanStoreToken != "":
+		log.Fatalf("GRANT_STORE_SERVICE_TOKEN and KANBAN_STORE_SERVICE_TOKEN are set together or not at all: a person's access needs both stores")
+	default:
+		log.Println("principal access not configured — requests that name a person (X-Principal-Id) answer 503")
+	}
 	srv := mailstack.NewServer(store, auth, settings, options...)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
