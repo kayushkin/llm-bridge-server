@@ -34,6 +34,8 @@ const (
 	SettingBearerToken           = "bearer_token"
 	SettingAuthStoreURL          = "auth_store_url"
 	SettingAuthStoreBearerToken  = "auth_store_bearer_token"
+	SettingFileStoreURL          = "file_store_url"
+	SettingFileStoreServiceToken = "file_store_service_token"
 )
 
 // DefaultListenPort is the loopback port the service listens on with nothing
@@ -77,6 +79,10 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "Where auth-store answers. Gmail and Outlook access tokens are fetched from it on every provider call; a wrong address fails every Gmail and Outlook request and leaves IMAP and local accounts working."},
 		{Key: SettingAuthStoreBearerToken, EnvironmentVariable: "AUTH_STORE_TOKEN", Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,
 			Description: "The bearer token presented to auth-store. A wrong or missing one makes auth-store refuse every token fetch when it has a token of its own set, which fails every Gmail and Outlook request."},
+		{Key: SettingFileStoreURL, EnvironmentVariable: "FILE_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString,
+			Description: "Where file-store answers. Imported attachments keep their bytes there. Unset, an import that carries an attachment is refused with 503 and reading one answers 503; mail without attachments is unaffected."},
+		{Key: SettingFileStoreServiceToken, EnvironmentVariable: "FILE_STORE_SERVICE_TOKEN", Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,
+			Description: "The token file-store asks of every caller. The service refuses to start when FILE_STORE_URL is set and this is not. It reads every file, so it reaches the unit through a host-local drop-in from ~/.config/file-store-tokens.env, never the tracked unit and never the shared principal-gating file, whose variables every agent session inherits."},
 	}
 }
 

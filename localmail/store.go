@@ -368,7 +368,15 @@ func (s *Store) Get(ctx context.Context, accountID, id string) (backend.Message,
 	if err != nil {
 		return backend.Message{}, err
 	}
+	stored, err = s.withAttachments(ctx)(stored, nil)
+	if err != nil {
+		return backend.Message{}, err
+	}
 	m := backend.Message{Meta: stored.MessageMeta, BodyText: bodyText.String, BodyHTML: bodyHTML.String}
+	for _, a := range stored.Attachments {
+		m.Attachments = append(m.Attachments, backend.Attachment{
+			ID: a.ID, Filename: a.Filename, MimeType: a.MimeType, Size: a.Size, InlineCID: a.InlineCID})
+	}
 	m.InReplyTo = m.Meta.InReplyTo
 	// The headers a reader of a real message would find. Synthesized from the
 	// stored fields rather than kept separately, so the two can never disagree.
@@ -428,8 +436,12 @@ func (s *Store) PermDelete(ctx context.Context, accountID, id string) error {
 	if err := checkAffected(res); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM local_message_bodies WHERE account_id = ? AND id = ?`, accountID, id); err != nil {
-		return fmt.Errorf("localmail: delete body: %w", err)
+	// Every revision and attachment row goes with the message. Their bytes in
+	// file-store are the caller's to purge first: see AttachmentFileIDs.
+	for _, table := range []string{"local_message_bodies", "local_message_revisions", "local_message_attachments"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE account_id = ? AND id = ?`, accountID, id); err != nil {
+			return fmt.Errorf("localmail: delete from %s: %w", table, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("localmail: commit delete: %w", err)

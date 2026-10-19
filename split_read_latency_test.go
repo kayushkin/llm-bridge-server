@@ -71,7 +71,7 @@ func TestSplitReadLatency(t *testing.T) {
 		ticket[i] = latencyMessage(fmt.Sprintf("ticket-%02d", i), 4<<10, 16<<10)
 	}
 	ticket[0] = latencyMessage("ticket-00", 8<<10, latencyLargeHTMLBytes)
-	outcomes, _, err := store.Import(context.Background(), "desk", ticket, nil)
+	outcomes, _, _, err := store.Import(context.Background(), "desk", ticket, nil)
 	if err != nil {
 		t.Fatalf("import ticket: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestSplitReadLatency(t *testing.T) {
 				batch = append(batch, latencyMessage(fmt.Sprintf("filler-%07d", filled), 2<<10, 6<<10))
 				filled++
 			}
-			if _, _, err := store.Import(context.Background(), "desk", batch, nil); err != nil {
+			if _, _, _, err := store.Import(context.Background(), "desk", batch, nil); err != nil {
 				t.Fatalf("import filler: %v", err)
 			}
 			added += len(batch)

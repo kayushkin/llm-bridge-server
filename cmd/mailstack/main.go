@@ -15,6 +15,7 @@ import (
 	"github.com/kayushkin/mailstack"
 	"github.com/kayushkin/mailstack/accounts"
 	"github.com/kayushkin/mailstack/apiauth"
+	"github.com/kayushkin/mailstack/filestore"
 )
 
 func main() {
@@ -48,7 +49,17 @@ func main() {
 	defer store.Close()
 
 	auth := apiauth.New(authStoreURL, settings.String(mailstack.SettingAuthStoreBearerToken))
-	srv := mailstack.NewServer(store, auth, settings, mailstack.WithLocalMailDB(*localDBPath))
+	options := []mailstack.ServerOption{mailstack.WithLocalMailDB(*localDBPath)}
+	if fileStoreURL := settings.String(mailstack.SettingFileStoreURL); fileStoreURL != "" {
+		fileStoreToken := settings.String(mailstack.SettingFileStoreServiceToken)
+		if fileStoreToken == "" {
+			log.Fatalf("FILE_STORE_URL is set but FILE_STORE_SERVICE_TOKEN is not: file-store takes no call without it")
+		}
+		options = append(options, mailstack.WithFileStore(filestore.New(fileStoreURL, fileStoreToken)))
+	} else {
+		log.Println("FILE_STORE_URL not set — imports with attachments and attachment reads on local accounts answer 503")
+	}
+	srv := mailstack.NewServer(store, auth, settings, options...)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	httpSrv := &http.Server{

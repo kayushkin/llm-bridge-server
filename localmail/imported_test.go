@@ -36,7 +36,7 @@ func TestAnImportedMessageSurvivesWithoutLoss(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	in := exported("AAMkAD1")
-	outcomes, _, err := store.Import(ctx, "desk", []ImportedMessage{in}, nil)
+	outcomes, _, _, err := store.Import(ctx, "desk", []ImportedMessage{in}, nil)
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestAnImportInventsNoIdentity(t *testing.T) {
 	ctx := context.Background()
 	in := exported("AAMkAD2")
 	in.MessageID, in.ConversationID = "", ""
-	outcomes, _, err := store.Import(ctx, "desk", []ImportedMessage{in}, nil)
+	outcomes, _, _, err := store.Import(ctx, "desk", []ImportedMessage{in}, nil)
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestAnAbsentBodyIsNotAnEmptyOne(t *testing.T) {
 	in := exported("AAMkAD3")
 	in.BodyText = strPtr("")
 	in.BodyHTML = nil
-	outcomes, _, err := store.Import(ctx, "desk", []ImportedMessage{in}, nil)
+	outcomes, _, _, err := store.Import(ctx, "desk", []ImportedMessage{in}, nil)
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestReimportIsIdempotentAndAChangeIsARevision(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	in := exported("AAMkAD4")
-	first, _, err := store.Import(ctx, "desk", []ImportedMessage{in}, nil)
+	first, _, _, err := store.Import(ctx, "desk", []ImportedMessage{in}, nil)
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestReimportIsIdempotentAndAChangeIsARevision(t *testing.T) {
 		t.Fatalf("SetUnread: %v", err)
 	}
 
-	again, changed, err := store.Import(ctx, "desk", []ImportedMessage{in}, nil)
+	again, changed, _, err := store.Import(ctx, "desk", []ImportedMessage{in}, nil)
 	if err != nil {
 		t.Fatalf("re-Import: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestReimportIsIdempotentAndAChangeIsARevision(t *testing.T) {
 	edited := in
 	edited.BodyHTML = strPtr("<p>edited</p>")
 	edited.SourceRevision = "ck-2"
-	third, changed, err := store.Import(ctx, "desk", []ImportedMessage{edited}, nil)
+	third, changed, _, err := store.Import(ctx, "desk", []ImportedMessage{edited}, nil)
 	if err != nil {
 		t.Fatalf("edited Import: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestOneInvalidMessageRefusesTheWholeImport(t *testing.T) {
 	noBody.BodyText, noBody.BodyHTML = nil, nil
 	duplicate := exported("AAMkAD5")
 
-	_, _, err := store.Import(ctx, "desk", []ImportedMessage{good, noDate, noBody, duplicate},
+	_, _, _, err := store.Import(ctx, "desk", []ImportedMessage{good, noDate, noBody, duplicate},
 		&ImportSource{Ref: "export-1.json", SHA256: "abc"})
 	var invalid *ImportValidationError
 	if !errors.As(err, &invalid) {
@@ -208,7 +208,7 @@ func TestAnImportSourceIsCheckpointedWithItsMessages(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	src := &ImportSource{Ref: "2026-10-01/export-17.json", SHA256: "1f2e"}
-	if _, _, err := store.Import(ctx, "desk", []ImportedMessage{exported("A1"), exported("A2")}, src); err != nil {
+	if _, _, _, err := store.Import(ctx, "desk", []ImportedMessage{exported("A1"), exported("A2")}, src); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 	sources, err := store.ImportSources(ctx, "desk")
@@ -229,11 +229,11 @@ func TestAnImportSourceIsCheckpointedWithItsMessages(t *testing.T) {
 func TestProviderIDsAreScopedToTheAccount(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
-	a, _, err := store.Import(ctx, "desk-a", []ImportedMessage{exported("SAME")}, nil)
+	a, _, _, err := store.Import(ctx, "desk-a", []ImportedMessage{exported("SAME")}, nil)
 	if err != nil {
 		t.Fatalf("Import a: %v", err)
 	}
-	b, _, err := store.Import(ctx, "desk-b", []ImportedMessage{exported("SAME")}, nil)
+	b, _, _, err := store.Import(ctx, "desk-b", []ImportedMessage{exported("SAME")}, nil)
 	if err != nil {
 		t.Fatalf("Import b: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestProviderIDsAreScopedToTheAccount(t *testing.T) {
 func TestPermDeleteRemovesTheBody(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
-	outcomes, _, err := store.Import(ctx, "desk", []ImportedMessage{exported("GONE")}, nil)
+	outcomes, _, _, err := store.Import(ctx, "desk", []ImportedMessage{exported("GONE")}, nil)
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}

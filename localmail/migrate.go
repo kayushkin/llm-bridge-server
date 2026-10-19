@@ -26,6 +26,7 @@ var migrations = []struct {
 }{
 	{name: "0001_local_messages", stmt: localMessagesSchema},
 	{name: "0002_split_bodies_and_imports", stmt: splitBodiesAndImportsSchema},
+	{name: "0003_revisions_and_attachments", stmt: revisionsAndAttachmentsSchema},
 }
 
 const localMessagesSchema = `
@@ -123,6 +124,50 @@ CREATE TABLE local_import_sources (
 	message_count INTEGER NOT NULL,
 	imported_at   INTEGER NOT NULL,
 	PRIMARY KEY (account_id, source_ref)
+);
+`
+
+// revisionsAndAttachmentsSchema keeps what an update replaces, and the
+// attachments of every revision.
+//
+// The current revision stays where it was — local_messages and
+// local_message_bodies — so every read of the present costs what it did. A
+// revision an import replaces is copied here first, whole: its metadata as
+// StoredMessage JSON, as GET .../metadata served it at the time, and both
+// bodies with absent kept distinct from empty.
+//
+// Attachments are keyed by revision, so an old revision keeps the files it had
+// without a copy. The bytes are in file-store; file_id is its id, and it never
+// leaves this service, because file-store judges no caller and a route that
+// took a file id alone would turn "may this person read this message?" into
+// "can they guess an id?".
+const revisionsAndAttachmentsSchema = `
+CREATE TABLE local_message_revisions (
+	account_id        TEXT NOT NULL,
+	id                TEXT NOT NULL,
+	revision          INTEGER NOT NULL,
+	metadata_json     TEXT NOT NULL,
+	body_text         TEXT,
+	body_html         TEXT,
+	replaced_at       INTEGER NOT NULL,
+	PRIMARY KEY (account_id, id, revision)
+);
+
+CREATE TABLE local_message_attachments (
+	account_id           TEXT NOT NULL,
+	id                   TEXT NOT NULL,
+	revision             INTEGER NOT NULL,
+	attachment_id        TEXT NOT NULL,
+	position             INTEGER NOT NULL,
+	source_attachment_id TEXT NOT NULL DEFAULT '',
+	filename             TEXT NOT NULL,
+	content_type         TEXT NOT NULL,
+	size_bytes           INTEGER NOT NULL,
+	sha256               TEXT NOT NULL,
+	content_id           TEXT NOT NULL DEFAULT '',
+	is_inline            INTEGER NOT NULL DEFAULT 0,
+	file_id              TEXT NOT NULL,
+	PRIMARY KEY (account_id, id, revision, attachment_id)
 );
 `
 

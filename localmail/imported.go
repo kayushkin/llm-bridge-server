@@ -82,6 +82,9 @@ type ImportedMessage struct {
 	BodyText   *string          `json:"body_text,omitempty"`
 	BodyHTML   *string          `json:"body_html,omitempty"`
 	Outlook    *OutlookLocation `json:"outlook,omitempty"`
+	// Attachments in the order the message lists them. Their bytes go to
+	// file-store; see ImportedAttachment.
+	Attachments []ImportedAttachment `json:"attachments,omitempty"`
 
 	// Mailbox state. Applied when the message is first imported and never on a
 	// re-import: once a message is here, whether it is read, flagged or filed
@@ -93,6 +96,41 @@ type ImportedMessage struct {
 	// Snippet is derived by the caller, which has the HTML-to-text rule the
 	// search index uses. Not part of the request.
 	Snippet string `json:"-"`
+}
+
+// MaxAttachmentsPerMessage bounds one message's attachment list.
+const MaxAttachmentsPerMessage = 100
+
+// ImportedAttachment is one attachment as an export carries it, bytes and all.
+// Content is base64 on the wire, which encoding/json decodes into the slice.
+type ImportedAttachment struct {
+	// SourceAttachmentID is the export's own id for the part, kept as given.
+	SourceAttachmentID string `json:"source_attachment_id,omitempty"`
+	Filename           string `json:"filename"`
+	ContentType        string `json:"content_type"`
+	// ContentID is the part's Content-ID, by which an HTML body shows it
+	// inline as cid:<ContentID>.
+	ContentID string `json:"content_id,omitempty"`
+	Inline    bool   `json:"inline,omitempty"`
+	Content   []byte `json:"content_base64"`
+
+	// FileID is file-store's id once the server has uploaded the bytes. Import
+	// refuses a changed message whose attachments have none.
+	FileID string `json:"-"`
+}
+
+// StoredAttachment describes one attachment of a stored revision. It carries
+// no file-store id: the bytes are read through this service, which checks the
+// caller first.
+type StoredAttachment struct {
+	ID                 string `json:"id"`
+	Filename           string `json:"filename"`
+	MimeType           string `json:"mime_type"`
+	Size               int64  `json:"size"`
+	SHA256             string `json:"sha256"`
+	InlineCID          string `json:"inline_cid,omitempty"`
+	Inline             bool   `json:"inline"`
+	SourceAttachmentID string `json:"source_attachment_id,omitempty"`
 }
 
 // ImportSource names the unit an import came from, so the next run can skip it
@@ -171,8 +209,15 @@ type StoredMessage struct {
 	SourceRevision    string            `json:"source_revision,omitempty"`
 	Outlook           *OutlookLocation  `json:"outlook,omitempty"`
 	Bodies            BodyPresence      `json:"bodies"`
-	CreatedAt         time.Time         `json:"created_at"`
-	UpdatedAt         time.Time         `json:"updated_at"`
+	// Attachments of this revision, in the order the message lists them.
+	// Always present, empty when there are none.
+	Attachments []StoredAttachment `json:"attachments"`
+	CreatedAt   time.Time          `json:"created_at"`
+	// UpdatedAt is when this revision became current.
+	UpdatedAt time.Time `json:"updated_at"`
+	// ReplacedAt is when a later import replaced this revision. Absent on the
+	// current one.
+	ReplacedAt *time.Time `json:"replaced_at,omitempty"`
 }
 
 // MetadataETag changes whenever anything in the metadata response changes,
@@ -220,6 +265,21 @@ func ValidateImport(msgs []ImportedMessage) error {
 		if m.FolderID != "" && !knownFolder(m.FolderID) {
 			fail(i, m, "unknown folder %q", m.FolderID)
 		}
+		if len(m.Attachments) > MaxAttachmentsPerMessage {
+			fail(i, m, "%d attachments; the most is %d", len(m.Attachments), MaxAttachmentsPerMessage)
+		}
+		for j, a := range m.Attachments {
+			switch {
+			case strings.TrimSpace(a.Filename) == "":
+				fail(i, m, "attachment %d has no filename", j)
+			case strings.TrimSpace(a.ContentType) == "":
+				fail(i, m, "attachment %d (%s) has no content_type", j, a.Filename)
+			case len(a.Content) == 0:
+				// file-store keeps no empty file, so an empty part cannot be
+				// stored; refusing here says so before anything is uploaded.
+				fail(i, m, "attachment %d (%s) has no bytes; an empty attachment cannot be stored", j, a.Filename)
+			}
+		}
 	}
 	if len(items) > 0 {
 		return &ImportValidationError{Items: items}
@@ -227,10 +287,10 @@ func ValidateImport(msgs []ImportedMessage) error {
 	return nil
 }
 
-// importedID is the store's id for an imported message: derived from the
+// ImportedID is the store's id for an imported message: derived from the
 // account and the source's id, so a re-import lands on the same row, and long
 // enough that two source ids colliding is not a case anyone has to handle.
-func importedID(accountID, providerMessageID string) string {
+func ImportedID(accountID, providerMessageID string) string {
 	sum := sha256.Sum256([]byte(accountID + "\x00" + providerMessageID))
 	return "lm" + hex.EncodeToString(sum[:16])
 }
@@ -238,14 +298,32 @@ func importedID(accountID, providerMessageID string) string {
 // contentHash covers everything an import sets except mailbox state, so a
 // re-import of an unchanged message hashes the same whatever has happened to it
 // here since.
+//
+// An attachment counts by its descriptor and the sha256 of its bytes, so a
+// changed file changes the hash without the bytes being hashed into JSON.
 func contentHash(m ImportedMessage) (string, error) {
+	type hashedAttachment struct {
+		SourceAttachmentID string `json:"source_attachment_id,omitempty"`
+		Filename           string `json:"filename"`
+		ContentType        string `json:"content_type"`
+		ContentID          string `json:"content_id,omitempty"`
+		Inline             bool   `json:"inline,omitempty"`
+		SHA256             string `json:"sha256"`
+	}
 	content := struct {
 		ImportedMessage
-		FolderID string `json:"folder_id,omitempty"`
-		Unread   *bool  `json:"unread,omitempty"`
-		Flagged  bool   `json:"flagged,omitempty"`
+		FolderID    string             `json:"folder_id,omitempty"`
+		Unread      *bool              `json:"unread,omitempty"`
+		Flagged     bool               `json:"flagged,omitempty"`
+		Attachments []hashedAttachment `json:"attachments,omitempty"`
 	}{ImportedMessage: m}
 	content.ReceivedAt = m.ReceivedAt.UTC()
+	for _, a := range m.Attachments {
+		content.Attachments = append(content.Attachments, hashedAttachment{
+			SourceAttachmentID: a.SourceAttachmentID, Filename: a.Filename, ContentType: a.ContentType,
+			ContentID: a.ContentID, Inline: a.Inline, SHA256: sha256Hex(a.Content),
+		})
+	}
 	raw, err := json.Marshal(content)
 	if err != nil {
 		return "", fmt.Errorf("localmail: hash message %s: %w", m.ProviderMessageID, err)
@@ -254,19 +332,59 @@ func contentHash(m ImportedMessage) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// PlanImport says what Import would do with each message right now, without
+// writing anything: the server uploads attachments only for the messages that
+// will change. An import that runs between the plan and the import can change
+// the answer, which Import handles by reporting the uploads it did not use.
+func (s *Store) PlanImport(ctx context.Context, accountID string, msgs []ImportedMessage) ([]string, error) {
+	plan := make([]string, len(msgs))
+	for i, m := range msgs {
+		hash, err := contentHash(m)
+		if err != nil {
+			return nil, err
+		}
+		var existingHash string
+		err = s.db.QueryRowContext(ctx, `
+			SELECT content_sha256 FROM local_messages
+			WHERE account_id = ? AND provider_message_id = ? AND `+providerIDIndexed,
+			accountID, m.ProviderMessageID).Scan(&existingHash)
+		switch {
+		case err == sql.ErrNoRows:
+			plan[i] = ImportCreated
+		case err != nil:
+			return nil, fmt.Errorf("localmail: look up %s: %w", m.ProviderMessageID, err)
+		case existingHash == hash:
+			plan[i] = ImportUnchanged
+		default:
+			plan[i] = ImportUpdated
+		}
+	}
+	return plan, nil
+}
+
 // Import stores a validated batch in one transaction and, when source is set,
 // records it as imported in the same transaction. It returns one outcome per
-// message in request order, and the metadata of every message that was created
-// or changed, for the caller to index.
-func (s *Store) Import(ctx context.Context, accountID string, msgs []ImportedMessage, source *ImportSource) ([]ImportOutcome, []backend.MessageMeta, error) {
+// message in request order; the metadata of every message that was created or
+// changed, for the caller to index; and the file-store ids of uploaded
+// attachments that ended up unused, because their message turned out
+// unchanged, for the caller to purge.
+//
+// An update copies the revision it replaces into local_message_revisions
+// first, so nothing an import overwrites is lost.
+func (s *Store) Import(ctx context.Context, accountID string, msgs []ImportedMessage, source *ImportSource) ([]ImportOutcome, []backend.MessageMeta, []string, error) {
 	if accountID == "" {
-		return nil, nil, fmt.Errorf("localmail: account id is required")
+		return nil, nil, nil, fmt.Errorf("localmail: account id is required")
 	}
 	if err := ValidateImport(msgs); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if source != nil && (source.Ref == "" || source.SHA256 == "") {
-		return nil, nil, fmt.Errorf("localmail: an import source needs both ref and sha256")
+		return nil, nil, nil, fmt.Errorf("localmail: an import source needs both ref and sha256")
 	}
 
 	now := time.Now().UTC().UnixMilli()
@@ -274,46 +392,59 @@ func (s *Store) Import(ctx context.Context, accountID string, msgs []ImportedMes
 	defer s.mu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("localmail: begin import: %w", err)
+		return nil, nil, nil, fmt.Errorf("localmail: begin import: %w", err)
 	}
 	defer tx.Rollback()
 
 	outcomes := make([]ImportOutcome, len(msgs))
 	var changed []backend.MessageMeta
+	var unused []string
 	for i, m := range msgs {
 		hash, err := contentHash(m)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		id := importedID(accountID, m.ProviderMessageID)
+		id := ImportedID(accountID, m.ProviderMessageID)
 		out := ImportOutcome{ProviderMessageID: m.ProviderMessageID, ID: id, Locator: accountID + ":" + id}
 
 		var existingRevision int64
 		var existingHash string
 		err = tx.QueryRowContext(ctx, `
 			SELECT revision, content_sha256 FROM local_messages
-			WHERE account_id = ? AND provider_message_id = ? AND `+providerIDIndexed+``, accountID, m.ProviderMessageID).
+			WHERE account_id = ? AND provider_message_id = ? AND `+providerIDIndexed, accountID, m.ProviderMessageID).
 			Scan(&existingRevision, &existingHash)
 		switch {
 		case err == sql.ErrNoRows:
 			if err := insertImported(ctx, tx, accountID, id, m, hash, now); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			out.Outcome, out.Revision = ImportCreated, 1
 		case err != nil:
-			return nil, nil, fmt.Errorf("localmail: look up %s: %w", m.ProviderMessageID, err)
+			return nil, nil, nil, fmt.Errorf("localmail: look up %s: %w", m.ProviderMessageID, err)
 		case existingHash == hash:
 			out.Outcome, out.Revision = ImportUnchanged, existingRevision
 		default:
+			if err := keepRevision(ctx, tx, accountID, id, now); err != nil {
+				return nil, nil, nil, err
+			}
 			if err := updateImported(ctx, tx, accountID, id, m, hash, existingRevision+1, now); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			out.Outcome, out.Revision, out.PreviousRevision = ImportUpdated, existingRevision+1, existingRevision
 		}
-		outcomes[i] = out
-		if out.Outcome != ImportUnchanged {
+		if out.Outcome == ImportUnchanged {
+			for _, a := range m.Attachments {
+				if a.FileID != "" {
+					unused = append(unused, a.FileID)
+				}
+			}
+		} else {
+			if err := insertAttachments(ctx, tx, accountID, id, out.Revision, m); err != nil {
+				return nil, nil, nil, err
+			}
 			changed = append(changed, importedMeta(accountID, id, m))
 		}
+		outcomes[i] = out
 	}
 
 	if source != nil {
@@ -325,14 +456,65 @@ func (s *Store) Import(ctx context.Context, accountID string, msgs []ImportedMes
 				message_count = excluded.message_count,
 				imported_at   = excluded.imported_at`,
 			accountID, source.Ref, source.SHA256, len(msgs), now); err != nil {
-			return nil, nil, fmt.Errorf("localmail: record import source %s: %w", source.Ref, err)
+			return nil, nil, nil, fmt.Errorf("localmail: record import source %s: %w", source.Ref, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, nil, fmt.Errorf("localmail: commit import: %w", err)
+		return nil, nil, nil, fmt.Errorf("localmail: commit import: %w", err)
 	}
-	return outcomes, changed, nil
+	return outcomes, changed, unused, nil
 }
+
+// keepRevision copies the current revision of a message into
+// local_message_revisions before an update overwrites it.
+func keepRevision(ctx context.Context, tx *sql.Tx, accountID, id string, now int64) error {
+	var bodyText, bodyHTML sql.NullString
+	current, err := scanStored(tx.QueryRowContext(ctx, `
+		SELECT `+storedColumns+`, body_text, body_html
+		FROM local_messages JOIN local_message_bodies USING (account_id, id)
+		WHERE account_id = ? AND id = ?`, accountID, id), accountID, &bodyText, &bodyHTML)
+	if err != nil {
+		return fmt.Errorf("localmail: read revision to keep of %s: %w", id, err)
+	}
+	// The attachments stay in their own table under this revision's number,
+	// so the snapshot leaves them out rather than holding a second copy.
+	current.Attachments = nil
+	snapshot, err := json.Marshal(current)
+	if err != nil {
+		return fmt.Errorf("localmail: encode revision %d of %s: %w", current.Revision, id, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO local_message_revisions (account_id, id, revision, metadata_json, body_text, body_html, replaced_at)
+		VALUES (?,?,?,?,?,?,?)`,
+		accountID, id, current.Revision, string(snapshot), bodyText, bodyHTML, now); err != nil {
+		return fmt.Errorf("localmail: keep revision %d of %s: %w", current.Revision, id, err)
+	}
+	return nil
+}
+
+// insertAttachments records a revision's attachments, whose bytes the caller
+// has already put in file-store.
+func insertAttachments(ctx context.Context, tx *sql.Tx, accountID, id string, revision int64, m ImportedMessage) error {
+	for position, a := range m.Attachments {
+		if a.FileID == "" {
+			return fmt.Errorf("%w: attachment %d (%s) of %s", ErrAttachmentsNotUploaded, position, a.Filename, m.ProviderMessageID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO local_message_attachments (account_id, id, revision, attachment_id, position,
+				source_attachment_id, filename, content_type, size_bytes, sha256, content_id, is_inline, file_id)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			accountID, id, revision, attachmentIDAt(position), position, a.SourceAttachmentID, a.Filename,
+			a.ContentType, len(a.Content), sha256Hex(a.Content), backend.StripAngleBrackets(a.ContentID),
+			boolToInt(a.Inline), a.FileID); err != nil {
+			return fmt.Errorf("localmail: record attachment %d of %s: %w", position, m.ProviderMessageID, err)
+		}
+	}
+	return nil
+}
+
+// attachmentIDAt is an attachment's id within its revision: its place in the
+// message's list, counted from one.
+func attachmentIDAt(position int) string { return fmt.Sprintf("a%d", position+1) }
 
 // importedMeta is the index's view of an imported message: what accounts'
 // message index needs for Message-ID lookup and threading.
@@ -553,8 +735,8 @@ func scanStored(row *sql.Row, accountID string, extra ...any) (StoredMessage, er
 
 // Metadata reads one message without its bodies.
 func (s *Store) Metadata(ctx context.Context, accountID, id string) (StoredMessage, error) {
-	return scanStored(s.db.QueryRowContext(ctx,
-		`SELECT `+storedColumns+` FROM local_messages WHERE account_id = ? AND id = ?`, accountID, id), accountID)
+	return s.withAttachments(ctx)(scanStored(s.db.QueryRowContext(ctx,
+		`SELECT `+storedColumns+` FROM local_messages WHERE account_id = ? AND id = ?`, accountID, id), accountID))
 }
 
 // MetadataByProviderID reads one message by the id its source gave it.
@@ -562,9 +744,9 @@ func (s *Store) MetadataByProviderID(ctx context.Context, accountID, providerMes
 	if providerMessageID == "" {
 		return StoredMessage{}, ErrNotFound
 	}
-	return scanStored(s.db.QueryRowContext(ctx,
+	return s.withAttachments(ctx)(scanStored(s.db.QueryRowContext(ctx,
 		`SELECT `+storedColumns+` FROM local_messages WHERE account_id = ? AND provider_message_id = ? AND `+providerIDIndexed,
-		accountID, providerMessageID), accountID)
+		accountID, providerMessageID), accountID))
 }
 
 // Body reads one representation of a message's body, whole, with the metadata
@@ -593,4 +775,223 @@ func (s *Store) Body(ctx context.Context, accountID, id string, format BodyForma
 		return "", meta, ErrBodyAbsent
 	}
 	return body.String, meta, nil
+}
+
+// ============================ attachments ============================
+
+// ErrAttachmentsNotUploaded is returned by Import for a changed message whose
+// attachments carry no file-store id. The server uploads only for messages
+// PlanImport said would change, so this means one changed in between.
+var ErrAttachmentsNotUploaded = errors.New("localmail: a changed message's attachments were not uploaded")
+
+// ErrAttachmentNotFound is returned for an attachment id the revision does not
+// have.
+var ErrAttachmentNotFound = errors.New("localmail: attachment not found")
+
+// ErrRevisionNotFound is returned for a revision the message never had.
+var ErrRevisionNotFound = errors.New("localmail: revision not found")
+
+func (s *Store) attachmentsOf(ctx context.Context, accountID, id string, revision int64) ([]StoredAttachment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT attachment_id, filename, content_type, size_bytes, sha256, content_id, is_inline, source_attachment_id
+		FROM local_message_attachments WHERE account_id = ? AND id = ? AND revision = ?
+		ORDER BY position`, accountID, id, revision)
+	if err != nil {
+		return nil, fmt.Errorf("localmail: list attachments of %s: %w", id, err)
+	}
+	defer rows.Close()
+	out := []StoredAttachment{}
+	for rows.Next() {
+		var a StoredAttachment
+		var inline int
+		if err := rows.Scan(&a.ID, &a.Filename, &a.MimeType, &a.Size, &a.SHA256, &a.InlineCID, &inline, &a.SourceAttachmentID); err != nil {
+			return nil, fmt.Errorf("localmail: scan attachment of %s: %w", id, err)
+		}
+		a.Inline = inline == 1
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("localmail: read attachments of %s: %w", id, err)
+	}
+	return out, nil
+}
+
+// withAttachments fills in the attachments of the revision a read returned.
+// It takes the read's two results whole, so a call reads
+// s.withAttachments(ctx)(scanStored(...)).
+func (s *Store) withAttachments(ctx context.Context) func(StoredMessage, error) (StoredMessage, error) {
+	return func(m StoredMessage, err error) (StoredMessage, error) {
+		if err != nil {
+			return StoredMessage{}, err
+		}
+		m.Attachments, err = s.attachmentsOf(ctx, m.AccountID, m.ID, m.Revision)
+		if err != nil {
+			return StoredMessage{}, err
+		}
+		m.HasAttach = len(m.Attachments) > 0
+		return m, nil
+	}
+}
+
+// AttachmentFile finds one attachment of a revision — revision 0 means the
+// current one — and the file-store id that holds its bytes. The id is for this
+// service to fetch with, never to hand out.
+func (s *Store) AttachmentFile(ctx context.Context, accountID, id string, revision int64, attachmentID string) (StoredAttachment, string, error) {
+	if revision == 0 {
+		current, err := s.Metadata(ctx, accountID, id)
+		if err != nil {
+			return StoredAttachment{}, "", err
+		}
+		revision = current.Revision
+	} else if _, err := s.Revision(ctx, accountID, id, revision); err != nil {
+		return StoredAttachment{}, "", err
+	}
+	var a StoredAttachment
+	var inline int
+	var fileID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT attachment_id, filename, content_type, size_bytes, sha256, content_id, is_inline, source_attachment_id, file_id
+		FROM local_message_attachments WHERE account_id = ? AND id = ? AND revision = ? AND attachment_id = ?`,
+		accountID, id, revision, attachmentID).
+		Scan(&a.ID, &a.Filename, &a.MimeType, &a.Size, &a.SHA256, &a.InlineCID, &inline, &a.SourceAttachmentID, &fileID)
+	if err == sql.ErrNoRows {
+		return StoredAttachment{}, "", ErrAttachmentNotFound
+	}
+	if err != nil {
+		return StoredAttachment{}, "", fmt.Errorf("localmail: read attachment %s of %s: %w", attachmentID, id, err)
+	}
+	a.Inline = inline == 1
+	return a, fileID, nil
+}
+
+// AttachmentFileIDs lists the file-store ids of every attachment of every
+// revision of a message: what has to be purged before the message is.
+func (s *Store) AttachmentFileIDs(ctx context.Context, accountID, id string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT file_id FROM local_message_attachments WHERE account_id = ? AND id = ?`, accountID, id)
+	if err != nil {
+		return nil, fmt.Errorf("localmail: list attachment files of %s: %w", id, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var fileID string
+		if err := rows.Scan(&fileID); err != nil {
+			return nil, fmt.Errorf("localmail: scan attachment file of %s: %w", id, err)
+		}
+		out = append(out, fileID)
+	}
+	return out, rows.Err()
+}
+
+// ============================ revisions ============================
+
+// RevisionSummary is one entry in a message's history.
+type RevisionSummary struct {
+	Revision       int64        `json:"revision"`
+	Current        bool         `json:"current"`
+	ContentSHA256  string       `json:"content_sha256,omitempty"`
+	SourceRevision string       `json:"source_revision,omitempty"`
+	Bodies         BodyPresence `json:"bodies"`
+	BecameCurrent  time.Time    `json:"became_current_at"`
+	ReplacedAt     *time.Time   `json:"replaced_at,omitempty"`
+}
+
+// Revisions lists a message's history, newest first: the current revision,
+// then each one an import replaced.
+func (s *Store) Revisions(ctx context.Context, accountID, id string) ([]RevisionSummary, error) {
+	current, err := s.Metadata(ctx, accountID, id)
+	if err != nil {
+		return nil, err
+	}
+	out := []RevisionSummary{summaryOf(current, true)}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT metadata_json, replaced_at FROM local_message_revisions
+		WHERE account_id = ? AND id = ? ORDER BY revision DESC`, accountID, id)
+	if err != nil {
+		return nil, fmt.Errorf("localmail: list revisions of %s: %w", id, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		old, err := scanRevision(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, summaryOf(old, false))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("localmail: read revisions of %s: %w", id, err)
+	}
+	return out, nil
+}
+
+func summaryOf(m StoredMessage, current bool) RevisionSummary {
+	return RevisionSummary{
+		Revision: m.Revision, Current: current, ContentSHA256: m.ContentSHA256, SourceRevision: m.SourceRevision,
+		Bodies: m.Bodies, BecameCurrent: m.UpdatedAt, ReplacedAt: m.ReplacedAt,
+	}
+}
+
+func scanRevision(scan func(...any) error, extra ...any) (StoredMessage, error) {
+	var metadataJSON string
+	var replacedAt int64
+	if err := scan(append([]any{&metadataJSON, &replacedAt}, extra...)...); err != nil {
+		if err == sql.ErrNoRows {
+			return StoredMessage{}, ErrRevisionNotFound
+		}
+		return StoredMessage{}, fmt.Errorf("localmail: read revision: %w", err)
+	}
+	var m StoredMessage
+	if err := json.Unmarshal([]byte(metadataJSON), &m); err != nil {
+		return StoredMessage{}, fmt.Errorf("localmail: decode stored revision: %w", err)
+	}
+	replaced := time.UnixMilli(replacedAt).UTC()
+	m.ReplacedAt = &replaced
+	return m, nil
+}
+
+// Revision reads one revision's metadata, the current one included.
+func (s *Store) Revision(ctx context.Context, accountID, id string, revision int64) (StoredMessage, error) {
+	current, err := s.Metadata(ctx, accountID, id)
+	if err != nil {
+		return StoredMessage{}, err
+	}
+	if revision == current.Revision {
+		return current, nil
+	}
+	old, err := scanRevision(s.db.QueryRowContext(ctx, `
+		SELECT metadata_json, replaced_at FROM local_message_revisions
+		WHERE account_id = ? AND id = ? AND revision = ?`, accountID, id, revision).Scan)
+	return s.withAttachments(ctx)(old, err)
+}
+
+// RevisionBody reads one body representation of one revision.
+func (s *Store) RevisionBody(ctx context.Context, accountID, id string, revision int64, format BodyFormat) (string, StoredMessage, error) {
+	current, err := s.Metadata(ctx, accountID, id)
+	if err != nil {
+		return "", StoredMessage{}, err
+	}
+	if revision == current.Revision {
+		return s.Body(ctx, accountID, id, format)
+	}
+	var column string
+	switch format {
+	case BodyFormatText:
+		column = "body_text"
+	case BodyFormatHTML:
+		column = "body_html"
+	default:
+		return "", StoredMessage{}, fmt.Errorf("localmail: unknown body format %q; want text or html", format)
+	}
+	var body sql.NullString
+	old, err := scanRevision(s.db.QueryRowContext(ctx, `
+		SELECT metadata_json, replaced_at, `+column+` FROM local_message_revisions
+		WHERE account_id = ? AND id = ? AND revision = ?`, accountID, id, revision).Scan, &body)
+	if err != nil {
+		return "", StoredMessage{}, err
+	}
+	if !body.Valid {
+		return "", old, ErrBodyAbsent
+	}
+	return body.String, old, nil
 }

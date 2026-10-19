@@ -16,6 +16,7 @@ import (
 	"github.com/kayushkin/mailstack/accounts"
 	"github.com/kayushkin/mailstack/apiauth"
 	"github.com/kayushkin/mailstack/backend"
+	"github.com/kayushkin/mailstack/filestore"
 	"github.com/kayushkin/mailstack/localmail"
 )
 
@@ -36,6 +37,10 @@ type Server struct {
 	localMu     sync.Mutex
 	localDBPath string
 	localStore  *localmail.Store
+
+	// files holds imported attachments' bytes. Nil when FILE_STORE_URL is
+	// unset, and then attachments on local accounts are refused with 503.
+	files *filestore.Client
 }
 
 // ServerOption adjusts a Server at construction. Variadic so that adding one
@@ -46,6 +51,11 @@ type ServerOption func(*Server)
 // path, which is only ever created if a local account is actually used.
 func WithLocalMailDB(path string) ServerOption {
 	return func(s *Server) { s.localDBPath = path }
+}
+
+// WithFileStore sets where imported attachments' bytes are kept.
+func WithFileStore(files *filestore.Client) ServerOption {
+	return func(s *Server) { s.files = files }
 }
 
 // NewServer builds the server. settings is what GET /settings describes and
@@ -108,6 +118,10 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, settings *serviceset
 	// at a time, and a bounded batch of metadata in one call.
 	s.mux.Handle("GET /api/messages/{id}/metadata", s.auth(s.handleGetMessageMetadata))
 	s.mux.Handle("GET /api/messages/{id}/body", s.auth(s.handleGetMessageBody))
+	s.mux.Handle("GET /api/messages/{id}/revisions", s.auth(s.handleListRevisions))
+	s.mux.Handle("GET /api/messages/{id}/revisions/{revision}", s.auth(s.handleGetRevisionMetadata))
+	s.mux.Handle("GET /api/messages/{id}/revisions/{revision}/body", s.auth(s.handleGetRevisionBody))
+	s.mux.Handle("GET /api/messages/{id}/revisions/{revision}/attachments/{attachment_id}", s.auth(s.handleGetRevisionAttachment))
 	s.mux.Handle("POST /api/messages/resolve", s.auth(s.handleResolveMessages))
 	s.mux.Handle("GET /api/messages/{id}/attachments/{attachment_id}", s.auth(s.handleGetAttachment))
 	s.mux.Handle("POST /api/messages/{id}/read", s.auth(s.handleMarkRead))
@@ -382,7 +396,7 @@ func (s *Server) backendFor(accountID string) (backend.Backend, *accounts.Accoun
 		if err != nil {
 			return nil, a, err
 		}
-		return backend.NewLocal(a.ID, store), a, nil
+		return backend.NewLocal(a.ID, store, s.purgeAttachmentFiles), a, nil
 	default:
 		return nil, a, fmt.Errorf("unknown provider %q", a.Provider)
 	}
@@ -496,9 +510,13 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("account query param required"))
 		return
 	}
-	b, _, err := s.backendFor(acct)
+	b, a, err := s.backendFor(acct)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if a.Provider == accounts.ProviderLocal {
+		s.serveLocalAttachment(w, r, acct, r.PathValue("id"), 0, r.PathValue("attachment_id"))
 		return
 	}
 	body, contentType, err := b.Attachment(r.Context(), r.PathValue("id"), r.PathValue("attachment_id"))

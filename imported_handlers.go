@@ -37,8 +37,10 @@ const maxResolveRefs = 200
 
 // Error codes a caller can branch on without parsing the message.
 const (
-	errorCodeMessageNotFound = "message_not_found"
-	errorCodeBodyAbsent      = "body_absent"
+	errorCodeMessageNotFound    = "message_not_found"
+	errorCodeBodyAbsent         = "body_absent"
+	errorCodeRevisionNotFound   = "revision_not_found"
+	errorCodeAttachmentNotFound = "attachment_not_found"
 )
 
 func writeCodedError(w http.ResponseWriter, status int, code string, err error) {
@@ -117,17 +119,36 @@ func (s *Server) handleImportMessages(w http.ResponseWriter, r *http.Request) {
 		m.Snippet = localmail.Snippet(accounts.SearchableText(text, html))
 	}
 
-	started := time.Now()
-	outcomes, changed, err := store.Import(r.Context(), accountID, req.Messages, req.Source)
-	setStoreTiming(w, started)
+	// Validated before anything is uploaded, so a refused batch leaves no
+	// files behind.
 	var invalid *localmail.ImportValidationError
-	if errors.As(err, &invalid) {
+	if err := localmail.ValidateImport(req.Messages); errors.As(err, &invalid) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": invalid.Error(), "invalid": invalid.Items})
 		return
 	}
+
+	started := time.Now()
+	uploaded, status, err := s.uploadChangedAttachments(r.Context(), store, accountID, req.Messages)
 	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	outcomes, changed, unused, err := store.Import(r.Context(), accountID, req.Messages, req.Source)
+	setStoreTiming(w, started)
+	if err != nil {
+		if purgeErr := s.purgeAttachmentFiles(r.Context(), uploaded); purgeErr != nil {
+			log.Printf("mailstack: import into %s failed and its %d uploaded attachment file(s) could not all be purged: %v",
+				accountID, len(uploaded), purgeErr)
+		}
+		if errors.Is(err, localmail.ErrAttachmentsNotUploaded) {
+			writeError(w, http.StatusConflict, fmt.Errorf("%w; another import changed a message while this one ran — send the batch again", err))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if err := s.purgeAttachmentFiles(r.Context(), unused); err != nil {
+		log.Printf("mailstack: import into %s left %d unused attachment file(s) it could not purge: %v", accountID, len(unused), err)
 	}
 	// Index what changed exactly as an append does, so an imported message is
 	// answerable by Message-ID and joins its thread at once.
@@ -353,34 +374,49 @@ func (s *Server) handleGetMessageBody(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err)
 		return
 	}
-	format := localmail.BodyFormat(r.URL.Query().Get("format"))
-	var contentType string
-	switch format {
-	case localmail.BodyFormatText:
-		contentType = "text/plain; charset=utf-8"
-	case localmail.BodyFormatHTML:
-		contentType = "text/html; charset=utf-8"
-	default:
-		writeError(w, http.StatusBadRequest, fmt.Errorf("format must be text or html, got %q", format))
+	format, ok := bodyFormatOf(w, r)
+	if !ok {
 		return
 	}
-
 	started := time.Now()
 	body, stored, err := store.Body(r.Context(), accountID, r.PathValue("id"), format)
 	setStoreTiming(w, started)
+	writeBody(w, r, format, body, stored, err)
+}
+
+// bodyFormatOf reads ?format=, answering 400 itself when it is neither text
+// nor html.
+func bodyFormatOf(w http.ResponseWriter, r *http.Request) (localmail.BodyFormat, bool) {
+	format := localmail.BodyFormat(r.URL.Query().Get("format"))
+	if format != localmail.BodyFormatText && format != localmail.BodyFormatHTML {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("format must be text or html, got %q", format))
+		return "", false
+	}
+	return format, true
+}
+
+// writeBody answers one body read: the bytes as their own media type, or the
+// 404 that says which thing was missing.
+func writeBody(w http.ResponseWriter, r *http.Request, format localmail.BodyFormat, body string, stored localmail.StoredMessage, err error) {
 	switch {
 	case errors.Is(err, localmail.ErrNotFound):
 		writeCodedError(w, http.StatusNotFound, errorCodeMessageNotFound, err)
 		return
+	case errors.Is(err, localmail.ErrRevisionNotFound):
+		writeCodedError(w, http.StatusNotFound, errorCodeRevisionNotFound, err)
+		return
 	case errors.Is(err, localmail.ErrBodyAbsent):
 		writeCodedError(w, http.StatusNotFound, errorCodeBodyAbsent, fmt.Errorf(
-			"message %s has no %s body", stored.ID, format))
+			"message %s revision %d has no %s body", stored.ID, stored.Revision, format))
 		return
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-
+	contentType := "text/plain; charset=utf-8"
+	if format == localmail.BodyFormatHTML {
+		contentType = "text/html; charset=utf-8"
+	}
 	etag := stored.BodyETag(format)
 	h := w.Header()
 	h.Set("ETag", etag)

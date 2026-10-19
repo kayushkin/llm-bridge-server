@@ -21,7 +21,13 @@ type LocalStore interface {
 	MoveTo(ctx context.Context, accountID, id, folderID string) error
 	Delete(ctx context.Context, accountID, id string) error
 	PermDelete(ctx context.Context, accountID, id string) error
+	// AttachmentFileIDs names the stored files of every revision of a message,
+	// which PermDelete leaves for the caller to purge first.
+	AttachmentFileIDs(ctx context.Context, accountID, id string) ([]string, error)
 }
+
+// PurgeFiles destroys stored attachment files by id.
+type PurgeFiles func(ctx context.Context, fileIDs []string) error
 
 // Local is a mail account this host owns outright: no provider, no network, no
 // credentials. It exists so that synthetic mail — demo data, fixtures, a corpus
@@ -33,12 +39,13 @@ type LocalStore interface {
 // is no upstream to be unimplemented against: marking a local message read is a
 // row update, and refusing it would be inventing a limitation.
 type Local struct {
-	accountID string
-	store     LocalStore
+	accountID  string
+	store      LocalStore
+	purgeFiles PurgeFiles
 }
 
-func NewLocal(accountID string, store LocalStore) *Local {
-	return &Local{accountID: accountID, store: store}
+func NewLocal(accountID string, store LocalStore, purgeFiles PurgeFiles) *Local {
+	return &Local{accountID: accountID, store: store, purgeFiles: purgeFiles}
 }
 
 func (l *Local) Folders(ctx context.Context) ([]Folder, error) {
@@ -69,7 +76,19 @@ func (l *Local) Delete(ctx context.Context, id string) error {
 	return l.store.Delete(ctx, l.accountID, id)
 }
 
+// PermDelete purges a message's attachment files before its rows. In that
+// order, a purge that fails leaves the message in place to be deleted again,
+// where the other order would leave files nothing names.
 func (l *Local) PermDelete(ctx context.Context, id string) error {
+	fileIDs, err := l.store.AttachmentFileIDs(ctx, l.accountID, id)
+	if err != nil {
+		return err
+	}
+	if len(fileIDs) > 0 {
+		if err := l.purgeFiles(ctx, fileIDs); err != nil {
+			return fmt.Errorf("purge attachments of %s: %w", id, err)
+		}
+	}
 	return l.store.PermDelete(ctx, l.accountID, id)
 }
 
@@ -87,9 +106,9 @@ func (l *Local) SaveDraft(ctx context.Context, d Draft, existingID string) (stri
 	return "", errNotImplemented
 }
 
-// Attachment is refused because a local message has none: the append route
-// carries a body and no parts, so there is no attachment id that could ever
-// resolve.
+// Attachment is refused here because a local attachment is served by the
+// server itself, which relays file-store's answer with its safety headers
+// intact; this interface carries only a content type.
 func (l *Local) Attachment(ctx context.Context, msgID, attID string) (io.ReadCloser, string, error) {
-	return nil, "", fmt.Errorf("local messages carry no attachments")
+	return nil, "", fmt.Errorf("a local attachment is served by mailstack's own route, not through the backend interface")
 }
