@@ -78,6 +78,10 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, settings *serviceset
 	// it is not a mail operation that any provider could answer — see the
 	// handler.
 	s.mux.Handle("POST /api/accounts/{id}/messages", s.auth(s.handleAppendLocalMessage))
+	// Imported mail: an export's messages put into a local account by the id
+	// the source gave them, idempotently. See imported_handlers.go.
+	s.mux.Handle("POST /api/accounts/{id}/messages/import", s.auth(s.handleImportMessages))
+	s.mux.Handle("GET /api/accounts/{id}/import-sources", s.auth(s.handleListImportSources))
 	s.mux.Handle("GET /api/imap/creds", s.auth(s.handleListImapCreds))
 	s.mux.Handle("POST /api/imap/creds", s.auth(s.handleSaveImapCred))
 	s.mux.Handle("GET /api/imap/creds/{name}", s.auth(s.handleGetImapCred))
@@ -100,6 +104,11 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, settings *serviceset
 	s.mux.Handle("GET /api/messages/{id}/thread", s.auth(s.handleMessageThread))
 	s.mux.Handle("GET /api/index/stats", s.auth(s.handleIndexStats))
 	s.mux.Handle("GET /api/messages/{id}", s.auth(s.handleGetMessage))
+	// Split reads for local accounts: metadata without bodies, one body format
+	// at a time, and a bounded batch of metadata in one call.
+	s.mux.Handle("GET /api/messages/{id}/metadata", s.auth(s.handleGetMessageMetadata))
+	s.mux.Handle("GET /api/messages/{id}/body", s.auth(s.handleGetMessageBody))
+	s.mux.Handle("POST /api/messages/resolve", s.auth(s.handleResolveMessages))
 	s.mux.Handle("GET /api/messages/{id}/attachments/{attachment_id}", s.auth(s.handleGetAttachment))
 	s.mux.Handle("POST /api/messages/{id}/read", s.auth(s.handleMarkRead))
 	s.mux.Handle("POST /api/messages/{id}/flag", s.auth(s.handleFlag))

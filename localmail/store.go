@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kayushkin/mailstack/backend"
 	_ "modernc.org/sqlite"
@@ -75,40 +76,6 @@ func DefaultDBPath() string {
 	return filepath.Join(home, ".config", "mailstack", "local-mail.db")
 }
 
-const schema = `
-CREATE TABLE IF NOT EXISTS local_messages (
-	account_id     TEXT NOT NULL,
-	id             TEXT NOT NULL,
-	folder_id      TEXT NOT NULL DEFAULT 'INBOX',
-	message_id     TEXT NOT NULL DEFAULT '',
-	thread_id      TEXT NOT NULL DEFAULT '',
-	in_reply_to    TEXT NOT NULL DEFAULT '',
-	references_ids TEXT NOT NULL DEFAULT '[]',
-	subject        TEXT NOT NULL DEFAULT '',
-	from_name      TEXT NOT NULL DEFAULT '',
-	from_email     TEXT NOT NULL DEFAULT '',
-	to_addrs       TEXT NOT NULL DEFAULT '[]',
-	cc_addrs       TEXT NOT NULL DEFAULT '[]',
-	date_ms        INTEGER NOT NULL,
-	snippet        TEXT NOT NULL DEFAULT '',
-	body_text      TEXT NOT NULL DEFAULT '',
-	body_html      TEXT NOT NULL DEFAULT '',
-	unread         INTEGER NOT NULL DEFAULT 1,
-	flagged        INTEGER NOT NULL DEFAULT 0,
-	created_at     INTEGER NOT NULL,
-	PRIMARY KEY (account_id, id)
-);
-
--- Listing is always newest-first within one folder, and the cursor walks that
--- same order, so the index carries the whole ORDER BY.
-CREATE INDEX IF NOT EXISTS idx_local_messages_listing
-	ON local_messages (account_id, folder_id, date_ms DESC, id DESC);
-
--- Threading lookups by RFC identity.
-CREATE INDEX IF NOT EXISTS idx_local_messages_message_id
-	ON local_messages (account_id, message_id);
-`
-
 // Open creates or opens the synthetic mailbox.
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -118,9 +85,9 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open local mail db: %w", err)
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("init local mail schema: %w", err)
+		return nil, fmt.Errorf("migrate local mail schema: %w", err)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
@@ -197,23 +164,39 @@ func (s *Store) Append(ctx context.Context, accountID string, m backend.Message)
 		return backend.MessageMeta{}, fmt.Errorf("localmail: encode cc: %w", err)
 	}
 
+	now := time.Now().UTC().UnixMilli()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return backend.MessageMeta{}, fmt.Errorf("localmail: begin append: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO local_messages (account_id, id, folder_id, message_id, thread_id,
 			in_reply_to, references_ids, subject, from_name, from_email, to_addrs, cc_addrs,
-			date_ms, snippet, body_text, body_html, unread, flagged, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			date_ms, snippet, text_bytes, html_bytes, unread, flagged, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		accountID, meta.ID, meta.FolderID, meta.MessageID, meta.ThreadID,
 		meta.InReplyTo, string(refs), meta.Subject, meta.From.Name, meta.From.Email,
 		string(to), string(cc), meta.Date.UTC().UnixMilli(), meta.Snippet,
-		m.BodyText, m.BodyHTML, boolToInt(meta.Unread), boolToInt(meta.Flagged),
-		time.Now().UTC().UnixMilli())
+		byteCountOrNull(m.BodyText), byteCountOrNull(m.BodyHTML),
+		boolToInt(meta.Unread), boolToInt(meta.Flagged), now, now)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return backend.MessageMeta{}, fmt.Errorf("localmail: message %q already exists in %s", meta.ID, accountID)
 		}
 		return backend.MessageMeta{}, fmt.Errorf("localmail: insert message: %w", err)
+	}
+	// An appended body that is blank was not given: Append refuses a message
+	// with neither, so a blank one is the representation the sender left out.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO local_message_bodies (account_id, id, body_text, body_html) VALUES (?,?,?,?)`,
+		accountID, meta.ID, textOrNull(m.BodyText), textOrNull(m.BodyHTML)); err != nil {
+		return backend.MessageMeta{}, fmt.Errorf("localmail: insert body: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return backend.MessageMeta{}, fmt.Errorf("localmail: commit append: %w", err)
 	}
 	return meta, nil
 }
@@ -374,47 +357,29 @@ func (s *Store) List(ctx context.Context, accountID, folderID, cursor string, li
 	return out, "", nil
 }
 
-// Get returns one message with its body.
+// Get returns one message with its body. It is the whole-message read every
+// backend answers; Metadata and Body are the split reads only this store has.
 func (s *Store) Get(ctx context.Context, accountID, id string) (backend.Message, error) {
-	var m backend.Message
-	var refsJSON, toJSON, ccJSON string
-	var dateMS int64
-	var unread, flagged int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, folder_id, message_id, thread_id, in_reply_to, references_ids,
-		       subject, from_name, from_email, to_addrs, cc_addrs, date_ms, snippet,
-		       unread, flagged, body_text, body_html
-		FROM local_messages WHERE account_id = ? AND id = ?`, accountID, id).
-		Scan(&m.Meta.ID, &m.Meta.FolderID, &m.Meta.MessageID, &m.Meta.ThreadID, &m.Meta.InReplyTo,
-			&refsJSON, &m.Meta.Subject, &m.Meta.From.Name, &m.Meta.From.Email, &toJSON, &ccJSON,
-			&dateMS, &m.Meta.Snippet, &unread, &flagged, &m.BodyText, &m.BodyHTML)
-	if err == sql.ErrNoRows {
-		return backend.Message{}, ErrNotFound
-	}
+	var bodyText, bodyHTML sql.NullString
+	stored, err := scanStored(s.db.QueryRowContext(ctx, `
+		SELECT `+storedColumns+`, body_text, body_html
+		FROM local_messages JOIN local_message_bodies USING (account_id, id)
+		WHERE account_id = ? AND id = ?`, accountID, id), accountID, &bodyText, &bodyHTML)
 	if err != nil {
-		return backend.Message{}, fmt.Errorf("localmail: get message: %w", err)
-	}
-	m.Meta.AccountID = accountID
-	m.Meta.Date = time.UnixMilli(dateMS).UTC()
-	m.Meta.Unread = unread == 1
-	m.Meta.Flagged = flagged == 1
-	if err := decodeJSON(refsJSON, &m.Meta.References); err != nil {
 		return backend.Message{}, err
 	}
-	if err := decodeJSON(toJSON, &m.Meta.To); err != nil {
-		return backend.Message{}, err
-	}
-	if err := decodeJSON(ccJSON, &m.Meta.Cc); err != nil {
-		return backend.Message{}, err
-	}
+	m := backend.Message{Meta: stored.MessageMeta, BodyText: bodyText.String, BodyHTML: bodyHTML.String}
 	m.InReplyTo = m.Meta.InReplyTo
 	// The headers a reader of a real message would find. Synthesized from the
 	// stored fields rather than kept separately, so the two can never disagree.
+	// An imported message may have no Message-ID, and then it has no header.
 	m.Headers = map[string]string{
-		"Message-ID": "<" + m.Meta.MessageID + ">",
-		"Subject":    m.Meta.Subject,
-		"From":       formatAddress(m.Meta.From),
-		"Date":       m.Meta.Date.Format(time.RFC1123Z),
+		"Subject": m.Meta.Subject,
+		"From":    formatAddress(m.Meta.From),
+		"Date":    m.Meta.Date.Format(time.RFC1123Z),
+	}
+	if m.Meta.MessageID != "" {
+		m.Headers["Message-ID"] = "<" + m.Meta.MessageID + ">"
 	}
 	if m.Meta.InReplyTo != "" {
 		m.Headers["In-Reply-To"] = "<" + m.Meta.InReplyTo + ">"
@@ -451,11 +416,25 @@ func (s *Store) Delete(ctx context.Context, accountID, id string) error {
 func (s *Store) PermDelete(ctx context.Context, accountID, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.ExecContext(ctx, `DELETE FROM local_messages WHERE account_id = ? AND id = ?`, accountID, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("localmail: begin delete: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM local_messages WHERE account_id = ? AND id = ?`, accountID, id)
 	if err != nil {
 		return fmt.Errorf("localmail: delete message: %w", err)
 	}
-	return checkAffected(res)
+	if err := checkAffected(res); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM local_message_bodies WHERE account_id = ? AND id = ?`, accountID, id); err != nil {
+		return fmt.Errorf("localmail: delete body: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("localmail: commit delete: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) update(ctx context.Context, accountID, id, query string, value any) error {
@@ -526,12 +505,21 @@ func decodeJSON(raw string, out any) error {
 	return nil
 }
 
+// Snippet is the list preview of a message body.
+func Snippet(body string) string { return snippet(body, 200) }
+
+// snippet cuts at a rune boundary: a byte cut through a multi-byte character
+// stores invalid UTF-8, and JSON encoding then replaces it with U+FFFD.
 func snippet(body string, limit int) string {
 	s := strings.Join(strings.Fields(body), " ")
 	if len(s) <= limit {
 		return s
 	}
-	return s[:limit] + "…"
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 func formatAddress(a backend.Address) string {
@@ -539,6 +527,21 @@ func formatAddress(a backend.Address) string {
 		return a.Email
 	}
 	return fmt.Sprintf("%s <%s>", a.Name, a.Email)
+}
+
+// textOrNull stores a blank body as absent; see Append.
+func textOrNull(body string) any {
+	if body == "" {
+		return nil
+	}
+	return body
+}
+
+func byteCountOrNull(body string) any {
+	if body == "" {
+		return nil
+	}
+	return len(body)
 }
 
 func boolToInt(b bool) int {
