@@ -141,6 +141,11 @@ func (s *Server) handleImportMessages(w http.ResponseWriter, r *http.Request) {
 			log.Printf("mailstack: import into %s failed and its %d uploaded attachment file(s) could not all be purged: %v",
 				accountID, len(uploaded), purgeErr)
 		}
+		var purged *localmail.PurgedError
+		if errors.As(err, &purged) {
+			writeError(w, http.StatusConflict, fmt.Errorf("%w; nothing was imported", err))
+			return
+		}
 		if errors.Is(err, localmail.ErrAttachmentsNotUploaded) {
 			writeError(w, http.StatusConflict, fmt.Errorf("%w; another import changed a message while this one ran — send the batch again", err))
 			return

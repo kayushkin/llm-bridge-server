@@ -400,51 +400,15 @@ func (s *Store) Import(ctx context.Context, accountID string, msgs []ImportedMes
 	var changed []backend.MessageMeta
 	var unused []string
 	for i, m := range msgs {
-		hash, err := contentHash(m)
+		stored, err := storeImportedMessage(ctx, tx, accountID, m, EventOriginImport, now)
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		id := ImportedID(accountID, m.ProviderMessageID)
-		out := ImportOutcome{ProviderMessageID: m.ProviderMessageID, ID: id, Locator: accountID + ":" + id}
-
-		var existingRevision int64
-		var existingHash string
-		err = tx.QueryRowContext(ctx, `
-			SELECT revision, content_sha256 FROM local_messages
-			WHERE account_id = ? AND provider_message_id = ? AND `+providerIDIndexed, accountID, m.ProviderMessageID).
-			Scan(&existingRevision, &existingHash)
-		switch {
-		case err == sql.ErrNoRows:
-			if err := insertImported(ctx, tx, accountID, id, m, hash, now); err != nil {
-				return nil, nil, nil, err
-			}
-			out.Outcome, out.Revision = ImportCreated, 1
-		case err != nil:
-			return nil, nil, nil, fmt.Errorf("localmail: look up %s: %w", m.ProviderMessageID, err)
-		case existingHash == hash:
-			out.Outcome, out.Revision = ImportUnchanged, existingRevision
-		default:
-			if err := keepRevision(ctx, tx, accountID, id, now); err != nil {
-				return nil, nil, nil, err
-			}
-			if err := updateImported(ctx, tx, accountID, id, m, hash, existingRevision+1, now); err != nil {
-				return nil, nil, nil, err
-			}
-			out.Outcome, out.Revision, out.PreviousRevision = ImportUpdated, existingRevision+1, existingRevision
+		outcomes[i] = stored.outcome
+		unused = append(unused, stored.unusedFileIDs...)
+		if stored.changed != nil {
+			changed = append(changed, *stored.changed)
 		}
-		if out.Outcome == ImportUnchanged {
-			for _, a := range m.Attachments {
-				if a.FileID != "" {
-					unused = append(unused, a.FileID)
-				}
-			}
-		} else {
-			if err := insertAttachments(ctx, tx, accountID, id, out.Revision, m); err != nil {
-				return nil, nil, nil, err
-			}
-			changed = append(changed, importedMeta(accountID, id, m))
-		}
-		outcomes[i] = out
 	}
 
 	if source != nil {
@@ -463,6 +427,80 @@ func (s *Store) Import(ctx context.Context, accountID string, msgs []ImportedMes
 		return nil, nil, nil, fmt.Errorf("localmail: commit import: %w", err)
 	}
 	return outcomes, changed, unused, nil
+}
+
+// storedMessage is what storing one imported message did.
+type storedMessage struct {
+	outcome ImportOutcome
+	// changed is the index's view of the message when it was created or
+	// updated; nil when it was unchanged.
+	changed *backend.MessageMeta
+	// unusedFileIDs are uploads an unchanged message did not need.
+	unusedFileIDs []string
+}
+
+// storeImportedMessage is the one storage command every way into a local
+// account goes through — an export import, a pushed delivery. Inside the
+// caller's transaction it refuses a purged message, creates or updates the
+// message (keeping the revision it replaces), records the attachments, and
+// queues a message.revision_available event in the outbox, so a committed
+// change and its notification can never come apart.
+func storeImportedMessage(ctx context.Context, tx *sql.Tx, accountID string, m ImportedMessage, origin string, now int64) (storedMessage, error) {
+	if err := refusePurged(ctx, tx, accountID, m.ProviderMessageID); err != nil {
+		return storedMessage{}, err
+	}
+	hash, err := contentHash(m)
+	if err != nil {
+		return storedMessage{}, err
+	}
+	id := ImportedID(accountID, m.ProviderMessageID)
+	out := ImportOutcome{ProviderMessageID: m.ProviderMessageID, ID: id, Locator: accountID + ":" + id}
+
+	var existingRevision int64
+	var existingHash string
+	err = tx.QueryRowContext(ctx, `
+		SELECT revision, content_sha256 FROM local_messages
+		WHERE account_id = ? AND provider_message_id = ? AND `+providerIDIndexed, accountID, m.ProviderMessageID).
+		Scan(&existingRevision, &existingHash)
+	switch {
+	case err == sql.ErrNoRows:
+		if err := insertImported(ctx, tx, accountID, id, m, hash, now); err != nil {
+			return storedMessage{}, err
+		}
+		out.Outcome, out.Revision = ImportCreated, 1
+	case err != nil:
+		return storedMessage{}, fmt.Errorf("localmail: look up %s: %w", m.ProviderMessageID, err)
+	case existingHash == hash:
+		out.Outcome, out.Revision = ImportUnchanged, existingRevision
+	default:
+		if err := keepRevision(ctx, tx, accountID, id, now); err != nil {
+			return storedMessage{}, err
+		}
+		if err := updateImported(ctx, tx, accountID, id, m, hash, existingRevision+1, now); err != nil {
+			return storedMessage{}, err
+		}
+		out.Outcome, out.Revision, out.PreviousRevision = ImportUpdated, existingRevision+1, existingRevision
+	}
+
+	result := storedMessage{outcome: out}
+	if out.Outcome == ImportUnchanged {
+		for _, a := range m.Attachments {
+			if a.FileID != "" {
+				result.unusedFileIDs = append(result.unusedFileIDs, a.FileID)
+			}
+		}
+		return result, nil
+	}
+	if err := insertAttachments(ctx, tx, accountID, id, out.Revision, m); err != nil {
+		return storedMessage{}, err
+	}
+	if err := queueEvent(ctx, tx, Event{Kind: EventRevisionAvailable, Origin: origin, AccountID: accountID, ID: id,
+		ProviderMessageID: m.ProviderMessageID, Revision: out.Revision}, now); err != nil {
+		return storedMessage{}, err
+	}
+	meta := importedMeta(accountID, id, m)
+	result.changed = &meta
+	return result, nil
 }
 
 // keepRevision copies the current revision of a message into

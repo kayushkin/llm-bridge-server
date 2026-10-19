@@ -27,6 +27,7 @@ var migrations = []struct {
 	{name: "0001_local_messages", stmt: localMessagesSchema},
 	{name: "0002_split_bodies_and_imports", stmt: splitBodiesAndImportsSchema},
 	{name: "0003_revisions_and_attachments", stmt: revisionsAndAttachmentsSchema},
+	{name: "0004_ingress_and_outbox", stmt: ingressAndOutboxSchema},
 }
 
 const localMessagesSchema = `
@@ -169,6 +170,69 @@ CREATE TABLE local_message_attachments (
 	file_id              TEXT NOT NULL,
 	PRIMARY KEY (account_id, id, revision, attachment_id)
 );
+`
+
+// ingressAndOutboxSchema is what pushed delivery needs: credentials bound to
+// accounts, a receipt for every delivery, tombstones that keep a purged
+// message from coming back, and the outbox of events a consumer reads.
+const ingressAndOutboxSchema = `
+CREATE TABLE ingress_credentials (
+	credential_id TEXT PRIMARY KEY,
+	token_sha256  TEXT NOT NULL UNIQUE,
+	source        TEXT NOT NULL,
+	note          TEXT NOT NULL DEFAULT '',
+	created_at    INTEGER NOT NULL,
+	revoked_at    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE ingress_credential_accounts (
+	credential_id TEXT NOT NULL,
+	account_id    TEXT NOT NULL,
+	PRIMARY KEY (credential_id, account_id)
+);
+
+-- One row per delivery the endpoint answered, whatever it answered. A
+-- delivery id is the sender's; the same one sent again is answered from here.
+CREATE TABLE delivery_receipts (
+	receipt_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	credential_id       TEXT NOT NULL,
+	source              TEXT NOT NULL,
+	delivery_id         TEXT NOT NULL,
+	account_id          TEXT NOT NULL,
+	provider_message_id TEXT NOT NULL,
+	source_revision     TEXT NOT NULL,
+	content_sha256      TEXT NOT NULL,
+	status              TEXT NOT NULL,
+	message_id          TEXT NOT NULL DEFAULT '',
+	revision            INTEGER NOT NULL DEFAULT 0,
+	detail              TEXT NOT NULL DEFAULT '',
+	received_at         INTEGER NOT NULL,
+	UNIQUE (source, delivery_id)
+);
+
+-- A purge is remembered by the source's id, so the same message delivered or
+-- imported again is refused instead of quietly coming back.
+CREATE TABLE message_purges (
+	account_id          TEXT NOT NULL,
+	provider_message_id TEXT NOT NULL,
+	message_id          TEXT NOT NULL,
+	reason              TEXT NOT NULL,
+	purged_at           INTEGER NOT NULL,
+	PRIMARY KEY (account_id, provider_message_id)
+);
+
+-- The transactional outbox. A row is written in the same transaction as the
+-- change it announces; seq is the cursor and the consumer's idempotency key.
+CREATE TABLE message_events (
+	seq                 INTEGER PRIMARY KEY AUTOINCREMENT,
+	kind                TEXT NOT NULL,
+	origin              TEXT NOT NULL,
+	account_id          TEXT NOT NULL,
+	id                  TEXT NOT NULL,
+	provider_message_id TEXT NOT NULL DEFAULT '',
+	revision            INTEGER NOT NULL DEFAULT 0,
+	created_at          INTEGER NOT NULL
+);
+CREATE INDEX idx_message_events_account ON message_events (account_id, seq);
 `
 
 func migrate(db *sql.DB) error {

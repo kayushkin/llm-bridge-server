@@ -134,6 +134,16 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, settings *serviceset
 	s.mux.Handle("DELETE /api/messages/{id}", s.routeFor(ruleImportAccount, accountInQuery, s.handleDelete))
 	s.mux.Handle("POST /api/messages/{id}/perm-delete", s.routeFor(ruleServicesOnly, 0, s.handlePermDelete))
 	s.mux.Handle("POST /api/messages/bulk", s.routeFor(ruleImportAccount, accountInQuery, s.handleBulk))
+	// Pushed delivery authenticates with an ingress credential, not the
+	// service bearer, so it is the one /api/ route outside routeFor: an
+	// ingress token can deliver into its accounts and do nothing else.
+	s.mux.HandleFunc("POST /api/ingress/deliveries", s.handleDeliver)
+	s.mux.Handle("POST /api/ingress/credentials", s.routeFor(ruleServicesOnly, 0, s.handleCreateIngressCredential))
+	s.mux.Handle("GET /api/ingress/credentials", s.routeFor(ruleServicesOnly, 0, s.handleListIngressCredentials))
+	s.mux.Handle("POST /api/ingress/credentials/{id}/revoke", s.routeFor(ruleServicesOnly, 0, s.handleRevokeIngressCredential))
+	s.mux.Handle("GET /api/ingress/receipts", s.routeFor(ruleServicesOnly, 0, s.handleListReceipts))
+	s.mux.Handle("GET /api/events", s.routeFor(ruleServicesOnly, 0, s.handleListEvents))
+	s.mux.Handle("POST /api/messages/{id}/purge", s.routeFor(ruleServicesOnly, 0, s.handlePurgeMessage))
 	// Settings: every environment variable the service reads, behind the same
 	// bearer as /api/*. A token is served as set or unset, never its value.
 	// PUT /settings/{key} is not mounted: no setting is Editable.
