@@ -74,6 +74,12 @@ type Manager struct {
 	// startup; nil leaves promoted sessions unfiled rather than guessing a
 	// folder name the user never configured.
 	folderResolver func(purpose string) string
+
+	// ptyReapedByIdleReaper marks a terminal-mode session whose process the
+	// idle reaper killed, so watchPTYExit does not overwrite the state the
+	// reaper recorded with its own pty_exited. Set by ReapIdleProcess before
+	// the kill, taken by watchPTYExit.
+	ptyReapedByIdleReaper map[string]bool
 }
 
 // SetFolderResolver installs the purpose→sidebar-folder mapping. The manager
@@ -163,18 +169,33 @@ func (m *Manager) SetSessionInfoObserver(fn SessionInfoObserver) {
 // write is dropped when the session has since moved to anything else, so a
 // late verdict can never overwrite a fresher truth. Passing no allowedFrom
 // drops the write rather than treating it as unbounded.
-func (m *Manager) ApplyDerivedSessionState(bridgeID string, next msg.SessionState, reason string, allowedFrom ...msg.SessionState) bool {
+//
+// The transition is followed by the status it produced, which is what writes
+// the session row. Until 2026-10-19 only the session_state went out, so the
+// row kept its old state until some later event happened to emit a status —
+// and after a turn has ended there often is none.
+func (m *Manager) ApplyDerivedSessionState(bridgeID string, next msg.SessionState, reason msg.SessionStateReason, allowedFrom ...msg.SessionState) bool {
 	m.mu.Lock()
 	d := m.derivation[bridgeID]
 	m.mu.Unlock()
 	if d == nil {
 		return false
 	}
+	d.publishMu.Lock()
+	defer d.publishMu.Unlock()
 	ev := d.applyExternalState(next, reason, allowedFrom...)
 	if ev == nil {
 		return false
 	}
+	var harnessName msg.Harness
+	if sess, err := m.store.GetSession(bridgeID); err == nil && sess != nil {
+		harnessName = sess.Harness
+	}
+	ev.Harness = harnessName
 	m.publishDerived(bridgeID, []msg.Event{*ev})
+	if err := m.broadcastCurrentStatus(bridgeID, d, harnessName); err != nil {
+		log.Printf("[harness] %s: status after %s → %s not written: %v", bridgeID, ev.State.Previous, next, err)
+	}
 	return true
 }
 
@@ -209,14 +230,16 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL st
 		derivation:       make(map[string]*derivationState),
 		budgetHalted:     make(map[string]bool),
 		otelSidecars:     make(map[string]*otelSidecar),
-		pending:          newPendingHooks(),
-		store:            st,
-		logStore:         ls,
-		runners:          NewRunnerRegistry(),
-		authClient:       authClient,
-		publicServerURL:  publicServerURL,
-		localBridgeURL:   localBridgeURL,
-		ptyRingBytes:     ptyRingBytes,
+
+		ptyReapedByIdleReaper: make(map[string]bool),
+		pending:               newPendingHooks(),
+		store:                 st,
+		logStore:              ls,
+		runners:               NewRunnerRegistry(),
+		authClient:            authClient,
+		publicServerURL:       publicServerURL,
+		localBridgeURL:        localBridgeURL,
+		ptyRingBytes:          ptyRingBytes,
 	}
 	m.logStoreWrites = newLogStoreQueue(ls.PushEvent)
 	return m
@@ -520,7 +543,7 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 	// emitted its first event yet, which is exactly what the enum says that
 	// moment is. The derivation moves it on from here.
 	m.store.UpdateSessionPID(sess.SessionID, proc.PID())
-	m.ForceSessionState(sess.SessionID, msg.SessionStarting, "process_spawned")
+	m.ForceSessionState(sess.SessionID, msg.SessionStarting, msg.ReasonProcessSpawned)
 
 	// Start event reader goroutine
 	go m.readEvents(proc)
@@ -897,8 +920,9 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 // session_state).
 // ForceSessionState records a state the SERVER decided on rather than one
 // an event implied, then persists and broadcasts it exactly as a derived
-// transition. Returns false when the session already held that state, so
-// the caller can answer without claiming a change that did not happen.
+// transition. Returns false when the session already held that state with
+// that reason, so the caller can answer without claiming a change that did
+// not happen.
 //
 // The interrupt handler is the caller this exists for. The user pressing
 // Stop produces no harness event, so before this the handler wrote the
@@ -907,50 +931,138 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 // session had left, and no SSE subscriber ever heard the interrupt — only
 // derive() broadcasts. Every client learned about it by refetching, which
 // is why bridge-ui carried a localStorage set of interrupted ids instead.
-func (m *Manager) ForceSessionState(bridgeID string, state msg.SessionState, reason string) (changed bool, err error) {
+//
+// reason is written onto the status whichever branch runs. It used to be
+// lost whenever the process had already gone (about 95% of idle reaps): Kill
+// makes readEvents exit and drop the derivation, and the branch for a session
+// with no derivation wrote a bare {state, changed_at}.
+func (m *Manager) ForceSessionState(bridgeID string, state msg.SessionState, reason msg.SessionStateReason) (changed bool, err error) {
+	return m.ForceSessionStateWithDetail(bridgeID, state, reason, "")
+}
+
+// ForceSessionStateWithDetail is ForceSessionState with the cause in words,
+// written to the status as ReasonDetail — the spawn error under
+// ReasonSpawnFailed, which until 2026-10-19 went nowhere at all.
+func (m *Manager) ForceSessionStateWithDetail(bridgeID string, state msg.SessionState, reason msg.SessionStateReason, reasonDetail string) (changed bool, err error) {
 	m.mu.Lock()
 	d := m.derivation[bridgeID]
 	m.mu.Unlock()
 
+	sess, sessErr := m.store.GetSession(bridgeID)
 	var harnessName msg.Harness
-	if sess, err := m.store.GetSession(bridgeID); err == nil && sess != nil {
+	if sessErr == nil && sess != nil {
 		harnessName = sess.Harness
 	}
 
 	if d == nil {
 		// No live derivation — the process is gone, so there is no state
 		// machine to keep honest and nothing can be in flight. The status is
-		// the state alone; the next derivation seeds itself from the row.
+		// the state and why; the next derivation seeds itself from the row.
 		now := time.Now()
+		status := &msg.SessionStatus{State: state, Reason: reason, ReasonDetail: reasonDetail, ChangedAt: now}
+		if sessErr == nil && sess != nil && sess.Status != nil && sess.Status.State == state {
+			// The state did not change, so neither does when it last did.
+			// Still written: the reason may be new, and a spawn into a row
+			// already at starting must still restart the reaper's clock,
+			// which runs from updated_at.
+			if !sess.Status.ChangedAt.IsZero() {
+				status.ChangedAt = sess.Status.ChangedAt
+			}
+		}
 		err := m.storeAndFanOutDerived(bridgeID, &msg.Event{
 			Type:      msg.EventSessionStatus,
 			Harness:   harnessName,
 			Timestamp: now,
-			Status:    &msg.SessionStatus{State: state, ChangedAt: now},
+			Status:    status,
 		}, true)
 		return err == nil, err
 	}
 
-	prev, changed := d.forceState(state)
+	// Held across the decision and the write, so a batch derive() built
+	// before this cannot land after it. See derivationState.publishMu.
+	d.publishMu.Lock()
+	defer d.publishMu.Unlock()
+
+	prev, changed := d.forceState(state, reason, reasonDetail)
 	if !changed {
 		return false, nil
 	}
 
-	m.broadcastDerived(bridgeID, &msg.Event{
-		Type:            msg.EventSessionState,
-		Harness:         harnessName,
-		BridgeSessionID: bridgeID,
-		Timestamp:       time.Now(),
-		State: &msg.StateEvent{
-			State:    state,
-			Previous: prev,
-			Reason:   reason,
-		},
-	})
+	if prev != state {
+		m.broadcastDerived(bridgeID, &msg.Event{
+			Type:            msg.EventSessionState,
+			Harness:         harnessName,
+			BridgeSessionID: bridgeID,
+			Timestamp:       time.Now(),
+			State: &msg.StateEvent{
+				State:    state,
+				Previous: prev,
+				Reason:   string(reason),
+			},
+		})
+	}
 	if err := m.broadcastCurrentStatus(bridgeID, d, harnessName); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// ReapIdleProcess kills a session's quiet harness process for the idle reaper,
+// and records the state the session is left in with reason idle_reaped. It
+// returns that state.
+//
+// The kill is the reaper's whole purpose and is unconditional: a warm Claude
+// Code process holds about 150MB, and a pile of them took the host down on
+// 2026-05-29. What changed on 2026-10-19 is only what the row says afterwards.
+// It used to say aborted whatever the session had been doing, so every
+// autoworker that finished its work and went quiet — 903 of them from
+// 2026-10-05 to 2026-10-19 — was recorded as if someone had stopped it. See
+// sessionStateAfterIdleReap for the mapping.
+//
+// The state is read before the kill: the kill makes the event pump exit and
+// drop the derivation, after which only the row is left to read.
+func (m *Manager) ReapIdleProcess(bridgeID string) (msg.SessionState, error) {
+	m.mu.Lock()
+	d := m.derivation[bridgeID]
+	if _, isPTY := m.processes[bridgeID].(*PTYProcess); isPTY {
+		m.ptyReapedByIdleReaper[bridgeID] = true
+	}
+	m.mu.Unlock()
+	prior := m.persistedSessionState(bridgeID)
+	if d != nil {
+		prior = d.currentState()
+	}
+	// Kill fails when the process has already exited; the state is recorded
+	// all the same, so the row says what happened and the watchdog does not
+	// go looking for the process.
+	_ = m.Kill(bridgeID)
+	next := sessionStateAfterIdleReap(prior)
+	_, err := m.ForceSessionState(bridgeID, next, msg.ReasonIdleReaped)
+	return next, err
+}
+
+// sessionStateAfterIdleReap is the state a session is left in when the idle
+// reaper kills its process while it was in prior.
+//
+//   - idle → completed: the turn ended and nothing came after it. A message
+//     still starts the session again.
+//   - completed → completed: a person marked it done; reaping changes nothing.
+//   - awaiting_user, awaiting_permission (and its old name waiting_on_approval)
+//     → unchanged: the question really is unanswered, and the answer is what
+//     restarts the session.
+//   - error → error: the reap is not what went wrong, and the error stays
+//     readable.
+//   - anything else (paused, starting, and in terminal mode whatever state
+//     the row last held) → aborted, as before: the process was taken away
+//     with work unfinished or never begun.
+func sessionStateAfterIdleReap(prior msg.SessionState) msg.SessionState {
+	switch prior {
+	case msg.SessionIdle, msg.SessionCompleted:
+		return msg.SessionCompleted
+	case msg.SessionAwaitingUser, msg.SessionAwaitingPermission, msg.SessionWaitingApproval, msg.SessionError:
+		return prior
+	}
+	return msg.SessionAborted
 }
 
 // broadcastCurrentStatus emits the derivation's status as it stands now, for
@@ -980,6 +1092,9 @@ func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 		// closing transition on the next EventResult, leaving a row stuck
 		// at tool_running/running (the F1 settle bug).
 		d = newDerivationStateSeeded(m.persistedSessionState(bridgeID))
+		// The reason too, so a status this derivation emits before its first
+		// transition (a tool list changing, say) does not drop it.
+		d.seedStateReason(m.persistedSessionStatus(bridgeID))
 		// Seed the spend accumulators from the same row, for the same
 		// reason one step further: a derivation is thrown away when its
 		// harness process exits, which happens on every stop, crash, idle
@@ -993,6 +1108,10 @@ func (m *Manager) deriveAndBroadcast(bridgeID string, src *msg.Event) {
 		m.derivation[bridgeID] = d
 	}
 	m.mu.Unlock()
+
+	// Deciding and writing are one step; see derivationState.publishMu.
+	d.publishMu.Lock()
+	defer d.publishMu.Unlock()
 
 	// Read before anything below writes the row: the settle reconcile asks
 	// whether the row was stale when this terminal event arrived, and the
@@ -1147,6 +1266,22 @@ func (m *Manager) persistedSessionState(bridgeID string) msg.SessionState {
 	return msg.SessionState(sess.State)
 }
 
+// persistedSessionStatus reads the session row's whole status. A missing row
+// or one written before statuses existed reads as the zero status.
+func (m *Manager) persistedSessionStatus(bridgeID string) msg.SessionStatus {
+	sess, err := m.store.GetSession(bridgeID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("[harness] persistedSessionStatus: read session %s: %v", bridgeID, err)
+		}
+		return msg.SessionStatus{}
+	}
+	if sess == nil || sess.Status == nil {
+		return msg.SessionStatus{}
+	}
+	return *sess.Status
+}
+
 // persistedSpend reads the cumulative spend already recorded for bridgeID.
 // Missing row (fresh session) reads as zero, which is the correct seed for
 // one. A real read error is logged loudly and also reads as zero: refusing to
@@ -1206,7 +1341,7 @@ func (m *Manager) reconcileSettledSessionState(bridgeID string, d *derivationSta
 		State: &msg.StateEvent{
 			State:    settled,
 			Previous: stored,
-			Reason:   "turn_settled_reconcile",
+			Reason:   string(msg.ReasonTurnSettledReconcile),
 		},
 	})
 	// No session_status here: the one derive() emitted for this same terminal
@@ -1665,7 +1800,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	m.mu.Unlock()
 
 	m.store.UpdateSessionPID(sess.SessionID, proc.PID())
-	m.ForceSessionState(sess.SessionID, msg.SessionStarting, "process_spawned")
+	m.ForceSessionState(sess.SessionID, msg.SessionStarting, msg.ReasonProcessSpawned)
 
 	if sess.Mode == msg.SessionModePTY {
 		// PTY processes have no event channel to drain; readEvents would
@@ -1706,6 +1841,8 @@ func (m *Manager) watchPTYExit(p *PTYProcess) {
 	delete(m.attachHubs, bridgeID)
 	sidecar := m.otelSidecars[bridgeID]
 	delete(m.otelSidecars, bridgeID)
+	reapedByIdleReaper := m.ptyReapedByIdleReaper[bridgeID]
+	delete(m.ptyReapedByIdleReaper, bridgeID)
 	m.mu.Unlock()
 
 	// Stop the OTel sidecar after the PTY child exits. The sidecar's
@@ -1716,7 +1853,12 @@ func (m *Manager) watchPTYExit(p *PTYProcess) {
 	}
 
 	m.store.UpdateSessionPID(bridgeID, 0)
-	m.ForceSessionState(bridgeID, msg.SessionCompleted, "pty_exited")
+	if reapedByIdleReaper {
+		// The reaper records the state itself, with reason idle_reaped;
+		// pty_exited would hide why the process went.
+		return
+	}
+	m.ForceSessionState(bridgeID, msg.SessionCompleted, msg.ReasonPTYExited)
 }
 
 // startSSH spawns a harness process on a remote machine via SSH. Reads

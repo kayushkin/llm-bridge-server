@@ -837,3 +837,60 @@ func TestRecordAskUserQuestionSignalsCarriesMultiSelect(t *testing.T) {
 		t.Error("a single-select question came back allowing several answers")
 	}
 }
+
+// --- GET /signals?session_type= ---
+
+// A UI separates the person's own chats from background agents by the type of
+// the session that raised each signal. The filter is repeatable, like type=
+// on GET /sessions/summary, and an unknown type is a 400 rather than a list
+// that reads like "nothing to show".
+func TestListSignalsFiltersBySessionType(t *testing.T) {
+	srv, st := testServer(t)
+	newSessionForSignals(t, st, "br_chat", msg.SessionTypeInteractive)
+	newSessionForSignals(t, st, "br_worker", msg.SessionTypeAutonomous)
+	newSessionForSignals(t, st, "br_herald", msg.SessionTypeHerald)
+	chat := newSignalRow(t, st, &msg.Signal{SessionID: "br_chat", SessionType: msg.SessionTypeInteractive,
+		Kind: msg.SignalKindQuestion, Source: msg.SignalSourceDerived, Surface: msg.SignalSurfaceChat})
+	worker := newSignalRow(t, st, &msg.Signal{SessionID: "br_worker", SessionType: msg.SessionTypeAutonomous,
+		Kind: msg.SignalKindQuestion, Source: msg.SignalSourceDerived, Surface: msg.SignalSurfaceChat})
+	herald := newSignalRow(t, st, &msg.Signal{SessionID: "br_herald", SessionType: msg.SessionTypeHerald,
+		Kind: msg.SignalKindNotification, Source: msg.SignalSourceDerived, Surface: msg.SignalSurfaceChat})
+
+	list := func(t *testing.T, query string) (int, []msg.Signal) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/signals"+query, nil))
+		var signals []msg.Signal
+		if rec.Code == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &signals); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+		}
+		return rec.Code, signals
+	}
+	idsOf := func(signals []msg.Signal) map[string]msg.SessionType {
+		out := map[string]msg.SessionType{}
+		for _, sig := range signals {
+			out[sig.ID] = sig.SessionType
+		}
+		return out
+	}
+
+	code, signals := list(t, "?session_type=interactive")
+	if got := idsOf(signals); code != http.StatusOK || len(got) != 1 || got[chat.ID] != msg.SessionTypeInteractive {
+		t.Fatalf("?session_type=interactive: %d %v; want only the chat's signal, carrying its session_type", code, got)
+	}
+
+	code, signals = list(t, "?session_type=autonomous&session_type=herald")
+	if got := idsOf(signals); code != http.StatusOK || len(got) != 2 || got[worker.ID] == "" || got[herald.ID] == "" {
+		t.Fatalf("?session_type=autonomous&session_type=herald: %d %v; want the worker's and the herald's", code, got)
+	}
+
+	if code, signals = list(t, ""); code != http.StatusOK || len(signals) != 3 {
+		t.Fatalf("no filter: %d, %d signals; want all 3", code, len(signals))
+	}
+
+	if code, _ = list(t, "?session_type=chat"); code != http.StatusBadRequest {
+		t.Fatalf("?session_type=chat answered %d; want 400 for a type that does not exist", code)
+	}
+}

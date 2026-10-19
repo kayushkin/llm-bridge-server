@@ -241,6 +241,11 @@ func TestLinkDiscoveredSessionParent(t *testing.T) {
 		if child.Depth != 1 {
 			t.Errorf("depth = %d, want 1", child.Depth)
 		}
+		// Linked, it runs inside its parent's process: the bridge must not
+		// resume it, send to it or offer a button on it.
+		if child.ControlledBy != msg.ControlledByHarness {
+			t.Errorf("controlled_by = %q, want harness", child.ControlledBy)
+		}
 	})
 
 	t.Run("is idempotent, so every discovery pass may run it", func(t *testing.T) {

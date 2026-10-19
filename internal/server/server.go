@@ -782,11 +782,28 @@ func (s *Server) watchdogTick() {
 			if s.harness.HasProcess(sess.SessionID) {
 				continue
 			}
+			// A harness subagent never has a process of its own: it runs
+			// inside its parent's, so "no process" is its normal state, and
+			// autoResume refuses to start one. This used to log "resuming"
+			// and force it idle every tick it was mid-task (41 a day), and the
+			// resume never happened. While the parent's process runs, the
+			// subagent is running; once it is gone, nothing will ever report
+			// the task's end, so record that end here.
+			if sess.ControlledBy == msg.ControlledByHarness {
+				if sess.ManagerSessionID != "" && s.harness.HasProcess(sess.ManagerSessionID) {
+					continue
+				}
+				log.Printf("[watchdog] %s: subagent at state=%s, and the process it ran in is gone; recording error (parent_process_exited)", sess.SessionID, st)
+				if _, err := s.harness.ForceSessionState(sess.SessionID, msg.SessionError, msg.ReasonParentProcessExited); err != nil {
+					log.Printf("[watchdog] %s: state write failed: %v", sess.SessionID, err)
+				}
+				continue
+			}
 			log.Printf("[watchdog] %s: state=%s but no harness process; resuming", sess.SessionID, st)
 			// Drop back to idle so autoResume's startOnInstance path takes a
 			// clean state transition. Skip the auto-resume on failure to flip
 			// state — leaving it active would just refire next tick.
-			if _, err := s.harness.ForceSessionState(sess.SessionID, msg.SessionIdle, "watchdog_no_process"); err != nil {
+			if _, err := s.harness.ForceSessionState(sess.SessionID, msg.SessionIdle, msg.ReasonWatchdogNoProcess); err != nil {
 				log.Printf("[watchdog] %s: state reset failed: %v", sess.SessionID, err)
 				continue
 			}
@@ -796,7 +813,9 @@ func (s *Server) watchdogTick() {
 }
 
 // reapIdleTick kills harness processes that have gone quiet past their
-// idle timeout and marks the session aborted. This is the source-level
+// idle timeout and records how each session was left (see
+// harness.sessionStateAfterIdleReap: a finished turn reads completed, an
+// unanswered question keeps its state, reason idle_reaped either way). This is the source-level
 // fix for the warm-process leak: after a turn completes the claude
 // subprocess lingers (on stdin in events mode, on the pty fd in pty mode)
 // holding ~150MB while it waits for a follow-up turn that one-shot
@@ -857,12 +876,15 @@ func (s *Server) reapIdleTick() {
 		} else {
 			log.Printf("[reaper] %s: idle %s (mode=%s state=%s) exceeds timeout; killing", id, quiet.Round(time.Second), sess.Mode, sess.State)
 		}
-		// Kill may fail if the process already exited — flip state anyway so
-		// the row reflects reality and the watchdog won't try to resume it.
-		_ = s.harness.Kill(id)
-		if _, err := s.harness.ForceSessionState(id, msg.SessionAborted, "idle_reaped"); err != nil {
-			log.Printf("[reaper] %s: state transition failed: %v", id, err)
+		// The kill is unconditional; ReapIdleProcess decides only what the
+		// row says afterwards (completed for a finished turn, the question
+		// kept for an unanswered one), always with reason idle_reaped.
+		left, err := s.harness.ReapIdleProcess(id)
+		if err != nil {
+			log.Printf("[reaper] %s: killed, but recording state %s failed: %v", id, left, err)
+			continue
 		}
+		log.Printf("[reaper] %s: killed; recorded %s (idle_reaped)", id, left)
 	}
 }
 

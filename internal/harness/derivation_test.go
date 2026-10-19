@@ -1234,7 +1234,7 @@ func TestDerivation_ForceStateReportsPreviousAndClearsInflight(t *testing.T) {
 	deriveWithoutStatus(d, &msg.Event{Type: msg.EventUserMessage})
 	deriveWithoutStatus(d, &msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "t1", Name: "Bash"}})
 
-	prev, changed := d.forceState(msg.SessionPaused)
+	prev, changed := d.forceState(msg.SessionPaused, msg.ReasonUserInterrupt, "")
 	if !changed {
 		t.Fatal("forceState reported no change; want changed")
 	}
@@ -1245,7 +1245,7 @@ func TestDerivation_ForceStateReportsPreviousAndClearsInflight(t *testing.T) {
 		t.Fatalf("activeTools after force = %v; want empty", d.activeTools)
 	}
 
-	if _, changed := d.forceState(msg.SessionPaused); changed {
+	if _, changed := d.forceState(msg.SessionPaused, msg.ReasonUserInterrupt, ""); changed {
 		t.Fatal("forcing the state it already holds reported a change; want none")
 	}
 }

@@ -151,27 +151,46 @@ func TestManager_SubagentFramesPromoteToOwnSession(t *testing.T) {
 }
 
 // TestManager_SubagentSettlesOnTerminalTask guards the state half: a subagent
-// emits no result event of its own, so only the parent's task_updated can
-// settle it. Without that it sits at "running" forever.
+// emits no result event of its own, so only the parent's task status can
+// settle it, and that status decides the end state. Until 2026-10-19 a
+// completed task left its subagent idle — "between turns" — under a parent
+// that said it had finished.
 func TestManager_SubagentSettlesOnTerminalTask(t *testing.T) {
-	m := newTestManager(t)
-	const parentID = "br-parent-settle"
-	const toolUseID = "toolu_settle"
-	const taskID = "task_settle"
-	seedParent(t, m, parentID)
+	cases := []struct {
+		taskStatus string
+		wantState  msg.SessionState
+		wantReason msg.SessionStateReason
+	}{
+		{msg.TaskStatusCompleted, msg.SessionCompleted, msg.ReasonTaskCompleted},
+		{msg.TaskStatusFailed, msg.SessionError, msg.ReasonTaskFailed},
+		{msg.TaskStatusCancelled, msg.SessionAborted, msg.ReasonTaskCancelled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.taskStatus, func(t *testing.T) {
+			m := newTestManager(t)
+			parentID := "br-parent-settle-" + tc.taskStatus
+			const toolUseID = "toolu_settle"
+			const taskID = "task_settle"
+			seedParent(t, m, parentID)
 
-	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
-	waitForPumpExit := startEventPump(t, m, proc)
+			proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 16)}
+			waitForPumpExit := startEventPump(t, m, proc)
 
-	proc.ch <- taskStarted(parentID, toolUseID, taskID, "probe")
-	proc.ch <- msg.Event{Type: msg.EventBlock, BridgeSessionID: parentID, Harness: msg.HarnessClaudeCode, HarnessParentID: toolUseID,
-		Block: &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "work"}}}}
-	proc.ch <- taskUpdated(parentID, taskID, "completed")
-	close(proc.ch)
-	waitForPumpExit()
+			proc.ch <- taskStarted(parentID, toolUseID, taskID, "probe")
+			proc.ch <- msg.Event{Type: msg.EventBlock, BridgeSessionID: parentID, Harness: msg.HarnessClaudeCode, HarnessParentID: toolUseID,
+				Block: &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "work"}}}}
+			proc.ch <- taskUpdated(parentID, taskID, tc.taskStatus)
+			close(proc.ch)
+			waitForPumpExit()
 
-	if got := findSubagent(t, m, parentID).State; got != string(msg.SessionIdle) {
-		t.Fatalf("subagent state = %q, want idle after task_updated status=completed", got)
+			sub := findSubagent(t, m, parentID)
+			if sub.State != string(tc.wantState) {
+				t.Fatalf("subagent state = %q, want %s after task status %s", sub.State, tc.wantState, tc.taskStatus)
+			}
+			if sub.Status == nil || sub.Status.Reason != tc.wantReason {
+				t.Fatalf("subagent status = %+v, want reason %s", sub.Status, tc.wantReason)
+			}
+		})
 	}
 }
 
@@ -197,6 +216,9 @@ func TestManager_AbandonedSubagentSettlesOnProcessExit(t *testing.T) {
 	sub := findSubagent(t, m, parentID)
 	if sub.State != string(msg.SessionError) {
 		t.Fatalf("abandoned subagent state = %q, want error", sub.State)
+	}
+	if sub.Status == nil || sub.Status.Reason != msg.ReasonParentProcessExited {
+		t.Fatalf("abandoned subagent status = %+v, want reason parent_process_exited", sub.Status)
 	}
 
 	// The row alone settles nothing a client can see. Writing it silently was

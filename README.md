@@ -258,7 +258,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 |---|---|---|---|
 | `GET` | `/sessions/{id}/signals` | One session's signals | owner |
 | `POST` | `/sessions/{id}/signals` | A session raises a notice about itself | owner |
-| `GET` | `/signals` | The inbox across sessions (`?state=open`) | principal, own sessions only |
+| `GET` | `/signals` | The inbox across sessions (`?state=open&kind=&surface=&session_type=&session_id=&linked_todo_id=&limit=`; `session_type` repeatable) | principal, own sessions only |
 | `POST` | `/signals/{id}/answer` | Answer a question, whether or not its session still runs | owner |
 | `POST` | `/signals/{id}/resolve` | Acknowledge or dismiss | owner |
 
@@ -344,7 +344,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/folders` | Create one | operator |
 | `DELETE` | `/folders/{name}` | Delete one | operator |
 | `PUT` | `/folders/{name}` | Rename one | operator |
-| `GET` | `/session-taxonomy` | The types and purposes a session may carry | principal |
+| `GET` | `/session-taxonomy` | The types and purposes a session may carry, and the reasons its state may change for | principal |
 | `GET` | `/session-taxonomy/report` | Sessions whose labels break that vocabulary | operator |
 | `GET` | `/source-folders` | Which folder each session `source` files into | operator |
 | `DELETE` | `/source-folders/{source}` | Clear one | operator |

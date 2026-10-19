@@ -39,6 +39,12 @@ type statusTracking struct {
 	turnStartedAt time.Time
 	changedAt     time.Time
 
+	// stateReason and stateReasonDetail say why sessionState last changed
+	// (msg.SessionStatus.Reason and .ReasonDetail). Set with every change of
+	// sessionState, by derive(), forceState and applyExternalState.
+	stateReason       msg.SessionStateReason
+	stateReasonDetail string
+
 	// harnessCompacting is true while the harness reports, in its own words,
 	// that it is compacting. Kept apart from the compact_ack path because a
 	// `status` frame with an empty status is also what a permission-mode
@@ -278,6 +284,8 @@ func (d *derivationState) clearTurnInFlight() {
 func (d *derivationState) statusLocked() msg.SessionStatus {
 	status := msg.SessionStatus{
 		State:         d.sessionState,
+		Reason:        d.stateReason,
+		ReasonDetail:  d.stateReasonDetail,
 		RateLimit:     d.rateLimit,
 		TurnStartedAt: d.turnStartedAt,
 		ChangedAt:     d.changedAt,

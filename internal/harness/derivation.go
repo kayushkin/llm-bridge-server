@@ -44,9 +44,28 @@ type turnAccumulator struct {
 type derivationState struct {
 	mu sync.Mutex
 
+	// publishMu makes deciding a status and writing it one step. derive()
+	// decides under mu and the manager writes afterwards, so without this a
+	// state the server forced between the two was overwritten by the status
+	// derive() had already built: br_1792020662192496685 was stopped
+	// ("killed", aborted) while its last turn's batch was being written, and
+	// the batch's idle status landed after it with the larger as_of, so the
+	// row read idle. Held by the manager around derive-and-publish, a forced
+	// state and an external one; never taken under mu.
+	publishMu sync.Mutex
+
 	// sessionState is the last-emitted SessionState value. derive()
 	// only emits an event on transition.
 	sessionState msg.SessionState
+
+	// endedByServer is true while sessionState is an end (completed, aborted
+	// or error) the server forced — a kill, the idle reaper, a failed spawn, a
+	// subagent's task ending. A harness frame still in the pipe after that
+	// (the rest of a dying process's output, or a runner's late frames) is
+	// not new activity and must not move the state; only a new turn
+	// (user_message) or a lifecycle state the server sends does, and either
+	// clears this.
+	endedByServer bool
 
 	// activeTools tracks tool_use_id → tool name for in-flight tool
 	// calls. Multiple concurrent tools keep the session in
@@ -220,6 +239,20 @@ func (d *derivationState) seedAPISpend(totalUSD float64, calls int, usage msg.To
 	}
 }
 
+// seedStateReason carries the stored status's reason, and when the state last
+// changed, into a derivation seeded from that row's state. Ignored when the
+// stored status is for a different state than the one seeded.
+func (d *derivationState) seedStateReason(stored msg.SessionStatus) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if stored.State != d.sessionState {
+		return
+	}
+	d.stateReason = stored.Reason
+	d.stateReasonDetail = stored.ReasonDetail
+	d.changedAt = stored.ChangedAt
+}
+
 // seedSessionCost starts the cost estimate from what the session was recorded
 // as costing before this harness process, and what its per-turn results summed
 // to. Call it after seedAPISpend: the API spend before this process is read off
@@ -278,17 +311,37 @@ func (d *derivationState) currentState() msg.SessionState {
 //
 // Clears the in-flight bookkeeping for the same reason EventResult does:
 // whatever tools or prompts were outstanding are not coming back.
-func (d *derivationState) forceState(next msg.SessionState) (msg.SessionState, bool) {
+//
+// The second return is also true when only the reason changed: the idle
+// reaper keeps an awaiting_user session at awaiting_user, and the row must
+// still say the process was reaped. ChangedAt moves only with the state.
+func (d *derivationState) forceState(next msg.SessionState, reason msg.SessionStateReason, reasonDetail string) (msg.SessionState, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	prev := d.sessionState
-	if prev == next {
+	if prev == next && d.stateReason == reason && d.stateReasonDetail == reasonDetail {
 		return prev, false
 	}
+	if prev != next {
+		d.changedAt = time.Now()
+	}
 	d.sessionState = next
-	d.changedAt = time.Now()
+	d.stateReason = reason
+	d.stateReasonDetail = reasonDetail
+	d.endedByServer = isSessionEndState(next)
 	d.clearTurnInFlight()
 	return prev, true
+}
+
+// isSessionEndState reports whether s is one of the ends a forced state can
+// hold against late harness frames. disconnected is not here: nothing forces
+// it.
+func isSessionEndState(s msg.SessionState) bool {
+	switch s {
+	case msg.SessionCompleted, msg.SessionAborted, msg.SessionError:
+		return true
+	}
+	return false
 }
 
 // isHoldingSessionState reports whether s is a "turn in flight" state —
@@ -348,7 +401,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 
 	prev := d.sessionState
 	next := prev
-	reason := ""
+	var reason msg.SessionStateReason
 
 	switch ev.Type {
 	case msg.EventUserMessage:
@@ -358,12 +411,12 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 		// made the two states indistinguishable in practice and left
 		// model_generating emitted zero times across the live table.
 		next = msg.SessionModelGenerating
-		reason = "turn_started"
+		reason = msg.ReasonTurnStarted
 
 	case msg.EventToolCall:
 		if ev.ToolCall != nil && ev.ToolCall.ToolID != "" {
 			d.activeTools[ev.ToolCall.ToolID] = ev.ToolCall.Name
-			reason = "tool=" + ev.ToolCall.Name
+			reason = msg.ReasonToolCalled
 		}
 		if !d.awaitingApproval {
 			next = msg.SessionToolRunning
@@ -385,7 +438,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 		// user still has on screen.
 		if len(d.activeTools) == 0 && !d.awaitingApproval && prev == msg.SessionToolRunning {
 			next = msg.SessionModelGenerating
-			reason = "tools_drained"
+			reason = msg.ReasonToolsDrained
 		}
 
 	case msg.EventSystem:
@@ -406,7 +459,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 					d.preCompactState = prev
 				}
 				next = msg.SessionCompacting
-				reason = "compact_requested"
+				reason = msg.ReasonCompactRequested
 			case "status":
 				// The harness compacting on its own initiative: no
 				// compact_ack precedes it, and until this case read the
@@ -419,14 +472,14 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 					}
 					d.harnessCompacting = true
 					next = msg.SessionCompacting
-					reason = "harness_compacting"
+					reason = msg.ReasonHarnessCompacting
 				} else if d.harnessCompacting && prev == msg.SessionCompacting {
 					d.harnessCompacting = false
 					next = d.preCompactState
 					if next == "" || next == msg.SessionCompacting {
 						next = msg.SessionModelGenerating
 					}
-					reason = "compact_complete"
+					reason = msg.ReasonCompactComplete
 				}
 			case "compact_boundary":
 				if prev == msg.SessionCompacting {
@@ -435,7 +488,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 					if next == "" || next == msg.SessionCompacting {
 						next = msg.SessionModelGenerating
 					}
-					reason = "compact_complete"
+					reason = msg.ReasonCompactComplete
 				}
 			case msg.SystemSubtypeBackgroundTasksChanged:
 				// The whole list, every time. Mid-turn it only updates what
@@ -448,12 +501,12 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 					if next == "" {
 						next = msg.SessionIdle
 					}
-					reason = "background_tasks_finished"
+					reason = msg.ReasonBackgroundTasksFinished
 				case len(d.backgroundTasks) > 0 && (prev == msg.SessionIdle || prev == msg.SessionAwaitingUser):
 					// The list can land after the result that ended the turn.
 					d.stateOnceBackgroundTasksFinish = prev
 					next = msg.SessionBackgroundTasksRunning
-					reason = "background_tasks_running"
+					reason = msg.ReasonBackgroundTasksRunning
 				}
 			}
 		}
@@ -473,7 +526,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 				}
 				d.pendingApprovals[ev.Hook.RequestID] = struct{}{}
 				next = msg.SessionAwaitingPermission
-				reason = "hook=" + ev.Hook.Source
+				reason = msg.ReasonPermissionRequested
 			case "completed":
 				if _, was := d.pendingApprovals[ev.Hook.RequestID]; was {
 					delete(d.pendingApprovals, ev.Hook.RequestID)
@@ -488,7 +541,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 							// flight on the very path where none is.
 							next = msg.SessionModelGenerating
 						}
-						reason = "hook_resolved"
+						reason = msg.ReasonPermissionResolved
 					}
 				}
 			}
@@ -507,7 +560,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 					d.awaitingApproval = true
 				}
 				next = msg.SessionAwaitingPermission
-				reason = "approval_required"
+				reason = msg.ReasonApprovalRequired
 			case "approved", "denied", "auto_approved", "resolved":
 				if d.awaitingApproval && len(d.pendingApprovals) == 0 {
 					d.awaitingApproval = false
@@ -520,7 +573,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 						// flight on the very path where none is.
 						next = msg.SessionModelGenerating
 					}
-					reason = "approval_" + ev.Approval.Status
+					reason = msg.ReasonApprovalResolved
 				}
 				// auto_approved with no preceding pending — no
 				// transition; the harness pre-resolved before the
@@ -536,10 +589,10 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 		// auto-rename feature) once that infrastructure is reusable.
 		if ev.Result != nil && looksLikeQuestion(ev.Result.Text) {
 			next = msg.SessionAwaitingUser
-			reason = "turn_complete_awaiting_user"
+			reason = msg.ReasonTurnCompleteAwaitingUser
 		} else {
 			next = msg.SessionIdle
-			reason = "turn_complete"
+			reason = msg.ReasonTurnComplete
 		}
 		// The turn is over but the process is not quiet: work the turn started
 		// is still running in it, and the harness will open a turn by itself
@@ -549,14 +602,14 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 		if len(d.backgroundTasks) > 0 {
 			d.stateOnceBackgroundTasksFinish = next
 			next = msg.SessionBackgroundTasksRunning
-			reason = "turn_complete_background_tasks_running"
+			reason = msg.ReasonTurnCompleteBackgroundTasksRunning
 		}
 		d.clearTurnInFlight()
 
 	case msg.EventError:
 		next = msg.SessionError
 		d.clearTurnInFlight()
-		reason = "error"
+		reason = msg.ReasonHarnessError
 
 	case msg.EventSessionState:
 		// Manager-emitted lifecycle states (subprocess starting,
@@ -572,7 +625,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 				// An abort kills the process, and its background tasks with it.
 				d.backgroundTasks = nil
 				d.subagents = nil
-				reason = "aborted"
+				reason = msg.ReasonAborted
 			case msg.SessionStarting,
 				msg.SessionCompacting, msg.SessionPaused, msg.SessionRateLimited,
 				msg.SessionCompleted, msg.SessionDisconnected,
@@ -585,14 +638,30 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 				// that writes the session row.
 				msg.SessionIdle:
 				next = ev.State.State
-				reason = "lifecycle"
+				// The sender's own reason when it is one of the vocabulary —
+				// mark-done says mark_done_user — and lifecycle otherwise.
+				reason = msg.ReasonLifecycle
+				if r := msg.SessionStateReason(ev.State.Reason); msg.ValidSessionStateReason(r) {
+					reason = r
+				}
 			}
 		}
+	}
+
+	// A state the server forced to an end holds against everything but a new
+	// turn or a lifecycle state the server itself sent. See endedByServer.
+	opensNewActivity := ev.Type == msg.EventUserMessage ||
+		(ev.Type == msg.EventSessionState && ev.State != nil)
+	if d.endedByServer && next != prev && !opensNewActivity {
+		next = prev
 	}
 
 	if next != prev {
 		d.sessionState = next
 		d.changedAt = eventTime(ev)
+		d.stateReason = reason
+		d.stateReasonDetail = ""
+		d.endedByServer = false
 		out = append(out, msg.Event{
 			Type:             msg.EventSessionState,
 			Harness:          ev.Harness,
@@ -605,7 +674,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 			State: &msg.StateEvent{
 				State:    next,
 				Previous: prev,
-				Reason:   reason,
+				Reason:   string(reason),
 			},
 		})
 	}
@@ -702,7 +771,7 @@ func (d *derivationState) derive(ev *msg.Event) []msg.Event {
 // authoritative state. An empty allowedFrom is rejected rather than read as
 // "any state", so a caller that forgets the bound gets no write instead of an
 // unbounded one.
-func (d *derivationState) applyExternalState(next msg.SessionState, reason string, allowedFrom ...msg.SessionState) *msg.Event {
+func (d *derivationState) applyExternalState(next msg.SessionState, reason msg.SessionStateReason, allowedFrom ...msg.SessionState) *msg.Event {
 	if len(allowedFrom) == 0 {
 		return nil
 	}
@@ -734,13 +803,16 @@ func (d *derivationState) applyExternalState(next msg.SessionState, reason strin
 		return nil
 	}
 	d.sessionState = next
+	d.changedAt = time.Now()
+	d.stateReason = reason
+	d.stateReasonDetail = ""
 	return &msg.Event{
 		Type:      msg.EventSessionState,
 		Timestamp: time.Now(),
 		State: &msg.StateEvent{
 			State:    next,
 			Previous: prev,
-			Reason:   reason,
+			Reason:   string(reason),
 		},
 	}
 }

@@ -226,9 +226,14 @@ happened.
 - `GET /sessions/{id}/signals` — one session's signals, newest first.
 - `GET /signals` — the cross-session inbox. `?state=open` is what the "Needs you" inbox
   wants.
-- Both take `state`, `kind`, `surface` and `limit`; `/signals` also takes `session_id`. An
-  unrecognized enum value is a **400, not an empty list** — a typo that silently returns
-  `[]` reads as "you have no signals", which is the one wrong answer this endpoint can give.
+- Both take `state`, `kind`, `surface`, `linked_todo_id`, `session_type` and `limit`;
+  `/signals` also takes `session_id`. An unrecognized enum value is a **400, not an empty
+  list** — a typo that silently returns `[]` reads as "you have no signals", which is the
+  one wrong answer this endpoint can give.
+- `session_type` (since 2026-10-19) is repeatable, like `type=` on `GET /sessions/summary`,
+  and matches the type on the raising session's row: `?session_type=interactive` is the
+  person's own chats, `?session_type=autonomous&session_type=system` the background agents.
+  Each signal already carries `session_type`, copied from the session when it was raised.
 
 **Tool-path backfill.** `parkPrehook` records the signals once the park is genuinely
 established (after the `awaiting_resolution` broadcast succeeds — recording earlier would

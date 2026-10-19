@@ -509,8 +509,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.AutoStart {
 		credID := resolveCredential(s.harnessStore, inst.ID)
 		if _, startErr := s.startOnInstance(r.Context(), sess, inst, credID); startErr != nil {
-			s.harness.ForceSessionState(sess.SessionID, msg.SessionError, "spawn_failed")
-			sess.State = string(msg.SessionError)
+			// The cause goes on the session's status and in the log. Until
+			// 2026-10-19 it went nowhere: br_1791866142589272438 errored in
+			// its creation second, the create answered 201, and only a retry
+			// through /resume ever showed anyone why.
+			s.recordSpawnFailure(sess, startErr)
 		} else {
 			sess.State = string(msg.SessionStarting)
 		}
@@ -623,13 +626,29 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, sess)
 }
 
+// recordSpawnFailure records that a harness process could not be started for
+// sess: state error, reason spawn_failed, and the error itself as the status's
+// reason_detail, which GET /sessions and the session's event stream both
+// carry. It also logs the error and updates sess in place, State and Status,
+// so a handler that answers with sess shows the cause too.
+func (s *Server) recordSpawnFailure(sess *store.Session, spawnErr error) {
+	log.Printf("[spawn] %s: ERROR could not start a harness process: %v", sess.SessionID, spawnErr)
+	if _, err := s.harness.ForceSessionStateWithDetail(sess.SessionID, msg.SessionError, msg.ReasonSpawnFailed, spawnErr.Error()); err != nil {
+		log.Printf("[spawn] %s: ERROR recording the spawn failure: %v", sess.SessionID, err)
+	}
+	sess.State = string(msg.SessionError)
+	if stored, err := s.store.GetSession(sess.SessionID); err == nil && stored != nil {
+		sess.Status = stored.Status
+	}
+}
+
 // stopSession kills a session's harness process and marks it aborted. It is
 // what POST /sessions/{id}/stop does, and what a stop_session action runs.
 func (s *Server) stopSession(bridgeID string) error {
 	if err := s.harness.Kill(bridgeID); err != nil {
 		// Process might not be running, just update state
 	}
-	_, err := s.harness.ForceSessionState(bridgeID, msg.SessionAborted, "killed")
+	_, err := s.harness.ForceSessionState(bridgeID, msg.SessionAborted, msg.ReasonKilled)
 	return err
 }
 
@@ -896,7 +915,7 @@ func (s *Server) handleInterruptSession(w http.ResponseWriter, r *http.Request) 
 	// registered, so a paused session still has a live harness and is NOT
 	// resumable — resume 409s on the process registry, and sending the
 	// next message is what continues it.
-	s.harness.ForceSessionState(bridgeID, msg.SessionPaused, "user_interrupt")
+	s.harness.ForceSessionState(bridgeID, msg.SessionPaused, msg.ReasonUserInterrupt)
 
 	sess.State = string(msg.SessionPaused)
 	writeJSON(w, sess)
@@ -1080,8 +1099,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 
 	credID := resolveCredential(s.harnessStore, inst.ID)
 	if _, err := s.startOnInstance(context.Background(), forked, inst, credID); err != nil {
-		s.harness.ForceSessionState(forked.SessionID, msg.SessionError, "spawn_failed")
-		forked.State = string(msg.SessionError)
+		s.recordSpawnFailure(forked, err)
 	} else {
 		forked.State = string(msg.SessionStarting)
 	}

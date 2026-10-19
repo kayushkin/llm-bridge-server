@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -29,6 +30,12 @@ type SignalFilter struct {
 	// one principal. Set by the server from the caller's verified identity
 	// by request authorization. Empty means "don't narrow".
 	OwnedByPrincipalID string
+	// SessionTypes narrows to the signals raised by sessions of any of these
+	// types — the person's own chats (interactive) apart from background
+	// agents (autonomous, system, …). Read from the session row, which owns
+	// the type; the copy on the signal is what the session was when it raised
+	// it. Empty means "don't narrow".
+	SessionTypes []msg.SessionType
 	// Limit caps the returned rows. Zero means no cap.
 	Limit int
 }
@@ -220,6 +227,13 @@ func (s *Store) ListSignals(filter SignalFilter) ([]Signal, error) {
 	if filter.OwnedByPrincipalID != "" {
 		query += ` AND session_id IN (SELECT bridge_id FROM sessions WHERE principal_id=?)`
 		args = append(args, filter.OwnedByPrincipalID)
+	}
+	if len(filter.SessionTypes) > 0 {
+		query += ` AND session_id IN (SELECT bridge_id FROM sessions WHERE type IN (` +
+			strings.TrimSuffix(strings.Repeat("?,", len(filter.SessionTypes)), ",") + `))`
+		for _, sessionType := range filter.SessionTypes {
+			args = append(args, string(sessionType))
+		}
 	}
 	// created_at ties are common (one AskUserQuestion mints a row per
 	// question in the same millisecond), so id breaks the tie — without it

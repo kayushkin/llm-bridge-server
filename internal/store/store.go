@@ -428,6 +428,15 @@ func (s *Store) migrate() error {
 	// above covers purpose='subagent' with an empty type.
 	s.db.Exec(`UPDATE sessions SET type = 'system'
 		WHERE type = '' AND purpose IN ('subagent','workflow-subagent')`)
+	// A subagent the bridge knows the parent of runs inside that parent's
+	// process, so the bridge must never resume it, send to it or offer a
+	// button on it — and controlled_by='harness' is the flag every one of
+	// those gates reads. Only live promotion set it, so on 2026-10-19 1,254
+	// linked subagent rows (every discovery import, and every one older than
+	// August) lacked it. Idempotent: it fills only an empty flag.
+	if _, err := s.db.Exec(markLinkedSubagentsHarnessControlled); err != nil {
+		return fmt.Errorf("mark linked subagents controlled_by=harness: %w", err)
+	}
 
 	// Legacy frontend chats created before the frontends sent a purpose at
 	// all. The rows already say type='interactive' and origin='frontend', and
@@ -1158,7 +1167,7 @@ type ReconciledSession struct {
 }
 
 // ReconcileSessions resets every session in any of the given states to 'idle'
-// with pid=0 and returns the sessions that were reconciled, each with the
+// (a harness subagent to 'error', see below) with pid=0 and returns the sessions that were reconciled, each with the
 // status event it wrote. Called at startup:
 // the harness subprocess can only exist in memory, so any row marked with an
 // active state from a previous server lifetime is stale. updated_at is
@@ -1205,14 +1214,23 @@ func (s *Store) ReconcileSessions(states ...msg.SessionState) ([]ReconciledSessi
 	// One status per session rather than one UPDATE for the lot: a client
 	// may be holding this session's last status from before the restart, and
 	// only a status with a larger AsOf — its own event row — replaces it.
+	//
+	// A harness subagent is the exception. It ran inside its parent's process,
+	// which the restart killed, so its task will never report an end and it
+	// will never be resumed (the bridge does not control it). Set idle, it sat
+	// idle for good; it is recorded as the error it is.
 	reconciled := make([]ReconciledSession, 0, len(sessions))
 	for i := range sessions {
+		status := &msg.SessionStatus{State: msg.SessionIdle, Reason: msg.ReasonStartupReconcile, ChangedAt: time.Now()}
+		if sessions[i].ControlledBy == msg.ControlledByHarness {
+			status = &msg.SessionStatus{State: msg.SessionError, Reason: msg.ReasonParentProcessExited, ChangedAt: time.Now()}
+		}
 		ev := &msg.Event{
 			Type:            msg.EventSessionStatus,
 			Harness:         sessions[i].Harness,
 			BridgeSessionID: sessions[i].SessionID,
 			Timestamp:       time.Now(),
-			Status:          &msg.SessionStatus{State: msg.SessionIdle, ChangedAt: time.Now()},
+			Status:          status,
 		}
 		if _, err := s.writeSessionStatus(sessions[i].SessionID, ev, false); err != nil {
 			return nil, fmt.Errorf("reconcile session %s: %w", sessions[i].SessionID, err)
@@ -1886,7 +1904,8 @@ func (s *Store) FileInactive(cutoff time.Time, folder string) ([]string, error) 
 
 // ArchiveOld moves every session whose updated_at is older than cutoff into
 // the Archive folder, regardless of the session's current folder assignment.
-// Running sessions and sessions already in the Archive folder are left alone.
+// Sessions in any active state (msg.ActiveSessionStates) and sessions already
+// in the Archive folder are left alone.
 // Returns the bridge IDs that were moved. Auto-creates the Archive folder in
 // the registry if it doesn't exist.
 func (s *Store) ArchiveOld(cutoff time.Time) ([]string, error) {
@@ -1901,10 +1920,17 @@ func (s *Store) ArchiveOld(cutoff time.Time) ([]string, error) {
 	); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(
-		`SELECT bridge_id FROM sessions WHERE folder_name != ? AND state != 'running' AND updated_at < ?`,
-		ArchiveFolder, cutoff,
-	)
+	// Every active state is spared, not only 'running': the derivation has
+	// not written 'running' since it split into model_generating, tool_running
+	// and the rest, so the old test spared nothing.
+	activeStates := msg.ActiveSessionStates()
+	archivable := `folder_name != ? AND updated_at < ? AND state NOT IN (` +
+		strings.TrimSuffix(strings.Repeat("?,", len(activeStates)), ",") + `)`
+	archivableArgs := []any{ArchiveFolder, cutoff}
+	for _, state := range activeStates {
+		archivableArgs = append(archivableArgs, string(state))
+	}
+	rows, err := tx.Query(`SELECT bridge_id FROM sessions WHERE `+archivable, archivableArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1928,8 +1954,8 @@ func (s *Store) ArchiveOld(cutoff time.Time) ([]string, error) {
 	// activity. Bumping it would make a freshly archived session look active
 	// and defeat the next sweep's cutoff.
 	if _, err := tx.Exec(
-		`UPDATE sessions SET folder_name=? WHERE folder_name != ? AND state != 'running' AND updated_at < ?`,
-		ArchiveFolder, ArchiveFolder, cutoff,
+		`UPDATE sessions SET folder_name=? WHERE `+archivable,
+		append([]any{ArchiveFolder}, archivableArgs...)...,
 	); err != nil {
 		return nil, err
 	}
@@ -2119,11 +2145,32 @@ func (s *Store) LinkDiscoveredSessionParent(bridgeID, parentHarnessSessionID str
 	if err != nil {
 		return false, err
 	}
-	if n > 0 {
+	// A linked subagent runs inside its parent's process, so the bridge does
+	// not control it. Run whether or not this call wrote the link: a row
+	// linked before discovery set the flag gets it on the next pass.
+	marked, err := s.db.Exec(markLinkedSubagentsHarnessControlled+` AND bridge_id = ?`, bridgeID)
+	if err != nil {
+		return n > 0, fmt.Errorf("mark %s controlled_by=harness: %w", bridgeID, err)
+	}
+	markedRows, err := marked.RowsAffected()
+	if err != nil {
+		return n > 0, err
+	}
+	if n > 0 || markedRows > 0 {
 		s.notifyChanged(bridgeID)
 	}
 	return n > 0, nil
 }
+
+// markLinkedSubagentsHarnessControlled sets controlled_by='harness' on every
+// subagent row linked to a parent that does not say so already. The migration
+// runs it over the table, and LinkDiscoveredSessionParent over the one row it
+// links, so a discovered subagent is gated from the pass that links it.
+const markLinkedSubagentsHarnessControlled = `
+	UPDATE sessions SET controlled_by = 'harness'
+	 WHERE purpose IN ('subagent','workflow-subagent')
+	   AND COALESCE(manager_session_id, '') != ''
+	   AND COALESCE(controlled_by, '') = ''`
 
 // UpsertDiscoveredSession inserts a discovered session if it doesn't already exist.
 //

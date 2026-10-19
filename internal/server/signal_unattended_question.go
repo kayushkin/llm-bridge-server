@@ -205,7 +205,7 @@ func (s *Server) surfaceDerivedWorkerQuestion(sess *store.Session, verdict *turn
 		s.recordCardWaiting(signal.LinkedTodoID, sess.SessionID, "Worker asked: "+signal.Title)
 	}
 	s.harness.ApplyDerivedSessionState(sess.SessionID, msg.SessionAwaitingUser,
-		"turn_complete_signal_question", msg.SessionIdle, msg.SessionAwaitingUser)
+		msg.ReasonTurnCompleteSignalQuestion, msg.SessionIdle, msg.SessionAwaitingUser)
 }
 
 // autoContinueWorker answers a derived sign-off by sending the worker its

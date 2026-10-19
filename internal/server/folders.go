@@ -131,7 +131,7 @@ func (s *Server) handleMarkSessionDone(w http.ResponseWriter, r *http.Request) {
 		Timestamp:       time.Now(),
 		State: &msg.StateEvent{
 			State:  nextState,
-			Reason: "mark_done_user",
+			Reason: string(msg.ReasonMarkDoneUser),
 		},
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

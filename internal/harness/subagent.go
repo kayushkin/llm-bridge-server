@@ -254,13 +254,35 @@ func (r *subagentRouter) settle(ev *msg.Event) {
 		return
 	}
 
-	state := msg.SessionIdle
-	if ev.System.TaskStatus != msg.TaskStatusCompleted {
-		state = msg.SessionError
-	}
-
+	state, reason := subagentEndState(ev.System.TaskStatus)
 	task.settled = true
-	r.manager.ForceSessionState(task.bridgeID, state, "task_"+ev.System.TaskStatus)
+	if _, err := r.manager.ForceSessionState(task.bridgeID, state, reason); err != nil {
+		log.Printf("[subagent] %s: recording %s's end (%s) failed: %v", r.parentID, task.bridgeID, reason, err)
+	}
+}
+
+// subagentEndState is the state and reason a subagent session ends in, read
+// from the terminal status its parent reported for its task. A subagent has no
+// turn of its own to end, so this is the only word on how it finished.
+//
+//   - completed → completed. It used to be idle, which says "between turns,
+//     may continue" about a task that can never continue: every claude-code
+//     subagent since 2026-10-05 sat idle under a parent that said completed.
+//   - failed → error.
+//   - cancelled → aborted. Claude Code maps its own stopped and killed onto
+//     cancelled: the task was taken away, which is what aborted means
+//     (killed on purpose), not a fault of the subagent's own.
+//
+// Call only with a terminal status (msg.TaskStatusIsTerminal).
+func subagentEndState(taskStatus string) (msg.SessionState, msg.SessionStateReason) {
+	switch taskStatus {
+	case msg.TaskStatusCompleted:
+		return msg.SessionCompleted, msg.ReasonTaskCompleted
+	case msg.TaskStatusCancelled:
+		return msg.SessionAborted, msg.ReasonTaskCancelled
+	default:
+		return msg.SessionError, msg.ReasonTaskFailed
+	}
 }
 
 // route returns the bridge session id an event belongs to: the subagent's own
@@ -348,7 +370,7 @@ func (r *subagentRouter) settleUnfinished() {
 		if task.bridgeID == "" {
 			continue
 		}
-		r.manager.ForceSessionState(task.bridgeID, msg.SessionError, "parent_process_exited")
+		r.manager.ForceSessionState(task.bridgeID, msg.SessionError, msg.ReasonParentProcessExited)
 	}
 
 	// The same close for the tasks that never got a session. There is no row to

@@ -102,7 +102,7 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /sessions/{id}/tools/{tool_use_id}/snapshots":    {routeGroupOneSession, "File snapshots before and after an Edit or Write (snapshot-store)"},
 
 	// Signals.
-	"GET /signals": {routeGroupSignals, "The inbox across sessions (`?state=open`)"},
+	"GET /signals": {routeGroupSignals, "The inbox across sessions (`?state=open&kind=&surface=&session_type=&session_id=&linked_todo_id=&limit=`; `session_type` repeatable)"},
 
 	"POST /operations":                            {routeGroupOperations, "Accept an operation intent: 202 and a new receipt, or 200 and the first one for a repeated idempotency key"},
 	"GET /operations":                             {routeGroupOperations, "Receipts, newest first (`?organization_id=&principal_id=&type=&state=&created_after=&created_before=&limit=`)"},
@@ -175,7 +175,7 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /source-folders":             {routeGroupFolders, "Which folder each session `source` files into"},
 	"PUT /source-folders/{source}":    {routeGroupFolders, "Set one"},
 	"DELETE /source-folders/{source}": {routeGroupFolders, "Clear one"},
-	"GET /session-taxonomy":           {routeGroupFolders, "The types and purposes a session may carry"},
+	"GET /session-taxonomy":           {routeGroupFolders, "The types and purposes a session may carry, and the reasons its state may change for"},
 	"GET /session-taxonomy/report":    {routeGroupFolders, "Sessions whose labels break that vocabulary"},
 	"POST /admin/file-inactive":       {routeGroupFolders, "File inactive sessions; a scheduler job calls it"},
 	"POST /admin/archive-old":         {routeGroupFolders, "Archive old sessions; a scheduler job calls it"},

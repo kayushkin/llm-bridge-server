@@ -348,21 +348,21 @@ func (s *Server) onTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionStat
 		// match did not. Bounded to the states this verdict was formed
 		// about, so a turn that has already started again is left alone.
 		s.harness.ApplyDerivedSessionState(bridgeID, msg.SessionAwaitingUser,
-			"turn_complete_signal_question", msg.SessionIdle, msg.SessionAwaitingUser)
+			msg.ReasonTurnCompleteSignalQuestion, msg.SessionIdle, msg.SessionAwaitingUser)
 	case turnSignalNotification:
 		s.recordDerivedSignal(sess, verdict, msg.SignalKindNotification, nil, cardContext{})
 		// A notification does not block, so a session the heuristic parked
 		// at awaiting_user goes back to idle: nobody is being asked
 		// anything.
 		s.harness.ApplyDerivedSessionState(bridgeID, msg.SessionIdle,
-			"turn_complete_signal_notification", msg.SessionAwaitingUser)
+			msg.ReasonTurnCompleteSignalNotification, msg.SessionAwaitingUser)
 	case turnSignalNeither:
 		// Demote a heuristic false positive. This is the only path that
 		// makes an existing behaviour stricter, and it is why the
 		// classifier is worth its cost: today a turn ending in "does that
 		// make sense?" parks the session with nothing to answer.
 		s.harness.ApplyDerivedSessionState(bridgeID, msg.SessionIdle,
-			"turn_complete_signal_neither", msg.SessionAwaitingUser)
+			msg.ReasonTurnCompleteSignalNeither, msg.SessionAwaitingUser)
 	}
 }
 

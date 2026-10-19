@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -174,5 +175,33 @@ func TestCreateSessionWithoutAutoStartSpawnsNoProcess(t *testing.T) {
 	}
 	if row.PID != 0 {
 		t.Errorf("persisted PID = %d, want 0 (nothing should have spawned)", row.PID)
+	}
+}
+
+// TestCreateSessionWhoseSpawnFailsRecordsTheCause pins where a spawn failure's
+// cause goes: onto the session's status as reason spawn_failed with the error
+// as reason_detail, in the create response and in the row. Until 2026-10-19 it
+// went nowhere: br_1791866142589272438 errored in its creation second, the
+// create answered 201 with `"status": null`, and nothing anywhere said why.
+// Computer use on a session that is not Claude Code is a refusal the spawn
+// makes after the row exists, which is the case to reach.
+func TestCreateSessionWhoseSpawnFailsRecordsTheCause(t *testing.T) {
+	buildMockHarnessOnPath(t)
+	srv, st, instID := testServerWithInstance(t, msg.HarnessMock)
+
+	body := autoStartRequest(instID)
+	body.HarnessConfig = json.RawMessage(`{"computer_use": true}`)
+	got := postCreateSession(t, srv, body)
+
+	if got.State != string(msg.SessionError) || got.Status == nil || got.Status.Reason != msg.ReasonSpawnFailed ||
+		!strings.Contains(got.Status.ReasonDetail, "computer use") {
+		t.Fatalf("create response: state %q status %+v; want error, spawn_failed, the refusal as detail", got.State, got.Status)
+	}
+	row, err := st.GetSession(got.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if row.State != string(msg.SessionError) || row.Status == nil || row.Status.Reason != msg.ReasonSpawnFailed || row.Status.ReasonDetail != got.Status.ReasonDetail {
+		t.Fatalf("row: state %q status %+v; want what the response said", row.State, row.Status)
 	}
 }

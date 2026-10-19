@@ -77,7 +77,7 @@ func TestStatus_SecondParallelToolIsAStatusChangeWithoutAStateChange(t *testing.
 func TestStatus_PauseWithAToolInFlightReportsNoTools(t *testing.T) {
 	d := newDerivationState()
 	statusAfter(d, userMessage(), toolCall("t1", "Bash", `{"command":"sleep 600"}`))
-	if _, changed := d.forceState(msg.SessionPaused); !changed {
+	if _, changed := d.forceState(msg.SessionPaused, msg.ReasonUserInterrupt, ""); !changed {
 		t.Fatal("forceState reported no change")
 	}
 	got := d.currentStatus()

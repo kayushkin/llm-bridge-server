@@ -25,8 +25,9 @@ const claudeCodeLongestWakeupDelay = time.Hour + time.Minute
 // sits idle for good.
 //
 // Call it once at startup, after ReconcileAndResume. A wakeup counts as lost
-// when its session was not deliberately stopped (aborted: the user or the
-// reaper killed it), and no user_message has been logged since it came due,
+// when its session had not ended (see sessionEndedBeforeRestart: stopped,
+// finished, or killed by the idle reaper), and no user_message has been logged
+// since it came due,
 // since a wakeup that fires logs its prompt as one. A wakeup that came due
 // longer ago than autoResumeWindow is logged and left, by the same rule that
 // leaves older sessions for the user to resume.
@@ -76,7 +77,7 @@ func (s *Server) lostWakeup(sessionID string, oldestCallToRead time.Time) (*stor
 	if err != nil {
 		return nil, fmt.Errorf("read session: %w", err)
 	}
-	if msg.SessionState(sess.State) == msg.SessionAborted || sess.ControlledBy == msg.ControlledByHarness {
+	if sessionEndedBeforeRestart(sess) || sess.ControlledBy == msg.ControlledByHarness {
 		return nil, nil
 	}
 	wakeup, err := s.store.LatestScheduledWakeup(sessionID, oldestCallToRead)
@@ -94,6 +95,26 @@ func (s *Server) lostWakeup(sessionID string, oldestCallToRead time.Time) (*stor
 		return nil, nil
 	}
 	return wakeup, nil
+}
+
+// sessionEndedBeforeRestart reports whether a session was over before the
+// restart, so a wakeup it left behind is not lost but finished with:
+//
+//   - aborted: someone stopped it.
+//   - completed: it finished — marked done, or its turn ended and the idle
+//     reaper took the quiet process.
+//   - any state with reason idle_reaped: the reaper waits for a pending
+//     wakeup to come due before it kills, so a reaped session's wakeup came
+//     due, did not fire, and was given its full timeout. The reaper keeps an
+//     unanswered question's state, which is why the state alone cannot say
+//     this. Until 2026-10-19 every reap read aborted and the first rule
+//     covered it.
+func sessionEndedBeforeRestart(sess *store.Session) bool {
+	switch msg.SessionState(sess.State) {
+	case msg.SessionAborted, msg.SessionCompleted:
+		return true
+	}
+	return sess.Status != nil && sess.Status.Reason == msg.ReasonIdleReaped
 }
 
 // deliverLostWakeup sends an armed wakeup's prompt, unless the session has

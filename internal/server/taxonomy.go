@@ -44,7 +44,8 @@ type taxonomyFinding struct {
 }
 
 // handleSessionTaxonomy returns the classification vocabulary: every valid
-// session type, and every registered purpose with a live session count.
+// session type, every registered purpose with a live session count, and every
+// reason a session's status may give for its state (msg.SessionStateReasons).
 func (s *Server) handleSessionTaxonomy(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.store.SessionClassCounts()
 	if err != nil {
@@ -75,8 +76,9 @@ func (s *Server) handleSessionTaxonomy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]any{
-		"types":    types,
-		"purposes": purposes,
+		"types":         types,
+		"purposes":      purposes,
+		"state_reasons": msg.SessionStateReasons(),
 	})
 }
 

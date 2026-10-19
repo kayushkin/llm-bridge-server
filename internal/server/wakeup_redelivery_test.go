@@ -59,6 +59,35 @@ func TestLostWakeup(t *testing.T) {
 		}
 	})
 
+	t.Run("a completed session is left alone", func(t *testing.T) {
+		// The idle reaper records a finished turn as completed, after giving
+		// a pending wakeup its full timeout; a person marking it done says
+		// the same. Neither left a wakeup to deliver.
+		srv, st := testServer(t)
+		st.CreateSession(&store.Session{SessionID: "br_w", Harness: "claude_code", State: string(msg.SessionCompleted)})
+		storeScheduledWakeup(t, st, "br_w", "toolu_a", time.Now().Add(-10*time.Minute))
+		wakeup, err := srv.lostWakeup("br_w", oldestCallToRead)
+		if err != nil || wakeup != nil {
+			t.Fatalf("got %+v, %v; want none", wakeup, err)
+		}
+	})
+
+	t.Run("a reaped session that kept its question is left alone", func(t *testing.T) {
+		// The reaper keeps awaiting_user, so only the reason says the process
+		// was reaped — which before 2026-10-19 the state aborted said alone.
+		srv, st := testServer(t)
+		st.CreateSession(&store.Session{SessionID: "br_w", Harness: "claude_code", State: string(msg.SessionAwaitingUser)})
+		storeScheduledWakeup(t, st, "br_w", "toolu_a", time.Now().Add(-10*time.Minute))
+		if _, err := st.WriteSessionStatus("br_w", &msg.Event{Type: msg.EventSessionStatus,
+			Status: &msg.SessionStatus{State: msg.SessionAwaitingUser, Reason: msg.ReasonIdleReaped}}); err != nil {
+			t.Fatal(err)
+		}
+		wakeup, err := srv.lostWakeup("br_w", oldestCallToRead)
+		if err != nil || wakeup != nil {
+			t.Fatalf("got %+v, %v; want none", wakeup, err)
+		}
+	})
+
 	t.Run("a session with no wakeup", func(t *testing.T) {
 		srv, st := testServer(t)
 		st.CreateSession(&store.Session{SessionID: "br_w", Harness: "claude_code", State: string(msg.SessionIdle)})

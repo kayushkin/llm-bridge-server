@@ -215,7 +215,9 @@ func (s *Server) handleListSessionSignals(w http.ResponseWriter, r *http.Request
 
 // handleListSignals serves GET /signals — the cross-session inbox query.
 // Same optional filters as the per-session route; `?state=open` is the one
-// the "Needs you" inbox uses.
+// the "Needs you" inbox uses, and `?session_type=interactive` (repeatable)
+// keeps the person's own chats apart from background agents. Each signal
+// carries session_type.
 func (s *Server) handleListSignals(w http.ResponseWriter, r *http.Request) {
 	filter, err := signalFilterFromQuery(r)
 	if err != nil {
@@ -360,7 +362,7 @@ func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
 		// Bounded to the state the dismissal was formed about, so a session
 		// that has started another turn is left alone.
 		s.harness.ApplyDerivedSessionState(signal.SessionID, msg.SessionIdle,
-			"signal_dismissed", msg.SessionAwaitingUser)
+			msg.ReasonSignalDismissed, msg.SessionAwaitingUser)
 	}
 	if req.State == msg.SignalStateDismissed {
 		// Nobody is going to answer, so nothing is being waited on. The card's
@@ -435,6 +437,18 @@ func signalFilterFromQuery(r *http.Request) (store.SignalFilter, error) {
 			return filter, errBadEnum("limit", v, "a non-negative integer")
 		}
 		filter.Limit = n
+	}
+	// Repeatable, like type= on GET /sessions/summary: any of the named types.
+	for _, v := range q["session_type"] {
+		sessionType := msg.SessionType(v)
+		if !msg.ValidSessionType(sessionType) {
+			allowed := make([]string, 0, len(msg.SessionTypes()))
+			for _, t := range msg.SessionTypes() {
+				allowed = append(allowed, string(t))
+			}
+			return filter, errBadEnum("session_type", v, strings.Join(allowed, "|"))
+		}
+		filter.SessionTypes = append(filter.SessionTypes, sessionType)
 	}
 	return filter, nil
 }
