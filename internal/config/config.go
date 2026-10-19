@@ -161,12 +161,28 @@ type Config struct {
 	// Empty turns labelling off: drifts are still detected and held,
 	// unlabelled.
 	PromptDriftTaggerModelRole string
-	// DemoLoginSigningKey is the HMAC-SHA256 key that signs the demo login
-	// cookie and the session agent tokens, from
-	// LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY. Required, and at least
-	// DemoLoginSigningKeyMinimumBytes long: without it nothing can be signed
-	// and no caller can be identified.
+	// DemoLoginSigningKey is the HMAC-SHA256 key that signs the session agent
+	// tokens and session posting tokens a harness child is given, from
+	// LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY. The variable keeps its old name: until
+	// 2026-10-19 it also signed the login cookie, which is now an opaque token
+	// with a row in login_sessions. Required, and at least
+	// DemoLoginSigningKeyMinimumBytes long: without it no agent can be
+	// identified.
 	DemoLoginSigningKey string
+	// DemoLoginEnabled is whether POST /auth/demo-login signs anyone in, from
+	// LLMBRIDGE_DEMO_LOGIN_ENABLED (default true). A deployment whose people
+	// sign in through Entra ID sets it false, and the route then answers 404.
+	DemoLoginEnabled bool
+	// Entra ID sign-in. All four of tenant, client id, client secret and
+	// redirect URL set switch it on; none set leaves it off; some set is a
+	// startup error (ValidateEntraSignInSettings). EntraAuthorityURL is the
+	// login host, https://login.microsoftonline.com unless a test points it
+	// at a fake provider.
+	EntraTenantID     string
+	EntraClientID     string
+	EntraClientSecret string
+	EntraRedirectURL  string
+	EntraAuthorityURL string
 	// ServiceToken is the credential an internal service presents in
 	// X-LLM-Bridge-Service-Token to call this server unrestricted, from
 	// LLMBRIDGE_SERVICE_TOKEN. Required, and at least ServiceTokenMinimumBytes
@@ -203,15 +219,20 @@ const (
 	// host-local file (~/.config/file-store-tokens.env) — never the shared
 	// principal-gating file. It reads every file file-store holds.
 	FileStoreServiceTokenEnvironmentVariable = "FILE_STORE_SERVICE_TOKEN"
+	// The Entra ID client secret proves to Microsoft that a token request
+	// comes from this application; an agent holding it could redeem any
+	// authorization code meant for this server.
+	EntraClientSecretEnvironmentVariable = "LLMBRIDGE_ENTRA_CLIENT_SECRET"
 )
 
 // SecretEnvironmentVariableNames lists every environment variable that must
 // never reach a process this server spawns. A harness child runs an agent that
 // can execute shell commands; whatever is in its environment the agent can
-// read. The demo login signing key would let it mint a login cookie for any
-// principal, the service token would make it the unrestricted internal caller,
-// and a store service token would let it bypass that store's per-principal
-// enforcement. The kanban token is read by internal/kanbanclient rather than
+// read. The demo login signing key would let it mint a session agent token
+// for any principal, the service token would make it the unrestricted
+// internal caller, a store service token would let it bypass that store's
+// per-principal enforcement, and the Entra client secret would let it redeem
+// an authorization code meant for this server. The kanban token is read by internal/kanbanclient rather than
 // by Load, which is why its name is taken from that package: one spelling,
 // read in one place and stripped in another.
 func SecretEnvironmentVariableNames() []string {
@@ -221,6 +242,7 @@ func SecretEnvironmentVariableNames() []string {
 		GrantStoreServiceTokenEnvironmentVariable,
 		KanbanStoreServiceTokenEnvironmentVariable,
 		FileStoreServiceTokenEnvironmentVariable,
+		EntraClientSecretEnvironmentVariable,
 	}
 }
 
@@ -232,16 +254,16 @@ const DemoLoginSigningKeyMinimumBytes = 32
 const ServiceTokenMinimumBytes = 32
 
 // ValidateRequestAuthorizationCredentials checks the two secrets this server
-// cannot identify a caller without: the key that signs the login cookie and
-// the session agent tokens, and the token an internal service presents. Every
-// request is authorized before it reaches a handler, so a server that starts
-// without either would gate nothing while looking as though it did.
+// cannot identify a caller without: the key that signs the session agent and
+// posting tokens, and the token an internal service presents. Every request is
+// authorized before it reaches a handler, so a server that starts without
+// either would gate nothing while looking as though it did.
 //
 // server.New calls this and refuses to build a server that fails it.
 // ValidateRequestAuthorizationSettings is the whole startup check.
 func (c *Config) ValidateRequestAuthorizationCredentials() error {
 	if c.DemoLoginSigningKey == "" {
-		return fmt.Errorf("%s is unset: it signs the login cookie and every session agent token, and every request to this server is authorized",
+		return fmt.Errorf("%s is unset: it signs every session agent token and session posting token, and every request to this server is authorized",
 			DemoLoginSigningKeyEnvironmentVariable)
 	}
 	if len(c.DemoLoginSigningKey) < DemoLoginSigningKeyMinimumBytes {
@@ -367,6 +389,12 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		SignalClassifierTimeout:       settings.Duration(SettingSignalClassifierTimeout),
 		SignalClassifierMaxChars:      settings.Integer(SettingSignalClassifierMaximumCharacters),
 		DemoLoginSigningKey:           settings.String("demo_login.signing_key"),
+		DemoLoginEnabled:              settings.Boolean("demo_login.enabled"),
+		EntraTenantID:                 settings.String("entra.tenant_id"),
+		EntraClientID:                 settings.String("entra.client_id"),
+		EntraClientSecret:             settings.String("entra.client_secret"),
+		EntraRedirectURL:              settings.String("entra.redirect_url"),
+		EntraAuthorityURL:             settings.String("entra.authority_url"),
 		ServiceToken:                  settings.String("service_token"),
 		GrantStoreServiceToken:        settings.String("grant_store.service_token"),
 	}

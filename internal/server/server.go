@@ -99,10 +99,16 @@ type Server struct {
 	// the list and then a schema does not walk /proc twice. See services.go.
 	serviceInventoryMu sync.Mutex
 	serviceInventory   *serviceinventory.Inventory
-	// principalSessionCookieCodec signs and verifies the demo login cookie and
-	// the session agent tokens. Always present: New refuses to build a server
-	// without a signing key. See demo_login.go.
-	principalSessionCookieCodec *principalSessionCookieCodec
+	// harnessChildTokenSigner signs and verifies the session agent tokens
+	// and session posting tokens. Always present: New refuses to build a
+	// server without a signing key. See session_agent_token.go.
+	harnessChildTokenSigner *harnessChildTokenSigner
+	// loginClock is what login sessions and login attempts read the time
+	// from: time.Now, except in a test that lets one expire.
+	loginClock func() time.Time
+	// entraSignIn is Entra ID sign-in, nil when the Entra settings are unset.
+	// See entra_sign_in.go.
+	entraSignIn *entraSignIn
 	// principalLookupCache holds principal-store's answer about a caller —
 	// active or disabled, administrator or not — for a few seconds. See
 	// request_principal_lookup.go.
@@ -207,9 +213,18 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	if err := cfg.ValidateRequestAuthorizationCredentials(); err != nil {
 		panic(fmt.Sprintf("request authorization: %v", err))
 	}
-	srv.principalSessionCookieCodec = &principalSessionCookieCodec{
+	srv.harnessChildTokenSigner = &harnessChildTokenSigner{
 		signingKey: []byte(cfg.DemoLoginSigningKey),
 		now:        time.Now,
+	}
+	srv.loginClock = time.Now
+	// A half-configured Entra sign-in is refused here as main refuses it, so
+	// no server starts with sign-in silently off.
+	if err := cfg.ValidateEntraSignInSettings(); err != nil {
+		panic(fmt.Sprintf("entra sign-in: %v", err))
+	}
+	if cfg.EntraSignInEnabled() {
+		srv.entraSignIn = newEntraSignIn(cfg)
 	}
 	srv.principalLookupCache = newPrincipalLookupCache(srv.principalClient)
 	srv.sessionActionModels = srv

@@ -102,6 +102,13 @@ const gatedTestServerPublicURL = "https://gateway.example.test"
 
 func newGatedTestServer(t *testing.T, grantsByPrincipal map[string]map[string][]string) *gatedTestServer {
 	t.Helper()
+	return newGatedTestServerConfigured(t, grantsByPrincipal, nil)
+}
+
+// newGatedTestServerConfigured is newGatedTestServer with a last say over the
+// config before the server is built, for a test of a setting.
+func newGatedTestServerConfigured(t *testing.T, grantsByPrincipal map[string]map[string][]string, configure func(*config.Config)) *gatedTestServer {
+	t.Helper()
 	directory := t.TempDir()
 	bridgeStore, err := store.New(filepath.Join(directory, "test.db"))
 	if err != nil {
@@ -146,6 +153,9 @@ func newGatedTestServer(t *testing.T, grantsByPrincipal map[string]map[string][]
 		PublicURL:         gatedTestServerPublicURL,
 	}
 	testAuthorizationConfig(cfg)
+	if configure != nil {
+		configure(cfg)
+	}
 	gated := &gatedTestServer{
 		server:     New(bridgeStore, nil, nil, harnesses, nil, testModelStore(t), nil, cfg),
 		store:      bridgeStore,
@@ -173,7 +183,7 @@ func (gated *gatedTestServer) requestAs(t *testing.T, cookie *http.Cookie, metho
 		request.Header.Set("Content-Type", "application/json")
 	}
 	if cookie != nil {
-		request.AddCookie(cookie)
+		addLoginCookie(request, cookie)
 	}
 	return serve(gated.server, request)
 }

@@ -52,12 +52,12 @@ const sessionPostingTokenSignatureDomain = "llm-bridge-server session posting to
 //
 // Shape: <prefix>.<base64url session id>.<signature>. The session id is
 // base64url-encoded because a caller-minted session id may contain dots.
-func (codec *principalSessionCookieCodec) encodeSessionPostingToken(sessionID string) string {
+func (codec *harnessChildTokenSigner) encodeSessionPostingToken(sessionID string) string {
 	signedPortion := sessionPostingTokenPrefix + "." + base64.RawURLEncoding.EncodeToString([]byte(sessionID))
 	return signedPortion + "." + codec.sessionPostingTokenSignature(signedPortion)
 }
 
-func (codec *principalSessionCookieCodec) sessionPostingTokenSignature(signedPortion string) string {
+func (codec *harnessChildTokenSigner) sessionPostingTokenSignature(signedPortion string) string {
 	mac := hmac.New(sha256.New, codec.signingKey)
 	mac.Write([]byte(sessionPostingTokenSignatureDomain))
 	mac.Write([]byte(signedPortion))
@@ -65,7 +65,7 @@ func (codec *principalSessionCookieCodec) sessionPostingTokenSignature(signedPor
 }
 
 // decodeSessionPostingToken verifies a token and returns the session it names.
-func (codec *principalSessionCookieCodec) decodeSessionPostingToken(token string) (string, error) {
+func (codec *harnessChildTokenSigner) decodeSessionPostingToken(token string) (string, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] != sessionPostingTokenPrefix {
 		return "", errors.New("not a session posting token")
@@ -111,7 +111,7 @@ func (s *Server) sessionPostingEnvironment(session *store.Session) []string {
 	}
 	sessionURL := fmt.Sprintf("%s/sessions/%s", gatewayURL, url.PathEscape(session.SessionID))
 	environment := []string{
-		sessionPostingTokenEnvironmentVariable + "=" + s.principalSessionCookieCodec.encodeSessionPostingToken(session.SessionID),
+		sessionPostingTokenEnvironmentVariable + "=" + s.harnessChildTokenSigner.encodeSessionPostingToken(session.SessionID),
 		sessionActionsURLEnvironmentVariable + "=" + sessionURL + "/actions",
 	}
 	if s.fileStore != nil {

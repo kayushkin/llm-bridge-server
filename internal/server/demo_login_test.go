@@ -31,6 +31,12 @@ type fakePrincipalDirectory struct {
 	// groupIDsByMember answers GET /principals/{id}/groups: the groups each
 	// human belongs to. A human missing here belongs to none.
 	groupIDsByMember map[string][]string
+	// identityBindings answers every /identity-bindings request when set; a
+	// directory without it answers them principal-store's 404.
+	identityBindings http.HandlerFunc
+	// identityBindingRequests records each /identity-bindings request and its
+	// body, so a test can see what the bridge sent.
+	identityBindingRequests []recordedKanbanRequest
 }
 
 func newFakePrincipalDirectory(t *testing.T, recordsByID map[string]string) *fakePrincipalDirectory {
@@ -60,9 +66,42 @@ func newFakePrincipalDirectory(t *testing.T, recordsByID map[string]string) *fak
 		directory.mutex.Unlock()
 		_ = json.NewEncoder(w).Encode(groups)
 	})
+	identityBindings := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		directory.mutex.Lock()
+		directory.identityBindingRequests = append(directory.identityBindingRequests, recordedKanbanRequest{
+			Method: r.Method, EscapedPath: r.URL.EscapedPath(), RawQuery: r.URL.RawQuery, Header: r.Header.Clone(), Body: string(body),
+		})
+		handler := directory.identityBindings
+		directory.mutex.Unlock()
+		if handler == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"not found: no active binding"}`))
+			return
+		}
+		handler(w, r)
+	}
+	mux.HandleFunc("/identity-bindings", identityBindings)
+	mux.HandleFunc("/identity-bindings/", identityBindings)
 	directory.server = httptest.NewServer(mux)
 	t.Cleanup(directory.server.Close)
 	return directory
+}
+
+// setIdentityBindings replaces what the directory answers on /identity-bindings.
+func (directory *fakePrincipalDirectory) setIdentityBindings(handler http.HandlerFunc) {
+	directory.mutex.Lock()
+	defer directory.mutex.Unlock()
+	directory.identityBindings = handler
+}
+
+// recordedIdentityBindingRequests is every /identity-bindings request so far.
+func (directory *fakePrincipalDirectory) recordedIdentityBindingRequests() []recordedKanbanRequest {
+	directory.mutex.Lock()
+	defer directory.mutex.Unlock()
+	return append([]recordedKanbanRequest(nil), directory.identityBindingRequests...)
 }
 
 // readCount is how many lookups have reached this directory.
@@ -172,12 +211,30 @@ func demoLogin(t *testing.T, server *Server, principalID string) *httptest.Respo
 func loginCookieFrom(t *testing.T, recorder *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	for _, cookie := range recorder.Result().Cookies() {
-		if cookie.Name == demoLoginCookieName {
+		if cookie.Name == loginSessionCookieName {
+			var body loggedInPrincipalResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err == nil && body.CSRFToken != "" {
+				csrfTokenByLoginCookieValue.Store(cookie.Value, body.CSRFToken)
+			}
 			return cookie
 		}
 	}
-	t.Fatalf("no %s cookie in response (status %d, body %s)", demoLoginCookieName, recorder.Code, recorder.Body.String())
+	t.Fatalf("no %s cookie in response (status %d, body %s)", loginSessionCookieName, recorder.Code, recorder.Body.String())
 	return nil
+}
+
+// csrfTokenByLoginCookieValue remembers the CSRF token each test login was
+// given, so a test that only holds the cookie sends a request the way the
+// page that logged in would.
+var csrfTokenByLoginCookieValue sync.Map
+
+// addLoginCookie puts a login cookie on a request, with the CSRF token its
+// login answered with, as the page that logged in would send them.
+func addLoginCookie(request *http.Request, cookie *http.Cookie) {
+	request.AddCookie(cookie)
+	if token, known := csrfTokenByLoginCookieValue.Load(cookie.Value); known {
+		request.Header.Set(csrfTokenHeader, token.(string))
+	}
 }
 
 func TestDemoLoginWithAHumanSetsACookieThatAuthPrincipalReads(t *testing.T) {
@@ -214,10 +271,22 @@ func TestDemoLoginWithAHumanSetsACookieThatAuthPrincipalReads(t *testing.T) {
 	}
 
 	logout := serve(server, httptest.NewRequest("POST", "/auth/logout", nil))
-	cleared := loginCookieFrom(t, logout)
+	cleared := clearedLoginCookieFrom(t, logout)
 	if logout.Code != http.StatusNoContent || cleared.MaxAge >= 0 || cleared.Value != "" {
-		t.Fatalf("logout = %d cookie %+v, want 204 and a cleared cookie", logout.Code, cleared)
+		t.Fatalf("logout with no cookie = %d cookie %+v, want 204 and a cleared cookie", logout.Code, cleared)
 	}
+}
+
+// clearedLoginCookieFrom returns the Set-Cookie that drops the login cookie.
+func clearedLoginCookieFrom(t *testing.T, recorder *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == loginSessionCookieName {
+			return cookie
+		}
+	}
+	t.Fatalf("no %s cookie in response (status %d, body %s)", loginSessionCookieName, recorder.Code, recorder.Body.String())
+	return nil
 }
 
 func TestDemoLoginRefusesUnknownGroupDisabledAndMalformedPrincipals(t *testing.T) {
@@ -255,7 +324,7 @@ func TestDemoLoginAnswers502WhenPrincipalStoreIsDown(t *testing.T) {
 	}
 }
 
-func TestKanbanProxyWithoutAValidCookieIs401AndReachesNothing(t *testing.T) {
+func TestKanbanProxyWithoutALiveLoginSessionIs401AndReachesNothing(t *testing.T) {
 	kanban := newFakeKanbanStore(t)
 	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban.server.URL)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
@@ -268,39 +337,50 @@ func TestKanbanProxyWithoutAValidCookieIs401AndReachesNothing(t *testing.T) {
 	}
 	tampered.Value = tampered.Value[:len(tampered.Value)-1] + string(replacement)
 
-	tamperedPrincipal := *cookie
-	tamperedPrincipal.Value = strings.Replace(cookie.Value, "principal_000001", "principal_000002", 1)
+	// A cookie of the shape this server signed until 2026-10-19 names no
+	// login session: its holder signs in again.
+	oldSignedCookie := &http.Cookie{Name: loginSessionCookieName, Value: "principal_000001.1999999999.c2lnbmF0dXJl"}
 
-	expired := &http.Cookie{Name: demoLoginCookieName, Value: server.principalSessionCookieCodec.encode(principalSession{
-		PrincipalID: "principal_000001", ExpiresAt: time.Now().Add(-time.Minute),
-	})}
-	signedWithAnotherKey := &http.Cookie{Name: demoLoginCookieName, Value: (&principalSessionCookieCodec{
-		signingKey: []byte("a-different-key-that-is-32-bytes-long!!"), now: time.Now,
-	}).encode(principalSession{PrincipalID: "principal_000001", ExpiresAt: time.Now().Add(time.Hour)})}
+	revokedCookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
+	logout := httptest.NewRequest("POST", "/auth/logout", nil)
+	addLoginCookie(logout, revokedCookie)
+	if response := serve(server, logout); response.Code != http.StatusNoContent {
+		t.Fatalf("logout = %d %s", response.Code, response.Body.String())
+	}
 
-	for name, requestCookie := range map[string]*http.Cookie{
-		"no cookie":               nil,
-		"tampered signature":      &tampered,
-		"tampered principal":      &tamperedPrincipal,
-		"expired":                 expired,
-		"signed with another key": signedWithAnotherKey,
-		"malformed":               {Name: demoLoginCookieName, Value: "not-a-session"},
+	for name, check := range map[string]struct {
+		cookie *http.Cookie
+		code   string
+	}{
+		"no cookie":         {nil, "not_logged_in"},
+		"tampered token":    {&tampered, "login_session_unknown"},
+		"old signed cookie": {oldSignedCookie, "login_session_unknown"},
+		"malformed":         {&http.Cookie{Name: loginSessionCookieName, Value: "not-a-session"}, "login_session_unknown"},
+		"logged out":        {revokedCookie, "login_session_revoked"},
 	} {
 		request := httptest.NewRequest("GET", "/kanban/boards", nil)
-		if requestCookie != nil {
-			request.AddCookie(requestCookie)
+		if check.cookie != nil {
+			request.AddCookie(check.cookie)
 		}
 		response := serve(server, request)
-		if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "not_logged_in") {
-			t.Errorf("%s: /kanban/boards = %d %s, want 401 not_logged_in", name, response.Code, response.Body.String())
+		if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), check.code) {
+			t.Errorf("%s: /kanban/boards = %d %s, want 401 %s", name, response.Code, response.Body.String(), check.code)
 		}
 		who := httptest.NewRequest("GET", "/auth/principal", nil)
-		if requestCookie != nil {
-			who.AddCookie(requestCookie)
+		if check.cookie != nil {
+			who.AddCookie(check.cookie)
 		}
-		if answer := serve(server, who); answer.Code != http.StatusUnauthorized {
-			t.Errorf("%s: /auth/principal = %d, want 401", name, answer.Code)
+		if answer := serve(server, who); answer.Code != http.StatusUnauthorized || !strings.Contains(answer.Body.String(), check.code) {
+			t.Errorf("%s: /auth/principal = %d %s, want 401 %s", name, answer.Code, answer.Body.String(), check.code)
 		}
+	}
+
+	// Twelve hours on, the first login has expired.
+	server.loginClock = func() time.Time { return time.Now().Add(loginSessionLifetime + time.Second) }
+	expired := httptest.NewRequest("GET", "/kanban/boards", nil)
+	expired.AddCookie(cookie)
+	if response := serve(server, expired); response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "login_session_expired") {
+		t.Errorf("expired: /kanban/boards = %d %s, want 401 login_session_expired", response.Code, response.Body.String())
 	}
 	if got := kanban.recorded(); len(got) != 0 {
 		t.Fatalf("kanban-store received %d requests from unauthenticated callers: %+v", len(got), got)
@@ -337,7 +417,7 @@ func TestKanbanProxyCarriesOnlyTheCookiesPrincipalAndNoServiceToken(t *testing.T
 			t.Fatalf("kanban-store saw a service token header %q: %v", key, seen.Header[key])
 		}
 	}
-	if cookieHeader := seen.Header.Get("Cookie"); strings.Contains(cookieHeader, demoLoginCookieName) || !strings.Contains(cookieHeader, "unrelated=kept") {
+	if cookieHeader := seen.Header.Get("Cookie"); strings.Contains(cookieHeader, loginSessionCookieName) || !strings.Contains(cookieHeader, "unrelated=kept") {
 		t.Fatalf("kanban-store saw Cookie %q, want the unrelated cookie and not the login cookie", cookieHeader)
 	}
 	if seen.Header.Get("Accept") != "application/json" {
@@ -364,7 +444,7 @@ func TestKanbanProxyPassesPathQueryBodyAndUpstreamAnswerThroughUnchanged(t *test
 	}
 	postRequest := httptest.NewRequest("POST", "/kanban/boards/b1/cards", strings.NewReader(`{"title":"Call plumber"}`))
 	postRequest.Header.Set("Content-Type", "application/json")
-	postRequest.AddCookie(cookie)
+	addLoginCookie(postRequest, cookie)
 	response := serve(server, postRequest)
 	if response.Code != http.StatusForbidden ||
 		response.Body.String() != `{"error":"principal_000001 has no grant on board b1"}` ||

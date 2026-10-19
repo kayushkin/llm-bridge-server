@@ -3,6 +3,7 @@ module github.com/kayushkin/llm-bridge-server
 go 1.25.0
 
 require (
+	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/creack/pty v1.1.24
 	github.com/gorilla/websocket v1.5.3
 	github.com/kayushkin/agent-store v0.0.0
@@ -15,6 +16,7 @@ require (
 	github.com/kayushkin/model-store v0.0.0
 	github.com/kayushkin/snapshot-store v0.0.0
 	github.com/oklog/ulid/v2 v2.1.1
+	golang.org/x/oauth2 v0.36.0
 	modernc.org/sqlite v1.48.2
 	mvdan.cc/sh/v3 v3.13.1
 )
@@ -22,6 +24,7 @@ require (
 require (
 	github.com/anthropics/anthropic-sdk-go v1.35.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.37 // indirect

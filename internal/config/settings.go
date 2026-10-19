@@ -137,6 +137,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "How many operations run at once. More wait in the queue."},
 		{Key: "operations.lease_duration", EnvironmentVariable: "LLMBRIDGE_OPERATIONS_LEASE", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Default: "30s",
 			Description: "How long a worker's claim on a running operation lasts without renewal. An operation whose worker stops renewing is reconciled once it runs out."},
+		{Key: "demo_login.enabled", EnvironmentVariable: "LLMBRIDGE_DEMO_LOGIN_ENABLED", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "true",
+			Description: "Whether POST /auth/demo-login signs anyone in. It takes a principal id and no password, so a deployment whose people sign in through Entra ID sets this false, and the route answers 404 demo_login_disabled."},
 		{Key: "tests.allow_production_addresses", EnvironmentVariable: productiondefaults.AllowInTestsEnvironmentVariable, Kind: behaviour, ValueType: text,
 			Description: "Set to anything, lets a go test binary use this host's live addresses. Never set on a running server."},
 
@@ -179,6 +181,14 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "Where /api/skill-store/ forwards to."},
 		{Key: "usage_store.url", EnvironmentVariable: "LLMBRIDGE_USAGE_STORE_URL", Kind: wiring, ValueType: text, Default: productiondefaults.UsageStoreURL,
 			Description: "usage-store, asked before each routed one-shot call whether the subscription the call would bill is used up; a model on a full, fresh window is skipped for the role's next. Empty switches the check off."},
+		{Key: "entra.tenant_id", EnvironmentVariable: "LLMBRIDGE_ENTRA_TENANT_ID", Kind: wiring, ValueType: text,
+			Description: "The Microsoft Entra ID tenant people sign in from, as a GUID. A token from any other tenant is refused. Entra sign-in is on only when this, the client id, the client secret and the redirect URL are all set."},
+		{Key: "entra.client_id", EnvironmentVariable: "LLMBRIDGE_ENTRA_CLIENT_ID", Kind: wiring, ValueType: text,
+			Description: "The application (client) id of this server's Entra ID app registration; an ID token must name it as its audience."},
+		{Key: "entra.redirect_url", EnvironmentVariable: "LLMBRIDGE_ENTRA_REDIRECT_URL", Kind: wiring, ValueType: text,
+			Description: "The absolute URL Entra ID sends the browser back to, which must reach GET /auth/entra/callback and be registered on the app exactly."},
+		{Key: "entra.authority_url", EnvironmentVariable: "LLMBRIDGE_ENTRA_AUTHORITY_URL", Kind: wiring, ValueType: text, Default: "https://login.microsoftonline.com",
+			Description: "The Entra ID login host. The issuer a token must carry is this, the tenant id and /v2.0. It exists so a test can point sign-in at a fake provider."},
 		{Key: "auth_store.url", EnvironmentVariable: "AUTH_STORE_URL", Kind: wiring, ValueType: text, Default: "http://127.0.0.1:8303",
 			Description: "auth-store, which resolves the credentials bound to a harness instance."},
 
@@ -216,7 +226,9 @@ func SettingDefinitions() []servicesettings.Definition {
 
 		// Secrets.
 		{Key: "demo_login.signing_key", EnvironmentVariable: DemoLoginSigningKeyEnvironmentVariable, Kind: secret, ValueType: text, Required: true,
-			Description: "Signs the login cookie and every session agent token."},
+			Description: "Signs every session agent token and session posting token. The login cookie is an opaque token with a row in login_sessions and is not signed."},
+		{Key: "entra.client_secret", EnvironmentVariable: EntraClientSecretEnvironmentVariable, Kind: secret, ValueType: text,
+			Description: "The client secret of this server's Entra ID app registration, sent with each authorization code it redeems. It never reaches a harness child."},
 		{Key: "service_token", EnvironmentVariable: ServiceTokenEnvironmentVariable, Kind: secret, ValueType: text, Required: true,
 			Description: "What an internal service presents in X-LLM-Bridge-Service-Token to reach the operator routes."},
 		{Key: "grant_store.service_token", EnvironmentVariable: GrantStoreServiceTokenEnvironmentVariable, Kind: secret, ValueType: text,

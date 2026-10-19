@@ -147,7 +147,7 @@ func (s *Server) serveStoreProxyAsPrincipal(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	outbound.Header.Set(principalIdentityHeader, principalID)
-	removeCookieFromRequestHeader(outbound.Header, demoLoginCookieName)
+	removeCookieFromRequestHeader(outbound.Header, loginSessionCookieName)
 
 	response, err := storeProxyHTTPClient.Do(outbound)
 	if err != nil {

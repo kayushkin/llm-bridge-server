@@ -23,9 +23,11 @@ package server
 //     the token, so it may say which of its logged-in users a request is for.
 //     The request is then that principal's in every respect. X-Principal-Id
 //     without the token is 401; it must never be believed on its own.
-//   - a principal: a valid demo login cookie, or — on the identity-carrying
-//     store proxies only — a session agent token (session_agent_token.go).
-//     What a principal may do depends on the route's class.
+//   - a principal: a login cookie naming a live login session
+//     (login_sessions.go) — which must also carry the session's CSRF token on
+//     anything but GET, HEAD and OPTIONS — or, on the identity-carrying store
+//     proxies only, a session agent token (session_agent_token.go). What a
+//     principal may do depends on the route's class.
 //   - nobody: 401 on any route that is not open or a harness callback.
 //
 // Whatever principal a request resolves to is read from principal-store
@@ -102,6 +104,10 @@ const (
 	// (session_posting_token.go) as a Bearer token — for that session and no
 	// other. The token is accepted on no other class.
 	routeSessionOwnerOrItsAgentPostsIntoSession
+	// routePrincipalManagesOwnLoginSessions lists or revokes login sessions;
+	// the handler narrows a principal to its own, and lets an administrator
+	// reach anyone's.
+	routePrincipalManagesOwnLoginSessions
 )
 
 // routeAccessRule is one route's classification.
@@ -152,10 +158,15 @@ func cannotBeFilteredRoute(reason string) routeAccessRule {
 // HandleFunc/Handle in this package has no rule.
 var routeAccessRules = map[string]routeAccessRule{
 	// Open.
-	"GET /health":           openRoute("liveness for load balancers and healthcheck"),
-	"POST /auth/demo-login": openRoute("how a principal obtains a login"),
-	"GET /auth/principal":   openRoute("answers 401 itself without a valid cookie"),
-	"POST /auth/logout":     openRoute("clears a cookie; needs none"),
+	"GET /health":                     openRoute("liveness for load balancers and healthcheck"),
+	"POST /auth/demo-login":           openRoute("how a principal obtains a login; answers 404 itself when switched off"),
+	"GET /auth/entra/start":           openRoute("sends the browser to Entra ID to sign in"),
+	"GET /auth/entra/callback":        openRoute("Entra ID sends the browser back here; the handler verifies everything it is given"),
+	"GET /auth/principal":             openRoute("answers 401 itself without a live login session"),
+	"POST /auth/logout":               openRoute("revokes the cookie's live session, checking its CSRF token itself, and clears a dead cookie with none"),
+	"GET /auth/sessions":              {class: routePrincipalManagesOwnLoginSessions, reason: "a principal's own login sessions; an administrator names anyone's"},
+	"POST /auth/sessions/{id}/revoke": {class: routePrincipalManagesOwnLoginSessions, reason: "ends a principal's own login session; an administrator ends anyone's"},
+	"GET /auth/login-attempts":        operatorRoute("every sign-in attempt, with the identities of people refused"),
 
 	// Harness callbacks: called by processes this server spawned or by
 	// runners, none of which carry a login.
@@ -305,6 +316,11 @@ var routeAccessRules = map[string]routeAccessRule{
 	"DELETE /machines/{id}":                        operatorRoute("machine registry"),
 	"POST /api/runner/seed/broadcast":              operatorRoute("tells every runner to reconcile"),
 
+	// Identity bindings in principal-store: who an Entra identity signs in as.
+	"GET /admin/identity-bindings":              operatorRoute("which outside identity signs in as which principal"),
+	"POST /admin/identity-bindings":             operatorRoute("decides who an outside identity signs in as"),
+	"POST /admin/identity-bindings/{id}/unlink": operatorRoute("stops an outside identity signing in, and ends its login sessions"),
+
 	// agent-store's library routes other than the two catalog reads above.
 	"POST /agents":                  operatorRoute("agent-store write"),
 	"PUT /agents/{slug}":            operatorRoute("agent-store write"),
@@ -387,6 +403,9 @@ type requestCaller struct {
 	// owns it, every operator route, every list unfiltered, both store
 	// proxies.
 	isAdministrator bool
+	// loginSessionID is the login session whose cookie authenticated the
+	// request, and empty for every other credential.
+	loginSessionID string
 	// postingAgentOfSessionID is set, and nothing else is, when the caller
 	// is a session's own agent presenting its session posting token. It reaches
 	// only routeSessionOwnerOrItsAgentPostsIntoSession, for this session.
@@ -486,7 +505,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// looked at, so there is no route on which it could be believed.
 	if headerName := principalIdentityHeaderNameIn(r.Header); headerName != "" {
 		writeJSONError(w, http.StatusUnauthorized, "principal_header_without_service_token", fmt.Sprintf(
-			"%s says which principal a request acts as and is believed only from a caller presenting %s; log in with POST /auth/demo-login instead",
+			"%s says which principal a request acts as and is believed only from a caller presenting %s; sign in with GET /auth/entra/start or POST /auth/demo-login instead",
 			headerName, serviceTokenHeader))
 		return
 	}
@@ -512,7 +531,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	principalID, credentialError := s.principalOfRequest(r, rule)
+	principalID, loginSessionID, credentialError := s.principalOfRequest(r, rule)
 	if credentialError != nil {
 		credentialError.write(w)
 		return
@@ -522,6 +541,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		credentialError.write(w)
 		return
 	}
+	caller.loginSessionID = loginSessionID
 	s.serveAsCaller(w, r, pattern, rule, caller)
 }
 
@@ -588,7 +608,8 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			return
 		}
 	case routePrincipalCreatesSession, routePrincipalSeesOwnSessionsOnly, routePrincipalReadsCatalog,
-		routePrincipalOrSessionAgentThroughStoreProxy, routePrincipalCreatesOperation, routePrincipalSeesOwnOperationsOnly:
+		routePrincipalOrSessionAgentThroughStoreProxy, routePrincipalCreatesOperation, routePrincipalSeesOwnOperationsOnly,
+		routePrincipalManagesOwnLoginSessions:
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf("route %q has an access class this server does not handle", pattern))
 		return
@@ -637,30 +658,36 @@ func (e *requestCredentialError) write(w http.ResponseWriter) {
 }
 
 // principalOfRequest establishes which principal a request acts as, from its
-// login cookie — or, on a route that accepts one, its session agent token.
-func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (string, *requestCredentialError) {
+// login cookie — or, on a route that accepts one, its session agent token —
+// and returns the login session's id when the cookie was the credential. A
+// cookie-authenticated request with an unsafe method is refused here unless
+// it carries the session's CSRF token.
+func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (string, string, *requestCredentialError) {
 	if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization {
 		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy {
-			return "", &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
+			return "", "", &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
 				"an Authorization header is accepted only on %s/ and %s/, as a session agent token; this route takes the login cookie or %s",
 				kanbanProxyMountPrefix, grantStoreProxyMountPrefix, serviceTokenHeader)}
 		}
 		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 		if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
-			return "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token",
+			return "", "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token",
 				"the Authorization header must be \"Bearer <session agent token>\""}
 		}
 		principalID, err := s.principalOfSessionAgentToken(strings.TrimSpace(token))
 		if err != nil {
-			return "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token", err.Error()}
+			return "", "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token", err.Error()}
 		}
-		return principalID, nil
+		return principalID, "", nil
 	}
-	session, err := s.verifiedPrincipalSession(r)
-	if err != nil {
-		return "", &requestCredentialError{http.StatusUnauthorized, "not_logged_in", err.Error()}
+	session, refusal := s.liveLoginSessionOfRequest(r)
+	if refusal != nil {
+		return "", "", refusal
 	}
-	return session.PrincipalID, nil
+	if refusal := csrfRefusalOf(r, session); refusal != nil {
+		return "", "", refusal
+	}
+	return session.PrincipalID, session.ID, nil
 }
 
 // postingAgentOfRequest verifies a session posting token and holds it to the
@@ -672,7 +699,7 @@ func (s *Server) postingAgentOfRequest(r *http.Request, pattern string, rule rou
 		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "invalid_session_posting_token",
 			"the Authorization header must be \"Bearer <session posting token>\""}
 	}
-	tokenSessionID, err := s.principalSessionCookieCodec.decodeSessionPostingToken(strings.TrimSpace(token))
+	tokenSessionID, err := s.harnessChildTokenSigner.decodeSessionPostingToken(strings.TrimSpace(token))
 	if err != nil {
 		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "invalid_session_posting_token", err.Error()}
 	}

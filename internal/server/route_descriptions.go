@@ -186,11 +186,19 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /services/databases/rows":   {routeGroupServices, "Newest rows of one table (`?path=&table=&filter=col:op:value`)"},
 
 	// Login and store proxies.
-	"POST /auth/demo-login":          {routeGroupLogin, "Sign in as a principal by id, with no password"},
-	"GET /auth/principal":            {routeGroupLogin, "Who the login cookie names"},
-	"POST /auth/logout":              {routeGroupLogin, "Clear the cookie"},
-	kanbanProxyMountPrefix + "/":     {routeGroupLogin, "kanban-store `/api/…`, as the caller"},
-	grantStoreProxyMountPrefix + "/": {routeGroupLogin, "grant-store `/…`, as the caller"},
+	"POST /auth/demo-login":                     {routeGroupLogin, "Sign in as a principal by id, with no password; 404 when switched off"},
+	"GET /auth/entra/start":                     {routeGroupLogin, "Send the browser to Entra ID to sign in, coming back to return_to"},
+	"GET /auth/entra/callback":                  {routeGroupLogin, "Where Entra ID sends the browser back; verifies the ID token and starts a login session"},
+	"GET /auth/principal":                       {routeGroupLogin, "Who the login cookie names, and the session's CSRF token"},
+	"POST /auth/logout":                         {routeGroupLogin, "Revoke the cookie's login session and clear the cookie"},
+	"GET /auth/sessions":                        {routeGroupLogin, "The caller's login sessions; an administrator names anyone's with principal_id"},
+	"POST /auth/sessions/{id}/revoke":           {routeGroupLogin, "End a login session, with a reason"},
+	"GET /auth/login-attempts":                  {routeGroupLogin, "Sign-in attempts and how each ended, filtered by outcome"},
+	"GET /admin/identity-bindings":              {routeGroupLogin, "principal-store's identity bindings, query passed through"},
+	"POST /admin/identity-bindings":             {routeGroupLogin, "Link an Entra identity to a principal, as the calling administrator"},
+	"POST /admin/identity-bindings/{id}/unlink": {routeGroupLogin, "Unlink an identity and revoke its live login sessions"},
+	kanbanProxyMountPrefix + "/":                {routeGroupLogin, "kanban-store `/api/…`, as the caller"},
+	grantStoreProxyMountPrefix + "/":            {routeGroupLogin, "grant-store `/…`, as the caller"},
 
 	// Runners and harness callbacks.
 	"GET /api/runner/ws":                         {routeGroupRunners, "A runner's WebSocket"},

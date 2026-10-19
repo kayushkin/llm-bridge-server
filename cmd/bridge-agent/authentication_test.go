@@ -10,8 +10,9 @@ import (
 )
 
 // fakeGatedServer stands in for llm-bridge-server's gate: POST /auth/demo-login
-// is open and sets a cookie, and POST /sessions answers 401 to a request that
-// carries neither that cookie nor the service token. It records the
+// is open, sets a cookie and answers with a CSRF token, and POST /sessions
+// answers 401 to a request that carries neither that cookie nor the service
+// token, and 403 to a cookie without its CSRF token. It records the
 // credential each create arrived with.
 type fakeGatedServer struct {
 	loggedInAs       string
@@ -34,13 +35,18 @@ func (f *fakeGatedServer) handler(t *testing.T) http.Handler {
 			return
 		}
 		f.loggedInAs = request.PrincipalID
-		http.SetCookie(w, &http.Cookie{Name: "llm_bridge_principal_session", Value: "signed-" + request.PrincipalID, Path: "/", HttpOnly: true})
+		http.SetCookie(w, &http.Cookie{Name: "llm_bridge_principal_session", Value: "token-" + request.PrincipalID, Path: "/", HttpOnly: true})
+		_, _ = w.Write([]byte(`{"principal_id":"` + request.PrincipalID + `","csrf_token":"csrf-` + request.PrincipalID + `"}`))
 	})
 	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
 		token := r.Header.Get(serviceTokenHeader)
 		cookie, _ := r.Cookie("llm_bridge_principal_session")
 		if token == "" && cookie == nil {
 			http.Error(w, `{"error":{"code":"not_logged_in"}}`, http.StatusUnauthorized)
+			return
+		}
+		if cookie != nil && r.Header.Get(csrfTokenHeader) != "csrf-"+strings.TrimPrefix(cookie.Value, "token-") {
+			http.Error(w, `{"error":{"code":"csrf_token_mismatch"}}`, http.StatusForbidden)
 			return
 		}
 		f.createdWithToken = token
@@ -68,7 +74,7 @@ func TestAPrincipalWithNoServiceTokenLogsInAndCreatesTheSessionWithTheCookie(t *
 	if fake.loggedInAs != "principal_000001" {
 		t.Errorf("logged in as %q, want principal_000001", fake.loggedInAs)
 	}
-	if fake.createdByCookie != "signed-principal_000001" {
+	if fake.createdByCookie != "token-principal_000001" {
 		t.Errorf("create carried cookie %q, want the login's", fake.createdByCookie)
 	}
 	if fake.createdWithToken != "" || fake.createdAsHeader != "" {

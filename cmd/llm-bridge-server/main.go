@@ -58,7 +58,22 @@ func main() {
 	if err := forbidSameUserProcessesFromReadingThisProcess(); err != nil {
 		log.Fatalf("refusing to start, because an agent running as this user could read the login signing key out of this process: %v", err)
 	}
-	log.Printf("every route is gated (service token or login); POST /auth/demo-login signs in as any active human principal-store principal with no password — a stand-in for real login, never expose it to the internet; /kanban/ proxies to kanban-store %s and /grant-store/ to grant-store %s carrying X-Principal-Id, so neither store may be reachable except through here; principals read from principal-store %s",
+	// A half-configured Entra sign-in is a mistake in the unit; starting with
+	// sign-in silently off would hide it until someone failed to sign in.
+	if err := cfg.ValidateEntraSignInSettings(); err != nil {
+		log.Fatalf("refusing to start: %v", err)
+	}
+	if cfg.DemoLoginEnabled {
+		log.Printf("demo login is ON: POST /auth/demo-login signs in as any active human principal-store principal with no password — a stand-in for real login, never expose it to the internet; LLMBRIDGE_DEMO_LOGIN_ENABLED=false switches it off")
+	} else {
+		log.Printf("demo login is OFF (LLMBRIDGE_DEMO_LOGIN_ENABLED=false): POST /auth/demo-login answers 404 demo_login_disabled")
+	}
+	if cfg.EntraSignInEnabled() {
+		log.Printf("Entra ID sign-in is ON for tenant %s, client %s, issuer %s, redirect %s", cfg.EntraTenantID, cfg.EntraClientID, cfg.EntraIssuerURL(), cfg.EntraRedirectURL)
+	} else {
+		log.Printf("Entra ID sign-in is OFF: no LLMBRIDGE_ENTRA_* settings")
+	}
+	log.Printf("every route is gated (service token or login session); /kanban/ proxies to kanban-store %s and /grant-store/ to grant-store %s carrying X-Principal-Id, so neither store may be reachable except through here; principals read from principal-store %s",
 		cfg.KanbanStoreURL, cfg.GrantStoreURL, cfg.PrincipalStoreURL)
 
 	// Say where the two stores that outlive this process are, before writing

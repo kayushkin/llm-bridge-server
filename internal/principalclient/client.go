@@ -130,3 +130,86 @@ func (c *Client) GroupIDsOf(ctx context.Context, principalID string) ([]string, 
 	}
 	return ids, nil
 }
+
+// ErrIdentityNotProvisioned is principal-store answering that no active
+// binding links the identity to a principal: the person has not been
+// provisioned, and may not sign in.
+var ErrIdentityNotProvisioned = errors.New("identity is not bound to any principal")
+
+// IdentityBinding is principal-store's record linking an outside identity —
+// for Entra ID the tenant id and object id — to one human principal.
+type IdentityBinding struct {
+	ID           string `json:"id"`
+	Seq          int64  `json:"seq"`
+	PrincipalID  string `json:"principal_id"`
+	Provider     string `json:"provider"`
+	TenantID     string `json:"tenant_id"`
+	Subject      string `json:"subject"`
+	LinkedAt     int64  `json:"linked_at"`
+	LinkedBy     string `json:"linked_by"`
+	LinkNote     string `json:"link_note"`
+	UnlinkedAt   int64  `json:"unlinked_at"`
+	UnlinkedBy   string `json:"unlinked_by"`
+	UnlinkReason string `json:"unlink_reason"`
+}
+
+// IdentityResolution is principal-store's answer to "who does this identity
+// sign in as": the active binding and the principal it names, which comes back
+// even when disabled so the caller can say why it refuses.
+type IdentityResolution struct {
+	Binding   IdentityBinding `json:"binding"`
+	Principal Principal       `json:"principal"`
+}
+
+// ResolveIdentityBinding asks principal-store which principal an outside
+// identity is bound to. It returns an error wrapping ErrIdentityNotProvisioned
+// when principal-store answers 404 with its own error body, and any other
+// error when it could not be asked or answered something else. A 2xx whose
+// binding does not name the identity asked about is an error, not a match.
+func (c *Client) ResolveIdentityBinding(ctx context.Context, provider, tenantID, subject string) (IdentityResolution, error) {
+	query := url.Values{"provider": {provider}, "tenant_id": {tenantID}, "subject": {subject}}
+	requestURL := c.url + "/identity-bindings/resolve?" + query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return IdentityResolution{}, fmt.Errorf("build GET %s: %w", requestURL, err)
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return IdentityResolution{}, fmt.Errorf("principal-store unreachable: GET %s: %w", requestURL, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return IdentityResolution{}, fmt.Errorf("read principal-store response: %w", err)
+	}
+	if response.StatusCode/100 == 2 {
+		var resolution IdentityResolution
+		if err := json.Unmarshal(body, &resolution); err != nil {
+			return IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with %s and a body that is not an identity resolution: %w", requestURL, response.Status, err)
+		}
+		binding := resolution.Binding
+		if binding.ID == "" || binding.Provider != provider || !strings.EqualFold(binding.TenantID, tenantID) || !strings.EqualFold(binding.Subject, subject) ||
+			binding.UnlinkedAt != 0 || resolution.Principal.ID == "" || resolution.Principal.ID != binding.PrincipalID || resolution.Principal.Kind == "" {
+			return IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with binding %+v and principal %q, which is not an active binding of the identity asked about", requestURL, binding, resolution.Principal.ID)
+		}
+		return resolution, nil
+	}
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	switch {
+	case response.StatusCode == http.StatusNotFound && parsed.Error != "":
+		return IdentityResolution{}, fmt.Errorf("%w: %s", ErrIdentityNotProvisioned, parsed.Error)
+	case response.StatusCode == http.StatusNotFound:
+		return IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with 404 and no JSON error, which is Go's answer for a route that does not exist, not for an unprovisioned identity: check LLMBRIDGE_PRINCIPAL_STORE_URL", requestURL)
+	default:
+		return IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
+	}
+}
+
+// BaseURL is principal-store's base URL, for the administrator routes that
+// pass a request through to it unchanged.
+func (c *Client) BaseURL() string {
+	return c.url
+}

@@ -251,7 +251,7 @@ func TestAnAgentSharesIntoItsOwnSessionAndNoOther(t *testing.T) {
 
 func TestASessionPostingTokenIsNoOtherKindOfCredential(t *testing.T) {
 	srv, _ := testServer(t)
-	codec := srv.principalSessionCookieCodec
+	codec := srv.harnessChildTokenSigner
 	token := codec.encodeSessionPostingToken("br_1")
 	if sessionID, err := codec.decodeSessionPostingToken(token); err != nil || sessionID != "br_1" {
 		t.Fatalf("round trip: %q, %v", sessionID, err)

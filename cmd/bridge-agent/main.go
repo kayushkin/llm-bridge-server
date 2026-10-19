@@ -29,8 +29,9 @@
 //     strips this token from every harness child, so an agent session never has
 //     it.
 //   - --principal alone: the CLI logs in through POST /auth/demo-login as that
-//     principal and the delegate is created as them. This is how an agent
-//     session runs the CLI.
+//     principal and the delegate is created as them, sending the login's CSRF
+//     token with every request. This is how an agent session runs the CLI,
+//     and it needs a server with demo login switched on.
 //
 // With neither, the CLI stops before it calls the server, rather than guess
 // whose delegate it is starting.
@@ -70,6 +71,7 @@ const (
 	serviceTokenEnvironmentVariable = "LLMBRIDGE_SERVICE_TOKEN"
 	serviceTokenHeader              = "X-LLM-Bridge-Service-Token"
 	principalIDHeader               = "X-Principal-Id"
+	csrfTokenHeader                 = "X-CSRF-Token"
 )
 
 // bundleDir holds Claude Code MCP config files, one per bundle. The "none"
@@ -246,6 +248,9 @@ type delegate struct {
 	// cookie jar carries the login cookie instead.
 	serviceToken      string
 	actingPrincipalID string
+	// csrfToken is the login session's CSRF token, from the login response.
+	// The server refuses a cookie-authenticated POST without it.
+	csrfToken string
 }
 
 // authenticatedDelegate returns a delegate that every server route will
@@ -270,8 +275,8 @@ func authenticatedDelegate(ctx context.Context, server, serviceToken, principalI
 	return d, nil
 }
 
-// demoLogin obtains the login cookie; the client's jar sends it on every
-// later request.
+// demoLogin obtains the login cookie, which the client's jar sends on every
+// later request, and the CSRF token do sends beside it.
 func (d *delegate) demoLogin(ctx context.Context, principalID string) error {
 	body, err := json.Marshal(map[string]string{"principal_id": principalID})
 	if err != nil {
@@ -285,6 +290,16 @@ func (d *delegate) demoLogin(ctx context.Context, principalID string) error {
 	if resp.StatusCode >= 300 {
 		return httpError(resp)
 	}
+	var login struct {
+		CSRFToken string `json:"csrf_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&login); err != nil {
+		return fmt.Errorf("read the login response: %w", err)
+	}
+	if login.CSRFToken == "" {
+		return fmt.Errorf("the login response carries no csrf_token, so every POST this CLI makes would be refused; is the server older than login sessions?")
+	}
+	d.csrfToken = login.CSRFToken
 	return nil
 }
 
@@ -295,6 +310,9 @@ func (d *delegate) do(req *http.Request) (*http.Response, error) {
 		if d.actingPrincipalID != "" {
 			req.Header.Set(principalIDHeader, d.actingPrincipalID)
 		}
+	}
+	if d.csrfToken != "" {
+		req.Header.Set(csrfTokenHeader, d.csrfToken)
 	}
 	return d.client.Do(req)
 }

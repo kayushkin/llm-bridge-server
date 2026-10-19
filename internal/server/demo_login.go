@@ -2,16 +2,19 @@ package server
 
 // Demo login and the identity-carrying store proxies.
 //
-// ⚠️ This is a stand-in for real login, for a product deployed separately from
-// this host with its own frontend. A caller names a principal-store principal
-// and is signed in as it — no password, no second factor — and every request it
-// then sends through /kanban/ reaches kanban-store carrying that principal's id
-// in X-Principal-Id, which kanban-store trusts and filters boards by. The
-// company's real login replaces it; anyone who can reach POST /auth/demo-login
-// can sign in as anybody.
+// ⚠️ Demo login is a stand-in for real login. A caller names a principal-store
+// principal and is signed in as it — no password, no second factor — and every
+// request it then sends through /kanban/ reaches kanban-store carrying that
+// principal's id in X-Principal-Id, which kanban-store trusts and filters
+// boards by. Entra ID sign-in (entra_sign_in.go) is the real login; a
+// deployment that uses it switches demo login off with
+// LLMBRIDGE_DEMO_LOGIN_ENABLED=false. While it is on, anyone who can reach
+// POST /auth/demo-login can sign in as anybody.
 //
-// Because kanban-store trusts the header, two things make this safe only as a
-// demo, and only behind this proxy:
+// Either way the result is a login session (login_sessions.go): a row and an
+// opaque cookie, revocable on the server.
+//
+// Because kanban-store trusts the header, two things make the proxy safe:
 //
 //   - The header is set here and nowhere else. Every client-sent
 //     X-Principal-Id and X-Kanban-Store-Service-Token is deleted before the
@@ -21,80 +24,16 @@ package server
 //     a user who can reach it directly can send any X-Principal-Id they like.
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
-
-// demoLoginCookieName is the cookie that carries a signed principal session.
-const demoLoginCookieName = "llm_bridge_principal_session"
-
-// demoLoginSessionLifetime is how long a demo login lasts before the caller
-// must log in again. There is no refresh.
-const demoLoginSessionLifetime = 12 * time.Hour
-
-// principalSessionCookieCodec signs and verifies the demo login cookie.
-//
-// The cookie value is `<principal id>.<expiry epoch seconds>.<signature>`,
-// where the signature is base64url(HMAC-SHA256(key, "<principal id>.<expiry>")).
-// A principal id is refused at login unless it is made only of letters, digits
-// and underscores, so the "." separators are unambiguous.
-type principalSessionCookieCodec struct {
-	signingKey []byte
-	now        func() time.Time
-}
-
-// principalSession is what a verified cookie says: who, and until when.
-type principalSession struct {
-	PrincipalID string
-	ExpiresAt   time.Time
-}
-
-func (codec *principalSessionCookieCodec) signature(signedPortion string) string {
-	mac := hmac.New(sha256.New, codec.signingKey)
-	mac.Write([]byte(signedPortion))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-}
-
-func (codec *principalSessionCookieCodec) encode(session principalSession) string {
-	signedPortion := session.PrincipalID + "." + strconv.FormatInt(session.ExpiresAt.Unix(), 10)
-	return signedPortion + "." + codec.signature(signedPortion)
-}
-
-// decode verifies a cookie value. Every failure — wrong shape, bad signature,
-// expired — is an error; there is no partially-trusted result.
-func (codec *principalSessionCookieCodec) decode(cookieValue string) (principalSession, error) {
-	parts := strings.Split(cookieValue, ".")
-	if len(parts) != 3 {
-		return principalSession{}, errors.New("malformed session cookie")
-	}
-	principalID, expiryText, presentedSignature := parts[0], parts[1], parts[2]
-	expectedSignature := codec.signature(principalID + "." + expiryText)
-	if !hmac.Equal([]byte(presentedSignature), []byte(expectedSignature)) {
-		return principalSession{}, errors.New("session cookie signature does not verify")
-	}
-	if !isWellFormedPrincipalID(principalID) {
-		return principalSession{}, errors.New("session cookie names a malformed principal id")
-	}
-	expirySeconds, err := strconv.ParseInt(expiryText, 10, 64)
-	if err != nil {
-		return principalSession{}, errors.New("session cookie expiry is not a number")
-	}
-	expiresAt := time.Unix(expirySeconds, 0).UTC()
-	if !codec.now().Before(expiresAt) {
-		return principalSession{}, errors.New("session cookie has expired")
-	}
-	return principalSession{PrincipalID: principalID, ExpiresAt: expiresAt}, nil
-}
 
 // isWellFormedPrincipalID accepts principal-store's id shape (principal_000001):
 // the principal_ prefix followed by letters, digits and underscores only.
@@ -113,12 +52,23 @@ func isWellFormedPrincipalID(principalID string) bool {
 	return true
 }
 
-// registerLoginAndStoreProxyRoutes mounts the demo login routes and the
-// kanban-store and grant-store proxies. They are always mounted.
+// registerLoginAndStoreProxyRoutes mounts the login routes, the login session
+// and identity binding administration routes, and the kanban-store and
+// grant-store proxies. They are always mounted: a switched-off sign-in method
+// answers 404 from its handler, so the route table does not depend on
+// settings.
 func (s *Server) registerLoginAndStoreProxyRoutes() {
 	s.mux.HandleFunc("POST /auth/demo-login", s.handleDemoLogin)
+	s.mux.HandleFunc("GET /auth/entra/start", s.handleEntraSignInStart)
+	s.mux.HandleFunc("GET /auth/entra/callback", s.handleEntraSignInCallback)
 	s.mux.HandleFunc("GET /auth/principal", s.handleGetLoggedInPrincipal)
-	s.mux.HandleFunc("POST /auth/logout", s.handleDemoLogout)
+	s.mux.HandleFunc("POST /auth/logout", s.handleLogout)
+	s.mux.HandleFunc("GET /auth/sessions", s.handleListLoginSessions)
+	s.mux.HandleFunc("POST /auth/sessions/{id}/revoke", s.handleRevokeLoginSession)
+	s.mux.HandleFunc("GET /auth/login-attempts", s.handleListLoginAttempts)
+	s.mux.HandleFunc("GET /admin/identity-bindings", s.handleListIdentityBindings)
+	s.mux.HandleFunc("POST /admin/identity-bindings", s.handleLinkIdentityBinding)
+	s.mux.HandleFunc("POST /admin/identity-bindings/{id}/unlink", s.handleUnlinkIdentityBinding)
 	s.mux.HandleFunc(kanbanProxyMountPrefix+"/", s.handleKanbanStoreProxyAsPrincipal)
 	s.mux.HandleFunc(grantStoreProxyMountPrefix+"/", s.handleGrantStoreProxyAsPrincipal)
 }
@@ -127,14 +77,14 @@ type demoLoginRequest struct {
 	PrincipalID string `json:"principal_id"`
 }
 
-type loggedInPrincipalResponse struct {
-	PrincipalID string    `json:"principal_id"`
-	ExpiresAt   time.Time `json:"expires_at"`
-}
-
 // handleDemoLogin signs the caller in as a human, active principal that
-// principal-store has.
+// principal-store has, unless demo login is switched off.
 func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.DemoLoginEnabled {
+		writeJSONError(w, http.StatusNotFound, "demo_login_disabled",
+			"demo login is switched off on this server (LLMBRIDGE_DEMO_LOGIN_ENABLED=false); sign in with GET /auth/entra/start")
+		return
+	}
 	var request demoLoginRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -170,21 +120,13 @@ func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session := principalSession{
-		PrincipalID: principal.ID,
-		ExpiresAt:   s.principalSessionCookieCodec.now().Add(demoLoginSessionLifetime).UTC().Truncate(time.Second),
+	session, token, err := s.recordLoginSession(r, principal.ID, store.LoginSessionMethodDemo, "")
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "login_session_not_recorded", err.Error())
+		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     demoLoginCookieName,
-		Value:    s.principalSessionCookieCodec.encode(session),
-		Path:     "/",
-		Expires:  session.ExpiresAt,
-		MaxAge:   int(demoLoginSessionLifetime / time.Second),
-		HttpOnly: true,
-		Secure:   requestArrivedOverHTTPS(r),
-		SameSite: http.SameSiteLaxMode,
-	})
-	writeJSON(w, loggedInPrincipalResponse{PrincipalID: session.PrincipalID, ExpiresAt: session.ExpiresAt})
+	setLoginSessionCookie(w, r, session, token)
+	writeJSON(w, loggedInPrincipalResponseOf(session))
 }
 
 // requestArrivedOverHTTPS reports whether the cookie can be marked Secure: the
@@ -193,41 +135,6 @@ func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
 // browser drop it and every login silently fail.
 func requestArrivedOverHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-}
-
-// verifiedPrincipalSession reads and verifies the login cookie on r.
-func (s *Server) verifiedPrincipalSession(r *http.Request) (principalSession, error) {
-	cookie, err := r.Cookie(demoLoginCookieName)
-	if err != nil {
-		return principalSession{}, fmt.Errorf("no %s cookie: log in with POST /auth/demo-login", demoLoginCookieName)
-	}
-	return s.principalSessionCookieCodec.decode(cookie.Value)
-}
-
-// handleGetLoggedInPrincipal answers who the cookie says the caller is.
-func (s *Server) handleGetLoggedInPrincipal(w http.ResponseWriter, r *http.Request) {
-	session, err := s.verifiedPrincipalSession(r)
-	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "not_logged_in", err.Error())
-		return
-	}
-	writeJSON(w, loggedInPrincipalResponse{PrincipalID: session.PrincipalID, ExpiresAt: session.ExpiresAt})
-}
-
-// handleDemoLogout clears the login cookie. The cookie is stateless, so a copy
-// captured before logout stays valid until it expires; this is a demo.
-func (s *Server) handleDemoLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     demoLoginCookieName,
-		Value:    "",
-		Path:     "/",
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   requestArrivedOverHTTPS(r),
-		SameSite: http.SameSiteLaxMode,
-	})
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // removeCookieFromRequestHeader rewrites the Cookie header without the named

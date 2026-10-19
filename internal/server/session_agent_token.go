@@ -12,8 +12,9 @@ package server
 // cookie would. The token is accepted nowhere else.
 //
 // The token is signed with the demo login signing key under its own domain
-// separator, so it can never verify as a login cookie and a cookie can never
-// verify as a token. It carries the principal, the session and an expiry, and
+// separator, so it can never verify as a session posting token or the other
+// way round. The login cookie is not signed at all: it is an opaque token
+// looked up in login_sessions (login_sessions.go). It carries the principal, the session and an expiry, and
 // every request that presents it is checked against the store: the session
 // must still exist, still belong to that principal, and not be in a terminal
 // state. That is how a token dies with its session.
@@ -44,13 +45,12 @@ const (
 )
 
 // sessionAgentTokenPrefix starts every session agent token, so a token is
-// recognisable in a log and never has the three-part shape of a login cookie.
+// recognisable in a log.
 const sessionAgentTokenPrefix = "llm-bridge-session-agent-token-v1"
 
 // sessionAgentTokenSignatureDomain is prepended to the signed bytes of a
-// session agent token and of nothing else. A login cookie signs
-// "principal_….<expiry>", which cannot begin with this, so no signature is
-// valid for both.
+// session agent token and of nothing else, so no signature made for another
+// purpose with the same key is valid for one.
 const sessionAgentTokenSignatureDomain = "llm-bridge-server session agent token v1\x00"
 
 // sessionAgentTokenLifetime bounds a token independently of its session. A
@@ -67,6 +67,16 @@ var sessionStatesThatEndSessionAgentTokens = []msg.SessionState{
 	msg.SessionDisconnected,
 }
 
+// harnessChildTokenSigner signs and verifies the two tokens a harness child
+// is given: the session agent token (this file) and the session posting token
+// (session_posting_token.go), each under its own domain separator, with the
+// key in LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY. Until 2026-10-19 it also signed the
+// login cookie and was named for it.
+type harnessChildTokenSigner struct {
+	signingKey []byte
+	now        func() time.Time
+}
+
 // sessionAgentTokenClaims is what a verified token says.
 type sessionAgentTokenClaims struct {
 	PrincipalID string
@@ -79,14 +89,14 @@ type sessionAgentTokenClaims struct {
 // Shape: <prefix>.<principal id>.<base64url session id>.<expiry seconds>.<signature>.
 // The session id is base64url-encoded because a caller-minted session id may
 // contain dots.
-func (codec *principalSessionCookieCodec) encodeSessionAgentToken(claims sessionAgentTokenClaims) string {
+func (codec *harnessChildTokenSigner) encodeSessionAgentToken(claims sessionAgentTokenClaims) string {
 	signedPortion := sessionAgentTokenPrefix + "." + claims.PrincipalID + "." +
 		base64.RawURLEncoding.EncodeToString([]byte(claims.SessionID)) + "." +
 		strconv.FormatInt(claims.ExpiresAt.Unix(), 10)
 	return signedPortion + "." + codec.sessionAgentTokenSignature(signedPortion)
 }
 
-func (codec *principalSessionCookieCodec) sessionAgentTokenSignature(signedPortion string) string {
+func (codec *harnessChildTokenSigner) sessionAgentTokenSignature(signedPortion string) string {
 	mac := hmac.New(sha256.New, codec.signingKey)
 	mac.Write([]byte(sessionAgentTokenSignatureDomain))
 	mac.Write([]byte(signedPortion))
@@ -95,7 +105,7 @@ func (codec *principalSessionCookieCodec) sessionAgentTokenSignature(signedPorti
 
 // decodeSessionAgentToken verifies a token's shape, signature and expiry.
 // It does not look at the session; principalOfSessionAgentToken does.
-func (codec *principalSessionCookieCodec) decodeSessionAgentToken(token string) (sessionAgentTokenClaims, error) {
+func (codec *harnessChildTokenSigner) decodeSessionAgentToken(token string) (sessionAgentTokenClaims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 5 || parts[0] != sessionAgentTokenPrefix {
 		return sessionAgentTokenClaims{}, errors.New("not a session agent token")
@@ -125,7 +135,7 @@ func (codec *principalSessionCookieCodec) decodeSessionAgentToken(token string) 
 // principalOfSessionAgentToken verifies a presented token and the session it
 // names, and returns the principal the request acts as.
 func (s *Server) principalOfSessionAgentToken(token string) (string, error) {
-	claims, err := s.principalSessionCookieCodec.decodeSessionAgentToken(token)
+	claims, err := s.harnessChildTokenSigner.decodeSessionAgentToken(token)
 	if err != nil {
 		return "", err
 	}
@@ -158,10 +168,10 @@ func (s *Server) sessionAgentEnvironment(session *store.Session) ([]string, erro
 		return nil, fmt.Errorf("session %s acts for %s and needs %s, and neither LLMBRIDGE_PUBLIC_URL nor LLMBRIDGE_LISTEN_ADDR gives this server's address",
 			session.SessionID, session.PrincipalID, gatewayURLEnvironmentVariable)
 	}
-	token := s.principalSessionCookieCodec.encodeSessionAgentToken(sessionAgentTokenClaims{
+	token := s.harnessChildTokenSigner.encodeSessionAgentToken(sessionAgentTokenClaims{
 		PrincipalID: session.PrincipalID,
 		SessionID:   session.SessionID,
-		ExpiresAt:   s.principalSessionCookieCodec.now().Add(sessionAgentTokenLifetime).UTC().Truncate(time.Second),
+		ExpiresAt:   s.harnessChildTokenSigner.now().Add(sessionAgentTokenLifetime).UTC().Truncate(time.Second),
 	})
 	return []string{
 		gatewayURLEnvironmentVariable + "=" + gatewayURL,

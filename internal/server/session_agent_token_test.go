@@ -115,30 +115,21 @@ func TestSessionAgentTokensAndLoginCookiesAreNotInterchangeable(t *testing.T) {
 	cookie := loginCookieFrom(t, demoLogin(t, gated.server, firstTestPrincipalID))
 	session := gated.createSessionAs(t, cookie, "")
 	token := gated.sessionAgentTokenFor(t, session)
-	codec := gated.server.principalSessionCookieCodec
+	codec := gated.server.harnessChildTokenSigner
 
 	if response := gated.requestWithBearer(t, cookie.Value, "GET", "/kanban/boards"); response.Code != http.StatusUnauthorized {
 		t.Errorf("login cookie value as a bearer token = %d, want 401", response.Code)
 	}
-	if _, err := codec.decode(token); err == nil {
-		t.Errorf("a session agent token decoded as a login cookie")
-	}
 	tokenAsCookie := httptest.NewRequest("GET", "/sessions", nil)
-	tokenAsCookie.AddCookie(&http.Cookie{Name: demoLoginCookieName, Value: token})
+	tokenAsCookie.AddCookie(&http.Cookie{Name: loginSessionCookieName, Value: token})
 	if response := serve(gated.server, tokenAsCookie); response.Code != http.StatusUnauthorized {
 		t.Errorf("session agent token as the login cookie = %d, want 401", response.Code)
 	}
 
-	// Same key, same fields, signed as the other kind: neither verifies.
-	cookieSignatureOverTokenFields := sessionAgentTokenPrefix + "." + firstTestPrincipalID + "." + strings.Split(token, ".")[2] + "." + strings.Split(token, ".")[3]
-	forged := cookieSignatureOverTokenFields + "." + codec.signature(cookieSignatureOverTokenFields)
-	if _, err := codec.decodeSessionAgentToken(forged); err == nil {
-		t.Errorf("a token signed the way a cookie is signed verified as a session agent token")
-	}
-	expiry := strings.Split(cookie.Value, ".")[1]
-	tokenSignedCookie := firstTestPrincipalID + "." + expiry + "." + codec.sessionAgentTokenSignature(firstTestPrincipalID+"."+expiry)
-	if _, err := codec.decode(tokenSignedCookie); err == nil {
-		t.Errorf("a cookie signed the way a token is signed verified as a login cookie")
+	// A session posting token is signed with the same key under another
+	// domain separator, and is not a session agent token.
+	if _, err := codec.decodeSessionAgentToken(codec.encodeSessionPostingToken(session.SessionID)); err == nil {
+		t.Errorf("a session posting token verified as a session agent token")
 	}
 
 	expired := codec.encodeSessionAgentToken(sessionAgentTokenClaims{PrincipalID: firstTestPrincipalID, SessionID: session.SessionID, ExpiresAt: time.Now().Add(-time.Minute)})
@@ -317,7 +308,7 @@ func TestGrantStoreProxyMapsEveryRouteAndCarriesOnlyThePrincipal(t *testing.T) {
 				}
 			}
 		}
-		if cookieHeader := seen.Header.Get("Cookie"); strings.Contains(cookieHeader, demoLoginCookieName) || !strings.Contains(cookieHeader, "unrelated=kept") {
+		if cookieHeader := seen.Header.Get("Cookie"); strings.Contains(cookieHeader, loginSessionCookieName) || !strings.Contains(cookieHeader, "unrelated=kept") {
 			t.Errorf("%s %s: grant-store saw Cookie %q, want only the unrelated cookie", route.method, route.gatewayPath, cookieHeader)
 		}
 	}
