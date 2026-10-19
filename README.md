@@ -375,6 +375,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/auth/sessions/{id}/revoke` | End a login session, with a reason | principal, own logins only |
 | `*` | `/grant-store/` | grant-store `/…`, as the caller | principal or session agent |
 | `*` | `/kanban/` | kanban-store `/api/…`, as the caller | principal or session agent |
+| `*` | `/mailstack/` | mailstack `/…`, as the caller, checked against their mail grants and tickets | principal or session agent |
 
 ### Runners and harness callbacks
 

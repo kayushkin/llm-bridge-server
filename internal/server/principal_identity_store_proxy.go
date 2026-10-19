@@ -33,6 +33,9 @@ const (
 	// of the path is forwarded under grant-store's root, where all its routes
 	// live (/grants, /principals/{id}/effective, /relations, /resource-types).
 	grantStoreProxyMountPrefix = "/grant-store"
+	// mailstackProxyMountPrefix is where mailstack is mounted; the remainder of
+	// the path is forwarded under mailstack's root, where /api/… lives.
+	mailstackProxyMountPrefix = "/mailstack"
 )
 
 // principalIdentityHeader is the header the stores read the caller's principal
@@ -82,6 +85,11 @@ type principalIdentityStoreProxy struct {
 	// unavailableErrorCode is the error code of the 502 answered when the
 	// store cannot be reached.
 	unavailableErrorCode string
+	// upstreamAuthorization, when set, is the Authorization header the proxy
+	// presents to the store, after the client's own is deleted. mailstack
+	// takes one bearer for every caller and narrows by X-Principal-Id;
+	// kanban-store and grant-store trust X-Principal-Id alone.
+	upstreamAuthorization string
 }
 
 func (s *Server) handleKanbanStoreProxyAsPrincipal(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +113,27 @@ func (s *Server) handleGrantStoreProxyAsPrincipal(w http.ResponseWriter, r *http
 		upstreamBaseURL:      s.cfg.GrantStoreURL,
 		upstreamPathPrefix:   "",
 		unavailableErrorCode: "grant_store_unavailable",
+	})
+}
+
+// handleMailstackProxyAsPrincipal forwards /mailstack/<rest> to mailstack
+// /<rest> with mailstack's bearer and the caller as X-Principal-Id, which
+// mailstack checks against the person's mail grants and tickets on every
+// call. Without a mailstack token the route is 503 rather than a forward that
+// mailstack would only refuse.
+func (s *Server) handleMailstackProxyAsPrincipal(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.MailstackToken == "" {
+		writeJSONError(w, http.StatusServiceUnavailable, "mailstack_proxy_not_configured",
+			"LLMBRIDGE_MAILSTACK_TOKEN is not set, so this gateway cannot present itself to mailstack")
+		return
+	}
+	s.serveStoreProxyAsPrincipal(w, r, principalIdentityStoreProxy{
+		storeName:             "mailstack",
+		mountPrefix:           mailstackProxyMountPrefix,
+		upstreamBaseURL:       s.cfg.MailstackURL,
+		upstreamPathPrefix:    "",
+		unavailableErrorCode:  "mailstack_unavailable",
+		upstreamAuthorization: "Bearer " + s.cfg.MailstackToken,
 	})
 }
 
@@ -147,6 +176,9 @@ func (s *Server) serveStoreProxyAsPrincipal(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	outbound.Header.Set(principalIdentityHeader, principalID)
+	if proxy.upstreamAuthorization != "" {
+		outbound.Header.Set("Authorization", proxy.upstreamAuthorization)
+	}
 	removeCookieFromRequestHeader(outbound.Header, loginSessionCookieName)
 
 	response, err := storeProxyHTTPClient.Do(outbound)

@@ -171,7 +171,7 @@ func SettingDefinitions() []servicesettings.Definition {
 		{Key: "log_store.url", EnvironmentVariable: "LLMBRIDGE_LOG_STORE_URL", Kind: wiring, ValueType: text, Default: productiondefaults.LogStoreURL,
 			Description: "log-store, which keeps every session event."},
 		{Key: "mailstack.url", EnvironmentVariable: "LLMBRIDGE_MAILSTACK_URL", Kind: wiring, ValueType: text, Default: productiondefaults.MailstackURL,
-			Description: "mailstack, asked for the sender and subject behind a card when triage drafts a customer reply."},
+			Description: "mailstack, asked for the sender and subject behind a card when triage drafts a customer reply, and the upstream of the /mailstack/ proxy, which forwards a person's mail reads as X-Principal-Id."},
 		{Key: "healthcheck.url", EnvironmentVariable: "LLMBRIDGE_HEALTHCHECK_URL", Kind: wiring, ValueType: text, Default: productiondefaults.HealthcheckURL,
 			Description: "healthcheck, whose status is the list of services the service inventory shows."},
 		{Key: "model_store.url", EnvironmentVariable: "LLMBRIDGE_MODEL_STORE_URL", Kind: wiring, ValueType: text,
@@ -241,7 +241,7 @@ func SettingDefinitions() []servicesettings.Definition {
 		{Key: "file_store.service_token", EnvironmentVariable: FileStoreServiceTokenEnvironmentVariable, Kind: secret, ValueType: text,
 			Description: "Sent to file-store on every call. It reads every file file-store holds, so it never reaches a harness child."},
 		{Key: "mailstack.token", EnvironmentVariable: "LLMBRIDGE_MAILSTACK_TOKEN", Kind: secret, ValueType: text,
-			Description: "mailstack's bearer token. Unset switches the sender lookup off, and a customer reply draft carries no recipient."},
+			Description: "mailstack's bearer token, presented on the sender lookup and on every /mailstack/ proxy request. Unset switches the sender lookup off, a customer reply draft carries no recipient, and /mailstack/ answers 503."},
 		{Key: "auth_store.token", EnvironmentVariable: "AUTH_STORE_TOKEN", Kind: secret, ValueType: text,
 			Description: "auth-store's bearer token."},
 	}

@@ -263,6 +263,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	// Identity-carrying store proxies.
 	kanbanProxyMountPrefix + "/":     {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store as the caller's principal"},
 	grantStoreProxyMountPrefix + "/": {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "grant-store as the caller's principal"},
+	mailstackProxyMountPrefix + "/":  {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "mailstack as the caller's principal"},
 
 	// Operator.
 	"GET /services":                                operatorRoute("host service inventory"),
@@ -666,8 +667,8 @@ func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (stri
 	if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization {
 		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy {
 			return "", "", &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
-				"an Authorization header is accepted only on %s/ and %s/, as a session agent token; this route takes the login cookie or %s",
-				kanbanProxyMountPrefix, grantStoreProxyMountPrefix, serviceTokenHeader)}
+				"an Authorization header is accepted only on %s/, %s/ and %s/, as a session agent token; this route takes the login cookie or %s",
+				kanbanProxyMountPrefix, grantStoreProxyMountPrefix, mailstackProxyMountPrefix, serviceTokenHeader)}
 		}
 		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 		if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {

@@ -71,6 +71,7 @@ func (s *Server) registerLoginAndStoreProxyRoutes() {
 	s.mux.HandleFunc("POST /admin/identity-bindings/{id}/unlink", s.handleUnlinkIdentityBinding)
 	s.mux.HandleFunc(kanbanProxyMountPrefix+"/", s.handleKanbanStoreProxyAsPrincipal)
 	s.mux.HandleFunc(grantStoreProxyMountPrefix+"/", s.handleGrantStoreProxyAsPrincipal)
+	s.mux.HandleFunc(mailstackProxyMountPrefix+"/", s.handleMailstackProxyAsPrincipal)
 }
 
 type demoLoginRequest struct {
