@@ -69,11 +69,13 @@ The server will not start without these five:
 
 | Variable | What it is |
 |---|---|
-| `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY` | At least 32 bytes. Signs login cookies and session agent tokens. |
+| `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY` | At least 32 bytes. Signs session agent tokens and session posting tokens. |
 | `LLMBRIDGE_SERVICE_TOKEN` | At least 32 bytes. Internal callers send it as `X-LLM-Bridge-Service-Token`. |
 | `LLMBRIDGE_PRINCIPAL_STORE_URL` | principal-store |
 | `LLMBRIDGE_KANBAN_STORE_URL` | kanban-store |
 | `LLMBRIDGE_GRANT_STORE_URL` | grant-store |
+
+Login has its own optional settings. `LLMBRIDGE_DEMO_LOGIN_ENABLED` (default `true`) switches demo login; set it `false` where people sign in through Entra ID. Entra ID sign-in is on when all four of `LLMBRIDGE_ENTRA_TENANT_ID` (a GUID), `LLMBRIDGE_ENTRA_CLIENT_ID`, `LLMBRIDGE_ENTRA_CLIENT_SECRET` and `LLMBRIDGE_ENTRA_REDIRECT_URL` are set; some but not all is a startup error naming the missing ones. `LLMBRIDGE_ENTRA_AUTHORITY_URL` defaults to `https://login.microsoftonline.com`.
 
 Every other setting is declared once, in `internal/config/settings.go`, with its default and what it changes. `GET /settings` shows each value in force and what decided it. The server refuses to start on a value that does not parse, and on an `LLMBRIDGE_` variable nothing declares.
 
@@ -123,7 +125,7 @@ Every request is checked before a handler sees it (`internal/server/request_auth
 
 1. **Operator**: the service token, or a principal principal-store marks `is_administrator`. May call anything. A wrong token is 401.
 2. **The service token on behalf of a person**: the token plus `X-Principal-Id`. dash sends this for its logged-in user, and the request is judged as that person's. `X-Principal-Id` without the token is 401 on every route.
-3. **Principal**: a login cookie from `POST /auth/demo-login`, or, on the two store proxies only, a session agent token.
+3. **Principal**: a login cookie naming a live login session, from Entra ID sign-in or `POST /auth/demo-login`, or, on the two store proxies only, a session agent token. A cookie request with any method but `GET`, `HEAD` or `OPTIONS` must also carry the session's CSRF token in `X-CSRF-Token` (403 `csrf_token_missing` / `csrf_token_mismatch`).
 4. **Nobody**: 401 everywhere but the routes open to anyone and the harness callbacks.
 
 Every principal is looked up in principal-store: unknown is 400 `unknown_principal`, a group is 400 `principal_not_human`, disabled is 403 `principal_disabled`, principal-store down is 502. Answers are cached for 30 seconds, so disabling someone takes up to 30 seconds to take effect.
@@ -142,19 +144,28 @@ Every principal is looked up in principal-store: unknown is 400 `unknown_princip
 | principal, own operations only | The answer holds only the caller's operations |
 | owner | Only the principal who owns the session, signal or operation. Anyone else's, one with no principal and a missing one all answer the same 404 |
 | principal or session agent | A login cookie or a session agent token; the request reaches the store as that principal |
+| principal, own logins only | The caller's own login sessions; an administrator reaches anyone's, and someone else's is 404 to anyone else |
 
 A route with no rule is 403 `route_not_classified` to everyone but the service token, and `TestEveryRegisteredRouteIsClassified` fails until it has one. A fork or promoted subagent takes its parent's principal.
 
+### Login sessions
+
+Signing in creates a row in table `login_sessions` and sets the `llm_bridge_principal_session` cookie to a random token; the row keeps only its SHA-256. A login lasts 12 hours. An unknown token is 401 `login_session_unknown`, a revoked one `login_session_revoked`, an expired one `login_session_expired`. `POST /auth/logout` revokes the session on the server, so a copy of the cookie stops working too. `GET /auth/sessions` lists the caller's sessions, and `POST /auth/sessions/{id}/revoke {"reason":…}` ends one; an administrator may do either for anyone. Cookies signed before 2026-10-19 name no session, and their holders sign in again.
+
+The login response and `GET /auth/principal` carry `csrf_token`. Send it as `X-CSRF-Token` on every cookie request that is not `GET`, `HEAD` or `OPTIONS`.
+
 ### Demo login
 
-⚠️ **A stand-in for a real login, with no password.** Anyone who can reach `POST /auth/demo-login` can sign in as any active human principal by naming its id. Never publish it beyond a network you control.
+⚠️ **A stand-in for a real login, with no password.** Anyone who can reach `POST /auth/demo-login` can sign in as any active human principal by naming its id. Never publish it beyond a network you control, and switch it off with `LLMBRIDGE_DEMO_LOGIN_ENABLED=false` where people sign in through Entra ID; it then answers 404 `demo_login_disabled`.
 
 ```bash
 curl -s -c jar -X POST localhost:8160/auth/demo-login -H 'Content-Type: application/json' \
   -d '{"principal_id":"principal_000001"}'
 ```
 
-The `llm_bridge_principal_session` cookie holds the principal id and a 12-hour expiry, signed with HMAC-SHA256. It holds no server state, so a copy taken before logout works until it expires.
+### Entra ID sign-in
+
+`GET /auth/entra/start?return_to=/chat` sends the browser to Entra ID (authorization code with PKCE). `return_to` must be a path on this site. Entra sends it back to `GET /auth/entra/callback`, which redeems the code, checks the ID token's signature, issuer, audience, times, nonce and tenant, and looks up the `tid` and `oid` claims in principal-store's identity bindings. Never `sub`, never an email. A bound, active human gets a login session and lands on `return_to`. Anyone else lands there with `?login_error=<code>`, or gets a 401 when the token itself fails a check. Every attempt is a row in `login_attempts` with its outcome. An administrator finds a refused person's `tid` and `oid` with `GET /auth/login-attempts?outcome=identity_not_provisioned` and links them with `POST /admin/identity-bindings {"principal_id","provider":"entra","tenant_id","subject","note"}`. The bridge sets `linked_by` itself. `POST /admin/identity-bindings/{id}/unlink {"reason"}` unlinks a binding and revokes its live login sessions.
 
 ### Store proxies
 
@@ -172,7 +183,7 @@ The token lasts 24 hours, is minted at each spawn, and works only on the two sto
 
 ### Secrets never reach a child process
 
-Every process the server starts gets its environment from `internal/childprocessenv`, which removes the signing key, the service token, `GRANT_STORE_SERVICE_TOKEN` and `KANBAN_STORE_SERVICE_TOKEN`; a test fails on any `exec.Command` that skips it. The server also marks itself non-dumpable, so a process running as the same user cannot read its memory. Keep the unit's environment file unreadable by the user agents run as.
+Every process the server starts gets its environment from `internal/childprocessenv`, which removes the signing key, the service token, `GRANT_STORE_SERVICE_TOKEN`, `KANBAN_STORE_SERVICE_TOKEN`, `FILE_STORE_SERVICE_TOKEN` and `LLMBRIDGE_ENTRA_CLIENT_SECRET`; a test fails on any `exec.Command` that skips it. The server also marks itself non-dumpable, so a process running as the same user cannot read its memory. Keep the unit's environment file unreadable by the user agents run as.
 
 ## Routes
 
@@ -351,9 +362,17 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `POST` | `/auth/demo-login` | Sign in as a principal by id, with no password | anyone |
-| `POST` | `/auth/logout` | Clear the cookie | anyone |
-| `GET` | `/auth/principal` | Who the login cookie names | anyone |
+| `GET` | `/admin/identity-bindings` | principal-store's identity bindings, query passed through | operator |
+| `POST` | `/admin/identity-bindings` | Link an Entra identity to a principal, as the calling administrator | operator |
+| `POST` | `/admin/identity-bindings/{id}/unlink` | Unlink an identity and revoke its live login sessions | operator |
+| `POST` | `/auth/demo-login` | Sign in as a principal by id, with no password; 404 when switched off | anyone |
+| `GET` | `/auth/entra/callback` | Where Entra ID sends the browser back; verifies the ID token and starts a login session | anyone |
+| `GET` | `/auth/entra/start` | Send the browser to Entra ID to sign in, coming back to return_to | anyone |
+| `GET` | `/auth/login-attempts` | Sign-in attempts and how each ended, filtered by outcome | operator |
+| `POST` | `/auth/logout` | Revoke the cookie's login session and clear the cookie | anyone |
+| `GET` | `/auth/principal` | Who the login cookie names, and the session's CSRF token | anyone |
+| `GET` | `/auth/sessions` | The caller's login sessions; an administrator names anyone's with principal_id | principal, own logins only |
+| `POST` | `/auth/sessions/{id}/revoke` | End a login session, with a reason | principal, own logins only |
 | `*` | `/grant-store/` | grant-store `/…`, as the caller | principal or session agent |
 | `*` | `/kanban/` | kanban-store `/api/…`, as the caller | principal or session agent |
 
