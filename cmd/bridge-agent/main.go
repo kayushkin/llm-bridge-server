@@ -36,6 +36,10 @@
 // With neither, the CLI stops before it calls the server, rather than guess
 // whose delegate it is starting.
 //
+// When the bundle runs the Playwright MCP, the delegate's browser is recorded
+// and each video shared into the chat of the session that ran this command
+// (browser_video.go); -record-browser-video=false turns that off.
+//
 //	bridge-agent --principal principal_000001 --mcp browser "open dash.kayushkin.com and screenshot the board"
 package main
 
@@ -97,6 +101,7 @@ func main() {
 		rawJSON     = flag.Bool("json", false, "print the full result event as JSON instead of just its text")
 		computerUse = flag.Bool("computer-use", false, "give the delegate its runner machine's computer-use tool (mcp__llm-bridge-computer-use__computer); the instance must be on a runner machine whose owner switched computer use on")
 		keep        = flag.Bool("keep", false, "leave the delegate session running instead of stopping it after the result")
+		recordVideo = flag.Bool("record-browser-video", true, "when the bundle runs the Playwright MCP and the delegate runs on this session's machine, record its browser and share each video into this session's chat")
 		principal   = flag.String("principal", "", "principal-store id (principal_000001) the delegate session belongs to. Without "+serviceTokenEnvironmentVariable+" set, the CLI logs in as this principal; one of the two is required")
 
 		listPurposes = flag.Bool("list-purposes", false, "print the registered session purposes and exit")
@@ -168,9 +173,41 @@ func main() {
 		fatal("%v", err)
 	}
 
-	sessionID, err := agent.createSession(ctx, *harness, *instance, *manager, *purpose, prompt, harnessConfig)
+	// A recorded delegate is created without starting, so the machine the
+	// server put it on can be checked before its browser is pointed at a
+	// config file on this one; the send below starts it.
+	videoDirectory := ""
+	recordedHarnessConfig := harnessConfig
+	if *recordVideo {
+		videoDirectory, recordedHarnessConfig, err = withBrowserVideoRecording(harnessConfig)
+		if err != nil {
+			fatal("%v", err)
+		}
+	}
+	sessionID, err := agent.createSession(ctx, *harness, *instance, *manager, *purpose, prompt, recordedHarnessConfig, videoDirectory == "")
 	if err != nil {
 		fatal("create delegate session: %v", err)
+	}
+	if videoDirectory != "" {
+		sameMachine, reason, err := agent.delegateSharesThisMachine(ctx, sessionID, os.Getenv("LLM_BRIDGE_SESSION_ID"))
+		if err != nil {
+			agent.stop(sessionID)
+			fatal("%v", err)
+		}
+		if sameMachine {
+			prompt += closeTheBrowserBeforeAnswering
+		} else {
+			fmt.Fprintf(os.Stderr, "[bridge-agent] not recording the browser: %s; starting session %s again without recording\n", reason, sessionID)
+			agent.stop(sessionID)
+			if err := os.RemoveAll(videoDirectory); err != nil {
+				fatal("remove the unused browser video folder: %v", err)
+			}
+			videoDirectory = ""
+			sessionID, err = agent.createSession(ctx, *harness, *instance, *manager, *purpose, prompt, harnessConfig, true)
+			if err != nil {
+				fatal("create delegate session: %v", err)
+			}
+		}
 	}
 	fmt.Fprintf(os.Stderr, "[bridge-agent] session %s (mcp=%s)\n", sessionID, *bundle)
 
@@ -201,6 +238,11 @@ func main() {
 		fmt.Println(string(out))
 	} else {
 		fmt.Println(result.Text)
+	}
+	if videoDirectory != "" {
+		if err := shareBrowserVideosIntoThisSession(videoDirectory); err != nil {
+			fatal("%v", err)
+		}
 	}
 	if result.IsError {
 		os.Exit(1)
@@ -317,7 +359,7 @@ func (d *delegate) do(req *http.Request) (*http.Response, error) {
 	return d.client.Do(req)
 }
 
-func (d *delegate) createSession(ctx context.Context, harness, instance, managerSessionID, purpose, prompt string, harnessConfig map[string]any) (string, error) {
+func (d *delegate) createSession(ctx context.Context, harness, instance, managerSessionID, purpose, prompt string, harnessConfig map[string]any, autoStart bool) (string, error) {
 	cfg, err := json.Marshal(harnessConfig)
 	if err != nil {
 		return "", fmt.Errorf("marshal harness config: %w", err)
@@ -330,7 +372,7 @@ func (d *delegate) createSession(ctx context.Context, harness, instance, manager
 		Type:             msg.SessionTypeAutonomous,
 		Purpose:          purpose,
 		Origin:           "bridge-agent",
-		AutoStart:        true,
+		AutoStart:        autoStart,
 		HarnessConfig:    cfg,
 	})
 	if err != nil {

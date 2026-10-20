@@ -68,7 +68,7 @@ func TestAPrincipalWithNoServiceTokenLogsInAndCreatesTheSessionWithTheCookie(t *
 	if err != nil {
 		t.Fatalf("authenticatedDelegate: %v", err)
 	}
-	if _, err := d.createSession(context.Background(), "claude_code", "", "", "delegate", "hello", map[string]any{}); err != nil {
+	if _, err := d.createSession(context.Background(), "claude_code", "", "", "delegate", "hello", map[string]any{}, true); err != nil {
 		t.Fatalf("createSession: %v", err)
 	}
 	if fake.loggedInAs != "principal_000001" {
@@ -91,7 +91,7 @@ func TestAServiceTokenIsSentWithThePrincipalItActsAs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("authenticatedDelegate: %v", err)
 	}
-	if _, err := d.createSession(context.Background(), "claude_code", "", "", "delegate", "hello", map[string]any{}); err != nil {
+	if _, err := d.createSession(context.Background(), "claude_code", "", "", "delegate", "hello", map[string]any{}, true); err != nil {
 		t.Fatalf("createSession: %v", err)
 	}
 	if fake.loggedInAs != "" {
