@@ -32,6 +32,7 @@ const (
 	SettingSessionRenamerModelRole           = "session_renamer.model_role"
 	SettingSessionIdleTimeout                = "session.idle_timeout"
 	SettingSessionPTYIdleTimeout             = "session.pty_idle_timeout"
+	SettingExternalActivityPollInterval      = "external_activity.poll_interval"
 	SettingOneShotInstanceByProvider         = "oneshot.instance_by_provider"
 	SettingOperationsCompletionModelRole     = "operations.completion_model_role"
 	SettingOperationsGrantEnforcement        = "operations.grant_enforcement"
@@ -118,6 +119,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "How long an events-mode session may sit with no new event before its harness process is stopped and the session marked aborted. 0s or less switches reaping off."},
 		{Key: SettingSessionPTYIdleTimeout, EnvironmentVariable: "LLMBRIDGE_PTY_IDLE_TIMEOUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "60m",
 			Description: "The same cutoff for pty-mode sessions, where a person reading output emits nothing. 0s or less switches reaping off."},
+		{Key: SettingExternalActivityPollInterval, EnvironmentVariable: "LLMBRIDGE_EXTERNAL_ACTIVITY_POLL_INTERVAL", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "15s",
+			Description: "How often the server asks each harness wrapper which session files changed, so a conversation run with claude or codex in a terminal reaches the dash while the server is up. 0s or less switches the watcher off; sessions are then found only at startup."},
 
 		{Key: SettingOneShotInstanceByProvider, EnvironmentVariable: "LLMBRIDGE_ONESHOT_INSTANCE_BY_PROVIDER", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeStringMap, Editable: true, Default: "anthropic:inst-cc-local,openai:inst-codex-local",
 			Description: "Which harness instance makes every one-shot call this server routes — the classifier, triage, the drift tagger, the renamer, the command reviewer, operations and POST /oneshot — for each model-store provider, as provider:instance pairs. A model whose provider is named nowhere here is an attempt that fails, and the role's next model is tried. Each instance must be enabled and its harness must implement -oneshot."},
@@ -299,6 +302,7 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 		SettingSignalClassifierTimeout:         c.SignalClassifierTimeout.String(),
 		SettingSessionIdleTimeout:              c.IdleTimeout.String(),
 		SettingSessionPTYIdleTimeout:           c.PTYIdleTimeout.String(),
+		SettingExternalActivityPollInterval:    c.ExternalActivityPollInterval.String(),
 	}
 	// Seeded only when set, so a Config literal that leaves them out gets the
 	// declared defaults rather than an empty value.

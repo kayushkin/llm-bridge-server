@@ -11,17 +11,24 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// otelSidecar is a long-running co-process spawned alongside a PTY session
-// to host an OTLP/HTTP-JSON receiver for the upstream CLI's telemetry.
-// PTY-mode sessions can't host the receiver in-process because the harness
-// wrapper exec's straight into claude — there's no Go process left.
+// ptySidecar is a long-running co-process spawned alongside a PTY session to
+// turn what the CLI does in its own screen into events. PTY-mode sessions
+// can't do that in-process because the harness wrapper exec's straight into
+// the CLI — there's no Go process left. Each sidecar posts translated
+// msg.Events to {localBridgeURL}/sidecar/event/{bridge_id}, and runs until
+// its stdin is closed (which the manager does when the PTY session ends).
 //
-// The sidecar is `llm-bridge-claudecode -otel-sidecar`. It prints one line
-// to stdout containing its receiver URL, then runs until its stdin is
-// closed (which the manager does when the PTY session terminates).
-type otelSidecar struct {
+// Two kinds, by harness (ptySidecarStarters):
+//   - Claude Code, `llm-bridge-claudecode -otel-sidecar` (startOTelSidecar):
+//     an OTLP receiver for claude's telemetry plus a tailer of its session
+//     file. It prints its receiver URL on stdout first, and the PTY child
+//     gets OTel env vars pointing at it.
+//   - Codex, `llm-bridge-codex -pty-sidecar` (startRolloutSidecar): a tailer
+//     of codex's rollout file, with nothing for the PTY child to know.
+type ptySidecar struct {
 	cmd         *exec.Cmd
 	endpointURL string
 	stdin       io.WriteCloser
@@ -36,7 +43,7 @@ type otelSidecar struct {
 // Real errors (binary missing, sidecar crashed before printing URL)
 // surface to the caller, but the caller (manager) treats sidecar
 // failure as non-fatal and just logs.
-func startOTelSidecar(binPath, bridgeSessionID, bridgeServerURL, ptyCwd, ptyResumeID string) (*otelSidecar, []string, error) {
+func startOTelSidecar(binPath, bridgeSessionID, bridgeServerURL, ptyCwd, ptyResumeID string) (*ptySidecar, []string, error) {
 	if binPath == "" {
 		return nil, nil, fmt.Errorf("sidecar bin path empty")
 	}
@@ -129,14 +136,14 @@ func startOTelSidecar(binPath, bridgeSessionID, bridgeServerURL, ptyCwd, ptyResu
 		"OTEL_SERVICE_NAME=llm-bridge-claudecode-pty",
 	}
 
-	return &otelSidecar{cmd: cmd, endpointURL: endpoint, stdin: stdin}, env, nil
+	return &ptySidecar{cmd: cmd, endpointURL: endpoint, stdin: stdin}, env, nil
 }
 
 // stop terminates the sidecar. Closes stdin first (the sidecar's normal
 // shutdown signal, which drains pending OTel batches with a flush window
 // before exiting), then SIGTERMs as a backstop, then SIGKILLs if the
 // process still lingers.
-func (s *otelSidecar) stop() {
+func (s *ptySidecar) stop() {
 	if s == nil || s.cmd == nil {
 		return
 	}
@@ -162,7 +169,7 @@ func (s *otelSidecar) stop() {
 	case <-time.After(2 * time.Second):
 	}
 	if s.cmd.Process != nil {
-		log.Printf("[sidecar] forcing kill on stuck OTel sidecar pid=%d", s.cmd.Process.Pid)
+		log.Printf("[sidecar] forcing kill on stuck pty sidecar pid=%d", s.cmd.Process.Pid)
 		_ = s.cmd.Process.Kill()
 	}
 }
@@ -172,4 +179,44 @@ func trimNewline(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
+}
+
+// ptySidecarStarter starts a harness's sidecar and returns the env vars the
+// PTY child needs to reach it (none for a rollout tailer).
+type ptySidecarStarter func(binPath, bridgeSessionID, bridgeServerURL, ptyCwd, ptyResumeID string) (*ptySidecar, []string, error)
+
+// ptySidecarStarters names the harnesses whose PTY sessions report events,
+// and how. A harness missing here runs its PTY with no events reaching the
+// dash, which the manager logs at spawn.
+var ptySidecarStarters = map[msg.Harness]ptySidecarStarter{
+	msg.HarnessClaudeCode: startOTelSidecar,
+	msg.HarnessCodex:      startRolloutSidecar,
+}
+
+// startRolloutSidecar spawns `<wrapper> -pty-sidecar`, which follows the PTY
+// session's rollout file and posts its events to the bridge. It needs no
+// handshake: the PTY child is not told anything about it.
+func startRolloutSidecar(binPath, bridgeSessionID, bridgeServerURL, ptyCwd, ptyResumeID string) (*ptySidecar, []string, error) {
+	if binPath == "" || bridgeSessionID == "" || bridgeServerURL == "" {
+		return nil, nil, fmt.Errorf("rollout sidecar needs a binary, a bridge session id and a bridge URL (got %q, %q, %q)", binPath, bridgeSessionID, bridgeServerURL)
+	}
+	cmd := exec.Command(binPath, "-pty-sidecar")
+	cmd.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(),
+		"LLMBRIDGE_BRIDGE_SESSION_ID="+bridgeSessionID,
+		"LLMBRIDGE_BRIDGE_SERVER_URL="+bridgeServerURL,
+		"LLMBRIDGE_PTY_CWD="+ptyCwd,
+	)
+	if ptyResumeID != "" {
+		cmd.Env = append(cmd.Env, "LLMBRIDGE_PTY_RESUME_ID="+ptyResumeID)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("rollout sidecar stdin pipe: %w", err)
+	}
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return nil, nil, fmt.Errorf("rollout sidecar start: %w", err)
+	}
+	return &ptySidecar{cmd: cmd, stdin: stdin}, nil, nil
 }

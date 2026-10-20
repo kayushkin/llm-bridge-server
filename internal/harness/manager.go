@@ -55,7 +55,7 @@ type Manager struct {
 	derivation          map[string]*derivationState   // sessionID → convenience-event derivation state
 	processCleanups     map[string]chan struct{}      // sessionID → closed when the current process's exit cleanup (readEvents / watchPTYExit) has finished
 	budgetHalted        map[string]bool               // sessionID → already announced this session's spend-ceiling breach (see budget.go)
-	otelSidecars        map[string]*otelSidecar       // sessionID → per-PTY OTel sidecar (nil for non-PTY sessions)
+	ptySidecars         map[string]*ptySidecar        // sessionID → the PTY session's sidecar (ptySidecarStarters; nil for non-PTY sessions)
 	pending             *pendingHooks                 // awaiting_resolution hooks indexed by sessionID, request_id
 	store               *store.Store
 	logStore            *logstore.Client
@@ -231,7 +231,7 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL st
 		attachHubs:       make(map[string]*AttachHub),
 		derivation:       make(map[string]*derivationState),
 		budgetHalted:     make(map[string]bool),
-		otelSidecars:     make(map[string]*otelSidecar),
+		ptySidecars:      make(map[string]*ptySidecar),
 
 		ptyReapedByIdleReaper: make(map[string]bool),
 		pending:               newPendingHooks(),
@@ -633,6 +633,16 @@ func (m *Manager) trackProcessCleanupLocked(sessionID string) chan struct{} {
 // still this process's, so a newer process's channel is left alone.
 func (m *Manager) runProcessCleanupTracked(sessionID string, cleanupDone chan struct{}, run func()) {
 	defer func() {
+		// Everything the harness wrote up to now, this process reported
+		// itself; the external activity watcher imports only what comes
+		// after. Set before the cleanup counts as finished, so the watcher
+		// (which skips a session while HasProcessOrCleanup) never sees the
+		// process gone and the mark not yet moved.
+		if m.store != nil {
+			if err := m.store.AdvanceExternalActivityMark(sessionID, time.Now()); err != nil {
+				log.Printf("[harness] ERROR session %s: record where its process stopped writing: %v; a terminal run of it may re-import this process's last turn", sessionID, err)
+			}
+		}
 		m.mu.Lock()
 		if m.processCleanups[sessionID] == cleanupDone {
 			delete(m.processCleanups, sessionID)
@@ -641,6 +651,17 @@ func (m *Manager) runProcessCleanupTracked(sessionID string, cleanupDone chan st
 		close(cleanupDone)
 	}()
 	run()
+}
+
+// HasProcessOrCleanup reports whether the bridge has a process for the
+// session, or one whose exit cleanup has not finished. Either way what the
+// harness writes for it is the bridge's own, not a terminal run's.
+func (m *Manager) HasProcessOrCleanup(sessionID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, running := m.processes[sessionID]
+	_, cleaning := m.processCleanups[sessionID]
+	return running || cleaning
 }
 
 // Send writes a message to the harness stdin. Pass blocks=nil for text-only
@@ -1789,10 +1810,10 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 			return nil, err
 		}
 
-		// Spawn the per-session OTel sidecar first so the PTY child sees
-		// OTEL_EXPORTER_OTLP_ENDPOINT etc. at spawn time. Sidecar failure
-		// is non-fatal — telemetry is observability, the user's chat
-		// session should still come up. Log loudly so the gap is visible.
+		// Spawn the per-session sidecar first, so a Claude Code PTY child
+		// sees OTEL_EXPORTER_OTLP_ENDPOINT etc. at spawn time. Sidecar
+		// failure is non-fatal — the user's session should still come up
+		// without the dash's view of it. Log loudly so the gap is visible.
 		//
 		// localBridgeURL is the loopback URL bridge-server listens on; the
 		// sidecar POSTs translated msg.Events to {localBridgeURL}/sidecar/event/{bridge_id}.
@@ -1800,25 +1821,27 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 		// and telemetry is silently disabled for PTY sessions — log once
 		// per session so the gap surfaces.
 		var sidecarEnv []string
-		if h == msg.HarnessClaudeCode {
-			if m.localBridgeURL == "" {
-				log.Printf("[sidecar] localBridgeURL not configured; PTY session %s starts without OTel", sess.SessionID)
+		startSidecar, reportsEvents := ptySidecarStarters[h]
+		switch {
+		case !reportsEvents:
+			log.Printf("[sidecar] %s has no pty sidecar; PTY session %s sends the dash no events", h, sess.SessionID)
+		case m.localBridgeURL == "":
+			log.Printf("[sidecar] localBridgeURL not configured; PTY session %s starts without a sidecar and sends the dash no events", sess.SessionID)
+		default:
+			// Tell the sidecar the same directory the child gets.
+			// How the harness uses it to find the session's files is
+			// the harness's own business; the contract this layer owes is
+			// only that the two agree.
+			ptyCwd := ptyChildWorkingDir(workingDir)
+			sc, env, err := startSidecar(binPath, sess.SessionID, m.localBridgeURL, ptyCwd, sess.HarnessSessionID)
+			if err != nil {
+				log.Printf("[sidecar] ERROR start failed for %s (continuing without events): %v", sess.SessionID, err)
 			} else {
-				// Tell the sidecar the same directory the child gets.
-				// How the harness uses it to find the session's telemetry is
-				// the harness's own business; the contract this layer owes is
-				// only that the two agree.
-				ptyCwd := ptyChildWorkingDir(workingDir)
-				sc, env, err := startOTelSidecar(binPath, sess.SessionID, m.localBridgeURL, ptyCwd, sess.HarnessSessionID)
-				if err != nil {
-					log.Printf("[sidecar] start failed for %s (continuing without OTel): %v", sess.SessionID, err)
-				} else {
-					sidecarEnv = env
-					m.mu.Lock()
-					m.otelSidecars[sess.SessionID] = sc
-					m.mu.Unlock()
-					log.Printf("[sidecar] spawned for PTY session %s, endpoint=%s, cwd=%s, resume=%s", sess.SessionID, sc.endpointURL, ptyCwd, sess.HarnessSessionID)
-				}
+				sidecarEnv = env
+				m.mu.Lock()
+				m.ptySidecars[sess.SessionID] = sc
+				m.mu.Unlock()
+				log.Printf("[sidecar] spawned for %s PTY session %s, endpoint=%q, cwd=%s, resume=%s", h, sess.SessionID, sc.endpointURL, ptyCwd, sess.HarnessSessionID)
 			}
 		}
 
@@ -1826,9 +1849,9 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 		if err != nil {
 			// PTY launch failed — sidecar is now orphaned. Stop it.
 			m.mu.Lock()
-			if sc := m.otelSidecars[sess.SessionID]; sc != nil {
+			if sc := m.ptySidecars[sess.SessionID]; sc != nil {
 				sc.stop()
-				delete(m.otelSidecars, sess.SessionID)
+				delete(m.ptySidecars, sess.SessionID)
 			}
 			m.mu.Unlock()
 		}
@@ -1904,8 +1927,8 @@ func (m *Manager) watchPTYExit(p *PTYProcess) {
 	delete(m.processStartedAt, bridgeID)
 	delete(m.msgState, bridgeID)
 	delete(m.attachHubs, bridgeID)
-	sidecar := m.otelSidecars[bridgeID]
-	delete(m.otelSidecars, bridgeID)
+	sidecar := m.ptySidecars[bridgeID]
+	delete(m.ptySidecars, bridgeID)
 	reapedByIdleReaper := m.ptyReapedByIdleReaper[bridgeID]
 	delete(m.ptyReapedByIdleReaper, bridgeID)
 	m.mu.Unlock()
@@ -1971,6 +1994,68 @@ func (m *Manager) startSSH(ctx context.Context, sess *store.Session, inst *msg.I
 	args = append(args, remoteCmd)
 
 	return StartSSHProcess(ctx, args, sess, credentialID)
+}
+
+// HistoryEvents returns a harness session's whole transcript as events, read
+// by the wrapper's -import-history, without storing them anywhere.
+func (m *Manager) HistoryEvents(ctx context.Context, h msg.Harness, harnessSessionID string) ([]msg.Event, error) {
+	binPath, ok := Available(h)
+	if !ok {
+		return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
+	}
+	return runImportHistory(ctx, binPath, harnessSessionID)
+}
+
+// runImportHistory runs `<wrapper> -import-history <id>` and parses its
+// NDJSON. A line that is not an event is skipped, as ImportHistory always
+// did.
+func runImportHistory(ctx context.Context, binPath, harnessSessionID string) ([]msg.Event, error) {
+	cmd := exec.CommandContext(ctx, binPath, "-import-history", harnessSessionID)
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("exec %s -import-history: %w", binPath, err)
+	}
+	var events []msg.Event
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var event msg.Event
+		if err := json.Unmarshal(line, &event); err != nil {
+			continue
+		}
+		events = append(events, event)
+	}
+	return events, scanner.Err()
+}
+
+// ChangedSessions asks a harness wrapper for the sessions whose files changed
+// after since (`-changed-since`), in -discover's shape. -discover reads every
+// transcript, which for Claude Code takes minutes, so it runs once at
+// startup; this is the cheap question the external activity watcher repeats.
+func (m *Manager) ChangedSessions(ctx context.Context, h msg.Harness, since time.Time) ([]msg.StoredSession, error) {
+	binPath, ok := Available(h)
+	if !ok {
+		return nil, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
+	}
+	cmd := exec.CommandContext(ctx, binPath, "-changed-since", since.UTC().Format(time.RFC3339Nano))
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("exec %s -changed-since: %w: %s", binPath, err, bytes.TrimSpace(stderr.Bytes()))
+	}
+	var sessions []msg.StoredSession
+	if err := json.Unmarshal(out, &sessions); err != nil {
+		return nil, fmt.Errorf("parse %s -changed-since output: %w", binPath, err)
+	}
+	return sessions, nil
 }
 
 // DiscoverSessions invokes a harness binary with -discover to find sessions
@@ -2055,41 +2140,20 @@ func (m *Manager) ImportHistory(ctx context.Context, bridgeSessionID string, h m
 		return 0, fmt.Errorf("harness binary not found: %s", msg.HarnessBinaryName(h))
 	}
 
-	cmd := exec.CommandContext(ctx, binPath, "-import-history", harnessSessionID)
-	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
-	cmd.Stderr = os.Stderr
-
-	out, err := cmd.Output()
+	events, err := runImportHistory(ctx, binPath, harnessSessionID)
 	if err != nil {
-		return 0, fmt.Errorf("exec %s -import-history: %w", binPath, err)
+		return 0, err
 	}
-
-	// Parse NDJSON output and push each event to log-store
 	var imported int
-	scanner := bufio.NewScanner(bytes.NewReader(out))
-	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var event msg.Event
-		if err := json.Unmarshal(line, &event); err != nil {
-			continue
-		}
-
+	for _, event := range events {
 		event.BridgeSessionID = bridgeSessionID
-
 		if _, err := m.logStore.PushEvent(event); err != nil {
 			log.Printf("[import-history] failed to push event: %v", err)
 			continue
 		}
 		imported++
 	}
-
-	return imported, scanner.Err()
+	return imported, nil
 }
 
 // logStoreAlreadyHoldsTranscript asks log-store whether a harness session's

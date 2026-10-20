@@ -447,6 +447,30 @@ type PTYProcess struct {
 	exitOnce  sync.Once
 }
 
+// ptySessionModel reads the model the server resolved into
+// harness_config.model before the spawn (injectModelSelection). An empty or
+// absent one is no model; a config that cannot be read refuses the spawn
+// rather than starting the CLI on a model nobody chose.
+func ptySessionModel(sess *store.Session) (string, error) {
+	if len(sess.HarnessConfig) == 0 {
+		return "", nil
+	}
+	var cfg struct {
+		Model *json.RawMessage `json:"model"`
+	}
+	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
+		return "", fmt.Errorf("pty spawn for %s: read harness_config: %w", sess.SessionID, err)
+	}
+	if cfg.Model == nil {
+		return "", nil
+	}
+	var model string
+	if err := json.Unmarshal(*cfg.Model, &model); err != nil {
+		return "", fmt.Errorf("pty spawn for %s: harness_config.model is not a string: %w", sess.SessionID, err)
+	}
+	return model, nil
+}
+
 // StartProcessPTY spawns a harness bridge subprocess inside a pty. The
 // child sees LLMBRIDGE_PTY_MODE=1 in its environment; pty-capable
 // harnesses are expected to detect that and exec into their upstream
@@ -477,6 +501,15 @@ func StartProcessPTY(ctx context.Context, binPath string, sess *store.Session, c
 		// the right session without us shoehorning a JSON-RPC handshake
 		// across the tty (where the user is going to be typing).
 		cmd.Env = append(cmd.Env, "LLMBRIDGE_PTY_RESUME_ID="+hid)
+	}
+	model, err := ptySessionModel(sess)
+	if err != nil {
+		return nil, err
+	}
+	if model != "" {
+		// The pty wrapper passes it to the CLI as --model. Without it the
+		// CLI started on its own default, not the session's model.
+		cmd.Env = append(cmd.Env, "LLMBRIDGE_PTY_MODEL="+model)
 	}
 	if len(extraEnv) > 0 {
 		cmd.Env = append(cmd.Env, extraEnv...)

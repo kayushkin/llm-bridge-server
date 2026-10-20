@@ -60,10 +60,9 @@ import (
 // Each test runs once per harness. A harness whose wrapper or CLI is not on
 // PATH is skipped, not failed.
 //
-// No server-side discovery runs here. In production it runs once, when the
-// server starts (cmd/llm-bridge-server calls AutoDiscover), so a conversation
-// that happens in a terminal while the server is up is exactly as invisible to
-// a running server as it is to this one.
+// The external-CLI tests run the external activity watcher main.go starts
+// (WatchExternalHarnessActivity), at a 2s interval. Startup discovery
+// (AutoDiscover) does not run: it reads every transcript on the host.
 
 // liveHarness names one harness and the binaries it needs.
 type liveHarness struct {
@@ -189,6 +188,12 @@ func TestHarnessModeSwitchLive(t *testing.T) {
 			if !answeredInDash {
 				t.Errorf("the dash's event stream never showed an answer naming %s (%s)", codeWord, stream.summary())
 			}
+			// The pty must run on the session's model, not the CLI's default.
+			if ptyResult, ok := stream.waitFor(30*time.Second, func(ev msg.Event) bool {
+				return ev.Type == msg.EventResult && ev.Result != nil && strings.Contains(ev.Result.Text, codeWord)
+			}); ok && ptyResult.Result.Model != env.model {
+				t.Errorf("the pty turn ran on %q, want the session's model %q", ptyResult.Result.Model, env.model)
+			}
 			if !sawPrompt || !answeredInDash {
 				// The pty screen itself says whether the CLI resumed the
 				// conversation, which separates "no resume" from "no events".
@@ -238,6 +243,7 @@ func TestHarnessExternalCLILive(t *testing.T) {
 		t.Run(string(h.harness)+"/resume_known_session", func(t *testing.T) {
 			requireLiveHarness(t, h)
 			env := newLiveBridge(t, h)
+			env.startExternalActivityWatcher(t)
 
 			codeWord := liveCodeWord()
 			bridgeID := env.createEventsSession(t)
@@ -278,6 +284,7 @@ func TestHarnessExternalCLILive(t *testing.T) {
 		t.Run(string(h.harness)+"/new_session_appears", func(t *testing.T) {
 			requireLiveHarness(t, h)
 			env := newLiveBridge(t, h)
+			env.startExternalActivityWatcher(t)
 
 			harnessSessionID := runExternalNewSession(t, h, "Reply with only the word OK.")
 			t.Logf("external CLI started conversation %s", harnessSessionID)
@@ -414,6 +421,30 @@ func liveModelForHarness(t *testing.T, models *modelstore.Store, h liveHarness) 
 	}
 	t.Fatalf("production's efficient role has no %s model for %s", h.modelProvider, h.harness)
 	return ""
+}
+
+// startExternalActivityWatcher runs the watcher main.go starts, polling every
+// two seconds so a test does not wait out the 15s default.
+func (e *liveBridge) startExternalActivityWatcher(t *testing.T) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"value": "2s"})
+	req, err := http.NewRequest(http.MethodPut, e.baseURL+"/settings/external_activity.poll_interval", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT external_activity.poll_interval: %v", err)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT external_activity.poll_interval = %d: %s", resp.StatusCode, respBody)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.server.WatchExternalHarnessActivity(ctx)
 }
 
 func (e *liveBridge) listSessionIDs() []string {

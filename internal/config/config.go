@@ -136,6 +136,9 @@ type Config struct {
 	// defaults much higher than IdleTimeout. Configured via
 	// LLMBRIDGE_PTY_IDLE_TIMEOUT; <=0 disables reaping for pty sessions.
 	PTYIdleTimeout time.Duration
+	// ExternalActivityPollInterval seeds external_activity.poll_interval:
+	// how often the server looks for session files a terminal run changed.
+	ExternalActivityPollInterval time.Duration
 	// SignalClassifierModelRole is the model-store role the turn-end signal
 	// classifier asks to sort a finished turn into question | notification |
 	// neither. Empty turns the classifier off everywhere, leaving the
@@ -383,6 +386,7 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		PTYRingBufferBytes:            settings.Integer("pty.ring_buffer_bytes"),
 		IdleTimeout:                   settings.Duration(SettingSessionIdleTimeout),
 		PTYIdleTimeout:                settings.Duration(SettingSessionPTYIdleTimeout),
+		ExternalActivityPollInterval:  settings.Duration(SettingExternalActivityPollInterval),
 		SignalClassifierModelRole:     settings.ModelRole(SettingSignalClassifierModelRole),
 		SignalClassifierOptOut:        harnessSetOf(settings.StringList(SettingSignalClassifierOptOutHarnesses)),
 		PromptDriftTaggerModelRole:    settings.ModelRole(SettingPromptDriftTaggerModelRole),

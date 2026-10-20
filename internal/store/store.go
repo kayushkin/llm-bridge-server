@@ -544,6 +544,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateLoginAttempts(); err != nil {
 		return err
 	}
+	if err := s.migrateExternalActivityMarks(); err != nil {
+		return err
+	}
 	return nil
 }
 

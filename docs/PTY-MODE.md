@@ -2,6 +2,17 @@
 
 Status: **draft (2026-04-27)** — pre-implementation. Open questions tagged `[OPEN]`.
 
+## How it works now (2026-10-20)
+
+The rest of this file is the April design. What runs today:
+
+- **Both claude_code and codex support pty.** The wrapper execs the CLI with `--model` from `LLMBRIDGE_PTY_MODEL` (the session's model, from `harness_config.model`) and the session's conversation from `LLMBRIDGE_PTY_RESUME_ID`: `claude --resume <id>`, `codex --no-daemon resume <id>`. Without them a switch to pty opened a blank conversation on the CLI's default model.
+- **A sidecar turns the pty into events** (`ptySidecarStarters`, `internal/harness/sidecar.go`), posted to `/sidecar/event/{id}`, so the dash's chat and the session's state follow a turn typed into the CLI. Claude Code's (`-otel-sidecar`) receives claude's telemetry and tails its session file; Codex's (`-pty-sidecar`) tails its rollout. A resumed file is posted from where it ended.
+- **`--no-daemon`** keeps codex's thread in the pty's own process. Codex 0.163's shared app-server daemon outlived the pty and held the thread's writer lock, so the switch back to events mode was refused.
+- **Switching mode** (`POST /sessions/{id}/mode`) waits for the old process's exit cleanup before it spawns the new one (`KillAndWaitForCleanup`), or the old cleanup marked the new process `completed`.
+- The server ends a session's event streams whenever its process exits, which every switch does; the chat reconnects with `Last-Event-ID`.
+- `go test -tags harness_live -run TestHarnessModeSwitchLive ./internal/server/` drives events → pty → events against both real CLIs.
+
 ## Why
 
 Today every session is "events mode": the harness subprocess speaks structured JSON and llm-bridge-server emits a normalized `msg.Event` stream. That's the right abstraction for tools that build their own UI, but it's the wrong abstraction for tools that already give the user a terminal — `claude-squad`, vibe-kanban-style runners, ssh-attach setups, anything that wants the unmodified upstream CLI's TUI.
