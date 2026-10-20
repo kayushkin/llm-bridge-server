@@ -139,44 +139,75 @@ func (s *Scheduler) Reload() error {
 	return s.Start()
 }
 
+// RunJobNow runs a job outside its schedule. A shell job's run is returned
+// finished, with its output. An agent job's run is returned as soon as it is
+// created, still running: the run follows its session until the turn ends,
+// which takes minutes, and the callers — the API, the bus, and the bridge's
+// run-a-job button with its 30-second limit — would otherwise give up on a run
+// that is going fine. Read its outcome from GET /api/jobs/{id}/runs.
+// It returns nil when the job was not run: on hold, deleted, or still running.
 func (s *Scheduler) RunJobNow(jobID int64) (*db.Run, error) {
 	job, err := s.store.GetJob(jobID)
 	if err != nil {
 		return nil, err
 	}
-	return s.executeJob(*job), nil
+	if job.Type != "agent" {
+		return s.executeJob(*job), nil
+	}
+	runCreated := make(chan *db.Run, 1)
+	go func() {
+		defer s.recordJobPanic(*job)
+		s.executeJobReportingRun(*job, runCreated)
+	}()
+	return <-runCreated, nil
 }
 
 func (s *Scheduler) addJob(j db.Job) (cron.EntryID, error) {
 	job := j
 	id, err := s.cron.AddFunc(job.Schedule, func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("panic in job %d (%s): %v", job.ID, job.Name, r)
-
-				// Log the panic
-				if s.logger != nil {
-					s.logger.LogError("job_panic", fmt.Sprintf("Job %s panicked: %v", job.Name, r), map[string]interface{}{
-						"job_id":   job.ID,
-						"job_name": job.Name,
-						"schedule": job.Schedule,
-						"panic":    fmt.Sprintf("%v", r),
-					})
-				}
-
-				// Try to record the panic as a failed run
-				run, err := s.store.CreateRun(job.ID)
-				if err == nil {
-					s.store.FinishRun(run.ID, "panic", fmt.Sprintf("panic: %v", r))
-				}
-			}
-		}()
+		defer s.recordJobPanic(job)
 		s.executeJob(job)
 	})
 	return id, err
 }
 
+// recordJobPanic, deferred around a job's execution, logs a panic and records
+// it as a failed run.
+func (s *Scheduler) recordJobPanic(job db.Job) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	log.Printf("panic in job %d (%s): %v", job.ID, job.Name, r)
+
+	// Log the panic
+	if s.logger != nil {
+		s.logger.LogError("job_panic", fmt.Sprintf("Job %s panicked: %v", job.Name, r), map[string]interface{}{
+			"job_id":   job.ID,
+			"job_name": job.Name,
+			"schedule": job.Schedule,
+			"panic":    fmt.Sprintf("%v", r),
+		})
+	}
+
+	// Try to record the panic as a failed run
+	run, err := s.store.CreateRun(job.ID)
+	if err == nil {
+		s.store.FinishRun(run.ID, "panic", fmt.Sprintf("panic: %v", r))
+	}
+}
+
 func (s *Scheduler) executeJob(job db.Job) *db.Run {
+	return s.executeJobReportingRun(job, nil)
+}
+
+// executeJobReportingRun runs the job and returns its finished run. When
+// runCreated is not nil it also receives the run as soon as it is created, and
+// is closed when the run ends, so a job that is skipped sends nil.
+func (s *Scheduler) executeJobReportingRun(job db.Job, runCreated chan<- *db.Run) *db.Run {
+	if runCreated != nil {
+		defer close(runCreated)
+	}
 	// The cron entry closes over the job as it looked when the schedule was
 	// loaded, and every field of it is editable through the API. Run the row as
 	// it stands NOW: reading it only for the hold check, then executing the
@@ -236,6 +267,10 @@ func (s *Scheduler) executeJob(job db.Job) *db.Run {
 		}
 		return nil
 	}
+	if runCreated != nil {
+		started := *run
+		runCreated <- &started
+	}
 
 	// Log job start
 	if s.logger != nil {
@@ -254,6 +289,8 @@ func (s *Scheduler) executeJob(job db.Job) *db.Run {
 				SessionID:    job.SessionID,
 				WorkspaceID:  job.WorkspaceID,
 				ModelRole:    job.ModelRole,
+				// timeout_seconds caps how long the run follows its session.
+				SessionWaitLimit: executor.AgentSessionWaitLimit(job.TimeoutSecs),
 			})
 		}
 	} else {

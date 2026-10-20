@@ -18,7 +18,9 @@ import (
 
 // AgentExecutor runs agent turns by publishing a BridgeInbound message on
 // NATS — the same path the interactive bridge-chat UI uses, so scheduled
-// sessions land in llm-bridge-server alongside manual ones.
+// sessions land in llm-bridge-server alongside manual ones — and then follows
+// the session until the turn ends, so the run's status is the turn's outcome
+// rather than the fact that a message was sent (agent_session_outcome.go).
 //
 // For the first turn (empty BusSessionID) the executor looks up the first
 // enabled harness instance matching the job's orchestrator via
@@ -34,6 +36,9 @@ type AgentExecutor struct {
 	// starts, so a change on the settings page applies to the next session.
 	defaultModelRole func() string
 	modelRoles       sessionmodelrole.RoleChecker
+	// sessionPollInterval is how often a run reads its session's state while
+	// it waits for the turn to end. Zero takes defaultSessionPollInterval.
+	sessionPollInterval time.Duration
 }
 
 // NewAgentExecutor takes both addresses from the caller, which reads them from
@@ -116,6 +121,9 @@ type AgentRun struct {
 	// the executor's default. A run that continues SessionID starts no
 	// session, and the session keeps the model it was created on.
 	ModelRole string
+	// SessionWaitLimit is the longest the run waits for the session's turn to
+	// end before it gives up as a timeout. See AgentSessionWaitLimit.
+	SessionWaitLimit time.Duration
 }
 
 // workingMemoryPreamble prepends the job's prompt with the location of its
@@ -198,11 +206,21 @@ func (e *AgentExecutor) Run(run AgentRun) Result {
 		},
 	}
 
+	// Taken before the publish, so no state the session reaches because of
+	// this message can be stamped earlier.
+	publishedAt := time.Now()
 	if err := e.client.Publish(messages.BridgeInboundSubject, in); err != nil {
 		return Result{Status: runstatus.Error, Output: fmt.Sprintf("publish failed: %v", err)}
 	}
+	published := fmt.Sprintf("published to %s (bus_session=%s%s)", messages.BridgeInboundSubject, busSessionID, startsOn)
 
-	return Result{Status: runstatus.Success, Output: fmt.Sprintf("published to %s (bus_session=%s%s)", messages.BridgeInboundSubject, busSessionID, startsOn)}
+	waitLimit := run.SessionWaitLimit
+	if waitLimit <= 0 {
+		waitLimit = DefaultAgentSessionWaitLimit
+	}
+	outcome := e.waitForSessionOutcome(busSessionID, publishedAt, waitLimit)
+	outcome.Output = published + "; " + outcome.Output
+	return outcome
 }
 
 // newSessionRequest builds the create request for a job's first turn: the

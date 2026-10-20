@@ -25,8 +25,10 @@ const (
 	// Error means the run finished and reported a failure.
 	Error = "error"
 
-	// Timeout means the run exceeded its timeout_seconds cap and its process
-	// group was killed. Written by the executor.
+	// Timeout means the run exceeded its timeout_seconds cap. For a shell job
+	// its process group was killed; for an agent job its session had not
+	// finished its turn, and the session was left running. Written by the
+	// executor.
 	Timeout = "timeout"
 
 	// Interrupted means the scheduler process died while the run was in flight,
