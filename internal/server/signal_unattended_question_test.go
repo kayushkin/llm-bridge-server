@@ -283,9 +283,11 @@ func TestDerivedWorkerQuestionSurfacesWithItsAudience(t *testing.T) {
 	srv, st := testServerWithKanban(t, card.handler("card-3"))
 	sess := seedWorkerSession(t, st, "demo-builder-4", msg.PurposeDispatcher)
 	stubClassifier(t, srv, map[string]any{
-		"kind":    "question",
-		"title":   "Should the health check count discontinued products?",
-		"options": []any{map[string]any{"label": "Yes"}, map[string]any{"label": "No"}},
+		"kind": "question",
+		"questions": []any{map[string]any{
+			"question": "Should the health check count discontinued products?",
+			"options":  []any{map[string]any{"label": "Yes"}, map[string]any{"label": "No"}},
+		}},
 	})
 	stubTriage(t, srv, map[string]any{"disposition": "needs_input", "reason": "a real choice", "audience": "assignee"}, nil)
 
@@ -317,7 +319,7 @@ func TestDerivedSignoffPastTheCapIsSurfacedNotAnswered(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	stubClassifier(t, srv, map[string]any{"kind": "question", "title": "Shall I continue?"})
+	stubClassifier(t, srv, derivedQuestionVerdict("Shall I continue?"))
 	stubTriage(t, srv, map[string]any{"disposition": "signoff", "reason": "permission"}, nil)
 
 	srv.onTurnEnd(sess.SessionID, turnEndEvent("Done with that step. Shall I continue?"), msg.SessionIdle)

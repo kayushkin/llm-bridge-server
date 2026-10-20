@@ -48,3 +48,11 @@ func NewHookRequestID() string {
 	}
 	return "hreq_" + hex.EncodeToString(b)
 }
+
+// NewDerivedQuestionGroupID returns a fresh request id (dqgroup_<ULID>) shared
+// by the questions the turn-end classifier found in one finished turn. It
+// names a group, never a parked hook, and the prefix keeps it apart from
+// hreq_ ids, which do.
+func NewDerivedQuestionGroupID() string {
+	return "dqgroup_" + ulid.Make().String()
+}

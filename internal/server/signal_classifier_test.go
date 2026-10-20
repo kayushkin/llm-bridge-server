@@ -118,13 +118,15 @@ func TestOnTurnEndRecordsDerivedQuestion(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_q", msg.SessionTypeInteractive)
 	stubClassifier(t, srv, map[string]any{
-		"kind":  "question",
-		"title": "Should I drop the legacy column?",
-		"body":  "It has no readers left but two writers.",
-		"options": []any{
-			map[string]any{"label": "Drop it", "description": "irreversible"},
-			map[string]any{"label": "Leave it"},
-		},
+		"kind": "question",
+		"questions": []any{map[string]any{
+			"question": "Should I drop the legacy column?",
+			"context":  "It has no readers left but two writers.",
+			"options": []any{
+				map[string]any{"label": "Drop it", "description": "irreversible"},
+				map[string]any{"label": "Leave it"},
+			},
+		}},
 	})
 
 	srv.onTurnEnd(sess.SessionID, turnEndEvent("…so: should I drop the legacy column?"), msg.SessionIdle)
@@ -140,11 +142,12 @@ func TestOnTurnEndRecordsDerivedQuestion(t *testing.T) {
 	if sig.Source != msg.SignalSourceDerived {
 		t.Errorf("source = %q, want derived", sig.Source)
 	}
-	// The record that tells the two resolve paths apart: a derived signal has
-	// no parked hook behind it, so it must carry no request id. A client that
-	// saw one here would post to the hook-resolve verb and 404.
+	// A lone derived question belongs to no group, so it carries no request id.
 	if sig.RequestID != "" {
-		t.Errorf("request_id = %q, want empty on a derived signal", sig.RequestID)
+		t.Errorf("request_id = %q, want empty on a lone derived question", sig.RequestID)
+	}
+	if sig.Body != "It has no readers left but two writers." {
+		t.Errorf("body = %q, want the question's context", sig.Body)
 	}
 	if sig.Title != "Should I drop the legacy column?" {
 		t.Errorf("title = %q", sig.Title)
@@ -206,7 +209,7 @@ func TestOnTurnEndNeitherRecordsNothing(t *testing.T) {
 func TestOnTurnEndSupersedesTheEarlierDerivedSignal(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_super", msg.SessionTypeInteractive)
-	stubClassifier(t, srv, map[string]any{"kind": "question", "title": "Which one?"})
+	stubClassifier(t, srv, derivedQuestionVerdict("Which one?"))
 
 	srv.onTurnEnd(sess.SessionID, turnEndEvent("There are two candidates — which one?"), msg.SessionIdle)
 	first := openSignals(t, st, sess.SessionID)
@@ -247,7 +250,7 @@ func TestOnTurnEndYieldsToAnOpenToolQuestion(t *testing.T) {
 	srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 	before := len(openSignals(t, st, sess.SessionID))
 
-	stubClassifier(t, srv, map[string]any{"kind": "question", "title": "Also, which branch?"})
+	stubClassifier(t, srv, derivedQuestionVerdict("Also, which branch?"))
 	srv.onTurnEnd(sess.SessionID, turnEndEvent("Also, which branch should I use?"), msg.SessionAwaitingUser)
 
 	// A parked tool ask is a structured question with a real resolve verb.
@@ -298,7 +301,7 @@ func TestAnswerDerivedQuestionsClosesTheQuestionButNotTheNotification(t *testing
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_send", msg.SessionTypeInteractive)
 
-	stubClassifier(t, srv, map[string]any{"kind": "question", "title": "Which branch?"})
+	stubClassifier(t, srv, derivedQuestionVerdict("Which branch?"))
 	srv.onTurnEnd(sess.SessionID, turnEndEvent("Two branches look right — which branch?"), msg.SessionIdle)
 	question := openSignals(t, st, sess.SessionID)[0]
 
@@ -420,4 +423,10 @@ func TestAStaleToolQuestionIsRetiredLikeAnyOther(t *testing.T) {
 			t.Errorf("open questions = %d, want 2 — a live park owns its ask", got)
 		}
 	})
+}
+
+// derivedQuestionVerdict is a classifier verdict asking one question with no
+// options.
+func derivedQuestionVerdict(question string) map[string]any {
+	return map[string]any{"kind": "question", "questions": []any{map[string]any{"question": question}}}
 }

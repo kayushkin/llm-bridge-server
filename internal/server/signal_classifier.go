@@ -62,16 +62,33 @@ const (
 	turnSignalNeither      turnSignalKind = "neither"
 )
 
-// turnClassification is the verdict for one turn-end.
+// turnClassification is the verdict for one turn-end. A question verdict
+// carries its questions in Questions and leaves Title, Body and Severity
+// empty; a notification verdict is the other way round.
 type turnClassification struct {
-	Kind    turnSignalKind `json:"kind"`
-	Title   string         `json:"title"`
-	Body    string         `json:"body"`
-	Options []struct {
-		Label       string `json:"label"`
-		Description string `json:"description"`
-	} `json:"options"`
-	Severity string `json:"severity"`
+	Kind      turnSignalKind       `json:"kind"`
+	Title     string               `json:"title"`
+	Body      string               `json:"body"`
+	Questions []classifiedQuestion `json:"questions"`
+	Severity  string               `json:"severity"`
+}
+
+// classifiedQuestion is one decision a turn asked the human to make. A turn
+// may ask several, and each is its own entry: on 2026-10-20 a turn asking how
+// to handle pull requests (a, b or c) and how to handle next steps (a, b or c)
+// came back as ONE question whose options were "PRs: choose a, b, or c" and
+// "Next steps: choose a, b, or c" (sig_01M5D1003TG9GXK3DZPEWYPG57), and with
+// one list of options a person could answer only one of the two anyway.
+type classifiedQuestion struct {
+	Question string             `json:"question"`
+	Context  string             `json:"context"`
+	Options  []classifiedOption `json:"options"`
+}
+
+// classifiedOption is one choice the assistant offered for a question.
+type classifiedOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
 }
 
 // signalClassifier calls a cheap model to classify a turn-end. Zero value is
@@ -151,7 +168,11 @@ Return exactly one kind:
 - "notification" — the turn finished without needing an answer, but it says something the human should see unprompted: work completed that they were waiting on, something that failed, a warning, a change with consequences they did not ask for.
 - "neither" — everything else, and this is the common case. Ordinary progress reports, answers to what the human just asked, and routine completions are "neither". Prefer "neither" whenever you hesitate.
 
-For a question: title is the question itself, in the assistant's own words. options are the choices the assistant offered, if any — do not invent options it did not offer. body is any short context needed to understand the question.
+For a question: fill questions, one entry for each separate decision the assistant is waiting on, and leave title, body and severity empty.
+- Two questions that can be answered independently are two entries, even when the assistant asked them in one sentence ("Which do you want for X and for Y?"). Never merge them into one entry, because a person can click only one option of an entry.
+- question is that one question, in the assistant's own words where possible. context is any short detail needed to answer it, or empty.
+- options are the choices the assistant offered for that question, in its order — do not invent options it did not offer, and leave options empty when it offered none.
+- Each option's label is a complete answer a person can click on its own: name the choice itself ("Add PRs to repo-store"), never a bare letter or number ("c", "Option 2") and never an instruction ("Choose a, b, or c"). description is the rest of what the assistant said about that choice; when the assistant said it would pick that option, say so there.
 
 For a notification: title is a one-line headline. body is the detail. severity is "warn" for a failure, a risk, or anything the human may need to act on, and "info" otherwise.
 
@@ -186,23 +207,35 @@ func classifierToolSchema() map[string]any {
 				},
 				"title": map[string]any{
 					"type":        "string",
-					"description": "The question, or the notification headline. Empty when kind is neither.",
+					"description": "The notification headline. Empty unless kind is notification.",
 					"maxLength":   300,
 				},
 				"body": map[string]any{
 					"type":        "string",
-					"description": "Optional supporting detail.",
+					"description": "The notification detail. Empty unless kind is notification.",
 				},
-				"options": map[string]any{
+				"questions": map[string]any{
 					"type":        "array",
-					"description": "Choices the assistant actually offered. Empty unless it offered some.",
+					"description": "One entry per separate decision the assistant is waiting on. Empty unless kind is question.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"label":       map[string]any{"type": "string"},
-							"description": map[string]any{"type": "string"},
+							"question": map[string]any{"type": "string", "maxLength": 300},
+							"context":  map[string]any{"type": "string"},
+							"options": map[string]any{
+								"type":        "array",
+								"description": "Choices the assistant actually offered for this question. Empty unless it offered some.",
+								"items": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"label":       map[string]any{"type": "string"},
+										"description": map[string]any{"type": "string"},
+									},
+									"required": []string{"label"},
+								},
+							},
 						},
-						"required": []string{"label"},
+						"required": []string{"question"},
 					},
 				},
 				"severity": map[string]any{
@@ -339,18 +372,23 @@ func (s *Server) onTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionStat
 
 	switch verdict.Kind {
 	case turnSignalQuestion:
-		if sessionSurfacesQuestions(sess) {
-			s.surfaceDerivedWorkerQuestion(sess, verdict)
+		questions := usableQuestions(verdict.Questions)
+		if len(questions) == 0 {
+			log.Printf("[signals] %s: classifier returned question with no question text, no signal recorded", bridgeID)
 			return
 		}
-		s.recordDerivedSignal(sess, verdict, msg.SignalKindQuestion, nil, cardContext{})
+		if sessionSurfacesQuestions(sess) {
+			s.surfaceDerivedWorkerQuestions(sess, questions)
+			return
+		}
+		s.recordDerivedQuestions(sess, questions, nil, cardContext{})
 		// Promote: the classifier saw a question the heuristic's string
 		// match did not. Bounded to the states this verdict was formed
 		// about, so a turn that has already started again is left alone.
 		s.harness.ApplyDerivedSessionState(bridgeID, msg.SessionAwaitingUser,
 			msg.ReasonTurnCompleteSignalQuestion, msg.SessionIdle, msg.SessionAwaitingUser)
 	case turnSignalNotification:
-		s.recordDerivedSignal(sess, verdict, msg.SignalKindNotification, nil, cardContext{})
+		s.recordDerivedNotification(sess, verdict)
 		// A notification does not block, so a session the heuristic parked
 		// at awaiting_user goes back to idle: nobody is being asked
 		// anything.
@@ -540,68 +578,126 @@ func (s *Server) closeQuestionsAnsweredByMessage(bridgeID, text string) {
 	}
 }
 
-// recordDerivedSignal persists the classifier's verdict as a signal row.
-// Derived rows carry no RequestID — there is no parked hook behind them —
-// which is exactly how a consumer tells the two resolve paths apart.
-//
-// triage and card are the question triage's verdict and what it knew about
-// the card, for a question raised by a surfacing worker; nil and empty for
-// every other signal. Returns the row it wrote, or nil when it wrote none.
-func (s *Server) recordDerivedSignal(sess *store.Session, verdict *turnClassification, kind msg.SignalKind, triage *questionTriageVerdict, card cardContext) *msg.Signal {
-	title := strings.TrimSpace(verdict.Title)
-	if title == "" {
-		log.Printf("[signals] %s: classifier returned %s with no title, no signal recorded", sess.SessionID, kind)
-		return nil
+// usableQuestions keeps the questions that have question text, trimmed, and
+// drops options with no label. A question with no text cannot be shown, and
+// an option with no label cannot be clicked.
+func usableQuestions(questions []classifiedQuestion) []classifiedQuestion {
+	usable := make([]classifiedQuestion, 0, len(questions))
+	for _, question := range questions {
+		text := strings.TrimSpace(question.Question)
+		if text == "" {
+			continue
+		}
+		cleaned := classifiedQuestion{Question: text, Context: strings.TrimSpace(question.Context)}
+		for _, option := range question.Options {
+			label := strings.TrimSpace(option.Label)
+			if label == "" {
+				continue
+			}
+			cleaned.Options = append(cleaned.Options, classifiedOption{Label: label, Description: strings.TrimSpace(option.Description)})
+		}
+		usable = append(usable, cleaned)
 	}
+	return usable
+}
 
+// derivedQuestionSignal builds the open row for one question the classifier
+// found. requestID ties it to the other questions of the same turn, and is
+// empty when the turn asked only one.
+func (s *Server) derivedQuestionSignal(sess *store.Session, question classifiedQuestion, requestID string) *msg.Signal {
 	signal := &msg.Signal{
 		ID:           ids.NewSignalID(),
 		SessionID:    sess.SessionID,
 		SessionType:  sess.Type,
-		Kind:         kind,
+		Kind:         msg.SignalKindQuestion,
+		Source:       msg.SignalSourceDerived,
+		RequestID:    requestID,
+		Surface:      signalSurfaceForSession(sess),
+		Title:        question.Question,
+		Body:         question.Context,
+		State:        msg.SignalStateOpen,
+		LinkedTodoID: s.linkedTodoForSession(sess.SessionID),
+		// A derived question resolves by sending a message, and a message
+		// is free text whether or not the assistant listed choices.
+		AllowFreeform: true,
+	}
+	for _, option := range question.Options {
+		signal.Options = append(signal.Options, msg.SignalOption{
+			// A derived option has no machine value distinct from its
+			// label: the answer is sent on as a message, and the label is
+			// the text.
+			Label:       option.Label,
+			Value:       option.Label,
+			Description: option.Description,
+		})
+	}
+	return signal
+}
+
+// recordDerivedQuestions writes one open question row per question the turn
+// asked. Several questions share one request id, which is what makes them one
+// group: the chat draws them together, POST /signals/{id}/answer refuses an
+// answer that leaves one of them blank, and the answers reach the session as
+// one message with each answer under its question (answerTextForMessage). A
+// lone question carries no request id, as derived rows always did.
+//
+// A derived request id never names a parked hook, so the answer path, which
+// asks parkedAsks before it treats a request id as a park, delivers the
+// answers as a message.
+//
+// triageByQuestion holds the question triage's verdict for each question, in
+// order, for a surfacing worker; nil for every other session. card is what
+// triage knew about the card. Returns the rows it wrote.
+func (s *Server) recordDerivedQuestions(sess *store.Session, questions []classifiedQuestion, triageByQuestion []*questionTriageVerdict, card cardContext) []*msg.Signal {
+	requestID := ""
+	if len(questions) > 1 {
+		requestID = ids.NewDerivedQuestionGroupID()
+	}
+	recorded := make([]*msg.Signal, 0, len(questions))
+	for i, question := range questions {
+		signal := s.derivedQuestionSignal(sess, question, requestID)
+		if i < len(triageByQuestion) && triageByQuestion[i] != nil {
+			signal.Audience = triageByQuestion[i].Audience
+			signal.CustomerReplyDraft = customerReplyDraftFor(triageByQuestion[i], card)
+		}
+		if err := s.store.CreateSignal(signal); err != nil {
+			log.Printf("[signals] %s: persist derived question: %v", sess.SessionID, err)
+			continue
+		}
+		log.Printf("[signals] %s: derived question signal %s (surface=%s audience=%s request=%s)", sess.SessionID, signal.ID, signal.Surface, signal.Audience, requestID)
+		recorded = append(recorded, signal)
+	}
+	return recorded
+}
+
+// recordDerivedNotification persists a notification verdict as a signal row.
+// Returns the row it wrote, or nil when it wrote none.
+func (s *Server) recordDerivedNotification(sess *store.Session, verdict *turnClassification) *msg.Signal {
+	title := strings.TrimSpace(verdict.Title)
+	if title == "" {
+		log.Printf("[signals] %s: classifier returned notification with no title, no signal recorded", sess.SessionID)
+		return nil
+	}
+	signal := &msg.Signal{
+		ID:           ids.NewSignalID(),
+		SessionID:    sess.SessionID,
+		SessionType:  sess.Type,
+		Kind:         msg.SignalKindNotification,
 		Source:       msg.SignalSourceDerived,
 		Surface:      signalSurfaceForSession(sess),
 		Title:        title,
 		Body:         strings.TrimSpace(verdict.Body),
 		State:        msg.SignalStateOpen,
 		LinkedTodoID: s.linkedTodoForSession(sess.SessionID),
+		Severity:     msg.SignalSeverityInfo,
 	}
-
-	if kind == msg.SignalKindQuestion {
-		for _, opt := range verdict.Options {
-			label := strings.TrimSpace(opt.Label)
-			if label == "" {
-				continue
-			}
-			signal.Options = append(signal.Options, msg.SignalOption{
-				// A derived option has no machine value distinct from its
-				// label: the resolve path sends the text on to /send, and
-				// the label is the text.
-				Label:       label,
-				Value:       label,
-				Description: strings.TrimSpace(opt.Description),
-			})
-		}
-		// A derived question resolves by sending a message, and a message
-		// is free text whether or not the assistant listed choices.
-		signal.AllowFreeform = true
-		if triage != nil {
-			signal.Audience = triage.Audience
-			signal.CustomerReplyDraft = customerReplyDraftFor(triage, card)
-		}
-	} else {
-		switch verdict.Severity {
-		case string(msg.SignalSeverityWarn):
-			signal.Severity = msg.SignalSeverityWarn
-		default:
-			signal.Severity = msg.SignalSeverityInfo
-		}
+	if verdict.Severity == string(msg.SignalSeverityWarn) {
+		signal.Severity = msg.SignalSeverityWarn
 	}
-
 	if err := s.store.CreateSignal(signal); err != nil {
-		log.Printf("[signals] %s: persist derived signal: %v", sess.SessionID, err)
+		log.Printf("[signals] %s: persist derived notification: %v", sess.SessionID, err)
 		return nil
 	}
-	log.Printf("[signals] %s: derived %s signal %s (surface=%s audience=%s)", sess.SessionID, kind, signal.ID, signal.Surface, signal.Audience)
+	log.Printf("[signals] %s: derived notification signal %s (surface=%s)", sess.SessionID, signal.ID, signal.Surface)
 	return signal
 }

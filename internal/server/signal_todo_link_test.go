@@ -191,10 +191,7 @@ func TestDerivedSignalsCarryTheLinkedTodo(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	withHarnessSessionID(t, st, sess)
 
-	srv.recordDerivedSignal(sess, &turnClassification{
-		Kind:  turnSignalQuestion,
-		Title: "Which branch should I ship from?",
-	}, msg.SignalKindQuestion, nil, cardContext{})
+	srv.recordDerivedQuestions(sess, []classifiedQuestion{{Question: "Which branch should I ship from?"}}, nil, cardContext{})
 
 	signals, err := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if err != nil {

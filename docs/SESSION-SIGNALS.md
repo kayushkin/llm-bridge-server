@@ -62,7 +62,7 @@ signal {
   session_type  "interactive"|"autonomous"|"herald"   // metadata, NOT a discriminator
   kind          "question"|"notification"
   source        "tool"|"derived"
-  request_id    string?         // tool path only — the parked hook's id
+  request_id    string?         // the parked hook's id, or a dqgroup_ id tying a turn's derived questions together
   surface       "chat"|"kanban" // where it renders — a projection of attended-ness
   title         string          // the question, or the notification headline
   body          string?         // optional detail for a notification
@@ -335,6 +335,17 @@ adds. And `surface:"kanban"` has no mount yet — that is P4's, on the kanban ca
 The derived producer. A cheap-model pass over each turn-end sorts the assistant's final
 text into `question` | `notification` | `neither` and writes a `source:"derived"` signal
 for the first two. On by default (decision 1), with a per-harness opt-out.
+
+**A turn can ask several questions, and each becomes its own row** (since 2026-10-20). The
+classifier returns `questions: [{question, context, options}]`, one entry per separate
+decision, and the server writes one row per question. Two or more share a request id
+minted by `ids.NewDerivedQuestionGroupID` (`dqgroup_…`), which names a group, never a park:
+the chat draws them together, `POST /signals/{id}/answer` refuses an answer that leaves
+one blank (400 `incomplete_answer`), and the answers reach the session as one message with
+each under its question. A lone question carries no request id. Before this the classifier
+had one title and one list of options, and a turn asking two a/b/c questions came back as
+buttons labelled "PRs: choose a, b, or c" (sig_01M5D1003TG9GXK3DZPEWYPG57). The prompt also
+requires each option label to name the choice, never a bare letter or an instruction.
 
 | Piece | File |
 |---|---|
