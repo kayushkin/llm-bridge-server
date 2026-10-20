@@ -4,9 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
 )
+
+// modeSwitchCleanupTimeout bounds the wait for the old process's exit
+// cleanup. A pty cleanup waits about two seconds for its OTel sidecar to
+// flush, and an events cleanup drains the session's queued log-store writes.
+const modeSwitchCleanupTimeout = 15 * time.Second
 
 // switchModeRequest is the JSON body of POST /sessions/{id}/mode.
 type switchModeRequest struct {
@@ -84,11 +90,14 @@ func (s *Server) handleSwitchMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Kill the current process if one is running. Kill is idempotent
-	// for already-dead processes — readEvents / watchPTYExit may have
-	// already torn it down — so we ignore its error and trust the
-	// next state observation.
-	_ = s.harness.Kill(bridgeID)
+	// Kill the current process and wait for its exit cleanup to finish
+	// before spawning the next one. The cleanup clears the session's
+	// process entry and PID and, for pty, records the session completed;
+	// started before it ran, the new process was overwritten by it.
+	if err := s.harness.KillAndWaitForCleanup(bridgeID, modeSwitchCleanupTimeout); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":{"code":"previous_process_still_exiting","message":%q}}`, err.Error()), http.StatusConflict)
+		return
+	}
 
 	// Persist the new mode BEFORE spawning so startOnInstance (which
 	// reads sess.Mode) routes through the right spawn path.

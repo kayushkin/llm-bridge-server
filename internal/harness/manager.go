@@ -53,6 +53,7 @@ type Manager struct {
 	msgState            map[string]*sessionMsgState   // sessionID → message-id assignment state
 	attachHubs          map[string]*AttachHub         // sessionID → fan-out hub for pty sessions
 	derivation          map[string]*derivationState   // sessionID → convenience-event derivation state
+	processCleanups     map[string]chan struct{}      // sessionID → closed when the current process's exit cleanup (readEvents / watchPTYExit) has finished
 	budgetHalted        map[string]bool               // sessionID → already announced this session's spend-ceiling breach (see budget.go)
 	otelSidecars        map[string]*otelSidecar       // sessionID → per-PTY OTel sidecar (nil for non-PTY sessions)
 	pending             *pendingHooks                 // awaiting_resolution hooks indexed by sessionID, request_id
@@ -224,6 +225,7 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL st
 	m := &Manager{
 		processes:        make(map[string]HarnessProcess),
 		processStartedAt: make(map[string]time.Time),
+		processCleanups:  make(map[string]chan struct{}),
 		subscribers:      make(map[string][]chan StoredEvent),
 		msgState:         make(map[string]*sessionMsgState),
 		attachHubs:       make(map[string]*AttachHub),
@@ -537,6 +539,7 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 	m.mu.Lock()
 	m.processes[sess.SessionID] = proc
 	m.processStartedAt[sess.SessionID] = time.Now()
+	cleanupDone := m.trackProcessCleanupLocked(sess.SessionID)
 	m.mu.Unlock()
 
 	// Update session with PID. `starting` — the subprocess exists and has not
@@ -546,7 +549,7 @@ func (m *Manager) Start(ctx context.Context, sess *store.Session) (*Process, err
 	m.ForceSessionState(sess.SessionID, msg.SessionStarting, msg.ReasonProcessSpawned)
 
 	// Start event reader goroutine
-	go m.readEvents(proc)
+	go m.runProcessCleanupTracked(sess.SessionID, cleanupDone, func() { m.readEvents(proc) })
 
 	return proc, nil
 }
@@ -580,6 +583,64 @@ func (m *Manager) Kill(sessionID string) error {
 	m.mu.Unlock()
 
 	return proc.Kill()
+}
+
+// KillAndWaitForCleanup kills the session's process and returns once that
+// process's exit cleanup has finished, or an error when it has not within
+// timeout. A caller that starts a new process for the same session right
+// after a kill must use this, not Kill.
+//
+// Kill only signals. The cleanup runs afterwards in the process's own
+// goroutine — readEvents for events mode, watchPTYExit for pty, which first
+// waits about two seconds for the OTel sidecar to flush — and it removes the
+// session's process entry, sets its PID to 0 and, for pty, records the
+// session completed with reason pty_exited. A mode switch used to start the
+// new process before that ran, so the old process's cleanup landed on the
+// new one: switching from pty back to events left a running session reading
+// completed, which the server's forced end state then held against every
+// later event.
+//
+// A session with no process, or whose cleanup already finished, returns at
+// once.
+func (m *Manager) KillAndWaitForCleanup(sessionID string, timeout time.Duration) error {
+	m.mu.Lock()
+	cleanupDone := m.processCleanups[sessionID]
+	m.mu.Unlock()
+	// Kill's error means there was no process to signal; whether its cleanup
+	// is still running is what cleanupDone answers.
+	_ = m.Kill(sessionID)
+	if cleanupDone == nil {
+		return nil
+	}
+	select {
+	case <-cleanupDone:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("session %s: the previous process's exit cleanup did not finish within %s", sessionID, timeout)
+	}
+}
+
+// trackProcessCleanupLocked records a fresh cleanup channel as the session's
+// current one and returns it. Caller holds m.mu.
+func (m *Manager) trackProcessCleanupLocked(sessionID string) chan struct{} {
+	cleanupDone := make(chan struct{})
+	m.processCleanups[sessionID] = cleanupDone
+	return cleanupDone
+}
+
+// runProcessCleanupTracked runs a process's reader or exit watcher, then
+// marks its cleanup finished. The map entry is removed only while it is
+// still this process's, so a newer process's channel is left alone.
+func (m *Manager) runProcessCleanupTracked(sessionID string, cleanupDone chan struct{}, run func()) {
+	defer func() {
+		m.mu.Lock()
+		if m.processCleanups[sessionID] == cleanupDone {
+			delete(m.processCleanups, sessionID)
+		}
+		m.mu.Unlock()
+		close(cleanupDone)
+	}()
+	run()
 }
 
 // Send writes a message to the harness stdin. Pass blocks=nil for text-only
@@ -1797,6 +1858,7 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 	m.mu.Lock()
 	m.processes[sess.SessionID] = proc
 	m.processStartedAt[sess.SessionID] = time.Now()
+	cleanupDone := m.trackProcessCleanupLocked(sess.SessionID)
 	m.mu.Unlock()
 
 	m.store.UpdateSessionPID(sess.SessionID, proc.PID())
@@ -1813,10 +1875,13 @@ func (m *Manager) StartOnInstance(ctx context.Context, sess *store.Session, inst
 			m.mu.Lock()
 			m.attachHubs[sess.SessionID] = hub
 			m.mu.Unlock()
-			go m.watchPTYExit(pp)
+			go m.runProcessCleanupTracked(sess.SessionID, cleanupDone, func() { m.watchPTYExit(pp) })
+		} else {
+			// No watcher means no cleanup to wait for.
+			go m.runProcessCleanupTracked(sess.SessionID, cleanupDone, func() {})
 		}
 	} else {
-		go m.readEvents(proc)
+		go m.runProcessCleanupTracked(sess.SessionID, cleanupDone, func() { m.readEvents(proc) })
 	}
 
 	return proc, nil
