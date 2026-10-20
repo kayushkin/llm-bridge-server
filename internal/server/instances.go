@@ -59,28 +59,18 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 }
 
 // instancesPrincipalMayDispatchOn narrows instances to the ones a principal
-// restricted to itself may start a session on, by the same lenient rule
-// checkPrincipalMayRunHere enforces at creation: a principal holding no
-// can_dispatch_on grant is not restricted, one holding any may use only the
-// instances it names and the instances of the machines it names. Machine
+// restricted to itself may start a session on, by the rule
+// checkPrincipalMayRunHere enforces at creation (principal_grants.go). Machine
 // details (hostname, SSH user and key path) are the operator's and are left
 // out; machine_id stays.
 func (s *Server) instancesPrincipalMayDispatchOn(ctx context.Context, principalID string, instances []msg.Instance) ([]msg.Instance, error) {
-	if s.grantClient == nil {
-		return nil, fmt.Errorf("instances are listed for %s by their can_dispatch_on grants, and this server has no grant-store (LLMBRIDGE_GRANT_STORE_URL)", principalID)
-	}
-	instanceIDs, err := s.grantClient.EffectiveResourceIDs(ctx, principalID, "can_dispatch_on", "instance")
+	dispatch, err := s.dispatchGrantsOf(ctx, principalID)
 	if err != nil {
-		return nil, fmt.Errorf("could not read %s's can_dispatch_on grants: %w", principalID, err)
+		return nil, err
 	}
-	machineIDs, err := s.grantClient.EffectiveResourceIDs(ctx, principalID, "can_dispatch_on", "machine")
-	if err != nil {
-		return nil, fmt.Errorf("could not read %s's can_dispatch_on grants: %w", principalID, err)
-	}
-	restrictedByGrants := len(instanceIDs)+len(machineIDs) > 0
 	visible := make([]msg.Instance, 0, len(instances))
 	for _, instance := range instances {
-		if restrictedByGrants && !contains(instanceIDs, instance.ID) && !contains(machineIDs, instance.MachineID) {
+		if !dispatch.permits(instance.ID, instance.MachineID) {
 			continue
 		}
 		instance.Machine = nil

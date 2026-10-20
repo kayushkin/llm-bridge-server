@@ -129,11 +129,11 @@ func newGatedTestServerConfigured(t *testing.T, grantsByPrincipal map[string]map
 		}
 	}
 	principalRecords := map[string]string{
-		firstTestPrincipalID:         `{"id":"principal_000001","kind":"human","display_name":"One","disabled_at":0,"is_administrator":false,"groups":[]}`,
-		secondTestPrincipalID:        `{"id":"principal_000002","kind":"human","display_name":"Two","disabled_at":0,"is_administrator":false,"groups":[]}`,
-		administratorTestPrincipalID: `{"id":"principal_000003","kind":"human","display_name":"Root","disabled_at":0,"is_administrator":true,"groups":[]}`,
-		groupTestPrincipalID:         `{"id":"principal_000006","kind":"group","display_name":"Data Team","disabled_at":0,"is_administrator":false,"members":[]}`,
-		disabledTestPrincipalID:      `{"id":"principal_000009","kind":"human","display_name":"Gone","disabled_at":1788980427,"is_administrator":true,"groups":[]}`,
+		firstTestPrincipalID:         `{"id":"principal_000001","kind":"human","acts_as_caller":true,"restricted_to_its_grants":false,"display_name":"One","disabled_at":0,"is_administrator":false,"groups":[]}`,
+		secondTestPrincipalID:        `{"id":"principal_000002","kind":"human","acts_as_caller":true,"restricted_to_its_grants":false,"display_name":"Two","disabled_at":0,"is_administrator":false,"groups":[]}`,
+		administratorTestPrincipalID: `{"id":"principal_000003","kind":"human","acts_as_caller":true,"restricted_to_its_grants":false,"display_name":"Root","disabled_at":0,"is_administrator":true,"groups":[]}`,
+		groupTestPrincipalID:         `{"id":"principal_000006","kind":"group","acts_as_caller":false,"restricted_to_its_grants":false,"display_name":"Data Team","disabled_at":0,"is_administrator":false,"members":[]}`,
+		disabledTestPrincipalID:      `{"id":"principal_000009","kind":"human","acts_as_caller":true,"restricted_to_its_grants":false,"display_name":"Gone","disabled_at":1788980427,"is_administrator":true,"groups":[]}`,
 	}
 	principals := newFakePrincipalDirectory(t, principalRecords)
 	kanban := newFakeKanbanStore(t)
@@ -447,7 +447,7 @@ func TestADemotedAdministratorLosesAccessWhenTheCachedAnswerExpires(t *testing.T
 	}
 
 	gated.principals.setRecord(administratorTestPrincipalID,
-		`{"id":"principal_000003","kind":"human","display_name":"Root","disabled_at":0,"is_administrator":false,"groups":[]}`)
+		`{"id":"principal_000003","kind":"human","acts_as_caller":true,"restricted_to_its_grants":false,"display_name":"Root","disabled_at":0,"is_administrator":false,"groups":[]}`)
 
 	// What the cache buys: a page load is many requests and one lookup.
 	readsBeforeThePage := gated.principals.readCount()
@@ -471,7 +471,7 @@ func TestADemotedAdministratorLosesAccessWhenTheCachedAnswerExpires(t *testing.T
 	// Disabling bites the same way, and is refused before is_administrator is
 	// read — this record says is_administrator true and disabled_at set.
 	gated.principals.setRecord(administratorTestPrincipalID,
-		`{"id":"principal_000003","kind":"human","display_name":"Root","disabled_at":1788980427,"is_administrator":true,"groups":[]}`)
+		`{"id":"principal_000003","kind":"human","acts_as_caller":true,"restricted_to_its_grants":false,"display_name":"Root","disabled_at":1788980427,"is_administrator":true,"groups":[]}`)
 	gated.clock.advance(principalLookupCacheLifetime)
 	response = gated.requestAs(t, cookie, "GET", "/sessions", nil)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "principal_disabled") {
@@ -541,7 +541,7 @@ func TestAnAssertedPrincipalIsCheckedWithPrincipalStore(t *testing.T) {
 	}{
 		"unknown":   {unknownTestPrincipalID, http.StatusBadRequest, "unknown_principal"},
 		"disabled":  {disabledTestPrincipalID, http.StatusForbidden, "principal_disabled"},
-		"a group":   {groupTestPrincipalID, http.StatusBadRequest, "principal_not_human"},
+		"a group":   {groupTestPrincipalID, http.StatusBadRequest, "principal_does_not_act"},
 		"not an id": {"Slava Kayushkin", http.StatusBadRequest, "invalid_principal_id"},
 	} {
 		response := gated.requestAsServiceAssertingPrincipal(t, testCase.principalID, "GET", "/sessions")

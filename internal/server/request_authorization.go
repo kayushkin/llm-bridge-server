@@ -48,6 +48,10 @@ import (
 // serviceTokenHeader carries LLMBRIDGE_SERVICE_TOKEN from an internal service.
 const serviceTokenHeader = "X-LLM-Bridge-Service-Token"
 
+// peerTokenHeader carries a peer token: another llm-bridge-server acting here
+// as the peer principal this server issued the token for (peers.go).
+const peerTokenHeader = "X-LLM-Bridge-Peer-Token"
+
 // routeAccessClass says who may call a route and how a principal is limited.
 type routeAccessClass int
 
@@ -164,6 +168,16 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /auth/entra/callback":        openRoute("Entra ID sends the browser back here; the handler verifies everything it is given"),
 	"GET /auth/principal":             openRoute("answers 401 itself without a live login session"),
 	"POST /auth/logout":               openRoute("revokes the cookie's live session, checking its CSRF token itself, and clears a dead cookie with none"),
+	"POST /peer-invites":              operatorRoute("hands another server access to this one"),
+	"GET /peer-invites":               operatorRoute("who was invited to link, and by whom"),
+	"POST /peer/redeem":               openRoute("the calling server has no credential yet; the one-time passphrase is the credential, checked by the handler"),
+	"GET /peer/self":                  catalogRoute("tells a caller who it is; the handler answers only a peer token"),
+	"GET /peer-tokens":                operatorRoute("which servers may act here"),
+	"POST /peer-tokens/{id}/revoke":   operatorRoute("takes another server's access away"),
+	"POST /peer-links":                operatorRoute("stores a credential for another server"),
+	"GET /peer-links":                 operatorRoute("which servers this one may act on"),
+	"POST /peer-links/{id}/check":     operatorRoute("calls another server with a stored credential"),
+	"POST /peer-links/{id}/remove":    operatorRoute("deletes a stored credential"),
 	"GET /auth/sessions":              {class: routePrincipalManagesOwnLoginSessions, reason: "a principal's own login sessions; an administrator names anyone's"},
 	"POST /auth/sessions/{id}/revoke": {class: routePrincipalManagesOwnLoginSessions, reason: "ends a principal's own login session; an administrator ends anyone's"},
 	"GET /auth/login-attempts":        operatorRoute("every sign-in attempt, with the identities of people refused"),
@@ -407,6 +421,9 @@ type requestCaller struct {
 	// loginSessionID is the login session whose cookie authenticated the
 	// request, and empty for every other credential.
 	loginSessionID string
+	// peerTokenID is set when another llm-bridge-server presented a peer
+	// token; principalID is then the peer principal the token acts as.
+	peerTokenID string
 	// postingAgentOfSessionID is set, and nothing else is, when the caller
 	// is a session's own agent presenting its session posting token. It reaches
 	// only routeSessionOwnerOrItsAgentPostsIntoSession, for this session.
@@ -465,6 +482,13 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	presentedPeerTokens, peerTokenPresent := r.Header[http.CanonicalHeaderKey(peerTokenHeader)]
+	if _, serviceTokenPresent := r.Header[http.CanonicalHeaderKey(serviceTokenHeader)]; peerTokenPresent && serviceTokenPresent {
+		writeJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
+			"%s and %s were both sent; a request comes from one caller", serviceTokenHeader, peerTokenHeader))
+		return
+	}
+
 	if presentedServiceToken, present := r.Header[http.CanonicalHeaderKey(serviceTokenHeader)]; present {
 		if len(presentedServiceToken) != 1 || subtle.ConstantTimeCompare([]byte(presentedServiceToken[0]), []byte(s.cfg.ServiceToken)) != 1 {
 			writeJSONError(w, http.StatusUnauthorized, "invalid_service_token", serviceTokenHeader+" does not match this server's service token")
@@ -516,6 +540,30 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		refuseUnclassifiedRoute(w, pattern)
 		return
 	}
+
+	// Another llm-bridge-server acting as the peer principal its token was
+	// issued for. From here it is held to the route rules exactly as a person
+	// signed in as that principal would be.
+	if peerTokenPresent {
+		if len(presentedPeerTokens) != 1 || strings.TrimSpace(presentedPeerTokens[0]) == "" {
+			writeJSONError(w, http.StatusBadRequest, "ambiguous_peer_token", fmt.Sprintf(
+				"%s was sent %d times or empty; a request presents one peer token", peerTokenHeader, len(presentedPeerTokens)))
+			return
+		}
+		if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization {
+			writeJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
+				"%s and an Authorization header were both sent; a request comes from one caller", peerTokenHeader))
+			return
+		}
+		caller, credentialError := s.callerOfPeerToken(r.Context(), presentedPeerTokens[0])
+		if credentialError != nil {
+			credentialError.write(w)
+			return
+		}
+		s.serveAsCaller(w, r, pattern, rule, caller)
+		return
+	}
+
 	switch rule.class {
 	case routeOpenToEveryone, routeHarnessCallback:
 		s.mux.ServeHTTP(w, r)

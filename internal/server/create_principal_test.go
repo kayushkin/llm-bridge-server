@@ -24,7 +24,7 @@ func fakePrincipalStore(t *testing.T, known string) *httptest.Server {
 			_, _ = w.Write([]byte(`{"error":"not found: principal ` + r.PathValue("id") + `"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"id":"` + known + `","kind":"human","display_name":"Slava","disabled_at":0,"groups":[]}`))
+		_, _ = w.Write([]byte(`{"id":"` + known + `","kind":"human","acts_as_caller":true,"restricted_to_its_grants":false,"display_name":"Slava","disabled_at":0,"groups":[]}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -42,6 +42,7 @@ func TestCreateSessionStoresAKnownPrincipalAndRefusesAnUnknownOne(t *testing.T) 
 	srv, st, instanceID := testServerWithInstance(t, msg.HarnessMock)
 	directory := fakePrincipalStore(t, "principal_000001")
 	srv.principalClient = principalclient.New(directory.URL)
+	srv.principalLookupCache = newPrincipalLookupCache(srv.principalClient)
 	// No grants at all: the gate lets everything through, which is the case
 	// this test is about — the principal check itself.
 	srv.grantClient = grantclient.New(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{}).URL, "")

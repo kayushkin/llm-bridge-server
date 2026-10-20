@@ -159,8 +159,8 @@ func newEntraTestHarness(t *testing.T) *entraTestHarness {
 		cfg.EntraAuthorityURL = provider.server.URL
 	})
 	bindings := map[string]string{
-		testEntraObjectIDOfFirst:    `{"binding":{"id":"identity_binding_000001","principal_id":"principal_000001","provider":"entra","tenant_id":"` + testEntraTenantID + `","subject":"` + testEntraObjectIDOfFirst + `","linked_at":1,"linked_by":"principal_000003"},"principal":{"id":"principal_000001","kind":"human","disabled_at":0,"is_administrator":false}}`,
-		testEntraObjectIDOfDisabled: `{"binding":{"id":"identity_binding_000002","principal_id":"principal_000009","provider":"entra","tenant_id":"` + testEntraTenantID + `","subject":"` + testEntraObjectIDOfDisabled + `","linked_at":1,"linked_by":"principal_000003"},"principal":{"id":"principal_000009","kind":"human","disabled_at":1788980427,"is_administrator":true}}`,
+		testEntraObjectIDOfFirst:    `{"binding":{"id":"identity_binding_000001","principal_id":"principal_000001","provider":"entra","tenant_id":"` + testEntraTenantID + `","subject":"` + testEntraObjectIDOfFirst + `","linked_at":1,"linked_by":"principal_000003"},"principal":{"id":"principal_000001","kind":"human","acts_as_caller":true,"restricted_to_its_grants":false,"disabled_at":0,"is_administrator":false}}`,
+		testEntraObjectIDOfDisabled: `{"binding":{"id":"identity_binding_000002","principal_id":"principal_000009","provider":"entra","tenant_id":"` + testEntraTenantID + `","subject":"` + testEntraObjectIDOfDisabled + `","linked_at":1,"linked_by":"principal_000003"},"principal":{"id":"principal_000009","kind":"human","acts_as_caller":true,"restricted_to_its_grants":false,"disabled_at":1788980427,"is_administrator":true}}`,
 	}
 	gated.principals.setIdentityBindings(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

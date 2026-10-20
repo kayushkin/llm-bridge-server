@@ -22,11 +22,12 @@ var ErrNotGranted = errors.New("not granted")
 // session started as a principal may start only on an instance (or a
 // machine) the principal's grants name, and only as an agent they name.
 //
-// Lenient in the same shape as the tool filter, by the operator's choice on
-// 2026-09-11: a principal holding NO grant of a relation is not restricted
-// by it — so a default principal set before any grant is written does not
-// lock every session out — and a principal holding any grant of it is
-// refused outside them. A grant-store that cannot answer is an error: a
+// What the grants allow is decided in principal_grants.go: lenient by the
+// operator's choice on 2026-09-11 (a principal holding NO grant of a relation
+// is not restricted by it, so a default principal set before any grant is
+// written does not lock every session out), except for a kind principal-store
+// marks restricted to its grants, such as a peer; and a grant of "*" names
+// every resource of its type. A grant-store that cannot answer is an error: a
 // session that named a principal must not start because the check failed.
 //
 // Called twice on purpose: at POST /sessions, so the caller gets a 403 with
@@ -42,43 +43,34 @@ func (s *Server) checkPrincipalMayRunHere(ctx context.Context, sess *store.Sessi
 	if sess.PrincipalID == "" {
 		return nil
 	}
-	if s.grantClient == nil {
-		return fmt.Errorf("session %s is started as %s but this server has no grant-store to read its grants from (LLMBRIDGE_GRANT_STORE_URL)", sess.SessionID, sess.PrincipalID)
-	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-
-	instanceIDs, err := s.grantClient.EffectiveResourceIDs(ctx, sess.PrincipalID, "can_dispatch_on", "instance")
+	dispatch, err := s.dispatchGrantsOf(ctx, sess.PrincipalID)
 	if err != nil {
-		return fmt.Errorf("could not read %s's can_dispatch_on grants: %w", sess.PrincipalID, err)
+		return err
 	}
-	machineIDs, err := s.grantClient.EffectiveResourceIDs(ctx, sess.PrincipalID, "can_dispatch_on", "machine")
-	if err != nil {
-		return fmt.Errorf("could not read %s's can_dispatch_on grants: %w", sess.PrincipalID, err)
+	if !dispatch.permits(inst.ID, inst.MachineID) {
+		return fmt.Errorf("%w: %s may not start a session on instance %s (machine %s); %s",
+			ErrNotGranted, sess.PrincipalID, inst.ID, inst.MachineID, dispatch.describe())
 	}
-	if len(instanceIDs)+len(machineIDs) > 0 && !contains(instanceIDs, inst.ID) && !contains(machineIDs, inst.MachineID) {
-		return fmt.Errorf("%w: %s may not start a session on instance %s (machine %s); their can_dispatch_on grants name instances %v and machines %v",
-			ErrNotGranted, sess.PrincipalID, inst.ID, inst.MachineID, instanceIDs, machineIDs)
-	}
-
 	if sess.AgentID == "" {
 		return nil
 	}
-	agentIDs, err := s.grantClient.EffectiveResourceIDs(ctx, sess.PrincipalID, "can_run_as", "agent")
+	runAs, err := s.grantedResourcesOf(ctx, sess.PrincipalID, "can_run_as", "agent")
 	if err != nil {
-		return fmt.Errorf("could not read %s's can_run_as grants: %w", sess.PrincipalID, err)
+		return err
 	}
-	if len(agentIDs) == 0 {
+	if !runAs.restricts() || runAs.namesAll() {
 		return nil
 	}
 	agentID, err := s.resolveAgentID(sess.AgentID)
 	if err != nil {
-		return fmt.Errorf("%w: %s holds can_run_as grants for agents %v, and the session's agent %q could not be resolved to an agent-store id: %v",
-			ErrNotGranted, sess.PrincipalID, agentIDs, sess.AgentID, err)
+		return fmt.Errorf("%w: %s, and the session's agent %q could not be resolved to an agent-store id: %v",
+			ErrNotGranted, runAs.describe(), sess.AgentID, err)
 	}
-	if !contains(agentIDs, agentID) {
-		return fmt.Errorf("%w: %s may not start a session as agent %s (agent-store id %s); their can_run_as grants name agents %v",
-			ErrNotGranted, sess.PrincipalID, sess.AgentID, agentID, agentIDs)
+	if !runAs.permits(agentID) {
+		return fmt.Errorf("%w: %s may not start a session as agent %s (agent-store id %s); %s",
+			ErrNotGranted, sess.PrincipalID, sess.AgentID, agentID, runAs.describe())
 	}
 	return nil
 }
@@ -97,15 +89,6 @@ func (s *Server) resolveAgentID(agentID string) (string, error) {
 		return "", fmt.Errorf("agent-store has no agent with slug %q: %w", agentID, err)
 	}
 	return strconv.FormatInt(agent.ID, 10), nil
-}
-
-func contains(ids []string, id string) bool {
-	for _, candidate := range ids {
-		if candidate == id {
-			return true
-		}
-	}
-	return false
 }
 
 // grantGateStatus maps a gate failure to the HTTP answer POST /sessions gives.

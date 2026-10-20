@@ -52,6 +52,7 @@ var requestHeadersNeverForwardedToStores = []string{
 	"X-Kanban-Store-Service-Token",
 	grantclient.ServiceTokenHeader,
 	serviceTokenHeader,
+	peerTokenHeader,
 	"Authorization",
 }
 

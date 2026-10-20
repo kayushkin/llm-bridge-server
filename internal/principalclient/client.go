@@ -34,19 +34,55 @@ func New(base string) *Client {
 	return &Client{url: strings.TrimSuffix(base, "/"), http: &http.Client{Timeout: 5 * time.Second}}
 }
 
+// KindPeer is principal-store's kind for another llm-bridge-server linked to
+// this one. Spelled here because a peer invite may be made only for one: what
+// a peer may do is read from the answers below, never from this word.
+const KindPeer = "peer"
+
 // Principal is the part of principal-store's principal record this server
-// reads. Kind is "human" or "group"; DisabledAt is 0 for an active principal
-// and the epoch second it was disabled otherwise.
+// reads. DisabledAt is 0 for an active principal and the epoch second it was
+// disabled otherwise.
 //
 // IsAdministrator is principal-store's own answer to "may this person do
 // anything?", and it is read, never derived: this server does not keep a list
 // of administrators and must not infer one from a name, an email or a group.
-// principal-store sets it on humans only.
+//
+// ActsAsCaller and RestrictedToItsGrants are principal-store's answers for the
+// principal's kind: may a request act as it (a human or a peer), and does
+// holding no grant of a relation refuse it (a peer) rather than leave it
+// unrestricted (a human). This server reads them instead of comparing Kind to
+// a word.
 type Principal struct {
-	ID              string `json:"id"`
-	Kind            string `json:"kind"`
-	DisabledAt      int64  `json:"disabled_at"`
-	IsAdministrator bool   `json:"is_administrator"`
+	ID                    string `json:"id"`
+	Kind                  string `json:"kind"`
+	DisabledAt            int64  `json:"disabled_at"`
+	IsAdministrator       bool   `json:"is_administrator"`
+	ActsAsCaller          bool   `json:"acts_as_caller"`
+	RestrictedToItsGrants bool   `json:"restricted_to_its_grants"`
+}
+
+// UnmarshalJSON refuses a record without acts_as_caller or
+// restricted_to_its_grants: a principal-store older than those answers would
+// otherwise read as a principal that may do nothing and is never restricted,
+// with nothing saying why.
+func (principal *Principal) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ID                    string `json:"id"`
+		Kind                  string `json:"kind"`
+		DisabledAt            int64  `json:"disabled_at"`
+		IsAdministrator       bool   `json:"is_administrator"`
+		ActsAsCaller          *bool  `json:"acts_as_caller"`
+		RestrictedToItsGrants *bool  `json:"restricted_to_its_grants"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.ActsAsCaller == nil || wire.RestrictedToItsGrants == nil {
+		return fmt.Errorf("principal %q has no acts_as_caller or restricted_to_its_grants, so principal-store is older than this server needs: deploy principal-store first", wire.ID)
+	}
+	*principal = Principal{ID: wire.ID, Kind: wire.Kind, DisabledAt: wire.DisabledAt, IsAdministrator: wire.IsAdministrator,
+		ActsAsCaller: *wire.ActsAsCaller, RestrictedToItsGrants: *wire.RestrictedToItsGrants}
+	return nil
 }
 
 // CheckExists returns nil when principal-store has the principal, an error
@@ -120,7 +156,11 @@ func (c *Client) GroupIDsOf(ctx context.Context, principalID string) ([]string, 
 	if response.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
 	}
-	var groups []Principal
+	// Only the ids are read, so a group's own record is not held to
+	// Principal's checks.
+	var groups []struct {
+		ID string `json:"id"`
+	}
 	if err := json.Unmarshal(body, &groups); err != nil {
 		return nil, fmt.Errorf("principal-store answered GET %s with a body that is not a list of principals: %w", requestURL, err)
 	}

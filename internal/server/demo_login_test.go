@@ -120,9 +120,9 @@ func (directory *fakePrincipalDirectory) setRecord(principalID, record string) {
 
 func standardPrincipalDirectory(t *testing.T) *fakePrincipalDirectory {
 	return newFakePrincipalDirectory(t, map[string]string{
-		"principal_000001": `{"id":"principal_000001","kind":"human","display_name":"Slava","disabled_at":0,"is_administrator":false,"groups":[]}`,
-		"principal_000006": `{"id":"principal_000006","kind":"group","display_name":"Data Team","disabled_at":0,"members":[]}`,
-		"principal_000009": `{"id":"principal_000009","kind":"human","display_name":"Gone","disabled_at":1788980427,"groups":[]}`,
+		"principal_000001": `{"id":"principal_000001","kind":"human","acts_as_caller":true,"restricted_to_its_grants":false,"display_name":"Slava","disabled_at":0,"is_administrator":false,"groups":[]}`,
+		"principal_000006": `{"id":"principal_000006","kind":"group","acts_as_caller":false,"restricted_to_its_grants":false,"display_name":"Data Team","disabled_at":0,"members":[]}`,
+		"principal_000009": `{"id":"principal_000009","kind":"human","acts_as_caller":true,"restricted_to_its_grants":false,"display_name":"Gone","disabled_at":1788980427,"groups":[]}`,
 	})
 }
 

@@ -18,7 +18,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -31,6 +30,10 @@ var ErrPrincipalUnknown = errors.New("principal unknown")
 // ServiceTokenHeader is the header grant-store accepts an internal service's
 // token in, for unrestricted access.
 const ServiceTokenHeader = "X-Grant-Store-Service-Token"
+
+// AllResources is the resource_id grant-store stores for a grant on every
+// resource of its type, now and later.
+const AllResources = "*"
 
 // Client talks to one grant-store.
 type Client struct {
@@ -71,27 +74,6 @@ func (c *Client) EffectiveResourceIDs(ctx context.Context, principalID, relation
 	ids := make([]string, 0, len(grants))
 	for _, g := range grants {
 		ids = append(ids, g.ResourceID)
-	}
-	return ids, nil
-}
-
-// EffectiveToolIDs returns the tool-store ids the principal's effective
-// can_use grants name. An empty answer means the principal — and every group
-// they are in — holds no such grant; it is not an error.
-func (c *Client) EffectiveToolIDs(ctx context.Context, principalID string) ([]int64, error) {
-	grants, err := c.effective(ctx, principalID, "can_use", "tool")
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]int64, 0, len(grants))
-	for _, g := range grants {
-		id, err := strconv.ParseInt(g.ResourceID, 10, 64)
-		if err != nil {
-			// tool-store ids are integers and grant-store checks the shape on
-			// write, so this is a store answering something it never accepts.
-			return nil, fmt.Errorf("grant %s names tool resource_id %q, which is not a tool-store id", g.ID, g.ResourceID)
-		}
-		ids = append(ids, id)
 	}
 	return ids, nil
 }

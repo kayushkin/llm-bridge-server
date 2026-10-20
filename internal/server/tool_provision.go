@@ -172,29 +172,22 @@ func (s *Server) resolveBundleToolOffer(ctx context.Context, sess *store.Session
 		offer.IDs = mcpIDs
 	}
 	if sess.PrincipalID != "" {
-		if s.grantClient == nil {
-			return nil, fmt.Errorf("session %s is started as %s but this server has no grant-store to read its grants from (LLMBRIDGE_GRANT_STORE_URL)", sess.SessionID, sess.PrincipalID)
-		}
-		grantedIDs, err := s.grantClient.EffectiveToolIDs(ctx, sess.PrincipalID)
+		canUse, err := s.grantedResourcesOf(ctx, sess.PrincipalID, "can_use", "tool")
 		if err != nil {
 			return nil, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
 		}
-		if len(grantedIDs) == 0 {
-			offer.Notes = append(offer.Notes, fmt.Sprintf("principal %s holds no can_use tool grant; the bundle's tools are offered unchanged (lenient, operator's choice 2026-09-11)", sess.PrincipalID))
+		if !canUse.restricts() {
+			offer.Notes = append(offer.Notes, fmt.Sprintf("%s; the bundle's tools are offered unchanged (operator's choice 2026-09-11)", canUse.describe()))
 		} else {
-			granted := make(map[int64]bool, len(grantedIDs))
-			for _, id := range grantedIDs {
-				granted[id] = true
-			}
 			narrowed := make([]int64, 0, len(offer.IDs))
 			for _, id := range offer.IDs {
-				if granted[id] {
+				if canUse.permitsTool(id) {
 					narrowed = append(narrowed, id)
 				}
 			}
 			if len(narrowed) < len(offer.IDs) {
 				offer.NarrowedByGrants = true
-				offer.Notes = append(offer.Notes, fmt.Sprintf("bundle %s names tools %v; %s's can_use grants allow %v; offering %v", sess.BundleID, offer.IDs, sess.PrincipalID, grantedIDs, narrowed))
+				offer.Notes = append(offer.Notes, fmt.Sprintf("bundle %s names tools %v; %s; offering %v", sess.BundleID, offer.IDs, canUse.describe(), narrowed))
 			}
 			offer.IDs = narrowed
 		}
@@ -206,17 +199,15 @@ func (s *Server) resolveBundleToolOffer(ctx context.Context, sess *store.Session
 }
 
 // resolveGrantedToolOffer is source 3: nil with no error exactly when the
-// principal holds no can_use tool grant, so the caller falls through to the
-// instance's opt-ins.
+// principal's can_use grants do not restrict it (it holds none and its kind is
+// not restricted to its grants), so the caller falls through to the
+// instance's opt-ins. A peer holding none gets an empty offer instead.
 func (s *Server) resolveGrantedToolOffer(ctx context.Context, sess *store.Session) (*toolOffer, error) {
-	if s.grantClient == nil {
-		return nil, fmt.Errorf("session %s is started as %s but this server has no grant-store to read its grants from (LLMBRIDGE_GRANT_STORE_URL)", sess.SessionID, sess.PrincipalID)
-	}
-	grantedIDs, err := s.grantClient.EffectiveToolIDs(ctx, sess.PrincipalID)
+	canUse, err := s.grantedResourcesOf(ctx, sess.PrincipalID, "can_use", "tool")
 	if err != nil {
 		return nil, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
 	}
-	if len(grantedIDs) == 0 {
+	if !canUse.restricts() {
 		return nil, nil
 	}
 	offer := &toolOffer{Source: toolOfferGrants}
@@ -225,22 +216,18 @@ func (s *Server) resolveGrantedToolOffer(ctx context.Context, sess *store.Sessio
 		offer.Notes = append(offer.Notes, fmt.Sprintf("instance %s's opt-ins could not be read from tool-store, so the session starts with no MCP servers: %v", sess.InstanceID, err))
 		return offer, nil
 	}
-	granted := make(map[int64]bool, len(grantedIDs))
-	for _, id := range grantedIDs {
-		granted[id] = true
-	}
 	var optedInIDs []int64
 	for _, t := range optedIn {
 		optedInIDs = append(optedInIDs, t.ID)
-		if granted[t.ID] {
+		if canUse.namesTool(t.ID) {
 			offer.IDs = append(offer.IDs, t.ID)
 		}
 	}
 	offer.NarrowedByGrants = len(offer.IDs) < len(optedInIDs)
 	if len(offer.IDs) == 0 {
-		offer.Notes = append(offer.Notes, fmt.Sprintf("%s's granted tools %v and instance %s's opt-ins %v share nothing; the session starts with no MCP servers", sess.PrincipalID, grantedIDs, sess.InstanceID, optedInIDs))
+		offer.Notes = append(offer.Notes, fmt.Sprintf("%s, and instance %s's opt-ins %v share nothing with them; the session starts with no MCP servers", canUse.describe(), sess.InstanceID, optedInIDs))
 	} else {
-		offer.Notes = append(offer.Notes, fmt.Sprintf("granted %v ∩ instance %s opt-ins %v", grantedIDs, sess.InstanceID, optedInIDs))
+		offer.Notes = append(offer.Notes, fmt.Sprintf("%s ∩ instance %s opt-ins %v", canUse.describe(), sess.InstanceID, optedInIDs))
 	}
 	return offer, nil
 }

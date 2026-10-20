@@ -71,6 +71,7 @@ func newServerWithBundles(toolStoreURL, bundleStoreURL, grantStoreURL string) *S
 	s := &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, bundleClient: bundleclient.New(bundleStoreURL)}
 	if grantStoreURL != "" {
 		s.grantClient = grantclient.New(grantStoreURL, "")
+		s.principalLookupCache = principalLookupCacheAnswering(humanPrincipalForGrantTests)
 	}
 	return s
 }

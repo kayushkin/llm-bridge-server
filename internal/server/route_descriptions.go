@@ -24,6 +24,7 @@ const (
 	routeGroupFolders          routeGroup = "Folders, labels and housekeeping"
 	routeGroupServices         routeGroup = "Services page"
 	routeGroupLogin            routeGroup = "Login and store proxies"
+	routeGroupPeers            routeGroup = "Peers: other llm-bridge-servers"
 	routeGroupRunners          routeGroup = "Runners and harness callbacks"
 	routeGroupAgentStore       routeGroup = "agent-store, mounted in this process"
 	routeGroupAgentStorePrompt routeGroup = "agent-store prompt source, mounted in this process"
@@ -42,6 +43,7 @@ var routeGroupsInReadmeOrder = []routeGroup{
 	routeGroupFolders,
 	routeGroupServices,
 	routeGroupLogin,
+	routeGroupPeers,
 	routeGroupRunners,
 	routeGroupAgentStore,
 	routeGroupAgentStorePrompt,
@@ -191,6 +193,16 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /auth/entra/callback":                  {routeGroupLogin, "Where Entra ID sends the browser back; verifies the ID token and starts a login session"},
 	"GET /auth/principal":                       {routeGroupLogin, "Who the login cookie names, and the session's CSRF token"},
 	"POST /auth/logout":                         {routeGroupLogin, "Revoke the cookie's login session and clear the cookie"},
+	"POST /peer-invites":                        {routeGroupPeers, "Make a one-time passphrase another server redeems to act here as a peer principal"},
+	"GET /peer-invites":                         {routeGroupPeers, "Every peer invite, redeemed or not; never a passphrase"},
+	"POST /peer/redeem":                         {routeGroupPeers, "Trade a peer invite's passphrase for a peer token"},
+	"GET /peer/self":                            {routeGroupPeers, "Who the presented peer token acts as here"},
+	"GET /peer-tokens":                          {routeGroupPeers, "Every peer token this server issued, revoked or not; never a token"},
+	"POST /peer-tokens/{id}/revoke":             {routeGroupPeers, "Revoke a peer token, with a reason"},
+	"POST /peer-links":                          {routeGroupPeers, "Link to another server: redeem its passphrase there and keep the token in auth-store"},
+	"GET /peer-links":                           {routeGroupPeers, "Every server this one holds a peer token for"},
+	"POST /peer-links/{id}/check":               {routeGroupPeers, "Ask the other server who this link's token acts as there"},
+	"POST /peer-links/{id}/remove":              {routeGroupPeers, "Stop using a link and delete its token from auth-store"},
 	"GET /auth/sessions":                        {routeGroupLogin, "The caller's login sessions; an administrator names anyone's with principal_id"},
 	"POST /auth/sessions/{id}/revoke":           {routeGroupLogin, "End a login session, with a reason"},
 	"GET /auth/login-attempts":                  {routeGroupLogin, "Sign-in attempts and how each ended, filtered by outcome"},

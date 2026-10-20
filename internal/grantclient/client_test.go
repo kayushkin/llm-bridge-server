@@ -22,7 +22,7 @@ func TestTheServiceTokenIsSentOnlyWhenConfigured(t *testing.T) {
 	if _, err := New(grantStore.URL, "grant-store-service-token").EffectiveResourceIDs(t.Context(), "principal_000001", "can_dispatch_on", "instance"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(grantStore.URL, "grant-store-service-token").EffectiveToolIDs(t.Context(), "principal_000001"); err != nil {
+	if _, err := New(grantStore.URL, "grant-store-service-token").EffectiveResourceIDs(t.Context(), "principal_000001", "can_use", "tool"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := New(grantStore.URL, "").EffectiveResourceIDs(t.Context(), "principal_000001", "can_dispatch_on", "instance"); err != nil {

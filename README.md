@@ -377,6 +377,21 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `*` | `/kanban/` | kanban-store `/api/…`, as the caller | principal or session agent |
 | `*` | `/mailstack/` | mailstack `/…`, as the caller, checked against their mail grants and tickets | principal or session agent |
 
+### Peers: other llm-bridge-servers
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/peer-invites` | Every peer invite, redeemed or not; never a passphrase | operator |
+| `POST` | `/peer-invites` | Make a one-time passphrase another server redeems to act here as a peer principal | operator |
+| `GET` | `/peer-links` | Every server this one holds a peer token for | operator |
+| `POST` | `/peer-links` | Link to another server: redeem its passphrase there and keep the token in auth-store | operator |
+| `POST` | `/peer-links/{id}/check` | Ask the other server who this link's token acts as there | operator |
+| `POST` | `/peer-links/{id}/remove` | Stop using a link and delete its token from auth-store | operator |
+| `GET` | `/peer-tokens` | Every peer token this server issued, revoked or not; never a token | operator |
+| `POST` | `/peer-tokens/{id}/revoke` | Revoke a peer token, with a reason | operator |
+| `POST` | `/peer/redeem` | Trade a peer invite's passphrase for a peer token | anyone |
+| `GET` | `/peer/self` | Who the presented peer token acts as here | principal |
+
 ### Runners and harness callbacks
 
 | Method | Route | What it does | Who may call |

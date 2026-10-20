@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,9 +9,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
+	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -98,7 +101,33 @@ func fakeToolStoreWithOptIns(t *testing.T, optIns map[string][]map[string]any) (
 }
 
 func newServerWithGrants(toolStoreURL, grantStoreURL string) *Server {
-	return &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, grantClient: grantclient.New(grantStoreURL, "")}
+	return &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, grantClient: grantclient.New(grantStoreURL, ""),
+		principalLookupCache: principalLookupCacheAnswering(humanPrincipalForGrantTests)}
+}
+
+// humanPrincipalForGrantTests is the principal the grant tests run as: a
+// human, so holding no grant of a relation leaves it unrestricted.
+var humanPrincipalForGrantTests = principalclient.Principal{ID: "principal_000001", Kind: "human", ActsAsCaller: true}
+
+// principalLookupCacheAnswering is a principal lookup for a test server built
+// without principal-store: it knows the principals given, and answers any
+// other id as an unrestricted human, since these tests are about grants.
+func principalLookupCacheAnswering(principals ...principalclient.Principal) *principalLookupCache {
+	byID := map[string]principalclient.Principal{}
+	for _, principal := range principals {
+		byID[principal.ID] = principal
+	}
+	return &principalLookupCache{
+		principalsByID: map[string]cachedPrincipal{},
+		lifetime:       principalLookupCacheLifetime,
+		now:            time.Now,
+		readFromUpstream: func(_ context.Context, principalID string) (principalclient.Principal, error) {
+			if principal, known := byID[principalID]; known {
+				return principal, nil
+			}
+			return principalclient.Principal{ID: principalID, Kind: "human", ActsAsCaller: true}, nil
+		},
+	}
 }
 
 // harnessToolRowsForTests is the fake tool-store's harness tools, in

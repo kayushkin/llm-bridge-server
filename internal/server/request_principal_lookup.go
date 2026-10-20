@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
 // principalLookupCacheLifetime is how long principal-store's answer about one
@@ -119,9 +120,9 @@ func (s *Server) callerForPrincipalID(ctx context.Context, principalID, subjectD
 		return requestCaller{}, &requestCredentialError{http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
 			"could not read principal %s from principal-store, so this request is refused rather than answered as a principal nobody confirmed: %v", principalID, err)}
 	}
-	if principal.Kind != "human" {
-		return requestCaller{}, &requestCredentialError{http.StatusBadRequest, "principal_not_human", fmt.Sprintf(
-			"%s %s, which is a %q principal; a group is a set of people, not someone who acts", subjectDescription, principalID, principal.Kind)}
+	if !principal.ActsAsCaller {
+		return requestCaller{}, &requestCredentialError{http.StatusBadRequest, "principal_does_not_act", fmt.Sprintf(
+			"%s %s, which is a %q principal, and principal-store says that kind does not act as a caller: a group is a set of principals and a contact holds nothing", subjectDescription, principalID, principal.Kind)}
 	}
 	// Disabled is decided before is_administrator is looked at: a departed
 	// administrator is a departed person first.
@@ -130,4 +131,29 @@ func (s *Server) callerForPrincipalID(ctx context.Context, principalID, subjectD
 			"principal %s was disabled in principal-store at %s", principalID, time.Unix(principal.DisabledAt, 0).UTC().Format(time.RFC3339))}
 	}
 	return requestCaller{principalID: principal.ID, isAdministrator: principal.IsAdministrator}, nil
+}
+
+// callerOfPeerToken turns a peer token another server presented into the
+// caller the route rules are applied to: the peer principal the token was
+// issued for, read from principal-store like any other principal. A token this
+// server never issued, or one an operator revoked, is 401. The token's value
+// is never logged or echoed; only its id is named.
+func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken string) (requestCaller, *requestCredentialError) {
+	token, err := s.store.GetPeerTokenByHash(hashPeerSecret(presentedToken))
+	if errors.Is(err, store.ErrPeerTokenNotFound) {
+		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "peer_token_unknown", peerTokenHeader + " is not a peer token this server issued"}
+	}
+	if err != nil {
+		return requestCaller{}, &requestCredentialError{http.StatusInternalServerError, "peer_token_lookup_failed", fmt.Sprintf("could not look up the peer token: %v", err)}
+	}
+	if token.RevokedAt != nil {
+		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "peer_token_revoked", fmt.Sprintf(
+			"peer token %s was revoked at %s: %s", token.ID, token.RevokedAt.UTC().Format(time.RFC3339), token.RevokeReason)}
+	}
+	caller, credentialError := s.callerForPrincipalID(ctx, token.PeerPrincipalID, "peer token "+token.ID+" acts as")
+	if credentialError != nil {
+		return requestCaller{}, credentialError
+	}
+	caller.peerTokenID = token.ID
+	return caller, nil
 }

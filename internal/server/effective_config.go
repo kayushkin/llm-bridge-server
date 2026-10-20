@@ -465,52 +465,40 @@ func toolValues(ids []int64, names map[int64]string) []map[string]any {
 }
 
 func (s *Server) noteDispatchGrants(ctx context.Context, sess *store.Session, inst *msg.Instance, setting *msg.EffectiveSetting, warn func(string, ...any)) {
-	if s.grantClient == nil {
-		warn("the session names principal %s but this server has no grant-store (LLMBRIDGE_GRANT_STORE_URL); a spawn would be refused", sess.PrincipalID)
-		return
-	}
-	instanceIDs, err := s.grantClient.EffectiveResourceIDs(ctx, sess.PrincipalID, "can_dispatch_on", "instance")
+	dispatch, err := s.dispatchGrantsOf(ctx, sess.PrincipalID)
 	if err != nil {
-		warn("%s's can_dispatch_on grants could not be read; a spawn would be refused: %v", sess.PrincipalID, err)
-		return
-	}
-	machineIDs, err := s.grantClient.EffectiveResourceIDs(ctx, sess.PrincipalID, "can_dispatch_on", "machine")
-	if err != nil {
-		warn("%s's can_dispatch_on grants could not be read; a spawn would be refused: %v", sess.PrincipalID, err)
+		warn("a spawn would be refused: %v", err)
 		return
 	}
 	switch {
-	case len(instanceIDs)+len(machineIDs) == 0:
-		setting.Notes = append(setting.Notes, fmt.Sprintf("%s holds no can_dispatch_on grant, so any instance is allowed (lenient)", sess.PrincipalID))
-	case contains(instanceIDs, inst.ID) || contains(machineIDs, inst.MachineID):
-		setting.Notes = append(setting.Notes, fmt.Sprintf("allowed by %s's can_dispatch_on grants (instances %v, machines %v)", sess.PrincipalID, instanceIDs, machineIDs))
+	case !dispatch.restricts():
+		setting.Notes = append(setting.Notes, dispatch.describe())
+	case dispatch.permits(inst.ID, inst.MachineID):
+		setting.Notes = append(setting.Notes, "allowed: "+dispatch.describe())
 	default:
-		warn("a spawn would be refused: %s may not start a session on instance %s (machine %s); their can_dispatch_on grants name instances %v and machines %v", sess.PrincipalID, inst.ID, inst.MachineID, instanceIDs, machineIDs)
+		warn("a spawn would be refused: %s may not start a session on instance %s (machine %s); %s", sess.PrincipalID, inst.ID, inst.MachineID, dispatch.describe())
 	}
 }
 
 func (s *Server) noteRunAsGrants(ctx context.Context, sess *store.Session, setting *msg.EffectiveSetting, warn func(string, ...any)) {
-	if s.grantClient == nil {
-		return
-	}
-	agentIDs, err := s.grantClient.EffectiveResourceIDs(ctx, sess.PrincipalID, "can_run_as", "agent")
+	runAs, err := s.grantedResourcesOf(ctx, sess.PrincipalID, "can_run_as", "agent")
 	if err != nil {
-		warn("%s's can_run_as grants could not be read; a spawn would be refused: %v", sess.PrincipalID, err)
+		warn("a spawn would be refused: %v", err)
 		return
 	}
-	if len(agentIDs) == 0 {
-		setting.Notes = append(setting.Notes, fmt.Sprintf("%s holds no can_run_as grant, so any agent is allowed (lenient)", sess.PrincipalID))
+	if !runAs.restricts() || runAs.namesAll() {
+		setting.Notes = append(setting.Notes, runAs.describe())
 		return
 	}
 	agentID, err := s.resolveAgentID(sess.AgentID)
 	if err != nil {
-		warn("a spawn would be refused: %s holds can_run_as grants for agents %v and agent %q could not be resolved to an agent-store id: %v", sess.PrincipalID, agentIDs, sess.AgentID, err)
+		warn("a spawn would be refused: %s, and agent %q could not be resolved to an agent-store id: %v", runAs.describe(), sess.AgentID, err)
 		return
 	}
-	if contains(agentIDs, agentID) {
-		setting.Notes = append(setting.Notes, fmt.Sprintf("allowed by %s's can_run_as grants (agent-store id %s)", sess.PrincipalID, agentID))
+	if runAs.permits(agentID) {
+		setting.Notes = append(setting.Notes, fmt.Sprintf("allowed (agent-store id %s): %s", agentID, runAs.describe()))
 	} else {
-		warn("a spawn would be refused: %s may not run as agent %s (agent-store id %s); their can_run_as grants name %v", sess.PrincipalID, sess.AgentID, agentID, agentIDs)
+		warn("a spawn would be refused: %s may not run as agent %s (agent-store id %s); %s", sess.PrincipalID, sess.AgentID, agentID, runAs.describe())
 	}
 }
 

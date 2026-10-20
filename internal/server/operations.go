@@ -458,23 +458,23 @@ func (s *Server) checkOperationGrant(r *http.Request, operationType msg.Operatio
 		return http.StatusInternalServerError, "grant_enforcement_misconfigured", fmt.Sprintf(
 			"operations.grant_enforcement is %q, not one of %v", enforcement, config.OperationsGrantEnforcementValues)
 	}
-	granted, err := s.grantClient.EffectiveResourceIDs(r.Context(), principalID, operationRunGrantRelation, operationTypeResourceType)
+	granted, err := s.grantedResourcesOf(r.Context(), principalID, operationRunGrantRelation, operationTypeResourceType)
 	switch {
 	case errors.Is(err, grantclient.ErrPrincipalUnknown):
 		return http.StatusBadRequest, "unknown_principal", err.Error()
 	case err != nil:
 		return http.StatusBadGateway, "grant_store_unavailable", err.Error()
 	}
-	if len(granted) == 0 && enforcement == config.OperationsGrantEnforcementLenient {
+	// strict refuses a principal holding no grant whatever its kind; lenient
+	// leaves that to the kind, as every other relation does.
+	if enforcement == config.OperationsGrantEnforcementStrict {
+		granted.restrictedToItsGrants = true
+	}
+	if granted.permits(string(operationType)) {
 		return 0, "", ""
 	}
-	for _, grantedType := range granted {
-		if grantedType == string(operationType) {
-			return 0, "", ""
-		}
-	}
-	return http.StatusForbidden, "not_granted", fmt.Sprintf("%s holds no %s grant on %s %s (enforcement %s; granted: %v)",
-		principalID, operationRunGrantRelation, operationTypeResourceType, operationType, enforcement, granted)
+	return http.StatusForbidden, "not_granted", fmt.Sprintf("%s may not start %s %s (enforcement %s): %s",
+		principalID, operationTypeResourceType, operationType, enforcement, granted.describe())
 }
 
 func (s *Server) handleListOperationBudgets(w http.ResponseWriter, r *http.Request) {

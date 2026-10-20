@@ -191,8 +191,8 @@ func TestTypedValuesTakeThePlacesTheMessageNamesThem(t *testing.T) {
 func TestATargetSessionActionFollowsTheRoutesRuleForAdministrators(t *testing.T) {
 	srv, st := sessionsForTargetActions(t)
 	principalsByID := map[string]principalclient.Principal{
-		"principal_000001": {ID: "principal_000001", Kind: "human", IsAdministrator: true},
-		"principal_000002": {ID: "principal_000002", Kind: "human"},
+		"principal_000001": {ID: "principal_000001", Kind: "human", ActsAsCaller: true, IsAdministrator: true},
+		"principal_000002": {ID: "principal_000002", Kind: "human", ActsAsCaller: true},
 	}
 	srv.principalLookupCache.readFromUpstream = func(_ context.Context, principalID string) (principalclient.Principal, error) {
 		principal, found := principalsByID[principalID]

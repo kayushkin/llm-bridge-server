@@ -43,6 +43,7 @@ func gatedServer(t *testing.T, grants map[string][]string) (*Server, string) {
 	t.Helper()
 	srv, _, instanceID := testServerWithInstance(t, msg.HarnessMock)
 	srv.principalClient = principalclient.New(fakePrincipalStore(t, "principal_000001").URL)
+	srv.principalLookupCache = newPrincipalLookupCache(srv.principalClient)
 	srv.grantClient = grantclient.New(fakeGrantStoreByRelation(t, "principal_000001", grants).URL, "")
 	return srv, instanceID
 }
