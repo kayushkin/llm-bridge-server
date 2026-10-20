@@ -1,4 +1,4 @@
-//go:build pty_integration
+//go:build pty_integration || harness_live
 
 package server
 

@@ -478,8 +478,9 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `go test ./...` | nothing | Unit tests, and the conformance matrix against `cmd/mock-harness` |
 | `go test -tags pty_integration ./...` | `claude` and `llm-bridge-claudecode` on `PATH` | A real pty-mode session: attach, a keystroke each way, stop |
 | `go test -tags convenience_events_integration ./...` | the same, signed in | A real turn, checking the `agent_state`, `usage_total` and `turn_complete` events |
+| `go test -tags harness_live -run 'TestHarness(ModeSwitch\|ExternalCLI)Live' -v -timeout 30m ./internal/server/` | `claude`, `codex` and both wrappers on `PATH`, signed in; `~/.config/model-store/store.db` | Per harness: events → pty → events keeps the conversation and the dash's stream and session row follow the pty turn; a turn run with the CLI outside the bridge, and a conversation started there, reach the dash |
 
-The tagged tests skip when a binary is missing.
+The tagged tests skip when a binary is missing. The `harness_live` tests spend real model calls on the `efficient` role's model for each harness's provider, read from a copy of production's model registry. They clear the `CLAUDE*`, `CODEX_*` and `LLM_BRIDGE_*` variables an agent session sets, since a harness child that inherits them believes it is nested and Claude Code stops writing its session file.
 
 ⚠️ `scripts/e2e-smoke.sh` and `scripts/e2e-claude.sh` do not set the five required settings, so the server they start refuses to run.
 
