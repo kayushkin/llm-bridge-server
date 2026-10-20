@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# bridge-image — make images with an image model and show them in this chat.
+#
+#   bridge-image "a red crab in a navy beret, watercolour on cream paper"
+#   bridge-image "the same crab, now holding a paintbrush" --reference crab.png
+#
+# Each image is made by the instance llm-bridge-server's
+# image_generation.instance_id names (Codex on the ChatGPT subscription on
+# this host), shared into the session the agent is running in, and saved on
+# this host. Prints the server's answer: each image's path, and in
+# session_files the copy shared into the chat. One call takes 30 to 90 seconds.
+#
+# Works in any session llm-bridge-server spawned on this host, with the token
+# that can post into that one session (internal/server/session_posting_token.go).
+set -euo pipefail
+
+usage() {
+  echo 'usage: bridge-image "<prompt>" [--reference <image>]...' >&2
+  exit 2
+}
+[ $# -ge 1 ] || usage
+: "${LLM_BRIDGE_SESSION_IMAGES_URL:?is unset: this process was not started by llm-bridge-server with file sharing on}"
+: "${LLM_BRIDGE_SESSION_POSTING_TOKEN:?is unset: this process was not started by llm-bridge-server with posting on}"
+
+prompt="$1"; shift
+references=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reference)
+      [ $# -ge 2 ] || usage
+      [ -f "$2" ] || { echo "bridge-image: not a file: $2" >&2; exit 1; }
+      references+=("$(realpath -- "$2")"); shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+request=$(jq -n --arg prompt "$prompt" --args '{prompt:$prompt} + (if $ARGS.positional == [] then {} else {reference_image_paths:$ARGS.positional} end)' "${references[@]}")
+curl --fail-with-body --silent --show-error --max-time 420 -X POST "$LLM_BRIDGE_SESSION_IMAGES_URL" \
+  -H "Authorization: Bearer $LLM_BRIDGE_SESSION_POSTING_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary "$request"
+echo

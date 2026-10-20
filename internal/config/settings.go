@@ -37,6 +37,7 @@ const (
 	SettingOperationsCompletionModelRole     = "operations.completion_model_role"
 	SettingOperationsGrantEnforcement        = "operations.grant_enforcement"
 	SettingSessionActionsReviewModelRole     = "session_actions.review_model_role"
+	SettingImageGenerationInstanceID         = "image_generation.instance_id"
 )
 
 // ModelRoleSettings are the stored settings whose value is a model-store role:
@@ -124,6 +125,8 @@ func SettingDefinitions() []servicesettings.Definition {
 
 		{Key: SettingOneShotInstanceByProvider, EnvironmentVariable: "LLMBRIDGE_ONESHOT_INSTANCE_BY_PROVIDER", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeStringMap, Editable: true, Default: "anthropic:inst-cc-local,openai:inst-codex-local",
 			Description: "Which harness instance makes every one-shot call this server routes — the classifier, triage, the drift tagger, the renamer, the command reviewer, operations and POST /oneshot — for each model-store provider, as provider:instance pairs. A model whose provider is named nowhere here is an attempt that fails, and the role's next model is tried. Each instance must be enabled and its harness must implement -oneshot."},
+		{Key: SettingImageGenerationInstanceID, EnvironmentVariable: "LLMBRIDGE_IMAGE_GENERATION_INSTANCE_ID", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeString, Editable: true, Default: "inst-codex-local",
+			Description: "The harness instance that makes images for POST /images and POST /sessions/{id}/images. Its harness must implement -generate-image (llm-bridge-codex does, on the Codex login). Empty switches image generation off."},
 		{Key: SettingOperationsCompletionModelRole, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true,
 			Description: "The model-store role an llm.completion or classification.run uses when its input names no model. Empty means an input must name one: a role, a model id or an alias."},
 		{Key: SettingSessionActionsReviewModelRole, EnvironmentVariable: "LLMBRIDGE_SESSION_ACTIONS_REVIEW_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "balanced",
@@ -310,6 +313,7 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 		SettingOperationsCompletionModelRole: c.OperationsCompletionModelRole,
 		SettingOperationsGrantEnforcement:    c.OperationsGrantEnforcement,
 		SettingSessionActionsReviewModelRole: c.SessionActionsReviewModelRole,
+		SettingImageGenerationInstanceID:     c.ImageGenerationInstanceID,
 	} {
 		if value != "" {
 			seeds[key] = value

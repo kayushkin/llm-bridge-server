@@ -29,3 +29,4 @@ secrets.*
 # an excluded directory.
 !*.go
 __pycache__/
+/bridge-mcp

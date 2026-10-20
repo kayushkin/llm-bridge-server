@@ -52,6 +52,12 @@ func attachServiceSettings(cfg *config.Config, st *store.Store) *servicesettings
 func (s *Server) wireServiceSettings() {
 	if s.harnessStore != nil {
 		s.settings.SetValidator(config.SettingOneShotInstanceByProvider, s.checkOneShotInstanceByProvider)
+		s.settings.SetValidator(config.SettingImageGenerationInstanceID, func(value string) error {
+			if value == "" {
+				return nil
+			}
+			return s.checkSettingNamesAnEnabledInstance(value)
+		})
 	}
 	for _, key := range config.ModelRoleSettings {
 		s.settings.SetValidator(key, s.checkSettingNamesAnAssignedModelRole)

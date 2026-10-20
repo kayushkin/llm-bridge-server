@@ -42,6 +42,7 @@ const (
 	sessionPostingTokenEnvironmentVariable = "LLM_BRIDGE_SESSION_POSTING_TOKEN"
 	sessionFilesURLEnvironmentVariable     = "LLM_BRIDGE_SESSION_FILES_URL"
 	sessionActionsURLEnvironmentVariable   = "LLM_BRIDGE_SESSION_ACTIONS_URL"
+	sessionImagesURLEnvironmentVariable    = "LLM_BRIDGE_SESSION_IMAGES_URL"
 )
 
 const sessionPostingTokenPrefix = "llm-bridge-session-posting-token-v1"
@@ -115,7 +116,9 @@ func (s *Server) sessionPostingEnvironment(session *store.Session) []string {
 		sessionActionsURLEnvironmentVariable + "=" + sessionURL + "/actions",
 	}
 	if s.fileStore != nil {
-		environment = append(environment, sessionFilesURLEnvironmentVariable+"="+sessionURL+"/files")
+		environment = append(environment,
+			sessionFilesURLEnvironmentVariable+"="+sessionURL+"/files",
+			sessionImagesURLEnvironmentVariable+"="+sessionURL+"/images")
 	}
 	return environment
 }

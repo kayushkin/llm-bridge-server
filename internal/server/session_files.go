@@ -51,8 +51,7 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusBadRequest, "invalid_content_type", "Content-Type must say what the bytes are: "+err.Error())
 		return
 	}
-	sessionDirectory, err := s.sessionFilesDirectoryOf(session.SessionID)
-	if err != nil {
+	if _, err := s.sessionFilesDirectoryOf(session.SessionID); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_session_id", err.Error())
 		return
 	}
@@ -70,17 +69,66 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	record, failure := s.shareFileIntoSession(session, http.MaxBytesReader(w, r.Body, limits.MaximumFileBytes), limits.MaximumFileBytes, mediaType, filename, sharedBy)
+	if failure != nil {
+		failure.write(w)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(record); err != nil {
+		log.Printf("[session-files] write %s answer: %v", record.FileID, err)
+	}
+}
+
+// sessionFileShareFailure is why shareFileIntoSession did not finish: either
+// file-store's own refusal, relayed as it came, or this server's status, code
+// and message.
+type sessionFileShareFailure struct {
+	fileStoreError error
+	status         int
+	code           string
+	message        string
+}
+
+func (failure *sessionFileShareFailure) Error() string {
+	if failure.fileStoreError != nil {
+		return "file-store: " + failure.fileStoreError.Error()
+	}
+	return failure.code + ": " + failure.message
+}
+
+func (failure *sessionFileShareFailure) write(w http.ResponseWriter) {
+	if failure.fileStoreError != nil {
+		writeFileStoreError(w, failure.fileStoreError)
+		return
+	}
+	writeJSONError(w, failure.status, failure.code, failure.message)
+}
+
+// shareFileIntoSession stores content in file-store, copies it to the
+// session's directory for the agent, records it in session_files and writes
+// the session_file event that puts it in the conversation. content must
+// already be held to maximumFileBytes, which is named in the refusal when it
+// is not.
+func (s *Server) shareFileIntoSession(session *store.Session, content io.Reader, maximumFileBytes int64, mediaType, filename string, sharedBy msg.SessionFileSharer) (store.SessionFile, *sessionFileShareFailure) {
+	failed := func(status int, code, message string) (store.SessionFile, *sessionFileShareFailure) {
+		return store.SessionFile{}, &sessionFileShareFailure{status: status, code: code, message: message}
+	}
+	sessionDirectory, err := s.sessionFilesDirectoryOf(session.SessionID)
+	if err != nil {
+		return failed(http.StatusBadRequest, "invalid_session_id", err.Error())
+	}
+
 	// Spooled to the session's directory first, because the same bytes go to
 	// two places — file-store and the agent's copy — and a request body can be
 	// read once.
 	if err := os.MkdirAll(sessionDirectory, 0o700); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "session_files_directory", err.Error())
-		return
+		return failed(http.StatusInternalServerError, "session_files_directory", err.Error())
 	}
 	spool, err := os.CreateTemp(sessionDirectory, ".incoming-*")
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "session_files_directory", err.Error())
-		return
+		return failed(http.StatusInternalServerError, "session_files_directory", err.Error())
 	}
 	spoolPath := spool.Name()
 	keepSpool := false
@@ -90,38 +138,32 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 			os.Remove(spoolPath)
 		}
 	}()
-	sizeBytes, err := io.Copy(spool, http.MaxBytesReader(w, r.Body, limits.MaximumFileBytes))
+	sizeBytes, err := io.Copy(spool, content)
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			writeJSONError(w, http.StatusRequestEntityTooLarge, "file_too_large",
-				fmt.Sprintf("a session file may be at most %d bytes (file-store's maximum_file_bytes)", limits.MaximumFileBytes))
-			return
+			return failed(http.StatusRequestEntityTooLarge, "file_too_large",
+				fmt.Sprintf("a session file may be at most %d bytes (file-store's maximum_file_bytes)", maximumFileBytes))
 		}
-		writeJSONError(w, http.StatusBadRequest, "upload_interrupted", err.Error())
-		return
+		return failed(http.StatusBadRequest, "upload_interrupted", err.Error())
 	}
 	if _, err := spool.Seek(0, io.SeekStart); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "session_files_directory", err.Error())
-		return
+		return failed(http.StatusInternalServerError, "session_files_directory", err.Error())
 	}
 	stored, err := s.fileStore.Upload(spool, sizeBytes, mediaType, filename, session.SessionID)
 	if err != nil {
-		writeFileStoreError(w, err)
-		return
+		return store.SessionFile{}, &sessionFileShareFailure{fileStoreError: err}
 	}
 
 	// <session>/<file id>/<filename>: the file id keeps two uploads of the same
 	// name apart, and the name stays exactly what the sharer called it.
 	fileDirectory := filepath.Join(sessionDirectory, stored.ID)
 	if err := os.MkdirAll(fileDirectory, 0o700); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "session_files_directory", err.Error())
-		return
+		return failed(http.StatusInternalServerError, "session_files_directory", err.Error())
 	}
 	agentPath := filepath.Join(fileDirectory, filename)
 	if err := os.Rename(spoolPath, agentPath); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "session_files_directory", err.Error())
-		return
+		return failed(http.StatusInternalServerError, "session_files_directory", err.Error())
 	}
 	keepSpool = true
 
@@ -136,8 +178,7 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := s.store.InsertSessionFile(record); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "record_session_file", err.Error())
-		return
+		return failed(http.StatusInternalServerError, "record_session_file", err.Error())
 	}
 	event := msg.Event{
 		Type:            msg.EventSessionFile,
@@ -148,15 +189,10 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 	if _, err := s.harness.BroadcastEvent(&event); err != nil {
 		// The file is kept and listed; only the timeline entry is missing, and
 		// the caller has to know that rather than find it out.
-		writeJSONError(w, http.StatusInternalServerError, "record_session_file_event", fmt.Sprintf(
+		return failed(http.StatusInternalServerError, "record_session_file_event", fmt.Sprintf(
 			"%s is stored and listed at GET /sessions/%s/files, but its session_file event was not written: %v", record.FileID, session.SessionID, err))
-		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(record); err != nil {
-		log.Printf("[session-files] write %s answer: %v", record.FileID, err)
-	}
+	return record, nil
 }
 
 // handleListSessionFiles is GET /sessions/{id}/files: every file shared into

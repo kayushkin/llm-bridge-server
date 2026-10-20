@@ -34,6 +34,8 @@ type Config struct {
 	OperationsCompletionModelRole string
 	// SessionActionsReviewModelRole seeds session_actions.review_model_role.
 	SessionActionsReviewModelRole string
+	// ImageGenerationInstanceID seeds image_generation.instance_id.
+	ImageGenerationInstanceID string
 	// SessionRenamerModelRole seeds session_renamer.model_role; empty in a
 	// Config literal switches automatic titles off.
 	SessionRenamerModelRole    string
@@ -351,6 +353,7 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		OneShotInstanceByProvider:     settings.StringMap(SettingOneShotInstanceByProvider),
 		OperationsCompletionModelRole: settings.ModelRole(SettingOperationsCompletionModelRole),
 		SessionActionsReviewModelRole: settings.ModelRole(SettingSessionActionsReviewModelRole),
+		ImageGenerationInstanceID:     settings.String(SettingImageGenerationInstanceID),
 		SessionRenamerModelRole:       settings.ModelRole(SettingSessionRenamerModelRole),
 		UsageStoreURL:                 settings.String("usage_store.url"),
 		OperationsGrantEnforcement:    settings.String(SettingOperationsGrantEnforcement),

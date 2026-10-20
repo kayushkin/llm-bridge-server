@@ -297,6 +297,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools", s.handleFilesNamedByTools)
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/content", s.handleFileNamedByToolsContent)
 	s.mux.HandleFunc("POST /sessions/{id}/actions", s.handleOfferSessionAction)
+	s.mux.HandleFunc("POST /sessions/{id}/images", s.handleGenerateImagesIntoSession)
 	s.mux.HandleFunc("GET /sessions/{id}/actions", s.handleListSessionActions)
 	s.mux.HandleFunc("POST /sessions/{id}/actions/{action_id}/run", s.handleRunSessionAction)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleSessionEvents)
@@ -470,6 +471,7 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("POST /instances/{id}/oneshot", s.handleInstanceOneShot)
 	}
 	s.mux.HandleFunc("POST /oneshot", s.handleRoutedOneShot)
+	s.mux.HandleFunc("POST /images", s.handleGenerateImages)
 
 	// Hook registry routes (mounted only when hook-store is loaded).
 	// /hooks/exec/{id} is always registered because the hook-store is

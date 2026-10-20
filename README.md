@@ -240,6 +240,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/sessions/{id}/git/repos` | Git repos in the session's directory | owner |
 | `GET` | `/sessions/{id}/hooks/pending` | Hooks waiting on a human decision | owner |
 | `POST` | `/sessions/{id}/hooks/{request_id}/resolve` | Allow or deny one | owner |
+| `POST` | `/sessions/{id}/images` | Make images from a prompt and reference images and share them into the session (its owner, or its own agent with LLM_BRIDGE_SESSION_POSTING_TOKEN) | owner, or the session's own agent |
 | `POST` | `/sessions/{id}/interrupt` | Stop the current turn | owner |
 | `POST` | `/sessions/{id}/mark-done` | Mark done and move to Archive | owner |
 | `GET` | `/sessions/{id}/messages` | History, projected by log-store for reading | owner |
@@ -328,6 +329,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/harnesses/{name}/agents` | Its named agents | principal |
 | `GET` | `/harnesses/{name}/capabilities` | One harness's capabilities | principal |
 | `GET` | `/health` | Health, harnesses present, session counts | anyone |
+| `POST` | `/images` | Make images from a prompt and reference images on the instance image_generation.instance_id names, with no session; answers with the saved files | operator |
 | `*` | `/images/` | Harness images | principal |
 | `GET` | `/models` | Models there are credentials for | operator |
 | `POST` | `/oneshot` | One model call for a model-store role, with no session; the server picks the model, the instance and the fallbacks | operator |

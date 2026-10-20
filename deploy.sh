@@ -99,6 +99,9 @@ if [ -n "${GOWORK:-}" ]; then
   echo "    building with GOWORK=$GOWORK"
 fi
 go build -o "$BIN_NAME" ./cmd/llm-bridge-server
+# bridge-mcp: the MCP server tool-store offers sessions, built beside the
+# server so a refused build stops the deploy before anything is touched.
+go build -o bridge-mcp ./cmd/bridge-mcp
 echo "    built: $(ls -lh "$BIN_NAME" | awk '{print $5}')"
 
 # Checked before the backup, and so before the stop and the install: an unidentifiable
@@ -163,6 +166,17 @@ install -m 755 "$REPO_DIR/scripts/bridge-share-file" "$HOME/bin/bridge-share-fil
 echo "==> Installing bridge-button..."
 # How an agent puts a button in the chat, with the same token.
 install -m 755 "$REPO_DIR/scripts/bridge-button" "$HOME/bin/bridge-button"
+
+echo "==> Installing bridge-image..."
+# How an agent makes images from a shell and shows them in the chat.
+install -m 755 "$REPO_DIR/scripts/bridge-image" "$HOME/bin/bridge-image"
+
+echo "==> Installing bridge-mcp..."
+# The same routes as MCP tools (generate_image, share_file, offer_button), for a
+# session tool-store offers the "bridge" tool to. install writes a new file, so
+# a session's running copy keeps the binary it loaded.
+install -m 755 bridge-mcp "$HOME/bin/bridge-mcp"
+rm -f bridge-mcp
 
 echo "==> Installing service file..."
 # The committed unit file uses __USER__ / __HOME__ placeholders so the repo
