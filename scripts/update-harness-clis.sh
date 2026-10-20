@@ -11,7 +11,7 @@
 # typing ran Codex's own self-update that way.
 set -euo pipefail
 
-export PATH="$HOME/.local/share/mise/shims:$PATH"
+export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"
 
 packages=(@anthropic-ai/claude-code @openai/codex)
 
