@@ -171,7 +171,8 @@ Return exactly one kind:
 For a question: fill questions, one entry for each separate decision the assistant is waiting on, and leave title, body and severity empty.
 - Two questions that can be answered independently are two entries, even when the assistant asked them in one sentence ("Which do you want for X and for Y?"). Never merge them into one entry, because a person can click only one option of an entry.
 - question is that one question, in the assistant's own words where possible. context is any short detail needed to answer it, or empty.
-- options are the choices the assistant offered for that question, in its order — do not invent options it did not offer, and leave options empty when it offered none.
+- options are the choices the assistant offered for that question, in its order — do not invent choices it did not offer. A question that asks for a free answer ("What's your upload speed?") has no options.
+- A plain yes/no question ("Do you want me to make them start on their own?") gets exactly two options, the yes and the no, each saying what it means ("Yes, make them start automatically", "No, leave them as they are"). Never give a question a single option: one button is no choice.
 - Each option's label is a complete answer a person can click on its own: name the choice itself ("Add PRs to repo-store"), never a bare letter or number ("c", "Option 2") and never an instruction ("Choose a, b, or c"). description is the rest of what the assistant said about that choice; when the assistant said it would pick that option, say so there.
 
 For a notification: title is a one-line headline. body is the detail. severity is "warn" for a failure, a risk, or anything the human may need to act on, and "info" otherwise.

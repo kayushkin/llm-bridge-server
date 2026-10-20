@@ -193,7 +193,7 @@ func TestClassifierIsAskedForAListOfQuestions(t *testing.T) {
 	if _, ok := schema.Properties["options"]; ok {
 		t.Error("schema still has top-level options, which cannot hold two questions' choices")
 	}
-	for _, rule := range []string{"Never merge them", "never a bare letter or number"} {
+	for _, rule := range []string{"Never merge them", "never a bare letter or number", "gets exactly two options, the yes and the no", "Never give a question a single option"} {
 		if !strings.Contains(request.SystemPrompt, rule) {
 			t.Errorf("system prompt does not carry the rule %q", rule)
 		}
