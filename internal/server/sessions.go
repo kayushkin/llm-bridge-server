@@ -760,8 +760,6 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// channel, not through the next message.
 	s.closeQuestionsAnsweredByMessage(bridgeID, req.Message)
 
-	go s.maybeAutoRename(bridgeID)
-
 	writeJSON(w, map[string]string{"status": "sent", "message_id": userEvent.MessageID})
 }
 

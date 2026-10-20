@@ -179,8 +179,9 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	// sessions with. Wired here because folderForPurpose reads both the config
 	// defaults and the source_folders overrides the manager has no access to.
 	srv.harness.SetFolderResolver(srv.folderForPurpose)
-	// The classifier reacts to turn-ends, so it hangs off the manager's
-	// observer rather than reaching into the derivation state machine.
+	// The renamer and the classifier react to turn-ends, so they hang off the
+	// manager's observer rather than reaching into the derivation state
+	// machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
 	srv.harness.SetUnpromptedTurnStartObserver(srv.onUnpromptedTurnStart)
 	if cfg.FileStoreURL != "" {

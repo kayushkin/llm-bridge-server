@@ -129,7 +129,7 @@ func TestOnTurnEndRecordsDerivedQuestion(t *testing.T) {
 		}},
 	})
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("…so: should I drop the legacy column?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…so: should I drop the legacy column?"), msg.SessionIdle)
 
 	got := openSignals(t, st, sess.SessionID)
 	if len(got) != 1 {
@@ -173,7 +173,7 @@ func TestOnTurnEndRecordsNotificationWithSeverity(t *testing.T) {
 		"severity": "warn",
 	})
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("The nightly migration failed and I rolled it back."), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("The nightly migration failed and I rolled it back."), msg.SessionIdle)
 
 	got := openSignals(t, st, sess.SessionID)
 	if len(got) != 1 {
@@ -199,7 +199,7 @@ func TestOnTurnEndNeitherRecordsNothing(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_none", msg.SessionTypeInteractive)
 	stubClassifier(t, srv, map[string]any{"kind": "neither"})
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("Done — the tests pass and I pushed the branch."), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Done — the tests pass and I pushed the branch."), msg.SessionIdle)
 
 	if got := openSignals(t, st, sess.SessionID); len(got) != 0 {
 		t.Fatalf("open signals = %d, want 0 — an ordinary completion is not a signal", len(got))
@@ -211,13 +211,13 @@ func TestOnTurnEndSupersedesTheEarlierDerivedSignal(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_super", msg.SessionTypeInteractive)
 	stubClassifier(t, srv, derivedQuestionVerdict("Which one?"))
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("There are two candidates — which one?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("There are two candidates — which one?"), msg.SessionIdle)
 	first := openSignals(t, st, sess.SessionID)
 	if len(first) != 1 {
 		t.Fatalf("after first turn: open signals = %d, want 1", len(first))
 	}
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("Actually there are three now — which one?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Actually there are three now — which one?"), msg.SessionIdle)
 
 	// Exactly one derived row stays open: the newest. Nothing else resolves a
 	// derived signal until P4 adds the signal-level verb, so without
@@ -251,7 +251,7 @@ func TestOnTurnEndYieldsToAnOpenToolQuestion(t *testing.T) {
 	before := len(openSignals(t, st, sess.SessionID))
 
 	stubClassifier(t, srv, derivedQuestionVerdict("Also, which branch?"))
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("Also, which branch should I use?"), msg.SessionAwaitingUser)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Also, which branch should I use?"), msg.SessionAwaitingUser)
 
 	// A parked tool ask is a structured question with a real resolve verb.
 	// A derived row alongside it is a second, weaker copy of the same demand.
@@ -271,7 +271,7 @@ func TestOnTurnEndSkipsDisabledClassifierWithoutCallingIt(t *testing.T) {
 	srv.signalClassifier = newSignalClassifier("", time.Second, 6000, nil, nil)
 	srv.signalClassifier.baseURL = ts.URL
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("Should I proceed with the migration?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Should I proceed with the migration?"), msg.SessionIdle)
 
 	if called {
 		t.Error("classifier called with an empty model; the off switch does not switch it off")
@@ -288,7 +288,7 @@ func TestOnTurnEndSendsTheTailOfALongTurn(t *testing.T) {
 	srv.signalClassifier.tuning.maxChars = 80
 
 	question := "So which of the two should I use?"
-	srv.onTurnEnd(sess.SessionID, turnEndEvent(strings.Repeat("filler line\n", 200)+question), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent(strings.Repeat("filler line\n", 200)+question), msg.SessionIdle)
 
 	// The question a human has to answer is at the end of a turn, so a
 	// truncation that kept the head would classify the file dump instead.
@@ -302,7 +302,7 @@ func TestAnswerDerivedQuestionsClosesTheQuestionButNotTheNotification(t *testing
 	sess := newSessionForSignals(t, st, "br_send", msg.SessionTypeInteractive)
 
 	stubClassifier(t, srv, derivedQuestionVerdict("Which branch?"))
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("Two branches look right — which branch?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Two branches look right — which branch?"), msg.SessionIdle)
 	question := openSignals(t, st, sess.SessionID)[0]
 
 	note := &msg.Signal{

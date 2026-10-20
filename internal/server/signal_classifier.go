@@ -322,15 +322,14 @@ func (c *signalClassifier) trim(text string) string {
 	return "…" + string(runes[len(runes)-limit:])
 }
 
-// onTurnEnd is the Manager's turn-end observer. It classifies the finished
-// turn, records a derived signal for a question or a notification, and
+// classifyTurnEnd classifies the finished turn, records a derived signal for a question or a notification, and
 // reconciles the session state the heuristic set provisionally.
 //
 // Everything here is best-effort: a classifier that errors, times out or is
 // switched off leaves the session exactly as the heuristic left it. A signal
 // is an extra surface on top of a turn that already completed, and no
 // failure to produce one may change how the turn itself resolved.
-func (s *Server) onTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionState) {
+func (s *Server) classifyTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionState) {
 	if s.signalClassifier == nil || ev == nil || ev.Result == nil {
 		return
 	}

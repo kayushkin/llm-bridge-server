@@ -52,7 +52,7 @@ func TestTurnAskingTwoQuestionsRecordsOneGroupOfTwo(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_two", msg.SessionTypeInteractive)
 	stubClassifier(t, srv, twoQuestionVerdict())
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
 
 	got := openSignals(t, st, sess.SessionID)
 	if len(got) != 2 {
@@ -103,7 +103,7 @@ func TestADerivedGroupIsAnsweredWholeAndReachesTheSessionAsOneLabelledMessage(t 
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_two", msg.SessionTypeInteractive)
 	stubClassifier(t, srv, twoQuestionVerdict())
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
 	group := openSignals(t, st, sess.SessionID)
 	if len(group) != 2 {
 		t.Fatalf("open signals = %d, want 2", len(group))
@@ -142,7 +142,7 @@ func TestQuestionsWithNoTextAreDroppedAndAVerdictOfNoneRecordsNothing(t *testing
 		},
 	})
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("Which branch should I ship from?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Which branch should I ship from?"), msg.SessionIdle)
 
 	got := openSignals(t, st, sess.SessionID)
 	if len(got) != 1 {
@@ -156,7 +156,7 @@ func TestQuestionsWithNoTextAreDroppedAndAVerdictOfNoneRecordsNothing(t *testing
 	}
 
 	stubClassifier(t, srv, map[string]any{"kind": "question", "questions": []any{map[string]any{"question": ""}}})
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("Hmm, which one?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Hmm, which one?"), msg.SessionIdle)
 	if got := openSignals(t, st, sess.SessionID); len(got) != 0 {
 		t.Errorf("open signals = %d, want 0 for a question verdict with no question text", len(got))
 	}
@@ -167,7 +167,7 @@ func TestClassifierIsAskedForAListOfQuestions(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_schema", msg.SessionTypeInteractive)
 	captured := stubClassifier(t, srv, map[string]any{"kind": "neither"})
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("Which do you want for PRs and for next steps?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Which do you want for PRs and for next steps?"), msg.SessionIdle)
 
 	var request msg.OneShotRequest
 	if err := json.Unmarshal([]byte(*captured), &request); err != nil {
@@ -229,7 +229,7 @@ func TestWorkerTurnWithOneRealQuestionAndOneSignoffSurfacesBothAsOneGroup(t *tes
 		"goals and next": {"disposition": "signoff", "reason": "the worker said what it would do"},
 	})
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
 
 	got := openSignals(t, st, sess.SessionID)
 	if len(got) != 2 {
@@ -262,7 +262,7 @@ func TestWorkerSignoffsThatCannotBeSentAreSurfacedWithNoAnsweredRowsBesideThem(t
 		"goals and next": {"disposition": "signoff", "reason": "permission"},
 	})
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
 
 	open := openSignals(t, st, sess.SessionID)
 	if len(open) != 2 {

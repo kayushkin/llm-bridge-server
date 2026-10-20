@@ -291,7 +291,7 @@ func TestDerivedWorkerQuestionSurfacesWithItsAudience(t *testing.T) {
 	})
 	stubTriage(t, srv, map[string]any{"disposition": "needs_input", "reason": "a real choice", "audience": "assignee"}, nil)
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("…so: should the health check count discontinued products?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…so: should the health check count discontinued products?"), msg.SessionIdle)
 
 	open := openSignals(t, st, sess.SessionID)
 	if len(open) != 1 {
@@ -322,7 +322,7 @@ func TestDerivedSignoffPastTheCapIsSurfacedNotAnswered(t *testing.T) {
 	stubClassifier(t, srv, derivedQuestionVerdict("Shall I continue?"))
 	stubTriage(t, srv, map[string]any{"disposition": "signoff", "reason": "permission"}, nil)
 
-	srv.onTurnEnd(sess.SessionID, turnEndEvent("Done with that step. Shall I continue?"), msg.SessionIdle)
+	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Done with that step. Shall I continue?"), msg.SessionIdle)
 
 	open := openSignals(t, st, sess.SessionID)
 	if len(open) != 1 {
