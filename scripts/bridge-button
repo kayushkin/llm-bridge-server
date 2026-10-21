@@ -43,6 +43,13 @@
 #   bridge-button "Save the Mac password" --secret-input PASSWORD "Mac login password" \
 #     --run 'jq -n --arg p "$BRIDGE_INPUT_PASSWORD" ... | curl ... -d @- >/dev/null && echo saved'
 #
+# When a press fails, you are told in a new message. When it succeeds, you are
+# told only if the button reports success: --run and --scheduler-job buttons do
+# unless you pass --no-report, which suits a lookup whose output under the button
+# is all the person needs; the others do not unless you pass --report, which
+# suits a button your next step waits on. --deploy takes neither: deploy-gate
+# tells this session how the deploy went.
+#
 # A button is for work the server does, never for answering a question: ask with
 # AskUserQuestion, whose options the chat already draws as one-click answers.
 #
@@ -82,6 +89,8 @@ while [ $# -gt 0 ]; do
     --markdown)      set_field result_format markdown; shift ;;
     --model)         set_field model "$2"; shift 2 ;;
     --max-cost)      set_number maximum_cost_usd "$2"; shift 2 ;;
+    --report)        set_number report_success true; shift ;;
+    --no-report)     set_number report_success false; shift ;;
     --input|--secret-input)
       [ $# -ge 3 ] || usage
       offer=$(jq --arg name "$2" --arg label "$3" --argjson secret "$([ "$1" = --secret-input ] && echo true || echo false)" \

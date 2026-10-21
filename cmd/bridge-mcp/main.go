@@ -88,7 +88,9 @@ func main() {
 			"type is one of deploy (repo_id), run_scheduler_job (scheduler_job_id), run_command (shell_command; optional working_directory, result_format text|markdown, inputs), " +
 			"model_call (message, model, maximum_cost_usd), background_agent (message, maximum_cost_usd; optional model), fork_and_send (message), new_session_and_send (message), " +
 			"send_to_session (target_session_id, message; optional inputs) or stop_session (target_session_id). " +
-			"A reviewer model reads every run_command. Write the action_id from the answer in your reply where the button should appear.",
+			"A reviewer model reads every run_command. A failed press is always reported to you as a new message; a successful one only when report_success is true, " +
+			"which it is by default for run_command and run_scheduler_job: set it false when the result under the button is all the person needs, true when your next step waits on a press of another kind. " +
+			"Write the action_id from the answer in your reply where the button should appear.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(false)},
 	}, offerButton)
 
