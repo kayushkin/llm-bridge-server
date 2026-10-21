@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	modelstore "github.com/kayushkin/model-store"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -153,8 +154,23 @@ func TestAChangedClassifierSettingIsInForceWithoutARestart(t *testing.T) {
 	if !srv.signalClassifier.enabledFor(msg.HarnessClaudeCode) || srv.signalClassifier.enabledFor(msg.HarnessCodex) {
 		t.Error("the classifier should now run for claude_code and skip codex")
 	}
-	if modelRole, timeout := srv.questionTriage.current(); modelRole != "efficient" || timeout != 45*time.Second {
-		t.Errorf("triage did not follow: %q %v", modelRole, timeout)
+	// Triage follows the classifier's timeout but not its role: the two
+	// roles are separate settings so each can move without the other.
+	if modelRole, timeout := srv.questionTriage.current(); modelRole != "" || timeout != 45*time.Second {
+		t.Errorf("triage = %q %v, want its own (empty) role and the classifier's timeout", modelRole, timeout)
+	}
+	if err := srv.modelStore.SetRole(modelstore.RoleBalanced, "mock-model"); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(msg.ServiceSettingUpdate{Value: modelstore.RoleBalanced})
+	if got := serve(srv, serviceSettingsRequest("PUT", "/settings/"+config.SettingQuestionTriageModelRole, string(body), true)); got.Code != http.StatusOK {
+		t.Fatalf("PUT %s = %d %s", config.SettingQuestionTriageModelRole, got.Code, got.Body.String())
+	}
+	if modelRole, _ := srv.questionTriage.current(); modelRole != modelstore.RoleBalanced {
+		t.Errorf("triage role = %q, want balanced", modelRole)
+	}
+	if tuning := srv.signalClassifier.currentTuning(); tuning.modelRole != "efficient" {
+		t.Errorf("changing triage's role moved the classifier's to %q", tuning.modelRole)
 	}
 	if got := serve(srv, serviceSettingsRequest("PUT", "/settings/"+config.SettingSignalClassifierTimeout, `{"value":"soon"}`, true)); got.Code != http.StatusBadRequest {
 		t.Errorf("a malformed duration = %d, want 400", got.Code)

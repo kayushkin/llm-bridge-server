@@ -85,7 +85,8 @@ func (s *Server) checkSettingNamesAnEnabledInstance(instanceID string) error {
 }
 
 // retuneFromServiceSettings puts the stored signal_classifier.* values in force
-// in the classifier and in question triage, which shares its model and timeout.
+// in the classifier, and question_triage.model_role with the classifier's
+// timeout in question triage.
 func (s *Server) retuneFromServiceSettings() {
 	optOut := make(map[msg.Harness]bool)
 	for _, harnessName := range s.settings.StringList(config.SettingSignalClassifierOptOutHarnesses) {
@@ -101,6 +102,6 @@ func (s *Server) retuneFromServiceSettings() {
 		s.signalClassifier.retune(tuning)
 	}
 	if s.questionTriage != nil {
-		s.questionTriage.retune(tuning.modelRole, tuning.timeout)
+		s.questionTriage.retune(s.settings.ModelRole(config.SettingQuestionTriageModelRole), tuning.timeout)
 	}
 }

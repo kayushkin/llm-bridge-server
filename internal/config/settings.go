@@ -28,6 +28,7 @@ const (
 	SettingSignalClassifierTimeout           = "signal_classifier.timeout"
 	SettingSignalClassifierMaximumCharacters = "signal_classifier.maximum_characters"
 	SettingSignalClassifierOptOutHarnesses   = "signal_classifier.opt_out_harnesses"
+	SettingQuestionTriageModelRole           = "question_triage.model_role"
 	SettingPromptDriftTaggerModelRole        = "prompt_drift_tagger.model_role"
 	SettingSessionRenamerModelRole           = "session_renamer.model_role"
 	SettingSessionIdleTimeout                = "session.idle_timeout"
@@ -44,6 +45,7 @@ const (
 // each is checked with model-store on write.
 var ModelRoleSettings = []string{
 	SettingSignalClassifierModelRole,
+	SettingQuestionTriageModelRole,
 	SettingPromptDriftTaggerModelRole,
 	SettingSessionRenamerModelRole,
 	SettingOperationsCompletionModelRole,
@@ -105,7 +107,9 @@ func SettingDefinitions() []servicesettings.Definition {
 	definitions := []servicesettings.Definition{
 		// Behaviour the server stores: changed on the settings page, no restart.
 		{Key: SettingSignalClassifierModelRole, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "balanced",
-			Description: "The model-store role the turn-end signal classifier and question triage ask. Its models are tried in order, each on the instance oneshot.instance_by_provider names for its provider. Empty switches both off: no derived signals, and a worker's question reaches its card untriaged."},
+			Description: "The model-store role the turn-end signal classifier asks. Its models are tried in order, each on the instance oneshot.instance_by_provider names for its provider. Empty switches the classifier off: no derived signals."},
+		{Key: SettingQuestionTriageModelRole, EnvironmentVariable: "LLMBRIDGE_QUESTION_TRIAGE_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "balanced",
+			Description: "The model-store role question triage asks, deciding whether a surfacing worker's question needs a person and who. Apart from signal_classifier.model_role since 2026-10-20, so the classifier could move to the model an eval chose for it while triage kept its own. Empty switches triage off: a worker's question reaches its card untriaged."},
 		{Key: SettingSignalClassifierTimeout, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "20s",
 			Description: "How long one classify or triage call may take. On timeout the turn keeps the state the heuristic gave it and no signal is written."},
 		{Key: SettingSignalClassifierMaximumCharacters, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "6000",
@@ -299,6 +303,7 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 	sort.Strings(optOut)
 	seeds := map[string]string{
 		SettingSignalClassifierModelRole:       c.SignalClassifierModelRole,
+		SettingQuestionTriageModelRole:         c.QuestionTriageModelRole,
 		SettingSignalClassifierOptOutHarnesses: strings.Join(optOut, ","),
 		SettingPromptDriftTaggerModelRole:      c.PromptDriftTaggerModelRole,
 		SettingSessionRenamerModelRole:         c.SessionRenamerModelRole,

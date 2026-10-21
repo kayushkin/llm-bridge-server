@@ -196,9 +196,10 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	if srv.signalClassifier != nil {
 		srv.signalClassifier.runOneShot = srv.routedOneShotJSON
 	}
-	// Triage shares the classifier's role, timeout and router: it is the
-	// same kind of cheap call, and one switch turns both off.
-	srv.questionTriage = newQuestionTriage(cfg.SignalClassifierModelRole, cfg.SignalClassifierTimeout, srv.routedOneShotJSON)
+	// Triage shares the classifier's timeout and router, and has its own
+	// role (question_triage.model_role), so either can move to another model
+	// without the other.
+	srv.questionTriage = newQuestionTriage(cfg.QuestionTriageModelRole, cfg.SignalClassifierTimeout, srv.routedOneShotJSON)
 	if cfg.MailstackToken == "" {
 		log.Printf("[triage] LLMBRIDGE_MAILSTACK_TOKEN is not set: customer reply drafts will carry no recipient")
 	} else if client, err := mailstackclient.New(cfg.MailstackURL, cfg.MailstackToken); err != nil {

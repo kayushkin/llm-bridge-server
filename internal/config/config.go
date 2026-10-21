@@ -147,6 +147,10 @@ type Config struct {
 	// looksLikeQuestion heuristic as the only awaiting_user signal and
 	// minting no derived signals.
 	SignalClassifierModelRole string
+	// QuestionTriageModelRole is the model-store role question triage asks.
+	// Empty turns triage off, and a worker's question reaches its card
+	// untriaged.
+	QuestionTriageModelRole string
 	// SignalClassifierOptOut is the set of harnesses the classifier skips
 	// — the per-harness escape hatch the on-by-default decision was taken
 	// with. Configured via LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT as a
@@ -391,6 +395,7 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		PTYIdleTimeout:                settings.Duration(SettingSessionPTYIdleTimeout),
 		ExternalActivityPollInterval:  settings.Duration(SettingExternalActivityPollInterval),
 		SignalClassifierModelRole:     settings.ModelRole(SettingSignalClassifierModelRole),
+		QuestionTriageModelRole:       settings.ModelRole(SettingQuestionTriageModelRole),
 		SignalClassifierOptOut:        harnessSetOf(settings.StringList(SettingSignalClassifierOptOutHarnesses)),
 		PromptDriftTaggerModelRole:    settings.ModelRole(SettingPromptDriftTaggerModelRole),
 		SignalClassifierTimeout:       settings.Duration(SettingSignalClassifierTimeout),

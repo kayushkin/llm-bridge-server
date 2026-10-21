@@ -361,7 +361,10 @@ Stored settings (PUT /settings/{key}; the variables seed each row once):
 role, default `balanced`, called through the one-shot router; **empty turns the
 classifier off everywhere**), `LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT` (comma-separated
 harness names — the escape hatch), `LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT` (20s),
-`LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS` (6000).
+`LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS` (6000). Question triage has its own role,
+`question_triage.model_role` (default `balanced`), since 2026-10-20: the classifier moved
+to model-store's `turn-end-signal` role (claude-haiku-5-5, chosen by eval-store
+eval_run_000010) while triage stayed on `balanced`.
 
 ### The five things not to re-derive
 
