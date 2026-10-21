@@ -1,0 +1,31 @@
+[Unit]
+Description=Sign-in Store — how people sign in to dash, kayushkin.com and the film player, and their sessions
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/kayushkincom/bin/sign-in-store
+
+# Loopback, deliberately. nginx is the only way in from outside, and it passes
+# only the browser routes. settings.go defaults to the same address.
+Environment=SIGN_IN_STORE_ADDR=127.0.0.1:8328
+Environment=SIGN_IN_STORE_SIGN_IN_PAGE_URL=https://kayushkin.com/signin
+Environment=SIGN_IN_STORE_COOKIE_DOMAIN=kayushkin.com
+Environment=PRINCIPAL_STORE_URL=http://127.0.0.1:8314
+Environment=PEOPLE_STORE_URL=http://127.0.0.1:8321
+Environment=MULTICHAT_URL=http://127.0.0.1:8402
+Environment=AUTH_STORE_URL=http://127.0.0.1:8303
+# multichat's bearer in auth-store, read each time a link is sent.
+Environment=SIGN_IN_STORE_MULTICHAT_CREDENTIAL_ID=cred_e1b7ffd551a0741c9a6d5f93
+
+# SIGN_IN_STORE_SERVICE_TOKEN and AUTH_STORE_TOKEN. Host-local, mode 600, never
+# in this repo; deploy.sh writes it on the first deploy.
+EnvironmentFile=/home/kayushkincom/.config/sign-in-store/sign-in-store.env
+
+Environment=HOME=/home/kayushkincom
+WorkingDirectory=/home/kayushkincom/repos/sign-in-store
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
