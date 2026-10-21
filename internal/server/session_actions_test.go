@@ -297,6 +297,7 @@ func TestAnOfferIsRefusedWhenItIsMalformedOrNamesNothing(t *testing.T) {
 		{"a command field", map[string]any{"label": "x", "type": "deploy", "repo_id": 1, "command": "rm -rf /"}, 400, "invalid_session_action_offer"},
 		{"deploy without repo", map[string]any{"label": "x", "type": "deploy"}, 400, "invalid_session_action_offer"},
 		{"deploy with a message", map[string]any{"label": "x", "type": "deploy", "repo_id": 1, "message": "hi"}, 400, "invalid_session_action_offer"},
+		{"deploy that asks to report its success", map[string]any{"label": "x", "type": "deploy", "repo_id": 1, "report_success": true}, 400, "deploy-gate"},
 		{"a reply button, which only repeats a question", map[string]any{"label": "Yes", "type": "send_message", "message": "yes"}, 400, "AskUserQuestion"},
 		{"fork without message", map[string]any{"label": "x", "type": "fork_and_send"}, 400, "invalid_session_action_offer"},
 		{"fork with a job", map[string]any{"label": "x", "type": "fork_and_send", "message": "hi", "scheduler_job_id": 76}, 400, "invalid_session_action_offer"},
@@ -453,6 +454,37 @@ func TestARunCommandIsReviewedWhenOfferedAndItsOutputIsItsResult(t *testing.T) {
 	finished := waitForSessionActionToEnd(t, st, "br_buttons", offered.ActionID)
 	if finished.State != msg.SessionActionSucceeded || finished.Output != "- Ana\n- Bo\n" || finished.Offer.ResultFormat != msg.SessionActionResultMarkdown || finished.Review == nil {
 		t.Errorf("finished = %+v", finished)
+	}
+}
+
+func TestAnOfferStoresWhetherASuccessfulPressIsReported(t *testing.T) {
+	srv, st, _ := testServerForSessionActions(t)
+	newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
+	withFakeSessionActionModels(srv, "approve")
+	directory := t.TempDir()
+	for _, c := range []struct {
+		name  string
+		offer map[string]any
+		want  bool
+	}{
+		{"a command, left to its default", map[string]any{"label": "Save it", "type": "run_command", "shell_command": "true", "working_directory": directory}, true},
+		{"a command the agent does not wait on", map[string]any{"label": "Show deploys", "type": "run_command", "shell_command": "true", "working_directory": directory, "report_success": false}, false},
+		{"a new session, left to its default", map[string]any{"label": "Start", "type": "new_session_and_send", "message": "go"}, false},
+		{"a new session the agent waits on", map[string]any{"label": "Start", "type": "new_session_and_send", "message": "go", "report_success": true}, true},
+	} {
+		recorder := offerAsInternalService(t, srv, "br_buttons", c.offer)
+		if recorder.Code != http.StatusCreated {
+			t.Fatalf("%s: offer: %d %s", c.name, recorder.Code, recorder.Body)
+		}
+		var offered msg.SessionAction
+		json.Unmarshal(recorder.Body.Bytes(), &offered)
+		stored, err := st.GetSessionAction("br_buttons", offered.ActionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Offer.ReportSuccess == nil || *stored.Offer.ReportSuccess != c.want {
+			t.Errorf("%s: stored report_success = %v, want %v", c.name, stored.Offer.ReportSuccess, c.want)
+		}
 	}
 }
 

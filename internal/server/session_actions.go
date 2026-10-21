@@ -86,6 +86,10 @@ func (s *Server) handleOfferSessionAction(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	if offer.ReportSuccess == nil && offer.Type != msg.SessionActionDeploy {
+		reportSuccess := msg.SessionActionReportsSuccessByDefault(offer.Type)
+		offer.ReportSuccess = &reportSuccess
+	}
 	action := store.SessionAction{
 		SessionID: session.SessionID,
 		Offer:     offer,
@@ -319,6 +323,8 @@ func sessionActionOfferProblem(offer msg.SessionActionOffer) string {
 		return "working_directory must be an absolute path"
 	case offer.ResultFormat != "" && offer.ResultFormat != msg.SessionActionResultText && offer.ResultFormat != msg.SessionActionResultMarkdown:
 		return fmt.Sprintf("result_format %q is neither text nor markdown", offer.ResultFormat)
+	case offer.Type == msg.SessionActionDeploy && offer.ReportSuccess != nil:
+		return "report_success is not used by a deploy action: deploy-gate tells the session that started a deploy how it ended"
 	}
 	if problem := sessionActionInputsProblem(offer.Inputs); problem != "" {
 		return problem

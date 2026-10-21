@@ -36,14 +36,39 @@ func TestTheReportTellsTheAgentHowItsButtonEnded(t *testing.T) {
 }
 
 func TestADeployIsNotReportedTwice(t *testing.T) {
-	if sessionActionReportsToItsSession(msg.SessionActionDeploy) {
-		t.Error("deploy-gate already reports a deploy; the server must not report it again")
-	}
-	for _, kind := range []msg.SessionActionType{msg.SessionActionRunCommand, msg.SessionActionModelCall, msg.SessionActionBackgroundAgent,
-		msg.SessionActionRunSchedulerJob, msg.SessionActionForkAndSend, msg.SessionActionNewSessionAndSend, msg.SessionActionSendToSession, msg.SessionActionStopSession} {
-		if !sessionActionReportsToItsSession(kind) {
-			t.Errorf("%s is not reported", kind)
+	for _, state := range []msg.SessionActionState{msg.SessionActionSucceeded, msg.SessionActionFailed} {
+		deploy := store.SessionAction{Offer: msg.SessionActionOffer{Type: msg.SessionActionDeploy}, State: state}
+		if sessionActionReportsToItsSession(deploy) {
+			t.Errorf("a %s deploy is reported; deploy-gate already reports it", state)
 		}
+	}
+}
+
+func TestAPressIsReportedWhenItFailsOrTheOfferAskedForItsSuccess(t *testing.T) {
+	yes, no := true, false
+	for _, c := range []struct {
+		name          string
+		reportSuccess *bool
+		state         msg.SessionActionState
+		want          bool
+	}{
+		{"success the offer asked for", &yes, msg.SessionActionSucceeded, true},
+		{"success the offer did not ask for", &no, msg.SessionActionSucceeded, false},
+		{"failure the offer did not ask for", &no, msg.SessionActionFailed, true},
+		{"unseen end the offer did not ask for", &no, msg.SessionActionOutcomeUnknown, true},
+		{"success of an action offered before the choice existed", nil, msg.SessionActionSucceeded, true},
+	} {
+		action := store.SessionAction{Offer: msg.SessionActionOffer{Type: msg.SessionActionModelCall, ReportSuccess: c.reportSuccess}, State: c.state}
+		if got := sessionActionReportsToItsSession(action); got != c.want {
+			t.Errorf("%s: reported %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestTheReportIsMarkedAsABridgeReport(t *testing.T) {
+	report := sessionActionReport(store.SessionAction{ActionID: "session_action_000042", Offer: msg.SessionActionOffer{Label: "x"}, State: msg.SessionActionFailed})
+	if !strings.HasPrefix(report, `<bridge-report kind="session-action">`) || !strings.HasSuffix(report, "</bridge-report>") {
+		t.Errorf("the report is not one bridge-report block:\n%s", report)
 	}
 }
 
