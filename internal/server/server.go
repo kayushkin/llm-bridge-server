@@ -1055,7 +1055,9 @@ func (s *Server) tellResumedSessionItsBackgroundTasksDied(sess store.Session) {
 
 // backgroundTasksLostMessage is what a resumed session is told when the restart
 // killed work its finished turn had left running. It names each task, because
-// "some tasks" leaves the model to guess which results it is still owed.
+// "some tasks" leaves the model to guess which results it is still owed. It is a
+// <bridge-report kind="restart"> block, so the chat folds it rather than drawing
+// it as the person's message; so is resumeMessage's notice.
 func backgroundTasksLostMessage(tasks []msg.BackgroundTask) string {
 	var b strings.Builder
 	b.WriteString("[llm-bridge] The harness process was restarted under this session and it has just been " +
@@ -1074,7 +1076,7 @@ func backgroundTasksLostMessage(tasks []msg.BackgroundTask) string {
 		"above is intact. A subagent's partial work is lost unless it wrote files, and a backgrounded " +
 		"command may have got part way, so check the real state of anything they could have changed, " +
 		"then start again whatever you still need. Do not repeat work that already completed.")
-	return b.String()
+	return msg.WrapBridgeReport(msg.BridgeReportKindRestart, b.String())
 }
 
 // resumeMessage decides what to say to a harness that has just come back up
@@ -1103,7 +1105,7 @@ func resumeMessage(turn store.InterruptedTurn) (text string, replayedVerbatim bo
 	if turn.ToolCallsAlreadyRun == 0 {
 		return turn.UserMessageText, true
 	}
-	return fmt.Sprintf(
+	return msg.WrapBridgeReport(msg.BridgeReportKindRestart, fmt.Sprintf(
 		"[llm-bridge] Your previous turn did not finish: the harness process was restarted "+
 			"under it and this session has just been resumed. %d tool call(s) from that turn "+
 			"had already run, so part of its work may have landed and part of it certainly did "+
@@ -1113,7 +1115,7 @@ func resumeMessage(turn store.InterruptedTurn) (text string, replayedVerbatim bo
 			"transcript above is intact: read back what you had already done, check the real "+
 			"state of anything it changed rather than assuming either way, and carry on from "+
 			"there. Do not repeat a step that already completed.",
-		turn.ToolCallsAlreadyRun), false
+		turn.ToolCallsAlreadyRun)), false
 }
 
 // AutoDiscover runs session discovery for all harness types and imports them to the store.

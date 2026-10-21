@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -30,5 +31,14 @@ func TestBackgroundTasksLostMessageSaysSoWhenItHasNoList(t *testing.T) {
 	text := backgroundTasksLostMessage(nil)
 	if !strings.Contains(text, "no list of what was running") {
 		t.Errorf("notice does not admit it has no list:\n%s", text)
+	}
+}
+
+func TestRestartNoticesAreMarkedAsBridgeReports(t *testing.T) {
+	resumed, _ := resumeMessage(store.InterruptedTurn{UserMessageText: "deploy it", ToolCallsAlreadyRun: 3})
+	for _, notice := range []string{backgroundTasksLostMessage(nil), resumed} {
+		if !strings.HasPrefix(notice, `<bridge-report kind="restart">`) || !strings.HasSuffix(notice, "</bridge-report>") {
+			t.Errorf("the notice is not one bridge-report block:\n%s", notice)
+		}
 	}
 }
