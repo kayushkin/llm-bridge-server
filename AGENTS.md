@@ -16,7 +16,7 @@ A link signs one person in once, within 7 days. The operator makes one through `
 
 ## What comes next
 
-Step 1 (this service, links and sessions) is built. Still to do, in order: kayushkin.com's `/signin` page and Caddy onto it, with existing `viewer_session` cookies accepted until they expire; dash per person (non-administrators see the media pages only); Sign in with Discord (the Event-Manager app, auth-store `cred_b6101072bcdf427cd2758413`); Entra moved over from llm-bridge-server; passwords; passkeys; demo login off.
+Steps 1 and 2 are live: this service, and kayushkin.com's `/signin` page, its stream check (which Caddy on watch.kayushkin.com asks) and downloadstack's film-viewer check reading `sign_in_session`, with kayushkin.com's older `viewer_session` still believed until it expires. nginx on kayushkin.com passes exactly the four browser routes under `/api/sign-in/`. Still to do, in order: dash per person (non-administrators see the media pages only); Sign in with Discord (the Event-Manager app, auth-store `cred_b6101072bcdf427cd2758413`); Entra moved over from llm-bridge-server; passwords; passkeys; demo login off.
 
 # Access and operations
 
