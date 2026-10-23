@@ -55,6 +55,10 @@ const (
 	SentByOperator = "operator"
 	SentByDiscord  = "discord"
 	SentByPhone    = "phone"
+	// SentByHostShell is a link made with `sign-in-store make-link` by
+	// someone with a shell on this host: the way back in when every other
+	// way is shut.
+	SentByHostShell = "host_shell"
 )
 
 // How a session was signed in.

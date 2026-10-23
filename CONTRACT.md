@@ -9,7 +9,7 @@
 | Field | Meaning |
 |---|---|
 | `principal_id` | who it signs in |
-| `sent_by` | `operator` (made by an administrator and handed over), `discord` or `phone` (asked for by handle and sent to the person's own chat) |
+| `sent_by` | `operator` (made by an administrator and handed over), `discord` or `phone` (asked for by handle and sent to the person's own chat), or `host_shell` (made with `sign-in-store make-link <principal_id>` from a shell on this host) |
 | `made_by` | the administrator, for an `operator` link |
 | `created_at`, `expires_at`, `redeemed_at` | epoch seconds; `redeemed_at` 0 until spent |
 | `session_id` | the session the redemption opened |

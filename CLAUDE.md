@@ -22,6 +22,9 @@ Steps 1 to 3 are live: this service; kayushkin.com's `/signin` page, its stream 
 
 ## Callers, bind and secrets
 
+**The way back in from a shell:** `~/bin/sign-in-store make-link principal_000001` (as root, `sudo -iu kayushkincom ~/bin/sign-in-store make-link principal_000001`) prints a one-time sign-in link for that principal, `sent_by` `host_shell`. It needs only the database and principal-store, not the running service or its token, because having a shell on this host is the credential. It refuses to create a database, so run as the wrong user it fails instead of making a link nobody can use. Use it when nobody can sign in any other way, as on 2026-10-23, when changing `DASH_TOKEN` logged the operator out everywhere.
+
+
 Binds loopback only. nginx must pass a browser only `POST /link-requests`, `POST /redeem`, `GET /session` and `POST /sign-out`, setting `X-Real-IP`, which is believed only from a loopback caller. The administrator routes take `X-Sign-In-Store-Service-Token` plus `X-Principal-Id` naming an enabled administrator, whose id is recorded on what they do. The service token and `AUTH_STORE_TOKEN` live in `~/.config/sign-in-store/sign-in-store.env` (mode 600), which the first `deploy.sh` writes; multichat's bearer is read from auth-store credential `cred_e1b7ffd551a0741c9a6d5f93` each time a link is sent. Unit `sign-in-store.service` (user), binary `~/bin/sign-in-store`, data `~/.config/sign-in-store/sign-in-store.db`.
 
 # Working in this repo

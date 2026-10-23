@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -13,10 +14,31 @@ import (
 	signinstore "github.com/kayushkin/sign-in-store"
 )
 
+// runCommand runs a command given on the command line instead of the
+// server: today only make-link, the way back in from a shell on this host.
+func runCommand(settings *servicesettings.Registry, arguments []string) int {
+	if len(arguments) != 2 || arguments[0] != "make-link" {
+		fmt.Fprintln(os.Stderr, signinstore.ErrUsage)
+		return 2
+	}
+	directory := signinstore.NewDirectory(signinstore.DirectoryConfig{PrincipalStoreURL: settings.String(signinstore.SettingPrincipalStoreURL)})
+	link, url, err := signinstore.MakeSignInLinkFromHostShell(context.Background(), settings.String(signinstore.SettingDataDirectory),
+		directory, arguments[1], settings.String(signinstore.SettingSignInPageURL))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "make-link: %v\n", err)
+		return 1
+	}
+	fmt.Print(signinstore.HostShellLinkMessage(link, url))
+	return 0
+}
+
 func main() {
 	settings, err := signinstore.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
 		log.Fatalf("read settings: %v", err)
+	}
+	if len(os.Args) > 1 {
+		os.Exit(runCommand(settings, os.Args[1:]))
 	}
 	if err := settings.CheckRequired(); err != nil {
 		log.Fatalf("read settings: %v", err)
