@@ -148,6 +148,10 @@ func (s *Store) migrate() error {
 			started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			finished_at DATETIME
 		);
+		-- Every read of runs is by job, newest first. Without this, each
+		-- GET /api/jobs/{id}/runs scanned every run of every job (852,000
+		-- rows on 2026-10-23, half a second each).
+		CREATE INDEX IF NOT EXISTS idx_runs_job_id_id ON runs(job_id, id);
 	`)
 	if err != nil {
 		return err
@@ -542,6 +546,37 @@ func (s *Store) ListRuns(jobID int64) ([]Run, error) {
 	for rows.Next() {
 		var r Run
 		if err := rows.Scan(&r.ID, &r.JobID, &r.Status, &r.Output, &r.StartedAt, &r.FinishedAt); err != nil {
+			return nil, err
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
+
+// RunHeader is a run without its output, for reads that only need to know
+// how each job last ended.
+type RunHeader struct {
+	ID         int64      `json:"id"`
+	JobID      int64      `json:"job_id"`
+	Status     string     `json:"status"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+// LatestRuns is the newest run of every job that has run, without output,
+// ordered by job id.
+func (s *Store) LatestRuns() ([]RunHeader, error) {
+	rows, err := s.db.Query(`SELECT r.id, r.job_id, r.status, r.started_at, r.finished_at
+		FROM runs r JOIN (SELECT MAX(id) AS id FROM runs GROUP BY job_id) latest ON latest.id = r.id
+		ORDER BY r.job_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	runs := []RunHeader{}
+	for rows.Next() {
+		var r RunHeader
+		if err := rows.Scan(&r.ID, &r.JobID, &r.Status, &r.StartedAt, &r.FinishedAt); err != nil {
 			return nil, err
 		}
 		runs = append(runs, r)

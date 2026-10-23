@@ -60,6 +60,7 @@ func New(store *db.Store, scheduler *cronpkg.Scheduler, token string, settings *
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/api/jobs", s.handleJobs)
 	s.mux.HandleFunc("/api/jobs/", s.handleJobSub)
+	s.mux.HandleFunc("GET /api/runs/latest", s.handleLatestRuns)
 	s.mux.HandleFunc("/api/calendar/events", s.handleCalendarEvents)
 	// At the root, not under /api: dash sends /api/scheduler/settings here, as
 	// it does for every service's settings. GET describes every setting; PUT
@@ -522,4 +523,16 @@ func writeError(w http.ResponseWriter, status int, msg, details string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(APIError{Error: msg, Status: status, Details: details})
+}
+
+// handleLatestRuns answers each job's newest run without its output, so a
+// page showing how every job last ended reads one small answer instead of a
+// hundred runs with output for each job.
+func (s *Server) handleLatestRuns(w http.ResponseWriter, r *http.Request) {
+	runs, err := s.store.LatestRuns()
+	if err != nil {
+		writeError(w, 500, "failed to list the latest runs", err.Error())
+		return
+	}
+	writeJSON(w, runs)
 }

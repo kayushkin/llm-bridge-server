@@ -118,3 +118,30 @@ func TestClearExpiredHolds(t *testing.T) {
 		t.Fatal("expected hold to be cleared")
 	}
 }
+
+// LatestRuns answers one run per job, the newest, and only jobs that have run.
+func TestLatestRunsIsTheNewestRunOfEachJob(t *testing.T) {
+	s := testStore(t)
+	first, _ := s.CreateJob("first", "* * * * *", "echo")
+	second, _ := s.CreateJob("second", "* * * * *", "echo")
+	s.CreateJob("never run", "* * * * *", "echo")
+	older, _ := s.CreateRun(first.ID)
+	s.FinishRun(older.ID, "error", "old")
+	newer, _ := s.CreateRun(first.ID)
+	s.FinishRun(newer.ID, "success", "new")
+	only, _ := s.CreateRun(second.ID)
+
+	runs, err := s.LatestRuns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want one for each of the two jobs that ran: %+v", len(runs), runs)
+	}
+	if runs[0].JobID != first.ID || runs[0].ID != newer.ID || runs[0].Status != "success" {
+		t.Errorf("the first job's latest run is %+v, want run %d, success", runs[0], newer.ID)
+	}
+	if runs[1].JobID != second.ID || runs[1].ID != only.ID || runs[1].Status != "running" {
+		t.Errorf("the second job's latest run is %+v, want run %d, still running", runs[1], only.ID)
+	}
+}

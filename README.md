@@ -22,6 +22,7 @@ Centralized job scheduler for the inber ecosystem.
   future time, or clear the hold
 - `DELETE /api/jobs/:id` — delete job
 - `GET /api/jobs/:id/runs` — run history
+- `GET /api/runs/latest` — the newest run of every job that has run, without output: `[{id, job_id, status, started_at, finished_at}]`
 - `POST /api/jobs/:id/run` — trigger now
 - `GET /api/calendar/events` — Google Calendar events
 - `POST /api/calendar/events` — create calendar event
