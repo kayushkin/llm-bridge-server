@@ -147,6 +147,14 @@ type DraftAttachment struct {
 	Data     []byte `json:"data"`
 }
 
+// Searcher is a backend whose provider searches its mailbox itself. Search
+// takes the provider's own query syntax and lists matches newest first.
+// Gmail is one; a backend that is not answers GET /api/messages?q= with 501
+// rather than an unfiltered list.
+type Searcher interface {
+	Search(ctx context.Context, query, cursor string, limit int) (msgs []MessageMeta, next string, err error)
+}
+
 // Backend is the provider-agnostic mail interface. Phase 2 implements
 // only the read-side methods for Gmail; write-side and other providers
 // come in later phases.

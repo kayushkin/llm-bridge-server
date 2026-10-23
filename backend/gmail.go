@@ -229,16 +229,30 @@ type gmailMessagesList struct {
 }
 
 func (g *Gmail) List(ctx context.Context, folderID, cursor string, limit int) ([]MessageMeta, string, error) {
+	q := url.Values{}
+	if folderID != "" {
+		q.Set("labelIds", folderID)
+	}
+	return g.listMessages(ctx, q, cursor, limit)
+}
+
+// Search lists the messages Gmail's own search finds for query, in the
+// syntax of Gmail's search box (from:unr.edu after:2023/01/01), across every
+// label, newest first.
+func (g *Gmail) Search(ctx context.Context, query, cursor string, limit int) ([]MessageMeta, string, error) {
+	q := url.Values{}
+	q.Set("q", query)
+	return g.listMessages(ctx, q, cursor, limit)
+}
+
+// listMessages runs messages.list with the given parameters and reads each
+// message's metadata.
+func (g *Gmail) listMessages(ctx context.Context, q url.Values, cursor string, limit int) ([]MessageMeta, string, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	if limit > 500 {
 		limit = 500
-	}
-
-	q := url.Values{}
-	if folderID != "" {
-		q.Set("labelIds", folderID)
 	}
 	q.Set("maxResults", strconv.Itoa(limit))
 	if cursor != "" {

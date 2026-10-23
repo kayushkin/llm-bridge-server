@@ -556,3 +556,24 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// Search hands the query to Gmail's own search and names no label, so it
+// reaches every folder; List names the label and sends no query.
+func TestGmailSearchSendsTheQueryAndNoLabel(t *testing.T) {
+	api := newRecordingAPI(t)
+	api.route("/users/me/messages", http.StatusOK, `{"messages":[]}`)
+
+	if _, _, err := newRecordedGmail(t, api, &fakeTokenSource{}).Search(context.Background(), "from:unr.edu after:2023/01/01", "", 20); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	request := api.only()
+	if got := request.Query.Get("q"); got != "from:unr.edu after:2023/01/01" {
+		t.Errorf("want q passed through, got %q", got)
+	}
+	if request.Query.Has("labelIds") {
+		t.Errorf("a search must name no label, got labelIds=%q", request.Query.Get("labelIds"))
+	}
+	if got := request.Query.Get("maxResults"); got != "20" {
+		t.Errorf("want maxResults=20, got %q", got)
+	}
+}

@@ -466,7 +466,22 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	msgs, next, err := b.List(r.Context(), folder, cursor, limit)
+	var msgs []backend.MessageMeta
+	var next string
+	if query := r.URL.Query().Get("q"); query != "" {
+		searcher, ok := b.(backend.Searcher)
+		if !ok {
+			writeError(w, http.StatusNotImplemented, fmt.Errorf("account %s's provider has no search here; q works on Gmail accounts", acct))
+			return
+		}
+		if folder != "" {
+			writeError(w, http.StatusBadRequest, errors.New("q searches every folder; send q or folder, not both (Gmail syntax: label:… inside q)"))
+			return
+		}
+		msgs, next, err = searcher.Search(r.Context(), query, cursor, limit)
+	} else {
+		msgs, next, err = b.List(r.Context(), folder, cursor, limit)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
