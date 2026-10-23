@@ -22,9 +22,11 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -226,7 +228,7 @@ func runScheduler(cfg config.Config, settings *servicesettings.Registry, d deps)
 	srv := api.New(store, scheduler, cfg.Token, settings, modelstoreroles.New(cfg.ModelStoreURL).CheckRole)
 	srv.SetLogger(logger)
 
-	addr := fmt.Sprintf(":%d", cfg.Port)
+	addr := net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.Port))
 	served := make(chan error, 1)
 	go func() {
 		d.logf("scheduler listening on %s", addr)

@@ -31,10 +31,11 @@ const ServiceName = "scheduler"
 // process; owning the whole prefix would stop the scheduler the day its own
 // unit set SCHEDULER_URL for its jobs. So SCHEDULER_DB_PATH and SCHEDULER_PORTS
 // are refused, and SCHEDULER_URL is not.
-var OwnedEnvironmentVariablePrefixes = []string{"SCHEDULER_PORT", "SCHEDULER_DB", "SCHEDULER_TOKEN"}
+var OwnedEnvironmentVariablePrefixes = []string{"SCHEDULER_PORT", "SCHEDULER_LISTEN", "SCHEDULER_DB", "SCHEDULER_TOKEN"}
 
 // Keys of the settings, as GET /settings names them.
 const (
+	SettingListenHost   = "listen_host"
 	SettingPort         = "port"
 	SettingDatabasePath = "database_path"
 	SettingToken        = "token"
@@ -45,6 +46,10 @@ const (
 
 // The values in force with nothing set.
 const (
+	// DefaultListenHost is loopback. With no SCHEDULER_TOKEN, anyone who
+	// reaches the port can create a shell job; every job and agent calls it on
+	// localhost.
+	DefaultListenHost   = "127.0.0.1"
 	DefaultPort         = "8092"
 	DefaultNATSURL      = "nats://localhost:4222"
 	DefaultBridgeURL    = "http://localhost:8160"
@@ -53,6 +58,7 @@ const (
 
 // Config is the configuration the service runs on, read from a Registry.
 type Config struct {
+	ListenHost   string
 	Port         int
 	DatabasePath string
 	Token        string
@@ -87,8 +93,10 @@ func DefaultDatabasePath() string {
 // not the weakest door.
 func SettingDefinitions() []servicesettings.Definition {
 	return append([]servicesettings.Definition{
+		{Key: SettingListenHost, EnvironmentVariable: "SCHEDULER_LISTEN_HOST", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultListenHost,
+			Description: "The interface the HTTP server listens on. The default is loopback: with no SCHEDULER_TOKEN any caller can create a shell job, and every job and agent calls it on localhost. An empty value or 0.0.0.0 listens on every interface."},
 		{Key: SettingPort, EnvironmentVariable: "SCHEDULER_PORT", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeInteger, Default: DefaultPort,
-			Description: "The port the HTTP API listens on, on every interface. Changing it moves the service: every SCHEDULER_URL, dash's scheduler proxy and healthcheck must be told the new port."},
+			Description: "The port the HTTP API listens on, on the interface SCHEDULER_LISTEN_HOST names. Changing it moves the service: every SCHEDULER_URL, dash's scheduler proxy and healthcheck must be told the new port."},
 		{Key: SettingDatabasePath, EnvironmentVariable: "SCHEDULER_DB", Kind: msg.ServiceSettingKindPath, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultDatabasePath(), Required: true,
 			Description: "The SQLite file that holds every job and every run. Changing it starts the scheduler on whatever jobs that file holds, or none; the old jobs stop firing."},
 		{Key: SettingToken, EnvironmentVariable: "SCHEDULER_TOKEN", Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,
@@ -113,6 +121,7 @@ func NewSettingsRegistry(environment servicesettings.Environment) (*servicesetti
 // Load reads the service's configuration from registry.
 func Load(registry *servicesettings.Registry) Config {
 	return Config{
+		ListenHost:         registry.String(SettingListenHost),
 		Port:               registry.Integer(SettingPort),
 		DatabasePath:       registry.String(SettingDatabasePath),
 		Token:              registry.String(SettingToken),

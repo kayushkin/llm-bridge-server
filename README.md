@@ -39,12 +39,13 @@ Centralized job scheduler for the inber ecosystem.
 The service (`cmd/scheduler`) reads these, declared once in
 `internal/config/settings.go`. A test fails on any `os.Getenv` in the service's
 packages that the declarations do not name. A set variable starting with
-`SCHEDULER_PORT`, `SCHEDULER_DB` or `SCHEDULER_TOKEN` that is not declared (a
+`SCHEDULER_PORT`, `SCHEDULER_LISTEN`, `SCHEDULER_DB` or `SCHEDULER_TOKEN` that is not declared (a
 misspelling such as `SCHEDULER_DB_PATH`) stops the start; `SCHEDULER_URL`, which
 jobs read to find the scheduler, is not the service's and is left alone.
 
 | variable | default | |
 |---|---|---|
+| `SCHEDULER_LISTEN_HOST` | `127.0.0.1` | the interface to listen on; loopback, because with no token any caller can run shell jobs |
 | `SCHEDULER_PORT` | `8092` | a whole number, or the start is refused |
 | `SCHEDULER_DB` | `~/.scheduler/scheduler.db` | required; with no home directory the start is refused |
 | `SCHEDULER_TOKEN` | unset | the bearer for every route but `/health` |

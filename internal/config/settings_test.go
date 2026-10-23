@@ -25,6 +25,7 @@ func TestLoadReadsTheSameValuesItAlwaysDid(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Config{
+		ListenHost:    "127.0.0.1",
 		Port:          8092,
 		DatabasePath:  "/home/someone/.scheduler/scheduler.db",
 		Token:         "",
@@ -45,6 +46,7 @@ func TestLoadReadsTheSameValuesItAlwaysDid(t *testing.T) {
 		t.Fatal(err)
 	}
 	want = Config{
+		ListenHost:         "192.0.2.1",
 		Port:               19104,
 		DatabasePath:       "/srv/scheduler.db",
 		Token:              "a-token",
@@ -87,6 +89,7 @@ func TestLoadReadsTheSameValuesItAlwaysDid(t *testing.T) {
 }
 
 var everyVariableSetToItsOwnValue = map[string]string{
+	"SCHEDULER_LISTEN_HOST":   "192.0.2.1",
 	"SCHEDULER_PORT":          "19104",
 	"SCHEDULER_DB":            "/srv/scheduler.db",
 	"SCHEDULER_TOKEN":         "a-token",
