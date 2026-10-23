@@ -1108,7 +1108,37 @@ func saveState(path string, st *state) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	// Write beside the file and rename over it, so a write that fails part
+	// way leaves the last good state in place. os.WriteFile truncates first:
+	// on 2026-10-21 the disk filled mid-write, left a zero-byte state.json,
+	// and every tick failed to load it for two days.
+	temporary, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		os.Remove(temporary.Name())
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		os.Remove(temporary.Name())
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		os.Remove(temporary.Name())
+		return err
+	}
+	if err := os.Chmod(temporary.Name(), 0644); err != nil {
+		os.Remove(temporary.Name())
+		return err
+	}
+	if err := os.Rename(temporary.Name(), path); err != nil {
+		os.Remove(temporary.Name())
+		return err
+	}
+	return nil
 }
 
 // registerSchedulerJob upserts an autoworker-tick job in the scheduler.

@@ -97,3 +97,41 @@ func TestACorruptStateFileIsAnError(t *testing.T) {
 			"absent and every tick fires")
 	}
 }
+
+// A save that cannot finish leaves the last good state readable. The old save
+// truncated the file before writing, so a full disk on 2026-10-21 left a
+// zero-byte state.json that every later tick failed to load.
+func TestAFailedSaveLeavesTheLastGoodState(t *testing.T) {
+	path := statePathIn(t)
+	st, err := loadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.LastFire["anthropic"] = 1_800_000_000
+	if err := saveState(path, st); err != nil {
+		t.Fatal(err)
+	}
+
+	// A read-only directory stands in for a full disk. A save that writes
+	// beside the file and renames cannot make its temporary file, so it fails
+	// before it touches state.json; a save that writes in place succeeds here,
+	// which is how it truncated the file when the disk was full.
+	directory := filepath.Dir(path)
+	if err := os.Chmod(directory, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(directory, 0o755)
+	st.LastFire["anthropic"] = 1_900_000_000
+	if err := saveState(path, st); err == nil {
+		t.Fatal("the save succeeded in a read-only directory, so it wrote state.json in place; " +
+			"a full disk part way through that write empties the file")
+	}
+
+	reloaded, err := loadState(path)
+	if err != nil {
+		t.Fatalf("a failed save left a state that does not load: %v", err)
+	}
+	if got := reloaded.LastFire["anthropic"]; got != 1_800_000_000 {
+		t.Errorf("after a failed save the state reads %d, want the last good 1800000000", got)
+	}
+}
