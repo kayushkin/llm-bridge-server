@@ -61,7 +61,7 @@ func TestRuns(t *testing.T) {
 	if err := s.FinishRun(run.ID, "success", "ok"); err != nil {
 		t.Fatal(err)
 	}
-	runs, err := s.ListRuns(j.ID)
+	runs, err := s.ListRuns(j.ID, MaxRunsListed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,5 +143,26 @@ func TestLatestRunsIsTheNewestRunOfEachJob(t *testing.T) {
 	}
 	if runs[1].JobID != second.ID || runs[1].ID != only.ID || runs[1].Status != "running" {
 		t.Errorf("the second job's latest run is %+v, want run %d, still running", runs[1], only.ID)
+	}
+}
+
+func TestListRunsTakesALimit(t *testing.T) {
+	s := testStore(t)
+	j, _ := s.CreateJob("r", "* * * * *", "echo")
+	for index := 0; index < 3; index++ {
+		run, _ := s.CreateRun(j.ID)
+		s.FinishRun(run.ID, "success", "ok")
+	}
+	runs, err := s.ListRuns(j.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].ID != 3 {
+		t.Fatalf("a limit of 1 should answer only the newest run; got %+v", runs)
+	}
+	for _, limit := range []int{0, MaxRunsListed + 1} {
+		if _, err := s.ListRuns(j.ID, limit); err == nil {
+			t.Errorf("a limit of %d was accepted", limit)
+		}
 	}
 }

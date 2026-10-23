@@ -536,8 +536,16 @@ func (s *Store) FinishRun(id int64, status, output string) error {
 	return err
 }
 
-func (s *Store) ListRuns(jobID int64) ([]Run, error) {
-	rows, err := s.db.Query(`SELECT id, job_id, status, output, started_at, finished_at FROM runs WHERE job_id=? ORDER BY id DESC LIMIT 100`, jobID)
+// MaxRunsListed is the most runs one read of a job's history answers.
+const MaxRunsListed = 100
+
+// ListRuns answers a job's newest runs, newest first, at most limit of them
+// (1 to MaxRunsListed).
+func (s *Store) ListRuns(jobID int64, limit int) ([]Run, error) {
+	if limit < 1 || limit > MaxRunsListed {
+		return nil, fmt.Errorf("limit %d is outside 1 to %d", limit, MaxRunsListed)
+	}
+	rows, err := s.db.Query(`SELECT id, job_id, status, output, started_at, finished_at FROM runs WHERE job_id=? ORDER BY id DESC LIMIT ?`, jobID, limit)
 	if err != nil {
 		return nil, err
 	}

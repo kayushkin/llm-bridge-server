@@ -61,7 +61,7 @@ func TestOverlappingTickIsSkipped(t *testing.T) {
 	}
 
 	// Exactly one run row, and the job is runnable again once it is released.
-	runs, err := store.ListRuns(job.ID)
+	runs, err := store.ListRuns(job.ID, db.MaxRunsListed)
 	if err != nil {
 		t.Fatal(err)
 	}

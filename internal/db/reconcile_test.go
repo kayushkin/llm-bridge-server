@@ -30,7 +30,7 @@ func TestReconcileOrphanedRuns(t *testing.T) {
 		t.Fatalf("reconciled %d runs, want 2", len(interrupted))
 	}
 
-	runs, err := s.ListRuns(job.ID)
+	runs, err := s.ListRuns(job.ID, MaxRunsListed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestReconcileOrphanedRunsReturnsTheOutputItStored(t *testing.T) {
 	}
 
 	stored := map[int64]Run{}
-	runs, err := s.ListRuns(job.ID)
+	runs, err := s.ListRuns(job.ID, MaxRunsListed)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -31,7 +31,7 @@ func TestRunningAnAgentJobNowReturnsTheRunWhileItRuns(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		runs, err := store.ListRuns(job.ID)
+		runs, err := store.ListRuns(job.ID, db.MaxRunsListed)
 		if err != nil {
 			t.Fatal(err)
 		}

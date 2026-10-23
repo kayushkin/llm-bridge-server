@@ -295,7 +295,7 @@ func (h *Handler) handleListRuns(cmd Command) (any, error) {
 		return nil, fmt.Errorf("job_id is required")
 	}
 
-	runs, err := h.store.ListRuns(cmd.JobID)
+	runs, err := h.store.ListRuns(cmd.JobID, db.MaxRunsListed)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list runs: %w", err)
 	}

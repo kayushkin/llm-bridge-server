@@ -399,7 +399,16 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 405, "method not allowed", "")
 			return
 		}
-		runs, err := s.store.ListRuns(id)
+		limit := db.MaxRunsListed
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > db.MaxRunsListed {
+				writeError(w, 400, fmt.Sprintf("limit must be a whole number from 1 to %d", db.MaxRunsListed), "")
+				return
+			}
+			limit = parsed
+		}
+		runs, err := s.store.ListRuns(id, limit)
 		if err != nil {
 			writeError(w, 500, "failed to list runs", err.Error())
 			return

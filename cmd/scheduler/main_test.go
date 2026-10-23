@@ -654,7 +654,7 @@ func TestRunScheduler_ClosesOutRunsStrandedByAPreviousProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer after.Close()
-	runs, err := after.ListRuns(job.ID)
+	runs, err := after.ListRuns(job.ID, db.MaxRunsListed)
 	if err != nil {
 		t.Fatal(err)
 	}
