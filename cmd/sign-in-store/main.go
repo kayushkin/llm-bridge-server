@@ -65,6 +65,11 @@ func main() {
 		ServiceToken:  settings.String(signinstore.SettingServiceToken),
 		SignInPageURL: settings.String(signinstore.SettingSignInPageURL),
 		CookieDomain:  settings.String(signinstore.SettingCookieDomain),
+		Discord: signinstore.DiscordConfig{
+			ApplicationID:            settings.String(signinstore.SettingDiscordApplicationID),
+			ClientSecretCredentialID: settings.String(signinstore.SettingDiscordSecretID),
+			RedirectURL:              settings.String(signinstore.SettingDiscordRedirectURL),
+		},
 	})
 	signinstore.RegisterSettingsHandler(mux, settings)
 

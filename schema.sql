@@ -33,3 +33,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     remote_address   TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_principal ON sessions(principal_id, seq);
+
+-- One Sign in with Discord round trip: the state Discord carries back and the
+-- browser-binding cookie, both kept only as hashes. Spent once, ten minutes.
+CREATE TABLE IF NOT EXISTS discord_attempts (
+    seq                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    state_sha256          TEXT NOT NULL UNIQUE,
+    browser_secret_sha256 TEXT NOT NULL,
+    purpose               TEXT NOT NULL,          -- sign_in or link
+    linking_principal_id  TEXT NOT NULL DEFAULT '',
+    linking_session_id    TEXT NOT NULL DEFAULT '',
+    return_to             TEXT NOT NULL,
+    created_at            INTEGER NOT NULL,
+    expires_at            INTEGER NOT NULL,
+    consumed_at           INTEGER NOT NULL DEFAULT 0
+);

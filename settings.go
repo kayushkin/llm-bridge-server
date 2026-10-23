@@ -19,25 +19,28 @@ const OwnedEnvironmentVariablePrefix = "SIGN_IN_STORE_"
 
 // Keys of the settings, as GET /settings names them.
 const (
-	SettingListenAddress       = "listen_address"
-	SettingDataDirectory       = "data_directory"
-	SettingServiceToken        = "service_token"
-	SettingSignInPageURL       = "sign_in_page_url"
-	SettingCookieDomain        = "cookie_domain"
-	SettingPrincipalStoreURL   = "principal_store_url"
-	SettingPeopleStoreURL      = "people_store_url"
-	SettingMultichatURL        = "multichat_url"
-	SettingMultichatCredential = "multichat_credential_id"
-	SettingAuthStoreURL        = "auth_store_url"
-	SettingAuthStoreToken      = "auth_store_token"
-	MinimumServiceTokenLength  = 32
-	DefaultListenAddress       = "127.0.0.1:8328"
-	defaultPrincipalStoreURL   = "http://127.0.0.1:8314"
-	defaultPeopleStoreURL      = "http://127.0.0.1:8321"
-	defaultMultichatURL        = "http://127.0.0.1:8402"
-	defaultAuthStoreURL        = "http://127.0.0.1:8303"
-	defaultSignInPageURL       = "https://kayushkin.com/signin"
-	defaultCookieDomain        = "kayushkin.com"
+	SettingListenAddress        = "listen_address"
+	SettingDataDirectory        = "data_directory"
+	SettingServiceToken         = "service_token"
+	SettingSignInPageURL        = "sign_in_page_url"
+	SettingCookieDomain         = "cookie_domain"
+	SettingPrincipalStoreURL    = "principal_store_url"
+	SettingPeopleStoreURL       = "people_store_url"
+	SettingMultichatURL         = "multichat_url"
+	SettingMultichatCredential  = "multichat_credential_id"
+	SettingAuthStoreURL         = "auth_store_url"
+	SettingAuthStoreToken       = "auth_store_token"
+	SettingDiscordApplicationID = "discord_application_id"
+	SettingDiscordSecretID      = "discord_client_secret_credential_id"
+	SettingDiscordRedirectURL   = "discord_redirect_url"
+	MinimumServiceTokenLength   = 32
+	DefaultListenAddress        = "127.0.0.1:8328"
+	defaultPrincipalStoreURL    = "http://127.0.0.1:8314"
+	defaultPeopleStoreURL       = "http://127.0.0.1:8321"
+	defaultMultichatURL         = "http://127.0.0.1:8402"
+	defaultAuthStoreURL         = "http://127.0.0.1:8303"
+	defaultSignInPageURL        = "https://kayushkin.com/signin"
+	defaultCookieDomain         = "kayushkin.com"
 )
 
 // SettingDefinitions declares every environment variable the service reads,
@@ -67,6 +70,12 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The auth-store credential that holds multichat's bearer token, read when a link is sent."},
 		{Key: SettingAuthStoreURL, EnvironmentVariable: "AUTH_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: text, Default: defaultAuthStoreURL,
 			Description: "auth-store, where multichat's token is read from."},
+		{Key: SettingDiscordApplicationID, EnvironmentVariable: "SIGN_IN_STORE_DISCORD_APPLICATION_ID", Kind: msg.ServiceSettingKindWiring, ValueType: text,
+			Description: "The Discord application Sign in with Discord uses (the operator's Event-Manager app, shared with discord-signup-store). Unset switches Sign in with Discord off: its routes answer 503."},
+		{Key: SettingDiscordSecretID, EnvironmentVariable: "SIGN_IN_STORE_DISCORD_CLIENT_SECRET_CREDENTIAL_ID", Kind: msg.ServiceSettingKindWiring, ValueType: text,
+			Description: "The auth-store credential holding that application's OAuth2 client secret, read each time a code is traded."},
+		{Key: SettingDiscordRedirectURL, EnvironmentVariable: "SIGN_IN_STORE_DISCORD_REDIRECT_URL", Kind: msg.ServiceSettingKindWiring, ValueType: text,
+			Description: "Where Discord sends the browser back: this service's GET /discord/callback as the browser reaches it. It must be in the application's OAuth2 redirect list on Discord's developer portal, or Discord refuses every sign-in."},
 		{Key: SettingAuthStoreToken, EnvironmentVariable: "AUTH_STORE_TOKEN", Kind: msg.ServiceSettingKindSecret, ValueType: text, Required: true,
 			Description: "The bearer auth-store asks for."},
 	}

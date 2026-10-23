@@ -18,7 +18,7 @@
 
 | Field | Meaning |
 |---|---|
-| `principal_id`, `method` (`sign_in_link`), `sign_in_link_id` | who, and how they signed in |
+| `principal_id`, `method` (`sign_in_link` or `discord`), `sign_in_link_id` | who, and how they signed in |
 | `created_at`, `expires_at`, `last_seen_at` | epoch seconds; `last_seen_at` written at most once a minute |
 | `revoked_at`, `revoked_by`, `revoke_reason` | who ended it and why; sign-out records the person themselves |
 | `user_agent`, `remote_address` | the browser, as it signed in |
@@ -39,6 +39,13 @@ An enabled principal-store principal of kind `human`. A group, a contact or a pe
 | POST | `/redeem` | `{"secret"}`, the part of the link after `#`: 200 with the session (below) and the cookie set; 410 `link_not_usable` for used, expired or unknown; 403 `may_not_sign_in` when the principal is now disabled or not a person (the link is not spent) |
 | GET | `/session` | 200 `{session_id, principal_id, display_name, is_administrator, group_ids, method, expires_at}` and header `X-Signed-In-Principal-Id`; 401 with code `not_signed_in`, `session_unknown`, `session_revoked`, `session_expired`, `principal_unknown` or `principal_may_not_sign_in`; 502 when principal-store cannot answer. Apps and Caddy's `forward_auth` call it with the browser's cookies |
 | POST | `/sign-out` | revokes the browser's session and clears the cookie; 200 even with no session |
+
+## Sign in with Discord (through nginx)
+
+| Method | Path | |
+|---|---|---|
+| GET | `/discord/start` | `?purpose=sign_in` (default) or `link`, `&return_to=` an https address on the cookie domain (default the sign-in page; anything else 400). `link` needs a live session (401 otherwise). Records an attempt, sets the `sign_in_discord_attempt` cookie, and redirects to Discord with scope `identify`. 503 when no Discord application is set |
+| GET | `/discord/callback` | Discord sends the browser back here. Spends the attempt (once, within 10 minutes, only in the browser holding its cookie), trades the code for the Discord user id, then: **sign_in** finds the principal bound to it in principal-store (`provider=discord`, empty tenant) and opens a session (`method` `discord`); **link** binds it to the principal that started the link, `linked_by` themselves. Redirects to `return_to`, with `?discord_linked=1` after a link, or `?sign_in_error=` one of `discord_denied`, `discord_attempt_not_usable` (then to the sign-in page), `discord_unavailable`, `discord_not_linked`, `may_not_sign_in`, `discord_already_linked`, `signed_out_while_linking` |
 
 ## Routes the operator reaches (through dash)
 

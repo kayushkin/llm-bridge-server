@@ -193,16 +193,16 @@ func (d *Directory) PersonOwningHandle(ctx context.Context, kind, value string) 
 	return &person, nil
 }
 
-// multichatToken reads multichat's bearer from auth-store at the time of use,
-// so a rotated token is used at once.
-func (d *Directory) multichatToken(ctx context.Context) (string, error) {
+// resolveCredential reads a secret from auth-store at the time of use, so a
+// rotated one is used at once. reason goes in auth-store's audit trail.
+func (d *Directory) resolveCredential(ctx context.Context, credentialID, reason string) (string, error) {
 	var resolved struct {
 		AccessToken string `json:"access_token"`
 		APIKey      string `json:"api_key"`
 	}
-	headers := map[string]string{"Authorization": "Bearer " + d.authStoreToken, "X-Auth-App": ServiceName, "X-Auth-Reason": "send a sign-in link through multichat"}
-	if err := d.getJSON(ctx, d.authStoreURL+"/api/credentials/"+url.PathEscape(d.multichatCredID)+"/resolve", headers, &resolved); err != nil {
-		return "", fmt.Errorf("auth-store credential %s: %w", d.multichatCredID, err)
+	headers := map[string]string{"Authorization": "Bearer " + d.authStoreToken, "X-Auth-App": ServiceName, "X-Auth-Reason": reason}
+	if err := d.getJSON(ctx, d.authStoreURL+"/api/credentials/"+url.PathEscape(credentialID)+"/resolve", headers, &resolved); err != nil {
+		return "", fmt.Errorf("auth-store credential %s: %w", credentialID, err)
 	}
 	if resolved.AccessToken != "" {
 		return resolved.AccessToken, nil
@@ -210,7 +210,63 @@ func (d *Directory) multichatToken(ctx context.Context) (string, error) {
 	if resolved.APIKey != "" {
 		return resolved.APIKey, nil
 	}
-	return "", fmt.Errorf("auth-store credential %s holds no token", d.multichatCredID)
+	return "", fmt.Errorf("auth-store credential %s holds no secret", credentialID)
+}
+
+// multichatToken is multichat's bearer.
+func (d *Directory) multichatToken(ctx context.Context) (string, error) {
+	return d.resolveCredential(ctx, d.multichatCredID, "send a sign-in link through multichat")
+}
+
+// PrincipalOfIdentity is the principal an outside identity is bound to in
+// principal-store, or ErrNotFound when none is.
+func (d *Directory) PrincipalOfIdentity(ctx context.Context, provider, tenantID, subject string) (Principal, error) {
+	var resolution struct {
+		Principal Principal `json:"principal"`
+	}
+	query := url.Values{"provider": {provider}, "tenant_id": {tenantID}, "subject": {subject}}
+	err := d.getJSON(ctx, d.principalStoreURL+"/identity-bindings/resolve?"+query.Encode(), nil, &resolution)
+	if errors.Is(err, errNotFoundUpstream) {
+		return Principal{}, fmt.Errorf("%w: no %s identity %s is bound", ErrNotFound, provider, subject)
+	}
+	if err != nil {
+		return Principal{}, fmt.Errorf("principal-store: %w", err)
+	}
+	if resolution.Principal.ID == "" {
+		return Principal{}, fmt.Errorf("principal-store resolved %s identity %s to no principal", provider, subject)
+	}
+	return resolution.Principal, nil
+}
+
+// errIdentityAlreadyBound is principal-store refusing a link because the
+// identity is bound to someone already.
+var errIdentityAlreadyBound = errors.New("identity already bound")
+
+// LinkIdentity binds an outside identity to a principal in principal-store.
+func (d *Directory) LinkIdentity(ctx context.Context, principalID, provider, tenantID, subject, linkedBy, note string) error {
+	payload, err := json.Marshal(map[string]string{"principal_id": principalID, "provider": provider, "tenant_id": tenantID,
+		"subject": subject, "linked_by": linkedBy, "note": note})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, d.principalStoreURL+"/identity-bindings", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := d.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("principal-store: %w", err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+	switch {
+	case response.StatusCode == http.StatusConflict:
+		return fmt.Errorf("%w: %s", errIdentityAlreadyBound, strings.TrimSpace(string(body)))
+	case response.StatusCode/100 != 2:
+		return fmt.Errorf("principal-store POST /identity-bindings answered %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 // directRoomWith finds the one-to-one conversation with a bridged chat

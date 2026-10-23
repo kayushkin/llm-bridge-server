@@ -3,6 +3,7 @@ package signinstore
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,12 +13,13 @@ import (
 )
 
 const (
-	testServiceToken   = "a-service-token-that-is-long-enough-for-the-check"
-	testAdministrator  = "principal_000001"
-	testPerson         = "principal_000002"
-	testGroup          = "principal_000006"
-	testMultichatToken = "multichat-bearer"
-	testDiscordAccount = "@discord_1234:matrix.kayushkin.com"
+	testServiceToken    = "a-service-token-that-is-long-enough-for-the-check"
+	testAdministrator   = "principal_000001"
+	testPerson          = "principal_000002"
+	testGroup           = "principal_000006"
+	testMultichatToken  = "multichat-bearer"
+	testDiscordAccount  = "@discord_1234:matrix.kayushkin.com"
+	testDiscordRedirect = "https://kayushkin.com/api/sign-in/discord/callback"
 )
 
 // fakeWorld stands in for principal-store, people-store, auth-store and
@@ -27,6 +29,9 @@ type fakeWorld struct {
 	principals map[string]map[string]any
 	sent       []string
 	server     *httptest.Server
+	// discordBindings maps a Discord user id to the principal bound to it.
+	discordBindings map[string]string
+	linkedBy        map[string]string
 }
 
 func newFakeWorld(t *testing.T) *fakeWorld {
@@ -36,7 +41,46 @@ func newFakeWorld(t *testing.T) *fakeWorld {
 		testPerson:        {"id": testPerson, "kind": "human", "display_name": "Viewer", "disabled_at": 0, "is_administrator": false, "groups": []any{map[string]any{"id": "principal_000130"}}},
 		testGroup:         {"id": testGroup, "kind": "group", "display_name": "Film viewers", "disabled_at": 0, "is_administrator": false, "members": []any{}},
 	}}
+	world.discordBindings, world.linkedBy = map[string]string{}, map[string]string{}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /identity-bindings/resolve", func(w http.ResponseWriter, r *http.Request) {
+		world.mutex.Lock()
+		principalID, bound := world.discordBindings[r.URL.Query().Get("subject")]
+		record := world.principals[principalID]
+		world.mutex.Unlock()
+		if r.URL.Query().Get("provider") != "discord" || r.URL.Query().Get("tenant_id") != "" || !bound {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"binding": map[string]any{"id": "identity_binding_000001"}, "principal": record})
+	})
+	mux.HandleFunc("POST /identity-bindings", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		world.mutex.Lock()
+		defer world.mutex.Unlock()
+		if _, bound := world.discordBindings[body["subject"]]; bound {
+			http.Error(w, `{"error":"identity already bound"}`, http.StatusConflict)
+			return
+		}
+		world.discordBindings[body["subject"]] = body["principal_id"]
+		world.linkedBy[body["subject"]] = body["linked_by"]
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":"identity_binding_000001"}`)
+	})
+	// Discord: a code becomes an access token, and the token names a user.
+	mux.HandleFunc("POST /oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		if r.Form.Get("client_secret") != testMultichatToken || r.Form.Get("client_id") != "discord-app" || r.Form.Get("redirect_uri") != testDiscordRedirect {
+			http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
+			return
+		}
+		fmt.Fprintf(w, `{"access_token":"access-for-%s"}`, r.Form.Get("code"))
+	})
+	mux.HandleFunc("GET /users/@me", func(w http.ResponseWriter, r *http.Request) {
+		user := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer access-for-")
+		fmt.Fprintf(w, `{"id":%q}`, user)
+	})
 	mux.HandleFunc("GET /principals/{id}", func(w http.ResponseWriter, r *http.Request) {
 		world.mutex.Lock()
 		record, known := world.principals[r.PathValue("id")]
@@ -118,7 +162,11 @@ func newTestService(t *testing.T) *testService {
 	store.now = func() time.Time { return service.clock }
 	directory.now = func() time.Time { return service.clock }
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, store, directory, ServerConfig{ServiceToken: testServiceToken, SignInPageURL: "https://kayushkin.com/signin", CookieDomain: "kayushkin.com"})
+	RegisterHandlers(mux, store, directory, ServerConfig{ServiceToken: testServiceToken, SignInPageURL: "https://kayushkin.com/signin", CookieDomain: "kayushkin.com",
+		Discord: DiscordConfig{ApplicationID: "discord-app", ClientSecretCredentialID: "cred_discord", RedirectURL: testDiscordRedirect}})
+	previousAuthorize, previousAPI := discordAuthorizeURL, discordAPIBase
+	discordAuthorizeURL, discordAPIBase = world.server.URL+"/oauth2/authorize", world.server.URL
+	t.Cleanup(func() { discordAuthorizeURL, discordAPIBase = previousAuthorize, previousAPI })
 	service.handler = mux
 	return service
 }

@@ -41,6 +41,7 @@ type ServerConfig struct {
 	ServiceToken  string
 	SignInPageURL string
 	CookieDomain  string
+	Discord       DiscordConfig
 }
 
 type server struct {
@@ -66,6 +67,8 @@ func RegisterHandlers(mux *http.ServeMux, store *Store, directory *Directory, co
 	mux.HandleFunc("POST /redeem", s.redeem)
 	mux.HandleFunc("GET /session", s.currentSession)
 	mux.HandleFunc("POST /sign-out", s.signOut)
+	mux.HandleFunc("GET /discord/start", s.startDiscord)
+	mux.HandleFunc("GET /discord/callback", s.finishDiscord)
 	// The operator's, through dash with the service token.
 	mux.HandleFunc("POST /sign-in-links", s.administrator(s.makeLink))
 	mux.HandleFunc("GET /sign-in-links", s.administrator(s.listLinks))

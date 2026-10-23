@@ -66,6 +66,8 @@ const (
 	MethodSignInLink = "sign_in_link"
 )
 
+// MethodDiscord is in discord.go.
+
 // Store owns the database.
 type Store struct {
 	db      *sql.DB
