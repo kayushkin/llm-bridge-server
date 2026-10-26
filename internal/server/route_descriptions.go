@@ -205,6 +205,7 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /peer-links":                           {routeGroupPeers, "Every server this one holds a peer token for"},
 	"POST /peer-links/{id}/check":               {routeGroupPeers, "Ask the other server who this link's token acts as there"},
 	"POST /peer-links/{id}/remove":              {routeGroupPeers, "Stop using a link and delete its token from auth-store"},
+	"/peer-links/{id}/proxy/{rest...}":          {routeGroupPeers, "Any request to the linked server, as this server's peer principal there; the answer streams back unchanged"},
 	"GET /auth/sessions":                        {routeGroupLogin, "The caller's login sessions; an administrator names anyone's with principal_id"},
 	"POST /auth/sessions/{id}/revoke":           {routeGroupLogin, "End a login session, with a reason"},
 	"GET /auth/login-attempts":                  {routeGroupLogin, "Sign-in attempts and how each ended, filtered by outcome"},

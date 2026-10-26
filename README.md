@@ -388,6 +388,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/peer-links` | Every server this one holds a peer token for | operator |
 | `POST` | `/peer-links` | Link to another server: redeem its passphrase there and keep the token in auth-store | operator |
 | `POST` | `/peer-links/{id}/check` | Ask the other server who this link's token acts as there | operator |
+| `*` | `/peer-links/{id}/proxy/{rest...}` | Any request to the linked server, as this server's peer principal there; the answer streams back unchanged | operator |
 | `POST` | `/peer-links/{id}/remove` | Stop using a link and delete its token from auth-store | operator |
 | `GET` | `/peer-tokens` | Every peer token this server issued, revoked or not; never a token | operator |
 | `POST` | `/peer-tokens/{id}/revoke` | Revoke a peer token, with a reason | operator |

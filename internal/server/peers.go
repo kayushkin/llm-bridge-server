@@ -321,8 +321,9 @@ func peerBaseURLOf(raw string) (string, error) {
 }
 
 // peerHTTPClient calls other servers. It verifies certificates with the
-// system's roots, which is Go's default and is never switched off here.
-var peerHTTPClient = &http.Client{Timeout: 20 * time.Second}
+// system's roots, which is Go's default and is never switched off here, and it
+// follows no redirect, which would carry the peer token to another host.
+var peerHTTPClient = &http.Client{Timeout: 20 * time.Second, CheckRedirect: refusePeerRedirect}
 
 // handleCreatePeerLink: POST /peer-links. Redeems the passphrase on the other
 // server, keeps the token in auth-store and records the link. If auth-store or
@@ -463,6 +464,12 @@ func (s *Server) handleCheckPeerLink(w http.ResponseWriter, r *http.Request) {
 // principal the link's token acts as there. The token is read from auth-store
 // on each call, so a credential rotated there is used at once.
 func (s *Server) callPeer(ctx context.Context, link store.PeerLink, method, path string, body io.Reader) (*http.Response, error) {
+	return s.callPeerWithHeaders(ctx, peerHTTPClient, link, method, path, body, nil)
+}
+
+// callPeerWithHeaders is callPeer through the given client, with
+// setRequestHeaders, when set, adding headers before the peer token is set.
+func (s *Server) callPeerWithHeaders(ctx context.Context, client *http.Client, link store.PeerLink, method, path string, body io.Reader, setRequestHeaders func(*http.Request)) (*http.Response, error) {
 	resolved, err := s.authClient.Resolve(ctx, link.CredentialID, "peer link "+link.ID+" calls "+link.BaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("read peer link %s's token from auth-store credential %s: %w", link.ID, link.CredentialID, err)
@@ -475,8 +482,11 @@ func (s *Server) callPeer(ctx context.Context, link store.PeerLink, method, path
 	if err != nil {
 		return nil, fmt.Errorf("build %s %s%s: %w", method, link.BaseURL, path, err)
 	}
+	if setRequestHeaders != nil {
+		setRequestHeaders(request)
+	}
 	request.Header.Set(peerTokenHeader, token)
-	response, err := peerHTTPClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("%s %s%s: %w", method, link.BaseURL, path, err)
 	}
