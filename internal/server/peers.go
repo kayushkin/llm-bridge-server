@@ -40,6 +40,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 const (
@@ -67,52 +68,8 @@ func hashPeerSecret(value string) string {
 	return sha256Hex(value)
 }
 
-// peerInviteRequest is the body of POST /peer-invites.
-type peerInviteRequest struct {
-	PeerPrincipalID  string `json:"peer_principal_id"`
-	ExpiresInSeconds int64  `json:"expires_in_seconds"`
-}
-
-// peerInviteAnswer is the answer to POST /peer-invites: the invite and its
-// passphrase, which is shown here once and kept nowhere.
-type peerInviteAnswer struct {
-	Invite     store.PeerInvite `json:"invite"`
-	Passphrase string           `json:"passphrase"`
-}
-
-// peerRedeemRequest is the body of POST /peer/redeem.
-type peerRedeemRequest struct {
-	Passphrase string `json:"passphrase"`
-}
-
-// peerRedeemAnswer is the answer to POST /peer/redeem: the token, shown here
-// once, and what it acts as.
-type peerRedeemAnswer struct {
-	Token           string `json:"token"`
-	PeerTokenID     string `json:"peer_token_id"`
-	PeerPrincipalID string `json:"peer_principal_id"`
-}
-
-// peerSelfAnswer is the answer to GET /peer/self: who a peer token acts as on
-// this server.
-type peerSelfAnswer struct {
-	PeerTokenID     string `json:"peer_token_id"`
-	PeerPrincipalID string `json:"peer_principal_id"`
-	IsAdministrator bool   `json:"is_administrator"`
-}
-
-// peerRevokeRequest is the body of POST /peer-tokens/{id}/revoke and
-// POST /peer-links/{id}/remove.
-type peerRevokeRequest struct {
-	Reason string `json:"reason"`
-}
-
-// peerLinkRequest is the body of POST /peer-links.
-type peerLinkRequest struct {
-	BaseURL     string `json:"base_url"`
-	Passphrase  string `json:"passphrase"`
-	DisplayName string `json:"display_name"`
-}
+// The bodies and answers of the peer routes are llm-bridge's msg.Peer* types,
+// so that bridge-ui reads them through the generated TypeScript.
 
 // refuseWhileDemoLoginIsOn answers 409 and returns true while demo login is
 // switched on. what says which peer step was refused.
@@ -147,7 +104,7 @@ func (s *Server) handleCreatePeerInvite(w http.ResponseWriter, r *http.Request) 
 	if s.refuseWhileDemoLoginIsOn(w, "making a peer invite") {
 		return
 	}
-	var request peerInviteRequest
+	var request msg.PeerInviteRequest
 	if !decodeAdministrationBody(w, r, &request, "created_by") {
 		return
 	}
@@ -188,11 +145,13 @@ func (s *Server) handleCreatePeerInvite(w http.ResponseWriter, r *http.Request) 
 	}
 	now := time.Now().UTC()
 	invite := store.PeerInvite{
-		PassphraseHash:  hashPeerSecret(passphrase),
-		PeerPrincipalID: principal.ID,
-		CreatedBy:       administratorID,
-		CreatedAt:       now,
-		ExpiresAt:       now.Add(lifetime),
+		PeerInvite: msg.PeerInvite{
+			PeerPrincipalID: principal.ID,
+			CreatedBy:       administratorID,
+			CreatedAt:       now,
+			ExpiresAt:       now.Add(lifetime),
+		},
+		PassphraseHash: hashPeerSecret(passphrase),
 	}
 	if err := s.store.InsertPeerInvite(&invite); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
@@ -200,7 +159,7 @@ func (s *Server) handleCreatePeerInvite(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(peerInviteAnswer{Invite: invite, Passphrase: passphrase})
+	json.NewEncoder(w).Encode(msg.PeerInviteCreated{Invite: invite.PeerInvite, Passphrase: passphrase})
 }
 
 // handleListPeerInvites: GET /peer-invites.
@@ -219,7 +178,7 @@ func (s *Server) handleRedeemPeerInvite(w http.ResponseWriter, r *http.Request) 
 	if s.refuseWhileDemoLoginIsOn(w, "redeeming a peer invite") {
 		return
 	}
-	var request peerRedeemRequest
+	var request msg.PeerRedeemRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil || request.Passphrase == "" {
@@ -248,7 +207,7 @@ func (s *Server) handleRedeemPeerInvite(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(peerRedeemAnswer{Token: token, PeerTokenID: issued.ID, PeerPrincipalID: issued.PeerPrincipalID})
+	json.NewEncoder(w).Encode(msg.PeerRedeemed{Token: token, PeerTokenID: issued.ID, PeerPrincipalID: issued.PeerPrincipalID})
 }
 
 // handlePeerSelf: GET /peer/self. Tells a peer who its token acts as here,
@@ -259,7 +218,7 @@ func (s *Server) handlePeerSelf(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "not_a_peer", fmt.Sprintf("GET %s answers a caller presenting %s", peerSelfPath, peerTokenHeader))
 		return
 	}
-	writeJSON(w, peerSelfAnswer{PeerTokenID: caller.peerTokenID, PeerPrincipalID: caller.principalID, IsAdministrator: caller.isAdministrator})
+	writeJSON(w, msg.PeerSelf{PeerTokenID: caller.peerTokenID, PeerPrincipalID: caller.principalID, IsAdministrator: caller.isAdministrator})
 }
 
 // handleListPeerTokens: GET /peer-tokens.
@@ -279,7 +238,7 @@ func (s *Server) handleRevokePeerToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var request peerRevokeRequest
+	var request msg.PeerReasonRequest
 	if !decodeAdministrationBody(w, r, &request, "revoked_by") {
 		return
 	}
@@ -334,7 +293,7 @@ func (s *Server) handleCreatePeerLink(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var request peerLinkRequest
+	var request msg.PeerLinkRequest
 	if !decodeAdministrationBody(w, r, &request, "created_by") {
 		return
 	}
@@ -389,34 +348,34 @@ func (s *Server) handleCreatePeerLink(w http.ResponseWriter, r *http.Request) {
 }
 
 // redeemPeerInviteOn posts a passphrase to another server's POST /peer/redeem.
-func redeemPeerInviteOn(ctx context.Context, baseURL, passphrase string) (peerRedeemAnswer, error) {
-	body, err := json.Marshal(peerRedeemRequest{Passphrase: passphrase})
+func redeemPeerInviteOn(ctx context.Context, baseURL, passphrase string) (msg.PeerRedeemed, error) {
+	body, err := json.Marshal(msg.PeerRedeemRequest{Passphrase: passphrase})
 	if err != nil {
-		return peerRedeemAnswer{}, err
+		return msg.PeerRedeemed{}, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+peerRedeemPath, bytes.NewReader(body))
 	if err != nil {
-		return peerRedeemAnswer{}, fmt.Errorf("build POST %s%s: %w", baseURL, peerRedeemPath, err)
+		return msg.PeerRedeemed{}, fmt.Errorf("build POST %s%s: %w", baseURL, peerRedeemPath, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := peerHTTPClient.Do(request)
 	if err != nil {
-		return peerRedeemAnswer{}, fmt.Errorf("POST %s%s: %w", baseURL, peerRedeemPath, err)
+		return msg.PeerRedeemed{}, fmt.Errorf("POST %s%s: %w", baseURL, peerRedeemPath, err)
 	}
 	defer response.Body.Close()
 	answerBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return peerRedeemAnswer{}, fmt.Errorf("read %s%s's answer: %w", baseURL, peerRedeemPath, err)
+		return msg.PeerRedeemed{}, fmt.Errorf("read %s%s's answer: %w", baseURL, peerRedeemPath, err)
 	}
 	if response.StatusCode != http.StatusCreated {
-		return peerRedeemAnswer{}, fmt.Errorf("%s%s answered %s: %s", baseURL, peerRedeemPath, response.Status, strings.TrimSpace(string(answerBody)))
+		return msg.PeerRedeemed{}, fmt.Errorf("%s%s answered %s: %s", baseURL, peerRedeemPath, response.Status, strings.TrimSpace(string(answerBody)))
 	}
-	var answer peerRedeemAnswer
+	var answer msg.PeerRedeemed
 	if err := json.Unmarshal(answerBody, &answer); err != nil {
-		return peerRedeemAnswer{}, fmt.Errorf("%s%s answered 201 with a body that is not a peer token: %w", baseURL, peerRedeemPath, err)
+		return msg.PeerRedeemed{}, fmt.Errorf("%s%s answered 201 with a body that is not a peer token: %w", baseURL, peerRedeemPath, err)
 	}
 	if answer.Token == "" || answer.PeerTokenID == "" || answer.PeerPrincipalID == "" {
-		return peerRedeemAnswer{}, fmt.Errorf("%s%s answered 201 without a token, its id or its principal", baseURL, peerRedeemPath)
+		return msg.PeerRedeemed{}, fmt.Errorf("%s%s answered 201 without a token, its id or its principal", baseURL, peerRedeemPath)
 	}
 	return answer, nil
 }
@@ -501,7 +460,7 @@ func (s *Server) handleRemovePeerLink(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var request peerRevokeRequest
+	var request msg.PeerReasonRequest
 	if !decodeAdministrationBody(w, r, &request, "removed_by") {
 		return
 	}
@@ -526,8 +485,8 @@ func (s *Server) handleRemovePeerLink(w http.ResponseWriter, r *http.Request) {
 			"%s is removed, and auth-store credential %s that holds its token could not be deleted: %v", link.ID, link.CredentialID, err))
 		return
 	}
-	writeJSON(w, map[string]any{
-		"link": link,
-		"note": fmt.Sprintf("the token still works on %s until its operator revokes peer token %s there", link.BaseURL, link.RemotePeerTokenID),
+	writeJSON(w, msg.PeerLinkRemoved{
+		Link: link,
+		Note: fmt.Sprintf("the token still works on %s until its operator revokes peer token %s there", link.BaseURL, link.RemotePeerTokenID),
 	})
 }

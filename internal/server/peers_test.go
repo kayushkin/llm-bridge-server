@@ -72,13 +72,13 @@ func (gated *gatedTestServer) requestAsPeer(t *testing.T, token, method, path st
 
 // inviteAndRedeem makes an invite for the peer principal and redeems it,
 // returning the token.
-func (gated *gatedTestServer) inviteAndRedeem(t *testing.T) peerRedeemAnswer {
+func (gated *gatedTestServer) inviteAndRedeem(t *testing.T) msg.PeerRedeemed {
 	t.Helper()
 	created := gated.requestAsAdministrator(t, "POST", "/peer-invites", map[string]any{"peer_principal_id": peerTestPrincipalID})
 	if created.Code != http.StatusCreated {
 		t.Fatalf("POST /peer-invites = %d %s", created.Code, created.Body)
 	}
-	var invite peerInviteAnswer
+	var invite msg.PeerInviteCreated
 	if err := json.Unmarshal(created.Body.Bytes(), &invite); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func (gated *gatedTestServer) inviteAndRedeem(t *testing.T) peerRedeemAnswer {
 	if redeemed.Code != http.StatusCreated {
 		t.Fatalf("POST /peer/redeem = %d %s", redeemed.Code, redeemed.Body)
 	}
-	var answer peerRedeemAnswer
+	var answer msg.PeerRedeemed
 	if err := json.Unmarshal(redeemed.Body.Bytes(), &answer); err != nil {
 		t.Fatal(err)
 	}
@@ -209,8 +209,8 @@ func TestAPeerInviteIsMadeOnlyForAPeer(t *testing.T) {
 func TestAnExpiredInviteIsGone(t *testing.T) {
 	gated := newPeerTestServer(t, map[string][]string{}, false)
 	past := time.Now().Add(-2 * time.Hour)
-	if err := gated.store.InsertPeerInvite(&store.PeerInvite{PassphraseHash: hashPeerSecret("old"), PeerPrincipalID: peerTestPrincipalID,
-		CreatedBy: administratorTestPrincipalID, CreatedAt: past, ExpiresAt: past.Add(time.Hour)}); err != nil {
+	if err := gated.store.InsertPeerInvite(&store.PeerInvite{PassphraseHash: hashPeerSecret("old"), PeerInvite: msg.PeerInvite{PeerPrincipalID: peerTestPrincipalID,
+		CreatedBy: administratorTestPrincipalID, CreatedAt: past, ExpiresAt: past.Add(time.Hour)}}); err != nil {
 		t.Fatal(err)
 	}
 	if answer := serve(gated.server, httptest.NewRequest("POST", "/peer/redeem", strings.NewReader(`{"passphrase":"old"}`))); answer.Code != http.StatusGone {
@@ -288,7 +288,7 @@ func TestTwoServersLink(t *testing.T) {
 	t.Cleanup(func() { peerHTTPClient = previousClient })
 
 	created := issuing.requestAsAdministrator(t, "POST", "/peer-invites", map[string]any{"peer_principal_id": peerTestPrincipalID, "expires_in_seconds": 600})
-	var invite peerInviteAnswer
+	var invite msg.PeerInviteCreated
 	if err := json.Unmarshal(created.Body.Bytes(), &invite); err != nil || created.Code != http.StatusCreated {
 		t.Fatalf("invite = %d %s", created.Code, created.Body)
 	}
@@ -315,7 +315,7 @@ func TestTwoServersLink(t *testing.T) {
 	if checked.Code != http.StatusOK {
 		t.Fatalf("check = %d %s", checked.Code, checked.Body)
 	}
-	var self peerSelfAnswer
+	var self msg.PeerSelf
 	if err := json.Unmarshal(checked.Body.Bytes(), &self); err != nil || self.PeerPrincipalID != peerTestPrincipalID || !self.IsAdministrator {
 		t.Fatalf("the issuing server should say the link acts as its administrator peer: %s", checked.Body)
 	}

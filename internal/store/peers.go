@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // Peers are other llm-bridge-servers linked to this one. A link has two ends,
@@ -59,59 +61,25 @@ const (
 	peerLinkIDPrefix   = "peer_link_"
 )
 
-// PeerInvite is one row of peer_invites: a one-time passphrase an operator
-// here hands to another server so it can become PeerPrincipalID.
+// PeerInvite is one row of peer_invites: the record the routes send, and the
+// hex SHA-256 of the passphrase, which is shown once, in the answer that
+// created the invite, and never sent again.
 type PeerInvite struct {
-	ID string `json:"id"`
-	// PassphraseHash is the hex SHA-256 of the passphrase. The passphrase
-	// itself is shown once, in the answer that created the invite.
-	PassphraseHash  string     `json:"-"`
-	PeerPrincipalID string     `json:"peer_principal_id"`
-	CreatedBy       string     `json:"created_by"`
-	CreatedAt       time.Time  `json:"created_at"`
-	ExpiresAt       time.Time  `json:"expires_at"`
-	RedeemedAt      *time.Time `json:"redeemed_at,omitempty"`
-	// PeerTokenID is the token the redemption made, empty until then.
-	PeerTokenID string `json:"peer_token_id,omitempty"`
+	msg.PeerInvite
+	PassphraseHash string `json:"-"`
 }
 
-// PeerToken is one row of peer_tokens: the credential another server presents
-// to act here as PeerPrincipalID.
+// PeerToken is one row of peer_tokens: the record the routes send, and the
+// hex SHA-256 of the token, which is handed once, to the server that redeemed
+// the invite.
 type PeerToken struct {
-	ID string `json:"id"`
-	// TokenHash is the hex SHA-256 of the token. The token itself is handed
-	// once, to the server that redeemed the invite.
-	TokenHash       string     `json:"-"`
-	PeerPrincipalID string     `json:"peer_principal_id"`
-	PeerInviteID    string     `json:"peer_invite_id"`
-	CreatedAt       time.Time  `json:"created_at"`
-	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
-	RevokedBy       string     `json:"revoked_by,omitempty"`
-	RevokeReason    string     `json:"revoke_reason,omitempty"`
+	msg.PeerToken
+	TokenHash string `json:"-"`
 }
 
 // PeerLink is one row of peer_links: another server this one holds a peer
-// token for.
-type PeerLink struct {
-	ID string `json:"id"`
-	// BaseURL is the other server's https address, as the operator gave it.
-	BaseURL     string `json:"base_url"`
-	DisplayName string `json:"display_name"`
-	// RemotePeerPrincipalID is the principal this server acts as on the other
-	// one, in the other server's principal-store. It is that store's id, not
-	// one here.
-	RemotePeerPrincipalID string `json:"remote_peer_principal_id"`
-	// RemotePeerTokenID is the other server's id for the token, which its
-	// operator revokes it by.
-	RemotePeerTokenID string `json:"remote_peer_token_id"`
-	// CredentialID is the auth-store credential that holds the token.
-	CredentialID string     `json:"credential_id"`
-	CreatedBy    string     `json:"created_by"`
-	CreatedAt    time.Time  `json:"created_at"`
-	RemovedAt    *time.Time `json:"removed_at,omitempty"`
-	RemovedBy    string     `json:"removed_by,omitempty"`
-	RemoveReason string     `json:"remove_reason,omitempty"`
-}
+// token for. It holds no secret, so the record is the wire record.
+type PeerLink = msg.PeerLink
 
 // migratePeers creates peer_invites, peer_tokens and peer_links. Called from
 // migrate().
@@ -211,7 +179,7 @@ func (s *Store) RedeemPeerInvite(passphraseHash, tokenHash string, redeemedAt ti
 	if err != nil {
 		return PeerToken{}, err
 	}
-	token := PeerToken{ID: prefixedIDOf(peerTokenIDPrefix, rowID), TokenHash: tokenHash, PeerPrincipalID: invite.PeerPrincipalID, PeerInviteID: invite.ID, CreatedAt: redeemedAt.UTC()}
+	token := PeerToken{PeerToken: msg.PeerToken{ID: prefixedIDOf(peerTokenIDPrefix, rowID), PeerPrincipalID: invite.PeerPrincipalID, PeerInviteID: invite.ID, CreatedAt: redeemedAt.UTC()}, TokenHash: tokenHash}
 	inviteRowID, _ := rowIDOfPrefixed(peerInviteIDPrefix, invite.ID)
 	if _, err := transaction.Exec(`UPDATE peer_invites SET redeemed_at = ?, peer_token_id = ? WHERE id = ?`, redeemedAt.UTC(), token.ID, inviteRowID); err != nil {
 		return PeerToken{}, fmt.Errorf("mark %s redeemed: %w", invite.ID, err)
