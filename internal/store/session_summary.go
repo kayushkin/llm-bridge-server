@@ -121,6 +121,10 @@ type SessionSummaryFilter struct {
 	// query, and a session with no principal matches no principal. Empty means
 	// "don't narrow".
 	OwnedByPrincipalID string
+	// OwnedThroughPeerPrincipalID narrows further to the sessions a connected
+	// server started through this peer principal for one of its users. Set by
+	// the server beside OwnedByPrincipalID, never from the query.
+	OwnedThroughPeerPrincipalID string
 }
 
 // summaryFilterAxis pairs one filterable column expression with the values a row
@@ -151,7 +155,7 @@ func (f SessionSummaryFilter) axes() []summaryFilterAxis {
 // IsEmpty reports whether the filter constrains nothing, so a caller can tell an
 // unfiltered listing from a filtered one without reaching into the axes.
 func (f SessionSummaryFilter) IsEmpty() bool {
-	if len(f.SessionIDs) > 0 || len(f.ManagerSessionIDs) > 0 || f.OwnedByPrincipalID != "" {
+	if len(f.SessionIDs) > 0 || len(f.ManagerSessionIDs) > 0 || f.OwnedByPrincipalID != "" || f.OwnedThroughPeerPrincipalID != "" {
 		return false
 	}
 	for _, axis := range f.axes() {
@@ -197,6 +201,9 @@ func (f SessionSummaryFilter) CacheKey() string {
 	// wrong answer.
 	b.WriteString("owned_by_principal_id=")
 	b.WriteString(f.OwnedByPrincipalID)
+	b.WriteByte(';')
+	b.WriteString("owned_through_peer_principal_id=")
+	b.WriteString(f.OwnedThroughPeerPrincipalID)
 	b.WriteByte(';')
 	return b.String()
 }
@@ -348,6 +355,10 @@ func sessionSummariesQuery(limit int, before string, filter SessionSummaryFilter
 	if filter.OwnedByPrincipalID != "" {
 		conds = append(conds, `COALESCE(principal_id, '') = ?`)
 		args = append(args, filter.OwnedByPrincipalID)
+	}
+	if filter.OwnedThroughPeerPrincipalID != "" {
+		conds = append(conds, `COALESCE(NULLIF(session_id, ''), bridge_id) IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = ?)`)
+		args = append(args, filter.OwnedThroughPeerPrincipalID)
 	}
 	if len(conds) > 0 {
 		q += ` WHERE ` + strings.Join(conds, ` AND `)

@@ -48,8 +48,9 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if principalID, restricted := principalRestrictingRequest(r); restricted {
-		instances, err = s.instancesPrincipalMayDispatchOn(r.Context(), principalID, instances)
+	if _, restricted := principalRestrictingRequest(r); restricted {
+		caller, _ := callerOfRequest(r)
+		instances, err = s.instancesPrincipalMayDispatchOn(r.Context(), grantSubjectOfCaller(caller), instances)
 		if err != nil {
 			writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 			return
@@ -63,8 +64,8 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 // checkPrincipalMayRunHere enforces at creation (principal_grants.go). Machine
 // details (hostname, SSH user and key path) are the operator's and are left
 // out; machine_id stays.
-func (s *Server) instancesPrincipalMayDispatchOn(ctx context.Context, principalID string, instances []msg.Instance) ([]msg.Instance, error) {
-	dispatch, err := s.dispatchGrantsOf(ctx, principalID)
+func (s *Server) instancesPrincipalMayDispatchOn(ctx context.Context, subject grantSubject, instances []msg.Instance) ([]msg.Instance, error) {
+	dispatch, err := s.dispatchGrantsOf(ctx, subject)
 	if err != nil {
 		return nil, err
 	}

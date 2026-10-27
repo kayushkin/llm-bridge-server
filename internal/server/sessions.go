@@ -191,8 +191,8 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var sessions []store.Session
-	if principalID, restricted := principalRestrictingRequest(r); restricted {
-		sessions, err = s.store.ListSessionsOwnedByPrincipalPaged(principalID, state, limit, offset)
+	if scope, restricted := sessionScopeRestrictingRequest(r); restricted {
+		sessions, err = s.store.ListSessionsOwnedByPrincipalPaged(scope.principalID, scope.throughPeerPrincipalID, state, limit, offset)
 	} else if state != "" {
 		sessions, err = s.store.ListSessionsByStatePaged(state, limit, offset)
 	} else {
@@ -257,6 +257,31 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.PrincipalID = callerPrincipalID
+	}
+
+	// Whose grants decide where and as whom the session may run, and the peer
+	// origin the new session keeps: a connected server acting for one of its
+	// users starts it limited by that server's grants too, and so does an
+	// agent whose own session was started that way.
+	creatorSubject := grantSubject{principalID: req.PrincipalID}
+	var creatorPeerOrigin *store.SessionPeerOrigin
+	if caller, ok := callerOfRequest(r); ok {
+		switch {
+		case caller.peer.actsForRemoteUser():
+			creatorPeerOrigin = &store.SessionPeerOrigin{PeerPrincipalID: caller.peer.peerPrincipalID, RemotePrincipalID: caller.peer.remoteUserPrincipalID}
+		case caller.delegatingAgentOfSessionID != "":
+			origin, found, err := s.store.SessionPeerOriginOfLineage(caller.delegatingAgentOfSessionID)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_lookup_failed", err.Error())
+				return
+			}
+			if found {
+				creatorPeerOrigin = &origin
+			}
+		}
+	}
+	if creatorPeerOrigin != nil {
+		creatorSubject.throughPeerPrincipalID = creatorPeerOrigin.PeerPrincipalID
 	}
 
 	h := msg.Harness(req.Harness)
@@ -436,7 +461,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 				"could not read manager_session_id %s, so the session was not created: %v", req.ManagerSessionID, err))
 			return
 		}
-		if callerPrincipalID, restricted := principalRestrictingRequest(r); restricted && parent.PrincipalID != callerPrincipalID {
+		if scope, restricted := sessionScopeRestrictingRequest(r); restricted && !s.sessionIsInScope(parent, scope) {
 			writeJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
 				"manager_session_id %q is not a session this server has", req.ManagerSessionID))
 			return
@@ -457,7 +482,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.PrincipalID != "" {
-		if err := s.checkPrincipalMayRunHere(r.Context(), &store.Session{SessionID: bridgeID, PrincipalID: req.PrincipalID, AgentID: req.AgentID}, inst); err != nil {
+		if err := s.checkPrincipalMayRunHere(r.Context(), creatorSubject, &store.Session{SessionID: bridgeID, PrincipalID: req.PrincipalID, AgentID: req.AgentID}, inst); err != nil {
 			status, code := grantGateStatus(err)
 			writeJSONError(w, status, code, err.Error())
 			return
@@ -510,6 +535,16 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The origin goes in before the session does, so no session started for a
+	// connected server's user ever exists without the peer's limits.
+	if creatorPeerOrigin != nil {
+		origin := *creatorPeerOrigin
+		origin.SessionID = sess.SessionID
+		if err := s.store.RecordSessionPeerOrigin(origin); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_not_recorded", err.Error())
+			return
+		}
+	}
 	if err := s.store.CreateSession(sess); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1099,6 +1134,10 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		MaxBudgetUSD: parent.MaxBudgetUSD,
 	}
 
+	if _, err := s.store.CopySessionPeerOrigin(parent.SessionID, forked.SessionID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_not_recorded", err.Error())
+		return
+	}
 	if err := s.store.CreateSession(forked); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

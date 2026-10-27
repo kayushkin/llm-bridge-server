@@ -180,8 +180,38 @@ func (s *Store) migratePeers() error {
 			provisioned_by     TEXT NOT NULL,
 			provisioned_at     DATETIME NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS peer_user_mappings (
+			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+			peer_principal_id   TEXT NOT NULL,
+			remote_principal_id TEXT NOT NULL,
+			local_principal_id  TEXT NOT NULL,
+			created_by          TEXT NOT NULL,
+			created_at          DATETIME NOT NULL,
+			removed_at          DATETIME,
+			removed_by          TEXT NOT NULL DEFAULT '',
+			remove_reason       TEXT NOT NULL DEFAULT ''
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_peer_user_mappings_live
+			ON peer_user_mappings(peer_principal_id, remote_principal_id) WHERE removed_at IS NULL;
+		CREATE TABLE IF NOT EXISTS session_peer_origins (
+			session_id          TEXT PRIMARY KEY,
+			peer_principal_id   TEXT NOT NULL,
+			remote_principal_id TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_session_peer_origins_peer ON session_peer_origins(peer_principal_id);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	for _, column := range []string{
+		"ALTER TABLE peer_connections ADD COLUMN removed_by_other_server INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE peer_connections ADD COLUMN removal_notice TEXT NOT NULL DEFAULT ''",
+	} {
+		if _, err := s.db.Exec(column); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	return nil
 }
 
 // InsertPeerConnectionInvite records a new invite and sets its ID.
@@ -367,6 +397,43 @@ func (s *Store) RemovePeerConnection(id, removedBy, reason string, removedAt tim
 	}
 	result, err := s.db.Exec(`UPDATE peer_connections SET removed_at = ?, removed_by = ?, remove_reason = ? WHERE id = ? AND removed_at IS NULL`,
 		removedAt.UTC(), removedBy, reason, rowID)
+	if err != nil {
+		return PeerConnection{}, fmt.Errorf("remove peer connection %s: %w", id, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return PeerConnection{}, err
+	}
+	connection, err := s.GetPeerConnection(id)
+	if err != nil {
+		return PeerConnection{}, err
+	}
+	if changed == 0 {
+		return connection, ErrPeerConnectionAlreadyRemoved
+	}
+	return connection, nil
+}
+
+// RecordPeerConnectionRemovalNotice keeps what happened when this server told
+// the other one it removed the connection.
+func (s *Store) RecordPeerConnectionRemovalNotice(id, notice string) error {
+	rowID, ok := rowIDOfPrefixed(peerConnectionIDPrefix, id)
+	if !ok {
+		return ErrPeerConnectionNotFound
+	}
+	_, err := s.db.Exec(`UPDATE peer_connections SET removal_notice = ? WHERE id = ?`, notice, rowID)
+	return err
+}
+
+// RemovePeerConnectionByOtherServer marks a connection removed because the
+// other server removed it and said so over it.
+func (s *Store) RemovePeerConnectionByOtherServer(id, reason string, removedAt time.Time) (PeerConnection, error) {
+	rowID, ok := rowIDOfPrefixed(peerConnectionIDPrefix, id)
+	if !ok {
+		return PeerConnection{}, ErrPeerConnectionNotFound
+	}
+	result, err := s.db.Exec(`UPDATE peer_connections SET removed_at = ?, removed_by = '', remove_reason = ?, removed_by_other_server = 1 WHERE id = ? AND removed_at IS NULL`,
+		removedAt.UTC(), reason, rowID)
 	if err != nil {
 		return PeerConnection{}, fmt.Errorf("remove peer connection %s: %w", id, err)
 	}
@@ -598,7 +665,7 @@ func (s *Store) RecordPeerAccessLevelGroup(levelKey, groupPrincipalID, provision
 const (
 	peerConnectionInviteSelect = `SELECT id, passphrase_hash, created_by, created_at, expires_at, redeemed_at, connection_id FROM peer_connection_invites`
 	peerConnectionSelect       = `SELECT id, display_name, transport, role, remote_base_url, remote_connection_id, inbound_credential_hash,
-		outbound_credential_id, peer_principal_id, created_by, created_at, removed_at, removed_by, remove_reason FROM peer_connections`
+		outbound_credential_id, peer_principal_id, created_by, created_at, removed_at, removed_by, remove_reason, removed_by_other_server, removal_notice FROM peer_connections`
 	peerGrantSelect = `SELECT id, connection_id, token_hash, peer_principal_id, level, group_principal_id, created_by, created_at,
 		delivered_at, revoked_at, revoked_by, revoke_reason FROM peer_grants`
 	peerAccessSelect = `SELECT id, connection_id, remote_grant_id, remote_peer_principal_id, level, credential_id, received_at, ended_at, end_reason FROM peer_access`
@@ -632,7 +699,7 @@ func scanPeerConnection(row rowScanner) (PeerConnection, error) {
 	var removedAt sql.NullTime
 	if err := row.Scan(&rowID, &connection.DisplayName, &transport, &role, &connection.RemoteBaseURL, &connection.RemoteConnectionID,
 		&connection.InboundCredentialHash, &connection.OutboundCredentialID, &connection.PeerPrincipalID, &connection.CreatedBy, &connection.CreatedAt,
-		&removedAt, &connection.RemovedBy, &connection.RemoveReason); err != nil {
+		&removedAt, &connection.RemovedBy, &connection.RemoveReason, &connection.RemovedByOtherServer, &connection.RemovalNotice); err != nil {
 		return PeerConnection{}, err
 	}
 	connection.ID = prefixedIDOf(peerConnectionIDPrefix, rowID)

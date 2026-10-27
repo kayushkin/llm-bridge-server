@@ -172,7 +172,11 @@ func (s *Server) resolveBundleToolOffer(ctx context.Context, sess *store.Session
 		offer.IDs = mcpIDs
 	}
 	if sess.PrincipalID != "" {
-		canUse, err := s.grantedResourcesOf(ctx, sess.PrincipalID, "can_use", "tool")
+		subject, err := s.grantSubjectOfSession(sess)
+		if err != nil {
+			return nil, err
+		}
+		canUse, err := s.grantedResourcesOf(ctx, subject, "can_use", "tool")
 		if err != nil {
 			return nil, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
 		}
@@ -203,7 +207,11 @@ func (s *Server) resolveBundleToolOffer(ctx context.Context, sess *store.Session
 // not restricted to its grants), so the caller falls through to the
 // instance's opt-ins. A peer holding none gets an empty offer instead.
 func (s *Server) resolveGrantedToolOffer(ctx context.Context, sess *store.Session) (*toolOffer, error) {
-	canUse, err := s.grantedResourcesOf(ctx, sess.PrincipalID, "can_use", "tool")
+	subject, err := s.grantSubjectOfSession(sess)
+	if err != nil {
+		return nil, err
+	}
+	canUse, err := s.grantedResourcesOf(ctx, subject, "can_use", "tool")
 	if err != nil {
 		return nil, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
 	}

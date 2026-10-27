@@ -621,6 +621,14 @@ func (s *Server) newSessionAndSendAction(session *store.Session, offer msg.Sessi
 	if status != http.StatusCreated && status != http.StatusOK {
 		return sessionActionOutcome{output: string(body), err: fmt.Errorf("new session refused with %d", status)}
 	}
+	var created store.Session
+	if err := json.Unmarshal(body, &created); err == nil && created.SessionID != "" {
+		// Before the message is sent, so the session never runs without the
+		// limits of the connected server this one was started through.
+		if _, err := s.store.CopySessionPeerOrigin(session.SessionID, created.SessionID); err != nil {
+			return sessionActionOutcome{resultSessionID: created.SessionID, err: fmt.Errorf("session %s was created but its peer origin was not copied, so the message was not sent: %w", created.SessionID, err)}
+		}
+	}
 	return s.sendToCreatedSession(body, offer.Message)
 }
 

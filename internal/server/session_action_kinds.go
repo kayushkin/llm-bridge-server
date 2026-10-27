@@ -291,6 +291,11 @@ func (s *Server) backgroundAgentAction(session *store.Session, action store.Sess
 	if err := json.Unmarshal(body, &created); err != nil || created.SessionID == "" {
 		return sessionActionOutcome{output: string(body), err: fmt.Errorf("the created session's record does not name it: %v", err)}
 	}
+	// Before the task is sent, so the session never runs without the limits
+	// of the connected server its offering session was started through.
+	if _, err := s.store.CopySessionPeerOrigin(session.SessionID, created.SessionID); err != nil {
+		return sessionActionOutcome{resultSessionID: created.SessionID, err: fmt.Errorf("session %s was created but its peer origin was not copied, so the task was not sent: %w", created.SessionID, err)}
+	}
 
 	// Subscribed before the task is sent, so its reply cannot slip past.
 	events := s.harness.Subscribe(created.SessionID)

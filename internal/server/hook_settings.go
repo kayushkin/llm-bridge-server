@@ -60,7 +60,11 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 		}
 		inst.Machine = m
 	}
-	if err := s.checkPrincipalMayRunHere(ctx, sess, inst); err != nil {
+	subject, err := s.grantSubjectOfSession(sess)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkPrincipalMayRunHere(ctx, subject, sess, inst); err != nil {
 		return nil, err
 	}
 	if err := s.injectHookSettings(sess); err != nil {

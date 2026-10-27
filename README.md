@@ -395,12 +395,16 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/peer-connections/{id}` | One connection, whether its socket is up, and the access given and held | operator |
 | `POST` | `/peer-connections/{id}/check` | Ask the other server who the access this server holds acts as there | operator |
 | `POST` | `/peer-connections/{id}/grant` | Give the other server a level of access here and deliver its token | operator |
-| `*` | `/peer-connections/{id}/proxy/{rest...}` | Any request to the connected server, as this server's peer principal there; the answer streams back unchanged | operator |
+| `*` | `/peer-connections/{id}/proxy/{rest...}` | Any request to the connected server, as this server's peer principal there and, for a caller who is not an administrator, named as that caller; the answer streams back unchanged | principal, named to the connected server |
 | `POST` | `/peer-connections/{id}/remove` | End a connection: revoke the access given, drop the access held, close the socket | operator |
 | `POST` | `/peer-connections/{id}/revoke-grant` | Take the other server's access away, with a reason, and tell it | operator |
+| `GET` | `/peer-user-mappings` | Which connected server's users act as which of this server's principals; ?peer_principal_id= narrows | operator |
+| `POST` | `/peer-user-mappings` | Map a connected server's user to a principal here, allowed only what both it and the peer may do | operator |
+| `POST` | `/peer-user-mappings/{id}/remove` | End a mapping, with a reason | operator |
 | `POST` | `/peer/access` | The other server delivers a token for access on it | connected server |
 | `POST` | `/peer/access/revoked` | The other server says a token it gave no longer works | connected server |
 | `POST` | `/peer/connect` | Another server connects with a one-time passphrase | anyone |
+| `POST` | `/peer/connection/removed` | The other server says it removed the connection; this side removes it too | connected server |
 | `GET` | `/peer/self` | Who the presented peer token acts as here | principal |
 | `GET` | `/peer/socket` | The WebSocket a server without an address keeps open to this one | connected server |
 

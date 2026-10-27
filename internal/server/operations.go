@@ -458,7 +458,8 @@ func (s *Server) checkOperationGrant(r *http.Request, operationType msg.Operatio
 		return http.StatusInternalServerError, "grant_enforcement_misconfigured", fmt.Sprintf(
 			"operations.grant_enforcement is %q, not one of %v", enforcement, config.OperationsGrantEnforcementValues)
 	}
-	granted, err := s.grantedResourcesOf(r.Context(), principalID, operationRunGrantRelation, operationTypeResourceType)
+	caller, _ := callerOfRequest(r)
+	granted, err := s.grantedResourcesOf(r.Context(), grantSubjectOfCaller(caller), operationRunGrantRelation, operationTypeResourceType)
 	switch {
 	case errors.Is(err, grantclient.ErrPrincipalUnknown):
 		return http.StatusBadRequest, "unknown_principal", err.Error()

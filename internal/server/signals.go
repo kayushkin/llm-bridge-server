@@ -225,7 +225,7 @@ func (s *Server) handleListSignals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter.SessionID = r.URL.Query().Get("session_id")
-	filter.OwnedByPrincipalID, _ = principalRestrictingRequest(r)
+	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = sessionScopeFilterOfRequest(r)
 	signals, err := s.store.ListSignals(filter)
 	writeSignals(w, signals, err)
 }

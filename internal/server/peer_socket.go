@@ -66,7 +66,7 @@ const (
 // a socket keeps: what the body is, what answer is wanted, where an SSE stream
 // resumes, and the peer token. Anything else the other server put in a frame
 // is dropped before the handler sees it.
-var headersCrossingPeerSockets = []string{"Content-Type", "Accept", "Last-Event-ID", peerTokenHeader}
+var headersCrossingPeerSockets = []string{"Content-Type", "Accept", "Last-Event-ID", peerTokenHeader, peerUserHeader}
 
 // peerSocketFrame is one message on a peer socket.
 type peerSocketFrame struct {

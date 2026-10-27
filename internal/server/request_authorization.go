@@ -52,6 +52,14 @@ const serviceTokenHeader = "X-LLM-Bridge-Service-Token"
 // as the peer principal this server issued the token for (peers.go).
 const peerTokenHeader = "X-LLM-Bridge-Peer-Token"
 
+// peerUserHeader names, beside a peer token, which of the calling server's
+// own principals a request is for: its principal-store id there (phase 2 of
+// design note d107154a). This server acts for that user as the local
+// principal its administrator mapped the pair to (peer_users.go), allowed only
+// what both principals' grants allow. It means nothing without a peer token,
+// and the calling server sets it itself, never from a client's header.
+const peerUserHeader = "X-LLM-Bridge-Peer-User"
+
 // routeAccessClass says who may call a route and how a principal is limited.
 type routeAccessClass int
 
@@ -117,6 +125,12 @@ const (
 	// the handler narrows a principal to its own, and lets an administrator
 	// reach anyone's.
 	routePrincipalManagesOwnLoginSessions
+	// routePrincipalActsThroughPeerConnection is the connection proxy: any
+	// principal of this server may call a connected one through it, named
+	// there as itself (peerUserHeader) unless it is an administrator, who
+	// acts as this whole server. A peer may not go on through it to a third
+	// server.
+	routePrincipalActsThroughPeerConnection
 )
 
 // sessionAgentDelegateAccess says whether, and how, a session's own agent may
@@ -165,6 +179,9 @@ func harnessCallbackRoute(reason string) routeAccessRule {
 }
 func peerConnectionCallRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routePeerConnectionCall, reason: reason}
+}
+func peerConnectionProxyRoute(reason string) routeAccessRule {
+	return routeAccessRule{class: routePrincipalActsThroughPeerConnection, reason: reason}
 }
 func operatorRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routeOperatorOnly, reason: reason}
@@ -219,13 +236,17 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /peer-connections/{id}/grant":        operatorRoute("gives another server access to this one"),
 	"POST /peer-connections/{id}/revoke-grant": operatorRoute("takes another server's access away"),
 	"POST /peer-connections/{id}/check":        operatorRoute("calls another server with a stored token"),
-	"/peer-connections/{id}/proxy/{rest...}":   operatorRoute("acts on another server as this whole server's peer principal, so only an administrator here may"),
+	"/peer-connections/{id}/proxy/{rest...}":   peerConnectionProxyRoute("acts on another server: as this server's peer principal for an administrator, and for anyone else as that person, whom the other server maps to one of its own principals"),
 	"GET /peer-access-levels":                  operatorRoute("the levels of access this server can give"),
 	"POST /peer-access-levels/{key}/provision": operatorRoute("makes a level's group and its grants"),
 	"POST /peer/connect":                       openRoute("the other server has no credential yet; the one-time passphrase is the credential, checked by the handler"),
 	"GET /peer/socket":                         peerConnectionCallRoute("the dial-out socket; the handler checks the connection's credential"),
 	"POST /peer/access":                        peerConnectionCallRoute("the other server delivers a token; the handler checks the connection"),
 	"POST /peer/access/revoked":                peerConnectionCallRoute("the other server takes a token back; the handler checks the connection"),
+	"POST /peer/connection/removed":            peerConnectionCallRoute("the other server says it removed the connection; the handler checks the connection"),
+	"GET /peer-user-mappings":                  operatorRoute("which connected server's users act as which principal here"),
+	"POST /peer-user-mappings":                 operatorRoute("lets a connected server's user act here as one of this server's principals"),
+	"POST /peer-user-mappings/{id}/remove":     operatorRoute("takes that away"),
 	"GET /peer/self":                           catalogRoute("tells a caller who it is; the handler answers only a peer token"),
 	"GET /auth/sessions":                       {class: routePrincipalManagesOwnLoginSessions, reason: "a principal's own login sessions; an administrator names anyone's"},
 	"POST /auth/sessions/{id}/revoke":          {class: routePrincipalManagesOwnLoginSessions, reason: "ends a principal's own login session; an administrator ends anyone's"},
@@ -461,15 +482,27 @@ type requestCallerContextKey struct{}
 // requestCaller is who an authorized request acts as, as request
 // authorization established it.
 // peerCaller is what a peer token says about the server presenting it: the
-// grant it was issued by, the connection that grant is on, and its level.
-// remoteUserPrincipalID is left for phase 2 of design note
-// d107154a-49ac-471b-a1b7-fc7975de37f3, when the calling server also names
-// which of its own principals is asking; nothing sets it yet.
+// grant it was issued by, the connection that grant is on, its level, and the
+// peer principal it acts as. When the request also names one of the calling
+// server's users (peerUserHeader), remoteUserPrincipalID is that user's id
+// there and mappingID the mapping that made it one of this server's
+// principals; the request's principalID is then the mapped local principal,
+// and peerPrincipalID still limits what it may do.
 type peerCaller struct {
-	grantID               string
-	connectionID          string
-	level                 string
+	grantID         string
+	connectionID    string
+	level           string
+	peerPrincipalID string
+	// peerIsAdministrator is principal-store's answer for the peer principal.
+	peerIsAdministrator   bool
 	remoteUserPrincipalID string
+	mappingID             string
+}
+
+// actsForRemoteUser reports whether a peer request names one of the calling
+// server's users and so acts as a mapped local principal.
+func (peer *peerCaller) actsForRemoteUser() bool {
+	return peer != nil && peer.remoteUserPrincipalID != ""
 }
 
 type requestCaller struct {
@@ -496,6 +529,21 @@ type requestCaller struct {
 	// delegates. principalID is then the principal that session runs with,
 	// empty when it runs with none.
 	delegatingAgentOfSessionID string
+	// observesEverySession is set on a read-only route that narrows to one
+	// principal's sessions when the caller's can_observe_sessions_on grants
+	// name every instance: sessionScopeRestrictingRequest then narrows
+	// nothing.
+	observesEverySession bool
+}
+
+// sessionScopeOfCaller is the sessions a restricted caller reaches by
+// ownership (peer_users.go).
+func sessionScopeOfCaller(caller requestCaller) sessionScope {
+	scope := sessionScope{principalID: caller.principalID}
+	if caller.peer.actsForRemoteUser() {
+		scope.throughPeerPrincipalID = caller.peer.peerPrincipalID
+	}
+	return scope
 }
 
 // narrowsToOnePrincipal reports whether this caller's answers must be limited
@@ -551,6 +599,12 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	presentedPeerTokens, peerTokenPresent := r.Header[http.CanonicalHeaderKey(peerTokenHeader)]
+	presentedPeerUsers, peerUserPresent := r.Header[http.CanonicalHeaderKey(peerUserHeader)]
+	if peerUserPresent && !peerTokenPresent {
+		writeJSONError(w, http.StatusBadRequest, "peer_user_without_peer_token", fmt.Sprintf(
+			"%s names a connected server's user and means nothing without %s", peerUserHeader, peerTokenHeader))
+		return
+	}
 	if _, serviceTokenPresent := r.Header[http.CanonicalHeaderKey(serviceTokenHeader)]; peerTokenPresent && serviceTokenPresent {
 		writeJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
 			"%s and %s were both sent; a request comes from one caller", serviceTokenHeader, peerTokenHeader))
@@ -649,6 +703,18 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 			credentialError.write(w)
 			return
 		}
+		if peerUserPresent {
+			if len(presentedPeerUsers) != 1 || strings.TrimSpace(presentedPeerUsers[0]) == "" {
+				writeJSONError(w, http.StatusBadRequest, "ambiguous_peer_user", fmt.Sprintf(
+					"%s was sent %d times or empty; a request names one user", peerUserHeader, len(presentedPeerUsers)))
+				return
+			}
+			caller, credentialError = s.callerForPeerUser(r.Context(), caller, strings.TrimSpace(presentedPeerUsers[0]))
+			if credentialError != nil {
+				credentialError.write(w)
+				return
+			}
+		}
 		s.serveAsCaller(w, r, pattern, rule, caller)
 		return
 	}
@@ -702,12 +768,22 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
 		return
 	}
+	if caller.peer != nil && rule.class == routePrincipalActsThroughPeerConnection {
+		writeJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
+			"%s reaches a server connected to this one, and a connected server may not go on through it to another", pattern))
+		return
+	}
 	if caller.isAdministrator {
 		// principal-store says this person may do anything here, so no
 		// per-resource check applies. The identity still travels with the
 		// request: the store proxies set X-Principal-Id from it, and
 		// kanban-store and grant-store make their own administrator check.
 		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+		return
+	}
+	if caller.peer.actsForRemoteUser() && routeClassIsRefusedToPeerUsers(rule.class) {
+		writeJSONError(w, http.StatusForbidden, "route_not_for_peer_users", fmt.Sprintf(
+			"%s answers as one principal from a store or record this server cannot narrow to what both the connected server and its mapped user may do, so a connected server's user is refused it (%s)", pattern, rule.reason))
 		return
 	}
 	switch rule.class {
@@ -725,9 +801,20 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
-		if !s.sessionIsOwnedByPrincipal(sessionID, caller.principalID) {
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
+		if !s.sessionIDIsInScope(sessionID, sessionScopeOfCaller(caller)) {
+			if !requestOnlyReads(r, pattern) {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			observes, err := s.mayObserveSession(r, caller, sessionID)
+			if err != nil {
+				writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+				return
+			}
+			if !observes {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
 		}
 	case routePrincipalOwnsSignal:
 		signalID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
@@ -736,9 +823,22 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			return
 		}
 		signal, err := s.store.GetSignal(signalID)
-		if err != nil || !s.sessionIsOwnedByPrincipal(signal.SessionID, caller.principalID) {
+		if err != nil {
 			http.Error(w, "signal not found", http.StatusNotFound)
 			return
+		}
+		if !s.sessionIDIsInScope(signal.SessionID, sessionScopeOfCaller(caller)) {
+			observes := false
+			if requestOnlyReads(r, pattern) {
+				if observes, err = s.mayObserveSession(r, caller, signal.SessionID); err != nil {
+					writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+					return
+				}
+			}
+			if !observes {
+				http.Error(w, "signal not found", http.StatusNotFound)
+				return
+			}
 		}
 	case routePrincipalOwnsOperation:
 		operationID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
@@ -750,7 +850,16 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			http.Error(w, "operation not found", http.StatusNotFound)
 			return
 		}
-	case routePrincipalCreatesSession, routePrincipalSeesOwnSessionsOnly, routePrincipalReadsCatalog,
+	case routePrincipalSeesOwnSessionsOnly:
+		if requestOnlyReads(r, pattern) {
+			observes, err := s.mayObserveEverySession(r, caller)
+			if err != nil {
+				writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+				return
+			}
+			caller.observesEverySession = observes
+		}
+	case routePrincipalCreatesSession, routePrincipalReadsCatalog, routePrincipalActsThroughPeerConnection,
 		routePrincipalOrSessionAgentThroughStoreProxy, routePrincipalCreatesOperation, routePrincipalSeesOwnOperationsOnly,
 		routePrincipalManagesOwnLoginSessions:
 	default:
@@ -776,16 +885,6 @@ func principalIdentityHeaderNameIn(header http.Header) string {
 		}
 	}
 	return ""
-}
-
-// sessionIsOwnedByPrincipal reports whether the session exists and was
-// started as principalID. A session with no principal is owned by nobody.
-func (s *Server) sessionIsOwnedByPrincipal(sessionID, principalID string) bool {
-	if principalID == "" {
-		return false
-	}
-	session, err := s.store.GetSession(sessionID)
-	return err == nil && session.PrincipalID == principalID
 }
 
 // requestCredentialError is a refusal decided while establishing who a

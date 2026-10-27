@@ -58,7 +58,7 @@ func (s *Server) handleSessionsSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter.ManagerSessionIDs = managerSessionIDs
-	filter.OwnedByPrincipalID, _ = principalRestrictingRequest(r)
+	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = sessionScopeFilterOfRequest(r)
 
 	s.serveSessionsSummary(w, r, limit, before, filter)
 }
@@ -117,7 +117,7 @@ func (s *Server) handleSessionsSummaryLookup(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	filter.ManagerSessionIDs = managerSessionIDs
-	filter.OwnedByPrincipalID, _ = principalRestrictingRequest(r)
+	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = sessionScopeFilterOfRequest(r)
 
 	s.serveSessionsSummary(w, r, limit, req.Before, filter)
 }
@@ -227,8 +227,8 @@ func (s *Server) handleSessionsValidatorsLookup(w http.ResponseWriter, r *http.R
 // sessions: every other id is dropped before log-store is asked, exactly as if
 // it named no session.
 func (s *Server) serveSessionsValidators(w http.ResponseWriter, r *http.Request, ids string) {
-	if principalID, restricted := principalRestrictingRequest(r); restricted && strings.TrimSpace(ids) != "" {
-		owned, err := s.store.SessionIDsOwnedByPrincipal(principalID, strings.Split(ids, ","))
+	if scope, restricted := sessionScopeRestrictingRequest(r); restricted && strings.TrimSpace(ids) != "" {
+		owned, err := s.store.SessionIDsOwnedByPrincipal(scope.principalID, scope.throughPeerPrincipalID, strings.Split(ids, ","))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -285,8 +285,8 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 	// Except by owner: a principal restricted to itself is warmed only its
 	// own sessions, and the cache key carries the principal so one principal's
 	// bundle is never served to another.
-	ownedByPrincipalID, _ := principalRestrictingRequest(r)
-	rows, err := s.store.ListSessionSummaries(n, "", store.SessionSummaryFilter{OwnedByPrincipalID: ownedByPrincipalID})
+	ownedByPrincipalID, ownedThroughPeerPrincipalID := sessionScopeFilterOfRequest(r)
+	rows, err := s.store.ListSessionSummaries(n, "", store.SessionSummaryFilter{OwnedByPrincipalID: ownedByPrincipalID, OwnedThroughPeerPrincipalID: ownedThroughPeerPrincipalID})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

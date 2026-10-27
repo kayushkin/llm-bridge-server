@@ -695,12 +695,20 @@ func (s *Store) ListSessionsPaged(limit, offset int) ([]Session, error) {
 // nobody and never listed here. principalID must be non-empty: an empty one
 // would match exactly the unowned sessions, the opposite of what a caller
 // narrowing to one principal wants.
-func (s *Store) ListSessionsOwnedByPrincipalPaged(principalID, state string, limit, offset int) ([]Session, error) {
+//
+// throughPeerPrincipalID, when set, narrows further to the sessions a
+// connected server started through that peer principal for one of its users
+// (session_peer_origins): what that server's user may reach.
+func (s *Store) ListSessionsOwnedByPrincipalPaged(principalID, throughPeerPrincipalID, state string, limit, offset int) ([]Session, error) {
 	if principalID == "" {
 		return nil, fmt.Errorf("ListSessionsOwnedByPrincipalPaged: principal id is required")
 	}
 	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE principal_id=?`
 	args := []any{principalID}
+	if throughPeerPrincipalID != "" {
+		query += ` AND COALESCE(NULLIF(session_id, ''), bridge_id) IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = ?)`
+		args = append(args, throughPeerPrincipalID)
+	}
 	if state != "" {
 		query += ` AND state=?`
 		args = append(args, state)
@@ -729,7 +737,8 @@ func (s *Store) ListSessionsOwnedByPrincipalPaged(principalID, state string, lim
 // SessionIDsOwnedByPrincipal returns the subset of sessionIDs whose session
 // has principal_id principalID, in no particular order. Ids that name no
 // session, or a session owned by someone else or by nobody, are dropped.
-func (s *Store) SessionIDsOwnedByPrincipal(principalID string, sessionIDs []string) ([]string, error) {
+// throughPeerPrincipalID narrows as ListSessionsOwnedByPrincipalPaged does.
+func (s *Store) SessionIDsOwnedByPrincipal(principalID, throughPeerPrincipalID string, sessionIDs []string) ([]string, error) {
 	if principalID == "" {
 		return nil, fmt.Errorf("SessionIDsOwnedByPrincipal: principal id is required")
 	}
@@ -740,7 +749,12 @@ func (s *Store) SessionIDsOwnedByPrincipal(principalID string, sessionIDs []stri
 	for _, id := range sessionIDs {
 		args = append(args, id)
 	}
-	rows, err := s.dbRO.Query(`SELECT bridge_id FROM sessions WHERE principal_id=? AND bridge_id IN (`+sqlPlaceholders(len(sessionIDs))+`)`, args...)
+	query := `SELECT bridge_id FROM sessions WHERE principal_id=? AND bridge_id IN (` + sqlPlaceholders(len(sessionIDs)) + `)`
+	if throughPeerPrincipalID != "" {
+		query += ` AND COALESCE(NULLIF(session_id, ''), bridge_id) IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = ?)`
+		args = append(args, throughPeerPrincipalID)
+	}
+	rows, err := s.dbRO.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2077,6 +2091,11 @@ func (s *Store) EnsureSubagentSession(parent *Session, harnessSessionID, display
 		Type:         msg.SessionTypeSystem,
 		Origin:       "llm-bridge-" + strings.ReplaceAll(string(parent.Harness), "_", ""),
 		FolderName:   folderName,
+	}
+	// A subagent of a session a connected server started for one of its
+	// users stays limited by that server (peer_users.go).
+	if _, err := s.CopySessionPeerOrigin(parent.SessionID, sub.SessionID); err != nil {
+		return "", false, err
 	}
 	if err := s.CreateSession(sub); err != nil {
 		return "", false, err

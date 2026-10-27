@@ -39,24 +39,27 @@ var ErrNotGranted = errors.New("not granted")
 // verbatim. Grants name agent-store's numeric id, so the slug is resolved
 // through the in-process agent-store here; a numeric agent_id is taken as the
 // id directly.
-func (s *Server) checkPrincipalMayRunHere(ctx context.Context, sess *store.Session, inst *msg.Instance) error {
+//
+// subject is whose grants decide: the session's principal, and the peer it
+// was started through for one of that peer's users (grantSubjectOfSession).
+func (s *Server) checkPrincipalMayRunHere(ctx context.Context, subject grantSubject, sess *store.Session, inst *msg.Instance) error {
 	if sess.PrincipalID == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	dispatch, err := s.dispatchGrantsOf(ctx, sess.PrincipalID)
+	dispatch, err := s.dispatchGrantsOf(ctx, subject)
 	if err != nil {
 		return err
 	}
 	if !dispatch.permits(inst.ID, inst.MachineID) {
 		return fmt.Errorf("%w: %s may not start a session on instance %s (machine %s); %s",
-			ErrNotGranted, sess.PrincipalID, inst.ID, inst.MachineID, dispatch.describe())
+			ErrNotGranted, subject, inst.ID, inst.MachineID, dispatch.describe())
 	}
 	if sess.AgentID == "" {
 		return nil
 	}
-	runAs, err := s.grantedResourcesOf(ctx, sess.PrincipalID, "can_run_as", "agent")
+	runAs, err := s.grantedResourcesOf(ctx, subject, "can_run_as", "agent")
 	if err != nil {
 		return err
 	}
@@ -70,9 +73,30 @@ func (s *Server) checkPrincipalMayRunHere(ctx context.Context, sess *store.Sessi
 	}
 	if !runAs.permits(agentID) {
 		return fmt.Errorf("%w: %s may not start a session as agent %s (agent-store id %s); %s",
-			ErrNotGranted, sess.PrincipalID, sess.AgentID, agentID, runAs.describe())
+			ErrNotGranted, subject, sess.AgentID, agentID, runAs.describe())
 	}
 	return nil
+}
+
+// grantSubjectOfSession is whose grants decide for a stored session: its
+// principal, and the peer it was started through when a connected server
+// started it for one of its users (store.SessionPeerOrigin). A session that
+// does not exist yet, as at create, has no origin row; the caller passes the
+// request's subject instead.
+func (s *Server) grantSubjectOfSession(sess *store.Session) (grantSubject, error) {
+	subject := grantSubject{principalID: sess.PrincipalID}
+	// A server built with no session store (some tests) has no origins.
+	if sess.SessionID == "" || sess.PrincipalID == "" || s.store == nil {
+		return subject, nil
+	}
+	origin, found, err := s.store.SessionPeerOriginOfLineage(sess.SessionID)
+	if err != nil {
+		return grantSubject{}, fmt.Errorf("read session %s's peer origin: %w", sess.SessionID, err)
+	}
+	if found {
+		subject.throughPeerPrincipalID = origin.PeerPrincipalID
+	}
+	return subject, nil
 }
 
 // resolveAgentID turns a session's agent_id — a slug today, or already an id

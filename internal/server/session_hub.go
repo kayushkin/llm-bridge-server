@@ -71,6 +71,10 @@ type sessionListFrame struct {
 	// (only the renamer deletes, and its sessions have no principal), so a
 	// restricted subscriber misses no delete it could have been sent.
 	ownerPrincipalID string
+	// sessionID is the session the frame is about, so a subscriber that is a
+	// connected server's user is written only the frames of sessions started
+	// through that server.
+	sessionID string
 }
 
 // sessionHub fans out session-row mutation signals to all SSE subscribers.
@@ -191,7 +195,11 @@ func (h *sessionHub) publishOwnedBy(ev sessionListEvent, ownerPrincipalID string
 	defer h.mu.Unlock()
 
 	h.seq++
-	frame := sessionListFrame{seq: h.seq, typ: ev.Type, data: data, ownerPrincipalID: ownerPrincipalID}
+	frameSessionID := ev.SessionID
+	if frameSessionID == "" && ev.Session != nil {
+		frameSessionID = ev.Session.SessionID
+	}
+	frame := sessionListFrame{seq: h.seq, typ: ev.Type, data: data, ownerPrincipalID: ownerPrincipalID, sessionID: frameSessionID}
 
 	h.replay = append(h.replay, frame)
 	if len(h.replay) > sessionListReplayCapacity {
@@ -321,9 +329,18 @@ func (s *Server) handleSessionListEvents(w http.ResponseWriter, r *http.Request)
 	// Everything the client missed, in the order it was published, before any
 	// live frame — the backlog was snapshotted at subscribe time, so no live
 	// frame can be older than the last one here.
-	restrictedToPrincipalID, restricted := principalRestrictingRequest(r)
+	scope, restricted := sessionScopeRestrictingRequest(r)
+	frameIsOutOfScope := func(frame sessionListFrame) bool {
+		if !restricted {
+			return false
+		}
+		if frame.ownerPrincipalID != scope.principalID {
+			return true
+		}
+		return scope.throughPeerPrincipalID != "" && !s.sessionIDIsInScope(frame.sessionID, scope)
+	}
 	for _, frame := range backlog {
-		if restricted && frame.ownerPrincipalID != restrictedToPrincipalID {
+		if frameIsOutOfScope(frame) {
 			continue
 		}
 		if !s.writeSessionListFrame(w, frame) {
@@ -358,7 +375,7 @@ func (s *Server) handleSessionListEvents(w http.ResponseWriter, r *http.Request)
 				// Hub dropped us as a slow subscriber.
 				return
 			}
-			if restricted && frame.ownerPrincipalID != restrictedToPrincipalID {
+			if frameIsOutOfScope(frame) {
 				continue
 			}
 			if !s.writeSessionListFrame(w, frame) {

@@ -30,6 +30,10 @@ type SignalFilter struct {
 	// one principal. Set by the server from the caller's verified identity
 	// by request authorization. Empty means "don't narrow".
 	OwnedByPrincipalID string
+	// OwnedThroughPeerPrincipalID narrows further to signals of sessions a
+	// connected server started through this peer principal for one of its
+	// users. Set by the server beside OwnedByPrincipalID.
+	OwnedThroughPeerPrincipalID string
 	// SessionTypes narrows to the signals raised by sessions of any of these
 	// types — the person's own chats (interactive) apart from background
 	// agents (autonomous, system, …). Read from the session row, which owns
@@ -227,6 +231,10 @@ func (s *Store) ListSignals(filter SignalFilter) ([]Signal, error) {
 	if filter.OwnedByPrincipalID != "" {
 		query += ` AND session_id IN (SELECT bridge_id FROM sessions WHERE principal_id=?)`
 		args = append(args, filter.OwnedByPrincipalID)
+	}
+	if filter.OwnedThroughPeerPrincipalID != "" {
+		query += ` AND session_id IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id=?)`
+		args = append(args, filter.OwnedThroughPeerPrincipalID)
 	}
 	if len(filter.SessionTypes) > 0 {
 		query += ` AND session_id IN (SELECT bridge_id FROM sessions WHERE type IN (` +

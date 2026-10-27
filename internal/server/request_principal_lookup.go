@@ -159,8 +159,40 @@ func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken, socketCo
 	if credentialError != nil {
 		return requestCaller{}, credentialError
 	}
-	caller.peer = &peerCaller{grantID: grant.ID, connectionID: grant.ConnectionID, level: grant.Level}
+	caller.peer = &peerCaller{grantID: grant.ID, connectionID: grant.ConnectionID, level: grant.Level,
+		peerPrincipalID: grant.PeerPrincipalID, peerIsAdministrator: caller.isAdministrator}
 	return caller, nil
+}
+
+// callerForPeerUser turns a peer caller into the local principal its
+// administrator mapped the named remote user to (peer_users.go). The caller
+// is an administrator only when both the peer and the mapped principal are;
+// otherwise every grant check intersects the two (principal_grants.go) and
+// the request reaches only the sessions that principal started through this
+// peer. An unmapped user is 403: the calling server's word about who its user
+// is gives nothing here until an administrator here says who that user is.
+func (s *Server) callerForPeerUser(ctx context.Context, peer requestCaller, remotePrincipalID string) (requestCaller, *requestCredentialError) {
+	mapping, err := s.store.LivePeerUserMapping(peer.peer.peerPrincipalID, remotePrincipalID)
+	if errors.Is(err, store.ErrPeerUserMappingNotFound) {
+		return requestCaller{}, &requestCredentialError{http.StatusForbidden, "peer_user_not_mapped", fmt.Sprintf(
+			"the connected server acting as %s names its user %s, whom no administrator here has mapped to a principal of this server; POST /peer-user-mappings {\"peer_principal_id\":%q,\"remote_principal_id\":%q,\"local_principal_id\":…} maps them",
+			peer.peer.peerPrincipalID, remotePrincipalID, peer.peer.peerPrincipalID, remotePrincipalID)}
+	}
+	if err != nil {
+		return requestCaller{}, &requestCredentialError{http.StatusInternalServerError, "peer_user_mapping_lookup_failed", err.Error()}
+	}
+	local, credentialError := s.callerForPrincipalID(ctx, mapping.LocalPrincipalID, "peer user mapping "+mapping.ID+" maps to")
+	if credentialError != nil {
+		return requestCaller{}, credentialError
+	}
+	forUser := *peer.peer
+	forUser.remoteUserPrincipalID = remotePrincipalID
+	forUser.mappingID = mapping.ID
+	return requestCaller{
+		principalID:     local.principalID,
+		isAdministrator: local.isAdministrator && forUser.peerIsAdministrator,
+		peer:            &forUser,
+	}, nil
 }
 
 // forget drops the cached answer for principalID, so the next request reads

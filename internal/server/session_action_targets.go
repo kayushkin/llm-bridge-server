@@ -65,8 +65,20 @@ func (s *Server) targetSessionOfAction(ctx context.Context, session *store.Sessi
 // principal, and an administrator's session reaches any target. Whether a
 // principal is an administrator is principal-store's answer, read through
 // the same cache the request gate uses.
+//
+// A session a connected server started for one of its users reaches only the
+// sessions in that user's scope — its principal's, started through the same
+// peer (peer_users.go) — unless both its principal and the peer are
+// administrators, as the request gate rules.
 func (s *Server) sessionPrincipalMayReachTarget(ctx context.Context, session, target *store.Session) (bool, *sessionActionRefusal) {
-	if target.PrincipalID == session.PrincipalID {
+	origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(session.SessionID)
+	if err != nil {
+		return false, &sessionActionRefusal{http.StatusInternalServerError, "session_peer_origin_lookup_failed", err.Error()}
+	}
+	if !throughPeer && target.PrincipalID == session.PrincipalID {
+		return true, nil
+	}
+	if throughPeer && s.sessionIsInScope(target, sessionScope{principalID: session.PrincipalID, throughPeerPrincipalID: origin.PeerPrincipalID}) {
 		return true, nil
 	}
 	if session.PrincipalID == "" {
@@ -76,7 +88,14 @@ func (s *Server) sessionPrincipalMayReachTarget(ctx context.Context, session, ta
 	if credentialError != nil {
 		return false, &sessionActionRefusal{credentialError.status, credentialError.code, credentialError.message}
 	}
-	return owner.isAdministrator, nil
+	if !throughPeer {
+		return owner.isAdministrator, nil
+	}
+	peer, credentialError := s.callerForPrincipalID(ctx, origin.PeerPrincipalID, "session "+session.SessionID+" was started through")
+	if credentialError != nil {
+		return false, &sessionActionRefusal{credentialError.status, credentialError.code, credentialError.message}
+	}
+	return owner.isAdministrator && peer.isAdministrator, nil
 }
 
 // describeTargetSessionAction writes Command for a send_to_session or

@@ -465,7 +465,12 @@ func toolValues(ids []int64, names map[int64]string) []map[string]any {
 }
 
 func (s *Server) noteDispatchGrants(ctx context.Context, sess *store.Session, inst *msg.Instance, setting *msg.EffectiveSetting, warn func(string, ...any)) {
-	dispatch, err := s.dispatchGrantsOf(ctx, sess.PrincipalID)
+	subject, err := s.grantSubjectOfSession(sess)
+	if err != nil {
+		warn("a spawn would be refused: %v", err)
+		return
+	}
+	dispatch, err := s.dispatchGrantsOf(ctx, subject)
 	if err != nil {
 		warn("a spawn would be refused: %v", err)
 		return
@@ -481,7 +486,12 @@ func (s *Server) noteDispatchGrants(ctx context.Context, sess *store.Session, in
 }
 
 func (s *Server) noteRunAsGrants(ctx context.Context, sess *store.Session, setting *msg.EffectiveSetting, warn func(string, ...any)) {
-	runAs, err := s.grantedResourcesOf(ctx, sess.PrincipalID, "can_run_as", "agent")
+	subject, err := s.grantSubjectOfSession(sess)
+	if err != nil {
+		warn("a spawn would be refused: %v", err)
+		return
+	}
+	runAs, err := s.grantedResourcesOf(ctx, subject, "can_run_as", "agent")
 	if err != nil {
 		warn("a spawn would be refused: %v", err)
 		return

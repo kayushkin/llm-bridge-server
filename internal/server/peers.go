@@ -83,7 +83,10 @@ const (
 	peerSocketPath        = "/peer/socket"
 	peerAccessPath        = "/peer/access"
 	peerAccessRevokedPath = "/peer/access/revoked"
-	peerSelfPath          = "/peer/self"
+	// peerConnectionRemovedPath is where a server tells the other it removed
+	// their connection.
+	peerConnectionRemovedPath = "/peer/connection/removed"
+	peerSelfPath              = "/peer/self"
 )
 
 // hashPeerSecret is how a passphrase, a credential or a token is kept and
@@ -102,10 +105,7 @@ type peerAccessLevelDefinition struct {
 	grants      []msg.PeerAccessLevelGrant
 }
 
-// peerAccessLevelsWithGroups are the levels this server can provision. A
-// level that reads every session, not only the peer's own, is not here:
-// grant-store has no relation that says so, and the session routes narrow a
-// principal to its own sessions.
+// peerAccessLevelsWithGroups are the levels this server can provision.
 var peerAccessLevelsWithGroups = []peerAccessLevelDefinition{
 	{
 		key:         "run_sessions",
@@ -115,6 +115,14 @@ var peerAccessLevelsWithGroups = []peerAccessLevelDefinition{
 			{Relation: "can_dispatch_on", ResourceType: "instance", ResourceID: grantclient.AllResources},
 			{Relation: "can_run_as", ResourceType: "agent", ResourceID: grantclient.AllResources},
 			{Relation: "can_use", ResourceType: "tool", ResourceID: grantclient.AllResources},
+		},
+	},
+	{
+		key:         "observe",
+		displayName: "Observe",
+		description: "Read every session on any of this server's instances, and the catalog; start, send to, stop or change nothing.",
+		grants: []msg.PeerAccessLevelGrant{
+			{Relation: observeSessionsRelation, ResourceType: "instance", ResourceID: grantclient.AllResources},
 		},
 	},
 }
@@ -729,6 +737,13 @@ func (s *Server) handleRevokePeerGrant(w http.ResponseWriter, r *http.Request) {
 // revokeLivePeerGrant revokes the connection's live grant, takes its level
 // back, and tells the other server, saying in notice whether it heard.
 func (s *Server) revokeLivePeerGrant(ctx context.Context, connection store.PeerConnection, administratorID, reason string) (store.PeerGrant, string, *requestCredentialError) {
+	return s.revokeLivePeerGrantTelling(ctx, connection, administratorID, reason, true)
+}
+
+// revokeLivePeerGrantTelling is revokeLivePeerGrant, telling the other server
+// only when tell is set: a server the other side has just told it removed the
+// connection has no one left to tell.
+func (s *Server) revokeLivePeerGrantTelling(ctx context.Context, connection store.PeerConnection, administratorID, reason string, tell bool) (store.PeerGrant, string, *requestCredentialError) {
 	live, err := s.store.LivePeerGrantOfConnection(connection.ID)
 	if errors.Is(err, store.ErrPeerGrantNotFound) {
 		return store.PeerGrant{}, "", &requestCredentialError{http.StatusNotFound, "peer_grant_not_found", connection.ID + " gives the other server no access"}
@@ -743,6 +758,9 @@ func (s *Server) revokeLivePeerGrant(ctx context.Context, connection store.PeerC
 	if err := s.undoPeerLevelEffect(ctx, revoked); err != nil {
 		return store.PeerGrant{}, "", &requestCredentialError{http.StatusBadGateway, "principal_store_failed", fmt.Sprintf(
 			"%s is revoked, so its token no longer works, and its level could not be taken back from %s: %v", revoked.ID, revoked.PeerPrincipalID, err)}
+	}
+	if !tell {
+		return revoked, "the other server removed the connection, so it was not told", nil
 	}
 	notice := "the other server was told"
 	if err := s.callPeerConnection(ctx, connection, http.MethodPost, peerAccessRevokedPath, msg.PeerAccessRevocation{GrantID: revoked.ID, Reason: reason}, http.StatusOK, nil); err != nil {
@@ -934,18 +952,88 @@ func (s *Server) handleRemovePeerConnection(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
+	// Told before the socket closes and the credential goes, which are what
+	// the call travels by. Best effort: the connection is removed here
+	// whether or not the other server hears, and the row says which.
+	removalNotice := "the other server was told"
+	if err := s.callPeerConnection(r.Context(), connection, http.MethodPost, peerConnectionRemovedPath, msg.PeerConnectionRemovedNotice{Reason: request.Reason}, http.StatusOK, nil); err != nil {
+		removalNotice = fmt.Sprintf("the other server could not be told (%v); its calls are refused from now on", err)
+		log.Printf("[peers] %s removed: %s", connection.ID, removalNotice)
+	}
 	s.peerSockets.stop(connection.ID)
 	removed, err := s.store.RemovePeerConnection(connection.ID, administratorID, request.Reason, time.Now().UTC())
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
+	if err := s.store.RecordPeerConnectionRemovalNotice(connection.ID, removalNotice); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		return
+	}
+	removed.RemovalNotice = removalNotice
 	if err := s.authClient.Delete(r.Context(), connection.OutboundCredentialID); err != nil {
 		writeJSONError(w, http.StatusBadGateway, "auth_store_failed", fmt.Sprintf("%s is removed, and auth-store credential %s could not be deleted: %v", connection.ID, connection.OutboundCredentialID, err))
 		return
 	}
 	writeJSON(w, s.peerConnectionView(removed))
 }
+
+// handleReceivePeerConnectionRemoved: POST /peer/connection/removed. The
+// other server removed the connection and says so over it. This server
+// revokes the access it gave, ends the access it held, closes the socket and
+// deletes the connection's credential, as its own remove would, and marks the
+// connection removed by the other server.
+func (s *Server) handleReceivePeerConnectionRemoved(w http.ResponseWriter, r *http.Request) {
+	connection, credentialError := s.connectionOfConnectionCall(r)
+	if credentialError != nil {
+		credentialError.write(w)
+		return
+	}
+	var notice msg.PeerConnectionRemovedNotice
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&notice); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send reason")
+		return
+	}
+	reason := "removed by the other server: " + notice.Reason
+	if _, _, failure := s.revokeLivePeerGrantTelling(r.Context(), connection, "", reason, false); failure != nil && failure.code != "peer_grant_not_found" {
+		failure.write(w)
+		return
+	}
+	if ended, err := s.store.EndPeerAccess(connection.ID, "", reason, time.Now().UTC()); err == nil {
+		if err := s.authClient.Delete(r.Context(), ended.CredentialID); err != nil {
+			log.Printf("[peers] ERROR: delete ended access %s's credential %s: %v", ended.ID, ended.CredentialID, err)
+		}
+	} else if !errors.Is(err, store.ErrPeerAccessNotFound) {
+		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		return
+	}
+	removed, err := s.store.RemovePeerConnectionByOtherServer(connection.ID, notice.Reason, time.Now().UTC())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		return
+	}
+	if err := s.authClient.Delete(r.Context(), connection.OutboundCredentialID); err != nil {
+		log.Printf("[peers] ERROR: %s was removed by the other server, and auth-store credential %s could not be deleted: %v", connection.ID, connection.OutboundCredentialID, err)
+	}
+	// Answered before the socket closes: the answer travels over it. The
+	// dialer must not reopen it, so it is stopped once this answer is out.
+	writeJSON(w, s.peerConnectionView(removed))
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	closeAfter := peerSocketCloseAfterRemovalNotice
+	go func() {
+		time.Sleep(closeAfter)
+		s.peerSockets.stop(connection.ID)
+	}()
+}
+
+// peerSocketCloseAfterRemovalNotice is how long a server that heard the
+// connection was removed keeps the socket, so its answer reaches the other
+// side first.
+var peerSocketCloseAfterRemovalNotice = 2 * time.Second
 
 // errPeerAccessNotHeld is a call that needs access the other server never
 // gave, or took back.

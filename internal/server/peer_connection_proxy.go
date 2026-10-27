@@ -11,8 +11,17 @@ package server
 // the peer principal the token acts as there. Ids in the answer stay the other
 // server's; nothing is copied into this server's stores.
 //
-// Only administrators may use it: the other server sees one principal for the
-// whole of this server until phase 2 names the person as well.
+// Any principal of this server may use it (phase 2 of design note d107154a).
+// A caller who is not an administrator here is named to the other server in
+// peerUserHeader by its own principal id, set here from the verified caller
+// and never from a header the client sent; the other server acts for it as
+// the principal its administrator mapped it to, allowed only what both that
+// principal and this server's peer principal may do there, and refuses it
+// when no one has mapped it. An administrator here — or the service token
+// alone — sends no user and acts as this whole server's peer principal:
+// an administrator already holds everything this server holds, and naming
+// them would only narrow what the link was granted to do. A connected server
+// may not go on through the proxy to a third one.
 //
 // Only the headers in requestHeadersForwardedToPeers cross. Everything else a
 // browser or dash sent — the login cookie, its CSRF token, the service token,
@@ -65,6 +74,15 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 	for _, name := range requestHeadersForwardedToPeers {
 		if values := r.Header.Values(name); len(values) > 0 {
 			header[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
+		}
+	}
+	if caller, ok := callerOfRequest(r); ok {
+		if caller.peer != nil {
+			writeJSONError(w, http.StatusForbidden, "route_not_for_peers", "a connected server may not go on through this server to another")
+			return
+		}
+		if caller.principalID != "" && !caller.isAdministrator {
+			header.Set(peerUserHeader, caller.principalID)
 		}
 	}
 	response, err := s.callWithHeldAccessThrough(r.Context(), peerProxyHTTPClient, connection, r.Method, path, header, body, r.ContentLength)

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -19,6 +20,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -116,6 +118,14 @@ func newWritablePrincipalDirectory(t *testing.T) *writablePrincipalDirectory {
 	return directory
 }
 
+// addPrincipal records a principal of a kind that acts as a caller.
+func (directory *writablePrincipalDirectory) addPrincipal(principalID, kind string, isAdministrator bool) {
+	directory.mutex.Lock()
+	defer directory.mutex.Unlock()
+	directory.records[principalID] = map[string]any{"id": principalID, "kind": kind, "acts_as_caller": true, "restricted_to_its_grants": kind == "peer",
+		"display_name": principalID, "disabled_at": 0, "is_administrator": isAdministrator}
+}
+
 func (directory *writablePrincipalDirectory) isAdministrator(principalID string) bool {
 	directory.mutex.Lock()
 	defer directory.mutex.Unlock()
@@ -128,20 +138,41 @@ func (directory *writablePrincipalDirectory) isMember(groupID, memberID string) 
 	return directory.members[groupID][memberID]
 }
 
-// recordingGrantStore answers every principal's effective grants with
-// nothing and records the grants made.
+// recordingGrantStore records the grants made, and answers a principal's
+// effective grants with what the test set (setEffective), nothing otherwise.
 type recordingGrantStore struct {
-	mutex   sync.Mutex
-	created []grantclient.GrantInput
-	server  *httptest.Server
+	mutex     sync.Mutex
+	created   []grantclient.GrantInput
+	effective map[string][]string
+	server    *httptest.Server
+}
+
+func effectiveGrantKey(principalID, relation, resourceType string) string {
+	return principalID + "|" + relation + "|" + resourceType
+}
+
+// setEffective makes a principal's effective grants of one relation on one
+// resource type name exactly these resources.
+func (grants *recordingGrantStore) setEffective(principalID, relation, resourceType string, resourceIDs ...string) {
+	grants.mutex.Lock()
+	defer grants.mutex.Unlock()
+	grants.effective[effectiveGrantKey(principalID, relation, resourceType)] = resourceIDs
 }
 
 func newRecordingGrantStore(t *testing.T) *recordingGrantStore {
 	t.Helper()
-	grants := &recordingGrantStore{}
+	grants := &recordingGrantStore{effective: map[string][]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /principals/{id}/effective", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`[]`))
+		grants.mutex.Lock()
+		resourceIDs := grants.effective[effectiveGrantKey(r.PathValue("id"), r.URL.Query().Get("relation"), r.URL.Query().Get("resource_type"))]
+		grants.mutex.Unlock()
+		answer := []map[string]string{}
+		for index, resourceID := range resourceIDs {
+			answer = append(answer, map[string]string{"id": fmt.Sprintf("grant_%06d", index+1), "principal_id": r.PathValue("id"),
+				"resource_type": r.URL.Query().Get("resource_type"), "resource_id": resourceID})
+		}
+		_ = json.NewEncoder(w).Encode(answer)
 	})
 	mux.HandleFunc("POST /grants", func(w http.ResponseWriter, r *http.Request) {
 		var input grantclient.GrantInput
@@ -243,6 +274,26 @@ func (gated *gatedTestServer) requestAsAdministrator(t *testing.T, method, path 
 	request := httptest.NewRequest(method, path, bytes.NewReader(data))
 	request.Header.Set(serviceTokenHeader, testServiceToken)
 	request.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
+	return serve(gated.server, request)
+}
+
+// requestAsPrincipal is a call through dash for a principal of this server
+// who need not be an administrator.
+func (gated *gatedTestServer) requestAsPrincipal(t *testing.T, principalID, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader *bytes.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = bytes.NewReader(data)
+	} else {
+		reader = bytes.NewReader(nil)
+	}
+	request := httptest.NewRequest(method, path, reader)
+	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(principalIdentityHeader, principalID)
 	return serve(gated.server, request)
 }
 
@@ -465,7 +516,7 @@ func TestPeerConnectionRefusals(t *testing.T) {
 	for _, level := range levels {
 		keys = append(keys, level.Key)
 	}
-	if strings.Join(keys, ",") != "none,run_sessions,administrator,group" {
+	if strings.Join(keys, ",") != "none,run_sessions,observe,administrator,group" {
 		t.Fatalf("levels = %v", keys)
 	}
 	var body bytes.Buffer
@@ -485,5 +536,171 @@ func TestPeerBaseURLsMustBeHTTPS(t *testing.T) {
 	}
 	if got, err := peerBaseURLOf("base_url", "https://dash.example.com/bridge/"); err != nil || got != "https://dash.example.com/bridge" {
 		t.Errorf("https with a path = %q %v", got, err)
+	}
+}
+
+// connectedPairByDialingOut connects a server with no address to one with
+// one and waits for the socket.
+func connectedPairByDialingOut(t *testing.T) (accepting, initiating *peerTestServer, acceptingID, initiatingID string) {
+	t.Helper()
+	accepting = newPeerTestServer(t, false)
+	acceptingOverTLS := httptest.NewTLSServer(accepting.server)
+	t.Cleanup(acceptingOverTLS.Close)
+	trustTestCertificates(t, acceptingOverTLS)
+	initiating = newPeerTestServer(t, true)
+	acceptingID, initiatingID = connectPair(t, accepting, initiating, acceptingOverTLS.URL, "")
+	t.Cleanup(func() { initiating.server.peerSockets.stop(initiatingID) })
+	waitForSockets(t, map[*peerTestServer]string{accepting: acceptingID, initiating: initiatingID})
+	return accepting, initiating, acceptingID, initiatingID
+}
+
+// TestPeerUsersActAsMappedPrincipalsWithinBothGrants is phase 2: a user of
+// the calling server is refused until mapped, then acts as the mapped
+// principal, allowed only what both it and the peer may do, reaching only the
+// sessions it started through the peer unless both may observe more, and
+// refused the routes this server cannot narrow.
+func TestPeerUsersActAsMappedPrincipalsWithinBothGrants(t *testing.T) {
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	grant := decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "none"}),
+		http.StatusCreated, "grant none, so the test sets the peer's grants itself")
+	peerID := grant.PeerPrincipalID
+	const remoteUser = "principal_000501"
+	const localUser = "principal_000601"
+	initiating.directory.addPrincipal(remoteUser, "human", false)
+	accepting.directory.addPrincipal(localUser, "human", false)
+	accepting.grants.setEffective(peerID, "can_dispatch_on", "instance", "inst_test", "inst_second")
+	accepting.grants.setEffective(localUser, "can_dispatch_on", "instance", "inst_second")
+	proxy := "/peer-connections/" + initiatingID + "/proxy"
+	asUser := func(method, path string) *httptest.ResponseRecorder {
+		return initiating.requestAsPrincipal(t, remoteUser, method, proxy+path, nil)
+	}
+
+	if answer := asUser("GET", "/instances"); answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), "peer_user_not_mapped") ||
+		!strings.Contains(answer.Body.String(), remoteUser) {
+		t.Fatalf("an unmapped user = %d %s, want 403 peer_user_not_mapped naming the user", answer.Code, answer.Body)
+	}
+	if answer := accepting.requestAsAdministrator(t, "POST", "/peer-user-mappings", map[string]any{
+		"peer_principal_id": "principal_999999", "remote_principal_id": remoteUser, "local_principal_id": localUser,
+	}); answer.Code != http.StatusBadRequest {
+		t.Fatalf("a mapping for a peer principal no connection names = %d %s, want 400", answer.Code, answer.Body)
+	}
+	mapping := decodeAnswer[msg.PeerUserMapping](t, accepting.requestAsAdministrator(t, "POST", "/peer-user-mappings", map[string]any{
+		"peer_principal_id": peerID, "remote_principal_id": remoteUser, "local_principal_id": localUser,
+	}), http.StatusCreated, "map")
+	if mapping.CreatedBy != administratorTestPrincipalID {
+		t.Fatalf("mapping = %+v, want it to record the administrator", mapping)
+	}
+
+	instances := decodeAnswer[[]msg.Instance](t, asUser("GET", "/instances"), http.StatusOK, "instances as the mapped user")
+	if len(instances) != 1 || instances[0].ID != "inst_second" {
+		t.Fatalf("the mapped user sees %+v, want only inst_second, the one both the peer and the user may start on", instances)
+	}
+	accepting.grants.setEffective(peerID, "can_dispatch_on", "instance", "inst_test")
+	if instances := decodeAnswer[[]msg.Instance](t, asUser("GET", "/instances"), http.StatusOK, "instances"); len(instances) != 0 {
+		t.Fatalf("with no instance in common the mapped user sees %+v, want none", instances)
+	}
+
+	for _, seed := range []string{"br_local_own", "br_through_peer"} {
+		if seed == "br_through_peer" {
+			if err := accepting.server.store.RecordSessionPeerOrigin(store.SessionPeerOrigin{SessionID: seed, PeerPrincipalID: peerID, RemotePrincipalID: remoteUser}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := accepting.server.store.CreateSession(&store.Session{SessionID: seed, Harness: "mock", InstanceID: "inst_test", State: "idle", PrincipalID: localUser}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if answer := asUser("GET", "/sessions/br_local_own"); answer.Code != http.StatusNotFound {
+		t.Fatalf("the local principal's own session, not started through the peer = %d %s, want 404", answer.Code, answer.Body)
+	}
+	if answer := asUser("GET", "/sessions/br_through_peer"); answer.Code != http.StatusOK {
+		t.Fatalf("a session started through the peer for the user = %d %s, want 200", answer.Code, answer.Body)
+	}
+	listed := decodeAnswer[[]msg.ManagedSession](t, asUser("GET", "/sessions"), http.StatusOK, "list")
+	if len(listed) != 1 || listed[0].SessionID != "br_through_peer" {
+		t.Fatalf("the mapped user's list = %+v, want only br_through_peer", listed)
+	}
+
+	accepting.grants.setEffective(localUser, observeSessionsRelation, "instance", "*")
+	if answer := asUser("GET", "/sessions/br_local_own"); answer.Code != http.StatusNotFound {
+		t.Fatalf("observing with only the user's grant = %d, want 404: the peer may not observe", answer.Code)
+	}
+	accepting.grants.setEffective(peerID, observeSessionsRelation, "instance", "*")
+	if answer := asUser("GET", "/sessions/br_local_own"); answer.Code != http.StatusOK {
+		t.Fatalf("observing with both grants = %d %s, want 200", answer.Code, answer.Body)
+	}
+	if listed := decodeAnswer[[]msg.ManagedSession](t, asUser("GET", "/sessions"), http.StatusOK, "list while observing"); len(listed) != 2 {
+		t.Fatalf("observing every instance, the list = %d sessions, want 2", len(listed))
+	}
+	if answer := asUser("POST", "/sessions/br_local_own/stop"); answer.Code != http.StatusNotFound {
+		t.Fatalf("stopping an observed session = %d %s, want 404: observing changes nothing", answer.Code, answer.Body)
+	}
+	if answer := asUser("GET", "/kanban/boards"); answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), "route_not_for_peer_users") {
+		t.Fatalf("a store proxy as a mapped user = %d %s, want 403 route_not_for_peer_users", answer.Code, answer.Body)
+	}
+
+	removed := decodeAnswer[msg.PeerUserMapping](t, accepting.requestAsAdministrator(t, "POST", "/peer-user-mappings/"+mapping.ID+"/remove", map[string]any{"reason": "test over"}),
+		http.StatusOK, "remove the mapping")
+	if removed.RemovedAt == nil || removed.RemovedBy != administratorTestPrincipalID {
+		t.Fatalf("removed mapping = %+v", removed)
+	}
+	if answer := asUser("GET", "/instances"); answer.Code != http.StatusForbidden {
+		t.Fatalf("after the mapping is removed = %d, want 403", answer.Code)
+	}
+
+	sent := httptest.NewRequest("GET", "/instances", nil)
+	sent.Header.Set(serviceTokenHeader, testServiceToken)
+	sent.Header.Set(peerUserHeader, remoteUser)
+	if answer := serve(accepting.server, sent); answer.Code != http.StatusBadRequest || !strings.Contains(answer.Body.String(), "peer_user_without_peer_token") {
+		t.Fatalf("a user header with no peer token = %d %s, want 400", answer.Code, answer.Body)
+	}
+}
+
+// TestRemovingAConnectionTellsTheOtherServer removes a dial-out connection
+// on the side that dials and checks the other side marks it removed.
+func TestRemovingAConnectionTellsTheOtherServer(t *testing.T) {
+	previous := peerSocketCloseAfterRemovalNotice
+	peerSocketCloseAfterRemovalNotice = 50 * time.Millisecond
+	t.Cleanup(func() { peerSocketCloseAfterRemovalNotice = previous })
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}), http.StatusCreated, "grant")
+
+	removed := decodeAnswer[msg.PeerConnectionView](t, initiating.requestAsAdministrator(t, "POST", "/peer-connections/"+initiatingID+"/remove", map[string]any{"reason": "laptop retired"}),
+		http.StatusOK, "remove")
+	if removed.Connection.RemovalNotice != "the other server was told" {
+		t.Fatalf("removal notice = %q", removed.Connection.RemovalNotice)
+	}
+	other := decodeAnswer[msg.PeerConnectionView](t, accepting.requestAsAdministrator(t, "GET", "/peer-connections/"+acceptingID, nil), http.StatusOK, "the other side")
+	if other.Connection.RemovedAt == nil || !other.Connection.RemovedByOtherServer || other.Connection.RemoveReason != "laptop retired" || other.AccessGiven != nil {
+		t.Fatalf("the other side's connection = %+v, want it removed by the other server with its access revoked", other)
+	}
+}
+
+// TestSessionEventsStreamThroughTheSocket reads a stream that never ends
+// through the proxy over a dial-out socket, and gets its first frame while it
+// is still open.
+func TestSessionEventsStreamThroughTheSocket(t *testing.T) {
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}), http.StatusCreated, "grant")
+	initiatingOverHTTP := httptest.NewServer(initiating.server)
+	t.Cleanup(initiatingOverHTTP.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	request, _ := http.NewRequestWithContext(ctx, "GET", initiatingOverHTTP.URL+"/peer-connections/"+initiatingID+"/proxy/session-events", nil)
+	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("session-events through the socket = %d %q", response.StatusCode, response.Header.Get("Content-Type"))
+	}
+	reader := bufio.NewReader(response.Body)
+	line, err := reader.ReadString('\n')
+	if err != nil || strings.TrimSpace(line) != "event: hello" {
+		t.Fatalf("first line through the socket = %q %v, want event: hello while the stream is still open", line, err)
 	}
 }
