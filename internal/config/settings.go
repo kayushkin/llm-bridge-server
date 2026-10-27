@@ -157,6 +157,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The address this server listens on."},
 		{Key: "public_url", EnvironmentVariable: "LLMBRIDGE_PUBLIC_URL", Kind: wiring, ValueType: text,
 			Description: "The URL remote runners fetch harness binaries from. Empty makes a runner use the address it reached the server on."},
+		{Key: "peer_connections.public_url", EnvironmentVariable: "LLMBRIDGE_PEER_CONNECTIONS_PUBLIC_URL", Kind: wiring, ValueType: text,
+			Description: "The https address other llm-bridge-servers reach this one at, shown beside a connection passphrase so the administrator can give both to the other server. Nothing else reads it; public_url is the address runners and this server's own agents use."},
 		{Key: "principal_store.url", EnvironmentVariable: "LLMBRIDGE_PRINCIPAL_STORE_URL", Kind: wiring, ValueType: text, Required: true,
 			Description: "principal-store, which every caller's principal is read from. It has no default: a guessed address would answer who is an administrator."},
 		{Key: "grant_store.url", EnvironmentVariable: "LLMBRIDGE_GRANT_STORE_URL", Kind: wiring, ValueType: text, Required: true,
