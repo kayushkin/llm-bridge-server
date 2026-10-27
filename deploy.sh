@@ -102,6 +102,10 @@ go build -o "$BIN_NAME" ./cmd/llm-bridge-server
 # bridge-mcp: the MCP server tool-store offers sessions, built beside the
 # server so a refused build stops the deploy before anything is touched.
 go build -o bridge-mcp ./cmd/bridge-mcp
+# bridge-agent: how an agent starts a delegate. It signs in with the calling
+# session's posting token, so a copy older than the server's delegate routes
+# cannot start anything; build it with the server it talks to.
+go build -o bridge-agent ./cmd/bridge-agent
 echo "    built: $(ls -lh "$BIN_NAME" | awk '{print $5}')"
 
 # Checked before the backup, and so before the stop and the install: an unidentifiable
@@ -177,6 +181,10 @@ echo "==> Installing bridge-mcp..."
 # a session's running copy keeps the binary it loaded.
 install -m 755 bridge-mcp "$HOME/bin/bridge-mcp"
 rm -f bridge-mcp
+
+echo "==> Installing bridge-agent..."
+install -m 755 bridge-agent "$HOME/bin/bridge-agent"
+rm -f bridge-agent
 
 echo "==> Installing service file..."
 # The committed unit file uses __USER__ / __HOME__ placeholders so the repo
