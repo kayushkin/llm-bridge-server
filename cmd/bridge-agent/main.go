@@ -28,10 +28,12 @@
 //     sent as X-Principal-Id so the delegate belongs to that person. The server
 //     strips this token from every harness child, so an agent session never has
 //     it.
-//   - --principal alone: the CLI logs in through POST /auth/demo-login as that
-//     principal and the delegate is created as them, sending the login's CSRF
-//     token with every request. This is how an agent session runs the CLI,
-//     and it needs a server with demo login switched on.
+//   - LLM_BRIDGE_SESSION_POSTING_TOKEN, which the server gives every local and
+//     runner harness child: the CLI is then the agent of that session, and the
+//     server creates the delegate under that session, as that session's
+//     principal, and lets the CLI reach only its own delegates. This is how an
+//     agent session runs the CLI. --principal is then optional, and one that is
+//     not the session's principal is refused by the server.
 //
 // With neither, the CLI stops before it calls the server, rather than guess
 // whose delegate it is starting.
@@ -40,7 +42,7 @@
 // and each video shared into the chat of the session that ran this command
 // (browser_video.go); -record-browser-video=false turns that off.
 //
-//	bridge-agent --principal principal_000001 --mcp browser "open dash.kayushkin.com and screenshot the board"
+//	bridge-agent --mcp browser "open the board and screenshot it"
 package main
 
 import (
@@ -52,7 +54,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/signal"
@@ -75,7 +76,10 @@ const (
 	serviceTokenEnvironmentVariable = "LLMBRIDGE_SERVICE_TOKEN"
 	serviceTokenHeader              = "X-LLM-Bridge-Service-Token"
 	principalIDHeader               = "X-Principal-Id"
-	csrfTokenHeader                 = "X-CSRF-Token"
+
+	// sessionPostingTokenEnvironmentVariable is the token llm-bridge-server
+	// gives a harness child to act for its own session.
+	sessionPostingTokenEnvironmentVariable = "LLM_BRIDGE_SESSION_POSTING_TOKEN"
 )
 
 // bundleDir holds Claude Code MCP config files, one per bundle. The "none"
@@ -102,7 +106,7 @@ func main() {
 		computerUse = flag.Bool("computer-use", false, "give the delegate its runner machine's computer-use tool (mcp__llm-bridge-computer-use__computer); the instance must be on a runner machine whose owner switched computer use on")
 		keep        = flag.Bool("keep", false, "leave the delegate session running instead of stopping it after the result")
 		recordVideo = flag.Bool("record-browser-video", true, "when the bundle runs the Playwright MCP and the delegate runs on this session's machine, record its browser and share each video into this session's chat")
-		principal   = flag.String("principal", "", "principal-store id (principal_000001) the delegate session belongs to. Without "+serviceTokenEnvironmentVariable+" set, the CLI logs in as this principal; one of the two is required")
+		principal   = flag.String("principal", "", "principal-store id (principal_000001) the delegate session belongs to. With "+serviceTokenEnvironmentVariable+" it is sent as the principal the service acts for; with "+sessionPostingTokenEnvironmentVariable+" the delegate runs as this session's principal, and naming another is refused")
 
 		listPurposes = flag.Bool("list-purposes", false, "print the registered session purposes and exit")
 	)
@@ -168,7 +172,7 @@ func main() {
 	ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
 	defer cancelTimeout()
 
-	agent, err := authenticatedDelegate(ctx, strings.TrimRight(*server, "/"), os.Getenv(serviceTokenEnvironmentVariable), *principal)
+	agent, err := authenticatedDelegate(strings.TrimRight(*server, "/"), os.Getenv(serviceTokenEnvironmentVariable), os.Getenv(sessionPostingTokenEnvironmentVariable), *principal)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -286,63 +290,30 @@ type delegate struct {
 	client *http.Client
 	server string
 	// serviceToken, when set, goes on every request as the internal service's
-	// credential, and actingPrincipalID with it. When it is empty the client's
-	// cookie jar carries the login cookie instead.
+	// credential, and actingPrincipalID with it.
 	serviceToken      string
 	actingPrincipalID string
-	// csrfToken is the login session's CSRF token, from the login response.
-	// The server refuses a cookie-authenticated POST without it.
-	csrfToken string
+	// sessionPostingToken, when serviceToken is empty, goes on every request as
+	// "Authorization: Bearer": the CLI is then the agent of the session that
+	// token belongs to. requestedPrincipalID is sent in the create body, so the
+	// server refuses it when it is not that session's principal.
+	sessionPostingToken  string
+	requestedPrincipalID string
 }
 
-// authenticatedDelegate returns a delegate that every server route will
-// accept: the service token when the environment holds one, otherwise a demo
-// login as principalID. It fails when it has neither, and when the login is
-// refused, so a missing credential is reported before a session is attempted.
-func authenticatedDelegate(ctx context.Context, server, serviceToken, principalID string) (*delegate, error) {
+// authenticatedDelegate returns a delegate that every server route it calls
+// will accept: the service token when the environment holds one, otherwise
+// the session posting token. It fails when it has neither, so a missing
+// credential is reported before a session is attempted.
+func authenticatedDelegate(server, serviceToken, sessionPostingToken, principalID string) (*delegate, error) {
 	if serviceToken != "" {
 		return &delegate{client: &http.Client{}, server: server, serviceToken: serviceToken, actingPrincipalID: principalID}, nil
 	}
-	if principalID == "" {
-		return nil, fmt.Errorf("no credential for llm-bridge-server: pass --principal <principal-store id> to log in as that person, or set " + serviceTokenEnvironmentVariable + " when running as an internal service")
+	if sessionPostingToken != "" {
+		return &delegate{client: &http.Client{}, server: server, sessionPostingToken: sessionPostingToken, requestedPrincipalID: principalID}, nil
 	}
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		return nil, fmt.Errorf("create cookie jar: %w", err)
-	}
-	d := &delegate{client: &http.Client{Jar: jar}, server: server}
-	if err := d.demoLogin(ctx, principalID); err != nil {
-		return nil, fmt.Errorf("log in as %s: %w", principalID, err)
-	}
-	return d, nil
-}
-
-// demoLogin obtains the login cookie, which the client's jar sends on every
-// later request, and the CSRF token do sends beside it.
-func (d *delegate) demoLogin(ctx context.Context, principalID string) error {
-	body, err := json.Marshal(map[string]string{"principal_id": principalID})
-	if err != nil {
-		return err
-	}
-	resp, err := d.post(ctx, "/auth/demo-login", body)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return httpError(resp)
-	}
-	var login struct {
-		CSRFToken string `json:"csrf_token"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&login); err != nil {
-		return fmt.Errorf("read the login response: %w", err)
-	}
-	if login.CSRFToken == "" {
-		return fmt.Errorf("the login response carries no csrf_token, so every POST this CLI makes would be refused; is the server older than login sessions?")
-	}
-	d.csrfToken = login.CSRFToken
-	return nil
+	return nil, fmt.Errorf("no credential for llm-bridge-server: run this inside a bridge session, which sets %s, or set %s when running as an internal service",
+		sessionPostingTokenEnvironmentVariable, serviceTokenEnvironmentVariable)
 }
 
 // do sends a request to the server with the delegate's credential on it.
@@ -352,9 +323,8 @@ func (d *delegate) do(req *http.Request) (*http.Response, error) {
 		if d.actingPrincipalID != "" {
 			req.Header.Set(principalIDHeader, d.actingPrincipalID)
 		}
-	}
-	if d.csrfToken != "" {
-		req.Header.Set(csrfTokenHeader, d.csrfToken)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+d.sessionPostingToken)
 	}
 	return d.client.Do(req)
 }
@@ -374,6 +344,7 @@ func (d *delegate) createSession(ctx context.Context, harness, instance, manager
 		Origin:           "bridge-agent",
 		AutoStart:        autoStart,
 		HarnessConfig:    cfg,
+		PrincipalID:      d.requestedPrincipalID,
 	})
 	if err != nil {
 		return "", err
