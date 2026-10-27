@@ -244,8 +244,10 @@ func TestAnAgentSharesIntoItsOwnSessionAndNoOther(t *testing.T) {
 	if code := withToken(httptest.NewRequest(http.MethodGet, "/sessions/br_agent/files", nil)).Code; code != http.StatusUnauthorized {
 		t.Errorf("token on the list route: %d, want 401", code)
 	}
-	if code := withToken(httptest.NewRequest(http.MethodPost, "/sessions/br_agent/send", strings.NewReader(`{"message":"x"}`))).Code; code != http.StatusUnauthorized {
-		t.Errorf("token on send: %d, want 401", code)
+	// Send takes the token only for a delegate this session started
+	// (delegate_sessions.go), which its own session is not.
+	if code := withToken(httptest.NewRequest(http.MethodPost, "/sessions/br_agent/send", strings.NewReader(`{"message":"x"}`))).Code; code != http.StatusNotFound {
+		t.Errorf("token on send to its own session: %d, want 404", code)
 	}
 }
 

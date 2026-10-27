@@ -134,7 +134,7 @@ const (
 func testAuthorizationConfig(cfg *config.Config) {
 	cfg.DemoLoginSigningKey = testSigningKey
 	cfg.ServiceToken = testServiceToken
-	// This host relies on demo login, so tests have it on unless they are
+	// Demo login is on by default, so tests have it on unless they are
 	// about switching it off.
 	cfg.DemoLoginEnabled = true
 	if cfg.PrincipalStoreURL == "" {

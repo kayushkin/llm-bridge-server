@@ -238,6 +238,15 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		req.DisplayName, req.SessionID,
 	)
 
+	// A session's agent starts a delegate under its own session, as that
+	// session's principal (delegate_sessions.go).
+	if caller, ok := callerOfRequest(r); ok && caller.delegatingAgentOfSessionID != "" {
+		if refusal := delegateRequestRefusal(&req, caller.delegatingAgentOfSessionID, caller.principalID); refusal != nil {
+			refusal.write(w)
+			return
+		}
+	}
+
 	// A principal creates sessions as itself and as nobody else.
 	// An administrator and the internal service are not restricted here. Naming another principal is refused rather
 	// than overwritten, so a client bug that sends the wrong id is visible.

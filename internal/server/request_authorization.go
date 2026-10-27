@@ -114,9 +114,36 @@ const (
 	routePrincipalManagesOwnLoginSessions
 )
 
+// sessionAgentDelegateAccess says whether, and how, a session's own agent may
+// call a route with its session posting token to start and drive delegates:
+// sessions it creates under itself (manager_session_id), as bridge-agent does.
+// The agent acts with exactly the principal its own session runs with, and
+// reaches only its own delegates. Every route without one refuses the token as
+// before, except routeSessionOwnerOrItsAgentPostsIntoSession.
+type sessionAgentDelegateAccess int
+
+const (
+	// sessionAgentNotAccepted is every route but the few below.
+	sessionAgentNotAccepted sessionAgentDelegateAccess = iota
+	// sessionAgentCreatesItsDelegate is POST /sessions: the new session sits
+	// under the agent's session and runs as that session's principal.
+	sessionAgentCreatesItsDelegate
+	// sessionAgentReachesItsDelegate names a session in a path value that the
+	// agent's session must manage.
+	sessionAgentReachesItsDelegate
+	// sessionAgentReachesItsDelegateOrItself is the same, and also reaches the
+	// agent's own session.
+	sessionAgentReachesItsDelegateOrItself
+	// sessionAgentReadsCatalog is a catalog a delegate's start depends on.
+	sessionAgentReadsCatalog
+)
+
 // routeAccessRule is one route's classification.
 type routeAccessRule struct {
 	class routeAccessClass
+	// sessionAgentAccess says whether a session's agent may call the route
+	// with its posting token to start and drive its delegates.
+	sessionAgentAccess sessionAgentDelegateAccess
 	// ownedResourcePathValueName names the path value holding the session id
 	// (routePrincipalOwnsSession) or the signal id (routePrincipalOwnsSignal).
 	ownedResourcePathValueName string
@@ -139,6 +166,13 @@ func sessionAgentPostingRoute(pathValueName, reason string) routeAccessRule {
 }
 func sessionOwnedRoute(pathValueName string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalOwnsSession, ownedResourcePathValueName: pathValueName, reason: "acts on one session"}
+}
+
+// delegateDrivenSessionRoute is sessionOwnedRoute that a session's agent may
+// also call, with its posting token, on a delegate it started.
+func delegateDrivenSessionRoute(pathValueName string, access sessionAgentDelegateAccess) routeAccessRule {
+	return routeAccessRule{class: routePrincipalOwnsSession, ownedResourcePathValueName: pathValueName, sessionAgentAccess: access,
+		reason: "acts on one session, as its owner or as the agent of the session that started it"}
 }
 func signalOwnedRoute(pathValueName string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalOwnsSignal, ownedResourcePathValueName: pathValueName, reason: "acts on one signal of one session"}
@@ -198,7 +232,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	"/api/harness-proxy/{harness}/{rest...}":     harnessCallbackRoute("harness backend proxy for wrappers on runners; unauthenticated today (noteboard card f4e5e1ef)"),
 
 	// Sessions.
-	"POST /sessions":              {class: routePrincipalCreatesSession, reason: "a principal creates sessions as itself"},
+	"POST /sessions":              {class: routePrincipalCreatesSession, sessionAgentAccess: sessionAgentCreatesItsDelegate, reason: "a principal creates sessions as itself, and a session's agent its delegates as its own session's principal"},
 	"GET /sessions":               ownSessionsOnlyRoute("session list, narrowed in the store"),
 	"GET /sessions/summary":       ownSessionsOnlyRoute("sidebar list, narrowed in the store"),
 	"POST /sessions/summary":      ownSessionsOnlyRoute("sidebar list, narrowed in the store"),
@@ -211,8 +245,8 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /sessions/aggregates":    cannotBeFilteredRoute("aggregates computed by log-store across every session"),
 	"GET /sessions/discover":      operatorRoute("imports sessions found on this host's disk"),
 
-	"GET /sessions/{id}":                                  sessionOwnedRoute("id"),
-	"POST /sessions/{id}/send":                            sessionOwnedRoute("id"),
+	"GET /sessions/{id}":                                  delegateDrivenSessionRoute("id", sessionAgentReachesItsDelegateOrItself),
+	"POST /sessions/{id}/send":                            delegateDrivenSessionRoute("id", sessionAgentReachesItsDelegate),
 	"POST /sessions/{id}/files":                           sessionAgentPostingRoute("id", "shares a file into one session, as its owner or as its own agent"),
 	"GET /sessions/{id}/files":                            sessionOwnedRoute("id"),
 	"GET /sessions/{id}/files/{file_id}/content":          sessionOwnedRoute("id"),
@@ -222,7 +256,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /sessions/{id}/images":                          sessionAgentPostingRoute("id", "makes images and shares them into one session, as its owner or as its own agent"),
 	"GET /sessions/{id}/actions":                          sessionOwnedRoute("id"),
 	"POST /sessions/{id}/actions/{action_id}/run":         sessionOwnedRoute("id"),
-	"GET /sessions/{id}/events":                           sessionOwnedRoute("id"),
+	"GET /sessions/{id}/events":                           delegateDrivenSessionRoute("id", sessionAgentReachesItsDelegate),
 	"GET /sessions/{id}/attach":                           sessionOwnedRoute("id"),
 	"GET /sessions/{id}/attach-token":                     sessionOwnedRoute("id"),
 	"GET /sessions/{id}/messages":                         sessionOwnedRoute("id"),
@@ -231,7 +265,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /sessions/{id}/entries/{eventId}/images/{index}": sessionOwnedRoute("id"),
 	"POST /sessions/{id}/interrupt":                       sessionOwnedRoute("id"),
 	"POST /sessions/{id}/resume":                          sessionOwnedRoute("id"),
-	"POST /sessions/{id}/stop":                            sessionOwnedRoute("id"),
+	"POST /sessions/{id}/stop":                            delegateDrivenSessionRoute("id", sessionAgentReachesItsDelegate),
 	"POST /sessions/{id}/mode":                            sessionOwnedRoute("id"),
 	"POST /sessions/{id}/compact":                         sessionOwnedRoute("id"),
 	"POST /sessions/{id}/fork":                            sessionOwnedRoute("id"),
@@ -272,7 +306,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /harnesses/{name}/agents":       catalogRoute("agents available on a harness type"),
 	"/images/":                           catalogRoute("harness images"),
 	"GET /session-taxonomy":              catalogRoute("session type and purpose vocabulary"),
-	"GET /instances":                     catalogRoute("instances to start a session on; narrowed to can_dispatch_on grants and without machine details"),
+	"GET /instances":                     {class: routePrincipalReadsCatalog, sessionAgentAccess: sessionAgentReadsCatalog, reason: "instances to start a session on; narrowed to can_dispatch_on grants and without machine details"},
 	"GET /agents":                        catalogRoute("agent-store agents, unfiltered by can_run_as"),
 	"GET /agents/{slug}":                 catalogRoute("one agent-store agent, unfiltered by can_run_as"),
 
@@ -431,6 +465,11 @@ type requestCaller struct {
 	// is a session's own agent presenting its session posting token. It reaches
 	// only routeSessionOwnerOrItsAgentPostsIntoSession, for this session.
 	postingAgentOfSessionID string
+	// delegatingAgentOfSessionID is set when the caller is a session's agent
+	// presenting its posting token on a route that lets it start or drive its
+	// delegates. principalID is then the principal that session runs with,
+	// empty when it runs with none.
+	delegatingAgentOfSessionID string
 }
 
 // narrowsToOnePrincipal reports whether this caller's answers must be limited
@@ -580,6 +619,11 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+		return
+	}
+
+	if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization && rule.sessionAgentAccess != sessionAgentNotAccepted {
+		s.serveDelegatingAgent(w, r, pattern, rule)
 		return
 	}
 
