@@ -65,6 +65,11 @@ const (
 	// routeOperatorOnly needs the service token, or a principal
 	// principal-store calls an administrator.
 	routeOperatorOnly
+	// routePeerConnectionCall is called by a connected llm-bridge-server about
+	// the connection itself, never with a peer token: the handler checks the
+	// connection's credential, or the socket the call arrived over
+	// (peers.go).
+	routePeerConnectionCall
 	// routePrincipalCreatesSession is POST /sessions: the session is created
 	// as the calling principal, whatever the body says.
 	routePrincipalCreatesSession
@@ -158,6 +163,9 @@ func openRoute(reason string) routeAccessRule {
 func harnessCallbackRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routeHarnessCallback, reason: reason}
 }
+func peerConnectionCallRoute(reason string) routeAccessRule {
+	return routeAccessRule{class: routePeerConnectionCall, reason: reason}
+}
 func operatorRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routeOperatorOnly, reason: reason}
 }
@@ -196,26 +204,32 @@ func cannotBeFilteredRoute(reason string) routeAccessRule {
 // HandleFunc/Handle in this package has no rule.
 var routeAccessRules = map[string]routeAccessRule{
 	// Open.
-	"GET /health":                      openRoute("liveness for load balancers and healthcheck"),
-	"POST /auth/demo-login":            openRoute("how a principal obtains a login; answers 404 itself when switched off"),
-	"GET /auth/entra/start":            openRoute("sends the browser to Entra ID to sign in"),
-	"GET /auth/entra/callback":         openRoute("Entra ID sends the browser back here; the handler verifies everything it is given"),
-	"GET /auth/principal":              openRoute("answers 401 itself without a live login session"),
-	"POST /auth/logout":                openRoute("revokes the cookie's live session, checking its CSRF token itself, and clears a dead cookie with none"),
-	"POST /peer-invites":               operatorRoute("hands another server access to this one"),
-	"GET /peer-invites":                operatorRoute("who was invited to link, and by whom"),
-	"POST /peer/redeem":                openRoute("the calling server has no credential yet; the one-time passphrase is the credential, checked by the handler"),
-	"GET /peer/self":                   catalogRoute("tells a caller who it is; the handler answers only a peer token"),
-	"GET /peer-tokens":                 operatorRoute("which servers may act here"),
-	"POST /peer-tokens/{id}/revoke":    operatorRoute("takes another server's access away"),
-	"POST /peer-links":                 operatorRoute("stores a credential for another server"),
-	"GET /peer-links":                  operatorRoute("which servers this one may act on"),
-	"POST /peer-links/{id}/check":      operatorRoute("calls another server with a stored credential"),
-	"POST /peer-links/{id}/remove":     operatorRoute("deletes a stored credential"),
-	"/peer-links/{id}/proxy/{rest...}": operatorRoute("acts on another server as this whole server's peer principal, so only an administrator here may"),
-	"GET /auth/sessions":               {class: routePrincipalManagesOwnLoginSessions, reason: "a principal's own login sessions; an administrator names anyone's"},
-	"POST /auth/sessions/{id}/revoke":  {class: routePrincipalManagesOwnLoginSessions, reason: "ends a principal's own login session; an administrator ends anyone's"},
-	"GET /auth/login-attempts":         operatorRoute("every sign-in attempt, with the identities of people refused"),
+	"GET /health":                              openRoute("liveness for load balancers and healthcheck"),
+	"POST /auth/demo-login":                    openRoute("how a principal obtains a login; answers 404 itself when switched off"),
+	"GET /auth/entra/start":                    openRoute("sends the browser to Entra ID to sign in"),
+	"GET /auth/entra/callback":                 openRoute("Entra ID sends the browser back here; the handler verifies everything it is given"),
+	"GET /auth/principal":                      openRoute("answers 401 itself without a live login session"),
+	"POST /auth/logout":                        openRoute("revokes the cookie's live session, checking its CSRF token itself, and clears a dead cookie with none"),
+	"POST /peer-connection-invites":            operatorRoute("lets another server connect to this one"),
+	"GET /peer-connection-invites":             operatorRoute("who was invited to connect, and by whom"),
+	"POST /peer-connections":                   operatorRoute("connects to another server and stores a credential for it"),
+	"GET /peer-connections":                    operatorRoute("which servers this one is connected to, and the access each way"),
+	"GET /peer-connections/{id}":               operatorRoute("one connection and the access each way"),
+	"POST /peer-connections/{id}/remove":       operatorRoute("ends a connection and the access each way"),
+	"POST /peer-connections/{id}/grant":        operatorRoute("gives another server access to this one"),
+	"POST /peer-connections/{id}/revoke-grant": operatorRoute("takes another server's access away"),
+	"POST /peer-connections/{id}/check":        operatorRoute("calls another server with a stored token"),
+	"/peer-connections/{id}/proxy/{rest...}":   operatorRoute("acts on another server as this whole server's peer principal, so only an administrator here may"),
+	"GET /peer-access-levels":                  operatorRoute("the levels of access this server can give"),
+	"POST /peer-access-levels/{key}/provision": operatorRoute("makes a level's group and its grants"),
+	"POST /peer/connect":                       openRoute("the other server has no credential yet; the one-time passphrase is the credential, checked by the handler"),
+	"GET /peer/socket":                         peerConnectionCallRoute("the dial-out socket; the handler checks the connection's credential"),
+	"POST /peer/access":                        peerConnectionCallRoute("the other server delivers a token; the handler checks the connection"),
+	"POST /peer/access/revoked":                peerConnectionCallRoute("the other server takes a token back; the handler checks the connection"),
+	"GET /peer/self":                           catalogRoute("tells a caller who it is; the handler answers only a peer token"),
+	"GET /auth/sessions":                       {class: routePrincipalManagesOwnLoginSessions, reason: "a principal's own login sessions; an administrator names anyone's"},
+	"POST /auth/sessions/{id}/revoke":          {class: routePrincipalManagesOwnLoginSessions, reason: "ends a principal's own login session; an administrator ends anyone's"},
+	"GET /auth/login-attempts":                 operatorRoute("every sign-in attempt, with the identities of people refused"),
 
 	// Harness callbacks: called by processes this server spawned or by
 	// runners, none of which carry a login.
@@ -446,6 +460,18 @@ type requestCallerContextKey struct{}
 
 // requestCaller is who an authorized request acts as, as request
 // authorization established it.
+// peerCaller is what a peer token says about the server presenting it: the
+// grant it was issued by, the connection that grant is on, and its level.
+// remoteUserPrincipalID is left for phase 2 of design note
+// d107154a-49ac-471b-a1b7-fc7975de37f3, when the calling server also names
+// which of its own principals is asking; nothing sets it yet.
+type peerCaller struct {
+	grantID               string
+	connectionID          string
+	level                 string
+	remoteUserPrincipalID string
+}
+
 type requestCaller struct {
 	// principalID is the principal the request acts as, and empty for the
 	// internal service acting as itself.
@@ -458,9 +484,9 @@ type requestCaller struct {
 	// loginSessionID is the login session whose cookie authenticated the
 	// request, and empty for every other credential.
 	loginSessionID string
-	// peerTokenID is set when another llm-bridge-server presented a peer
-	// token; principalID is then the peer principal the token acts as.
-	peerTokenID string
+	// peer is set when another llm-bridge-server presented a peer token;
+	// principalID is then the peer principal the token acts as.
+	peer *peerCaller
 	// postingAgentOfSessionID is set, and nothing else is, when the caller
 	// is a session's own agent presenting its session posting token. It reaches
 	// only routeSessionOwnerOrItsAgentPostsIntoSession, for this session.
@@ -583,6 +609,17 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A request another server sent over a peer socket acts only as the peer
+	// its token names, or is a connection call: the routes open to everyone
+	// and the harness callbacks are for this host's own callers, never for a
+	// peer, however it arrived.
+	socketConnectionID, arrivedOverPeerSocket := peerSocketConnectionOfRequest(r)
+	if arrivedOverPeerSocket && !peerTokenPresent && rule.class != routePeerConnectionCall {
+		writeJSONError(w, http.StatusForbidden, "peer_socket_requires_peer_token", fmt.Sprintf(
+			"a request over a peer socket must present %s, or be a connection call; %s is neither", peerTokenHeader, pattern))
+		return
+	}
+
 	// Another llm-bridge-server acting as the peer principal its token was
 	// issued for. From here it is held to the route rules exactly as a person
 	// signed in as that principal would be.
@@ -597,7 +634,17 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 				"%s and an Authorization header were both sent; a request comes from one caller", peerTokenHeader))
 			return
 		}
-		caller, credentialError := s.callerOfPeerToken(r.Context(), presentedPeerTokens[0])
+		if !arrivedOverPeerSocket && s.cfg.DemoLoginEnabled {
+			writeJSONError(w, http.StatusConflict, "demo_login_enabled",
+				"a peer token by https is refused while demo login is on: it is a call from another machine, and demo login signs anyone in as anyone; a peer reaches this server over the socket this server dialed")
+			return
+		}
+		if rule.class == routeHarnessCallback || rule.class == routePeerConnectionCall {
+			writeJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
+				"%s is called by this host's own processes or as a connection call, never with a peer token", pattern))
+			return
+		}
+		caller, credentialError := s.callerOfPeerToken(r.Context(), presentedPeerTokens[0], socketConnectionID, arrivedOverPeerSocket)
 		if credentialError != nil {
 			credentialError.write(w)
 			return
@@ -607,7 +654,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch rule.class {
-	case routeOpenToEveryone, routeHarnessCallback:
+	case routeOpenToEveryone, routeHarnessCallback, routePeerConnectionCall:
 		s.mux.ServeHTTP(w, r)
 		return
 	}

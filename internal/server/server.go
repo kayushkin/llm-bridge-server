@@ -69,6 +69,8 @@ type Server struct {
 	// and handleCreateSession.
 	grantClient     *grantclient.Client
 	principalClient *principalclient.Client
+	// peerSockets holds every open peer socket and every dialer (peer_socket.go).
+	peerSockets *peerSocketRegistry
 	// bundleClient checks a bundle_id at creation and resolves it at spawn.
 	bundleClient *bundleclient.Client
 	// kanbanClient answers "which noteboard todo is this session linked
@@ -157,6 +159,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		permClient:      permclient.New(cfg.PermissionStoreURL),
 		grantClient:     grantclient.New(cfg.GrantStoreURL, cfg.GrantStoreServiceToken),
 		principalClient: principalclient.New(cfg.PrincipalStoreURL),
+		peerSockets:     newPeerSocketRegistry(),
 		bundleClient:    bundleclient.New(cfg.BundleStoreURL),
 		kanbanClient:    newKanbanClient(cfg.KanbanStoreURL),
 		bridgePrefs:     newBridgePrefsStore(cfg.BridgePrefsPath),

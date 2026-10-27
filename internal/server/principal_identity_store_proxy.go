@@ -53,6 +53,7 @@ var requestHeadersNeverForwardedToStores = []string{
 	grantclient.ServiceTokenHeader,
 	serviceTokenHeader,
 	peerTokenHeader,
+	peerConnectionCredentialHeader,
 	"Authorization",
 }
 

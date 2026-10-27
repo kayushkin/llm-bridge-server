@@ -134,26 +134,40 @@ func (s *Server) callerForPrincipalID(ctx context.Context, principalID, subjectD
 }
 
 // callerOfPeerToken turns a peer token another server presented into the
-// caller the route rules are applied to: the peer principal the token was
-// issued for, read from principal-store like any other principal. A token this
-// server never issued, or one an operator revoked, is 401. The token's value
-// is never logged or echoed; only its id is named.
-func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken string) (requestCaller, *requestCredentialError) {
-	token, err := s.store.GetPeerTokenByHash(hashPeerSecret(presentedToken))
-	if errors.Is(err, store.ErrPeerTokenNotFound) {
+// caller the route rules are applied to: the peer principal the grant was
+// made for, read from principal-store like any other principal. A token this
+// server never issued, or one an administrator revoked, is 401, and so is a
+// token presented over the socket of a connection it was not granted on. The
+// token's value is never logged or echoed; only its grant's id is named.
+func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken, socketConnectionID string, arrivedOverPeerSocket bool) (requestCaller, *requestCredentialError) {
+	grant, err := s.store.GetPeerGrantByTokenHash(hashPeerSecret(presentedToken))
+	if errors.Is(err, store.ErrPeerGrantNotFound) {
 		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "peer_token_unknown", peerTokenHeader + " is not a peer token this server issued"}
 	}
 	if err != nil {
 		return requestCaller{}, &requestCredentialError{http.StatusInternalServerError, "peer_token_lookup_failed", fmt.Sprintf("could not look up the peer token: %v", err)}
 	}
-	if token.RevokedAt != nil {
+	if grant.RevokedAt != nil {
 		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "peer_token_revoked", fmt.Sprintf(
-			"peer token %s was revoked at %s: %s", token.ID, token.RevokedAt.UTC().Format(time.RFC3339), token.RevokeReason)}
+			"peer grant %s was revoked at %s: %s", grant.ID, grant.RevokedAt.UTC().Format(time.RFC3339), grant.RevokeReason)}
 	}
-	caller, credentialError := s.callerForPrincipalID(ctx, token.PeerPrincipalID, "peer token "+token.ID+" acts as")
+	if arrivedOverPeerSocket && grant.ConnectionID != socketConnectionID {
+		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "peer_token_on_another_connection", fmt.Sprintf(
+			"peer grant %s is on %s, and this request came over %s's socket", grant.ID, grant.ConnectionID, socketConnectionID)}
+	}
+	caller, credentialError := s.callerForPrincipalID(ctx, grant.PeerPrincipalID, "peer grant "+grant.ID+" acts as")
 	if credentialError != nil {
 		return requestCaller{}, credentialError
 	}
-	caller.peerTokenID = token.ID
+	caller.peer = &peerCaller{grantID: grant.ID, connectionID: grant.ConnectionID, level: grant.Level}
 	return caller, nil
+}
+
+// forget drops the cached answer for principalID, so the next request reads
+// principal-store again. This server calls it after it changes the principal
+// itself, as granting a peer a level does, so a new level applies at once.
+func (cache *principalLookupCache) forget(principalID string) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	delete(cache.principalsByID, principalID)
 }

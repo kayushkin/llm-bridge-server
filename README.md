@@ -127,7 +127,8 @@ Every request is checked before a handler sees it (`internal/server/request_auth
 2. **The service token on behalf of a person**: the token plus `X-Principal-Id`. dash sends this for its logged-in user, and the request is judged as that person's. `X-Principal-Id` without the token is 401 on every route.
 3. **Principal**: a login cookie naming a live login session, from Entra ID sign-in or `POST /auth/demo-login`, or, on the two store proxies only, a session agent token. A cookie request with any method but `GET`, `HEAD` or `OPTIONS` must also carry the session's CSRF token in `X-CSRF-Token` (403 `csrf_token_missing` / `csrf_token_mismatch`).
 4. **A session's agent**: its session posting token (`LLM_BRIDGE_SESSION_POSTING_TOKEN`) as `Authorization: Bearer`. It shares files, offers actions and makes images in its own session, and starts and drives delegates under it: `POST /sessions` creates a session whose `manager_session_id` is the agent's session and whose principal is that session's (403 `delegate_manager_mismatch` / `delegate_principal_mismatch` for a body naming another, 403 `delegating_session_ended` once the session has ended); `GET /sessions/{id}`, `POST /sessions/{id}/send`, `POST /sessions/{id}/stop` and `GET /sessions/{id}/events` reach only those delegates (and `GET` the agent's own session), 404 otherwise; `GET /instances` reads the catalog. `cmd/bridge-agent` uses it when there is no service token. Any other route answers it 401.
-5. **Nobody**: 401 everywhere but the routes open to anyone and the harness callbacks.
+5. **Another llm-bridge-server**: a peer token in `X-LLM-Bridge-Peer-Token`, which this server delivered when an administrator granted that server a level of access. It acts as the peer principal the grant made and is held to the route rules like a person signed in as it; a peer is never let onto a harness callback. By https it is 409 `demo_login_enabled` while demo login is on; over a socket this server dialed out itself it is not. A request over a peer socket with no peer token is 403 unless it is a connection call.
+6. **Nobody**: 401 everywhere but the routes open to anyone and the harness callbacks.
 
 Every principal is looked up in principal-store: unknown is 400 `unknown_principal`, a group is 400 `principal_not_human`, disabled is 403 `principal_disabled`, principal-store down is 502. Answers are cached for 30 seconds, so disabling someone takes up to 30 seconds to take effect.
 
@@ -138,6 +139,7 @@ Every principal is looked up in principal-store: unknown is 400 `unknown_princip
 | anyone | No credential needed |
 | harness callback | Called by a process the server started, or by a runner; carries no login. The handler makes whatever check it makes. ⚠️ The prehooks, sidecar, hook exec and harness proxy check nothing, so do not publish them beyond this host. |
 | operator | Service token or administrator; a principal gets 403 `operator_route` |
+| connected server | A connection call from a server connected to this one: the handler checks the connection's credential in `X-LLM-Bridge-Peer-Connection`, or the socket the call arrived over. Never a peer token |
 | principal | Any principal. `GET /instances` lists only the instances its `can_dispatch_on` grants allow |
 | principal, as itself | `POST /sessions` creates the session as the caller; naming someone else is 403 `principal_mismatch` |
 | principal, own sessions only | The answer holds only the caller's sessions |
@@ -384,17 +386,23 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/peer-invites` | Every peer invite, redeemed or not; never a passphrase | operator |
-| `POST` | `/peer-invites` | Make a one-time passphrase another server redeems to act here as a peer principal | operator |
-| `GET` | `/peer-links` | Every server this one holds a peer token for | operator |
-| `POST` | `/peer-links` | Link to another server: redeem its passphrase there and keep the token in auth-store | operator |
-| `POST` | `/peer-links/{id}/check` | Ask the other server who this link's token acts as there | operator |
-| `*` | `/peer-links/{id}/proxy/{rest...}` | Any request to the linked server, as this server's peer principal there; the answer streams back unchanged | operator |
-| `POST` | `/peer-links/{id}/remove` | Stop using a link and delete its token from auth-store | operator |
-| `GET` | `/peer-tokens` | Every peer token this server issued, revoked or not; never a token | operator |
-| `POST` | `/peer-tokens/{id}/revoke` | Revoke a peer token, with a reason | operator |
-| `POST` | `/peer/redeem` | Trade a peer invite's passphrase for a peer token | anyone |
+| `GET` | `/peer-access-levels` | The levels of access this server can give, and each level's group | operator |
+| `POST` | `/peer-access-levels/{key}/provision` | Make a level's principal-store group and its grants | operator |
+| `GET` | `/peer-connection-invites` | Every connection passphrase, redeemed or not; never a passphrase | operator |
+| `POST` | `/peer-connection-invites` | Make a one-time passphrase another server enters to connect to this one; connecting gives no access | operator |
+| `GET` | `/peer-connections` | Every connected server, whether its socket is up, and the access given and held | operator |
+| `POST` | `/peer-connections` | Connect to another server by its address and passphrase, directly or by dialing out | operator |
+| `GET` | `/peer-connections/{id}` | One connection, whether its socket is up, and the access given and held | operator |
+| `POST` | `/peer-connections/{id}/check` | Ask the other server who the access this server holds acts as there | operator |
+| `POST` | `/peer-connections/{id}/grant` | Give the other server a level of access here and deliver its token | operator |
+| `*` | `/peer-connections/{id}/proxy/{rest...}` | Any request to the connected server, as this server's peer principal there; the answer streams back unchanged | operator |
+| `POST` | `/peer-connections/{id}/remove` | End a connection: revoke the access given, drop the access held, close the socket | operator |
+| `POST` | `/peer-connections/{id}/revoke-grant` | Take the other server's access away, with a reason, and tell it | operator |
+| `POST` | `/peer/access` | The other server delivers a token for access on it | connected server |
+| `POST` | `/peer/access/revoked` | The other server says a token it gave no longer works | connected server |
+| `POST` | `/peer/connect` | Another server connects with a one-time passphrase | anyone |
 | `GET` | `/peer/self` | Who the presented peer token acts as here | principal |
+| `GET` | `/peer/socket` | The WebSocket a server without an address keeps open to this one | connected server |
 
 ### Runners and harness callbacks
 

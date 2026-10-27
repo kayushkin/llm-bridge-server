@@ -25,6 +25,7 @@ var whoMayCallRoute = map[routeAccessClass]string{
 	routeOpenToEveryone:                           "anyone",
 	routeHarnessCallback:                          "harness callback",
 	routeOperatorOnly:                             "operator",
+	routePeerConnectionCall:                       "connected server",
 	routePrincipalCreatesSession:                  "principal, as itself",
 	routePrincipalOwnsSession:                     "owner",
 	routePrincipalOwnsSignal:                      "owner",

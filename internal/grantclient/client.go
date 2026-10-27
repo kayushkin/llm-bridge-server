@@ -109,3 +109,48 @@ func (c *Client) effective(ctx context.Context, principalID, relation, resourceT
 	}
 	return grants, nil
 }
+
+// GrantInput is the body of grant-store's POST /grants.
+type GrantInput struct {
+	PrincipalID  string `json:"principal_id"`
+	Relation     string `json:"relation"`
+	ResourceType string `json:"resource_type"`
+	ResourceID   string `json:"resource_id"`
+	Note         string `json:"note"`
+}
+
+// Create records a grant with the service token and returns its id. grant-store
+// is idempotent on the active tuple, so a grant that already exists answers
+// with its id too.
+func (c *Client) Create(ctx context.Context, input GrantInput) (string, error) {
+	data, err := json.Marshal(input)
+	if err != nil {
+		return "", err
+	}
+	requestURL := c.url + "/grants"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, strings.NewReader(string(data)))
+	if err != nil {
+		return "", fmt.Errorf("build POST %s: %w", requestURL, err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if c.serviceToken != "" {
+		request.Header.Set(ServiceTokenHeader, c.serviceToken)
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("grant-store unreachable: POST %s: %w", requestURL, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", fmt.Errorf("read grant-store response: %w", err)
+	}
+	if response.StatusCode/100 != 2 {
+		return "", fmt.Errorf("grant-store answered POST %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
+	}
+	var created grant
+	if err := json.Unmarshal(body, &created); err != nil || created.ID == "" {
+		return "", fmt.Errorf("grant-store answered POST %s with a body that is not a grant: %s", requestURL, strings.TrimSpace(string(body)))
+	}
+	return created.ID, nil
+}
