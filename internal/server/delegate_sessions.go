@@ -38,15 +38,18 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 			"the Authorization header must be \"Bearer <session posting token>\"")
 		return
 	}
-	agentSessionID, err := s.harnessChildTokenSigner.decodeSessionPostingToken(strings.TrimSpace(token))
-	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "invalid_session_posting_token", err.Error())
+	agentSession, credentialError := s.verifiedPostingSession(token)
+	if credentialError != nil {
+		credentialError.write(w)
 		return
 	}
-	agentSession, err := s.store.GetSession(agentSessionID)
-	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "invalid_session_posting_token", fmt.Sprintf(
-			"the session posting token names session %s, which this server does not have", agentSessionID))
+	agentSessionID := agentSession.SessionID
+	// An agent whose session has ended has no business driving anything: a
+	// token left in its transcript must not start, send to, stop or read its
+	// delegates.
+	if slices.Contains(sessionStatesThatEndSessionAgentTokens, msg.SessionState(agentSession.State)) {
+		writeJSONError(w, http.StatusForbidden, "delegating_session_ended", fmt.Sprintf(
+			"session %s is %s, so its agent may not start or drive delegates", agentSessionID, agentSession.State))
 		return
 	}
 
@@ -58,16 +61,31 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 			return
 		}
 		caller = principalCaller
+		// A session a connected server started for one of its users acts
+		// within the peer's grants as well as its principal's, so its agent is
+		// an administrator here only when both are: a peer user mapped to a
+		// local administrator through a peer that is not one gets no
+		// administrator's reach through its agent's token.
+		if caller.isAdministrator {
+			origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(agentSessionID)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error())
+				return
+			}
+			if throughPeer {
+				peer, credentialError := s.callerForPrincipalID(r.Context(), origin.PeerPrincipalID, "the peer session "+agentSessionID+" was started through is")
+				if credentialError != nil {
+					credentialError.write(w)
+					return
+				}
+				caller.isAdministrator = peer.isAdministrator
+			}
+		}
 	}
 	caller.delegatingAgentOfSessionID = agentSessionID
 
 	switch rule.sessionAgentAccess {
 	case sessionAgentCreatesItsDelegate:
-		if slices.Contains(sessionStatesThatEndSessionAgentTokens, msg.SessionState(agentSession.State)) {
-			writeJSONError(w, http.StatusForbidden, "delegating_session_ended", fmt.Sprintf(
-				"session %s is %s, so its agent may not start a delegate", agentSessionID, agentSession.State))
-			return
-		}
 	case sessionAgentReachesItsDelegate, sessionAgentReachesItsDelegateOrItself:
 		targetSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
 		if err != nil {

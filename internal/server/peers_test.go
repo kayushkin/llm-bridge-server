@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -702,5 +703,204 @@ func TestSessionEventsStreamThroughTheSocket(t *testing.T) {
 	line, err := reader.ReadString('\n')
 	if err != nil || strings.TrimSpace(line) != "event: hello" {
 		t.Fatalf("first line through the socket = %q %v, want event: hello while the stream is still open", line, err)
+	}
+}
+
+// TestTheProxyNeverPassesBackAPageForThisOrigin has the other server answer
+// HTML with a cookie and a redirect: the browser must get none of it as a page
+// of this server's origin.
+func TestTheProxyNeverPassesBackAPageForThisOrigin(t *testing.T) {
+	accepting := newPeerTestServer(t, false)
+	acceptingOverTLS := httptest.NewTLSServer(accepting.server)
+	t.Cleanup(acceptingOverTLS.Close)
+	initiating := newPeerTestServer(t, false)
+	initiatingOverTLS := httptest.NewTLSServer(initiating.server)
+	t.Cleanup(initiatingOverTLS.Close)
+	trustTestCertificates(t, acceptingOverTLS, initiatingOverTLS)
+	acceptingID, initiatingID := connectPair(t, accepting, initiating, acceptingOverTLS.URL, initiatingOverTLS.URL)
+	decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}),
+		http.StatusCreated, "grant")
+
+	const pattern = "GET /an-answer-for-the-proxy-test"
+	answers := map[string]string{"html": "text/html; charset=utf-8", "json": "application/json; charset=utf-8", "stream": "text/event-stream"}
+	accepting.server.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", answers[r.URL.Query().Get("kind")])
+		w.Header().Set("Set-Cookie", "stolen=1")
+		w.Header().Set("Refresh", "0; url=https://elsewhere.example")
+		w.Header().Set("Content-Security-Policy", "default-src *")
+		_, _ = w.Write([]byte("<script>alert(1)</script>"))
+	})
+	routeAccessRules[pattern] = openRoute("a test answer")
+	t.Cleanup(func() { delete(routeAccessRules, pattern) })
+
+	for kind, want := range map[string]string{"html": "application/octet-stream", "json": answers["json"], "stream": answers["stream"]} {
+		answer := initiating.requestAsAdministrator(t, "GET", "/peer-connections/"+initiatingID+"/proxy/an-answer-for-the-proxy-test?kind="+kind, nil)
+		if answer.Code != http.StatusOK {
+			t.Fatalf("%s through the proxy = %d %s", kind, answer.Code, answer.Body)
+		}
+		header := answer.Header()
+		if got := header.Get("Content-Type"); got != want {
+			t.Errorf("%s: Content-Type = %q, want %q", kind, got, want)
+		}
+		if header.Get("X-Content-Type-Options") != "nosniff" || header.Get("Content-Security-Policy") != "sandbox" {
+			t.Errorf("%s: nosniff = %q, policy = %q, want nosniff and sandbox", kind, header.Get("X-Content-Type-Options"), header.Get("Content-Security-Policy"))
+		}
+		if header.Get("Set-Cookie") != "" || header.Get("Refresh") != "" {
+			t.Errorf("%s: the other server's Set-Cookie %q or Refresh %q reached the browser", kind, header.Get("Set-Cookie"), header.Get("Refresh"))
+		}
+	}
+}
+
+func TestPassedBackContentTypeKeepsOnlyWhatTheBridgeAnswers(t *testing.T) {
+	for peerType, want := range map[string]string{
+		"application/json": "application/json", "application/json; charset=utf-8": "application/json; charset=utf-8",
+		"text/event-stream": "text/event-stream", "text/html": "application/octet-stream", "image/svg+xml": "application/octet-stream",
+		"": "application/octet-stream", "not a type": "application/octet-stream", "Application/JSON": "Application/JSON",
+	} {
+		if got := passedBackContentType(peerType); got != want {
+			t.Errorf("passedBackContentType(%q) = %q, want %q", peerType, got, want)
+		}
+	}
+}
+
+// TestAPeerSocketServesOnlySoManyRequestsAtOnce holds the most requests one
+// socket runs at once open on the accepting side, and checks the next is
+// answered 503 at once instead of being started.
+func TestAPeerSocketServesOnlySoManyRequestsAtOnce(t *testing.T) {
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}), http.StatusCreated, "grant")
+	const pattern = "GET /a-request-that-waits"
+	release := make(chan struct{})
+	started := make(chan struct{}, peerSocketMostRequestsServedAtOnce)
+	accepting.server.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	routeAccessRules[pattern] = openRoute("a test answer")
+	t.Cleanup(func() { delete(routeAccessRules, pattern) })
+	initiatingOverHTTP := httptest.NewServer(initiating.server)
+	t.Cleanup(initiatingOverHTTP.Close)
+	get := func() (*http.Response, error) {
+		request, _ := http.NewRequest("GET", initiatingOverHTTP.URL+"/peer-connections/"+initiatingID+"/proxy/a-request-that-waits", nil)
+		request.Header.Set(serviceTokenHeader, testServiceToken)
+		request.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
+		return http.DefaultClient.Do(request)
+	}
+	results := make(chan int, peerSocketMostRequestsServedAtOnce)
+	for range peerSocketMostRequestsServedAtOnce {
+		go func() {
+			response, err := get()
+			if err != nil {
+				results <- -1
+				return
+			}
+			response.Body.Close()
+			results <- response.StatusCode
+		}()
+	}
+	for range peerSocketMostRequestsServedAtOnce {
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the held requests did not all start")
+		}
+	}
+	response, err := get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "peer_socket_busy") {
+		t.Fatalf("one request past the most = %d %s, want 503 peer_socket_busy", response.StatusCode, body)
+	}
+	close(release)
+	for range peerSocketMostRequestsServedAtOnce {
+		if code := <-results; code != http.StatusNoContent {
+			t.Fatalf("a held request ended %d, want 204", code)
+		}
+	}
+}
+
+// TestALargeAnswerCrossesThePeerSocketInChunks writes one answer larger than
+// the chunk a frame carries and reads it back whole.
+func TestALargeAnswerCrossesThePeerSocketInChunks(t *testing.T) {
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}), http.StatusCreated, "grant")
+	const pattern = "GET /a-large-answer"
+	large := bytes.Repeat([]byte("0123456789abcdef"), 3*peerSocketLargestAnswerChunk/16+5)
+	accepting.server.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(large)
+	})
+	routeAccessRules[pattern] = openRoute("a test answer")
+	t.Cleanup(func() { delete(routeAccessRules, pattern) })
+	answer := initiating.requestAsAdministrator(t, "GET", "/peer-connections/"+initiatingID+"/proxy/a-large-answer", nil)
+	if answer.Code != http.StatusOK || !bytes.Equal(answer.Body.Bytes(), large) {
+		t.Fatalf("large answer = %d, %d bytes, want 200 and %d bytes", answer.Code, answer.Body.Len(), len(large))
+	}
+}
+
+// TestAFrameOverTheReadLimitEndsTheSocket sends one message larger than the
+// accepting side reads and checks that side closes the socket.
+func TestAFrameOverTheReadLimitEndsTheSocket(t *testing.T) {
+	previous := peerSocketReadLimit
+	peerSocketReadLimit = 4096
+	t.Cleanup(func() { peerSocketReadLimit = previous })
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	acceptingSocket := accepting.server.peerSockets.socketOf(acceptingID)
+	initiatingSocket := initiating.server.peerSockets.socketOf(initiatingID)
+	if acceptingSocket == nil || initiatingSocket == nil {
+		t.Fatal("a side has no open socket")
+	}
+	if err := initiatingSocket.send(peerSocketFrame{Type: peerSocketFrameCancel, Stream: 1, Error: strings.Repeat("x", 8192)}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-acceptingSocket.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the accepting side kept a socket that sent a frame over its read limit")
+	}
+}
+
+// TestAPeerStartedSessionsAgentIsNoAdministratorThroughAPeerThatIsNot maps a
+// connected server's user to a local administrator through a peer that is not
+// one, and checks that session's agent, using its posting token, does not get
+// an administrator's unfiltered instance list.
+func TestAPeerStartedSessionsAgentIsNoAdministratorThroughAPeerThatIsNot(t *testing.T) {
+	accepting := newPeerTestServer(t, false)
+	const localAdministrator = "principal_000701"
+	const peerID = "principal_000702"
+	accepting.directory.addPrincipal(localAdministrator, "human", true)
+	accepting.directory.addPrincipal(peerID, "peer", false)
+	accepting.grants.setEffective(localAdministrator, "can_dispatch_on", "instance", "inst_second")
+	accepting.grants.setEffective(peerID, "can_dispatch_on", "instance", "inst_second")
+	st := accepting.server.store
+	for _, session := range []*store.Session{
+		{SessionID: "br_local_admins_own", Harness: "claude_code", State: string(msg.SessionIdle), Type: msg.SessionTypeInteractive, PrincipalID: localAdministrator},
+		{SessionID: "br_started_through_peer", Harness: "claude_code", State: string(msg.SessionIdle), Type: msg.SessionTypeInteractive, PrincipalID: localAdministrator},
+	} {
+		if err := st.CreateSession(session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.RecordSessionPeerOrigin(store.SessionPeerOrigin{SessionID: "br_started_through_peer", PeerPrincipalID: peerID, RemotePrincipalID: "principal_000703"}); err != nil {
+		t.Fatal(err)
+	}
+	instancesAsAgentOf := func(sessionID string) []msg.Instance {
+		recorder := servedWithPostingToken(t, accepting.server, currentPostingTokenFor(t, accepting.server, sessionID), http.MethodGet, "/instances", nil)
+		return decodeAnswer[[]msg.Instance](t, recorder, http.StatusOK, "instances as the agent of "+sessionID)
+	}
+	all := instancesAsAgentOf("br_local_admins_own")
+	if len(all) < 2 {
+		t.Fatalf("the local administrator's own agent sees %d instances, want every one (at least 2)", len(all))
+	}
+	throughPeer := instancesAsAgentOf("br_started_through_peer")
+	if len(throughPeer) != 1 || throughPeer[0].ID != "inst_second" {
+		t.Fatalf("the agent of a session started through a non-administrator peer sees %+v, want only inst_second", throughPeer)
 	}
 }

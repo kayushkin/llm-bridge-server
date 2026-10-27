@@ -43,7 +43,7 @@ func servedWithPostingToken(t *testing.T, srv *Server, token, method, path strin
 func TestASessionsAgentStartsADelegateUnderItselfWithItsPostingToken(t *testing.T) {
 	srv, st, instanceID := testServerWithInstance(t, msg.HarnessMock)
 	newSessionForSignals(t, st, "br_agent", msg.SessionTypeInteractive)
-	token := srv.harnessChildTokenSigner.encodeSessionPostingToken("br_agent")
+	token := currentPostingTokenFor(t, srv, "br_agent")
 
 	recorder := servedWithPostingToken(t, srv, token, http.MethodPost, "/sessions", delegateRequest(instanceID))
 	if recorder.Code != http.StatusOK && recorder.Code != http.StatusCreated {
@@ -82,7 +82,7 @@ func TestADelegatingAgentReachesNoSessionItDidNotStart(t *testing.T) {
 	if err := st.CreateSession(neighboursDelegate); err != nil {
 		t.Fatal(err)
 	}
-	token := srv.harnessChildTokenSigner.encodeSessionPostingToken("br_agent")
+	token := currentPostingTokenFor(t, srv, "br_agent")
 
 	for _, c := range []struct {
 		method, path string
@@ -128,7 +128,7 @@ func TestADelegateRunsWithItsSessionsPrincipalAndNoOther(t *testing.T) {
 	withoutPrincipal := newSessionForSignals(t, st, "br_without_principal", msg.SessionTypeInteractive)
 	request := delegateRequest(instanceID)
 	request.PrincipalID = "principal_000001"
-	recorder := servedWithPostingToken(t, srv, srv.harnessChildTokenSigner.encodeSessionPostingToken(withoutPrincipal.SessionID), http.MethodPost, "/sessions", request)
+	recorder := servedWithPostingToken(t, srv, currentPostingTokenFor(t, srv, withoutPrincipal.SessionID), http.MethodPost, "/sessions", request)
 	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "delegate_principal_mismatch") {
 		t.Fatalf("a principal-less session's agent naming a principal: %d %s, want 403 delegate_principal_mismatch", recorder.Code, recorder.Body)
 	}
@@ -138,7 +138,7 @@ func TestADelegateRunsWithItsSessionsPrincipalAndNoOther(t *testing.T) {
 	if err := st.CreateSession(withPrincipal); err != nil {
 		t.Fatal(err)
 	}
-	recorder = servedWithPostingToken(t, srv, srv.harnessChildTokenSigner.encodeSessionPostingToken(withPrincipal.SessionID), http.MethodPost, "/sessions", delegateRequest(instanceID))
+	recorder = servedWithPostingToken(t, srv, currentPostingTokenFor(t, srv, withPrincipal.SessionID), http.MethodPost, "/sessions", delegateRequest(instanceID))
 	if recorder.Code >= 300 {
 		t.Fatalf("create delegate: %d %s", recorder.Code, recorder.Body)
 	}
@@ -155,8 +155,72 @@ func TestAnEndedSessionsAgentStartsNoDelegate(t *testing.T) {
 	if err := st.CreateSession(ended); err != nil {
 		t.Fatal(err)
 	}
-	recorder := servedWithPostingToken(t, srv, srv.harnessChildTokenSigner.encodeSessionPostingToken("br_ended"), http.MethodPost, "/sessions", delegateRequest(instanceID))
+	recorder := servedWithPostingToken(t, srv, currentPostingTokenFor(t, srv, "br_ended"), http.MethodPost, "/sessions", delegateRequest(instanceID))
 	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "delegating_session_ended") {
 		t.Errorf("create from an ended session: %d %s, want 403 delegating_session_ended", recorder.Code, recorder.Body)
+	}
+}
+
+// currentPostingTokenFor records a new spawn of the session and returns the
+// posting token that spawn's agent would be given.
+func currentPostingTokenFor(t *testing.T, srv *Server, sessionID string) string {
+	t.Helper()
+	spawnKey, err := newSessionPostingSpawnKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.RecordSessionPostingSpawn(sessionID, spawnKey); err != nil {
+		t.Fatal(err)
+	}
+	return srv.harnessChildTokenSigner.encodeSessionPostingToken(sessionID, spawnKey)
+}
+
+// TestAPostingTokenFromAnEarlierSpawnIsRefused spawns a session twice and
+// checks only the second spawn's token is accepted.
+func TestAPostingTokenFromAnEarlierSpawnIsRefused(t *testing.T) {
+	srv, st, instanceID := testServerWithInstance(t, msg.HarnessMock)
+	newSessionForSignals(t, st, "br_agent", msg.SessionTypeInteractive)
+	earlier := currentPostingTokenFor(t, srv, "br_agent")
+	current := currentPostingTokenFor(t, srv, "br_agent")
+	recorder := servedWithPostingToken(t, srv, earlier, http.MethodPost, "/sessions", delegateRequest(instanceID))
+	if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), "session_posting_token_from_an_earlier_spawn") {
+		t.Fatalf("earlier spawn's token = %d %s, want 401 session_posting_token_from_an_earlier_spawn", recorder.Code, recorder.Body)
+	}
+	if recorder := servedWithPostingToken(t, srv, current, http.MethodPost, "/sessions", delegateRequest(instanceID)); recorder.Code != http.StatusOK && recorder.Code != http.StatusCreated {
+		t.Fatalf("current spawn's token = %d %s", recorder.Code, recorder.Body)
+	}
+	unrecorded := srv.harnessChildTokenSigner.encodeSessionPostingToken("br_agent", "never-recorded")
+	if recorder := servedWithPostingToken(t, srv, unrecorded, http.MethodPost, "/sessions", delegateRequest(instanceID)); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("a token for a spawn never recorded = %d, want 401", recorder.Code)
+	}
+}
+
+// TestAnEndedSessionsTokenDrivesNoDelegate checks that once the agent's
+// session has ended, its token can no longer read, send to, stop or stream a
+// delegate it started.
+func TestAnEndedSessionsTokenDrivesNoDelegate(t *testing.T) {
+	srv, st, _ := testServerWithInstance(t, msg.HarnessMock)
+	ended := &store.Session{SessionID: "br_ended_agent", Harness: "claude_code", State: string(msg.SessionCompleted), Type: msg.SessionTypeInteractive}
+	delegate := &store.Session{SessionID: "br_its_delegate", Harness: "claude_code", State: string(msg.SessionIdle), Type: msg.SessionTypeInteractive, ManagerSessionID: "br_ended_agent"}
+	for _, session := range []*store.Session{ended, delegate} {
+		if err := st.CreateSession(session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token := currentPostingTokenFor(t, srv, "br_ended_agent")
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/sessions/br_its_delegate"},
+		{http.MethodPost, "/sessions/br_its_delegate/send"},
+		{http.MethodPost, "/sessions/br_its_delegate/stop"},
+		{http.MethodGet, "/sessions/br_its_delegate/events"},
+	} {
+		var body any
+		if route.method == http.MethodPost {
+			body = map[string]any{"content": "after the end"}
+		}
+		recorder := servedWithPostingToken(t, srv, token, route.method, route.path, body)
+		if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "delegating_session_ended") {
+			t.Errorf("%s %s after the agent's session ended = %d %s, want 403 delegating_session_ended", route.method, route.path, recorder.Code, recorder.Body)
+		}
 	}
 }

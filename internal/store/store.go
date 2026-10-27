@@ -542,6 +542,9 @@ func (s *Store) migrate() error {
 	if err := s.migratePeers(); err != nil {
 		return fmt.Errorf("migrate peers: %w", err)
 	}
+	if err := s.migrateSessionPostingSpawns(); err != nil {
+		return fmt.Errorf("migrate session posting spawns: %w", err)
+	}
 	if err := s.migrateLoginSessions(); err != nil {
 		return err
 	}

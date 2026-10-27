@@ -874,3 +874,38 @@ func TestEveryAccessRuleNamesARegisteredRoute(t *testing.T) {
 		}
 	}
 }
+
+func TestHarnessCallbacksAreNotAnsweredThroughThePublicProxy(t *testing.T) {
+	gated := newGatedTestServer(t, nil)
+	callbacks := []struct{ method, path string }{
+		{"POST", "/permission/cc-prehook/br_x"}, {"POST", "/permission/codex-prehook/br_x"},
+		{"POST", "/sidecar/event/br_x"}, {"GET", "/api/harness-proxy/inber/health"},
+	}
+	for _, proxyHeader := range publicProxyHeaders {
+		for _, route := range callbacks {
+			request := httptest.NewRequest(route.method, route.path, strings.NewReader("{}"))
+			request.Header.Set(proxyHeader, "203.0.113.7")
+			response := serve(gated.server, request)
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "harness_callback_not_public") {
+				t.Errorf("%s %s with %s = %d %s, want 403 harness_callback_not_public", route.method, route.path, proxyHeader, response.Code, response.Body.String())
+			}
+		}
+	}
+	for _, route := range callbacks {
+		response := serve(gated.server, httptest.NewRequest(route.method, route.path, strings.NewReader("{}")))
+		if strings.Contains(response.Body.String(), "harness_callback_not_public") {
+			t.Errorf("%s %s from this host = %d %s, want the handler's own answer", route.method, route.path, response.Code, response.Body.String())
+		}
+	}
+	for _, route := range []struct{ method, path string }{
+		{"GET", "/api/runner/install.sh"}, {"GET", "/api/runner/binary?name=runner&os=linux&arch=amd64"},
+		{"POST", "/api/runner/enroll"}, {"GET", "/api/runner/ws"}, {"GET", "/api/agent-store/seed/manifest"}, {"GET", "/api/skill-store/seed/manifest"},
+	} {
+		request := httptest.NewRequest(route.method, route.path, strings.NewReader("{}"))
+		request.Header.Set("X-Forwarded-For", "203.0.113.7")
+		request.Header.Set("X-Forwarded-Proto", "https")
+		if response := serve(gated.server, request); strings.Contains(response.Body.String(), "harness_callback_not_public") {
+			t.Errorf("runner route %s %s through the proxy = %d %s, want the handler's own answer", route.method, route.path, response.Code, response.Body.String())
+		}
+	}
+}

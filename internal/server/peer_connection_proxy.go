@@ -32,7 +32,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -40,9 +42,28 @@ import (
 // the other server, beside the peer token.
 var requestHeadersForwardedToPeers = []string{"Content-Type", "Accept", "Last-Event-ID"}
 
-// responseHeadersNeverPassedBackFromPeers are left out of the answer: a cookie
-// the other server sets is for its own origin, never this one's.
-var responseHeadersNeverPassedBackFromPeers = []string{"Set-Cookie"}
+// responseHeadersPassedBackFromPeers are the only headers of the other
+// server's answer that reach the browser. The answer is shown on this server's
+// own origin, signed in as this server's user, so anything that could make the
+// browser act on it is left out: a cookie, a redirect, a refresh, a policy the
+// other server chose. Content-Type passes only as passedBackContentType allows.
+var responseHeadersPassedBackFromPeers = []string{"Content-Type", "Cache-Control", "Content-Encoding"}
+
+// contentTypesPassedBackFromPeers are the media types a peer's answer may keep:
+// the bridge answers JSON and event streams, and anything else, HTML above all,
+// would run as this server's own page.
+var contentTypesPassedBackFromPeers = []string{"application/json", "text/event-stream"}
+
+// passedBackContentType is the Content-Type the browser gets for a peer's
+// answer: the peer's own when its media type is one the bridge answers, else
+// application/octet-stream, which the browser only downloads.
+func passedBackContentType(peerContentType string) string {
+	mediaType, _, err := mime.ParseMediaType(peerContentType)
+	if err == nil && slices.Contains(contentTypesPassedBackFromPeers, mediaType) {
+		return peerContentType
+	}
+	return "application/octet-stream"
+}
 
 // peerProxyHTTPClient forwards proxied requests by https. Like peerHTTPClient
 // it verifies certificates with the system's roots and follows no redirect,
@@ -92,13 +113,21 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 	}
 	defer response.Body.Close()
 	for key, values := range response.Header {
-		if headerIsOneOf(key, hopByHopHeaders) || headerIsOneOf(key, responseHeadersNeverPassedBackFromPeers) {
+		if !headerIsOneOf(key, responseHeadersPassedBackFromPeers) {
+			continue
+		}
+		if strings.EqualFold(key, "Content-Type") {
+			w.Header().Set("Content-Type", passedBackContentType(response.Header.Get("Content-Type")))
 			continue
 		}
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
 	}
+	// Whatever the answer is, the browser neither guesses another type for it
+	// nor runs it as a page of this origin.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "sandbox")
 	w.WriteHeader(response.StatusCode)
 	if err := copyFlushingEachRead(w, response.Body); err != nil {
 		log.Printf("[peer-proxy] %s %s through %s: copy answer: %v", r.Method, path, connection.ID, err)

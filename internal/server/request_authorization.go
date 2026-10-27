@@ -169,6 +169,12 @@ type routeAccessRule struct {
 	// reason says why the route is in its class, for the next reader and for
 	// the refusal message.
 	reason string
+	// answersThroughPublicProxy lets a routeHarnessCallback route answer a
+	// request that came through the public reverse proxy. Only the runner's
+	// routes set it, because their handlers check the runner's token or its
+	// one-time passphrase themselves; every other harness callback takes no
+	// credential and is for this host's own processes alone.
+	answersThroughPublicProxy bool
 }
 
 func openRoute(reason string) routeAccessRule {
@@ -176,6 +182,13 @@ func openRoute(reason string) routeAccessRule {
 }
 func harnessCallbackRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routeHarnessCallback, reason: reason}
+}
+
+// runnerRoute is a harness callback a remote runner calls, which may arrive
+// through the public reverse proxy because its handler checks the runner's
+// own credential.
+func runnerRoute(reason string) routeAccessRule {
+	return routeAccessRule{class: routeHarnessCallback, reason: reason, answersThroughPublicProxy: true}
 }
 func peerConnectionCallRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routePeerConnectionCall, reason: reason}
@@ -260,12 +273,12 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /permission/codex-prehook/{bridge_id}": harnessCallbackRoute("codex PreToolUse hook, a curl from the harness child"),
 	"POST /sidecar/event/{bridge_id}":            harnessCallbackRoute("OTel sidecar of a pty session posts translated events"),
 	"POST /hooks/exec/{id}":                      harnessCallbackRoute("registered hook fired by the harness child via curl"),
-	"GET /api/runner/ws":                         harnessCallbackRoute("runner WebSocket; the handler authenticates the runner's bearer token"),
-	"POST /api/runner/enroll":                    harnessCallbackRoute("runner enrollment; the handler checks the single-use passphrase"),
-	"GET /api/runner/install.sh":                 harnessCallbackRoute("bootstrap script fetched by a machine before it has a runner token"),
-	"GET /api/runner/binary":                     harnessCallbackRoute("runner and harness binaries fetched by a machine during bootstrap"),
-	"/api/agent-store/":                          harnessCallbackRoute("seed proxy for runners; the handler authenticates the runner's bearer token"),
-	"/api/skill-store/":                          harnessCallbackRoute("seed proxy for runners; the handler authenticates the runner's bearer token"),
+	"GET /api/runner/ws":                         runnerRoute("runner WebSocket; the handler authenticates the runner's bearer token"),
+	"POST /api/runner/enroll":                    runnerRoute("runner enrollment; the handler checks the single-use passphrase"),
+	"GET /api/runner/install.sh":                 runnerRoute("bootstrap script fetched by a machine before it has a runner token"),
+	"GET /api/runner/binary":                     runnerRoute("runner and harness binaries fetched by a machine during bootstrap"),
+	"/api/agent-store/":                          runnerRoute("seed proxy for runners; the handler authenticates the runner's bearer token"),
+	"/api/skill-store/":                          runnerRoute("seed proxy for runners; the handler authenticates the runner's bearer token"),
 	"/api/harness-proxy/{harness}/{rest...}":     harnessCallbackRoute("harness backend proxy for wrappers on runners; unauthenticated today (noteboard card f4e5e1ef)"),
 
 	// Sessions.
@@ -665,6 +678,17 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The harness callbacks take no credential: they are for harness children,
+	// sidecars and runner tunnels on this host. A request that came through the
+	// public reverse proxy carries the headers it sets, and is refused here
+	// whatever else it presents, so a mistake in the proxy's rules cannot open
+	// them. The runner's own routes are exempt (answersThroughPublicProxy).
+	if rule.class == routeHarnessCallback && !rule.answersThroughPublicProxy && requestCameThroughPublicProxy(r) {
+		writeJSONError(w, http.StatusForbidden, "harness_callback_not_public", fmt.Sprintf(
+			"%s is called by this host's own processes and is not answered through the public proxy", pattern))
+		return
+	}
+
 	// A request another server sent over a peer socket acts only as the peer
 	// its token names, or is a connection call: the routes open to everyone
 	// and the harness callbacks are for this host's own callers, never for a
@@ -759,6 +783,22 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	}
 	caller.loginSessionID = loginSessionID
 	s.serveAsCaller(w, r, pattern, rule, caller)
+}
+
+// publicProxyHeaders are set by the reverse proxy in front of this server on
+// every request it forwards. A harness child, a sidecar or a runner reaching
+// 127.0.0.1 directly or through an SSH tunnel sends none of them.
+var publicProxyHeaders = []string{"X-Forwarded-For", "X-Forwarded-Proto", "X-Real-Ip", "Forwarded"}
+
+// requestCameThroughPublicProxy reports whether any header the public reverse
+// proxy sets is present.
+func requestCameThroughPublicProxy(r *http.Request) bool {
+	for _, name := range publicProxyHeaders {
+		if _, present := r.Header[http.CanonicalHeaderKey(name)]; present {
+			return true
+		}
+	}
+	return false
 }
 
 // refuseUnclassifiedRoute answers a route nobody has written a rule for.
@@ -948,10 +988,11 @@ func (s *Server) postingAgentOfRequest(r *http.Request, pattern string, rule rou
 		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "invalid_session_posting_token",
 			"the Authorization header must be \"Bearer <session posting token>\""}
 	}
-	tokenSessionID, err := s.harnessChildTokenSigner.decodeSessionPostingToken(strings.TrimSpace(token))
-	if err != nil {
-		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "invalid_session_posting_token", err.Error()}
+	tokenSession, credentialError := s.verifiedPostingSession(token)
+	if credentialError != nil {
+		return requestCaller{}, credentialError
 	}
+	tokenSessionID := tokenSession.SessionID
 	pathSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
 	if err != nil {
 		return requestCaller{}, &requestCredentialError{http.StatusInternalServerError, "route_rule_invalid", err.Error()}

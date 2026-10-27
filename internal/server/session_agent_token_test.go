@@ -128,7 +128,7 @@ func TestSessionAgentTokensAndLoginCookiesAreNotInterchangeable(t *testing.T) {
 
 	// A session posting token is signed with the same key under another
 	// domain separator, and is not a session agent token.
-	if _, err := codec.decodeSessionAgentToken(codec.encodeSessionPostingToken(session.SessionID)); err == nil {
+	if _, err := codec.decodeSessionAgentToken(codec.encodeSessionPostingToken(session.SessionID, "spawn_1")); err == nil {
 		t.Errorf("a session posting token verified as a session agent token")
 	}
 

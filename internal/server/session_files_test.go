@@ -254,19 +254,19 @@ func TestAnAgentSharesIntoItsOwnSessionAndNoOther(t *testing.T) {
 func TestASessionPostingTokenIsNoOtherKindOfCredential(t *testing.T) {
 	srv, _ := testServer(t)
 	codec := srv.harnessChildTokenSigner
-	token := codec.encodeSessionPostingToken("br_1")
-	if sessionID, err := codec.decodeSessionPostingToken(token); err != nil || sessionID != "br_1" {
-		t.Fatalf("round trip: %q, %v", sessionID, err)
+	token := codec.encodeSessionPostingToken("br_1", "spawn_1")
+	if sessionID, spawnKey, err := codec.decodeSessionPostingToken(token); err != nil || sessionID != "br_1" || spawnKey != "spawn_1" {
+		t.Fatalf("round trip: %q %q, %v", sessionID, spawnKey, err)
 	}
 	if _, err := codec.decodeSessionAgentToken(token); err == nil {
 		t.Error("a session posting token verified as a session agent token")
 	}
 	agentToken := codec.encodeSessionAgentToken(sessionAgentTokenClaims{PrincipalID: "principal_000001", SessionID: "br_1", ExpiresAt: time.Now().Add(time.Hour)})
-	if _, err := codec.decodeSessionPostingToken(agentToken); err == nil {
+	if _, _, err := codec.decodeSessionPostingToken(agentToken); err == nil {
 		t.Error("a session agent token verified as a session posting token")
 	}
 	forged := strings.TrimSuffix(token, token[len(token)-4:]) + "AAAA"
-	if _, err := codec.decodeSessionPostingToken(forged); err == nil {
+	if _, _, err := codec.decodeSessionPostingToken(forged); err == nil {
 		t.Error("a token with a changed signature verified")
 	}
 }

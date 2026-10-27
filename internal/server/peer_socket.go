@@ -50,6 +50,22 @@ const (
 	// peerSocketLargestRequestBody caps one request body carried over a
 	// socket, which is sent in one frame.
 	peerSocketLargestRequestBody = 64 << 20
+	// peerSocketLargestAnswerChunk caps the body one answer frame carries; a
+	// handler's larger write is sent as several frames.
+	peerSocketLargestAnswerChunk = 1 << 20
+	// peerSocketLargestFrame is the most this side reads as one WebSocket
+	// message. The largest frame the other side may send is a request carrying
+	// a body of peerSocketLargestRequestBody, which JSON carries as base64
+	// (4 bytes for every 3), plus its path and headers; 96 MiB holds that
+	// (64 MiB × 4/3 ≈ 85.4 MiB) with room for the rest. Anything larger ends
+	// the socket instead of being buffered. peerSocketReadLimit holds it, so a
+	// test can lower it.
+	peerSocketLargestFrame = 96 << 20
+	// peerSocketMostRequestsServedAtOnce caps the requests from the other
+	// server this side runs at the same time on one socket. Each holds a
+	// goroutine and possibly an event stream that never ends, so beyond this
+	// a request is answered 503 at once rather than started.
+	peerSocketMostRequestsServedAtOnce = 64
 	// peerSocketPingInterval and peerSocketReadDeadline keep a socket whose
 	// other end vanished from looking connected.
 	peerSocketPingInterval = 30 * time.Second
@@ -61,6 +77,9 @@ const (
 	// peerSocketLongestBackoff caps the wait between dial attempts.
 	peerSocketLongestBackoff = time.Minute
 )
+
+// peerSocketReadLimit is the read limit every socket sets: peerSocketLargestFrame.
+var peerSocketReadLimit int64 = peerSocketLargestFrame
 
 // headersCrossingPeerSockets is every request header a request carried over
 // a socket keeps: what the body is, what answer is wanted, where an SSE stream
@@ -160,6 +179,7 @@ func (socket *peerSocket) close() {
 // run reads frames until the socket fails or closes, and pings the other end
 // meanwhile. It returns when the socket is done.
 func (socket *peerSocket) run() error {
+	socket.connection.SetReadLimit(peerSocketReadLimit)
 	socket.connection.SetReadDeadline(time.Now().Add(peerSocketReadDeadline))
 	socket.connection.SetPongHandler(func(string) error {
 		return socket.connection.SetReadDeadline(time.Now().Add(peerSocketReadDeadline))
@@ -351,8 +371,23 @@ func (reader *peerSocketBodyReader) Close() error {
 func (socket *peerSocket) serveRequest(frame peerSocketFrame) {
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), peerSocketConnectionContextKey{}, socket.connectionID))
 	socket.streamsMutex.Lock()
-	socket.serving[frame.Stream] = cancel
+	refusal := ""
+	if _, alreadyServing := socket.serving[frame.Stream]; alreadyServing {
+		refusal = fmt.Sprintf("stream %d is already serving a request", frame.Stream)
+	} else if len(socket.serving) >= peerSocketMostRequestsServedAtOnce {
+		refusal = fmt.Sprintf("this server already runs %d requests from you on this socket, the most it runs at once", peerSocketMostRequestsServedAtOnce)
+	} else {
+		socket.serving[frame.Stream] = cancel
+	}
 	socket.streamsMutex.Unlock()
+	if refusal != "" {
+		cancel()
+		log.Printf("[peer-socket] %s: refused stream %d: %s", socket.connectionID, frame.Stream, refusal)
+		writer := &peerSocketResponseWriter{socket: socket, stream: frame.Stream, header: http.Header{}}
+		writeJSONError(writer, http.StatusServiceUnavailable, "peer_socket_busy", refusal)
+		writer.finish()
+		return
+	}
 	go func() {
 		defer func() {
 			cancel()
@@ -426,14 +461,16 @@ func (writer *peerSocketResponseWriter) Write(data []byte) (int, error) {
 	if writer.sendFailure != nil {
 		return 0, writer.sendFailure
 	}
-	if len(data) == 0 {
-		return 0, nil
+	written := 0
+	for written < len(data) {
+		chunk := data[written:min(len(data), written+peerSocketLargestAnswerChunk)]
+		if err := writer.socket.send(peerSocketFrame{Type: peerSocketFrameBody, Stream: writer.stream, Body: append([]byte(nil), chunk...)}); err != nil {
+			writer.sendFailure = err
+			return written, err
+		}
+		written += len(chunk)
 	}
-	if err := writer.socket.send(peerSocketFrame{Type: peerSocketFrameBody, Stream: writer.stream, Body: append([]byte(nil), data...)}); err != nil {
-		writer.sendFailure = err
-		return 0, err
-	}
-	return len(data), nil
+	return written, nil
 }
 
 // Flush does nothing: every Write is already sent as its own frame.
