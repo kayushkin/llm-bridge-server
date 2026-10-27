@@ -6,7 +6,12 @@ After=network.target
 Type=simple
 User=__USER__
 ExecStart=/usr/local/bin/llm-bridge
-Environment=LLMBRIDGE_LISTEN_ADDR=:8160
+# Loopback only: remote runners come in through their SSH tunnels, and a
+# linked peer server through the host's https reverse proxy.
+Environment=LLMBRIDGE_LISTEN_ADDR=127.0.0.1:8160
+# Demo login signs anyone who can reach it in as any human by naming an id.
+# Agents start delegates with their session posting token instead.
+Environment=LLMBRIDGE_DEMO_LOGIN_ENABLED=false
 Environment=LLMBRIDGE_IMAGES_DIR=__HOME__/repos/llm-bridge-server/images
 Restart=on-failure
 RestartSec=5
