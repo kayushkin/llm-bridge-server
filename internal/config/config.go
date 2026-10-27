@@ -40,6 +40,12 @@ type Config struct {
 	// Config literal switches automatic titles off.
 	SessionRenamerModelRole    string
 	OperationsGrantEnforcement string
+	// ServerName seeds server.name; KeepAwakeEnabled and
+	// KeepAwakeGraceMinutes seed keep_awake.enabled and
+	// keep_awake.grace_minutes. Each is seeded only when set.
+	ServerName            string
+	KeepAwakeEnabled      bool
+	KeepAwakeGraceMinutes int
 	// UsageStoreURL is usage-store, read for subscription limits before a
 	// routed one-shot call. Empty switches the check off.
 	UsageStoreURL  string
@@ -361,6 +367,9 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		SessionRenamerModelRole:       settings.ModelRole(SettingSessionRenamerModelRole),
 		UsageStoreURL:                 settings.String("usage_store.url"),
 		OperationsGrantEnforcement:    settings.String(SettingOperationsGrantEnforcement),
+		ServerName:                    settings.String(SettingServerName),
+		KeepAwakeEnabled:              settings.Boolean(SettingKeepAwakeEnabled),
+		KeepAwakeGraceMinutes:         settings.Integer(SettingKeepAwakeGraceMinutes),
 		AgentStoreDB:                  settings.String("agent_store.database_path"),
 		MemoryStoreDB:                 settings.String("memory_store.database_path"),
 		HarnessStoreDB:                settings.String("harness_store.database_path"),

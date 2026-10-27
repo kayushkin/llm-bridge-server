@@ -90,6 +90,8 @@ func (s *Server) registerLoginAndStoreProxyRoutes() {
 	s.mux.HandleFunc("POST /peer-user-mappings", s.handleCreatePeerUserMapping)
 	s.mux.HandleFunc("POST /peer-user-mappings/{id}/remove", s.handleRemovePeerUserMapping)
 	s.mux.HandleFunc("GET /peer/self", s.handlePeerSelf)
+	s.mux.HandleFunc("GET /peer/server-name", s.handlePeerServerName)
+	s.mux.HandleFunc("GET /server", s.handleGetServer)
 	s.mux.HandleFunc(kanbanProxyMountPrefix+"/", s.handleKanbanStoreProxyAsPrincipal)
 	s.mux.HandleFunc(grantStoreProxyMountPrefix+"/", s.handleGrantStoreProxyAsPrincipal)
 	s.mux.HandleFunc(mailstackProxyMountPrefix+"/", s.handleMailstackProxyAsPrincipal)

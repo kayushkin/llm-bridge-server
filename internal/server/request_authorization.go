@@ -248,6 +248,8 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /peer-user-mappings":                 operatorRoute("lets a connected server's user act here as one of this server's principals"),
 	"POST /peer-user-mappings/{id}/remove":     operatorRoute("takes that away"),
 	"GET /peer/self":                           catalogRoute("tells a caller who it is; the handler answers only a peer token"),
+	"GET /peer/server-name":                    peerConnectionCallRoute("a connected server asks this one's name and gives its own; the handler checks the connection"),
+	"GET /server":                              catalogRoute("what this server calls itself, which the chat draws as the heading of its sessions"),
 	"GET /auth/sessions":                       {class: routePrincipalManagesOwnLoginSessions, reason: "a principal's own login sessions; an administrator names anyone's"},
 	"POST /auth/sessions/{id}/revoke":          {class: routePrincipalManagesOwnLoginSessions, reason: "ends a principal's own login session; an administrator ends anyone's"},
 	"GET /auth/login-attempts":                 operatorRoute("every sign-in attempt, with the identities of people refused"),
@@ -702,6 +704,11 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		if credentialError != nil {
 			credentialError.write(w)
 			return
+		}
+		if !arrivedOverPeerSocket {
+			// Over a socket, serveRequest has already read and stamped the name.
+			s.noteOtherServerName(caller.peer.connectionID, r.Header)
+			s.stampThisServersName(w.Header())
 		}
 		if peerUserPresent {
 			if len(presentedPeerUsers) != 1 || strings.TrimSpace(presentedPeerUsers[0]) == "" {

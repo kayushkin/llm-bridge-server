@@ -39,6 +39,9 @@ const (
 	SettingOperationsGrantEnforcement        = "operations.grant_enforcement"
 	SettingSessionActionsReviewModelRole     = "session_actions.review_model_role"
 	SettingImageGenerationInstanceID         = "image_generation.instance_id"
+	SettingServerName                        = "server.name"
+	SettingKeepAwakeEnabled                  = "keep_awake.enabled"
+	SettingKeepAwakeGraceMinutes             = "keep_awake.grace_minutes"
 )
 
 // ModelRoleSettings are the stored settings whose value is a model-store role:
@@ -137,6 +140,12 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The model-store role that reviews a run_command button's command when an agent offers it, and whose verdict the button shows. A command it rejects cannot be run; a role none of whose models answers refuses the offer."},
 		{Key: SettingOperationsGrantEnforcement, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_GRANT_ENFORCEMENT", Kind: behaviour, ValueType: text, Editable: true, Default: OperationsGrantEnforcementLenient,
 			Description: "How grant-store's can_run_operation grants are applied to a principal starting an operation. lenient: a principal holding no such grant may start any type, and one holding any may start only those. strict: a principal may start only the types its grants name. Administrators and the service token are never checked."},
+		{Key: SettingServerName, EnvironmentVariable: "LLMBRIDGE_SERVER_NAME", Kind: behaviour, ValueType: text, Editable: true,
+			Description: "What this server calls itself: shown at the top of its own session list, and reported to every server it is connected to, which shows it as this server's name. Empty means it has none, and is shown as such."},
+		{Key: SettingKeepAwakeEnabled, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_ENABLED", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeBoolean, Editable: true, Default: "false",
+			Description: "Hold the machine awake while any session on this server is running, and for keep_awake.grace_minutes after the last one stops or was last sent a message. It cannot wake a machine that is already asleep, or stop a closed lid from putting it to sleep."},
+		{Key: SettingKeepAwakeGraceMinutes, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_GRACE_MINUTES", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "30",
+			Description: "How many minutes the machine is kept awake after the last session stops running or was last sent a message, when keep_awake.enabled is on. 0 releases the hold as soon as no session runs."},
 
 		// Behaviour read once at start.
 		{Key: "session.purpose_folders", EnvironmentVariable: "LLMBRIDGE_PURPOSE_FOLDERS", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeStringMap,
@@ -321,10 +330,17 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 		SettingOperationsGrantEnforcement:    c.OperationsGrantEnforcement,
 		SettingSessionActionsReviewModelRole: c.SessionActionsReviewModelRole,
 		SettingImageGenerationInstanceID:     c.ImageGenerationInstanceID,
+		SettingServerName:                    c.ServerName,
 	} {
 		if value != "" {
 			seeds[key] = value
 		}
+	}
+	if c.KeepAwakeEnabled {
+		seeds[SettingKeepAwakeEnabled] = "true"
+	}
+	if c.KeepAwakeGraceMinutes > 0 {
+		seeds[SettingKeepAwakeGraceMinutes] = strconv.Itoa(c.KeepAwakeGraceMinutes)
 	}
 	if len(c.OneShotInstanceByProvider) > 0 {
 		providers := make([]string, 0, len(c.OneShotInstanceByProvider))

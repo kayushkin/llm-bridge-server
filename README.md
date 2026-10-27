@@ -336,6 +336,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `*` | `/images/` | Harness images | principal |
 | `GET` | `/models` | Models there are credentials for | operator |
 | `POST` | `/oneshot` | One model call for a model-store role, with no session; the server picks the model, the instance and the fallbacks | operator |
+| `GET` | `/server` | This server's name and whether it is holding its machine awake | principal |
 | `GET` | `/settings` | Every server setting, its value and what decided it | operator |
 | `PUT` | `/settings/{key}` | Change a stored setting without a restart | operator |
 
@@ -406,6 +407,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/peer/connect` | Another server connects with a one-time passphrase | anyone |
 | `POST` | `/peer/connection/removed` | The other server says it removed the connection; this side removes it too | connected server |
 | `GET` | `/peer/self` | Who the presented peer token acts as here | principal |
+| `GET` | `/peer/server-name` | This server's name, for a connected server; the call carries the caller's | connected server |
 | `GET` | `/peer/socket` | The WebSocket a server without an address keeps open to this one | connected server |
 
 ### Runners and harness callbacks

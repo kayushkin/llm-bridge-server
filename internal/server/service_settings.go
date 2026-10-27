@@ -63,6 +63,18 @@ func (s *Server) wireServiceSettings() {
 		s.settings.SetValidator(key, s.checkSettingNamesAnAssignedModelRole)
 	}
 	s.settings.SetValidator(config.SettingOperationsGrantEnforcement, checkOperationGrantEnforcementValue)
+	s.settings.SetValidator(config.SettingServerName, checkServerNameValue)
+	s.settings.SetValidator(config.SettingKeepAwakeGraceMinutes, checkKeepAwakeGraceMinutesValue)
+	s.settings.OnChange(func(key string) {
+		switch key {
+		case config.SettingServerName:
+			go s.tellConnectedServersThisServersName()
+		case config.SettingKeepAwakeEnabled, config.SettingKeepAwakeGraceMinutes:
+			if s.keepAwake != nil {
+				go s.keepAwake.Check()
+			}
+		}
+	})
 	s.settings.OnChange(func(string) { s.retuneFromServiceSettings() })
 	s.retuneFromServiceSettings()
 }

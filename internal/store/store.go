@@ -770,6 +770,24 @@ func (s *Store) SessionIDsOwnedByPrincipal(principalID, throughPeerPrincipalID s
 	return owned, rows.Err()
 }
 
+// CountSessionsInStates counts the sessions in any of the states. No state
+// counts nothing.
+func (s *Store) CountSessionsInStates(states []string) (int, error) {
+	if len(states) == 0 {
+		return 0, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(states)), ",")
+	args := make([]any, len(states))
+	for index, state := range states {
+		args[index] = state
+	}
+	var count int
+	if err := s.dbRO.QueryRow(`SELECT COUNT(*) FROM sessions WHERE state IN (`+placeholders+`)`, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count sessions in states %v: %w", states, err)
+	}
+	return count, nil
+}
+
 func (s *Store) ListSessionsByState(state string) ([]Session, error) {
 	return s.ListSessionsByStatePaged(state, 0, 0)
 }

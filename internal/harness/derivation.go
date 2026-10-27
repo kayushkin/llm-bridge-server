@@ -2,6 +2,7 @@ package harness
 
 import (
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -357,19 +358,21 @@ func isSessionEndState(s msg.SessionState) bool {
 // completed, error, aborted, paused, disconnected) are NOT holding and
 // are left untouched so a late stray result can't clobber them.
 func isHoldingSessionState(s msg.SessionState) bool {
-	switch s {
-	case msg.SessionStarting,
-		msg.SessionRunning,
-		msg.SessionModelGenerating,
-		msg.SessionToolRunning,
-		msg.SessionCompacting,
-		msg.SessionAwaitingPermission,
-		msg.SessionWaitingApproval,
-		msg.SessionRateLimited:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(HoldingSessionStates, s)
+}
+
+// HoldingSessionStates are the states of a session whose turn is in progress:
+// the ones isHoldingSessionState holds, and the ones keep-awake counts as a
+// session running.
+var HoldingSessionStates = []msg.SessionState{
+	msg.SessionStarting,
+	msg.SessionRunning,
+	msg.SessionModelGenerating,
+	msg.SessionToolRunning,
+	msg.SessionCompacting,
+	msg.SessionAwaitingPermission,
+	msg.SessionWaitingApproval,
+	msg.SessionRateLimited,
 }
 
 // derive applies the state machine to ev and returns the convenience

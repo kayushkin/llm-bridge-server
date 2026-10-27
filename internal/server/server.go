@@ -22,6 +22,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
@@ -71,6 +72,9 @@ type Server struct {
 	principalClient *principalclient.Client
 	// peerSockets holds every open peer socket and every dialer (peer_socket.go).
 	peerSockets *peerSocketRegistry
+	// keepAwake holds this machine awake while sessions run, once
+	// StartKeepAwake has run; nil before that and in tests.
+	keepAwake *keepawake.Controller
 	// bundleClient checks a bundle_id at creation and resolves it at spawn.
 	bundleClient *bundleclient.Client
 	// kanbanClient answers "which noteboard todo is this session linked
@@ -292,9 +296,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/validators", s.handleSessionsValidatorsLookup)
 	s.mux.HandleFunc("GET /sessions/search", s.handleSearchSessions)
 	s.mux.HandleFunc("GET /sessions/discover", s.handleDiscoverSessions)
-	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
+	s.mux.HandleFunc("POST /sessions", s.touchingKeepAwake(s.handleCreateSession))
 	s.mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
-	s.mux.HandleFunc("POST /sessions/{id}/send", s.handleSendMessage)
+	s.mux.HandleFunc("POST /sessions/{id}/send", s.touchingKeepAwake(s.handleSendMessage))
 	s.mux.HandleFunc("POST /sessions/{id}/files", s.handleShareSessionFile)
 	s.mux.HandleFunc("GET /sessions/{id}/files", s.handleListSessionFiles)
 	s.mux.HandleFunc("GET /sessions/{id}/files/{file_id}/content", s.handleSessionFileContent)

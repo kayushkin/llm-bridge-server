@@ -360,7 +360,9 @@ func (socket *peerSocket) serveRequest(frame peerSocketFrame) {
 			delete(socket.serving, frame.Stream)
 			socket.streamsMutex.Unlock()
 		}()
+		socket.server.noteOtherServerName(socket.connectionID, frame.Header)
 		writer := &peerSocketResponseWriter{socket: socket, stream: frame.Stream, header: http.Header{}}
+		socket.server.stampThisServersName(writer.header)
 		request, err := requestCarriedOverPeerSocket(ctx, frame)
 		if err != nil {
 			writeJSONError(writer, http.StatusBadRequest, "invalid_peer_socket_request", err.Error())
@@ -567,6 +569,7 @@ func (s *Server) dialPeerSocketOnce(ctx context.Context, connection store.PeerCo
 	socketURL.Scheme = "wss"
 	header := http.Header{}
 	header.Set(peerConnectionCredentialHeader, credential)
+	s.stampThisServersName(header)
 	conn, response, err := peerSocketDialer.DialContext(ctx, socketURL.String(), header)
 	if err != nil {
 		if response != nil {
@@ -576,6 +579,7 @@ func (s *Server) dialPeerSocketOnce(ctx context.Context, connection store.PeerCo
 		}
 		return fmt.Errorf("dial %s: %w", socketURL, err)
 	}
+	s.noteOtherServerName(connection.ID, response.Header)
 	socket := newPeerSocket(s, connection.ID, conn, true)
 	s.peerSockets.open(socket)
 	defer s.peerSockets.closed(socket)
@@ -612,7 +616,9 @@ func (s *Server) handlePeerSocket(w http.ResponseWriter, r *http.Request) {
 			"%s is %s and this server %s it, so no socket is opened to this server for it", connection.ID, connection.Transport, connection.Role))
 		return
 	}
-	conn, err := peerSocketUpgrader.Upgrade(w, r, nil)
+	answerHeader := http.Header{}
+	s.stampThisServersName(answerHeader)
+	conn, err := peerSocketUpgrader.Upgrade(w, r, answerHeader)
 	if err != nil {
 		log.Printf("[peer-socket] %s: upgrade: %v", connection.ID, err)
 		return

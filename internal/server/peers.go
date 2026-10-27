@@ -54,6 +54,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
+	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -87,6 +88,7 @@ const (
 	// their connection.
 	peerConnectionRemovedPath = "/peer/connection/removed"
 	peerSelfPath              = "/peer/self"
+	peerServerNamePath        = "/peer/server-name"
 )
 
 // hashPeerSecret is how a passphrase, a credential or a token is kept and
@@ -256,9 +258,21 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	displayName := strings.TrimSpace(request.DisplayName)
+	ownServerName := s.thisServerName()
+	// The other server shows this one by the name it reports; the typed label
+	// is only a fallback, and an older server requires one, so this server's
+	// own name stands in when none was typed.
 	nameForThisServer := strings.TrimSpace(request.NameForThisServer)
-	if displayName == "" || nameForThisServer == "" || request.Passphrase == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "display_name, name_for_this_server and passphrase are all required")
+	if nameForThisServer == "" {
+		nameForThisServer = ownServerName
+	}
+	if request.Passphrase == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "passphrase is required")
+		return
+	}
+	if nameForThisServer == "" {
+		writeJSONError(w, http.StatusBadRequest, "this_server_has_no_name", fmt.Sprintf(
+			"this server has no %s, so the other server would have nothing to call it: set it on the settings page, or send name_for_this_server", config.SettingServerName))
 		return
 	}
 	transport := msg.PeerTransportDialOut
@@ -281,7 +295,7 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 	}
 	var answer msg.PeerConnectAnswer
 	if err := postJSONToPeer(r.Context(), remoteBaseURL+peerConnectPath, nil, msg.PeerConnectCall{
-		Passphrase: request.Passphrase, ServerName: nameForThisServer, BaseURL: thisServerBaseURL, Credential: inboundCredential,
+		Passphrase: request.Passphrase, ServerName: nameForThisServer, OwnServerName: ownServerName, BaseURL: thisServerBaseURL, Credential: inboundCredential,
 	}, http.StatusCreated, &answer); err != nil {
 		writeJSONError(w, http.StatusBadGateway, "peer_connect_failed", err.Error())
 		return
@@ -291,8 +305,13 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 			"%s answered with connection %q, transport %q and a credential set: %t; this server asked for %s", remoteBaseURL, answer.ConnectionID, answer.Transport, answer.Credential != "", transport))
 		return
 	}
+	otherServerName := strings.TrimSpace(answer.OwnServerName)
+	if checkServerNameValue(otherServerName) != nil {
+		log.Printf("[peers] %s reported a name that cannot be shown (%q); keeping none", remoteBaseURL, answer.OwnServerName)
+		otherServerName = ""
+	}
 	credential, err := s.authClient.Create(r.Context(), authstoreclient.CredentialInput{
-		Provider: peerConnectionCredentialProvider, Owner: "llm-bridge-server", Account: answer.ConnectionID, Label: displayName,
+		Provider: peerConnectionCredentialProvider, Owner: "llm-bridge-server", Account: answer.ConnectionID, Label: firstNonEmpty(otherServerName, displayName, answer.ConnectionID),
 		IntendedApp: "llm-bridge-server", AuthType: "token", RefreshMode: "none", Token: answer.Credential, BaseURL: remoteBaseURL,
 	})
 	if err != nil {
@@ -307,6 +326,10 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 		},
 		InboundCredentialHash: hashPeerSecret(inboundCredential),
 		OutboundCredentialID:  credential.ID,
+	}
+	if otherServerName != "" {
+		reportedAt := connection.CreatedAt
+		connection.OtherServerName, connection.OtherServerNameReportedAt = otherServerName, &reportedAt
 	}
 	if err := s.store.InsertPeerConnection(&connection); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf(
@@ -328,10 +351,17 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 	var call msg.PeerConnectCall
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&call); err != nil || call.Passphrase == "" || strings.TrimSpace(call.ServerName) == "" || call.Credential == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send the passphrase from POST /peer-connection-invites, server_name and credential")
+	if err := decoder.Decode(&call); err != nil || call.Passphrase == "" || call.Credential == "" ||
+		(strings.TrimSpace(call.ServerName) == "" && strings.TrimSpace(call.OwnServerName) == "") {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send the passphrase from POST /peer-connection-invites, own_server_name or server_name, and credential")
 		return
 	}
+	otherServerName := strings.TrimSpace(call.OwnServerName)
+	if checkServerNameValue(otherServerName) != nil {
+		log.Printf("[peers] a connecting server reported a name that cannot be shown (%q); keeping none", call.OwnServerName)
+		otherServerName = ""
+	}
+	label := firstNonEmpty(otherServerName, strings.TrimSpace(call.ServerName))
 	transport := msg.PeerTransportDialOut
 	remoteBaseURL := ""
 	if call.BaseURL != "" {
@@ -355,7 +385,7 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	outbound, err := s.authClient.Create(r.Context(), authstoreclient.CredentialInput{
-		Provider: peerConnectionCredentialProvider, Owner: "llm-bridge-server", Account: strings.TrimSpace(call.ServerName), Label: strings.TrimSpace(call.ServerName),
+		Provider: peerConnectionCredentialProvider, Owner: "llm-bridge-server", Account: label, Label: label,
 		IntendedApp: "llm-bridge-server", AuthType: "token", RefreshMode: "none", Token: call.Credential, BaseURL: remoteBaseURL,
 	})
 	if err != nil {
@@ -370,6 +400,10 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 		InboundCredentialHash: hashPeerSecret(credentialForThem),
 		OutboundCredentialID:  outbound.ID,
 	}
+	if otherServerName != "" {
+		reportedAt := now
+		connection.OtherServerName, connection.OtherServerNameReportedAt = otherServerName, &reportedAt
+	}
 	if err := s.store.RedeemPeerConnectionInvite(passphraseHash, &connection, now); err != nil {
 		if deleteErr := s.authClient.Delete(r.Context(), outbound.ID); deleteErr != nil {
 			log.Printf("[peers] ERROR: delete auth-store credential %s after a failed connection: %v", outbound.ID, deleteErr)
@@ -381,7 +415,7 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	writeJSONStatus(w, http.StatusCreated, msg.PeerConnectAnswer{ConnectionID: connection.ID, Transport: transport, Credential: credentialForThem})
+	writeJSONStatus(w, http.StatusCreated, msg.PeerConnectAnswer{ConnectionID: connection.ID, Transport: transport, Credential: credentialForThem, OwnServerName: s.thisServerName()})
 }
 
 // peerConnectionInviteError maps a passphrase check to its answer, or nil.
@@ -402,7 +436,8 @@ func peerConnectionInviteError(err error) *requestCredentialError {
 
 // peerConnectionView is a connection with what is true of it now.
 func (s *Server) peerConnectionView(connection store.PeerConnection) msg.PeerConnectionView {
-	view := msg.PeerConnectionView{Connection: connection.PeerConnection, SocketConnected: s.peerSockets.socketOf(connection.ID) != nil}
+	view := msg.PeerConnectionView{Connection: connection.PeerConnection, SocketConnected: s.peerSockets.socketOf(connection.ID) != nil,
+		OtherServerName: connection.OtherServerName, OtherServerNameReportedAt: connection.OtherServerNameReportedAt}
 	if grant, err := s.store.LivePeerGrantOfConnection(connection.ID); err == nil {
 		view.AccessGiven = &grant.PeerGrant
 	} else if !errors.Is(err, store.ErrPeerGrantNotFound) {
@@ -813,6 +848,7 @@ func (s *Server) connectionPresentingCredential(r *http.Request) (store.PeerConn
 	if connection.RemovedAt != nil {
 		return store.PeerConnection{}, &requestCredentialError{http.StatusUnauthorized, "peer_connection_removed", connection.ID + " was removed"}
 	}
+	s.noteOtherServerName(connection.ID, r.Header)
 	return connection, nil
 }
 
@@ -1069,12 +1105,21 @@ func (s *Server) outboundConnectionCredential(ctx context.Context, connection st
 // credentials; on a socket the connection itself is the credential for a
 // connection call, so a direct-only header is added only for https.
 func (s *Server) sendOverPeerConnection(ctx context.Context, client *http.Client, connection store.PeerConnection, method, path string, header http.Header, body io.Reader, contentLength int64, connectionCall bool) (*http.Response, error) {
+	header = header.Clone()
+	if header == nil {
+		header = http.Header{}
+	}
+	s.stampThisServersName(header)
 	if connection.Transport == msg.PeerTransportDialOut {
 		socket := s.peerSockets.socketOf(connection.ID)
 		if socket == nil {
 			return nil, errPeerNotConnected
 		}
-		return socket.roundTrip(ctx, method, path, header, body)
+		response, err := socket.roundTrip(ctx, method, path, header, body)
+		if err == nil {
+			s.noteOtherServerName(connection.ID, response.Header)
+		}
+		return response, err
 	}
 	if connection.RemoteBaseURL == "" {
 		return nil, fmt.Errorf("%s is direct and has no address for the other server", connection.ID)
@@ -1100,6 +1145,7 @@ func (s *Server) sendOverPeerConnection(ctx context.Context, client *http.Client
 	if err != nil {
 		return nil, fmt.Errorf("%s %s%s: %w", method, connection.RemoteBaseURL, path, err)
 	}
+	s.noteOtherServerName(connection.ID, response.Header)
 	return response, nil
 }
 
