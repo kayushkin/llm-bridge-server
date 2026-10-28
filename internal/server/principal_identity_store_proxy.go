@@ -29,6 +29,12 @@ const (
 	// kanbanProxyMountPrefix is where kanban-store is mounted; the remainder of
 	// the path is forwarded under kanban-store's /api/.
 	kanbanProxyMountPrefix = "/kanban"
+	// kanbanStoreProxyMountPrefix also reaches kanban-store, with the remainder
+	// forwarded under its root, unchanged, like grant-store's: /kanban-store/api/…
+	// reaches /api/… and /kanban-store/settings its settings. A client that
+	// treats a base path as kanban-store itself, as bridge-ui does through a
+	// connected server, uses this one; /kanban/ stays for the agents that call it.
+	kanbanStoreProxyMountPrefix = "/kanban-store"
 	// grantStoreProxyMountPrefix is where grant-store is mounted; the remainder
 	// of the path is forwarded under grant-store's root, where all its routes
 	// live (/grants, /principals/{id}/effective, /relations, /resource-types).
@@ -100,6 +106,18 @@ func (s *Server) handleKanbanStoreProxyAsPrincipal(w http.ResponseWriter, r *htt
 		mountPrefix:          kanbanProxyMountPrefix,
 		upstreamBaseURL:      s.cfg.KanbanStoreURL,
 		upstreamPathPrefix:   "/api",
+		unavailableErrorCode: "kanban_store_unavailable",
+	})
+}
+
+// handleKanbanStoreRootProxyAsPrincipal forwards /kanban-store/<rest> to
+// kanban-store /<rest>, unchanged.
+func (s *Server) handleKanbanStoreRootProxyAsPrincipal(w http.ResponseWriter, r *http.Request) {
+	s.serveStoreProxyAsPrincipal(w, r, principalIdentityStoreProxy{
+		storeName:            "kanban-store",
+		mountPrefix:          kanbanStoreProxyMountPrefix,
+		upstreamBaseURL:      s.cfg.KanbanStoreURL,
+		upstreamPathPrefix:   "",
 		unavailableErrorCode: "kanban_store_unavailable",
 	})
 }

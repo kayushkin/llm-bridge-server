@@ -574,3 +574,38 @@ func TestNewRefusesAServerThatCouldNotIdentifyACaller(t *testing.T) {
 		}()
 	}
 }
+
+// /kanban-store/ reaches kanban-store at its root, so a client that takes its
+// base path to be kanban-store itself (bridge-ui through a connected server)
+// gets /api/… and /settings without the /api/ that /kanban/ adds.
+func TestKanbanStoreRootProxyForwardsThePathUnchanged(t *testing.T) {
+	kanban := newFakeKanbanStore(t)
+	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban.server.URL)
+	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
+
+	for _, path := range []string{"/kanban-store/api/boards/b1/cards?tag=x", "/kanban-store/settings"} {
+		request := httptest.NewRequest("GET", path, nil)
+		request.AddCookie(cookie)
+		if response := serve(server, request); response.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d %s", path, response.Code, response.Body.String())
+		}
+	}
+	unauthenticated := httptest.NewRequest("GET", "/kanban-store/api/boards", nil)
+	if response := serve(server, unauthenticated); response.Code != http.StatusUnauthorized {
+		t.Fatalf("GET without a login = %d, want 401", response.Code)
+	}
+
+	got := kanban.recorded()
+	if len(got) != 2 {
+		t.Fatalf("kanban-store received %d requests, want 2", len(got))
+	}
+	if got[0].EscapedPath != "/api/boards/b1/cards" || got[0].RawQuery != "tag=x" {
+		t.Fatalf("first forwarded as %s ? %s, want /api/boards/b1/cards ? tag=x", got[0].EscapedPath, got[0].RawQuery)
+	}
+	if got[1].EscapedPath != "/settings" {
+		t.Fatalf("second forwarded as %s, want /settings", got[1].EscapedPath)
+	}
+	if principal := got[0].Header.Get("X-Principal-Id"); principal != "principal_000001" {
+		t.Fatalf("X-Principal-Id = %q, want the login's principal", principal)
+	}
+}

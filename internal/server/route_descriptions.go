@@ -225,6 +225,7 @@ var routeDescriptions = map[string]routeDescription{
 	"POST /admin/identity-bindings":             {routeGroupLogin, "Link an Entra identity to a principal, as the calling administrator"},
 	"POST /admin/identity-bindings/{id}/unlink": {routeGroupLogin, "Unlink an identity and revoke its live login sessions"},
 	kanbanProxyMountPrefix + "/":                {routeGroupLogin, "kanban-store `/api/…`, as the caller"},
+	kanbanStoreProxyMountPrefix + "/":           {routeGroupLogin, "kanban-store at its root (`/api/…`, `/settings`), as the caller"},
 	grantStoreProxyMountPrefix + "/":            {routeGroupLogin, "grant-store `/…`, as the caller"},
 	mailstackProxyMountPrefix + "/":             {routeGroupLogin, "mailstack `/…`, as the caller, checked against their mail grants and tickets"},
 
