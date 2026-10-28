@@ -50,9 +50,11 @@ var requestHeadersForwardedToPeers = []string{"Content-Type", "Accept", "Last-Ev
 var responseHeadersPassedBackFromPeers = []string{"Content-Type", "Cache-Control", "Content-Encoding"}
 
 // contentTypesPassedBackFromPeers are the media types a peer's answer may keep:
-// the bridge answers JSON and event streams, and anything else, HTML above all,
-// would run as this server's own page.
-var contentTypesPassedBackFromPeers = []string{"application/json", "text/event-stream"}
+// the bridge answers JSON and event streams, and a shared file may be a raster
+// image, which the browser draws and never runs. Anything else, HTML above all,
+// would run as this server's own page; SVG stays out because it can carry
+// script. nosniff and the sandbox policy are set on every answer as well.
+var contentTypesPassedBackFromPeers = []string{"application/json", "text/event-stream", "image/png", "image/jpeg", "image/gif", "image/webp"}
 
 // passedBackContentType is the Content-Type the browser gets for a peer's
 // answer: the peer's own when its media type is one the bridge answers, else

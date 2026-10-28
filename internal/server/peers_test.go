@@ -755,6 +755,7 @@ func TestPassedBackContentTypeKeepsOnlyWhatTheBridgeAnswers(t *testing.T) {
 	for peerType, want := range map[string]string{
 		"application/json": "application/json", "application/json; charset=utf-8": "application/json; charset=utf-8",
 		"text/event-stream": "text/event-stream", "text/html": "application/octet-stream", "image/svg+xml": "application/octet-stream",
+		"image/png": "image/png", "image/jpeg": "image/jpeg", "image/gif": "image/gif", "image/webp": "image/webp", "image/bmp": "application/octet-stream",
 		"": "application/octet-stream", "not a type": "application/octet-stream", "Application/JSON": "Application/JSON",
 	} {
 		if got := passedBackContentType(peerType); got != want {
