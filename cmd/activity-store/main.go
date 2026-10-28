@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	activitystore "github.com/kayushkin/activity-store"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 func main() {
