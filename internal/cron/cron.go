@@ -107,7 +107,8 @@ func (s *Scheduler) Start() error {
 		return err
 	}
 	for _, j := range jobs {
-		if !j.Enabled {
+		// A triggered job has no schedule; the event-trigger consumer starts it.
+		if !j.Enabled || j.EventTrigger != nil {
 			continue
 		}
 		if _, err := s.addJob(j); err != nil {
@@ -150,6 +151,9 @@ func (s *Scheduler) RunJobNow(jobID int64) (*db.Run, error) {
 	job, err := s.store.GetJob(jobID)
 	if err != nil {
 		return nil, err
+	}
+	if job.EventTrigger != nil {
+		return nil, ErrRunsOnEventTrigger
 	}
 	if job.Type != "agent" {
 		return s.executeJob(*job), nil
@@ -256,6 +260,19 @@ func (s *Scheduler) executeJobReportingRun(job db.Job, runCreated chan<- *db.Run
 
 	startTime := time.Now()
 
+	run, err := s.createRun(job)
+	if err != nil {
+		return nil
+	}
+	if runCreated != nil {
+		started := *run
+		runCreated <- &started
+	}
+	return s.runAcquiredJob(job, run, job.Prompt, startTime)
+}
+
+// createRun records a new run of the job, logging a failure.
+func (s *Scheduler) createRun(job db.Job) (*db.Run, error) {
 	run, err := s.store.CreateRun(job.ID)
 	if err != nil {
 		log.Printf("create run for job %d: %v", job.ID, err)
@@ -265,13 +282,13 @@ func (s *Scheduler) executeJobReportingRun(job db.Job, runCreated chan<- *db.Run
 				"job_name": job.Name,
 			})
 		}
-		return nil
 	}
-	if runCreated != nil {
-		started := *run
-		runCreated <- &started
-	}
+	return run, err
+}
 
+// runAcquiredJob executes a job its caller holds in flight, with prompt in
+// place of the job's own for an agent job, and finishes the run.
+func (s *Scheduler) runAcquiredJob(job db.Job, run *db.Run, prompt string, startTime time.Time) *db.Run {
 	// Log job start
 	if s.logger != nil {
 		s.logger.LogJobStart(job.ID, job.Name, job.Schedule, run.ID)
@@ -284,7 +301,7 @@ func (s *Scheduler) executeJobReportingRun(job db.Job, runCreated chan<- *db.Run
 		} else {
 			result = s.agentExecutor.Run(executor.AgentRun{
 				Agent:        job.Agent,
-				Prompt:       job.Prompt,
+				Prompt:       prompt,
 				Orchestrator: job.Orchestrator,
 				SessionID:    job.SessionID,
 				WorkspaceID:  job.WorkspaceID,
@@ -303,14 +320,7 @@ func (s *Scheduler) executeJobReportingRun(job db.Job, runCreated chan<- *db.Run
 	duration := time.Since(startTime)
 
 	if err := s.store.FinishRun(run.ID, result.Status, result.Output); err != nil {
-		log.Printf("finish run %d: %v", run.ID, err)
-		if s.logger != nil {
-			s.logger.LogError("db_error", fmt.Sprintf("Failed to finish run %d: %v", run.ID, err), map[string]interface{}{
-				"run_id":   run.ID,
-				"job_id":   job.ID,
-				"job_name": job.Name,
-			})
-		}
+		s.logRunFinishFailure(job, run, err)
 	}
 
 	run.Status = result.Status
@@ -331,4 +341,15 @@ func (s *Scheduler) executeJobReportingRun(job db.Job, runCreated chan<- *db.Run
 	}
 
 	return run
+}
+
+func (s *Scheduler) logRunFinishFailure(job db.Job, run *db.Run, err error) {
+	log.Printf("finish run %d: %v", run.ID, err)
+	if s.logger != nil {
+		s.logger.LogError("db_error", fmt.Sprintf("Failed to finish run %d: %v", run.ID, err), map[string]interface{}{
+			"run_id":   run.ID,
+			"job_id":   job.ID,
+			"job_name": job.Name,
+		})
+	}
 }

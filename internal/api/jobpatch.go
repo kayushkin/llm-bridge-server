@@ -27,11 +27,28 @@ type jobPatchRequest struct {
 	Orchestrator *string `json:"orchestrator"`
 	SessionID    *string `json:"session_id"`
 	WorkspaceID  *string `json:"workspace_id"`
-	TimeoutSecs  *int    `json:"timeout_seconds"`
-	Enabled      *bool   `json:"enabled"`
+	// EventTrigger is raw so that null, which removes the trigger, differs
+	// from leaving the field out: a pointer decodes both as nil.
+	EventTrigger json.RawMessage `json:"event_trigger"`
+	TimeoutSecs  *int            `json:"timeout_seconds"`
+	Enabled      *bool           `json:"enabled"`
 }
 
-func (r jobPatchRequest) toJobPatch() db.JobPatch {
+// toJobPatch converts the request; an event_trigger that does not decode is
+// an error for the caller's 400.
+func (r jobPatchRequest) toJobPatch() (db.JobPatch, error) {
+	var eventTrigger *string
+	if r.EventTrigger != nil {
+		trigger, err := db.DecodeEventTrigger(string(r.EventTrigger))
+		if err != nil {
+			return db.JobPatch{}, err
+		}
+		encoded, err := db.EncodeEventTrigger(trigger)
+		if err != nil {
+			return db.JobPatch{}, err
+		}
+		eventTrigger = &encoded
+	}
 	return db.JobPatch{
 		Name:         r.Name,
 		Description:  r.Description,
@@ -44,9 +61,10 @@ func (r jobPatchRequest) toJobPatch() db.JobPatch {
 		Orchestrator: r.Orchestrator,
 		SessionID:    r.SessionID,
 		WorkspaceID:  r.WorkspaceID,
+		EventTrigger: eventTrigger,
 		TimeoutSecs:  r.TimeoutSecs,
 		Enabled:      r.Enabled,
-	}
+	}, nil
 }
 
 // applyJobPatch returns the job the patch would produce. Used to validate the
@@ -64,6 +82,10 @@ func applyJobPatch(job db.Job, patch db.JobPatch) db.Job {
 	assign(&job.Orchestrator, patch.Orchestrator)
 	assign(&job.SessionID, patch.SessionID)
 	assign(&job.WorkspaceID, patch.WorkspaceID)
+	if patch.EventTrigger != nil {
+		// toJobPatch wrote this string from a trigger it had just decoded.
+		job.EventTrigger, _ = db.DecodeEventTrigger(*patch.EventTrigger)
+	}
 	assign(&job.TimeoutSecs, patch.TimeoutSecs)
 	assign(&job.Enabled, patch.Enabled)
 	return job

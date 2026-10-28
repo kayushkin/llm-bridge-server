@@ -9,27 +9,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/slava/scheduler/internal/eventtriggers"
 	_ "modernc.org/sqlite"
 )
 
 type Job struct {
-	ID           int64      `json:"id"`
-	Name         string     `json:"name"`
-	Description  string     `json:"description,omitempty"`
-	Schedule     string     `json:"schedule"`
-	Command      string     `json:"command"`
-	Type         string     `json:"type"`                   // "shell" or "agent"
-	Agent        string     `json:"agent,omitempty"`        // agent name (for type=agent)
-	Prompt       string     `json:"prompt,omitempty"`       // prompt text (for type=agent)
-	ModelRole    string     `json:"model_role,omitempty"`   // model-store role the session starts on (for type=agent); empty takes the agent_job_model_role setting
-	Orchestrator string     `json:"orchestrator,omitempty"` // "claude-code", "inber", etc. (for type=agent)
-	SessionID    string     `json:"session_id,omitempty"`   // session to resume (for type=agent)
-	WorkspaceID  string     `json:"workspace_id,omitempty"` // noteboard workspace holding this job's working memory (for type=agent)
-	TimeoutSecs  int        `json:"timeout_seconds"`        // per-job wall-clock cap; 0 means executor.DefaultTimeout
-	Enabled      bool       `json:"enabled"`
-	HoldUntil    *time.Time `json:"hold_until,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	Schedule     string `json:"schedule"`
+	Command      string `json:"command"`
+	Type         string `json:"type"`                   // "shell" or "agent"
+	Agent        string `json:"agent,omitempty"`        // agent name (for type=agent)
+	Prompt       string `json:"prompt,omitempty"`       // prompt text (for type=agent)
+	ModelRole    string `json:"model_role,omitempty"`   // model-store role the session starts on (for type=agent); empty takes the agent_job_model_role setting
+	Orchestrator string `json:"orchestrator,omitempty"` // "claude-code", "inber", etc. (for type=agent)
+	SessionID    string `json:"session_id,omitempty"`   // session to resume (for type=agent)
+	WorkspaceID  string `json:"workspace_id,omitempty"` // noteboard workspace holding this job's working memory (for type=agent)
+	// EventTrigger, when set, runs the job on each bus message it matches
+	// instead of on Schedule, which is then empty. See internal/eventtriggers.
+	EventTrigger *eventtriggers.Trigger `json:"event_trigger,omitempty"`
+	TimeoutSecs  int                    `json:"timeout_seconds"` // per-job wall-clock cap; 0 means executor.DefaultTimeout
+	Enabled      bool                   `json:"enabled"`
+	HoldUntil    *time.Time             `json:"hold_until,omitempty"`
+	CreatedAt    time.Time              `json:"created_at"`
+	UpdatedAt    time.Time              `json:"updated_at"`
 }
 
 type Run struct {
@@ -174,10 +178,15 @@ func (s *Store) migrate() error {
 		// job (autoworker, the nightly guards) sets its own instead of being
 		// held to one global 5 minutes.
 		"ALTER TABLE jobs ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 0",
+		// An event trigger as JSON, '' for a job that runs on its schedule.
+		"ALTER TABLE jobs ADD COLUMN event_trigger TEXT NOT NULL DEFAULT ''",
 	} {
 		s.db.Exec(col)
 	}
 	if err := s.migrateModelToModelRole(); err != nil {
+		return err
+	}
+	if err := s.migrateEventTriggerDeliveries(); err != nil {
 		return err
 	}
 	return s.migrateServiceSettings()
@@ -331,9 +340,13 @@ func (s *Store) CreateJobFull(j Job) (*Job, error) {
 	if j.Type == "" {
 		j.Type = "shell"
 	}
+	eventTrigger, err := EncodeEventTrigger(j.EventTrigger)
+	if err != nil {
+		return nil, err
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO jobs (name, description, schedule, command, type, agent, prompt, model_role, orchestrator, session_id, workspace_id, timeout_seconds, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		j.Name, j.Description, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.ModelRole, j.Orchestrator, j.SessionID, j.WorkspaceID, j.TimeoutSecs, j.Enabled, now, now,
+		`INSERT INTO jobs (name, description, schedule, command, type, agent, prompt, model_role, orchestrator, session_id, workspace_id, event_trigger, timeout_seconds, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		j.Name, j.Description, j.Schedule, j.Command, j.Type, j.Agent, j.Prompt, j.ModelRole, j.Orchestrator, j.SessionID, j.WorkspaceID, eventTrigger, j.TimeoutSecs, j.Enabled, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -346,7 +359,7 @@ func (s *Store) CreateJobFull(j Job) (*Job, error) {
 }
 
 func (s *Store) ListJobs() ([]Job, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, schedule, command, type, agent, prompt, model_role, orchestrator, session_id, workspace_id, timeout_seconds, enabled, hold_until, created_at, updated_at FROM jobs ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, description, schedule, command, type, agent, prompt, model_role, orchestrator, session_id, workspace_id, event_trigger, timeout_seconds, enabled, hold_until, created_at, updated_at FROM jobs ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -355,10 +368,14 @@ func (s *Store) ListJobs() ([]Job, error) {
 	for rows.Next() {
 		var j Job
 		var enabled int
-		if err := rows.Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.ModelRole, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &j.TimeoutSecs, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		var eventTrigger string
+		if err := rows.Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.ModelRole, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &eventTrigger, &j.TimeoutSecs, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt); err != nil {
 			return nil, err
 		}
 		j.Enabled = enabled != 0
+		if j.EventTrigger, err = DecodeEventTrigger(eventTrigger); err != nil {
+			return nil, fmt.Errorf("job %d: %w", j.ID, err)
+		}
 		jobs = append(jobs, j)
 	}
 	return jobs, rows.Err()
@@ -367,12 +384,16 @@ func (s *Store) ListJobs() ([]Job, error) {
 func (s *Store) GetJob(id int64) (*Job, error) {
 	var j Job
 	var enabled int
-	err := s.db.QueryRow(`SELECT id, name, description, schedule, command, type, agent, prompt, model_role, orchestrator, session_id, workspace_id, timeout_seconds, enabled, hold_until, created_at, updated_at FROM jobs WHERE id=?`, id).
-		Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.ModelRole, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &j.TimeoutSecs, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt)
+	var eventTrigger string
+	err := s.db.QueryRow(`SELECT id, name, description, schedule, command, type, agent, prompt, model_role, orchestrator, session_id, workspace_id, event_trigger, timeout_seconds, enabled, hold_until, created_at, updated_at FROM jobs WHERE id=?`, id).
+		Scan(&j.ID, &j.Name, &j.Description, &j.Schedule, &j.Command, &j.Type, &j.Agent, &j.Prompt, &j.ModelRole, &j.Orchestrator, &j.SessionID, &j.WorkspaceID, &eventTrigger, &j.TimeoutSecs, &enabled, &j.HoldUntil, &j.CreatedAt, &j.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	j.Enabled = enabled != 0
+	if j.EventTrigger, err = DecodeEventTrigger(eventTrigger); err != nil {
+		return nil, fmt.Errorf("job %d: %w", j.ID, err)
+	}
 	return &j, nil
 }
 
@@ -399,6 +420,9 @@ type JobPatch struct {
 	Orchestrator *string
 	SessionID    *string
 	WorkspaceID  *string
+	// EventTrigger is the trigger as JSON, as EncodeEventTrigger writes it;
+	// "" removes it.
+	EventTrigger *string
 	TimeoutSecs  *int
 	Enabled      *bool
 }
@@ -424,6 +448,7 @@ var patchColumns = []struct {
 	{"orchestrator", func(p JobPatch) (any, bool) { return patchValue(p.Orchestrator) }},
 	{"session_id", func(p JobPatch) (any, bool) { return patchValue(p.SessionID) }},
 	{"workspace_id", func(p JobPatch) (any, bool) { return patchValue(p.WorkspaceID) }},
+	{"event_trigger", func(p JobPatch) (any, bool) { return patchValue(p.EventTrigger) }},
 	{"timeout_seconds", func(p JobPatch) (any, bool) { return patchValue(p.TimeoutSecs) }},
 	{"enabled", func(p JobPatch) (any, bool) { return patchValue(p.Enabled) }},
 }

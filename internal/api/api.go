@@ -15,6 +15,7 @@ import (
 	"github.com/slava/scheduler/internal/boundedtext"
 	cronpkg "github.com/slava/scheduler/internal/cron"
 	"github.com/slava/scheduler/internal/db"
+	"github.com/slava/scheduler/internal/eventtriggers"
 )
 
 // APIError is a structured JSON error response.
@@ -61,6 +62,7 @@ func New(store *db.Store, scheduler *cronpkg.Scheduler, token string, settings *
 	s.mux.HandleFunc("/api/jobs", s.handleJobs)
 	s.mux.HandleFunc("/api/jobs/", s.handleJobSub)
 	s.mux.HandleFunc("GET /api/runs/latest", s.handleLatestRuns)
+	s.mux.HandleFunc("GET /api/event-trigger-subjects", s.handleEventTriggerSubjects)
 	s.mux.HandleFunc("/api/calendar/events", s.handleCalendarEvents)
 	// At the root, not under /api: dash sends /api/scheduler/settings here, as
 	// it does for every service's settings. GET describes every setting; PUT
@@ -136,7 +138,9 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			Orchestrator string `json:"orchestrator"`
 			SessionID    string `json:"session_id"`
 			WorkspaceID  string `json:"workspace_id"`
-			TimeoutSecs  int    `json:"timeout_seconds"`
+			// decodeStrict refuses an unknown field inside it too.
+			EventTrigger *eventtriggers.Trigger `json:"event_trigger"`
+			TimeoutSecs  int                    `json:"timeout_seconds"`
 			// Pointer, for the same reason jobPatchRequest.Enabled is one: a
 			// plain bool cannot tell "enabled: false" from "field absent", and
 			// those must mean different things here. Absent means true, so no
@@ -152,14 +156,15 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			jobType = db.DefaultJobType
 		}
 		if problem := db.ValidateJob(db.Job{
-			Name:        req.Name,
-			Schedule:    req.Schedule,
-			Command:     req.Command,
-			Type:        jobType,
-			Agent:       req.Agent,
-			Prompt:      req.Prompt,
-			ModelRole:   req.ModelRole,
-			TimeoutSecs: req.TimeoutSecs,
+			Name:         req.Name,
+			Schedule:     req.Schedule,
+			Command:      req.Command,
+			Type:         jobType,
+			Agent:        req.Agent,
+			Prompt:       req.Prompt,
+			ModelRole:    req.ModelRole,
+			EventTrigger: req.EventTrigger,
+			TimeoutSecs:  req.TimeoutSecs,
 		}); problem != "" {
 			writeError(w, 400, problem, "")
 			return
@@ -179,6 +184,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			Orchestrator: req.Orchestrator,
 			SessionID:    req.SessionID,
 			WorkspaceID:  req.WorkspaceID,
+			EventTrigger: req.EventTrigger,
 			TimeoutSecs:  req.TimeoutSecs,
 			Enabled:      db.EnabledOnCreate(req.Enabled),
 		})
@@ -261,7 +267,11 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 				writeError(w, 500, "failed to get job", err.Error())
 				return
 			}
-			patch := req.toJobPatch()
+			patch, err := req.toJobPatch()
+			if err != nil {
+				writeError(w, 400, err.Error(), "")
+				return
+			}
 			// Validate the job the patch would PRODUCE, not the patch itself.
 			// Clearing a shell job's command is only invalid in combination with
 			// the type it already has, and a patch read on its own cannot see that.
@@ -428,6 +438,10 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 				writeError(w, 404, "job not found", "")
 				return
 			}
+			if errors.Is(err, cronpkg.ErrRunsOnEventTrigger) {
+				writeError(w, 409, err.Error(), "")
+				return
+			}
 			writeError(w, 500, "failed to run job", err.Error())
 			return
 		}
@@ -492,7 +506,8 @@ func (s *Server) handleCalendarEvents(w http.ResponseWriter, r *http.Request) {
 	out := make([]occurrence, 0)
 	const maxPerJob = 500
 	for _, j := range jobs {
-		if !j.Enabled {
+		// A triggered job has no schedule, so it has no occurrences.
+		if !j.Enabled || j.EventTrigger != nil {
 			continue
 		}
 		sched, err := cron.ParseStandard(j.Schedule)

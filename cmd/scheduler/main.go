@@ -38,6 +38,7 @@ import (
 	"github.com/slava/scheduler/internal/config"
 	cronpkg "github.com/slava/scheduler/internal/cron"
 	"github.com/slava/scheduler/internal/db"
+	"github.com/slava/scheduler/internal/eventtriggerconsumer"
 	"github.com/slava/scheduler/internal/executor"
 	"github.com/slava/scheduler/internal/logging"
 	"github.com/slava/scheduler/internal/modelstoreroles"
@@ -77,6 +78,9 @@ type deps struct {
 	// called only when the connection opened, which is the whole of that
 	// decision — an agent job has nowhere to send its request otherwise.
 	newAgentExecutor func() *executor.AgentExecutor
+	// subscribeEventTriggers starts the consumers that run triggered jobs. It
+	// is called only when the connection opened.
+	subscribeEventTriggers func(store *db.Store, scheduler *cronpkg.Scheduler) error
 	// openStore opens the job database.
 	openStore func(path string) (*db.Store, error)
 	// newBusHandler builds the bus request handler.
@@ -131,6 +135,10 @@ func productionDeps(cfg config.Config, settings *servicesettings.Registry, signa
 			return executor.NewAgentExecutor(client, cfg.BridgeURL, cfg.NoteboardURL,
 				func() string { return settings.ModelRole(config.SettingAgentJobModelRole) },
 				sessionmodelrole.New(cfg.ModelStoreURL, cfg.BridgeURL))
+		},
+		subscribeEventTriggers: func(store *db.Store, scheduler *cronpkg.Scheduler) error {
+			consumer := &eventtriggerconsumer.Consumer{Store: store, Starter: scheduler}
+			return consumer.Subscribe(client)
 		},
 		openStore: db.New,
 		newBusHandler: func(natsURL string, store *db.Store, scheduler *cronpkg.Scheduler, logger *logging.Logger) (busService, error) {
@@ -223,6 +231,14 @@ func runScheduler(cfg config.Config, settings *servicesettings.Registry, d deps)
 	if err := busHandler.Start(); err != nil {
 		logger.LogError("startup_error", fmt.Sprintf("Failed to start bus handler: %v", err), nil)
 		d.logf("warning: bus handler failed to start: %v", err)
+	}
+	// Nor are event triggers: without them no triggered job runs, but every
+	// scheduled job still does.
+	if conn != nil {
+		if err := d.subscribeEventTriggers(store, scheduler); err != nil {
+			logger.LogError("startup_error", fmt.Sprintf("Failed to subscribe event triggers; no triggered job will run: %v", err), nil)
+			d.logf("warning: event triggers failed to subscribe; no triggered job will run: %v", err)
+		}
 	}
 
 	srv := api.New(store, scheduler, cfg.Token, settings, modelstoreroles.New(cfg.ModelStoreURL).CheckRole)

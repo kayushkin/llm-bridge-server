@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/robfig/cron/v3"
+	"github.com/slava/scheduler/internal/eventtriggers"
 )
 
 // This file holds the one definition of what a runnable job is. It lives in db
@@ -56,14 +57,21 @@ func ValidateJob(job Job) string {
 	// still refuses an empty schedule — cron.ParseStandard("") fails two lines
 	// below with `invalid schedule "": empty spec string`. Measured. Keep it for
 	// the wording, and do not cite it as the thing that stops an empty schedule.
-	if job.Schedule == "" {
-		return "schedule is required"
+	// A job runs on its schedule or on its event trigger. Both would leave the
+	// prompt a template on some runs and plain text on others.
+	if job.EventTrigger != nil && job.Schedule != "" {
+		return "a job runs on a schedule or on an event_trigger, not both"
+	}
+	if job.EventTrigger == nil && job.Schedule == "" {
+		return "schedule or event_trigger is required"
 	}
 	// The cron expression used to go unchecked, so a job with an unparseable
 	// schedule was accepted, then skipped with a log line at load time and never
 	// ran again. Reject it at the edge instead.
-	if _, err := cron.ParseStandard(job.Schedule); err != nil {
-		return fmt.Sprintf("invalid schedule %q: %s", job.Schedule, err)
+	if job.EventTrigger == nil {
+		if _, err := cron.ParseStandard(job.Schedule); err != nil {
+			return fmt.Sprintf("invalid schedule %q: %s", job.Schedule, err)
+		}
 	}
 	if job.TimeoutSecs < 0 {
 		return "timeout_seconds must be >= 0 (0 means the default)"
@@ -87,6 +95,16 @@ func ValidateJob(job Job) string {
 	// stored, shown and never used — the fate of the model column it replaced.
 	if job.ModelRole != "" && job.Type != "agent" {
 		return fmt.Sprintf("model_role is only for agent jobs; a %s job starts no session", job.Type)
+	}
+	if job.EventTrigger != nil {
+		// A shell command filled from a stranger's chat message would run
+		// whatever they typed.
+		if job.Type != "agent" {
+			return fmt.Sprintf("event_trigger is only for agent jobs; a %s job's command cannot be filled from a message", job.Type)
+		}
+		if problem := eventtriggers.Validate(*job.EventTrigger, job.Prompt); problem != "" {
+			return problem
+		}
 	}
 	return ""
 }

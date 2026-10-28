@@ -263,6 +263,8 @@ type harness struct {
 	conn      *fakeConnection
 	bus       *fakeBusService
 	published *recordingEntryPublisher
+	// eventTriggerSubscriptions counts calls to subscribeEventTriggers.
+	eventTriggerSubscriptions int
 
 	mu           sync.Mutex
 	connectCalls int
@@ -344,6 +346,12 @@ func (h *harness) deps() deps {
 				return nil, err
 			}
 			return h.conn, nil
+		},
+		subscribeEventTriggers: func(store *db.Store, scheduler *cronpkg.Scheduler) error {
+			h.mu.Lock()
+			h.eventTriggerSubscriptions++
+			h.mu.Unlock()
+			return nil
 		},
 		newLogger: func() *logging.Logger {
 			h.mu.Lock()

@@ -76,7 +76,7 @@ func TestCreateJobStillRejectsWhatItAlreadyRejected(t *testing.T) {
 		want    string
 	}{
 		{"a job with no name", Command{Schedule: "* * * * *", Command: "echo"}, "name is required"},
-		{"a job with no schedule", Command{Name: "j", Command: "echo"}, "schedule is required"},
+		{"a job with no schedule", Command{Name: "j", Command: "echo"}, "schedule or event_trigger is required"},
 		{"a shell job with no command", Command{Name: "j", Schedule: "* * * * *", Type: "shell"}, "command is required for shell jobs"},
 		{"an agent job with no agent", Command{Name: "j", Schedule: "* * * * *", Type: "agent", Prompt: "hi"}, "agent and prompt is required for agent jobs"},
 		{"an agent job with no prompt", Command{Name: "j", Schedule: "* * * * *", Type: "agent", Agent: "claude-code"}, "agent and prompt is required for agent jobs"},

@@ -1,6 +1,8 @@
 package bus
 
 import (
+	"github.com/slava/scheduler/internal/eventtriggers"
+
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,22 +22,23 @@ import (
 // json.Unmarshal, so a publisher that sent them got success and a row with all
 // three empty. Adding a creation field to one edge means adding it to both.
 type Command struct {
-	Action       string `json:"action"`
-	Name         string `json:"name,omitempty"`
-	Description  string `json:"description,omitempty"`
-	Schedule     string `json:"schedule,omitempty"`
-	Command      string `json:"command,omitempty"`
-	Type         string `json:"type,omitempty"`
-	Agent        string `json:"agent,omitempty"`
-	Prompt       string `json:"prompt,omitempty"`
-	ModelRole    string `json:"model_role,omitempty"`
-	Orchestrator string `json:"orchestrator,omitempty"`
-	SessionID    string `json:"session_id,omitempty"`
-	WorkspaceID  string `json:"workspace_id,omitempty"`
-	TimeoutSecs  int    `json:"timeout_seconds,omitempty"`
-	ID           int64  `json:"id,omitempty"`
-	Enabled      *bool  `json:"enabled,omitempty"`
-	JobID        int64  `json:"job_id,omitempty"`
+	Action       string                 `json:"action"`
+	Name         string                 `json:"name,omitempty"`
+	Description  string                 `json:"description,omitempty"`
+	Schedule     string                 `json:"schedule,omitempty"`
+	Command      string                 `json:"command,omitempty"`
+	Type         string                 `json:"type,omitempty"`
+	Agent        string                 `json:"agent,omitempty"`
+	Prompt       string                 `json:"prompt,omitempty"`
+	ModelRole    string                 `json:"model_role,omitempty"`
+	Orchestrator string                 `json:"orchestrator,omitempty"`
+	SessionID    string                 `json:"session_id,omitempty"`
+	WorkspaceID  string                 `json:"workspace_id,omitempty"`
+	EventTrigger *eventtriggers.Trigger `json:"event_trigger,omitempty"`
+	TimeoutSecs  int                    `json:"timeout_seconds,omitempty"`
+	ID           int64                  `json:"id,omitempty"`
+	Enabled      *bool                  `json:"enabled,omitempty"`
+	JobID        int64                  `json:"job_id,omitempty"`
 }
 
 // RunResult represents a job run result for publishing
@@ -193,6 +196,7 @@ func (h *Handler) handleCreateJob(cmd Command) (any, error) {
 		Orchestrator: cmd.Orchestrator,
 		SessionID:    cmd.SessionID,
 		WorkspaceID:  cmd.WorkspaceID,
+		EventTrigger: cmd.EventTrigger,
 		TimeoutSecs:  cmd.TimeoutSecs,
 		// Command.Enabled already existed for toggle_job, and create_job read
 		// it and threw it away — so a caller could ask for a disabled job over

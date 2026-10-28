@@ -1,10 +1,12 @@
 package bus
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/slava/scheduler/internal/db"
+	"github.com/slava/scheduler/internal/eventtriggers"
 
 	_ "modernc.org/sqlite"
 )
@@ -74,6 +76,20 @@ var creationRequests = []creationRequest{
 		},
 	},
 	{
+		name: "an agent job that runs on an event trigger instead of a schedule",
+		body: `{
+			"action":"create_job","name":"t","type":"agent","agent":"claude-code",
+			"prompt":"{{.body}}",
+			"event_trigger":{"subject":"messaging.inbound","conditions":[{"field":"is_direct_message","equals":true}]}
+		}`,
+		want: map[string]any{
+			"Name": "t", "Type": "agent", "Agent": "claude-code", "Prompt": "{{.body}}",
+			"EventTrigger": &eventtriggers.Trigger{Subject: "messaging.inbound", Conditions: []eventtriggers.Condition{
+				{Field: "is_direct_message", Equals: json.RawMessage(`true`)},
+			}},
+		},
+	},
+	{
 		name: "a shell job, which is the only kind that can carry a command",
 		body: `{
 			"action":"create_job","name":"s","description":"shell one",
@@ -109,7 +125,7 @@ func TestCreateJobOverTheBusStoresEveryFieldItWasSent(t *testing.T) {
 			stored := reflect.ValueOf(jobs[0])
 			for field, want := range request.want {
 				got := stored.FieldByName(field).Interface()
-				if got != want {
+				if !reflect.DeepEqual(got, want) {
 					t.Errorf("%s: sent %v, stored %v", field, want, got)
 				}
 			}

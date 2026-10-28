@@ -2,7 +2,11 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
+	"reflect"
+
 	"errors"
+	"github.com/slava/scheduler/internal/eventtriggers"
 	"testing"
 )
 
@@ -86,11 +90,12 @@ func TestUpdateJobWritesEveryPatchableColumn(t *testing.T) {
 	jobType, agent, prompt, modelRole := "agent", "claude-code", "p", "balanced"
 	orchestrator, sessionID, workspaceID := "inber", "sess", "ws"
 	timeout, enabled := 1800, false
+	eventTrigger := `{"subject":"messaging.inbound","conditions":[{"field":"platform","equals":"discord"}]}`
 	patch := JobPatch{
 		Name: &name, Description: &description, Schedule: &schedule, Command: &command,
 		Type: &jobType, Agent: &agent, Prompt: &prompt, ModelRole: &modelRole,
 		Orchestrator: &orchestrator, SessionID: &sessionID, WorkspaceID: &workspaceID,
-		TimeoutSecs: &timeout, Enabled: &enabled,
+		EventTrigger: &eventTrigger, TimeoutSecs: &timeout, Enabled: &enabled,
 	}
 	if got := len(patch.Changes()); got != len(PatchableColumns()) {
 		t.Fatalf("patch reports %d changes, want all %d patchable columns", got, len(PatchableColumns()))
@@ -104,10 +109,13 @@ func TestUpdateJobWritesEveryPatchableColumn(t *testing.T) {
 		ID: created.ID, Name: name, Description: description, Schedule: schedule,
 		Command: command, Type: jobType, Agent: agent, Prompt: prompt, ModelRole: modelRole,
 		Orchestrator: orchestrator, SessionID: sessionID, WorkspaceID: workspaceID,
+		EventTrigger: &eventtriggers.Trigger{Subject: "messaging.inbound", Conditions: []eventtriggers.Condition{
+			{Field: "platform", Equals: json.RawMessage(`"discord"`)},
+		}},
 		TimeoutSecs: timeout, Enabled: enabled,
 	}
 	want.CreatedAt, want.UpdatedAt = got.CreatedAt, got.UpdatedAt
-	if *got != want {
+	if !reflect.DeepEqual(*got, want) {
 		t.Fatalf("after full patch:\n got %+v\nwant %+v", *got, want)
 	}
 }
