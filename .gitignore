@@ -8,6 +8,7 @@
 /llm-bridge-server
 /mock-harness
 /bridge-agent
+/bridge-sessions
 /bridge-mcp
 
 # Host-local config (machine-specific systemd drop-ins, dev secrets, etc.).

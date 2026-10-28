@@ -155,6 +155,14 @@ const (
 	sessionAgentReachesItsDelegateOrItself
 	// sessionAgentReadsCatalog is a catalog a delegate's start depends on.
 	sessionAgentReadsCatalog
+	// sessionAgentReadsSessions is a read-only session route — the list,
+	// full-text search, one session and its history — that a session's agent
+	// reads as its own session's principal: every session when that session
+	// runs with no principal, as the internal service does, and otherwise
+	// exactly what the principal (and, for a session a connected server
+	// started, that server too) may read. It never sends, stops or changes
+	// anything, and never answers through the public reverse proxy.
+	sessionAgentReadsSessions
 )
 
 // routeAccessRule is one route's classification.
@@ -221,6 +229,14 @@ func operationOwnedRoute(pathValueName string) routeAccessRule {
 func ownSessionsOnlyRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalSeesOwnSessionsOnly, reason: reason}
 }
+
+// sessionReadRoute is a read-only session route a session's agent may also
+// call with its posting token, reading as its own session's principal.
+func sessionReadRoute(rule routeAccessRule) routeAccessRule {
+	rule.sessionAgentAccess = sessionAgentReadsSessions
+	rule.reason += "; a session's agent reads it as its own session's principal"
+	return rule
+}
 func catalogRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalReadsCatalog, reason: reason}
 }
@@ -283,7 +299,7 @@ var routeAccessRules = map[string]routeAccessRule{
 
 	// Sessions.
 	"POST /sessions":              {class: routePrincipalCreatesSession, sessionAgentAccess: sessionAgentCreatesItsDelegate, reason: "a principal creates sessions as itself, and a session's agent its delegates as its own session's principal"},
-	"GET /sessions":               ownSessionsOnlyRoute("session list, narrowed in the store"),
+	"GET /sessions":               sessionReadRoute(ownSessionsOnlyRoute("session list, narrowed in the store")),
 	"GET /sessions/summary":       ownSessionsOnlyRoute("sidebar list, narrowed in the store"),
 	"POST /sessions/summary":      ownSessionsOnlyRoute("sidebar list, narrowed in the store"),
 	"GET /sessions/recent-bundle": ownSessionsOnlyRoute("recent sessions warmed for the chat page, narrowed in the store"),
@@ -291,11 +307,11 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /sessions/validators":   ownSessionsOnlyRoute("staleness check; ids not owned by the caller are dropped before log-store is asked"),
 	"GET /session-events":         ownSessionsOnlyRoute("session list stream; frames about other principals' sessions are not written"),
 	"GET /signals":                ownSessionsOnlyRoute("cross-session signal inbox, narrowed in the store"),
-	"GET /sessions/search":        cannotBeFilteredRoute("full-text search answered by log-store across every session"),
+	"GET /sessions/search":        sessionReadRoute(cannotBeFilteredRoute("full-text search answered by log-store across every session")),
 	"GET /sessions/aggregates":    cannotBeFilteredRoute("aggregates computed by log-store across every session"),
 	"GET /sessions/discover":      operatorRoute("imports sessions found on this host's disk"),
 
-	"GET /sessions/{id}":                                  delegateDrivenSessionRoute("id", sessionAgentReachesItsDelegateOrItself),
+	"GET /sessions/{id}":                                  sessionReadRoute(sessionOwnedRoute("id")),
 	"POST /sessions/{id}/send":                            delegateDrivenSessionRoute("id", sessionAgentReachesItsDelegate),
 	"POST /sessions/{id}/files":                           sessionAgentPostingRoute("id", "shares a file into one session, as its owner or as its own agent"),
 	"GET /sessions/{id}/files":                            sessionOwnedRoute("id"),
@@ -309,7 +325,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /sessions/{id}/events":                           delegateDrivenSessionRoute("id", sessionAgentReachesItsDelegate),
 	"GET /sessions/{id}/attach":                           sessionOwnedRoute("id"),
 	"GET /sessions/{id}/attach-token":                     sessionOwnedRoute("id"),
-	"GET /sessions/{id}/messages":                         sessionOwnedRoute("id"),
+	"GET /sessions/{id}/messages":                         sessionReadRoute(sessionOwnedRoute("id")),
 	"GET /sessions/{id}/messages/raw":                     sessionOwnedRoute("id"),
 	"GET /sessions/{id}/entries/{eventId}":                sessionOwnedRoute("id"),
 	"GET /sessions/{id}/entries/{eventId}/images/{index}": sessionOwnedRoute("id"),

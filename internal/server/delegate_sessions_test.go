@@ -88,8 +88,6 @@ func TestADelegatingAgentReachesNoSessionItDidNotStart(t *testing.T) {
 		method, path string
 		body         any
 	}{
-		{http.MethodGet, "/sessions/br_neighbour", nil},
-		{http.MethodGet, "/sessions/br_neighbours_delegate", nil},
 		{http.MethodPost, "/sessions/br_neighbours_delegate/send", map[string]string{"message": "x"}},
 		{http.MethodPost, "/sessions/br_neighbours_delegate/stop", nil},
 		{http.MethodGet, "/sessions/br_neighbours_delegate/events", nil},
@@ -101,10 +99,8 @@ func TestADelegatingAgentReachesNoSessionItDidNotStart(t *testing.T) {
 		}
 	}
 
-	// Routes that take no delegate access still refuse the token.
-	if code := servedWithPostingToken(t, srv, token, http.MethodGet, "/sessions", nil).Code; code != http.StatusUnauthorized {
-		t.Errorf("GET /sessions: %d, want 401", code)
-	}
+	// Reading another session is allowed and tested in
+	// agent_session_reads_test.go; driving one is what is refused above.
 
 	request := delegateRequest(instanceID)
 	request.ManagerSessionID = "br_neighbour"

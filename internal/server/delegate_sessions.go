@@ -16,6 +16,9 @@ package server
 //     session only when the agent's session manages it (GET also the agent's
 //     own session); anything else is 404, the answer for a missing session.
 //   - GET /instances, which a start needs, reads as the session's principal.
+//   - GET /sessions, GET /sessions/search, GET /sessions/{id} and its
+//     /messages read as the session's principal (serveSessionReadingAgent),
+//     so an agent can find and read past sessions on its own server.
 //
 // The routes that take this are marked by sessionAgentAccess on their rule in
 // routeAccessRules. Every other route refuses the token as before.
@@ -26,6 +29,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -82,6 +86,10 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 			}
 		}
 	}
+	if rule.sessionAgentAccess == sessionAgentReadsSessions {
+		s.serveSessionReadingAgent(w, r, pattern, rule, agentSession, caller)
+		return
+	}
 	caller.delegatingAgentOfSessionID = agentSessionID
 
 	switch rule.sessionAgentAccess {
@@ -135,4 +143,49 @@ func delegateRequestRefusal(req *CreateSessionRequest, agentSessionID, agentPrin
 	req.ManagerSessionID = agentSessionID
 	req.PrincipalID = agentPrincipalID
 	return nil
+}
+
+// serveSessionReadingAgent answers a read-only session route for a session's
+// agent. Who the agent reads as is decided the way every other caller's is:
+//
+//   - a session that runs with no principal — every session on a server one
+//     operator runs alone — reads as the internal service, as the operator's
+//     own tools do: every session, and search across them;
+//   - a session with a principal reads through serveAsCaller as that
+//     principal, carrying the connected server it was started through when it
+//     was, so the session scope and observe grants apply exactly as they do to
+//     that principal's own requests, and search (which cannot be narrowed) is
+//     refused unless the principal is an administrator.
+//
+// The token reaches this server only from its own harness children, so a
+// request that came through the public reverse proxy is refused before
+// anything is read.
+func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule, agentSession *store.Session, caller requestCaller) {
+	if requestCameThroughPublicProxy(r) {
+		writeJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
+			"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))
+		return
+	}
+	if agentSession.PrincipalID == "" {
+		s.mux.ServeHTTP(w, withRequestCaller(r, requestCaller{}))
+		return
+	}
+	origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(agentSession.SessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error())
+		return
+	}
+	if throughPeer {
+		peer, credentialError := s.callerForPrincipalID(r.Context(), origin.PeerPrincipalID, "the peer session "+agentSession.SessionID+" was started through is")
+		if credentialError != nil {
+			credentialError.write(w)
+			return
+		}
+		caller.peer = &peerCaller{
+			peerPrincipalID:       origin.PeerPrincipalID,
+			peerIsAdministrator:   peer.isAdministrator,
+			remoteUserPrincipalID: origin.RemotePrincipalID,
+		}
+	}
+	s.serveAsCaller(w, r, pattern, rule, caller)
 }

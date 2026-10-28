@@ -106,6 +106,9 @@ go build -o bridge-mcp ./cmd/bridge-mcp
 # session's posting token, so a copy older than the server's delegate routes
 # cannot start anything; build it with the server it talks to.
 go build -o bridge-agent ./cmd/bridge-agent
+# bridge-sessions: how an agent finds and reads past sessions on this server,
+# read-only, with the same posting token.
+go build -o bridge-sessions ./cmd/bridge-sessions
 echo "    built: $(ls -lh "$BIN_NAME" | awk '{print $5}')"
 
 # Checked before the backup, and so before the stop and the install: an unidentifiable
@@ -185,6 +188,10 @@ rm -f bridge-mcp
 echo "==> Installing bridge-agent..."
 install -m 755 bridge-agent "$HOME/bin/bridge-agent"
 rm -f bridge-agent
+
+echo "==> Installing bridge-sessions..."
+install -m 755 bridge-sessions "$HOME/bin/bridge-sessions"
+rm -f bridge-sessions
 
 echo "==> Installing service file..."
 # The committed unit file uses __USER__ / __HOME__ placeholders so the repo
