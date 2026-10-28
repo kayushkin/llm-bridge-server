@@ -108,6 +108,7 @@ func (s *Server) importExternalActivity(ctx context.Context, h msg.Harness, sinc
 		if s.harness.HasProcessOrCleanup(row.SessionID) {
 			continue
 		}
+		s.fillDiscoveredSessionMetadata("[external-activity]", row.SessionID, ds)
 		// A harness subagent runs inside its parent's process, which reports
 		// it; only a subagent of a conversation run outside the bridge is
 		// this watcher's to import.
@@ -133,6 +134,7 @@ func (s *Server) recordExternalSession(ctx context.Context, ds msg.StoredSession
 		log.Printf("[external-activity] ERROR record %s session %s: %v", ds.Harness, ds.HarnessSessionID, err)
 		return
 	}
+	s.fillDiscoveredSessionMetadata("[external-activity]", bridgeID, ds)
 	if !inserted {
 		return
 	}

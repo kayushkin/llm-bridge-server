@@ -142,12 +142,35 @@ const maxDiscoveredDisplayNameRunes = 100
 // The limit counts runes, not bytes. The name is stored and then served as
 // JSON to the dash, so a byte cut would survive the request and reach the
 // browser as a replacement character.
+//
+// A prompt that is text codex injected (msg.IsCodexInjectedText) is no prompt:
+// a wrapper too old to skip it reports the AGENTS.md instructions as the first
+// user message, and the session would be titled with them.
 func displayNameForDiscoveredSession(prompt, project string) string {
 	displayName := prompt
-	if displayName == "" {
+	if displayName == "" || msg.IsCodexInjectedText(displayName) {
 		displayName = project
 	}
 	return textutil.TruncateToRuneLimit(displayName, maxDiscoveredDisplayNameRunes)
+}
+
+// fillDiscoveredSessionMetadata brings a discovered session's working folder
+// and title onto its row where the row lacks them or holds codex's own text
+// (store.FillDiscoveredSessionMetadata decides which), and logs what changed
+// under logPrefix. Every path that sees a session on disk calls it — startup
+// discovery, GET /sessions/discover and the external activity watcher — so a
+// row written before the wrapper reported these converges on the next pass.
+func (s *Server) fillDiscoveredSessionMetadata(logPrefix, bridgeID string, ds msg.StoredSession) bool {
+	changed, err := s.store.FillDiscoveredSessionMetadata(bridgeID, displayNameForDiscoveredSession(ds.Prompt, ds.Project), ds.Project)
+	if err != nil {
+		log.Printf("%s ERROR fill %s (%s %s): %v", logPrefix, bridgeID, ds.Harness, ds.HarnessSessionID, err)
+		return false
+	}
+	if len(changed) == 0 {
+		return false
+	}
+	log.Printf("%s %s (%s %s): filled %s from the session on disk", logPrefix, bridgeID, ds.Harness, ds.HarnessSessionID, strings.Join(changed, " and "))
+	return true
 }
 
 // Request types are canonical — defined in llm-bridge/msg/server.go.
@@ -1416,6 +1439,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			log.Printf("[discover] failed to upsert session %s: %v", ds.HarnessSessionID, err)
 			continue
 		}
+		s.fillDiscoveredSessionMetadata("[discover]", bridgeID, ds)
 		// Lineage is resolved after every row exists — discovery has no
 		// parent-before-child ordering, so linking inline drops every subagent
 		// walked before its parent. Mirrors AutoDiscover.

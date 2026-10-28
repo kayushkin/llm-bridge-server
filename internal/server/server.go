@@ -1162,7 +1162,7 @@ func (s *Server) AutoDiscover() {
 				len(sessions), s.cfg.LogStoreURL)
 		}
 
-		var imported, linkedCount, reclassified int
+		var imported, linkedCount, reclassified, filled int
 		var pendingLinks []discoveredLink
 		for _, ds := range sessions {
 			displayName := displayNameForDiscoveredSession(ds.Prompt, ds.Project)
@@ -1187,6 +1187,9 @@ func (s *Server) AutoDiscover() {
 			if err != nil {
 				log.Printf("[auto-discover] failed to upsert session %s: %v", ds.HarnessSessionID, err)
 				continue
+			}
+			if s.fillDiscoveredSessionMetadata("[auto-discover]", bridgeID, ds) {
+				filled++
 			}
 			if !inserted {
 				changed, err := s.reclassifyDiscoveredSession(bridgeID, ds.Source)
@@ -1213,6 +1216,7 @@ func (s *Server) AutoDiscover() {
 			log.Printf("[auto-discover] imported %d sessions", imported)
 		}
 		log.Printf("[auto-discover] reclassified %d existing discovered sessions to the purpose their adapter now reports", reclassified)
+		log.Printf("[auto-discover] filled a working folder or replaced a blank or harness-injected title on %d sessions", filled)
 		for _, l := range pendingLinks {
 			linked, err := s.store.LinkDiscoveredSessionParent(l.bridgeID, l.parentHarnessID)
 			if err != nil {
