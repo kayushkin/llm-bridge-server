@@ -240,8 +240,19 @@ func (s *Server) resolveGrantedToolOffer(ctx context.Context, sess *store.Sessio
 	return offer, nil
 }
 
+// harnessesThatStartProvisionedMCPServers are the harnesses whose wrappers
+// read mcp_config and start the servers in it. Claude Code takes it as
+// --mcp-config. llm-bridge-inber reads the servers out of it and hands them,
+// with the session's LLM_BRIDGE_ environment, to inber-server, which starts
+// them for that session. Any other harness would be handed a config it
+// ignores, at the cost of a round trip to tool-store.
+var harnessesThatStartProvisionedMCPServers = map[msg.Harness]bool{
+	msg.HarnessClaudeCode: true,
+	msg.HarnessInber:      true,
+}
+
 func (s *Server) injectMCPConfig(sess *store.Session) error {
-	if sess == nil || sess.Harness != msg.HarnessClaudeCode {
+	if sess == nil || !harnessesThatStartProvisionedMCPServers[sess.Harness] {
 		return nil
 	}
 	cfg := map[string]json.RawMessage{}

@@ -400,8 +400,8 @@ func (s *Server) effectiveModel(ctx context.Context, sess *store.Session, cfg ma
 
 func (s *Server) effectiveTools(ctx context.Context, sess *store.Session, cfg map[string]json.RawMessage, warn func(string, ...any)) msg.EffectiveSetting {
 	setting := msg.EffectiveSetting{Key: msg.EffectiveSettingTools}
-	if sess.Harness != msg.HarnessClaudeCode {
-		setting.Layer, setting.Detail = msg.EffectiveLayerNone, fmt.Sprintf("MCP tools are provisioned for claude_code only; %s sessions are handed none", sess.Harness)
+	if !harnessesThatStartProvisionedMCPServers[sess.Harness] {
+		setting.Layer, setting.Detail = msg.EffectiveLayerNone, fmt.Sprintf("MCP tools are provisioned only for harnesses that start the servers they are handed (claude_code, inber); %s sessions are handed none", sess.Harness)
 		return setting
 	}
 	if s.cfg == nil || s.cfg.ToolStoreURL == "" {

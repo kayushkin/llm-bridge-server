@@ -126,7 +126,7 @@ func TestInjectMCPConfigConflictingMCPConfigErrors(t *testing.T) {
 	}
 }
 
-func TestInjectMCPConfigNonClaudeCodeHarnessSkipped(t *testing.T) {
+func TestInjectMCPConfigSkipsAHarnessThatStartsNoMCPServers(t *testing.T) {
 	srv := fakeToolStore(t, `{"mcpServers":{}}`)
 	s := newServerWithToolStoreURL(srv.URL)
 	sess := &store.Session{
@@ -138,7 +138,7 @@ func TestInjectMCPConfigNonClaudeCodeHarnessSkipped(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 	if string(sess.HarnessConfig) != before {
-		t.Fatal("non-claudecode harness should be skipped")
+		t.Fatal("a harness that starts no MCP servers should be skipped")
 	}
 }
 
@@ -345,9 +345,9 @@ func TestInjectMCPConfigPresetPathWinsOverInstanceDefaults(t *testing.T) {
 	}
 }
 
-// Only the Claude Code bridge consumes mcp_config, so no other harness should
-// cost a round trip to tool-store.
-func TestInjectMCPConfigNonClaudeCodeInstanceIsNotLookedUp(t *testing.T) {
+// Only harnesses that start the servers they are handed consume mcp_config, so
+// no other harness should cost a round trip to tool-store.
+func TestInjectMCPConfigDoesNotLookUpAHarnessThatStartsNoMCPServers(t *testing.T) {
 	srv, asked := fakeInstanceToolStore(t, nil)
 	s := newServerWithToolStoreURL(srv.URL)
 	sess := &store.Session{Harness: msg.HarnessCodex, InstanceID: "inst-1"}
@@ -356,5 +356,38 @@ func TestInjectMCPConfigNonClaudeCodeInstanceIsNotLookedUp(t *testing.T) {
 	}
 	if len(*asked) != 0 {
 		t.Fatalf("tool-store should not have been called, was asked about %v", *asked)
+	}
+}
+
+// inber starts the servers it is handed (llm-bridge-inber passes them to
+// inber-server with the session's environment), so an inber session gets its
+// instance's opt-ins as a Claude Code session does. It used to get nothing,
+// whatever the opt-ins said.
+func TestInjectMCPConfigProvisionsTheInstanceOptInsForInber(t *testing.T) {
+	body := `{"mcpServers":{"bridge":{"command":"bridge-mcp"}}}`
+	srv, asked := fakeInstanceToolStore(t, map[string]string{"inst-inber": body})
+	s := newServerWithToolStoreURL(srv.URL)
+	sess := &store.Session{
+		Harness:    msg.HarnessInber,
+		SessionID:  "test-inber",
+		InstanceID: "inst-inber",
+	}
+	if err := s.injectMCPConfig(sess); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(*asked) != 1 || (*asked)[0] != "inst-inber" {
+		t.Fatalf("tool-store was asked about %v, want [inst-inber]", *asked)
+	}
+	path := mcpConfigPath(t, sess)
+	if path == "" {
+		t.Fatal("the instance's opt-ins did not reach the inber session")
+	}
+	t.Cleanup(func() { os.Remove(path) })
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read tmpfile: %v", err)
+	}
+	if !strings.Contains(string(got), "bridge-mcp") {
+		t.Fatalf("tmpfile body unexpected: %s", got)
 	}
 }
