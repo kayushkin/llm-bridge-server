@@ -642,8 +642,8 @@ func TestANewSessionButtonStartsTheSessionAsANewChatDoes(t *testing.T) {
 		MaxBudgetUSD:  4,
 	}
 	request := newChatLikeSessionRequest(offering, "Start: fix the thing")
-	if request.WorkingDir != "" || len(request.HarnessConfig) != 0 || request.AgentID != "" {
-		t.Errorf("the new session took the offering session's working directory, harness config or agent: %+v", request)
+	if request.WorkingDir != "" || len(request.HarnessConfig) != 0 || request.AgentID != "" || request.BundleID != "" || request.MaxBudget != nil {
+		t.Errorf("the new session took the offering session's working directory, harness config, agent, bundle or ceiling: %+v", request)
 	}
 	if request.Type != msg.SessionTypeInteractive || request.Purpose != msg.PurposeChat {
 		t.Errorf("type %q purpose %q, want a chat's", request.Type, request.Purpose)
@@ -651,9 +651,5 @@ func TestANewSessionButtonStartsTheSessionAsANewChatDoes(t *testing.T) {
 	if request.Harness != "claude_code" || request.InstanceID != "inst-cc-local" || request.PrincipalID != "principal_000001" ||
 		request.DisplayName != "Start: fix the thing" || request.Origin != "orchestrator" {
 		t.Errorf("request = %+v", request)
-	}
-	// The restrictions go with it, so a button is not how a session sheds them.
-	if request.BundleID != "bundle_000003" || request.MaxBudget == nil || *request.MaxBudget != 4 {
-		t.Errorf("bundle %q ceiling %v, want the offering session's", request.BundleID, request.MaxBudget)
 	}
 }

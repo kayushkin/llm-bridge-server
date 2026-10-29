@@ -600,26 +600,22 @@ func (s *Server) forkAndSendAction(session *store.Session, offer msg.SessionActi
 // model, effort and tools, and with them the prompt of wherever it starts. It
 // copies nothing else from the offering session: a session started in an
 // orchestrator's home directory read that directory's CLAUDE.md and took on
-// the orchestrator's role (br_1793299558792674921, 2026-10-29). The bundle and
-// the spend ceiling are still carried, for the reason a fork carries them:
-// otherwise a button would be how a session sheds its restrictions. The origin
-// is carried so the session still says who started it.
+// the orchestrator's role (br_1793299558792674921, 2026-10-29). Nor does it
+// copy the bundle or the spend ceiling, unlike a fork: a session that starts
+// work through buttons, such as an orchestrator, has a bundle and a ceiling
+// for its own turns, not for the tasks it hands out. The principal is carried,
+// so its grants still bound the new session. The origin is carried so the
+// session still says who started it.
 func newChatLikeSessionRequest(session *store.Session, displayName string) CreateSessionRequest {
-	request := CreateSessionRequest{
+	return CreateSessionRequest{
 		Harness:     session.Harness,
 		InstanceID:  session.InstanceID,
 		DisplayName: displayName,
 		PrincipalID: session.PrincipalID,
-		BundleID:    session.BundleID,
 		Type:        msg.SessionTypeInteractive,
 		Purpose:     msg.PurposeChat,
 		Origin:      session.Origin,
 	}
-	if session.MaxBudgetUSD > 0 {
-		ceiling := session.MaxBudgetUSD
-		request.MaxBudget = &ceiling
-	}
-	return request
 }
 
 // newSessionAndSendAction starts a session the way the chat starts one when a
