@@ -103,7 +103,7 @@ func otherServerLabel(connection store.PeerConnection) string {
 // which fields each carries) and answers what is wrong with it. A field of
 // another kind is refused, not ignored, so a sender learns it was not read.
 func validatePeerMessageBody(kind msg.PeerMessageKind, body msg.PeerMessageBody) error {
-	size := len(body.Title) + len(body.Prompt) + len(body.Summary) + len(body.Detail)
+	size := len(body.Title) + len(body.Prompt) + len(body.Summary) + len(body.Detail) + len(body.Repo) + len(body.BaseCommit)
 	for _, commit := range append(append([]msg.PeerRepoCommit{}, body.Commits...), body.Versions...) {
 		size += len(commit.Repo) + len(commit.Commit)
 	}
@@ -113,11 +113,13 @@ func validatePeerMessageBody(kind msg.PeerMessageKind, body msg.PeerMessageBody)
 	present := map[string]bool{
 		"title": body.Title != "", "prompt": body.Prompt != "", "summary": body.Summary != "", "commits": len(body.Commits) > 0,
 		"result": body.Result != "", "detail": body.Detail != "", "versions": len(body.Versions) > 0,
+		"repo": body.Repo != "", "base_commit": body.BaseCommit != "",
 	}
 	allowed := map[msg.PeerMessageKind][]string{
 		msg.PeerMessageKindRequest: {"title", "prompt"},
 		msg.PeerMessageKindNotice:  {"summary", "commits"},
 		msg.PeerMessageKindStatus:  {"result", "detail", "versions"},
+		msg.PeerMessageKindPatch:   {"repo", "base_commit", "summary"},
 	}
 	fields, known := allowed[kind]
 	if !known {
@@ -146,6 +148,10 @@ func validatePeerMessageBody(kind msg.PeerMessageKind, body msg.PeerMessageBody)
 			return errors.New("a notice needs a summary and at least one commit")
 		}
 		return validCommits(body.Commits, "commits")
+	case msg.PeerMessageKindPatch:
+		if strings.TrimSpace(body.Repo) == "" || strings.TrimSpace(body.BaseCommit) == "" {
+			return errors.New("a patch needs the repo it changes and the base commit it was made against")
+		}
 	case msg.PeerMessageKindStatus:
 		if !slices.Contains(msg.PeerMessageStatusResults, body.Result) {
 			return fmt.Errorf("a status's result is one of %v, not %q", msg.PeerMessageStatusResults, body.Result)
@@ -159,15 +165,9 @@ func validatePeerMessageBody(kind msg.PeerMessageKind, body msg.PeerMessageBody)
 // administrator, or a session's agent by its posting token, sends a message
 // to the other server.
 func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request) {
-	var createdBy string
-	if caller, ok := callerOfRequest(r); ok && caller.delegatingAgentOfSessionID != "" {
-		createdBy = "session:" + caller.delegatingAgentOfSessionID
-	} else {
-		administratorID, ok := administratorMakingPeerChange(w, r)
-		if !ok {
-			return
-		}
-		createdBy = administratorID
+	createdBy, ok := peerMessageSenderOf(w, r)
+	if !ok {
+		return
 	}
 	connection, ok := s.livePeerConnectionOf(w, r)
 	if !ok {
@@ -177,11 +177,14 @@ func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request)
 	decoder := json.NewDecoder(io.LimitReader(r.Body, peerMessageBodyLimit+4096))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {kind, body, in_reply_to?}: "+err.Error())
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {kind, body, in_reply_to?, attachment_ids?}: "+err.Error())
 		return
 	}
 	if err := validatePeerMessageBody(request.Kind, request.Body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_peer_message", err.Error())
+		return
+	}
+	if !s.stagedPeerAttachmentsFor(w, request.Kind, request.AttachmentIDs, createdBy) {
 		return
 	}
 	if request.InReplyTo != "" {
@@ -197,7 +200,7 @@ func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	message, err := s.queuePeerMessage(r.Context(), connection, request.Kind, request.Body, request.InReplyTo, createdBy)
+	message, err := s.queuePeerMessage(r.Context(), connection, request.Kind, request.Body, request.InReplyTo, createdBy, request.AttachmentIDs...)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -205,18 +208,31 @@ func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request)
 	writeJSONStatus(w, http.StatusCreated, message)
 }
 
-// queuePeerMessage records an outgoing message and tries to deliver it now,
-// returning the record as it stands after the try.
-func (s *Server) queuePeerMessage(ctx context.Context, connection store.PeerConnection, kind msg.PeerMessageKind, body msg.PeerMessageBody, inReplyTo, createdBy string) (store.PeerMessage, error) {
+// queuePeerMessage records an outgoing message, with the uploads it sends,
+// and tries to deliver it now, returning the record as it stands after the
+// try.
+func (s *Server) queuePeerMessage(ctx context.Context, connection store.PeerConnection, kind msg.PeerMessageKind, body msg.PeerMessageBody, inReplyTo, createdBy string, attachmentIDs ...string) (store.PeerMessage, error) {
 	message := store.PeerMessage{ConnectionID: connection.ID, Direction: msg.PeerMessageDirectionOutgoing, Kind: kind, Body: body,
 		InReplyTo: inReplyTo, State: msg.PeerMessageStateQueued, CreatedBy: createdBy}
 	if err := s.store.InsertPeerMessage(&message); err != nil {
 		return store.PeerMessage{}, err
 	}
+	if len(attachmentIDs) > 0 {
+		if err := s.store.ClaimStagedPeerAttachments(attachmentIDs, message.ID, createdBy); err != nil {
+			if markErr := s.store.MarkPeerMessageFailed(message.ID, "its attachments could not be claimed: "+err.Error()); markErr != nil {
+				log.Printf("[peer-messages] ERROR: mark %s failed: %v", message.ID, markErr)
+			}
+			return store.PeerMessage{}, fmt.Errorf("claim the attachments of %s: %w", message.ID, err)
+		}
+	}
 	attemptContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	s.deliverPeerMessage(attemptContext, message)
-	return s.store.GetPeerMessage(message.ID)
+	current, err := s.store.GetPeerMessage(message.ID)
+	if err != nil {
+		return store.PeerMessage{}, err
+	}
+	return s.withPeerAttachments(current)
 }
 
 // peerMessageRefusal is an answer from the other server that will not change
@@ -264,7 +280,11 @@ func (s *Server) sendPeerMessage(ctx context.Context, message store.PeerMessage)
 	if connection.RemovedAt != nil {
 		return "", peerMessageRefusal{reason: connection.ID + " was removed"}
 	}
-	delivery := msg.PeerMessageDelivery{ID: message.ID, Kind: message.Kind, Body: message.Body, CreatedAt: message.CreatedAt}
+	descriptions, err := s.peerAttachmentDescriptionsOf(message.ID)
+	if err != nil {
+		return "", fmt.Errorf("read %s's attachments: %w", message.ID, err)
+	}
+	delivery := msg.PeerMessageDelivery{ID: message.ID, Kind: message.Kind, Body: message.Body, CreatedAt: message.CreatedAt, Attachments: descriptions}
 	if message.InReplyTo != "" {
 		answered, err := s.store.GetPeerMessage(message.InReplyTo)
 		if err != nil {
@@ -331,6 +351,8 @@ func (s *Server) RunPeerMessageOutbox(ctx context.Context) {
 		case <-ticker.C:
 		}
 		s.deliverDuePeerMessages(ctx)
+		s.fetchDuePeerAttachments()
+		s.removeUnclaimedPeerAttachmentUploads(time.Now())
 		s.finishSelfUpdatesThatReported()
 	}
 }
@@ -380,11 +402,15 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 	decoder := json.NewDecoder(io.LimitReader(r.Body, peerMessageBodyLimit+4096))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&delivery); err != nil || delivery.ID == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {id, kind, body, in_reply_to?, created_at}")
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {id, kind, body, in_reply_to?, created_at, attachments?}")
 		return
 	}
 	if err := validatePeerMessageBody(delivery.Kind, delivery.Body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_peer_message", err.Error())
+		return
+	}
+	if err := s.checkIncomingPeerAttachments(delivery.Kind, delivery.Attachments); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_peer_attachments", err.Error())
 		return
 	}
 	// The same message delivered again, because the acknowledgement was lost,
@@ -439,7 +465,11 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	log.Printf("[peer-messages] %s (%s) received on %s from %s as its %s", message.ID, message.Kind, connection.ID, otherServerLabel(connection), delivery.ID)
+	if err := s.recordIncomingPeerAttachments(message, delivery.Attachments); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		return
+	}
+	log.Printf("[peer-messages] %s (%s, %d files) received on %s from %s as its %s", message.ID, message.Kind, len(delivery.Attachments), connection.ID, otherServerLabel(connection), delivery.ID)
 	if signalID, err := s.raisePeerMessageSignal(message, connection); err != nil {
 		log.Printf("[peer-messages] ERROR: raise the signal for %s: %v", message.ID, err)
 	} else if err := s.store.SetPeerMessageSignal(message.ID, signalID); err != nil {
@@ -489,6 +519,11 @@ func (s *Server) raisePeerMessageSignal(message store.PeerMessage, connection st
 		title = fmt.Sprintf("Update ready from %s: %s", server, oneLine(notice.Summary, 120))
 		body = fmt.Sprintf("%s says changes are ready to take (%s): %s. Approve it to run this server's update, or decline it. Its summary, from another machine:\n\n%s",
 			server, message.ID, strings.Join(repos, ", "), untrustedTextBlock(notice.Summary))
+	case msg.PeerMessageKindPatch:
+		patch := message.Body
+		title = fmt.Sprintf("Patch from %s for %s", server, oneLine(patch.Repo, 80))
+		body = fmt.Sprintf("%s offers a change to %s, made against %s (%s), as attached git format-patch files. Approve it to start a session that lands it here, or decline it. Its summary, from another machine:\n\n%s",
+			server, oneLine(patch.Repo, 80), oneLine(patch.BaseCommit, 80), message.ID, untrustedTextBlock(patch.Summary))
 	case msg.PeerMessageKindStatus:
 		status := message.Body
 		title = fmt.Sprintf("%s: %s", server, status.Result)
@@ -562,6 +597,12 @@ func (s *Server) handleListPeerMessages(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
+	for index := range messages {
+		if messages[index], err = s.withPeerAttachments(messages[index]); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+			return
+		}
+	}
 	writeJSON(w, messages)
 }
 
@@ -571,7 +612,12 @@ func (s *Server) handleGetPeerMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, message)
+	decorated, err := s.withPeerAttachments(message)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		return
+	}
+	writeJSON(w, decorated)
 }
 
 func (s *Server) peerMessageOf(w http.ResponseWriter, r *http.Request) (store.PeerMessage, bool) {
@@ -657,10 +703,20 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {instance_id} or {handoff: \"orchestrator\"} for a request, {} for a notice: "+err.Error())
 		return
 	}
+	attachments, err := s.store.PeerAttachmentsOfMessage(message.ID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		return
+	}
+	if !peerAttachmentsAllHere(attachments) {
+		writeJSONError(w, http.StatusConflict, "peer_attachments_not_fetched", fmt.Sprintf(
+			"%s's files have not all arrived and been verified here yet; approve it once they have (GET /peer-messages/%s shows each, and POST …/attachments/{id}/retry fetches one again)", message.ID, message.ID))
+		return
+	}
 	switch message.Kind {
-	case msg.PeerMessageKindRequest:
+	case msg.PeerMessageKindRequest, msg.PeerMessageKindPatch:
 		if (approval.InstanceID == "") == (approval.Handoff == "") {
-			writeJSONError(w, http.StatusBadRequest, "invalid_request", "approving a request takes exactly one of instance_id and handoff")
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "approving a request or a patch takes exactly one of instance_id and handoff")
 			return
 		}
 		if approval.Handoff != "" && approval.Handoff != msg.PeerMessageHandoffOrchestrator {
@@ -682,7 +738,7 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	switch message.Kind {
-	case msg.PeerMessageKindRequest:
+	case msg.PeerMessageKindRequest, msg.PeerMessageKindPatch:
 		sessionID, status, code, detail := s.startApprovedPeerRequest(r.Context(), decided, connection, approval)
 		if code != "" {
 			s.undoApproval(w, message, status, code, detail)
@@ -702,6 +758,9 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 	}
 	s.settlePeerMessageSignal(decided, msg.SignalStateAcknowledged)
 	current, err := s.store.GetPeerMessage(message.ID)
+	if err == nil {
+		current, err = s.withPeerAttachments(current)
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -725,6 +784,14 @@ func framedPeerRequestPrompt(message store.PeerMessage, connection store.PeerCon
 func (s *Server) startApprovedPeerRequest(ctx context.Context, message store.PeerMessage, connection store.PeerConnection, approval msg.PeerMessageApproveRequest) (string, int, string, string) {
 	request := message.Body
 	prompt := framedPeerRequestPrompt(message, connection, request)
+	if message.Kind == msg.PeerMessageKindPatch {
+		framed, err := s.framedPeerPatchPrompt(message, connection)
+		if err != nil {
+			return "", http.StatusInternalServerError, "patch_unreadable", err.Error()
+		}
+		prompt = framed
+		request.Title = "Land a patch to " + message.Body.Repo
+	}
 	if approval.Handoff == msg.PeerMessageHandoffOrchestrator {
 		return s.handPeerRequestToOrchestrator(ctx, prompt)
 	}
@@ -851,12 +918,15 @@ func (s *Server) sendPeerStatus(ctx context.Context, connection store.PeerConnec
 // failed.
 func (s *Server) reportPeerRequestTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionState) {
 	waiting, err := s.store.ListPeerMessages(store.PeerMessageFilter{SessionID: bridgeID, Direction: msg.PeerMessageDirectionIncoming,
-		State: msg.PeerMessageStateApproved, Kind: msg.PeerMessageKindRequest})
+		State: msg.PeerMessageStateApproved})
 	if err != nil {
 		log.Printf("[peer-messages] ERROR: read the requests session %s answers: %v", bridgeID, err)
 		return
 	}
 	for _, message := range waiting {
+		if message.Kind != msg.PeerMessageKindRequest && message.Kind != msg.PeerMessageKindPatch {
+			continue
+		}
 		status := msg.PeerMessageBody{Result: msg.PeerMessageStatusSucceeded}
 		if ev != nil && ev.Result != nil {
 			status.Detail = ev.Result.Text

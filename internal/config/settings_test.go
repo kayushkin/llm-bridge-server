@@ -100,7 +100,7 @@ func TestStoredSettingSeedsNameOnlyEditableSettings(t *testing.T) {
 			editable[definition.Key] = true
 		}
 	}
-	seeds := (&Config{SignalClassifierMaxChars: 10, OneShotInstanceByProvider: map[string]string{"anthropic": "i"}, OperationsCompletionModelRole: "balanced", OperationsGrantEnforcement: "lenient", SessionActionsReviewModelRole: "balanced", ImageGenerationInstanceID: "inst-codex-local", ServerName: "laptop", SelfUpdateCommand: "true", OrchestratorURL: "http://127.0.0.1:1", KeepAwakeEnabled: true, KeepAwakeGraceMinutes: 30}).StoredSettingSeeds()
+	seeds := (&Config{SignalClassifierMaxChars: 10, OneShotInstanceByProvider: map[string]string{"anthropic": "i"}, OperationsCompletionModelRole: "balanced", OperationsGrantEnforcement: "lenient", SessionActionsReviewModelRole: "balanced", ImageGenerationInstanceID: "inst-codex-local", ServerName: "laptop", SelfUpdateCommand: "true", OrchestratorURL: "http://127.0.0.1:1", KeepAwakeEnabled: true, KeepAwakeGraceMinutes: 30, PeerAttachmentMaximumBytes: 1, PeerAttachmentsMaximumTotalBytes: 1}).StoredSettingSeeds()
 	for key := range seeds {
 		if !editable[key] {
 			t.Errorf("a seed names %s, which is not an editable setting", key)

@@ -401,9 +401,12 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `*` | `/peer-connections/{id}/proxy/{rest...}` | Any request to the connected server, as this server's peer principal there and, for a caller who is not an administrator, named as that caller; the answer streams back unchanged | principal, named to the connected server |
 | `POST` | `/peer-connections/{id}/remove` | End a connection: revoke the access given, drop the access held, close the socket | operator |
 | `POST` | `/peer-connections/{id}/revoke-grant` | Take the other server's access away, with a reason, and tell it | operator |
+| `POST` | `/peer-message-attachments` | Store a file (the raw body; ?name=, ?media_type=) to send with the next message, answered with its id, size and SHA-256 | operator |
 | `GET` | `/peer-messages` | Messages to and from connected servers, newest first, by connection, direction, state and kind | operator |
 | `GET` | `/peer-messages/{id}` | One message to or from a connected server | operator |
 | `POST` | `/peer-messages/{id}/approve` | Approves a connected server's request (starts its session) or notice (runs the update) | operator |
+| `GET` | `/peer-messages/{id}/attachments/{attachment_id}` | Download a file of a message, as application/octet-stream | operator |
+| `POST` | `/peer-messages/{id}/attachments/{attachment_id}/retry` | Fetch a file of an incoming message from the other server again now | operator |
 | `POST` | `/peer-messages/{id}/decline` | Declines a connected server's request or notice, telling it the reason | operator |
 | `GET` | `/peer-user-mappings` | Which connected server's users act as which of this server's principals; ?peer_principal_id= narrows | operator |
 | `POST` | `/peer-user-mappings` | Map a connected server's user to a principal here, allowed only what both it and the peer may do | operator |
@@ -413,6 +416,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/peer/connect` | Another server connects with a one-time passphrase | anyone |
 | `POST` | `/peer/connection/removed` | The other server says it removed the connection; this side removes it too | connected server |
 | `POST` | `/peer/messages` | A connected server delivers a message; answered with this server's id for it | connected server |
+| `GET` | `/peer/messages/{message_id}/attachments/{attachment_id}` | A connected server fetches the bytes of a file this server sent it | connected server |
 | `GET` | `/peer/self` | Who the presented peer token acts as here | principal |
 | `GET` | `/peer/server-name` | This server's id and name, for a connected server; the call carries the caller's | connected server |
 | `GET` | `/peer/socket` | The WebSocket a server without an address keeps open to this one | connected server |

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -253,8 +254,12 @@ type peerTestServer struct {
 
 func newPeerTestServer(t *testing.T, demoLoginEnabled bool, configure ...func(*config.Config)) *peerTestServer {
 	t.Helper()
+	// A data directory of its own, so two connected test servers never share
+	// the files they keep beside their database (attachments, updates).
+	dataDirectory := t.TempDir()
 	gated := newGatedTestServerConfigured(t, nil, func(cfg *config.Config) {
 		cfg.DemoLoginEnabled = demoLoginEnabled
+		cfg.DBPath = filepath.Join(dataDirectory, "bridge.db")
 		for _, change := range configure {
 			change(cfg)
 		}

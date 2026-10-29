@@ -44,6 +44,8 @@ const (
 	SettingOrchestratorURL                   = "orchestrator.url"
 	SettingKeepAwakeEnabled                  = "keep_awake.enabled"
 	SettingKeepAwakeGraceMinutes             = "keep_awake.grace_minutes"
+	SettingPeerAttachmentMaximumBytes        = "peer_messages.attachment_maximum_bytes"
+	SettingPeerAttachmentsMaximumTotalBytes  = "peer_messages.attachments_maximum_total_bytes"
 )
 
 // ModelRoleSettings are the stored settings whose value is a model-store role:
@@ -150,6 +152,10 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "Where the orchestrator answers. An administrator may hand an approved request from a connected server to it instead of starting a session on an instance; it is sent to the orchestrator's POST /home-session/messages. Empty means no handoff is offered."},
 		{Key: SettingKeepAwakeEnabled, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_ENABLED", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeBoolean, Editable: true, Default: "false",
 			Description: "Hold the machine awake while any session on this server is running, and for keep_awake.grace_minutes after the last one stops or was last sent a message. It cannot wake a machine that is already asleep, or stop a closed lid from putting it to sleep."},
+		{Key: SettingPeerAttachmentMaximumBytes, EnvironmentVariable: "LLMBRIDGE_PEER_ATTACHMENT_MAXIMUM_BYTES", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "52428800",
+			Description: "The largest file, in bytes, a message to or from a connected server may carry: an upload here over it is refused, and so is a message from the other server that describes one, before any of it is fetched."},
+		{Key: SettingPeerAttachmentsMaximumTotalBytes, EnvironmentVariable: "LLMBRIDGE_PEER_ATTACHMENTS_MAXIMUM_TOTAL_BYTES", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "209715200",
+			Description: "The most bytes all the files of one message to or from a connected server may come to together."},
 		{Key: SettingKeepAwakeGraceMinutes, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_GRACE_MINUTES", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "30",
 			Description: "How many minutes the machine is kept awake after the last session stops running or was last sent a message, when keep_awake.enabled is on. 0 releases the hold as soon as no session runs."},
 
@@ -351,6 +357,12 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 	}
 	if c.KeepAwakeGraceMinutes > 0 {
 		seeds[SettingKeepAwakeGraceMinutes] = strconv.Itoa(c.KeepAwakeGraceMinutes)
+	}
+	if c.PeerAttachmentMaximumBytes > 0 {
+		seeds[SettingPeerAttachmentMaximumBytes] = strconv.Itoa(c.PeerAttachmentMaximumBytes)
+	}
+	if c.PeerAttachmentsMaximumTotalBytes > 0 {
+		seeds[SettingPeerAttachmentsMaximumTotalBytes] = strconv.Itoa(c.PeerAttachmentsMaximumTotalBytes)
 	}
 	if len(c.OneShotInstanceByProvider) > 0 {
 		providers := make([]string, 0, len(c.OneShotInstanceByProvider))
