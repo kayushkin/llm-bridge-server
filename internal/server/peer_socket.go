@@ -317,6 +317,10 @@ type peerSocketBodyReader struct {
 	ctx     context.Context
 	pending []byte
 	done    bool
+	// ended says the other server finished the answer: an end frame came, or
+	// the socket closed. A read stopped by this side's context is done but not
+	// ended, and Close must still tell the other server to stop serving it.
+	ended   bool
 	failure error
 }
 
@@ -332,6 +336,7 @@ func (reader *peerSocketBodyReader) Read(buffer []byte) (int, error) {
 		case frame, open := <-reader.frames:
 			if !open {
 				reader.done = true
+				reader.ended = true
 				if reader.failure == nil {
 					reader.failure = errors.New("the peer socket closed before the answer ended")
 				}
@@ -339,6 +344,7 @@ func (reader *peerSocketBodyReader) Read(buffer []byte) (int, error) {
 			}
 			if frame.Type == peerSocketFrameEnd {
 				reader.done = true
+				reader.ended = true
 				if frame.Error != "" {
 					reader.failure = errors.New(frame.Error)
 				} else {
@@ -357,9 +363,17 @@ func (reader *peerSocketBodyReader) Read(buffer []byte) (int, error) {
 	return read, nil
 }
 
+// Close tells the other server to stop serving an answer it has not finished.
+//
+// It used to test done, which a read stopped by this side's context also sets.
+// So a stream whose reader went away — a chat closing a session's event stream
+// through the proxy — sent no cancel, and the other server kept serving it,
+// holding one of its peerSocketMostRequestsServedAtOnce slots, until all 64
+// were held and it answered every request 503 peer_socket_busy (2026-10-29).
 func (reader *peerSocketBodyReader) Close() error {
-	if !reader.done {
-		reader.done = true
+	reader.done = true
+	if !reader.ended {
+		reader.ended = true
 		reader.socket.endCall(reader.stream)
 		reader.socket.send(peerSocketFrame{Type: peerSocketFrameCancel, Stream: reader.stream})
 	}
