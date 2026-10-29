@@ -620,6 +620,7 @@ func (s *Server) dialPeerSocketOnce(ctx context.Context, connection store.PeerCo
 	socket := newPeerSocket(s, connection.ID, conn, true)
 	s.peerSockets.open(socket)
 	defer s.peerSockets.closed(socket)
+	go s.flushPeerMessageOutbox(connection.ID)
 	log.Printf("[peer-socket] %s (%s): connected to %s", connection.ID, connection.DisplayName, socketURL)
 	go func() {
 		select {
@@ -663,6 +664,7 @@ func (s *Server) handlePeerSocket(w http.ResponseWriter, r *http.Request) {
 	socket := newPeerSocket(s, connection.ID, conn, false)
 	s.peerSockets.open(socket)
 	defer s.peerSockets.closed(socket)
+	go s.flushPeerMessageOutbox(connection.ID)
 	log.Printf("[peer-socket] %s (%s): connected", connection.ID, connection.DisplayName)
 	err = socket.run()
 	log.Printf("[peer-socket] %s (%s): socket ended: %v", connection.ID, connection.DisplayName, err)

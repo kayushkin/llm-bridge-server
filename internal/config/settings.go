@@ -40,6 +40,8 @@ const (
 	SettingSessionActionsReviewModelRole     = "session_actions.review_model_role"
 	SettingImageGenerationInstanceID         = "image_generation.instance_id"
 	SettingServerName                        = "server.name"
+	SettingSelfUpdateCommand                 = "self_update.command"
+	SettingOrchestratorURL                   = "orchestrator.url"
 	SettingKeepAwakeEnabled                  = "keep_awake.enabled"
 	SettingKeepAwakeGraceMinutes             = "keep_awake.grace_minutes"
 )
@@ -142,6 +144,10 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "How grant-store's can_run_operation grants are applied to a principal starting an operation. lenient: a principal holding no such grant may start any type, and one holding any may start only those. strict: a principal may start only the types its grants name. Administrators and the service token are never checked."},
 		{Key: SettingServerName, EnvironmentVariable: "LLMBRIDGE_SERVER_NAME", Kind: behaviour, ValueType: text, Editable: true,
 			Description: "What this server calls itself: shown at the top of its own session list, and reported to every server it is connected to, which shows it as this server's name. Empty means it has none, and is shown as such."},
+		{Key: SettingSelfUpdateCommand, EnvironmentVariable: "LLMBRIDGE_SELF_UPDATE_COMMAND", Kind: behaviour, ValueType: text, Editable: true,
+			Description: "The shell command this server runs, detached, when an administrator approves an \"update ready\" notice from a connected server: it pulls, builds, tests and restarts whatever this host runs. It is given LLMBRIDGE_SELF_UPDATE_RESULT_FILE, where it writes {\"result\":\"succeeded\"|\"failed\",\"detail\":…,\"versions\":[{\"repo\",\"commit\"}]} as JSON, LLMBRIDGE_SELF_UPDATE_OPERATION_ID, and LLMBRIDGE_SELF_UPDATE_COMMITS, the notice's commits as JSON [{\"repo\",\"commit\"}]. It must outlive a restart of this server: under systemd with the default KillMode, start the work in a unit of its own (systemd-run). Empty means this server takes no updates from a notice."},
+		{Key: SettingOrchestratorURL, EnvironmentVariable: "LLMBRIDGE_ORCHESTRATOR_URL", Kind: behaviour, ValueType: text, Editable: true,
+			Description: "Where the orchestrator answers. An administrator may hand an approved request from a connected server to it instead of starting a session on an instance; it is sent to the orchestrator's POST /home-session/messages. Empty means no handoff is offered."},
 		{Key: SettingKeepAwakeEnabled, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_ENABLED", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeBoolean, Editable: true, Default: "false",
 			Description: "Hold the machine awake while any session on this server is running, and for keep_awake.grace_minutes after the last one stops or was last sent a message. It cannot wake a machine that is already asleep, or stop a closed lid from putting it to sleep."},
 		{Key: SettingKeepAwakeGraceMinutes, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_GRACE_MINUTES", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "30",
@@ -331,6 +337,8 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 		SettingSessionActionsReviewModelRole: c.SessionActionsReviewModelRole,
 		SettingImageGenerationInstanceID:     c.ImageGenerationInstanceID,
 		SettingServerName:                    c.ServerName,
+		SettingSelfUpdateCommand:             c.SelfUpdateCommand,
+		SettingOrchestratorURL:               c.OrchestratorURL,
 	} {
 		if value != "" {
 			seeds[key] = value

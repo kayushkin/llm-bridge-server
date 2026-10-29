@@ -43,7 +43,11 @@ type Config struct {
 	// ServerName seeds server.name; KeepAwakeEnabled and
 	// KeepAwakeGraceMinutes seed keep_awake.enabled and
 	// keep_awake.grace_minutes. Each is seeded only when set.
-	ServerName            string
+	ServerName string
+	// SelfUpdateCommand and OrchestratorURL seed self_update.command and
+	// orchestrator.url; both are read from the settings record when used.
+	SelfUpdateCommand     string
+	OrchestratorURL       string
 	KeepAwakeEnabled      bool
 	KeepAwakeGraceMinutes int
 	// UsageStoreURL is usage-store, read for subscription limits before a
@@ -368,6 +372,8 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		UsageStoreURL:                 settings.String("usage_store.url"),
 		OperationsGrantEnforcement:    settings.String(SettingOperationsGrantEnforcement),
 		ServerName:                    settings.String(SettingServerName),
+		SelfUpdateCommand:             settings.String(SettingSelfUpdateCommand),
+		OrchestratorURL:               settings.String(SettingOrchestratorURL),
 		KeepAwakeEnabled:              settings.Boolean(SettingKeepAwakeEnabled),
 		KeepAwakeGraceMinutes:         settings.Integer(SettingKeepAwakeGraceMinutes),
 		AgentStoreDB:                  settings.String("agent_store.database_path"),

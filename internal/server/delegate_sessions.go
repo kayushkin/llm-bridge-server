@@ -91,6 +91,17 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 			return
 		}
 	case sessionAgentReadsCatalog:
+	case sessionAgentUsesPeerMessaging:
+		if requestCameThroughPublicProxy(r) {
+			writeJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
+				"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))
+			return
+		}
+		if agentSession.PrincipalID != "" && !caller.isAdministrator {
+			writeJSONError(w, http.StatusForbidden, "peer_messaging_needs_an_administrator", fmt.Sprintf(
+				"session %s runs as %s, who is not an administrator here, so its agent may not message connected servers", agentSessionID, agentSession.PrincipalID))
+			return
+		}
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf(
 			"route %q lets a session's agent in with a kind of access this server does not handle", pattern))

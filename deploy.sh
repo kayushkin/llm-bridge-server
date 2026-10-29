@@ -109,6 +109,9 @@ go build -o bridge-agent ./cmd/bridge-agent
 # bridge-sessions: how an agent finds and reads past sessions on this server,
 # read-only, with the same posting token.
 go build -o bridge-sessions ./cmd/bridge-sessions
+# bridge-peer: how an agent sends a connected server a request or a notice,
+# and reads this server's messages to and from connected servers.
+go build -o bridge-peer ./cmd/bridge-peer
 echo "    built: $(ls -lh "$BIN_NAME" | awk '{print $5}')"
 
 # Checked before the backup, and so before the stop and the install: an unidentifiable
@@ -192,6 +195,10 @@ rm -f bridge-agent
 echo "==> Installing bridge-sessions..."
 install -m 755 bridge-sessions "$HOME/bin/bridge-sessions"
 rm -f bridge-sessions
+
+echo "==> Installing bridge-peer..."
+install -m 755 bridge-peer "$HOME/bin/bridge-peer"
+rm -f bridge-peer
 
 echo "==> Installing service file..."
 # The committed unit file uses __USER__ / __HOME__ placeholders so the repo

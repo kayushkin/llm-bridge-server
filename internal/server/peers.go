@@ -120,6 +120,12 @@ var peerAccessLevelsWithGroups = []peerAccessLevelDefinition{
 		},
 	},
 	{
+		key:         peerMessagesLevelKey,
+		displayName: "Send requests",
+		description: "Send requests and notices that wait here for an administrator's approval, and nothing else: no session, catalog or store is reachable.",
+		grants:      []msg.PeerAccessLevelGrant{},
+	},
+	{
 		key:         "observe",
 		displayName: "Observe",
 		description: "Read every session on any of this server's instances, and the catalog; start, send to, stop or change nothing.",

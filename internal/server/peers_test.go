@@ -251,9 +251,14 @@ type peerTestServer struct {
 	auth      *fakeAuthStore
 }
 
-func newPeerTestServer(t *testing.T, demoLoginEnabled bool) *peerTestServer {
+func newPeerTestServer(t *testing.T, demoLoginEnabled bool, configure ...func(*config.Config)) *peerTestServer {
 	t.Helper()
-	gated := newGatedTestServerConfigured(t, nil, func(cfg *config.Config) { cfg.DemoLoginEnabled = demoLoginEnabled })
+	gated := newGatedTestServerConfigured(t, nil, func(cfg *config.Config) {
+		cfg.DemoLoginEnabled = demoLoginEnabled
+		for _, change := range configure {
+			change(cfg)
+		}
+	})
 	directory := newWritablePrincipalDirectory(t)
 	grants := newRecordingGrantStore(t)
 	auth, authServer := newFakeAuthStore(t)
@@ -517,7 +522,7 @@ func TestPeerConnectionRefusals(t *testing.T) {
 	for _, level := range levels {
 		keys = append(keys, level.Key)
 	}
-	if strings.Join(keys, ",") != "none,run_sessions,observe,administrator,group" {
+	if strings.Join(keys, ",") != "none,run_sessions,messages,observe,administrator,group" {
 		t.Fatalf("levels = %v", keys)
 	}
 	var body bytes.Buffer
@@ -542,9 +547,9 @@ func TestPeerBaseURLsMustBeHTTPS(t *testing.T) {
 
 // connectedPairByDialingOut connects a server with no address to one with
 // one and waits for the socket.
-func connectedPairByDialingOut(t *testing.T) (accepting, initiating *peerTestServer, acceptingID, initiatingID string) {
+func connectedPairByDialingOut(t *testing.T, configureAccepting ...func(*config.Config)) (accepting, initiating *peerTestServer, acceptingID, initiatingID string) {
 	t.Helper()
-	accepting = newPeerTestServer(t, false)
+	accepting = newPeerTestServer(t, false, configureAccepting...)
 	acceptingOverTLS := httptest.NewTLSServer(accepting.server)
 	t.Cleanup(acceptingOverTLS.Close)
 	trustTestCertificates(t, acceptingOverTLS)

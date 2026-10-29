@@ -72,6 +72,8 @@ type Server struct {
 	principalClient *principalclient.Client
 	// peerSockets holds every open peer socket and every dialer (peer_socket.go).
 	peerSockets *peerSocketRegistry
+	// peerSelfUpdates serializes finishing an approved notice's update.
+	peerSelfUpdates sync.Mutex
 	// keepAwake holds this machine awake while sessions run, once
 	// StartKeepAwake has run; nil before that and in tests.
 	keepAwake *keepawake.Controller

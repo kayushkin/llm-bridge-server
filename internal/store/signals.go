@@ -148,8 +148,14 @@ func (s *Store) CreateSignal(sig *Signal) error {
 	if sig.ID == "" {
 		return fmt.Errorf("signal id is required")
 	}
-	if sig.SessionID == "" {
+	// A signal belongs to a session, except one a message from a connected
+	// server raised, which belongs to no session and names its message in
+	// RequestID.
+	if sig.SessionID == "" && sig.Source != msg.SignalSourcePeerMessage {
 		return fmt.Errorf("signal session_id is required")
+	}
+	if sig.Source == msg.SignalSourcePeerMessage && sig.RequestID == "" {
+		return fmt.Errorf("a peer_message signal names its message in request_id")
 	}
 	if sig.CreatedAt.IsZero() {
 		sig.CreatedAt = time.Now().UTC()

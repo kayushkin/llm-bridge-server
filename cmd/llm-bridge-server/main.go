@@ -207,6 +207,7 @@ func main() {
 	go srv.WatchExternalHarnessActivity(context.Background()) // Bring in terminal runs of claude and codex while the server is up
 	srv.StartWatchdog()                                       // Periodic check for sessions whose harness died mid-life
 	srv.StartPeerDialers()                                    // Reopen the socket of every dial-out connection this server initiated
+	go srv.RunPeerMessageOutbox(context.Background())         // Deliver queued messages to connected servers, and report finished updates
 	stopKeepAwake := srv.StartKeepAwake()                     // Hold this machine awake while sessions run, when keep_awake.enabled is on
 	defer stopKeepAwake()
 

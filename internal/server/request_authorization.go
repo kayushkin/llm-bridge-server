@@ -163,6 +163,11 @@ const (
 	// started, that server too) may read. It never sends, stops or changes
 	// anything, and never answers through the public reverse proxy.
 	sessionAgentReadsSessions
+	// sessionAgentUsesPeerMessaging lists connected servers and their messages
+	// and sends one, as an administrator would, for an agent whose session runs
+	// with no principal or as an administrator. It never approves or declines:
+	// that is a person's decision.
+	sessionAgentUsesPeerMessaging
 )
 
 // routeAccessRule is one route's classification.
@@ -237,6 +242,14 @@ func sessionReadRoute(rule routeAccessRule) routeAccessRule {
 	rule.reason += "; a session's agent reads it as its own session's principal"
 	return rule
 }
+
+// peerMessagingRoute is an operator route a session's agent may also call
+// with its posting token to read connections and messages and send one.
+func peerMessagingRoute(rule routeAccessRule) routeAccessRule {
+	rule.sessionAgentAccess = sessionAgentUsesPeerMessaging
+	rule.reason += "; a session's agent with no principal, or an administrator's, may call it with its posting token"
+	return rule
+}
 func catalogRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalReadsCatalog, reason: reason}
 }
@@ -259,7 +272,13 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /peer-connection-invites":            operatorRoute("lets another server connect to this one"),
 	"GET /peer-connection-invites":             operatorRoute("who was invited to connect, and by whom"),
 	"POST /peer-connections":                   operatorRoute("connects to another server and stores a credential for it"),
-	"GET /peer-connections":                    operatorRoute("which servers this one is connected to, and the access each way"),
+	"GET /peer-connections":                    peerMessagingRoute(operatorRoute("which servers this one is connected to, and the access each way")),
+	"POST /peer-connections/{id}/messages":     peerMessagingRoute(operatorRoute("sends the other server a request, notice or status")),
+	"GET /peer-messages":                       peerMessagingRoute(operatorRoute("messages to and from connected servers")),
+	"GET /peer-messages/{id}":                  peerMessagingRoute(operatorRoute("one message to or from a connected server")),
+	"POST /peer-messages/{id}/approve":         operatorRoute("approves a connected server's request (starting its session) or notice (running the update); never an agent"),
+	"POST /peer-messages/{id}/decline":         operatorRoute("declines a connected server's request or notice and tells it why"),
+	"POST /peer/messages":                      peerConnectionCallRoute("the other server delivers a message; the handler checks the connection and what it may send"),
 	"GET /peer-connections/{id}":               operatorRoute("one connection and the access each way"),
 	"POST /peer-connections/{id}/remove":       operatorRoute("ends a connection and the access each way"),
 	"POST /peer-connections/{id}/grant":        operatorRoute("gives another server access to this one"),
