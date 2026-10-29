@@ -21,11 +21,12 @@
 # directory; a reviewer model reads it first, and its verdict shows on the
 # button (a command it rejects cannot be pressed). The command's output shows
 # under the button, as markdown with --markdown. --ask asks one model one
-# question, with no tools; --agent starts a session set up like this one and
+# question, with no tools; --agent starts a session as a new chat starts and
 # shows its final reply. Both need --max-cost, the most they may spend at list
 # price, which the button shows; --model is a model-store id, alias or role.
 # --fork starts a copy of this session with its history; --new-session starts a
-# fresh one. Find a repo's id with repo-store's GET /repos/by-name/{name}.
+# fresh one as a new chat starts: same harness, instance and principal, but the
+# instance's working directory and default settings, not this session's. Find a repo's id with repo-store's GET /repos/by-name/{name}.
 #
 # --send-to sends another session (br_…) a message, as if the person had typed
 # it there; --stop-session stops another session. Either target must exist,

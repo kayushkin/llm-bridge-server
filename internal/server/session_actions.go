@@ -433,7 +433,7 @@ func (s *Server) describeSessionAction(ctx context.Context, session *store.Sessi
 		return fmt.Sprintf("ask %q (the first of %s that answers) this, with no tools, spending at most $%.2f at list price (at most %d output tokens):\n%s",
 			offer.Model, strings.Join(models, ", then "), offer.MaximumCostUSD, call.maximumOutputTokens, offer.Message), nil
 	case msg.SessionActionBackgroundAgent:
-		model := "this session's model"
+		model := "the instance's default model"
 		if offer.Model != "" {
 			if s.modelStore == nil {
 				return "", &sessionActionRefusal{http.StatusServiceUnavailable, "model_store_not_configured", "this server has no model-store to resolve model with"}
@@ -444,12 +444,12 @@ func (s *Server) describeSessionAction(ctx context.Context, session *store.Sessi
 			}
 			model = resolved.ID
 		}
-		return fmt.Sprintf("start a background session named %q — %s harness, instance %s, agent %s, principal %s, working directory %s, model %s, spend ceiling $%.2f, none of session %s's history — send it this, and show its final reply here:\n%s",
-			offer.Label, session.Harness, orNone(session.InstanceID), orNone(session.AgentID), orNone(session.PrincipalID), orInstanceDefault(session.WorkingDir),
+		return fmt.Sprintf("start a background session named %q as a new chat starts — %s harness, instance %s, principal %s, the instance's working directory, model %s, spend ceiling $%.2f, none of session %s's history — send it this, and show its final reply here:\n%s",
+			offer.Label, session.Harness, orNone(session.InstanceID), orNone(session.PrincipalID),
 			model, offer.MaximumCostUSD, session.SessionID, offer.Message), nil
 	case msg.SessionActionNewSessionAndSend:
-		return fmt.Sprintf("start a new session named %q — %s harness, instance %s, agent %s, principal %s, working directory %s, none of session %s's history — and send it this message: %s",
-			offer.Label, session.Harness, orNone(session.InstanceID), orNone(session.AgentID), orNone(session.PrincipalID), orInstanceDefault(session.WorkingDir),
+		return fmt.Sprintf("start a new session named %q as a new chat starts — %s harness, instance %s, principal %s, the instance's working directory and default settings, none of session %s's history — and send it this message: %s",
+			offer.Label, session.Harness, orNone(session.InstanceID), orNone(session.PrincipalID),
 			session.SessionID, offer.Message), nil
 	case msg.SessionActionSendToSession, msg.SessionActionStopSession:
 		return s.describeTargetSessionAction(ctx, session, offer)
@@ -594,29 +594,39 @@ func (s *Server) forkAndSendAction(session *store.Session, offer msg.SessionActi
 	return s.sendToCreatedSession(body, offer.Message)
 }
 
-// newSessionAndSendAction starts a session set up as this one is — harness,
-// instance, agent, principal, bundle, working directory, harness config and
-// spend ceiling — with none of its history. The bundle and the ceiling are
-// carried for the reason a fork carries them: otherwise a button would be how
-// a session sheds its restrictions.
-func (s *Server) newSessionAndSendAction(session *store.Session, offer msg.SessionActionOffer) sessionActionOutcome {
+// newChatLikeSessionRequest is the request the chat sends for a new chat —
+// harness, instance and principal, type interactive, purpose chat — so the
+// session gets the instance's working directory and the defaults for the
+// model, effort and tools, and with them the prompt of wherever it starts. It
+// copies nothing else from the offering session: a session started in an
+// orchestrator's home directory read that directory's CLAUDE.md and took on
+// the orchestrator's role (br_1793299558792674921, 2026-10-29). The bundle and
+// the spend ceiling are still carried, for the reason a fork carries them:
+// otherwise a button would be how a session sheds its restrictions. The origin
+// is carried so the session still says who started it.
+func newChatLikeSessionRequest(session *store.Session, displayName string) CreateSessionRequest {
 	request := CreateSessionRequest{
-		Harness:       session.Harness,
-		InstanceID:    session.InstanceID,
-		DisplayName:   offer.Label,
-		AgentID:       session.AgentID,
-		PrincipalID:   session.PrincipalID,
-		BundleID:      session.BundleID,
-		Type:          session.Type,
-		Purpose:       session.Purpose,
-		Origin:        session.Origin,
-		HarnessConfig: session.HarnessConfig,
-		WorkingDir:    session.WorkingDir,
+		Harness:     session.Harness,
+		InstanceID:  session.InstanceID,
+		DisplayName: displayName,
+		PrincipalID: session.PrincipalID,
+		BundleID:    session.BundleID,
+		Type:        msg.SessionTypeInteractive,
+		Purpose:     msg.PurposeChat,
+		Origin:      session.Origin,
 	}
 	if session.MaxBudgetUSD > 0 {
 		ceiling := session.MaxBudgetUSD
 		request.MaxBudget = &ceiling
 	}
+	return request
+}
+
+// newSessionAndSendAction starts a session the way the chat starts one when a
+// person presses "new chat" (newChatLikeSessionRequest), then sends it the
+// offer's message.
+func (s *Server) newSessionAndSendAction(session *store.Session, offer msg.SessionActionOffer) sessionActionOutcome {
+	request := newChatLikeSessionRequest(session, offer.Label)
 	status, body := s.serveInternally(http.MethodPost, "/sessions", request)
 	if status != http.StatusCreated && status != http.StatusOK {
 		return sessionActionOutcome{output: string(body), err: fmt.Errorf("new session refused with %d", status)}
@@ -718,11 +728,4 @@ func suffixIfNotEmpty(separator, text string) string {
 		return ""
 	}
 	return separator + text
-}
-
-func orInstanceDefault(workingDirectory string) string {
-	if workingDirectory == "" {
-		return "the instance's default"
-	}
-	return workingDirectory
 }

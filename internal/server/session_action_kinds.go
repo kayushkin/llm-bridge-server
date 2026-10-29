@@ -256,33 +256,24 @@ func (s *Server) reviewSessionActionCommand(ctx context.Context, session *store.
 	return &msg.SessionActionReview{Verdict: answer.Verdict, Reasons: strings.TrimSpace(answer.Reasons), Model: response.Model, ReviewedAt: time.Now().UTC()}, nil
 }
 
-// backgroundAgentAction starts a session set up as this one is — harness,
-// instance, agent, principal, bundle, working directory, harness config — with
-// the offer's spend ceiling and, when it names one, its model; sends it the
+// backgroundAgentAction starts a session as a new chat starts
+// (newChatLikeSessionRequest) with the offer's spend ceiling and, when it names one, its model; sends it the
 // task; and waits for its final reply, which becomes the action's output.
 // The session's id is recorded as soon as it exists, so the chat can show it
 // while it works.
 func (s *Server) backgroundAgentAction(session *store.Session, action store.SessionAction) sessionActionOutcome {
 	offer := action.Offer
-	harnessConfig, err := harnessConfigWithModel(session.HarnessConfig, offer.Model)
+	harnessConfig, err := harnessConfigWithModel(nil, offer.Model)
 	if err != nil {
 		return sessionActionOutcome{err: err}
 	}
 	ceiling := offer.MaximumCostUSD
-	request := CreateSessionRequest{
-		Harness:       session.Harness,
-		InstanceID:    session.InstanceID,
-		DisplayName:   offer.Label,
-		AgentID:       session.AgentID,
-		PrincipalID:   session.PrincipalID,
-		BundleID:      session.BundleID,
-		Type:          msg.SessionTypeAutonomous,
-		Purpose:       msg.PurposeSessionAction,
-		Origin:        "llm-bridge-server",
-		HarnessConfig: harnessConfig,
-		WorkingDir:    session.WorkingDir,
-		MaxBudget:     &ceiling,
-	}
+	request := newChatLikeSessionRequest(session, offer.Label)
+	request.Type = msg.SessionTypeAutonomous
+	request.Purpose = msg.PurposeSessionAction
+	request.Origin = "llm-bridge-server"
+	request.HarnessConfig = harnessConfig
+	request.MaxBudget = &ceiling
 	status, body := s.serveInternally(http.MethodPost, "/sessions", request)
 	if status != http.StatusCreated && status != http.StatusOK {
 		return sessionActionOutcome{output: string(body), err: fmt.Errorf("the background session was refused with %d", status)}
