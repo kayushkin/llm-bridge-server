@@ -33,6 +33,32 @@ func waitForOtherServerName(t *testing.T, server *peerTestServer, connectionID, 
 	t.Fatalf("connection %s shows the other server as %q, want %q", connectionID, view.OtherServerName, want)
 }
 
+// waitForOtherServerID waits until a connection shows the id the other server
+// reported.
+func waitForOtherServerID(t *testing.T, server *peerTestServer, connectionID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var view msg.PeerConnectionView
+	for time.Now().Before(deadline) {
+		view = decodeAnswer[msg.PeerConnectionView](t, server.requestAsAdministrator(t, "GET", "/peer-connections/"+connectionID, nil), http.StatusOK, "get")
+		if view.OtherServerID == want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("connection %s shows the other server's id as %q, want %q", connectionID, view.OtherServerID, want)
+}
+
+// serverIDOf is the id a server answers in GET /server.
+func serverIDOf(t *testing.T, server *peerTestServer) string {
+	t.Helper()
+	described := decodeAnswer[msg.ServerDescription](t, server.requestAsAdministrator(t, "GET", "/server", nil), http.StatusOK, "GET /server")
+	if !strings.HasPrefix(described.ID, msg.ServerIDPrefix) {
+		t.Fatalf("GET /server answers id %q, want one starting %s", described.ID, msg.ServerIDPrefix)
+	}
+	return described.ID
+}
+
 // connectByNamesAlone connects with no typed labels: each side is known by the
 // name it reports.
 func connectByNamesAlone(t *testing.T, accepting, initiating *peerTestServer, acceptingURL, initiatingURL string) (acceptingID, initiatingID string) {
@@ -78,6 +104,8 @@ func TestServerNamesTravelOverADialOutConnection(t *testing.T) {
 	waitForSockets(t, map[*peerTestServer]string{accepting: acceptingID, initiating: initiatingID})
 	waitForOtherServerName(t, initiating, initiatingID, "main")
 	waitForOtherServerName(t, accepting, acceptingID, "laptop")
+	waitForOtherServerID(t, initiating, initiatingID, serverIDOf(t, accepting))
+	waitForOtherServerID(t, accepting, acceptingID, serverIDOf(t, initiating))
 
 	nameServer(t, accepting, "home server")
 	waitForOtherServerName(t, initiating, initiatingID, "home server")
@@ -101,6 +129,20 @@ func TestServerNamesTravelOverADirectConnection(t *testing.T) {
 	acceptingID, initiatingID := connectByNamesAlone(t, accepting, initiating, acceptingOverTLS.URL, initiatingOverTLS.URL)
 	waitForOtherServerName(t, initiating, initiatingID, "main")
 	waitForOtherServerName(t, accepting, acceptingID, "desk")
+	acceptingServerID, initiatingServerID := serverIDOf(t, accepting), serverIDOf(t, initiating)
+	if acceptingServerID == initiatingServerID {
+		t.Fatalf("two servers answer the same id %s", acceptingServerID)
+	}
+	waitForOtherServerID(t, initiating, initiatingID, acceptingServerID)
+	waitForOtherServerID(t, accepting, acceptingID, initiatingServerID)
+
+	// An id that is not a server id is not recorded over the one known.
+	accepting.server.noteOtherServerIdentity(acceptingID, http.Header{http.CanonicalHeaderKey(msg.ServerIDHeader): {"server_000042"}})
+	waitForOtherServerID(t, accepting, acceptingID, initiatingServerID)
+	// A renamed server keeps its id.
+	nameServer(t, accepting, "renamed main")
+	waitForOtherServerName(t, initiating, initiatingID, "renamed main")
+	waitForOtherServerID(t, initiating, initiatingID, acceptingServerID)
 
 	nameServer(t, accepting, "renamed main")
 	waitForOtherServerName(t, initiating, initiatingID, "renamed main")

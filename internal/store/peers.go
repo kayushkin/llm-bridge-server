@@ -89,6 +89,9 @@ type PeerConnection struct {
 	// and OtherServerNameReportedAt when; the view carries both.
 	OtherServerName           string     `json:"-"`
 	OtherServerNameReportedAt *time.Time `json:"-"`
+	// OtherServerID is the id the other server last reported for itself,
+	// empty while it has not said; the view carries it.
+	OtherServerID string `json:"-"`
 }
 
 // PeerGrant is one row of peer_grants, with the hash of the token.
@@ -212,6 +215,7 @@ func (s *Store) migratePeers() error {
 		"ALTER TABLE peer_connections ADD COLUMN removal_notice TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE peer_connections ADD COLUMN other_server_name TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE peer_connections ADD COLUMN other_server_name_reported_at DATETIME",
+		"ALTER TABLE peer_connections ADD COLUMN other_server_id TEXT NOT NULL DEFAULT ''",
 	} {
 		if _, err := s.db.Exec(column); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -376,6 +380,37 @@ func (s *Store) ListPeerConnections() ([]PeerConnection, error) {
 		connections = append(connections, connection)
 	}
 	return connections, rows.Err()
+}
+
+// RecordPeerConnectionOtherServerID records the id the other server reported
+// for itself on a connection. It writes only when the id differs from the one
+// recorded, and answers the id it replaced, empty when none was recorded or
+// nothing changed, and whether it wrote.
+func (s *Store) RecordPeerConnectionOtherServerID(id, serverID string) (replaced string, written bool, err error) {
+	rowID, ok := rowIDOfPrefixed(peerConnectionIDPrefix, id)
+	if !ok {
+		return "", false, ErrPeerConnectionNotFound
+	}
+	transaction, err := s.db.Begin()
+	if err != nil {
+		return "", false, err
+	}
+	defer transaction.Rollback()
+	var recorded string
+	if err := transaction.QueryRow(`SELECT other_server_id FROM peer_connections WHERE id = ?`, rowID).Scan(&recorded); err != nil {
+		_, err = notFoundAs("", err, ErrPeerConnectionNotFound)
+		return "", false, err
+	}
+	if recorded == serverID {
+		return "", false, nil
+	}
+	if _, err := transaction.Exec(`UPDATE peer_connections SET other_server_id = ? WHERE id = ?`, serverID, rowID); err != nil {
+		return "", false, fmt.Errorf("record %s's other server id: %w", id, err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return "", false, err
+	}
+	return recorded, true, nil
 }
 
 // RecordPeerConnectionOtherServerName records the name the other server
@@ -698,7 +733,7 @@ const (
 	peerConnectionInviteSelect = `SELECT id, passphrase_hash, created_by, created_at, expires_at, redeemed_at, connection_id FROM peer_connection_invites`
 	peerConnectionSelect       = `SELECT id, display_name, transport, role, remote_base_url, remote_connection_id, inbound_credential_hash,
 		outbound_credential_id, peer_principal_id, created_by, created_at, removed_at, removed_by, remove_reason, removed_by_other_server, removal_notice,
-		other_server_name, other_server_name_reported_at FROM peer_connections`
+		other_server_name, other_server_name_reported_at, other_server_id FROM peer_connections`
 	peerGrantSelect = `SELECT id, connection_id, token_hash, peer_principal_id, level, group_principal_id, created_by, created_at,
 		delivered_at, revoked_at, revoked_by, revoke_reason FROM peer_grants`
 	peerAccessSelect = `SELECT id, connection_id, remote_grant_id, remote_peer_principal_id, level, credential_id, received_at, ended_at, end_reason FROM peer_access`
@@ -733,7 +768,7 @@ func scanPeerConnection(row rowScanner) (PeerConnection, error) {
 	if err := row.Scan(&rowID, &connection.DisplayName, &transport, &role, &connection.RemoteBaseURL, &connection.RemoteConnectionID,
 		&connection.InboundCredentialHash, &connection.OutboundCredentialID, &connection.PeerPrincipalID, &connection.CreatedBy, &connection.CreatedAt,
 		&removedAt, &connection.RemovedBy, &connection.RemoveReason, &connection.RemovedByOtherServer, &connection.RemovalNotice,
-		&connection.OtherServerName, &otherServerNameReportedAt); err != nil {
+		&connection.OtherServerName, &otherServerNameReportedAt, &connection.OtherServerID); err != nil {
 		return PeerConnection{}, err
 	}
 	connection.OtherServerNameReportedAt = timeOrNil(otherServerNameReportedAt)

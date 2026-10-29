@@ -1,10 +1,12 @@
 package server
 
-// What this server calls itself, and whether it holds its machine awake.
+// Who this server is, what it calls itself, and whether it holds its machine
+// awake.
 //
-// server.name is a stored behaviour setting: GET /server answers it to any
+// The server's id is made once by the store (internal/store/server_identity.go)
+// and travels beside its name. server.name is a stored behaviour setting: GET /server answers it to any
 // signed-in caller, every request and answer over a peer connection carries it
-// in msg.ServerNameHeader, and a change is sent at once to every connected
+// in msg.ServerNameHeader with the id in msg.ServerIDHeader, and a change is sent at once to every connected
 // server (peers.go, tellConnectedServersThisServersName). keep_awake.* drive
 // internal/keepawake, which holds a sleep block while sessions run here.
 
@@ -63,7 +65,7 @@ func checkKeepAwakeGraceMinutesValue(value string) error {
 
 // handleGetServer: GET /server.
 func (s *Server) handleGetServer(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, msg.ServerDescription{Name: s.thisServerName(), KeepAwake: s.keepAwakeState()})
+	writeJSON(w, msg.ServerDescription{ID: s.store.ThisServerID(), Name: s.thisServerName(), KeepAwake: s.keepAwakeState()})
 }
 
 func (s *Server) keepAwakeSettings() keepawake.Settings {

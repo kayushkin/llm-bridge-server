@@ -4,7 +4,9 @@ package ids
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 
+	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -55,4 +57,21 @@ func NewHookRequestID() string {
 // hreq_ ids, which do.
 func NewDerivedQuestionGroupID() string {
 	return "dqgroup_" + ulid.Make().String()
+}
+
+// NewServerID returns a fresh server id (server_<ULID>). A server makes one
+// once, at its first start, and keeps it.
+func NewServerID() string {
+	return msg.ServerIDPrefix + ulid.Make().String()
+}
+
+// IsServerID says whether value is a server id: msg.ServerIDPrefix and a
+// ULID, nothing else.
+func IsServerID(value string) bool {
+	rest, found := strings.CutPrefix(value, msg.ServerIDPrefix)
+	if !found {
+		return false
+	}
+	_, err := ulid.ParseStrict(rest)
+	return err == nil
 }

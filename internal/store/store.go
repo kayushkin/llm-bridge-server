@@ -39,6 +39,8 @@ type Store struct {
 	db       *sql.DB // writer pool, pinned to 1 connection
 	dbRO     *sql.DB // reader pool, concurrent readers under WAL
 	notifier Notifier
+	// serverID is this server's own id, read from server_identity at open.
+	serverID string
 }
 
 // SetNotifier registers a callback fired after successful session-row
@@ -538,6 +540,9 @@ func (s *Store) migrate() error {
 	}
 	if err := s.migrateSessionActions(); err != nil {
 		return err
+	}
+	if err := s.migrateServerIdentity(); err != nil {
+		return fmt.Errorf("migrate server identity: %w", err)
 	}
 	if err := s.migratePeers(); err != nil {
 		return fmt.Errorf("migrate peers: %w", err)

@@ -747,9 +747,9 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !arrivedOverPeerSocket {
-			// Over a socket, serveRequest has already read and stamped the name.
-			s.noteOtherServerName(caller.peer.connectionID, r.Header)
-			s.stampThisServersName(w.Header())
+			// Over a socket, serveRequest has already read and stamped the id and name.
+			s.noteOtherServerIdentity(caller.peer.connectionID, r.Header)
+			s.stampThisServersIdentity(w.Header())
 		}
 		if peerUserPresent {
 			if len(presentedPeerUsers) != 1 || strings.TrimSpace(presentedPeerUsers[0]) == "" {

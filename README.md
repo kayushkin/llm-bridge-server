@@ -408,7 +408,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/peer/connect` | Another server connects with a one-time passphrase | anyone |
 | `POST` | `/peer/connection/removed` | The other server says it removed the connection; this side removes it too | connected server |
 | `GET` | `/peer/self` | Who the presented peer token acts as here | principal |
-| `GET` | `/peer/server-name` | This server's name, for a connected server; the call carries the caller's | connected server |
+| `GET` | `/peer/server-name` | This server's id and name, for a connected server; the call carries the caller's | connected server |
 | `GET` | `/peer/socket` | The WebSocket a server without an address keeps open to this one | connected server |
 
 ### Runners and harness callbacks

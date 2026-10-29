@@ -338,6 +338,18 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 	}
 	if thisServerDials(connection) {
 		s.startPeerDialer(connection)
+	} else if connection.Transport == msg.PeerTransportDirect {
+		// The connect call's body has no room for ids (an older server refuses
+		// a field it does not know), and nothing else is sent until someone
+		// uses the connection, so swap them now. A socket's dial does this on
+		// a dial_out connection.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if err := s.exchangeServerIdentities(ctx, connection); err != nil {
+				log.Printf("[peers] %s: swap server ids after connecting: %v", connection.ID, err)
+			}
+		}()
 	}
 	writeJSONStatus(w, http.StatusCreated, s.peerConnectionView(connection))
 }
@@ -437,7 +449,8 @@ func peerConnectionInviteError(err error) *requestCredentialError {
 // peerConnectionView is a connection with what is true of it now.
 func (s *Server) peerConnectionView(connection store.PeerConnection) msg.PeerConnectionView {
 	view := msg.PeerConnectionView{Connection: connection.PeerConnection, SocketConnected: s.peerSockets.socketOf(connection.ID) != nil,
-		OtherServerName: connection.OtherServerName, OtherServerNameReportedAt: connection.OtherServerNameReportedAt}
+		OtherServerName: connection.OtherServerName, OtherServerNameReportedAt: connection.OtherServerNameReportedAt,
+		OtherServerID: connection.OtherServerID}
 	if grant, err := s.store.LivePeerGrantOfConnection(connection.ID); err == nil {
 		view.AccessGiven = &grant.PeerGrant
 	} else if !errors.Is(err, store.ErrPeerGrantNotFound) {
@@ -848,7 +861,7 @@ func (s *Server) connectionPresentingCredential(r *http.Request) (store.PeerConn
 	if connection.RemovedAt != nil {
 		return store.PeerConnection{}, &requestCredentialError{http.StatusUnauthorized, "peer_connection_removed", connection.ID + " was removed"}
 	}
-	s.noteOtherServerName(connection.ID, r.Header)
+	s.noteOtherServerIdentity(connection.ID, r.Header)
 	return connection, nil
 }
 
@@ -1109,7 +1122,7 @@ func (s *Server) sendOverPeerConnection(ctx context.Context, client *http.Client
 	if header == nil {
 		header = http.Header{}
 	}
-	s.stampThisServersName(header)
+	s.stampThisServersIdentity(header)
 	if connection.Transport == msg.PeerTransportDialOut {
 		socket := s.peerSockets.socketOf(connection.ID)
 		if socket == nil {
@@ -1117,7 +1130,7 @@ func (s *Server) sendOverPeerConnection(ctx context.Context, client *http.Client
 		}
 		response, err := socket.roundTrip(ctx, method, path, header, body)
 		if err == nil {
-			s.noteOtherServerName(connection.ID, response.Header)
+			s.noteOtherServerIdentity(connection.ID, response.Header)
 		}
 		return response, err
 	}
@@ -1145,7 +1158,7 @@ func (s *Server) sendOverPeerConnection(ctx context.Context, client *http.Client
 	if err != nil {
 		return nil, fmt.Errorf("%s %s%s: %w", method, connection.RemoteBaseURL, path, err)
 	}
-	s.noteOtherServerName(connection.ID, response.Header)
+	s.noteOtherServerIdentity(connection.ID, response.Header)
 	return response, nil
 }
 
