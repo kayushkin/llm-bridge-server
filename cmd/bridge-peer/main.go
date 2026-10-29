@@ -55,6 +55,7 @@ func usage() error {
   bridge-peer servers
   bridge-peer request <server name or connection id> --title "…" [--attach <file>]… "<prompt>"
   bridge-peer notice <server name or connection id> --repo <repo> --commit <sha> [--repo … --commit …] [--in-reply-to <message id>] [--attach <file>]… "<summary>"
+  bridge-peer status <server name or connection id> --in-reply-to <message id> --result succeeded|failed|declined [--attach <file>]… "<detail>"
   bridge-peer patch <server name or connection id> --repo <repo name> [--base origin/main] [--summary "…"]
       (run inside the repo: it sends git format-patch <base>..HEAD as one attached file)
   bridge-peer fetch <message id> [--out <directory>]
@@ -83,6 +84,7 @@ func run(arguments []string, out io.Writer) error {
 	base := flags.String("base", "origin/main", "a patch's base: the commit the other server already has")
 	summary := flags.String("summary", "", "a patch's summary (default: its commit subjects)")
 	outDirectory := flags.String("out", ".", "where fetch writes a message's files")
+	result := flags.String("result", "", "a status's result: succeeded, failed or declined")
 	var repos, commits, attachments repeated
 	flags.Var(&attachments, "attach", "a file to send with the message (repeat)")
 	flags.Var(&repos, "repo", "a notice's repo (repeat, paired with --commit)")
@@ -132,6 +134,19 @@ func run(arguments []string, out io.Writer) error {
 			return err
 		}
 		return c.send(out, connection, msg.PeerMessageKindNotice, msg.PeerMessageBody{Summary: positional[1], Commits: pairs}, *inReplyTo, attachmentIDs)
+	case "status":
+		if len(positional) != 2 || *inReplyTo == "" || *result == "" {
+			return usage()
+		}
+		connection, err := c.resolveServer(positional[0])
+		if err != nil {
+			return err
+		}
+		attachmentIDs, err := c.uploadAll(out, attachments)
+		if err != nil {
+			return err
+		}
+		return c.send(out, connection, msg.PeerMessageKindStatus, msg.PeerMessageBody{Result: msg.PeerMessageStatusResult(*result), Detail: positional[1]}, *inReplyTo, attachmentIDs)
 	case "patch":
 		if len(positional) != 1 || len(repos) != 1 || len(commits) != 0 {
 			return usage()

@@ -170,3 +170,16 @@ func TestFetchKeepsOnlyAFileWhoseSHA256Matches(t *testing.T) {
 		t.Fatalf("fetched file = %q, %v", data, err)
 	}
 }
+
+func TestStatusAnswersAMessageWithItsResult(t *testing.T) {
+	fake, server := newFakePeerServer(t)
+	if out, err := runCLI(t, server, "status", "main", "--in-reply-to", "peer_message_000007", "--result", "failed", "it did not apply"); err != nil {
+		t.Fatalf("status: %v\n%s", err, out)
+	}
+	if len(fake.sent) != 1 || fake.sent[0].Kind != msg.PeerMessageKindStatus || fake.sent[0].Body.Result != "failed" || fake.sent[0].InReplyTo != "peer_message_000007" {
+		t.Fatalf("sent %+v", fake.sent)
+	}
+	if _, err := runCLI(t, server, "status", "main", "--result", "failed", "no reply id"); err == nil {
+		t.Fatal("status without --in-reply-to was sent")
+	}
+}
