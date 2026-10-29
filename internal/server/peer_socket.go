@@ -162,6 +162,12 @@ type peerSocket struct {
 
 	// Whether the other server's bridge answers, from the probes and from
 	// every answer that arrives (healthMutex guards these).
+	// The probe settings, read once when the socket opens.
+	probeInterval                  time.Duration
+	probeIntervalWhileNotAnswering time.Duration
+	probeTimeout                   time.Duration
+	probePath                      string
+
 	healthMutex       sync.Mutex
 	answering         bool
 	lastAnsweredAt    time.Time
@@ -181,7 +187,9 @@ type peerSocketCall struct {
 func newPeerSocket(server *Server, connectionID string, connection *websocket.Conn, dialing bool) *peerSocket {
 	socket := &peerSocket{server: server, connectionID: connectionID, connection: connection,
 		calls: map[uint64]*peerSocketCall{}, serving: map[uint64]context.CancelFunc{}, closed: make(chan struct{}),
-		answering: true, lastAnsweredAt: time.Now()}
+		answering: true, lastAnsweredAt: time.Now(),
+		probeInterval: peerSocketProbeInterval, probeIntervalWhileNotAnswering: peerSocketProbeIntervalWhileNotAnswering,
+		probeTimeout: peerSocketProbeTimeout, probePath: peerSocketProbePath}
 	if dialing {
 		socket.nextStream.Store(1)
 	} else {
@@ -360,9 +368,9 @@ func (socket *peerSocket) roundTrip(ctx context.Context, method, path string, he
 // while it does not, so its recovery is noticed soon.
 func (socket *peerSocket) probeUntilClosed() {
 	for {
-		wait := peerSocketProbeInterval
+		wait := socket.probeInterval
 		if socket.notAnswering() != nil {
-			wait = peerSocketProbeIntervalWhileNotAnswering
+			wait = socket.probeIntervalWhileNotAnswering
 		}
 		select {
 		case <-socket.closed:
@@ -377,11 +385,11 @@ func (socket *peerSocket) probeUntilClosed() {
 // its status, shows the bridge behind the socket serves requests, except the
 // refusal of a server already running all it will of this socket's requests.
 func (socket *peerSocket) probe() {
-	ctx, cancel := context.WithTimeout(context.Background(), peerSocketProbeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), socket.probeTimeout)
 	defer cancel()
 	header := http.Header{}
 	socket.server.stampThisServersIdentity(header)
-	response, err := socket.roundTrip(ctx, http.MethodGet, peerSocketProbePath, header, nil)
+	response, err := socket.roundTrip(ctx, http.MethodGet, socket.probePath, header, nil)
 	if err != nil {
 		if errors.Is(err, errPeerNotConnected) {
 			return
