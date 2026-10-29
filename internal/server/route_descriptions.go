@@ -216,7 +216,7 @@ var routeDescriptions = map[string]routeDescription{
 	"POST /peer-user-mappings":                  {routeGroupPeers, "Map a connected server's user to a principal here, allowed only what both it and the peer may do"},
 	"POST /peer-user-mappings/{id}/remove":      {routeGroupPeers, "End a mapping, with a reason"},
 	"GET /peer/self":                            {routeGroupPeers, "Who the presented peer token acts as here"},
-	"GET /peer/server-name":                     {routeGroupPeers, "This server's name, for a connected server; the call carries the caller's"},
+	"GET /peer/server-name":                     {routeGroupPeers, "This server's id and name, for a connected server; the call carries the caller's"},
 	"GET /server":                               {routeGroupHarnessesModels, "This server's name and whether it is holding its machine awake"},
 	"GET /auth/sessions":                        {routeGroupLogin, "The caller's login sessions; an administrator names anyone's with principal_id"},
 	"POST /auth/sessions/{id}/revoke":           {routeGroupLogin, "End a login session, with a reason"},
