@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -500,6 +501,7 @@ func (c *client) upload(path, name string) (msg.PeerMessageAttachment, error) {
 // gitOutput runs git in the current directory and returns its standard output.
 func gitOutput(arguments ...string) (string, error) {
 	command := exec.Command("git", arguments...)
+	command.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	output, err := command.Output()
