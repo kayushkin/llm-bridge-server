@@ -18,6 +18,9 @@ const subagentPurpose = "subagent"
 type subagentTask struct {
 	taskID      string
 	description string
+	// harnessSessionID is the harness's own session id for the subagent, when
+	// the harness gives it one (msg.SystemEvent.SubagentHarnessSessionID).
+	harnessSessionID string
 	bridgeID    string // the subagent's own session, once minted
 	settled     bool   // a terminal task_updated/task_notification has landed
 }
@@ -135,7 +138,11 @@ func (r *subagentRouter) observe(ev *msg.Event) {
 			ev.System.SubagentSessionID = existing.bridgeID
 			return
 		}
-		task := &subagentTask{taskID: ev.System.TaskID, description: ev.System.Description}
+		task := &subagentTask{
+			taskID:           ev.System.TaskID,
+			description:      ev.System.Description,
+			harnessSessionID: ev.System.SubagentHarnessSessionID,
+		}
 		r.byToolUse[ev.System.ToolUseID] = task
 		r.byTaskID[ev.System.TaskID] = task
 		// Mint here, at the announcement, rather than when the subagent's first
@@ -207,10 +214,16 @@ func (r *subagentRouter) ensureSession(toolUseID string, task *subagentTask) str
 		return ""
 	}
 
-	// The dedupe key must match what the discovery scanner derives from the
-	// rollout filename (subagents/agent-<task_id>.jsonl) so the live row and
-	// the discovered one converge instead of doubling up.
-	harnessSessionID := "agent-" + task.taskID
+	// The dedupe key must match what discovery derives for the same subagent,
+	// so the live row and the discovered one converge instead of doubling up.
+	// A harness that gives the subagent a session of its own (Codex: a thread)
+	// names it, and discovery keys on that id. Claude Code names none, and
+	// discovery derives the key from the transcript's filename,
+	// subagents/agent-<task_id>.jsonl.
+	harnessSessionID := task.harnessSessionID
+	if harnessSessionID == "" {
+		harnessSessionID = "agent-" + task.taskID
+	}
 	displayName := task.description
 	if displayName == "" {
 		displayName = task.taskID

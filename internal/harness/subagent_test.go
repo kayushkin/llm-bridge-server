@@ -867,3 +867,34 @@ func TestSubagentIsMarkedNotBridgeControlled(t *testing.T) {
 			sub.HarnessSessionID, want)
 	}
 }
+
+// TestManager_SubagentRowIsKeyedOnTheHarnessOwnSessionID pins the key a Codex
+// subagent's row is minted under. Codex gives a spawned agent a thread of its
+// own, and discovery finds that thread's rollout and keys its row on the thread
+// id. Minting under "agent-<task id>" instead would leave two rows for one
+// subagent, the live one and the discovered one.
+func TestManager_SubagentRowIsKeyedOnTheHarnessOwnSessionID(t *testing.T) {
+	m := newTestManager(t)
+	const parentID = "br-parent-codex"
+	const childThreadID = "01a18959-5183-7253-9293-7dffbc98dfea"
+	seedParent(t, m, parentID)
+
+	proc := &fakeProcess{sid: parentID, ch: make(chan msg.Event, 8)}
+	waitForPumpExit := startEventPump(t, m, proc)
+	started := taskStarted(parentID, "call_spawn", childThreadID, "/root/hello")
+	started.Harness = msg.HarnessCodex
+	started.System.SubagentType = ""
+	started.System.SubagentHarnessSessionID = childThreadID
+	proc.ch <- started
+	proc.ch <- taskUpdated(parentID, childThreadID, msg.TaskStatusCompleted)
+	close(proc.ch)
+	waitForPumpExit()
+
+	sub := findSubagent(t, m, parentID)
+	if sub.HarnessSessionID != childThreadID {
+		t.Errorf("harness_session_id = %q, want the child thread's id %q", sub.HarnessSessionID, childThreadID)
+	}
+	if sub.State != string(msg.SessionCompleted) {
+		t.Errorf("state = %q, want %q", sub.State, msg.SessionCompleted)
+	}
+}
