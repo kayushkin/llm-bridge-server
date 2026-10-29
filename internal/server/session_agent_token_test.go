@@ -321,3 +321,78 @@ func TestGrantStoreProxyMapsEveryRouteAndCarriesOnlyThePrincipal(t *testing.T) {
 		t.Errorf("service token on /grant-store/relations = %d %s, want 403 store_proxy_requires_a_principal", response.Code, response.Body.String())
 	}
 }
+
+// TestAnAdministratorsSessionAgentTokenReachesWhatTheAdministratorDoes covers
+// a chat the operator started: its agent's token reaches the operator routes
+// and every session, as the administrator's own login does, while anyone
+// else's token stays on the store proxies.
+func TestAnAdministratorsSessionAgentTokenReachesWhatTheAdministratorDoes(t *testing.T) {
+	gated := newGatedTestServer(t, nil)
+	administratorCookie := gated.loginAs(t, administratorTestPrincipalID)
+	administratorSession := gated.createSessionAs(t, administratorCookie, administratorTestPrincipalID)
+	administratorToken := gated.sessionAgentTokenFor(t, administratorSession)
+	ordinaryCookie := gated.loginAs(t, firstTestPrincipalID)
+	ordinarySession := gated.createSessionAs(t, ordinaryCookie, "")
+	ordinaryToken := gated.sessionAgentTokenFor(t, ordinarySession)
+
+	for _, route := range []struct{ method, path string }{
+		{"GET", "/machines"},
+		{"GET", "/peer-connections"},
+		{"GET", "/bridge-prefs"},
+		{"GET", "/sessions"},
+		{"GET", "/sessions/" + ordinarySession.SessionID},
+		{"GET", "/kanban/boards"},
+	} {
+		if response := gated.requestWithBearer(t, administratorToken, route.method, route.path); response.Code != http.StatusOK {
+			t.Errorf("administrator's token on %s %s = %d %s, want 200", route.method, route.path, response.Code, response.Body.String())
+		}
+	}
+	var listed []json.RawMessage
+	decodeRecorderJSON(t, gated.requestWithBearer(t, administratorToken, "GET", "/sessions"), &listed)
+	if len(listed) < 2 {
+		t.Errorf("administrator's token lists %d sessions, want every session (at least 2)", len(listed))
+	}
+
+	for _, route := range []struct{ method, path string }{
+		{"GET", "/machines"},
+		{"GET", "/peer-connections"},
+		{"GET", "/sessions"},
+	} {
+		response := gated.requestWithBearer(t, ordinaryToken, route.method, route.path)
+		if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "authorization_header_not_accepted") {
+			t.Errorf("ordinary token on %s %s = %d %s, want 401 authorization_header_not_accepted", route.method, route.path, response.Code, response.Body.String())
+		}
+	}
+
+	throughProxy := httptest.NewRequest("GET", "/machines", nil)
+	throughProxy.Header.Set("Authorization", "Bearer "+administratorToken)
+	throughProxy.Header.Set("X-Forwarded-For", "203.0.113.7")
+	if response := serve(gated.server, throughProxy); response.Code != http.StatusForbidden ||
+		!strings.Contains(response.Body.String(), "session_agent_token_not_public") {
+		t.Errorf("administrator's token through the public proxy = %d %s, want 403 session_agent_token_not_public", response.Code, response.Body.String())
+	}
+
+	if response := gated.requestAs(t, administratorCookie, "POST", "/sessions/"+administratorSession.SessionID+"/stop", nil); response.Code != http.StatusOK {
+		t.Fatalf("stop = %d %s", response.Code, response.Body.String())
+	}
+	if response := gated.requestWithBearer(t, administratorToken, "GET", "/machines"); response.Code != http.StatusUnauthorized {
+		t.Errorf("administrator's token after its session stopped = %d %s, want 401", response.Code, response.Body.String())
+	}
+}
+
+// TestAnAdministratorsSessionAgentTokenIsHeldToThePeerItsSessionCameThrough
+// matches the posting token's rule: a session a connected server started acts
+// as an administrator only when that peer is one too.
+func TestAnAdministratorsSessionAgentTokenIsHeldToThePeerItsSessionCameThrough(t *testing.T) {
+	gated := newGatedTestServer(t, nil)
+	administratorCookie := gated.loginAs(t, administratorTestPrincipalID)
+	session := gated.createSessionAs(t, administratorCookie, administratorTestPrincipalID)
+	if err := gated.store.RecordSessionPeerOrigin(store.SessionPeerOrigin{
+		SessionID: session.SessionID, PeerPrincipalID: firstTestPrincipalID, RemotePrincipalID: "principal_000801"}); err != nil {
+		t.Fatal(err)
+	}
+	token := gated.sessionAgentTokenFor(t, session)
+	if response := gated.requestWithBearer(t, token, "GET", "/machines"); response.Code != http.StatusUnauthorized {
+		t.Errorf("token of a session started through a peer that is not an administrator = %d %s, want 401", response.Code, response.Body.String())
+	}
+}

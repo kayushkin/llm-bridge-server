@@ -104,7 +104,7 @@ func (codec *harnessChildTokenSigner) sessionAgentTokenSignature(signedPortion s
 }
 
 // decodeSessionAgentToken verifies a token's shape, signature and expiry.
-// It does not look at the session; principalOfSessionAgentToken does.
+// It does not look at the session; sessionAgentTokenClaimsOfLiveSession does.
 func (codec *harnessChildTokenSigner) decodeSessionAgentToken(token string) (sessionAgentTokenClaims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 5 || parts[0] != sessionAgentTokenPrefix {
@@ -132,26 +132,34 @@ func (codec *harnessChildTokenSigner) decodeSessionAgentToken(token string) (ses
 	return sessionAgentTokenClaims{PrincipalID: parts[1], SessionID: string(sessionID), ExpiresAt: expiresAt}, nil
 }
 
-// principalOfSessionAgentToken verifies a presented token and the session it
-// names, and returns the principal the request acts as.
-func (s *Server) principalOfSessionAgentToken(token string) (string, error) {
+// isSessionAgentToken reports whether a bearer token is shaped as a session
+// agent token rather than a session posting token. It verifies nothing: it
+// only picks which verifier the token goes to.
+func isSessionAgentToken(token string) bool {
+	return strings.HasPrefix(token, sessionAgentTokenPrefix+".")
+}
+
+// sessionAgentTokenClaimsOfLiveSession verifies a presented token and the
+// session it names, and returns its claims: the principal the request acts as
+// and the session whose agent holds the token.
+func (s *Server) sessionAgentTokenClaimsOfLiveSession(token string) (sessionAgentTokenClaims, error) {
 	claims, err := s.harnessChildTokenSigner.decodeSessionAgentToken(token)
 	if err != nil {
-		return "", err
+		return sessionAgentTokenClaims{}, err
 	}
 	session, err := s.store.GetSession(claims.SessionID)
 	if err != nil {
-		return "", fmt.Errorf("session agent token names session %s, which does not exist", claims.SessionID)
+		return sessionAgentTokenClaims{}, fmt.Errorf("session agent token names session %s, which does not exist", claims.SessionID)
 	}
 	if session.PrincipalID != claims.PrincipalID {
-		return "", fmt.Errorf("session agent token names principal %s, and session %s is not started as that principal", claims.PrincipalID, claims.SessionID)
+		return sessionAgentTokenClaims{}, fmt.Errorf("session agent token names principal %s, and session %s is not started as that principal", claims.PrincipalID, claims.SessionID)
 	}
 	for _, terminalState := range sessionStatesThatEndSessionAgentTokens {
 		if msg.SessionState(session.State) == terminalState {
-			return "", fmt.Errorf("session %s has ended (state %s), and its session agent token ended with it", claims.SessionID, session.State)
+			return sessionAgentTokenClaims{}, fmt.Errorf("session %s has ended (state %s), and its session agent token ended with it", claims.SessionID, session.State)
 		}
 	}
-	return claims.PrincipalID, nil
+	return claims, nil
 }
 
 // sessionAgentEnvironment returns the variables a session's harness child

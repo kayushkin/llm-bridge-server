@@ -24,6 +24,7 @@ package server
 // routeAccessRules. Every other route refuses the token as before.
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -64,26 +65,10 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 			credentialError.write(w)
 			return
 		}
-		caller = principalCaller
-		// A session a connected server started for one of its users acts
-		// within the peer's grants as well as its principal's, so its agent is
-		// an administrator here only when both are: a peer user mapped to a
-		// local administrator through a peer that is not one gets no
-		// administrator's reach through its agent's token.
-		if caller.isAdministrator {
-			origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(agentSessionID)
-			if err != nil {
-				writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error())
-				return
-			}
-			if throughPeer {
-				peer, credentialError := s.callerForPrincipalID(r.Context(), origin.PeerPrincipalID, "the peer session "+agentSessionID+" was started through is")
-				if credentialError != nil {
-					credentialError.write(w)
-					return
-				}
-				caller.isAdministrator = peer.isAdministrator
-			}
+		caller, credentialError = s.administratorOnlyIfSessionPeerIsOne(r.Context(), principalCaller, agentSessionID)
+		if credentialError != nil {
+			credentialError.write(w)
+			return
 		}
 	}
 	if rule.sessionAgentAccess == sessionAgentReadsSessions {
@@ -188,4 +173,28 @@ func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request
 		}
 	}
 	s.serveAsCaller(w, r, pattern, rule, caller)
+}
+
+// administratorOnlyIfSessionPeerIsOne holds a caller acting for a session's
+// agent to the peer that session was started through, if any. A session a
+// connected server started for one of its users acts within the peer's grants
+// as well as its principal's, so its agent is an administrator here only when
+// both are: a peer user mapped to a local administrator through a peer that is
+// not one gets no administrator's reach through its agent's token.
+func (s *Server) administratorOnlyIfSessionPeerIsOne(ctx context.Context, caller requestCaller, agentSessionID string) (requestCaller, *requestCredentialError) {
+	if !caller.isAdministrator {
+		return caller, nil
+	}
+	origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(agentSessionID)
+	if err != nil {
+		return requestCaller{}, &requestCredentialError{http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error()}
+	}
+	if throughPeer {
+		peer, credentialError := s.callerForPrincipalID(ctx, origin.PeerPrincipalID, "the peer session "+agentSessionID+" was started through is")
+		if credentialError != nil {
+			return requestCaller{}, credentialError
+		}
+		caller.isAdministrator = peer.isAdministrator
+	}
+	return caller, nil
 }

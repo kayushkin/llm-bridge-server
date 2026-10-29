@@ -773,7 +773,11 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization && rule.class == routeSessionOwnerOrItsAgentPostsIntoSession {
+	// A session agent token goes to the principal path below on every route;
+	// any other bearer on these routes is a session posting token.
+	_, hasAuthorization := r.Header["Authorization"]
+	presentsPostingToken := hasAuthorization && !isSessionAgentToken(bearerTokenOf(r))
+	if presentsPostingToken && rule.class == routeSessionOwnerOrItsAgentPostsIntoSession {
 		caller, credentialError := s.postingAgentOfRequest(r, pattern, rule)
 		if credentialError != nil {
 			credentialError.write(w)
@@ -783,12 +787,12 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization && rule.sessionAgentAccess != sessionAgentNotAccepted {
+	if presentsPostingToken && rule.sessionAgentAccess != sessionAgentNotAccepted {
 		s.serveDelegatingAgent(w, r, pattern, rule)
 		return
 	}
 
-	principalID, loginSessionID, credentialError := s.principalOfRequest(r, rule)
+	principalID, loginSessionID, sessionAgentTokenSessionID, credentialError := s.principalOfRequest(r, rule)
 	if credentialError != nil {
 		credentialError.write(w)
 		return
@@ -798,8 +802,49 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		credentialError.write(w)
 		return
 	}
+	if sessionAgentTokenSessionID != "" && rule.class != routePrincipalOrSessionAgentThroughStoreProxy {
+		if caller, credentialError = s.administratorOfSessionAgentToken(r, pattern, caller, sessionAgentTokenSessionID); credentialError != nil {
+			credentialError.write(w)
+			return
+		}
+	}
 	caller.loginSessionID = loginSessionID
 	s.serveAsCaller(w, r, pattern, rule, caller)
+}
+
+// administratorOfSessionAgentToken decides whether a session agent token may
+// be used off the store proxies. Only an administrator's may: principal-store
+// says that person may do anything here, so the agent of a session they
+// started may reach the operator routes and every session as they could from
+// dash. Everyone else's token stays on the store proxies. It is held to the
+// peer the session was started through, as a posting token is, and never
+// answers through the public reverse proxy, so a token copied out of a
+// transcript reaches nothing from outside this host.
+func (s *Server) administratorOfSessionAgentToken(r *http.Request, pattern string, caller requestCaller, sessionID string) (requestCaller, *requestCredentialError) {
+	caller, credentialError := s.administratorOnlyIfSessionPeerIsOne(r.Context(), caller, sessionID)
+	if credentialError != nil {
+		return requestCaller{}, credentialError
+	}
+	if !caller.isAdministrator {
+		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
+			"a session agent token is accepted on %s only for a principal principal-store marks is_administrator, and %s is not one; anyone's is accepted on %s/, %s/, %s/ and %s/",
+			pattern, caller.principalID, kanbanProxyMountPrefix, kanbanStoreProxyMountPrefix, grantStoreProxyMountPrefix, mailstackProxyMountPrefix)}
+	}
+	if requestCameThroughPublicProxy(r) {
+		return requestCaller{}, &requestCredentialError{http.StatusForbidden, "session_agent_token_not_public", fmt.Sprintf(
+			"an administrator's session agent token reaches %s only from this host, never through the public proxy", pattern)}
+	}
+	return caller, nil
+}
+
+// bearerTokenOf returns the token of an "Authorization: Bearer" header, and
+// "" for any other header or none.
+func bearerTokenOf(r *http.Request) string {
+	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+	if !strings.EqualFold(scheme, "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(token)
 }
 
 // publicProxyHeaders are set by the reverse proxy in front of this server on
@@ -964,36 +1009,38 @@ func (e *requestCredentialError) write(w http.ResponseWriter) {
 }
 
 // principalOfRequest establishes which principal a request acts as, from its
-// login cookie — or, on a route that accepts one, its session agent token —
-// and returns the login session's id when the cookie was the credential. A
-// cookie-authenticated request with an unsafe method is refused here unless
-// it carries the session's CSRF token.
-func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (string, string, *requestCredentialError) {
+// login cookie or its session agent token, and returns the login session's id
+// when the cookie was the credential, or the session agent token's session
+// when the token was. A cookie-authenticated request with an unsafe method is
+// refused here unless it carries the session's CSRF token. Whether the token
+// may be used on this route is the caller's decision: anyone's on the store
+// proxies, an administrator's elsewhere.
+func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (string, string, string, *requestCredentialError) {
 	if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization {
-		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy {
-			return "", "", &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
-				"an Authorization header is accepted only on %s/, %s/, %s/ and %s/, as a session agent token; this route takes the login cookie or %s",
+		token := bearerTokenOf(r)
+		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy && !isSessionAgentToken(token) {
+			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
+				"an Authorization header is accepted on %s/, %s/, %s/ and %s/ as a session agent token, and elsewhere only as an administrator's session agent token; this route takes the login cookie or %s",
 				kanbanProxyMountPrefix, kanbanStoreProxyMountPrefix, grantStoreProxyMountPrefix, mailstackProxyMountPrefix, serviceTokenHeader)}
 		}
-		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
-		if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
-			return "", "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token",
+		if token == "" {
+			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token",
 				"the Authorization header must be \"Bearer <session agent token>\""}
 		}
-		principalID, err := s.principalOfSessionAgentToken(strings.TrimSpace(token))
+		claims, err := s.sessionAgentTokenClaimsOfLiveSession(token)
 		if err != nil {
-			return "", "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token", err.Error()}
+			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token", err.Error()}
 		}
-		return principalID, "", nil
+		return claims.PrincipalID, "", claims.SessionID, nil
 	}
 	session, refusal := s.liveLoginSessionOfRequest(r)
 	if refusal != nil {
-		return "", "", refusal
+		return "", "", "", refusal
 	}
 	if refusal := csrfRefusalOf(r, session); refusal != nil {
-		return "", "", refusal
+		return "", "", "", refusal
 	}
-	return session.PrincipalID, session.ID, nil
+	return session.PrincipalID, session.ID, "", nil
 }
 
 // postingAgentOfRequest verifies a session posting token and holds it to the
