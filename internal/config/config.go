@@ -98,6 +98,8 @@ type Config struct {
 	// every gated request whether the caller is active and an administrator.
 	// Required, via LLMBRIDGE_PRINCIPAL_STORE_URL.
 	PrincipalStoreURL string
+	// DiscoveryPrincipalID explicitly owns local imports; empty leaves them unowned.
+	DiscoveryPrincipalID string
 	// BundleStoreURL is the base URL of bundle-store, asked at session
 	// creation whether a bundle_id names a real bundle and at spawn what it
 	// resolves to. Configured via LLMBRIDGE_BUNDLE_STORE_URL.
@@ -397,6 +399,7 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		PermissionStoreURL:            settings.String("permission_store.url"),
 		GrantStoreURL:                 settings.String("grant_store.url"),
 		PrincipalStoreURL:             settings.String("principal_store.url"),
+		DiscoveryPrincipalID:          settings.String("discovery.principal_id"),
 		BundleStoreURL:                settings.String("bundle_store.url"),
 		KanbanStoreURL:                settings.String("kanban_store.url"),
 		MailstackURL:                  settings.String("mailstack.url"),

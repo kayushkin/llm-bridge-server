@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
@@ -40,8 +39,6 @@ const (
 	// Small enough that a batch's answer fits the output limit with a
 	// rationale per item.
 	classificationBatchSize = 20
-	// maximumItemCharacters is how much of an item's text the model sees.
-	maximumItemCharacters = 4000
 	// classificationMaximumOutputTokens bounds one batch's answer, thinking
 	// included.
 	classificationMaximumOutputTokens = 8000
@@ -240,11 +237,7 @@ func classificationBatchPrompt(batch []msg.ClassificationItem) string {
 	}
 	items := make([]promptItem, 0, len(batch))
 	for _, item := range batch {
-		text := item.Text
-		if utf8.RuneCountInString(text) > maximumItemCharacters {
-			text = string([]rune(text)[:maximumItemCharacters]) + " [cut]"
-		}
-		items = append(items, promptItem{ID: item.ID, Text: text})
+		items = append(items, promptItem{ID: item.ID, Text: item.Text})
 	}
 	encoded, _ := json.MarshalIndent(items, "", "  ")
 	return "Classify these items:\n" + string(encoded)

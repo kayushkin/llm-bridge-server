@@ -115,6 +115,12 @@ func (s *Server) importExternalActivity(ctx context.Context, h msg.Harness, sinc
 		if row.ControlledBy == msg.ControlledByHarness && row.ParentID != "" && s.harness.HasProcessOrCleanup(row.ParentID) {
 			continue
 		}
+		if h == msg.HarnessCodex && row.Origin == msg.OriginDiscovery {
+			if _, err := s.harness.SyncCodexHistory(ctx, row.SessionID); err != nil {
+				log.Printf("[external-activity] ERROR Codex history %s: %v", row.SessionID, err)
+			}
+			continue
+		}
 		if err := s.importExternalTurns(ctx, h, row.SessionID, ds.HarnessSessionID, watcherStarted); err != nil {
 			log.Printf("[external-activity] ERROR session %s (%s %s): %v", row.SessionID, h, ds.HarnessSessionID, err)
 		}
@@ -125,11 +131,15 @@ func (s *Server) importExternalActivity(ctx context.Context, h msg.Harness, sinc
 // recordExternalSession records a conversation started outside the bridge,
 // exactly as AutoDiscover records one it finds at startup.
 func (s *Server) recordExternalSession(ctx context.Context, ds msg.StoredSession, instanceID string) {
+	if err := s.validateDiscoveryPrincipal(ctx); err != nil {
+		log.Printf("[external-activity] ERROR discovery owner: %v", err)
+		return
+	}
 	source, folder := ds.Source, s.folderForPurpose(ds.Source)
 	if source == "" {
 		source, folder = s.discoverySourceFolder(ds.Prompt)
 	}
-	bridgeID, inserted, err := s.store.UpsertDiscoveredSession(ds.HarnessSessionID, ds.BridgeSessionID, displayNameForDiscoveredSession(ds.Prompt, ds.Project), string(ds.Harness), instanceID, source, folder, ds.CreatedAt, ds.UpdatedAt)
+	bridgeID, inserted, err := s.store.UpsertDiscoveredSessionOwnedBy(ds.HarnessSessionID, ds.BridgeSessionID, displayNameForDiscoveredSession(ds.Prompt, ds.Project), string(ds.Harness), instanceID, source, folder, ds.CreatedAt, ds.UpdatedAt, s.cfg.DiscoveryPrincipalID)
 	if err != nil {
 		log.Printf("[external-activity] ERROR record %s session %s: %v", ds.Harness, ds.HarnessSessionID, err)
 		return

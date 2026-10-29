@@ -168,6 +168,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "Set to anything, lets a go test binary use this host's live addresses. Never set on a running server."},
 
 		// Wiring.
+		{Key: "discovery.principal_id", EnvironmentVariable: "LLMBRIDGE_DISCOVERY_PRINCIPAL_ID", Kind: wiring, ValueType: text,
+			Description: "Explicit owner of local discovered sessions. Empty leaves imports unowned. Existing owners are never replaced."},
 		{Key: "listen_address", EnvironmentVariable: "LLMBRIDGE_LISTEN_ADDR", Kind: wiring, ValueType: text, Default: productiondefaults.ListenAddr,
 			Description: "The address this server listens on."},
 		{Key: "public_url", EnvironmentVariable: "LLMBRIDGE_PUBLIC_URL", Kind: wiring, ValueType: text,

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	harnessstore "github.com/kayushkin/harness-store"
+	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -733,8 +734,23 @@ func TestSessionEvents_NotFound(t *testing.T) {
 // Credentials
 // ──────────────────────────────────────────────────────────────────────────────
 
+func useEmptyCredentialStore(t *testing.T, srv *Server) {
+	t.Helper()
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/credentials" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	}))
+	t.Cleanup(auth.Close)
+	srv.authClient = authstoreclient.New(auth.URL, "", "")
+}
+
 func TestCredentialsList(t *testing.T) {
 	srv, _ := testServer(t)
+	useEmptyCredentialStore(t, srv)
 
 	resp := doJSON(t, srv, "GET", "/credentials", nil)
 	if resp.StatusCode != 200 {
@@ -1063,6 +1079,7 @@ func TestDiscoverSessions(t *testing.T) {
 
 func TestResponseContentType(t *testing.T) {
 	srv, _ := testServer(t)
+	useEmptyCredentialStore(t, srv)
 
 	for _, path := range []string{"/health", "/harnesses", "/sessions", "/credentials", "/bridge-prefs"} {
 		resp := doJSON(t, srv, "GET", path, nil)

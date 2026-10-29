@@ -20,7 +20,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	creds, err := s.authClient.List(ctx, authstoreclient.ListFilter{})
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+		writeJSONError(w, http.StatusBadGateway, "auth_store_unavailable", err.Error())
 		return
 	}
 
@@ -35,7 +35,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		Credentials []credResponse `json:"credentials"`
 	}
 
-	var result []modelWithCreds
+	result := make([]modelWithCreds, 0, len(statuses))
 	for _, ms := range statuses {
 		mc := modelWithCreds{ModelStatus: ms}
 		mc.Credentials = credsByProvider[ms.Provider]

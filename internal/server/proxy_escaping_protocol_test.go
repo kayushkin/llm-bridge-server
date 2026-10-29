@@ -223,7 +223,7 @@ func TestCleanDoesNotResolveAnEscapedDotDotIntoATraversal(t *testing.T) {
 // case that sends one through the mux and finds it normalised is vacuous — it
 // is watching the mux work, not the handler.
 //
-// Measured: net/http's ServeMux answers 307 to the cleaned path and the request
+// net/http's ServeMux redirects to the cleaned path and the request
 // is never routed. Which means the only dot segments the handler's path.Clean
 // ever saw were ones the DECODE manufactured out of an escaped %2F.., and
 // resolving those was the traversal the case above pins. Cleaning the escaped
@@ -247,9 +247,13 @@ func TestRealDotSegmentsAreNormalisedByTheMuxNotTheHandler(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusTemporaryRedirect {
-		t.Errorf("status = %d, want 307 — a literal dot segment is supposed to be "+
-			"redirected by the mux before any handler sees it", resp.StatusCode)
+	// Go releases differ in the redirect status; the standard mux owns it.
+	control := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { t.Error("unclean path reached handler") })
+	mux.ServeHTTP(control, httptest.NewRequest(http.MethodGet, "/api/skill-store/skills/./x/../y", nil))
+	if resp.StatusCode != control.Code {
+		t.Errorf("status = %d, want standard mux status %d", resp.StatusCode, control.Code)
 	}
 	if got, want := resp.Header.Get("Location"), "/api/skill-store/skills/y"; got != want {
 		t.Errorf("Location = %q, want %q", got, want)

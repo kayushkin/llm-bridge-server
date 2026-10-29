@@ -236,3 +236,25 @@ func TestClassificationStopsBeforeAModelCallWhenTheBudgetIsSpent(t *testing.T) {
 		t.Fatalf("submit under a spent budget: %v, %d calls", err, len(caller.Calls()))
 	}
 }
+
+func TestClassificationPreservesTheEntireItemText(t *testing.T) {
+	caller := &executorstest.FakeOneShot{InstanceID: "inst", DefaultModel: "claude-haiku-4-5"}
+	h := newClassifierHarness(t, caller, executorstest.FakeTaxonomies{})
+	text := "  " + strings.Repeat("界\n", 3000) + "invoice\t "
+	receipt := h.classify(t, "principal_000004", msg.ClassificationRunInput{Taxonomy: &boardTaxonomy, Items: []msg.ClassificationItem{{ID: "long-mail", Text: text}}})
+	result := decodeClassification(t, receipt)
+	if receipt.State != msg.OperationStateSucceeded || strings.Join(result.Items[0].Values["category"], ",") != "invoice" {
+		t.Fatalf("classification lost the instruction-relevant tail: %+v", result)
+	}
+	calls := caller.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d", len(calls))
+	}
+	var items []msg.ClassificationItem
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(calls[0].Prompt, "Classify these items:\n")), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Text != text {
+		t.Fatal("item text changed in transit")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	logstoreclient "github.com/kayushkin/log-store/client"
 	"log"
 	"net/http"
 	"strconv"
@@ -865,6 +866,28 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	events := s.harness.Subscribe(bridgeID)
+	// Tail local Codex history for as long as this view is connected. A separate
+	// goroutine lets the SSE consumer drain events while a backlog imports.
+	syncCtx, stopSync := context.WithCancel(r.Context())
+	defer stopSync()
+	syncErrors := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			if _, err := s.harness.SyncCodexHistory(syncCtx, bridgeID); err != nil {
+				if syncCtx.Err() == nil {
+					syncErrors <- err
+				}
+				return
+			}
+			select {
+			case <-syncCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -915,6 +938,13 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			s.harness.Unsubscribe(bridgeID, events)
+			return
+		case err := <-syncErrors:
+			log.Printf("[codex-history-sync] %s: %v", bridgeID, err)
+			data, _ := json.Marshal(map[string]string{"error": err.Error()})
+			fmt.Fprintf(w, "event: error\ndata: %s\n\n", data)
+			flusher.Flush()
 			s.harness.Unsubscribe(bridgeID, events)
 			return
 		case <-keepalive.C:
@@ -1383,6 +1413,12 @@ func mergeHarnessConfig(current json.RawMessage, req ConfigSessionRequest) (json
 }
 
 func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) {
+	s.discoveryMu.Lock()
+	defer s.discoveryMu.Unlock()
+	if err := s.validateDiscoveryPrincipal(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	harnessFilter := msg.Harness(r.URL.Query().Get("harness"))
 
 	sessions, err := s.harness.DiscoverSessions(r.Context(), harnessFilter)
@@ -1424,7 +1460,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			source, folder = s.discoverySourceFolder(ds.Prompt)
 		}
 
-		bridgeID, inserted, err := s.store.UpsertDiscoveredSession(
+		bridgeID, inserted, err := s.store.UpsertDiscoveredSessionOwnedBy(
 			ds.HarnessSessionID,
 			ds.BridgeSessionID,
 			displayName,
@@ -1434,6 +1470,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			folder,
 			ds.CreatedAt,
 			ds.UpdatedAt,
+			s.cfg.DiscoveryPrincipalID,
 		)
 		if err != nil {
 			log.Printf("[discover] failed to upsert session %s: %v", ds.HarnessSessionID, err)
@@ -1454,9 +1491,23 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 				reclassified++
 			}
 		}
-		if inserted {
-			imported++
-			// Import history to log-store for new sessions
+		// Import history for newly-inserted sessions, and for existing sessions
+		// that have no events in log-store yet (e.g. log-store was down when
+		// the session was first discovered).
+		needsImport := inserted && ds.HarnessSessionID != ""
+		if !inserted && ds.HarnessSessionID != "" {
+			held, err := logstoreclient.New(s.cfg.LogStoreURL).SessionsHoldingHarnessSessionID(ds.HarnessSessionID)
+			if err != nil {
+				log.Printf("[discover] cannot check stored history for %s: %v", ds.HarnessSessionID, err)
+				writeJSONError(w, http.StatusBadGateway, "log_store_unavailable", err.Error())
+				return
+			}
+			needsImport = len(held) == 0
+		}
+		if needsImport {
+			if inserted {
+				imported++
+			}
 			go func(h msg.Harness, brID, sid string) {
 				n, err := s.harness.ImportHistory(context.Background(), brID, h, sid)
 				if err != nil {

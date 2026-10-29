@@ -228,6 +228,12 @@ func TestSessionHubJoinsCleanlyUnderConcurrentPublish(t *testing.T) {
 				// Drain once the publisher is done; the caller waits for both.
 				go func() {
 					got := seqsOf(backlog)
+					// A late join can receive every frame in the replay backlog.
+					// No live frame remains to trigger the completion check below.
+					if len(got) == published {
+						results <- got
+						return
+					}
 					deadline := time.After(2 * time.Second)
 					for {
 						select {

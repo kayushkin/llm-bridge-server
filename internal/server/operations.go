@@ -374,7 +374,11 @@ func (s *Server) operationIsOwnedByPrincipal(operationID, principalID string) bo
 // OperationExecutors is every executor this server runs operations with,
 // wired to its own one-shot path. main hands them to the coordinator.
 func (s *Server) OperationExecutors() []operations.Executor {
-	return []operations.Executor{executors.ModelClassifier{Caller: s, Taxonomies: s}, executors.LLMCompletion{Caller: s}}
+	var boardStore executors.BoardClassificationStore
+	if s.kanbanClient != nil {
+		boardStore = s.kanbanClient
+	}
+	return []operations.Executor{executors.ModelClassifier{Caller: s, Taxonomies: s}, executors.BoardClassifier{Caller: s, Store: boardStore}, executors.LLMCompletion{Caller: s}}
 }
 
 // checkOneShotInstanceByProvider is the write check on

@@ -51,6 +51,7 @@ const autoResumeWindow = 2 * time.Hour
 const watchdogInterval = 60 * time.Second
 
 type Server struct {
+	discoveryMu   sync.Mutex
 	mux           *http.ServeMux
 	store         *store.Store
 	agentStore    *agentstore.Store
@@ -1128,109 +1129,121 @@ func resumeMessage(turn store.InterruptedTurn) (text string, replayedVerbatim bo
 }
 
 // AutoDiscover runs session discovery for all harness types and imports them to the store.
-// Called on startup to populate the session list with on-disk sessions.
+// AutoDiscover imports once; WatchExternalHarnessActivity handles later changes.
 func (s *Server) AutoDiscover() {
 	go func() {
-		ctx := context.Background()
-		sessions, err := s.harness.DiscoverSessions(ctx, "")
-		if err != nil {
+		if err := s.discoverOnce(context.Background()); err != nil {
 			log.Printf("auto-discover: %v", err)
-			return
-		}
-
-		// Build map of harness type → local instance ID.
-		// Discovery runs the harness binary locally, so sessions belong to the local instance.
-		localInstances := s.localInstancesByHarness([]msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex})
-
-		// Announce the blast radius BEFORE writing any of it.
-		//
-		// Whether a discovered session is "new" is decided by this instance's
-		// own DB, but the import it triggers writes into log-store, which this
-		// instance does not own and cannot clean up. So the guard against
-		// re-importing a transcript lives in a database log-store cannot see:
-		// point the binary at a fresh DB and every session on disk is new
-		// again, and every one of their transcripts is written into the shared
-		// event log a second time under a fresh bridge id.
-		//
-		// That happened on 2026-08-01: a canary booted against an empty
-		// /tmp DB re-imported 2,863 sessions into the production log-store in
-		// two minutes, and the throwaway DB that would have identified them
-		// was deleted minutes later. The per-session lines below arrive after
-		// the fact and 2,510 times over, and none of them names log-store —
-		// so this one line, before the loop, is the only warning an operator
-		// polling for readiness can actually catch.
-		if len(sessions) > 0 {
-			log.Printf("[auto-discover] %d sessions on disk; any not already in this instance's DB will have their transcripts imported into log-store at %s",
-				len(sessions), s.cfg.LogStoreURL)
-		}
-
-		var imported, linkedCount, reclassified, filled int
-		var pendingLinks []discoveredLink
-		for _, ds := range sessions {
-			displayName := displayNameForDiscoveredSession(ds.Prompt, ds.Project)
-
-			instanceID := localInstances[ds.Harness]
-			// Prefer the adapter's structural source tag (e.g. claudecode marks
-			// Task()-spawned subagents from the on-disk layout) over our prompt-
-			// prefix heuristic. Fall back to prefix inference only when the
-			// adapter has no structural signal.
-			source, folder := ds.Source, s.folderForPurpose(ds.Source)
-			if source == "" {
-				source, folder = s.discoverySourceFolder(ds.Prompt)
-			}
-			bridgeID, inserted, err := s.store.UpsertDiscoveredSession(ds.HarnessSessionID, ds.BridgeSessionID, displayName, string(ds.Harness), instanceID, source, folder, ds.CreatedAt, ds.UpdatedAt)
-			// Lineage is resolved after every row exists, not here: discovery
-			// has no parent-before-child ordering, so linking inline drops
-			// every subagent that happened to be walked before its parent —
-			// 497 of 1,292 on the first real run.
-			if err == nil && ds.ParentHarnessSessionID != "" {
-				pendingLinks = append(pendingLinks, discoveredLink{bridgeID: bridgeID, parentHarnessID: ds.ParentHarnessSessionID})
-			}
-			if err != nil {
-				log.Printf("[auto-discover] failed to upsert session %s: %v", ds.HarnessSessionID, err)
-				continue
-			}
-			if s.fillDiscoveredSessionMetadata("[auto-discover]", bridgeID, ds) {
-				filled++
-			}
-			if !inserted {
-				changed, err := s.reclassifyDiscoveredSession(bridgeID, ds.Source)
-				if err != nil {
-					log.Printf("[auto-discover] failed to reclassify %s as %q: %v", bridgeID, ds.Source, err)
-				} else if changed {
-					reclassified++
-				}
-			}
-			if inserted {
-				imported++
-				// Import history to log-store for new sessions
-				go func(h msg.Harness, brID, sid string) {
-					n, err := s.harness.ImportHistory(context.Background(), brID, h, sid)
-					if err != nil {
-						log.Printf("[auto-discover] failed to import history for %s: %v", sid, err)
-					} else if n > 0 {
-						log.Printf("[auto-discover] imported %d events for session %s", n, sid)
-					}
-				}(ds.Harness, bridgeID, ds.HarnessSessionID)
-			}
-		}
-		if imported > 0 {
-			log.Printf("[auto-discover] imported %d sessions", imported)
-		}
-		log.Printf("[auto-discover] reclassified %d existing discovered sessions to the purpose their adapter now reports", reclassified)
-		log.Printf("[auto-discover] filled a working folder or replaced a blank or harness-injected title on %d sessions", filled)
-		for _, l := range pendingLinks {
-			linked, err := s.store.LinkDiscoveredSessionParent(l.bridgeID, l.parentHarnessID)
-			if err != nil {
-				log.Printf("[auto-discover] failed to link %s to parent %s: %v", l.bridgeID, l.parentHarnessID, err)
-			} else if linked {
-				linkedCount++
-			}
-		}
-		if linkedCount > 0 {
-			log.Printf("[auto-discover] linked %d sessions to the parent that spawned them", linkedCount)
 		}
 	}()
+}
+
+func (s *Server) discoverOnce(ctx context.Context) error {
+	s.discoveryMu.Lock()
+	defer s.discoveryMu.Unlock()
+	if err := s.validateDiscoveryPrincipal(ctx); err != nil {
+		return err
+	}
+	sessions, err := s.harness.DiscoverSessions(ctx, "")
+	if err != nil {
+		return err
+	}
+
+	// Build map of harness type → local instance ID.
+	// Discovery runs the harness binary locally, so sessions belong to the local instance.
+	localInstances := s.localInstancesByHarness([]msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex})
+
+	// Announce the blast radius BEFORE writing any of it.
+	//
+	// Whether a discovered session is "new" is decided by this instance's
+	// own DB, but the import it triggers writes into log-store, which this
+	// instance does not own and cannot clean up. So the guard against
+	// re-importing a transcript lives in a database log-store cannot see:
+	// point the binary at a fresh DB and every session on disk is new
+	// again, and every one of their transcripts is written into the shared
+	// event log a second time under a fresh bridge id.
+	//
+	// That happened on 2026-08-01: a canary booted against an empty
+	// /tmp DB re-imported 2,863 sessions into the production log-store in
+	// two minutes, and the throwaway DB that would have identified them
+	// was deleted minutes later. The per-session lines below arrive after
+	// the fact and 2,510 times over, and none of them names log-store —
+	// so this one line, before the loop, is the only warning an operator
+	// polling for readiness can actually catch.
+	if len(sessions) > 0 {
+		log.Printf("[auto-discover] %d sessions on disk; any not already in this instance's DB will have their transcripts imported into log-store at %s",
+			len(sessions), s.cfg.LogStoreURL)
+	}
+
+	var imported, linkedCount, reclassified, filled int
+	var pendingLinks []discoveredLink
+	for _, ds := range sessions {
+		displayName := displayNameForDiscoveredSession(ds.Prompt, ds.Project)
+
+		instanceID := localInstances[ds.Harness]
+		// Prefer the adapter's structural source tag (e.g. claudecode marks
+		// Task()-spawned subagents from the on-disk layout) over our prompt-
+		// prefix heuristic. Fall back to prefix inference only when the
+		// adapter has no structural signal.
+		source, folder := ds.Source, s.folderForPurpose(ds.Source)
+		if source == "" {
+			source, folder = s.discoverySourceFolder(ds.Prompt)
+		}
+		bridgeID, inserted, err := s.store.UpsertDiscoveredSessionOwnedBy(ds.HarnessSessionID, ds.BridgeSessionID, displayName, string(ds.Harness), instanceID, source, folder, ds.CreatedAt, ds.UpdatedAt, s.cfg.DiscoveryPrincipalID)
+		// Lineage is resolved after every row exists, not here: discovery
+		// has no parent-before-child ordering, so linking inline drops
+		// every subagent that happened to be walked before its parent —
+		// 497 of 1,292 on the first real run.
+		if err == nil && ds.ParentHarnessSessionID != "" {
+			pendingLinks = append(pendingLinks, discoveredLink{bridgeID: bridgeID, parentHarnessID: ds.ParentHarnessSessionID})
+		}
+		if err != nil {
+			log.Printf("[auto-discover] failed to upsert session %s: %v", ds.HarnessSessionID, err)
+			continue
+		}
+		if s.fillDiscoveredSessionMetadata("[auto-discover]", bridgeID, ds) {
+			filled++
+		}
+		if !inserted {
+			changed, err := s.reclassifyDiscoveredSession(bridgeID, ds.Source)
+			if err != nil {
+				log.Printf("[auto-discover] failed to reclassify %s as %q: %v", bridgeID, ds.Source, err)
+			} else if changed {
+				reclassified++
+			}
+		}
+		if inserted {
+			imported++
+			// Import history to log-store for new sessions
+			func(h msg.Harness, brID, sid string) {
+				n, err := s.harness.ImportHistory(ctx, brID, h, sid)
+				if err != nil {
+					log.Printf("[auto-discover] failed to import history for %s: %v", sid, err)
+				} else if n > 0 {
+					log.Printf("[auto-discover] imported %d events for session %s", n, sid)
+				}
+			}(ds.Harness, bridgeID, ds.HarnessSessionID)
+		}
+	}
+	if imported > 0 {
+		log.Printf("[auto-discover] imported %d sessions", imported)
+	}
+	if reclassified > 0 {
+		log.Printf("[auto-discover] reclassified %d existing discovered sessions to the purpose their adapter now reports", reclassified)
+	}
+	log.Printf("[auto-discover] filled a working folder or replaced a blank or harness-injected title on %d sessions", filled)
+	for _, l := range pendingLinks {
+		linked, err := s.store.LinkDiscoveredSessionParent(l.bridgeID, l.parentHarnessID)
+		if err != nil {
+			log.Printf("[auto-discover] failed to link %s to parent %s: %v", l.bridgeID, l.parentHarnessID, err)
+		} else if linked {
+			linkedCount++
+		}
+	}
+	if linkedCount > 0 {
+		log.Printf("[auto-discover] linked %d sessions to the parent that spawned them", linkedCount)
+	}
+	return nil
 }
 
 // handleSeedBroadcast is the explicit "tell every runner to reconcile" trigger.

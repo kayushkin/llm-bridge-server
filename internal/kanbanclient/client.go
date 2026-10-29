@@ -382,9 +382,9 @@ func (c *Client) getAsPrincipal(ctx context.Context, endpoint, principalID, what
 		return nil, fmt.Errorf("kanban-store %s: %w", what, err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	body, err := readKanbanAnswer(response.Body, what)
 	if err != nil {
-		return nil, fmt.Errorf("read %s response: %w", what, err)
+		return nil, err
 	}
 	switch {
 	case response.StatusCode == http.StatusNotFound, response.StatusCode == http.StatusForbidden:
@@ -393,4 +393,23 @@ func (c *Client) getAsPrincipal(ctx context.Context, endpoint, principalID, what
 		return nil, fmt.Errorf("kanban-store %s: status %d: %s", what, response.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return body, nil
+}
+
+// maximumKanbanAnswerBytes bounds one kanban-store answer read into memory.
+// A board page or a card's history can be large, so the bound sits far above
+// any real answer; until 2026-10-29 a 1 MiB io.LimitReader cut longer answers
+// off silently, which then failed to parse or, worse, parsed short.
+const maximumKanbanAnswerBytes = 64 << 20
+
+// readKanbanAnswer reads a whole answer, or fails naming it when it is longer
+// than maximumKanbanAnswerBytes rather than returning part of it.
+func readKanbanAnswer(body io.Reader, what string) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maximumKanbanAnswerBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s response: %w", what, err)
+	}
+	if len(data) > maximumKanbanAnswerBytes {
+		return nil, fmt.Errorf("read %s response: kanban-store answered more than %d bytes", what, maximumKanbanAnswerBytes)
+	}
+	return data, nil
 }

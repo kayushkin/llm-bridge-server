@@ -71,6 +71,10 @@ type StreamResumePoint struct {
 // appears on neither the page nor the resumed stream and nothing reports it missing.
 func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, err := s.harness.SyncCodexHistory(r.Context(), id); err != nil {
+		writeJSONError(w, http.StatusBadGateway, "codex_history_sync_failed", err.Error())
+		return
+	}
 
 	// STEP 1 — before the flush. See above.
 	head, err := s.store.MaxEventRowID(id)

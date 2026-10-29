@@ -46,6 +46,7 @@ type StoredEvent struct {
 
 // Manager handles harness subprocess lifecycle.
 type Manager struct {
+	codexHistorySyncs   sync.Map // bridge session ID -> serialized history sync state
 	mu                  sync.RWMutex
 	processes           map[string]HarnessProcess     // sessionID → process
 	processStartedAt    map[string]time.Time          // sessionID → when its current process was registered (see ProcessStartedAt)

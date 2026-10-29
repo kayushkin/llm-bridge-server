@@ -2299,6 +2299,12 @@ const markLinkedSubagentsHarnessControlled = `
 // source/folderName tag the session for sidebar grouping (see config.SourceFolders).
 // Returns the canonical bridge_id (newly generated or existing) and whether a new row was inserted.
 func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displayName, harness, instanceID, source, folderName string, createdAt, updatedAt time.Time) (string, bool, error) {
+	return s.UpsertDiscoveredSessionOwnedBy(harnessSessionID, bridgeSessionID, displayName, harness, instanceID, source, folderName, createdAt, updatedAt, "")
+}
+
+// UpsertDiscoveredSessionOwnedBy assigns the explicitly configured owner only
+// to new or previously unowned imports, and includes it in the first SSE frame.
+func (s *Store) UpsertDiscoveredSessionOwnedBy(harnessSessionID, bridgeSessionID, displayName, harness, instanceID, source, folderName string, createdAt, updatedAt time.Time, principalID string) (string, bool, error) {
 	if strings.HasPrefix(harnessSessionID, "br_") {
 		return "", false, fmt.Errorf("UpsertDiscoveredSession: harness_session_id %q has bridge_id prefix — harness bridge is emitting a bridge_session_id in the harness slot (contract violation)", harnessSessionID)
 	}
@@ -2318,9 +2324,9 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 	}
 
 	// Check if session already exists by harness_session_id
-	var existingBridgeID, existingInstanceID, existingDisplayName, existingSource, existingFolder string
+	var existingBridgeID, existingInstanceID, existingDisplayName, existingSource, existingFolder, existingPrincipalID string
 	var existingUpdatedAt time.Time
-	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(purpose, ''), COALESCE(folder_name, ''), updated_at FROM sessions WHERE harness_session_id=?`, harnessSessionID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder, &existingUpdatedAt)
+	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(purpose, ''), COALESCE(folder_name, ''), updated_at, COALESCE(principal_id, '') FROM sessions WHERE harness_session_id=?`, harnessSessionID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder, &existingUpdatedAt, &existingPrincipalID)
 	if err == nil {
 		// Already exists - update timestamp, display_name, instance_id, source,
 		// and folder where the existing values are empty. Existing non-empty
@@ -2341,15 +2347,19 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 		if existingFolder == "" && folderName != "" {
 			newFolder = folderName
 		}
+		newPrincipalID := existingPrincipalID
+		if newPrincipalID == "" {
+			newPrincipalID = principalID
+		}
 		// Nothing to write, nothing to announce. The startup discovery pass
 		// brings every session on disk through here; until 2026-09-17 each one
 		// was an UPDATE and an upsert frame to every open /session-events
 		// stream whether or not anything differed — tens of thousands of
 		// frames per restart, over rows that had not changed in days.
-		if updatedAt.Equal(existingUpdatedAt) && newInstanceID == existingInstanceID && newDisplayName == existingDisplayName && newSource == existingSource && newFolder == existingFolder {
+		if updatedAt.Equal(existingUpdatedAt) && newInstanceID == existingInstanceID && newDisplayName == existingDisplayName && newSource == existingSource && newFolder == existingFolder && newPrincipalID == existingPrincipalID {
 			return existingBridgeID, false, nil
 		}
-		if _, err := s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=?, purpose=?, folder_name=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, newSource, newFolder, existingBridgeID); err != nil {
+		if _, err := s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=?, purpose=?, folder_name=?, principal_id=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, newSource, newFolder, newPrincipalID, existingBridgeID); err != nil {
 			return "", false, fmt.Errorf("UpsertDiscoveredSession: update %s: %w", existingBridgeID, err)
 		}
 		s.notifyChanged(existingBridgeID)
@@ -2417,8 +2427,8 @@ func (s *Store) UpsertDiscoveredSession(harnessSessionID, bridgeSessionID, displ
 	}
 
 	_, err = s.db.Exec(
-		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, parent_id, purpose, type, origin, folder_name, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		bridgeID, bridgeID, harnessSessionID, displayName, harness, instanceID, "idle", 0, "", "", source, string(sessionType), origin, folderName, createdAt, updatedAt,
+		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, parent_id, purpose, type, origin, folder_name, created_at, updated_at, principal_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		bridgeID, bridgeID, harnessSessionID, displayName, harness, instanceID, "idle", 0, "", "", source, string(sessionType), origin, folderName, createdAt, updatedAt, principalID,
 	)
 	if err != nil {
 		return "", false, err
