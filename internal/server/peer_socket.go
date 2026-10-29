@@ -114,6 +114,39 @@ func peerSocketConnectionOfRequest(r *http.Request) (string, bool) {
 // open now.
 var errPeerNotConnected = errors.New("the other server is not connected: its socket is not open")
 
+// Probing whether the other server's bridge answers. The WebSocket ping only
+// shows the socket is open: on 2026-10-29 a server answered every ping while
+// each request sent to it hung, and its connection still read as connected.
+// So each side also sends a real request over each socket it holds, through
+// the same path proxied calls take, and a server that stops answering it is
+// treated as not answering until it answers again. Vars so tests can shorten
+// them.
+var (
+	peerSocketProbeInterval                  = 60 * time.Second
+	peerSocketProbeIntervalWhileNotAnswering = 15 * time.Second
+	peerSocketProbeTimeout                   = 15 * time.Second
+	// peerSocketProbePath is a cheap connection call every version with
+	// sockets serves.
+	peerSocketProbePath = peerServerNamePath
+)
+
+// errPeerNotAnswering is a call over a socket whose other end stopped
+// answering its probes: the call fails at once instead of waiting.
+// peerSocketBusyHeader marks the answer a server gives when it already runs
+// as many of this socket's requests as it will. That answer comes at once,
+// but the bridge is serving nothing new, so it does not count as answering.
+const peerSocketBusyHeader = "X-Llm-Bridge-Peer-Socket-Busy"
+
+type errPeerNotAnswering struct {
+	since   time.Time
+	failure string
+}
+
+func (err *errPeerNotAnswering) Error() string {
+	return fmt.Sprintf("the other server's socket is open but its bridge has not answered since %s (%s); calls are refused until it answers a probe again",
+		err.since.UTC().Format(time.RFC3339), err.failure)
+}
+
 // peerSocket is one open socket and the streams on it.
 type peerSocket struct {
 	server       *Server
@@ -126,6 +159,14 @@ type peerSocket struct {
 	serving      map[uint64]context.CancelFunc
 	closed       chan struct{}
 	closeOnce    sync.Once
+
+	// Whether the other server's bridge answers, from the probes and from
+	// every answer that arrives (healthMutex guards these).
+	healthMutex       sync.Mutex
+	answering         bool
+	lastAnsweredAt    time.Time
+	notAnsweringSince time.Time
+	lastProbeFailure  string
 }
 
 // peerSocketCall is a request this side sent, waiting for its answer.
@@ -139,7 +180,8 @@ type peerSocketCall struct {
 // accepting side even.
 func newPeerSocket(server *Server, connectionID string, connection *websocket.Conn, dialing bool) *peerSocket {
 	socket := &peerSocket{server: server, connectionID: connectionID, connection: connection,
-		calls: map[uint64]*peerSocketCall{}, serving: map[uint64]context.CancelFunc{}, closed: make(chan struct{})}
+		calls: map[uint64]*peerSocketCall{}, serving: map[uint64]context.CancelFunc{}, closed: make(chan struct{}),
+		answering: true, lastAnsweredAt: time.Now()}
 	if dialing {
 		socket.nextStream.Store(1)
 	} else {
@@ -202,6 +244,7 @@ func (socket *peerSocket) run() error {
 			}
 		}
 	}()
+	go socket.probeUntilClosed()
 	defer socket.close()
 	for {
 		_, data, err := socket.connection.ReadMessage()
@@ -298,6 +341,9 @@ func (socket *peerSocket) roundTrip(ctx context.Context, method, path string, he
 	}
 	select {
 	case head := <-call.head:
+		if head.Header.Get(peerSocketBusyHeader) == "" {
+			socket.noteAnswered()
+		}
 		reader := &peerSocketBodyReader{socket: socket, stream: stream, frames: call.frames, ctx: ctx}
 		return &http.Response{StatusCode: head.Status, Status: fmt.Sprintf("%d %s", head.Status, http.StatusText(head.Status)), Header: head.Header, Body: reader}, nil
 	case <-ctx.Done():
@@ -307,6 +353,89 @@ func (socket *peerSocket) roundTrip(ctx context.Context, method, path string, he
 	case <-socket.closed:
 		return nil, errPeerNotConnected
 	}
+}
+
+// probeUntilClosed sends one probe at a time until the socket closes: every
+// peerSocketProbeInterval while the other server answers, and more often
+// while it does not, so its recovery is noticed soon.
+func (socket *peerSocket) probeUntilClosed() {
+	for {
+		wait := peerSocketProbeInterval
+		if socket.notAnswering() != nil {
+			wait = peerSocketProbeIntervalWhileNotAnswering
+		}
+		select {
+		case <-socket.closed:
+			return
+		case <-time.After(wait):
+		}
+		socket.probe()
+	}
+}
+
+// probe sends GET peerSocketProbePath over the socket. Any answer, whatever
+// its status, shows the bridge behind the socket serves requests, except the
+// refusal of a server already running all it will of this socket's requests.
+func (socket *peerSocket) probe() {
+	ctx, cancel := context.WithTimeout(context.Background(), peerSocketProbeTimeout)
+	defer cancel()
+	header := http.Header{}
+	socket.server.stampThisServersIdentity(header)
+	response, err := socket.roundTrip(ctx, http.MethodGet, peerSocketProbePath, header, nil)
+	if err != nil {
+		if errors.Is(err, errPeerNotConnected) {
+			return
+		}
+		socket.noteNotAnswering(err)
+		return
+	}
+	response.Body.Close()
+	if response.Header.Get(peerSocketBusyHeader) != "" {
+		socket.noteNotAnswering(fmt.Errorf("it refuses new requests: it already runs %d of this socket's", peerSocketMostRequestsServedAtOnce))
+	}
+}
+
+// noteAnswered records that an answer arrived over the socket.
+func (socket *peerSocket) noteAnswered() {
+	socket.healthMutex.Lock()
+	defer socket.healthMutex.Unlock()
+	if !socket.answering {
+		log.Printf("[peer-socket] %s: the other server answers again, after not answering since %s", socket.connectionID, socket.notAnsweringSince.UTC().Format(time.RFC3339))
+	}
+	socket.answering = true
+	socket.lastAnsweredAt = time.Now()
+	socket.notAnsweringSince = time.Time{}
+	socket.lastProbeFailure = ""
+}
+
+// noteNotAnswering records a failed probe.
+func (socket *peerSocket) noteNotAnswering(err error) {
+	socket.healthMutex.Lock()
+	defer socket.healthMutex.Unlock()
+	if socket.answering {
+		socket.answering = false
+		socket.notAnsweringSince = time.Now()
+		log.Printf("[peer-socket] %s: the other server's socket is open but it stopped answering: %v", socket.connectionID, err)
+	}
+	socket.lastProbeFailure = err.Error()
+}
+
+// notAnswering is the error a call gets while the other server is not
+// answering, nil while it is.
+func (socket *peerSocket) notAnswering() error {
+	socket.healthMutex.Lock()
+	defer socket.healthMutex.Unlock()
+	if socket.answering {
+		return nil
+	}
+	return &errPeerNotAnswering{since: socket.notAnsweringSince, failure: socket.lastProbeFailure}
+}
+
+// health is the socket's answering state for a connection's view.
+func (socket *peerSocket) health() (answering bool, lastAnsweredAt, notAnsweringSince time.Time, lastProbeFailure string) {
+	socket.healthMutex.Lock()
+	defer socket.healthMutex.Unlock()
+	return socket.answering, socket.lastAnsweredAt, socket.notAnsweringSince, socket.lastProbeFailure
 }
 
 // peerSocketBodyReader reads one answer's body frames.
@@ -397,7 +526,7 @@ func (socket *peerSocket) serveRequest(frame peerSocketFrame) {
 	if refusal != "" {
 		cancel()
 		log.Printf("[peer-socket] %s: refused stream %d: %s", socket.connectionID, frame.Stream, refusal)
-		writer := &peerSocketResponseWriter{socket: socket, stream: frame.Stream, header: http.Header{}}
+		writer := &peerSocketResponseWriter{socket: socket, stream: frame.Stream, header: http.Header{peerSocketBusyHeader: {"true"}}}
 		writeJSONError(writer, http.StatusServiceUnavailable, "peer_socket_busy", refusal)
 		writer.finish()
 		return

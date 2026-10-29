@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -913,5 +914,80 @@ func TestAPeerStartedSessionsAgentIsNoAdministratorThroughAPeerThatIsNot(t *test
 	throughPeer := instancesAsAgentOf("br_started_through_peer")
 	if len(throughPeer) != 1 || throughPeer[0].ID != "inst_second" {
 		t.Fatalf("the agent of a session started through a non-administrator peer sees %+v, want only inst_second", throughPeer)
+	}
+}
+
+// TestAServerWhoseBridgeStopsAnsweringIsNotAnswering is the 2026-10-29 case:
+// the socket stays open and its pings are answered, but every request sent
+// to the other server hangs. The probe marks the connection not answering,
+// a proxied call then fails at once with 503 peer_not_answering, and the
+// first probe answered after that clears it.
+func TestAServerWhoseBridgeStopsAnsweringIsNotAnswering(t *testing.T) {
+	savedInterval, savedWhileNot, savedTimeout, savedPath := peerSocketProbeInterval, peerSocketProbeIntervalWhileNotAnswering, peerSocketProbeTimeout, peerSocketProbePath
+	peerSocketProbeInterval, peerSocketProbeIntervalWhileNotAnswering, peerSocketProbeTimeout = 150*time.Millisecond, 100*time.Millisecond, 300*time.Millisecond
+	const probePattern = "GET /a-probe-that-can-hang"
+	peerSocketProbePath = "/a-probe-that-can-hang"
+	t.Cleanup(func() {
+		peerSocketProbeInterval, peerSocketProbeIntervalWhileNotAnswering, peerSocketProbeTimeout, peerSocketProbePath = savedInterval, savedWhileNot, savedTimeout, savedPath
+	})
+	routeAccessRules[probePattern] = peerConnectionCallRoute("a test probe, answered as a connection call like the real one")
+	t.Cleanup(func() { delete(routeAccessRules, probePattern) })
+
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}), http.StatusCreated, "grant")
+	var hang atomic.Bool
+	hangingHandler := func(w http.ResponseWriter, r *http.Request) {
+		for hang.Load() {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+	accepting.server.mux.HandleFunc(probePattern, hangingHandler)
+	initiating.server.mux.HandleFunc(probePattern, hangingHandler)
+
+	answeringOf := func() msg.PeerConnectionView {
+		return decodeAnswer[msg.PeerConnectionView](t, initiating.requestAsAdministrator(t, "GET", "/peer-connections/"+initiatingID, nil), http.StatusOK, "connection")
+	}
+	waitFor := func(want bool) msg.PeerConnectionView {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			view := answeringOf()
+			if view.Answering != nil && *view.Answering == want {
+				return view
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("answering never became %v: %+v", want, view)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if view := waitFor(true); !view.SocketConnected || view.LastAnsweredAt == nil {
+		t.Fatalf("a fresh connection = %+v, want connected and answering with a time", view)
+	}
+
+	hang.Store(true)
+	view := waitFor(false)
+	if !view.SocketConnected || view.NotAnsweringSince == nil || view.LastProbeFailure == "" {
+		t.Fatalf("a hung bridge = %+v, want the socket still connected, a since time and a failure", view)
+	}
+	started := time.Now()
+	proxied := initiating.requestAsAdministrator(t, "GET", "/peer-connections/"+initiatingID+"/proxy/server", nil)
+	if proxied.Code != http.StatusServiceUnavailable || !strings.Contains(proxied.Body.String(), "peer_not_answering") {
+		t.Fatalf("a proxied call to a hung bridge = %d %s, want 503 peer_not_answering", proxied.Code, proxied.Body.String())
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("the refusal took %s, want it at once", elapsed)
+	}
+
+	hang.Store(false)
+	if view := waitFor(true); view.NotAnsweringSince != nil || view.LastProbeFailure != "" {
+		t.Fatalf("after recovery = %+v, want the since time and failure cleared", view)
+	}
+	if proxied := initiating.requestAsAdministrator(t, "GET", "/peer-connections/"+initiatingID+"/proxy/server", nil); proxied.Code == http.StatusServiceUnavailable {
+		t.Fatalf("a proxied call after recovery = %d %s", proxied.Code, proxied.Body.String())
 	}
 }

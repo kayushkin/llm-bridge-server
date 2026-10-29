@@ -454,9 +454,19 @@ func peerConnectionInviteError(err error) *requestCredentialError {
 
 // peerConnectionView is a connection with what is true of it now.
 func (s *Server) peerConnectionView(connection store.PeerConnection) msg.PeerConnectionView {
-	view := msg.PeerConnectionView{Connection: connection.PeerConnection, SocketConnected: s.peerSockets.socketOf(connection.ID) != nil,
+	socket := s.peerSockets.socketOf(connection.ID)
+	view := msg.PeerConnectionView{Connection: connection.PeerConnection, SocketConnected: socket != nil,
 		OtherServerName: connection.OtherServerName, OtherServerNameReportedAt: connection.OtherServerNameReportedAt,
 		OtherServerID: connection.OtherServerID}
+	if socket != nil {
+		answering, lastAnsweredAt, notAnsweringSince, lastProbeFailure := socket.health()
+		view.Answering = &answering
+		view.LastAnsweredAt = &lastAnsweredAt
+		if !answering {
+			view.NotAnsweringSince = &notAnsweringSince
+			view.LastProbeFailure = lastProbeFailure
+		}
+	}
 	if grant, err := s.store.LivePeerGrantOfConnection(connection.ID); err == nil {
 		view.AccessGiven = &grant.PeerGrant
 	} else if !errors.Is(err, store.ErrPeerGrantNotFound) {
@@ -1101,6 +1111,8 @@ func writePeerCallError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "peer_access_not_held", err.Error())
 	case errors.Is(err, errPeerNotConnected):
 		writeJSONError(w, http.StatusServiceUnavailable, "peer_not_connected", err.Error())
+	case errors.As(err, new(*errPeerNotAnswering)):
+		writeJSONError(w, http.StatusServiceUnavailable, "peer_not_answering", err.Error())
 	default:
 		writeJSONError(w, http.StatusBadGateway, "peer_unreachable", err.Error())
 	}
@@ -1133,6 +1145,9 @@ func (s *Server) sendOverPeerConnection(ctx context.Context, client *http.Client
 		socket := s.peerSockets.socketOf(connection.ID)
 		if socket == nil {
 			return nil, errPeerNotConnected
+		}
+		if err := socket.notAnswering(); err != nil {
+			return nil, err
 		}
 		response, err := socket.roundTrip(ctx, method, path, header, body)
 		if err == nil {
