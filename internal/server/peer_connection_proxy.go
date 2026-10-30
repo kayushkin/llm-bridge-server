@@ -20,8 +20,12 @@ package server
 // when no one has mapped it. An administrator here — or the service token
 // alone — sends no user and acts as this whole server's peer principal:
 // an administrator already holds everything this server holds, and naming
-// them would only narrow what the link was granted to do. A connected server
-// may not go on through the proxy to a third one.
+// them would only narrow what the link was granted to do. The one exception
+// is starting a session (proxiedRequestStartsASession): an administrator is
+// named there too, so the session runs on the other server as the principal
+// they are mapped to and its agent gets that principal's token; unnamed, it
+// ran with no principal and its agent could reach nothing there. A connected
+// server may not go on through the proxy to a third one.
 //
 // Only the headers in requestHeadersForwardedToPeers cross. Everything else a
 // browser or dash sent — the login cookie, its CSRF token, the service token,
@@ -78,6 +82,12 @@ func peerConnectionProxyMountPrefix(connectionID string) string {
 	return "/peer-connections/" + connectionID + "/proxy"
 }
 
+// proxiedRequestStartsASession reports whether a proxied request, by its path
+// on the other server, creates a session there.
+func proxiedRequestStartsASession(method, path string) bool {
+	return method == http.MethodPost && path == "/sessions"
+}
+
 // handlePeerConnectionProxy: /peer-connections/{id}/proxy/{rest...}, any
 // method.
 func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +96,7 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	path := escapedPathAfterPrefix(r.URL, peerConnectionProxyMountPrefix(connection.ID))
+	startsASession := proxiedRequestStartsASession(r.Method, path)
 	if r.URL.RawQuery != "" {
 		path += "?" + r.URL.RawQuery
 	}
@@ -104,7 +115,7 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 			writeJSONError(w, http.StatusForbidden, "route_not_for_peers", "a connected server may not go on through this server to another")
 			return
 		}
-		if caller.principalID != "" && !caller.isAdministrator {
+		if caller.principalID != "" && (!caller.isAdministrator || startsASession) {
 			header.Set(peerUserHeader, caller.principalID)
 		}
 	}

@@ -282,6 +282,18 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 		req.PrincipalID = callerPrincipalID
 	}
+	// A connected server's user starts sessions as the principal they are
+	// mapped to here, administrator or not, so the session's agent holds that
+	// principal's token. An administrator is otherwise left to name a principal
+	// or none, and the connected server cannot name one of this server's ids.
+	if caller, ok := callerOfRequest(r); ok && caller.peer.actsForRemoteUser() {
+		if req.PrincipalID != "" && req.PrincipalID != caller.principalID {
+			writeJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
+				"principal_id %q is not %s, the principal this connected server's user is mapped to; omit principal_id", req.PrincipalID, caller.principalID))
+			return
+		}
+		req.PrincipalID = caller.principalID
+	}
 
 	// Whose grants decide where and as whom the session may run, and the peer
 	// origin the new session keeps: a connected server acting for one of its

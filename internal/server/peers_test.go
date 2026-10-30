@@ -991,3 +991,52 @@ func TestAServerWhoseBridgeStopsAnsweringIsNotAnswering(t *testing.T) {
 		t.Fatalf("a proxied call after recovery = %d %s", proxied.Code, proxied.Body.String())
 	}
 }
+
+// TestAnAdministratorsSessionOnAConnectedServerRunsAsTheirMappedPrincipal: an
+// administrator here is named to the other server when starting a session
+// there, though on no other request, so the session runs as the principal they
+// are mapped to and not with none. Unmapped, the start is refused.
+func TestAnAdministratorsSessionOnAConnectedServerRunsAsTheirMappedPrincipal(t *testing.T) {
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	grant := decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}),
+		http.StatusCreated, "grant administrator")
+	const localOperator = "principal_000610"
+	accepting.directory.addPrincipal(localOperator, "human", true)
+	instances := decodeAnswer[[]msg.Instance](t, accepting.requestAsAdministrator(t, "GET", "/instances", nil), http.StatusOK, "instances")
+	if len(instances) == 0 {
+		t.Fatal("the accepting test server has no instance")
+	}
+	proxy := "/peer-connections/" + initiatingID + "/proxy"
+	start := func() *httptest.ResponseRecorder {
+		return initiating.requestAsAdministrator(t, "POST", proxy+"/sessions", map[string]any{
+			"type": "interactive", "purpose": "chat", "origin": "test", "harness": instances[0].HarnessType, "instance_id": instances[0].ID,
+		})
+	}
+
+	if answer := initiating.requestAsAdministrator(t, "GET", proxy+"/instances", nil); answer.Code != http.StatusOK {
+		t.Fatalf("an administrator reading instances, unmapped = %d %s, want 200: only a session start names them", answer.Code, answer.Body)
+	}
+	if answer := start(); answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), "peer_user_not_mapped") ||
+		!strings.Contains(answer.Body.String(), administratorTestPrincipalID) {
+		t.Fatalf("an unmapped administrator starting a session = %d %s, want 403 peer_user_not_mapped naming them", answer.Code, answer.Body)
+	}
+
+	decodeAnswer[msg.PeerUserMapping](t, accepting.requestAsAdministrator(t, "POST", "/peer-user-mappings", map[string]any{
+		"peer_principal_id": grant.PeerPrincipalID, "remote_principal_id": administratorTestPrincipalID, "local_principal_id": localOperator,
+	}), http.StatusCreated, "map the administrator")
+	created := decodeAnswer[msg.ManagedSession](t, start(), http.StatusCreated, "start a session as the mapped administrator")
+	stored, err := accepting.server.store.GetSession(created.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PrincipalID != localOperator {
+		t.Fatalf("the session runs as %q, want %s, the principal the administrator is mapped to", stored.PrincipalID, localOperator)
+	}
+
+	if answer := initiating.requestAsAdministrator(t, "POST", proxy+"/sessions", map[string]any{
+		"type": "interactive", "purpose": "chat", "origin": "test", "harness": instances[0].HarnessType, "instance_id": instances[0].ID,
+		"principal_id": "principal_000999",
+	}); answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), "principal_mismatch") {
+		t.Fatalf("naming another principal = %d %s, want 403 principal_mismatch", answer.Code, answer.Body)
+	}
+}

@@ -128,8 +128,8 @@ const (
 	// routePrincipalActsThroughPeerConnection is the connection proxy: any
 	// principal of this server may call a connected one through it, named
 	// there as itself (peerUserHeader) unless it is an administrator, who
-	// acts as this whole server. A peer may not go on through it to a third
-	// server.
+	// acts as this whole server everywhere but in starting a session. A peer
+	// may not go on through it to a third server.
 	routePrincipalActsThroughPeerConnection
 )
 
