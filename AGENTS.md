@@ -2,7 +2,7 @@
 
 ## What it owns
 
-`127.0.0.1:8328`. **How people sign in** to dash, kayushkin.com and watch.kayushkin.com, and the **sessions** that result: one-time sign-in links (`sign_in_link_000001`) and sessions (`session_000001`), each kept only as a SHA-256 of its secret. It does not own who anybody is: principal-store does, and every session check asks it whether the principal still exists, is enabled, is a person and is an administrator. It replaces three separate logins — dash's shared `DASH_TOKEN`, kayushkin.com's film-viewer links, and llm-bridge-server's demo login — in the steps of design note `f3d492d9-a6b0-4ea1-bd8a-46f28ee3542b`. `CONTRACT.md` is the route table.
+`127.0.0.1:8328`. **How people sign in** to dash, kayushkin.com and watch.kayushkin.com, and the **sessions** that result: one-time sign-in links (`sign_in_link_000001`) and sessions (`session_000001`), each kept only as a SHA-256 of its secret. It does not own who anybody is: principal-store does, and every session check asks it whether the principal still exists, is enabled, is a person and is an administrator. It replaces three separate logins — dash's shared `DASH_TOKEN`, kayushkin.com's library-member links, and llm-bridge-server's demo login — in the steps of design note `f3d492d9-a6b0-4ea1-bd8a-46f28ee3542b`. `CONTRACT.md` is the route table.
 
 ## Where this prompt lives
 
@@ -20,7 +20,7 @@ A link signs one person in once, within 7 days. The operator makes one through `
 
 ## What comes next
 
-Steps 1 to 3 are live: this service; kayushkin.com's `/signin` page, its stream check (which Caddy on watch.kayushkin.com asks) and downloadstack's film-viewer check reading `sign_in_session`, with kayushkin.com's older `viewer_session` still believed until it expires; and dash, which takes `sign_in_session` beside `DASH_TOKEN`, acts as each person's own principal, and lets only administrators in. nginx on kayushkin.com passes exactly the four browser routes under `/api/sign-in/`. Sign in with Discord is built (above). Still to do, in order: Entra moved over from llm-bridge-server; passwords; passkeys; demo login off.
+Steps 1 to 3 are live: this service; kayushkin.com's `/signin` page, its stream check (which Caddy on watch.kayushkin.com asks) and downloadstack's library-member check reading `sign_in_session`, with kayushkin.com's older `viewer_session` still believed until it expires; and dash, which takes `sign_in_session` beside `DASH_TOKEN`, acts as each person's own principal, and lets only administrators in. nginx on kayushkin.com passes exactly the four browser routes under `/api/sign-in/`. Sign in with Discord is built (above). Still to do, in order: Entra moved over from llm-bridge-server; passwords; passkeys; demo login off.
 
 # Access and operations
 

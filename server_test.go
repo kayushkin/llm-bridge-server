@@ -39,7 +39,7 @@ func newFakeWorld(t *testing.T) *fakeWorld {
 	world := &fakeWorld{principals: map[string]map[string]any{
 		testAdministrator: {"id": testAdministrator, "kind": "human", "display_name": "Operator", "disabled_at": 0, "is_administrator": true, "groups": []any{}},
 		testPerson:        {"id": testPerson, "kind": "human", "display_name": "Viewer", "disabled_at": 0, "is_administrator": false, "groups": []any{map[string]any{"id": "principal_000130"}}},
-		testGroup:         {"id": testGroup, "kind": "group", "display_name": "Film viewers", "disabled_at": 0, "is_administrator": false, "members": []any{}},
+		testGroup:         {"id": testGroup, "kind": "group", "display_name": "Library members", "disabled_at": 0, "is_administrator": false, "members": []any{}},
 	}}
 	world.discordBindings, world.linkedBy = map[string]string{}, map[string]string{}
 	mux := http.NewServeMux()
