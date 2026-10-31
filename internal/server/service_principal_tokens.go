@@ -36,6 +36,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // servicePrincipalTokenPrefix starts every service principal token, so a
@@ -319,4 +320,15 @@ func (s *Server) handleRecordSessionStarter(w http.ResponseWriter, r *http.Reque
 	}
 	log.Printf("[service-principal-token] %s recorded %s as the starter of session %s (runs as %s)", administratorID, request.PrincipalID, session.SessionID, session.PrincipalID)
 	writeJSON(w, recorded)
+}
+
+// handleSelf: GET /self. Who the request acts as, so a service learns its own
+// principal id from its token rather than from a setting beside it.
+func (s *Server) handleSelf(w http.ResponseWriter, r *http.Request) {
+	caller, ok := callerOfRequest(r)
+	if !ok || caller.principalID == "" {
+		writeJSON(w, msg.CallerSelf{InternalService: true})
+		return
+	}
+	writeJSON(w, msg.CallerSelf{PrincipalID: caller.principalID, IsAdministrator: caller.isAdministrator})
 }

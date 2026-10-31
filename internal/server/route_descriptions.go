@@ -199,6 +199,7 @@ var routeDescriptions = map[string]routeDescription{
 	"POST /peer-connection-invites":                               {routeGroupPeers, "Make a one-time passphrase another server enters to connect to this one; connecting gives no access"},
 	"POST /service-principal-tokens":                              {routeGroupLogin, "Issue a token for a service principal (principal-store kind `service`); the token is answered once and kept as its SHA-256"},
 	"GET /service-principal-tokens":                               {routeGroupLogin, "Every service principal token's record, revoked or not; never a token"},
+	"GET /self":                                                   {routeGroupLogin, "Who the request acts as: its principal and whether it is an administrator, or the internal service"},
 	"POST /service-principal-tokens/{id}/revoke":                  {routeGroupLogin, "Stop a service principal token working, with a reason"},
 	"GET /peer-connection-invites":                                {routeGroupPeers, "Every connection passphrase, redeemed or not; never a passphrase"},
 	"POST /peer-connections":                                      {routeGroupPeers, "Connect to another server by its address and passphrase, directly or by dialing out"},

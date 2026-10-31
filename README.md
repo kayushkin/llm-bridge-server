@@ -387,6 +387,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `*` | `/kanban-store/` | kanban-store at its root (`/api/…`, `/settings`), as the caller | principal or session agent |
 | `*` | `/kanban/` | kanban-store `/api/…`, as the caller | principal or session agent |
 | `*` | `/mailstack/` | mailstack `/…`, as the caller, checked against their mail grants and tickets | principal or session agent |
+| `GET` | `/self` | Who the request acts as: its principal and whether it is an administrator, or the internal service | principal |
 | `GET` | `/service-principal-tokens` | Every service principal token's record, revoked or not; never a token | operator |
 | `POST` | `/service-principal-tokens` | Issue a token for a service principal (principal-store kind `service`); the token is answered once and kept as its SHA-256 | operator |
 | `POST` | `/service-principal-tokens/{id}/revoke` | Stop a service principal token working, with a reason | operator |

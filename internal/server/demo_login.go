@@ -68,6 +68,7 @@ func (s *Server) registerLoginAndStoreProxyRoutes() {
 	s.mux.HandleFunc("GET /auth/login-attempts", s.handleListLoginAttempts)
 	s.mux.HandleFunc("POST /service-principal-tokens", s.handleIssueServicePrincipalToken)
 	s.mux.HandleFunc("GET /service-principal-tokens", s.handleListServicePrincipalTokens)
+	s.mux.HandleFunc("GET /self", s.handleSelf)
 	s.mux.HandleFunc("POST /service-principal-tokens/{id}/revoke", s.handleRevokeServicePrincipalToken)
 	s.mux.HandleFunc("PUT /sessions/{id}/starter", s.handleRecordSessionStarter)
 	s.mux.HandleFunc("GET /admin/identity-bindings", s.handleListIdentityBindings)

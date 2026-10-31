@@ -381,6 +381,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	"PUT /sessions/{id}/starter":                          operatorRoute("records which service started a session as another principal, letting it drive the session"),
 	"POST /service-principal-tokens":                      operatorRoute("issues a token a service principal calls this server with"),
 	"GET /service-principal-tokens":                       operatorRoute("every service principal token's record; never a token"),
+	"GET /self":                                           catalogRoute("tells any caller who it acts as"),
 	"POST /service-principal-tokens/{id}/revoke":          operatorRoute("stops a service principal token working"),
 	"PUT /sessions/{id}/permission-mode":                  operatorRoute("can switch a session to bypass, skipping permission-store"),
 	"PUT /sessions/{id}/bypass-permissions":               operatorRoute("can switch a session to bypass, skipping permission-store"),

@@ -242,3 +242,24 @@ func TestAServiceCallsThroughOnlyTheConnectionsItIsGranted(t *testing.T) {
 		t.Fatalf("a person with no grant lists %+v, want none", listed)
 	}
 }
+
+// GET /self tells a service which principal its token acts as, so the id is
+// never configured beside the token.
+func TestSelfNamesThePrincipalATokenActsAs(t *testing.T) {
+	server := newServicePrincipalTestServer(t)
+	issued := issueServicePrincipalToken(t, server)
+	self := decodeAnswer[msg.CallerSelf](t, requestWithServicePrincipalToken(t, server, issued.Token, "GET", "/self", nil), http.StatusOK, "self as the service")
+	if self.PrincipalID != testServicePrincipalID || self.IsAdministrator || self.InternalService {
+		t.Fatalf("self = %+v", self)
+	}
+	administrator := decodeAnswer[msg.CallerSelf](t, server.requestAsAdministrator(t, "GET", "/self", nil), http.StatusOK, "self as an administrator")
+	if administrator.PrincipalID != administratorTestPrincipalID || !administrator.IsAdministrator {
+		t.Fatalf("administrator self = %+v", administrator)
+	}
+	bare := httptest.NewRequest("GET", "/self", nil)
+	bare.Header.Set(serviceTokenHeader, testServiceToken)
+	if internal := decodeAnswer[msg.CallerSelf](t, serve(server.server, bare), http.StatusOK, "self as the service token"); !internal.InternalService || internal.PrincipalID != "" {
+		t.Fatalf("internal self = %+v", internal)
+	}
+	expectRefusal(t, serve(server.server, httptest.NewRequest("GET", "/self", nil)), http.StatusUnauthorized, "", "self with no credential")
+}
