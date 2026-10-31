@@ -487,11 +487,31 @@ func (s *Server) handleListPeerConnections(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
+	callThrough, narrowed, err := s.callThroughGrantsOfRequest(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+		return
+	}
 	views := make([]msg.PeerConnectionView, 0, len(connections))
 	for _, connection := range connections {
+		if narrowed && !callThrough.requiresAGrantAndNames(connection.ID) {
+			continue
+		}
 		views = append(views, s.peerConnectionView(connection))
 	}
 	writeJSON(w, views)
+}
+
+// callThroughGrantsOfRequest reads the caller's can_call_through grants on
+// peer connections, and false when the caller is not narrowed by them: the
+// service token, or an administrator.
+func (s *Server) callThroughGrantsOfRequest(r *http.Request) (grantedResources, bool, error) {
+	if _, restricted := principalRestrictingRequest(r); !restricted {
+		return grantedResources{}, false, nil
+	}
+	caller, _ := callerOfRequest(r)
+	granted, err := s.grantedResourcesOf(r.Context(), grantSubjectOfCaller(caller), callThroughRelation, "peer_connection")
+	return granted, true, err
 }
 
 // livePeerConnectionOf reads the connection a route's {id} names and answers
@@ -516,6 +536,15 @@ func (s *Server) livePeerConnectionOf(w http.ResponseWriter, r *http.Request) (s
 
 // handleGetPeerConnection: GET /peer-connections/{id}.
 func (s *Server) handleGetPeerConnection(w http.ResponseWriter, r *http.Request) {
+	callThrough, narrowed, err := s.callThroughGrantsOfRequest(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+		return
+	}
+	if narrowed && !callThrough.requiresAGrantAndNames(r.PathValue("id")) {
+		writeJSONError(w, http.StatusNotFound, "peer_connection_not_found", "no peer connection has id "+r.PathValue("id"))
+		return
+	}
 	connection, err := s.store.GetPeerConnection(r.PathValue("id"))
 	if errors.Is(err, store.ErrPeerConnectionNotFound) {
 		writeJSONError(w, http.StatusNotFound, "peer_connection_not_found", "no peer connection has id "+r.PathValue("id"))

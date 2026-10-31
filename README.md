@@ -127,8 +127,9 @@ Every request is checked before a handler sees it (`internal/server/request_auth
 2. **The service token on behalf of a person**: the token plus `X-Principal-Id`. dash sends this for its logged-in user, and the request is judged as that person's. `X-Principal-Id` without the token is 401 on every route.
 3. **Principal**: a login cookie naming a live login session, from Entra ID sign-in or `POST /auth/demo-login`, or a session agent token: anyone's on the store proxies, and an administrator's (principal-store's `is_administrator`) on every other route a principal may call, from this host only. A cookie request with any method but `GET`, `HEAD` or `OPTIONS` must also carry the session's CSRF token in `X-CSRF-Token` (403 `csrf_token_missing` / `csrf_token_mismatch`).
 4. **A session's agent**: its session posting token (`LLM_BRIDGE_SESSION_POSTING_TOKEN`) as `Authorization: Bearer`. It shares files, offers actions and makes images in its own session, and starts and drives delegates under it: `POST /sessions` creates a session whose `manager_session_id` is the agent's session and whose principal is that session's (403 `delegate_manager_mismatch` / `delegate_principal_mismatch` for a body naming another); `POST /sessions/{id}/send`, `POST /sessions/{id}/stop` and `GET /sessions/{id}/events` reach only those delegates, 404 otherwise; `GET /instances` reads the catalog. It also **reads** sessions, read-only, on `GET /sessions`, `GET /sessions/search`, `GET /sessions/{id}` and `GET /sessions/{id}/messages`: as the internal service when its own session runs with no principal (every session on a one-operator server), otherwise as that principal exactly — its own sessions, an administrator's every one, search refused 403 `route_not_available_to_principals` to a non-administrator — and, for a session a connected server started, within that server's limits too. These read routes refuse the token through the public reverse proxy (403 `session_posting_token_not_public`). Every one of these answers 403 `delegating_session_ended` once the agent's session has ended. The token is bound to one spawn of its session, so a token from an earlier spawn is 401 `session_posting_token_from_an_earlier_spawn`. `cmd/bridge-agent` and `cmd/bridge-sessions` use it when there is no service token. Any other route answers it 401.
-5. **Another llm-bridge-server**: a peer token in `X-LLM-Bridge-Peer-Token`, which this server delivered when an administrator granted that server a level of access. It acts as the peer principal the grant made and is held to the route rules like a person signed in as it; a peer is never let onto a harness callback. By https it is 409 `demo_login_enabled` while demo login is on; over a socket this server dialed out itself it is not. A request over a peer socket with no peer token is 403 unless it is a connection call.
-6. **Nobody**: 401 everywhere but the routes open to anyone and the harness callbacks.
+5. **A service**: a service principal token (`Authorization: Bearer llm-bridge-service-principal-token-v1.…`) that an administrator issued with `POST /service-principal-tokens` for a principal of principal-store's kind `service`. It acts as that service on every route, held to the route rules and to its grants like a person signed in as it, from this host only (403 `service_principal_token_not_public` through the public proxy). Revoked, it is 401 `service_principal_token_revoked`.
+6. **Another llm-bridge-server**: a peer token in `X-LLM-Bridge-Peer-Token`, which this server delivered when an administrator granted that server a level of access. It acts as the peer principal the grant made and is held to the route rules like a person signed in as it; a peer is never let onto a harness callback. By https it is 409 `demo_login_enabled` while demo login is on; over a socket this server dialed out itself it is not. A request over a peer socket with no peer token is 403 unless it is a connection call.
+7. **Nobody**: 401 everywhere but the routes open to anyone and the harness callbacks.
 
 Every principal is looked up in principal-store: unknown is 400 `unknown_principal`, a group is 400 `principal_not_human`, disabled is 403 `principal_disabled`, principal-store down is 502. Answers are cached for 30 seconds, so disabling someone takes up to 30 seconds to take effect.
 
@@ -141,12 +142,14 @@ Every principal is looked up in principal-store: unknown is 400 `unknown_princip
 | operator | Service token or administrator; a principal gets 403 `operator_route` |
 | connected server | A connection call from a server connected to this one: the handler checks the connection's credential in `X-LLM-Bridge-Peer-Connection`, or the socket the call arrived over. Never a peer token |
 | principal | Any principal. `GET /instances` lists only the instances its `can_dispatch_on` grants allow |
-| principal, as itself | `POST /sessions` creates the session as the caller; naming someone else is 403 `principal_mismatch` |
+| principal, as itself | `POST /sessions` creates the session as the caller; naming someone else is 403 `principal_mismatch`, unless the caller holds `can_start_sessions_as` on them, when the session runs as them and the caller, recorded as its starter, may drive it while the grant stands |
 | principal, own sessions only | The answer holds only the caller's sessions |
 | principal, as itself, in its organization | `POST /operations` starts the operation as the caller, whatever the body says. `organization_id` must be an active principal-store group (400 `unknown_organization`, `organization_not_group`, `organization_disabled`) the caller belongs to (403 `not_a_member_of_organization`); an administrator and the service token skip the membership check |
 | principal, own operations only | The answer holds only the caller's operations |
 | owner | Only the principal who owns the session, signal or operation. Anyone else's, one with no principal and a missing one all answer the same 404 |
 | principal or session agent | A login cookie or a session agent token; the request reaches the store as that principal |
+| principal, connections it may call through only | An administrator sees every connection; anyone else only those its `can_call_through` grants name, and another is 404 |
+| principal, named to the connected server | Any principal calls the connected server through the connection, named there as itself unless it is an administrator; a principal restricted to its grants, such as a service, needs `can_call_through` on the connection (403 `peer_connection_not_granted`) |
 | principal, own logins only | The caller's own login sessions; an administrator reaches anyone's, and someone else's is 404 to anyone else |
 
 A route with no rule is 403 `route_not_classified` to everyone but the service token, and `TestEveryRegisteredRouteIsClassified` fails until it has one. A fork or promoted subagent takes its parent's principal.
@@ -253,6 +256,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/sessions/{id}/rename` | Set the title | owner |
 | `POST` | `/sessions/{id}/resume` | Restart a stopped session with its history | owner |
 | `POST` | `/sessions/{id}/send` | Send a message | owner |
+| `PUT` | `/sessions/{id}/starter` | Record which service started a session as another principal, for a session created before starters were recorded; the service must hold `can_start_sessions_as` on that principal | operator |
 | `POST` | `/sessions/{id}/stop` | End the session | owner |
 | `GET` | `/sessions/{id}/tools/{tool_use_id}/snapshots` | File snapshots before and after an Edit or Write (snapshot-store) | owner |
 
@@ -383,6 +387,9 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `*` | `/kanban-store/` | kanban-store at its root (`/api/…`, `/settings`), as the caller | principal or session agent |
 | `*` | `/kanban/` | kanban-store `/api/…`, as the caller | principal or session agent |
 | `*` | `/mailstack/` | mailstack `/…`, as the caller, checked against their mail grants and tickets | principal or session agent |
+| `GET` | `/service-principal-tokens` | Every service principal token's record, revoked or not; never a token | operator |
+| `POST` | `/service-principal-tokens` | Issue a token for a service principal (principal-store kind `service`); the token is answered once and kept as its SHA-256 | operator |
+| `POST` | `/service-principal-tokens/{id}/revoke` | Stop a service principal token working, with a reason | operator |
 
 ### Peers: other llm-bridge-servers
 
@@ -392,9 +399,9 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/peer-access-levels/{key}/provision` | Make a level's principal-store group and its grants | operator |
 | `GET` | `/peer-connection-invites` | Every connection passphrase, redeemed or not; never a passphrase | operator |
 | `POST` | `/peer-connection-invites` | Make a one-time passphrase another server enters to connect to this one; connecting gives no access | operator |
-| `GET` | `/peer-connections` | Every connected server, whether its socket is up, and the access given and held | operator |
+| `GET` | `/peer-connections` | Every connected server, whether its socket is up, and the access given and held | principal, connections it may call through only |
 | `POST` | `/peer-connections` | Connect to another server by its address and passphrase, directly or by dialing out | operator |
-| `GET` | `/peer-connections/{id}` | One connection, whether its socket is up, and the access given and held | operator |
+| `GET` | `/peer-connections/{id}` | One connection, whether its socket is up, and the access given and held | principal, connections it may call through only |
 | `POST` | `/peer-connections/{id}/check` | Ask the other server who the access this server holds acts as there | operator |
 | `POST` | `/peer-connections/{id}/grant` | Give the other server a level of access here and deliver its token | operator |
 | `POST` | `/peer-connections/{id}/messages` | Sends the other server a request, notice or status, through this server's outbox | operator |

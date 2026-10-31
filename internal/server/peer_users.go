@@ -36,6 +36,10 @@ import (
 // whatever principal-store says of the kind.
 const observeSessionsRelation = "can_observe_sessions_on"
 
+// callThroughRelation is grant-store's relation for listing a peer connection
+// and calling the connected server through it.
+const callThroughRelation = "can_call_through"
+
 // sessionScope is which sessions a restricted caller reaches: those started
 // as principalID, and, for a connected server's user, only those started
 // through that server's peer principal.

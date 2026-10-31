@@ -547,6 +547,9 @@ func (s *Store) migrate() error {
 	if err := s.migratePeers(); err != nil {
 		return fmt.Errorf("migrate peers: %w", err)
 	}
+	if err := s.migrateServicePrincipals(); err != nil {
+		return fmt.Errorf("migrate service principals: %w", err)
+	}
 	if err := s.migratePeerMessages(); err != nil {
 		return fmt.Errorf("migrate peer messages: %w", err)
 	}

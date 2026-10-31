@@ -52,6 +52,11 @@ const KindPeer = "peer"
 // holding no grant of a relation refuse it (a peer) rather than leave it
 // unrestricted (a human). This server reads them instead of comparing Kind to
 // a word.
+//
+// HoldsServicePrincipalTokens is principal-store's answer for whether the kind
+// may be issued a service principal token (a service). A principal-store
+// older than that answer sends none, which reads as false: no token is issued
+// or accepted until principal-store says the kind may hold one.
 type Principal struct {
 	ID                    string `json:"id"`
 	Kind                  string `json:"kind"`
@@ -59,6 +64,8 @@ type Principal struct {
 	IsAdministrator       bool   `json:"is_administrator"`
 	ActsAsCaller          bool   `json:"acts_as_caller"`
 	RestrictedToItsGrants bool   `json:"restricted_to_its_grants"`
+	// HoldsServicePrincipalTokens: see above.
+	HoldsServicePrincipalTokens bool `json:"holds_service_principal_tokens"`
 }
 
 // UnmarshalJSON refuses a record without acts_as_caller or
@@ -73,6 +80,8 @@ func (principal *Principal) UnmarshalJSON(data []byte) error {
 		IsAdministrator       bool   `json:"is_administrator"`
 		ActsAsCaller          *bool  `json:"acts_as_caller"`
 		RestrictedToItsGrants *bool  `json:"restricted_to_its_grants"`
+		// Absent from a principal-store older than the service kind.
+		HoldsServicePrincipalTokens bool `json:"holds_service_principal_tokens"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -81,7 +90,7 @@ func (principal *Principal) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("principal %q has no acts_as_caller or restricted_to_its_grants, so principal-store is older than this server needs: deploy principal-store first", wire.ID)
 	}
 	*principal = Principal{ID: wire.ID, Kind: wire.Kind, DisabledAt: wire.DisabledAt, IsAdministrator: wire.IsAdministrator,
-		ActsAsCaller: *wire.ActsAsCaller, RestrictedToItsGrants: *wire.RestrictedToItsGrants}
+		ActsAsCaller: *wire.ActsAsCaller, RestrictedToItsGrants: *wire.RestrictedToItsGrants, HoldsServicePrincipalTokens: wire.HoldsServicePrincipalTokens}
 	return nil
 }
 

@@ -119,6 +119,17 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 			header.Set(peerUserHeader, caller.principalID)
 		}
 	}
+	// A principal restricted to its grants, such as a service, calls through
+	// only a connection its can_call_through grants name; a person holding
+	// none is not restricted, as before the relation existed.
+	if callThrough, narrowed, err := s.callThroughGrantsOfRequest(r); err != nil {
+		writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+		return
+	} else if narrowed && !callThrough.permits(connection.ID) {
+		writeJSONError(w, http.StatusForbidden, "peer_connection_not_granted", fmt.Sprintf(
+			"%s; grant can_call_through on peer_connection %s to call through it", callThrough.describe(), connection.ID))
+		return
+	}
 	response, err := s.callWithHeldAccessThrough(r.Context(), peerProxyHTTPClient, connection, r.Method, path, header, body, r.ContentLength)
 	if err != nil {
 		writePeerCallError(w, err)

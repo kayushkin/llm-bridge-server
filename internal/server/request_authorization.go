@@ -131,6 +131,11 @@ const (
 	// acts as this whole server everywhere but in starting a session. A peer
 	// may not go on through it to a third server.
 	routePrincipalActsThroughPeerConnection
+	// routePrincipalSeesPeerConnectionsItMayCallThrough reads this server's
+	// connections to others: an administrator every one, anyone else only
+	// those its can_call_through grants name, which the handler narrows to.
+	// Holding none shows none, whatever the kind.
+	routePrincipalSeesPeerConnectionsItMayCallThrough
 )
 
 // sessionAgentDelegateAccess says whether, and how, a session's own agent may
@@ -209,6 +214,9 @@ func peerConnectionCallRoute(reason string) routeAccessRule {
 func peerConnectionProxyRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalActsThroughPeerConnection, reason: reason}
 }
+func peerConnectionReadRoute(reason string) routeAccessRule {
+	return routeAccessRule{class: routePrincipalSeesPeerConnectionsItMayCallThrough, reason: reason}
+}
 func operatorRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routeOperatorOnly, reason: reason}
 }
@@ -272,7 +280,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /peer-connection-invites":                               operatorRoute("lets another server connect to this one"),
 	"GET /peer-connection-invites":                                operatorRoute("who was invited to connect, and by whom"),
 	"POST /peer-connections":                                      operatorRoute("connects to another server and stores a credential for it"),
-	"GET /peer-connections":                                       peerMessagingRoute(operatorRoute("which servers this one is connected to, and the access each way")),
+	"GET /peer-connections":                                       peerMessagingRoute(peerConnectionReadRoute("which servers this one is connected to, and the access each way; anyone but an administrator sees only those its can_call_through grants name")),
 	"POST /peer-connections/{id}/messages":                        peerMessagingRoute(operatorRoute("sends the other server a request, notice or status")),
 	"GET /peer-messages":                                          peerMessagingRoute(operatorRoute("messages to and from connected servers")),
 	"GET /peer-messages/{id}":                                     peerMessagingRoute(operatorRoute("one message to or from a connected server")),
@@ -283,7 +291,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /peer-messages/{id}/attachments/{attachment_id}":         peerMessagingRoute(operatorRoute("downloads a file of a message; an agent only of a message it sent or whose approval started its session")),
 	"POST /peer-messages/{id}/attachments/{attachment_id}/retry":  operatorRoute("fetches a file of an incoming message again now"),
 	"GET /peer/messages/{message_id}/attachments/{attachment_id}": peerConnectionCallRoute("the other server fetches a file of a message this server sent it; the handler checks the connection"),
-	"GET /peer-connections/{id}":                                  operatorRoute("one connection and the access each way"),
+	"GET /peer-connections/{id}":                                  peerConnectionReadRoute("one connection and the access each way; anyone but an administrator reaches only one its can_call_through grants name"),
 	"POST /peer-connections/{id}/remove":                          operatorRoute("ends a connection and the access each way"),
 	"POST /peer-connections/{id}/grant":                           operatorRoute("gives another server access to this one"),
 	"POST /peer-connections/{id}/revoke-grant":                    operatorRoute("takes another server's access away"),
@@ -370,6 +378,10 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /sessions/{id}/signals":                         sessionOwnedRoute("id"),
 	"GET /sessions/{id}/tools/{tool_use_id}/snapshots":    sessionOwnedRoute("id"),
 	"PUT /sessions/{id}/folder":                           operatorRoute("files a session into the shared folder registry"),
+	"PUT /sessions/{id}/starter":                          operatorRoute("records which service started a session as another principal, letting it drive the session"),
+	"POST /service-principal-tokens":                      operatorRoute("issues a token a service principal calls this server with"),
+	"GET /service-principal-tokens":                       operatorRoute("every service principal token's record; never a token"),
+	"POST /service-principal-tokens/{id}/revoke":          operatorRoute("stops a service principal token working"),
 	"PUT /sessions/{id}/permission-mode":                  operatorRoute("can switch a session to bypass, skipping permission-store"),
 	"PUT /sessions/{id}/bypass-permissions":               operatorRoute("can switch a session to bypass, skipping permission-store"),
 	"POST /signals/{id}/resolve":                          signalOwnedRoute("id"),
@@ -796,10 +808,12 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A session agent token goes to the principal path below on every route;
-	// any other bearer on these routes is a session posting token.
+	// A session agent token and a service principal token go to the principal
+	// path below on every route; any other bearer on these routes is a session
+	// posting token.
 	_, hasAuthorization := r.Header["Authorization"]
-	presentsPostingToken := hasAuthorization && !isSessionAgentToken(bearerTokenOf(r))
+	presentedBearer := bearerTokenOf(r)
+	presentsPostingToken := hasAuthorization && !isSessionAgentToken(presentedBearer) && !isServicePrincipalToken(presentedBearer)
 	if presentsPostingToken && rule.class == routeSessionOwnerOrItsAgentPostsIntoSession {
 		caller, credentialError := s.postingAgentOfRequest(r, pattern, rule)
 		if credentialError != nil {
@@ -934,6 +948,16 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			return
 		}
 		if !s.sessionIDIsInScope(sessionID, sessionScopeOfCaller(caller)) {
+			// A service that started this session as another principal
+			// drives it while it holds can_start_sessions_as on that one.
+			drives, err := s.callerStartedSessionIDAndMayDriveIt(r.Context(), caller, sessionID)
+			if err != nil {
+				writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+				return
+			}
+			if drives {
+				break
+			}
 			if !requestOnlyReads(r, pattern) {
 				http.Error(w, "session not found", http.StatusNotFound)
 				return
@@ -993,7 +1017,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 		}
 	case routePrincipalCreatesSession, routePrincipalReadsCatalog, routePrincipalActsThroughPeerConnection,
 		routePrincipalOrSessionAgentThroughStoreProxy, routePrincipalCreatesOperation, routePrincipalSeesOwnOperationsOnly,
-		routePrincipalManagesOwnLoginSessions:
+		routePrincipalManagesOwnLoginSessions, routePrincipalSeesPeerConnectionsItMayCallThrough:
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf("route %q has an access class this server does not handle", pattern))
 		return
@@ -1041,6 +1065,12 @@ func (e *requestCredentialError) write(w http.ResponseWriter) {
 func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (string, string, string, *requestCredentialError) {
 	if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization {
 		token := bearerTokenOf(r)
+		// A service's own token is accepted on every route, as the principal
+		// it was issued for (service_principal_tokens.go).
+		if isServicePrincipalToken(token) {
+			principalID, credentialError := s.principalOfServicePrincipalToken(r.Context(), r, token)
+			return principalID, "", "", credentialError
+		}
 		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy && !isSessionAgentToken(token) {
 			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
 				"an Authorization header is accepted on %s/, %s/, %s/ and %s/ as a session agent token, and elsewhere only as an administrator's session agent token; this route takes the login cookie or %s",

@@ -271,16 +271,34 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// A principal creates sessions as itself and as nobody else.
-	// An administrator and the internal service are not restricted here. Naming another principal is refused rather
-	// than overwritten, so a client bug that sends the wrong id is visible.
+	// A principal creates sessions as itself, and as another principal only
+	// when it holds can_start_sessions_as on that one (a service such as
+	// orchestratord starting sessions that run as the person it works for);
+	// the starter is then recorded with the session. An administrator and the
+	// internal service are not restricted here. Naming another principal
+	// without the grant is refused rather than overwritten, so a client bug
+	// that sends the wrong id is visible.
+	startedAsAnotherPrincipalBy := ""
 	if callerPrincipalID, restricted := principalRestrictingRequest(r); restricted {
 		if req.PrincipalID != "" && req.PrincipalID != callerPrincipalID {
-			writeJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
-				"principal_id %q is not the logged-in principal %s; a session can only be created as yourself (omit principal_id)", req.PrincipalID, callerPrincipalID))
-			return
+			caller, _ := callerOfRequest(r)
+			allowed := false
+			if caller.peer == nil && caller.delegatingAgentOfSessionID == "" {
+				var err error
+				if allowed, err = s.mayStartSessionsAs(r.Context(), grantSubjectOfCaller(caller), req.PrincipalID); err != nil {
+					writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+					return
+				}
+			}
+			if !allowed {
+				writeJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
+					"principal_id %q is not the logged-in principal %s, which holds no %s grant on it; a session can only be created as yourself (omit principal_id)", req.PrincipalID, callerPrincipalID, startSessionsAsRelation))
+				return
+			}
+			startedAsAnotherPrincipalBy = callerPrincipalID
+		} else {
+			req.PrincipalID = callerPrincipalID
 		}
-		req.PrincipalID = callerPrincipalID
 	}
 	// A connected server's user starts sessions as the principal they are
 	// mapped to here, administrator or not, so the session's agent holds that
@@ -498,9 +516,17 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if scope, restricted := sessionScopeRestrictingRequest(r); restricted && !s.sessionIsInScope(parent, scope) {
-			writeJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
-				"manager_session_id %q is not a session this server has", req.ManagerSessionID))
-			return
+			caller, _ := callerOfRequest(r)
+			drives, err := s.callerStartedSessionAndMayDriveIt(r.Context(), caller, parent)
+			if err != nil {
+				writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+				return
+			}
+			if !drives {
+				writeJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
+					"manager_session_id %q is not a session this server has", req.ManagerSessionID))
+				return
+			}
 		}
 		managerSession = parent
 	}
@@ -578,6 +604,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		origin.SessionID = sess.SessionID
 		if err := s.store.RecordSessionPeerOrigin(origin); err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_not_recorded", err.Error())
+			return
+		}
+	}
+	// The starter goes in before the session does, so no session started as
+	// another principal ever exists without saying who may drive it.
+	if startedAsAnotherPrincipalBy != "" {
+		if err := s.store.RecordSessionStarter(store.SessionStarter{SessionID: sess.SessionID, PrincipalID: startedAsAnotherPrincipalBy, RecordedBy: startedAsAnotherPrincipalBy}); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "session_starter_not_recorded", err.Error())
 			return
 		}
 	}
