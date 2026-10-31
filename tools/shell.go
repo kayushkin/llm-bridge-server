@@ -14,6 +14,17 @@ import (
 
 // Shell returns a tool that executes shell commands via bash.
 func Shell() Impl {
+	return ShellWithSessionEnvironment(nil)
+}
+
+// ShellWithSessionEnvironment is Shell for a caller that serves many sessions
+// from one process. sessionEnvironment returns NAME=value entries that belong
+// to the session (for an llm-bridge session, the LLM_BRIDGE_ values that let
+// bridge-share-file and bridge-button reach its own chat). It is called for
+// every command, so a value the session's caller refreshed applies to the next
+// command, and its entries come after the process's own, so they win. A nil
+// sessionEnvironment adds nothing.
+func ShellWithSessionEnvironment(sessionEnvironment func() []string) Impl {
 	type input struct {
 		Command  string   `json:"command"`
 		Commands []string `json:"commands"`
@@ -80,6 +91,9 @@ func Shell() Impl {
 				}
 				// Ensure common dev tools are on PATH (mise, go, node, etc.)
 				cmd.Env = ensureDevToolsOnPath()
+				if sessionEnvironment != nil {
+					cmd.Env = append(cmd.Env, sessionEnvironment()...)
+				}
 				out, err := cmd.CombinedOutput()
 				result := string(out)
 				if err != nil {

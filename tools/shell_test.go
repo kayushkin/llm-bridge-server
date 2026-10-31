@@ -143,3 +143,31 @@ func TestShellDoesNotRunTheRestOfASequenceAfterCancel(t *testing.T) {
 		t.Fatalf("the result does not say what was skipped, got %q", out)
 	}
 }
+
+// A process that serves many sessions gives each session's commands that
+// session's values, read at every command so a refreshed one applies to the
+// next command, and they win over the process's own.
+func TestShellWithSessionEnvironmentGivesEachCommandTheSessionsValues(t *testing.T) {
+	t.Setenv("LLM_BRIDGE_SESSION_POSTING_TOKEN", "the-process-own")
+	token := "spawn-1"
+	shell := ShellWithSessionEnvironment(func() []string {
+		return []string{"LLM_BRIDGE_SESSION_POSTING_TOKEN=" + token}
+	})
+	run := func() string {
+		out, err := shell.Run(context.Background(), `{"command":"printf %s \"$LLM_BRIDGE_SESSION_POSTING_TOKEN\""}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if got := run(); got != "spawn-1" {
+		t.Fatalf("command saw %q, want the session's spawn-1", got)
+	}
+	token = "spawn-2"
+	if got := run(); got != "spawn-2" {
+		t.Fatalf("after a refresh the command saw %q, want spawn-2", got)
+	}
+	if got, _ := Shell().Run(context.Background(), `{"command":"printf %s \"$LLM_BRIDGE_SESSION_POSTING_TOKEN\""}`); got != "the-process-own" {
+		t.Fatalf("plain Shell saw %q, want the process's own value", got)
+	}
+}
