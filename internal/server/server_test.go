@@ -22,6 +22,19 @@ import (
 // seeded, because the server's model resolution requires one — see testModelStore.
 func testServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
+	return testServerWithLogStore(t, "http://localhost:0")
+}
+
+// testServerWithLogStore is testServer with a log-store the caller supplies.
+// A test that drives a live harness process needs one that answers: with the
+// unreachable default every event push is refused and retried, and the send
+// path waits out logStoreDrainTimeout (10s) for that session's queue under the
+// manager lock, so a state the test waits for arrives 10s late or not before
+// its deadline. Measured 2026-10-31: on one CPU 4 runs in 10 of
+// TestInterruptSession_LiveProcessDuringToolRunning reached tool_running only
+// after exactly 10.0s, the rest after 20ms.
+func testServerWithLogStore(t *testing.T, logStoreURL string) (*Server, *store.Store) {
+	t.Helper()
 	dir := t.TempDir()
 	st, err := store.New(filepath.Join(dir, "test.db"))
 	if err != nil {
@@ -32,7 +45,7 @@ func testServer(t *testing.T) (*Server, *store.Store) {
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		LogStoreURL:     "http://localhost:0", // unused in unit tests
+		LogStoreURL:     logStoreURL,
 	}
 	testAuthorizationConfig(cfg)
 

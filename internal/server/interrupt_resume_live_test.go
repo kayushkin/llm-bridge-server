@@ -60,7 +60,7 @@ func waitForSessionState(t *testing.T, st *store.Store, bridgeID string, want st
 // emitting tool_running this failing state was unreachable (finding §5).
 func TestInterruptSession_LiveProcessDuringToolRunning(t *testing.T) {
 	buildMockHarnessOnPath(t)
-	srv, st := testServer(t)
+	srv, st := testServerWithLogStore(t, fakeLogStore(t).URL)
 
 	const bridgeID = "br_int_live"
 	sess := &store.Session{SessionID: bridgeID, Harness: msg.HarnessMock, State: "idle"}
@@ -103,7 +103,7 @@ func TestInterruptSession_LiveProcessDuringToolRunning(t *testing.T) {
 // has nothing to resume → 409.
 func TestResumeSession_AlreadyRunning(t *testing.T) {
 	buildMockHarnessOnPath(t)
-	srv, st := testServer(t)
+	srv, st := testServerWithLogStore(t, fakeLogStore(t).URL)
 
 	const bridgeID = "br_res_live"
 	sess := &store.Session{SessionID: bridgeID, Harness: msg.HarnessMock, State: "running"}
