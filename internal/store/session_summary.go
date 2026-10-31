@@ -29,7 +29,7 @@ type SessionSummaryRow struct {
 	DisplayName string
 	AgentID     string
 	// BundleID is the bundle-store id the session was started with, or "".
-	BundleID  string
+	BundleID string
 	// SpendUSD is the session's cost estimate (msg.ManagedSession.SpendUSD).
 	SpendUSD  float64
 	UpdatedAt time.Time
@@ -51,6 +51,11 @@ type SessionSummaryRow struct {
 	// Status is the session's whole status, of which State is one field, with
 	// the event row id it is current as of. Never nil. See msg.SessionStatus.
 	Status *msg.SessionStatus
+
+	// WorkingDir is the directory the session was started in: the sessions
+	// table's own working_dir column, the same value the full record's
+	// working_dir carries. "" when none was recorded.
+	WorkingDir string
 }
 
 // summarySessionIDExpression is the projected session id: session_id falling
@@ -67,7 +72,7 @@ const summarySessionIDExpression = `COALESCE(NULLIF(session_id, ''), bridge_id)`
 // summaryColumns are the projected columns, in scan order. The raw updated_at is
 // selected a second time (as text) as the timestamp half of the cursor; the id
 // half is the already-projected session id, assembled in Go.
-const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), COALESCE(bundle_id, ''), updated_at, created_at, COALESCE(manager_session_id, ''), CAST(updated_at AS TEXT), COALESCE(spend_usd, 0), COALESCE(status, '')`
+const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), COALESCE(bundle_id, ''), updated_at, created_at, COALESCE(manager_session_id, ''), CAST(updated_at AS TEXT), COALESCE(spend_usd, 0), COALESCE(status, ''), COALESCE(working_dir, '')`
 
 // SessionSummaryFilter narrows ListSessionSummaries to the rows matching every
 // non-empty axis. An empty axis constrains nothing, and the values within one
@@ -278,7 +283,7 @@ func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSum
 		if err := rows.Scan(
 			&r.SessionID, &r.State, &r.Harness, &r.InstanceID, &r.Type, &r.Purpose,
 			&r.Mode, &r.FolderName, &r.DisplayName, &r.AgentID, &r.BundleID, &r.UpdatedAt, &r.CreatedAt,
-			&r.ManagerSessionID, &updatedAtText, &r.SpendUSD, &statusJSON,
+			&r.ManagerSessionID, &updatedAtText, &r.SpendUSD, &statusJSON, &r.WorkingDir,
 		); err != nil {
 			return nil, err
 		}

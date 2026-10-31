@@ -773,3 +773,26 @@ func TestSessionSummaryIDLookupsSearchAnIndex(t *testing.T) {
 		}
 	}
 }
+
+// The summary carries the session's working directory, so a list reader can
+// place a session by its repo without fetching each record whole.
+func TestListSessionSummaries_CarriesTheWorkingDirectory(t *testing.T) {
+	s := testStore(t)
+	if err := s.CreateSession(&Session{SessionID: "in-repo", Harness: "claude_code", State: "idle", WorkingDir: "/srv/repos/dash"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(&Session{SessionID: "nowhere", Harness: "claude_code", State: "idle"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ListSessionSummaries(100, "", SessionSummaryFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, row := range rows {
+		got[row.SessionID] = row.WorkingDir
+	}
+	if got["in-repo"] != "/srv/repos/dash" || got["nowhere"] != "" {
+		t.Errorf("working directories = %v, want in-repo at /srv/repos/dash and nowhere empty", got)
+	}
+}

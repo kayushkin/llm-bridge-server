@@ -36,16 +36,21 @@ type SessionSummary struct {
 	ManagerSessionID string `json:"managerSessionId"`
 	// SpendUSD is the session's cost estimate so far, in US dollars — every
 	// session, oneshot calls included (msg.ManagedSession.SpendUSD).
-	SpendUSD  float64 `json:"spendUsd"`
+	SpendUSD float64 `json:"spendUsd"`
 	// Status is the session's whole status, exactly as msg.SessionStatus
 	// serializes it — the same JSON the session-list stream's upsert carries
 	// and the same an EventSessionStatus carries, so a client has one decoder
 	// for all three. It is NOT re-keyed to camelCase like the fields around
 	// it: a second spelling of one struct is a second thing to keep in step.
 	// State above is Status.State, kept for the consumers that filter on it.
-	Status *msg.SessionStatus `json:"status"`
-	UpdatedAt string  `json:"updatedAt"`
-	CreatedAt string  `json:"createdAt"`
+	Status    *msg.SessionStatus `json:"status"`
+	UpdatedAt string             `json:"updatedAt"`
+	CreatedAt string             `json:"createdAt"`
+	// WorkingDir is the directory the session was started in, the same
+	// value as the full record's working_dir; "" when none was recorded. It
+	// lets a list reader place a session by its repo without fetching each
+	// session whole.
+	WorkingDir string `json:"workingDir"`
 }
 
 // SummaryLookupRequest is the POST /sessions/summary body: the same query the
@@ -136,6 +141,7 @@ func summaryFromRow(r store.SessionSummaryRow) SessionSummary {
 		ManagerSessionID: r.ManagerSessionID,
 		SpendUSD:         r.SpendUSD,
 		Status:           r.Status,
+		WorkingDir:       r.WorkingDir,
 	}
 }
 
