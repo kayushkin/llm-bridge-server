@@ -257,6 +257,9 @@ func (s *Store) setAvailability(p *Principal, availability *Availability) error 
 	if p.Kind == KindPeer {
 		return fmt.Errorf("%w: %s is a peer — another server has no working week; availability belongs to a human", ErrInvalidAvailability, p.ID)
 	}
+	if p.Kind == KindService {
+		return fmt.Errorf("%w: %s is a service — a program has no working week; availability belongs to a human", ErrInvalidAvailability, p.ID)
+	}
 	if err := availability.Validate(); err != nil {
 		return err
 	}

@@ -99,12 +99,12 @@ func (s *Store) Get(id string, includeDisabledMemberships bool) (*Principal, err
 	if err != nil {
 		return nil, err
 	}
-	switch p.Kind {
-	case KindHuman, KindPeer:
+	switch {
+	case p.ActsAsCaller:
 		if p.Groups, err = s.ListGroups(id, includeDisabledMemberships); err != nil {
 			return nil, err
 		}
-	case KindGroup:
+	case p.Kind == KindGroup:
 		if p.Members, err = s.ListMembers(id, includeDisabledMemberships); err != nil {
 			return nil, err
 		}
@@ -399,10 +399,12 @@ type Principal struct {
 	// comparing kind to a word: acts_in_this_deployment says it may hold
 	// grants, acts_as_caller that a request may act as it, and
 	// restricted_to_its_grants that holding no grant of a relation refuses it
-	// rather than leaving it unrestricted.
-	ActsInThisDeployment  bool `json:"acts_in_this_deployment"`
-	ActsAsCaller          bool `json:"acts_as_caller"`
-	RestrictedToItsGrants bool `json:"restricted_to_its_grants"`
+	// rather than leaving it unrestricted. holds_service_principal_tokens says
+	// it may be issued a token of its own in place of a login.
+	ActsInThisDeployment        bool `json:"acts_in_this_deployment"`
+	ActsAsCaller                bool `json:"acts_as_caller"`
+	RestrictedToItsGrants       bool `json:"restricted_to_its_grants"`
+	HoldsServicePrincipalTokens bool `json:"holds_service_principal_tokens"`
 
 	// Availability is a human's declared working week in their own zone.
 	// Absent means unknown, and unknown is never available — see

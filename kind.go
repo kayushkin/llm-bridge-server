@@ -32,6 +32,12 @@ const (
 	// refused by that relation: a link that has just been made gives the other
 	// server nothing until someone grants it something.
 	KindPeer = "peer"
+	// KindService is a program on this host that calls other services as
+	// itself, such as a daemon that reads and starts sessions. It never logs
+	// in: it presents a service principal token that llm-bridge-server issued
+	// for it, which an administrator can revoke. Like a peer, it has only
+	// what it is granted, and holding no grant of a relation refuses it.
+	KindService = "service"
 )
 
 // KindDefinition is one kind and what a principal of it may do. The booleans
@@ -50,13 +56,17 @@ type KindDefinition struct {
 	// grant of a relation is refused by that relation. Kinds without it keep
 	// the lenient rule the operator chose on 2026-09-11: holding no grant of a
 	// relation means that relation does not restrict them.
-	RestrictedToItsGrants bool   `json:"restricted_to_its_grants"`
-	Description           string `json:"description"`
+	RestrictedToItsGrants bool `json:"restricted_to_its_grants"`
+	// HoldsServicePrincipalTokens says a principal of this kind may be issued
+	// a token of its own, which a service accepts in place of a login. Only a
+	// service may: a person signs in, and a peer presents a peer token.
+	HoldsServicePrincipalTokens bool   `json:"holds_service_principal_tokens"`
+	Description                 string `json:"description"`
 }
 
 // KindDefinitions is every kind a principal can be, in the order GET /kinds
-// serves them. A service account or an agent is not modelled yet — add it
-// here when it is, and the 400 below starts naming it.
+// serves them. An agent is not modelled yet — add it here when it is, and the
+// 400 below starts naming it.
 var KindDefinitions = []KindDefinition{
 	{
 		Name: KindHuman, ActsInThisDeployment: true, ActsAsCaller: true,
@@ -73,6 +83,10 @@ var KindDefinitions = []KindDefinition{
 	{
 		Name: KindPeer, ActsInThisDeployment: true, ActsAsCaller: true, RestrictedToItsGrants: true,
 		Description: "another llm-bridge-server linked to this one; acts through a peer token, and has only what it is granted",
+	},
+	{
+		Name: KindService, ActsInThisDeployment: true, ActsAsCaller: true, RestrictedToItsGrants: true, HoldsServicePrincipalTokens: true,
+		Description: "a program on this host that calls other services as itself; acts through a service principal token, never a login, and has only what it is granted",
 	},
 }
 
@@ -132,4 +146,5 @@ func (p *Principal) fillKindAnswers() {
 	p.ActsInThisDeployment = definition.ActsInThisDeployment
 	p.ActsAsCaller = definition.ActsAsCaller
 	p.RestrictedToItsGrants = definition.RestrictedToItsGrants
+	p.HoldsServicePrincipalTokens = definition.HoldsServicePrincipalTokens
 }

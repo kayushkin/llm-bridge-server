@@ -105,7 +105,7 @@ func TestPostRejectsUnknownKindWithTheVocabulary(t *testing.T) {
 func TestKindsRoute(t *testing.T) {
 	srv, _ := newTestServer(t)
 	status, body := do(t, srv, "GET", "/kinds", nil)
-	if status != http.StatusOK || strings.TrimSpace(string(body)) != `["human","group","contact","peer"]` {
+	if status != http.StatusOK || strings.TrimSpace(string(body)) != `["human","group","contact","peer","service"]` {
 		t.Fatalf("GET /kinds = %d: %s", status, body)
 	}
 }

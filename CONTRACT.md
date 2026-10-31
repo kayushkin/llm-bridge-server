@@ -41,7 +41,7 @@ module: fts5` — `Open()` says so and names the flag.
 | `disabled_at` | 0 = active. The only removal; see below |
 | `availability` | a human's declared working week in their own zone, `{"tzid","days","start","end"}` — the same shape as kanban-store's board `business_hours`, but the person's, so a Los Angeles board can have an Amsterdam member. **Absent means unknown, and unknown is never available.** Never defaulted. A group never carries one; see [Availability](#availability) |
 | `created_at` / `updated_at` | |
-| **`acts_in_this_deployment`**, **`acts_as_caller`**, **`restricted_to_its_grants`** | **computed on read** from the kind, on every record: may hold grants; a request may act as it (so it may be a group member and an administrator); holding no grant of a relation refuses it. Services read these instead of comparing `kind` to a word. See [Kinds](#kinds) |
+| **`acts_in_this_deployment`**, **`acts_as_caller`**, **`restricted_to_its_grants`**, **`holds_service_principal_tokens`** | **computed on read** from the kind, on every record: may hold grants; a request may act as it (so it may be a group member and an administrator); holding no grant of a relation refuses it; it may be issued a token of its own in place of a login. Services read these instead of comparing `kind` to a word. See [Kinds](#kinds) |
 | **`groups`** | **computed on read** by `GET /principals/{id}` for a human or a peer: the groups it belongs to. Always present for those, `[]` when none |
 | **`members`** | **computed on read** by `GET /principals/{id}` for a group: the humans and peers in it. Always present for a group, `[]` when none |
 
@@ -53,7 +53,7 @@ from the shape as well as from `kind`. Neither is expanded by `GET /principals`.
 | Field | Meaning |
 |---|---|
 | `group_id` | a `kind=group` principal. A human here is a 400 |
-| `member_id` | a `human` or `peer` principal (a kind with `acts_as_caller`). A group here is a 400: **no nested groups in v1** |
+| `member_id` | a `human`, `peer` or `service` principal (a kind with `acts_as_caller`). A group here is a 400: **no nested groups in v1** |
 | `created_at` | |
 
 `(group_id, member_id)` is the primary key and the insert is `INSERT OR IGNORE`,
@@ -157,14 +157,15 @@ id, and this is where the address becomes one, once.
 ## Kinds
 
 `GET /kind-definitions` serves each kind with what it may do, and every
-principal record carries the same three answers:
+principal record carries the same four answers:
 
-| kind | `acts_in_this_deployment` (holds grants) | `acts_as_caller` (makes requests, joins groups, may administer) | `restricted_to_its_grants` |
-|---|---|---|---|
-| `human` | yes | yes | no |
-| `group` | yes | no | no |
-| `contact` | no | no | no |
-| `peer` | yes | yes | **yes** |
+| kind | `acts_in_this_deployment` (holds grants) | `acts_as_caller` (makes requests, joins groups, may administer) | `restricted_to_its_grants` | `holds_service_principal_tokens` |
+|---|---|---|---|---|
+| `human` | yes | yes | no | no |
+| `group` | yes | no | no | no |
+| `contact` | no | no | no | no |
+| `peer` | yes | yes | **yes** | no |
+| `service` | yes | yes | **yes** | **yes** |
 
 A **`peer`** is another llm-bridge-server linked to this deployment. It acts
 here through a peer token this deployment's llm-bridge-server issued it, never
@@ -174,9 +175,17 @@ grant of a relation **refuses** it, where a human holding none is not
 restricted. A link that has just been made therefore gives the other server
 nothing. A peer has no availability or time off.
 
+A **`service`** is a program on this host that calls other services as
+itself, such as orchestratord reading and starting sessions. It never logs in:
+it presents a service principal token that llm-bridge-server issued for it,
+and an administrator there can revoke the token. Like a peer it is restricted
+to its grants, and it has no availability or time off. It is the only kind
+with `holds_service_principal_tokens`, which is what llm-bridge-server checks
+before it issues or accepts such a token.
+
 ## The administrator
 
-A human or a peer may carry `is_administrator`. It is one fact about a person, and the
+A human, a peer or a service may carry `is_administrator`. It is one fact about a person, and the
 services that read it — kanban-store, grant-store, llm-bridge-server — let an
 administrator past every per-resource check they make: every board, every
 grant, every session, granted or not. This store only records it.
