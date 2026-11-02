@@ -21,7 +21,7 @@ const ServiceName = "llm-bridge-server"
 // and either way someone believes it does something.
 const OwnedEnvironmentVariablePrefix = "LLMBRIDGE_"
 
-// Keys of the behaviour settings the server stores and reads at the time of
+// Keys of the behavior settings the server stores and reads at the time of
 // use. Everything else is read once, from the environment, into Config.
 const (
 	SettingSignalClassifierModelRole         = "signal_classifier.model_role"
@@ -107,70 +107,70 @@ func SettingDefinitions() []servicesettings.Definition {
 		wiring    = msg.ServiceSettingKindWiring
 		path      = msg.ServiceSettingKindPath
 		secret    = msg.ServiceSettingKindSecret
-		behaviour = msg.ServiceSettingKindBehaviour
+		behavior = msg.ServiceSettingKindBehavior
 		text      = msg.ServiceSettingValueTypeString
 		role      = msg.ServiceSettingValueTypeModelRole
 	)
 	definitions := []servicesettings.Definition{
 		// Behaviour the server stores: changed on the settings page, no restart.
-		{Key: SettingSignalClassifierModelRole, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "balanced",
+		{Key: SettingSignalClassifierModelRole, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL_ROLE", Kind: behavior, ValueType: role, Editable: true, Default: "balanced",
 			Description: "The model-store role the turn-end signal classifier asks. Its models are tried in order, each on the instance oneshot.instance_by_provider names for its provider. Empty switches the classifier off: no derived signals."},
-		{Key: SettingQuestionTriageModelRole, EnvironmentVariable: "LLMBRIDGE_QUESTION_TRIAGE_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "balanced",
+		{Key: SettingQuestionTriageModelRole, EnvironmentVariable: "LLMBRIDGE_QUESTION_TRIAGE_MODEL_ROLE", Kind: behavior, ValueType: role, Editable: true, Default: "balanced",
 			Description: "The model-store role question triage asks, deciding whether a surfacing worker's question needs a person and who. Apart from signal_classifier.model_role since 2026-10-20, so the classifier could move to the model an eval chose for it while triage kept its own. Empty switches triage off: a worker's question reaches its card untriaged."},
-		{Key: SettingSignalClassifierTimeout, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "20s",
+		{Key: SettingSignalClassifierTimeout, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_TIMEOUT", Kind: behavior, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "20s",
 			Description: "How long one classify or triage call may take. On timeout the turn keeps the state the heuristic gave it and no signal is written."},
-		{Key: SettingSignalClassifierMaximumCharacters, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "6000",
+		{Key: SettingSignalClassifierMaximumCharacters, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_MAX_CHARS", Kind: behavior, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "6000",
 			Description: "How much of a turn's final text is sent to the classifier, counted from the end, where a question or a sign-off lives."},
-		{Key: SettingSignalClassifierOptOutHarnesses, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeStringList, Editable: true,
+		{Key: SettingSignalClassifierOptOutHarnesses, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT", Kind: behavior, ValueType: msg.ServiceSettingValueTypeStringList, Editable: true,
 			Description: "Harnesses whose turns the classifier skips, comma-separated by harness id."},
-		{Key: SettingPromptDriftTaggerModelRole, EnvironmentVariable: "LLMBRIDGE_PROMPT_DRIFT_TAGGER_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "balanced",
+		{Key: SettingPromptDriftTaggerModelRole, EnvironmentVariable: "LLMBRIDGE_PROMPT_DRIFT_TAGGER_MODEL_ROLE", Kind: behavior, ValueType: role, Editable: true, Default: "balanced",
 			Description: "The model-store role that proposes tags for sections a prompt-file edit adds, one call per held drift. Empty switches labelling off: drifts are still detected and held, unlabelled."},
-		{Key: SettingSessionRenamerModelRole, EnvironmentVariable: "LLMBRIDGE_SESSION_RENAMER_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "efficient",
+		{Key: SettingSessionRenamerModelRole, EnvironmentVariable: "LLMBRIDGE_SESSION_RENAMER_MODEL_ROLE", Kind: behavior, ValueType: role, Editable: true, Default: "efficient",
 			Description: "The model-store role that writes a session's sidebar title from its recent turns. Empty switches automatic titles off."},
-		{Key: SettingSessionIdleTimeout, EnvironmentVariable: "LLMBRIDGE_IDLE_TIMEOUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "15m",
+		{Key: SettingSessionIdleTimeout, EnvironmentVariable: "LLMBRIDGE_IDLE_TIMEOUT", Kind: behavior, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "15m",
 			Description: "How long an events-mode session may sit with no new event before its harness process is stopped and the session marked aborted. 0s or less switches reaping off."},
-		{Key: SettingSessionPTYIdleTimeout, EnvironmentVariable: "LLMBRIDGE_PTY_IDLE_TIMEOUT", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "60m",
+		{Key: SettingSessionPTYIdleTimeout, EnvironmentVariable: "LLMBRIDGE_PTY_IDLE_TIMEOUT", Kind: behavior, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "60m",
 			Description: "The same cutoff for pty-mode sessions, where a person reading output emits nothing. 0s or less switches reaping off."},
-		{Key: SettingExternalActivityPollInterval, EnvironmentVariable: "LLMBRIDGE_EXTERNAL_ACTIVITY_POLL_INTERVAL", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "15s",
+		{Key: SettingExternalActivityPollInterval, EnvironmentVariable: "LLMBRIDGE_EXTERNAL_ACTIVITY_POLL_INTERVAL", Kind: behavior, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "15s",
 			Description: "How often the server asks each harness wrapper which session files changed, so a conversation run with claude or codex in a terminal reaches the dash while the server is up. 0s or less switches the watcher off; sessions are then found only at startup."},
 
-		{Key: SettingOneShotInstanceByProvider, EnvironmentVariable: "LLMBRIDGE_ONESHOT_INSTANCE_BY_PROVIDER", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeStringMap, Editable: true, Default: "anthropic:inst-cc-local,openai:inst-codex-local",
+		{Key: SettingOneShotInstanceByProvider, EnvironmentVariable: "LLMBRIDGE_ONESHOT_INSTANCE_BY_PROVIDER", Kind: behavior, ValueType: msg.ServiceSettingValueTypeStringMap, Editable: true, Default: "anthropic:inst-cc-local,openai:inst-codex-local",
 			Description: "Which harness instance makes every one-shot call this server routes — the classifier, triage, the drift tagger, the renamer, the command reviewer, operations and POST /oneshot — for each model-store provider, as provider:instance pairs. A model whose provider is named nowhere here is an attempt that fails, and the role's next model is tried. Each instance must be enabled and its harness must implement -oneshot."},
-		{Key: SettingImageGenerationInstanceID, EnvironmentVariable: "LLMBRIDGE_IMAGE_GENERATION_INSTANCE_ID", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeString, Editable: true, Default: "inst-codex-local",
+		{Key: SettingImageGenerationInstanceID, EnvironmentVariable: "LLMBRIDGE_IMAGE_GENERATION_INSTANCE_ID", Kind: behavior, ValueType: msg.ServiceSettingValueTypeString, Editable: true, Default: "inst-codex-local",
 			Description: "The harness instance that makes images for POST /images and POST /sessions/{id}/images. Its harness must implement -generate-image (llm-bridge-codex does, on the Codex login). Empty switches image generation off."},
-		{Key: SettingOperationsCompletionModelRole, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true,
+		{Key: SettingOperationsCompletionModelRole, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_COMPLETION_MODEL_ROLE", Kind: behavior, ValueType: role, Editable: true,
 			Description: "The model-store role an llm.completion or classification.run uses when its input names no model. Empty means an input must name one: a role, a model id or an alias."},
-		{Key: SettingSessionActionsReviewModelRole, EnvironmentVariable: "LLMBRIDGE_SESSION_ACTIONS_REVIEW_MODEL_ROLE", Kind: behaviour, ValueType: role, Editable: true, Default: "balanced",
+		{Key: SettingSessionActionsReviewModelRole, EnvironmentVariable: "LLMBRIDGE_SESSION_ACTIONS_REVIEW_MODEL_ROLE", Kind: behavior, ValueType: role, Editable: true, Default: "balanced",
 			Description: "The model-store role that reviews a run_command button's command when an agent offers it, and whose verdict the button shows. A command it rejects cannot be run; a role none of whose models answers refuses the offer."},
-		{Key: SettingOperationsGrantEnforcement, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_GRANT_ENFORCEMENT", Kind: behaviour, ValueType: text, Editable: true, Default: OperationsGrantEnforcementLenient,
+		{Key: SettingOperationsGrantEnforcement, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_GRANT_ENFORCEMENT", Kind: behavior, ValueType: text, Editable: true, Default: OperationsGrantEnforcementLenient,
 			Description: "How grant-store's can_run_operation grants are applied to a principal starting an operation. lenient: a principal holding no such grant may start any type, and one holding any may start only those. strict: a principal may start only the types its grants name. Administrators and the service token are never checked."},
-		{Key: SettingServerName, EnvironmentVariable: "LLMBRIDGE_SERVER_NAME", Kind: behaviour, ValueType: text, Editable: true,
+		{Key: SettingServerName, EnvironmentVariable: "LLMBRIDGE_SERVER_NAME", Kind: behavior, ValueType: text, Editable: true,
 			Description: "What this server calls itself: shown at the top of its own session list, and reported to every server it is connected to, which shows it as this server's name. Empty means it has none, and is shown as such."},
-		{Key: SettingSelfUpdateCommand, EnvironmentVariable: "LLMBRIDGE_SELF_UPDATE_COMMAND", Kind: behaviour, ValueType: text, Editable: true,
+		{Key: SettingSelfUpdateCommand, EnvironmentVariable: "LLMBRIDGE_SELF_UPDATE_COMMAND", Kind: behavior, ValueType: text, Editable: true,
 			Description: "The shell command this server runs, detached, when an administrator approves an \"update ready\" notice from a connected server: it pulls, builds, tests and restarts whatever this host runs. It is given LLMBRIDGE_SELF_UPDATE_RESULT_FILE, where it writes {\"result\":\"succeeded\"|\"failed\",\"detail\":…,\"versions\":[{\"repo\",\"commit\"}]} as JSON, LLMBRIDGE_SELF_UPDATE_OPERATION_ID, and LLMBRIDGE_SELF_UPDATE_COMMITS, the notice's commits as JSON [{\"repo\",\"commit\"}]. It must outlive a restart of this server: under systemd with the default KillMode, start the work in a unit of its own (systemd-run). Empty means this server takes no updates from a notice."},
-		{Key: SettingOrchestratorURL, EnvironmentVariable: "LLMBRIDGE_ORCHESTRATOR_URL", Kind: behaviour, ValueType: text, Editable: true,
+		{Key: SettingOrchestratorURL, EnvironmentVariable: "LLMBRIDGE_ORCHESTRATOR_URL", Kind: behavior, ValueType: text, Editable: true,
 			Description: "Where the orchestrator answers. An administrator may hand an approved request from a connected server to it instead of starting a session on an instance; it is sent to the orchestrator's POST /home-session/messages. Empty means no handoff is offered."},
-		{Key: SettingKeepAwakeEnabled, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_ENABLED", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeBoolean, Editable: true, Default: "false",
+		{Key: SettingKeepAwakeEnabled, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_ENABLED", Kind: behavior, ValueType: msg.ServiceSettingValueTypeBoolean, Editable: true, Default: "false",
 			Description: "Hold the machine awake while any session on this server is running, and for keep_awake.grace_minutes after the last one stops or was last sent a message. It cannot wake a machine that is already asleep, or stop a closed lid from putting it to sleep."},
-		{Key: SettingPeerAttachmentMaximumBytes, EnvironmentVariable: "LLMBRIDGE_PEER_ATTACHMENT_MAXIMUM_BYTES", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "52428800",
+		{Key: SettingPeerAttachmentMaximumBytes, EnvironmentVariable: "LLMBRIDGE_PEER_ATTACHMENT_MAXIMUM_BYTES", Kind: behavior, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "52428800",
 			Description: "The largest file, in bytes, a message to or from a connected server may carry: an upload here over it is refused, and so is a message from the other server that describes one, before any of it is fetched."},
-		{Key: SettingPeerAttachmentsMaximumTotalBytes, EnvironmentVariable: "LLMBRIDGE_PEER_ATTACHMENTS_MAXIMUM_TOTAL_BYTES", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "209715200",
+		{Key: SettingPeerAttachmentsMaximumTotalBytes, EnvironmentVariable: "LLMBRIDGE_PEER_ATTACHMENTS_MAXIMUM_TOTAL_BYTES", Kind: behavior, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "209715200",
 			Description: "The most bytes all the files of one message to or from a connected server may come to together."},
-		{Key: SettingKeepAwakeGraceMinutes, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_GRACE_MINUTES", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "30",
+		{Key: SettingKeepAwakeGraceMinutes, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_GRACE_MINUTES", Kind: behavior, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "30",
 			Description: "How many minutes the machine is kept awake after the last session stops running or was last sent a message, when keep_awake.enabled is on. 0 releases the hold as soon as no session runs."},
 
 		// Behaviour read once at start.
-		{Key: "session.purpose_folders", EnvironmentVariable: "LLMBRIDGE_PURPOSE_FOLDERS", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeStringMap,
+		{Key: "session.purpose_folders", EnvironmentVariable: "LLMBRIDGE_PURPOSE_FOLDERS", Kind: behavior, ValueType: msg.ServiceSettingValueTypeStringMap,
 			Description: "purpose:folder pairs laid over the purpose registry's own folders, deciding where a new session is filed. The Settings page's source folders override both at runtime."},
-		{Key: "pty.ring_buffer_bytes", EnvironmentVariable: "LLMBRIDGE_PTY_RING_BUFFER_BYTES", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Default: "65536",
+		{Key: "pty.ring_buffer_bytes", EnvironmentVariable: "LLMBRIDGE_PTY_RING_BUFFER_BYTES", Kind: behavior, ValueType: msg.ServiceSettingValueTypeInteger, Default: "65536",
 			Description: "How many bytes of recent pty output each session keeps to replay to a terminal that attaches late."},
-		{Key: "operations.worker_count", EnvironmentVariable: "LLMBRIDGE_OPERATIONS_WORKERS", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeInteger, Default: "4",
+		{Key: "operations.worker_count", EnvironmentVariable: "LLMBRIDGE_OPERATIONS_WORKERS", Kind: behavior, ValueType: msg.ServiceSettingValueTypeInteger, Default: "4",
 			Description: "How many operations run at once. More wait in the queue."},
-		{Key: "operations.lease_duration", EnvironmentVariable: "LLMBRIDGE_OPERATIONS_LEASE", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeDuration, Default: "30s",
+		{Key: "operations.lease_duration", EnvironmentVariable: "LLMBRIDGE_OPERATIONS_LEASE", Kind: behavior, ValueType: msg.ServiceSettingValueTypeDuration, Default: "30s",
 			Description: "How long a worker's claim on a running operation lasts without renewal. An operation whose worker stops renewing is reconciled once it runs out."},
-		{Key: "demo_login.enabled", EnvironmentVariable: "LLMBRIDGE_DEMO_LOGIN_ENABLED", Kind: behaviour, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "true",
+		{Key: "demo_login.enabled", EnvironmentVariable: "LLMBRIDGE_DEMO_LOGIN_ENABLED", Kind: behavior, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "true",
 			Description: "Whether POST /auth/demo-login signs anyone in. It takes a principal id and no password, so a deployment whose people sign in through Entra ID sets this false, and the route answers 404 demo_login_disabled."},
-		{Key: "tests.allow_production_addresses", EnvironmentVariable: productiondefaults.AllowInTestsEnvironmentVariable, Kind: behaviour, ValueType: text,
+		{Key: "tests.allow_production_addresses", EnvironmentVariable: productiondefaults.AllowInTestsEnvironmentVariable, Kind: behavior, ValueType: text,
 			Description: "Set to anything, lets a go test binary use this host's live addresses. Never set on a running server."},
 
 		// Wiring.
@@ -305,7 +305,7 @@ func NewSettingsRegistry(environment servicesettings.Environment) (*servicesetti
 	return servicesettings.New(ServiceName, []string{OwnedEnvironmentVariablePrefix}, SettingDefinitions(), environment)
 }
 
-// StoredSettingSeeds is what each stored behaviour setting starts from the
+// StoredSettingSeeds is what each stored behavior setting starts from the
 // first time this server runs with it editable: the value Config holds, which
 // Load took from the environment or the default and a test wrote as a literal.
 // The two values operations.grant_enforcement takes.
