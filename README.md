@@ -264,6 +264,10 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
+| `GET` | `/session-briefs` | Briefs across chats (`?session_id=&loose_end_state=open&updated_since=&limit=`; `session_id` repeatable) | principal, own sessions only |
+| `GET` | `/sessions/{id}/brief` | One chat's brief: overall goal, current step, each turn's revision, and its loose ends | owner |
+| `POST` | `/sessions/{id}/loose-ends/{loose_end_id}/answer` | Answer a loose end (`{"text"}`): sent to the session as a message quoting it | owner |
+| `POST` | `/sessions/{id}/loose-ends/{loose_end_id}/dismiss` | Close a loose end without an answer | owner |
 | `GET` | `/sessions/{id}/signals` | One session's signals | owner |
 | `POST` | `/sessions/{id}/signals` | A session raises a notice about itself | owner |
 | `GET` | `/signals` | The inbox across sessions (`?state=open&kind=&surface=&session_type=&session_id=&linked_todo_id=&limit=`; `session_type` repeatable) | principal, own sessions only |

@@ -33,6 +33,11 @@ type Notifier interface {
 	// by a turn ending, a message, a resolve verb, a supersede or a park
 	// draining, and every one of those has to reach the surfaces showing it.
 	OnSignalsChanged(bridgeID string)
+
+	// OnSessionBriefChanged fires when a session's brief or one of its loose
+	// ends moves: a turn updated it, or a person answered or dismissed a
+	// loose end.
+	OnSessionBriefChanged(bridgeID string)
 }
 
 type Store struct {
@@ -56,6 +61,12 @@ func (s *Store) notifyChanged(bridgeID string) {
 func (s *Store) notifySignalsChanged(bridgeID string) {
 	if s.notifier != nil && bridgeID != "" {
 		s.notifier.OnSignalsChanged(bridgeID)
+	}
+}
+
+func (s *Store) notifySessionBriefChanged(bridgeID string) {
+	if s.notifier != nil && bridgeID != "" {
+		s.notifier.OnSessionBriefChanged(bridgeID)
 	}
 }
 
@@ -528,6 +539,9 @@ func (s *Store) migrate() error {
 	`)
 	if err != nil {
 		return err
+	}
+	if err := s.migrateSessionBriefs(); err != nil {
+		return fmt.Errorf("migrate session briefs: %w", err)
 	}
 	if err := s.migrateSignals(); err != nil {
 		return err

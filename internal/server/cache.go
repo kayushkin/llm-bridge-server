@@ -75,6 +75,10 @@ func (c *responseCache) OnSessionDeleted(string) { c.invalidate() }
 // cheaper than reasoning about which projections happen to embed one.
 func (c *responseCache) OnSignalsChanged(string) { c.invalidate() }
 
+// OnSessionBriefChanged invalidates as well, since the brief routes are read
+// through the same cache.
+func (c *responseCache) OnSessionBriefChanged(string) { c.invalidate() }
+
 // notifierFanout multiplexes store mutation signals to several Notifiers. The
 // store accepts a single Notifier; the SSE hub and the response cache both need
 // the signal, so this fans it out. Order is preserved; all targets are always
@@ -96,6 +100,12 @@ func (f *notifierFanout) OnSessionChanged(id string) {
 func (f *notifierFanout) OnSessionDeleted(id string) {
 	for _, t := range f.targets {
 		t.OnSessionDeleted(id)
+	}
+}
+
+func (f *notifierFanout) OnSessionBriefChanged(id string) {
+	for _, t := range f.targets {
+		t.OnSessionBriefChanged(id)
 	}
 }
 

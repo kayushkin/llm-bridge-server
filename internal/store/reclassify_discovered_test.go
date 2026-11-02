@@ -12,6 +12,7 @@ type countingNotifier struct{ changed map[string]int }
 func (n *countingNotifier) OnSessionChanged(bridgeID string) { n.changed[bridgeID]++ }
 func (n *countingNotifier) OnSessionDeleted(string)          {}
 func (n *countingNotifier) OnSignalsChanged(string)          {}
+func (n *countingNotifier) OnSessionBriefChanged(string)     {}
 
 // importUnrecognised inserts a discovered row the way discovery did before the
 // adapter recognised oneshot transcripts: no source, so purpose "discovered".

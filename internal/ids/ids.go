@@ -75,3 +75,14 @@ func IsServerID(value string) bool {
 	_, err := ulid.ParseStrict(rest)
 	return err == nil
 }
+
+// NewSessionBriefRevisionID returns a fresh id for one turn's revision of a
+// session brief (sbrev_<ULID>).
+func NewSessionBriefRevisionID() string {
+	return "sbrev_" + ulid.Make().String()
+}
+
+// NewLooseEndID returns a fresh loose end id (loose_<ULID>).
+func NewLooseEndID() string {
+	return "loose_" + ulid.Make().String()
+}

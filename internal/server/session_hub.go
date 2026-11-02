@@ -176,6 +176,20 @@ func (h *sessionHub) OnSignalsChanged(bridgeID string) {
 	h.publishOwnedBy(sessionListEvent{Type: "signal", SessionID: bridgeID}, ownerPrincipalID)
 }
 
+// OnSessionBriefChanged announces that a session's brief or loose ends moved.
+// Like a signal frame it names the session and carries no rows: a client
+// re-reads the brief through GET /sessions/{id}/brief.
+func (h *sessionHub) OnSessionBriefChanged(bridgeID string) {
+	if h == nil {
+		return
+	}
+	ownerPrincipalID := ""
+	if sess, err := h.store.GetSession(bridgeID); err == nil {
+		ownerPrincipalID = sess.PrincipalID
+	}
+	h.publishOwnedBy(sessionListEvent{Type: "session_brief", SessionID: bridgeID}, ownerPrincipalID)
+}
+
 // OnSessionDeleted implements store.Notifier.
 func (h *sessionHub) OnSessionDeleted(bridgeID string) {
 	if h == nil {

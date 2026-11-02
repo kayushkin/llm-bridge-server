@@ -142,7 +142,8 @@ func (n *notifierRecorder) OnSessionChanged(id string) {
 		n.onChange(id)
 	}
 }
-func (n *notifierRecorder) OnSessionDeleted(string) {}
+func (n *notifierRecorder) OnSessionDeleted(string)      {}
+func (n *notifierRecorder) OnSessionBriefChanged(string) {}
 func (n *notifierRecorder) OnSignalsChanged(id string) {
 	if n.onSignals != nil {
 		n.onSignals(id)

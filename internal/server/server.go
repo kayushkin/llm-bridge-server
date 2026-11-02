@@ -377,6 +377,13 @@ func (s *Server) routes() {
 	// is still live. See signal_answer.go.
 	s.mux.HandleFunc("POST /signals/{id}/answer", s.handleAnswerSignal)
 
+	// Session briefs: what each chat is for, where it stands, what each turn
+	// changed, and what it said that nobody answered. See session_brief_pass.go.
+	s.mux.HandleFunc("GET /sessions/{id}/brief", s.handleGetSessionBrief)
+	s.mux.HandleFunc("GET /session-briefs", s.handleListSessionBriefs)
+	s.mux.HandleFunc("POST /sessions/{id}/loose-ends/{loose_end_id}/answer", s.handleAnswerLooseEnd)
+	s.mux.HandleFunc("POST /sessions/{id}/loose-ends/{loose_end_id}/dismiss", s.handleDismissLooseEnd)
+
 	// Operations: asynchronous work with a durable receipt. See operations.go
 	// and docs/OPERATIONS.md in llm-bridge.
 	s.mux.HandleFunc("POST /operations", s.handleCreateOperation)
