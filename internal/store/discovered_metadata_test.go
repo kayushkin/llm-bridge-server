@@ -28,14 +28,14 @@ func titleAndFolder(t *testing.T, s *Store, bridgeID string) (string, string, ti
 	return title, folder, updated
 }
 
-func TestFillDiscoveredSessionMetadataReplacesInjectedTitleAndFillsFolder(t *testing.T) {
+func TestFillOrRepairDiscoveredSessionMetadataReplacesInjectedTitleAndFillsFolder(t *testing.T) {
 	s := testStore(t)
 	id := discoveredRow(t, s, "01a17f13-5a13-7950-be14-de83e37aff1d", injectedAgentsTitle)
 	_, _, updatedBefore := titleAndFolder(t, s, id)
 
-	changed, err := s.FillDiscoveredSessionMetadata(id, "Which are the recent orders?", "/work/repo")
+	changed, err := s.FillOrRepairDiscoveredSessionMetadata(id, "Which are the recent orders?", "/work/repo")
 	if err != nil {
-		t.Fatalf("FillDiscoveredSessionMetadata: %v", err)
+		t.Fatalf("FillOrRepairDiscoveredSessionMetadata: %v", err)
 	}
 	if want := []string{"working_dir", "display_name"}; !reflect.DeepEqual(changed, want) {
 		t.Errorf("changed = %v, want %v", changed, want)
@@ -48,13 +48,13 @@ func TestFillDiscoveredSessionMetadataReplacesInjectedTitleAndFillsFolder(t *tes
 		t.Errorf("updated_at moved from %v to %v; correcting a label is not activity", updatedBefore, updatedAfter)
 	}
 
-	again, err := s.FillDiscoveredSessionMetadata(id, "Which are the recent orders?", "/work/repo")
+	again, err := s.FillOrRepairDiscoveredSessionMetadata(id, "Which are the recent orders?", "/work/repo")
 	if err != nil || len(again) != 0 {
 		t.Errorf("second call changed %v (err %v), want nothing", again, err)
 	}
 }
 
-func TestFillDiscoveredSessionMetadataKeepsTitlesSomeoneChose(t *testing.T) {
+func TestFillOrRepairDiscoveredSessionMetadataKeepsTitlesSomeoneChose(t *testing.T) {
 	s := testStore(t)
 
 	renamedByPerson := discoveredRow(t, s, "01a17f13-6000-7950-be14-de83e37aff1d", injectedAgentsTitle)
@@ -69,9 +69,9 @@ func TestFillDiscoveredSessionMetadataKeepsTitlesSomeoneChose(t *testing.T) {
 
 	for _, id := range []string{renamedByPerson, renamedByRenamer, plainTitle} {
 		before, _, _ := titleAndFolder(t, s, id)
-		changed, err := s.FillDiscoveredSessionMetadata(id, "Something else", "/work/repo")
+		changed, err := s.FillOrRepairDiscoveredSessionMetadata(id, "Something else", "/work/repo")
 		if err != nil {
-			t.Fatalf("FillDiscoveredSessionMetadata(%s): %v", id, err)
+			t.Fatalf("FillOrRepairDiscoveredSessionMetadata(%s): %v", id, err)
 		}
 		if want := []string{"working_dir"}; !reflect.DeepEqual(changed, want) {
 			t.Errorf("%s: changed = %v, want only the folder", id, changed)
@@ -82,20 +82,66 @@ func TestFillDiscoveredSessionMetadataKeepsTitlesSomeoneChose(t *testing.T) {
 	}
 }
 
-func TestFillDiscoveredSessionMetadataNeverWritesInjectedTextOrOverwritesAFolder(t *testing.T) {
+func TestFillOrRepairDiscoveredSessionMetadataNeverWritesInjectedTextOrOverwritesAFolder(t *testing.T) {
 	s := testStore(t)
 	id := discoveredRow(t, s, "01a17f13-9000-7950-be14-de83e37aff1d", "")
 	if _, err := s.db.Exec(`UPDATE sessions SET working_dir='/work/chosen' WHERE bridge_id=?`, id); err != nil {
 		t.Fatalf("set folder: %v", err)
 	}
-	changed, err := s.FillDiscoveredSessionMetadata(id, "<environment_context>\n  <cwd>/work</cwd>", "/work/other")
+	changed, err := s.FillOrRepairDiscoveredSessionMetadata(id, "<environment_context>\n  <cwd>/work</cwd>", "/work/other")
 	if err != nil {
-		t.Fatalf("FillDiscoveredSessionMetadata: %v", err)
+		t.Fatalf("FillOrRepairDiscoveredSessionMetadata: %v", err)
 	}
 	if len(changed) != 0 {
 		t.Errorf("changed = %v, want nothing: the title offered is codex's own text and the folder is already set", changed)
 	}
 	if title, folder, _ := titleAndFolder(t, s, id); title != "" || folder != "/work/chosen" {
 		t.Errorf("row = (%q, %q)", title, folder)
+	}
+}
+
+func TestFillOrRepairDiscoveredSessionMetadataRepairsTheClaudeCodeProjectNameMisreading(t *testing.T) {
+	s := testStore(t)
+
+	misread := discoveredRow(t, s, "8f1d5481-1914-48a4-8b66-194179709d6b", "Email alert poller")
+	if _, err := s.FillOrRepairDiscoveredSessionMetadata(misread, "", "/work/llm/bridge/server"); err != nil {
+		t.Fatalf("seed the misread folder: %v", err)
+	}
+	changed, err := s.FillOrRepairDiscoveredSessionMetadata(misread, "", "/work/llm-bridge-server")
+	if err != nil {
+		t.Fatalf("FillOrRepairDiscoveredSessionMetadata: %v", err)
+	}
+	if want := []string{"working_dir"}; !reflect.DeepEqual(changed, want) {
+		t.Errorf("changed = %v, want %v", changed, want)
+	}
+	if _, folder, _ := titleAndFolder(t, s, misread); folder != "/work/llm-bridge-server" {
+		t.Errorf("working_dir = %q, want the transcript's cwd /work/llm-bridge-server", folder)
+	}
+
+	chosen := discoveredRow(t, s, "8f1d5481-1914-48a4-8b66-194179709d6c", "Elsewhere")
+	if _, err := s.FillOrRepairDiscoveredSessionMetadata(chosen, "", "/work/other"); err != nil {
+		t.Fatalf("seed a folder: %v", err)
+	}
+	if changed, err := s.FillOrRepairDiscoveredSessionMetadata(chosen, "", "/work/llm-bridge-server"); err != nil || len(changed) != 0 {
+		t.Errorf("changed %v (err %v); a folder that is not the misreading must be kept", changed, err)
+	}
+}
+
+func TestIsClaudeCodeProjectNameMisreading(t *testing.T) {
+	cases := []struct {
+		stored, actual string
+		want           bool
+	}{
+		{"/work/llm/bridge/server", "/work/llm-bridge-server", true},
+		{"/home/u//claude/projects", "/home/u/.claude/projects", true},
+		{"/work/photo/store/wt/matcher", "/work/photo_store/wt/matcher", true},
+		{"/work/repo", "/work/repo", false},
+		{"/work/llm/bridge", "/work/llm-bridge-server", false},
+		{"/work/llm-bridge-server", "/work/llm/bridge/server", false},
+	}
+	for _, c := range cases {
+		if got := isClaudeCodeProjectNameMisreading(c.stored, c.actual); got != c.want {
+			t.Errorf("isClaudeCodeProjectNameMisreading(%q, %q) = %v, want %v", c.stored, c.actual, got, c.want)
+		}
 	}
 }

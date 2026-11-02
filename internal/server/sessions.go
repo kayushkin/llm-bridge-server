@@ -155,14 +155,15 @@ func displayNameForDiscoveredSession(prompt, project string) string {
 	return textutil.TruncateToRuneLimit(displayName, maxDiscoveredDisplayNameRunes)
 }
 
-// fillDiscoveredSessionMetadata brings a discovered session's working folder
-// and title onto its row where the row lacks them or holds codex's own text
-// (store.FillDiscoveredSessionMetadata decides which), and logs what changed
+// fillOrRepairDiscoveredSessionMetadata brings a discovered session's working
+// folder and title onto its row where the row lacks them, holds codex's own
+// text, or holds a working folder the Claude Code wrapper misread
+// (store.FillOrRepairDiscoveredSessionMetadata decides which), and logs what changed
 // under logPrefix. Every path that sees a session on disk calls it — startup
 // discovery, GET /sessions/discover and the external activity watcher — so a
 // row written before the wrapper reported these converges on the next pass.
-func (s *Server) fillDiscoveredSessionMetadata(logPrefix, bridgeID string, ds msg.StoredSession) bool {
-	changed, err := s.store.FillDiscoveredSessionMetadata(bridgeID, displayNameForDiscoveredSession(ds.Prompt, ds.Project), ds.Project)
+func (s *Server) fillOrRepairDiscoveredSessionMetadata(logPrefix, bridgeID string, ds msg.StoredSession) bool {
+	changed, err := s.store.FillOrRepairDiscoveredSessionMetadata(bridgeID, displayNameForDiscoveredSession(ds.Prompt, ds.Project), ds.Project)
 	if err != nil {
 		log.Printf("%s ERROR fill %s (%s %s): %v", logPrefix, bridgeID, ds.Harness, ds.HarnessSessionID, err)
 		return false
@@ -1529,7 +1530,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			log.Printf("[discover] failed to upsert session %s: %v", ds.HarnessSessionID, err)
 			continue
 		}
-		s.fillDiscoveredSessionMetadata("[discover]", bridgeID, ds)
+		s.fillOrRepairDiscoveredSessionMetadata("[discover]", bridgeID, ds)
 		// Lineage is resolved after every row exists — discovery has no
 		// parent-before-child ordering, so linking inline drops every subagent
 		// walked before its parent. Mirrors AutoDiscover.

@@ -24,7 +24,7 @@ func TestDisplayNameForDiscoveredSessionRefusesCodexText(t *testing.T) {
 // A session discovered before the wrapper skipped codex's own text, titled
 // with its AGENTS.md instructions and with no working folder, is corrected
 // the next time a discovery pass reports it.
-func TestFillDiscoveredSessionMetadataCorrectsARowDiscoveredEarlier(t *testing.T) {
+func TestFillOrRepairDiscoveredSessionMetadataCorrectsARowDiscoveredEarlier(t *testing.T) {
 	srv, st := testServer(t)
 	now := time.Now()
 	harnessID := "01a17f13-5a13-7950-be14-de83e37aff1d"
@@ -34,8 +34,8 @@ func TestFillDiscoveredSessionMetadataCorrectsARowDiscoveredEarlier(t *testing.T
 	}
 
 	reported := msg.StoredSession{HarnessSessionID: harnessID, Harness: msg.HarnessCodex, Prompt: "Which are the recent orders?", Project: "/work/repo"}
-	if !srv.fillDiscoveredSessionMetadata("[test]", bridgeID, reported) {
-		t.Fatal("fillDiscoveredSessionMetadata changed nothing")
+	if !srv.fillOrRepairDiscoveredSessionMetadata("[test]", bridgeID, reported) {
+		t.Fatal("fillOrRepairDiscoveredSessionMetadata changed nothing")
 	}
 	row, err := st.GetSession(bridgeID)
 	if err != nil {
@@ -44,7 +44,7 @@ func TestFillDiscoveredSessionMetadataCorrectsARowDiscoveredEarlier(t *testing.T
 	if row.DisplayName != "Which are the recent orders?" || row.WorkingDir != "/work/repo" {
 		t.Errorf("row = (%q, %q), want the typed request and the rollout's cwd", row.DisplayName, row.WorkingDir)
 	}
-	if srv.fillDiscoveredSessionMetadata("[test]", bridgeID, reported) {
+	if srv.fillOrRepairDiscoveredSessionMetadata("[test]", bridgeID, reported) {
 		t.Error("a second pass changed the row again")
 	}
 }

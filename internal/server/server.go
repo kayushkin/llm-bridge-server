@@ -1211,7 +1211,7 @@ func (s *Server) discoverOnce(ctx context.Context) error {
 			log.Printf("[auto-discover] failed to upsert session %s: %v", ds.HarnessSessionID, err)
 			continue
 		}
-		if s.fillDiscoveredSessionMetadata("[auto-discover]", bridgeID, ds) {
+		if s.fillOrRepairDiscoveredSessionMetadata("[auto-discover]", bridgeID, ds) {
 			filled++
 		}
 		if !inserted {
