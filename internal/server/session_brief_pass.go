@@ -49,8 +49,8 @@ const sessionBriefSystemPrompt = `You keep a short brief for one chat between a 
 
 Fields:
 
-- overall_goal: what the person wants from this chat, in one plain sentence. Keep it unless the person changed what they want; a new step toward the same goal is not a change. When there is no brief yet, write it from what the person first asked in this chat, together with what they have asked since.
-- goal_changed: true only when this turn's message changed the overall goal.
+- overall_goal: what the person wants from this chat, in one plain sentence. Keep it unless the person changed what they want; a new step toward the same goal is not a change. When there is no brief yet, write it from what the person first asked in this chat, together with what they have asked since. When the brief's goal does not fit what the person first asked — it names a report, a check or a side task instead of what they came for — correct it.
+- goal_changed: true only when this turn's message changed the overall goal. Correcting a wrong goal is not a change: leave it false.
 - current_step: what the assistant is doing now or waiting on, in one sentence. When it finished and waits for nothing, say what it finished.
 - turn_change: one line naming what this turn changed outside the conversation — a commit, a merge, a push, a deploy, files written, a setting or record changed — using the names, ids and commit hashes the assistant gave. Empty when the turn only read, explained or asked.
 - settled: the open loose ends this turn dealt with, each by its id with a few words on how. A loose end is settled when the person's message answered it, when the assistant did or dropped the thing on purpose, or when it no longer matters. Never name an id you were not shown.
