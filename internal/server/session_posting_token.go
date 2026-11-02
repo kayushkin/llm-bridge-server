@@ -169,6 +169,34 @@ func (s *Server) sessionPostingEnvironment(session *store.Session) []string {
 		log.Printf("[session-posting] %s: %v; the agent cannot share files or offer actions", session.SessionID, err)
 		return nil
 	}
+	return s.sessionPostingEnvironmentForSpawn(session, gatewayURL, spawnKey)
+}
+
+// sessionPostingEnvironmentOfCurrentSpawn returns the same variables for the
+// spawn the session already has, without drawing a new one: a button's shell
+// command gets them, so bridge-peer, bridge-button and bridge-share-file work
+// there as they do in the agent's own shell, and the agent's token stays
+// valid. Nothing, with the reason logged, when the session has never been
+// spawned or this server's address is unknown.
+func (s *Server) sessionPostingEnvironmentOfCurrentSpawn(session *store.Session) []string {
+	gatewayURL := s.gatewayURLForSessionAgents()
+	if gatewayURL == "" {
+		log.Printf("[session-posting] %s: neither LLMBRIDGE_PUBLIC_URL nor LLMBRIDGE_LISTEN_ADDR gives this server's address; a button's command cannot post into the session", session.SessionID)
+		return nil
+	}
+	spawnKey, recorded, err := s.store.SessionPostingSpawnKey(session.SessionID)
+	if err != nil {
+		log.Printf("[session-posting] %s: read the spawn key: %v; a button's command cannot post into the session", session.SessionID, err)
+		return nil
+	}
+	if !recorded {
+		log.Printf("[session-posting] %s: the session has no recorded spawn; a button's command cannot post into the session", session.SessionID)
+		return nil
+	}
+	return s.sessionPostingEnvironmentForSpawn(session, gatewayURL, spawnKey)
+}
+
+func (s *Server) sessionPostingEnvironmentForSpawn(session *store.Session, gatewayURL, spawnKey string) []string {
 	sessionURL := fmt.Sprintf("%s/sessions/%s", gatewayURL, url.PathEscape(session.SessionID))
 	environment := []string{
 		sessionPostingTokenEnvironmentVariable + "=" + s.harnessChildTokenSigner.encodeSessionPostingToken(session.SessionID, spawnKey),

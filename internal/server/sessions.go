@@ -302,8 +302,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// A connected server's user starts sessions as the principal they are
 	// mapped to here, administrator or not, so the session's agent holds that
-	// principal's token. An administrator is otherwise left to name a principal
-	// or none, and the connected server cannot name one of this server's ids.
+	// principal's token. The connected server cannot name one of this
+	// server's ids.
 	if caller, ok := callerOfRequest(r); ok && caller.peer.actsForRemoteUser() {
 		if req.PrincipalID != "" && req.PrincipalID != caller.principalID {
 			writeJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
@@ -311,6 +311,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.PrincipalID = caller.principalID
+	}
+	// An administrator who names no principal starts the session as
+	// themselves, as every other principal does, so its agent holds their
+	// token. Only a caller acting as nobody — the internal service with no
+	// X-Principal-Id — starts a session with no principal.
+	if req.PrincipalID == "" {
+		req.PrincipalID = principalStartingSessionAsThemselves(r)
 	}
 
 	// Whose grants decide where and as whom the session may run, and the peer
@@ -1600,4 +1607,19 @@ func resolveCredential(hs *harnessstore.Store, instanceID string) string {
 		}
 	}
 	return ""
+}
+
+// principalStartingSessionAsThemselves is the principal a request to start a
+// session acts as, when that is whom the session runs as if the request names
+// none: a signed-in principal, administrator or not, or the internal service
+// acting for one (X-Principal-Id). Empty for the internal service acting as
+// itself, for a connected server (it starts sessions only as a mapped user,
+// handled above), and for a session's agent starting a delegate, whose
+// principal delegateRequestRefusal decides.
+func principalStartingSessionAsThemselves(r *http.Request) string {
+	caller, ok := callerOfRequest(r)
+	if !ok || caller.peer != nil || caller.delegatingAgentOfSessionID != "" {
+		return ""
+	}
+	return caller.principalID
 }

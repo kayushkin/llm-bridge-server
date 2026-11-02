@@ -217,14 +217,8 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 			if setting.Record == "" {
 				setting.Record = "sessions.principal_id"
 			}
-			if prefs.DefaultPrincipalID != "" && prefs.DefaultPrincipalID == sess.PrincipalID && o.Layer == msg.EffectiveLayerRequest {
-				setting.Notes = append(setting.Notes, "equals bridge-prefs.default_principal_id, which the chat pane sends unless the creator chose otherwise")
-			}
 		} else {
 			setting.Layer, setting.Detail = msg.EffectiveLayerNone, "no principal: grants are not consulted and the instance's opt-ins are offered unchanged"
-			if prefs.DefaultPrincipalID != "" {
-				setting.Notes = append(setting.Notes, fmt.Sprintf("bridge-prefs.default_principal_id is %s; the creator did not send it (the chat pane would have)", prefs.DefaultPrincipalID))
-			}
 		}
 		add(setting)
 	}
@@ -534,9 +528,9 @@ func (s *Server) handleSessionEffectiveConfig(w http.ResponseWriter, r *http.Req
 //
 // A board fills in whichever of principal, agent, instance and bundle the
 // caller left empty, exactly as the kanban dispatcher does, and the answer
-// says so. A principal the caller left empty is then filled from
-// bridge-prefs.default_principal_id, as the chat pane does — a scripted
-// caller that omits it gets none, and the answer says that too.
+// says so. A principal still empty is then the caller's own, as it would be
+// for a session the caller started: none only for the internal service
+// acting as itself.
 func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	subject := msg.EffectiveConfigSubject{
@@ -585,10 +579,10 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 		apply(msg.EffectiveSettingInstance, "default_instance_id", &subject.InstanceID)
 		apply(msg.EffectiveSettingBundle, "default_bundle_id", &subject.BundleID)
 	}
-	if subject.PrincipalID == "" && s.bridgePrefs != nil {
-		if id := s.bridgePrefs.get().DefaultPrincipalID; id != "" {
+	if subject.PrincipalID == "" {
+		if id := principalStartingSessionAsThemselves(r); id != "" {
 			subject.PrincipalID = id
-			origins[msg.EffectiveSettingPrincipal] = inputOrigin{Layer: msg.EffectiveLayerGlobal, Record: "bridge-prefs.default_principal_id", Detail: "the chat pane sends this when the creator names none; a scripted caller that omits principal_id gets no principal"}
+			origins[msg.EffectiveSettingPrincipal] = inputOrigin{Layer: msg.EffectiveLayerRequest, Detail: "the caller's own principal: a session started by a caller that names none runs as that caller"}
 		}
 	}
 

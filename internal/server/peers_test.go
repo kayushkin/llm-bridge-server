@@ -1040,3 +1040,35 @@ func TestAnAdministratorsSessionOnAConnectedServerRunsAsTheirMappedPrincipal(t *
 		t.Fatalf("naming another principal = %d %s, want 403 principal_mismatch", answer.Code, answer.Body)
 	}
 }
+
+// TestASessionAnAdministratorStartsRunsAsThem: an administrator who names no
+// principal starts the session as themselves, as any other principal does, so
+// its agent holds their token. Only the internal service acting as itself
+// starts one with no principal.
+func TestASessionAnAdministratorStartsRunsAsThem(t *testing.T) {
+	gated := newPeerTestServer(t, false)
+	instances := decodeAnswer[[]msg.Instance](t, gated.requestAsAdministrator(t, "GET", "/instances", nil), http.StatusOK, "instances")
+	if len(instances) == 0 {
+		t.Fatal("the test server has no instance")
+	}
+	body := map[string]any{"type": "interactive", "purpose": "chat", "origin": "test", "harness": instances[0].HarnessType, "instance_id": instances[0].ID}
+	principalOf := func(answer *httptest.ResponseRecorder, what string) string {
+		t.Helper()
+		created := decodeAnswer[msg.ManagedSession](t, answer, http.StatusCreated, what)
+		stored, err := gated.server.store.GetSession(created.SessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return stored.PrincipalID
+	}
+
+	if got := principalOf(gated.requestAsAdministrator(t, "POST", "/sessions", body), "an administrator starts a session"); got != administratorTestPrincipalID {
+		t.Errorf("an administrator's session runs as %q, want %s", got, administratorTestPrincipalID)
+	}
+	data, _ := json.Marshal(body)
+	request := httptest.NewRequest("POST", "/sessions", bytes.NewReader(data))
+	request.Header.Set(serviceTokenHeader, testServiceToken)
+	if got := principalOf(serve(gated.server, request), "the internal service starts a session"); got != "" {
+		t.Errorf("the internal service's session runs as %q, want no principal", got)
+	}
+}

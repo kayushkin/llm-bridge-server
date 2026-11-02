@@ -653,3 +653,43 @@ func TestANewSessionButtonStartsTheSessionAsANewChatDoes(t *testing.T) {
 		t.Errorf("request = %+v", request)
 	}
 }
+
+// A button's command posts into its session as the agent's own shell does
+// (bridge-peer, bridge-button), with a token for the spawn the session already
+// has: pressing a button must not cut off the running agent's token.
+func TestARunCommandCarriesThePostingVariablesOfTheCurrentSpawn(t *testing.T) {
+	srv, st, _ := testServerForSessionActions(t)
+	session := newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
+	withFakeSessionActionModels(srv, "approve")
+	agentEnvironment := map[string]string{}
+	for _, variable := range srv.sessionPostingEnvironment(session) {
+		name, value, _ := strings.Cut(variable, "=")
+		agentEnvironment[name] = value
+	}
+
+	recorder := offerAsInternalService(t, srv, "br_buttons", map[string]any{
+		"label": "Show posting variables", "type": "run_command", "working_directory": t.TempDir(),
+		"shell_command": `printf '%s\n%s' "$LLM_BRIDGE_SESSION_ACTIONS_URL" "$LLM_BRIDGE_SESSION_POSTING_TOKEN"`,
+	})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("offer: %d %s", recorder.Code, recorder.Body)
+	}
+	var offered msg.SessionAction
+	json.Unmarshal(recorder.Body.Bytes(), &offered)
+	recorder = httptest.NewRecorder()
+	asInternalService(srv).ServeHTTP(recorder, runRequest("br_buttons", offered.ActionID))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("run: %d %s", recorder.Code, recorder.Body)
+	}
+	finished := waitForSessionActionToEnd(t, st, "br_buttons", offered.ActionID)
+	actionsURL, buttonToken, _ := strings.Cut(finished.Output, "\n")
+	if actionsURL != "http://127.0.0.1:8160/sessions/br_buttons/actions" {
+		t.Errorf("actions address in the command = %q (output %q)", actionsURL, finished.Output)
+	}
+	if posting, refusal := srv.verifiedPostingSession(buttonToken); refusal != nil || posting.SessionID != "br_buttons" {
+		t.Errorf("the command's token does not verify for br_buttons: %+v", refusal)
+	}
+	if _, refusal := srv.verifiedPostingSession(agentEnvironment[sessionPostingTokenEnvironmentVariable]); refusal != nil {
+		t.Errorf("pressing the button cut off the agent's own token: %+v", refusal)
+	}
+}

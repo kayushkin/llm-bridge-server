@@ -92,9 +92,12 @@ func (s *Server) runCommandAction(session *store.Session, action store.SessionAc
 // runShellForSessionAction runs script with bash -l -c in directory. The child
 // gets this server's environment without its secrets, as a harness child
 // does, plus LLM_BRIDGE_SESSION_ID — so a deploy that detaches, as
-// llm-bridge-server's own does, reports its outcome to the session — and
-// AI_AGENT, which deploy-gate writes into the deploy ledger as who deployed,
-// plus inputEnvironment: what the person typed into the button's boxes.
+// llm-bridge-server's own does, reports its outcome to the session — the
+// session's posting variables for its current spawn, so the bridge's own
+// commands (bridge-peer, bridge-button, bridge-share-file) find this server
+// as they do in the agent's shell, AI_AGENT, which deploy-gate writes into the
+// deploy ledger as who deployed, and inputEnvironment: what the person typed
+// into the button's boxes.
 func (s *Server) runShellForSessionAction(session *store.Session, action store.SessionAction, directory, script string, inputEnvironment []string) sessionActionOutcome {
 	ctx, cancel := context.WithTimeout(context.Background(), sessionActionCommandTimeout)
 	defer cancel()
@@ -104,6 +107,7 @@ func (s *Server) runShellForSessionAction(session *store.Session, action store.S
 		"LLM_BRIDGE_SESSION_ID="+session.SessionID,
 		fmt.Sprintf("AI_AGENT=chat button %s confirmed by %s", action.ActionID, describePrincipalForLog(action.RunByPrincipalID)),
 	)
+	command.Env = append(command.Env, s.sessionPostingEnvironmentOfCurrentSpawn(session)...)
 	command.Env = append(command.Env, inputEnvironment...)
 	output, err := command.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
