@@ -75,9 +75,9 @@ A shell job's wall-clock cap is **per-job**: `timeout_seconds` on create or PATC
 
 **Re-measured live 2026-08-13 on a disposable job, and this is now true of the running service too.** For five days this section carried a ⛔ block saying the opposite — that the deployed binary silently dropped every field but three and answered `200` — on the strength of a 2026-08-08 measurement plus the binary's build date. `~/bin/scheduler` was rebuilt **2026-08-11 20:33**, after commit `863868a` landed, and nobody re-measured. Verified this time by creating a throwaway job and reading it back: `PATCH {"schedule":"0 6 * * *","command":"echo CHANGED"}` → the row really changed; `{"scheduel":…}` → **400** `unknown field`; `{"schedule":"not a cron"}` → **400**; `{"command":""}` on a shell job → **400** `command is required for shell jobs`. The DB-surgery workaround is obsolete, as originally written. **A build date is not a deploy check — re-measure.**
 
-## A job cannot be created disabled
+## A job can be created switched off
 
-⚠️ **You cannot create a disabled job through the API.** The `POST /api/jobs` request struct has no `enabled` field at all (`internal/api/api.go`) and `db.go` sets `Enabled = true` on insert. The strict decoder rejects `{"enabled":false}` with a **400** `json: unknown field "enabled"` (measured live 2026-08-13), so you learn it failed rather than getting a live cron job you believed was off. Create it, then PATCH `{"enabled":false}`.
+`POST /api/jobs` takes `"enabled": false` and creates the job switched off (`internal/api/api.go`, `Enabled *bool`); leaving the field out creates it switched on, as before. So never create a job and then PATCH it off: for the moment between the two calls it is live and can fire. This section said the opposite until 2026-11-02; scheduler@271998d changed the code on 2026-09-25.
 
 ## Run statuses
 
