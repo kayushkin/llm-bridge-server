@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -179,5 +180,43 @@ func TestASessionsAgentReadsAsItsSessionsPrincipal(t *testing.T) {
 	recorder = servedWithPostingToken(t, srv, peerToken, http.MethodGet, "/sessions/search?q=x", nil)
 	if recorder.Code != http.StatusForbidden {
 		t.Errorf("search as the agent of a peer-started session: %d %s, want 403", recorder.Code, recorder.Body)
+	}
+}
+
+// A chat session sits in completed between turns, which is when a person
+// presses its buttons. While a pressed run_command runs, the session's token
+// is accepted, so bridge-peer and bridge-agent work in the button's shell;
+// once the run ends it is refused again.
+func TestAnEndedSessionsTokenIsAcceptedOnlyWhileItsButtonRuns(t *testing.T) {
+	srv, st, _ := testServerWithInstance(t, msg.HarnessMock)
+	ended := &store.Session{SessionID: "br_button_between_turns", Harness: "claude_code", State: string(msg.SessionCompleted), Type: msg.SessionTypeInteractive}
+	if err := st.CreateSession(ended); err != nil {
+		t.Fatal(err)
+	}
+	token := currentPostingTokenFor(t, srv, ended.SessionID)
+	action := store.SessionAction{
+		SessionID: ended.SessionID,
+		Offer:     msg.SessionActionOffer{Label: "List messages", Type: msg.SessionActionRunCommand, ShellCommand: "bridge-peer messages"},
+		Command:   "bridge-peer messages",
+		State:     msg.SessionActionOffered,
+		OfferedAt: time.Now().UTC(),
+	}
+	if err := st.InsertSessionAction(&action); err != nil {
+		t.Fatal(err)
+	}
+	if recorder := servedWithPostingToken(t, srv, token, http.MethodGet, "/sessions", nil); recorder.Code != http.StatusForbidden {
+		t.Errorf("before the press: %d %s, want 403", recorder.Code, recorder.Body)
+	}
+	if _, err := st.StartSessionAction(ended.SessionID, action.ActionID, "principal_000001", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if recorder := servedWithPostingToken(t, srv, token, http.MethodGet, "/sessions", nil); recorder.Code != http.StatusOK {
+		t.Errorf("while the button runs: %d %s, want 200", recorder.Code, recorder.Body)
+	}
+	if _, err := st.FinishSessionAction(ended.SessionID, action.ActionID, store.SessionActionEnd{State: msg.SessionActionSucceeded}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if recorder := servedWithPostingToken(t, srv, token, http.MethodGet, "/sessions", nil); recorder.Code != http.StatusForbidden {
+		t.Errorf("after the run: %d %s, want 403", recorder.Code, recorder.Body)
 	}
 }

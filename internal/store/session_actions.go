@@ -355,3 +355,13 @@ func encodeSessionActionReview(review *msg.SessionActionReview) (string, error) 
 	}
 	return string(encoded), nil
 }
+
+// SessionHasRunningCommandAction reports whether a run_command button of the
+// session is running now: a person confirmed it, and its shell holds the
+// session's posting token.
+func (s *Store) SessionHasRunningCommandAction(sessionID string) (bool, error) {
+	var running bool
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM session_actions WHERE session_id = ? AND type = ? AND state = ?)`,
+		sessionID, string(msg.SessionActionRunCommand), string(msg.SessionActionRunning)).Scan(&running)
+	return running, err
+}

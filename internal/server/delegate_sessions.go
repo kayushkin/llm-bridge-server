@@ -51,11 +51,22 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 	agentSessionID := agentSession.SessionID
 	// An agent whose session has ended has no business driving anything: a
 	// token left in its transcript must not start, send to, stop or read its
-	// delegates.
+	// delegates. A run_command button a person pressed is the exception while
+	// it runs: its shell holds the session's token (runShellForSessionAction),
+	// and a chat session sits in completed between turns, which is when
+	// buttons are pressed.
 	if slices.Contains(sessionStatesThatEndSessionAgentTokens, msg.SessionState(agentSession.State)) {
-		writeJSONError(w, http.StatusForbidden, "delegating_session_ended", fmt.Sprintf(
-			"session %s is %s, so its agent may not start or drive delegates", agentSessionID, agentSession.State))
-		return
+		buttonRunning, err := s.store.SessionHasRunningCommandAction(agentSessionID)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "session_actions_unreadable", fmt.Sprintf(
+				"could not read whether session %s has a button running: %v", agentSessionID, err))
+			return
+		}
+		if !buttonRunning {
+			writeJSONError(w, http.StatusForbidden, "delegating_session_ended", fmt.Sprintf(
+				"session %s is %s, so its agent may not start or drive delegates", agentSessionID, agentSession.State))
+			return
+		}
 	}
 
 	caller := requestCaller{}
