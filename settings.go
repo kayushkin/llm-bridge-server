@@ -66,7 +66,7 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "people-store, which turns a Discord username or phone number into a person, their principal and their chat accounts."},
 		{Key: SettingMultichatURL, EnvironmentVariable: "MULTICHAT_URL", Kind: msg.ServiceSettingKindWiring, ValueType: text, Default: defaultMultichatURL,
 			Description: "multichat, which carries a sign-in link to a person's one-to-one chat."},
-		{Key: SettingMultichatCredential, EnvironmentVariable: "SIGN_IN_STORE_MULTICHAT_CREDENTIAL_ID", Kind: msg.ServiceSettingKindBehaviour, ValueType: text, Required: true,
+		{Key: SettingMultichatCredential, EnvironmentVariable: "SIGN_IN_STORE_MULTICHAT_CREDENTIAL_ID", Kind: msg.ServiceSettingKindBehavior, ValueType: text, Required: true,
 			Description: "The auth-store credential that holds multichat's bearer token, read when a link is sent."},
 		{Key: SettingAuthStoreURL, EnvironmentVariable: "AUTH_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: text, Default: defaultAuthStoreURL,
 			Description: "auth-store, where multichat's token is read from."},
