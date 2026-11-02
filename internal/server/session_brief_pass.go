@@ -49,7 +49,7 @@ const sessionBriefSystemPrompt = `You keep a short brief for one chat between a 
 
 Fields:
 
-- overall_goal: what the person wants from this chat, in one plain sentence. Keep it unless the person changed what they want; a new step toward the same goal is not a change. On the first turn, write it from the person's message.
+- overall_goal: what the person wants from this chat, in one plain sentence. Keep it unless the person changed what they want; a new step toward the same goal is not a change. When there is no brief yet, write it from what the person first asked in this chat, together with what they have asked since.
 - goal_changed: true only when this turn's message changed the overall goal.
 - current_step: what the assistant is doing now or waiting on, in one sentence. When it finished and waits for nothing, say what it finished.
 - turn_change: one line naming what this turn changed outside the conversation — a commit, a merge, a push, a deploy, files written, a setting or record changed — using the names, ids and commit hashes the assistant gave. Empty when the turn only read, explained or asked.
@@ -59,6 +59,8 @@ Fields:
   - "offer": something the assistant offered to do ("I can also…", "want me to…") that the person has not taken up.
   - "dropped_problem": a failure, risk or oddity the assistant noticed and did not follow up or fix.
   Do not raise: the question or choice the final message of the turn asks (the person sees that one already), anything the person's message already dealt with, rhetorical questions, "let me know if…", or progress notes. Do not raise a loose end already open under another id. text is the remark in the assistant's own words where possible; context is the one detail needed to act on it, or empty.
+
+A turn can start with an automated message rather than the person: a deploy report, a button's report, a task notification, a scheduled wakeup. Such a message is not the person asking for something new and never changes the overall goal.
 
 Write plain, short sentences. Use the names and ids the conversation uses.`
 
@@ -168,6 +170,11 @@ func (s *Server) updateSessionBriefAtTurnEnd(bridgeID string, state msg.SessionS
 		log.Printf("[session-brief] %s: ERROR read the turn: %v", bridgeID, err)
 		return
 	}
+	firstUserMessage, err := s.store.FirstUserMessage(bridgeID)
+	if err != nil {
+		log.Printf("[session-brief] %s: ERROR read the first message: %v", bridgeID, err)
+		return
+	}
 	if len(assistantTexts) == 0 {
 		return
 	}
@@ -185,7 +192,7 @@ func (s *Server) updateSessionBriefAtTurnEnd(bridgeID string, state msg.SessionS
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.signalClassifier.currentTuning().timeout)
 	defer cancel()
-	verdict, err := s.askForSessionBrief(ctx, previous.Brief, openLooseEnds, userMessage, assistantTexts)
+	verdict, err := s.askForSessionBrief(ctx, previous.Brief, openLooseEnds, firstUserMessage, userMessage, assistantTexts)
 	if err != nil {
 		log.Printf("[session-brief] %s: ERROR %v", bridgeID, err)
 		return
@@ -203,7 +210,7 @@ func (s *Server) updateSessionBriefAtTurnEnd(bridgeID string, state msg.SessionS
 }
 
 // askForSessionBrief makes the one model call.
-func (s *Server) askForSessionBrief(ctx context.Context, previous *msg.SessionBrief, openLooseEnds []msg.LooseEnd, userMessage string, assistantTexts []string) (*sessionBriefVerdict, error) {
+func (s *Server) askForSessionBrief(ctx context.Context, previous *msg.SessionBrief, openLooseEnds []msg.LooseEnd, firstUserMessage, userMessage string, assistantTexts []string) (*sessionBriefVerdict, error) {
 	if s.signalClassifier.runOneShot == nil {
 		return nil, fmt.Errorf("no oneshot runner wired")
 	}
@@ -212,7 +219,7 @@ func (s *Server) askForSessionBrief(ctx context.Context, previous *msg.SessionBr
 		return nil, fmt.Errorf("marshal brief schema: %w", err)
 	}
 	raw, err := s.signalClassifier.runOneShot(ctx, msg.OneShotRequest{
-		Prompt:       sessionBriefPrompt(previous, openLooseEnds, userMessage, assistantTexts),
+		Prompt:       sessionBriefPrompt(previous, openLooseEnds, firstUserMessage, userMessage, assistantTexts),
 		SystemPrompt: sessionBriefSystemPrompt,
 		ModelRole:    s.signalClassifier.currentTuning().modelRole,
 		Caller:       oneShotCallerSessionBrief,
@@ -237,13 +244,20 @@ func (s *Server) askForSessionBrief(ctx context.Context, previous *msg.SessionBr
 }
 
 // sessionBriefPrompt lays out what the model reads.
-func sessionBriefPrompt(previous *msg.SessionBrief, openLooseEnds []msg.LooseEnd, userMessage string, assistantTexts []string) string {
+func sessionBriefPrompt(previous *msg.SessionBrief, openLooseEnds []msg.LooseEnd, firstUserMessage, userMessage string, assistantTexts []string) string {
 	var prompt strings.Builder
 	prompt.WriteString("## The brief before this turn\n\n")
 	if previous == nil {
 		prompt.WriteString("None: this is the chat's first brief.\n")
 	} else {
 		fmt.Fprintf(&prompt, "overall_goal: %s\ncurrent_step: %s\n", previous.OverallGoal, previous.CurrentStep)
+	}
+	prompt.WriteString("\n## What the person first asked in this chat\n\n")
+	if strings.TrimSpace(firstUserMessage) == "" {
+		prompt.WriteString("Nothing recorded.\n")
+	} else {
+		prompt.WriteString(keepHead(firstUserMessage, sessionBriefUserMessageMaximumCharacters))
+		prompt.WriteString("\n")
 	}
 	prompt.WriteString("\n## Open loose ends\n\n")
 	if len(openLooseEnds) == 0 {
@@ -256,7 +270,7 @@ func sessionBriefPrompt(previous *msg.SessionBrief, openLooseEnds []msg.LooseEnd
 		}
 		prompt.WriteString("\n")
 	}
-	prompt.WriteString("\n## What the person said to start this turn\n\n")
+	prompt.WriteString("\n## The message that started this turn (the person's, or an automated report)\n\n")
 	if strings.TrimSpace(userMessage) == "" {
 		prompt.WriteString("Nothing: the assistant started this turn by itself.\n")
 	} else {

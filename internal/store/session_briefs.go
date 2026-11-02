@@ -349,3 +349,19 @@ func (s *Store) CurrentTurnText(sessionID string) (userMessage string, assistant
 	}
 	return lastUserMessage.String, assistantTexts, rows.Err()
 }
+
+// FirstUserMessage returns the text of the session's first user_message, or ""
+// when it has none. The brief pass shows it on every turn, so a brief first
+// written late in a chat, or on a turn an automated report started, still
+// knows what the person asked for.
+func (s *Store) FirstUserMessage(sessionID string) (string, error) {
+	var text sql.NullString
+	err := s.dbRO.QueryRow(
+		`SELECT json_extract(data, '$.result.text') FROM events WHERE session_id=? AND type='user_message' ORDER BY id LIMIT 1`,
+		sessionID,
+	).Scan(&text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return text.String, err
+}

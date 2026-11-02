@@ -70,7 +70,7 @@ func TestTheBriefPassWritesTheFirstBriefAndALooseEnd(t *testing.T) {
 		t.Fatalf("model calls = %d, want 1", len(*calls))
 	}
 	prompt := (*calls)[0].Prompt
-	for _, want := range []string{"Move the nightly backup", "the disk is at 91%", "Moved job 81", "first brief"} {
+	for _, want := range []string{"Move the nightly backup", "the disk is at 91%", "Moved job 81", "first brief", "first asked in this chat"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt does not contain %q:\n%s", want, prompt)
 		}
@@ -192,5 +192,26 @@ func TestKeepHeadAndTailKeepsBothEnds(t *testing.T) {
 	got := keepHeadAndTail(text, 200)
 	if !strings.HasPrefix(got, strings.Repeat("a", 50)) || !strings.HasSuffix(got, strings.Repeat("z", 50)) {
 		t.Errorf("lost an end: %q", got)
+	}
+}
+
+// A chat's first brief can be written late, on a turn an automated report
+// started. The pass still shows the chat's first message, so the goal comes
+// from what the person asked, not from the report.
+func TestTheBriefPassAlwaysShowsTheChatsFirstMessage(t *testing.T) {
+	srv, st := testServer(t)
+	sess := newSessionForSignals(t, st, "br_late", msg.SessionTypeInteractive)
+	storeChatTurn(t, st, sess.SessionID, "Build the session brief for the orchestrator", "Designed it.")
+	storeChatTurn(t, st, sess.SessionID, "[deploy-gate] The deploy finished: it succeeded.", "Checked the deploy.")
+	calls := stubSessionBrief(t, srv, map[string]any{
+		"overall_goal": "g", "goal_changed": false, "current_step": "s", "turn_change": "",
+		"settled": []any{}, "new_loose_ends": []any{},
+	})
+	srv.updateSessionBriefAtTurnEnd(sess.SessionID, msg.SessionIdle)
+	prompt := (*calls)[0].Prompt
+	first := strings.Index(prompt, "Build the session brief for the orchestrator")
+	report := strings.Index(prompt, "[deploy-gate]")
+	if first < 0 || report < 0 || first > report {
+		t.Errorf("prompt should show the first message, then the report that started this turn:\n%s", prompt)
 	}
 }
