@@ -81,7 +81,7 @@ var ModelRoleSettingKeys = []string{
 }
 
 func modelRoleDefinition(key, variable, defaultRole, description string) servicesettings.Definition {
-	return servicesettings.Definition{Key: key, EnvironmentVariable: variable, Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeModelRole,
+	return servicesettings.Definition{Key: key, EnvironmentVariable: variable, Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeModelRole,
 		Default: defaultRole, Required: true, Editable: true,
 		Description: description + " A model-store role (best, default, balanced, efficient): llm-bridge-server tries the role's models in order. Read by the job binary each time it starts, so a change takes effect on the next run."}
 }
@@ -91,7 +91,7 @@ func modelRoleDefinition(key, variable, defaultRole, description string) service
 // FIRST model and never tries the rest, and the session's harness must be able
 // to run that model, which is checked before the session is created.
 func sessionModelRoleDefinition(key, variable, defaultRole, description string) servicesettings.Definition {
-	return servicesettings.Definition{Key: key, EnvironmentVariable: variable, Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeModelRole,
+	return servicesettings.Definition{Key: key, EnvironmentVariable: variable, Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeModelRole,
 		Default: defaultRole, Required: true, Editable: true,
 		Description: description + " A model-store role (best, default, balanced, efficient): the session runs on the role's first model, with no fallback to the rest, and is not started when its harness cannot run that model. Read when each session is started, so a change applies to the next one."}
 }

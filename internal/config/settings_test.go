@@ -126,7 +126,7 @@ func TestEveryModelRoleSettingIsAStoredModelRole(t *testing.T) {
 			t.Errorf("%s is in ModelRoleSettingKeys and not declared", key)
 			continue
 		}
-		if !definition.Editable || !definition.Required || definition.ValueType != msg.ServiceSettingValueTypeModelRole || definition.Kind != msg.ServiceSettingKindBehaviour {
+		if !definition.Editable || !definition.Required || definition.ValueType != msg.ServiceSettingValueTypeModelRole || definition.Kind != msg.ServiceSettingKindBehavior {
 			t.Errorf("%s = %+v, want an editable, required behaviour setting of type model_role", key, definition)
 		}
 		if !slices.Contains(msg.CanonicalModelRoles, msg.ModelRole(definition.Default)) {

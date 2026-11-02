@@ -167,7 +167,7 @@ var Autoworker = JobBinary{Name: "autoworker", OwnedEnvironmentVariablePrefixes:
 		{Key: SettingUsageStoreURL, EnvironmentVariable: "USAGE_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultUsageStoreURL,
 			Description: "Where usage-store answers. The weekly limits and what has been used against them come from there, so a wrong address dispatches nothing."},
 		schedulerURLDefinition(), modelStoreURLDefinition(),
-		{Key: SettingDefaultMaxBudgetUSD, EnvironmentVariable: "AUTOWORKER_DEFAULT_MAX_BUDGET_USD", Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeDecimal,
+		{Key: SettingDefaultMaxBudgetUSD, EnvironmentVariable: "AUTOWORKER_DEFAULT_MAX_BUDGET_USD", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeDecimal,
 			Description: "The spend cap in USD for a dispatched session whose card has no ceiling of its own; unset or 0 is uncapped. A value that is not a number stops the binary rather than run uncapped. The -default-max-budget-usd flag overrides it."},
 	}
 }}
@@ -232,7 +232,7 @@ var KanbanDispatcher = JobBinary{Name: "kanban-dispatcher", settingDefinitions: 
 var KanbanScoper = JobBinary{Name: "kanban-scoper", OwnedEnvironmentVariablePrefixes: []string{"KANBAN_SCOPER_"}, settingDefinitions: func() []servicesettings.Definition {
 	return []servicesettings.Definition{
 		kanbanStoreURLDefinition(), kanbanStoreServiceTokenDefinition(), bridgeURLDefinition(), bridgeServiceTokenDefinition(),
-		{Key: SettingRoleTags, EnvironmentVariable: "KANBAN_SCOPER_ROLE_TAGS", Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "false",
+		{Key: SettingRoleTags, EnvironmentVariable: "KANBAN_SCOPER_ROLE_TAGS", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "false",
 			Description: "Require a capability and a role in each decomposition and tag sub-cards capability:/role:. The -role-tags flag overrides it. A value that is not true or false stops the binary."},
 		schedulerURLDefinition(),
 	}
@@ -247,7 +247,7 @@ var ReminderCoordinator = JobBinary{Name: "reminder-coordinator", OwnedEnvironme
 			Description: "Where dash answers; the Google Calendar mirror goes through its authenticated proxy. The -dash-url flag overrides it."},
 		{Key: SettingAskPath, EnvironmentVariable: "ASK_BIN", Kind: msg.ServiceSettingKindPath, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultAskPath(),
 			Description: "The ask binary every nudge is sent through. The -ask flag overrides it."},
-		{Key: SettingTimezone, EnvironmentVariable: "REMINDER_TZ", Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultReminderTimezone,
+		{Key: SettingTimezone, EnvironmentVariable: "REMINDER_TZ", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultReminderTimezone,
 			Description: "The IANA zone the digest hour and the working day are read in. The -tz flag overrides it."},
 		{Key: SettingRuntimeDirectory, EnvironmentVariable: "XDG_RUNTIME_DIR", Kind: msg.ServiceSettingKindPath, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultRuntimeDirectory(),
 			Description: "This user's runtime directory, handed to `systemctl --user` when it reads dash-server's token."},
