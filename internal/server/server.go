@@ -51,16 +51,19 @@ const autoResumeWindow = 2 * time.Hour
 const watchdogInterval = 60 * time.Second
 
 type Server struct {
-	discoveryMu   sync.Mutex
-	mux           *http.ServeMux
-	store         *store.Store
-	agentStore    *agentstore.Store
-	memoryStore   *memorystore.Store
-	harnessStore  *harnessstore.Store
-	hookStore     *hookstore.Store
-	modelStore    *modelstore.Store
-	snapshotStore *snapshotstore.Store
-	harness       *harness.Manager
+	discoveryMu sync.Mutex
+	// peerProxyCalls shares identical reads through the connection proxy and
+	// limits how often each connected server is called (peer_proxy_calls.go).
+	peerProxyCalls peerProxyCalls
+	mux            *http.ServeMux
+	store          *store.Store
+	agentStore     *agentstore.Store
+	memoryStore    *memorystore.Store
+	harnessStore   *harnessstore.Store
+	hookStore      *hookstore.Store
+	modelStore     *modelstore.Store
+	snapshotStore  *snapshotstore.Store
+	harness        *harness.Manager
 	// harnessStartLockBySessionID holds a *sync.Mutex per session id, so
 	// startOnInstance spawns at most one harness process per session.
 	harnessStartLockBySessionID sync.Map

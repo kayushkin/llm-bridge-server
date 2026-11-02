@@ -130,32 +130,49 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 			"%s; grant can_call_through on peer_connection %s to call through it", callThrough.describe(), connection.ID))
 		return
 	}
+	if proxiedRequestOnlyReads(r.Method, escapedPathAfterPrefix(r.URL, peerConnectionProxyMountPrefix(connection.ID)), header) {
+		s.serveSharedProxiedRead(w, r, connection, path, header)
+		return
+	}
+	// Anything else may change what the other server answers, so no answer
+	// kept from before it may be served after it.
+	s.peerProxyCalls.forgetAnswersOf(connection.ID)
+	if !s.peerProxyCalls.allow(connection.ID) {
+		writePeerCallError(w, errPeerCallLimit)
+		return
+	}
 	response, err := s.callWithHeldAccessThrough(r.Context(), peerProxyHTTPClient, connection, r.Method, path, header, body, r.ContentLength)
 	if err != nil {
 		writePeerCallError(w, err)
 		return
 	}
 	defer response.Body.Close()
-	for key, values := range response.Header {
-		if !headerIsOneOf(key, responseHeadersPassedBackFromPeers) {
-			continue
-		}
-		if strings.EqualFold(key, "Content-Type") {
-			w.Header().Set("Content-Type", passedBackContentType(response.Header.Get("Content-Type")))
-			continue
-		}
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-	// Whatever the answer is, the browser neither guesses another type for it
-	// nor runs it as a page of this origin.
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "sandbox")
+	passBackPeerAnswerHeaders(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
 	if err := copyFlushingEachRead(w, response.Body); err != nil {
 		log.Printf("[peer-proxy] %s %s through %s: copy answer: %v", r.Method, path, connection.ID, err)
 	}
+}
+
+// passBackPeerAnswerHeaders copies the headers of the other server's answer
+// that may reach the browser, and adds the two every answer gets.
+func passBackPeerAnswerHeaders(destination, peerHeader http.Header) {
+	for key, values := range peerHeader {
+		if !headerIsOneOf(key, responseHeadersPassedBackFromPeers) {
+			continue
+		}
+		if strings.EqualFold(key, "Content-Type") {
+			destination.Set("Content-Type", passedBackContentType(peerHeader.Get("Content-Type")))
+			continue
+		}
+		for _, value := range values {
+			destination.Add(key, value)
+		}
+	}
+	// Whatever the answer is, the browser neither guesses another type for it
+	// nor runs it as a page of this origin.
+	destination.Set("X-Content-Type-Options", "nosniff")
+	destination.Set("Content-Security-Policy", "sandbox")
 }
 
 // headerIsOneOf says whether key names one of headers, in any casing.

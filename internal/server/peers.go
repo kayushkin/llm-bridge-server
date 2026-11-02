@@ -1138,6 +1138,11 @@ func writePeerCallError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errPeerAccessNotHeld):
 		writeJSONError(w, http.StatusConflict, "peer_access_not_held", err.Error())
+	case errors.Is(err, errPeerCallLimit):
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusTooManyRequests, "peer_call_limit", fmt.Sprintf(
+			"%v: at most %g calls a second to one connected server, %d at once in a burst; ask again in a second",
+			err, peerProxyCallsPerSecond, peerProxyCallBurst))
 	case errors.Is(err, errPeerNotConnected):
 		writeJSONError(w, http.StatusServiceUnavailable, "peer_not_connected", err.Error())
 	case errors.As(err, new(*errPeerNotAnswering)):

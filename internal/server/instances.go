@@ -263,13 +263,13 @@ func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 		credBindings = []msg.InstanceCredential{}
 	}
 
-	reachable := s.harness.CheckSSHReachability(inst.Machine)
+	reachable, checkedAt := s.harness.ReachabilityOfMachine(inst.Machine)
 
 	status := msg.InstanceStatus{
 		Instance:    *inst,
 		Credentials: credBindings,
 		Reachable:   reachable,
-		LastChecked: time.Now(),
+		LastChecked: checkedAt,
 	}
 	writeJSON(w, status)
 }

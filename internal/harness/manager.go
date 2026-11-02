@@ -47,6 +47,7 @@ type StoredEvent struct {
 // Manager handles harness subprocess lifecycle.
 type Manager struct {
 	codexHistorySyncs   sync.Map // bridge session ID -> serialized history sync state
+	sshProbes           sshReachabilityProbes
 	mu                  sync.RWMutex
 	processes           map[string]HarnessProcess     // sessionID → process
 	processStartedAt    map[string]time.Time          // sessionID → when its current process was registered (see ProcessStartedAt)
@@ -2205,24 +2206,75 @@ func (m *Manager) logStoreAlreadyHoldsTranscript(harnessSessionID string) (logst
 	return logstore.HeldSession{}, false
 }
 
-// CheckSSHReachability tests if a machine is reachable. Local machines
-// are trivially reachable; runner machines are reachable iff a runner is
-// currently registered for them; SSH machines run a quick login probe.
-func (m *Manager) CheckSSHReachability(mach *msg.Machine) bool {
+// machineReachabilityFreshFor is how long one SSH login probe's answer is
+// served before a machine is probed again. A var so tests can shorten it.
+var machineReachabilityFreshFor = 30 * time.Second
+
+// sshReachabilityProbe is one machine's last SSH probe, or the one running.
+type sshReachabilityProbe struct {
+	done      chan struct{}
+	reachable bool
+	checkedAt time.Time
+}
+
+// sshReachabilityProbes holds each SSH machine's last probe, by machine id, so
+// the browser's status reads cost at most one ssh login per machine per
+// machineReachabilityFreshFor however many tabs ask.
+type sshReachabilityProbes struct {
+	mutex  sync.Mutex
+	probes map[string]*sshReachabilityProbe
+}
+
+// ReachabilityOfMachine reports whether a machine is reachable and when that
+// was checked. Local machines are trivially reachable; runner machines are
+// reachable iff a runner is currently registered for them, read now; SSH
+// machines run a login probe whose answer is shared for
+// machineReachabilityFreshFor, and concurrent askers share one probe.
+func (m *Manager) ReachabilityOfMachine(mach *msg.Machine) (reachable bool, checkedAt time.Time) {
 	if mach == nil {
-		return false
+		return false, time.Now()
 	}
 	switch mach.Transport {
 	case msg.TransportLocal:
-		return true
+		return true, time.Now()
 	case msg.TransportRunner:
-		return m.runners != nil && m.runners.Get(mach.Name) != nil
+		return m.runners != nil && m.runners.Get(mach.Name) != nil, time.Now()
 	case msg.TransportSSH:
-		// fall through
+		// below
 	default:
-		return false
+		return false, time.Now()
 	}
 
+	key := mach.ID
+	m.sshProbes.mutex.Lock()
+	if m.sshProbes.probes == nil {
+		m.sshProbes.probes = map[string]*sshReachabilityProbe{}
+	}
+	if probe := m.sshProbes.probes[key]; probe != nil {
+		select {
+		case <-probe.done:
+			if time.Since(probe.checkedAt) < machineReachabilityFreshFor {
+				m.sshProbes.mutex.Unlock()
+				return probe.reachable, probe.checkedAt
+			}
+		default:
+			m.sshProbes.mutex.Unlock()
+			<-probe.done
+			return probe.reachable, probe.checkedAt
+		}
+	}
+	probe := &sshReachabilityProbe{done: make(chan struct{})}
+	m.sshProbes.probes[key] = probe
+	m.sshProbes.mutex.Unlock()
+
+	probe.reachable = probeSSHLogin(mach)
+	probe.checkedAt = time.Now()
+	close(probe.done)
+	return probe.reachable, probe.checkedAt
+}
+
+// probeSSHLogin runs one quick login on an SSH machine.
+func probeSSHLogin(mach *msg.Machine) bool {
 	args := []string{}
 	if mach.SSHKeyPath != "" {
 		args = append(args, "-i", mach.SSHKeyPath)

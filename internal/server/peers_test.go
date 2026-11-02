@@ -572,6 +572,11 @@ func connectedPairByDialingOut(t *testing.T, configureAccepting ...func(*config.
 // sessions it started through the peer unless both may observe more, and
 // refused the routes this server cannot narrow.
 func TestPeerUsersActAsMappedPrincipalsWithinBothGrants(t *testing.T) {
+	// This test changes grants on the other server between identical reads,
+	// so the proxy must not serve an answer it kept from before the change.
+	savedFresh := peerProxySharedAnswerFreshFor
+	peerProxySharedAnswerFreshFor = 0
+	t.Cleanup(func() { peerProxySharedAnswerFreshFor = savedFresh })
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
 	grant := decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "none"}),
 		http.StatusCreated, "grant none, so the test sets the peer's grants itself")
@@ -796,8 +801,15 @@ func TestAPeerSocketServesOnlySoManyRequestsAtOnce(t *testing.T) {
 	t.Cleanup(func() { delete(routeAccessRules, pattern) })
 	initiatingOverHTTP := httptest.NewServer(initiating.server)
 	t.Cleanup(initiatingOverHTTP.Close)
+	// The proxy shares identical reads and limits calls per connection; this
+	// test is about the far side's own limit, so each request is distinct and
+	// the proxy's allowance is out of the way.
+	savedBurst := peerProxyCallBurst
+	peerProxyCallBurst = 10 * peerSocketMostRequestsServedAtOnce
+	t.Cleanup(func() { peerProxyCallBurst = savedBurst })
+	var requestNumber atomic.Int64
 	get := func() (*http.Response, error) {
-		request, _ := http.NewRequest("GET", initiatingOverHTTP.URL+"/peer-connections/"+initiatingID+"/proxy/a-request-that-waits", nil)
+		request, _ := http.NewRequest("GET", fmt.Sprintf("%s/peer-connections/%s/proxy/a-request-that-waits?n=%d", initiatingOverHTTP.URL, initiatingID, requestNumber.Add(1)), nil)
 		request.Header.Set(serviceTokenHeader, testServiceToken)
 		request.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
 		return http.DefaultClient.Do(request)
