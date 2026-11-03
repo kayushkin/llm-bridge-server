@@ -265,13 +265,13 @@ C=$(code DELETE "/rules/$RULE_ID")
 [ "$C" = "204" ] || fail "DELETE should be 204, got $C"
 C=$(code GET "/rules/$RULE_ID")
 [ "$C" = "404" ] || fail "deleted rule should now 404, got $C"
-# ...and the engine stops honouring it.
+# ...and the engine stops honoring it.
 EV=$(curl -fsS --max-time 10 -X POST "$BASE/evaluate" -H 'Content-Type: application/json' \
   -d "{\"bridge_id\":\"$BRIDGE_ID\",\"tool\":\"Bash\",\"input\":{\"command\":\"e2e-canary go\"}}")
 [ "$(jq -r '.matched_rule_id' <<<"$EV")" = "default-ask" ] \
   || fail "deleted rule is still matching: $EV"
 
-step "hermeticity — --db was honoured, DefaultPath() never used"
+step "hermeticity — --db was honored, DefaultPath() never used"
 # The server ran with HOME=$FAKE_HOME, so DefaultPath() would have landed here
 # had --db been ignored. Its absence proves every write went to the temp db.
 [ ! -e "$FAKE_HOME/.config/permission-store/permission-store.db" ] \

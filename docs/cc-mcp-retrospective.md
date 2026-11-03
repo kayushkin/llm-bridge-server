@@ -59,7 +59,7 @@ Fix: dispatch known-safe methods (`resolve_hook`, `set_bypass_permissions`,
 
 CC's MCP TS SDK reads `process.env.MCP_TOOL_TIMEOUT` and uses it as
 the per-tool-call timeout. Default is 60s. Parked permission calls
-got cancelled after a minute and CC fell back to its
+got canceled after a minute and CC fell back to its
 no-permission-prompt behavior.
 
 Fix: set `MCP_TOOL_TIMEOUT` and `MCP_TIMEOUT` on every CC spawn.

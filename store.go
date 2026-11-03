@@ -82,7 +82,7 @@ type AuditEntry struct {
 // dsnParams configures every connection modernc.org/sqlite opens.
 //
 // _pragma=NAME(VALUE) is the ONLY pragma syntax this driver understands, and it
-// silently ignores DSN keys it does not recognise rather than rejecting them.
+// silently ignores DSN keys it does not recognize rather than rejecting them.
 // This store shipped with the mattn-style "?_journal_mode=WAL&_busy_timeout=5000",
 // which applied neither and said nothing: the live database at
 // ~/.config/permission-store/permission-store.db read byte 18 of its header as 1,

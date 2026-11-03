@@ -47,7 +47,7 @@ func TestOpenAppliesItsConcurrencyPragmas(t *testing.T) {
 // not run the busy handler for the lock upgrade the conversion needs.
 //
 // Holding a write transaction on the fresh file makes that deterministic. The 0s
-// is the assertion — a store honouring its own 5s busy_timeout would have
+// is the assertion — a store honoring its own 5s busy_timeout would have
 // outlasted a 150ms lock.
 func TestOpenWaitsOutAConversionItLoses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "permission-store.db")
