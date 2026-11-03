@@ -82,7 +82,7 @@ func TestGmailFoldersDropsLabelsHiddenFromTheLabelList(t *testing.T) {
 // A folder whose unread count could not be read is reported as zero unread,
 // which is indistinguishable from a folder that is genuinely all-read. This
 // case pins that deliberately rather than endorsing it: whether one flaky
-// labels.get should blank a count or fail the whole sidebar is a judgement
+// labels.get should blank a count or fail the whole sidebar is a judgment
 // about how mailstack degrades, and it is filed rather than decided here.
 func TestGmailFoldersSurvivesALabelsGetFailure(t *testing.T) {
 	api := newRecordingAPI(t)

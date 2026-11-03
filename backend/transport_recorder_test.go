@@ -42,7 +42,7 @@ type recordingAPI struct {
 	requests []wireRequest
 	routes   map[string]cannedResponse
 	// firstCallStatus, when set for a path, is served once and then removed.
-	// This is how a token that expires between two calls is modelled.
+	// This is how a token that expires between two calls is modeled.
 	firstCallStatus map[string]cannedResponse
 	unroutedPaths   []string
 }

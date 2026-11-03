@@ -257,13 +257,13 @@ step "the run never went near the live credentials"
 # MAILSTACK_DB override: without it, the binary would create exactly this path.
 DEFAULT_DB="${HOME:-/nonexistent}/.config/mailstack/accounts.db"
 [ ! -e "$DEFAULT_DB" ] \
-  || fail "the binary created its DEFAULT db at $DEFAULT_DB — the MAILSTACK_DB override is not being honoured"
+  || fail "the binary created its DEFAULT db at $DEFAULT_DB — the MAILSTACK_DB override is not being honored"
 # Synthetic mail has its own default path and its own override. It is opened
 # lazily, so this also fails if that laziness is ever lost and the file starts
 # being created at boot on every host.
 DEFAULT_LOCAL_DB="${HOME:-/nonexistent}/.config/mailstack/local-mail.db"
 [ ! -e "$DEFAULT_LOCAL_DB" ] \
-  || fail "the binary created its DEFAULT synthetic-mail db at $DEFAULT_LOCAL_DB — MAILSTACK_LOCAL_DB is not being honoured, or the store is no longer opened lazily"
+  || fail "the binary created its DEFAULT synthetic-mail db at $DEFAULT_LOCAL_DB — MAILSTACK_LOCAL_DB is not being honored, or the store is no longer opened lazily"
 echo "    wrote only $DB_PATH; default paths untouched"
 
 step "SUCCESS — mailstack boots and answers"

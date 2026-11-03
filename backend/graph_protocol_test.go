@@ -67,7 +67,7 @@ func TestGraphFoldersSelectsTheFieldsItMapsAndCapsThePage(t *testing.T) {
 //
 //	https://learn.microsoft.com/en-us/graph/api/user-list-mailfolders
 //
-// This case pins today's behaviour so the gap is documented rather than
+// This case pins today's behavior so the gap is documented rather than
 // rediscovered; closing it is a design call about how deep to walk.
 func TestGraphFoldersReturnsOnlyTheRootChildrenAndNoHiddenFolders(t *testing.T) {
 	api := newRecordingAPI(t)

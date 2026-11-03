@@ -254,8 +254,8 @@ func TestARepeatedContinuationIsReportedRatherThanLoopingForever(t *testing.T) {
 // fires for a server that keeps handing back distinct links forever — so it is
 // the kind of error surface that can sit in the code unreachable. This drives
 // enough distinct pages to reach it. It deliberately does not assert the cap's
-// value: the number is a judgement call, and pinning it would turn any future
-// retuning into a test failure that says nothing about behaviour.
+// value: the number is a judgment call, and pinning it would turn any future
+// retuning into a test failure that says nothing about behavior.
 func TestTheWalkStopsRatherThanFollowingAnEndlessChainOfNewLinks(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

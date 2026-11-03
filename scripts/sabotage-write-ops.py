@@ -37,7 +37,7 @@ line of ANY of these thirteen left `go test ./...` green.
 
 The census named two of the thirteen. That is the fifth consecutive row on
 `e9b0b89c` where the function name under-described the mechanism it belongs to,
-and the 222nd's rule — read the row's neighbours before scoping the work to its
+and the 222nd's rule — read the row's neighbors before scoping the work to its
 title — has now not once failed to pay.
 
 ⚠️ Read that measurement on `main`. mailstack's checkout was already standing
@@ -248,7 +248,7 @@ CASES = [
     # to. Drifts the value rather than deleting the line, per the case rules —
     # every path assertion is anchored to it, so it has to redden.
     Case(
-        "CONTROL known-positive: every write op is addressed to a neighbouring API root",
+        "CONTROL known-positive: every write op is addressed to a neighboring API root",
         [('const gmailBase = "https://gmail.googleapis.com/gmail/v1"',
           'const gmailBase = "https://gmail.googleapis.com/gmail/v2"')],
     ),

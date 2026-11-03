@@ -134,7 +134,7 @@ func TestACredentialDeliversOnlyIntoItsAccounts(t *testing.T) {
 	}
 }
 
-func TestPurgeLeavesATombstoneEveryWayInHonours(t *testing.T) {
+func TestPurgeLeavesATombstoneEveryWayInHonors(t *testing.T) {
 	s := localTestServer(t)
 	_, token := createIngressCredential(t, s, `["demo-local"]`)
 	_, got := deliver(t, s, token, pushedDelivery("d1", "demo-local", "ck-1", "hallo"))

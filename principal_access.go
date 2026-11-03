@@ -32,7 +32,7 @@ import (
 // A person may read a message with can_read_mail on its account or through a
 // ticket. Everything wider than one message — a folder, a thread, a search —
 // needs the account grant, because a ticket grants its own messages and not
-// their neighbours. A message the person may not read is 404, as if it did not
+// their neighbors. A message the person may not read is 404, as if it did not
 // exist; an account route they hold no grant for is 403.
 //
 // The rule is strict: a person with no mail grant reads only what tickets

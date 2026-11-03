@@ -333,11 +333,11 @@ func TestIndexMessagesIndexesEveryMessageOfAPageAndNotJustTheFirst(t *testing.T)
 	}
 }
 
-func TestLookupByMessageIDNormalisesTheBracketedFormCallersActuallySend(t *testing.T) {
+func TestLookupByMessageIDNormalizesTheBracketedFormCallersActuallySend(t *testing.T) {
 	// The third consumer of the same helpers, and the one that faces outwards.
 	// The index stores Message-IDs with their angle brackets stripped, but RFC
 	// 5322 writes them WITH brackets, so that is the form a caller copies out
-	// of a mail client and puts in the URL. Without the normalisation the
+	// of a mail client and puts in the URL. Without the normalization the
 	// lookup compares "<a@x.com>" against a stored "a@x.com", matches nothing,
 	// and answers 200 with indexed:false — which reads as "we have never seen
 	// this message" rather than "you spelled it the documented way".
@@ -370,7 +370,7 @@ func TestLookupByMessageIDNormalisesTheBracketedFormCallersActuallySend(t *testi
 		// Both spellings must land on the same stored id, or the two callers
 		// disagree about what they are holding.
 		if got.MessageID != "stored@x.com" {
-			t.Errorf("%s: echoed message_id = %q, want the normalised stored@x.com", spelling, got.MessageID)
+			t.Errorf("%s: echoed message_id = %q, want the normalized stored@x.com", spelling, got.MessageID)
 		}
 		if !got.Indexed {
 			t.Errorf("%s: indexed = false, but this message was indexed above", spelling)

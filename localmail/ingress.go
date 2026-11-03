@@ -396,7 +396,7 @@ func ValidateDelivery(d Delivery) error {
 		problems = append(problems, "account_id is required")
 	}
 	if strings.TrimSpace(d.Message.SourceRevision) == "" {
-		problems = append(problems, "message.source_revision is required: with provider_message_id it is what makes a redelivery recognisable")
+		problems = append(problems, "message.source_revision is required: with provider_message_id it is what makes a redelivery recognizable")
 	}
 	var invalid *ImportValidationError
 	if err := ValidateImport([]ImportedMessage{d.Message}); errors.As(err, &invalid) {

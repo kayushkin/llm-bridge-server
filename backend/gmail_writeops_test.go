@@ -544,7 +544,7 @@ func TestARetriedWriteThatReportsSuccessAskedForTheLabelChange(t *testing.T) {
 	}
 }
 
-// unreplayableReader hides a reader behind a type net/http does not recognise,
+// unreplayableReader hides a reader behind a type net/http does not recognize,
 // so http.NewRequest records no GetBody hook for it. This is the shape do()
 // cannot resend: a streaming body, a pipe, anything not held in memory.
 type unreplayableReader struct{ io.Reader }
