@@ -355,6 +355,23 @@ func (s *Store) FinishPeerMessage(id, statusMessageID string) error {
 	return s.updatePeerMessage(id, `state = 'done', status_message_id = ?`, statusMessageID)
 }
 
+// FinishApprovedPeerMessage marks an approved incoming request or patch done
+// with the message that answered it, once: it reports false, and changes
+// nothing, when the message is no longer approved.
+func (s *Store) FinishApprovedPeerMessage(id, answerMessageID string) (bool, error) {
+	rowID, ok := rowIDOfPrefixed(peerMessageIDPrefix, id)
+	if !ok {
+		return false, ErrPeerMessageNotFound
+	}
+	result, err := s.db.Exec(`UPDATE peer_messages SET state = 'done', status_message_id = ?, updated_at = ?
+		WHERE id = ? AND direction = 'incoming' AND state = 'approved'`, answerMessageID, time.Now().UTC(), rowID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
 // SetPeerMessageStatusMessage names the status sent in answer without
 // changing the message's state (a declined one stays declined).
 func (s *Store) SetPeerMessageStatusMessage(id, statusMessageID string) error {
