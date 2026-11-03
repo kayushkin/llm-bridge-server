@@ -415,7 +415,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/peer-connections/{id}/remove` | End a connection: revoke the access given, drop the access held, close the socket | operator |
 | `POST` | `/peer-connections/{id}/revoke-grant` | Take the other server's access away, with a reason, and tell it | operator |
 | `POST` | `/peer-message-attachments` | Store a file (the raw body; ?name=, ?media_type=) to send with the next message, answered with its id, size and SHA-256 | operator |
-| `GET` | `/peer-messages` | Messages to and from connected servers, newest first, by connection, direction, state and kind | operator |
+| `GET` | `/peer-messages` | Messages to and from connected servers, newest first, by connection, direction, state and kind; open=true lists this server's requests, notices and patches still waiting for an answer | operator |
 | `GET` | `/peer-messages/{id}` | One message to or from a connected server | operator |
 | `POST` | `/peer-messages/{id}/approve` | Approves a connected server's request (starts its session) or notice (runs the update) | operator |
 | `GET` | `/peer-messages/{id}/attachments/{attachment_id}` | Download a file of a message, as application/octet-stream | operator |

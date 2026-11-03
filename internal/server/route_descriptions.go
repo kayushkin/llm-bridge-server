@@ -228,7 +228,7 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /peer/self":                                              {routeGroupPeers, "Who the presented peer token acts as here"},
 	"GET /peer/server-name":                                       {routeGroupPeers, "This server's id and name, for a connected server; the call carries the caller's"},
 	"POST /peer-connections/{id}/messages":                        {routeGroupPeers, "Sends the other server a request, notice or status, through this server's outbox"},
-	"GET /peer-messages":                                          {routeGroupPeers, "Messages to and from connected servers, newest first, by connection, direction, state and kind"},
+	"GET /peer-messages":                                          {routeGroupPeers, "Messages to and from connected servers, newest first, by connection, direction, state and kind; open=true lists this server's requests, notices and patches still waiting for an answer"},
 	"GET /peer-messages/{id}":                                     {routeGroupPeers, "One message to or from a connected server"},
 	"POST /peer-messages/{id}/approve":                            {routeGroupPeers, "Approves a connected server's request (starts its session) or notice (runs the update)"},
 	"POST /peer-messages/{id}/decline":                            {routeGroupPeers, "Declines a connected server's request or notice, telling it the reason"},

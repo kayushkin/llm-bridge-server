@@ -39,6 +39,9 @@ func newFakePeerServer(t *testing.T) (*fakePeerServer, *httptest.Server) {
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/peer-connections":
 			_ = json.NewEncoder(w).Encode([]map[string]any{{"connection": map[string]any{"id": "peer_connection_000001", "transport": "dial_out"}, "other_server_name": "main", "socket_connected": true}})
+		case r.Method == "GET" && r.URL.Path == "/peer-messages" && r.URL.Query().Get("open") == "true":
+			_ = json.NewEncoder(w).Encode([]msg.PeerMessage{{ID: "peer_message_000007", Direction: msg.PeerMessageDirectionOutgoing, Kind: msg.PeerMessageKindRequest,
+				Body: msg.PeerMessageBody{Title: "update to a1"}, State: msg.PeerMessageStateDelivered}})
 		case r.Method == "POST" && r.URL.Path == "/peer-message-attachments":
 			body, _ := io.ReadAll(r.Body)
 			id := "peer_attachment_00000" + string(rune('1'+len(fake.uploads)))
@@ -181,5 +184,30 @@ func TestStatusAnswersAMessageWithItsResult(t *testing.T) {
 	}
 	if _, err := runCLI(t, server, "status", "main", "--result", "failed", "no reply id"); err == nil {
 		t.Fatal("status without --in-reply-to was sent")
+	}
+}
+
+func TestRequestShowsWhatIsStillOpenThereAndSendsItsSupersedes(t *testing.T) {
+	fake, server := newFakePeerServer(t)
+	t.Setenv(postingTokenEnvironmentVariable, "posting-token")
+	t.Setenv(serviceTokenEnvironmentVariable, "")
+	var out bytes.Buffer
+	if err := run([]string{"request", "main", "--title", "update to b2", "--server-url", server.URL, "do it"}, &out); err != nil {
+		t.Fatalf("request: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "Still open on main") || !strings.Contains(out.String(), "peer_message_000007") {
+		t.Fatalf("output %q does not show the open request before sending", out.String())
+	}
+	out.Reset()
+	if err := run([]string{"request", "main", "--title", "update to b2", "--supersedes", "peer_message_000007", "--server-url", server.URL, "do it"}, &out); err != nil {
+		t.Fatalf("request --supersedes: %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "Still open on main") {
+		t.Fatalf("output %q lists the message this one replaces as still open", out.String())
+	}
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	if last := fake.sent[len(fake.sent)-1]; len(last.Supersedes) != 1 || last.Supersedes[0] != "peer_message_000007" {
+		t.Fatalf("sent %+v, want supersedes [peer_message_000007]", last)
 	}
 }

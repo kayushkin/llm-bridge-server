@@ -61,22 +61,34 @@ func (s *Store) migratePeerMessages() error {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_peer_messages_incoming ON peer_messages(connection_id, remote_message_id)
 			WHERE direction = 'incoming' AND remote_message_id != '';
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	// supersedes holds a JSON array of this server's ids; superseded_by one id.
+	for _, column := range []string{
+		`ALTER TABLE peer_messages ADD COLUMN supersedes TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE peer_messages ADD COLUMN superseded_by TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := s.db.Exec(column); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("add a peer_messages column: %w", err)
+		}
+	}
+	return nil
 }
 
 const peerMessageSelect = `SELECT id, connection_id, direction, kind, body, in_reply_to, remote_message_id, state, created_by, sender_server_name,
 	created_at, updated_at, delivered_at, attempts, last_error, next_attempt_at, decided_by, decided_at, decision_reason,
-	session_id, operation, status_message_id, signal_id FROM peer_messages`
+	session_id, operation, status_message_id, signal_id, supersedes, superseded_by FROM peer_messages`
 
 func scanPeerMessage(row rowScanner) (PeerMessage, error) {
 	var message PeerMessage
 	var rowID int64
-	var body, operation, direction, kind, state string
+	var body, operation, direction, kind, state, supersedes string
 	var deliveredAt, nextAttemptAt, decidedAt sql.NullTime
 	if err := row.Scan(&rowID, &message.ConnectionID, &direction, &kind, &body, &message.InReplyTo, &message.RemoteMessageID, &state,
 		&message.CreatedBy, &message.SenderServerName, &message.CreatedAt, &message.UpdatedAt, &deliveredAt, &message.Attempts, &message.LastError,
 		&nextAttemptAt, &message.DecidedBy, &decidedAt, &message.DecisionReason, &message.SessionID, &operation, &message.StatusMessageID,
-		&message.SignalID); err != nil {
+		&message.SignalID, &supersedes, &message.SupersededBy); err != nil {
 		return PeerMessage{}, err
 	}
 	message.ID = prefixedIDOf(peerMessageIDPrefix, rowID)
@@ -85,6 +97,11 @@ func scanPeerMessage(row rowScanner) (PeerMessage, error) {
 	message.State = msg.PeerMessageState(state)
 	if err := json.Unmarshal([]byte(body), &message.Body); err != nil {
 		return PeerMessage{}, fmt.Errorf("peer message %s holds a body this server cannot read: %w", message.ID, err)
+	}
+	if supersedes != "" {
+		if err := json.Unmarshal([]byte(supersedes), &message.Supersedes); err != nil {
+			return PeerMessage{}, fmt.Errorf("peer message %s holds a supersedes list this server cannot read: %w", message.ID, err)
+		}
 	}
 	message.DeliveredAt = timeOrNil(deliveredAt)
 	message.NextAttemptAt = timeOrNil(nextAttemptAt)
@@ -115,15 +132,23 @@ func (s *Store) InsertPeerMessage(message *PeerMessage) error {
 	if err != nil {
 		return fmt.Errorf("insert peer message on %s: encode body: %w", message.ConnectionID, err)
 	}
+	supersedes := ""
+	if len(message.Supersedes) > 0 {
+		encoded, err := json.Marshal(message.Supersedes)
+		if err != nil {
+			return fmt.Errorf("insert peer message on %s: encode supersedes: %w", message.ConnectionID, err)
+		}
+		supersedes = string(encoded)
+	}
 	now := time.Now().UTC()
 	if message.CreatedAt.IsZero() {
 		message.CreatedAt = now
 	}
 	message.UpdatedAt = now
 	result, err := s.db.Exec(`INSERT INTO peer_messages (connection_id, direction, kind, body, in_reply_to, remote_message_id, state, created_by,
-		sender_server_name, created_at, updated_at, next_attempt_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sender_server_name, created_at, updated_at, next_attempt_at, supersedes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		message.ConnectionID, string(message.Direction), string(message.Kind), string(body), message.InReplyTo, message.RemoteMessageID,
-		string(message.State), message.CreatedBy, message.SenderServerName, message.CreatedAt.UTC(), message.UpdatedAt, nullableTime(message.NextAttemptAt))
+		string(message.State), message.CreatedBy, message.SenderServerName, message.CreatedAt.UTC(), message.UpdatedAt, nullableTime(message.NextAttemptAt), supersedes)
 	if err != nil {
 		return fmt.Errorf("insert peer message on %s: %w", message.ConnectionID, err)
 	}
@@ -334,4 +359,57 @@ func (s *Store) FinishPeerMessage(id, statusMessageID string) error {
 // changing the message's state (a declined one stays declined).
 func (s *Store) SetPeerMessageStatusMessage(id, statusMessageID string) error {
 	return s.updatePeerMessage(id, `status_message_id = ?`, statusMessageID)
+}
+
+// MarkPeerMessageSuperseded records the later message that replaced this one.
+func (s *Store) MarkPeerMessageSuperseded(id, supersededBy string) error {
+	return s.updatePeerMessage(id, `superseded_by = ?`, supersededBy)
+}
+
+// CancelQueuedPeerMessageSuperseded stops an outgoing message that has not
+// left the outbox, because a later one replaced it. It reports false, and
+// changes nothing, when the message is no longer queued.
+func (s *Store) CancelQueuedPeerMessageSuperseded(id, supersededBy string) (bool, error) {
+	rowID, ok := rowIDOfPrefixed(peerMessageIDPrefix, id)
+	if !ok {
+		return false, ErrPeerMessageNotFound
+	}
+	result, err := s.db.Exec(`UPDATE peer_messages SET state = 'failed', superseded_by = ?, next_attempt_at = NULL,
+		last_error = ?, updated_at = ? WHERE id = ? AND direction = 'outgoing' AND state = 'queued'`,
+		supersededBy, "not sent: superseded by "+supersededBy+" before it was delivered", time.Now().UTC(), rowID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
+// OpenOutgoingPeerMessages returns this server's outgoing requests, notices
+// and patches still waiting for the other server, oldest first, on one
+// connection or every one: not failed, not answered by an incoming status,
+// and not replaced by a later message.
+func (s *Store) OpenOutgoingPeerMessages(connectionID string) ([]PeerMessage, error) {
+	query := peerMessageSelect + ` AS sent WHERE sent.direction = 'outgoing' AND sent.kind != 'status' AND sent.state != 'failed'
+		AND sent.superseded_by = ''
+		AND NOT EXISTS (SELECT 1 FROM peer_messages answer WHERE answer.direction = 'incoming' AND answer.kind = 'status'
+			AND answer.connection_id = sent.connection_id AND answer.in_reply_to = ? || printf('%06d', sent.id))`
+	arguments := []any{peerMessageIDPrefix}
+	if connectionID != "" {
+		query += ` AND sent.connection_id = ?`
+		arguments = append(arguments, connectionID)
+	}
+	rows, err := s.db.Query(query+` ORDER BY sent.id`, arguments...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	messages := []PeerMessage{}
+	for rows.Next() {
+		message, err := scanPeerMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	return messages, rows.Err()
 }

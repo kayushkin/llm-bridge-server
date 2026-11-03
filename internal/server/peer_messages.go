@@ -177,7 +177,7 @@ func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request)
 	decoder := json.NewDecoder(io.LimitReader(r.Body, peerMessageBodyLimit+4096))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {kind, body, in_reply_to?, attachment_ids?}: "+err.Error())
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {kind, body, in_reply_to?, attachment_ids?, supersedes?}: "+err.Error())
 		return
 	}
 	if err := validatePeerMessageBody(request.Kind, request.Body); err != nil {
@@ -200,7 +200,12 @@ func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	message, err := s.queuePeerMessage(r.Context(), connection, request.Kind, request.Body, request.InReplyTo, createdBy, request.AttachmentIDs...)
+	supersedes, refusal := s.outgoingMessagesASendMaySupersede(connection, request.Kind, request.Supersedes)
+	if refusal != "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_supersedes", refusal)
+		return
+	}
+	message, err := s.queuePeerMessage(r.Context(), connection, request.Kind, request.Body, request.InReplyTo, createdBy, supersedes, request.AttachmentIDs...)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -208,14 +213,61 @@ func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request)
 	writeJSONStatus(w, http.StatusCreated, message)
 }
 
+// outgoingMessagesASendMaySupersede checks the earlier messages a new one
+// names as replaced: each must be this server's own outgoing request, notice
+// or patch on the same connection, not already replaced, and only a request,
+// notice or patch may replace anything. It returns the ids once each, in the
+// order given, or why they are refused.
+func (s *Server) outgoingMessagesASendMaySupersede(connection store.PeerConnection, kind msg.PeerMessageKind, named []string) ([]string, string) {
+	if len(named) == 0 {
+		return nil, ""
+	}
+	if kind == msg.PeerMessageKindStatus {
+		return nil, "a status answers a message and replaces none; send supersedes only on a request, notice or patch"
+	}
+	var supersedes []string
+	for _, id := range named {
+		if slices.Contains(supersedes, id) {
+			continue
+		}
+		earlier, err := s.store.GetPeerMessage(id)
+		if err != nil || earlier.ConnectionID != connection.ID || earlier.Direction != msg.PeerMessageDirectionOutgoing {
+			return nil, fmt.Sprintf("%q names no message this server sent on %s; supersedes takes this server's own ids (GET /peer-messages?open=true&connection_id=%s lists the open ones)", id, connection.ID, connection.ID)
+		}
+		if earlier.Kind == msg.PeerMessageKindStatus {
+			return nil, fmt.Sprintf("%s is a status; only a request, notice or patch can be replaced", id)
+		}
+		if earlier.SupersededBy != "" {
+			return nil, fmt.Sprintf("%s was already replaced by %s", id, earlier.SupersededBy)
+		}
+		supersedes = append(supersedes, id)
+	}
+	return supersedes, ""
+}
+
 // queuePeerMessage records an outgoing message, with the uploads it sends,
+// marks the earlier messages it replaces (one still queued is never sent),
 // and tries to deliver it now, returning the record as it stands after the
 // try.
-func (s *Server) queuePeerMessage(ctx context.Context, connection store.PeerConnection, kind msg.PeerMessageKind, body msg.PeerMessageBody, inReplyTo, createdBy string, attachmentIDs ...string) (store.PeerMessage, error) {
+func (s *Server) queuePeerMessage(ctx context.Context, connection store.PeerConnection, kind msg.PeerMessageKind, body msg.PeerMessageBody, inReplyTo, createdBy string, supersedes []string, attachmentIDs ...string) (store.PeerMessage, error) {
 	message := store.PeerMessage{ConnectionID: connection.ID, Direction: msg.PeerMessageDirectionOutgoing, Kind: kind, Body: body,
-		InReplyTo: inReplyTo, State: msg.PeerMessageStateQueued, CreatedBy: createdBy}
+		InReplyTo: inReplyTo, State: msg.PeerMessageStateQueued, CreatedBy: createdBy, Supersedes: supersedes}
 	if err := s.store.InsertPeerMessage(&message); err != nil {
 		return store.PeerMessage{}, err
+	}
+	for _, earlierID := range supersedes {
+		cancelled, err := s.store.CancelQueuedPeerMessageSuperseded(earlierID, message.ID)
+		if err == nil && !cancelled {
+			err = s.store.MarkPeerMessageSuperseded(earlierID, message.ID)
+		}
+		if err != nil {
+			return store.PeerMessage{}, fmt.Errorf("record that %s replaces %s: %w", message.ID, earlierID, err)
+		}
+		if cancelled {
+			log.Printf("[peer-messages] %s replaces %s on %s, which was still queued and will not be sent", message.ID, earlierID, connection.ID)
+		} else {
+			log.Printf("[peer-messages] %s replaces %s on %s", message.ID, earlierID, connection.ID)
+		}
 	}
 	if len(attachmentIDs) > 0 {
 		if err := s.store.ClaimStagedPeerAttachments(attachmentIDs, message.ID, createdBy); err != nil {
@@ -291,6 +343,17 @@ func (s *Server) sendPeerMessage(ctx context.Context, message store.PeerMessage)
 			return "", peerMessageRefusal{reason: fmt.Sprintf("the message it answers, %s, cannot be read: %v", message.InReplyTo, err)}
 		}
 		delivery.InReplyTo = answered.RemoteMessageID
+	}
+	// The other server is told only of replaced messages it holds: one that
+	// was still queued here was never sent.
+	for _, earlierID := range message.Supersedes {
+		earlier, err := s.store.GetPeerMessage(earlierID)
+		if err != nil {
+			return "", peerMessageRefusal{reason: fmt.Sprintf("the message it replaces, %s, cannot be read: %v", earlierID, err)}
+		}
+		if earlier.RemoteMessageID != "" {
+			delivery.Supersedes = append(delivery.Supersedes, earlier.RemoteMessageID)
+		}
 	}
 	data, err := json.Marshal(delivery)
 	if err != nil {
@@ -402,7 +465,7 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 	decoder := json.NewDecoder(io.LimitReader(r.Body, peerMessageBodyLimit+4096))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&delivery); err != nil || delivery.ID == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {id, kind, body, in_reply_to?, created_at, attachments?}")
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {id, kind, body, in_reply_to?, created_at, attachments?, supersedes?}")
 		return
 	}
 	if err := validatePeerMessageBody(delivery.Kind, delivery.Body); err != nil {
@@ -431,6 +494,11 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 			return
 		}
 		answered = &found
+	}
+	replaced, refusal := s.incomingMessagesADeliveryMaySupersede(connection, delivery)
+	if refusal != "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_supersedes", refusal)
+		return
 	}
 	answersOwnMessage := answered != nil && answered.Direction == msg.PeerMessageDirectionOutgoing
 	if delivery.Kind != msg.PeerMessageKindStatus || !answersOwnMessage {
@@ -461,7 +529,14 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 	}
 	message := store.PeerMessage{ConnectionID: connection.ID, Direction: msg.PeerMessageDirectionIncoming, Kind: delivery.Kind, Body: delivery.Body,
 		InReplyTo: delivery.InReplyTo, RemoteMessageID: delivery.ID, State: state, SenderServerName: otherServerLabel(connection)}
+	for _, earlier := range replaced {
+		message.Supersedes = append(message.Supersedes, earlier.ID)
+	}
 	if err := s.store.InsertPeerMessage(&message); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		return
+	}
+	if err := s.closeIncomingMessagesReplacedBy(message, replaced, connection); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
@@ -476,6 +551,66 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 		log.Printf("[peer-messages] ERROR: record signal %s on %s: %v", signalID, message.ID, err)
 	}
 	writeJSONStatus(w, http.StatusCreated, msg.PeerMessageAcknowledgement{ID: message.ID})
+}
+
+// incomingMessagesADeliveryMaySupersede reads the messages a delivery says it
+// replaces: each must be a request, notice or patch this server received on
+// the same connection.
+func (s *Server) incomingMessagesADeliveryMaySupersede(connection store.PeerConnection, delivery msg.PeerMessageDelivery) ([]store.PeerMessage, string) {
+	if len(delivery.Supersedes) == 0 {
+		return nil, ""
+	}
+	if delivery.Kind == msg.PeerMessageKindStatus {
+		return nil, "a status replaces no message"
+	}
+	var replaced []store.PeerMessage
+	for _, id := range delivery.Supersedes {
+		earlier, err := s.store.GetPeerMessage(id)
+		if err != nil || earlier.ConnectionID != connection.ID || earlier.Direction != msg.PeerMessageDirectionIncoming || earlier.Kind == msg.PeerMessageKindStatus {
+			return nil, fmt.Sprintf("supersedes %q names no request, notice or patch this server received from %s", id, connection.ID)
+		}
+		replaced = append(replaced, earlier)
+	}
+	return replaced, ""
+}
+
+// closeIncomingMessagesReplacedBy records that message replaces each of the
+// earlier ones. One still pending is declined by this server at once, its
+// signal dismissed and the other server sent a declined status, so nobody
+// approves both; one already decided is only marked, since its work started.
+func (s *Server) closeIncomingMessagesReplacedBy(message store.PeerMessage, replaced []store.PeerMessage, connection store.PeerConnection) error {
+	for _, earlier := range replaced {
+		if err := s.store.MarkPeerMessageSuperseded(earlier.ID, message.ID); err != nil {
+			return fmt.Errorf("record that %s replaces %s: %w", message.ID, earlier.ID, err)
+		}
+		if earlier.State != msg.PeerMessageStatePending {
+			log.Printf("[peer-messages] %s replaces %s, which was already %s, so it is only marked", message.ID, earlier.ID, earlier.State)
+			continue
+		}
+		reason := fmt.Sprintf("superseded by %s, which %s sent to replace it", message.ID, otherServerLabel(connection))
+		decided, err := s.store.DecidePeerMessage(earlier.ID, msg.PeerMessageStateDeclined, "server", reason, time.Now())
+		if errors.Is(err, store.ErrPeerMessageNotPending) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("decline %s, replaced by %s: %w", earlier.ID, message.ID, err)
+		}
+		s.settlePeerMessageSignal(decided, msg.SignalStateDismissed)
+		log.Printf("[peer-messages] %s replaces %s, which was pending and is declined", message.ID, earlier.ID)
+		// The status goes after this delivery is answered: the other server
+		// is waiting on that answer now.
+		go func(decided store.PeerMessage) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			statusID, err := s.sendPeerStatus(ctx, connection, decided, msg.PeerMessageBody{Result: msg.PeerMessageStatusDeclined, Detail: reason})
+			if err != nil {
+				log.Printf("[peer-messages] ERROR: tell %s that %s was declined as replaced: %v", connection.ID, decided.ID, err)
+			} else if err := s.store.SetPeerMessageStatusMessage(decided.ID, statusID); err != nil {
+				log.Printf("[peer-messages] ERROR: record status %s on %s: %v", statusID, decided.ID, err)
+			}
+		}(decided)
+	}
+	return nil
 }
 
 // untrustedTextBlock shows text from another machine as an indented code
@@ -532,6 +667,10 @@ func (s *Server) raisePeerMessageSignal(message store.PeerMessage, connection st
 		}
 		body = fmt.Sprintf("%s reports %s (%s). Its detail, from another machine:\n\n%s", server, status.Result, message.ID, untrustedTextBlock(status.Detail))
 	}
+	if len(message.Supersedes) > 0 {
+		title += " (replaces " + strings.Join(message.Supersedes, ", ") + ")"
+		body += "\n\nIt replaces " + strings.Join(message.Supersedes, ", ") + "; any of those still waiting was declined by this server."
+	}
 	signal := &msg.Signal{
 		ID:      ids.NewSignalID(),
 		Kind:    msg.SignalKindNotification,
@@ -585,14 +724,29 @@ func peerMessageFilterFromQuery(r *http.Request) (store.PeerMessageFilter, error
 	return filter, nil
 }
 
-// handleListPeerMessages: GET /peer-messages, newest first.
+// handleListPeerMessages: GET /peer-messages, newest first. With open=true
+// it answers instead this server's outgoing requests, notices and patches
+// still waiting for the other server, oldest first.
 func (s *Server) handleListPeerMessages(w http.ResponseWriter, r *http.Request) {
 	filter, err := peerMessageFilterFromQuery(r)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_filter", err.Error())
 		return
 	}
-	messages, err := s.store.ListPeerMessages(filter)
+	var messages []store.PeerMessage
+	switch open := r.URL.Query().Get("open"); open {
+	case "true":
+		if filter.Direction != "" || filter.State != "" || filter.Kind != "" {
+			writeJSONError(w, http.StatusBadRequest, "invalid_filter", "open=true lists outgoing messages still waiting, and takes only connection_id beside it")
+			return
+		}
+		messages, err = s.store.OpenOutgoingPeerMessages(filter.ConnectionID)
+	case "", "false":
+		messages, err = s.store.ListPeerMessages(filter)
+	default:
+		writeJSONError(w, http.StatusBadRequest, "invalid_filter", errBadEnum("open", open, "true, false").Error())
+		return
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -906,7 +1060,7 @@ func (s *Server) sendPeerStatus(ctx context.Context, connection store.PeerConnec
 	if len(status.Detail) > peerStatusDetailLimit {
 		status.Detail = status.Detail[:peerStatusDetailLimit] + "\n[cut at " + fmt.Sprint(peerStatusDetailLimit) + " bytes]"
 	}
-	sent, err := s.queuePeerMessage(ctx, connection, msg.PeerMessageKindStatus, status, answered.ID, "server")
+	sent, err := s.queuePeerMessage(ctx, connection, msg.PeerMessageKindStatus, status, answered.ID, "server", nil)
 	if err != nil {
 		return "", err
 	}

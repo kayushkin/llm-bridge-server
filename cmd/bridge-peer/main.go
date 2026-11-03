@@ -61,13 +61,17 @@ func main() {
 func usage() error {
 	return errors.New(`usage:
   bridge-peer servers
-  bridge-peer request <server name or connection id> --title "…" [--attach <file>]… "<prompt>"
-  bridge-peer notice <server name or connection id> --repo <repo> --commit <sha> [--repo … --commit …] [--in-reply-to <message id>] [--attach <file>]… "<summary>"
+  bridge-peer request <server name or connection id> --title "…" [--supersedes <message id>]… [--attach <file>]… "<prompt>"
+  bridge-peer notice <server name or connection id> --repo <repo> --commit <sha> [--repo … --commit …] [--in-reply-to <message id>] [--supersedes <message id>]… [--attach <file>]… "<summary>"
   bridge-peer status <server name or connection id> --in-reply-to <message id> --result succeeded|failed|declined [--attach <file>]… "<detail>"
-  bridge-peer patch <server name or connection id> --repo <repo name> [--base origin/main] [--summary "…"]
+  bridge-peer patch <server name or connection id> --repo <repo name> [--base origin/main] [--summary "…"] [--supersedes <message id>]…
       (run inside the repo: it sends git format-patch <base>..HEAD as one attached file)
   bridge-peer fetch <message id> [--out <directory>]
-  bridge-peer messages [--pending] [--server <name or connection id>] [--limit N]
+  bridge-peer messages [--pending | --open] [--server <name or connection id>] [--limit N]
+      (--open: this server's requests, notices and patches still waiting for an answer;
+       request, notice and patch print the open ones to that server before sending,
+       and --supersedes <id> says the new message replaces one, which the other server
+       then declines if it is still waiting there)
   bridge-peer instances <server name or connection id>
   bridge-peer run <server name or connection id> (--instance <its instance id> | --session <its session id>) [--timeout 15m] "<message>"
       (starts a session there, or continues one, waits for the reply and prints it; the session stays there)`)
@@ -90,6 +94,7 @@ func run(arguments []string, out io.Writer) error {
 	title := flags.String("title", "", "a request's title")
 	inReplyTo := flags.String("in-reply-to", "", "the id, on this server, of the message this one answers")
 	pending := flags.Bool("pending", false, "only incoming messages waiting for a decision")
+	open := flags.Bool("open", false, "only this server's requests, notices and patches still waiting for the other server")
 	onServer := flags.String("server", "", "only messages on this connected server")
 	limit := flags.Int("limit", 20, "most messages to print")
 	base := flags.String("base", "origin/main", "a patch's base: the commit the other server already has")
@@ -99,7 +104,8 @@ func run(arguments []string, out io.Writer) error {
 	instance := flags.String("instance", "", "run: the other server's instance to start a new session on")
 	session := flags.String("session", "", "run: the other server's session to continue")
 	timeout := flags.Duration("timeout", 15*time.Minute, "run: give up waiting for the reply after this long")
-	var repos, commits, attachments repeated
+	var repos, commits, attachments, supersedes repeated
+	flags.Var(&supersedes, "supersedes", "the id, on this server, of an earlier request, notice or patch this one replaces (repeat)")
 	flags.Var(&attachments, "attach", "a file to send with the message (repeat)")
 	flags.Var(&repos, "repo", "a notice's repo (repeat, paired with --commit)")
 	flags.Var(&commits, "commit", "a notice's commit (repeat, paired with --repo)")
@@ -130,7 +136,7 @@ func run(arguments []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return c.send(out, connection, msg.PeerMessageKindRequest, msg.PeerMessageBody{Title: *title, Prompt: positional[1]}, *inReplyTo, attachmentIDs)
+		return c.send(out, connection, msg.PeerMessageKindRequest, msg.PeerMessageBody{Title: *title, Prompt: positional[1]}, *inReplyTo, attachmentIDs, supersedes)
 	case "notice":
 		if len(positional) != 2 || len(repos) == 0 || len(repos) != len(commits) {
 			return usage()
@@ -147,7 +153,7 @@ func run(arguments []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return c.send(out, connection, msg.PeerMessageKindNotice, msg.PeerMessageBody{Summary: positional[1], Commits: pairs}, *inReplyTo, attachmentIDs)
+		return c.send(out, connection, msg.PeerMessageKindNotice, msg.PeerMessageBody{Summary: positional[1], Commits: pairs}, *inReplyTo, attachmentIDs, supersedes)
 	case "status":
 		if len(positional) != 2 || *inReplyTo == "" || *result == "" {
 			return usage()
@@ -160,7 +166,7 @@ func run(arguments []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return c.send(out, connection, msg.PeerMessageKindStatus, msg.PeerMessageBody{Result: msg.PeerMessageStatusResult(*result), Detail: positional[1]}, *inReplyTo, attachmentIDs)
+		return c.send(out, connection, msg.PeerMessageKindStatus, msg.PeerMessageBody{Result: msg.PeerMessageStatusResult(*result), Detail: positional[1]}, *inReplyTo, attachmentIDs, nil)
 	case "patch":
 		if len(positional) != 1 || len(repos) != 1 || len(commits) != 0 {
 			return usage()
@@ -169,17 +175,17 @@ func run(arguments []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return c.sendPatch(out, connection, repos[0], *base, *summary, *inReplyTo)
+		return c.sendPatch(out, connection, repos[0], *base, *summary, *inReplyTo, supersedes)
 	case "fetch":
 		if len(positional) != 1 {
 			return usage()
 		}
 		return c.fetch(out, positional[0], *outDirectory)
 	case "messages":
-		if len(positional) != 0 {
+		if len(positional) != 0 || (*pending && *open) {
 			return usage()
 		}
-		return listMessages(c, out, zone, *pending, *onServer, *limit)
+		return listMessages(c, out, zone, *pending, *open, *onServer, *limit)
 	case "instances":
 		if len(positional) != 1 {
 			return usage()
@@ -391,8 +397,13 @@ func listServers(c *client, out io.Writer) error {
 	return nil
 }
 
-func (c *client) send(out io.Writer, connection connectionView, kind msg.PeerMessageKind, body msg.PeerMessageBody, inReplyTo string, attachmentIDs []string) error {
-	request := msg.PeerMessageCreateRequest{Kind: kind, Body: body, InReplyTo: inReplyTo, AttachmentIDs: attachmentIDs}
+func (c *client) send(out io.Writer, connection connectionView, kind msg.PeerMessageKind, body msg.PeerMessageBody, inReplyTo string, attachmentIDs, supersedes []string) error {
+	if kind != msg.PeerMessageKindStatus {
+		if err := c.printOpenMessages(out, connection, supersedes); err != nil {
+			return err
+		}
+	}
+	request := msg.PeerMessageCreateRequest{Kind: kind, Body: body, InReplyTo: inReplyTo, AttachmentIDs: attachmentIDs, Supersedes: supersedes}
 	var sent msg.PeerMessage
 	if err := c.call(http.MethodPost, "/peer-connections/"+url.PathEscape(connection.Connection.ID)+"/messages", request, http.StatusCreated, &sent); err != nil {
 		return err
@@ -405,6 +416,9 @@ func (c *client) send(out io.Writer, connection connectionView, kind msg.PeerMes
 		fmt.Fprintf(out, " — %s", sent.LastError)
 	}
 	fmt.Fprintln(out)
+	if len(sent.Supersedes) > 0 {
+		fmt.Fprintf(out, "It replaces %s; %s declines any of those still waiting there.\n", strings.Join(sent.Supersedes, ", "), connection.name())
+	}
 	for _, attachment := range sent.Attachments {
 		fmt.Fprintf(out, "  %s %s (%d bytes, sha256 %s)\n", attachment.ID, attachment.Name, attachment.Size, attachment.SHA256)
 	}
@@ -414,8 +428,45 @@ func (c *client) send(out io.Writer, connection connectionView, kind msg.PeerMes
 	return nil
 }
 
-func listMessages(c *client, out io.Writer, zone *time.Location, pending bool, onServer string, limit int) error {
+// printOpenMessages shows what this server already asked of the other one
+// and has had no answer to, before a new request, notice or patch goes, so
+// the sender can tell a duplicate. It sends anyway: the sender decides.
+func (c *client) printOpenMessages(out io.Writer, connection connectionView, supersedes []string) error {
+	var open []msg.PeerMessage
+	if err := c.call(http.MethodGet, "/peer-messages?open=true&connection_id="+url.QueryEscape(connection.Connection.ID), nil, http.StatusOK, &open); err != nil {
+		return fmt.Errorf("read the messages still open on %s: %w", connection.name(), err)
+	}
+	var notReplaced []msg.PeerMessage
+	for _, message := range open {
+		if !slicesContain(supersedes, message.ID) {
+			notReplaced = append(notReplaced, message)
+		}
+	}
+	if len(notReplaced) == 0 {
+		return nil
+	}
+	fmt.Fprintf(out, "Still open on %s, with no answer yet (sending this one too):\n", connection.name())
+	for _, message := range notReplaced {
+		fmt.Fprintf(out, "  %s  %s  %s  %s\n", message.ID, message.CreatedAt.Local().Format("Jan 02 15:04"), message.State, summaryOf(message))
+	}
+	fmt.Fprintln(out, "If this message replaces one of them, send it with --supersedes <id> instead, so the other server declines the old one.")
+	return nil
+}
+
+func slicesContain(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+func listMessages(c *client, out io.Writer, zone *time.Location, pending, open bool, onServer string, limit int) error {
 	query := url.Values{}
+	if open {
+		query.Set("open", "true")
+	}
 	if pending {
 		query.Set("direction", string(msg.PeerMessageDirectionIncoming))
 		query.Set("state", string(msg.PeerMessageStatePending))
@@ -454,6 +505,12 @@ func listMessages(c *client, out io.Writer, zone *time.Location, pending bool, o
 		if m.SessionID != "" {
 			line += "  session " + m.SessionID
 		}
+		if len(m.Supersedes) > 0 {
+			line += "  replaces " + strings.Join(m.Supersedes, ", ")
+		}
+		if m.SupersededBy != "" {
+			line += "  replaced by " + m.SupersededBy
+		}
 		fmt.Fprintln(out, line)
 		fmt.Fprintf(out, "    %s\n", summaryOf(m))
 	}
@@ -472,6 +529,8 @@ func summaryOf(m msg.PeerMessage) string {
 			commits = append(commits, commit.Repo+"@"+commit.Commit)
 		}
 		return "notice: " + m.Body.Summary + " (" + strings.Join(commits, ", ") + ")"
+	case msg.PeerMessageKindPatch:
+		return "patch: " + m.Body.Repo + " — " + strings.Join(strings.Fields(m.Body.Summary), " ")
 	case msg.PeerMessageKindStatus:
 		detail := strings.Join(strings.Fields(m.Body.Detail), " ")
 		if len(detail) > 160 {
@@ -552,7 +611,7 @@ func gitOutput(arguments ...string) (string, error) {
 // sendPatch sends this repo's commits after base as one git format-patch
 // file. It refuses uncommitted changes, which the patch would leave out
 // without saying so, and a base with no commits after it.
-func (c *client) sendPatch(out io.Writer, connection connectionView, repo, base, summary, inReplyTo string) error {
+func (c *client) sendPatch(out io.Writer, connection connectionView, repo, base, summary, inReplyTo string, supersedes []string) error {
 	if status, err := gitOutput("status", "--porcelain"); err != nil {
 		return err
 	} else if strings.TrimSpace(status) != "" {
@@ -590,7 +649,7 @@ func (c *client) sendPatch(out io.Writer, connection connectionView, repo, base,
 	if err != nil {
 		return err
 	}
-	return c.send(out, connection, msg.PeerMessageKindPatch, msg.PeerMessageBody{Repo: repo, BaseCommit: baseCommit, Summary: summary}, inReplyTo, attachmentIDs)
+	return c.send(out, connection, msg.PeerMessageKindPatch, msg.PeerMessageBody{Repo: repo, BaseCommit: baseCommit, Summary: summary}, inReplyTo, attachmentIDs, supersedes)
 }
 
 // fetch downloads every file of a message into directory and checks each
