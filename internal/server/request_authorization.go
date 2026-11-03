@@ -474,6 +474,8 @@ var routeAccessRules = map[string]routeAccessRule{
 	"PUT /machines/{id}":                           operatorRoute("machine registry"),
 	"PUT /machines/{id}/computer-use":              operatorRoute("machine registry"),
 	"DELETE /machines/{id}":                        operatorRoute("machine registry"),
+	"GET /machines/stats":                          operatorRoute("machine health readings"),
+	"GET /machines/{id}/stats/history":             operatorRoute("machine health readings"),
 	"POST /api/runner/seed/broadcast":              operatorRoute("tells every runner to reconcile"),
 
 	// Identity bindings in principal-store: who an Entra identity signs in as.

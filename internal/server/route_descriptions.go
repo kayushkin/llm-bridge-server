@@ -135,6 +135,8 @@ var routeDescriptions = map[string]routeDescription{
 	"PUT /machines/{id}":                           {routeGroupMachines, "Change a machine (harness-store)"},
 	"PUT /machines/{id}/computer-use":              {routeGroupMachines, "Switch computer use on or off for a machine's sessions (`{\"allowed\": bool}`)"},
 	"DELETE /machines/{id}":                        {routeGroupMachines, "Remove a machine (harness-store)"},
+	"GET /machines/stats":                          {routeGroupMachines, "Every machine with its newest health reading: CPU, memory, drives, batteries, uptime"},
+	"GET /machines/{id}/stats/history":             {routeGroupMachines, "A machine's health readings over a time range, grouped into steps"},
 	"GET /instances":                               {routeGroupMachines, "List instances (harness-store)"},
 	"POST /instances":                              {routeGroupMachines, "Add an instance (harness-store)"},
 	"GET /instances/{id}":                          {routeGroupMachines, "One instance (harness-store)"},

@@ -310,10 +310,12 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/instances/{id}/status` | Live sessions and credential state (harness-store) | operator |
 | `GET` | `/machines` | List machines (harness-store) | operator |
 | `POST` | `/machines` | Add a machine (harness-store) | operator |
+| `GET` | `/machines/stats` | Every machine with its newest health reading: CPU, memory, drives, batteries, uptime | operator |
 | `DELETE` | `/machines/{id}` | Remove a machine (harness-store) | operator |
 | `GET` | `/machines/{id}` | One machine (harness-store) | operator |
 | `PUT` | `/machines/{id}` | Change a machine (harness-store) | operator |
 | `PUT` | `/machines/{id}/computer-use` | Switch computer use on or off for a machine's sessions (`{"allowed": bool}`) | operator |
+| `GET` | `/machines/{id}/stats/history` | A machine's health readings over a time range, grouped into steps | operator |
 
 ### Hooks
 

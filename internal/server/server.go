@@ -545,6 +545,8 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("PUT /machines/{id}", s.handleUpdateMachine)
 		s.mux.HandleFunc("PUT /machines/{id}/computer-use", s.handleSetMachineComputerUse)
 		s.mux.HandleFunc("DELETE /machines/{id}", s.handleDeleteMachine)
+		s.mux.HandleFunc("GET /machines/stats", s.handleMachineStatsOverview)
+		s.mux.HandleFunc("GET /machines/{id}/stats/history", s.handleMachineStatsHistory)
 	}
 
 	// Runner WebSocket — long-lived connection from llm-bridge-runner

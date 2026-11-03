@@ -35,6 +35,17 @@ const runnerOutgoingBuffer = 256
 type RunnerRegistry struct {
 	mu    sync.RWMutex
 	conns map[string]*RunnerConnection // machineName → connection
+
+	// machineStatsReceiver gets each machine_stats frame, filed under the
+	// machine the runner's token belongs to. Nil drops them.
+	machineStatsReceiver func(machineID string, stats msg.MachineStats)
+}
+
+// SetMachineStatsReceiver sets what receives runners' machine stats.
+func (r *RunnerRegistry) SetMachineStatsReceiver(receiver func(machineID string, stats msg.MachineStats)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.machineStatsReceiver = receiver
 }
 
 // NewRunnerRegistry constructs an empty registry.
@@ -264,10 +275,28 @@ func (c *RunnerConnection) reader() error {
 			// Read deadline is reset by SetPongHandler.
 		case msg.RunnerMsgPing:
 			_ = c.Send(&msg.RunnerMessage{Type: msg.RunnerMsgPong})
+		case msg.RunnerMsgMachineStats:
+			c.handleMachineStats(&m)
 		default:
 			log.Printf("[runner-server] unexpected message from %s: %s", c.MachineName, m.Type)
 		}
 	}
+}
+
+// handleMachineStats hands a machine_stats frame to the registry's receiver,
+// under this connection's machine id rather than anything the runner says.
+func (c *RunnerConnection) handleMachineStats(m *msg.RunnerMessage) {
+	if m.MachineStats == nil {
+		log.Printf("[runner-server] machine_stats from %s with no payload", c.MachineName)
+		return
+	}
+	c.registry.mu.RLock()
+	receiver := c.registry.machineStatsReceiver
+	c.registry.mu.RUnlock()
+	if receiver == nil {
+		return
+	}
+	receiver(c.MachineID, m.MachineStats.Stats)
 }
 
 // handleStdout parses a runner stdout line as msg.Event and forwards it
