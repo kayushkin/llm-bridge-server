@@ -103,12 +103,12 @@ func (s *Server) pruneMachineStats() {
 func (s *Server) handleMachineStatsOverview(w http.ResponseWriter, r *http.Request) {
 	machines, err := s.harnessStore.ListMachines()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
 		return
 	}
 	latest, err := s.store.LatestMachineStats()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
 		return
 	}
 	runners := s.harness.Runners()
@@ -134,17 +134,17 @@ func (s *Server) handleMachineStatsOverview(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleMachineStatsHistory(w http.ResponseWriter, r *http.Request) {
 	machineID := r.PathValue("id")
 	if _, err := s.harnessStore.GetMachine(machineID); err != nil {
-		http.Error(w, "machine not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "machine_not_found", "machine not found")
 		return
 	}
 	since, until, step, err := parseMachineStatsHistoryQuery(r, time.Now().UTC())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_machine_stats_query", err.Error())
 		return
 	}
 	samples, err := s.store.MachineStatsSamplesBetween(machineID, since, until)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
 		return
 	}
 	writeJSON(w, msg.MachineStatsHistory{
