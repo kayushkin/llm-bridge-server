@@ -36,7 +36,7 @@ Case-writing rules inherited from the scheduler plans:
   - Read every applied diff against its label (`--diffs`). A row prints the name
     you gave it, not the edit you made.
   - An UNNOTICED row is not automatically a coverage hole. It can be a
-    behavioural no-op, or a fake in the test file that swallows the value the
+    behavioral no-op, or a fake in the test file that swallows the value the
     mutation moved.
 
 Score when filed by the 218th pass: 18/18 real mechanisms caught, both controls
@@ -91,7 +91,7 @@ CASES = [
         [("// ListFilter narrows ListBundles.", "// ListFilter is how a caller narrows what ListBundles returns.")],
         expected_unnoticed="a prose comment. Nothing compiles against it and no test reads it. "
                            "This control is what proves the rows below redden because of the "
-                           "behaviour they move, not because any edit to these files reddens.",
+                           "behavior they move, not because any edit to these files reddens.",
     ),
 
     # ---- Store.SetEnabled: the four decisions in four lines ----

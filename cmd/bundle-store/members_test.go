@@ -39,7 +39,7 @@ func TestCheckPassesWhenEveryStoredMemberIsCarried(t *testing.T) {
 		[]storeEntry{{ID: 61, Name: "browser"}, {ID: 62, Name: "write-file"}},
 	)
 	report := checkStoredMembers(index, checkFixtureBundles())
-	if len(report.Missing) != 0 || len(report.Relabelled) != 0 {
+	if len(report.Missing) != 0 || len(report.Relabeled) != 0 {
 		t.Fatalf("every id carried under its stored label must report nothing, got %+v", report)
 	}
 }
@@ -66,8 +66,8 @@ func TestCheckFailsOnEveryMemberIDTheOwningStoreNoLongerCarries(t *testing.T) {
 			t.Fatalf("the report must name %q; got:\n%s", want, joined)
 		}
 	}
-	if len(report.Relabelled) != 0 {
-		t.Fatalf("a missing id is not a relabel: %v", report.Relabelled)
+	if len(report.Relabeled) != 0 {
+		t.Fatalf("a missing id is not a relabel: %v", report.Relabeled)
 	}
 }
 
@@ -82,12 +82,12 @@ func TestCheckReportsARenamedMemberWithoutFailing(t *testing.T) {
 	if len(report.Missing) != 0 {
 		t.Fatalf("a renamed member must not fail the check: %v", report.Missing)
 	}
-	if len(report.Relabelled) != 1 {
-		t.Fatalf("want one relabel line, got %d: %v", len(report.Relabelled), report.Relabelled)
+	if len(report.Relabeled) != 1 {
+		t.Fatalf("want one relabel line, got %d: %v", len(report.Relabeled), report.Relabeled)
 	}
 	for _, want := range []string{"bundle frontend", "skill id 501", `"web-testing"`, `"web-testing-v2"`, "skill-store"} {
-		if !strings.Contains(report.Relabelled[0], want) {
-			t.Fatalf("the relabel line must name %q; got: %s", want, report.Relabelled[0])
+		if !strings.Contains(report.Relabeled[0], want) {
+			t.Fatalf("the relabel line must name %q; got: %s", want, report.Relabeled[0])
 		}
 	}
 }
@@ -135,7 +135,7 @@ func TestCheckOfAnEmptyStorePasses(t *testing.T) {
 		t.Fatalf("a fresh store must hold no bundles, got %d", len(bundles))
 	}
 	report := checkStoredMembers(newMemberIndex(nil, nil), bundles)
-	if len(report.Missing) != 0 || len(report.Relabelled) != 0 {
+	if len(report.Missing) != 0 || len(report.Relabeled) != 0 {
 		t.Fatalf("an empty store must report nothing, got %+v", report)
 	}
 }

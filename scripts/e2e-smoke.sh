@@ -533,7 +533,7 @@ step "-check-members reports a member renamed upstream, and still passes"
 start_stub renamed
 CHECK_EXIT=$(run_check "$TMP_DIR/check-renamed.log")
 [ "$CHECK_EXIT" = 0 ] || fail "a renamed member must not fail the check: $(cat "$TMP_DIR/check-renamed.log")"
-grep -q 'RELABELLED.*bundle react.*skill id 7002.*"senior-frontend-v2"' "$TMP_DIR/check-renamed.log" \
+grep -q 'RELABELED.*bundle react.*skill id 7002.*"senior-frontend-v2"' "$TMP_DIR/check-renamed.log" \
   || fail "the check must report the rename: $(cat "$TMP_DIR/check-renamed.log")"
 
 step "-check-members fails on a member id deleted upstream, and names it"

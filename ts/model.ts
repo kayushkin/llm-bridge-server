@@ -105,7 +105,7 @@ export interface BundleRef {
  * gives Extends, and UpsertBundle turns that name into an id once, against
  * bundle-store's own bundles table, refusing the write if no such parent exists.
  * Supplying both is only accepted when they agree — one fact arriving by two
- * routes has to be checked, not silently resolved in favour of either.
+ * routes has to be checked, not silently resolved in favor of either.
  */
 export interface Bundle {
   id: number /* int64 */;

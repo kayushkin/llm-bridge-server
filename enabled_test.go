@@ -236,7 +236,7 @@ func TestADisabledBundleContributesNothingToResolve(t *testing.T) {
 // Whether that is right is a curator's question, not a test's: inheritance is
 // arguably structural, and a parent that vanished mid-chain would silently
 // resolve to a smaller bundle — which expandChain refuses to do for a *missing*
-// parent, loudly. The behaviour is pinned here so that changing it has to be a
+// parent, loudly. The behavior is pinned here so that changing it has to be a
 // decision rather than an accident, and so that a reader who assumes "disabled
 // means gone" meets this test instead of a production surprise.
 func TestADisabledParentStillContributesThroughInheritance(t *testing.T) {
@@ -268,7 +268,7 @@ func TestADisabledParentStillContributesThroughInheritance(t *testing.T) {
 	}
 	if !hasID(resp.Skills, skillBackendPatterns) {
 		t.Fatalf("a disabled parent no longer contributes through the Extends chain. That may be "+
-			"an improvement, but it is a behaviour change: expandChain uses GetBundle, which has "+
+			"an improvement, but it is a behavior change: expandChain uses GetBundle, which has "+
 			"no enabled filter. Update this test deliberately. Got: %+v", resp)
 	}
 }

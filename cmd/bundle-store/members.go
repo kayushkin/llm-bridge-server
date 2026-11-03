@@ -52,10 +52,10 @@ func indexByID(entries []storeEntry) map[int64]storeEntry {
 }
 
 // memberCheckReport is the outcome of checking stored bundles against the two
-// owning stores. Missing lines fail the check; relabelled lines do not.
+// owning stores. Missing lines fail the check; relabeled lines do not.
 type memberCheckReport struct {
-	Missing    []string
-	Relabelled []string
+	Missing   []string
+	Relabeled []string
 }
 
 // checkStoredMembers checks every member of every given bundle, whatever its
@@ -79,7 +79,7 @@ func checkStoredMembers(index *memberIndex, bundles []bundlestore.Bundle) member
 				continue
 			}
 			if entry.Name != m.Name {
-				report.Relabelled = append(report.Relabelled, fmt.Sprintf(
+				report.Relabeled = append(report.Relabeled, fmt.Sprintf(
 					"bundle %s (id %d): %s %s id %d is stored as %q, but %s now names it %q",
 					b.Name, b.ID, effect, m.Kind, m.ID, m.Name, m.Kind.OwningStore(), entry.Name))
 			}
@@ -113,8 +113,8 @@ func runMemberCheck(settings *servicesettings.Registry) error {
 	}
 
 	report := checkStoredMembers(index, bundles)
-	for _, line := range report.Relabelled {
-		log.Printf("RELABELLED (not a failure): %s", line)
+	for _, line := range report.Relabeled {
+		log.Printf("RELABELED (not a failure): %s", line)
 	}
 	for _, line := range report.Missing {
 		log.Printf("MISSING: %s", line)
@@ -128,7 +128,7 @@ func runMemberCheck(settings *servicesettings.Registry) error {
 			len(report.Missing), memberCount, len(bundles))
 	}
 	log.Printf("check-members: all %d member(s) across %d stored bundle(s) are carried by their owning store (%d label(s) out of date)",
-		memberCount, len(bundles), len(report.Relabelled))
+		memberCount, len(bundles), len(report.Relabeled))
 	return nil
 }
 
