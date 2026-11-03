@@ -22,7 +22,7 @@ own too: it is a plain HTTP API.
   YouTube's history, or a page in My Activity and in Chrome's history, is one
   activity with two sightings.
 - **Search** every word of the titles, links and details (SQLite FTS5).
-- **Summarise a day** in any time zone, by product (`GET /days/2026-01-05?tz=Europe/Paris`).
+- **Summarize a day** in any time zone, by product (`GET /days/2026-01-05?tz=Europe/Paris`).
 - **Keep history.** Deletes are soft and leave a revision; a purge removes
   what an activity said, everywhere, for something that must not be kept.
 

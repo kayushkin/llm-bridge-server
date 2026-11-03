@@ -9,7 +9,7 @@ import (
 // MaxDayFirst bounds how many activities a day summary lists per product.
 const MaxDayFirst = 50
 
-// Day summarises one calendar day in a time zone: for each product, how many
+// Day summarizes one calendar day in a time zone: for each product, how many
 // live activities, of which actions, and the earliest few. A day is midnight
 // to midnight in the zone, so one with a clock change is 23 or 25 hours.
 func (s *Store) Day(date, timeZone string, first int) (Day, error) {

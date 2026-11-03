@@ -113,7 +113,7 @@ func TestAnImportIsIdempotentAndFoldsTheSameWatchFromTwoSources(t *testing.T) {
 	var started ImportStarted
 	ts.do("POST", "/imports", ImportStart{Kind: ImportKindMyActivityHTML, Sha256: sha("a")}, 200, &started)
 	if !started.AlreadyFinished {
-		t.Fatal("the same file was not recognised")
+		t.Fatal("the same file was not recognized")
 	}
 	// A later export holding the same cards: known by reference.
 	_, counts = ts.importFile(ImportKindMyActivityHTML, sha("c"), search(), watch(SourceGoogleMyActivity, "ref-watch"))
@@ -202,7 +202,7 @@ func TestListSearchesEveryWordAndRefusesAnUnknownParameter(t *testing.T) {
 	ts.do("GET", "/activities?limit=5000", nil, 400, nil)
 }
 
-func TestADaySummarisesByProductInTheAskedZone(t *testing.T) {
+func TestADaySummarizesByProductInTheAskedZone(t *testing.T) {
 	ts := newTestServer(t)
 	ts.importFile(ImportKindMyActivityHTML, sha("a"), search(), watch(SourceGoogleMyActivity, "ref-watch"))
 	var day Day
