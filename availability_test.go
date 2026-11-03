@@ -56,7 +56,7 @@ func TestAvailabilityValidateRefusesWhatAClockCannotRead(t *testing.T) {
 		t.Fatalf("valid week refused: %v", err)
 	}
 	if strings.Join(ok.Days, ",") != "MO,FR" {
-		t.Fatalf("days not normalised and de-duplicated: %v", ok.Days)
+		t.Fatalf("days not normalized and de-duplicated: %v", ok.Days)
 	}
 }
 

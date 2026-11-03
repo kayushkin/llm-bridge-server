@@ -87,7 +87,7 @@ read `GET {grant-store}/principals/{id}/effective?relation=works_with` instead.
 ## Invariants
 
 **`kind` is `human`, `group`, `contact` or `peer`.** Anything else is a **400**
-naming the vocabulary. Case is normalised, nothing else is. `GET /kinds` serves
+naming the vocabulary. Case is normalized, nothing else is. `GET /kinds` serves
 the list so no caller hardcodes it.
 
 **Memberships are one level deep.** `group_id` must be a group and `member_id`

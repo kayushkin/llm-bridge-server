@@ -65,7 +65,7 @@ type KindDefinition struct {
 }
 
 // KindDefinitions is every kind a principal can be, in the order GET /kinds
-// serves them. An agent is not modelled yet — add it here when it is, and the
+// serves them. An agent is not modeled yet — add it here when it is, and the
 // 400 below starts naming it.
 var KindDefinitions = []KindDefinition{
 	{

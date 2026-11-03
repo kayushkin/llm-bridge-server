@@ -97,7 +97,7 @@ export interface TimeOff {
 /**
  * ContactResolution is what ResolveContact answers: the contact, and whether
  * this call is what created it. Created is not decoration — a caller that
- * suddenly creates a contact per message has a normalisation bug, and this is
+ * suddenly creates a contact per message has a normalization bug, and this is
  * the field that shows it.
  */
 export interface ContactResolution {
