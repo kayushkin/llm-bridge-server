@@ -1082,7 +1082,7 @@ func backgroundTasksLostMessage(tasks []msg.BackgroundTask) string {
 	var b strings.Builder
 	b.WriteString("[llm-bridge] The harness process was restarted under this session and it has just been " +
 		"resumed. Your last turn had finished, but background work it started was still running " +
-		"inside that process and was killed with it. It will never report back, so do not wait for it.\n\n")
+		"inside that process and was killed with it. It will not report back on its own, so do not wait for it.\n\n")
 	if len(tasks) == 0 {
 		b.WriteString("The bridge has no list of what was running.\n\n")
 	} else {
@@ -1093,9 +1093,12 @@ func backgroundTasksLostMessage(tasks []msg.BackgroundTask) string {
 		b.WriteString("\n")
 	}
 	b.WriteString("This notice is not a new instruction; the user's last request still stands. Your transcript " +
-		"above is intact. A subagent's partial work is lost unless it wrote files, and a backgrounded " +
-		"command may have got part way, so check the real state of anything they could have changed, " +
-		"then start again whatever you still need. Do not repeat work that already completed.")
+		"above is intact, and so is each subagent's: resume a subagent you still need by sending it a " +
+		"message (in Claude Code, SendMessage to its task id), and it carries on from where it stopped. " +
+		"The restart stopped it, not the user. If the harness refuses the resume or calls it stopped by " +
+		"the user, start a new agent for the same task: the user's request already covers that, so do " +
+		"not stop to ask. A backgrounded command may have got part way, so check the real state of " +
+		"anything it could have changed before running it again. Do not repeat work that already completed.")
 	return msg.WrapBridgeReport(msg.BridgeReportKindRestart, b.String())
 }
 

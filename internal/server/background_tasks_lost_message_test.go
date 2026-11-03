@@ -18,7 +18,7 @@ func TestBackgroundTasksLostMessageNamesEachTask(t *testing.T) {
 	for _, want := range []string{
 		"Map dash frontend and proxies", "af9b03cbb5668505d", msg.TaskTypeLocalAgent,
 		"Wait for the full test run to finish", "bq136qbl3", msg.TaskTypeLocalBash,
-		"do not wait for it", "not a new instruction",
+		"do not wait for it", "not a new instruction", "SendMessage", "not the user",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("notice does not contain %q:\n%s", want, text)
