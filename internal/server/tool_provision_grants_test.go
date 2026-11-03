@@ -239,7 +239,7 @@ func TestInjectMCPConfigAbortsWhenTheGrantsCannotBeRead(t *testing.T) {
 }
 
 // A session with no principal never touches grant-store, even when one is
-// configured — today's behaviour, pinned.
+// configured — today's behavior, pinned.
 func TestInjectMCPConfigWithoutAPrincipalNeverAsksGrantStore(t *testing.T) {
 	grantsAsked := false
 	grants := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

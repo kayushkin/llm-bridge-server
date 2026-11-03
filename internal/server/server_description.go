@@ -4,7 +4,7 @@ package server
 // awake.
 //
 // The server's id is made once by the store (internal/store/server_identity.go)
-// and travels beside its name. server.name is a stored behaviour setting: GET /server answers it to any
+// and travels beside its name. server.name is a stored behavior setting: GET /server answers it to any
 // signed-in caller, every request and answer over a peer connection carries it
 // in msg.ServerNameHeader with the id in msg.ServerIDHeader, and a change is sent at once to every connected
 // server (peers.go, tellConnectedServersThisServersName). keep_awake.* drive

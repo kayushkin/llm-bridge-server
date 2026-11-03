@@ -301,7 +301,7 @@ func subagentEndState(taskStatus string) (msg.SessionState, msg.SessionStateReas
 // route returns the bridge session id an event belongs to: the subagent's own
 // session when the frame carries a parent_tool_use_id, the parent otherwise.
 //
-// It falls back to the parent — today's behaviour — whenever the subagent
+// It falls back to the parent — today's behavior — whenever the subagent
 // cannot be identified, so an unrecognized frame is still recorded somewhere
 // rather than dropped. Each distinct unknown id is logged once; a steady
 // stream of those means CC changed the ordering guarantee that task_started
@@ -364,7 +364,7 @@ func (r *subagentRouter) settleUnfinished() {
 		}
 		task.settled = true
 
-		// Cancelled, not failed: the task did not report a failure, it was
+		// Canceled, not failed: the task did not report a failure, it was
 		// taken away mid-flight. This is the same canonical status the adapter
 		// maps Claude Code's own "stopped"/"killed" onto.
 		r.manager.broadcastDerived(r.parentID, &msg.Event{

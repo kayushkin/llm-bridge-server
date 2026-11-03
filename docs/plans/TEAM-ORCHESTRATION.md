@@ -1118,7 +1118,7 @@ The sidebar tree differentiates three kinds **structurally — no `is_subagent` 
 | Kind | What it is | Identified by | In the sidebar |
 |---|---|---|---|
 | **Top-level** (user goal / chat) | a session row | `manager_session_id IS NULL` | a folder root |
-| **Bridge-server subagent (L1)** — task-assigned | a session row | `manager_session_id IS NOT NULL` | nested under its manager; labelled by `role` + `type`/`purpose`; real → selectable, killable |
+| **Bridge-server subagent (L1)** — task-assigned | a session row | `manager_session_id IS NOT NULL` | nested under its manager; labeled by `role` + `type`/`purpose`; real → selectable, killable |
 | **Internal subagent (L2)** — spawned inside the harness | a session, **adapter-promoted** | own `bridge_session_id` + `manager_session_id`, `controlled_by=harness` | nested under its manager like any subagent, badged "internal"; visible/attributable but **not independently killable** (§12) |
 
 Nesting keys on `manager_session_id` — uniform for L1 and L2. `role`/`type`/`purpose`/`controlled_by`

@@ -51,7 +51,7 @@ func readPragmaFromEveryPooledConnection(t *testing.T, db *sql.DB, pragma string
 
 // TestReaderPoolBusyTimeoutIsSetOnEveryConnection is the point of this file.
 // The reader pool is the one that actually runs several connections at once,
-// and it was opened with a DSN key this driver does not recognise.
+// and it was opened with a DSN key this driver does not recognize.
 func TestReaderPoolBusyTimeoutIsSetOnEveryConnection(t *testing.T) {
 	s, err := New(filepath.Join(t.TempDir(), "bridge.db"))
 	if err != nil {

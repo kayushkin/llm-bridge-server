@@ -337,7 +337,7 @@ func TestReadEventsFanOutDoesNotWaitOnLogStorePush(t *testing.T) {
 	}
 	fanOut := time.Since(start)
 
-	// Serialised behind the pushes this is at least deltas*ingestDelay =
+	// Serialized behind the pushes this is at least deltas*ingestDelay =
 	// 500ms. A quarter of that still leaves room for the ten SQLite
 	// writes and the derivation the loop does per event, while failing
 	// loudly if the push ever moves back in front of the fan-out.

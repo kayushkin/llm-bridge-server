@@ -393,7 +393,7 @@ func encodeSummaryCursor(updatedAtText, sessionID string) string {
 // separator — one minted before the compound format existed — yields the whole
 // string as the timestamp and "" as the id, which is the correct bound for it
 // rather than a fallback: "" is below every session id, so filtering on it
-// reproduces the old timestamp-only behaviour exactly.
+// reproduces the old timestamp-only behavior exactly.
 func decodeSummaryCursor(cursor string) (updatedAtText, sessionID string) {
 	updatedAtText, sessionID, _ = strings.Cut(cursor, summaryCursorSeparator)
 	return updatedAtText, sessionID

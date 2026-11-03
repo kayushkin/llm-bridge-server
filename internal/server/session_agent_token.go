@@ -45,7 +45,7 @@ const (
 )
 
 // sessionAgentTokenPrefix starts every session agent token, so a token is
-// recognisable in a log.
+// recognizable in a log.
 const sessionAgentTokenPrefix = "llm-bridge-session-agent-token-v1"
 
 // sessionAgentTokenSignatureDomain is prepended to the signed bytes of a

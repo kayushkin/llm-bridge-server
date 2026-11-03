@@ -232,7 +232,7 @@ func (d *derivationState) foldSystemStatus(ev *msg.Event) {
 	}
 
 	// Any frame may carry a terminal task status (task_updated,
-	// task_notification, and the cancelled frames the router writes when the
+	// task_notification, and the canceled frames the router writes when the
 	// process dies), so this is not a subtype case.
 	if sys.TaskID != "" && msg.TaskStatusIsTerminal(sys.TaskStatus) {
 		for i := range d.subagents {

@@ -207,7 +207,7 @@ func TestAShareIsRefusedBeforeItIsKept(t *testing.T) {
 func TestAnAgentSharesIntoItsOwnSessionAndNoOther(t *testing.T) {
 	srv, st, _, _ := testServerWithFileStore(t)
 	session := newSessionForSignals(t, st, "br_agent", msg.SessionTypeInteractive)
-	newSessionForSignals(t, st, "br_neighbour", msg.SessionTypeInteractive)
+	newSessionForSignals(t, st, "br_neighbor", msg.SessionTypeInteractive)
 
 	environment := map[string]string{}
 	for _, variable := range srv.sessionPostingEnvironment(session) {
@@ -236,7 +236,7 @@ func TestAnAgentSharesIntoItsOwnSessionAndNoOther(t *testing.T) {
 		t.Errorf("shared_by = %q, want agent", shared.SharedBy)
 	}
 
-	if code := withToken(shareRequest("br_neighbour", "plot.png", "image/png", []byte("PLOT"))).Code; code != http.StatusNotFound {
+	if code := withToken(shareRequest("br_neighbor", "plot.png", "image/png", []byte("PLOT"))).Code; code != http.StatusNotFound {
 		t.Errorf("agent share into another session: %d, want 404", code)
 	}
 	// The token opens the share route and nothing else — not even reading

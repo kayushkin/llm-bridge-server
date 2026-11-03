@@ -1,6 +1,6 @@
 // Package keepawake holds the machine this server runs on awake while its
 // sessions run, and for a grace period after, by keeping a child process that
-// the operating system honours as a sleep block.
+// the operating system honors as a sleep block.
 //
 // A block only stops the machine from going to sleep on its own. It cannot wake
 // a machine that is already asleep, and it does not stop a closed lid or the

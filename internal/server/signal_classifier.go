@@ -396,7 +396,7 @@ func (s *Server) classifyTurnEnd(bridgeID string, ev *msg.Event, state msg.Sessi
 			msg.ReasonTurnCompleteSignalNotification, msg.SessionAwaitingUser)
 	case turnSignalNeither:
 		// Demote a heuristic false positive. This is the only path that
-		// makes an existing behaviour stricter, and it is why the
+		// makes an existing behavior stricter, and it is why the
 		// classifier is worth its cost: today a turn ending in "does that
 		// make sense?" parks the session with nothing to answer.
 		s.harness.ApplyDerivedSessionState(bridgeID, msg.SessionIdle,
@@ -467,7 +467,7 @@ func (s *Server) hasOpenToolQuestion(bridgeID string) bool {
 	open, err := s.store.ListSignals(store.SignalFilter{SessionID: bridgeID, State: msg.SignalStateOpen})
 	if err != nil {
 		log.Printf("[signals] %s: look up open signals: %v", bridgeID, err)
-		// Fail closed: an unreadable store must not become a licence to
+		// Fail closed: an unreadable store must not become a license to
 		// mint duplicates on top of a park we could not see.
 		return true
 	}

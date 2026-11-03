@@ -19,7 +19,7 @@ import (
 // before a write, and push a changed value into the components that hold one.
 
 // attachServiceSettings returns the settings registry this server runs on, with
-// the stored behaviour settings attached. A Config read by config.Load carries
+// the stored behavior settings attached. A Config read by config.Load carries
 // its registry; a Config built as a literal — every test — does not, so one is
 // built with no environment and the stored settings are seeded from the
 // literal's own fields. Either way the record in st is the source from here on.

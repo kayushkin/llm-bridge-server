@@ -110,7 +110,7 @@ func TestSessionWorkingDirectoryRoundTrips(t *testing.T) {
 	if got.WorkingDir != "/srv/project" {
 		t.Errorf("working_dir = %q, want /srv/project", got.WorkingDir)
 	}
-	// The neighbouring scanned fields must not have shifted along with it.
+	// The neighboring scanned fields must not have shifted along with it.
 	if got.Harness != "claude_code" || got.State != "idle" {
 		t.Errorf("scan misaligned: harness = %q, state = %q", got.Harness, got.State)
 	}

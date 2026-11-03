@@ -16,7 +16,7 @@ import (
 )
 
 // FakeOneShot stands in for a harness instance. A classification request —
-// recognised by its schema — is answered item by item: on each axis the item
+// recognized by its schema — is answered item by item: on each axis the item
 // gets the values whose names appear in its text, or the axis's first value
 // when the axis is required and none appears. Any other request is answered
 // with Text.

@@ -123,8 +123,8 @@ func TestAnswerIsUnknownSignal404(t *testing.T) {
 	}
 }
 
-func TestAnswerTextRendersOneQuestionVerbatimAndManyLabelled(t *testing.T) {
-	// A single answer goes as the user typed it — labelling it would put words
+func TestAnswerTextRendersOneQuestionVerbatimAndManyLabeled(t *testing.T) {
+	// A single answer goes as the user typed it — labeling it would put words
 	// in their mouth. Several answers have to say which question each belongs
 	// to, because the assistant asked them separately.
 	one := []store.Signal{{ID: "a", Title: "Which transport?"}}

@@ -237,10 +237,10 @@ happened.
 
 **Tool-path backfill.** `parkPrehook` records the signals once the park is genuinely
 established (after the `awaiting_resolution` broadcast succeeds — recording earlier would
-strand open rows on the broadcast-failure path, where the park is cancelled and no human
+strand open rows on the broadcast-failure path, where the park is canceled and no human
 ever sees the question). `broadcastPrehookResolved` and `broadcastStaleResolution` close
 them out, so every way a parked request can end also ends its signals: answered on allow,
-dismissed on deny or on a park cancelled by a dead client, and dismissed on a stale resolve
+dismissed on deny or on a park canceled by a dead client, and dismissed on a stale resolve
 after a harness restart.
 
 Two details worth not re-deriving:
@@ -344,7 +344,7 @@ the chat draws them together, `POST /signals/{id}/answer` refuses an answer that
 one blank (400 `incomplete_answer`), and the answers reach the session as one message with
 each under its question. A lone question carries no request id. Before this the classifier
 had one title and one list of options, and a turn asking two a/b/c questions came back as
-buttons labelled "PRs: choose a, b, or c" (sig_01M5D1003TG9GXK3DZPEWYPG57). The prompt also
+buttons labeled "PRs: choose a, b, or c" (sig_01M5D1003TG9GXK3DZPEWYPG57). The prompt also
 requires each option label to name the choice, never a bare letter or an instruction.
 
 | Piece | File |
@@ -402,7 +402,7 @@ last, so a head-first cap would classify the file dump above it. And when a stru
 `AskUserQuestion` is already parked, the derived pass records nothing: that ask has a
 real resolve verb behind it, and a derived row alongside it is a second, weaker copy of
 the same demand on the user's attention. The store lookup **fails closed** — an
-unreadable store must not become a licence to mint duplicates on top of a park we could
+unreadable store must not become a license to mint duplicates on top of a park we could
 not see.
 
 **5. `surface` routes; state describes.**
@@ -470,7 +470,7 @@ Making it reachable took a fix in kanban-store: `ListCardsByEntity` was
 `SELECT DISTINCT card_id` with **no ORDER BY**, so the order was whatever SQLite found
 convenient. It happens to be insertion order today and stops being it the moment the
 planner picks the `(entity_type, entity_ref)` index. A caller that reads row 0 was
-relying on unspecified behaviour. Now `GROUP BY card_id ORDER BY MIN(created_at),
+relying on unspecified behavior. Now `GROUP BY card_id ORDER BY MIN(created_at),
 card_id`. The order cannot diverge from insertion order through the HTTP API (created_at
 is stamped at insert), which is why the curative test inserts rows directly with
 out-of-step timestamps — through the API the old code passes.
@@ -574,7 +574,7 @@ The signal is a surface on top of the park; the park is the source of truth for 
 the session is blocked. Closing the surface out from under a live park hides the ask while
 the harness keeps sitting on the channel — the session wedges with nothing on screen that
 explains why. So the verb asks `parkedAsks.isParked` first and refuses, naming the hook
-route, which closes both. Once the park is gone (harness restart, cancelled request) the
+route, which closes both. Once the park is gone (harness restart, canceled request) the
 row is a leftover with nothing behind it and dismissing it is the only way to clear it —
 that path stays open, and is tested.
 
@@ -586,7 +586,7 @@ ONE place.** The same row renders in the chat, the inbox, the RefChip panel and 
 drawer, so two clicks are expected. `store.ResolveSignal` already updates only
 `WHERE state='open'`, so the handler does **not** repeat that check — it writes, re-reads,
 and returns what is stored. An earlier draft had the guard in both, and a sabotage run
-showed the handler's copy changed no observable behaviour, so it was removed rather than
+showed the handler's copy changed no observable behavior, so it was removed rather than
 kept as decoration.
 
 **5. The one thing a duplicate DOES cost is the unpark, so that check is where the
@@ -746,7 +746,7 @@ bridge-ui commit accompanies this one.
    (`internal/harness/sidecar.go:50`); `StartProcess` hands the harness plain
    `os.Environ()` plus `LLMBRIDGE_CREDENTIAL_ID`, so a `curl` from a Bash tool call has
    nothing to POST to. Three ways out, none obviously best: plumb the id into the harness
-   env and ship a small CLI; have the prehook recognise the call and rewrite its
+   env and ship a small CLI; have the prehook recognize the call and rewrite its
    `updated_input` (bridge-server already does this for `AskUserQuestion`); or provision a
    tool-store MCP (`injectMCPConfig`), which costs a stdio process per session and runs
    against the MCP-descoping decision.

@@ -28,7 +28,7 @@ import (
 // it, and the local transport was the one that never got a copy: it called
 // exec.Command and never set cmd.Dir, so a working directory configured on a
 // local instance was accepted by the API, stored, shown in the UI, and then
-// silently ignored at spawn while ssh and runner both honoured theirs. Every
+// silently ignored at spawn while ssh and runner both honored theirs. Every
 // level added since is added here, to this one function, for that reason.
 func WorkingDirForSession(sess *store.Session, inst *msg.Instance) (dir, owner string) {
 	if sess != nil && sess.WorkingDir != "" {

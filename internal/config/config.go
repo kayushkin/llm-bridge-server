@@ -15,7 +15,7 @@ import (
 
 type Config struct {
 	// Settings is the declared settings this Config was read from: what GET
-	// /settings describes, and where the stored behaviour settings are read
+	// /settings describes, and where the stored behavior settings are read
 	// at the time of use. Nil in a Config built as a literal, which is how
 	// tests build one; server.New then builds a registry with no environment
 	// and seeds the stored settings from the literal's own fields.
@@ -183,8 +183,8 @@ type Config struct {
 	SignalClassifierMaxChars int
 	// PromptDriftTaggerModelRole is the model-store role that labels the
 	// sections a prompt-file edit adds (one single-shot call per held drift).
-	// Empty turns labelling off: drifts are still detected and held,
-	// unlabelled.
+	// Empty turns labeling off: drifts are still detected and held,
+	// unlabeled.
 	PromptDriftTaggerModelRole string
 	// DemoLoginSigningKey is the HMAC-SHA256 key that signs the session agent
 	// tokens and session posting tokens a harness child is given, from

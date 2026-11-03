@@ -35,7 +35,7 @@ type sessionMsgState struct {
 	toolUseToMessage map[string]store.ToolUseBinding // tool_use_id → bubble ids, for task_progress correlation
 	clientRequestID  string                          // caller's per-turn id from the latest user_message, "" between turns
 	turnID           string                          // bridge-minted per-turn id, "" between turns
-	turnPromptText   string                          // text of the prompt that opened the current turn, "" between turns; used to recognise Claude Code's OTel echo of that prompt
+	turnPromptText   string                          // text of the prompt that opened the current turn, "" between turns; used to recognize Claude Code's OTel echo of that prompt
 }
 
 // StoredEvent pairs an event with its database row ID, assigned at insert time.
@@ -367,7 +367,7 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 		// events coming back from the harness.
 		st.clientRequestID = ev.ClientRequestID
 		// Open a new turn and remember its originating prompt so the OTel
-		// echo of it can be recognised above.
+		// echo of it can be recognized above.
 		st.turnID = ids.NewTurnID()
 		st.turnPromptText = userMessageText(ev)
 
@@ -2181,7 +2181,7 @@ func (m *Manager) ImportHistory(ctx context.Context, bridgeSessionID string, h m
 //   - log-store is unreachable or errors;
 //   - log-store holds a session row for the id but no events behind it.
 //
-// Failing open means importing, which is exactly today's behaviour, so an
+// Failing open means importing, which is exactly today's behavior, so an
 // outage costs duplicates rather than a transcript. Failing closed would drop
 // history on the floor whenever log-store hiccuped, and nothing would ever
 // go back for it.

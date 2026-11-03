@@ -112,7 +112,7 @@ func TestDisplayNameForDiscoveredSessionFallsBackToProject(t *testing.T) {
 // Both of them name the cap through the constant — `cutAt` and the expected
 // prefix are both maxDiscoveredDisplayNameRunes — so the input and the
 // expectation move together and the pair stays green for any value of it. Moved
-// to 99 and to 101, the whole package stayed green. The neighbouring 80 in
+// to 99 and to 101, the whole package stayed green. The neighboring 80 in
 // displayNameFromMessage is spelled out as a literal and is caught both ways;
 // these two caps read alike and were pinned very differently.
 //

@@ -99,7 +99,7 @@ func TestTurnAskingTwoQuestionsRecordsOneGroupOfTwo(t *testing.T) {
 	}
 }
 
-func TestADerivedGroupIsAnsweredWholeAndReachesTheSessionAsOneLabelledMessage(t *testing.T) {
+func TestADerivedGroupIsAnsweredWholeAndReachesTheSessionAsOneLabeledMessage(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_two", msg.SessionTypeInteractive)
 	stubClassifier(t, srv, twoQuestionVerdict())
@@ -152,7 +152,7 @@ func TestQuestionsWithNoTextAreDroppedAndAVerdictOfNoneRecordsNothing(t *testing
 		t.Errorf("request id = %q, want none: one usable question is no group", got[0].RequestID)
 	}
 	if len(got[0].Options) != 1 || got[0].Options[0].Label != "main" {
-		t.Errorf("options = %+v, want only the labelled one", got[0].Options)
+		t.Errorf("options = %+v, want only the labeled one", got[0].Options)
 	}
 
 	stubClassifier(t, srv, map[string]any{"kind": "question", "questions": []any{map[string]any{"question": ""}}})

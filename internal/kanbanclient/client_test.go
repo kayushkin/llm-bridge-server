@@ -111,7 +111,7 @@ func TestLinkedTodoForSessionSkipsOrphanedLinks(t *testing.T) {
 // path, refuses an empty rest, and Go's mux collapses "/api/cards//links"
 // before the handler sees it — measured, and zero of the 6,590 live session
 // links have a blank card_id. So this pins the client's tolerance of a
-// malformed body rather than a behaviour of the store.
+// malformed body rather than a behavior of the store.
 //
 // The good row after the blank one is what makes the test discriminating. With
 // only the blank row present, the client returns "" — and so does a client
@@ -238,7 +238,7 @@ func TestLinkedTodoForSessionIsQuietWhenThereIsNothingToFind(t *testing.T) {
 // a slash fails loudly with a status in the message, rather than silently
 // resolving to a DIFFERENT session's cards. Asserting err == nil here — which
 // is what the old test did, against a fixture that served every path alike —
-// pinned behaviour kanban-store does not have.
+// pinned behavior kanban-store does not have.
 //
 // Every session id in use today (br_…, autoworker-anthropic-…, herald-…,
 // tcl-…) is already free of slashes: measured over all 6,590 session links in

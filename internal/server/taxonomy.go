@@ -89,7 +89,7 @@ func (s *Server) handleSessionTaxonomy(w http.ResponseWriter, r *http.Request) {
 // It reports and does not repair. A triple here is a question — is this a
 // caller that needs fixing, a purpose the registry should learn, or history to
 // backfill? — and answering it wrong automatically is how the original
-// mislabelling happened: a migration decided that "no type" meant "interactive"
+// mislabeling happened: a migration decided that "no type" meant "interactive"
 // and rewrote four thousand rows on that guess.
 func (s *Server) handleSessionTaxonomyReport(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.store.SessionClassCounts()

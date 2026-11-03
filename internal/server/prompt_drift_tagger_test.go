@@ -23,7 +23,7 @@ func TestPromptDriftTaggerRequestNamesOnlyAddedSectionsAndExistingTags(t *testin
 		t.Fatalf("prompt should name the insert only:\n%s", request.Prompt)
 	}
 	if strings.Contains(request.Prompt, "SECRET-EDITED-BODY") {
-		t.Fatal("an edited section's body was sent; only added sections are labelled")
+		t.Fatal("an edited section's body was sent; only added sections are labeled")
 	}
 	if !strings.Contains(request.Prompt, "Tags already in use: scheduler, stores") {
 		t.Fatalf("existing tags missing:\n%s", request.Prompt)

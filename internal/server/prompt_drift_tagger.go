@@ -58,7 +58,7 @@ func promptDriftTaggerOutputSchema() map[string]any {
 	}
 }
 
-// onPromptDriftsDetected is agent-store's hook. It returns at once; labelling
+// onPromptDriftsDetected is agent-store's hook. It returns at once; labeling
 // runs in the background so a scan never waits on a model.
 func (s *Server) onPromptDriftsDetected(drifts []agentstore.PromptDrift) {
 	for _, drift := range drifts {
@@ -82,7 +82,7 @@ func (s *Server) annotatePromptDrift(ctx context.Context, drift agentstore.Promp
 	}
 	modelRole := s.settings.ModelRole(config.SettingPromptDriftTaggerModelRole)
 	if modelRole == "" {
-		return fmt.Errorf("prompt_drift_tagger.model_role is empty, so labelling is off")
+		return fmt.Errorf("prompt_drift_tagger.model_role is empty, so labeling is off")
 	}
 	request, err := buildPromptDriftTaggerRequest(drift, view.Sections, modelRole)
 	if err != nil {
@@ -100,7 +100,7 @@ func (s *Server) annotatePromptDrift(ctx context.Context, drift agentstore.Promp
 	if _, err := s.agentStore.SetPromptDriftAnnotation(drift.ID, *annotation); err != nil {
 		return fmt.Errorf("agent-store refused the labels: %w", err)
 	}
-	log.Printf("[prompt-drift] drift %d (%s) labelled: %s", drift.ID, drift.Path, annotation.Note)
+	log.Printf("[prompt-drift] drift %d (%s) labeled: %s", drift.ID, drift.Path, annotation.Note)
 	return nil
 }
 

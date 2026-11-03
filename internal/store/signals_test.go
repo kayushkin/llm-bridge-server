@@ -336,7 +336,7 @@ func TestMigrateSignalsAddsAllowMultipleOptionsToAnExistingTable(t *testing.T) {
 
 func TestSignalAudienceAndCustomerReplyDraftRoundTrip(t *testing.T) {
 	st := testStore(t)
-	draft := &msg.SignalCustomerReplyDraft{To: "helena@example.com", Subject: "Re: Catalogue size", Body: "Should the count include discontinued products?"}
+	draft := &msg.SignalCustomerReplyDraft{To: "helena@example.com", Subject: "Re: Catalog size", Body: "Should the count include discontinued products?"}
 	if err := st.CreateSignal(&msg.Signal{
 		ID: "sig_draft", SessionID: "br_1", Kind: msg.SignalKindQuestion, Source: msg.SignalSourceTool,
 		Surface: msg.SignalSurfaceKanban, Title: "Include discontinued?", State: msg.SignalStateOpen,

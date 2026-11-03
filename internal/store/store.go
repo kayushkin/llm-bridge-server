@@ -92,7 +92,7 @@ const busyTimeoutMillisecondsWanted = 5000
 // _pragma=... is modernc's syntax and it is the only one that works here. The
 // reader pool used to be opened with the mattn/go-sqlite3 spelling,
 // "?_busy_timeout=5000", directly above a comment saying each connection got
-// the setting on open. This driver ignores an unrecognised DSN key without
+// the setting on open. This driver ignores an unrecognized DSN key without
 // complaint, so that DSN opened cleanly and configured nothing: measured,
 // 0 of 8 pooled reader connections had a busy_timeout above 0. That is why
 // both pools now verify the value after opening rather than trusting the
@@ -368,10 +368,10 @@ func (s *Store) migrate() error {
 	s.db.Exec(`UPDATE sessions SET type = 'interactive'
 		WHERE type = '' AND purpose = 'chat'`)
 	// The rule above used to also match purpose = '', which made it a standing
-	// mislabeller rather than a backfill.
+	// mislabeler rather than a backfill.
 	//
 	// migrate() runs on every open, not once, so every session that arrived
-	// with no type got relabelled "interactive" at the next restart. Discovery
+	// with no type got relabeled "interactive" at the next restart. Discovery
 	// imports arrive exactly that way — a `claude -p` one-shot from a shell
 	// became a human chat on the next deploy, indistinguishable in the UI from
 	// a session someone actually opened. The same rule had already done this to
@@ -383,7 +383,7 @@ func (s *Store) migrate() error {
 	// session-taxonomy-guard reports whatever is left rather than papering
 	// over it.
 
-	// Repair the workflow subagents this backfill itself mislabelled.
+	// Repair the workflow subagents this backfill itself mislabeled.
 	//
 	// 'workflow-subagent' was missing from the system list above, so every
 	// Workflow-tool subagent fell through to the purpose='' rule and was typed
@@ -421,7 +421,7 @@ func (s *Store) migrate() error {
 	s.db.Exec(`UPDATE sessions SET origin = 'frontend'
 		WHERE origin = '' AND purpose = 'chat'`)
 
-	// Repair the discovery imports that the purpose='' rules above mislabelled.
+	// Repair the discovery imports that the purpose='' rules above mislabeled.
 	//
 	// Discovery wrote type='' and origin='llm-bridge-<harness>' for sessions it
 	// found on disk; the type rule then read the empty type as interactive. The
@@ -438,7 +438,7 @@ func (s *Store) migrate() error {
 	s.db.Exec(`UPDATE sessions SET type = 'external', purpose = 'discovered', origin = 'discovery'
 		WHERE purpose = '' AND origin LIKE 'llm-bridge-%' AND type IN ('', 'interactive')`)
 	// Discovered subagents that predate the live promotion path: purpose was
-	// recognised from the on-disk layout but type was left empty, and no rule
+	// recognized from the on-disk layout but type was left empty, and no rule
 	// above covers purpose='subagent' with an empty type.
 	s.db.Exec(`UPDATE sessions SET type = 'system'
 		WHERE type = '' AND purpose IN ('subagent','workflow-subagent')`)
@@ -2456,7 +2456,7 @@ func (s *Store) UpsertDiscoveredSessionOwnedBy(harnessSessionID, bridgeSessionID
 	//
 	// A discovered session is external: it ran outside the bridge, no caller
 	// declared anything about it, and the honest origin is "discovery".
-	// Where the adapter or a prompt prefix did recognise a purpose — a
+	// Where the adapter or a prompt prefix did recognize a purpose — a
 	// conformance probe, a subagent, a scheduled job — that is a real signal
 	// rather than a guess, so its registered type wins instead.
 	//
@@ -2498,18 +2498,18 @@ func (s *Store) UpsertDiscoveredSessionOwnedBy(harnessSessionID, bridgeSessionID
 // its harness adapter now reports for it.
 //
 // UpsertDiscoveredSession classifies a session only when it inserts the row,
-// so a purpose the adapter learned to recognise after the row was imported —
+// so a purpose the adapter learned to recognize after the row was imported —
 // oneshot transcripts, 51,002 of 51,258 discovered rows when it was added —
 // never reached the rows that already existed. This carries it to them.
 //
 // It writes only over the generic label: the row changes only while its
 // purpose is exactly "discovered", which is what the insert path writes when
-// nothing recognised the session. A purpose anything else set is never
+// nothing recognized the session. A purpose anything else set is never
 // overwritten, and a second call is a no-op. type follows the registry entry
 // for the new purpose, as it does on insert.
 //
 // folder_name moves to folderName only while it still holds what the insert
-// path filed an unrecognised session under — the registry folder for
+// path filed an unrecognized session under — the registry folder for
 // "discovered", or nothing. A session someone has since moved (on 2026-09-16,
 // 33,145 discovered rows sat in "Archive") stays where they put it.
 //

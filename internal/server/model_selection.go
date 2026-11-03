@@ -28,7 +28,7 @@ import (
 //  3. the per-harness default in bridge-prefs (what dash /settings edits).
 //  4. the registry's own `default` role.
 //
-// There is deliberately no fifth tier. The old behaviour — pass nothing and
+// There is deliberately no fifth tier. The old behavior — pass nothing and
 // let the harness fall back to whatever its account default happened to be —
 // is exactly how sessions ran on a model nobody chose while every picker showed
 // the one they did. If none of the four layers can answer, the session does

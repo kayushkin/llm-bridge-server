@@ -97,9 +97,9 @@ func logStoreSessionURL(base, sessionID, endpoint string) string {
 }
 
 // cleanEscapedPathAfterPrefix is escapedPathAfterPrefix with path.Clean applied,
-// for the store proxies, which normalise the remainder before forwarding it.
+// for the store proxies, which normalize the remainder before forwarding it.
 //
-// Cleaning the ESCAPED form is what makes the normalisation mean what it says.
+// Cleaning the ESCAPED form is what makes the normalization mean what it says.
 // path.Clean resolves ".." against "/" separators, so running it on the decoded
 // path let an escaped %2F..%2F become a real traversal that Clean then resolved
 // — the caller's single segment silently turned into a walk up the upstream's

@@ -24,9 +24,9 @@ type permissionDecision struct {
 	// The distinction is the whole reason a question outlives its session. A
 	// human deciding "deny" is an answer; a process dying is not, and
 	// recording it as one silently discarded questions the user never saw.
-	// Modelled as its own field rather than sniffed from the "auto:" prefix
+	// Modeled as its own field rather than sniffed from the "auto:" prefix
 	// on ResolvedBy, because ResolvedBy is a display string and the next
-	// auto: reason added would inherit behaviour nobody chose for it.
+	// auto: reason added would inherit behavior nobody chose for it.
 	SessionWentAway bool
 }
 

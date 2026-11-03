@@ -28,7 +28,7 @@ import (
 //  1. A "tool_store_tools" key on HarnessConfig — a JSON array of tool names
 //     the caller asked for by hand. The key is removed afterwards: it is an
 //     instruction, not state to ship. An empty array means "no MCP servers",
-//     and is honoured as an explicit opt-out.
+//     and is honored as an explicit opt-out.
 //  2. Otherwise, for a session started with a bundle (BundleID, normally a
 //     kanban board's default_bundle_id), the tools bundle-store resolves the
 //     bundle to — its extends chain plus base. A bundle is a per-session

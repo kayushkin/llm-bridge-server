@@ -118,7 +118,7 @@ func sessionEndedBeforeRestart(sess *store.Session) bool {
 }
 
 // deliverLostWakeup sends an armed wakeup's prompt, unless the session has
-// moved on since it was armed: the agent scheduled or cancelled another
+// moved on since it was armed: the agent scheduled or canceled another
 // wakeup, a message already came, or someone stopped the session.
 func (s *Server) deliverLostWakeup(armed store.ScheduledWakeup, oldestCallToRead time.Time) {
 	current, err := s.lostWakeup(armed.SessionID, oldestCallToRead)
@@ -130,7 +130,7 @@ func (s *Server) deliverLostWakeup(armed store.ScheduledWakeup, oldestCallToRead
 		log.Printf("[wakeup-redelivery] %s: wakeup %s no longer pending; not delivering it", armed.SessionID, armed.ToolID)
 		return
 	}
-	message := fmt.Sprintf("[llm-bridge-server restarted while your ScheduleWakeup was pending, which cancelled it. This is its prompt, sent by the server at the time it was due.]\n\n%s", armed.Prompt)
+	message := fmt.Sprintf("[llm-bridge-server restarted while your ScheduleWakeup was pending, which canceled it. This is its prompt, sent by the server at the time it was due.]\n\n%s", armed.Prompt)
 	status, body := s.serveInternally(http.MethodPost, "/sessions/"+url.PathEscape(armed.SessionID)+"/send", SendMessageRequest{Message: message})
 	if status != http.StatusOK {
 		log.Printf("[wakeup-redelivery] ERROR %s: sending wakeup %s answered %d: %s", armed.SessionID, armed.ToolID, status, body)

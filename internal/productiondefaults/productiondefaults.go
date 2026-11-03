@@ -70,7 +70,7 @@ const (
 // than constants because they are relative to HOME, and a test that relocates
 // HOME has relocated the production state along with it — the guard should
 // compare against wherever HOME points now, not wherever it pointed at
-// package-initialisation time.
+// package-initialization time.
 
 func BridgeDatabasePath() string {
 	return filepath.Join(homeDirectory(), ".llm-bridge", "bridge.db")

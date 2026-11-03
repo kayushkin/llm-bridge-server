@@ -88,7 +88,7 @@ func TestOptInLetsATestReachProductionOnPurpose(t *testing.T) {
 // TestLoadFallbacksMatchTheGuardedAddresses is the drift test, and it is the
 // one that keeps the guard honest.
 //
-// The guard recognises production by comparing Load's output against
+// The guard recognizes production by comparing Load's output against
 // productiondefaults' table. If someone moves a default in Load and not in the
 // table — or the other way round — nothing breaks, no test reddens, and the
 // guard quietly stops covering that field while still looking like it does.

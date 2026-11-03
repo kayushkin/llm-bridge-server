@@ -59,7 +59,7 @@ func getWithoutFollowingRedirects(t *testing.T, rawURL string) *http.Response {
 	}
 	// Build the request from a pre-parsed URL with Opaque set so the
 	// client transmits the percent-encoding verbatim instead of
-	// normalising it on the way out.
+	// normalizing it on the way out.
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		t.Fatalf("parse %q: %v", rawURL, err)
@@ -121,7 +121,7 @@ func TestHarnessProxyRefusesATraversalAboveAPrefixedBackend(t *testing.T) {
 
 // Refusal must not depend on the backend happening to carry a prefix.
 // The two constants shipped today have none, and a guard that only fired
-// under a prefix would leave the behaviour of the proxy dependent on
+// under a prefix would leave the behavior of the proxy dependent on
 // which backend it was pointed at.
 func TestHarnessProxyRefusesATraversalUnderAPrefixFreeBackendToo(t *testing.T) {
 	upstream := newHarnessProxyUpstream(t)

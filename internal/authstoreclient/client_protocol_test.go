@@ -365,7 +365,7 @@ func TestTheStatusesAuthStoreUsesForFailureAllBecomeErrors(t *testing.T) {
 }
 
 // parseQuery avoids net/url so a mis-encoded query cannot be silently
-// normalised by the same package that built it.
+// normalized by the same package that built it.
 func parseQuery(raw string) (map[string]string, error) {
 	out := map[string]string{}
 	if raw == "" {

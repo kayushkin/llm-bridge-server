@@ -14,9 +14,9 @@ func (n *countingNotifier) OnSessionDeleted(string)          {}
 func (n *countingNotifier) OnSignalsChanged(string)          {}
 func (n *countingNotifier) OnSessionBriefChanged(string)     {}
 
-// importUnrecognised inserts a discovered row the way discovery did before the
-// adapter recognised oneshot transcripts: no source, so purpose "discovered".
-func importUnrecognised(t *testing.T, s *Store, harnessID string, updatedAt time.Time) string {
+// importUnrecognized inserts a discovered row the way discovery did before the
+// adapter recognized oneshot transcripts: no source, so purpose "discovered".
+func importUnrecognized(t *testing.T, s *Store, harnessID string, updatedAt time.Time) string {
 	t.Helper()
 	id, inserted, err := s.UpsertDiscoveredSession(harnessID, harnessID, "classify this", "claude_code", "", "", "", updatedAt, updatedAt)
 	if err != nil || !inserted {
@@ -28,7 +28,7 @@ func importUnrecognised(t *testing.T, s *Store, harnessID string, updatedAt time
 func TestReclassifyDiscoveredSession_MovesADiscoveredRowToTheReportedPurpose(t *testing.T) {
 	s := testStore(t)
 	updatedAt := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
-	id := importUnrecognised(t, s, "uuid-oneshot", updatedAt)
+	id := importUnrecognized(t, s, "uuid-oneshot", updatedAt)
 
 	notifier := &countingNotifier{changed: map[string]int{}}
 	s.SetNotifier(notifier)
@@ -89,7 +89,7 @@ func TestReclassifyDiscoveredSession_NeverOverwritesAPurposeSomethingElseSet(t *
 
 func TestReclassifyDiscoveredSession_KeepsAFolderSomeoneChose(t *testing.T) {
 	s := testStore(t)
-	id := importUnrecognised(t, s, "uuid-archived", time.Now())
+	id := importUnrecognized(t, s, "uuid-archived", time.Now())
 	if _, err := s.db.Exec(`UPDATE sessions SET folder_name='Archive' WHERE bridge_id=?`, id); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestReclassifyDiscoveredSession_KeepsAFolderSomeoneChose(t *testing.T) {
 
 func TestReclassifyDiscoveredSession_RefusesUnregisteredOrGenericPurpose(t *testing.T) {
 	s := testStore(t)
-	id := importUnrecognised(t, s, "uuid-x", time.Now())
+	id := importUnrecognized(t, s, "uuid-x", time.Now())
 	for _, purpose := range []string{"not-a-purpose", msg.PurposeDiscovered, ""} {
 		if _, err := s.ReclassifyDiscoveredSession(id, purpose, ""); err == nil {
 			t.Errorf("purpose %q: want an error", purpose)

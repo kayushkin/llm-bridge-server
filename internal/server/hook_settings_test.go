@@ -387,7 +387,7 @@ func TestInjectHookSettings_OnlyClaudeCodeAndCodexGetAPermissionGate(t *testing.
 // Card 49a697df reserves the repair — making the claim true (a default gate
 // arm) and making the table honest (report only enforceable modes) are
 // different sizes and change different things — so this test asserts the
-// behaviour exactly as it stands and will redden when either is taken. That is
+// behavior exactly as it stands and will redden when either is taken. That is
 // the point: whoever takes the decision must come here and say which it was.
 func TestSupportedPermissionModesForOutrunsTheGate(t *testing.T) {
 	// aider has no entry in harnessSupportedPermissionModes and no gate arm.

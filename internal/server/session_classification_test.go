@@ -156,7 +156,7 @@ func TestDiscoveredSessionIsExternalNotAChat(t *testing.T) {
 		"Reply with exactly: ok",
 		"claude_code",
 		"inst-cc-local",
-		"", // no purpose recognised — the prompt matches no known prefix
+		"", // no purpose recognized — the prompt matches no known prefix
 		"",
 		discoveredAt, discoveredAt,
 	)
@@ -186,10 +186,10 @@ func TestDiscoveredSessionIsExternalNotAChat(t *testing.T) {
 	}
 }
 
-// Discovery does recognise some sessions structurally — a subagent from the
+// Discovery does recognize some sessions structurally — a subagent from the
 // on-disk layout, a conformance probe by its prompt. That is a real signal and
 // must beat the external default.
-func TestDiscoveredSessionKeepsARecognisedPurpose(t *testing.T) {
+func TestDiscoveredSessionKeepsARecognizedPurpose(t *testing.T) {
 	_, st, _ := testServerWithInstance(t, "claude_code")
 
 	bridgeID, _, err := st.UpsertDiscoveredSession(
@@ -268,7 +268,7 @@ func TestDiscoveredSubagentPassesTheTaxonomyGuard(t *testing.T) {
 // has to be stable, not current.
 var discoveredAt = time.Date(2026, 7, 27, 19, 7, 23, 0, time.UTC)
 
-// A oneshot transcript imported before the adapter could recognise it sits as
+// A oneshot transcript imported before the adapter could recognize it sits as
 // "discovered". The next discovery pass, now carrying Source=oneshot, must
 // relabel that existing row — filed where the registry files oneshot — while
 // tags that are not a registered reclassification leave it alone.

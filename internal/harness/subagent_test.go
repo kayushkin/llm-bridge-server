@@ -598,7 +598,7 @@ func TestManager_AbandonedUnpromotedTaskIsClosedOnProcessExit(t *testing.T) {
 // TestManager_ClosedUnpromotedTaskIsNotClosedTwice is the other side of it. A
 // shell that the harness closed for itself must not collect a second,
 // contradicting close at process exit: the timeline draws one finish row per
-// task and moves it to the LATEST close, so a spurious cancelled would overwrite
+// task and moves it to the LATEST close, so a spurious canceled would overwrite
 // a real completed and report every backgrounded shell as killed.
 //
 // Both closing subtypes are tested. A live shell closes with task_notification;

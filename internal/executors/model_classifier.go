@@ -115,7 +115,7 @@ func (classifier ModelClassifier) Execute(ctx context.Context, intent msg.Operat
 		return *failure
 	}
 	// Archived axes and values stay in a board's taxonomy so its history
-	// resolves; nothing new may be labelled with them.
+	// resolves; nothing new may be labeled with them.
 	taxonomy := stored.Selectable()
 	route, refusal := resolveRoute(classifier.Caller, input.Model)
 	if refusal != nil {

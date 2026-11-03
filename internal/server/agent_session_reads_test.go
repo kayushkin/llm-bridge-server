@@ -42,16 +42,16 @@ func sessionIDsIn(t *testing.T, recorder *httptest.ResponseRecorder) map[string]
 func TestAPrincipallessSessionsAgentReadsEverySessionAndDrivesNone(t *testing.T) {
 	srv, st, _ := testServerWithInstance(t, msg.HarnessMock)
 	newSessionForSignals(t, st, "br_agent", msg.SessionTypeInteractive)
-	newSessionForSignals(t, st, "br_neighbour", msg.SessionTypeInteractive)
+	newSessionForSignals(t, st, "br_neighbor", msg.SessionTypeInteractive)
 	token := currentPostingTokenFor(t, srv, "br_agent")
 
 	listed := sessionIDsIn(t, servedWithPostingToken(t, srv, token, http.MethodGet, "/sessions", nil))
-	if !listed["br_agent"] || !listed["br_neighbour"] {
+	if !listed["br_agent"] || !listed["br_neighbor"] {
 		t.Errorf("listed %v, want both sessions", listed)
 	}
 	for _, path := range []string{
-		"/sessions/br_neighbour",
-		"/sessions/br_neighbour/messages",
+		"/sessions/br_neighbor",
+		"/sessions/br_neighbor/messages",
 		"/sessions/search?q=anything",
 	} {
 		if code := servedWithPostingToken(t, srv, token, http.MethodGet, path, nil).Code; !authorizationPassed(code) {
@@ -62,16 +62,16 @@ func TestAPrincipallessSessionsAgentReadsEverySessionAndDrivesNone(t *testing.T)
 		method, path string
 		body         any
 	}{
-		{http.MethodPost, "/sessions/br_neighbour/send", map[string]string{"message": "x"}},
-		{http.MethodPost, "/sessions/br_neighbour/stop", nil},
-		{http.MethodGet, "/sessions/br_neighbour/events", nil},
+		{http.MethodPost, "/sessions/br_neighbor/send", map[string]string{"message": "x"}},
+		{http.MethodPost, "/sessions/br_neighbor/stop", nil},
+		{http.MethodGet, "/sessions/br_neighbor/events", nil},
 	} {
 		if code := servedWithPostingToken(t, srv, token, c.method, c.path, c.body).Code; code != http.StatusNotFound {
 			t.Errorf("%s %s: %d, want 404: reading is not driving", c.method, c.path, code)
 		}
 	}
 	// A read route that takes no agent access still refuses the token.
-	if code := servedWithPostingToken(t, srv, token, http.MethodGet, "/sessions/br_neighbour/effective-config", nil).Code; code != http.StatusUnauthorized {
+	if code := servedWithPostingToken(t, srv, token, http.MethodGet, "/sessions/br_neighbor/effective-config", nil).Code; code != http.StatusUnauthorized {
 		t.Errorf("GET effective-config: %d, want 401", code)
 	}
 }

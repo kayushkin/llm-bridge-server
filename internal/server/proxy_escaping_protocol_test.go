@@ -201,7 +201,7 @@ func TestTheStoreProxiesForwardAnEscapedSegment(t *testing.T) {
 	}
 }
 
-// ⚠️ The store proxies normalise the remainder with path.Clean, and cleaning
+// ⚠️ The store proxies normalize the remainder with path.Clean, and cleaning
 // the DECODED path is worse than the plain misrouting: an escaped %2F..%2F
 // decodes into real separators that Clean then RESOLVES, so a single segment
 // the caller sent walks up the upstream's path instead.
@@ -220,7 +220,7 @@ func TestCleanDoesNotResolveAnEscapedDotDotIntoATraversal(t *testing.T) {
 }
 
 // ⚠️ A dot segment the caller LITERALLY sent never reaches the handler, so a
-// case that sends one through the mux and finds it normalised is vacuous — it
+// case that sends one through the mux and finds it normalized is vacuous — it
 // is watching the mux work, not the handler.
 //
 // net/http's ServeMux redirects to the cleaned path and the request
@@ -231,9 +231,9 @@ func TestCleanDoesNotResolveAnEscapedDotDotIntoATraversal(t *testing.T) {
 // should always have been.
 //
 // So this is stated at two layers, both named:
-//   - through the mux, the MUX normalises and the handler is not involved;
+//   - through the mux, the MUX normalizes and the handler is not involved;
 //   - called directly, the helper still cleans, for a caller that is not the mux.
-func TestRealDotSegmentsAreNormalisedByTheMuxNotTheHandler(t *testing.T) {
+func TestRealDotSegmentsAreNormalizedByTheMuxNotTheHandler(t *testing.T) {
 	srv, _, _ := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, "http://unused")
 	ts := httptest.NewServer(asInternalService(srv))
 	t.Cleanup(ts.Close)

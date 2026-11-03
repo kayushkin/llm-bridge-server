@@ -149,7 +149,7 @@ reconnects SSE — `useBridgeSession.ts:984` — which replays the whole current
 via `store.ListCurrentTurnEventsWithIDs`; this likely adds to the burst. Not
 fully pinned down.)*
 
-**The design error, not just the value.** The guard asks the *denormalised state
+**The design error, not just the value.** The guard asks the *denormalized state
 cache* a question the *live process registry* already answers. `Manager.Stop`
 (`manager.go:356`) already returns `"session not running"` when there is no
 process:

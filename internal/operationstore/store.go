@@ -441,7 +441,7 @@ func (s *Store) RunningNotHeldBy(leaseOwner string, now time.Time) ([]Operation,
 type Change func(operation *Operation) (msg.OperationEventKind, error)
 
 // AnyLeaseToken passed to Update skips the lease check. Only the coordinator
-// uses it, for changes no worker makes: cancelling a queued operation, and
+// uses it, for changes no worker makes: canceling a queued operation, and
 // settling one whose worker is gone.
 const AnyLeaseToken int64 = -1
 

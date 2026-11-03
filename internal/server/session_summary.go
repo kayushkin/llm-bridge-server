@@ -375,7 +375,7 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 // buffer + re-marshal). A missing id maps to a null model.
 func (s *Server) fetchBundleModels(ids []string, turns int) (map[string]json.RawMessage, error) {
 	// The ids here come off the store, not off the inbound request — but that
-	// is not a reason to concatenate them. handleCreateSession honours a
+	// is not a reason to concatenate them. handleCreateSession honors a
 	// caller-minted `session_id` without constraining its characters, so an id
 	// carrying `&` is STORED and then rides every later recent-bundle call,
 	// including bundles covering sessions the caller has nothing to do with.

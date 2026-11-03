@@ -86,7 +86,7 @@ func TestANameCarryingReservedCharactersStaysOneParameter(t *testing.T) {
 		t.Errorf("name was mangled in transit:\n got %q\nwant %q", got.Get("name"), queryHostileProbe)
 	}
 	if got.Get("os") != "linux" || got.Get("arch") != "amd64" {
-		t.Errorf("name displaced its neighbours: os=%q arch=%q", got.Get("os"), got.Get("arch"))
+		t.Errorf("name displaced its neighbors: os=%q arch=%q", got.Get("os"), got.Get("arch"))
 	}
 }
 

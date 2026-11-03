@@ -146,7 +146,7 @@ func waitForSessionActionToEnd(t *testing.T, st *store.Store, sessionID, actionI
 func TestAnAgentOffersADeployAndOnlyThePersonCanRunIt(t *testing.T) {
 	srv, st, fake := testServerForSessionActions(t)
 	session := newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
-	newSessionForSignals(t, st, "br_neighbour", msg.SessionTypeInteractive)
+	newSessionForSignals(t, st, "br_neighbor", msg.SessionTypeInteractive)
 	repo := repoWithDeployScript(t, `printf '%s|%s|%s' "$PWD" "$LLM_BRIDGE_SESSION_ID" "$AI_AGENT" > ran.txt; echo deployed`)
 	fake.repoPaths[12] = repo
 	events := srv.harness.Subscribe("br_buttons")
@@ -177,7 +177,7 @@ func TestAnAgentOffersADeployAndOnlyThePersonCanRunIt(t *testing.T) {
 		t.Fatal("no session_action event for the offer")
 	}
 
-	if code := withToken(offerRequest("br_neighbour", map[string]any{"label": "Deploy demo", "type": "deploy", "repo_id": 12})).Code; code != http.StatusNotFound {
+	if code := withToken(offerRequest("br_neighbor", map[string]any{"label": "Deploy demo", "type": "deploy", "repo_id": 12})).Code; code != http.StatusNotFound {
 		t.Errorf("agent offering into another session: %d, want 404", code)
 	}
 	// The agent cannot press its own button.

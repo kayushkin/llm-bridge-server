@@ -284,8 +284,8 @@ func (s *Server) restartForAnswer(r *http.Request, sess *store.Session) error {
 
 // answerTextForMessage renders a group as the one message that carries it.
 // A single question sends its answer verbatim — anything else would put words
-// in the user's mouth. Several questions are labelled, because the assistant
-// asked them separately and an unlabelled concatenation is unreadable.
+// in the user's mouth. Several questions are labeled, because the assistant
+// asked them separately and an unlabeled concatenation is unreadable.
 func answerTextForMessage(group []store.Signal, answers map[string]string) string {
 	if len(group) == 1 {
 		return answers[group[0].ID]

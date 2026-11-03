@@ -206,9 +206,9 @@ func TestCancelAQueuedOperationThenCancelAgain(t *testing.T) {
 	gated, _ := newOperationsTestServer(t, testModelClassifier(0))
 	cookie := gated.loginAs(t, firstTestPrincipalID)
 	receipt := decodeReceipt(t, gated.requestAs(t, cookie, "POST", "/operations", classificationIntentFor(groupTestPrincipalID, "k1")))
-	cancelled := gated.requestAs(t, cookie, "POST", "/operations/"+receipt.ID+"/cancel", nil)
-	if cancelled.Code != http.StatusOK || decodeReceipt(t, cancelled).State != msg.OperationStateCancelled {
-		t.Fatalf("cancel = %d %s", cancelled.Code, cancelled.Body.String())
+	canceled := gated.requestAs(t, cookie, "POST", "/operations/"+receipt.ID+"/cancel", nil)
+	if canceled.Code != http.StatusOK || decodeReceipt(t, canceled).State != msg.OperationStateCancelled {
+		t.Fatalf("cancel = %d %s", canceled.Code, canceled.Body.String())
 	}
 	again := gated.requestAs(t, cookie, "POST", "/operations/"+receipt.ID+"/cancel", nil)
 	if again.Code != http.StatusConflict || errorCodeOf(t, again) != "operation_finished" {

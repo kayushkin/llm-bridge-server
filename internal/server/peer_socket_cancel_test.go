@@ -60,7 +60,7 @@ func waitForFrame(received <-chan peerSocketFrame, within time.Duration) (peerSo
 // event stream through the proxy — must tell the other server to stop serving
 // it. Until 2026-10-29 the stopped read marked the reader done, Close then sent
 // nothing, and the other server held the stream's slot until all 64 were held.
-func TestPeerSocketBodyCloseAfterCancelledReadSendsCancel(t *testing.T) {
+func TestPeerSocketBodyCloseAfterCanceledReadSendsCancel(t *testing.T) {
 	socket, received := openPeerSocketPair(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	reader := &peerSocketBodyReader{socket: socket, stream: 7, frames: make(chan peerSocketFrame), ctx: ctx}

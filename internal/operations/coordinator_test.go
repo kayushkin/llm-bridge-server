@@ -327,9 +327,9 @@ func TestCancel(t *testing.T) {
 		}})
 
 	queued, _, _ := coordinator.Submit(msg.OperationIntent{Type: scriptedType, OrganizationID: "o", IdempotencyKey: "queued"})
-	cancelled, err := coordinator.Cancel(context.Background(), queued.ID)
-	if err != nil || cancelled.State != msg.OperationStateCancelled {
-		t.Fatalf("cancel queued: %v %+v", err, cancelled)
+	canceled, err := coordinator.Cancel(context.Background(), queued.ID)
+	if err != nil || canceled.State != msg.OperationStateCancelled {
+		t.Fatalf("cancel queued: %v %+v", err, canceled)
 	}
 	if _, err := coordinator.Cancel(context.Background(), queued.ID); !errors.Is(err, operationstore.ErrTerminal) {
 		t.Fatalf("cancel finished: %v", err)

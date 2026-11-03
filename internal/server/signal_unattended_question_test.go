@@ -74,7 +74,7 @@ func postPrehookFull(t *testing.T, srv *Server, bridgeID, body string) (decision
 	return got.HookSpecificOutput.PermissionDecision, got.HookSpecificOutput.PermissionDecisionReason, got.HookSpecificOutput.UpdatedInput
 }
 
-const askWhichReading = `{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Should the count include discontinued products?","header":"The ticket says 'catalogue size' and the catalogue has 3 discontinued rows.","options":[{"label":"Include them"},{"label":"Exclude them"}]}]}}`
+const askWhichReading = `{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Should the count include discontinued products?","header":"The ticket says 'catalog size' and the catalog has 3 discontinued rows.","options":[{"label":"Include them"},{"label":"Exclude them"}]}]}}`
 
 const askMayIProceed = `{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Shall I go ahead and open the pull request?","header":"Tests pass.","options":[{"label":"Yes"},{"label":"No"}]}]}}`
 
@@ -90,7 +90,7 @@ func (c *cardStub) handler(cardID string) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/cards"):
-			_, _ = w.Write([]byte(`[{"card_id":"` + cardID + `","item":{"id":"` + cardID + `","title":"Add catalogue product count to /health","body":"Helena asks for a products count on /health."}}]`))
+			_, _ = w.Write([]byte(`[{"card_id":"` + cardID + `","item":{"id":"` + cardID + `","title":"Add catalog product count to /health","body":"Helena asks for a products count on /health."}}]`))
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/links"):
 			_, _ = w.Write([]byte(`[{"entity_type":"repo","entity_ref":"/tmp/x"},{"entity_type":"email","entity_ref":"demo-work:lmf8c5178e02571eae"}]`))
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/events"):
@@ -129,7 +129,7 @@ func stubMailstack(t *testing.T, srv *Server) {
 			http.Error(w, "account query param required", http.StatusBadRequest)
 			return
 		}
-		_, _ = w.Write([]byte(`{"meta":{"id":"lmf8c5178e02571eae","account_id":"demo-work","subject":"Catalogue size in /health","from":{"name":"Helena Ortiz","email":"helena@example.com"}},"body":{"text":"…"}}`))
+		_, _ = w.Write([]byte(`{"meta":{"id":"lmf8c5178e02571eae","account_id":"demo-work","subject":"Catalog size in /health","from":{"name":"Helena Ortiz","email":"helena@example.com"}},"body":{"text":"…"}}`))
 	}))
 	t.Cleanup(mail.Close)
 	client, err := mailstackclient.New(mail.URL, "tok")
@@ -175,10 +175,10 @@ func TestSurfacingWorkerRealQuestionLandsOnTheCardWithADraftForTheCustomer(t *te
 	seedWorkerSession(t, st, "demo-builder-2", msg.PurposeDispatcher)
 	prompt := stubTriage(t, srv, map[string]any{
 		"disposition": "needs_input",
-		"reason":      "two readings of 'catalogue size'",
+		"reason":      "two readings of 'catalog size'",
 		"audience":    "customer",
 		"customer_reply": map[string]any{
-			"subject": "Re: Catalogue size in /health",
+			"subject": "Re: Catalog size in /health",
 			"body":    "Hi Helena — should the count include the three discontinued products?",
 		},
 	}, nil)
@@ -194,7 +194,7 @@ func TestSurfacingWorkerRealQuestionLandsOnTheCardWithADraftForTheCustomer(t *te
 	if !strings.Contains(*prompt, "Helena Ortiz <helena@example.com>") {
 		t.Errorf("triage prompt did not name the requester from mailstack:\n%s", *prompt)
 	}
-	if !strings.Contains(*prompt, "Add catalogue product count") {
+	if !strings.Contains(*prompt, "Add catalog product count") {
 		t.Errorf("triage prompt did not carry the card's title:\n%s", *prompt)
 	}
 
@@ -221,7 +221,7 @@ func TestSurfacingWorkerRealQuestionLandsOnTheCardWithADraftForTheCustomer(t *te
 	if sig.CustomerReplyDraft.To != "helena@example.com" {
 		t.Errorf("draft.to = %q, want the sender resolved from mailstack, never from the model", sig.CustomerReplyDraft.To)
 	}
-	if sig.CustomerReplyDraft.Subject != "Re: Catalogue size in /health" || !strings.Contains(sig.CustomerReplyDraft.Body, "discontinued") {
+	if sig.CustomerReplyDraft.Subject != "Re: Catalog size in /health" || !strings.Contains(sig.CustomerReplyDraft.Body, "discontinued") {
 		t.Errorf("draft = %+v", sig.CustomerReplyDraft)
 	}
 	if kinds := card.eventKinds(); len(kinds) != 1 || kinds[0] != "waiting_started" {

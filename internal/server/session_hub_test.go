@@ -127,7 +127,7 @@ func TestSessionHubRejectsAnotherProcessesEventID(t *testing.T) {
 	old.publishOwnedBy(upsert("b"), "")
 
 	// A client reconnecting across a server restart carries an id whose numbers
-	// mean nothing to the new process. Honouring them would replay frames that
+	// mean nothing to the new process. Honoring them would replay frames that
 	// happen to share a sequence number but are entirely different sessions.
 	fresh := newSessionHub(nil)
 	for i := 0; i < 5; i++ {

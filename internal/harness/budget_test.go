@@ -166,7 +166,7 @@ func TestBudget_CeilingIsReachedNotExceeded(t *testing.T) {
 func TestBudget_NoCeilingNeverHalts(t *testing.T) {
 	// The overwhelming majority of sessions on this box have no ceiling,
 	// including every session that predates the column. Spending freely
-	// is the correct behaviour for all of them.
+	// is the correct behavior for all of them.
 	m, proc := budgetFixture(t, "br_budget_none", 0)
 
 	for i := 0; i < 5; i++ {

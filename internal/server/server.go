@@ -125,7 +125,7 @@ type Server struct {
 	// active or disabled, administrator or not — for a few seconds. See
 	// request_principal_lookup.go.
 	principalLookupCache *principalLookupCache
-	// settings is this server's declared settings, with the stored behaviour
+	// settings is this server's declared settings, with the stored behavior
 	// settings attached: read at the time of use, described by GET /settings,
 	// changed by PUT /settings/{key}. See service_settings.go.
 	settings *servicesettings.Registry

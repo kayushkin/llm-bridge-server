@@ -84,8 +84,8 @@ var discoveryPromptPrefixes = []struct {
 }
 
 // discoverySourceFolder infers a (source, folder) pair for a freshly-discovered
-// on-disk session. Conformance prompts are recognised by exact match; other
-// scheduled sources are recognised by stable prompt prefixes registered in
+// on-disk session. Conformance prompts are recognized by exact match; other
+// scheduled sources are recognized by stable prompt prefixes registered in
 // discoveryPromptPrefixes. Anything else is left unfiled — the harness CLI is
 // the source of truth for the original prompt and we don't second-guess user
 // sessions.
@@ -1035,7 +1035,7 @@ func (s *Server) handleInterruptSession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// The live process registry — not the denormalised state cache — is the
+	// The live process registry — not the denormalized state cache — is the
 	// authority on whether there is anything to interrupt. Stop() returns
 	// "session not running" when no live process exists; surface that as the
 	// 409. Interrupting a live-but-idle process is a harmless no-op. The old
@@ -1079,7 +1079,7 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The live process registry is the authority on whether the session is
-	// resumable, not the denormalised state cache. A session with a live
+	// resumable, not the denormalized state cache. A session with a live
 	// process is already running and has nothing to resume (409); one with
 	// no live process is resumable regardless of a stale state string — a
 	// crashed or interrupted session can read "running"/"error" yet have no
@@ -1304,14 +1304,14 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 		}
 		sess.MaxBudgetUSD = *req.MaxBudget
 		// The ceiling is now the session's own, whatever layer set it at create.
-		if relabelled, err := harnessConfigWithSettingsChosenOnSession(sess.HarnessConfig, msg.EffectiveSettingMaxBudget); err != nil {
+		if relabeled, err := harnessConfigWithSettingsChosenOnSession(sess.HarnessConfig, msg.EffectiveSettingMaxBudget); err != nil {
 			http.Error(w, "record max_budget layer: "+err.Error(), http.StatusInternalServerError)
 			return
-		} else if err := s.store.UpdateSessionHarnessConfig(bridgeID, relabelled); err != nil {
+		} else if err := s.store.UpdateSessionHarnessConfig(bridgeID, relabeled); err != nil {
 			http.Error(w, "persist harness_config: "+err.Error(), http.StatusInternalServerError)
 			return
 		} else {
-			sess.HarnessConfig = relabelled
+			sess.HarnessConfig = relabeled
 		}
 
 		// Raising the ceiling on a session with no live process is the
@@ -1334,7 +1334,7 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 	// `harness_config` into the params it spawns with, which is exactly how
 	// `permission_mode` already reaches a session that has never run.
 	//
-	// What the old behaviour cost: a freshly created session is in the database
+	// What the old behavior cost: a freshly created session is in the database
 	// and has no process until the first send starts one, so a client that
 	// configures between create and send — which is the normal shape of "new chat
 	// with a model chosen", chat-core's `send` does precisely that — got a 500
@@ -1401,14 +1401,14 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 // mergeHarnessConfig folds the harness-facing fields of a config request into a
 // session's stored `harness_config` blob, leaving every other key alone.
 //
-// Only the three fields `carriesHarnessConfig` recognises are written, and only
+// Only the three fields `carriesHarnessConfig` recognizes are written, and only
 // when set — `max_budget` is server state persisted separately, and an unset
 // field means "leave this as it is" rather than "clear it".
 func mergeHarnessConfig(current json.RawMessage, req ConfigSessionRequest) (json.RawMessage, error) {
 	cfg := map[string]json.RawMessage{}
 	if len(current) > 0 {
 		if err := json.Unmarshal(current, &cfg); err != nil {
-			// Refused rather than replaced. An unreadable blob is not licence to
+			// Refused rather than replaced. An unreadable blob is not license to
 			// throw away whatever a running session was configured with.
 			return nil, fmt.Errorf("stored harness_config is not an object: %w", err)
 		}

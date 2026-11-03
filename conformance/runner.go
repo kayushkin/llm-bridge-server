@@ -24,7 +24,7 @@ import (
 const SourceTag = "conformance"
 
 // Prompt strings sent to harness subprocesses during conformance tests. They
-// are exported so the auto-discover path can recognise sessions left behind on
+// are exported so the auto-discover path can recognize sessions left behind on
 // disk by the underlying harness CLI (e.g. ~/.codex/sessions/...) and tag them
 // with SourceTag.
 const (
@@ -854,7 +854,7 @@ func testDiscover(ctx context.Context, binary string) TestResult {
 // and interprets the exit code as a tri-state contract:
 //
 //	exit 2 → SKIP: binary explicitly signals "import not implemented"
-//	exit 0 → PASS: binary recognised the flag and treated a missing session
+//	exit 0 → PASS: binary recognized the flag and treated a missing session
 //	               as an idempotent no-op (analogous to -discover returning
 //	               an empty array)
 //	any other exit → FAIL: binary either errored mid-import or — more

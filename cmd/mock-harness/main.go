@@ -94,7 +94,7 @@ func envInt(key string, fallback int) int {
 // (conformance/runner.go, testImport).
 //
 // It has to be answered explicitly. Falling through to the JSON-RPC loop on an
-// unrecognised flag reads, from outside, as a harness that accepted -discover
+// unrecognized flag reads, from outside, as a harness that accepted -discover
 // and then wrote nothing: exit 0 with empty stdout, which decodes as neither an
 // array nor anything else.
 func runDiscover(w io.Writer) error {
@@ -208,7 +208,7 @@ func main() {
 
 		// The summary arrives in the params, exactly as every real harness
 		// reads it. This used to also accept a "compact:<summary>" method,
-		// which nothing but this file ever honoured — bridge-server sent that
+		// which nothing but this file ever honored — bridge-server sent that
 		// shape and the whole fleet answered "unknown method", so the one
 		// implementation that accepted it was the reason the contract looked
 		// alive. A reference harness that is more permissive than every real

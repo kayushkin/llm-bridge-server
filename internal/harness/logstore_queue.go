@@ -107,7 +107,7 @@ type sessionLogQueue struct {
 // the top of readEvents, Close in its exit path. Producers that arrive
 // with no queue registered — a bridge-originated event on a session whose
 // process has already gone, an event on a session that never had a pump —
-// fall back to a synchronous push, which is exactly the behaviour that
+// fall back to a synchronous push, which is exactly the behavior that
 // was there before.
 type logStoreQueue struct {
 	mu     sync.Mutex
@@ -200,7 +200,7 @@ func (q *logStoreQueue) Close(bridgeID string) {
 
 // Enqueue hands ev to bridgeID's writer, blocking while the queue is
 // full. With no queue registered it pushes synchronously, matching the
-// pre-queue behaviour for sessions that have no running pump.
+// pre-queue behavior for sessions that have no running pump.
 func (q *logStoreQueue) Enqueue(bridgeID, label string, ev msg.Event) {
 	sq := q.acquire(bridgeID)
 	if sq == nil {

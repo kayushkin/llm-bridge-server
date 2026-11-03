@@ -288,7 +288,7 @@ func TestListSessionSummaries_TieGroupWithLegacyRow(t *testing.T) {
 	}
 }
 
-// A cursor minted by the old server has no id half. It must keep the behaviour
+// A cursor minted by the old server has no id half. It must keep the behavior
 // it was built for rather than erroring or being read as an id bound of "".
 func TestListSessionSummaries_LegacyTimestampOnlyCursor(t *testing.T) {
 	s := testStore(t)
@@ -367,7 +367,7 @@ func ids(rows []SessionSummaryRow) []string {
 	return out
 }
 
-// A zero-value filter constrains nothing — the pre-filter behaviour, unchanged.
+// A zero-value filter constrains nothing — the pre-filter behavior, unchanged.
 func TestListSessionSummaries_EmptyFilterListsEverything(t *testing.T) {
 	s := testStore(t)
 	mkFilterableSession(t, s, "a", "interactive", "chat")

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bridge-image — make images with an image model and show them in this chat.
 #
-#   bridge-image "a red crab in a navy beret, watercolour on cream paper"
+#   bridge-image "a red crab in a navy beret, watercolor on cream paper"
 #   bridge-image "the same crab, now holding a paintbrush" --reference crab.png
 #
 # Each image is made by the instance llm-bridge-server's

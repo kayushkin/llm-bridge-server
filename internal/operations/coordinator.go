@@ -299,7 +299,7 @@ func intentFingerprint(intent msg.OperationIntent) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// Cancel asks an operation to stop. A queued one is cancelled at once; a
+// Cancel asks an operation to stop. A queued one is canceled at once; a
 // running one is marked and its attempt told to stop. A finished one is
 // operationstore.ErrTerminal.
 func (c *Coordinator) Cancel(ctx context.Context, operationID string) (msg.OperationReceipt, error) {
@@ -308,7 +308,7 @@ func (c *Coordinator) Cancel(ctx context.Context, operationID string) (msg.Opera
 		receipt := &operation.Receipt
 		if receipt.State == msg.OperationStateQueued {
 			receipt.State = msg.OperationStateCancelled
-			receipt.Error = &msg.OperationError{Code: "cancelled", Message: "cancelled before it started"}
+			receipt.Error = &msg.OperationError{Code: "cancelled", Message: "canceled before it started"}
 			return msg.OperationEventCancelled, nil
 		}
 		wasRunning = true
@@ -466,7 +466,7 @@ func executeRecovering(ctx context.Context, executor Executor, intent msg.Operat
 
 // finishAttempt records how an attempt ended. The rules, in order: an effect
 // still in doubt makes the operation unknown whatever the executor said; a
-// cancel request ends it cancelled unless the executor succeeded first; a
+// cancel request ends it canceled unless the executor succeeded first; a
 // retryable error with attempts left queues it again.
 func (c *Coordinator) finishAttempt(operation operationstore.Operation, description msg.OperationTypeDescription, result Result) {
 	requeued := false
@@ -500,7 +500,7 @@ func (c *Coordinator) finishAttempt(operation operationstore.Operation, descript
 			operationError.Retryable = false
 		case receipt.CancelRequestedAt != nil && state != msg.OperationStateSucceeded:
 			state = msg.OperationStateCancelled
-			operationError = &msg.OperationError{Code: "cancelled", Message: "cancelled while running"}
+			operationError = &msg.OperationError{Code: "cancelled", Message: "canceled while running"}
 		case state == "":
 			if operationError.Retryable && receipt.Attempt < description.MaximumAttempts {
 				receipt.State = msg.OperationStateQueued
@@ -581,7 +581,7 @@ func (c *Coordinator) reconcileOne(ctx context.Context, operation operationstore
 	requeue := false
 	switch {
 	case receipt.CancelRequestedAt != nil && !hasEffectInDoubt(receipt.Effects):
-		state, operationError = msg.OperationStateCancelled, &msg.OperationError{Code: "cancelled", Message: "cancelled; its worker stopped before finishing"}
+		state, operationError = msg.OperationStateCancelled, &msg.OperationError{Code: "cancelled", Message: "canceled; its worker stopped before finishing"}
 	case decision.Action == ReconcileRunAgain && hasEffectInDoubt(receipt.Effects):
 		state, operationError = msg.OperationStateUnknown, &msg.OperationError{Code: "effect_outcome_unknown",
 			Message: "its worker stopped after requesting an external change, and no answer said whether it was applied"}

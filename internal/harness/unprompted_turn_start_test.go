@@ -13,7 +13,7 @@ import (
 func TestARolloutReplayIsNotATurnStartingNow(t *testing.T) {
 	replayed := &msg.Event{Type: msg.EventUserMessage, Extensions: map[string]json.RawMessage{"source": json.RawMessage(`"rollout"`)}}
 	if !isRolloutReplay(replayed) {
-		t.Error("a rollout user_message was not recognised as a replay")
+		t.Error("a rollout user_message was not recognized as a replay")
 	}
 	for _, live := range []*msg.Event{
 		{Type: msg.EventUserMessage},

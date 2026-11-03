@@ -7,7 +7,7 @@ import (
 )
 
 // The tests here pin seedAPISpend's own contract rather than the manager
-// behaviour it produces. They exist because the manager path cannot see
+// behavior it produces. They exist because the manager path cannot see
 // these properties: it builds a derivation, seeds it once, and never seeds
 // again, so on that path "assign" and "add" are the same statement and a
 // shared map is never written to twice. Both become wrong the moment a

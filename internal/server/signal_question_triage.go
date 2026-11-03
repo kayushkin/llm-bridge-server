@@ -23,7 +23,7 @@ import (
 // of what a coding agent asks is a sign-off — "shall I proceed?", "is this
 // plan okay?" — that the person would answer "yes" to without reading. Triage
 // answers those on the spot and the worker continues. What reaches the card is
-// the remainder: a question that needs the assignee's judgement, or one only
+// the remainder: a question that needs the assignee's judgment, or one only
 // the customer who asked for the work can answer. For the second kind triage
 // also drafts the reply to the customer, so the person on the card forwards
 // rather than composes.

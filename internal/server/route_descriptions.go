@@ -78,7 +78,7 @@ var routeDescriptions = map[string]routeDescription{
 	"POST /sessions/{id}/images":                          {routeGroupOneSession, "Make images from a prompt and reference images and share them into the session (its owner, or its own agent with LLM_BRIDGE_SESSION_POSTING_TOKEN)"},
 	"GET /sessions/{id}/actions":                          {routeGroupOneSession, "Actions offered in the session, and who ran each and how it ended"},
 	"POST /sessions/{id}/actions/{action_id}/run":         {routeGroupOneSession, "Confirm an action: the server runs it (owner only, never the agent)"},
-	"GET /sessions/{id}/events":                           {routeGroupOneSession, "SSE stream of `msg.Event`; replays the current turn and honours `Last-Event-ID`"},
+	"GET /sessions/{id}/events":                           {routeGroupOneSession, "SSE stream of `msg.Event`; replays the current turn and honors `Last-Event-ID`"},
 	"GET /sessions/{id}/attach":                           {routeGroupOneSession, "WebSocket onto a pty-mode session's terminal"},
 	"GET /sessions/{id}/attach-token":                     {routeGroupOneSession, "The token the attach WebSocket needs"},
 	"GET /sessions/{id}/messages":                         {routeGroupOneSession, "History, projected by log-store for reading"},

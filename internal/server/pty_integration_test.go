@@ -106,7 +106,7 @@ func TestPTYIntegration_ClaudeCode_RoundTrip(t *testing.T) {
 	// transition), so a live pty session reads "starting" for its whole
 	// life. The previous assertion wanted msg.SessionRunning, which is
 	// both unreachable here and deprecated in llm-bridge's msg package in
-	// favour of SessionModelGenerating / SessionToolRunning.
+	// favor of SessionModelGenerating / SessionToolRunning.
 	//
 	// IsActive is llm-bridge's own answer to "does this state imply a live
 	// subprocess", so use it rather than restating the live-state list

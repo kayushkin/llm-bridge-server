@@ -184,7 +184,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		Input:           payload.ToolInput,
 	})
 	if err != nil {
-		// Pass the client's error through rather than labelling it. Evaluate
+		// Pass the client's error through rather than labeling it. Evaluate
 		// distinguishes five failures — unreachable, non-2xx, unreadable body,
 		// undecodable body, outcome outside the allowed set — and the fixed
 		// "unreachable" prefix this used to carry reported four of them as the
@@ -360,7 +360,7 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 
 	// Record the signal only once the request is genuinely parked. Doing it
 	// before the broadcast would leave an open signal row behind on the
-	// failure path above, where the park is cancelled and no human ever sees
+	// failure path above, where the park is canceled and no human ever sees
 	// the question.
 	if source == msg.HookSourceUserInput {
 		s.recordAskUserQuestionSignals(bridgeID, sess, requestID, payload.ToolInput)

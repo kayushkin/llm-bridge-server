@@ -2,7 +2,7 @@ package store
 
 import "fmt"
 
-// The server's own behaviour settings: what internal/config declares Editable
+// The server's own behavior settings: what internal/config declares Editable
 // and llm-bridge's servicesettings package reads and writes. One row per key,
 // the value written as the setting's type says. The environment seeds a row
 // once, on the first start after a setting becomes editable; after that this
@@ -22,7 +22,7 @@ func (s *Store) migrateServiceSettings() error {
 // ServiceSettingValues is the servicesettings.StoredValues over this store.
 type ServiceSettingValues struct{ store *Store }
 
-// ServiceSettingValues returns the stored behaviour settings of this server.
+// ServiceSettingValues returns the stored behavior settings of this server.
 func (s *Store) ServiceSettingValues() ServiceSettingValues {
 	return ServiceSettingValues{store: s}
 }

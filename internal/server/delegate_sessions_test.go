@@ -76,10 +76,10 @@ func TestASessionsAgentStartsADelegateUnderItselfWithItsPostingToken(t *testing.
 func TestADelegatingAgentReachesNoSessionItDidNotStart(t *testing.T) {
 	srv, st, instanceID := testServerWithInstance(t, msg.HarnessMock)
 	newSessionForSignals(t, st, "br_agent", msg.SessionTypeInteractive)
-	newSessionForSignals(t, st, "br_neighbour", msg.SessionTypeInteractive)
-	neighboursDelegate := &store.Session{SessionID: "br_neighbours_delegate", Harness: "claude_code", State: "idle",
-		Type: msg.SessionTypeAutonomous, ManagerSessionID: "br_neighbour"}
-	if err := st.CreateSession(neighboursDelegate); err != nil {
+	newSessionForSignals(t, st, "br_neighbor", msg.SessionTypeInteractive)
+	neighborsDelegate := &store.Session{SessionID: "br_neighbors_delegate", Harness: "claude_code", State: "idle",
+		Type: msg.SessionTypeAutonomous, ManagerSessionID: "br_neighbor"}
+	if err := st.CreateSession(neighborsDelegate); err != nil {
 		t.Fatal(err)
 	}
 	token := currentPostingTokenFor(t, srv, "br_agent")
@@ -88,9 +88,9 @@ func TestADelegatingAgentReachesNoSessionItDidNotStart(t *testing.T) {
 		method, path string
 		body         any
 	}{
-		{http.MethodPost, "/sessions/br_neighbours_delegate/send", map[string]string{"message": "x"}},
-		{http.MethodPost, "/sessions/br_neighbours_delegate/stop", nil},
-		{http.MethodGet, "/sessions/br_neighbours_delegate/events", nil},
+		{http.MethodPost, "/sessions/br_neighbors_delegate/send", map[string]string{"message": "x"}},
+		{http.MethodPost, "/sessions/br_neighbors_delegate/stop", nil},
+		{http.MethodGet, "/sessions/br_neighbors_delegate/events", nil},
 		// Its own session is not its delegate: it may read it, not drive it.
 		{http.MethodPost, "/sessions/br_agent/send", map[string]string{"message": "x"}},
 	} {
@@ -103,7 +103,7 @@ func TestADelegatingAgentReachesNoSessionItDidNotStart(t *testing.T) {
 	// agent_session_reads_test.go; driving one is what is refused above.
 
 	request := delegateRequest(instanceID)
-	request.ManagerSessionID = "br_neighbour"
+	request.ManagerSessionID = "br_neighbor"
 	recorder := servedWithPostingToken(t, srv, token, http.MethodPost, "/sessions", request)
 	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "delegate_manager_mismatch") {
 		t.Errorf("delegate under another session: %d %s, want 403 delegate_manager_mismatch", recorder.Code, recorder.Body)

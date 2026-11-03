@@ -181,7 +181,7 @@ func TestGuardAsksAboutTheHarnessID(t *testing.T) {
 }
 
 // A session with no harness id must not reach log-store at all. The client
-// refuses an empty id too, so behaviour is identical either way — but going
+// refuses an empty id too, so behavior is identical either way — but going
 // over the wire to be told no turns every id-less discovered session into a
 // failed request and a "could not ask log-store" line in the gateway log,
 // which reads as an outage. Discovery finds 1,675 such sessions on this host.

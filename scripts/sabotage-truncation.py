@@ -8,7 +8,7 @@ target and adds the scores up.
 Scoring the helper alone would not be enough. Its own tests can be perfect
 while a call site still byte-cuts, and that is exactly the state this repo was
 in: sessions.go:106 and renamer.go:68 were already rune-safe while three
-neighbours cut bytes. So every call site gets a case that puts the plain byte
+neighbors cut bytes. So every call site gets a case that puts the plain byte
 cut back, and it has to go red.
 
 Two call sites are KNOWN GAPs and say so. Both discovery loops need real
@@ -121,7 +121,7 @@ TARGETS = [
         # Written as `byteOffset*0` rather than `""`. The plain empty string is
         # a deletion of byteOffset's only use, so it orphans the variable and
         # the case reports `compile error` instead of a score -- which hides
-        # whether any test would have caught the behaviour. Multiplying by zero
+        # whether any test would have caught the behavior. Multiplying by zero
         # is the same value with every identifier still live.
         Case("helper trims to nothing", [("return text[:byteOffset]", "return text[:byteOffset*0]")]),
 
@@ -131,7 +131,7 @@ TARGETS = [
              [(RUNE_WALK, '\treturn "SABOTAGE"')]),
         Case("CONTROL known-negative: <= 0 rewritten as < 1, identical for ints",
              [("if maxRunes <= 0 {", "if maxRunes < 1 {")],
-             expected_unnoticed="a behavioural no-op; it must NOT be caught"),
+             expected_unnoticed="a behavioral no-op; it must NOT be caught"),
 
         # VALUE. The known-negative above rewrites this same guard without
         # moving it, which is what makes the pair worth reading together: one
@@ -348,7 +348,7 @@ def main():
     # The engine is asked what went wrong rather than inferring it from the
     # counters above: `caught < real` would miss a known-negative control that
     # WAS caught, which means the suite is red for a reason unrelated to
-    # behaviour and every CAUGHT in the table is suspect. That run scores a
+    # behavior and every CAUGHT in the table is suspect. That run scores a
     # perfect caught == real and is worth nothing.
     return 1 if found else 0
 

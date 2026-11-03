@@ -54,7 +54,7 @@ const previewMaximumSide = 1024
 const imageGenerationTimeout = 7 * time.Minute
 
 type generateImageInput struct {
-	Prompt              string   `json:"prompt" jsonschema:"what to draw: subject, style, composition, colours, any text to letter in it"`
+	Prompt              string   `json:"prompt" jsonschema:"what to draw: subject, style, composition, colors, any text to letter in it"`
 	ReferenceImagePaths []string `json:"reference_image_paths,omitempty" jsonschema:"absolute paths of images on this host to edit, or to take a character, style or layout from"`
 }
 

@@ -303,7 +303,7 @@ func TestHandleListSignalsRejectsUnknownFilterValues(t *testing.T) {
 func TestAskUserQuestionPrehookRecordsAndResolvesSignal(t *testing.T) {
 	// Parking broadcasts an awaiting_resolution event, and the broadcast
 	// path pushes through log-store. Without a reachable one the broadcast
-	// errors, the park is cancelled, and nothing is recorded — so stub it.
+	// errors, the park is canceled, and nothing is recorded — so stub it.
 	logStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -650,7 +650,7 @@ func TestDismissingALiveParkDeniesTheToolCall(t *testing.T) {
 		t.Error("nothing was delivered to the parked hook; the harness is still blocked")
 	}
 
-	// Once the park is gone — harness restart, cancelled request — the row is
+	// Once the park is gone — harness restart, canceled request — the row is
 	// a leftover with nothing behind it, and dismissing it is the only way to
 	// clear it.
 	srv.parkedAsks.cancel("br_1", "hreq_1")

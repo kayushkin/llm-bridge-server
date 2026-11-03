@@ -41,7 +41,7 @@ func TestAPreviewKeepsTheShapeAndFitsTheLongestSide(t *testing.T) {
 	}
 	red, green, _, _ := decoded.At(500, 250).RGBA()
 	if red>>8 < 180 || green>>8 > 70 {
-		t.Errorf("the colour changed: red %d green %d", red>>8, green>>8)
+		t.Errorf("the color changed: red %d green %d", red>>8, green>>8)
 	}
 }
 

@@ -133,7 +133,7 @@ func TestASpaceInAnIDIsNotWhatThesePinsAreAbout(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Site 2 — GET /sessions/recent-bundle. The ids do NOT come off this request:
 // they are read from the store, where a caller minted them at create time
-// (handleCreateSession honours req.SessionID unvalidated). So the injection is
+// (handleCreateSession honors req.SessionID unvalidated). So the injection is
 // STORED, and it rides every later recent-bundle call, not just its author's.
 // ─────────────────────────────────────────────────────────────────────────────
 

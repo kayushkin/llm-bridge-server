@@ -112,7 +112,7 @@ func SettingDefinitions() []servicesettings.Definition {
 		role      = msg.ServiceSettingValueTypeModelRole
 	)
 	definitions := []servicesettings.Definition{
-		// Behaviour the server stores: changed on the settings page, no restart.
+		// Behavior the server stores: changed on the settings page, no restart.
 		{Key: SettingSignalClassifierModelRole, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_MODEL_ROLE", Kind: behavior, ValueType: role, Editable: true, Default: "balanced",
 			Description: "The model-store role the turn-end signal classifier asks. Its models are tried in order, each on the instance oneshot.instance_by_provider names for its provider. Empty switches the classifier off: no derived signals."},
 		{Key: SettingQuestionTriageModelRole, EnvironmentVariable: "LLMBRIDGE_QUESTION_TRIAGE_MODEL_ROLE", Kind: behavior, ValueType: role, Editable: true, Default: "balanced",
@@ -124,7 +124,7 @@ func SettingDefinitions() []servicesettings.Definition {
 		{Key: SettingSignalClassifierOptOutHarnesses, EnvironmentVariable: "LLMBRIDGE_SIGNAL_CLASSIFIER_OPT_OUT", Kind: behavior, ValueType: msg.ServiceSettingValueTypeStringList, Editable: true,
 			Description: "Harnesses whose turns the classifier skips, comma-separated by harness id."},
 		{Key: SettingPromptDriftTaggerModelRole, EnvironmentVariable: "LLMBRIDGE_PROMPT_DRIFT_TAGGER_MODEL_ROLE", Kind: behavior, ValueType: role, Editable: true, Default: "balanced",
-			Description: "The model-store role that proposes tags for sections a prompt-file edit adds, one call per held drift. Empty switches labelling off: drifts are still detected and held, unlabelled."},
+			Description: "The model-store role that proposes tags for sections a prompt-file edit adds, one call per held drift. Empty switches labeling off: drifts are still detected and held, unlabeled."},
 		{Key: SettingSessionRenamerModelRole, EnvironmentVariable: "LLMBRIDGE_SESSION_RENAMER_MODEL_ROLE", Kind: behavior, ValueType: role, Editable: true, Default: "efficient",
 			Description: "The model-store role that writes a session's sidebar title from its recent turns. Empty switches automatic titles off."},
 		{Key: SettingSessionIdleTimeout, EnvironmentVariable: "LLMBRIDGE_IDLE_TIMEOUT", Kind: behavior, ValueType: msg.ServiceSettingValueTypeDuration, Editable: true, Default: "15m",
@@ -159,7 +159,7 @@ func SettingDefinitions() []servicesettings.Definition {
 		{Key: SettingKeepAwakeGraceMinutes, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_GRACE_MINUTES", Kind: behavior, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "30",
 			Description: "How many minutes the machine is kept awake after the last session stops running or was last sent a message, when keep_awake.enabled is on. 0 releases the hold as soon as no session runs."},
 
-		// Behaviour read once at start.
+		// Behavior read once at start.
 		{Key: "session.purpose_folders", EnvironmentVariable: "LLMBRIDGE_PURPOSE_FOLDERS", Kind: behavior, ValueType: msg.ServiceSettingValueTypeStringMap,
 			Description: "purpose:folder pairs laid over the purpose registry's own folders, deciding where a new session is filed. The Settings page's source folders override both at runtime."},
 		{Key: "pty.ring_buffer_bytes", EnvironmentVariable: "LLMBRIDGE_PTY_RING_BUFFER_BYTES", Kind: behavior, ValueType: msg.ServiceSettingValueTypeInteger, Default: "65536",

@@ -55,7 +55,7 @@ type LoginAttempt struct {
 	Outcome       string `json:"outcome"`
 	OutcomeDetail string `json:"outcome_detail,omitempty"`
 	// TenantID and Subject are the tid and oid claims of a verified ID token;
-	// PreferredUsername and DisplayName are for an administrator to recognise
+	// PreferredUsername and DisplayName are for an administrator to recognize
 	// the person by, and are never matched on.
 	TenantID          string `json:"tenant_id,omitempty"`
 	Subject           string `json:"subject,omitempty"`

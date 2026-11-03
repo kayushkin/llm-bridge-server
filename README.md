@@ -113,7 +113,7 @@ curl -s -X POST localhost:8160/sessions/<id>/send -H "$H" -H 'Content-Type: appl
 curl -sN localhost:8160/sessions/<id>/events -H "$H"         # SSE stream of msg.Event
 ```
 
-Each SSE `data:` line is one `msg.Event` (`github.com/kayushkin/llm-bridge/msg`; `Event` in `@kayushkin/llm-bridge-types` for TypeScript). The stream replays the current turn on connect and honours `Last-Event-ID`.
+Each SSE `data:` line is one `msg.Event` (`github.com/kayushkin/llm-bridge/msg`; `Event` in `@kayushkin/llm-bridge-types` for TypeScript). The stream replays the current turn on connect and honors `Last-Event-ID`.
 
 `cmd/bridge-agent` wraps these calls: it hands one prompt to a new session with a chosen MCP bundle and prints the final answer.
 
@@ -234,7 +234,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/sessions/{id}/effective-config` | Every setting the session runs with, and which layer decided it | owner |
 | `GET` | `/sessions/{id}/entries/{eventId}` | One history entry with its tool input and output in full | owner |
 | `GET` | `/sessions/{id}/entries/{eventId}/images/{index}` | One image a tool result carries, relayed from log-store | owner |
-| `GET` | `/sessions/{id}/events` | SSE stream of `msg.Event`; replays the current turn and honours `Last-Event-ID` | owner |
+| `GET` | `/sessions/{id}/events` | SSE stream of `msg.Event`; replays the current turn and honors `Last-Event-ID` | owner |
 | `GET` | `/sessions/{id}/files` | Files shared into the session | owner |
 | `POST` | `/sessions/{id}/files` | Share a file into the session (its owner, or its own agent with LLM_BRIDGE_SESSION_POSTING_TOKEN) | owner, or the session's own agent |
 | `GET` | `/sessions/{id}/files-named-by-tools` | Files on disk that the session's tool calls and their output named | owner |
@@ -555,6 +555,6 @@ The tagged tests skip when a binary is missing. The `harness_live` tests spend r
 - `PTY-MODE.md`: pty-mode sessions
 - `CACHE-RULES.md`: what may and may not break prompt caching
 - `CONFORMANCE-GRADING.md`: how the conformance matrix is graded
-- `CC-VERIFIED.md`: Claude Code flags and behaviour, checked by hand
+- `CC-VERIFIED.md`: Claude Code flags and behavior, checked by hand
 
 `docs/plans/` holds plans, some done in part and some not started: `CODEX-PARITY`, `IMPLEMENTATION-ROADMAP`, `CONTEXT-MIGRATION`, `TEAM-ORCHESTRATION`, `CLI-SURFACE`. Check a plan against the code before relying on it.
