@@ -35,7 +35,7 @@ const busyTimeoutMillisecondsWanted = 5000
 // _pragma=... is modernc's syntax and it is the only one that works here. The
 // mattn/go-sqlite3 spelling (_busy_timeout=5000) is silently ignored by this
 // driver — measured, 0 of 8 pooled connections saw it — as is any other
-// unrecognised key, which is why Open verifies the value after opening.
+// unrecognized key, which is why Open verifies the value after opening.
 //
 // ⚠️ foreign_keys is deliberately NOT set here. This database has live rows
 // that violate its own REFERENCES clauses (PRAGMA foreign_key_check reports an
@@ -67,7 +67,7 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
 
-	// An unrecognised DSN key is silently ignored by this driver, so prove the
+	// An unrecognized DSN key is silently ignored by this driver, so prove the
 	// setting actually took effect instead of trusting the connection string.
 	var busyTimeoutMilliseconds int
 	if err := db.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeoutMilliseconds); err != nil {

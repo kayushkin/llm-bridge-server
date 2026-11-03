@@ -100,7 +100,7 @@ func TestBusyTimeoutControl(t *testing.T) {
 }
 
 // TestTheMattnDSNSpellingIsSilentlyIgnored pins why Open verifies the pragma
-// after opening instead of trusting the DSN. modernc accepts an unrecognised
+// after opening instead of trusting the DSN. modernc accepts an unrecognized
 // key without complaint, so a DSN written in the other driver's dialect opens
 // cleanly and configures nothing.
 func TestTheMattnDSNSpellingIsSilentlyIgnored(t *testing.T) {
@@ -116,7 +116,7 @@ func TestTheMattnDSNSpellingIsSilentlyIgnored(t *testing.T) {
 
 	for connectionIndex, value := range readPragmaFromEveryPooledConnection(t, db, "busy_timeout") {
 		if value == busyTimeoutMillisecondsWanted {
-			t.Fatalf("pooled connection %d honoured _busy_timeout=5000; this driver now "+
+			t.Fatalf("pooled connection %d honored _busy_timeout=5000; this driver now "+
 				"understands the mattn spelling and dataSourceName's comment is stale",
 				connectionIndex)
 		}

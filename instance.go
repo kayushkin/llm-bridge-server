@@ -124,7 +124,7 @@ func (s *Store) UpdateInstance(inst *msg.Instance) error {
 }
 
 // DeleteInstance removes an instance. Cascading FK on instance_credentials
-// is not declared; callers that need that behaviour should call
+// is not declared; callers that need that behavior should call
 // ClearInstanceCredentials first.
 func (s *Store) DeleteInstance(id string) error {
 	res, err := s.db.Exec(`DELETE FROM instances WHERE id = ?`, id)
