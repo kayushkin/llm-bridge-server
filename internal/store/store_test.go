@@ -454,7 +454,7 @@ func TestInjectEventID(t *testing.T) {
 //
 // Asserting the refusal rather than reading `PRAGMA query_only` back is
 // deliberate: the readout has been seen to report the value it was set to on a
-// connection that then accepted the write. The behaviour is the contract.
+// connection that then accepted the write. The behavior is the contract.
 func TestAWriteThroughTheReaderPoolIsRefused(t *testing.T) {
 	s := newTestStore(t)
 	if _, err := s.StoreEvent("sess", "user_message", []byte(`{}`)); err != nil {

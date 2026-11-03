@@ -189,7 +189,7 @@ func TestStoredTail_PreviewShortensToolPayloadsAndEntryRouteExpandsThem(t *testi
 	}
 }
 
-// An OTel echo that carries a different turn_id than its prompt is still recognised
+// An OTel echo that carries a different turn_id than its prompt is still recognized
 // as the prompt's twin, and a prompt turn built before its echo arrived is rebuilt.
 func TestStoredTail_PairsAnEchoThatLandedInAnotherTurn(t *testing.T) {
 	srv, s := newTestServer(t)
@@ -273,7 +273,7 @@ func TestTurnMaterializer_BuildsTurnsWhenTheyEnd(t *testing.T) {
 // rebuilt on its next read. Either way, then update both constants below.
 const (
 	fingerprintedMaterializerVersion = 5
-	materializerRulesFingerprint     = "30f819651a6ef604f380f46d78cacbcf80f1ae8e8ce51e46a32e0014ffe0fb46"
+	materializerRulesFingerprint     = "21d6226fe0549ada2e53ac6b1754c384725f51fbf96ed0a1ee2b80f6e52a87c1"
 )
 
 func TestMaterializerVersionTracksTheRules(t *testing.T) {

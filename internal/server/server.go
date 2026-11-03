@@ -257,7 +257,7 @@ func (s *Server) materializeTail(id string, limit int, before int64) (TurnModel,
 	}
 
 	// Paired across the whole session, as the reading page is, so a copy whose twin
-	// sits outside this page is still recognised.
+	// sits outside this page is still recognized.
 	pairing, err := s.sessionPairing(id)
 	if err != nil {
 		return TurnModel{}, err

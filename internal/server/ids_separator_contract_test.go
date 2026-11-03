@@ -133,7 +133,7 @@ func TestAPlusAndASpaceInsideAnIDDoNotTradePlaces(t *testing.T) {
 // check), so nothing upstream forbids the comma — but measured 2026-08-29 over
 // log-store's own events.db, 0 of 26,969 distinct stored session ids contain
 // one. Whether to constrain the id or change the encoding is a live decision;
-// this pin only stops the behaviour being rediscovered as a surprise.
+// this pin only stops the behavior being rediscovered as a surprise.
 func TestAnIDContainingACommaIsIndistinguishableFromTwoIDs(t *testing.T) {
 	srv, _ := newTestServer(t)
 	assertResolved(t, resolvedIDs(t, srv, idsQuery("br_alpha,beta")), "br_alpha", "beta")

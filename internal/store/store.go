@@ -16,7 +16,7 @@ import (
 
 // readerPoolSize bounds how many queries run at once. Reads here are not
 // small — one /messages call over the largest real session scans 13,776 rows
-// and serialises 306MB — so an unbounded pool would let a handful of clients
+// and serializes 306MB — so an unbounded pool would let a handful of clients
 // pin every core. Eight is well above the number of dashboards this serves
 // and still leaves the machine room to run the harnesses that feed it.
 const readerPoolSize = 8
@@ -76,7 +76,7 @@ func New(dbPath string) (*Store, error) {
 		writer.Close()
 		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
-	// An unrecognised DSN key is silently ignored by this driver, so prove the
+	// An unrecognized DSN key is silently ignored by this driver, so prove the
 	// setting actually took effect instead of trusting the connection string.
 	var writerBusyTimeoutMilliseconds int
 	if err := writer.QueryRow("PRAGMA busy_timeout").Scan(&writerBusyTimeoutMilliseconds); err != nil {
@@ -92,7 +92,7 @@ func New(dbPath string) (*Store, error) {
 
 	// modernc applies _pragma= to every connection it opens, which a one-shot
 	// Exec on a pool cannot do — query_only and busy_timeout are both
-	// per-connection. Verified by behaviour, not by reading the pragma back:
+	// per-connection. Verified by behavior, not by reading the pragma back:
 	// TestAWriteThroughTheReaderPoolIsRefused drives 40 concurrent writes
 	// through this handle and every one must fail.
 	reader, err := sql.Open("sqlite", fmt.Sprintf("%s?_pragma=query_only(1)&_pragma=busy_timeout(%d)",

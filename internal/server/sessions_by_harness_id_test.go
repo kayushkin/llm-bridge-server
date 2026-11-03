@@ -101,7 +101,7 @@ func TestSessionsByHarnessIDUnknownIsEmptyList(t *testing.T) {
 }
 
 // A missing id is a 400. Answering it as "no match" would tell an importer to
-// import, which is the behaviour this endpoint exists to stop; answering it as
+// import, which is the behavior this endpoint exists to stop; answering it as
 // a lookup for '' would report every id-less transcript on the host.
 func TestSessionsByHarnessIDRequiresTheID(t *testing.T) {
 	srv, st := newTestServer(t)

@@ -66,7 +66,7 @@ func TestZeroTimesLeaveTheSearchUnbounded(t *testing.T) {
 	// And the one-argument form still answers identically.
 	same, err := s.SearchSessions("needle", 10)
 	if err != nil || len(same) != 3 {
-		t.Fatalf("SearchSessions changed behaviour: %v %v", hitIDs(same), err)
+		t.Fatalf("SearchSessions changed behavior: %v %v", hitIDs(same), err)
 	}
 }
 

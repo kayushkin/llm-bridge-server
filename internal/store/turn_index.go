@@ -150,7 +150,7 @@ func (st *sessionTurnState) assignTurn(eventID int64, rawTurnID string) string {
 	return turnID
 }
 
-// sessionLocks serialises index building per session, so a read that indexes a
+// sessionLocks serializes index building per session, so a read that indexes a
 // session on demand and the background pass cannot both build it at once.
 type sessionLocks struct {
 	mu    sync.Mutex

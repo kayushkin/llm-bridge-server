@@ -333,7 +333,7 @@ func classify(ev *msg.Event) (role, kind string, conversation bool) {
 		// markers, the rest is bookkeeping.
 		//
 		// Those two used to be spelled as one: every subtype outside the visible
-		// list was relabelled kind "meta", so anything asking "is this a system
+		// list was relabeled kind "meta", so anything asking "is this a system
 		// event?" was told no. The live reducer says "system" for all of them
 		// (kindOf in chat-core reduce/TurnReducer.ts), so the two paths disagreed
 		// about the same event, and this file claims to mirror that one exactly.
@@ -352,12 +352,12 @@ func classify(ev *msg.Event) (role, kind string, conversation bool) {
 		// This returned "text" for every one of them, which disagreed with the live
 		// reducer about the same event — chat-core's `kindOf` classifies by the block
 		// type (`reduce/TurnReducer.ts`) and this file's own header claims to mirror
-		// it exactly. So a session's reasoning was labelled prose the moment it was
+		// it exactly. So a session's reasoning was labeled prose the moment it was
 		// materialized, and every surface that asks for kind "thinking" found nothing
 		// on a reload while finding it live. Same class of bug as the task events
 		// described above, and the same fix: classify by what the event IS.
 		//
-		// ⚠️ Relabelling does NOT put reasoning back on screen, and it must not be
+		// ⚠️ Relabeling does NOT put reasoning back on screen, and it must not be
 		// mistaken for having done so. The reasoning TEXT is gone before it reaches
 		// this service: Claude Code records its thinking blocks with `thinking: ""`
 		// and a signature, so of the 98,959 thinking blocks stored here ZERO carry

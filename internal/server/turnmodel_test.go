@@ -318,7 +318,7 @@ func TestBuildTurnModel_CarriesSubagentFields(t *testing.T) {
 				TaskSummary: "found it", SubagentSessionID: "br_sub",
 			}}),
 		// A subagent's own frame, kept on the parent by the server's fail-safe.
-		// It must arrive labelled as somebody else's work.
+		// It must arrive labeled as somebody else's work.
 		mkRow(t, 3, msg.Event{Type: msg.EventBlock, TurnID: "t", Timestamp: base.Add(2 * time.Second),
 			HarnessParentID: "toolu_1",
 			Block:           &msg.BlockEvent{Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: "subagent working"}}}}),
@@ -348,7 +348,7 @@ func TestBuildTurnModel_CarriesSubagentFields(t *testing.T) {
 		t.Errorf("harnessParentId = %q, want toolu_1 — a subagent's own row must say so", got)
 	}
 	if m.Entries["e_1"].HarnessParentID != "" {
-		t.Error("the parent's own narration must not be labelled as a subagent's work")
+		t.Error("the parent's own narration must not be labeled as a subagent's work")
 	}
 
 	// A task event is a SYSTEM event, and the settled page has to say so. It
@@ -762,7 +762,7 @@ func TestBuildTurnModel_ThinkingOnlyTurnPromotesNothing(t *testing.T) {
 // reasoning was therefore filed as prose the moment it was materialized, so every
 // surface asking for kind "thinking" found it live and found nothing on a reload.
 //
-// ⚠️ Relabelling does not put reasoning back on screen and must not be read as having
+// ⚠️ Relabeling does not put reasoning back on screen and must not be read as having
 // done so. The TEXT is gone before it reaches this service — Claude Code records its
 // thinking blocks with `thinking: ""` plus a signature, so of the 98,959 thinking blocks
 // stored on this host ZERO carry text. This corrects the label on an empty box; the
