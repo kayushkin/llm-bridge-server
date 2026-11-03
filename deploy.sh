@@ -16,6 +16,7 @@ if [ -z "${DEPLOY_DETACHED:-}" ]; then
   cd "$(dirname "$0")"
   exec "$HOME/bin/deploy-gate" detach "$HOME/.cache/llm-bridge-deploy.log" \
     --setenv AUTH_STORE_URL --setenv AUTH_STORE_TOKEN --setenv LLMBRIDGE_MAILSTACK_TOKEN --setenv GOWORK \
+    --setenv DEPLOY_IDLE_WAIT_SECONDS --setenv DEPLOY_SKIP_IDLE_WAIT \
     -- bash "$(pwd)/$(basename "$0")" "$@"
 fi
 
@@ -158,6 +159,69 @@ if [ -f "$SESSION_ACTIONS_DROPIN" ]; then
   BACKUP_SESSION_ACTIONS_DROPIN="$SESSION_ACTIONS_DROPIN.backup-$STAMP"
   sudo cp -p "$SESSION_ACTIONS_DROPIN" "$BACKUP_SESSION_ACTIONS_DROPIN"
   echo "    session-actions drop-in -> $BACKUP_SESSION_ACTIONS_DROPIN"
+fi
+
+# Every route but /health is gated. The idle wait below and the readiness poll
+# after the start read the service token the unit carries, from the same
+# host-local file, so both checks exercise the real credential.
+TOKEN_FILE="${LLM_BRIDGE_TOKEN_FILE:-/home/kayushkincom/.config/principal-gating-tokens.env}"
+SERVICE_TOKEN="${LLMBRIDGE_SERVICE_TOKEN:-}"
+if [ -z "$SERVICE_TOKEN" ] && [ -r "$TOKEN_FILE" ]; then
+  SERVICE_TOKEN="$(sed -n 's/^LLMBRIDGE_SERVICE_TOKEN=//p' "$TOKEN_FILE" | head -1)"
+fi
+if [ -z "$SERVICE_TOKEN" ]; then
+  echo "ERROR: no LLMBRIDGE_SERVICE_TOKEN (looked in the environment and $TOKEN_FILE); the service was not touched"
+  exit 1
+fi
+
+# Wait for work to finish before the stop kills it. GET /restart-readiness names
+# every session with a turn in progress or background agents running and a live
+# harness process. The session that started this deploy is left out: its turn
+# ends as soon as deploy.sh returns, and deploy-gate's report wakes it after.
+# DEPLOY_IDLE_WAIT_SECONDS (default 1200) caps the wait; past it the deploy goes
+# ahead, and each session it cut off gets the bridge's restart report.
+# DEPLOY_SKIP_IDLE_WAIT="why" skips the wait, for an emergency; the log keeps why.
+IDLE_WAIT_SECONDS="${DEPLOY_IDLE_WAIT_SECONDS:-1200}"
+echo "==> Waiting for sessions to finish their work (at most ${IDLE_WAIT_SECONDS}s)..."
+if [ -n "${DEPLOY_SKIP_IDLE_WAIT:-}" ]; then
+  echo "    skipped: DEPLOY_SKIP_IDLE_WAIT=$DEPLOY_SKIP_IDLE_WAIT"
+else
+  WAIT_STARTED=$(date +%s)
+  LAST_WAITING_ON=""
+  while :; do
+    READINESS_BODY=$(mktemp)
+    READINESS_STATUS=$(curl -sS -o "$READINESS_BODY" -w '%{http_code}' \
+      -H "X-LLM-Bridge-Service-Token: $SERVICE_TOKEN" http://localhost:8160/restart-readiness 2>/dev/null) || READINESS_STATUS="unreachable"
+    if [ "$READINESS_STATUS" = "unreachable" ] || [ "$READINESS_STATUS" = "000" ]; then
+      echo "    $SERVICE is not answering, so no session is running on it; not waiting"
+      rm -f "$READINESS_BODY"; break
+    fi
+    if [ "$READINESS_STATUS" = "404" ]; then
+      echo "    the running server has no /restart-readiness (it predates the idle wait); not waiting"
+      rm -f "$READINESS_BODY"; break
+    fi
+    if [ "$READINESS_STATUS" != "200" ]; then
+      echo "ERROR: /restart-readiness answered $READINESS_STATUS: $(head -c 500 "$READINESS_BODY"); the service was not touched"
+      rm -f "$READINESS_BODY"; exit 1
+    fi
+    WAITING_ON=$(jq -r --arg own "${LLM_BRIDGE_SESSION_ID:-}" '.busy_sessions[] | select(.session_id != $own)
+      | "      \(.session_id) \(.state) \(.display_name)" + ([.background_tasks[]? | "\n        - \(.description) (\(.task_type), task \(.task_id))"] | join(""))' "$READINESS_BODY")
+    rm -f "$READINESS_BODY"
+    if [ -z "$WAITING_ON" ]; then
+      echo "    no session is mid-work after $(( $(date +%s) - WAIT_STARTED ))s"
+      break
+    fi
+    if [ "$WAITING_ON" != "$LAST_WAITING_ON" ]; then
+      echo "    waiting on, after $(( $(date +%s) - WAIT_STARTED ))s:"
+      echo "$WAITING_ON"
+      LAST_WAITING_ON="$WAITING_ON"
+    fi
+    if [ $(( $(date +%s) - WAIT_STARTED )) -ge "$IDLE_WAIT_SECONDS" ]; then
+      echo "    WARNING: still busy after ${IDLE_WAIT_SECONDS}s; restarting anyway, and the sessions above get the restart report"
+      break
+    fi
+    sleep 15
+  done
 fi
 
 echo "==> Stopping $SERVICE..."
@@ -325,20 +389,8 @@ sudo systemctl daemon-reload
 echo "==> Starting $SERVICE..."
 sudo systemctl start "$SERVICE"
 
-# Every route but /health is gated. The readiness poll therefore reads the
-# service token the unit carries — from the same host-local file, so the check
-# exercises the real credential — and proves both that a gated route answers it
-# and that a bare call is refused.
-TOKEN_FILE="${LLM_BRIDGE_TOKEN_FILE:-/home/kayushkincom/.config/principal-gating-tokens.env}"
-SERVICE_TOKEN="${LLMBRIDGE_SERVICE_TOKEN:-}"
-if [ -z "$SERVICE_TOKEN" ] && [ -r "$TOKEN_FILE" ]; then
-  SERVICE_TOKEN="$(sed -n 's/^LLMBRIDGE_SERVICE_TOKEN=//p' "$TOKEN_FILE" | head -1)"
-fi
-if [ -z "$SERVICE_TOKEN" ]; then
-  echo "ERROR: no LLMBRIDGE_SERVICE_TOKEN to verify with (looked in the environment and $TOKEN_FILE)"
-  rollback
-  exit 1
-fi
+# The readiness poll proves both that a gated route answers the service token
+# read before the stop and that a bare call is refused.
 
 echo "==> Verifying..."
 # `is-active` proves a process exists, not that the binary answers: a

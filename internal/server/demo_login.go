@@ -107,6 +107,7 @@ func (s *Server) registerLoginAndStoreProxyRoutes() {
 	s.mux.HandleFunc("POST /peer-messages/{id}/attachments/{attachment_id}/retry", s.handleRetryPeerAttachment)
 	s.mux.HandleFunc("GET /peer/messages/{message_id}/attachments/{attachment_id}", s.handleServePeerAttachment)
 	s.mux.HandleFunc("GET /server", s.handleGetServer)
+	s.mux.HandleFunc("GET /restart-readiness", s.handleRestartReadiness)
 	s.mux.HandleFunc(kanbanProxyMountPrefix+"/", s.handleKanbanStoreProxyAsPrincipal)
 	s.mux.HandleFunc(kanbanStoreProxyMountPrefix+"/", s.handleKanbanStoreRootProxyAsPrincipal)
 	s.mux.HandleFunc(grantStoreProxyMountPrefix+"/", s.handleGrantStoreProxyAsPrincipal)
