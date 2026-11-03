@@ -78,7 +78,7 @@ func ShellWithSessionEnvironment(sessionEnvironment func() []string) Impl {
 
 			var results []string
 			for i, c := range cmds {
-				// A cancelled call must not keep starting the commands behind
+				// A canceled call must not keep starting the commands behind
 				// the one it stopped. Say how many were skipped rather than
 				// returning a run that looks complete.
 				if err := ctx.Err(); err != nil {

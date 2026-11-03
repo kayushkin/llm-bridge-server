@@ -18,7 +18,7 @@ import (
 // isRelevantFile OR shouldIgnore left `go test ./...` green. Eleven functions,
 // one mechanism, executed by nothing.
 //
-// These tests characterise what the mechanism does today. Where the behaviour
+// These tests characterise what the mechanism does today. Where the behavior
 // looks wrong the test says so in a comment and pins it anyway — a
 // characterisation suite exists to make the next change visible, not to assert
 // the current answer is the right one.
@@ -472,9 +472,9 @@ func TestAMethodIsPrefixedByItsReceiverType(t *testing.T) {
 	requirePart(t, parts, "*Small.Method(json.RawMessage) *Wide")
 }
 
-// Unexported functions are summarised too — the filter this mechanism applies
+// Unexported functions are summarized too — the filter this mechanism applies
 // is on struct FIELDS, not on declarations.
-func TestUnexportedFunctionsAreSummarisedAsWell(t *testing.T) {
+func TestUnexportedFunctionsAreSummarizedAsWell(t *testing.T) {
 	parts := sampleParts(t)
 
 	requirePart(t, parts, "none()")
@@ -492,7 +492,7 @@ func TestASmallStructIsSpelledOutAndAWideOneIsCounted(t *testing.T) {
 	requirePart(t, parts, "type Empty struct{}")
 }
 
-func TestAnInterfaceIsSummarisedByItsMethodNames(t *testing.T) {
+func TestAnInterfaceIsSummarizedByItsMethodNames(t *testing.T) {
 	parts := sampleParts(t)
 
 	requirePart(t, parts, "type Reader interface{Read, Close}")

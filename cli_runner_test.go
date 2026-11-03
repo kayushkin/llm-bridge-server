@@ -158,7 +158,7 @@ func TestRunCLIInvalidInputJSON(t *testing.T) {
 }
 
 // TestRunCLITimeout exercises the per-tool timeout: a sleep that outlasts
-// TimeoutMs must be cancelled and surface an error rather than block.
+// TimeoutMs must be canceled and surface an error rather than block.
 func TestRunCLITimeout(t *testing.T) {
 	tool := &Tool{
 		Name: "slow",
@@ -180,7 +180,7 @@ func TestRunCLITimeout(t *testing.T) {
 }
 
 // TestRunCLIContextCancel covers cancellation via the caller's context (as
-// opposed to the per-tool timeout) — a cancelled context must abort the run.
+// opposed to the per-tool timeout) — a canceled context must abort the run.
 func TestRunCLIContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before running
@@ -190,7 +190,7 @@ func TestRunCLIContextCancel(t *testing.T) {
 		CLI:  &CLISpec{Command: "sleep", ArgsTemplate: []string{"5"}},
 	}
 	if _, err := runCLI(ctx, tool, `{}`); err == nil {
-		t.Fatal("expected error from cancelled context")
+		t.Fatal("expected error from canceled context")
 	}
 }
 

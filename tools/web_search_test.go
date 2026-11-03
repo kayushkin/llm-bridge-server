@@ -12,7 +12,7 @@ import (
 // web_search asked Brave for gzip and never decoded it. net/http decompresses
 // transparently ONLY when its own transport added Accept-Encoding; setting the
 // header by hand hands the caller a still-compressed body. Measured against the
-// live Brave API on 2026-08-14: Brave honours the request and gzips, so every
+// live Brave API on 2026-08-14: Brave honors the request and gzips, so every
 // search this tool ever ran returned "error parsing response: invalid character
 // '\x1f'". These tests pin the fix by driving a server that gzips only when the
 // client asks — the fix and the bug send byte-identical requests, so the defect
@@ -157,8 +157,8 @@ func TestSearchSendsTheQueryParametersAndTheAPIKey(t *testing.T) {
 	}
 }
 
-// A cancelled context must stop the call rather than be ignored.
-func TestSearchHonoursACancelledContext(t *testing.T) {
+// A canceled context must stop the call rather than be ignored.
+func TestSearchHonorsACanceledContext(t *testing.T) {
 	srv := braveServer(t, 200, braveResultsJSON, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -166,7 +166,7 @@ func TestSearchHonoursACancelledContext(t *testing.T) {
 	got := searchBrave(ctx, srv.URL, "key", "anything", 5, "US")
 
 	if !strings.Contains(got, "error") {
-		t.Errorf("cancelled context did not surface an error: %q", got)
+		t.Errorf("canceled context did not surface an error: %q", got)
 	}
 }
 
@@ -176,7 +176,7 @@ func TestSearchHonoursACancelledContext(t *testing.T) {
 // UNNOTICED against an earlier draft of this table that used the constants.
 // The numbers here are the ones web_search's InputSchema promises the caller
 // ("1-10, default 5", "default US"), so this table is what pins the schema's
-// text to the behaviour.
+// text to the behavior.
 func TestSearchParameterDefaults(t *testing.T) {
 	cases := []struct {
 		name        string

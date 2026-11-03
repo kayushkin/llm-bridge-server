@@ -231,13 +231,13 @@ func handleCreate(ctx context.Context, baseURL, token string, in schedulerInput)
 	// the defaulted value back on the input means the field table forwards it
 	// like any other, and the report names the type the job actually got
 	// rather than staying silent about a value the caller never chose.
-	normalisedInput := in
-	normalisedInput.Type = &jobType
+	normalizedInput := in
+	normalizedInput.Type = &jobType
 
 	reqBody := map[string]interface{}{}
 	var requestedFields []requestedChange
 	for _, field := range schedulerJobFields {
-		value, set := field.ReadRequested(normalisedInput)
+		value, set := field.ReadRequested(normalizedInput)
 		if !set {
 			continue
 		}
@@ -347,7 +347,7 @@ func handleGet(ctx context.Context, baseURL, token string, id int64) (string, er
 //
 // Both readers exist because a scheduler that will not apply a field does not
 // say so: it answers 200 or 201 with a row that does not hold the value. Which
-// fields PATCH honours depends on which build is serving :8092 — HEAD takes
+// fields PATCH honors depends on which build is serving :8092 — HEAD takes
 // every field, while older binaries take only enabled, description and
 // timeout_seconds and silently drop the rest. Reading the echo instead of
 // trusting the request is correct against either, so this tool never has to
@@ -400,7 +400,7 @@ var schedulerJobFields = []schedulerJobField{
 }
 
 // describeJobFields renders every field of a job that carries a value, one
-// labelled line each, in the order of the table above.
+// labeled line each, in the order of the table above.
 //
 // It is deliberately NOT gated on the job's type. The scheduler stores every
 // field on every job regardless of type, and the one type gate this tool used

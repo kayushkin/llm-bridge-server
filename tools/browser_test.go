@@ -245,11 +245,11 @@ func TestTheStatusIsRecoverableFromTheError(t *testing.T) {
 	}
 }
 
-// Cancelling a browser tool call used to cancel nothing: the request was built
+// Canceling a browser tool call used to cancel nothing: the request was built
 // with http.NewRequest, so the caller's context reached neither the dial nor the
 // wait for a response. navigate is the case under test because it is a POST —
 // the branch that also builds a request body.
-func TestCancellingABrowserCallStopsTheRequest(t *testing.T) {
+func TestCancelingABrowserCallStopsTheRequest(t *testing.T) {
 	released := make(chan struct{})
 	defer close(released)
 	connection := pinchtabServing(t, func(w http.ResponseWriter, r *http.Request) {
@@ -278,6 +278,6 @@ func TestCancellingABrowserCallStopsTheRequest(t *testing.T) {
 			t.Errorf("the call returned without reporting the cancellation: %q", output)
 		}
 	case <-time.After(cancellationDeadline):
-		t.Fatal("the browser tool ignored its cancelled context and waited on the server")
+		t.Fatal("the browser tool ignored its canceled context and waited on the server")
 	}
 }

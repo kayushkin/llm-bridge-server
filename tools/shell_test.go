@@ -52,11 +52,11 @@ func TestShellCancelStopsWhatTheCommandStarted(t *testing.T) {
 	select {
 	case <-returned:
 	case <-time.After(20 * time.Second):
-		t.Fatal("the shell tool never returned after its context was cancelled")
+		t.Fatal("the shell tool never returned after its context was canceled")
 	}
 	if processIsAlive(grandchild, 5*time.Second) {
 		_ = syscall.Kill(grandchild, syscall.SIGKILL)
-		t.Fatalf("process %d started by the command outlived the cancelled tool call", grandchild)
+		t.Fatalf("process %d started by the command outlived the canceled tool call", grandchild)
 	}
 }
 
@@ -106,7 +106,7 @@ func processIsAlive(pid int, within time.Duration) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-// Cancelling a sequence stops the sequence. Without the check the loop would
+// Canceling a sequence stops the sequence. Without the check the loop would
 // keep starting commands against a dead context and report each as a failure,
 // which reads as "we tried and they broke" rather than "we stopped".
 func TestShellDoesNotRunTheRestOfASequenceAfterCancel(t *testing.T) {
@@ -134,10 +134,10 @@ func TestShellDoesNotRunTheRestOfASequenceAfterCancel(t *testing.T) {
 	select {
 	case out = <-returned:
 	case <-time.After(20 * time.Second):
-		t.Fatal("the shell tool never returned after its context was cancelled")
+		t.Fatal("the shell tool never returned after its context was canceled")
 	}
 	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("the command after the cancelled one was run anyway")
+		t.Fatal("the command after the canceled one was run anyway")
 	}
 	if !strings.Contains(out, "1 of 2 commands not run") {
 		t.Fatalf("the result does not say what was skipped, got %q", out)

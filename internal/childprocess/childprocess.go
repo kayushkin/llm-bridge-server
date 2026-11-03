@@ -5,13 +5,13 @@
 // a tool that runs a shell command:
 //
 //   - The command is `bash -c ...`, so anything it starts is a grandchild.
-//     Killing bash leaves those grandchildren running. Measured: a cancelled
+//     Killing bash leaves those grandchildren running. Measured: a canceled
 //     `sleep 60 & sleep 60` leaves the backgrounded sleep alive.
 //
 //   - Grandchildren inherit the write end of the pipe the parent reads output
 //     from. Wait does not return until that pipe is closed, so one backgrounded
 //     process holding it blocks Wait forever — after the child is dead, and
-//     after the context is cancelled. Measured: Wait was still blocked five
+//     after the context is canceled. Measured: Wait was still blocked five
 //     seconds after cancellation with the direct child gone.
 //
 // Every command here is therefore its own process group, cancellation signals
@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-// InterruptToKillGrace is how long a cancelled process group has to exit after
+// InterruptToKillGrace is how long a canceled process group has to exit after
 // SIGINT before it is sent SIGKILL. It is short because the caller has already
 // asked for the command to stop; it is not zero because a shell running a build
 // should get the chance to leave its own children and temporary files tidy.
@@ -53,7 +53,7 @@ type Command struct {
 	ctx context.Context
 }
 
-// NewCommand builds a command that runs in its own process group. Cancelling
+// NewCommand builds a command that runs in its own process group. Canceling
 // ctx sends SIGINT to that whole group, then SIGKILL to the whole group after
 // InterruptToKillGrace.
 func NewCommand(ctx context.Context, name string, arguments ...string) *Command {
@@ -64,7 +64,7 @@ func NewCommand(ctx context.Context, name string, arguments ...string) *Command 
 	return &Command{Cmd: cmd, ctx: ctx}
 }
 
-// Run starts the command and waits for it, escalating a cancelled context to
+// Run starts the command and waits for it, escalating a canceled context to
 // SIGKILL on the whole process group.
 func (c *Command) Run() error {
 	if err := c.Cmd.Start(); err != nil {
@@ -102,7 +102,7 @@ func (c *Command) wait() error {
 }
 
 // killProcessGroupAfterGrace sends SIGKILL to the process group if the context
-// is cancelled and the group is still running InterruptToKillGrace later.
+// is canceled and the group is still running InterruptToKillGrace later.
 //
 // The escalation deliberately outlives the direct child. A shell exits on
 // SIGINT while the jobs it backgrounded do not — a non-interactive bash sets
@@ -112,7 +112,7 @@ func (c *Command) wait() error {
 // close.
 //
 // The returned function blocks until the escalation has been delivered or is no
-// longer needed. Call it after Wait, so a cancelled command has nothing of its
+// longer needed. Call it after Wait, so a canceled command has nothing of its
 // own left running by the time Run returns.
 func (c *Command) killProcessGroupAfterGrace() (awaitEscalation func()) {
 	commandReturned := make(chan struct{})
@@ -124,7 +124,7 @@ func (c *Command) killProcessGroupAfterGrace() (awaitEscalation func()) {
 		select {
 		case <-c.ctx.Done():
 		case <-commandReturned:
-			// Never cancelled: the group stopped on its own terms.
+			// Never canceled: the group stopped on its own terms.
 			return
 		}
 

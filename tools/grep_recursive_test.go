@@ -67,7 +67,7 @@ func TestRecursiveFalseDoesNotDescendIntoSubdirectories(t *testing.T) {
 		t.Errorf("recursive=false dropped the file directly inside the search path; want top.txt in:\n%s", out)
 	}
 	if strings.Contains(out, "nested.txt") {
-		t.Errorf("recursive=false still searched a subdirectory — the field is advertised and not honoured; got:\n%s", out)
+		t.Errorf("recursive=false still searched a subdirectory — the field is advertised and not honored; got:\n%s", out)
 	}
 }
 

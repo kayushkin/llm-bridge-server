@@ -283,7 +283,7 @@ func renderPlanMD(plan *TaskPlan) string {
 type BuildResult struct {
 	Success bool
 	Output  string
-	// Stopped reports that the build was cancelled rather than finished. A
+	// Stopped reports that the build was canceled rather than finished. A
 	// stopped build has decided nothing about the code, so callers must not
 	// read it as a failure: doing so writes a "Fix build error" task
 	// describing a build that never ran to completion.
@@ -323,7 +323,7 @@ func SavePlanMD(repoRoot string, plan *TaskPlan) error {
 	return savePlan(repoRoot, plan)
 }
 
-// RunBuildCheck runs the build command and returns the result. Cancelling ctx
+// RunBuildCheck runs the build command and returns the result. Canceling ctx
 // stops the build and everything it started, and is reported as
 // BuildResult.Stopped rather than as a build failure.
 func RunBuildCheck(ctx context.Context, repoRoot string) buildResult {

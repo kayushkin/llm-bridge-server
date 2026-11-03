@@ -16,7 +16,7 @@ import (
 //
 // The distinction is load-bearing one level up. "This is not a git
 // repository" is the case the mtime walk exists to serve, and "the caller
-// cancelled" is the case it must not serve — falling back there would start
+// canceled" is the case it must not serve — falling back there would start
 // the expensive scan that the cancellation was asking to avoid.
 func TestTheGitStrategyReportsADirectoryWithNoRepositoryAsAMissingFile(t *testing.T) {
 	_, err := findRecentlyModifiedGit(context.Background(), t.TempDir(), time.Hour)

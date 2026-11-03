@@ -79,7 +79,7 @@ func TestWriteFiles_NullContentLeavesTheFileIntact(t *testing.T) {
 
 // The batch arm is the worst case on the card: one good write and one destroyed
 // file inside a single success message that reads entirely normal.
-func TestWriteFiles_BatchEntryWithoutContentDoesNotDestroyItsNeighbour(t *testing.T) {
+func TestWriteFiles_BatchEntryWithoutContentDoesNotDestroyItsNeighbor(t *testing.T) {
 	dir := t.TempDir()
 	good := filepath.Join(dir, "good.txt")
 	victim := writeVictim(t, dir, "victim.txt")

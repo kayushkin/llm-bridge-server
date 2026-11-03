@@ -22,8 +22,8 @@ import (
 // and findRecentlyModifiedMtime — are the exception, and the distinction is the
 // point. cancellation_test.go calls findRecentlyModified, so a panic() there
 // reddens the suite and the reach guard reads it as covered. Nothing asserts
-// which files it returns: that test pins that a cancelled call stops, not that
-// an uncancelled one is right. A reach guard answers "somebody calls this",
+// which files it returns: that test pins that a canceled call stops, not that
+// an uncanceled one is right. A reach guard answers "somebody calls this",
 // which is weaker than "somebody checks this", so the finders are characterised
 // here alongside the two rows the census could see.
 
@@ -111,7 +111,7 @@ func TestOutsideAGitRepoTheWindowIsMeasuredFromModificationTime(t *testing.T) {
 	// which is right for every row at the moment the walk runs and wrong the
 	// moment anything caches the answer.
 	if !strings.Contains(out, "**fresh.go** (2 lines, 10m ago)") {
-		t.Errorf("want the row labelled with the file's own age, got:\n%s", out)
+		t.Errorf("want the row labeled with the file's own age, got:\n%s", out)
 	}
 }
 
@@ -138,7 +138,7 @@ func TestInsideAGitRepoTheWindowIsMeasuredFromCommitsRatherThanEdits(t *testing.
 
 // When git answers with nothing the tool does not report "nothing" — an empty
 // git result is indistinguishable from git being unavailable, so it falls
-// through to the walk. That is what makes the previous test's behaviour
+// through to the walk. That is what makes the previous test's behavior
 // conditional on there being any commit in the window at all.
 func TestAGitRepoWithNoCommitsInTheWindowFallsBackToModificationTime(t *testing.T) {
 	root := t.TempDir()
@@ -433,7 +433,7 @@ func TestTheAgeIsBucketedIntoFourSpellings(t *testing.T) {
 
 // ⚠️ The age is computed from the file's mtime whatever finder produced the
 // row, so inside a git repo a file listed because of a recent commit is
-// labelled with the age of the file on disk. The two can be days apart, and
+// labeled with the age of the file on disk. The two can be days apart, and
 // the label is the only timestamp the caller sees.
 func TestTheAgeShownIsAlwaysTheModificationTimeEvenOnAGitSourcedRow(t *testing.T) {
 	root := t.TempDir()
@@ -444,7 +444,7 @@ func TestTheAgeShownIsAlwaysTheModificationTimeEvenOnAGitSourcedRow(t *testing.T
 	out := runRecentFiles(t, root, map[string]any{"since": "24h"})
 
 	if !strings.Contains(out, "**committed.go** (2 lines, 3d ago)") {
-		t.Errorf("want the row labelled with its mtime age, got:\n%s", out)
+		t.Errorf("want the row labeled with its mtime age, got:\n%s", out)
 	}
 }
 

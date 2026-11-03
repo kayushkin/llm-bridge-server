@@ -77,9 +77,9 @@ func findRecentlyModified(ctx context.Context, rootDir string, since time.Durati
 	}
 
 	// The mtime scan is the fallback for "git could not answer", not for "the
-	// caller stopped asking". Without this check a cancelled git log fails, and
+	// caller stopped asking". Without this check a canceled git log fails, and
 	// failing is precisely what sends the caller into a full tree walk — so
-	// cancelling the cheap half would start the expensive one.
+	// canceling the cheap half would start the expensive one.
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
 	}

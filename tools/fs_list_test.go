@@ -70,7 +70,7 @@ func TestListFilesDescriptionDoesNotPromiseIgnoreFiltering(t *testing.T) {
 	}
 }
 
-// The description and the behaviour are one claim, so they are pinned together.
+// The description and the behavior are one claim, so they are pinned together.
 // If someone later teaches the walk to read .gitignore, this test fails and
 // makes them go and correct the sentence in the same change.
 func TestRecursiveListingWalksIgnoredDirectoriesAsItsDescriptionSays(t *testing.T) {
@@ -80,7 +80,7 @@ func TestRecursiveListingWalksIgnoredDirectoriesAsItsDescriptionSays(t *testing.
 	// .gitignore names all three of these; the walk lists them anyway.
 	for _, ignored := range []string{"node_modules/", "build/out.bin", "debug.log"} {
 		if !strings.Contains(out, ignored) {
-			t.Errorf("%q is absent from the recursive listing — the walk now honours an ignore file, so the tool description must stop saying it does not:\n%s", ignored, out)
+			t.Errorf("%q is absent from the recursive listing — the walk now honors an ignore file, so the tool description must stop saying it does not:\n%s", ignored, out)
 		}
 	}
 	// The one exclusion it really does have.

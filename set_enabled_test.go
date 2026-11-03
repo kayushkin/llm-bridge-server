@@ -52,7 +52,7 @@ func TestSetEnabledTrueRestoresATool(t *testing.T) {
 // It matters because the not-found signal is derived from RowsAffected. SQLite
 // counts rows the UPDATE matched, not rows whose values changed, so a no-op
 // write still reports one row and the call returns nil. Narrow that WHERE
-// clause — add `AND enabled != ?` as an optimisation, say — and every
+// clause — add `AND enabled != ?` as an optimization, say — and every
 // already-enabled tool starts answering ErrNotFound, which server.go turns
 // into a 404 for a tool that plainly exists.
 func TestSetEnabledIsIdempotentInBothDirections(t *testing.T) {

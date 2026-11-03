@@ -31,7 +31,7 @@ func TestRunReturnsOutputAndStatusOfAnOrdinaryCommand(t *testing.T) {
 	}
 }
 
-// Cancelling must reach past the shell to what the shell started. Without
+// Canceling must reach past the shell to what the shell started. Without
 // useOwnProcessGroup the grandchild is in this process's group, the cancel hits
 // the direct child alone, and the grandchild runs to its own completion.
 func TestCancelStopsAGrandchildOfTheCommand(t *testing.T) {
@@ -111,7 +111,7 @@ func TestWaitReturnsWhenABackgroundProcessHoldsTheOutputPipe(t *testing.T) {
 		t.Fatal("CombinedOutput never returned; a background process held the pipe open")
 	}
 	// The backgrounded sleep is this test's subject and is still running: the
-	// command was never cancelled, so nothing else will stop it.
+	// command was never canceled, so nothing else will stop it.
 	defer killProcessGroup(command.Process)
 	if !errors.Is(err, exec.ErrWaitDelay) {
 		t.Fatalf("want exec.ErrWaitDelay, got %v", err)
@@ -236,9 +236,9 @@ func TestRunTellsACommandThatNeverLaunchedFromOneThatRanAndFailed(t *testing.T) 
 	}
 }
 
-// A context already cancelled when Run is called stops the command before it
+// A context already canceled when Run is called stops the command before it
 // is started, so the failure comes out of Start rather than out of Wait. It
-// still has to say that it was cancelled: findRecentlyModified reads exactly
+// still has to say that it was canceled: findRecentlyModified reads exactly
 // this distinction to decide whether "git could not answer" should fall back
 // to a full tree walk, and a cancellation reported as an ordinary failure
 // would start the expensive walk the caller just asked to stop.

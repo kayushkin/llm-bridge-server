@@ -69,7 +69,7 @@ passes GUARD_MARKERS, scheduler's sabotage-reminder-coordinator.py passes
 UNREDDENED. A union that kept either in slot 4 would silently bind the other
 caller's argument to the wrong parameter, and the direction that fails is the
 quiet one — guard_markers landing in unreddened leaves guard_markers empty, so
-classify_caught can no longer recognise a guard and every guard-caught row
+classify_caught can no longer recognize a guard and every guard-caught row
 reads as coverage. That is precisely the inflation the 42nd's split exists to
 stop, reintroduced by an argument list. Both are keyword-only here, so a
 positional caller raises TypeError at the call instead.
@@ -138,7 +138,7 @@ def classify_caught(output, guard_markers):
     `go test` exits non-zero for both, and its exit code was all this engine
     read until now — so a mutation that trips a reach guard (the 33rd's
     `t.Fatalf` for "the input no longer reaches the code under test") scored a
-    flat CAUGHT with no assertion having looked at the behaviour at all.
+    flat CAUGHT with no assertion having looked at the behavior at all.
     Measured in multichat by the 42nd: a row reading CAUGHT while nothing
     checked the mechanism it named, and that catch would disappear the moment
     the fixture was resized, with the table still reading CAUGHT.
@@ -596,7 +596,7 @@ def problems(results):
             found.append("the known-positive control was NOT caught — the suite is not running")
         if case.name.startswith("CONTROL known-negative") and verdict.startswith("CAUGHT"):
             found.append("the known-negative control WAS caught — the suite is red for a "
-                         "reason unrelated to behaviour, so every CAUGHT above is suspect")
+                         "reason unrelated to behavior, so every CAUGHT above is suspect")
         if verdict == "compile error" and not case.expected_unnoticed:
             found.append("compile error, not a score: %s" % case.name)
         if verdict == "UNNOTICED" and not case.expected_unnoticed:
@@ -644,7 +644,7 @@ def run_cases(targets, packages, cases, guard_markers=()):
     file the engine happened to look at first.
 
     Pass --diffs to print the edit each case actually applied. A row prints the
-    name you gave it, not the edit you made, and mislabelled cases have twice
+    name you gave it, not the edit you made, and mislabeled cases have twice
     been read as coverage holes that were not there — so read the diffs at
     least once per case family.
 
@@ -816,7 +816,7 @@ def self_test():
          "\t/usr/lib/go/src/runtime/panic.go:860 +0x13a\n"
          "\t%s/internal/matrix/truncate.go:31\n" % REPO, "CAUGHT (panic in truncate.go)"),
         # An assertion fired AND production code crashed. The assertion wins:
-        # it names the behaviour, and both mean the mechanism is pinned.
+        # it names the behavior, and both mean the mechanism is pinned.
         ("--- FAIL: TestX\n    truncate_test.go:75: preview overruns its budget: 101\n"
          "panic: slice bounds out of range\n"
          "\t%s/internal/matrix/truncate.go:31\n" % REPO, "CAUGHT"),
@@ -857,7 +857,7 @@ def self_test():
         print("SELF-TEST FAIL: an expired expected_unnoticed declaration was not flagged")
         ok = False
     if problems(row(Case("CONTROL known-negative: a comment moves",
-                         expected_unnoticed="behaviour is unchanged"), "UNNOTICED")):
+                         expected_unnoticed="behavior is unchanged"), "UNNOTICED")):
         print("SELF-TEST FAIL: a well-behaved known-negative control was flagged")
         ok = False
 
@@ -867,7 +867,7 @@ def self_test():
     # number nobody can use.
     #
     # ⚠️ The declaration is what makes this a probe of that rule and not of its
-    # neighbour. Without `expected_guard_caught` the guard-caught rule flags the
+    # neighbor. Without `expected_guard_caught` the guard-caught rule flags the
     # same row, so the probe passes whether or not the known-positive rule reads
     # counts_as_coverage — measured while writing it: the obvious undeclared
     # version stayed green under a mutation that put `verdict == "CAUGHT"` back.

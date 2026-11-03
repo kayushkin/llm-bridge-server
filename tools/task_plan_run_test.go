@@ -94,7 +94,7 @@ func TestRunTaskPlanStartMarksOnlyTheNamedIndex(t *testing.T) {
 	}
 }
 
-// Completing a task removes it, which is the behaviour that keeps the plan
+// Completing a task removes it, which is the behavior that keeps the plan
 // short. A second task is left outstanding so the auto-build does not fire.
 func TestRunTaskPlanCompleteRemovesThatTaskAndKeepsTheRest(t *testing.T) {
 	root := t.TempDir()

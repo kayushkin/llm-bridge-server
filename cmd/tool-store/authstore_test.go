@@ -12,7 +12,7 @@ import (
 
 // The fixture below is derived from auth-store, not from this client.
 //
-// Every behaviour it encodes was read out of ~/repos/auth-store and then
+// Every behavior it encodes was read out of ~/repos/auth-store and then
 // confirmed against the service running on 127.0.0.1:8303 on 2026-08-29:
 //
 //   - the route is GET /api/resolve/{provider}

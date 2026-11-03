@@ -110,7 +110,7 @@ func TestWebFetchReturnsAsManyCharactersAsWereAsked(t *testing.T) {
 
 // TestWebFetchDefaultsToTheCharacterCountItAdvertises pins the number in the
 // schema description ("default 50000") rather than the constant in the code, so
-// that editing the constant moves the behaviour away from the documented
+// that editing the constant moves the behavior away from the documented
 // contract instead of moving the two together.
 func TestWebFetchDefaultsToTheCharacterCountItAdvertises(t *testing.T) {
 	const documentedDefault = 50000

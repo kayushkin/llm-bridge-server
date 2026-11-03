@@ -41,7 +41,7 @@ func TestCreateForwardsTheDescriptionTimeoutAndWorkspaceTheCallerNamed(t *testin
 		Schedule:    stringPointer("0 8 * * *"),
 		Type:        stringPointer("agent"),
 		Agent:       stringPointer("claude-code"),
-		Prompt:      stringPointer("summarise yesterday"),
+		Prompt:      stringPointer("summarize yesterday"),
 		Description: stringPointer("what it does"),
 		TimeoutSecs: intPointer(1800),
 		WorkspaceID: stringPointer("ws-42"),
@@ -88,7 +88,7 @@ func TestCreateNamesTheWorkspaceTheServerDidNotStore(t *testing.T) {
 		Schedule:    stringPointer("0 8 * * *"),
 		Type:        stringPointer("agent"),
 		Agent:       stringPointer("claude-code"),
-		Prompt:      stringPointer("summarise yesterday"),
+		Prompt:      stringPointer("summarize yesterday"),
 		WorkspaceID: stringPointer("ws-42"),
 	})
 	if err != nil {
@@ -273,7 +273,7 @@ func TestCreateSendsTheModelRoleUnderTheKeyTheSchedulerDecodes(t *testing.T) {
 		Schedule:  stringPointer("0 8 * * *"),
 		Type:      stringPointer("agent"),
 		Agent:     stringPointer("claude-code"),
-		Prompt:    stringPointer("summarise yesterday"),
+		Prompt:    stringPointer("summarize yesterday"),
 		ModelRole: stringPointer("balanced"),
 	})
 	if err != nil {

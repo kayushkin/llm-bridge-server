@@ -76,7 +76,7 @@ func (e *pinchtabStatusError) Error() string {
 // browser with no tabs open looks like.
 //
 // It also used http.NewRequest, so no caller's context reached the request and
-// cancelling a browser tool call cancelled nothing.
+// canceling a browser tool call canceled nothing.
 func (connection PinchtabConnection) requestExpectingSuccess(ctx context.Context, method, path string, body any) ([]byte, error) {
 	base := connection.baseURL()
 	var bodyReader io.Reader

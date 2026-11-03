@@ -7,9 +7,9 @@ import (
 	"os/exec"
 )
 
-// These platforms have no process group to signal, so a cancelled command
+// These platforms have no process group to signal, so a canceled command
 // reaches the direct child only and grandchildren are left running — the
-// behaviour every platform had before this package existed. WaitDelayAfterExit
+// behavior every platform had before this package existed. WaitDelayAfterExit
 // still applies, so a grandchild holding an output pipe cannot wedge Wait.
 
 func useOwnProcessGroup(cmd *exec.Cmd) {}

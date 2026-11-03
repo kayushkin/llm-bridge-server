@@ -55,8 +55,8 @@ two of them.
 ⚠️ **The three finders are the instructive exception and they are NOT in that
 list.** `findRecentlyModified`, `findRecentlyModifiedGit` and
 `findRecentlyModifiedMtime` all redden the suite under a `panic()`, because
-`cancellation_test.go` calls the first one — and that test asserts a cancelled
-call stops, never which files an uncancelled one returns. The reach guard reads
+`cancellation_test.go` calls the first one — and that test asserts a canceled
+call stops, never which files an uncanceled one returns. The reach guard reads
 them as covered while nothing checks what they answer. Cases below sabotage all
 three, and before this branch every one of them scored UNNOTICED.
 
@@ -249,7 +249,7 @@ CASES = [
         [("\tif decl.Type.Results != nil && len(decl.Type.Results.List) > 0 {", "\tif false {")],
     ),
     Case(
-        "the struct-detail threshold drops, so a small struct is summarised as a count",
+        "the struct-detail threshold drops, so a small struct is summarized as a count",
         [("\t\tif len(exported) > 0 && len(exported) <= 3 {",
           "\t\tif len(exported) > 0 && len(exported) <= 1 {")],
     ),
@@ -262,7 +262,7 @@ CASES = [
           '\t\treturn fmt.Sprintf("type %s struct{%d fields}", typeName, len(exported))')],
     ),
     Case(
-        "the exported test is inverted, so a struct is summarised by its private fields",
+        "the exported test is inverted, so a struct is summarized by its private fields",
         [("\t\t\t\t\tif isExported(name.Name) {", "\t\t\t\t\tif !isExported(name.Name) {")],
     ),
     Case(
@@ -283,7 +283,7 @@ CASES = [
         expected_unnoticed="isExported is only ever called with a parsed identifier, which is never empty, so the guard is unreachable and its two answers are indistinguishable",
     ),
     Case(
-        "the interface-detail threshold drops, so a two-method interface is summarised as a count",
+        "the interface-detail threshold drops, so a two-method interface is summarized as a count",
         [("\t\tif len(methods) <= 5 {", "\t\tif len(methods) <= 1 {")],
     ),
     Case(
@@ -328,7 +328,7 @@ CASES = [
         [('\tcase *ast.StructType:\n\t\treturn "struct"', '\tcase *ast.StructType:\n\t\treturn "?"')],
     ),
     Case(
-        "an unrecognised type is spelled as nothing, so the parameter disappears rather than being marked unknown",
+        "an unrecognized type is spelled as nothing, so the parameter disappears rather than being marked unknown",
         [('\tdefault:\n\t\treturn "?"\n\t}\n}\n\nfunc isExported', '\tdefault:\n\t\treturn ""\n\t}\n}\n\nfunc isExported')],
     ),
     Case(
@@ -475,7 +475,7 @@ CASES = [
     # is never rendered. Nothing downstream reads it, so nothing can see it
     # change — the field is a comment with a type.
     Case(
-        "CONTROL known-negative: a git-sourced row is labelled as having come from the mtime walk",
+        "CONTROL known-negative: a git-sourced row is labeled as having come from the mtime walk",
         [('\t\t\tSource:       "git",', '\t\t\tSource:       "mtime",')],
         expected_unnoticed="Source is set by both finders and read by nothing — formatRecentFiles never renders it",
     ),

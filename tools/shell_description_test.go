@@ -9,7 +9,7 @@ import (
 //
 // Shell applies no timeout of its own and has no background mode, so nothing in
 // this package can stop a command that decides to wait. The single lever on that
-// behaviour is the sentence the model reads on every turn, which is why these
+// behavior is the sentence the model reads on every turn, which is why these
 // tests pin it: an editor trimming the description for tokens would otherwise
 // remove a guard rail and leave a green suite behind.
 //

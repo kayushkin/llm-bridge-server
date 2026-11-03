@@ -19,12 +19,12 @@ import (
 // with both fields unchanged in the echoed row and on re-read. The tool used to
 // print "updated: schedule, command" for exactly that exchange.
 //
-// Which fields a real scheduler honours depends on which build is serving the
+// Which fields a real scheduler honors depends on which build is serving the
 // port — HEAD takes all thirteen, older binaries take only the three below — so
 // these tests drive both shapes rather than picking one and calling it the
 // truth. Nothing here needs to know which binary is deployed, which is the
 // point of reading the echo instead of the request.
-var fieldsTheOlderSchedulerHonours = []string{"enabled", "description", "timeout_seconds"}
+var fieldsTheOlderSchedulerHonors = []string{"enabled", "description", "timeout_seconds"}
 
 // recordedRequest is what the fake saw. The verb is recorded and not only the
 // body because a case list made entirely of one verb cannot see a handler that
@@ -39,7 +39,7 @@ type recordedRequest struct {
 // fakeScheduler serves the scheduler's two write verbs and its two read routes
 // over a job it holds — POST /api/jobs, PATCH /api/jobs/{id}, GET /api/jobs and
 // GET /api/jobs/{id}. On the write verbs it applies only the fields it was told
-// to honour and silently keeps its own value for the rest. That is what
+// to honor and silently keeps its own value for the rest. That is what
 // schedulers built before 863868a did; since then PATCH takes all thirteen
 // fields and answers an unknown one with a 400.
 //
@@ -48,12 +48,12 @@ type recordedRequest struct {
 // have their own omissions — extending this fake was cheaper and truer than a
 // second one, which would have been free to disagree with this about the shape
 // of a job.
-func fakeScheduler(t *testing.T, job Job, honoured []string, alsoListed ...Job) (baseURL string, lastRequest func() recordedRequest) {
+func fakeScheduler(t *testing.T, job Job, honored []string, alsoListed ...Job) (baseURL string, lastRequest func() recordedRequest) {
 	t.Helper()
 
-	honours := map[string]bool{}
-	for _, name := range honoured {
-		honours[name] = true
+	honors := map[string]bool{}
+	for _, name := range honored {
+		honors[name] = true
 	}
 
 	var seen recordedRequest
@@ -87,7 +87,7 @@ func fakeScheduler(t *testing.T, job Job, honoured []string, alsoListed ...Job) 
 		}
 
 		for name, value := range seen.Body {
-			if !honours[name] {
+			if !honors[name] {
 				continue
 			}
 			switch name {
@@ -118,7 +118,7 @@ func fakeScheduler(t *testing.T, job Job, honoured []string, alsoListed ...Job) 
 			case "enabled":
 				job.Enabled = value.(bool)
 			default:
-				t.Errorf("fake scheduler was told to honour %q but does not know how", name)
+				t.Errorf("fake scheduler was told to honor %q but does not know how", name)
 			}
 		}
 
@@ -186,7 +186,7 @@ func TestUpdateReportsEveryFieldAppliedWhenTheServerAppliesThemAll(t *testing.T)
 // The defect this card was filed for. Against the deployed scheduler these two
 // fields are dropped, and the tool announced them as updated.
 func TestUpdateDoesNotReportAFieldTheServerSilentlyDropped(t *testing.T) {
-	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonours)
+	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonors)
 
 	report, err := handleUpdate(context.Background(), baseURL, "", 50, schedulerInput{
 		Schedule: stringPointer("0 6 * * *"),
@@ -213,7 +213,7 @@ func TestUpdateDoesNotReportAFieldTheServerSilentlyDropped(t *testing.T) {
 // once: enabled lands, schedule does not, and saying either about the other is
 // a lie.
 func TestUpdateSeparatesTheAppliedFieldsFromTheDroppedOnes(t *testing.T) {
-	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonours)
+	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonors)
 
 	report, err := handleUpdate(context.Background(), baseURL, "", 50, schedulerInput{
 		Enabled:  boolPointer(false),
@@ -248,11 +248,11 @@ func TestUpdateSeparatesTheAppliedFieldsFromTheDroppedOnes(t *testing.T) {
 // place. This is the half b21b4bb fixed, and it stays pinned so a later change
 // cannot go back to sending nothing and reporting the echo as agreement.
 func TestUpdateForwardsEveryFieldTheCallerNamed(t *testing.T) {
-	baseURL, lastRequest := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonours)
+	baseURL, lastRequest := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonors)
 
 	if _, err := handleUpdate(context.Background(), baseURL, "", 50, schedulerInput{
 		Schedule: stringPointer("0 6 * * *"),
-		Prompt:   stringPointer("summarise yesterday"),
+		Prompt:   stringPointer("summarize yesterday"),
 	}); err != nil {
 		t.Fatalf("handleUpdate returned an error: %s", err)
 	}
@@ -261,7 +261,7 @@ func TestUpdateForwardsEveryFieldTheCallerNamed(t *testing.T) {
 		t.Errorf("update sent %s, want PATCH", method)
 	}
 	sent := lastRequest().Body
-	for field, want := range map[string]string{"schedule": "0 6 * * *", "prompt": "summarise yesterday"} {
+	for field, want := range map[string]string{"schedule": "0 6 * * *", "prompt": "summarize yesterday"} {
 		if got, present := sent[field]; !present {
 			t.Errorf("the request never carried %q", field)
 		} else if got != want {
@@ -280,7 +280,7 @@ func TestUpdateForwardsEveryFieldTheCallerNamed(t *testing.T) {
 // field reports itself as dropped forever and no string case can see it.
 func TestUpdateComparesANumericFieldByValueAndNotByItsJSONType(t *testing.T) {
 	timeout := 1800
-	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonours)
+	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonors)
 
 	report, err := handleUpdate(context.Background(), baseURL, "", 50, schedulerInput{
 		TimeoutSecs: &timeout,
@@ -298,7 +298,7 @@ func TestUpdateComparesANumericFieldByValueAndNotByItsJSONType(t *testing.T) {
 // holds is a no-op the server applies by definition, and reporting it as
 // refused would make every idempotent update look broken.
 func TestUpdateCountsAFieldSetToItsCurrentValueAsApplied(t *testing.T) {
-	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonours)
+	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonors)
 
 	report, err := handleUpdate(context.Background(), baseURL, "", 50, schedulerInput{
 		Schedule: stringPointer("0 0 31 2 *"),

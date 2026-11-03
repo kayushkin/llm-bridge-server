@@ -97,7 +97,7 @@ func searchBrave(ctx context.Context, baseURL, apiKey, query string, count int, 
 	// request that sets it by hand is taken to mean the caller will do the
 	// decoding, so the body arrives still compressed and every read below
 	// sees the gzip magic number instead of JSON. This tool asked Brave for
-	// gzip and then never decoded it, and Brave does honour the request —
+	// gzip and then never decoded it, and Brave does honor the request —
 	// measured against the live API 2026-08-14, which means every search this
 	// tool ran came back "error parsing response". Leave the header alone and
 	// the transport negotiates and decodes it for us.

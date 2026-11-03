@@ -17,11 +17,11 @@ import (
 // expensive one: it is a `go build ./...` fired by the task plan when the last
 // task is checked off, and before this it ran to completion whatever the caller
 // wanted. Measured on the old code: still blocked eight seconds after the
-// caller cancelled, on a command that runs for thirty.
+// caller canceled, on a command that runs for thirty.
 
 // cancellationDeadline bounds every test here. It is well above the time a
-// cancelled command needs (SIGINT, then SIGKILL after the two-second grace) and
-// well below the runtime of the commands being cancelled, so a test that hits
+// canceled command needs (SIGINT, then SIGKILL after the two-second grace) and
+// well below the runtime of the commands being canceled, so a test that hits
 // it has found a command that ignored its context rather than a slow machine.
 const cancellationDeadline = 10 * time.Second
 
@@ -32,7 +32,7 @@ func TestRunBuildStopsWhenTheCallerCancels(t *testing.T) {
 	finished := make(chan BuildResult, 1)
 	go func() { finished <- runBuild(ctx, t.TempDir()) }()
 
-	// Let the shell actually start before cancelling, so this exercises
+	// Let the shell actually start before canceling, so this exercises
 	// stopping a running command rather than refusing to start one.
 	time.Sleep(300 * time.Millisecond)
 	cancel()
@@ -40,10 +40,10 @@ func TestRunBuildStopsWhenTheCallerCancels(t *testing.T) {
 	select {
 	case result := <-finished:
 		if !result.Stopped {
-			t.Errorf("a cancelled build reported Stopped=false: %+v", result)
+			t.Errorf("a canceled build reported Stopped=false: %+v", result)
 		}
 	case <-time.After(cancellationDeadline):
-		t.Fatal("runBuild ignored its cancelled context")
+		t.Fatal("runBuild ignored its canceled context")
 	}
 	restore()
 }
@@ -51,7 +51,7 @@ func TestRunBuildStopsWhenTheCallerCancels(t *testing.T) {
 // A build that is stopped has decided nothing about the code. Reporting it as a
 // failure is what makes the caller write a "Fix build error" task describing a
 // build that never ran, so the two outcomes have to stay distinguishable.
-func TestCancelledBuildIsNotReportedAsAFailedBuild(t *testing.T) {
+func TestCanceledBuildIsNotReportedAsAFailedBuild(t *testing.T) {
 	restore := useBuildCommand(t, "sleep 60")
 	defer restore()
 
@@ -60,10 +60,10 @@ func TestCancelledBuildIsNotReportedAsAFailedBuild(t *testing.T) {
 
 	result := runBuild(ctx, t.TempDir())
 	if result.Success {
-		t.Errorf("a cancelled build reported success: %+v", result)
+		t.Errorf("a canceled build reported success: %+v", result)
 	}
 	if !result.Stopped {
-		t.Errorf("a cancelled build is indistinguishable from a failing build: %+v", result)
+		t.Errorf("a canceled build is indistinguishable from a failing build: %+v", result)
 	}
 	if !strings.Contains(result.Output, "stopped") {
 		t.Errorf("output does not say the build was stopped: %q", result.Output)
@@ -102,7 +102,7 @@ func TestSucceedingBuildIsStillASuccess(t *testing.T) {
 // writes X immediately, because SIGINT ends the sleep and the shell moves on to
 // the next command in the list rather than stopping. Measured — the marker
 // appeared 200ms after the interrupt, not three seconds later.
-func TestCancelledBuildLeavesNothingRunning(t *testing.T) {
+func TestCanceledBuildLeavesNothingRunning(t *testing.T) {
 	workingDirectory := t.TempDir()
 	pidFile := filepath.Join(workingDirectory, "backgrounded.pid")
 	// A backgrounded simple command is the shape that genuinely outlives the
@@ -118,7 +118,7 @@ func TestCancelledBuildLeavesNothingRunning(t *testing.T) {
 	backgrounded := readPidWhenWritten(t, pidFile)
 	if processIsAlive(backgrounded, 5*time.Second) {
 		_ = syscall.Kill(backgrounded, syscall.SIGKILL) // do not leak it out of the test
-		t.Errorf("a process started by the cancelled build (pid %d) was still running when runBuild returned", backgrounded)
+		t.Errorf("a process started by the canceled build (pid %d) was still running when runBuild returned", backgrounded)
 	}
 }
 
@@ -126,7 +126,7 @@ func TestRecentFilesGitStopsWhenTheCallerCancels(t *testing.T) {
 	repository := initRepository(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already cancelled: the command must not run to completion
+	cancel() // already canceled: the command must not run to completion
 
 	// Asserting only that an error came back would leave the cancellation
 	// indistinguishable from "this is not a git repository", and those two go
@@ -134,18 +134,18 @@ func TestRecentFilesGitStopsWhenTheCallerCancels(t *testing.T) {
 	// full mtime walk and must not serve the first with anything.
 	_, err := findRecentlyModifiedGit(ctx, repository, time.Hour)
 	if err == nil {
-		t.Fatal("git log ran to completion against a cancelled context")
+		t.Fatal("git log ran to completion against a canceled context")
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("want the cancellation reported as context.Canceled, got %v", err)
 	}
 }
 
-// The mtime scan is the fallback for "git could not answer". A cancelled git
+// The mtime scan is the fallback for "git could not answer". A canceled git
 // log also fails, and failing is exactly what used to send the caller into a
-// full tree walk — so cancelling the cheap half would have started the
+// full tree walk — so canceling the cheap half would have started the
 // expensive one.
-func TestCancellingDoesNotFallBackToTheFilesystemWalk(t *testing.T) {
+func TestCancelingDoesNotFallBackToTheFilesystemWalk(t *testing.T) {
 	repository := initRepository(t)
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -193,7 +193,7 @@ func TestShellLineBudgetsArePinnedToTheirExactValues(t *testing.T) {
 // past this package.
 func TestWholeFileByteCapIsPinnedToItsExactValue(t *testing.T) {
 	// ⚠️ Spelled out, NOT `= maxWholeFileReadBytes`. Writing it in terms of the
-	// constant is what the neighbouring rune test does, and it is why the cap
+	// constant is what the neighboring rune test does, and it is why the cap
 	// was unpinned in the first place: the fixture moves with the value, so the
 	// two agree at every value and the test can never fail for a wrong one.
 	// This literal has to be updated by hand when the cap changes on purpose,
@@ -274,7 +274,7 @@ func TestRecursiveWalkEntryCapIsPinnedToItsExactValue(t *testing.T) {
 
 	// A walk that stopped cannot know the size of the tree, so it must not
 	// print a total. This is the half that makes the count above load-bearing
-	// rather than decorative: a figure labelled "Total" is read as the size of
+	// rather than decorative: a figure labeled "Total" is read as the size of
 	// the directory, and at the cap it is the size of the walk.
 	if strings.Contains(over, "Total:") {
 		t.Errorf("a listing that stopped at its cap still reports a total, which it cannot know:\n%s",
@@ -482,7 +482,7 @@ func TestWebFetchDefaultCharacterBudgetIsPinnedToItsExactValue(t *testing.T) {
 
 // The unset-budget guard is `maxChars <= 0`. A request for exactly one
 // character is the adjacent value it must NOT swallow.
-func TestWebFetchHonoursACharacterBudgetOfOne(t *testing.T) {
+func TestWebFetchHonorsACharacterBudgetOfOne(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprint(w, strings.Repeat("a", 100))

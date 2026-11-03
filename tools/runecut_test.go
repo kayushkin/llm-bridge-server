@@ -185,7 +185,7 @@ func TestBuildErrorTaskDoesNotSplitARune(t *testing.T) {
 
 // runBuild cuts at its own budget, and it is a different cut from the one
 // AddBuildErrorTask makes. Sabotage scored this site UNNOTICED until the test
-// below existed: the neighbouring cut was pinned and this one only looked it.
+// below existed: the neighboring cut was pinned and this one only looked it.
 func TestBuildOutputDoesNotSplitARune(t *testing.T) {
 	const budget = 2000
 	for _, lead := range straddlingLeads(budget) {

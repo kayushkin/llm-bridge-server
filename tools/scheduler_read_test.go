@@ -52,12 +52,12 @@ func agentJobWithEveryField() Job {
 	return Job{
 		ID:           62,
 		Name:         "nightly summary",
-		Description:  "summarises yesterday",
+		Description:  "summarizes yesterday",
 		Schedule:     "0 8 * * *",
 		Command:      "echo left over from when this was a shell job",
 		Type:         "agent",
 		Agent:        "claude-code",
-		Prompt:       "summarise yesterday",
+		Prompt:       "summarize yesterday",
 		ModelRole:    "balanced",
 		Orchestrator: "claude-code",
 		SessionID:    "sess-7",
@@ -116,7 +116,7 @@ func TestListShowsTheDescriptionTimeoutAndWorkspaceOfEveryJobType(t *testing.T) 
 		"Description: walks every repo and reports drift",
 		"Timeout (seconds): 3600",
 		"Workspace ID: ws-guard",
-		"Description: summarises yesterday",
+		"Description: summarizes yesterday",
 		"Timeout (seconds): 1800",
 		"Workspace ID: ws-42",
 	} {

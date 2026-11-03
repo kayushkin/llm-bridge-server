@@ -77,7 +77,7 @@ HELPER_CASES = [
     Case("CONTROL known-negative: <= 0 rewritten as < 1, identical for ints",
          [("\tif maxBytes <= 0 {\n\t\treturn \"\"\n\t}\n\tif len(s) <= maxBytes {\n\t\treturn s\n\t}\n\t// s[cut] is the first byte past",
            "\tif maxBytes < 1 {\n\t\treturn \"\"\n\t}\n\tif len(s) <= maxBytes {\n\t\treturn s\n\t}\n\t// s[cut] is the first byte past")],
-         expected_unnoticed="a behavioural no-op; it must NOT be caught"),
+         expected_unnoticed="a behavioral no-op; it must NOT be caught"),
 
     # ---- boundary VALUES ----
     #
@@ -103,7 +103,7 @@ HELPER_CASES = [
     Case("suffix: a string of exactly maxBytes is cut instead of returned whole",
          [("\tif len(s) <= maxBytes {\n\t\treturn s\n\t}\n\t// s[cut] is the first byte of",
            "\tif len(s) < maxBytes {\n\t\treturn s\n\t}\n\t// s[cut] is the first byte of")],
-         expected_unnoticed="a behavioural no-op, unlike its prefix twin. Falling through with "
+         expected_unnoticed="a behavioral no-op, unlike its prefix twin. Falling through with "
                             "len(s) == maxBytes gives cut = 0, and s[0] is a rune start in any "
                             "valid UTF-8 string, so the walk does not move and s[0:] is the whole "
                             "string — the same answer the guard returns. FALSIFY: find an input "
