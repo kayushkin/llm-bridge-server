@@ -196,7 +196,7 @@ step "GET /api/jobs — must be EMPTY (proves we are on a fresh temp DB)"
 JOBS=$(curl -fsS --max-time 10 "$BASE/api/jobs")
 COUNT=$(jq 'length' <<<"$JOBS")
 [ "$COUNT" = "0" ] || fail "fresh DB should hold 0 jobs but /api/jobs returned $COUNT — ABORTING, this may be a real database"
-[ -f "$DB_PATH" ] || fail "SCHEDULER_DB was not honoured — no db at $DB_PATH"
+[ -f "$DB_PATH" ] || fail "SCHEDULER_DB was not honored — no db at $DB_PATH"
 echo "    0 jobs, db at $DB_PATH"
 
 step "GET /settings — describes the values this process started with"
@@ -286,7 +286,7 @@ REREAD=$(curl -fsS --max-time 10 "$BASE/api/jobs/$JOB_ID")
   || fail "PATCHed command did not persist: $REREAD"
 echo "    command edit persisted"
 
-step "PATCH /api/jobs/$JOB_ID — an unrecognised field is rejected, not swallowed"
+step "PATCH /api/jobs/$JOB_ID — an unrecognized field is rejected, not swallowed"
 CODE=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X PATCH "$BASE/api/jobs/$JOB_ID" \
   -H 'Content-Type: application/json' -d '{"promt":"typo"}')
 [ "$CODE" = "400" ] || fail "PATCH with unknown field returned $CODE, want 400"

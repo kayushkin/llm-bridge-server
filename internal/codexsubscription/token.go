@@ -53,7 +53,7 @@ type SubscriptionAccessToken struct {
 	LastRefresh time.Time
 }
 
-// DefaultAuthFilePath returns the Codex CLI auth file location, honouring
+// DefaultAuthFilePath returns the Codex CLI auth file location, honoring
 // CODEX_HOME the same way the CLI does.
 func DefaultAuthFilePath() (string, error) {
 	if codexHome := os.Getenv("CODEX_HOME"); codexHome != "" {

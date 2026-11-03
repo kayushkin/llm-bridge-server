@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestCleanBodyTextHonoursBothFormsOfOutlookConditionalComment(t *testing.T) {
+func TestCleanBodyTextHonorsBothFormsOfOutlookConditionalComment(t *testing.T) {
 	// The two forms mean opposite things, and treating them alike loses real
 	// prose in one direction or keeps Outlook-only markup in the other.
 	//

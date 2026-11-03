@@ -231,10 +231,10 @@ func TestHandleRequest_UnknownAction(t *testing.T) {
 	}
 }
 
-// TestHandleCreateJobHonoursEnabled — Command.Enabled already existed for
+// TestHandleCreateJobHonorsEnabled — Command.Enabled already existed for
 // toggle_job, and create_job read it and threw it away, so a caller could ask
 // for a disabled job over the bus, be told "success", and get an armed one.
-func TestHandleCreateJobHonoursEnabled(t *testing.T) {
+func TestHandleCreateJobHonorsEnabled(t *testing.T) {
 	disabled := false
 	enabled := true
 	for _, tc := range []struct {

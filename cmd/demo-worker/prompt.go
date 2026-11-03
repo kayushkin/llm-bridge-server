@@ -40,7 +40,7 @@ func builderPrompt(identity demoteam.Member, title, body, workingDir, cardID, re
 HOW TO WORK
 
 1. Read enough of the repository to understand what is being asked. The README
-   and the package that owns the behaviour are usually enough; do not read the
+   and the package that owns the behavior are usually enough; do not read the
    whole tree.
 2. Work on a NEW BRANCH. Never commit to main and never push to main — a
    pre-push hook will refuse it, and being refused is not a problem to work
@@ -114,7 +114,7 @@ your next message, and you continue from there.
 // ⚠️ It cannot approve. Every agent on this host acts as the same GitHub
 // account, and GitHub refuses "Can not approve your own pull request" — measured,
 // not assumed. A COMMENT review is permitted and is what it leaves. The
-// judgement itself is recorded on the card, where this system can act on it,
+// judgment itself is recorded on the card, where this system can act on it,
 // and that is the honest split until there is a second GitHub identity.
 func reviewerPrompt(identity demoteam.Member, title, prRef, workingDir, cardID, kanbanURL string) string {
 	number := prRef

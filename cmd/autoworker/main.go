@@ -339,7 +339,7 @@ func main() {
 	cfg, err := parseFlags(os.Args[1:], servicesettings.ProcessEnvironment(), homeDirectory)
 	if err != nil {
 		// A malformed environment value was a log.Fatalf during package variable
-		// initialisation and keeps that exit code; everything else here is the
+		// initialization and keeps that exit code; everything else here is the
 		// flag package's, whose Parse has already printed the error and the usage
 		// message. All three are the codes this binary used before the flag set
 		// moved out of main(), so nothing a caller sees moved.
@@ -429,7 +429,7 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 	now := time.Now()
 	nowLocal := now.In(loc)
 
-	// Lazy kanban-store clients; only initialised when actually needed so
+	// Lazy kanban-store clients; only initialized when actually needed so
 	// dry-run passes and skip-everything ticks don't hit kanban-store.
 	var (
 		kc          *kanbanclient.Client // "Agent runs" telemetry board
@@ -1069,7 +1069,7 @@ func newWorkerSessionRequest(p providerSpec, now time.Time, modelRole string, ma
 	}
 	// Top of the four-level cascade: session > Instance.WorkingDir >
 	// Machine.DefaultWorkingDir > whatever the spawning process had. Left empty
-	// the instance decides, which is the previous behaviour exactly.
+	// the instance decides, which is the previous behavior exactly.
 	create.WorkingDir = workingDir
 	// Who this session is acting as. Empty leaves it unattributed, which is what
 	// every session has been until now.

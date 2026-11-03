@@ -223,7 +223,7 @@ func TestEachSectionsReserveScalesWithTheBudgetItWasGivenNotTheDefault(t *testin
 	}
 
 	// The observable end of the same thing: a digest built to a small explicit
-	// budget must honour it. Reading digestCharBudget instead of charBudget
+	// budget must honor it. Reading digestCharBudget instead of charBudget
 	// reserves the default share of a budget nobody asked for.
 	const small = 3000
 	digest := buildDigest(sampleSession(), longSession(40, 1400), nil, small)

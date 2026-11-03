@@ -270,7 +270,7 @@ func TestARealRunCreatesTheBoardAndEveryColumnItNeeds(t *testing.T) {
 	}
 	// Spelled out rather than ranged over AutoworkerQueueColumns. A test that
 	// reads the same constant it is meant to pin moves with it: dropping a
-	// column from that slice deleted the expectation along with the behaviour,
+	// column from that slice deleted the expectation along with the behavior,
 	// and this assertion passed while a fresh board came up missing the column
 	// every dispatched card is moved to. Measured, not imagined — the row is in
 	// scripts/sabotage-autoworker.py.

@@ -11,7 +11,7 @@ import (
 // -dry-run promises a tick changes nothing: it publishes no session, writes no
 // cooldown, and creates no kanban board. TestADryRunIsNotAShortfall pins the
 // first. These pin the other two, at the call sites in run() that choose them;
-// initQueueClient's own read-only behaviour is pinned in
+// initQueueClient's own read-only behavior is pinned in
 // queue_client_bootstrap_test.go, but that cannot see run() passing it the
 // wrong argument.
 //

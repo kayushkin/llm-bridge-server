@@ -1,6 +1,6 @@
 package main
 
-// Behaviour in this scorer's target that no test in this package named.
+// Behavior in this scorer's target that no test in this package named.
 //
 // Three functions here were executed by the digest tests and asserted by none
 // of them. Each could have its whole body replaced by a zero-value return with

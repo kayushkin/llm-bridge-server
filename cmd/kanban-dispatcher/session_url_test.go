@@ -25,11 +25,11 @@ package main
 // to the session it did not ask about. The guard passes on one session's
 // evidence and the prompt goes to another.
 //
-// Neighbouring routes and their replies were measured against the
+// Neighboring routes and their replies were measured against the
 // llm-bridge-server running on this host on 2026-08-14 and are recorded in
 // internal/bridgesession's package comment. That is why the stub below ROUTES
 // instead of answering every path alike: against a stub that answers every path
-// the same way, an id that reaches the wrong route reads as correct behaviour,
+// the same way, an id that reaches the wrong route reads as correct behavior,
 // which is the fixture mistake the parent card was filed against.
 //
 // # What this file deliberately does NOT hold
@@ -73,7 +73,7 @@ type dispatcherBridgeRequest struct {
 }
 
 // stubDispatcherBridge answers like llm-bridge-server: Go 1.22 route patterns,
-// one wildcard segment for the session id, and the neighbouring routes that a
+// one wildcard segment for the session id, and the neighboring routes that a
 // session id carrying a slash would reach if it were interpolated raw.
 //
 // Deliberately not shared with cmd/autoworker-reviewer's stubReviewerBridge,
@@ -135,11 +135,11 @@ func stubDispatcherBridge(t *testing.T, seen *[]dispatcherBridgeRequest, session
 // row below reads a session that WOULD be reused if the id reached it.
 const anIdleSiblingSession = `{"state":"idle","updated_at":"2026-08-14T12:00:00Z"}`
 
-// A session id that spells a neighbouring route must still address the session
+// A session id that spells a neighboring route must still address the session
 // itself. The expected request targets are written out as literals rather than
 // built with url.PathEscape, because a fixture that computes its expectation
 // the way the code does agrees with the code however wrong the code is.
-func TestASessionIDThatNamesANeighbouringRouteDoesNotReachItOnTheReadSite(t *testing.T) {
+func TestASessionIDThatNamesANeighboringRouteDoesNotReachItOnTheReadSite(t *testing.T) {
 	for _, tc := range []struct {
 		sessionID  string
 		requestURI string

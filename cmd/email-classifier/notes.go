@@ -110,7 +110,7 @@ func newNoteboardClient(baseURL string) *noteboardClient {
 
 // noteboardItem is the subset of an item this command reads. noteboard sends
 // far more; naming only what is used keeps a schema change from silently
-// altering behaviour here.
+// altering behavior here.
 type noteboardItem struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`

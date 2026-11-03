@@ -218,7 +218,7 @@ func TestTheSpendCapCanBeSetFromTheEnvironmentAlone(t *testing.T) {
 // TestAMalformedSpendCapIsRefusedRatherThanTreatedAsUncapped covers the value
 // this whole mechanism exists to protect.
 //
-// It used to be a log.Fatalf inside a package variable initialiser, so it fired
+// It used to be a log.Fatalf inside a package variable initializer, so it fired
 // before main() ran and nothing could observe it. It is now an error, and the
 // sentinel is what lets main keep exit code 1 for it while the flag package
 // keeps 2 for a bad argument.

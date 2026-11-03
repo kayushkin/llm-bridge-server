@@ -49,7 +49,7 @@ var (
 // reproduces the same answer, so only failures about SIZE qualify: a reply
 // cut off at the output limit, an answer that did not fit the schema, and a
 // prompt the model would not take. A budget refusal, a missing instance, a
-// cancelled operation or an unreachable bridge fails the same way at any size.
+// canceled operation or an unreachable bridge fails the same way at any size.
 func SmallerRequestMayHelp(err error) bool {
 	return errors.Is(err, ErrTruncated) || errors.Is(err, ErrNoUsableAnswer) || errors.Is(err, ErrPromptTooLong)
 }

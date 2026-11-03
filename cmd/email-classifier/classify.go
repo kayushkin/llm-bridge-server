@@ -112,7 +112,7 @@ type filingReport struct {
 //
 // Accepting both shapes is a decode-edge concession, not a silent fixup: the
 // model's intent is unambiguous either way, and the fallback logs when it fires
-// so the misbehaviour stays visible rather than becoming invisible normality.
+// so the misbehavior stays visible rather than becoming invisible normality.
 type filingList []emailFiling
 type cardUpdateList []cardUpdate
 
@@ -213,10 +213,10 @@ Do NOT send a card_update merely because a deadline has passed since the card wa
 
 You MUST output a single JSON object conforming to the provided schema, exactly once.`
 
-	// The vocabulary's own judgement calls go last, where they are read against
+	// The vocabulary's own judgment calls go last, where they are read against
 	// everything above rather than qualified by it.
 	if guidance := strings.TrimSpace(active.Guidance); guidance != "" {
-		prompt += "\n\nJUDGEMENT CALLS FOR THIS MAILBOX:\n" + guidance
+		prompt += "\n\nJUDGMENT CALLS FOR THIS MAILBOX:\n" + guidance
 	}
 	return prompt
 }

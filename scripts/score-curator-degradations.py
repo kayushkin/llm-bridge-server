@@ -103,7 +103,7 @@ ARMS = [
      '',
      "caught"),
 
-    # --- behaviour the shortfalls sit on top of
+    # --- behavior the shortfalls sit on top of
     ("a-sign-off-that-could-not-be-read-counts-as-signed-off",
      "\t\treturn false, err\n\t}",
      "\t\treturn true, err\n\t}",
@@ -216,7 +216,7 @@ def main():
         else:
             if red:
                 names = sorted(set(re.findall(r"--- FAIL: (\w+)", out)))
-                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the wording, not the behaviour")
+                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the wording, not the behavior")
                 wrong += 1
             else:
                 print(f"  SURVIVES {name}  (control, as intended)")

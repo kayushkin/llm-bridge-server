@@ -128,13 +128,13 @@ func TestRegisterLeavesAnExistingTickAlone(t *testing.T) {
 
 // A job whose name only starts with the tick's name is a different job, and
 // its presence proves nothing about the tick.
-func TestRegisterIsNotSatisfiedByANeighbouringJobName(t *testing.T) {
+func TestRegisterIsNotSatisfiedByANeighboringJobName(t *testing.T) {
 	s := &schedulerStub{existing: []map[string]any{{"name": "kanban-dispatcher-tick-hourly"}, {"name": "kanban-dispatcher"}}}
 	if err := registerAgainst(t, s); err != nil {
 		t.Fatalf("registerSchedulerJob: %v", err)
 	}
 	if posted := s.postedJobs(); len(posted) != 1 {
-		t.Errorf("a neighbouring job name must not count as the tick, posted %v", posted)
+		t.Errorf("a neighboring job name must not count as the tick, posted %v", posted)
 	}
 }
 

@@ -157,7 +157,7 @@ func TestNoBinarySpellsTheVocabularyItself(t *testing.T) {
 
 // TestTheSweepAllowlistIsNotStale fails when an allowlist entry stops matching
 // anything. A stale entry is worse than no entry: it reads as a considered
-// judgement about live code, so the next sweep trusts it and skips a file that
+// judgment about live code, so the next sweep trusts it and skips a file that
 // no longer contains what the reason describes.
 func TestTheSweepAllowlistIsNotStale(t *testing.T) {
 	for _, rel := range []string{

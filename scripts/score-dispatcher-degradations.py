@@ -109,7 +109,7 @@ ARMS = [
      "\t\tif total == 0 || settled < total {\n",
      "\t\tif total == 0 {\n\t\t\tdegraded.Record(\"no children\")\n\t\t}\n\t\tif total == 0 || settled < total {\n", "caught"),
 
-    # ------------------------------------------------ behaviour the records sit on
+    # ------------------------------------------------ behavior the records sit on
     ("a-failed-children-read-reads-as-no-children",
      '\t\treturn 0, 0, "", err', '\t\treturn 0, 0, "", nil', "caught"),
     ("a-refused-rollup-note-stops-the-move",
@@ -458,7 +458,7 @@ def main():
                 missed += 1
         else:
             if red:
-                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the wording, not the behaviour")
+                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the wording, not the behavior")
                 wrong += 1
             else:
                 print(f"  SURVIVES {name}  (control, as intended)")

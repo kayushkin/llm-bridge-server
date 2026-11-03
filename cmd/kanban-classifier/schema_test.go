@@ -6,7 +6,7 @@ import (
 )
 
 // The schema is the only instruction the model gets about the SHAPE of its
-// answer. Nothing in this process branches on it: it is serialised, sent, and
+// answer. Nothing in this process branches on it: it is serialized, sent, and
 // acted on by a model on the far side, so it can only be wrong by disagreeing
 // with something on THIS side. prompt_vocabulary_test.go holds the state enum
 // and the title bound against the applier; the two tests here hold the rest.

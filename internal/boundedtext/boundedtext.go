@@ -33,7 +33,7 @@ import "unicode/utf8"
 
 const (
 	// valueLimit is how much of a value read from somewhere this process does
-	// not control is worth showing. Enough to recognise the value; not enough
+	// not control is worth showing. Enough to recognize the value; not enough
 	// to bury the line it sits in.
 	valueLimit = 60
 

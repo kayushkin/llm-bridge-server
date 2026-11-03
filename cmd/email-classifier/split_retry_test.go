@@ -119,7 +119,7 @@ func TestAFailureASmallerBatchCannotFixIsNotSplit(t *testing.T) {
 	}
 }
 
-// The behaviour the split exists for. Without these the fix above reads as
+// The behavior the split exists for. Without these the fix above reads as
 // "stop splitting", which would be a different and wrong change.
 func TestAFailureASmallerBatchCanFixStillSplits(t *testing.T) {
 	cases := []msg.OperationError{

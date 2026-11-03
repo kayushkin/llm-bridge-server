@@ -144,7 +144,7 @@ ARMS = [
      "\tif cfg.DryRun {\n\t\tdegraded.Record(\"goal card %s was not written: dry run\", p.cardID)\n\t\treturn nil\n\t}",
      "caught"),
 
-    # ---- behaviour the shortfalls sit on top of
+    # ---- behavior the shortfalls sit on top of
     ("a-refused-parent-link-abandons-the-rest-of-the-plan",
      "\t\t\tif errors.Is(err, errParentLinkRefused) {",
      "\t\t\tif false && errors.Is(err, errParentLinkRefused) {",
@@ -247,7 +247,7 @@ def main():
         else:
             if red:
                 names = sorted(set(re.findall(r"--- FAIL: (\w+)", out)))
-                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the wording, not the behaviour")
+                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the wording, not the behavior")
                 wrong += 1
             else:
                 print(f"  SURVIVES {name}  (control, as intended)")

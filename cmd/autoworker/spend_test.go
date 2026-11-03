@@ -44,7 +44,7 @@ func TestUncappedCardGetsTheFleetDefault(t *testing.T) {
 }
 
 // Off by default. Arming a fleet-wide cap is the user's call — this must not
-// change behaviour until they set a number.
+// change behavior until they set a number.
 func TestNoDefaultMeansUncapped(t *testing.T) {
 	for name, cand := range map[string]*queueCandidate{
 		"discovery session": nil,

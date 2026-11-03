@@ -102,7 +102,7 @@ func TestAStatusTheVocabularyDoesNotKnowIsFiledAtErrorLevel(t *testing.T) {
 	logger.LogJobFinish(4, "job", "* * * * *", 12, "cancelled-by-operator", "", time.Second)
 
 	if got := rec.only(t).Level; got != "error" {
-		t.Fatalf("an unrecognised terminal status was filed at level %q, want \"error\"", got)
+		t.Fatalf("an unrecognized terminal status was filed at level %q, want \"error\"", got)
 	}
 }
 

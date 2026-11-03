@@ -15,7 +15,7 @@ import (
 // out against a repo.
 //
 // respond, decide and escalate are deliberately absent: those need a person's
-// judgement or a person's authority, and handing them to a builder produces a
+// judgment or a person's authority, and handing them to a builder produces a
 // confident answer nobody asked for. They stay on the Work board for a human.
 var buildableActions = map[string]bool{
 	"implement":   true,

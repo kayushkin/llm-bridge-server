@@ -10,7 +10,7 @@
 //     about how much of a question a person reads in a session list, not a value
 //     another program computes, so a test that reads displayNameRuneLimit agrees
 //     with the constant through any drift of it. One test below asserts the
-//     number itself; the rest describe behaviour at that number.
+//     number itself; the rest describe behavior at that number.
 //
 //   - Sweep the rune alignment. 60 is divisible by 2, 3 and 4 — every rune width
 //     Go has — so a fixture repeating one wide rune from offset zero cuts cleanly
@@ -137,7 +137,7 @@ func TestDisplayNameFromQuestion_LongerQuestionsAreCutToTheLimitAndMarked(t *tes
 }
 
 // Every whitespace character becomes one space — not just \n, which is all the
-// code used to replace. The neighbours are distinct words so that a rule which
+// code used to replace. The neighbors are distinct words so that a rule which
 // dropped the separator, or kept the characters either side in the wrong order,
 // fails here; "a<ws>a" would pass under both.
 func TestCollapseWhitespaceRuns_EveryWhitespaceCharacterBecomesOneSpace(t *testing.T) {
@@ -312,7 +312,7 @@ func TestDisplayNameFromQuestion_NeverEmptiesAQuestionMainAccepted(t *testing.T)
 //
 // ⚠️ This is not duplication for its own sake and the first version of this file
 // got it wrong. A sweep derived from the function under test narrows in step with
-// the defect: with the bidi half of isNonText deleted, every behavioural test
+// the defect: with the bidi half of isNonText deleted, every behavioral test
 // below still passed, because nonTextRunes() stopped yielding bidi controls and
 // the loops simply had nothing to check. TestDisplayNameFromQuestion_ABidiOverride‐
 // CannotReorderTheRow — whose entire subject is bidi — passed VACUOUSLY, having
@@ -405,7 +405,7 @@ func TestNonTextSweep_SparesTheJoinersAndOrdinaryText(t *testing.T) {
 	}
 }
 
-// No control or bidi character reaches a display name. The neighbours are distinct
+// No control or bidi character reaches a display name. The neighbors are distinct
 // words so that a rule which dropped the separator, or kept the characters either
 // side in the wrong order, fails here; "a<R>a" would pass under both.
 func TestDisplayNameFromQuestion_NoControlOrBidiCharacterSurvives(t *testing.T) {
@@ -489,7 +489,7 @@ func TestDisplayNameFromQuestion_ABidiOverrideCannotReorderTheRow(t *testing.T) 
 // narrows in step with the defect and passes vacuously.
 
 // A title gets the same well-formedness as a derived name: nothing that is not text
-// survives it. Neighbours are distinct words so a rule that dropped the separator,
+// survives it. Neighbors are distinct words so a rule that dropped the separator,
 // or reordered what sits either side, fails here.
 func TestDisplayNameFromTitle_NoControlOrBidiCharacterSurvives(t *testing.T) {
 	rs := nonTextRunes()

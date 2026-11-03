@@ -195,7 +195,7 @@ func TestSkipCountsBreakdownOfNothingIsNotEmpty(t *testing.T) {
 
 // passCount counts review-pass tags rather than parsing the N out of them, so
 // the number in the tag is decorative. Pin that, and pin that the prefix does
-// not swallow the neighbouring review-settled tag.
+// not swallow the neighboring review-settled tag.
 func TestPassCountCountsTagsAndIgnoresTheNumber(t *testing.T) {
 	tags := entityTags("review-pass-1", "review-pass-7", "review-settled", "kanban-do-not-track")
 	if got, want := passCount(tags), 2; got != want {

@@ -87,7 +87,7 @@ func TestCreateWithoutEnabledStillArmsTheJob(t *testing.T) {
 	}
 }
 
-// TestCreateWithEnabledTrueArmsTheJob — the explicit true has to be honoured
+// TestCreateWithEnabledTrueArmsTheJob — the explicit true has to be honored
 // too, not merely happen to match the default.
 func TestCreateWithEnabledTrueArmsTheJob(t *testing.T) {
 	srv := setup(t, "")

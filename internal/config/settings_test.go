@@ -127,7 +127,7 @@ func TestEveryModelRoleSettingIsAStoredModelRole(t *testing.T) {
 			continue
 		}
 		if !definition.Editable || !definition.Required || definition.ValueType != msg.ServiceSettingValueTypeModelRole || definition.Kind != msg.ServiceSettingKindBehavior {
-			t.Errorf("%s = %+v, want an editable, required behaviour setting of type model_role", key, definition)
+			t.Errorf("%s = %+v, want an editable, required behavior setting of type model_role", key, definition)
 		}
 		if !slices.Contains(msg.CanonicalModelRoles, msg.ModelRole(definition.Default)) {
 			t.Errorf("%s defaults to %q, which is no canonical role", key, definition.Default)

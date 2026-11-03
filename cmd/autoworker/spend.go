@@ -66,7 +66,7 @@ func budgetForCard(qc *kanbanclient.Client, bridgeURL, noteboardURL string, cand
 		return 0, false
 	}
 	if err != nil {
-		// Fail closed, but only for work that actually has a ceiling to honour: an
+		// Fail closed, but only for work that actually has a ceiling to honor: an
 		// unreadable tree must not park uncapped work that never had one.
 		if _, hasOwn := cardSpendCeiling(cand.item); !hasOwn {
 			log.Printf("queue: spend tree unreadable (%v) — card %s sets no ceiling of its own; dispatching as before",
@@ -209,7 +209,7 @@ func cardSpendCeiling(item map[string]any) (float64, bool) {
 // should: a bad argument is the flag package's exit 2, a bad environment value
 // was a log.Fatalf and stays exit 1. Returning it rather than dying in place is
 // what makes it reachable — it used to fire during package variable
-// initialisation, before main() ran, so no test could observe it at all.
+// initialization, before main() ran, so no test could observe it at all.
 var errMalformedEnvironmentValue = errors.New("malformed environment value")
 
 // resolveSessionBudget decides the cost cap for one dispatched session, and says
@@ -230,7 +230,7 @@ var errMalformedEnvironmentValue = errors.New("malformed environment value")
 //     produced this host's most expensive unattended sessions, and it is
 //     dispatched uncapped without a default.
 //
-//  3. Uncapped, when neither is set. This is the historical behaviour and stays
+//  3. Uncapped, when neither is set. This is the historical behavior and stays
 //     the default: arming a fleet-wide cap is the user's call, not ours.
 //
 // The returned reason is logged verbatim. An uncapped session should be able to

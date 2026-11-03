@@ -55,7 +55,7 @@ func boardWithReadAndUnreadFilings() *boardState {
 func TestOnlyMailWithARecordedMessageIDCanBeCitedAsPrecedent(t *testing.T) {
 	// The best hit by score was filed unread (no Message-ID on any card): it
 	// must be skipped, not cited — mail the retired sender rule filed blind is
-	// exactly the wrong label a nearest neighbour must not carry into the
+	// exactly the wrong label a nearest neighbor must not carry into the
 	// prompt.
 	hits := []similarHit{
 		{ProviderID: "unread-1", MessageID: "unread-1@shop.example", Subject: "Order shipped", Score: -9.0},

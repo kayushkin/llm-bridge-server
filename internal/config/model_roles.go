@@ -5,7 +5,7 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
-// The model-store role each model-calling job binary asks for is a behaviour
+// The model-store role each model-calling job binary asks for is a behavior
 // setting of the service, not of the binary. The binaries are short-lived
 // processes started by jobs, with no store and no HTTP of their own, so a
 // setting they declared could only come from the environment and could not be
@@ -44,7 +44,7 @@ const DefaultModelStoreURL = "http://localhost:8155"
 const (
 	// email-classifier filed with claude-sonnet-4-6, deliberately a better
 	// model than its siblings': 44-50% of the mail that reaches the model
-	// becomes a new card, and telling a task from a record is the judgement
+	// becomes a new card, and telling a task from a record is the judgment
 	// the cheap model got wrong. default is model-store's everyday tier.
 	DefaultEmailClassifierModelRole = string(msg.ModelRoleDefault)
 	// Not efficient: on 2026-09-24 the efficient tier answered fifty-card

@@ -148,10 +148,10 @@ func TestRegisterIsIdempotentSoADeployDoesNotStackTicks(t *testing.T) {
 
 // The loose-match direction, and it is the one that fails quietly. A comparison
 // accepting any job whose name merely CONTAINS "kanban-classifier" would read a
-// neighbour as proof the tick is registered, and the tick would then never be
+// neighbor as proof the tick is registered, and the tick would then never be
 // registered — an operator seeing "already registered" and a board that never
 // fills.
-func TestANeighbouringJobIsNotMistakenForTheTick(t *testing.T) {
+func TestANeighboringJobIsNotMistakenForTheTick(t *testing.T) {
 	s := &schedulerStub{existing: []map[string]any{
 		{"name": "kanban-classifier-tick-hourly"},
 		{"name": "kanban-dispatcher-tick"},

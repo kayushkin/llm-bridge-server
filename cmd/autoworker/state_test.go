@@ -58,7 +58,7 @@ func TestAFreshInstallLoadsAnEmptyState(t *testing.T) {
 	}
 }
 
-// A state file whose map serialised as null is repaired on load. Without the
+// A state file whose map serialized as null is repaired on load. Without the
 // repair the first write to it panics, and the panic happens AFTER the session
 // has been published — so the money is spent and the cooldown is not recorded.
 func TestAStateFileWithANullMapIsRepaired(t *testing.T) {

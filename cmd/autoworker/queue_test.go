@@ -114,7 +114,7 @@ func (f *fakeKanban) start(t *testing.T) *kanbanclient.Client {
 
 // serveNoteboardItems stands in for noteboard's /api/items and records the last
 // query it was asked. The query matters: the parent chain has to be complete,
-// which means held ancestors and every page of the list. It honours limit and
+// which means held ancestors and every page of the list. It honors limit and
 // offset as noteboard does, so a list longer than one page takes more than one
 // request to read.
 //
@@ -620,7 +620,7 @@ func TestABridgeThatCannotReportSpendHoldsCappedWork(t *testing.T) {
 	}
 }
 
-// Fail closed, but only for work that has a ceiling to honour. An unreadable
+// Fail closed, but only for work that has a ceiling to honor. An unreadable
 // spend tree must not park work that never had one — that would turn a
 // noteboard outage into a frozen queue.
 func TestAnUnreadableTreeHoldsCappedWorkAndPassesUncappedWorkThrough(t *testing.T) {
@@ -656,7 +656,7 @@ func TestAnUnreadableTreeHoldsCappedWorkAndPassesUncappedWorkThrough(t *testing.
 		}
 		if got == nil {
 			t.Fatal("a card that never had a ceiling was parked by an unreadable spend " +
-				"tree; a store outage must not freeze work that has no cap to honour")
+				"tree; a store outage must not freeze work that has no cap to honor")
 		}
 	})
 }

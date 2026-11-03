@@ -67,7 +67,7 @@ the process dies at the `-h` call on line 385, three lines above the first
 `t.Fatal`. So there is no `file.go:NN:` line to read, and a message-based
 classifier can only report "unreadable".
 
-Reported as `runtime-fired`, and deliberately not folded into either neighbour.
+Reported as `runtime-fired`, and deliberately not folded into either neighbor.
 Calling it guard-fired would understate coverage that is real and correctly
 aimed; calling it assertion-fired would name a line that did not execute. It
 does not fail the run, but it is printed with the panic that produced it — a
@@ -126,7 +126,7 @@ Case-writing rules inherited from the reminder-coordinator and autoworker plans:
   - Read every applied diff against its label (`--diffs`). A row prints the name
     you gave it, not the edit you made.
   - An UNNOTICED row is not automatically a coverage hole. It can be a
-    behavioural no-op, or a fake in the test file that swallows the value the
+    behavioral no-op, or a fake in the test file that swallows the value the
     mutation moved.
 
 Score when filed by the 198th pass: 28/28 real mechanisms caught, both controls
@@ -287,7 +287,7 @@ CASES = [
     # "envOr prefers its fallback over the environment" was deleted 2026-09-26:
     # envOr is gone, and the lookup that replaced it lives in llm-bridge's
     # servicesettings, outside this repo. TestAnUnsetVariableFallsBackAndASetOneDoesNot
-    # still pins the behaviour from this side.
+    # still pins the behavior from this side.
     Case(
         "SCHEDULER_URL falls back to the kanban port: -register posts the job to the wrong service",
         [('DefaultSchedulerURL      = "http://localhost:8092"', 'DefaultSchedulerURL      = "http://localhost:8305"')],
@@ -308,7 +308,7 @@ CASES = [
         [('schedulerJobSchedule       = "*/15 * * * *"', 'schedulerJobSchedule       = "*/5 * * * *"')],
     ),
     Case(
-        "the job name drifts: -register no longer recognises its own job and registers a second one",
+        "the job name drifts: -register no longer recognizes its own job and registers a second one",
         [('schedulerJobName           = "email-classifier-tick"', 'schedulerJobName           = "email-classifier"')],
     ),
     Case(
@@ -388,7 +388,7 @@ INTERPOLATING_GUARDS = [
 # genuinely caught, and caught by the test named for the mechanism, so calling it
 # guard-fired would understate real coverage. But no assertion in the file ran,
 # so calling it assertion-fired is a lie about which line did the work. Naming it
-# is the only honest option; laundering it into either neighbour is not.
+# is the only honest option; laundering it into either neighbor is not.
 RUNTIME_KILLS = [
     # `-h` under ExitOnError calls os.Exit(0), and Go's testing package panics
     # on that rather than letting a test binary exit green half way through.
@@ -516,7 +516,7 @@ SELF_SABOTAGES = [
         "    # `-h` under ExitOnError",
         "RED",
         "empty the runtime-kill list: the os.Exit-during-test row must stop being "
-        "recognised, which would report real coverage as unreadable",
+        "recognized, which would report real coverage as unreadable",
     ),
     SelfSabotage(
         "def guard_only(messages):\n",

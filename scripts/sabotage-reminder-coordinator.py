@@ -22,7 +22,7 @@ Case-writing rules learned the expensive way, and re-earned here:
   - Read every applied diff against its label (`--diffs`). A row prints the name
     you gave it, not the edit you made.
   - An UNNOTICED row is not automatically a coverage hole. It can be a
-    behavioural no-op, or a fake in the test file that swallows the value the
+    behavioral no-op, or a fake in the test file that swallows the value the
     mutation moved. Both appear below, named, with expected_unnoticed set.
 
 Score: 132/135, exit 0 on 2026-10-05 — see the last dated section. Before
@@ -101,7 +101,7 @@ The 37 split cleanly in two, and only one half was a coverage hole:
   - **Eighteen cannot be observed by this suite at all**, and are declared rather
     than deleted. `main` is flag parsing; `envOr` is reached only from it and
     from ResolveDashToken; `dryPrefix` only ever reaches a log line (expired
-    2026-09-26: `unnamed_behaviour_test.go` now asserts it directly). The other
+    2026-09-26: `unnamed_behavior_test.go` now asserts it directly). The other
     fifteen are the CONCRETE clients — NoteboardClient, GoogleCalendarMirror,
     Herald — which the coordinator holds behind interfaces and the suite replaces
     with fakes wholesale. Those three are declared as **one case each covering
@@ -198,7 +198,7 @@ five are CAUGHT.
 The parked branch was never ported. The scheduler C3 close-out (card 2fab79e5)
 tagged it superseded/test/concrete-clients-speak-the-real-protocol on
 2026-09-26, ported only its DASH_TOKEN fix (cd3920a), and judged the rest of
-client_protocol_test.go covered by main's protocol tests. That judgement was
+client_protocol_test.go covered by main's protocol tests. That judgment was
 wrong for six of the seven rows: measured today, only the DASH_TOKENS row is
 CAUGHT, and ListScheduled's filter, FindByTag's first match, SetSchedule's
 key, UpdateEvent's verb, the 📋 prefix and the Bearer header were still
@@ -678,7 +678,7 @@ CASES = [
         "the dry-run log prefix is reworded",
         # Was declared unnoticed ("no test reads the log"). The declaration
         # expired 2026-09-26 when TestDryPrefix_MarksARehearsalAndOnlyARehearsal
-        # (unnamed_behaviour_test.go, card `526ea345`) began asserting the
+        # (unnamed_behavior_test.go, card `526ea345`) began asserting the
         # prefix itself; the scorer reported it STALE and it is a real row now.
         [('return "[dry-run] "', 'return "[DRY RUN] "')],
     ),
@@ -1013,7 +1013,7 @@ CASES = [
     # ---- the three helpers every reminder surface is rendered through ----
     # Written 2026-08-30 on test/the-coordinator-silent-column-is-closed and
     # ported 2026-09-26 (card `526ea345`), closing the silent column
-    # `--crosstable` found there: all four tests in unnamed_behaviour_test.go
+    # `--crosstable` found there: all four tests in unnamed_behavior_test.go
     # were reddened by NO case. This list is drafted from worries about the digest
     # DECIDING WRONGLY — what is due, what nags, what reaches the calendar — and
     # has no vocabulary for the helpers that decide how the answer is ORDERED,

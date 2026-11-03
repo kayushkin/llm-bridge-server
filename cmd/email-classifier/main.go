@@ -458,7 +458,7 @@ func run() int {
 	notes, err := loadRoutingNotes(newNoteboardClient(cfg.NoteboardURL))
 	if err != nil {
 		// Notes make filing better; their absence must not stop it. Filing
-		// without them is the behaviour this command had until today.
+		// without them is the behavior this command had until today.
 		log.Printf("[email] WARNING: could not load routing notes: %v — filing without them", err)
 		degraded.Record("routing notes unavailable, filed %s", "without user guidance")
 		notes = &routingNotes{bySender: map[string]routingNote{}, byMessage: map[string]routingNote{}}
@@ -503,7 +503,7 @@ func run() int {
 
 	// Message identity first: a second copy of a message already filed, and a
 	// reply to one, belong where that message went. Both are facts stated in the
-	// headers. Everything else is a judgement about what the mail says, and that
+	// headers. Everything else is a judgment about what the mail says, and that
 	// is the model's job, not a rule's.
 	routed, remaining := routeByMessageIdentity(mc, state, unfiled)
 	log.Printf("[email] routed by message identity: %d; to model: %d", len(routed), len(remaining))

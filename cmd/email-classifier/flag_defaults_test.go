@@ -119,7 +119,7 @@ func TestThereIsNoBoardToDefaultTo(t *testing.T) {
 
 // TestTheFlagsTheBoardReplacedAreGone pins that a job still passing a flag the
 // board now owns fails at parse, loudly, rather than having its value quietly
-// ignored in favour of the board's — which would look like the flag working.
+// ignored in favor of the board's — which would look like the flag working.
 func TestTheFlagsTheBoardReplacedAreGone(t *testing.T) {
 	for _, removed := range []string{"-board=Email", "-vocabulary=work", "-account=demo-work", "-hold-new-cards"} {
 		if outcome := parseFlagsInChildProcess(t, removed); !outcome.Failed {

@@ -14,7 +14,7 @@
 //
 //   - Never assert a bare error. runAsk has nine failure sites and they all
 //     return a non-nil error, so `err != nil` pins the signature and not the
-//     behaviour. Each failure test also asserts the discriminating side effect:
+//     behavior. Each failure test also asserts the discriminating side effect:
 //     the instance endpoint that must not be reached, the connection that must
 //     not be opened, the message that must not be published.
 package main

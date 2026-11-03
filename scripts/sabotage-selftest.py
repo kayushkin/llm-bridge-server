@@ -7,7 +7,7 @@ written alongside — a rule that only ever fires one way, with no instrument
 positioned to notice the other way had gone missing.
 
 Every check here asserts a verdict AND its opposite: the rule must fire on the
-input it is for, and must stay silent on the neighbouring input it is not for. A
+input it is for, and must stay silent on the neighboring input it is not for. A
 one-sided check would pass against a `problems()` that returned every line
 unconditionally, which is the degenerate scorer this repo already keeps a
 known-negative control to rule out.
@@ -168,7 +168,7 @@ reach_check("the answer is ordered, so two runs of the same input read the same"
 sound = [row("CONTROL known-positive: break the thing every test watches", "CAUGHT"),
          row("CONTROL known-negative: reword a log line", "UNNOTICED", DECLARATION),
          row("the hold gate stops firing", "CAUGHT"),
-         row("a behavioural no-op", "UNNOTICED", DECLARATION)]
+         row("a behavioral no-op", "UNNOTICED", DECLARATION)]
 checks_run += 1
 if problems(sound):
     failures.append("a sound run must report nothing, got: %r" % problems(sound))
@@ -179,5 +179,5 @@ for f in failures:
 if failures:
     print("\n%d FAILED" % len(failures))
     sys.exit(1)
-print("  every rule fires on its own input and stays silent on its neighbour")
+print("  every rule fires on its own input and stays silent on its neighbor")
 sys.exit(0)

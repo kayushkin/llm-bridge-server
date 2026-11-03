@@ -54,7 +54,7 @@ type vocabulary struct {
 	MootCategoriesWhenPassed map[string]bool
 	MootActionsWhenPassed    map[string]bool
 
-	// Guidance is appended to the system prompt: the judgement calls that are
+	// Guidance is appended to the system prompt: the judgment calls that are
 	// specific to this kind of mail and that the axis lists alone do not convey.
 	Guidance string
 }
@@ -171,7 +171,7 @@ var workVocabulary = vocabulary{
 		"security",       // vulnerabilities, credential rotation, audits
 		"release",        // shipping, deploys, release coordination
 		"code-review",    // pull requests and change proposals
-		"product",        // requirements, scope, roadmap, prioritisation
+		"product",        // requirements, scope, roadmap, prioritization
 		"infrastructure", // build, CI, environments, platform
 		"vendor",         // third parties and their support desks
 		"team",           // process, planning, scheduling, people

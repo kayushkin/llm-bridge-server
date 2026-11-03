@@ -21,7 +21,7 @@ type fakeBridge struct {
 	intent     msg.OperationIntent
 	states     []msg.OperationReceipt
 	reads      int
-	cancelled  bool
+	canceled   bool
 }
 
 func (f *fakeBridge) server(t *testing.T) *httptest.Server {
@@ -47,7 +47,7 @@ func (f *fakeBridge) server(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("POST /operations/operation_1/cancel", func(w http.ResponseWriter, r *http.Request) {
 		f.mutex.Lock()
-		f.cancelled = true
+		f.canceled = true
 		f.mutex.Unlock()
 	})
 	server := httptest.NewServer(mux)
@@ -108,8 +108,8 @@ func TestAWaitThatRunsOutAsksTheOperationToStop(t *testing.T) {
 	_, err := Call(context.Background(), cfg, "s", "p", map[string]any{}, &out)
 	bridge.mutex.Lock()
 	defer bridge.mutex.Unlock()
-	if !errors.Is(err, context.DeadlineExceeded) || !bridge.cancelled {
-		t.Fatalf("err %v cancelled %v", err, bridge.cancelled)
+	if !errors.Is(err, context.DeadlineExceeded) || !bridge.canceled {
+		t.Fatalf("err %v canceled %v", err, bridge.canceled)
 	}
 }
 

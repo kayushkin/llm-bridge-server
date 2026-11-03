@@ -37,7 +37,7 @@ type Contact struct {
 // ResolveContact turns an email address into one contact id, creating the
 // contact the first time that address is seen and finding the same row every
 // time after. created is reported so a caller that suddenly makes a contact
-// per message can see that it has a normalisation bug.
+// per message can see that it has a normalization bug.
 func (c *Client) ResolveContact(email, displayName string) (contact Contact, created bool, err error) {
 	payload, err := json.Marshal(map[string]string{"email": email, "display_name": displayName})
 	if err != nil {

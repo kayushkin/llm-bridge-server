@@ -43,7 +43,7 @@ func captureLog(t *testing.T, fn func()) string {
 }
 
 // lineContaining pulls out the single log line the claim is about. Measuring the
-// whole capture would let a neighbouring line answer for this one, and asserting
+// whole capture would let a neighboring line answer for this one, and asserting
 // a ceiling over the whole capture would grow with unrelated logging.
 func lineContaining(t *testing.T, capture, needle string) string {
 	t.Helper()

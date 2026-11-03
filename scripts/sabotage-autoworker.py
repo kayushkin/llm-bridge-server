@@ -29,7 +29,7 @@ here:
   - Read every applied diff against its label (`--diffs`). A row prints the name
     you gave it, not the edit you made.
   - An UNNOTICED row is not automatically a coverage hole. It can be a
-    behavioural no-op, or a fake in the test file that swallows the value the
+    behavioral no-op, or a fake in the test file that swallows the value the
     mutation moved.
 
 Score when filed by the 197th pass: 15/15 real mechanisms caught, both controls
@@ -60,7 +60,7 @@ initQueueClient is now sabotaged, and it was excluded above under "the kanban
 queue path". The exclusion is narrowed rather than dropped: its three siblings
 are still not scored here.
 
-Why it was worth adding, and this is a measurement rather than a judgement: on
+Why it was worth adding, and this is a measurement rather than a judgment: on
 2026-08-15 an unconditional `panic()` at initQueueClient's first line left
 `go test ./...` GREEN across the whole repository (card e9b0b89c, the 202nd
 pass). Nothing executed the function that decides whether an unattended tick may
@@ -77,7 +77,7 @@ suppresses writes. It fails two ways that look alike from outside:
 Three separate conditions answer nil here — board absent, boards unreadable,
 columns unreadable — and the log line is the only thing that tells them apart.
 So the log lines ARE the interface on those paths, and the rows below treat them
-as behaviour. ⚠️ That is why the known-negative control for this family rewords
+as behavior. ⚠️ That is why the known-negative control for this family rewords
 prose while KEEPING the `%v` that carries the error: a control that reworded a
 line the tests read would be expired on arrival, which is exactly what
 sabotage-email-classifier-sweep.py predicted when it wrote "falsified by a test
@@ -225,7 +225,7 @@ CASES = [
     # ================= initQueueClient: may this tick write? =================
     #
     # Added by the 217th pass. See the note at the foot of the docstring for why
-    # the log lines are treated as behaviour in this family and nowhere else.
+    # the log lines are treated as behavior in this family and nowhere else.
     Case(
         "CONTROL known-negative: reword the bootstrap failure line, keeping the error it carries",
         [('log.Printf("queue: bootstrap %q: %v (using default prompt)", autoworkerQueueBoard, err)',
@@ -452,7 +452,7 @@ CASES = [
     Case(
         "a card with no noteboard item is dispatched, so the prompt has no task in it",
         [("if c.Item == nil {", "if c.Item == nil && false {")],
-        expected_unnoticed="a behavioural no-op, not a coverage hole. Indexing a nil map in "
+        expected_unnoticed="a behavioral no-op, not a coverage hole. Indexing a nil map in "
                            "Go yields the zero value rather than panicking, so a card with no "
                            "item has an empty title and the NEXT guard skips it for that "
                            "reason instead. Only the log line tells the two guards apart",
@@ -496,7 +496,7 @@ CASES = [
           "if _, hasOwn := cardSpendCeiling(cand.item); hasOwn || !hasOwn {")],
     ),
     Case(
-        "an unreadable spend tree holds work that never had a ceiling to honour",
+        "an unreadable spend tree holds work that never had a ceiling to honor",
         [("\t\t\treturn 0, true\n\t\t}\n\t\tlog.Printf(\"queue: card %s is capped but the spend tree is unreadable",
           "\t\t\treturn 0, false\n\t\t}\n\t\tlog.Printf(\"queue: card %s is capped but the spend tree is unreadable")],
     ),
@@ -533,7 +533,7 @@ CASES = [
     Case(
         "a card's own ceiling of null reads as a ceiling of zero",
         [("\tif !ok || raw == nil {\n\t\treturn 0, false\n\t}", "\tif !ok {\n\t\treturn 0, false\n\t}")],
-        expected_unnoticed="a behavioural no-op. A JSON null decodes to a nil interface, which "
+        expected_unnoticed="a behavioral no-op. A JSON null decodes to a nil interface, which "
                            "fails the float64 assertion two lines down and returns the same "
                            "(0, false); no test can tell the two spellings apart",
     ),
@@ -653,7 +653,7 @@ CASES = [
     # scripts/sabotage-schedulerjobs.py. The rows here pin this binary's own
     # literals.
     Case(
-        "-register registers under a name a later -register will not recognise",
+        "-register registers under a name a later -register will not recognize",
         [('Name:        "autoworker-tick",', 'Name:        "autoworker-tick-v2",')],
     ),
     Case(

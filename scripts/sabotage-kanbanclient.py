@@ -88,7 +88,7 @@ was prose plus a literal with nothing comparing either against the code they
 describe, and the way a marker list fails is silent and one-directional: a marker
 that stops naming anything matches no line, so a row it should have explained
 reports as assertion-fired and the third line's `0 guard-fired only` becomes
-partly an artefact of the list rather than a measurement of the suite.
+partly an artifact of the list rather than a measurement of the suite.
 check_markers_against_the_suite() reads the suite's own format strings and
 answers it. The list is clean under all four branches today, which means landing
 the check changed no score — so the four self-sabotage rows are the only proof it
@@ -360,18 +360,18 @@ HELPER_ASSERTIONS = {
     # Main's own helpers, judged 2026-09-26 when this scorer was ported.
     "request body is not a JSON object: %v":
         "wireRecordingStore.onlyRequestBody judges what the client sent, the "
-        "same judgement as recordingStore's",
+        "same judgment as recordingStore's",
     "unexpected request %s %s":
         "effectiveDefaultsServer and moveCardAgainst judge the route and verb "
         "the client chose",
     "%s id=%q: request carries a query or fragment it was never given: %q":
         "assertSegments judges the path the client built from an id",
     "%s id=%q: %d path segments, want %d: %q":
-        "assertSegments, the same judgement",
+        "assertSegments, the same judgment",
     "%s id=%q: segment %d %q does not decode: %v":
-        "assertSegments, the same judgement",
+        "assertSegments, the same judgment",
     "%s id=%q: segment %d is %q (decoded %q), want %q — %s":
-        "assertSegments, the same judgement",
+        "assertSegments, the same judgment",
 }
 
 # The directories whose .go files can print a failure line during THIS scorer's
@@ -536,7 +536,7 @@ def check_markers_against_the_suite(formats=None, markers=None):
                 "marker %r matches no message this suite prints, so every row a "
                 "guard of that wording would have explained reports as "
                 "assertion-fired — the silent direction, and the one that makes "
-                "a headline '0 guard-fired' partly an artefact of the list. "
+                "a headline '0 guard-fired' partly an artifact of the list. "
                 "Either the guard was reworded and the marker was not, or the "
                 "marker's fixed text is interpolated in at run time (card "
                 "050fca4c, which this check cannot see)" % marker)

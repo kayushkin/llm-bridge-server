@@ -16,7 +16,7 @@ import (
 // version of this demo used hand-written card titles, and one of them asked an
 // agent to "bump the build image to Node 22 LTS" in a repository with no Node
 // in it anywhere. The agent checked every branch and all twelve commits,
-// refused, and wrote down why — correct behaviour, and a wasted session. Mail
+// refused, and wrote down why — correct behavior, and a wasted session. Mail
 // written from the actual code cannot ask for that.
 type Project struct {
 	Name     string

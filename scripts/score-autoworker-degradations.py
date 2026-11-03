@@ -154,7 +154,7 @@ ARMS = [
      '\t\td.reason = fmt.Sprintf("snapshot stale (snapshot_at=%s) — skip",\n\t\t\tsnapshotAt.Format(time.RFC3339))',
      "caught"),
 
-    # ---- behaviour the shortfalls sit on top of
+    # ---- behavior the shortfalls sit on top of
     ("the-hold-gate-lets-held-cards-through",
      '\t\tif heldAt, _ := c.Item["held_at"].(string); heldAt != "" {',
      '\t\tif heldAt, _ := c.Item["held_at"].(string); false && heldAt != "" {',
@@ -258,7 +258,7 @@ def main():
         else:
             if red:
                 names = sorted(set(re.findall(r"--- FAIL: (\w+)", out)))
-                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the wording, not the behaviour")
+                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the wording, not the behavior")
                 wrong += 1
             else:
                 print(f"  SURVIVES {name}  (control, as intended)")

@@ -127,7 +127,7 @@ func TestAutoworkerQueueSetIsSeparateFromAgentRuns(t *testing.T) {
 // TestNeedsApprovalIsNotInTheDeclaredSet pins a known gap so it cannot be
 // closed by accident. The live Autoworker queue board has a "Needs approval"
 // column that no code here creates; adding it to the set below is a real
-// behaviour change (EnsureBoard would start creating it) and wants a decision,
+// behavior change (EnsureBoard would start creating it) and wants a decision,
 // not a drive-by edit.
 func TestNeedsApprovalIsNotInTheDeclaredSet(t *testing.T) {
 	if containsAny(AutoworkerQueueColumns(), "Needs approval") {

@@ -18,7 +18,7 @@ import (
 // tagged critical two days after the show, an event on Aug 14 still tagged
 // normal on Aug 13. A frozen adjective cannot track a moving date.
 //
-// So the deadline itself is now stored — noteboard's due_at — and the judgement
+// So the deadline itself is now stored — noteboard's due_at — and the judgment
 // is derived from it on every tick by the pure functions below. Nothing here
 // calls a model. Re-scoring the entire board is arithmetic, and that is what
 // makes it affordable to redo every fifteen minutes instead of only when mail
@@ -136,7 +136,7 @@ func calendarDaysBetween(from, to time.Time) int {
 //
 // Every card written before this change has no due_at, so without this fallback
 // the first sweep would score the whole board as if nothing were ever due and
-// flatten three days of the model's judgement in one pass.
+// flatten three days of the model's judgment in one pass.
 var urgencyBuckets = map[string]deadlineBucket{
 	"expired":  deadlineOverdue,
 	"critical": deadlineToday,

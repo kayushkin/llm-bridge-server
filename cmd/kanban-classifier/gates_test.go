@@ -215,7 +215,7 @@ func (w *classifierWorld) runSession(sess session) bool {
 }
 
 // gatedSession is deliberately NOT terminal: a terminal state would let the
-// final-classified path colour results that are about some other gate.
+// final-classified path color results that are about some other gate.
 func gatedSession() session {
 	return session{
 		SessionID: "br_gate",

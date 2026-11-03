@@ -30,7 +30,7 @@ import (
 //     fetched and read (refile.go uses the same fact as its discriminator), so
 //     mail the retired sender rule filed unread — 298 of the board's 846 email
 //     links when this was built — can never be cited as precedent. A wrong
-//     label on the nearest neighbour is the highest-leverage error in this
+//     label on the nearest neighbor is the highest-leverage error in this
 //     design; those are the likeliest wrong labels, and they are excluded by
 //     construction.
 //   - At most two examples per card, so five examples cannot be five copies of

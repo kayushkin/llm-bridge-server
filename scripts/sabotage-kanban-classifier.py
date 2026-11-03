@@ -26,7 +26,7 @@ email-classifier plans:
   - Read every applied diff against its label (`--diffs`). A row prints the name
     you gave it, not the edit you made.
   - An UNNOTICED row is not automatically a coverage hole. It can be a
-    behavioural no-op, or a fake in the test file that swallows the value the
+    behavioral no-op, or a fake in the test file that swallows the value the
     mutation moved.
   - Verify every needle is unique WITHIN its target file before running. The
     engine refuses a needle found in more than one target file, but with a
@@ -256,7 +256,7 @@ CASES = [
         [('schedulerJobSchedule = "*/15 * * * *"', 'schedulerJobSchedule = "*/5 * * * *"')],
     ),
     Case(
-        "the job name drifts: -register stops recognising its own job, registers a second one, "
+        "the job name drifts: -register stops recognizing its own job, registers a second one, "
         "and the box classifies every session twice",
         [('schedulerJobName     = "kanban-classifier-tick"', 'schedulerJobName     = "kanban-classifier"')],
     ),
@@ -657,7 +657,7 @@ CASES = [
           'kc.AddCardLink(cardID, cardLinkSession, sess.DisplayName, "classifier")')],
     ),
     Case(
-        'an unrecognised state lands in Done instead of defaulting to In Progress',
+        'an unrecognized state lands in Done instead of defaulting to In Progress',
         [('\tcase "abandoned":\n\t\treturn kanbanvocab.ColumnFailed\n\tdefault:\n\t\treturn kanbanvocab.ColumnInProgress',
           '\tcase "abandoned":\n\t\treturn kanbanvocab.ColumnFailed\n\tdefault:\n\t\treturn kanbanvocab.ColumnDone')],
     ),
@@ -865,7 +865,7 @@ CASES = [
           '\t\tMaxTokens: maxOutputTokens / 2,')],
     ),
     Case(
-        'a truncated report is no longer recognised as one, so it reads as an ordinary failure',
+        'a truncated report is no longer recognized as one, so it reads as an ordinary failure',
         [('var errTruncatedReport = oneshot.ErrTruncated',
           'var errTruncatedReport = errors.New("report truncated")')],
     ),

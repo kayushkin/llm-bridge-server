@@ -600,11 +600,11 @@ func isNonText(r rune) bool {
 //
 // "One line" is not only about \n. This used to replace \n and nothing else, so a
 // question typed on a CRLF machine kept its bare \r, and \t, \v, \f, U+0085,
-// U+00A0 and U+3000 all travelled into a stored display name untouched. Splitting
+// U+00A0 and U+3000 all traveled into a stored display name untouched. Splitting
 // on unicode.IsSpace covers every one of them, and covers them by the same rule
 // rather than by an ever-growing list of characters somebody remembered.
 //
-// It also collapses runs of ordinary spaces, and that is a deliberate behaviour
+// It also collapses runs of ordinary spaces, and that is a deliberate behavior
 // change rather than a side effect worth hiding: you cannot turn "a\r\nb" into
 // one space without deciding what two adjacent whitespace characters mean. A
 // display name is one row of a list, where a run of spaces renders as a gap that

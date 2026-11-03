@@ -58,7 +58,7 @@ func NewAgentExecutor(client *natsbus.Client, bridgeURL, noteboardURL string, de
 }
 
 // orchestratorHarness maps scheduler's free-form orchestrator string to the
-// canonical llm-bridge harness kind. Anything unrecognised falls through to
+// canonical llm-bridge harness kind. Anything unrecognized falls through to
 // claude-code (the interactive default).
 func orchestratorHarness(orchestrator string) msg.Harness {
 	switch orchestrator {
@@ -109,7 +109,7 @@ func (e *AgentExecutor) firstEnabledInstance(h msg.Harness) (string, error) {
 // erodes it and the bridge's reaper eventually discards the process. WorkspaceID
 // is a noteboard workspace: a markdown document the agent rewrites each run,
 // which survives compaction, reaping, and a fresh session entirely. So the
-// workspace is the source of truth and the session is only an optimisation — a
+// workspace is the source of truth and the session is only an optimization — a
 // job with a workspace but no session still remembers everything that matters.
 type AgentRun struct {
 	Agent        string
@@ -151,7 +151,7 @@ what you already escalated, and what the human decided — so you neither repeat
 work nor re-raise something that was already dismissed.
 
 Rewriting is safe: every prior version is kept, and you can read them back with
-GET %[2]s/api/items/%[1]s/revisions. So do not hoard: summarise aggressively and
+GET %[2]s/api/items/%[1]s/revisions. So do not hoard: summarize aggressively and
 keep the workspace small enough for a human to read in one sitting. If it has
 grown past that, split the detail into child workspaces (create an item of type
 workspace with parent_id=%[1]s) and leave a short roll-up here.

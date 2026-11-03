@@ -163,7 +163,7 @@ func TestPatchJobEnabled(t *testing.T) {
 	}
 }
 
-// TestCalendarEvents pins the real /api/calendar/events behaviour. This
+// TestCalendarEvents pins the real /api/calendar/events behavior. This
 // endpoint used to be a 501 stub (see the old TestCalendarStub); commit
 // be7ad73 implemented it, expanding each enabled job's cron expression into
 // occurrences within [from, to].

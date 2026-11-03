@@ -143,7 +143,7 @@ ARMS = [
      '',
      "caught"),
 
-    # --- behaviour the shortfalls sit on top of
+    # --- behavior the shortfalls sit on top of
     ("the-origin-gate-lets-everything-through",
      "\t\tif !createdByAutoworker(sess) {",
      "\t\tif false && !createdByAutoworker(sess) {",
@@ -250,7 +250,7 @@ def main():
         else:
             if red:
                 names = sorted(set(re.findall(r"--- FAIL: (\w+)", out)))
-                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the wording, not the behaviour")
+                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the wording, not the behavior")
                 wrong += 1
             else:
                 print(f"  SURVIVES {name}  (control, as intended)")

@@ -71,7 +71,7 @@ const busyTimeoutMillisecondsWanted = 5000
 //
 // _pragma=... is modernc's syntax and it is the only one that works here. The
 // mattn/go-sqlite3 spelling (_busy_timeout=5000) is silently ignored by this
-// driver, as is any other unrecognised key — hence the check in New.
+// driver, as is any other unrecognized key — hence the check in New.
 func dataSourceName(dbPath string) string {
 	return fmt.Sprintf("%s?_pragma=busy_timeout(%d)", dbPath, busyTimeoutMillisecondsWanted)
 }
@@ -92,7 +92,7 @@ func New(dbPath string) (*Store, error) {
 		d.Close()
 		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
-	// An unrecognised DSN key is silently ignored by this driver, so prove the
+	// An unrecognized DSN key is silently ignored by this driver, so prove the
 	// setting actually took effect instead of trusting the connection string.
 	var busyTimeoutMilliseconds int
 	if err := d.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeoutMilliseconds); err != nil {
@@ -170,7 +170,7 @@ func (s *Store) migrate() error {
 		// A recurring agent job's DURABLE memory, as a noteboard workspace id.
 		// session_id above is its conversation, which compaction erodes and a
 		// reap discards; the workspace is what actually survives, so the
-		// workspace is the source of truth and the session is an optimisation.
+		// workspace is the source of truth and the session is an optimization.
 		"ALTER TABLE jobs ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE jobs ADD COLUMN hold_until DATETIME",
 		"ALTER TABLE jobs ADD COLUMN description TEXT NOT NULL DEFAULT ''",
@@ -226,7 +226,7 @@ type InterruptedRun struct {
 //
 // It returns the runs it closed rather than a count of them, because closing a
 // run is a finish and the caller has to be able to report each one the way every
-// other finish is reported. A count can only be summarised, and a summary of n
+// other finish is reported. A count can only be summarized, and a summary of n
 // killed runs does not say which jobs they were.
 //
 // FinishedAt is when reconciliation noticed, not when the process actually died

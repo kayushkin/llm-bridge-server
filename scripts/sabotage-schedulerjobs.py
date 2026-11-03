@@ -73,11 +73,11 @@ CASES = [
 
     # ---- the duplicate check ----
     Case(
-        "an existing job is not recognised, so every -register adds another copy",
+        "an existing job is not recognized, so every -register adds another copy",
         [("if name == job.Name {", "if name == job.Name && false {")],
     ),
     Case(
-        "the name check matches by prefix, so a neighbouring job proves this one is registered",
+        "the name check matches by prefix, so a neighboring job proves this one is registered",
         [("if name == job.Name {", "if strings.HasPrefix(name, job.Name) {")],
     ),
     Case(

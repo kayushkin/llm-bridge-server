@@ -249,7 +249,7 @@ func TestNaiveDatetimeIsReadInLocalZone(t *testing.T) {
 }
 
 // TestListingsFeedSendersAreNeverActionable covers the subdomain spread this
-// mail actually arrives from, and the neighbours it must not catch.
+// mail actually arrives from, and the neighbors it must not catch.
 func TestListingsFeedSendersAreNeverActionable(t *testing.T) {
 	feed := []string{
 		"my-saved-home@mail.zillow.com",

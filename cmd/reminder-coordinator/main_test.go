@@ -1541,7 +1541,7 @@ func TestAllDayEventWithNoEndDateCoversItsOwnDay(t *testing.T) {
 	}
 }
 
-// The day-load line is read for its NUMBERS, not only for its colour: "~1.5h
+// The day-load line is read for its NUMBERS, not only for its color: "~1.5h
 // booked, ~12.5h free" is the sentence that answers "is there room today?".
 // Every fixture before this one used whole-hour events and asserted only the
 // icon, so rounding a duration to the nearest quarter-DAY instead of the nearest
@@ -1989,7 +1989,7 @@ func TestTheNudgeReadsTheDayAndSaysSoWhenTheCalendarFails(t *testing.T) {
 		t.Fatalf("nudgeOnce: %v", err)
 	}
 	message := herald.sessions[0]
-	// The nudge LISTS the day, it does not summarise it: "2 events" cannot tell
+	// The nudge LISTS the day, it does not summarize it: "2 events" cannot tell
 	// you whether the evening is yours. Standup sits inside work hours and costs
 	// nothing; the review runs to 8pm and eats all but the last two hours, so 2h
 	// is free and 8pm–10pm is the biggest stretch. The free figure is asserted

@@ -30,7 +30,7 @@ import (
 //	DELETE /api/items          (wrong verb)        405 {"error":"method not allowed"}
 //	GET    /api/nosuchroute                        404 404 page not found   (PLAIN TEXT)
 //
-// and two behaviours that are characterised rather than fixed, each with its own
+// and two behaviors that are characterised rather than fixed, each with its own
 // test saying so out loud.
 
 // noteboardStub routes through a real http.ServeMux carrying noteboard's own
@@ -40,7 +40,7 @@ import (
 type noteboardStub struct {
 	// items is what a list route answers with.
 	items []map[string]any
-	// knownID is the only id the single-item routes recognise; anything else 404s.
+	// knownID is the only id the single-item routes recognize; anything else 404s.
 	knownID string
 	// lastQuery is the raw query of the last list request, for the caller to read.
 	lastQuery string
@@ -270,7 +270,7 @@ func numberedItems(count int) []map[string]any {
 }
 
 // ⚠️ Also a characterisation. noteboard answers 200 and echoes the whole item for
-// a PATCH field it does not recognise — measured: {"due_date":...} returned 200
+// a PATCH field it does not recognize — measured: {"due_date":...} returned 200
 // and the item came back without it. The client passes out=nil and discards the
 // body, so `err == nil` is not evidence that anything was written.
 //

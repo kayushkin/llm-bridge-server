@@ -216,19 +216,19 @@ func TestEachCallRefusesAServerFaultWhoseBodyDecodes(t *testing.T) {
 // entityTagsList POST and cardLinks POST write 201 and the rest write 200, so a
 // client that accepted "any 2xx" would hide a route that had changed shape.
 // Each write must accept exactly what kanban-store writes and refuse its
-// neighbour.
+// neighbor.
 //
 // PutTicket is left out: kanban-store writes 200 but the client accepts any
-// 2xx, deliberately or not. That is a behaviour question for the client, not
+// 2xx, deliberately or not. That is a behavior question for the client, not
 // something a protocol port should settle.
 func TestEachWriteAcceptsExactlyTheStatusTheServerWrites(t *testing.T) {
-	neighbour := map[int]int{200: 201, 201: 200}
+	neighbor := map[int]int{200: 201, 201: 200}
 	for _, call := range everyCall {
 		if call.wantMethod == "GET" || call.name == "PutTicket" {
 			continue
 		}
-		t.Run(call.name+"/refuses a neighbouring 2xx", func(t *testing.T) {
-			rejected := neighbour[call.successStatus]
+		t.Run(call.name+"/refuses a neighboring 2xx", func(t *testing.T) {
+			rejected := neighbor[call.successStatus]
 			store := newWireRecordingStore(t, rejected, call.successBody)
 			if err := call.invoke(store.client()); err == nil {
 				t.Errorf("HTTP %d is not what kanban-store writes for this route (%d), "+

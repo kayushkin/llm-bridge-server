@@ -139,7 +139,7 @@ func pullRequestRef(card kanbanclient.CardView) string {
 // Read from the event log rather than from a tag, because the log is the record
 // of what happened and a tag is a second copy of it. A reviewer that ran and
 // then failed to write its verdict leaves no pull_request_reviewed event, and
-// the card is picked up again — which is the behaviour worth having.
+// the card is picked up again — which is the behavior worth having.
 func alreadyReviewed(kanbanURL, cardID string) (bool, error) {
 	events, err := listEvents(kanbanURL, cardID)
 	if err != nil {

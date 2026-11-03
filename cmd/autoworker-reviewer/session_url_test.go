@@ -24,11 +24,11 @@ package main
 // closes it — so a delivery to the wrong session is indistinguishable here from
 // a delivery to the right one.
 //
-// Neighbouring routes and their replies were measured against the
+// Neighboring routes and their replies were measured against the
 // llm-bridge-server running on this host on 2026-08-14 and are recorded in
 // internal/bridgesession's package comment. That is why the stub below ROUTES
 // instead of answering every path alike: against a stub that answers every path
-// the same way, an id that reaches the wrong route reads as correct behaviour,
+// the same way, an id that reaches the wrong route reads as correct behavior,
 // which is the fixture mistake the parent card was filed against.
 
 import (
@@ -55,7 +55,7 @@ type reviewerBridgeRequest struct {
 }
 
 // stubReviewerBridge answers like llm-bridge-server: Go 1.22 route patterns, one
-// wildcard segment for the session id, and the neighbouring routes that a
+// wildcard segment for the session id, and the neighboring routes that a
 // session id carrying a slash would reach if it were interpolated raw.
 //
 // Deliberately not shared with cmd/kanban-curator's stubCuratorBridge or
@@ -120,11 +120,11 @@ const aCompletedAutoworkerSession = `{"state":"completed","updated_at":"2026-08-
 
 // ======================= the read site: GET /sessions/{id} =======================
 
-// A session id that spells a neighbouring route must still address the session
+// A session id that spells a neighboring route must still address the session
 // itself. The expected request targets are written out as literals rather than
 // built with url.PathEscape, because a fixture that computes its expectation
 // the way the code does agrees with the code however wrong the code is.
-func TestASessionIDThatNamesANeighbouringRouteDoesNotReachItOnTheReadSite(t *testing.T) {
+func TestASessionIDThatNamesANeighboringRouteDoesNotReachItOnTheReadSite(t *testing.T) {
 	for _, tc := range []struct {
 		sessionID  string
 		requestURI string
@@ -171,7 +171,7 @@ func TestASessionIDThatNamesANeighbouringRouteDoesNotReachItOnTheReadSite(t *tes
 // The stakes here are not just a wrong state. main() reads this state, and only
 // a session reading "completed" is nudged; the id it then hands to sendMessage
 // is the card's id, not the one this reply describes. So a state borrowed from
-// a neighbour is what authorises the message the next test is about.
+// a neighbor is what authorises the message the next test is about.
 func TestASessionIDIsNotCutShortByAQuerySeparator(t *testing.T) {
 	const sessionID = "autoworker-1?state=completed"
 	var seen []reviewerBridgeRequest
@@ -264,7 +264,7 @@ func TestAMessageIsPostedToTheSendRouteOfTheSessionNamed(t *testing.T) {
 	}
 }
 
-// The send site's own version of the neighbouring-route row. An id carrying a
+// The send site's own version of the neighboring-route row. An id carrying a
 // slash appends its tail to the path BEFORE "/send", so the nudge is posted at
 // a path the reviewer never named.
 func TestASessionIDWithASlashDoesNotMoveTheNudgeToAnotherRoute(t *testing.T) {

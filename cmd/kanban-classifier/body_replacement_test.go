@@ -19,9 +19,9 @@ import (
 //
 // Card adfff493-8b12-433e-8b29-b38c92bd9238 reserves the decision — whether a
 // classifier-owned body should keep replacing, start appending, own a marked
-// region, or patch only when it changed. All four repairs move the behaviour
+// region, or patch only when it changed. All four repairs move the behavior
 // pinned below, and before this file every one of them could have landed, or
-// the behaviour could have drifted the other way, with the suite green.
+// the behavior could have drifted the other way, with the suite green.
 //
 // A kanban card id IS a noteboard item id, so the row an update overwrites is a
 // type:todo row in the user's single source of truth for work.

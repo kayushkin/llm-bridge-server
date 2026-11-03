@@ -8,10 +8,10 @@ package main
 // interpolation left cmd/kanban-classifier green, while the same revert fails
 // 9-16 tests in each of the other four packages that call bridgesession.
 //
-// The stub ROUTES instead of answering every path alike, with the neighbouring
+// The stub ROUTES instead of answering every path alike, with the neighboring
 // routes llm-bridge-server serves (recorded in internal/bridgesession's package
 // comment). A stub that answers every path alike reports a session id that
-// wandered onto a neighbouring route as correct behaviour.
+// wandered onto a neighboring route as correct behavior.
 
 import (
 	"fmt"

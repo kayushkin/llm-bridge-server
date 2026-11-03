@@ -122,7 +122,7 @@ func TestEachBaseURLReachesTheClientItIsFor(t *testing.T) {
 // Both clients join their base URL to a path that already starts with "/", so a
 // base URL entered with a trailing slash produces "//api/items". noteboard
 // answers that with a 404 rather than a redirect, and the tick fails on every
-// call rather than on a recognisable one.
+// call rather than on a recognizable one.
 func TestATrailingSlashOnEitherBaseURLIsTrimmedBeforeAnyRequestIsBuilt(t *testing.T) {
 	cfg, err := parseFlags([]string{
 		"-noteboard-url", "http://notes.example/",

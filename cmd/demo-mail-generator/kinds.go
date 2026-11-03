@@ -26,7 +26,7 @@ var requestKinds = []requestKind{
 	},
 	{
 		Name: "question", From: demoteam.RoleResearcher,
-		Wants: "Ask a question about how something in the code works, or what a behaviour is. Want an ANSWER, not a change. Do not ask for anything to be built.",
+		Wants: "Ask a question about how something in the code works, or what a behavior is. Want an ANSWER, not a change. Do not ask for anything to be built.",
 	},
 	{
 		Name: "scope-change", From: demoteam.RoleResearcher,
@@ -42,7 +42,7 @@ var requestKinds = []requestKind{
 	},
 	{
 		Name: "bug-report", From: demoteam.RoleResearcher,
-		Wants: "Report something behaving wrong, with the route or function it happens in and what you expected instead. Base it on behaviour the code actually has.",
+		Wants: "Report something behaving wrong, with the route or function it happens in and what you expected instead. Base it on behavior the code actually has.",
 	},
 }
 

@@ -19,7 +19,7 @@
 //
 //   - Never assert a bare error. runScheduler has five failure sites and they
 //     all return a non-nil error, so `err != nil` pins the signature and not the
-//     behaviour. Each failure test also asserts the discriminating side effect:
+//     behavior. Each failure test also asserts the discriminating side effect:
 //     the handler that must not be built, the port that must not be bound, the
 //     connection that must not be closed twice.
 package main

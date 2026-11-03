@@ -1444,7 +1444,7 @@ func omissionMarker(omittedCount int, omittedNoun string) string {
 // that drops anything, so it scales with the number of sections, which is a
 // property of the builder and not of the budget.
 //
-// It hid because a second bug cancelled it out. Under the old raw byte cut
+// It hid because a second bug canceled it out. Under the old raw byte cut
 // every truncated prompt came out at exactly 1503 bytes and the arithmetic
 // happened to land inside the budget; the rune-safe walk-back makes them 1500,
 // one more entry fits, and the unbudgeted marker no longer has slack to hide in.

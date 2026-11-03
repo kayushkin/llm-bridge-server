@@ -16,7 +16,7 @@ declared scope, and the declaration is the thing that makes that plan's silence
 readable.
 
 Why the sweep was worth scoring at all, and this is a measurement rather than a
-judgement: on 2026-08-15 an unconditional `panic()` at rescoreBoard's first line
+judgment: on 2026-08-15 an unconditional `panic()` at rescoreBoard's first line
 left `go test ./...` GREEN across the whole repository. Nothing executed it. It
 runs every fifteen minutes and PATCHes the board.
 
@@ -39,7 +39,7 @@ reminder-coordinator plans:
   - Read every applied diff against its label (`--diffs`). A row prints the
     name you gave it, not the edit you made.
   - An UNNOTICED row is not automatically a coverage hole. It can be a
-    behavioural no-op, or a fake in the test file that swallows the value the
+    behavioral no-op, or a fake in the test file that swallows the value the
     mutation moved.
 
 Score when filed by the 216th nightly pass: 19/19 real mechanisms caught, both
@@ -90,7 +90,7 @@ CASES = [
           'log.Printf("[email] dry run would change %q: %s", card.Title, change)')],
         expected_unnoticed="log prose for whoever is watching a -dry-run tick. No test reads the "
                            "log and nothing downstream parses it. This control is what proves the "
-                           "rows below redden on the BEHAVIOUR and not on the source lines carrying "
+                           "rows below redden on the BEHAVIOR and not on the source lines carrying "
                            "it. Falsified by a test that captures log output.",
     ),
 

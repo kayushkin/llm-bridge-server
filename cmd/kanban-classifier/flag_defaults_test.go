@@ -344,7 +344,7 @@ func TestTheRegisteredJobMatchesTheOneThatRuns(t *testing.T) {
 	}
 
 	// The dedupe -register does before POSTing keys off this exact name. A drift
-	// means it stops recognising its own job and registers a second one beside
+	// means it stops recognizing its own job and registers a second one beside
 	// the first, and the box then classifies every session twice.
 	if payload["name"] != schedulerJobName {
 		t.Errorf("the payload name %v is not the constant %q the dedupe check reads", payload["name"], schedulerJobName)

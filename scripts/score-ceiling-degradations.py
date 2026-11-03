@@ -159,7 +159,7 @@ def main():
         else:
             if red:
                 names = sorted(set(re.findall(r"--- FAIL: (\w+)", out)))
-                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the constant, not the behaviour")
+                print(f"  WRONG    {name}  -- a control went red ({', '.join(names)}): the suite is pinning the constant, not the behavior")
                 wrong += 1
             else:
                 print(f"  SURVIVES {name}  (control, as intended)")

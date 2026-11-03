@@ -128,7 +128,7 @@ func TestAnAlreadyRegisteredTickIsNotRegisteredTwice(t *testing.T) {
 
 // TestAnUnrelatedJobDoesNotLookLikeThisOne. The idempotence check walks every
 // job the scheduler carries, and this box carries dozens. A comparison that
-// matched loosely would read a neighbour as proof the tick is registered and
+// matched loosely would read a neighbor as proof the tick is registered and
 // leave the dispatcher off cron entirely, reporting success.
 func TestAnUnrelatedJobDoesNotLookLikeThisOne(t *testing.T) {
 	f := startSchedulerFixture(t, &schedulerFixture{

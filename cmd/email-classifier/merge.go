@@ -50,7 +50,7 @@ Your job is to find groups of cards that are really ONE bucket, split apart beca
 Rules:
 - NEVER merge TASK cards. Two different things to do are two cards even if they look similar. If in doubt, do not merge.
 - Only group cards that would genuinely receive the same future mail.
-- A SHARED SENDER IS NOT A SHARED BUCKET. One organisation sends several unrelated kinds of mail from one address: a bank sends statements, security alerts AND rewards marketing; a retailer sends order receipts AND promotions. Each card lists the addresses that feed it, and a shared address is a hint worth looking at — it is never on its own a reason to merge. "They are all Wells Fargo mail" is not a group. "They are all marketing", "they are all receipts" is. Group by what the mail IS, never by who sent it.
+- A SHARED SENDER IS NOT A SHARED BUCKET. One organization sends several unrelated kinds of mail from one address: a bank sends statements, security alerts AND rewards marketing; a retailer sends order receipts AND promotions. Each card lists the addresses that feed it, and a shared address is a hint worth looking at — it is never on its own a reason to merge. "They are all Wells Fargo mail" is not a group. "They are all marketing", "they are all receipts" is. Group by what the mail IS, never by who sent it.
 - A group needs at least two cards.
 - survivor_card_id: if one existing card is already correctly named for the whole group, give its id and the others fold into it. If none is, leave it empty and give a survivor_title naming the CATEGORY ("Payment receipts", "Substack newsletters") — never an instance.
 - reason: one short sentence a human can check.
@@ -91,7 +91,7 @@ func mergeSchema() map[string]any {
 }
 
 // buildMergeDigest renders the whole board. Unlike the filing digest this is
-// never truncated: a merge decision is precisely a whole-board judgement, and a
+// never truncated: a merge decision is precisely a whole-board judgment, and a
 // board trimmed to fit would hide the very duplicate being looked for. It runs
 // about 200 characters a card — some 12,000 tokens at 180 cards — and every
 // batched call carries all of it (merge_batches.go).
@@ -339,7 +339,7 @@ func moveLinks(cfg config, kc *kanbanclient.Client, loser, survivor *cardState) 
 // It is archived rather than deleted, and its body records both where its
 // evidence went and exactly what went. Deleting would be tidier to look at and
 // much worse to live with: the underlying noteboard item is what a human may
-// have edited, and a merge is a judgement that deserves to be reversible.
+// have edited, and a merge is a judgment that deserves to be reversible.
 //
 // The list of moved links is what makes it reversible, and it was missing for
 // as long as this function existed. The note said where the evidence had gone

@@ -12,17 +12,17 @@ package main
 // TERMINAL CONDITION: the card is moved to Failed with "reaped: bridge session
 // not found (archived/pruned)". Every other error only skips the card until the
 // next tick. So a session id that wanders off its route does not fail loudly —
-// it lands on a neighbouring route, collects that route's 404, and the curator
+// it lands on a neighboring route, collects that route's 404, and the curator
 // closes a card whose agent is still working.
 //
-// Neighbouring routes and their replies were measured against the
+// Neighboring routes and their replies were measured against the
 // llm-bridge-server running on this host on 2026-08-14 and are recorded in
 // internal/bridgesession's package comment. The one that matters:
 //
 //	GET /sessions/{id}/attach-token  404 — for a session that EXISTS and may be running
 //
 // That is why the stub below ROUTES instead of answering every path alike. A
-// stub that 404s everything reports this bug as correct behaviour, which is the
+// stub that 404s everything reports this bug as correct behavior, which is the
 // fixture mistake the parent card was filed against.
 
 import (
@@ -46,7 +46,7 @@ type curatorBridgeRequest struct {
 }
 
 // stubCuratorBridge answers like llm-bridge-server: Go 1.22 route patterns, one
-// wildcard segment for the session id, and the neighbouring routes that a
+// wildcard segment for the session id, and the neighboring routes that a
 // session id carrying a slash would reach if it were interpolated raw.
 //
 // Deliberately not shared with cmd/email-classifier's stubBridge — that one
@@ -101,11 +101,11 @@ func stubCuratorBridge(t *testing.T, seen *[]curatorBridgeRequest, sessionBody s
 
 const aCompletedSession = `{"state":"completed","updated_at":"2026-08-14T12:00:00Z","purpose":"autoworker"}`
 
-// A session id that spells a neighbouring route must still address the session
+// A session id that spells a neighboring route must still address the session
 // itself. The expected request targets are written out as literals rather than
 // built with url.PathEscape, because a fixture that computes its expectation
 // the way the code does agrees with the code however wrong the code is.
-func TestASessionIDThatNamesANeighbouringRouteDoesNotReachIt(t *testing.T) {
+func TestASessionIDThatNamesANeighboringRouteDoesNotReachIt(t *testing.T) {
 	for _, tc := range []struct {
 		sessionID  string
 		requestURI string

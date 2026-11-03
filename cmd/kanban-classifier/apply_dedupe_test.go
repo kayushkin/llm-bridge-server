@@ -70,7 +70,7 @@ func TestACreatedCardIsMarkedAsClassifierWritten(t *testing.T) {
 // An unknown state is a model that answered off-schema. In Progress is the safe
 // landing: it keeps the card visible and in play rather than filing it as
 // finished or failed on a guess.
-func TestAnUnrecognisedStateLandsInProgressRatherThanBeingJudged(t *testing.T) {
+func TestAnUnrecognizedStateLandsInProgressRatherThanBeingJudged(t *testing.T) {
 	for _, state := range []string{"", "in progress", "IN_PROGRESS", "cancelled", "wontfix"} {
 		if got := stateToColumn(state); got != "In Progress" {
 			t.Errorf("stateToColumn(%q) = %q, want In Progress", state, got)

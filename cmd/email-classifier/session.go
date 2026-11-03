@@ -67,7 +67,7 @@ var dormantSessionStates = map[string]bool{
 
 // dormantSessionWindow is how long a dormant session still counts as owning its
 // card. kanban-dispatcher uses the same hour to decide whether an idle session
-// is still warm enough to reuse, and the two judgements should not disagree.
+// is still warm enough to reuse, and the two judgments should not disagree.
 const dormantSessionWindow = time.Hour
 
 // sessionGate answers "is an agent working on this card right now?".
@@ -150,7 +150,7 @@ func (g *sessionGate) resolve(sessionID string) (bool, string) {
 
 	default:
 		// Actively working: starting, model_generating, tool_running,
-		// compacting, rate_limited, running. Anything unrecognised lands here
+		// compacting, rate_limited, running. Anything unrecognized lands here
 		// too, which is the safe side of an unknown state.
 		return true, "state " + state
 	}
@@ -186,7 +186,7 @@ func (g *sessionGate) dormantStillOwns(sessionID, state, updatedAt string) (bool
 // the distinction does not matter — would make an unreachable bridge look
 // exactly like a finished session and let the classifier edit live cards.
 func fetchSessionState(client *http.Client, bridgeURL, sessionID string) (state, updatedAt string, notFound bool, err error) {
-	// Built rather than interpolated, because an id that reaches a neighbouring
+	// Built rather than interpolated, because an id that reaches a neighboring
 	// route answers 404 and a 404 is the one reply that frees the card. See
 	// internal/bridgesession for the routes a bare fmt.Sprintf can hit.
 	url, err := bridgesession.URL(bridgeURL, sessionID)

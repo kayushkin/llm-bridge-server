@@ -1,9 +1,9 @@
 package main
 
-// Tests for behaviour that no test in this package named at all.
+// Tests for behavior that no test in this package named at all.
 //
 // A sabotage cross-table asks "which tests does no case redden". It cannot ask
-// "which behaviour does no test name": a function absent from every _test.go is
+// "which behavior does no test name": a function absent from every _test.go is
 // invisible to it, because there is no test there to be silent. Censusing this
 // scorer's target against the package's tests, then emptying each candidate and
 // re-running, found two functions whose whole body could be replaced by a

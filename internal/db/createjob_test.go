@@ -59,7 +59,7 @@ func TestCreateJobFullStoresTheEnabledItIsGiven(t *testing.T) {
 // TestCreateJobHelperCreatesAnArmedJob — CreateJob takes no enabled argument,
 // so it has to state its own intent. It is used by tests and by callers that
 // mean "schedule this now"; if the field-less path silently produced disabled
-// jobs the change that made Enabled honoured would have broken them quietly.
+// jobs the change that made Enabled honored would have broken them quietly.
 func TestCreateJobHelperCreatesAnArmedJob(t *testing.T) {
 	store := patchTestStore(t)
 	created, err := store.CreateJob("j", "* * * * *", "echo")

@@ -21,8 +21,8 @@ type bridgeRequest struct {
 }
 
 // stubBridge answers like llm-bridge-server: Go 1.22 patterns, one wildcard
-// segment for the session id, and the neighbouring routes a session ref
-// carrying a slash would otherwise reach. Every one of those neighbours is a
+// segment for the session id, and the neighboring routes a session ref
+// carrying a slash would otherwise reach. Every one of those neighbors is a
 // real route on the running server, and each was measured 2026-08-14:
 //
 //	GET  /sessions/{id}/send          405 — registered POST-only
@@ -196,7 +196,7 @@ func TestUnknownStateHoldsTheCard(t *testing.T) {
 	// than a new terminal one, and guessing wrong costs an agent's work.
 	g := gateAgainst(t, "reticulating_splines", g0)
 	if owned, _ := g.agentOwns(cardWithSession("s-1")); !owned {
-		t.Fatal("an unrecognised state must fail safe and hold the card")
+		t.Fatal("an unrecognized state must fail safe and hold the card")
 	}
 }
 
@@ -244,9 +244,9 @@ func TestTheGateAsksAboutTheWholeRefAndNotThePrefixBeforeAQuestionMark(t *testin
 	}
 }
 
-// A ref containing a slash names a neighbouring route. attach-token is the one
+// A ref containing a slash names a neighboring route. attach-token is the one
 // that matters: it 404s for a session that exists, and a 404 frees the card.
-func TestASessionRefThatNamesANeighbouringRouteDoesNotReachIt(t *testing.T) {
+func TestASessionRefThatNamesANeighboringRouteDoesNotReachIt(t *testing.T) {
 	for _, ref := range []string{"s-1/send", "s-1/messages", "s-1/attach-token", "s-1/git"} {
 		t.Run(ref, func(t *testing.T) {
 			var seen []bridgeRequest

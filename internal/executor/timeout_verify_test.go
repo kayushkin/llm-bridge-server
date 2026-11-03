@@ -66,8 +66,8 @@ func TestNonZeroExitIsError(t *testing.T) {
 	}
 }
 
-// A long timeout must be honoured, not clipped to the old global 5 minutes.
-func TestLongTimeoutIsHonoured(t *testing.T) {
+// A long timeout must be honored, not clipped to the old global 5 minutes.
+func TestLongTimeoutIsHonored(t *testing.T) {
 	res := executor.Run("sleep 1", 2*time.Hour)
 	if res.Status != "success" {
 		t.Fatalf("want success, got %q / %q", res.Status, res.Output)

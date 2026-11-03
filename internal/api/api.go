@@ -144,7 +144,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			// Pointer, for the same reason jobPatchRequest.Enabled is one: a
 			// plain bool cannot tell "enabled: false" from "field absent", and
 			// those must mean different things here. Absent means true, so no
-			// existing caller changes behaviour; false means create it off.
+			// existing caller changes behavior; false means create it off.
 			Enabled *bool `json:"enabled"`
 		}
 		if err := decodeStrict(r, &req); err != nil {

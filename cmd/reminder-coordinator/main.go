@@ -67,7 +67,7 @@ const (
 
 	// linkGoogleCalendarEvent and linkGoogleCalendarSyncedDueAt keep the calendar
 	// mirror idempotent, and are the same link scheme personal-todo-calsync used —
-	// so any event it created is still recognised and adopted rather than
+	// so any event it created is still recognized and adopted rather than
 	// abandoned and duplicated.
 	linkGoogleCalendarEvent       = "gcal:"
 	linkGoogleCalendarSyncedDueAt = "gcalsync:"
@@ -1415,7 +1415,7 @@ func (c *Coordinator) todaysCalendar() ([]CalendarEvent, error) {
 // item says it wants one; otherwise it lives in the digest.
 //
 // The link scheme is the one personal-todo-calsync used (gcal: / gcalsync:), so
-// any event that script created is recognised and kept in step rather than
+// any event that script created is recognized and kept in step rather than
 // orphaned on the calendar with a fresh duplicate beside it.
 func (c *Coordinator) syncCalendar() error {
 	token, err := c.calendar.ResolveDashToken()
@@ -1715,7 +1715,7 @@ const (
 // listEveryPage reads every item matching query, one page at a time, and fails
 // if the list is still going after noteboardMaxPages pages.
 //
-// noteboard orders by `created_at DESC, id`, a total order, and honours offset
+// noteboard orders by `created_at DESC, id`, a total order, and honors offset
 // together with type, status, tag and parent_id (checked on :8191, 2026-09-27).
 // An item created mid-read pushes rows toward later pages and can hand one back
 // twice, which the dedupe absorbs; an item deleted mid-read can drop one, which

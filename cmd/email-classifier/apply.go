@@ -200,7 +200,7 @@ func (a *applier) applyReport(batch []pendingEmail, report *filingReport) error 
 }
 
 // resolveFilingCards turns a filing's card references into card ids, creating the
-// inline new card if it names one. Both kinds are honoured together — that is the
+// inline new card if it names one. Both kinds are honored together — that is the
 // many-to-many case, an email that belongs on an existing card and a new one.
 //
 // cardIDByTitle is mutated as cards are created, so a later filing in the same

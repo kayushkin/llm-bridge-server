@@ -222,7 +222,7 @@ REACH_GUARDS = [
 # reporting a failure. A row caught that way prints no `file.go:NN:` line at
 # all, so a message-based classifier can only say "unreadable" unless it is
 # told to look. The 281st pass met one for real (`os.Exit` under a `-h` flag)
-# and named it a third verdict rather than laundering it into either neighbour.
+# and named it a third verdict rather than laundering it into either neighbor.
 #
 # ⚠️ This suite produced NO runtime-fired row — declared, not assumed, and the
 # `--guard-split` run below prints the count either way. It is carried anyway
@@ -519,7 +519,7 @@ def self_test():
     check("no failure lines at all is not a guard verdict", [], False)
 
     # ⚠️ The next three lines are NOT messages this suite prints, and are
-    # labelled so rather than mixed in above. They state a property of the
+    # labeled so rather than mixed in above. They state a property of the
     # CLASSIFIER, which is a different thing from characterising the suite: a
     # marker found anywhere but at the start of a message is not a guard.
     #

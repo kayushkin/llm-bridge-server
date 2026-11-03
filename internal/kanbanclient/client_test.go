@@ -67,7 +67,7 @@ func TestALinkFailureStillReportsTheCardThatExists(t *testing.T) {
 	}
 	stranded, ok := StrandedCardID(err)
 	if !ok {
-		t.Fatalf("StrandedCardID must recognise a half-made card; got err %T: %v", err, err)
+		t.Fatalf("StrandedCardID must recognize a half-made card; got err %T: %v", err, err)
 	}
 	if stranded != "card-abc" {
 		t.Errorf("stranded card id = %q, want %q", stranded, "card-abc")

@@ -531,7 +531,7 @@ SUITE_FILES = sorted((REPO / "cmd" / "scheduler").glob("*.go"))
 # failure. Such a row prints no `file.go:NN:` line at all, so a classifier can
 # only call it unreadable unless it is told to look. The 281st pass met one for
 # real (os.Exit under a -h flag) and named it a third verdict rather than
-# laundering it into either neighbour.
+# laundering it into either neighbor.
 #
 # ⚠️ Declared, not assumed: the --guard-split run prints the count either way.
 # It is carried because this suite CAN produce one — the daemon under test runs

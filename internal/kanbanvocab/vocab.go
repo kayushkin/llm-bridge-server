@@ -129,7 +129,7 @@ const BoardAutoworkerQueue = "Autoworker queue"
 // separate function on purpose. cmd/autoworker used to pass one shared slice to
 // EnsureBoard for both boards, which is the hazard the package doc describes:
 // the moment either board's shape needs to change, a single shared set changes
-// both, and EnsureBoard's additive behaviour means the mistake shows up as an
+// both, and EnsureBoard's additive behavior means the mistake shows up as an
 // extra column rather than an error.
 //
 // ⚠️ The live board carries a sixth column, "Needs approval", which no code in
