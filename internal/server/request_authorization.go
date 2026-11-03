@@ -451,6 +451,8 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /hooks":                                  operatorRoute("hook registry"),
 	"GET /hooks":                                   operatorRoute("hook registry"),
 	"GET /hook-options":                            operatorRoute("hook registry vocabulary"),
+	"POST /restart-drain":                          operatorRoute("hold every new turn until a restart, so the work running can finish"),
+	"DELETE /restart-drain":                        operatorRoute("stop holding new turns and send the messages held"),
 	"GET /restart-readiness":                       operatorRoute("which sessions a restart of this server would cut off; deploy.sh waits on it"),
 	"GET /settings":                                operatorRoute("this server's own configuration, with where each value came from"),
 	"PUT /settings/{key}":                          operatorRoute("changes how this server behaves"),

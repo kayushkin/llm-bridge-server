@@ -86,3 +86,10 @@ func NewSessionBriefRevisionID() string {
 func NewLooseEndID() string {
 	return "loose_" + ulid.Make().String()
 }
+
+// NewHeldMessageID returns a fresh id for a message held while the server
+// waits to restart (held_<ULID>). Held messages are sent in id order, which is
+// the order they arrived.
+func NewHeldMessageID() string {
+	return "held_" + ulid.Make().String()
+}

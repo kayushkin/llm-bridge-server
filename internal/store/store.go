@@ -585,6 +585,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateMachineStatsSamples(); err != nil {
 		return err
 	}
+	if err := s.migrateHeldMessages(); err != nil {
+		return err
+	}
 	return nil
 }
 

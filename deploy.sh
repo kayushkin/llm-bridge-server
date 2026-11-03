@@ -188,6 +188,20 @@ if [ -n "${DEPLOY_SKIP_IDLE_WAIT:-}" ]; then
 else
   WAIT_STARTED=$(date +%s)
   LAST_WAITING_ON=""
+  DRAIN_STARTED=""
+  DRAIN_ASKED=""
+  # While it waits, the server holds every new turn instead of starting it, so
+  # the work running can finish (POST /restart-drain). A held message is sent
+  # by the restarted server, or by this one at once if the deploy stops before
+  # the service does: the trap below ends the drain. The drain's own limit
+  # outlasts the wait, so a deploy killed outright still frees what it held.
+  end_drain_unless_stopped() {
+    if [ -n "$DRAIN_STARTED" ] && [ -z "${SERVICE_STOPPED:-}" ]; then
+      echo "    the deploy ended before the stop; the server stops holding new turns and sends what it held"
+      curl -sS -o /dev/null -X DELETE -H "X-LLM-Bridge-Service-Token: $SERVICE_TOKEN" http://localhost:8160/restart-drain || true
+    fi
+  }
+  trap end_drain_unless_stopped EXIT
   while :; do
     READINESS_BODY=$(mktemp)
     READINESS_STATUS=$(curl -sS -o "$READINESS_BODY" -w '%{http_code}' \
@@ -203,6 +217,19 @@ else
     if [ "$READINESS_STATUS" != "200" ]; then
       echo "ERROR: /restart-readiness answered $READINESS_STATUS: $(head -c 500 "$READINESS_BODY"); the service was not touched"
       rm -f "$READINESS_BODY"; exit 1
+    fi
+    if [ -z "$DRAIN_ASKED" ]; then
+      DRAIN_ASKED=1
+      DRAIN_BODY=$(jq -n --argjson seconds "$(( IDLE_WAIT_SECONDS + 600 ))" \
+        --arg reason "deploy of $(git rev-parse --short HEAD) started by ${LLM_BRIDGE_SESSION_ID:-a shell}" \
+        '{maximum_seconds: $seconds, reason: $reason}')
+      DRAIN_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "X-LLM-Bridge-Service-Token: $SERVICE_TOKEN" \
+        -H 'Content-Type: application/json' -d "$DRAIN_BODY" http://localhost:8160/restart-drain)
+      case "$DRAIN_STATUS" in
+        200) DRAIN_STARTED=1; echo "    the server now holds new turns until the restart" ;;
+        404|405) echo "    the running server cannot hold new turns (it predates the drain); new turns may still start" ;;
+        *) echo "ERROR: POST /restart-drain answered $DRAIN_STATUS; the service was not touched"; rm -f "$READINESS_BODY"; exit 1 ;;
+      esac
     fi
     WAITING_ON=$(jq -r --arg own "${LLM_BRIDGE_SESSION_ID:-}" '.busy_sessions[] | select(.session_id != $own)
       | "      \(.session_id) \(.state) \(.display_name)" + ([.background_tasks[]? | "\n        - \(.description) (\(.task_type), task \(.task_id))"] | join(""))' "$READINESS_BODY")
@@ -225,6 +252,7 @@ else
 fi
 
 echo "==> Stopping $SERVICE..."
+SERVICE_STOPPED=1
 sudo systemctl stop "$SERVICE" 2>/dev/null || true
 sleep 1
 

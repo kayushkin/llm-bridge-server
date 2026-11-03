@@ -346,6 +346,8 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `*` | `/images/` | Harness images | principal |
 | `GET` | `/models` | Models there are credentials for | operator |
 | `POST` | `/oneshot` | One model call for a model-store role, with no session; the server picks the model, the instance and the fallbacks | operator |
+| `DELETE` | `/restart-drain` | Stop holding new turns and send the held messages | operator |
+| `POST` | `/restart-drain` | Hold new turns until a restart, for at most maximum_seconds | operator |
 | `GET` | `/restart-readiness` | Which sessions a restart would cut off, so a deploy can wait for them | operator |
 | `GET` | `/server` | This server's name and whether it is holding its machine awake | principal |
 | `GET` | `/settings` | Every server setting, its value and what decided it | operator |

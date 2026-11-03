@@ -28,6 +28,10 @@ type sessionARestartWouldCutOff struct {
 type restartReadiness struct {
 	Ready        bool                         `json:"ready"`
 	BusySessions []sessionARestartWouldCutOff `json:"busy_sessions"`
+	// Drain says whether new turns are being held (restart_drain.go), and
+	// HeldMessages how many messages wait to be sent.
+	Drain        restartDrainView `json:"drain"`
+	HeldMessages int              `json:"held_messages"`
 }
 
 // handleRestartReadiness serves GET /restart-readiness, which deploy.sh polls
@@ -38,29 +42,42 @@ type restartReadiness struct {
 // until deploy.sh's time limit. A harness subagent has no process of its own,
 // so it never counts; its parent does, as background_tasks_running.
 func (s *Server) handleRestartReadiness(w http.ResponseWriter, r *http.Request) {
-	answer := restartReadiness{BusySessions: []sessionARestartWouldCutOff{}}
+	busy, err := s.sessionsARestartWouldCutOff(s.harness.HasProcess)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "session_store_unreadable", err.Error())
+		return
+	}
+	held, err := s.store.UnclaimedHeldMessages()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "session_store_unreadable", err.Error())
+		return
+	}
+	writeJSON(w, restartReadiness{Ready: len(busy) == 0, BusySessions: busy, Drain: s.restartDrainView(), HeldMessages: len(held)})
+}
+
+// sessionsARestartWouldCutOff lists the sessions in a busy state whose harness
+// process is running, by processRunning.
+func (s *Server) sessionsARestartWouldCutOff(processRunning func(sessionID string) bool) ([]sessionARestartWouldCutOff, error) {
+	busy := []sessionARestartWouldCutOff{}
 	for _, state := range sessionStatesARestartCutsOff() {
 		sessions, err := s.store.ListSessionsByState(string(state))
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "session_store_unreadable", err.Error())
-			return
+			return nil, err
 		}
 		for _, session := range sessions {
-			if !s.harness.HasProcess(session.SessionID) {
+			if !processRunning(session.SessionID) {
 				continue
 			}
-			busy := sessionARestartWouldCutOff{SessionID: session.SessionID, DisplayName: session.DisplayName, State: session.State}
+			entry := sessionARestartWouldCutOff{SessionID: session.SessionID, DisplayName: session.DisplayName, State: session.State}
 			if state == msg.SessionBackgroundTasksRunning {
 				tasks, err := s.store.LastReportedBackgroundTasks(session.SessionID)
 				if err != nil {
-					writeJSONError(w, http.StatusInternalServerError, "session_store_unreadable", err.Error())
-					return
+					return nil, err
 				}
-				busy.BackgroundTasks = tasks
+				entry.BackgroundTasks = tasks
 			}
-			answer.BusySessions = append(answer.BusySessions, busy)
+			busy = append(busy, entry)
 		}
 	}
-	answer.Ready = len(answer.BusySessions) == 0
-	writeJSON(w, answer)
+	return busy, nil
 }

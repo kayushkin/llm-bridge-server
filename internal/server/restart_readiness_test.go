@@ -11,14 +11,6 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-func writeStateForRestartReadinessTest(t *testing.T, st *store.Store, sessionID string, state msg.SessionState) {
-	t.Helper()
-	if _, err := st.WriteSessionStatus(sessionID, &msg.Event{Type: msg.EventSessionStatus, Timestamp: time.Now(),
-		Status: &msg.SessionStatus{State: state}}); err != nil {
-		t.Fatalf("write %s to %s: %v", state, sessionID, err)
-	}
-}
-
 func readRestartReadiness(t *testing.T, srv *Server) restartReadiness {
 	t.Helper()
 	recorder := httptest.NewRecorder()
@@ -33,50 +25,64 @@ func readRestartReadiness(t *testing.T, srv *Server) restartReadiness {
 	return answer
 }
 
-// deploy.sh waits on this route before it stops the service, so it must name
-// a session whose process is running work, and only that: a row left busy by a
-// process that is gone would hold every deploy until the time limit, and an
-// idle session loses nothing to a restart.
-func TestRestartReadinessNamesOnlyBusySessionsWithARunningProcess(t *testing.T) {
-	buildMockHarnessOnPath(t)
+// deploy.sh waits on this before it stops the service, so it must name a
+// session that is doing work and has a running process, and only that: a row
+// left busy by a process that is gone would hold every deploy until the time
+// limit, and an idle session loses nothing to a restart.
+func TestSessionsARestartWouldCutOffAreBusyAndHaveARunningProcess(t *testing.T) {
 	srv, st, instID := testServerWithInstance(t, msg.HarnessMock)
-
-	live := postCreateSession(t, srv, autoStartRequest(instID))
-	t.Cleanup(func() { srv.harness.Kill(live.SessionID) })
-	if !srv.harness.HasProcess(live.SessionID) {
-		t.Fatal("the session has no process; the test needs one")
+	rows := map[string]msg.SessionState{
+		"br_running_a_tool":          msg.SessionToolRunning,
+		"br_background_agents":       msg.SessionBackgroundTasksRunning,
+		"br_idle_with_a_process":     msg.SessionIdle,
+		"br_busy_row_but_no_process": msg.SessionModelGenerating,
 	}
-	const staleSessionID = "br_busy_row_without_a_process"
-	if err := st.CreateSession(&store.Session{SessionID: staleSessionID, Harness: msg.HarnessMock, InstanceID: instID,
-		State: string(msg.SessionModelGenerating), Type: msg.SessionTypeAutonomous}); err != nil {
-		t.Fatalf("create stale session: %v", err)
+	for sessionID, state := range rows {
+		if err := st.CreateSession(&store.Session{SessionID: sessionID, Harness: msg.HarnessMock, InstanceID: instID,
+			State: string(state), Type: msg.SessionTypeAutonomous}); err != nil {
+			t.Fatal(err)
+		}
 	}
-
-	writeStateForRestartReadinessTest(t, st, live.SessionID, msg.SessionIdle)
-	if answer := readRestartReadiness(t, srv); !answer.Ready || len(answer.BusySessions) != 0 {
-		t.Fatalf("with only an idle live session and a stale busy row: %+v; want ready, none busy", answer)
-	}
-
-	writeStateForRestartReadinessTest(t, st, live.SessionID, msg.SessionToolRunning)
-	answer := readRestartReadiness(t, srv)
-	if answer.Ready || len(answer.BusySessions) != 1 || answer.BusySessions[0].SessionID != live.SessionID ||
-		answer.BusySessions[0].State != string(msg.SessionToolRunning) {
-		t.Fatalf("with the live session running a tool: %+v; want not ready, that session alone", answer)
-	}
-
 	subagent := msg.BackgroundTask{TaskID: "a1", TaskType: msg.TaskTypeLocalAgent, Description: "Research the tuner"}
 	data, err := json.Marshal(msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{
 		Subtype: msg.SystemSubtypeBackgroundTasksChanged, BackgroundTasks: []msg.BackgroundTask{subagent}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.StoreEventReturningID(live.SessionID, string(msg.EventSystem), "", "", data); err != nil {
-		t.Fatalf("store background tasks: %v", err)
+	if _, err := st.StoreEventReturningID("br_background_agents", string(msg.EventSystem), "", "", data); err != nil {
+		t.Fatal(err)
 	}
-	writeStateForRestartReadinessTest(t, st, live.SessionID, msg.SessionBackgroundTasksRunning)
-	answer = readRestartReadiness(t, srv)
-	if answer.Ready || len(answer.BusySessions) != 1 || len(answer.BusySessions[0].BackgroundTasks) != 1 ||
-		answer.BusySessions[0].BackgroundTasks[0].TaskID != "a1" {
-		t.Fatalf("with a background agent running: %+v; want not ready, naming task a1", answer)
+	withProcess := map[string]bool{"br_running_a_tool": true, "br_background_agents": true, "br_idle_with_a_process": true}
+
+	busy, err := srv.sessionsARestartWouldCutOff(func(sessionID string) bool { return withProcess[sessionID] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]sessionARestartWouldCutOff{}
+	for _, entry := range busy {
+		got[entry.SessionID] = entry
+	}
+	if len(got) != 2 {
+		t.Fatalf("busy = %+v; want br_running_a_tool and br_background_agents only", busy)
+	}
+	if got["br_running_a_tool"].State != string(msg.SessionToolRunning) {
+		t.Errorf("br_running_a_tool = %+v", got["br_running_a_tool"])
+	}
+	if tasks := got["br_background_agents"].BackgroundTasks; len(tasks) != 1 || tasks[0].TaskID != "a1" {
+		t.Errorf("br_background_agents tasks = %+v; want task a1", tasks)
+	}
+
+	// The route itself: nothing here has a live process in the harness
+	// manager, so it is ready, and it reports the drain and held messages.
+	answer := readRestartReadiness(t, srv)
+	if !answer.Ready || len(answer.BusySessions) != 0 || answer.Drain.Draining || answer.HeldMessages != 0 {
+		t.Fatalf("readiness with no live processes = %+v; want ready, nothing busy, not draining", answer)
+	}
+	if err := st.HoldMessage(store.HeldMessage{HeldMessageID: "held_01TESTREADINESS00000000000", SessionID: "br_idle_with_a_process",
+		Request: msg.SendMessageRequest{Message: "later"}, Source: "send", HeldAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if answer := readRestartReadiness(t, srv); answer.HeldMessages != 1 {
+		t.Fatalf("held_messages = %d; want 1", answer.HeldMessages)
 	}
 }

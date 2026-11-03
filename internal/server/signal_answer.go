@@ -214,23 +214,17 @@ func (s *Server) parkedToolInputWithAnswers(bridgeID, requestID string, answersB
 func (s *Server) answerAsNextMessage(r *http.Request, sess *store.Session, group []store.Signal, req signalAnswerRequest) error {
 	text := answerTextForMessage(group, req.Answers)
 
-	if s.harness.Get(sess.SessionID) == nil {
-		if err := s.restartForAnswer(r, sess); err != nil {
+	// While the server drains before a restart, the answer waits to be sent
+	// like any other message (restart_drain.go); the questions are answered
+	// now either way.
+	_, held, err := s.holdMessageIfRestartDraining(sess.SessionID, msg.SendMessageRequest{Message: text}, "signal_answer")
+	if err != nil {
+		return err
+	}
+	if !held {
+		if err := s.sendAnswerNow(r, sess, text); err != nil {
 			return err
 		}
-	}
-
-	userEvent := msg.Event{
-		Type:            msg.EventUserMessage,
-		BridgeSessionID: sess.SessionID,
-		Timestamp:       time.Now(),
-		Result:          &msg.ResultEvent{Text: text},
-	}
-	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
-		return fmt.Errorf("persist user_message: %w", err)
-	}
-	if err := s.harness.Send(sess.SessionID, text, nil); err != nil {
-		return err
 	}
 
 	// Answering an archived session reopens it, for the same reason replying
@@ -264,6 +258,26 @@ func (s *Server) answerAsNextMessage(r *http.Request, sess *store.Session, group
 	// turn-end will ever come to supersede them.
 	s.supersedeStaleQuestions(sess.SessionID)
 	return nil
+}
+
+// sendAnswerNow starts the session if its process is gone, records the answer
+// as the user's message, and sends it.
+func (s *Server) sendAnswerNow(r *http.Request, sess *store.Session, text string) error {
+	if s.harness.Get(sess.SessionID) == nil {
+		if err := s.restartForAnswer(r, sess); err != nil {
+			return err
+		}
+	}
+	userEvent := msg.Event{
+		Type:            msg.EventUserMessage,
+		BridgeSessionID: sess.SessionID,
+		Timestamp:       time.Now(),
+		Result:          &msg.ResultEvent{Text: text},
+	}
+	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
+		return fmt.Errorf("persist user_message: %w", err)
+	}
+	return s.harness.Send(sess.SessionID, text, nil)
 }
 
 // restartForAnswer brings back the process a reaped session lost.

@@ -81,6 +81,9 @@ type Server struct {
 	// keepAwake holds this machine awake while sessions run, once
 	// StartKeepAwake has run; nil before that and in tests.
 	keepAwake *keepawake.Controller
+	// restartDrain holds new turns while a deploy waits to restart this
+	// server (restart_drain.go).
+	restartDrain restartDrainState
 	// bundleClient checks a bundle_id at creation and resolves it at spawn.
 	bundleClient *bundleclient.Client
 	// kanbanClient answers "which noteboard todo is this session linked

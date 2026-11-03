@@ -173,6 +173,8 @@ var routeDescriptions = map[string]routeDescription{
 	"PUT /bridge-prefs":                  {routeGroupHarnessesModels, "Change them"},
 	"POST /bridge/permission-mode":       {routeGroupHarnessesModels, "Default permission mode for new sessions"},
 	"POST /bridge/bypass-permissions":    {routeGroupHarnessesModels, "Old boolean form of the above"},
+	"POST /restart-drain":                {routeGroupHarnessesModels, "Hold new turns until a restart, for at most maximum_seconds"},
+	"DELETE /restart-drain":              {routeGroupHarnessesModels, "Stop holding new turns and send the held messages"},
 	"GET /restart-readiness":             {routeGroupHarnessesModels, "Which sessions a restart would cut off, so a deploy can wait for them"},
 	"GET /settings":                      {routeGroupHarnessesModels, "Every server setting, its value and what decided it"},
 	"PUT /settings/{key}":                {routeGroupHarnessesModels, "Change a stored setting without a restart"},

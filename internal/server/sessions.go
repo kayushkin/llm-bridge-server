@@ -815,6 +815,16 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// While the server drains before a restart, a new turn waits: the
+	// message is kept and sent once the drain ends (restart_drain.go).
+	if heldMessageID, held, err := s.holdMessageIfRestartDraining(bridgeID, req, "send"); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "hold_failed", err.Error())
+		return
+	} else if held {
+		writeHeldMessageAnswer(w, heldMessageID)
+		return
+	}
+
 	if s.harness.Get(bridgeID) == nil {
 		if sess.InstanceID == "" || s.harnessStore == nil {
 			http.Error(w, "session has no instance bound", http.StatusInternalServerError)
@@ -882,7 +892,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// channel, not through the next message.
 	s.closeQuestionsAnsweredByMessage(bridgeID, req.Message)
 
-	writeJSON(w, map[string]string{"status": "sent", "message_id": userEvent.MessageID})
+	writeJSON(w, msg.SendMessageResponse{Status: msg.SendStatusSent, MessageID: userEvent.MessageID})
 }
 
 // writeRefusalIfOverBudget refuses the request when the session has spent its
