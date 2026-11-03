@@ -101,6 +101,7 @@ func (s *Server) registerLoginAndStoreProxyRoutes() {
 	s.mux.HandleFunc("GET /peer-messages/{id}", s.handleGetPeerMessage)
 	s.mux.HandleFunc("POST /peer-messages/{id}/approve", s.handleApprovePeerMessage)
 	s.mux.HandleFunc("POST /peer-messages/{id}/decline", s.handleDeclinePeerMessage)
+	s.mux.HandleFunc("POST /peer-messages/{id}/place", s.handlePlacePeerMessage)
 	s.mux.HandleFunc("POST /peer/messages", s.handleReceivePeerMessage)
 	s.mux.HandleFunc("POST /peer-message-attachments", s.handleUploadPeerAttachment)
 	s.mux.HandleFunc("GET /peer-messages/{id}/attachments/{attachment_id}", s.handleDownloadPeerAttachment)

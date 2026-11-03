@@ -871,9 +871,17 @@ func (s *Server) undoApproval(w http.ResponseWriter, message store.PeerMessage, 
 	writeJSONError(w, status, code, detail)
 }
 
+// orchestratorBaseURL is the orchestrator approved requests and patches are
+// handed to, or empty on a server that has none.
+func (s *Server) orchestratorBaseURL() string {
+	return strings.TrimRight(strings.TrimSpace(s.settings.String(config.SettingOrchestratorURL)), "/")
+}
+
 // handleApprovePeerMessage: POST /peer-messages/{id}/approve. An
-// administrator approves an incoming request (starting its session, on an
-// instance or through the orchestrator) or notice (running the update).
+// administrator approves an incoming request or patch, or a notice (running
+// the update). On a server with an orchestrator, a request or patch is handed
+// to it and it chooses the instance (POST /peer-messages/{id}/place); on one
+// with none, the administrator names the instance.
 func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request) {
 	administratorID, ok := administratorMakingPeerChange(w, r)
 	if !ok {
@@ -887,7 +895,7 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<16))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&approval); err != nil && !errors.Is(err, io.EOF) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {instance_id} or {handoff: \"orchestrator\"} for a request, {} for a notice: "+err.Error())
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {} (or {instance_id} on a server with no orchestrator) for a request or patch, {} for a notice: "+err.Error())
 		return
 	}
 	attachments, err := s.store.PeerAttachmentsOfMessage(message.ID)
@@ -900,19 +908,28 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 			"%s's files have not all arrived and been verified here yet; approve it once they have (GET /peer-messages/%s shows each, and POST …/attachments/{id}/retry fetches one again)", message.ID, message.ID))
 		return
 	}
+	orchestrator := s.orchestratorBaseURL()
 	switch message.Kind {
 	case msg.PeerMessageKindRequest, msg.PeerMessageKindPatch:
-		if (approval.InstanceID == "") == (approval.Handoff == "") {
-			writeJSONError(w, http.StatusBadRequest, "invalid_request", "approving a request or a patch takes exactly one of instance_id and handoff")
+		if orchestrator != "" && approval.InstanceID != "" {
+			writeJSONError(w, http.StatusConflict, "orchestrator_places_sessions", fmt.Sprintf(
+				"this server hands approved requests and patches to its orchestrator (%s), which chooses the instance; approve with {}", config.SettingOrchestratorURL))
 			return
 		}
-		if approval.Handoff != "" && approval.Handoff != msg.PeerMessageHandoffOrchestrator {
-			writeJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("handoff is %q, not %q", msg.PeerMessageHandoffOrchestrator, approval.Handoff))
+		if orchestrator == "" && approval.InstanceID == "" {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf(
+				"%s is empty, so approving a request or patch here takes {instance_id}", config.SettingOrchestratorURL))
 			return
+		}
+		if approval.InstanceID != "" {
+			if status, code, detail := s.checkPeerMessageMayStartOn(message, approval.InstanceID); code != "" {
+				writeJSONError(w, status, code, detail)
+				return
+			}
 		}
 	case msg.PeerMessageKindNotice:
-		if approval.InstanceID != "" || approval.Handoff != "" {
-			writeJSONError(w, http.StatusBadRequest, "invalid_request", "approving a notice takes no instance_id or handoff")
+		if approval.InstanceID != "" {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "approving a notice takes no instance_id")
 			return
 		}
 		if strings.TrimSpace(s.settings.String(config.SettingSelfUpdateCommand)) == "" {
@@ -926,7 +943,20 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 	}
 	switch message.Kind {
 	case msg.PeerMessageKindRequest, msg.PeerMessageKindPatch:
-		sessionID, status, code, detail := s.startApprovedPeerRequest(r.Context(), decided, connection, approval)
+		if approval.InstanceID == "" {
+			placementSessionID, status, code, detail := s.askOrchestratorToPlacePeerMessage(r.Context(), orchestrator, decided, connection)
+			if code != "" {
+				s.undoApproval(w, message, status, code, detail)
+				return
+			}
+			if err := s.store.SetPeerMessagePlacementSession(message.ID, placementSessionID); err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("the orchestrator's session %s was asked to place %s but that could not be recorded: %v", placementSessionID, message.ID, err))
+				return
+			}
+			log.Printf("[peer-messages] %s approved by %s: handed to the orchestrator's session %s to place", message.ID, administratorID, placementSessionID)
+			break
+		}
+		sessionID, status, code, detail := s.startPeerMessageSessionOnInstance(decided, connection, approval.InstanceID)
 		if code != "" {
 			s.undoApproval(w, message, status, code, detail)
 			return
@@ -944,7 +974,12 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 		log.Printf("[peer-messages] %s approved by %s: update started", message.ID, administratorID)
 	}
 	s.settlePeerMessageSignal(decided, msg.SignalStateAcknowledged)
-	current, err := s.store.GetPeerMessage(message.ID)
+	s.writePeerMessage(w, message.ID)
+}
+
+// writePeerMessage answers a message as it is stored now, with its files.
+func (s *Server) writePeerMessage(w http.ResponseWriter, id string) {
+	current, err := s.store.GetPeerMessage(id)
 	if err == nil {
 		current, err = s.withPeerAttachments(current)
 	}
@@ -953,6 +988,94 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, current)
+}
+
+// handlePlacePeerMessage: POST /peer-messages/{id}/place {instance_id,
+// reason}. The orchestrator session an approved request or patch was handed
+// to (by its posting token), or an administrator, names the instance its
+// session starts on. A message is placed once.
+func (s *Server) handlePlacePeerMessage(w http.ResponseWriter, r *http.Request) {
+	placedBy, ok := peerMessageSenderOf(w, r)
+	if !ok {
+		return
+	}
+	var placement msg.PeerMessagePlaceRequest
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<16))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&placement); err != nil || strings.TrimSpace(placement.InstanceID) == "" || strings.TrimSpace(placement.Reason) == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {instance_id, reason}: the instance the session starts on, and why that one")
+		return
+	}
+	message, err := s.store.GetPeerMessage(r.PathValue("id"))
+	if errors.Is(err, store.ErrPeerMessageNotFound) {
+		writeJSONError(w, http.StatusNotFound, "peer_message_not_found", "no message "+r.PathValue("id"))
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		return
+	}
+	if strings.HasPrefix(placedBy, "session:") && placedBy != "session:"+message.PlacementSessionID {
+		writeJSONError(w, http.StatusForbidden, "not_the_placing_session", fmt.Sprintf(
+			"%s was handed to session %q to place; only that session's agent or an administrator may place it", message.ID, message.PlacementSessionID))
+		return
+	}
+	if status, code, detail := s.checkPeerMessageMayStartOn(message, placement.InstanceID); code != "" {
+		writeJSONError(w, status, code, detail)
+		return
+	}
+	connection, err := s.store.GetPeerConnection(message.ConnectionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("read %s's connection %s: %v", message.ID, message.ConnectionID, err))
+		return
+	}
+	claimed, err := s.store.ClaimPeerMessagePlacement(message.ID, placedBy, strings.TrimSpace(placement.Reason), time.Now())
+	if errors.Is(err, store.ErrPeerMessageNotAwaitingPlacement) {
+		writeJSONError(w, http.StatusConflict, "peer_message_not_awaiting_placement", fmt.Sprintf(
+			"%s is %s, kind %s, handed to %q, session %q: only an approved request or patch handed to the orchestrator and not yet placed can be placed",
+			message.ID, message.State, message.Kind, message.PlacementSessionID, message.SessionID))
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		return
+	}
+	sessionID, status, code, detail := s.startPeerMessageSessionOnInstance(claimed, connection, placement.InstanceID)
+	if code != "" {
+		if err := s.store.ReleasePeerMessagePlacement(message.ID); err != nil {
+			log.Printf("[peer-messages] ERROR: release the placement of %s after %s: %v", message.ID, code, err)
+		}
+		writeJSONError(w, status, code, detail)
+		return
+	}
+	if err := s.store.SetPeerMessageSession(message.ID, sessionID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("session %s was started for %s but could not be recorded: %v", sessionID, message.ID, err))
+		return
+	}
+	log.Printf("[peer-messages] %s placed by %s on %s: session %s (%s)", message.ID, placedBy, placement.InstanceID, sessionID, placement.Reason)
+	s.writePeerMessage(w, message.ID)
+}
+
+// checkPeerMessageMayStartOn refuses an instance a message's session cannot
+// run on: one this server does not know, and, for a patch, one on a machine
+// that is not this server, since the patch's files, the repo it lands in and
+// the deploy are all here. It returns an HTTP status, code and detail, or an
+// empty code.
+func (s *Server) checkPeerMessageMayStartOn(message store.PeerMessage, instanceID string) (int, string, string) {
+	instance, err := s.harnessStore.GetInstanceWithMachine(instanceID)
+	if err != nil || instance == nil {
+		return http.StatusBadRequest, "unknown_instance", fmt.Sprintf("instance %q: %v", instanceID, err)
+	}
+	if message.Kind == msg.PeerMessageKindPatch && (instance.Machine == nil || instance.Machine.Transport != msg.TransportLocal) {
+		machine := "no machine"
+		if instance.Machine != nil {
+			machine = fmt.Sprintf("machine %s (%s, transport %s)", instance.Machine.ID, instance.Machine.Name, instance.Machine.Transport)
+		}
+		return http.StatusConflict, "patch_needs_this_server", fmt.Sprintf(
+			"%s is a patch, and its files, the repo it lands in and the deploy are on this server, but instance %s runs on %s; choose an instance whose machine's transport is %s",
+			message.ID, instanceID, machine, msg.TransportLocal)
+	}
+	return 0, "", ""
 }
 
 // framedPeerRequestPrompt is the first message of an approved request's
@@ -967,30 +1090,22 @@ func framedPeerRequestPrompt(message store.PeerMessage, connection store.PeerCon
 		otherServerLabel(connection), connection.ID, message.ID, oneLine(request.Title, 200), request.Prompt)
 }
 
-// startApprovedPeerRequest starts an approved request's session and returns
-// its id, or an HTTP status, code and detail saying why it could not.
-func (s *Server) startApprovedPeerRequest(ctx context.Context, message store.PeerMessage, connection store.PeerConnection, approval msg.PeerMessageApproveRequest) (string, int, string, string) {
-	request := message.Body
-	prompt := framedPeerRequestPrompt(message, connection, request)
-	if message.Kind == msg.PeerMessageKindPatch {
-		framed, err := s.framedPeerPatchPrompt(message, connection)
-		if err != nil {
-			return "", http.StatusInternalServerError, "patch_unreadable", err.Error()
-		}
-		prompt = framed
-		request.Title = "Land a patch to " + message.Body.Repo
+// startPeerMessageSessionOnInstance starts an approved request's or patch's
+// session on an instance, as its own chat, and returns its id, or an HTTP
+// status, code and detail saying why it could not.
+func (s *Server) startPeerMessageSessionOnInstance(message store.PeerMessage, connection store.PeerConnection, instanceID string) (string, int, string, string) {
+	prompt, title, err := s.framedPeerMessagePrompt(message, connection)
+	if err != nil {
+		return "", http.StatusInternalServerError, "patch_unreadable", err.Error()
 	}
-	if approval.Handoff == msg.PeerMessageHandoffOrchestrator {
-		return s.handPeerRequestToOrchestrator(ctx, prompt)
-	}
-	instance, err := s.harnessStore.GetInstance(approval.InstanceID)
+	instance, err := s.harnessStore.GetInstance(instanceID)
 	if err != nil || instance == nil {
-		return "", http.StatusBadRequest, "unknown_instance", fmt.Sprintf("instance %q: %v", approval.InstanceID, err)
+		return "", http.StatusBadRequest, "unknown_instance", fmt.Sprintf("instance %q: %v", instanceID, err)
 	}
 	create := CreateSessionRequest{
 		Harness:     instance.HarnessType,
 		InstanceID:  instance.ID,
-		DisplayName: oneLine(request.Title, 80),
+		DisplayName: oneLine(title, 80),
 		Type:        msg.SessionTypeInteractive,
 		Purpose:     msg.PurposeChat,
 		Origin:      peerMessageOrigin,
@@ -1014,14 +1129,47 @@ func (s *Server) startApprovedPeerRequest(ctx context.Context, message store.Pee
 	return created.SessionID, 0, "", ""
 }
 
-// handPeerRequestToOrchestrator sends an approved request to the
-// orchestrator's home session, as the operator's own message (it was
-// approved by an administrator), and returns that session.
-func (s *Server) handPeerRequestToOrchestrator(ctx context.Context, prompt string) (string, int, string, string) {
-	base := strings.TrimRight(strings.TrimSpace(s.settings.String(config.SettingOrchestratorURL)), "/")
-	if base == "" {
-		return "", http.StatusConflict, "orchestrator_not_configured", config.SettingOrchestratorURL + " is empty, so no request can be handed to the orchestrator; set it on /settings or approve on an instance"
+// framedPeerMessagePrompt is the first message of an approved request's or
+// patch's session, and its title.
+func (s *Server) framedPeerMessagePrompt(message store.PeerMessage, connection store.PeerConnection) (string, string, error) {
+	if message.Kind == msg.PeerMessageKindPatch {
+		framed, err := s.framedPeerPatchPrompt(message, connection)
+		if err != nil {
+			return "", "", err
+		}
+		return framed, "Land a patch to " + message.Body.Repo, nil
 	}
+	return framedPeerRequestPrompt(message, connection, message.Body), message.Body.Title, nil
+}
+
+// peerPlacementFrame is what the orchestrator is sent when an administrator
+// approves a request or patch: what it is, and how to place it. The framed
+// first message of the session it will start follows it.
+const peerPlacementFrame = `An administrator here approved a %s from another bridge server, and this server hands it to you to choose where its session runs.
+
+- Message: %s (from %s, connection %s)
+- Kind: %s
+- Approved by: %s
+
+Choose the instance its session starts on, then place it:
+
+    bridge-peer place %s --instance <instance id> --reason "<why that instance>"
+
+That starts the session as its own chat on that instance, with the first message quoted below. Only you or an administrator can place it, and only once. A patch can only run on an instance whose machine's transport is local: its files, the repo it lands in and the deploy are all on this server, and the server refuses any other. Do not do the work yourself and do not offer a button: the administrator has already approved it.
+
+--- the first message of the session you are placing ---
+%s
+--- end of the first message ---`
+
+// askOrchestratorToPlacePeerMessage sends an approved request or patch to the
+// orchestrator's home session, as the operator's own message (an
+// administrator approved it), and returns that session's id.
+func (s *Server) askOrchestratorToPlacePeerMessage(ctx context.Context, base string, message store.PeerMessage, connection store.PeerConnection) (string, int, string, string) {
+	firstMessage, _, err := s.framedPeerMessagePrompt(message, connection)
+	if err != nil {
+		return "", http.StatusInternalServerError, "patch_unreadable", err.Error()
+	}
+	prompt := fmt.Sprintf(peerPlacementFrame, message.Kind, message.ID, otherServerLabel(connection), connection.ID, message.Kind, message.DecidedBy, message.ID, firstMessage)
 	data, err := json.Marshal(map[string]string{"message": prompt, "trigger": "user"})
 	if err != nil {
 		return "", http.StatusInternalServerError, "invalid_request", err.Error()

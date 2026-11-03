@@ -68,6 +68,10 @@ func (s *Store) migratePeerMessages() error {
 	for _, column := range []string{
 		`ALTER TABLE peer_messages ADD COLUMN supersedes TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE peer_messages ADD COLUMN superseded_by TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE peer_messages ADD COLUMN placement_session_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE peer_messages ADD COLUMN placed_by TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE peer_messages ADD COLUMN placed_at DATETIME`,
+		`ALTER TABLE peer_messages ADD COLUMN placement_reason TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(column); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("add a peer_messages column: %w", err)
@@ -78,17 +82,19 @@ func (s *Store) migratePeerMessages() error {
 
 const peerMessageSelect = `SELECT id, connection_id, direction, kind, body, in_reply_to, remote_message_id, state, created_by, sender_server_name,
 	created_at, updated_at, delivered_at, attempts, last_error, next_attempt_at, decided_by, decided_at, decision_reason,
-	session_id, operation, status_message_id, signal_id, supersedes, superseded_by FROM peer_messages`
+	session_id, operation, status_message_id, signal_id, supersedes, superseded_by,
+	placement_session_id, placed_by, placed_at, placement_reason FROM peer_messages`
 
 func scanPeerMessage(row rowScanner) (PeerMessage, error) {
 	var message PeerMessage
 	var rowID int64
 	var body, operation, direction, kind, state, supersedes string
-	var deliveredAt, nextAttemptAt, decidedAt sql.NullTime
+	var deliveredAt, nextAttemptAt, decidedAt, placedAt sql.NullTime
 	if err := row.Scan(&rowID, &message.ConnectionID, &direction, &kind, &body, &message.InReplyTo, &message.RemoteMessageID, &state,
 		&message.CreatedBy, &message.SenderServerName, &message.CreatedAt, &message.UpdatedAt, &deliveredAt, &message.Attempts, &message.LastError,
 		&nextAttemptAt, &message.DecidedBy, &decidedAt, &message.DecisionReason, &message.SessionID, &operation, &message.StatusMessageID,
-		&message.SignalID, &supersedes, &message.SupersededBy); err != nil {
+		&message.SignalID, &supersedes, &message.SupersededBy,
+		&message.PlacementSessionID, &message.PlacedBy, &placedAt, &message.PlacementReason); err != nil {
 		return PeerMessage{}, err
 	}
 	message.ID = prefixedIDOf(peerMessageIDPrefix, rowID)
@@ -106,6 +112,7 @@ func scanPeerMessage(row rowScanner) (PeerMessage, error) {
 	message.DeliveredAt = timeOrNil(deliveredAt)
 	message.NextAttemptAt = timeOrNil(nextAttemptAt)
 	message.DecidedAt = timeOrNil(decidedAt)
+	message.PlacedAt = timeOrNil(placedAt)
 	if operation != "" {
 		var recorded msg.PeerMessageOperation
 		if err := json.Unmarshal([]byte(operation), &recorded); err != nil {
@@ -333,6 +340,46 @@ func (s *Store) ReturnPeerMessageToPending(id string) error {
 // SetPeerMessageSession records the session an approved request started.
 func (s *Store) SetPeerMessageSession(id, sessionID string) error {
 	return s.updatePeerMessage(id, `session_id = ?`, sessionID)
+}
+
+// SetPeerMessagePlacementSession records the orchestrator session an approved
+// request or patch was handed to, to choose its instance.
+func (s *Store) SetPeerMessagePlacementSession(id, sessionID string) error {
+	return s.updatePeerMessage(id, `placement_session_id = ?`, sessionID)
+}
+
+// ErrPeerMessageNotAwaitingPlacement is a placement of a message that is not
+// an approved request or patch handed to the orchestrator and not yet placed.
+var ErrPeerMessageNotAwaitingPlacement = errors.New("peer message is not waiting to be placed")
+
+// ClaimPeerMessagePlacement records who placed an approved request or patch,
+// once: it holds only while the message is approved, was handed to an
+// orchestrator session, and has no session and no placement yet. A second
+// claim is ErrPeerMessageNotAwaitingPlacement.
+func (s *Store) ClaimPeerMessagePlacement(id, placedBy, reason string, at time.Time) (PeerMessage, error) {
+	rowID, ok := rowIDOfPrefixed(peerMessageIDPrefix, id)
+	if !ok {
+		return PeerMessage{}, ErrPeerMessageNotFound
+	}
+	result, err := s.db.Exec(`UPDATE peer_messages SET placed_by = ?, placed_at = ?, placement_reason = ?, updated_at = ?
+		WHERE id = ? AND direction = 'incoming' AND state = 'approved' AND kind IN ('request', 'patch')
+		AND placement_session_id != '' AND session_id = '' AND placed_by = ''`, placedBy, at.UTC(), reason, time.Now().UTC(), rowID)
+	if err != nil {
+		return PeerMessage{}, err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		if _, err := s.GetPeerMessage(id); err != nil {
+			return PeerMessage{}, err
+		}
+		return PeerMessage{}, ErrPeerMessageNotAwaitingPlacement
+	}
+	return s.GetPeerMessage(id)
+}
+
+// ReleasePeerMessagePlacement undoes a placement whose session could not be
+// started, so the message can be placed again.
+func (s *Store) ReleasePeerMessagePlacement(id string) error {
+	return s.updatePeerMessage(id, `placed_by = '', placed_at = NULL, placement_reason = ''`)
 }
 
 // SetPeerMessageOperation records the update an approved notice ran.

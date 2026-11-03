@@ -288,3 +288,123 @@ func bearerJSONRequest(t *testing.T, server *peerTestServer, token, method, path
 	request.Header.Set("Content-Type", "application/json")
 	return serve(server.server, request)
 }
+
+// TestOnAServerWithAnOrchestratorItPlacesWhatAnAdministratorApproved hands an
+// approved request to a fake orchestrator, which is asked to place it, and
+// checks that only the session it was handed to (or an administrator) can
+// place it, once, and that placing starts the session.
+func TestOnAServerWithAnOrchestratorItPlacesWhatAnAdministratorApproved(t *testing.T) {
+	buildMockHarnessOnPath(t)
+	logStore := fakeLogStore(t).URL
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t, func(cfg *config.Config) { cfg.LogStoreURL = logStore })
+	grantPeerLevel(t, accepting, acceptingID, "messages")
+	placingSession := mustSessionOn(t, accepting, "br_orchestrator_home")
+	otherSession := mustSessionOn(t, accepting, "br_someone_else")
+
+	refuse := false
+	var handedOver []string
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Message, Trigger string }
+		if r.URL.Path != "/home-session/messages" || json.NewDecoder(r.Body).Decode(&body) != nil || body.Trigger != "user" {
+			http.Error(w, "unexpected call", http.StatusBadRequest)
+			return
+		}
+		if refuse {
+			http.Error(w, "weekly spend limit reached", http.StatusTooManyRequests)
+			return
+		}
+		handedOver = append(handedOver, body.Message)
+		fmt.Fprintf(w, `{"session_id":%q}`, placingSession)
+	}))
+	t.Cleanup(orchestrator.Close)
+	if err := accepting.server.settings.Set(config.SettingOrchestratorURL, orchestrator.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	request := msg.PeerMessageBody{Title: "Check the GPU", Prompt: "Read the GPU temperature on the media server."}
+	sent := sendPeerMessageAsAdministrator(t, initiating, initiatingID, msg.PeerMessageKindRequest, request, "")
+	id := sent.RemoteMessageID
+
+	if answer := accepting.requestAsAdministrator(t, "POST", "/peer-messages/"+id+"/approve", map[string]any{"instance_id": "inst_test"}); answer.Code != http.StatusConflict || !strings.Contains(answer.Body.String(), "orchestrator_places_sessions") {
+		t.Fatalf("approving on a named instance with an orchestrator = %d %s, want 409 orchestrator_places_sessions", answer.Code, answer.Body)
+	}
+	refuse = true
+	if answer := accepting.requestAsAdministrator(t, "POST", "/peer-messages/"+id+"/approve", map[string]any{}); answer.Code != http.StatusConflict || !strings.Contains(answer.Body.String(), "orchestrator_refused") {
+		t.Fatalf("approving while the orchestrator refuses = %d %s, want 409 orchestrator_refused", answer.Code, answer.Body)
+	}
+	if again, _ := accepting.server.store.GetPeerMessage(id); again.State != msg.PeerMessageStatePending {
+		t.Fatalf("after the orchestrator refused, the request is %+v, want it pending still", again)
+	}
+	refuse = false
+
+	approved := decodeAnswer[msg.PeerMessage](t, accepting.requestAsAdministrator(t, "POST", "/peer-messages/"+id+"/approve", map[string]any{}), http.StatusOK, "approve")
+	if approved.State != msg.PeerMessageStateApproved || approved.SessionID != "" || approved.PlacementSessionID != placingSession {
+		t.Fatalf("approved = %+v, want approved, no session yet, handed to %s", approved, placingSession)
+	}
+	if len(handedOver) != 1 {
+		t.Fatalf("the orchestrator was sent %d messages, want 1", len(handedOver))
+	}
+	for _, want := range []string{"bridge-peer place " + id, request.Prompt, "not the operator's own instructions", "transport is local"} {
+		if !strings.Contains(handedOver[0], want) {
+			t.Fatalf("the orchestrator's message lacks %q:\n%s", want, handedOver[0])
+		}
+	}
+
+	place := msg.PeerMessagePlaceRequest{InstanceID: "inst_test", Reason: "the request names this server"}
+	if answer := bearerJSONRequest(t, accepting, currentPostingTokenFor(t, accepting.server, otherSession), "POST", "/peer-messages/"+id+"/place", place); answer.Code != http.StatusForbidden {
+		t.Fatalf("another session placing it = %d %s, want 403", answer.Code, answer.Body)
+	}
+	if answer := bearerJSONRequest(t, accepting, currentPostingTokenFor(t, accepting.server, placingSession), "POST", "/peer-messages/"+id+"/place",
+		msg.PeerMessagePlaceRequest{InstanceID: "inst_test"}); answer.Code != http.StatusBadRequest {
+		t.Fatalf("placing with no reason = %d %s, want 400", answer.Code, answer.Body)
+	}
+	placed := decodeAnswer[msg.PeerMessage](t, bearerJSONRequest(t, accepting, currentPostingTokenFor(t, accepting.server, placingSession), "POST", "/peer-messages/"+id+"/place", place),
+		http.StatusOK, "place")
+	if placed.SessionID == "" || placed.PlacedBy != "session:"+placingSession || placed.PlacementReason != place.Reason || placed.PlacedAt == nil {
+		t.Fatalf("placed = %+v, want its session, placed by the orchestrator's session with the reason", placed)
+	}
+	session, err := accepting.server.store.GetSession(placed.SessionID)
+	if err != nil || session.InstanceID != "inst_test" || session.Origin != peerMessageOrigin || session.Type != msg.SessionTypeInteractive {
+		t.Fatalf("session %s = %+v, %v, want its own chat on inst_test with origin %s", placed.SessionID, session, err, peerMessageOrigin)
+	}
+	if answer := accepting.requestAsAdministrator(t, "POST", "/peer-messages/"+id+"/place", place); answer.Code != http.StatusConflict {
+		t.Fatalf("placing twice = %d %s, want 409", answer.Code, answer.Body)
+	}
+}
+
+// TestWithNoOrchestratorApprovingNamesTheInstance keeps the old way on a
+// server that has no orchestrator: approving takes an instance, and {} alone
+// is refused.
+func TestWithNoOrchestratorApprovingNamesTheInstance(t *testing.T) {
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	grantPeerLevel(t, accepting, acceptingID, "messages")
+	sent := sendPeerMessageAsAdministrator(t, initiating, initiatingID, msg.PeerMessageKindRequest, msg.PeerMessageBody{Title: "t", Prompt: "p"}, "")
+	if answer := accepting.requestAsAdministrator(t, "POST", "/peer-messages/"+sent.RemoteMessageID+"/approve", map[string]any{}); answer.Code != http.StatusBadRequest {
+		t.Fatalf("approving with no instance and no orchestrator = %d %s, want 400", answer.Code, answer.Body)
+	}
+}
+
+// TestAPatchStartsOnlyOnThisServersOwnMachine refuses a patch's session on
+// an instance of a runner machine: the patch, the repo and the deploy are
+// all on this server.
+func TestAPatchStartsOnlyOnThisServersOwnMachine(t *testing.T) {
+	accepting, _, _, _ := connectedPairByDialingOut(t)
+	harnesses := accepting.server.harnessStore
+	if err := harnesses.CreateMachine(&msg.Machine{ID: "m_media_server", Name: "media-server", Transport: msg.TransportRunner}); err != nil {
+		t.Fatal(err)
+	}
+	if err := harnesses.CreateInstance(&msg.Instance{ID: "inst_media_server", HarnessType: msg.HarnessMock, Name: "media-server/mock", MachineID: "m_media_server", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	patch := store.PeerMessage{ID: "peer_message_000001", Kind: msg.PeerMessageKindPatch}
+	if _, code, detail := accepting.server.checkPeerMessageMayStartOn(patch, "inst_media_server"); code != "patch_needs_this_server" {
+		t.Fatalf("a patch on a runner's instance = %q (%s), want patch_needs_this_server", code, detail)
+	}
+	if _, code, detail := accepting.server.checkPeerMessageMayStartOn(patch, "inst_test"); code != "" {
+		t.Fatalf("a patch on this server's own instance = %q (%s), want it allowed", code, detail)
+	}
+	request := store.PeerMessage{ID: "peer_message_000002", Kind: msg.PeerMessageKindRequest}
+	if _, code, detail := accepting.server.checkPeerMessageMayStartOn(request, "inst_media_server"); code != "" {
+		t.Fatalf("a request on a runner's instance = %q (%s), want it allowed", code, detail)
+	}
+}

@@ -10,7 +10,10 @@
 // Files travel only as attachments: the receiving server fetches
 // their bytes over the connection and keeps them only when their SHA-256
 // matches, so nothing has to be pasted into a session as text. It never approves or
-// declines a message; that is a person's decision, on the dash.
+// declines a message; that is a person's decision, on the dash. On a server
+// with an orchestrator, an approved request or patch is handed to the
+// orchestrator's session, whose agent chooses where it runs with
+// bridge-peer place.
 //
 // It signs in with the session's posting token (LLM_BRIDGE_SESSION_POSTING_TOKEN),
 // which reaches these routes for an agent whose session runs with no principal
@@ -73,6 +76,9 @@ func usage() error {
        and --supersedes <id> says the new message replaces one, which the other server
        then declines if it is still waiting there)
   bridge-peer instances <server name or connection id>
+  bridge-peer place <message id> --instance <instance id> --reason "<why that instance>"
+      (the orchestrator's session starts an approved request or patch handed to it, as its own chat
+       on an instance of this server; a patch only on an instance of this server's own machine)
   bridge-peer run <server name or connection id> (--instance <its instance id> | --session <its session id>) [--timeout 15m] "<message>"
       (starts a session there, or continues one, waits for the reply and prints it; the session stays there)`)
 }
@@ -101,7 +107,8 @@ func run(arguments []string, out io.Writer) error {
 	summary := flags.String("summary", "", "a patch's summary (default: its commit subjects)")
 	outDirectory := flags.String("out", ".", "where fetch writes a message's files")
 	result := flags.String("result", "", "a status's result: succeeded, failed or declined")
-	instance := flags.String("instance", "", "run: the other server's instance to start a new session on")
+	instance := flags.String("instance", "", "run: the other server's instance to start a new session on; place: this server's instance the message's session starts on")
+	reason := flags.String("reason", "", "place: why that instance")
 	session := flags.String("session", "", "run: the other server's session to continue")
 	timeout := flags.Duration("timeout", 15*time.Minute, "run: give up waiting for the reply after this long")
 	var repos, commits, attachments, supersedes repeated
@@ -181,6 +188,17 @@ func run(arguments []string, out io.Writer) error {
 			return usage()
 		}
 		return c.fetch(out, positional[0], *outDirectory)
+	case "place":
+		if len(positional) != 1 || *instance == "" || strings.TrimSpace(*reason) == "" {
+			return usage()
+		}
+		var placed msg.PeerMessage
+		if err := c.call(http.MethodPost, "/peer-messages/"+url.PathEscape(positional[0])+"/place",
+			msg.PeerMessagePlaceRequest{InstanceID: *instance, Reason: *reason}, http.StatusOK, &placed); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s placed on %s: session %s\n", placed.ID, *instance, placed.SessionID)
+		return nil
 	case "messages":
 		if len(positional) != 0 || (*pending && *open) {
 			return usage()
