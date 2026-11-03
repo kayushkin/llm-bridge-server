@@ -3,7 +3,11 @@
 // for an administrator there), a notice (changes ready to take) or a patch (a
 // change to one repo, as git format-patch files), attach files to a message,
 // download a message's files, and read the messages this server has sent and
-// received. Files travel only as attachments: the receiving server fetches
+// received. It also lists another server's instances and runs a session
+// there (bridge-peer run), new or continued, printing the reply; that goes
+// through the connection proxy with the session agent token
+// (LLM_BRIDGE_PRINCIPAL_TOKEN), since the proxy refuses the posting token.
+// Files travel only as attachments: the receiving server fetches
 // their bytes over the connection and keeps them only when their SHA-256
 // matches, so nothing has to be pasted into a session as text. It never approves or
 // declines a message; that is a person's decision, on the dash.
@@ -16,6 +20,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -27,8 +32,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
@@ -60,7 +67,10 @@ func usage() error {
   bridge-peer patch <server name or connection id> --repo <repo name> [--base origin/main] [--summary "…"]
       (run inside the repo: it sends git format-patch <base>..HEAD as one attached file)
   bridge-peer fetch <message id> [--out <directory>]
-  bridge-peer messages [--pending] [--server <name or connection id>] [--limit N]`)
+  bridge-peer messages [--pending] [--server <name or connection id>] [--limit N]
+  bridge-peer instances <server name or connection id>
+  bridge-peer run <server name or connection id> (--instance <its instance id> | --session <its session id>) [--timeout 15m] "<message>"
+      (starts a session there, or continues one, waits for the reply and prints it; the session stays there)`)
 }
 
 // repeated is a flag given more than once.
@@ -86,6 +96,9 @@ func run(arguments []string, out io.Writer) error {
 	summary := flags.String("summary", "", "a patch's summary (default: its commit subjects)")
 	outDirectory := flags.String("out", ".", "where fetch writes a message's files")
 	result := flags.String("result", "", "a status's result: succeeded, failed or declined")
+	instance := flags.String("instance", "", "run: the other server's instance to start a new session on")
+	session := flags.String("session", "", "run: the other server's session to continue")
+	timeout := flags.Duration("timeout", 15*time.Minute, "run: give up waiting for the reply after this long")
 	var repos, commits, attachments repeated
 	flags.Var(&attachments, "attach", "a file to send with the message (repeat)")
 	flags.Var(&repos, "repo", "a notice's repo (repeat, paired with --commit)")
@@ -167,6 +180,28 @@ func run(arguments []string, out io.Writer) error {
 			return usage()
 		}
 		return listMessages(c, out, zone, *pending, *onServer, *limit)
+	case "instances":
+		if len(positional) != 1 {
+			return usage()
+		}
+		connection, err := c.resolveServer(positional[0])
+		if err != nil {
+			return err
+		}
+		return listInstances(context.Background(), c, out, connection)
+	case "run":
+		if len(positional) != 2 || (*instance == "") == (*session == "") {
+			return usage()
+		}
+		connection, err := c.resolveServer(positional[0])
+		if err != nil {
+			return err
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
+		defer cancelTimeout()
+		return runOnServer(ctx, c, out, os.Stderr, connection, *instance, *session, positional[1])
 	default:
 		return usage()
 	}
@@ -193,7 +228,10 @@ type client struct {
 	serviceToken string
 	asPrincipal  string
 	postingToken string
-	http         *http.Client
+	// principalToken is the session agent token, which the connection proxy
+	// takes and the posting token is not.
+	principalToken string
+	http           *http.Client
 }
 
 func newClient(server, as string) (*client, error) {
@@ -210,7 +248,7 @@ func newClient(server, as string) (*client, error) {
 		base = parsed.Scheme + "://" + parsed.Host
 	}
 	c := &client{base: base, serviceToken: os.Getenv(serviceTokenEnvironmentVariable), asPrincipal: as,
-		postingToken: os.Getenv(postingTokenEnvironmentVariable), http: &http.Client{Timeout: time.Minute}}
+		postingToken: os.Getenv(postingTokenEnvironmentVariable), principalToken: principalTokenOfThisSession(), http: &http.Client{Timeout: time.Minute}}
 	switch {
 	case c.serviceToken != "" && c.asPrincipal == "":
 		return nil, fmt.Errorf("with %s, pass --as <administrator principal id>: a message records who sent it", serviceTokenEnvironmentVariable)
