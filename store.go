@@ -43,14 +43,14 @@ const busyTimeoutMillisecondsWanted = 5000
 //
 // _pragma=... is modernc's syntax and it is the only one that works here. The
 // mattn/go-sqlite3 spelling (_foreign_keys=on) is silently ignored by this
-// driver, as is any other unrecognised key — hence the verification below.
+// driver, as is any other unrecognized key — hence the verification below.
 func dataSourceName(dbPath string) string {
 	return fmt.Sprintf("%s?_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)",
 		dbPath, busyTimeoutMillisecondsWanted)
 }
 
 // verifyPerConnectionPragmasTookEffect proves the DSN was understood. An
-// unrecognised DSN key opens cleanly and configures nothing, so without this
+// unrecognized DSN key opens cleanly and configures nothing, so without this
 // a typo would leave the pool silently at SQLite's defaults.
 func verifyPerConnectionPragmasTookEffect(db *sql.DB) error {
 	var busyTimeoutMilliseconds int

@@ -112,7 +112,7 @@ func TestPerConnectionPragmaControl(t *testing.T) {
 }
 
 // TestTheMattnDSNSpellingIsSilentlyIgnored pins why Open verifies the pragmas
-// after opening instead of trusting the DSN. modernc accepts an unrecognised
+// after opening instead of trusting the DSN. modernc accepts an unrecognized
 // key without complaint, so a DSN written in the other driver's dialect opens
 // cleanly and configures nothing.
 func TestTheMattnDSNSpellingIsSilentlyIgnored(t *testing.T) {
@@ -127,7 +127,7 @@ func TestTheMattnDSNSpellingIsSilentlyIgnored(t *testing.T) {
 	for _, pragma := range []string{"busy_timeout", "foreign_keys"} {
 		for connectionIndex, value := range readPragmaFromEveryPooledConnection(t, db, pragma) {
 			if value != 0 {
-				t.Fatalf("pooled connection %d honoured the mattn spelling for %s (got %d); "+
+				t.Fatalf("pooled connection %d honored the mattn spelling for %s (got %d); "+
 					"this driver now understands it and dataSourceName's comment is stale",
 					connectionIndex, pragma, value)
 			}
