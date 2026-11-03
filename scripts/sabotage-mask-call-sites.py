@@ -72,7 +72,7 @@ ARMS = {
     "comment-only-crywolf": (
         MAIN,
         "// Sync to model-store (updates inber's credential DB)",
-        "// cry-wolf control: an edit that changes no behaviour",
+        "// cry-wolf control: an edit that changes no behavior",
         False,
         "cry-wolf control: a green rig must stay green here",
     ),

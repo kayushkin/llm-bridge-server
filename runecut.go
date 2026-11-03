@@ -10,7 +10,7 @@ import "unicode/utf8"
 // The canonical pair is tool-store's schema.TruncateAtRuneBoundary and
 // schema.SuffixAtRuneBoundary; aiauth keeps a package-local copy rather than
 // importing tool-store, because a 20-line helper is not worth a module edge
-// from an auth CLI to the tool registry. The behaviour is the canonical one so
+// from an auth CLI to the tool registry. The behavior is the canonical one so
 // the copies cannot drift apart silently. They stay unexported: MaskKey is the
 // only consumer and it lives in this package, so there is nothing to widen the
 // public API for.
