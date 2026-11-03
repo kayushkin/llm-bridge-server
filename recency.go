@@ -12,7 +12,7 @@ import (
 
 // waitDelayAfterGitExits bounds how long Wait blocks on git's output pipe after
 // git has exited or the context is done. It only elapses if something git
-// started is still holding that pipe open; without it a cancelled command can
+// started is still holding that pipe open; without it a canceled command can
 // leave the caller blocked on a pipe no live process is writing to.
 const waitDelayAfterGitExits = 5 * time.Second
 
@@ -40,7 +40,7 @@ func FindRecentlyModified(ctx context.Context, rootDir string, since time.Durati
 	}
 
 	// The mtime scan is the expensive strategy and it is reached by the cheap
-	// one failing — and a cancelled git log fails, so a cancellation asks for
+	// one failing — and a canceled git log fails, so a cancellation asks for
 	// the expensive strategy by exactly the same signal a real git failure
 	// does. Refusing here says which of the two we are answering.
 	//
@@ -48,7 +48,7 @@ func FindRecentlyModified(ctx context.Context, rootDir string, since time.Durati
 	// observable, because the walk it guards checks the same context on its
 	// first entry and stops there. It earns its place only if a later strategy
 	// is added that does not check for itself. Measured — with this line gone
-	// the cancelled scan still returns in microseconds; with the walk's own
+	// the canceled scan still returns in microseconds; with the walk's own
 	// check gone as well it walks all 12,000 files.
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
@@ -70,7 +70,7 @@ func findRecentlyModifiedGit(ctx context.Context, rootDir string, since time.Dur
 	sinceTime := time.Now().Add(-since)
 	sinceArg := sinceTime.Format("2006-01-02 15:04:05")
 
-	// The command is a fixed argv, not a shell, so cancelling it has no
+	// The command is a fixed argv, not a shell, so canceling it has no
 	// grandchildren to leave behind and the direct kill exec.CommandContext
 	// performs is enough. A tool that runs caller-supplied shell commands needs
 	// more than this — see tool-store's internal/childprocess, which owns the

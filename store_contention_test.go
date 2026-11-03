@@ -82,7 +82,7 @@ func TestConcurrentStoresDoNotFailOnContention(t *testing.T) {
 // Holding a write transaction on the fresh file makes the race deterministic
 // rather than roughly-half-the-time. Against the DSN version this fails on every
 // run, and it fails instantly — the 0s is the finding, because a store that had
-// honoured its own 5s busy_timeout would have outlasted a 150ms lock.
+// honored its own 5s busy_timeout would have outlasted a 150ms lock.
 func TestNewStoreWaitsOutAConversionItLoses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory.db")
 
@@ -134,7 +134,7 @@ func TestNewStoreWaitsOutAConversionItLoses(t *testing.T) {
 // settings have to actually reach SQLite. They arrive by different routes now —
 // busy_timeout as a DSN pragma, journal_mode as a statement switchJournalMode
 // runs once — and each route fails quietly in its own way. modernc's driver
-// drops a DSN key it does not recognise instead of rejecting it, so a misspelled
+// drops a DSN key it does not recognize instead of rejecting it, so a misspelled
 // one leaves the setting at its default and says nothing; and a lost
 // journal_mode race can report the mode it stayed on rather than an error.
 func TestStoreAppliesItsConcurrencyPragmas(t *testing.T) {

@@ -174,7 +174,7 @@ score = -bm25(memories_fts) × importance × recencyBoost
 
 `bm25()` is negative and orders ascending, so the sign flip turns it into a score that composes with the other two. Recency decays exponentially: `0.99^daysSinceAccess`. Accessing a memory boosts its importance by 1% (capped at 1.0).
 
-Two behaviours are worth knowing:
+Two behaviors are worth knowing:
 
 - **A query that matches nothing returns nothing.** It used to return the store's first `limit` rows sorted by id, because an unmatched query scored 0 against everything and 0 sorts as a tie.
 - **When BM25 separates no candidate from another** — every query term appears in every matched memory, so every term has zero IDF — importance and recency decide the order instead of the id tie-break.
@@ -183,7 +183,7 @@ Two behaviours are worth knowing:
 
 Search used to score the cosine similarity of a 256-bucket hashed bag of words. It was described here and in its own doc comment as TF-IDF, and it had no IDF of any kind: every term counted the same whether it appeared in one memory or in all of them, unrelated words sharing a hash bucket scored as a match, and nothing was stemmed.
 
-`TestBM25OutranksTheHashedBagOfWords` runs both retrievers over one labelled corpus of 40 memories and 10 queries and is the measurement behind the switch:
+`TestBM25OutranksTheHashedBagOfWords` runs both retrievers over one labeled corpus of 40 memories and 10 queries and is the measurement behind the switch:
 
 | metric | BM25 | hashed bag of words |
 |---|---|---|

@@ -47,7 +47,7 @@ import (
 func TestTruncateAtRuneBoundaryKeepsASingleByteBudget(t *testing.T) {
 	if got := truncateAtRuneBoundary("hello", 1); got != "h" {
 		t.Errorf("maxBytes=1 over single-byte runes: got %q, want %q — the guard "+
-			"rejects budgets it should honour", got, "h")
+			"rejects budgets it should honor", got, "h")
 	}
 	if got := truncateAtRuneBoundary("hello", 2); got != "he" {
 		t.Errorf("maxBytes=2 over single-byte runes: got %q, want %q", got, "he")
@@ -445,11 +445,11 @@ func saveOneBigMemory(t *testing.T, tag string, content string, tokens int) *Sto
 	return store
 }
 
-// TestBuildContextHonoursAOneBytePreview pins the lower half of the straddle on
+// TestBuildContextHonorsAOneBytePreview pins the lower half of the straddle on
 // `if truncatePreview <= 0`. The test above pins what happens when the caller
 // asks for nothing; this pins that a caller asking for one byte gets one byte
 // and not the 300-byte default.
-func TestBuildContextHonoursAOneBytePreview(t *testing.T) {
+func TestBuildContextHonorsAOneBytePreview(t *testing.T) {
 	store := saveOneBigMemory(t, "onebyte", "~"+strings.Repeat("Q", 999), 400)
 	got, _, err := store.BuildContext(BuildContextRequest{
 		Tags:              []string{"onebyte"},

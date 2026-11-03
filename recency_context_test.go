@@ -68,9 +68,9 @@ func newRepositoryWithARecentCommit(t *testing.T) string {
 	return root
 }
 
-// A cancelled context must reach the git subprocess. Before it did, the only
+// A canceled context must reach the git subprocess. Before it did, the only
 // thing that ended a git log was git finishing.
-func TestFindRecentlyModifiedRefusesToRunGitForACancelledCaller(t *testing.T) {
+func TestFindRecentlyModifiedRefusesToRunGitForACanceledCaller(t *testing.T) {
 	root := newRepositoryWithARecentCommit(t)
 
 	liveFiles, err := FindRecentlyModified(context.Background(), root, 24*time.Hour)
@@ -78,28 +78,28 @@ func TestFindRecentlyModifiedRefusesToRunGitForACancelledCaller(t *testing.T) {
 		t.Fatalf("scan with a live context: %v", err)
 	}
 	if len(liveFiles) == 0 {
-		t.Fatal("git scan returned no files, so a cancelled scan returning none would prove nothing")
+		t.Fatal("git scan returned no files, so a canceled scan returning none would prove nothing")
 	}
 
-	cancelled, cancel := context.WithCancel(context.Background())
+	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	files, err := FindRecentlyModified(cancelled, root, 24*time.Hour)
+	files, err := FindRecentlyModified(canceled, root, 24*time.Hour)
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("cancelled scan returned err %v, want context.Canceled", err)
+		t.Errorf("canceled scan returned err %v, want context.Canceled", err)
 	}
 	if len(files) != 0 {
-		t.Errorf("cancelled scan returned %d files, want none", len(files))
+		t.Errorf("canceled scan returned %d files, want none", len(files))
 	}
 }
 
 // The mtime walk is the fallback the git scan falls into when it fails, and a
-// cancelled git scan fails — so before either context check existed, cancelling
+// canceled git scan fails — so before either context check existed, canceling
 // the cheap strategy is what started the expensive one.
 //
 // This pins the two checks jointly. Removing either one alone leaves the
 // property intact, which is measured and written down where each is declared.
-func TestACancelledScanDoesNotWalkTheTree(t *testing.T) {
+func TestACanceledScanDoesNotWalkTheTree(t *testing.T) {
 	root := newTreeWithoutGit(t)
 
 	start := time.Now()
@@ -112,36 +112,36 @@ func TestACancelledScanDoesNotWalkTheTree(t *testing.T) {
 		t.Fatalf("live scan found %d files, want %d — the fallback must still run when git cannot answer", len(files), walkableTreeFileCount)
 	}
 
-	cancelled, cancel := context.WithCancel(context.Background())
+	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	start = time.Now()
-	files, err = FindRecentlyModified(cancelled, root, 24*time.Hour)
+	files, err = FindRecentlyModified(canceled, root, 24*time.Hour)
 	refused := time.Since(start)
 
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("cancelled scan returned err %v, want context.Canceled", err)
+		t.Errorf("canceled scan returned err %v, want context.Canceled", err)
 	}
 	if len(files) != 0 {
-		t.Errorf("cancelled scan returned %d files, want none", len(files))
+		t.Errorf("canceled scan returned %d files, want none", len(files))
 	}
 	if refused > fullWalk/10 {
-		t.Errorf("cancelled scan took %v against a %v walk of the same tree, so it walked it", refused, fullWalk)
+		t.Errorf("canceled scan took %v against a %v walk of the same tree, so it walked it", refused, fullWalk)
 	}
 }
 
-func TestTreeWalkStopsForACancelledCaller(t *testing.T) {
+func TestTreeWalkStopsForACanceledCaller(t *testing.T) {
 	root := newTreeWithoutGit(t)
 
-	cancelled, cancel := context.WithCancel(context.Background())
+	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	files, err := findRecentlyModifiedMtime(cancelled, root, 24*time.Hour)
+	files, err := findRecentlyModifiedMtime(canceled, root, 24*time.Hour)
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("cancelled walk returned err %v, want context.Canceled", err)
+		t.Errorf("canceled walk returned err %v, want context.Canceled", err)
 	}
 	if len(files) != 0 {
-		t.Errorf("cancelled walk returned %d files, want none — a truncated scan is not a short list", len(files))
+		t.Errorf("canceled walk returned %d files, want none — a truncated scan is not a short list", len(files))
 	}
 }
 
@@ -165,13 +165,13 @@ func TestTreeWalkStopsPartWayThrough(t *testing.T) {
 	stopped := time.Since(start)
 
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("walk cancelled mid-flight returned err %v, want context.Canceled", err)
+		t.Errorf("walk canceled mid-flight returned err %v, want context.Canceled", err)
 	}
 	if len(files) != 0 {
-		t.Errorf("walk cancelled mid-flight returned %d files, want none", len(files))
+		t.Errorf("walk canceled mid-flight returned %d files, want none", len(files))
 	}
 	if stopped >= fullWalk {
-		t.Errorf("walk cancelled mid-flight took %v, no less than the %v it takes to finish", stopped, fullWalk)
+		t.Errorf("walk canceled mid-flight took %v, no less than the %v it takes to finish", stopped, fullWalk)
 	}
 }
 
@@ -205,7 +205,7 @@ func TestRecencyScanContextAppliesItsOwnBoundWhenTheCallerHasNone(t *testing.T) 
 	}
 }
 
-func TestRecencyScanContextHonoursAnExplicitlyDisabledBound(t *testing.T) {
+func TestRecencyScanContextHonorsAnExplicitlyDisabledBound(t *testing.T) {
 	scan, endScan := recencyScanContext(context.Background(), -1)
 	defer endScan()
 

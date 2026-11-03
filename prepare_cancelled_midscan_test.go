@@ -17,7 +17,7 @@ import (
 // and instruction memories have already been written on the caller's behalf.
 //
 // Measured before this file existed: deleting the second check entirely left the
-// whole suite green. TestPrepareSessionFailsForACancelledCaller cancels before
+// whole suite green. TestPrepareSessionFailsForACanceledCaller cancels before
 // the call, so it is answered by the first check and never reaches the second.
 // Both producers return a context error, so "PrepareSession returned
 // context.Canceled" is exactly the assertion that cannot tell them apart.
@@ -95,7 +95,7 @@ func assertTheStandInRan(t *testing.T, started string) {
 // would make the test below pass for the wrong reason: git would fail instantly,
 // the scan would fall through to the mtime walk, and a green run would say
 // nothing about cancellation. This asserts the stand-in is the git that runs and
-// that cancelling the caller is what ends it.
+// that canceling the caller is what ends it.
 func TestTheGitStandInIsWhatTheScanSpawns(t *testing.T) {
 	started := gitStandInThatBlocksUntilKilled(t)
 	root := newRepoShapedWorkspace(t)

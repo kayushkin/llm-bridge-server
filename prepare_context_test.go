@@ -42,13 +42,13 @@ func prepareSessionConfigFor(root string) PrepareSessionConfig {
 
 // A caller who has gone must not be told the session was prepared, and must not
 // have memories written on its behalf on the way to being told so.
-func TestPrepareSessionFailsForACancelledCaller(t *testing.T) {
+func TestPrepareSessionFailsForACanceledCaller(t *testing.T) {
 	store := newStoreForContextTest(t)
 
-	cancelled, cancel := context.WithCancel(context.Background())
+	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := store.PrepareSession(cancelled, prepareSessionConfigFor(newWorkspaceWithOneRecentFile(t)))
+	err := store.PrepareSession(canceled, prepareSessionConfigFor(newWorkspaceWithOneRecentFile(t)))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("PrepareSession returned %v, want context.Canceled", err)
 	}

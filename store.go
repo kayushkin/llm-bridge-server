@@ -104,7 +104,7 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
 
-	// modernc's driver ignores a DSN key it does not recognise rather than
+	// modernc's driver ignores a DSN key it does not recognize rather than
 	// rejecting it, so `_pragma=` is the only spelling that reaches SQLite and a
 	// typo here would leave the setting at its default without saying so.
 	//

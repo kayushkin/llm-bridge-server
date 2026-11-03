@@ -177,7 +177,7 @@ CASES = [
   # (TestOrdinaryMemoriesAreStillRankedByScore builds ids that contradict
   # importance so a matching tag has to overrule them). A harness that cannot
   # report CAUGHT for this is measuring nothing, and every UNNOTICED below
-  # would be an artefact rather than a finding.
+  # would be an artifact rather than a finding.
   ("CONTROL (positive): the tag-match bonus stops being paid",
    "builder.go", "score += float64(matchCount) * 0.3", "score += float64(matchCount) * 0.0", True),
   # POSITIVE, on the other file, because a control reads the package it runs in
@@ -186,7 +186,7 @@ CASES = [
    "prepare.go", 'tags := []string{"recent", "file:" + f.RelativePath}',
    'tags := []string{"file:" + f.RelativePath}', True),
   # NO-OP. Same value, written differently. A row that comes back CAUGHT here
-  # means the suite is reacting to the edit rather than to the behaviour.
+  # means the suite is reacting to the edit rather than to the behavior.
   ("CONTROL (no-op): the one-day cut is spelled 1.0 instead of 1",
    "builder.go", "if daysSinceAccess < 1 {", "if daysSinceAccess < 1.0 {", False),
   ("CONTROL (no-op): the age subtraction gains a redundant pair of parentheses",

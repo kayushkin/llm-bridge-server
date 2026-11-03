@@ -130,7 +130,7 @@ func TestForgetEscapesWildcardsInTheID(t *testing.T) {
 // The derived row is written first on purpose, so insertion order cannot make
 // this pass by accident. It still passes with the ORDER BY removed: SQLite
 // scans the id primary-key index, so a prefix arrives before its extensions
-// whatever order they were written in. What this pins is the behaviour, not
+// whatever order they were written in. What this pins is the behavior, not
 // that one clause — if a later plan change stops delivering it, this fails.
 func TestForgetPrefersAnExactID(t *testing.T) {
 	store := newForgetTestStore(t)

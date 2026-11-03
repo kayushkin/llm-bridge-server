@@ -9,7 +9,7 @@ import (
 
 // This file is the measurement behind the switch from a hashed bag of words to
 // BM25 (noteboard todo 0c31b497-0418-4577-b156-6699918ef5a8). It keeps BOTH
-// scorers runnable against one labelled corpus, so the claim "this is better"
+// scorers runnable against one labeled corpus, so the claim "this is better"
 // is a number this suite re-derives rather than a sentence in a commit message.
 //
 // The old scorer is not a reconstruction from memory: Embedder and
@@ -20,7 +20,7 @@ import (
 // rankedCase is one query and the memories a reader asking it wants back.
 //
 // `relevant` is judged from the content alone: a memory is relevant when it is
-// about the thing asked for. No judgement here refers to either scorer.
+// about the thing asked for. No judgment here refers to either scorer.
 type rankedCase struct {
 	query    string
 	relevant []string
@@ -71,7 +71,7 @@ func rankingCorpus() []Memory {
 		{"argraph-tree", "argraphments turns a transcript into an argument tree with whisper and claude"},
 		{"midi-tab", "miditab converts a midi file into ascii tablature for guitar bass and ukulele"},
 		{"dmv-cli", "renodmv lists reno dmv appointment types and deep links to the booking page"},
-		{"north-search", "northwind-api serves a product catalogue search with cursor paging"},
+		{"north-search", "northwind-api serves a product catalog search with cursor paging"},
 	}
 
 	stamped := time.Now()
@@ -259,7 +259,7 @@ func storeWithRankingCorpus(t *testing.T) *Store {
 }
 
 // TestBM25OutranksTheHashedBagOfWords is the measurement the switch was made
-// on. It scores both retrievers over the same labelled corpus and fails if the
+// on. It scores both retrievers over the same labeled corpus and fails if the
 // new one is not ahead.
 //
 // ⚠️ MRR is measured and reported and deliberately NOT asserted on, and this is

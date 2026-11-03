@@ -8,7 +8,7 @@ import (
 
 // Get accepts a prefix of a memory's id because that is what the recall
 // pointers written into a conversation carry — inber's stasher names the first
-// eight characters of a UUID. These tests pin that the rest of Get honours the
+// eight characters of a UUID. These tests pin that the rest of Get honors the
 // row it resolved rather than the prefix it was handed, and that a prefix can
 // never reach a row the caller did not name.
 

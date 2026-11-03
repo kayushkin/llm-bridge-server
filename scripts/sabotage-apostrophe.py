@@ -42,7 +42,7 @@ REGISTRY = "tool_registry.go"
 # input never got to the code under test, or the fixture itself is wrong. A row
 # reddened ONLY by these has scored nothing about apostrophes.
 #
-# The fourth entry is the judgement call and it is deliberate. "no divergence at
+# The fourth entry is the judgment call and it is deliberate. "no divergence at
 # all" asserts that the CORPUS exercised the fix, not that the function is
 # correct, so a row it alone catches has been told only that some divergence
 # exists. Its sibling on line 30 ("diverged with no flanked apostrophe") is a
@@ -94,7 +94,7 @@ MUTATIONS = [
      "\tif true {\n\t\treturn s\n\t}\n\tvar b strings.Builder",
      "caught"),
 
-    ("KNOWN NEGATIVE: drop the Grow pre-allocation (behaviour-neutral)",
+    ("KNOWN NEGATIVE: drop the Grow pre-allocation (behavior-neutral)",
      HELPER,
      "\tb.Grow(len(s))",
      "",

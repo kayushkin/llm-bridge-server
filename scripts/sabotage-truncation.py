@@ -139,7 +139,7 @@ CASES = [
   ("only the preview call site reverts to a byte cut",
    "builder.go", "truncateAtRuneBoundary(content, previewChars)", "content[:previewChars]", True),
   # Known-NEGATIVE control. maxBytes==0 already returns "" via s[:0] on the
-  # second branch, so narrowing the guard is a behavioural no-op. A harness that
+  # second branch, so narrowing the guard is a behavioral no-op. A harness that
   # reports CAUGHT for this is reporting CAUGHT for everything.
   ("CONTROL (no-op): the maxBytes guard narrows from <=0 to <0",
    "util.go", "if maxBytes <= 0 {", "if maxBytes < 0 {", False),
@@ -154,7 +154,7 @@ CASES = [
   # list can read 6/6 while every literal in its three targets is free to drift.
   #
   # Each row below moves ONE literal by ONE unit, or swaps one comparison for
-  # its adjacent neighbour. A far move (2000 -> 20000) is a deletion wearing a
+  # its adjacent neighbor. A far move (2000 -> 20000) is a deletion wearing a
   # number and is already covered by the mechanism rows.
   ("VALUE: the maxBytes guard widens from <=0 to <=1, so a 1-byte budget yields nothing",
    "util.go", "if maxBytes <= 0 {", "if maxBytes <= 1 {", True),
@@ -238,7 +238,7 @@ TESTS = "|".join((
     "TestTruncatedPreviewSpellsItsTokenCounts",
     "TestPreviewLeavesContentOneByteOverTheBudgetWhole",
     "TestBuildContextPreviewDefaultsToThreeHundredBytes",
-    "TestBuildContextHonoursAOneBytePreview",
+    "TestBuildContextHonorsAOneBytePreview",
     "TestTruncateThresholdStraddlesItsOwnValue",
 ))
 

@@ -98,7 +98,7 @@ func TitleFirstRuneOfEachWord(s string) string {
 //
 // It is the negation of the unexported strings.isSeparator that strings.Title
 // uses, and it deliberately still answers false for an apostrophe. Whether a
-// particular apostrophe joins its neighbours is a question about position, not
+// particular apostrophe joins its neighbors is a question about position, not
 // about the rune, so TitleFirstRuneOfEachWord decides that at the call site.
 func isWordRune(r rune) bool {
 	if r <= 0x7F {

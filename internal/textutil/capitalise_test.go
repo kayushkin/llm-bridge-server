@@ -48,7 +48,7 @@ func TestEverythingWithoutAnApostropheMatchesStringsTitle(t *testing.T) {
 		if strings.ContainsRune(in, '\'') {
 			t.Fatalf("input %q contains an ASCII apostrophe — it belongs in the other test", in)
 		}
-		want := strings.Title(in) //nolint:staticcheck // SA1019: strings.Title is the behaviour being preserved
+		want := strings.Title(in) //nolint:staticcheck // SA1019: strings.Title is the behavior being preserved
 		if got := TitleFirstRuneOfEachWord(in); got != want {
 			t.Errorf("TitleFirstRuneOfEachWord(%q) = %q, want %q (strings.Title)", in, got, want)
 		}
@@ -66,7 +66,7 @@ func TestEverythingWithoutAnApostropheMatchesStringsTitle(t *testing.T) {
 func TestAnUnflankedApostropheStillSeparates(t *testing.T) {
 	inputs := []string{"'lead", "dogs' bowls", "'", "''", "a ' b", "trailing'"}
 	for _, in := range inputs {
-		want := strings.Title(in) //nolint:staticcheck // SA1019: strings.Title is the behaviour being preserved
+		want := strings.Title(in) //nolint:staticcheck // SA1019: strings.Title is the behavior being preserved
 		if got := TitleFirstRuneOfEachWord(in); got != want {
 			t.Errorf("TitleFirstRuneOfEachWord(%q) = %q, want %q (strings.Title)", in, got, want)
 		}
@@ -104,7 +104,7 @@ func TestInvalidUTF8IsCopiedNotReplaced(t *testing.T) {
 	}
 }
 
-// TestWordStartIsTitleCaseNotUpperCase pins the digraph behaviour, which is the
+// TestWordStartIsTitleCaseNotUpperCase pins the digraph behavior, which is the
 // difference between this function and a ToUpper-based one.
 func TestWordStartIsTitleCaseNotUpperCase(t *testing.T) {
 	if got, want := TitleFirstRuneOfEachWord("ǆdict"), "ǅdict"; got != want {
