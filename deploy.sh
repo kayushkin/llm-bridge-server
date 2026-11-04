@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# One deploy at a time. Two detached runs that overlap both stop the service,
+# and on 2026-11-03 and again on 2026-11-04 the second one failed after its stop
+# and left the bridge down for hours. The lock is taken before the gate check, so
+# a run that waited checks the tree as it is when its turn comes. A run that
+# cannot get the lock in two hours gives up before it touches anything.
+if [ -n "${DEPLOY_DETACHED:-}" ]; then
+  mkdir -p "$HOME/.cache"
+  exec 9>>"$HOME/.cache/llm-bridge-deploy.lock"
+  if ! flock -n 9; then
+    echo "==> Another llm-bridge deploy is running; waiting for it to finish (at most 2h)..."
+    if ! flock -w 7200 9; then
+      echo "ERROR: another llm-bridge deploy still holds $HOME/.cache/llm-bridge-deploy.lock after 2h; the service was not touched"
+      exit 1
+    fi
+  fi
+fi
+
 # One shared gate decides whether this tree may be deployed (main clone, default
 # branch, clean, pushed, not behind, and the same for every tree the build reads).
 # It lives in healthcheck/scripts/deploy-gate.sh. Do not inline or copy it.
@@ -32,6 +49,10 @@ DROPIN="$DROPIN_DIR/local.conf"
 # the backup and destroy the only good copy.
 STAMP="$(date +%Y%m%dT%H%M%S)"
 BACKUP_BIN="$SYSTEM_BIN.backup-$STAMP"
+# Every binary this run builds goes in a folder of its own, never the repo root,
+# so no other run can replace or delete one between the build and the install.
+mkdir -p "$HOME/.cache"
+BUILD_DIR="$(mktemp -d "$HOME/.cache/llm-bridge-build.XXXXXX")"
 BACKUP_DROPIN=""
 # file-store.conf gives the server file-store's address and token (session files).
 # Tracked separately because a rollback must also take it AWAY when this run is the
@@ -59,6 +80,7 @@ BACKUP_CHAT_LINKS_DROPIN=""
 # below, which are the only reason this deploy is safe to run against a
 # gateway with live sessions on it.
 rollback() {
+  ROLLBACK_RAN=1
   echo "==> ROLLING BACK to $BACKUP_BIN"
   if [ ! -f "$BACKUP_BIN" ]; then
     echo "FATAL: no backup at $BACKUP_BIN — cannot roll back; service left down"
@@ -97,6 +119,37 @@ rollback() {
   return 1
 }
 
+# on_exit runs however the script ends. A step that failed after the stop used to
+# end the run with the service stopped and nothing to start it again; now any
+# exit after the stop that did not reach "Done" and did not already roll back
+# rolls back. Before the stop, it only ends the drain (the server then sends the
+# turns it held). It always removes this run's build folder.
+SERVICE_STOPPED=""
+DEPLOY_FINISHED=""
+ROLLBACK_RAN=""
+DRAIN_STARTED=""
+SERVICE_TOKEN=""
+on_exit() {
+  local status=$?
+  set +e
+  if [ -n "$DRAIN_STARTED" ] && [ -z "$SERVICE_STOPPED" ]; then
+    echo "    the deploy ended before the stop; the server stops holding new turns and sends what it held"
+    curl -sS -o /dev/null -X DELETE -H "X-LLM-Bridge-Service-Token: $SERVICE_TOKEN" http://localhost:8160/restart-drain
+  fi
+  if [ -n "$SERVICE_STOPPED" ] && [ -z "$DEPLOY_FINISHED" ] && [ -z "$ROLLBACK_RAN" ]; then
+    echo "ERROR: the deploy failed (exit $status) after $SERVICE was stopped"
+    rollback
+  fi
+  rm -rf "$BUILD_DIR"
+  exit "$status"
+}
+trap on_exit EXIT
+# bash runs the EXIT trap on a signal only when the signal itself is trapped, so
+# a deploy unit stopped mid-run (SIGTERM) still rolls back.
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
+
 cd "$REPO_DIR"
 
 # Add go to PATH if managed by mise
@@ -111,28 +164,28 @@ echo "==> Building $BIN_NAME..."
 if [ -n "${GOWORK:-}" ]; then
   echo "    building with GOWORK=$GOWORK"
 fi
-go build -o "$BIN_NAME" ./cmd/llm-bridge-server
+go build -o "$BUILD_DIR/$BIN_NAME" ./cmd/llm-bridge-server
 # bridge-mcp: the MCP server tool-store offers sessions, built beside the
 # server so a refused build stops the deploy before anything is touched.
-go build -o bridge-mcp ./cmd/bridge-mcp
+go build -o "$BUILD_DIR/bridge-mcp" ./cmd/bridge-mcp
 # bridge-agent: how an agent starts a delegate. It signs in with the calling
 # session's posting token, so a copy older than the server's delegate routes
 # cannot start anything; build it with the server it talks to.
-go build -o bridge-agent ./cmd/bridge-agent
+go build -o "$BUILD_DIR/bridge-agent" ./cmd/bridge-agent
 # bridge-sessions: how an agent finds and reads past sessions on this server,
 # read-only, with the same posting token.
-go build -o bridge-sessions ./cmd/bridge-sessions
+go build -o "$BUILD_DIR/bridge-sessions" ./cmd/bridge-sessions
 # bridge-peer: how an agent sends a connected server a request or a notice,
 # and reads this server's messages to and from connected servers.
-go build -o bridge-peer ./cmd/bridge-peer
-echo "    built: $(ls -lh "$BIN_NAME" | awk '{print $5}')"
+go build -o "$BUILD_DIR/bridge-peer" ./cmd/bridge-peer
+echo "    built: $(ls -lh "$BUILD_DIR/$BIN_NAME" | awk '{print $5}')"
 
 # Checked before the backup, and so before the stop and the install: an unidentifiable
 # binary compiles perfectly and reads clean in the log, so going any further would take
 # the gateway down for a binary that cannot be traced to a commit. Refusing here leaves
 # the running service untouched and needs no rollback.
 echo "==> Checking provenance..."
-buildinfo="$(go version -m "$BIN_NAME")"
+buildinfo="$(go version -m "$BUILD_DIR/$BIN_NAME")"
 vcs_revision="$(printf '%s\n' "$buildinfo" | awk -F= '$1 ~ /[[:space:]]vcs\.revision$/ {print $2}')"
 vcs_modified="$(printf '%s\n' "$buildinfo" | awk -F= '$1 ~ /[[:space:]]vcs\.modified$/ {print $2}')"
 if [ -z "$vcs_revision" ]; then
@@ -205,20 +258,12 @@ if [ -n "${DEPLOY_SKIP_IDLE_WAIT:-}" ]; then
 else
   WAIT_STARTED=$(date +%s)
   LAST_WAITING_ON=""
-  DRAIN_STARTED=""
   DRAIN_ASKED=""
   # While it waits, the server holds every new turn instead of starting it, so
   # the work running can finish (POST /restart-drain). A held message is sent
   # by the restarted server, or by this one at once if the deploy stops before
-  # the service does: the trap below ends the drain. The drain's own limit
+  # the service does: on_exit ends the drain. The drain's own limit
   # outlasts the wait, so a deploy killed outright still frees what it held.
-  end_drain_unless_stopped() {
-    if [ -n "$DRAIN_STARTED" ] && [ -z "${SERVICE_STOPPED:-}" ]; then
-      echo "    the deploy ended before the stop; the server stops holding new turns and sends what it held"
-      curl -sS -o /dev/null -X DELETE -H "X-LLM-Bridge-Service-Token: $SERVICE_TOKEN" http://localhost:8160/restart-drain || true
-    fi
-  }
-  trap end_drain_unless_stopped EXIT
   while :; do
     READINESS_BODY=$(mktemp)
     READINESS_STATUS=$(curl -sS -o "$READINESS_BODY" -w '%{http_code}' \
@@ -274,7 +319,7 @@ sudo systemctl stop "$SERVICE" 2>/dev/null || true
 sleep 1
 
 echo "==> Installing binary to $SYSTEM_BIN..."
-sudo cp "$BIN_NAME" "$SYSTEM_BIN"
+sudo cp "$BUILD_DIR/$BIN_NAME" "$SYSTEM_BIN"
 
 echo "==> Installing bridge-share-file..."
 # How an agent shows the user a file: it uploads into the agent's own session
@@ -294,20 +339,16 @@ echo "==> Installing bridge-mcp..."
 # The same routes as MCP tools (generate_image, share_file, offer_button), for a
 # session tool-store offers the "bridge" tool to. install writes a new file, so
 # a session's running copy keeps the binary it loaded.
-install -m 755 bridge-mcp "$HOME/bin/bridge-mcp"
-rm -f bridge-mcp
+install -m 755 "$BUILD_DIR/bridge-mcp" "$HOME/bin/bridge-mcp"
 
 echo "==> Installing bridge-agent..."
-install -m 755 bridge-agent "$HOME/bin/bridge-agent"
-rm -f bridge-agent
+install -m 755 "$BUILD_DIR/bridge-agent" "$HOME/bin/bridge-agent"
 
 echo "==> Installing bridge-sessions..."
-install -m 755 bridge-sessions "$HOME/bin/bridge-sessions"
-rm -f bridge-sessions
+install -m 755 "$BUILD_DIR/bridge-sessions" "$HOME/bin/bridge-sessions"
 
 echo "==> Installing bridge-peer..."
-install -m 755 bridge-peer "$HOME/bin/bridge-peer"
-rm -f bridge-peer
+install -m 755 "$BUILD_DIR/bridge-peer" "$HOME/bin/bridge-peer"
 
 echo "==> Installing service file..."
 # The committed unit file uses __USER__ / __HOME__ placeholders so the repo
@@ -529,6 +570,7 @@ sudo find /usr/local/bin -maxdepth 1 -name "$BIN_NAME.backup-*" -printf '%f\n' 2
 sudo find "$DROPIN_DIR" -maxdepth 1 -name 'local.conf.backup-*' -printf '%f\n' 2>/dev/null \
   | sort -r | tail -n +6 | while read -r old; do sudo rm -f "$DROPIN_DIR/$old"; done
 
+DEPLOY_FINISHED=1
 echo "==> Done. Rollback point: $BACKUP_BIN"
 
 # Last act: write this deploy to repo-store's ledger, so the next agent sees what is live.
