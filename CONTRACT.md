@@ -57,6 +57,7 @@ Each needs `X-Sign-In-Store-Service-Token` and `X-Principal-Id` naming an enable
 | GET | `/sign-in-links` | `?principal_id=&limit=` (1–1000, default 100), newest first; never a secret |
 | GET | `/sessions` | the same query, newest first; never a secret |
 | POST | `/sessions/{id}/revoke` | `{"reason"}`, required: 200 with the session; 409 when revoked before |
+| POST | `/principals/{id}/discord-messages` | `{"body"}`: sends it to the one-to-one Discord chat of the person in people-store pointing at the principal, through multichat, so from the operator's own account; the body must say who it is from. 200 `{sent, person_id}`; 404 `unknown_principal` or `no_person`; 409 `no_chat` when there is no one-to-one Discord chat; 502 when people-store, principal-store or multichat fails |
 
 ## Open
 

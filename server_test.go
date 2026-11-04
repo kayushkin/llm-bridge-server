@@ -98,6 +98,13 @@ func newFakeWorld(t *testing.T) *fakeWorld {
 		}
 		http.Error(w, `{"error":"no such identity"}`, http.StatusNotFound)
 	})
+	mux.HandleFunc("GET /persons", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("principal_id") == testPerson {
+			fmt.Fprint(w, `[{"id":"person_000002"}]`)
+			return
+		}
+		fmt.Fprint(w, `[]`)
+	})
 	mux.HandleFunc("GET /persons/{id}", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"id": "person_000002", "principal_id": testPerson,
 			"identities": []any{map[string]any{"kind": "matrix_user", "value": testDiscordAccount}}})
@@ -378,5 +385,32 @@ func TestOnlyALoopbackCallerMayNameTheClientAddress(t *testing.T) {
 	request.RemoteAddr = "127.0.0.1:1000"
 	if got := clientAddress(request); got != "10.0.0.1" {
 		t.Errorf("nginx's X-Real-IP was not read: %s", got)
+	}
+}
+
+func TestADiscordMessageReachesThePersonPointingAtThePrincipal(t *testing.T) {
+	service := newTestService(t)
+	body := map[string]string{"body": "Member recommends Dune (2021): kayushkin.com/library/movies"}
+	if answer := service.do(t, "POST", "/principals/"+testPerson+"/discord-messages", body, map[string]string{ServiceTokenHeader: testServiceToken, PrincipalIDHeader: testPerson}, nil); answer.Code != http.StatusForbidden {
+		t.Fatalf("from a principal who is not an administrator = %d, want 403", answer.Code)
+	}
+	answer := service.do(t, "POST", "/principals/"+testPerson+"/discord-messages", body, asAdministrator, nil)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("send = %d %s", answer.Code, answer.Body)
+	}
+	if len(service.world.sent) != 1 || service.world.sent[0] != "!direct:matrix "+body["body"] {
+		t.Fatalf("sent = %v, want the body in the direct room", service.world.sent)
+	}
+	if empty := service.do(t, "POST", "/principals/"+testPerson+"/discord-messages", map[string]string{"body": " "}, asAdministrator, nil); empty.Code != http.StatusBadRequest {
+		t.Errorf("an empty body = %d, want 400", empty.Code)
+	}
+	if nobody := service.do(t, "POST", "/principals/"+testAdministrator+"/discord-messages", body, asAdministrator, nil); nobody.Code != http.StatusNotFound {
+		t.Errorf("a principal no person points at = %d %s, want 404", nobody.Code, nobody.Body)
+	}
+	if unknown := service.do(t, "POST", "/principals/principal_000999/discord-messages", body, asAdministrator, nil); unknown.Code != http.StatusNotFound {
+		t.Errorf("an unknown principal = %d %s, want 404", unknown.Code, unknown.Body)
+	}
+	if len(service.world.sent) != 1 {
+		t.Errorf("refused sends still sent: %v", service.world.sent)
 	}
 }

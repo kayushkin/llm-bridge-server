@@ -74,6 +74,7 @@ func RegisterHandlers(mux *http.ServeMux, store *Store, directory *Directory, co
 	mux.HandleFunc("GET /sign-in-links", s.administrator(s.listLinks))
 	mux.HandleFunc("GET /sessions", s.administrator(s.listSessions))
 	mux.HandleFunc("POST /sessions/{id}/revoke", s.administrator(s.revokeSession))
+	mux.HandleFunc("POST /principals/{id}/discord-messages", s.administrator(s.sendDiscordMessage))
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -385,6 +386,53 @@ func (s *server) administrator(next func(http.ResponseWriter, *http.Request, str
 
 // POST /sign-in-links {"principal_id": "…"}: the operator makes a link to
 // hand over. The answer holds the URL once; only its hash is kept.
+// POST /principals/{id}/discord-messages {"body": "…"}: send a message to the
+// one-to-one Discord chat of the person pointing at this principal, through
+// multichat — the same way a sign-in link goes out, so from the operator's own
+// Discord account. A site uses it to pass on something one member sent
+// another; the body must say who it is from. 404 when no person points at the
+// principal, 409 when they have no one-to-one Discord chat here.
+func (s *server) sendDiscordMessage(w http.ResponseWriter, r *http.Request, administratorID string) {
+	principalID := r.PathValue("id")
+	var request struct {
+		Body string `json:"body"`
+	}
+	if !decodeBody(w, r, &request) {
+		return
+	}
+	if strings.TrimSpace(request.Body) == "" {
+		writeError(w, http.StatusBadRequest, "body_required", `send {"body": "<the message>"}`)
+		return
+	}
+	if _, err := s.directory.Principal(r.Context(), principalID); errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "unknown_principal", err.Error())
+		return
+	} else if err != nil {
+		writeError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
+		return
+	}
+	person, err := s.directory.PersonPointingAtPrincipal(r.Context(), principalID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "people_store_unavailable", err.Error())
+		return
+	}
+	if person == nil {
+		writeError(w, http.StatusNotFound, "no_person", "no person in people-store points at "+principalID)
+		return
+	}
+	sent, err := s.directory.SendToPersonsChat(r.Context(), person, chatAccountPrefixesFor(SentByDiscord), request.Body)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "send_failed", err.Error())
+		return
+	}
+	if !sent {
+		writeError(w, http.StatusConflict, "no_chat", person.ID+" has no one-to-one Discord chat to send to")
+		return
+	}
+	log.Printf("[discord-message] %s sent a message to %s (%s)", administratorID, principalID, person.ID)
+	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "person_id": person.ID})
+}
+
 func (s *server) makeLink(w http.ResponseWriter, r *http.Request, administratorID string) {
 	var request struct {
 		PrincipalID string `json:"principal_id"`

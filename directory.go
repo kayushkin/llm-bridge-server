@@ -193,6 +193,29 @@ func (d *Directory) PersonOwningHandle(ctx context.Context, kind, value string) 
 	return &person, nil
 }
 
+// PersonPointingAtPrincipal finds, through people-store, the person whose
+// principal_id is this principal, with their chat handles; nil when nobody
+// points at it. Two people pointing at one principal is an error, not a pick.
+func (d *Directory) PersonPointingAtPrincipal(ctx context.Context, principalID string) (*Person, error) {
+	var listed []struct {
+		ID string `json:"id"`
+	}
+	if err := d.getJSON(ctx, d.peopleStoreURL+"/persons?"+url.Values{"principal_id": {principalID}}.Encode(), nil, &listed); err != nil {
+		return nil, fmt.Errorf("people-store: %w", err)
+	}
+	if len(listed) == 0 {
+		return nil, nil
+	}
+	if len(listed) > 1 {
+		return nil, fmt.Errorf("people-store: %d people point at %s", len(listed), principalID)
+	}
+	var person Person
+	if err := d.getJSON(ctx, d.peopleStoreURL+"/persons/"+url.PathEscape(listed[0].ID), nil, &person); err != nil {
+		return nil, fmt.Errorf("people-store: %w", err)
+	}
+	return &person, nil
+}
+
 // resolveCredential reads a secret from auth-store at the time of use, so a
 // rotated one is used at once. reason goes in auth-store's audit trail.
 func (d *Directory) resolveCredential(ctx context.Context, credentialID, reason string) (string, error) {
