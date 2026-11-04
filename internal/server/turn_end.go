@@ -8,6 +8,7 @@ import "github.com/kayushkin/llm-bridge/msg"
 func (s *Server) onTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionState) {
 	go s.maybeAutoRename(bridgeID)
 	go s.reportPeerRequestTurnEnd(bridgeID, ev, state)
+	go s.onChatLinkTurnEnd(bridgeID, ev, state)
 	go s.updateSessionBriefAtTurnEnd(bridgeID, state)
 	s.classifyTurnEnd(bridgeID, ev, state)
 }

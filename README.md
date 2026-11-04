@@ -229,6 +229,10 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/sessions/{id}/attach` | WebSocket onto a pty-mode session's terminal | owner |
 | `GET` | `/sessions/{id}/attach-token` | The token the attach WebSocket needs | owner |
 | `PUT` | `/sessions/{id}/bypass-permissions` | Old boolean form of the above | operator |
+| `GET` | `/sessions/{id}/chat-links` | The session's chat links, active and ended | owner, or the session's own agent |
+| `POST` | `/sessions/{id}/chat-links` | Link the session to a person writing to one of our bot accounts: what they send comes in, each turn it starts is sent back (its owner, or its own agent with LLM_BRIDGE_SESSION_POSTING_TOKEN) | owner, or the session's own agent |
+| `GET` | `/sessions/{id}/chat-links/{link_id}` | One chat link and its log of messages both ways | owner, or the session's own agent |
+| `POST` | `/sessions/{id}/chat-links/{link_id}/end` | End a chat link; what the person sends after is not kept | owner, or the session's own agent |
 | `POST` | `/sessions/{id}/compact` | Compact the context | owner |
 | `POST` | `/sessions/{id}/config` | Change model, effort, budget or disabled tools | owner |
 | `GET` | `/sessions/{id}/effective-config` | Every setting the session runs with, and which layer decided it | owner |

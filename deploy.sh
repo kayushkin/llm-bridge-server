@@ -46,6 +46,11 @@ BACKUP_FILE_STORE_DROPIN=""
 # before session actions refuses to start on LLMBRIDGE_REPO_STORE_URL.
 SESSION_ACTIONS_DROPIN="$DROPIN_DIR/session-actions.conf"
 BACKUP_SESSION_ACTIONS_DROPIN=""
+# chat-links.conf gives the server multichat's address and the NATS multichat
+# publishes on, both read from multichat's own unit. Rolled back the same way:
+# a binary from before chat links refuses to start on LLMBRIDGE_NATS_URL.
+CHAT_LINKS_DROPIN="$DROPIN_DIR/chat-links.conf"
+BACKUP_CHAT_LINKS_DROPIN=""
 
 # rollback restores the binary and drop-in this run replaced, restarts, and
 # confirms the service actually answers again. Called from the failure paths
@@ -71,6 +76,11 @@ rollback() {
     sudo cp -p "$BACKUP_SESSION_ACTIONS_DROPIN" "$SESSION_ACTIONS_DROPIN"
   else
     sudo rm -f "$SESSION_ACTIONS_DROPIN"
+  fi
+  if [ -n "$BACKUP_CHAT_LINKS_DROPIN" ] && [ -f "$BACKUP_CHAT_LINKS_DROPIN" ]; then
+    sudo cp -p "$BACKUP_CHAT_LINKS_DROPIN" "$CHAT_LINKS_DROPIN"
+  else
+    sudo rm -f "$CHAT_LINKS_DROPIN"
   fi
   sudo systemctl daemon-reload
   sudo systemctl start "$SERVICE"
@@ -159,6 +169,11 @@ if [ -f "$SESSION_ACTIONS_DROPIN" ]; then
   BACKUP_SESSION_ACTIONS_DROPIN="$SESSION_ACTIONS_DROPIN.backup-$STAMP"
   sudo cp -p "$SESSION_ACTIONS_DROPIN" "$BACKUP_SESSION_ACTIONS_DROPIN"
   echo "    session-actions drop-in -> $BACKUP_SESSION_ACTIONS_DROPIN"
+fi
+if [ -f "$CHAT_LINKS_DROPIN" ]; then
+  BACKUP_CHAT_LINKS_DROPIN="$CHAT_LINKS_DROPIN.backup-$STAMP"
+  sudo cp -p "$CHAT_LINKS_DROPIN" "$BACKUP_CHAT_LINKS_DROPIN"
+  echo "    chat-links drop-in -> $BACKUP_CHAT_LINKS_DROPIN"
 fi
 
 # Every route but /health is gated. The idle wait below and the readiness poll
@@ -411,6 +426,25 @@ else
 fi
 sudo cp "$TMP_SESSION_ACTIONS_DROPIN" "$SESSION_ACTIONS_DROPIN"
 rm -f "$TMP_SESSION_ACTIONS_DROPIN"
+
+# Chat links: multichat's port and the NATS it publishes messaging.inbound on,
+# both from multichat's own unit. Either missing leaves chat links off (their
+# routes answer 503) rather than failing the deploy. multichat's token is
+# auth-store's, resolved at use.
+MULTICHAT_UNIT="$HOME/.config/systemd/user/multichat-server.service"
+MULTICHAT_PORT="$(grep -oP '^Environment=PORT=\K.*' "$MULTICHAT_UNIT" 2>/dev/null || true)"
+MULTICHAT_NATS_URL="$(grep -oP '^Environment=NATS_URL=\K.*' "$MULTICHAT_UNIT" 2>/dev/null || true)"
+if [ -n "$MULTICHAT_PORT" ] && [ -n "$MULTICHAT_NATS_URL" ]; then
+  TMP_CHAT_LINKS_DROPIN=$(mktemp)
+  printf '[Service]\nEnvironment=LLMBRIDGE_MULTICHAT_URL=http://localhost:%s\nEnvironment=LLMBRIDGE_NATS_URL=%s\n' \
+    "$MULTICHAT_PORT" "$MULTICHAT_NATS_URL" > "$TMP_CHAT_LINKS_DROPIN"
+  sudo cp "$TMP_CHAT_LINKS_DROPIN" "$CHAT_LINKS_DROPIN"
+  rm -f "$TMP_CHAT_LINKS_DROPIN"
+  echo "    chat-links drop-in: LLMBRIDGE_MULTICHAT_URL=http://localhost:$MULTICHAT_PORT, LLMBRIDGE_NATS_URL=$MULTICHAT_NATS_URL"
+else
+  echo "WARNING: no PORT or NATS_URL in $MULTICHAT_UNIT; chat links stay off"
+  sudo rm -f "$CHAT_LINKS_DROPIN"
+fi
 
 sudo systemctl daemon-reload
 

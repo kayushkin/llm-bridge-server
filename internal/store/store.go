@@ -555,6 +555,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateSessionActions(); err != nil {
 		return err
 	}
+	if err := s.migrateChatLinks(); err != nil {
+		return fmt.Errorf("migrate chat links: %w", err)
+	}
 	if err := s.migrateServerIdentity(); err != nil {
 		return fmt.Errorf("migrate server identity: %w", err)
 	}

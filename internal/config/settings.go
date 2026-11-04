@@ -104,12 +104,12 @@ func HarnessProxyDefault(harnessName string) string {
 // read without being declared here.
 func SettingDefinitions() []servicesettings.Definition {
 	const (
-		wiring    = msg.ServiceSettingKindWiring
-		path      = msg.ServiceSettingKindPath
-		secret    = msg.ServiceSettingKindSecret
+		wiring   = msg.ServiceSettingKindWiring
+		path     = msg.ServiceSettingKindPath
+		secret   = msg.ServiceSettingKindSecret
 		behavior = msg.ServiceSettingKindBehavior
-		text      = msg.ServiceSettingValueTypeString
-		role      = msg.ServiceSettingValueTypeModelRole
+		text     = msg.ServiceSettingValueTypeString
+		role     = msg.ServiceSettingValueTypeModelRole
 	)
 	definitions := []servicesettings.Definition{
 		// Behavior the server stores: changed on the settings page, no restart.
@@ -188,6 +188,10 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "grant-store, read at spawn for a principal's grants and mounted at /grant-store/. It has no default."},
 		{Key: "kanban_store.url", EnvironmentVariable: "LLMBRIDGE_KANBAN_STORE_URL", Kind: wiring, ValueType: text, Required: true,
 			Description: "kanban-store, which owns the session-to-card link and is mounted at /kanban/. It has no default."},
+		{Key: "chat_links.nats_url", EnvironmentVariable: "LLMBRIDGE_NATS_URL", Kind: wiring, ValueType: text,
+			Description: "NATS, whose messaging.inbound subject multichat publishes what people send our accounts on. Chat links read it through a durable consumer. Empty switches chat links off, and their routes answer 503."},
+		{Key: "chat_links.multichat_url", EnvironmentVariable: "LLMBRIDGE_MULTICHAT_URL", Kind: wiring, ValueType: text,
+			Description: "multichat, which a chat link asks which accounts exist and sends a turn's final reply through, with the token auth-store holds for provider multichat. Empty switches chat links off, and their routes answer 503."},
 		{Key: "file_store.url", EnvironmentVariable: "LLMBRIDGE_FILE_STORE_URL", Kind: wiring, ValueType: text,
 			Description: "file-store, which keeps the bytes of every file shared into a session. It has no default; empty switches session files off, and their routes answer 503."},
 		{Key: "repo_store.url", EnvironmentVariable: "LLMBRIDGE_REPO_STORE_URL", Kind: wiring, ValueType: text,

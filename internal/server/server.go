@@ -148,6 +148,8 @@ type Server struct {
 	// process is making, so a slot left by a call a restart killed reads as
 	// free. See renamer.go.
 	renamesInFlight sync.Map
+	// chatLinks is nil when chat links are off (chat_links.go).
+	chatLinks *chatLinks
 }
 
 func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
@@ -200,6 +202,24 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	// machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
 	srv.harness.SetUnpromptedTurnStartObserver(srv.onUnpromptedTurnStart)
+	if cfg.ChatLinksNATSURL != "" && cfg.ChatLinksMultichatURL != "" {
+		srv.chatLinks = &chatLinks{
+			multichatURL: cfg.ChatLinksMultichatURL,
+			httpClient:   &http.Client{Timeout: 60 * time.Second},
+			token: func(ctx context.Context) (string, error) {
+				resolved, err := authClient.ResolveByProvider(ctx, chatLinkMultichatProvider, "", "", "read multichat's accounts and send a chat link's reply")
+				if err != nil {
+					return "", err
+				}
+				return resolved.Secret(), nil
+			},
+			kick: make(chan struct{}, 1),
+			now:  func() time.Time { return time.Now().UTC() },
+		}
+		srv.chatLinks.sendIntoSession = srv.sendIntoSessionThroughRoutes
+	} else {
+		log.Printf("[chat-links] off: LLMBRIDGE_NATS_URL and LLMBRIDGE_MULTICHAT_URL must both be set")
+	}
 	if cfg.FileStoreURL != "" {
 		srv.fileStore = filestoreclient.New(cfg.FileStoreURL, cfg.FileStoreServiceToken)
 	} else {
@@ -313,6 +333,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/files/{file_id}/content", s.handleSessionFileContent)
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools", s.handleFilesNamedByTools)
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/content", s.handleFileNamedByToolsContent)
+	s.mux.HandleFunc("POST /sessions/{id}/chat-links", s.handleCreateChatLink)
+	s.mux.HandleFunc("GET /sessions/{id}/chat-links", s.handleListChatLinks)
+	s.mux.HandleFunc("GET /sessions/{id}/chat-links/{link_id}", s.handleGetChatLink)
+	s.mux.HandleFunc("POST /sessions/{id}/chat-links/{link_id}/end", s.handleEndChatLink)
 	s.mux.HandleFunc("POST /sessions/{id}/actions", s.handleOfferSessionAction)
 	s.mux.HandleFunc("POST /sessions/{id}/images", s.handleGenerateImagesIntoSession)
 	s.mux.HandleFunc("GET /sessions/{id}/actions", s.handleListSessionActions)

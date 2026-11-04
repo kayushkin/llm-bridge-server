@@ -188,3 +188,26 @@ func keys(m map[string]struct{}) []string {
 	}
 	return out
 }
+
+// TestManager_TheResultCarriesTheClientRequestIDOfItsTurn pins what chat
+// links read at turn end: the result of a turn opened by a user_message
+// carries that message's client_request_id, and the next turn's does not.
+func TestManager_TheResultCarriesTheClientRequestIDOfItsTurn(t *testing.T) {
+	m := newTestManager(t)
+	const bridgeID = "br-client-request"
+	if err := m.store.CreateSession(&store.Session{SessionID: bridgeID, Harness: msg.HarnessClaudeCode, State: string(msg.SessionIdle)}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	m.AssignMessageID(bridgeID, &msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, ClientRequestID: "chat-link-delivery:x", Result: &msg.ResultEvent{Text: "from a person"}})
+	result := &msg.Event{Type: msg.EventResult, BridgeSessionID: bridgeID, Result: &msg.ResultEvent{Text: "reply"}}
+	m.AssignMessageID(bridgeID, result)
+	if result.ClientRequestID != "chat-link-delivery:x" {
+		t.Fatalf("result client_request_id = %q", result.ClientRequestID)
+	}
+	m.AssignMessageID(bridgeID, &msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, Result: &msg.ResultEvent{Text: "from the operator"}})
+	next := &msg.Event{Type: msg.EventResult, BridgeSessionID: bridgeID, Result: &msg.ResultEvent{Text: "reply"}}
+	m.AssignMessageID(bridgeID, next)
+	if next.ClientRequestID != "" {
+		t.Fatalf("the operator's turn carried %q", next.ClientRequestID)
+	}
+}

@@ -113,6 +113,12 @@ type Config struct {
 	// /kanban/ proxies to as the calling principal. Required, via
 	// LLMBRIDGE_KANBAN_STORE_URL.
 	KanbanStoreURL string
+	// ChatLinksNATSURL and ChatLinksMultichatURL switch chat links on: NATS
+	// carries what people send our accounts, multichat sends the replies.
+	// Either empty turns them off. Configured via LLMBRIDGE_NATS_URL and
+	// LLMBRIDGE_MULTICHAT_URL.
+	ChatLinksNATSURL      string
+	ChatLinksMultichatURL string
 	// MailstackURL is the base URL of mailstack, asked for the sender and
 	// subject of the mail behind a card when question triage drafts a reply
 	// to the customer. Configured via LLMBRIDGE_MAILSTACK_URL. MailstackToken
@@ -406,6 +412,8 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		DiscoveryPrincipalID:             settings.String("discovery.principal_id"),
 		BundleStoreURL:                   settings.String("bundle_store.url"),
 		KanbanStoreURL:                   settings.String("kanban_store.url"),
+		ChatLinksNATSURL:                 settings.String("chat_links.nats_url"),
+		ChatLinksMultichatURL:            settings.String("chat_links.multichat_url"),
 		MailstackURL:                     settings.String("mailstack.url"),
 		MailstackToken:                   settings.String("mailstack.token"),
 		HealthcheckURL:                   settings.String("healthcheck.url"),

@@ -209,6 +209,17 @@ func main() {
 	srv.StartWatchdog()                                       // Periodic check for sessions whose harness died mid-life
 	srv.StartPeerDialers()                                    // Reopen the socket of every dial-out connection this server initiated
 	srv.StartMachineStatsSampler(context.Background())        // Read this machine every minute, keep runners' readings, delete old ones
+	go srv.RunChatLinks(context.Background())                 // Deliver what people send linked conversations, and send the replies
+	go func() { // Read messaging.inbound for chat links; a bus that is down is retried, not fatal to every session
+		for {
+			err := srv.StartChatLinkInbound(cfg.ChatLinksNATSURL)
+			if err == nil {
+				return
+			}
+			log.Printf("[chat-links] ERROR: %v; trying again in a minute", err)
+			time.Sleep(time.Minute)
+		}
+	}()
 	go srv.RunPeerMessageOutbox(context.Background())         // Deliver queued messages to connected servers, and report finished updates
 	stopKeepAwake := srv.StartKeepAwake()                     // Hold this machine awake while sessions run, when keep_awake.enabled is on
 	defer stopKeepAwake()
