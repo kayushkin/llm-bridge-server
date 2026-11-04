@@ -192,6 +192,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "NATS, whose messaging.inbound subject multichat publishes what people send our accounts on. Chat links read it through a durable consumer. Empty switches chat links off, and their routes answer 503."},
 		{Key: "chat_links.multichat_url", EnvironmentVariable: "LLMBRIDGE_MULTICHAT_URL", Kind: wiring, ValueType: text,
 			Description: "multichat, which a chat link asks which accounts exist and sends a turn's final reply through, with the token auth-store holds for provider multichat. Empty switches chat links off, and their routes answer 503."},
+		{Key: "chat_links.people_store_url", EnvironmentVariable: "LLMBRIDGE_PEOPLE_STORE_URL", Kind: wiring, ValueType: text,
+			Description: "people-store, which a chat link asks who owns the platform account a message came from, and that person's principal, so the session is told whether the operator wrote it. Empty switches chat links off, and their routes answer 503."},
 		{Key: "file_store.url", EnvironmentVariable: "LLMBRIDGE_FILE_STORE_URL", Kind: wiring, ValueType: text,
 			Description: "file-store, which keeps the bytes of every file shared into a session. It has no default; empty switches session files off, and their routes answer 503."},
 		{Key: "repo_store.url", EnvironmentVariable: "LLMBRIDGE_REPO_STORE_URL", Kind: wiring, ValueType: text,

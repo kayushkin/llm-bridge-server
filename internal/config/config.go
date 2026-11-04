@@ -119,6 +119,9 @@ type Config struct {
 	// LLMBRIDGE_MULTICHAT_URL.
 	ChatLinksNATSURL      string
 	ChatLinksMultichatURL string
+	// ChatLinksPeopleStoreURL is people-store, which says who owns the
+	// account a chat link message came from. Chat links need it too.
+	ChatLinksPeopleStoreURL string
 	// MailstackURL is the base URL of mailstack, asked for the sender and
 	// subject of the mail behind a card when question triage drafts a reply
 	// to the customer. Configured via LLMBRIDGE_MAILSTACK_URL. MailstackToken
@@ -414,6 +417,7 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		KanbanStoreURL:                   settings.String("kanban_store.url"),
 		ChatLinksNATSURL:                 settings.String("chat_links.nats_url"),
 		ChatLinksMultichatURL:            settings.String("chat_links.multichat_url"),
+		ChatLinksPeopleStoreURL:          settings.String("chat_links.people_store_url"),
 		MailstackURL:                     settings.String("mailstack.url"),
 		MailstackToken:                   settings.String("mailstack.token"),
 		HealthcheckURL:                   settings.String("healthcheck.url"),

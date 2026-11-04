@@ -73,7 +73,51 @@ func (s *Store) migrateChatLinks() error {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_link_messages_bus_event
 			ON chat_link_messages(link_id, bus_event_id) WHERE bus_event_id != '';
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.addChatLinkMessageSenderColumns()
+}
+
+// addChatLinkMessageSenderColumns adds who sent a message (2026-11-04), only
+// when missing; any other failure is returned.
+func (s *Store) addChatLinkMessageSenderColumns() error {
+	existing := map[string]bool{}
+	rows, err := s.db.Query(`PRAGMA table_info(chat_link_messages)`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var position, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&position, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, column := range []struct{ name, definition string }{
+		{"sender_platform_user_id", "TEXT NOT NULL DEFAULT ''"},
+		{"sender_platform_display_name", "TEXT NOT NULL DEFAULT ''"},
+		{"sender_person_id", "TEXT NOT NULL DEFAULT ''"},
+		{"sender_principal_id", "TEXT NOT NULL DEFAULT ''"},
+		{"sender_person_display_name", "TEXT NOT NULL DEFAULT ''"},
+		{"sender_resolved_at", "DATETIME"},
+	} {
+		if existing[column.name] {
+			continue
+		}
+		if _, err := s.db.Exec(`ALTER TABLE chat_link_messages ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+			return fmt.Errorf("add chat_link_messages.%s: %w", column.name, err)
+		}
+	}
+	return nil
 }
 
 func chatLinkIDOf(rowID int64) string { return fmt.Sprintf("%s%06d", chatLinkIDPrefix, rowID) }
@@ -92,7 +136,9 @@ func rowIDWithPrefix(id, prefix string) (int64, bool) {
 }
 
 // ChatLinkMessageRowID answers the row id of a chat_link_message_… id.
-func ChatLinkMessageRowID(id string) (int64, bool) { return rowIDWithPrefix(id, chatLinkMessageIDPrefix) }
+func ChatLinkMessageRowID(id string) (int64, bool) {
+	return rowIDWithPrefix(id, chatLinkMessageIDPrefix)
+}
 
 const chatLinkSelect = `SELECT id, session_id, account_id, platform, conversation_id, person_display_name,
 	created_by_principal_id, created_by_session_agent, created_at, ended_at FROM chat_links`
@@ -208,16 +254,23 @@ func (s *Store) EndChatLink(sessionID, linkID string, endedAt time.Time) (ChatLi
 }
 
 const chatLinkMessageSelect = `SELECT id, link_id, direction, state, body, attachments, platform_message_ids, bus_event_id,
-	delivery_id, bridge_message_id, attempts, error, created_at, updated_at, next_attempt_at FROM chat_link_messages`
+	delivery_id, bridge_message_id, attempts, error, created_at, updated_at, next_attempt_at,
+	sender_platform_user_id, sender_platform_display_name, sender_person_id, sender_principal_id,
+	sender_person_display_name, sender_resolved_at FROM chat_link_messages`
 
 func scanChatLinkMessage(scanner interface{ Scan(...any) error }) (ChatLinkMessage, error) {
 	var message ChatLinkMessage
 	var rowID, linkRowID int64
 	var direction, state, attachments, platformMessageIDs string
-	var nextAttemptAt sql.NullTime
+	var nextAttemptAt, senderResolvedAt sql.NullTime
 	if err := scanner.Scan(&rowID, &linkRowID, &direction, &state, &message.Body, &attachments, &platformMessageIDs, &message.BusEventID,
-		&message.DeliveryID, &message.BridgeMessageID, &message.Attempts, &message.Error, &message.CreatedAt, &message.UpdatedAt, &nextAttemptAt); err != nil {
+		&message.DeliveryID, &message.BridgeMessageID, &message.Attempts, &message.Error, &message.CreatedAt, &message.UpdatedAt, &nextAttemptAt,
+		&message.SenderPlatformUserID, &message.SenderPlatformDisplayName, &message.SenderPersonID, &message.SenderPrincipalID,
+		&message.SenderPersonDisplayName, &senderResolvedAt); err != nil {
 		return ChatLinkMessage{}, err
+	}
+	if senderResolvedAt.Valid {
+		message.SenderResolvedAt = senderResolvedAt.Time.UTC()
 	}
 	message.ID = chatLinkMessageIDOf(rowID)
 	message.LinkID = chatLinkIDOf(linkRowID)
@@ -289,10 +342,23 @@ func (s *Store) ChatLinkOfMessage(message ChatLinkMessage) (ChatLink, error) {
 	return s.getChatLinkByRowID(rowID)
 }
 
+// InboundChatLinkMessage is what AddInboundChatLinkMessage keeps.
+type InboundChatLinkMessage struct {
+	LinkID                    string
+	BusEventID                string
+	Body                      string
+	Attachments               []msg.ChatLinkAttachment
+	PlatformMessageID         string
+	SenderPlatformUserID      string
+	SenderPlatformDisplayName string
+	At                        time.Time
+}
+
 // AddInboundChatLinkMessage keeps a message the person sent, pending. A bus
 // event already kept for the link (JetStream redelivers) adds nothing and
 // answers false.
-func (s *Store) AddInboundChatLinkMessage(linkID, busEventID, body string, attachments []msg.ChatLinkAttachment, platformMessageID string, at time.Time) (bool, error) {
+func (s *Store) AddInboundChatLinkMessage(inbound InboundChatLinkMessage) (bool, error) {
+	linkID, busEventID, body, attachments, platformMessageID, at := inbound.LinkID, inbound.BusEventID, inbound.Body, inbound.Attachments, inbound.PlatformMessageID, inbound.At
 	rowID, ok := rowIDWithPrefix(linkID, chatLinkIDPrefix)
 	if !ok {
 		return false, ErrChatLinkNotFound
@@ -312,14 +378,36 @@ func (s *Store) AddInboundChatLinkMessage(linkID, busEventID, body string, attac
 	if err != nil {
 		return false, err
 	}
-	result, err := s.db.Exec(`INSERT INTO chat_link_messages (link_id, direction, state, body, attachments, platform_message_ids, bus_event_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-		rowID, string(msg.ChatLinkInbound), string(msg.ChatLinkMessagePending), body, string(encodedAttachments), string(encodedIDs), busEventID, at.UTC(), at.UTC())
+	result, err := s.db.Exec(`INSERT INTO chat_link_messages (link_id, direction, state, body, attachments, platform_message_ids, bus_event_id,
+		sender_platform_user_id, sender_platform_display_name, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+		rowID, string(msg.ChatLinkInbound), string(msg.ChatLinkMessagePending), body, string(encodedAttachments), string(encodedIDs), busEventID,
+		inbound.SenderPlatformUserID, inbound.SenderPlatformDisplayName, at.UTC(), at.UTC())
 	if err != nil {
 		return false, err
 	}
 	inserted, err := result.RowsAffected()
 	return inserted == 1, err
+}
+
+// ChatLinkMessageSender is who people-store says sent an inbound message;
+// PersonID and PrincipalID are empty when nobody owns the account.
+type ChatLinkMessageSender struct {
+	PersonID          string
+	PrincipalID       string
+	PersonDisplayName string
+}
+
+// RecordChatLinkMessageSender stores who sent an inbound message, read at at.
+func (s *Store) RecordChatLinkMessageSender(messageID string, sender ChatLinkMessageSender, at time.Time) error {
+	rowID, ok := ChatLinkMessageRowID(messageID)
+	if !ok {
+		return fmt.Errorf("not a chat link message id: %q", messageID)
+	}
+	_, err := s.db.Exec(`UPDATE chat_link_messages SET sender_person_id = ?, sender_principal_id = ?, sender_person_display_name = ?,
+		sender_resolved_at = ?, updated_at = ? WHERE id = ?`,
+		sender.PersonID, sender.PrincipalID, sender.PersonDisplayName, at.UTC(), at.UTC(), rowID)
+	return err
 }
 
 // MarkChatLinkMessagesInSession records that pending inbound messages went

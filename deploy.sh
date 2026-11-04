@@ -47,8 +47,10 @@ BACKUP_FILE_STORE_DROPIN=""
 SESSION_ACTIONS_DROPIN="$DROPIN_DIR/session-actions.conf"
 BACKUP_SESSION_ACTIONS_DROPIN=""
 # chat-links.conf gives the server multichat's address and the NATS multichat
-# publishes on, both read from multichat's own unit. Rolled back the same way:
-# a binary from before chat links refuses to start on LLMBRIDGE_NATS_URL.
+# publishes on, both read from multichat's own unit, and people-store's
+# address, read from its unit. Rolled back the same way: a binary from before
+# chat links refuses to start on LLMBRIDGE_NATS_URL, and one from before
+# senders were read refuses LLMBRIDGE_PEOPLE_STORE_URL.
 CHAT_LINKS_DROPIN="$DROPIN_DIR/chat-links.conf"
 BACKUP_CHAT_LINKS_DROPIN=""
 
@@ -428,21 +430,24 @@ sudo cp "$TMP_SESSION_ACTIONS_DROPIN" "$SESSION_ACTIONS_DROPIN"
 rm -f "$TMP_SESSION_ACTIONS_DROPIN"
 
 # Chat links: multichat's port and the NATS it publishes messaging.inbound on,
-# both from multichat's own unit. Either missing leaves chat links off (their
+# both from multichat's own unit, and people-store's address from its unit,
+# which says who sent each message. Any missing leaves chat links off (their
 # routes answer 503) rather than failing the deploy. multichat's token is
 # auth-store's, resolved at use.
 MULTICHAT_UNIT="$HOME/.config/systemd/user/multichat-server.service"
 MULTICHAT_PORT="$(grep -oP '^Environment=PORT=\K.*' "$MULTICHAT_UNIT" 2>/dev/null || true)"
 MULTICHAT_NATS_URL="$(grep -oP '^Environment=NATS_URL=\K.*' "$MULTICHAT_UNIT" 2>/dev/null || true)"
-if [ -n "$MULTICHAT_PORT" ] && [ -n "$MULTICHAT_NATS_URL" ]; then
+PEOPLE_STORE_UNIT="$HOME/.config/systemd/user/people-store.service"
+PEOPLE_STORE_ADDR="$(grep -oP '^Environment=PEOPLE_STORE_ADDR=\K.*' "$PEOPLE_STORE_UNIT" 2>/dev/null || true)"
+if [ -n "$MULTICHAT_PORT" ] && [ -n "$MULTICHAT_NATS_URL" ] && [ -n "$PEOPLE_STORE_ADDR" ]; then
   TMP_CHAT_LINKS_DROPIN=$(mktemp)
-  printf '[Service]\nEnvironment=LLMBRIDGE_MULTICHAT_URL=http://localhost:%s\nEnvironment=LLMBRIDGE_NATS_URL=%s\n' \
-    "$MULTICHAT_PORT" "$MULTICHAT_NATS_URL" > "$TMP_CHAT_LINKS_DROPIN"
+  printf '[Service]\nEnvironment=LLMBRIDGE_MULTICHAT_URL=http://localhost:%s\nEnvironment=LLMBRIDGE_NATS_URL=%s\nEnvironment=LLMBRIDGE_PEOPLE_STORE_URL=http://%s\n' \
+    "$MULTICHAT_PORT" "$MULTICHAT_NATS_URL" "$PEOPLE_STORE_ADDR" > "$TMP_CHAT_LINKS_DROPIN"
   sudo cp "$TMP_CHAT_LINKS_DROPIN" "$CHAT_LINKS_DROPIN"
   rm -f "$TMP_CHAT_LINKS_DROPIN"
-  echo "    chat-links drop-in: LLMBRIDGE_MULTICHAT_URL=http://localhost:$MULTICHAT_PORT, LLMBRIDGE_NATS_URL=$MULTICHAT_NATS_URL"
+  echo "    chat-links drop-in: LLMBRIDGE_MULTICHAT_URL=http://localhost:$MULTICHAT_PORT, LLMBRIDGE_NATS_URL=$MULTICHAT_NATS_URL, LLMBRIDGE_PEOPLE_STORE_URL=http://$PEOPLE_STORE_ADDR"
 else
-  echo "WARNING: no PORT or NATS_URL in $MULTICHAT_UNIT; chat links stay off"
+  echo "WARNING: no PORT or NATS_URL in $MULTICHAT_UNIT, or no PEOPLE_STORE_ADDR in $PEOPLE_STORE_UNIT; chat links stay off"
   sudo rm -f "$CHAT_LINKS_DROPIN"
 fi
 

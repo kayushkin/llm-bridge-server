@@ -202,10 +202,11 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	// machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
 	srv.harness.SetUnpromptedTurnStartObserver(srv.onUnpromptedTurnStart)
-	if cfg.ChatLinksNATSURL != "" && cfg.ChatLinksMultichatURL != "" {
+	if cfg.ChatLinksNATSURL != "" && cfg.ChatLinksMultichatURL != "" && cfg.ChatLinksPeopleStoreURL != "" {
 		srv.chatLinks = &chatLinks{
-			multichatURL: cfg.ChatLinksMultichatURL,
-			httpClient:   &http.Client{Timeout: 60 * time.Second},
+			multichatURL:   cfg.ChatLinksMultichatURL,
+			peopleStoreURL: cfg.ChatLinksPeopleStoreURL,
+			httpClient:     &http.Client{Timeout: 60 * time.Second},
 			token: func(ctx context.Context) (string, error) {
 				resolved, err := authClient.ResolveByProvider(ctx, chatLinkMultichatProvider, "", "", "read multichat's accounts and send a chat link's reply")
 				if err != nil {
@@ -218,7 +219,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		}
 		srv.chatLinks.sendIntoSession = srv.sendIntoSessionThroughRoutes
 	} else {
-		log.Printf("[chat-links] off: LLMBRIDGE_NATS_URL and LLMBRIDGE_MULTICHAT_URL must both be set")
+		log.Printf("[chat-links] off: %v", errChatLinksOff)
 	}
 	if cfg.FileStoreURL != "" {
 		srv.fileStore = filestoreclient.New(cfg.FileStoreURL, cfg.FileStoreServiceToken)

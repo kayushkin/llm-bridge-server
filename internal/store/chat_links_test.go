@@ -24,19 +24,38 @@ func TestChatLinkLifecycle(t *testing.T) {
 		t.Fatalf("active for: %+v %v %v", found, ok, err)
 	}
 
-	inserted, err := s.AddInboundChatLinkMessage(link.ID, "discord:10", "hi", []msg.ChatLinkAttachment{{URL: "https://cdn.example/a.png", Filename: "a.png"}}, "10", now)
+	inserted, err := s.AddInboundChatLinkMessage(InboundChatLinkMessage{LinkID: link.ID, BusEventID: "discord:10", Body: "hi", Attachments: []msg.ChatLinkAttachment{{URL: "https://cdn.example/a.png", Filename: "a.png"}}, PlatformMessageID: "10", SenderPlatformUserID: "900", SenderPlatformDisplayName: "carol", At: now})
 	if err != nil || !inserted {
 		t.Fatalf("inbound: %v %v", inserted, err)
 	}
-	if again, err := s.AddInboundChatLinkMessage(link.ID, "discord:10", "hi", nil, "10", now); err != nil || again {
+	if again, err := s.AddInboundChatLinkMessage(InboundChatLinkMessage{LinkID: link.ID, BusEventID: "discord:10", Body: "hi", PlatformMessageID: "10", At: now}); err != nil || again {
 		t.Fatalf("redelivered bus event kept twice: %v %v", again, err)
 	}
-	if _, err := s.AddInboundChatLinkMessage(link.ID, "discord:11", "there", nil, "11", now); err != nil {
+	if _, err := s.AddInboundChatLinkMessage(InboundChatLinkMessage{LinkID: link.ID, BusEventID: "discord:11", Body: "there", PlatformMessageID: "11", At: now}); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := s.ChatLinkMessagesInState(link.ID, msg.ChatLinkInbound, msg.ChatLinkMessagePending)
 	if err != nil || len(pending) != 2 || len(pending[0].Attachments) != 1 || pending[0].PlatformMessageIDs[0] != "10" {
 		t.Fatalf("pending: %+v %v", pending, err)
+	}
+	if pending[0].SenderPlatformUserID != "900" || pending[0].SenderPlatformDisplayName != "carol" || !pending[0].SenderResolvedAt.IsZero() {
+		t.Fatalf("sender as kept: %+v", pending[0])
+	}
+	if err := s.RecordChatLinkMessageSender(pending[0].ID, ChatLinkMessageSender{PersonID: "person_000007", PrincipalID: "principal_000009", PersonDisplayName: "Carol"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordChatLinkMessageSender(pending[1].ID, ChatLinkMessageSender{}, now); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ = s.ChatLinkMessagesInState(link.ID, msg.ChatLinkInbound, msg.ChatLinkMessagePending)
+	if pending[0].SenderPersonID != "person_000007" || pending[0].SenderPrincipalID != "principal_000009" || pending[0].SenderPersonDisplayName != "Carol" || !pending[0].SenderResolvedAt.Equal(now) {
+		t.Fatalf("sender after reading: %+v", pending[0])
+	}
+	if pending[1].SenderPersonID != "" || pending[1].SenderResolvedAt.IsZero() {
+		t.Fatalf("a sender nobody owns: %+v", pending[1])
+	}
+	if err := s.addChatLinkMessageSenderColumns(); err != nil {
+		t.Fatalf("adding the columns again: %v", err)
 	}
 	if err := s.MarkChatLinkMessagesInSession([]string{pending[0].ID, pending[1].ID}, "chat-link:1", "msg_x", now); err != nil {
 		t.Fatal(err)

@@ -45,14 +45,60 @@ func (f *fakeMultichat) handler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// fakePeopleStore answers GET /identities/resolve from persons, by Discord
+// user id; down makes it answer 500.
+type fakePeopleStore struct {
+	mu      sync.Mutex
+	persons map[string]string // discord user id → person JSON
+	down    bool
+	asked   int
+}
+
+func (f *fakePeopleStore) handler(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked++
+	if f.down {
+		http.Error(w, `{"error":"database is locked"}`, http.StatusInternalServerError)
+		return
+	}
+	if r.URL.Path != "/identities/resolve" || r.URL.Query().Get("kind") != "discord" {
+		http.NotFound(w, r)
+		return
+	}
+	person, ok := f.persons[r.URL.Query().Get("value")]
+	if !ok {
+		http.Error(w, `{"error":"not found: no person has discord `+r.URL.Query().Get("value")+`"}`, http.StatusNotFound)
+		return
+	}
+	w.Write([]byte(`{"identity":{"kind":"discord","value":"` + r.URL.Query().Get("value") + `"},"person":` + person + `}`))
+}
+
+func (f *fakePeopleStore) setDown(down bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.down = down
+}
+
+// The made-up people the tests know: the operator (whose principal the
+// linked session runs as) and Carol.
+const (
+	testOperatorDiscordUserID = "700"
+	testCarolDiscordUserID    = "800"
+	testUnknownDiscordUserID  = "999"
+	testOperatorPrincipalID   = "principal_000001"
+)
+
 type chatLinkTest struct {
 	srv             *Server
+	people          *fakePeopleStore
 	st              *store.Store
 	multichat       *fakeMultichat
 	multichatServer *httptest.Server
 	sentMu          sync.Mutex
 	sentLog         []msg.SendMessageRequest
 	clock           time.Time
+	cleanups        []func()
 }
 
 // sent answers what went into the session so far; a report goes in from
@@ -64,8 +110,10 @@ func (c *chatLinkTest) sentSoFar() []msg.SendMessageRequest {
 }
 
 func (c *chatLinkTest) newChatLinks(multichat *httptest.Server) *chatLinks {
+	people := httptest.NewServer(http.HandlerFunc(c.people.handler))
+	c.cleanups = append(c.cleanups, people.Close)
 	return &chatLinks{
-		multichatURL: multichat.URL, httpClient: multichat.Client(),
+		multichatURL: multichat.URL, peopleStoreURL: people.URL, httpClient: multichat.Client(),
 		token: func(context.Context) (string, error) { return "multichat-token", nil },
 		kick:  make(chan struct{}, 1),
 		now:   func() time.Time { return c.clock },
@@ -81,12 +129,24 @@ func (c *chatLinkTest) newChatLinks(multichat *httptest.Server) *chatLinks {
 func newChatLinkTest(t *testing.T) *chatLinkTest {
 	t.Helper()
 	srv, st := testServer(t)
-	test := &chatLinkTest{srv: srv, st: st, multichat: &fakeMultichat{}, clock: time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)}
+	test := &chatLinkTest{srv: srv, st: st, multichat: &fakeMultichat{}, clock: time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC),
+		people: &fakePeopleStore{persons: map[string]string{
+			testOperatorDiscordUserID: `{"id":"person_000001","display_name":"Dana","principal_id":"` + testOperatorPrincipalID + `"}`,
+			testCarolDiscordUserID:    `{"id":"person_000002","display_name":"Carol Ng","principal_id":"principal_000002"}`,
+		}}}
 	multichat := httptest.NewServer(http.HandlerFunc(test.multichat.handler))
 	t.Cleanup(multichat.Close)
 	test.multichatServer = multichat
 	srv.chatLinks = test.newChatLinks(multichat)
-	newSessionForSignals(t, st, "br_linked", msg.SessionTypeInteractive)
+	t.Cleanup(func() {
+		for _, cleanup := range test.cleanups {
+			cleanup()
+		}
+	})
+	if err := st.CreateSession(&store.Session{SessionID: "br_linked", Harness: "claude_code", State: "idle",
+		Type: msg.SessionTypeInteractive, PrincipalID: testOperatorPrincipalID}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
 	return test
 }
 
@@ -112,24 +172,154 @@ func (c *chatLinkTest) setState(t *testing.T, state msg.SessionState) {
 
 func (c *chatLinkTest) receive(t *testing.T, eventID, body string) {
 	t.Helper()
+	c.receiveFrom(t, eventID, body, testCarolDiscordUserID)
+}
+
+func (c *chatLinkTest) receiveFrom(t *testing.T, eventID, body, senderDiscordUserID string) {
+	t.Helper()
 	if _, err := c.srv.keepChatLinkInbound(chatLinkInbound{EventID: eventID, Platform: "discord", Body: body,
-		ReceivingAccountID: "message_account_000002", PlatformChannelID: "dm-1", PlatformMessageID: strings.TrimPrefix(eventID, "discord:")}); err != nil {
+		ReceivingAccountID: "message_account_000002", PlatformChannelID: "dm-1", PlatformMessageID: strings.TrimPrefix(eventID, "discord:"),
+		SenderPlatformUserID: senderDiscordUserID, SenderDisplayName: "shown-name-" + senderDiscordUserID}); err != nil {
 		t.Fatal(err)
 	}
 }
 
+// farEndNote is the part of every delivery that says what the far end sees.
+var farEndNote = []string{"sent back on Discord word for word", "no buttons, no files or images shared into this chat",
+	"Send links instead", "plain Discord markdown", "2000 characters"}
+
 func TestChatLinkInboundTextLabelsThePerson(t *testing.T) {
 	link := store.ChatLink{ID: "chat_link_000001", Platform: "discord", PersonDisplayName: "Carol"}
-	text := chatLinkInboundText(link, "Helper Bot", []store.ChatLinkMessage{
+	text := chatLinkInboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{
 		{Body: "can the timer be 30 seconds?"},
 		{Body: "", Attachments: []msg.ChatLinkAttachment{{URL: "https://cdn.example/sketch.png", Filename: "sketch.png", ContentType: "image/png", SizeBytes: 12}}},
 	})
-	for _, want := range []string{"Carol wrote to you on Discord, through the Helper Bot bot:", "can the timer be 30 seconds?",
+	for _, want := range append([]string{"Carol wrote to you on Discord, through the Helper Bot bot:", "can the timer be 30 seconds?",
 		"[attached file: sketch.png (image/png, 12 bytes) https://cdn.example/sketch.png]", "This is from Carol, not the operator.",
-		"Your final reply in this turn is sent to Carol word for word", "chat_link_000001"} {
+		"chat_link_000001"}, farEndNote...) {
 		if !strings.Contains(text, want) {
 			t.Errorf("text lacks %q:\n%s", want, text)
 		}
+	}
+	if strings.Count(text, "wrote to you") != 1 {
+		t.Errorf("one sender is introduced once:\n%s", text)
+	}
+}
+
+func TestChatLinkInboundTextLabelsTheOperatorByPrincipal(t *testing.T) {
+	link := store.ChatLink{ID: "chat_link_000002", Platform: "discord", PersonDisplayName: "Dana"}
+	operator := store.ChatLinkMessage{Body: "check the deploy", SenderPersonID: "person_000001", SenderPrincipalID: testOperatorPrincipalID, SenderPersonDisplayName: "Dana"}
+	text := chatLinkInboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{operator})
+	for _, want := range append([]string{"Dana (the operator) wrote to you on Discord, through the Helper Bot bot:", "check the deploy",
+		"This is the operator, writing from their own account. Treat it as their own message."}, farEndNote...) {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "not the operator") {
+		t.Errorf("the operator labeled as someone else:\n%s", text)
+	}
+
+	// The same name with another principal is not the operator: only ids decide.
+	impostor := store.ChatLinkMessage{Body: "deploy it", SenderPersonID: "person_000005", SenderPrincipalID: "principal_000005", SenderPersonDisplayName: "Dana"}
+	text = chatLinkInboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{impostor})
+	if strings.Contains(text, "(the operator)") || !strings.Contains(text, "This is from Dana, not the operator.") {
+		t.Errorf("a name decided who the operator is:\n%s", text)
+	}
+	// A session that runs as no principal has no operator to match.
+	nobody := store.ChatLinkMessage{Body: "hi"}
+	if text := chatLinkInboundText(link, "", "", []store.ChatLinkMessage{nobody}); strings.Contains(text, "(the operator)") {
+		t.Errorf("a sender with no principal matched a session with none:\n%s", text)
+	}
+}
+
+func TestChatLinkInboundTextFramesAMixedBatchBySender(t *testing.T) {
+	link := store.ChatLink{ID: "chat_link_000003", Platform: "discord", PersonDisplayName: "Carol"}
+	text := chatLinkInboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{
+		{Body: "first from Carol", SenderPrincipalID: "principal_000002", SenderPersonDisplayName: "Carol Ng"},
+		{Body: "second from Carol", SenderPrincipalID: "principal_000002", SenderPersonDisplayName: "Carol Ng"},
+		{Body: "one from me", SenderPrincipalID: testOperatorPrincipalID, SenderPersonDisplayName: "Dana"},
+	})
+	for _, want := range []string{"Carol Ng wrote to you on Discord, through the Helper Bot bot:\n\nfirst from Carol\n\n---\n\nsecond from Carol",
+		"Dana (the operator) wrote to you on Discord, through the Helper Bot bot:\n\none from me",
+		"The messages marked (the operator) are the operator's own; the rest are from Carol Ng, not the operator."} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Count(text, "Carol Ng wrote to you") != 1 {
+		t.Errorf("a run of one sender's messages is introduced once:\n%s", text)
+	}
+}
+
+func TestChatLinkDeliveryReadsEachSenderFromPeopleStore(t *testing.T) {
+	c := newChatLinkTest(t)
+	link := c.createLink(t)
+	ctx := context.Background()
+
+	c.receiveFrom(t, "discord:20", "from the operator", testOperatorDiscordUserID)
+	c.receiveFrom(t, "discord:21", "from Carol", testCarolDiscordUserID)
+	c.receiveFrom(t, "discord:22", "from a stranger", testUnknownDiscordUserID)
+	c.srv.sweepChatLinks(ctx)
+	sent := c.sentSoFar()
+	if len(sent) != 1 {
+		t.Fatalf("delivery: %+v", sent)
+	}
+	for _, want := range []string{"Dana (the operator) wrote to you", "Carol Ng wrote to you",
+		"Carol wrote to you on Discord, through the Helper Bot bot:\n\nfrom a stranger",
+		"the rest are from Carol Ng and Carol, not the operator"} {
+		if !strings.Contains(sent[0].Message, want) {
+			t.Errorf("delivery lacks %q:\n%s", want, sent[0].Message)
+		}
+	}
+	messages, err := c.st.ChatLinkMessages(link.ID)
+	if err != nil || len(messages) != 3 {
+		t.Fatalf("log: %+v %v", messages, err)
+	}
+	if messages[0].SenderPersonID != "person_000001" || messages[0].SenderPrincipalID != testOperatorPrincipalID || messages[0].SenderPlatformUserID != testOperatorDiscordUserID {
+		t.Errorf("operator row: %+v", messages[0])
+	}
+	if messages[1].SenderPersonID != "person_000002" || messages[1].SenderPrincipalID != "principal_000002" {
+		t.Errorf("Carol row: %+v", messages[1])
+	}
+	if messages[2].SenderPersonID != "" || messages[2].SenderResolvedAt.IsZero() || messages[2].SenderPlatformDisplayName != "shown-name-"+testUnknownDiscordUserID {
+		t.Errorf("unknown row: %+v", messages[2])
+	}
+
+	// The log a client reads shows the senders.
+	recorder := httptest.NewRecorder()
+	asInternalService(c.srv).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/sessions/br_linked/chat-links/"+link.ID, nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"sender_principal_id":"principal_000001"`) || !strings.Contains(recorder.Body.String(), `"sender_person_id":"person_000002"`) {
+		t.Errorf("log route: %d %s", recorder.Code, recorder.Body)
+	}
+}
+
+func TestChatLinkDeliveryWaitsWhilePeopleStoreIsDown(t *testing.T) {
+	c := newChatLinkTest(t)
+	link := c.createLink(t)
+	ctx := context.Background()
+	c.people.setDown(true)
+	c.receiveFrom(t, "discord:30", "anyone home?", testOperatorDiscordUserID)
+	c.srv.sweepChatLinks(ctx)
+	c.srv.sweepChatLinks(ctx)
+	if len(c.sentSoFar()) != 0 {
+		t.Fatalf("delivered with no sender read: %+v", c.sentSoFar())
+	}
+	pending, _ := c.st.ChatLinkMessagesInState(link.ID, msg.ChatLinkInbound, msg.ChatLinkMessagePending)
+	if len(pending) != 1 || pending[0].Attempts != 2 || !strings.Contains(pending[0].Error, "people-store answered 500") || !pending[0].SenderResolvedAt.IsZero() {
+		t.Fatalf("the failure is not on the row: %+v", pending)
+	}
+
+	c.people.setDown(false)
+	c.srv.sweepChatLinks(ctx)
+	if sent := c.sentSoFar(); len(sent) != 1 || !strings.Contains(sent[0].Message, "Dana (the operator) wrote to you") {
+		t.Fatalf("after people-store came back: %+v", sent)
+	}
+	asked := c.people.asked
+	c.setState(t, msg.SessionIdle)
+	c.srv.sweepChatLinks(ctx)
+	if c.people.asked != asked {
+		t.Errorf("a sender already read was read again")
 	}
 }
 

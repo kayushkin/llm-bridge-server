@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +57,9 @@ const (
 // chatLinks is the server's chat-link machinery; nil when it is switched off.
 type chatLinks struct {
 	multichatURL string
-	httpClient   *http.Client
+	// peopleStoreURL is asked who owns the account a message came from.
+	peopleStoreURL string
+	httpClient     *http.Client
 	// token answers multichat's bearer.
 	token func(ctx context.Context) (string, error)
 	// kick wakes the sweep early, after a message arrives or a turn ends.
@@ -70,7 +73,7 @@ type chatLinks struct {
 	sendIntoSession func(sessionID string, request msg.SendMessageRequest) (int, []byte)
 }
 
-var errChatLinksOff = errors.New("chat links are off: LLMBRIDGE_NATS_URL and LLMBRIDGE_MULTICHAT_URL must both be set")
+var errChatLinksOff = errors.New("chat links are off: LLMBRIDGE_NATS_URL, LLMBRIDGE_MULTICHAT_URL and LLMBRIDGE_PEOPLE_STORE_URL must all be set")
 
 func (c *chatLinks) wake() {
 	if c == nil {
@@ -95,19 +98,36 @@ func chatLinkSessionIsFree(state msg.SessionState) bool {
 	return true
 }
 
-// chatLinkInboundText is what the session is sent: each message, labeled as
-// the person's, so the agent never takes it for the operator.
-func chatLinkInboundText(link store.ChatLink, accountName string, messages []store.ChatLinkMessage) string {
-	var text strings.Builder
+// chatLinkInboundText is what the session is sent: each message labeled by
+// who sent it, read by id from people-store. A message from the person whose
+// principal the session runs as is the operator's own; any other is labeled
+// as not the operator's, so the agent never takes it for them. The closing
+// note says what the far end can see, since the reply reaches them as a plain
+// platform message.
+func chatLinkInboundText(link store.ChatLink, sessionPrincipalID, accountName string, messages []store.ChatLinkMessage) string {
 	via := platformName(link.Platform)
 	if accountName != "" {
 		via += ", through the " + accountName + " bot"
 	}
-	fmt.Fprintf(&text, "%s wrote to you on %s:\n\n", link.PersonDisplayName, via)
+	var text strings.Builder
+	operatorWroteAny, othersWrote := false, []string{}
+	previousSender := ""
 	for index, message := range messages {
+		name, isOperator := chatLinkSenderName(link, sessionPrincipalID, message)
+		label := name
+		if isOperator {
+			label = name + " (the operator)"
+			operatorWroteAny = true
+		} else if !slices.Contains(othersWrote, name) {
+			othersWrote = append(othersWrote, name)
+		}
 		if index > 0 {
 			text.WriteString("\n\n---\n\n")
 		}
+		if index == 0 || label != previousSender {
+			fmt.Fprintf(&text, "%s wrote to you on %s:\n\n", label, via)
+		}
+		previousSender = label
 		if message.Body != "" {
 			text.WriteString(message.Body)
 		}
@@ -118,9 +138,33 @@ func chatLinkInboundText(link store.ChatLink, accountName string, messages []sto
 			fmt.Fprintf(&text, "[attached file: %s (%s, %d bytes) %s]", attachment.Filename, attachment.ContentType, attachment.SizeBytes, attachment.URL)
 		}
 	}
-	fmt.Fprintf(&text, "\n\nThis is from %s, not the operator. Your final reply in this turn is sent to %s word for word, so write it to them. (Chat link %s.)",
-		link.PersonDisplayName, link.PersonDisplayName, link.ID)
+	text.WriteString("\n\n")
+	switch {
+	case operatorWroteAny && len(othersWrote) == 0:
+		text.WriteString("This is the operator, writing from their own account. Treat it as their own message. ")
+	case operatorWroteAny:
+		fmt.Fprintf(&text, "The messages marked (the operator) are the operator's own; the rest are from %s, not the operator. ", strings.Join(othersWrote, " and "))
+	default:
+		fmt.Fprintf(&text, "This is from %s, not the operator. ", strings.Join(othersWrote, " and "))
+	}
+	platform := platformName(link.Platform)
+	fmt.Fprintf(&text, "Your final reply in this turn is sent back on %s word for word, as one message, so write it to them. "+
+		"They see only that text: no buttons, no files or images shared into this chat, nothing else from the bridge's chat page. "+
+		"Send links instead, keep to plain %s markdown, and expect a reply over 2000 characters to arrive in parts. (Chat link %s.)",
+		platform, platform, link.ID)
 	return text.String()
+}
+
+// chatLinkSenderName answers the name to label a message with, and whether
+// its sender is the person the session runs as. Only ids decide that: the
+// sender's principal, read from people-store, against the session's.
+func chatLinkSenderName(link store.ChatLink, sessionPrincipalID string, message store.ChatLinkMessage) (string, bool) {
+	name := message.SenderPersonDisplayName
+	if name == "" {
+		name = link.PersonDisplayName
+	}
+	isOperator := sessionPrincipalID != "" && message.SenderPrincipalID == sessionPrincipalID
+	return name, isOperator
 }
 
 func platformName(platform string) string {
@@ -328,7 +372,10 @@ func (s *Server) keepChatLinkInbound(inbound chatLinkInbound) (bool, error) {
 	for _, attachment := range inbound.Attachments {
 		attachments = append(attachments, msg.ChatLinkAttachment{URL: attachment.URL, Filename: attachment.Filename, ContentType: attachment.ContentType, SizeBytes: attachment.SizeBytes})
 	}
-	kept, err := s.store.AddInboundChatLinkMessage(link.ID, inbound.EventID, inbound.Body, attachments, inbound.PlatformMessageID, time.Now().UTC())
+	kept, err := s.store.AddInboundChatLinkMessage(store.InboundChatLinkMessage{
+		LinkID: link.ID, BusEventID: inbound.EventID, Body: inbound.Body, Attachments: attachments,
+		PlatformMessageID: inbound.PlatformMessageID, SenderPlatformUserID: inbound.SenderPlatformUserID,
+		SenderPlatformDisplayName: inbound.SenderDisplayName, At: time.Now().UTC()})
 	if err != nil {
 		return false, err
 	}
@@ -347,7 +394,11 @@ type chatLinkInbound struct {
 	ReceivingAccountID string `json:"receiving_account_id"`
 	PlatformChannelID  string `json:"platform_channel_id"`
 	PlatformMessageID  string `json:"platform_message_id"`
-	Attachments        []struct {
+	// SenderPlatformUserID is the platform's id of who sent it (a Discord
+	// user id); SenderDisplayName the name the platform showed.
+	SenderPlatformUserID string `json:"sender_platform_user_id"`
+	SenderDisplayName    string `json:"sender_display_name"`
+	Attachments          []struct {
 		URL         string `json:"url"`
 		Filename    string `json:"filename"`
 		ContentType string `json:"content_type"`
@@ -418,6 +469,10 @@ func (s *Server) deliverChatLinkInbound(ctx context.Context, link store.ChatLink
 	if !chatLinkSessionIsFree(msg.SessionState(session.State)) {
 		return
 	}
+	pending, err = s.resolveChatLinkSenders(ctx, link, pending)
+	if err != nil {
+		return
+	}
 	accountName, err := s.chatLinks.botAccountName(ctx, link.AccountID, link.Platform)
 	if err != nil {
 		log.Printf("[chat-links] %s: the account's name is unknown (%v); labeling by platform only", link.ID, err)
@@ -429,7 +484,7 @@ func (s *Server) deliverChatLinkInbound(ctx context.Context, link store.ChatLink
 	}
 	deliveryID := chatLinkDeliveryIDPrefix + pending[0].ID
 	status, body := s.chatLinks.sendIntoSession(link.SessionID,
-		msg.SendMessageRequest{Message: chatLinkInboundText(link, accountName, pending), ClientRequestID: deliveryID})
+		msg.SendMessageRequest{Message: chatLinkInboundText(link, session.PrincipalID, accountName, pending), ClientRequestID: deliveryID})
 	now := s.chatLinks.now()
 	if status != http.StatusOK {
 		reason := fmt.Sprintf("the session refused it with %d: %s", status, strings.TrimSpace(string(body)))
