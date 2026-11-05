@@ -1,15 +1,26 @@
 [Unit]
-Description=Tool Store — registry of MCP / CLI / local tools for harnesses
+Description=tool-store — registry of MCP, CLI, local and harness tools
 After=network.target
 
+# A systemd user unit: deploy.sh installs it to ~/.config/systemd/user/ and the
+# binary to ~/bin. %h is the user's home directory, so nothing here names a user.
 [Service]
 Type=simple
-ExecStart=/home/kayushkincom/bin/tool-store
-Environment=TOOL_STORE_ADDR=:8302
+ExecStart=%h/bin/tool-store
+
+# Loopback, deliberately. The service has no auth of its own; put a front door
+# that adds it in front. settings.go defaults to the same address.
+Environment=TOOL_STORE_ADDR=127.0.0.1:8302
 Environment=AUTH_STORE_URL=http://127.0.0.1:8303
-Environment=AUTH_STORE_TOKEN=changeme
-Environment=HOME=/home/kayushkincom
-WorkingDirectory=/home/kayushkincom/repos/tool-store
+
+# AUTH_STORE_TOKEN is a secret and never goes in this file. Put it in a
+# host-local drop-in, mode 600:
+#   ~/.config/systemd/user/tool-store.service.d/auth-store-token.conf
+#   [Service]
+#   Environment=AUTH_STORE_TOKEN=...
+# Without it POST /provision cannot resolve an env value from auth-store.
+
+WorkingDirectory=%h
 Restart=on-failure
 RestartSec=5
 

@@ -36,8 +36,9 @@ const (
 	SettingSchedulerToken = "scheduler_token"
 )
 
-// DefaultListenAddress is where the service listens with nothing set.
-const DefaultListenAddress = ":8302"
+// DefaultListenAddress is where the service listens with nothing set: loopback,
+// because the service has no auth of its own.
+const DefaultListenAddress = "127.0.0.1:8302"
 
 // DefaultAuthStoreURL is where auth-store is looked for with nothing set.
 const DefaultAuthStoreURL = "http://127.0.0.1:8303"

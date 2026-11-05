@@ -22,7 +22,7 @@ A tool has a global `enabled` flag, set by `POST /tools/{id}/enable` and `/disab
 
 ## Who may call it
 
-No authentication. The unit sets `TOOL_STORE_ADDR=:8302`, so it listens on every interface. dash proxies it at `/api/tool-store/*` behind dash's login. Unit `tool-store.service`, binary `~/bin/tool-store`. ⚠️ **The tracked `tool-store.service` carries a value for `AUTH_STORE_TOKEN`, and this repo is public** — noteboard todo `25654f1f-d8d3-4210-9687-76f3e5ae5608`. Do not add another secret to the tracked unit: a token belongs in a host-local drop-in under `~/.config/systemd/user/tool-store.service.d/`, mode 600.
+No authentication. The tracked unit `tool-store.service` (`%h` paths, so it names no user) sets `TOOL_STORE_ADDR=127.0.0.1:8302`, which is also the default since 2026-11-05, so it listens on loopback only. dash proxies it at `/api/tool-store/*` behind dash's login. Binary `~/bin/tool-store`; `deploy.sh` installs and enables the unit. **The tracked unit carries no secret.** `AUTH_STORE_TOKEN` comes from a host-local drop-in, `~/.config/systemd/user/tool-store.service.d/auth-store-token.conf`, mode 600; without one, `POST /provision` cannot resolve an env value from auth-store. Until 2026-11-05 the tracked unit carried the live value, and this repo is public, so that value stays in git history: rotating it is the fix (noteboard todo `25654f1f-d8d3-4210-9687-76f3e5ae5608`). Never add a secret to the tracked unit.
 
 # Working in this repo
 

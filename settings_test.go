@@ -20,7 +20,7 @@ import (
 )
 
 // The registry gives the service what its os.Getenv reads gave it before
-// 2026-09-20: ":8302", the default data directory, auth-store on 127.0.0.1:8303,
+// 2026-09-20 (":8302" then, loopback since 2026-11-05), the default data directory, auth-store on 127.0.0.1:8303,
 // PinchTab on localhost:9867 and the scheduler on localhost:8092 with nothing
 // set, no secret, and the operator's values when they are set.
 func TestTheRegistryReadsTheSameValuesTheServiceAlwaysDid(t *testing.T) {
@@ -29,7 +29,7 @@ func TestTheRegistryReadsTheSameValuesTheServiceAlwaysDid(t *testing.T) {
 		t.Fatal(err)
 	}
 	for key, want := range map[string]string{
-		SettingListenAddress:  ":8302",
+		SettingListenAddress:  "127.0.0.1:8302",
 		SettingDataDirectory:  DefaultDataDir(),
 		SettingAuthStoreURL:   "http://127.0.0.1:8303",
 		SettingAuthStoreToken: "",
@@ -75,7 +75,7 @@ func TestTheRegistryReadsTheSameValuesTheServiceAlwaysDid(t *testing.T) {
 		t.Fatal(err)
 	}
 	for key, want := range map[string]string{
-		SettingListenAddress: ":8302",
+		SettingListenAddress: "127.0.0.1:8302",
 		SettingDataDirectory: DefaultDataDir(),
 		SettingAuthStoreURL:  "http://127.0.0.1:8303",
 		SettingPinchtabURL:   "http://localhost:9867",
