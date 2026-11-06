@@ -14,9 +14,13 @@ import (
 func approvedRequestOnAccepting(t *testing.T, accepting, initiating *peerTestServer, acceptingID, initiatingID string) (msg.PeerMessage, msg.PeerMessage) {
 	t.Helper()
 	grantPeerLevel(t, accepting, acceptingID, "messages")
-	sent := sendPeerMessageAsAdministrator(t, initiating, initiatingID, msg.PeerMessageKindRequest, msg.PeerMessageBody{Title: "t", Prompt: "do it"}, "")
+	// "hang" makes the mock harness hold the session's turn open, so the
+	// only turn end is the one the test reports; otherwise the mock's own
+	// reply can reach the sender first.
+	sent := sendPeerMessageAsAdministrator(t, initiating, initiatingID, msg.PeerMessageKindRequest, msg.PeerMessageBody{Title: "t", Prompt: "do it, then hang"}, "")
 	approved := decodeAnswer[msg.PeerMessage](t, accepting.requestAsAdministrator(t, "POST", "/peer-messages/"+sent.RemoteMessageID+"/approve",
 		map[string]any{"instance_id": "inst_test"}), http.StatusOK, "approve")
+	stopHeldPeerRequestSessionAtCleanup(t, accepting, approved.SessionID)
 	return sent, approved
 }
 
@@ -95,4 +99,3 @@ func TestAutomaticTurnEndStatus(t *testing.T) {
 		}
 	}
 }
-
