@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -624,6 +626,18 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 	answer := s.effectiveConfigFor(ctx, sess, subject, origins)
 	if snapshotErr != nil {
 		answer.Warnings = append(answer.Warnings, fmt.Sprintf("POST /sessions would refuse this session: %v", snapshotErr))
+	}
+	// The references POST /sessions checks before it creates anything, with
+	// the same reads, so a preflight refuses what create would refuse.
+	if subject.AgentID != "" {
+		if err := s.checkAgentExists(subject.AgentID); err != nil {
+			answer.Warnings = append(answer.Warnings, fmt.Sprintf("POST /sessions would refuse this session: %v", err))
+		}
+	}
+	if subject.CardID != "" && s.kanbanClient != nil {
+		if _, err := s.kanbanClient.CardTags(ctx, subject.CardID); errors.Is(err, kanbanclient.ErrNotFound) {
+			answer.Warnings = append(answer.Warnings, fmt.Sprintf("POST /sessions would refuse this session: card_id %q is not a card kanban-store has: %v", subject.CardID, err))
+		}
 	}
 	writeJSON(w, answer)
 }

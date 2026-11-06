@@ -143,7 +143,7 @@ func (s *Server) injectClaudeCodeHookSettings(sess *store.Session) error {
 			return fmt.Errorf("harness_config of %s is unparseable: %w", sess.SessionID, err)
 		}
 	}
-	if _, ok := cfg["settings"]; ok {
+	if _, ok := cfg[harnessConfigKeySettings]; ok {
 		// Explicit user override — don't clobber. But the Read deny rules
 		// live in the settings this would have written, so a session whose
 		// bundle denies paths cannot take an override.

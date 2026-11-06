@@ -5,9 +5,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	agentstore "github.com/kayushkin/agent-store"
 	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -85,30 +88,95 @@ func TestGateRefusesAnInstanceOutsideTheDispatchGrants(t *testing.T) {
 	}
 }
 
-// can_run_as: no grants means any agent; grants mean only those, and a slug
-// the agent-store cannot resolve is refused rather than let through.
+// agentStoreWithAgents is an agent-store holding one agent per slug, and the
+// id it gave each.
+func agentStoreWithAgents(t *testing.T, slugs ...string) (*agentstore.Store, map[string]string) {
+	t.Helper()
+	agents, err := agentstore.Open(filepath.Join(t.TempDir(), "agents.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { agents.Close() })
+	ids := map[string]string{}
+	for _, slug := range slugs {
+		if err := agents.UpsertAgent(&agentstore.Agent{Slug: slug, DisplayName: slug, Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+		agent, err := agents.GetAgentBySlug(slug)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[slug] = strconv.FormatInt(agent.ID, 10)
+	}
+	return agents, ids
+}
+
+// can_run_as: no grants means any agent agent-store has; grants mean only
+// those, by id or by the slug of a granted id. An agent agent-store does not
+// have is refused before the grants are read, whatever they say.
 func TestGateRefusesAnAgentOutsideTheRunAsGrants(t *testing.T) {
-	srv, instanceID := gatedServer(t, map[string][]string{"can_run_as/agent": {"65"}})
+	agents, ids := agentStoreWithAgents(t, "northwind-builder", "northwind-reviewer")
+	srv, instanceID := gatedServer(t, map[string][]string{"can_run_as/agent": {ids["northwind-builder"]}})
+	srv.agentStore = agents
 	req := principalRequest(instanceID, "principal_000001")
-	req.AgentID = "65"
+	req.AgentID = ids["northwind-builder"]
 	if status, body := createStatus(t, srv, req); status != 201 {
 		t.Fatalf("granted agent by id: status = %d: %s", status, body)
 	}
-	req.AgentID = "12"
+	req.AgentID = "northwind-builder"
+	if status, body := createStatus(t, srv, req); status != 201 {
+		t.Fatalf("granted agent by slug: status = %d: %s", status, body)
+	}
+	req.AgentID = ids["northwind-reviewer"]
 	if status, body := createStatus(t, srv, req); status != 403 || !strings.Contains(body, "not_granted") {
 		t.Fatalf("ungranted agent: status = %d: %s", status, body)
 	}
-	// A slug with no agent-store to resolve it: refused, never guessed.
-	req.AgentID = "northwind-builder"
-	if status, body := createStatus(t, srv, req); status != 403 || !strings.Contains(body, "could not be resolved") {
-		t.Fatalf("unresolvable slug: status = %d: %s", status, body)
+	req.AgentID = "nobody-has-this-agent"
+	if status, body := createStatus(t, srv, req); status != 400 || !strings.Contains(body, "unknown_agent") {
+		t.Fatalf("unknown agent under run-as grants: status = %d: %s", status, body)
 	}
-	// No can_run_as grants at all: any agent.
+	// No can_run_as grants at all: any agent agent-store has, and still not
+	// one it lacks.
 	open, instanceID := gatedServer(t, map[string][]string{})
+	open.agentStore = agents
 	req = principalRequest(instanceID, "principal_000001")
-	req.AgentID = "northwind-builder"
+	req.AgentID = "northwind-reviewer"
 	if status, body := createStatus(t, open, req); status != 201 {
 		t.Fatalf("no run-as grants: status = %d: %s", status, body)
+	}
+	req.AgentID = "nobody-has-this-agent"
+	if status, body := createStatus(t, open, req); status != 400 || !strings.Contains(body, "unknown_agent") {
+		t.Fatalf("unknown agent with no run-as grants: status = %d: %s", status, body)
+	}
+	req.AgentID = "999999"
+	if status, body := createStatus(t, open, req); status != 400 || !strings.Contains(body, "unknown_agent") {
+		t.Fatalf("unknown agent id: status = %d: %s", status, body)
+	}
+}
+
+// A server with no agent-store cannot check an agent_id, so it refuses one
+// rather than let it through unchecked.
+func TestAnAgentIDWithNoAgentStoreIsRefused(t *testing.T) {
+	srv, instanceID := gatedServer(t, map[string][]string{})
+	req := principalRequest(instanceID, "principal_000001")
+	req.AgentID = "northwind-builder"
+	if status, body := createStatus(t, srv, req); status != 503 || !strings.Contains(body, "agent_store_not_configured") {
+		t.Fatalf("status = %d, want 503 agent_store_not_configured: %s", status, body)
+	}
+}
+
+// The dry run reports an agent create would refuse, as a warning.
+func TestTheDryRunWarnsOfAnAgentCreateWouldRefuse(t *testing.T) {
+	agents, _ := agentStoreWithAgents(t, "northwind-builder")
+	srv, instanceID := gatedServer(t, map[string][]string{})
+	srv.agentStore = agents
+	for agentID, wantWarning := range map[string]bool{"northwind-builder": false, "nobody-has-this-agent": true} {
+		resp := doJSON(t, srv, "GET", "/effective-config?instance_id="+instanceID+"&principal_id=principal_000001&agent_id="+agentID, nil)
+		answer := decodeJSON[msg.EffectiveConfig](t, resp)
+		warned := strings.Contains(strings.Join(answer.Warnings, "|"), "POST /sessions would refuse this session: unknown agent")
+		if warned != wantWarning {
+			t.Errorf("agent %s: warnings %v; want a refusal warning: %v", agentID, answer.Warnings, wantWarning)
+		}
 	}
 }
 
@@ -133,5 +201,20 @@ func TestGateRunsAtSpawnToo(t *testing.T) {
 	_, err = srv.startOnInstance(t.Context(), created, inst, "")
 	if err == nil || !strings.Contains(err.Error(), "not granted") {
 		t.Fatalf("spawn after grants changed: err = %v, want refused", err)
+	}
+}
+
+// The dry run reports a card create would refuse as a refusal, not only as
+// lost context.
+func TestTheDryRunWarnsOfACardCreateWouldRefuse(t *testing.T) {
+	srv, instanceID := gatedServer(t, map[string][]string{})
+	srv.kanbanClient = fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}})
+	for cardID, wantWarning := range map[string]bool{"card-billing": false, "card-nobody-has": true} {
+		resp := doJSON(t, srv, "GET", "/effective-config?instance_id="+instanceID+"&principal_id=principal_000001&card_id="+cardID, nil)
+		answer := decodeJSON[msg.EffectiveConfig](t, resp)
+		warned := strings.Contains(strings.Join(answer.Warnings, "|"), "POST /sessions would refuse this session: card_id")
+		if warned != wantWarning {
+			t.Errorf("card %s: warnings %v; want a refusal warning: %v", cardID, answer.Warnings, wantWarning)
+		}
 	}
 }

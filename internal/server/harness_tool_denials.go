@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,7 +30,10 @@ import (
 // refused unless every tool tool-store tags runs-commands is off.
 
 const (
-	harnessConfigKeyDeniedReadPaths      = "denied_read_paths"
+	harnessConfigKeyDeniedReadPaths = "denied_read_paths"
+	// harnessConfigKeySettings is Claude Code's --settings, which carries the
+	// Read deny rules and the hooks; a caller that sets it replaces both.
+	harnessConfigKeySettings             = "settings"
 	harnessConfigKeyDisabledToolsByLayer = "disabled_tools_by_layer"
 	harnessToolKind                      = "harness"
 	harnessToolTagRunsCommands           = "runs-commands"
@@ -176,14 +180,23 @@ func unionInOrder(lists ...[]string) []string {
 	return out
 }
 
+// errDeniedReadPathsUnenforceable marks a session refused because its
+// bundle denies reading paths that the session as asked for could read anyway.
+var errDeniedReadPathsUnenforceable = errors.New("denied read paths cannot be enforced")
+
 // checkDeniedReadPathsAreEnforceable refuses a session whose bundle denies
-// reading paths that its harness cannot keep it from reading.
-func checkDeniedReadPathsAreEnforceable(harness msg.Harness, paths, disabled, commandRunning []string) error {
+// reading paths that its harness cannot keep it from reading: a harness other
+// than claude_code, a command-running tool left on, or settings the caller set
+// itself, which would replace the settings that carry the Read deny rules.
+func checkDeniedReadPathsAreEnforceable(harness msg.Harness, paths, disabled, commandRunning []string, callerSetSettings bool) error {
 	if len(paths) == 0 {
 		return nil
 	}
 	if harness != msg.HarnessClaudeCode {
-		return fmt.Errorf("the session's bundle denies reading %v, which only claude_code enforces; a %s session reads files through its shell", paths, harness)
+		return fmt.Errorf("%w: the session's bundle denies reading %v, which only claude_code enforces; a %s session reads files through its shell", errDeniedReadPathsUnenforceable, paths, harness)
+	}
+	if callerSetSettings {
+		return fmt.Errorf("%w: the session's bundle denies reading %v, and harness_config.settings would replace the settings that carry those Read deny rules; leave settings out", errDeniedReadPathsUnenforceable, paths)
 	}
 	off := map[string]bool{}
 	for _, name := range disabled {
@@ -196,7 +209,7 @@ func checkDeniedReadPathsAreEnforceable(harness msg.Harness, paths, disabled, co
 		}
 	}
 	if len(stillOn) > 0 {
-		return fmt.Errorf("the session's bundle denies reading %v but leaves %v on, and a command reads around a Read deny rule; deny them in the bundle", paths, stillOn)
+		return fmt.Errorf("%w: the session's bundle denies reading %v but leaves %v on, and a command reads around a Read deny rule; deny them in the bundle", errDeniedReadPathsUnenforceable, paths, stillOn)
 	}
 	return nil
 }

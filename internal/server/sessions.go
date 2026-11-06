@@ -486,6 +486,23 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The agent the session runs as. Optional; when given it must be an agent
+	// agent-store has, by id or slug, whatever the principal's grants say.
+	if req.AgentID != "" {
+		if err := s.checkAgentExists(req.AgentID); err != nil {
+			switch {
+			case errors.Is(err, errUnknownAgent):
+				writeJSONError(w, http.StatusBadRequest, "unknown_agent", err.Error())
+			case errors.Is(err, errAgentStoreNotConfigured):
+				writeJSONError(w, http.StatusServiceUnavailable, "agent_store_not_configured", err.Error())
+			default:
+				writeJSONError(w, http.StatusInternalServerError, "agent_store_unavailable", fmt.Sprintf(
+					"could not confirm agent_id %s, so the session was not created: %v", req.AgentID, err))
+			}
+			return
+		}
+	}
+
 	// The card the session works. Optional; when given it must be a card
 	// kanban-store has, because every spawn reads its tags to pick the
 	// context sections it injects — a card id nobody has would leave every
@@ -600,7 +617,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// created: the alternative was a row that spawned on whatever the harness
 	// felt like while the picker showed the user's pick.
 	if err := s.snapshotSessionDefaultsIntoSession(r.Context(), sess, req.MaxBudget != nil); err != nil {
-		body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": "model_unresolvable", "message": err.Error()}})
+		code := "model_unresolvable"
+		if errors.Is(err, errDeniedReadPathsUnenforceable) {
+			code = "denied_read_paths_unenforceable"
+		}
+		body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})
 		http.Error(w, string(body), http.StatusUnprocessableEntity)
 		return
 	}

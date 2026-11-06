@@ -170,7 +170,8 @@ func (s *Server) snapshotSessionDefaultsIntoSession(ctx context.Context, sess *s
 	if bundle != nil {
 		deniedReadPaths = bundle.DeniedReadPaths
 	}
-	if err := checkDeniedReadPathsAreEnforceable(sess.Harness, deniedReadPaths, disabled, denials.CommandRunningTools); err != nil {
+	_, callerSetSettings := cfg[harnessConfigKeySettings]
+	if err := checkDeniedReadPathsAreEnforceable(sess.Harness, deniedReadPaths, disabled, denials.CommandRunningTools, callerSetSettings); err != nil {
 		return err
 	}
 	for _, layer := range []msg.EffectiveConfigLayer{msg.EffectiveLayerSession, msg.EffectiveLayerBundle, msg.EffectiveLayerHarnessDefault, msg.EffectiveLayerToolStore} {

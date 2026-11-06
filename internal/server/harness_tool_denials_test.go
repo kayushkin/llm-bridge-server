@@ -116,7 +116,7 @@ func TestAHarnessToolDisabledInToolStoreIsOffInEverySession(t *testing.T) {
 func TestDeniedReadPathsWithACommandRunningToolOnAreRefused(t *testing.T) {
 	srv, _, instanceID := serverWithBundleAndToolStore(t, bundleStoreDenying(t, nil, []string{"~/.config/**"}))
 	body := createSessionExpectingRefusal(t, srv, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6"})
-	if !strings.Contains(body, "leaves [Bash] on") {
+	if !strings.Contains(body, "leaves [Bash] on") || !strings.Contains(body, "denied_read_paths_unenforceable") {
 		t.Errorf("refusal %q does not name Bash", body)
 	}
 }
@@ -166,6 +166,26 @@ func TestACallersOwnSettingsCannotDropTheDenyRules(t *testing.T) {
 		HarnessConfig: json.RawMessage(`{"settings":"{}","denied_read_paths":["~/.ssh/**"]}`)}
 	if err := srv.injectHookSettings(sess); err == nil {
 		t.Fatal("injectHookSettings accepted a caller's settings on a session with denied read paths")
+	}
+}
+
+// A caller's own settings on a session whose bundle denies read paths are
+// refused at create, with the code that names why, rather than accepted and
+// left to fail at the first send. Without denied paths they are the caller's.
+func TestACallersOwnSettingsAreRefusedAtCreateWhenTheBundleDeniesReadPaths(t *testing.T) {
+	srv, _, instanceID := serverWithBundleAndToolStore(t, bundleStoreDenying(t, []int64{102}, []string{"~/.config/**"}))
+	request := msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6", HarnessConfig: json.RawMessage(`{"settings":"{}"}`),
+		Type: msg.SessionTypeAutonomous, Purpose: msg.PurposeChat, Origin: "test", Harness: msg.HarnessClaudeCode}
+	resp := doJSON(t, srv, "POST", "/sessions", request)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(body), "denied_read_paths_unenforceable") || !strings.Contains(string(body), "harness_config.settings") {
+		t.Fatalf("POST /sessions = %d %s; want 422 denied_read_paths_unenforceable naming harness_config.settings", resp.StatusCode, body)
+	}
+
+	open, st, instanceID := serverWithBundleAndToolStore(t, bundleStoreDenying(t, []int64{102}, nil))
+	sess := createSessionForDefaults(t, open, st, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6", HarnessConfig: json.RawMessage(`{"settings":"{}"}`)})
+	if sess.SessionID == "" {
+		t.Fatal("a bundle with no denied read paths refused the caller's settings")
 	}
 }
 
