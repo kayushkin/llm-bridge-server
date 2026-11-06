@@ -188,7 +188,15 @@ func TestRowsNamingAnAccountWithoutAFeedMoveOntoIt(t *testing.T) {
 	if _, err := s.AddDescriptionMarker(loan.ID, "77770001", "loan reference in autopay rows"); err != nil {
 		t.Fatal(err)
 	}
-	mustImport(t, s, "wells_fargo_csv", checking.ID, wellsFargoHeader+`"10/13/2026","WF LOAN/LINE AUTO PAY 261009 XXXXXXX77770001","-412.50","","Posted"`+"\n")
+	loan, err := s.PatchAccount(loan.ID, AccountPatch{LastFour: ptr("7777")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustImport(t, s, "wells_fargo_csv", checking.ID, wellsFargoHeader+
+		`"10/13/2026","WF LOAN/LINE AUTO PAY 261009 XXXXXXX77770001","-412.50","","Posted"`+"\n"+
+		// The loan's last four inside a card-terminal number: four digits
+		// alone must not move a purchase onto the loan.
+		`"05/30/2026","PURCHASE AUTHORIZED ON 05/30 LUNCH SHOP S306157777490 CARD 1234","-12.00","","Posted"`+"\n")
 	result, err := s.MatchTransfers()
 	if err != nil {
 		t.Fatal(err)
@@ -200,6 +208,8 @@ func TestRowsNamingAnAccountWithoutAFeedMoveOntoIt(t *testing.T) {
 		t.Fatalf("loan balance = %d, want 41250 (the debt shrank)", got)
 	}
 }
+
+func ptr[T any](value T) *T { return &value }
 
 func TestTransactionsMustBalance(t *testing.T) {
 	s := openTestStore(t)

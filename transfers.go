@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// minimumMarkerLengthWithoutPartner is the shortest marker that may move a
+// row onto an account without a feed. With no partner row there is no amount
+// to check, and four digits turn up inside unrelated card-terminal numbers.
+const minimumMarkerLengthWithoutPartner = 8
+
 // transferWindowDays is how far apart the two sides of one transfer may be
 // dated: a payment leaves checking on Friday and reaches the card on Monday.
 const transferWindowDays = 5
@@ -46,6 +51,8 @@ type transferCandidate struct {
 //
 // A candidate that names an account with has_own_feed = 0 has no partner row
 // to wait for, so its Uncategorized leg becomes a posting on that account.
+// Only markers of minimumMarkerLengthWithoutPartner characters or more count
+// here, since nothing else confirms the match.
 func (s *Store) MatchTransfers() (TransferMatchResult, error) {
 	var result TransferMatchResult
 	tx, err := s.db.Begin()
@@ -103,9 +110,9 @@ func (s *Store) MatchTransfers() (TransferMatchResult, error) {
 		withoutFeed[accountID] = hasOwnFeed == 0
 	}
 	markerRows.Close()
-	names := func(description, accountID string) bool {
+	names := func(description, accountID string, minimumLength int) bool {
 		for _, marker := range markers[accountID] {
-			if strings.Contains(description, marker) {
+			if len(marker) >= minimumLength && strings.Contains(description, marker) {
 				return true
 			}
 		}
@@ -130,7 +137,7 @@ func (s *Store) MatchTransfers() (TransferMatchResult, error) {
 			if distance > transferWindowDays*24*time.Hour {
 				continue
 			}
-			if !names(a.description, b.accountID) && !names(b.description, a.accountID) {
+			if !names(a.description, b.accountID, 0) && !names(b.description, a.accountID, 0) {
 				continue
 			}
 			pairs = append(pairs, pair{out: i, in: j, distance: distance})
@@ -171,7 +178,7 @@ func (s *Store) MatchTransfers() (TransferMatchResult, error) {
 		}
 		var target string
 		for accountID, isWithoutFeed := range withoutFeed {
-			if !isWithoutFeed || accountID == c.accountID || !names(c.description, accountID) {
+			if !isWithoutFeed || accountID == c.accountID || !names(c.description, accountID, minimumMarkerLengthWithoutPartner) {
 				continue
 			}
 			if target != "" {

@@ -427,6 +427,19 @@ func (s *Store) AddDescriptionMarker(accountID, marker, note string) (Account, e
 	return s.GetAccount(accountID)
 }
 
+// DeleteDescriptionMarker removes one marker from an account. Transfers
+// already paired or moved by it stay as they are.
+func (s *Store) DeleteDescriptionMarker(accountID, markerID string) (Account, error) {
+	result, err := s.db.Exec(`DELETE FROM account_description_markers WHERE id = ? AND account_id = ?`, markerID, accountID)
+	if err != nil {
+		return Account{}, err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return Account{}, ErrNotFound
+	}
+	return s.GetAccount(accountID)
+}
+
 // PatchAccount changes the fields given.
 func (s *Store) PatchAccount(id string, patch AccountPatch) (Account, error) {
 	current, err := s.GetAccount(id)

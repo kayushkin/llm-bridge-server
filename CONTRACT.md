@@ -50,7 +50,7 @@ entity-type registry match each kind for chips.
 | `GET /health`, `GET /settings`, `GET /vocabulary` | liveness; declared settings; every closed set of values the store accepts |
 | `GET/POST /institutions` | banks and issuers: `{name, website}` |
 | `GET/POST /accounts`, `GET/PATCH /accounts/{id}` | accounts with `balance_cents` and their detail block (`credit_card`, `loan`, `retirement`). `last_four` must be four digits: a full number is refused. Setting it also adds it as a description marker |
-| `POST /accounts/{id}/description-markers` | `{marker, note}`: text that names this account in another account's rows (an old card number, a loan reference). At least 4 characters |
+| `POST /accounts/{id}/description-markers`, `DELETE /accounts/{id}/description-markers/{marker_id}` | `{marker, note}`: text that names this account in another account's rows (an old card number, a loan reference). At least 4 characters. Deleting one leaves what it already matched |
 | `POST /accounts/{id}/opening-balance` | `{as_of, balance_cents, source}`: makes the ledger agree with a reported balance, with one opening-balance transaction dated the day before the account's first posting; replaces any earlier one. Also records an assertion |
 | `GET/POST /balance-assertions` | `{account_id, as_of, balance_cents, source}`: a reported balance; each answer carries `ledger_balance_cents` and `difference_cents` (ledger minus reported) as the ledger stands now |
 | `GET/POST /categories` | `{parent_id, name, kind}`; kind `expense`, `income` or `equity`. Two categories carry a `role` the store posts to: `uncategorized` and `opening_balances`. Find them by role, never by name |
@@ -99,7 +99,7 @@ both source rows; the other id is kept and still resolves.
 
 An account with `has_own_feed: false` (a loan with no export) never has a
 partner row to wait for, so a candidate whose description names it moves its
-Uncategorized posting onto that account.
+Uncategorized posting onto that account. Only markers of 8 or more characters count here: with no partner row there is no amount to check, and four digits turn up inside unrelated card-terminal numbers.
 
 ## Budgets
 

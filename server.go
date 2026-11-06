@@ -119,6 +119,10 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.AddDescriptionMarker(r.PathValue("id"), in.Marker, in.Note)
 		respond(w, http.StatusOK, out, err)
 	})
+	mux.HandleFunc("DELETE /accounts/{id}/description-markers/{marker_id}", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.DeleteDescriptionMarker(r.PathValue("id"), r.PathValue("marker_id"))
+		respond(w, http.StatusOK, out, err)
+	})
 	mux.HandleFunc("POST /accounts/{id}/opening-balance", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			AsOf         string `json:"as_of"`
