@@ -98,6 +98,9 @@ var addedColumns = []struct{ table, column, definition string }{
 	// decision: the sighting waits on the answer. detail: the sighting is
 	// recorded, and the answer only adds to what was recorded.
 	{"owner_questions", "purpose", "TEXT NOT NULL DEFAULT 'decision'"},
+	// The possession a duplicate was merged into; NULL for one never merged.
+	// A merged possession is also deleted.
+	{"possessions", "merged_into_id", "TEXT REFERENCES possessions(id)"},
 }
 
 func addColumns(db *sql.DB) error {

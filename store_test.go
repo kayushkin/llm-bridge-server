@@ -579,3 +579,39 @@ func mustSighting(t *testing.T, store *Store, id string) Sighting {
 	}
 	return sighting
 }
+
+func TestAMergeMovesPhotosKindAndLinksOntoTheKeptPossession(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	kept, err := store.CreatePossession(ctx, fields(t, `{"name":"GoXLR Mini","photos":[{"photo_id":"photo_000001"}]}`), "principal_000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := store.CreatePossession(ctx, fields(t, `{"name":"streaming mixer","brand":"TC-Helicon","audio_device":{"device_type":"mixer"},
+		"photos":[{"photo_id":"photo_000002","box_left":0.1,"box_top":0.1,"box_right":0.3,"box_bottom":0.3}]}`), "principal_000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keptID, duplicateID := kept["id"].(string), duplicate["id"].(string)
+	merged, err := store.MergePossession(ctx, duplicateID, keptID, "principal_000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged["name"] != "GoXLR Mini" || merged["brand"] != "TC-Helicon" || merged["kind"] != "audio_device" || len(merged["photos"].([]PhotoLink)) != 2 || merged["cover_photo_id"] != "photo_000001" {
+		t.Fatalf("merged = %v", merged)
+	}
+	if _, err := store.GetPossession(duplicateID, false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the duplicate should be gone from reads, got %v", err)
+	}
+	gone, _ := store.GetPossession(duplicateID, true)
+	if gone["merged_into_id"] != keptID {
+		t.Fatalf("the duplicate should say where it went: %v", gone["merged_into_id"])
+	}
+	if _, err := store.MergePossession(ctx, keptID, keptID, "principal_000001"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("merging into itself = %v", err)
+	}
+	laptop, _ := store.CreatePossession(ctx, fields(t, `{"name":"laptop","computer":{"form_factor":"laptop"}}`), "principal_000001")
+	if _, err := store.MergePossession(ctx, laptop["id"].(string), keptID, "principal_000001"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("merging a computer into an audio device = %v, want a conflict", err)
+	}
+}

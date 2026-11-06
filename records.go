@@ -319,7 +319,8 @@ func (recordType RecordType) readColumns() []Column {
 			Column{Name: "created_by", Type: ColumnText},
 			Column{Name: "created_at", Type: ColumnInteger},
 			Column{Name: "updated_at", Type: ColumnInteger},
-			Column{Name: "deleted_at", Type: ColumnInteger})
+			Column{Name: "deleted_at", Type: ColumnInteger},
+			Column{Name: "merged_into_id", Type: ColumnText})
 	}
 	return columns
 }

@@ -33,6 +33,17 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /possessions/{id}/revisions", server.revisions)
 	mux.HandleFunc("GET /possessions/{id}/image", server.possessionImage)
 	mux.HandleFunc("POST /possessions/{id}/photos", server.linkPhoto)
+	mux.HandleFunc("POST /possessions/{id}/merge", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Into  string `json:"into"`
+			Actor string `json:"actor"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		kept, err := server.Store.MergePossession(r.Context(), r.PathValue("id"), body.Into, body.Actor)
+		respond(w, http.StatusOK, kept, err)
+	})
 	mux.HandleFunc("DELETE /possessions/{id}/photos/{photo_id}", server.unlinkPhoto)
 
 	for _, kind := range KindTypes {

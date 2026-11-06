@@ -60,7 +60,7 @@ copies the whole row to `revisions`.
 {"id":"possession_000001","name":"black hoodie","brand":"Carhartt","model":"","serial_number":"",
  "description":"","quantity":1,"condition":"","status":"owned","place_id":null,"spot":"bedroom closet",
  "acquired_at":0,"acquired_how":"","purchase_line_id":null,"price_cents":null,"price_currency":"",
- "disposed_at":0,"tags":[],"created_by":"principal_000001","created_at":…,"updated_at":…,"deleted_at":0,
+ "disposed_at":0,"tags":[],"created_by":"principal_000001","created_at":…,"updated_at":…,"deleted_at":0,"merged_into_id":null,
  "kind":"garment",
  "garment":{"id":"garment_000001","category":"top","garment_type":"hoodie","layer":"mid","primary_color":"black",
             "secondary_colors":[],"pattern":"solid","materials":["cotton"],"size_label":"L","size_system":"letter",
@@ -88,6 +88,7 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` | `/possessions/{id}/revisions` | newest first, each the whole row as it was |
 | `GET` | `/possessions/{id}/image` | JPEG: the possession cut from its cover photo's thumbnail by its box, with a margin; the whole thumbnail when the photo has no box. **404** with no photo |
 | `POST` | `/possessions/{id}/photos` | `{photo_id, box_left, box_top, box_right, box_bottom, is_cover, linked_by}`: box sides are fractions 0–1, all four or none. The first photo is the cover until another is chosen. Linking again changes the box or cover |
+| `POST` | `/possessions/{id}/merge` | `{into, actor}`: folds a duplicate into the possession it duplicates. The kept one takes its photos, sightings, kind (when it has none), and every field it leaves blank; outfits, installed parts, odometer readings and a harness machine move to the kept kind record. The duplicate is deleted with `merged_into_id` set. Different kinds are a **409** |
 | `DELETE` | `/possessions/{id}/photos/{photo_id}` | the photo stays in photo-store; the earliest left becomes cover |
 | `GET` | `/garments`, `/computers`, `/computer-parts`, `/audio-devices`, `/musical-instruments`, `/vehicles` | possessions of that kind, with the same query as `/possessions` |
 | `GET` | `/<kind route>/{id}` and `…/{id}/image` | the possession the kind record extends |
