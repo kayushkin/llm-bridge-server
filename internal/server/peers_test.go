@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -895,7 +896,12 @@ func TestAFrameOverTheReadLimitEndsTheSocket(t *testing.T) {
 	if acceptingSocket == nil || initiatingSocket == nil {
 		t.Fatal("a side has no open socket")
 	}
-	if err := initiatingSocket.send(peerSocketFrame{Type: peerSocketFrameCancel, Stream: 1, Error: strings.Repeat("x", 8192)}); err != nil {
+	// The message leaves in fragments of the 4096-byte write buffer, and the
+	// reader checks its limit after each one, so it can refuse the message and
+	// close while the sender still writes: the sender's read loop answers that
+	// close, and the next fragment's write fails with ErrCloseSent. That is
+	// the refusal arriving early, not a failure; the wait below still decides.
+	if err := initiatingSocket.send(peerSocketFrame{Type: peerSocketFrameCancel, Stream: 1, Error: strings.Repeat("x", 8192)}); err != nil && !errors.Is(err, websocket.ErrCloseSent) {
 		t.Fatal(err)
 	}
 	select {
