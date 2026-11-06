@@ -60,8 +60,9 @@ entity-type registry match each kind for chips.
 | `GET/PATCH /transactions/{id}` | PATCH `{status, payee_id, memo}`. The id of a transaction the transfer matcher folded away answers with the one it was folded into |
 | `PUT /transactions/{id}/categories` | `{splits: [{category_id, amount_cents, memo, tax_year}]}` replaces every category posting; the splits must sum to what the category side summed to, so accounts never change |
 | `POST /transfers/match` | pairs transfers between the operator's own accounts; see below |
+| `POST /transactions/{id}/undo-transfer-without-partner` | puts a posting the matcher moved without a partner back on Uncategorized |
 | `POST /import-batches?source=&account_id=&file_name=&file_id=` | body: the file. One transaction per new row; all or nothing. `file_id` is the file-store id of the original |
-| `GET /import-batches`, `GET /import-batches/{id}`, `POST /import-batches/{id}/undo` | `outcomes` counts each row's fate; undo deletes what the batch made and keeps its rows |
+| `GET /import-batches`, `GET /import-batches/{id}`, `POST /import-batches/{id}/undo` | `outcomes` counts each row's fate, `first_row_on`/`last_row_on` the dates the file covers; undo deletes what the batch made and keeps its rows |
 | `GET /reports/spending?month=` | each category's total that month |
 | `GET /budget?month=&view=limit\|envelope`, `PUT /budget-assignments` | see below |
 | `GET /links?from_id=`, `POST /links` | `{from_id, entity_type, entity_ref, note}`: a pointer to another store's record by that store's id |
@@ -86,7 +87,7 @@ Importing the same file (same sha256) into the same account twice is a 409.
 
 ## Transfers
 
-`POST /transfers/match` answers `{paired, assigned_to_account_without_feed}`.
+`POST /transfers/match` answers `{paired, assigned_without_partner}`.
 
 A candidate is a transaction still in its imported shape: one account posting
 and one Uncategorized posting. Two candidates pair when their amounts are
@@ -97,9 +98,20 @@ payment in the same week from pairing. The closest dates pair first. The pair
 becomes the money-out side's transaction, holding both account postings and
 both source rows; the other id is kept and still resolves.
 
-An account with `has_own_feed: false` (a loan with no export) never has a
-partner row to wait for, so a candidate whose description names it moves its
-Uncategorized posting onto that account. Only markers of 8 or more characters count here: with no partner row there is no amount to check, and four digits turn up inside unrelated card-terminal numbers.
+Some transfers have no partner row to wait for: the account has
+`has_own_feed: false` (a loan with no export), or its imported rows start
+after the transfer (a card whose export begins when it was reissued). A
+candidate whose description names such an account moves its Uncategorized
+posting onto that account, and the move is kept in `transfers_without_partner`
+with its reason. Only markers of 8 or more characters count here: with no
+partner row there is no amount to check, and four digits turn up inside
+unrelated card-terminal numbers.
+
+**Importing into an account a file whose dates, widened by the 5-day window,
+cover one of those moves is a 409** naming them, since the file may hold the
+other side and the transfer would count twice. `POST
+/transactions/{id}/undo-transfer-without-partner` puts the posting back on
+Uncategorized; import, then match again.
 
 ## Budgets
 

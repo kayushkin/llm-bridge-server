@@ -20,10 +20,12 @@ const transferWindowDays = 5
 type TransferMatchResult struct {
 	// Paired: two rows, one in each account's file, folded into one transaction.
 	Paired int `json:"paired"`
-	// AssignedToAccountWithoutFeed: a row that names an account whose rows
-	// never arrive by import (a loan with no export) moved its Uncategorized
-	// leg onto that account.
-	AssignedToAccountWithoutFeed int `json:"assigned_to_account_without_feed"`
+	// AssignedWithoutPartner: a row that names an account whose own rows
+	// cannot hold its other side, because the account has no feed (a loan
+	// with no export) or its feed starts after the row, moved its
+	// Uncategorized leg onto that account. Each is kept in
+	// transfers_without_partner.
+	AssignedWithoutPartner int `json:"assigned_without_partner"`
 }
 
 type transferCandidate struct {
@@ -49,8 +51,10 @@ type transferCandidate struct {
 // side's transaction with both account postings and both source rows; the
 // other id is kept in transaction_merges.
 //
-// A candidate that names an account with has_own_feed = 0 has no partner row
-// to wait for, so its Uncategorized leg becomes a posting on that account.
+// A candidate that names an account whose own rows cannot hold its other side,
+// because the account has has_own_feed = 0 or its imported rows start after
+// the candidate's date, has no partner row to wait for, so its Uncategorized
+// leg becomes a posting on that account.
 // Only markers of minimumMarkerLengthWithoutPartner characters or more count
 // here, since nothing else confirms the match.
 func (s *Store) MatchTransfers() (TransferMatchResult, error) {
@@ -110,6 +114,20 @@ func (s *Store) MatchTransfers() (TransferMatchResult, error) {
 		withoutFeed[accountID] = hasOwnFeed == 0
 	}
 	markerRows.Close()
+	feedStarts := map[string]string{}
+	coverageRows, err := tx.Query(`SELECT account_id, MIN(first_row_on) FROM import_batches WHERE undone_at = 0 AND first_row_on != '' GROUP BY account_id`)
+	if err != nil {
+		return result, err
+	}
+	for coverageRows.Next() {
+		var accountID, firstRowOn string
+		if err := coverageRows.Scan(&accountID, &firstRowOn); err != nil {
+			coverageRows.Close()
+			return result, err
+		}
+		feedStarts[accountID] = firstRowOn
+	}
+	coverageRows.Close()
 	names := func(description, accountID string, minimumLength int) bool {
 		for _, marker := range markers[accountID] {
 			if len(marker) >= minimumLength && strings.Contains(description, marker) {
@@ -176,15 +194,25 @@ func (s *Store) MatchTransfers() (TransferMatchResult, error) {
 		if used[i] {
 			continue
 		}
-		var target string
+		var target, reason string
 		for accountID, isWithoutFeed := range withoutFeed {
-			if !isWithoutFeed || accountID == c.accountID || !names(c.description, accountID, minimumMarkerLengthWithoutPartner) {
+			if accountID == c.accountID || !names(c.description, accountID, minimumMarkerLengthWithoutPartner) {
+				continue
+			}
+			date := c.occurredOn.Format("2006-01-02")
+			var why string
+			switch {
+			case isWithoutFeed:
+				why = "the account has no feed of its own"
+			case feedStarts[accountID] != "" && date < feedStarts[accountID]:
+				why = "the account's imported rows start on " + feedStarts[accountID] + ", after this row"
+			default:
 				continue
 			}
 			if target != "" {
-				return result, fmt.Errorf("%w: %s names two accounts without a feed (%s and %s); make their markers more specific", ErrConflict, c.transactionID, target, accountID)
+				return result, fmt.Errorf("%w: %s names two accounts that cannot hold its other side (%s and %s); make their markers more specific", ErrConflict, c.transactionID, target, accountID)
 			}
-			target = accountID
+			target, reason = accountID, why
 		}
 		if target == "" {
 			continue
@@ -192,10 +220,61 @@ func (s *Store) MatchTransfers() (TransferMatchResult, error) {
 		if _, err := tx.Exec(`UPDATE postings SET category_id = NULL, account_id = ? WHERE id = ?`, target, c.categoryPostingID); err != nil {
 			return result, err
 		}
+		if _, err := tx.Exec(`INSERT INTO transfers_without_partner (posting_id, transaction_id, account_id, reason, created_at) VALUES (?,?,?,?,?)`,
+			c.categoryPostingID, c.transactionID, target, reason, now); err != nil {
+			return result, err
+		}
 		if _, err := tx.Exec(`UPDATE transactions SET updated_at = ? WHERE id = ?`, now, c.transactionID); err != nil {
 			return result, err
 		}
-		result.AssignedToAccountWithoutFeed++
+		result.AssignedWithoutPartner++
 	}
 	return result, tx.Commit()
+}
+
+// UndoTransferWithoutPartner puts a posting the matcher moved without a
+// partner back on Uncategorized, so a file covering its date can be imported
+// and paired properly.
+func (s *Store) UndoTransferWithoutPartner(transactionID string) (Transaction, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Transaction{}, err
+	}
+	defer tx.Rollback()
+	uncategorized, err := categoryIDForRole(tx, "uncategorized")
+	if err != nil {
+		return Transaction{}, err
+	}
+	rows, err := tx.Query(`SELECT posting_id FROM transfers_without_partner WHERE transaction_id = ?`, transactionID)
+	if err != nil {
+		return Transaction{}, err
+	}
+	var postingIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return Transaction{}, err
+		}
+		postingIDs = append(postingIDs, id)
+	}
+	rows.Close()
+	if len(postingIDs) == 0 {
+		return Transaction{}, fmt.Errorf("%w: %s holds no transfer moved without a partner", ErrNotFound, transactionID)
+	}
+	for _, id := range postingIDs {
+		if _, err := tx.Exec(`UPDATE postings SET account_id = NULL, category_id = ? WHERE id = ?`, uncategorized, id); err != nil {
+			return Transaction{}, err
+		}
+		if _, err := tx.Exec(`DELETE FROM transfers_without_partner WHERE posting_id = ?`, id); err != nil {
+			return Transaction{}, err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE transactions SET updated_at = ? WHERE id = ?`, s.unixNow(), transactionID); err != nil {
+		return Transaction{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Transaction{}, err
+	}
+	return s.GetTransaction(transactionID)
 }

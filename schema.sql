@@ -124,6 +124,8 @@ CREATE TABLE IF NOT EXISTS import_batches (
   file_name    TEXT NOT NULL DEFAULT '',
   file_id      TEXT NOT NULL DEFAULT '',       -- file-store id of the original file
   file_sha256  TEXT NOT NULL,
+  first_row_on TEXT NOT NULL DEFAULT '',     -- earliest row date in the file: what the file covers
+  last_row_on  TEXT NOT NULL DEFAULT '',
   imported_at  INTEGER NOT NULL,
   undone_at    INTEGER NOT NULL DEFAULT 0
 );
@@ -188,6 +190,18 @@ CREATE TABLE IF NOT EXISTS transaction_merges (
   into_transaction_id    TEXT NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
   reason                 TEXT NOT NULL,
   merged_at              INTEGER NOT NULL
+);
+
+-- A posting the transfer matcher moved onto an account with no partner row
+-- to confirm it: the account has no feed, or its feed starts later than the
+-- row. An import into that account covering the posting's date is refused
+-- until the move is undone, or the transfer would count twice.
+CREATE TABLE IF NOT EXISTS transfers_without_partner (
+  posting_id      TEXT PRIMARY KEY REFERENCES postings(id) ON DELETE CASCADE,
+  transaction_id  TEXT NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  account_id      TEXT NOT NULL REFERENCES accounts(id),
+  reason          TEXT NOT NULL,
+  created_at      INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS statements (

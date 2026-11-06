@@ -64,6 +64,10 @@ func Open(dataDir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("restrict db file: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	store := &Store{db: db, dataDir: dataDir, now: time.Now}
 	if err := store.ensureRoleCategories(); err != nil {
 		db.Close()
@@ -147,4 +151,39 @@ func categoryIDForRole(q queryer, role string) (string, error) {
 		return "", fmt.Errorf("category with role %s: %w", role, err)
 	}
 	return id, nil
+}
+
+// migrate makes the additive changes schema.sql cannot, since an edited
+// CREATE TABLE does nothing to a database that already exists. Each step
+// checks before it acts, so it is safe on every boot.
+func migrate(db *sql.DB) error {
+	columns := map[string]bool{}
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('import_batches')`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	rows.Close()
+	if !columns["first_row_on"] {
+		for _, statement := range []string{
+			`ALTER TABLE import_batches ADD COLUMN first_row_on TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE import_batches ADD COLUMN last_row_on TEXT NOT NULL DEFAULT ''`,
+			// Batches from before the columns: what their own rows made.
+			`UPDATE import_batches SET
+				first_row_on = COALESCE((SELECT MIN(t.occurred_on) FROM import_rows r JOIN transaction_sources ts ON ts.import_row_id = r.id JOIN transactions t ON t.id = ts.transaction_id WHERE r.import_batch_id = import_batches.id), ''),
+				last_row_on  = COALESCE((SELECT MAX(t.occurred_on) FROM import_rows r JOIN transaction_sources ts ON ts.import_row_id = r.id JOIN transactions t ON t.id = ts.transaction_id WHERE r.import_batch_id = import_batches.id), '')`,
+		} {
+			if _, err := db.Exec(statement); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

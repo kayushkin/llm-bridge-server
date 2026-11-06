@@ -189,6 +189,8 @@ type ImportBatch struct {
 	FileName   string         `json:"file_name"`
 	FileID     string         `json:"file_id"`
 	FileSHA256 string         `json:"file_sha256"`
+	FirstRowOn string         `json:"first_row_on"`
+	LastRowOn  string         `json:"last_row_on"`
 	ImportedAt int64          `json:"imported_at"`
 	UndoneAt   int64          `json:"undone_at"`
 	Outcomes   map[string]int `json:"outcomes"`
@@ -255,6 +257,40 @@ func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, erro
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return ImportBatch{}, err
 	}
+	firstRowOn, lastRowOn := rows[0].occurredOn, rows[0].occurredOn
+	for _, row := range rows {
+		firstRowOn, lastRowOn = min(firstRowOn, row.occurredOn), max(lastRowOn, row.occurredOn)
+	}
+	// A row in this file can be the other side of a moved transfer dated up to
+	// transferWindowDays outside the file's own dates.
+	first, err := time.Parse("2006-01-02", firstRowOn)
+	if err != nil {
+		return ImportBatch{}, err
+	}
+	last, err := time.Parse("2006-01-02", lastRowOn)
+	if err != nil {
+		return ImportBatch{}, err
+	}
+	var blocking []string
+	blockRows, err := tx.Query(`SELECT w.transaction_id FROM transfers_without_partner w JOIN transactions t ON t.id = w.transaction_id
+		WHERE w.account_id = ? AND t.occurred_on BETWEEN ? AND ? ORDER BY t.occurred_on`, request.AccountID,
+		first.AddDate(0, 0, -transferWindowDays).Format("2006-01-02"), last.AddDate(0, 0, transferWindowDays).Format("2006-01-02"))
+	if err != nil {
+		return ImportBatch{}, err
+	}
+	for blockRows.Next() {
+		var id string
+		if err := blockRows.Scan(&id); err != nil {
+			blockRows.Close()
+			return ImportBatch{}, err
+		}
+		blocking = append(blocking, id)
+	}
+	blockRows.Close()
+	if len(blocking) > 0 {
+		return ImportBatch{}, fmt.Errorf("%w: this file covers %s to %s, and the transfer matcher already moved %d transfers onto this account in that range with no partner row (%s); undo them with POST /transactions/{id}/undo-transfer-without-partner, import, then match again",
+			ErrConflict, firstRowOn, lastRowOn, len(blocking), strings.Join(blocking, ", "))
+	}
 	uncategorized, err := categoryIDForRole(tx, "uncategorized")
 	if err != nil {
 		return ImportBatch{}, err
@@ -268,8 +304,8 @@ func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, erro
 		return ImportBatch{}, err
 	}
 	now := s.unixNow()
-	if _, err := tx.Exec(`INSERT INTO import_batches (seq, id, source, account_id, file_name, file_id, file_sha256, imported_at) VALUES (?,?,?,?,?,?,?,?)`,
-		batchSeq, batchID, request.Source, request.AccountID, request.FileName, request.FileID, fileSHA, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO import_batches (seq, id, source, account_id, file_name, file_id, file_sha256, first_row_on, last_row_on, imported_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		batchSeq, batchID, request.Source, request.AccountID, request.FileName, request.FileID, fileSHA, firstRowOn, lastRowOn, now); err != nil {
 		return ImportBatch{}, err
 	}
 	occurrences := map[string]int{}
@@ -338,8 +374,8 @@ func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, erro
 // GetImportBatch returns one batch with counts of each row outcome.
 func (s *Store) GetImportBatch(id string) (ImportBatch, error) {
 	var b ImportBatch
-	err := s.db.QueryRow(`SELECT id, source, account_id, file_name, file_id, file_sha256, imported_at, undone_at FROM import_batches WHERE id = ?`, id).
-		Scan(&b.ID, &b.Source, &b.AccountID, &b.FileName, &b.FileID, &b.FileSHA256, &b.ImportedAt, &b.UndoneAt)
+	err := s.db.QueryRow(`SELECT id, source, account_id, file_name, file_id, file_sha256, first_row_on, last_row_on, imported_at, undone_at FROM import_batches WHERE id = ?`, id).
+		Scan(&b.ID, &b.Source, &b.AccountID, &b.FileName, &b.FileID, &b.FileSHA256, &b.FirstRowOn, &b.LastRowOn, &b.ImportedAt, &b.UndoneAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ImportBatch{}, ErrNotFound
 	}

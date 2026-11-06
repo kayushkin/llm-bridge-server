@@ -246,6 +246,10 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.SetTransactionCategories(r.PathValue("id"), in.Splits)
 		respond(w, http.StatusOK, out, err)
 	})
+	mux.HandleFunc("POST /transactions/{id}/undo-transfer-without-partner", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.UndoTransferWithoutPartner(r.PathValue("id"))
+		respond(w, http.StatusOK, out, err)
+	})
 	mux.HandleFunc("POST /transfers/match", func(w http.ResponseWriter, _ *http.Request) {
 		out, err := s.MatchTransfers()
 		respond(w, http.StatusOK, out, err)

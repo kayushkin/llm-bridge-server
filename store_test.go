@@ -201,7 +201,7 @@ func TestRowsNamingAnAccountWithoutAFeedMoveOntoIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.AssignedToAccountWithoutFeed != 1 {
+	if result.AssignedWithoutPartner != 1 {
 		t.Fatalf("result = %+v", result)
 	}
 	if got := balance(t, s, loan.ID); got != 41250 {
@@ -375,5 +375,50 @@ func TestSettingsDefaultToLoopbackAndRefuseUnknownVariables(t *testing.T) {
 	}
 	if _, err := NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{"BUDGET_STORE_ADDRESS": "x"})); err == nil {
 		t.Error("an undeclared BUDGET_STORE_ variable was accepted")
+	}
+}
+
+func TestRowsBeforeAnAccountsFeedStartsMoveOntoItAndBlockAnOverlappingImport(t *testing.T) {
+	s := openTestStore(t)
+	checking := mustAccount(t, s, AccountInput{Name: "Checking", Kind: "checking"})
+	card := mustAccount(t, s, AccountInput{Name: "Card", Kind: "credit_card", LastFour: "2222"})
+	if _, err := s.AddDescriptionMarker(card.ID, "XXXXXXXXXXXX3333", "old number"); err != nil {
+		t.Fatal(err)
+	}
+	mustImport(t, s, "wells_fargo_csv", checking.ID, wellsFargoHeader+
+		`"12/18/2024","ONLINE TRANSFER TO VISA CARD XXXXXXXXXXXX3333","-2000.00","","Posted"`+"\n"+
+		`"11/02/2026","ONLINE TRANSFER TO VISA CARD XXXXXXXXXXXX2222","-500.00","","Posted"`+"\n")
+	mustImport(t, s, "wells_fargo_csv", card.ID, wellsFargoHeader+
+		`"11/02/2026","ONLINE PAYMENT THANK YOU","500.00",,"Posted"`+"\n"+
+		`"08/25/2025","GROCERY","-40.00",,"Posted"`+"\n")
+	result, err := s.MatchTransfers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Paired != 1 || result.AssignedWithoutPartner != 1 {
+		t.Fatalf("result = %+v, want the 2026 payment paired and the 2024 one moved onto the card", result)
+	}
+	older := wellsFargoHeader + `"12/17/2024","ONLINE PAYMENT THANK YOU","2000.00",,"Posted"` + "\n"
+	if _, err := s.Import(ImportRequest{Source: "wells_fargo_csv", AccountID: card.ID}, strings.NewReader(older)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("importing card rows that cover the moved transfer = %v, want a conflict", err)
+	}
+	moved, err := s.ListTransactions(TransactionFilter{Month: "2024-12"})
+	if err != nil || len(moved) != 1 {
+		t.Fatalf("December 2024 = %v, %v", moved, err)
+	}
+	if _, err := s.UndoTransferWithoutPartner(moved[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	mustImport(t, s, "wells_fargo_csv", card.ID, older)
+	result, err = s.MatchTransfers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Paired != 1 || result.AssignedWithoutPartner != 0 {
+		t.Fatalf("after undo and import, result = %+v, want the 2024 payment paired with its card row", result)
+	}
+	// Card: -40 grocery, +500 and +2000 payments, counted once each.
+	if got := balance(t, s, card.ID); got != 246000 {
+		t.Fatalf("card balance = %d, want 246000", got)
 	}
 }
