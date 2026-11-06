@@ -41,7 +41,9 @@ A prefix and a zero-padded sequence: `institution_000001`, `account_000001`,
 `payee_match_rule_000001`, `import_batch_000001`, `import_row_000001`,
 `transaction_000001`, `posting_000001`, `balance_assertion_000001`,
 `budget_assignment_000001`, `link_000001`. The prefixes let kanban-store's
-entity-type registry match each kind for chips.
+entity-type registry match each kind for chips: `budget_account`,
+`budget_transaction`, `budget_category`, `budget_payee` and
+`budget_import_batch` resolve through the matching `GET …/{id}`.
 
 ## Routes
 
@@ -53,8 +55,8 @@ entity-type registry match each kind for chips.
 | `POST /accounts/{id}/description-markers`, `DELETE /accounts/{id}/description-markers/{marker_id}` | `{marker, note}`: text that names this account in another account's rows (an old card number, a loan reference). At least 4 characters. Deleting one leaves what it already matched |
 | `POST /accounts/{id}/opening-balance` | `{as_of, balance_cents, source}`: makes the ledger agree with a reported balance, with one opening-balance transaction dated the day before the account's first posting; replaces any earlier one. Also records an assertion |
 | `GET/POST /balance-assertions` | `{account_id, as_of, balance_cents, source}`: a reported balance; each answer carries `ledger_balance_cents` and `difference_cents` (ledger minus reported) as the ledger stands now |
-| `GET/POST /categories` | `{parent_id, name, kind}`; kind `expense`, `income` or `equity`. Two categories carry a `role` the store posts to: `uncategorized` and `opening_balances`. Find them by role, never by name |
-| `GET/POST /payees`, `POST /payees/apply-rules` | `{name, default_category_id, patterns}`: a pattern is upper-cased text matched as a substring of a description; the longest match wins. `apply-rules` names every transaction without a payee and moves one still wholly Uncategorized to the payee's default category. A category someone chose is never overwritten |
+| `GET/POST /categories`, `GET /categories/{id}` | `{parent_id, name, kind}`; kind `expense`, `income` or `equity`. Two categories carry a `role` the store posts to: `uncategorized` and `opening_balances`. Find them by role, never by name |
+| `GET/POST /payees`, `GET /payees/{id}`, `POST /payees/apply-rules` | `{name, default_category_id, patterns}`: a pattern is upper-cased text matched as a substring of a description; the longest match wins. `apply-rules` names every transaction without a payee and moves one still wholly Uncategorized to the payee's default category. A category someone chose is never overwritten |
 | `GET /transactions` | newest first; `account_id`, `category_id`, `month`, `q`, `uncategorized=true`, `limit` (≤1000, default 200), `offset` |
 | `POST /transactions` | `{occurred_on, status, payee_id, description, memo, postings}` by hand |
 | `GET/PATCH /transactions/{id}` | PATCH `{status, payee_id, memo}`. The id of a transaction the transfer matcher folded away answers with the one it was folded into |

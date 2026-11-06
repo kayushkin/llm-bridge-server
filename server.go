@@ -169,6 +169,14 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusCreated, out, err)
 	})
 
+	mux.HandleFunc("GET /categories/{id}", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.GetCategory(r.PathValue("id"))
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("GET /payees/{id}", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.GetPayee(r.PathValue("id"))
+		respond(w, http.StatusOK, out, err)
+	})
 	mux.HandleFunc("GET /payees", func(w http.ResponseWriter, _ *http.Request) {
 		list, err := s.ListPayees()
 		respond(w, http.StatusOK, list, err)
