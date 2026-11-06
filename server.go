@@ -49,6 +49,29 @@ func decodeBody(r *http.Request, into any) error {
 	return nil
 }
 
+// decodeLargeBody is decodeBody for the bulk routes, whose bodies carry a
+// whole run of suggestions or decisions.
+func decodeLargeBody(r *http.Request, into any) error {
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 16<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(into); err != nil {
+		return fmt.Errorf("%w: body: %v", ErrInvalid, err)
+	}
+	return nil
+}
+
+func optionalWholeNumber(r *http.Request, name string) (int, error) {
+	value := r.URL.Query().Get(name)
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("%w: %s %q is not a whole number", ErrInvalid, name, value)
+	}
+	return parsed, nil
+}
+
 func respond[T any](w http.ResponseWriter, status int, value T, err error) {
 	if err != nil {
 		writeError(w, err)
@@ -305,6 +328,49 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 			return
 		}
 		out, err := s.SetBudgetAssignment(BudgetAssignment{CategoryID: in.CategoryID, Month: in.Month, AmountCents: in.AmountCents})
+		respond(w, http.StatusOK, out, err)
+	})
+
+	mux.HandleFunc("GET /category-paths", func(w http.ResponseWriter, _ *http.Request) {
+		out, err := s.CategoryPaths()
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("GET /category-suggestions/candidates", func(w http.ResponseWriter, r *http.Request) {
+		limit, err := optionalWholeNumber(r, "limit")
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.ListSuggestionCandidates(limit)
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("GET /category-suggestions", func(w http.ResponseWriter, r *http.Request) {
+		limit, err := optionalWholeNumber(r, "limit")
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.ListSuggestions(r.URL.Query().Get("status"), limit)
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("POST /category-suggestions", func(w http.ResponseWriter, r *http.Request) {
+		var in SuggestionBatch
+		if err := decodeLargeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		count, err := s.CreateSuggestions(in)
+		respond(w, http.StatusCreated, map[string]int{"created": count}, err)
+	})
+	mux.HandleFunc("POST /category-suggestions/decisions", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Decisions []SuggestionDecision `json:"decisions"`
+		}
+		if err := decodeLargeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.DecideSuggestions(in.Decisions)
 		respond(w, http.StatusOK, out, err)
 	})
 

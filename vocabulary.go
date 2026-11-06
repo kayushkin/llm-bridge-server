@@ -58,5 +58,6 @@ func handleVocabulary(w http.ResponseWriter, _ *http.Request) {
 		"import_sources":          importSources,
 		"import_row_outcomes":     importRowOutcomes,
 		"budget_views":            budgetViews,
+		"suggestion_statuses":     suggestionStatuses,
 	})
 }

@@ -10,6 +10,9 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="$HOME/bin"
 SERVICE="budget-store.service"
 BINARY="budget-store"
+# Commands an operator or a scheduler job runs, built from cmd/<name> and
+# installed as ~/bin/<name>.
+COMMANDS=(budget-suggest-categories)
 UNIT_SRC="$REPO_DIR/$SERVICE"
 UNIT_DEST="$HOME/.config/systemd/user/$SERVICE"
 
@@ -25,6 +28,10 @@ go test ./...
 echo "==> Building $BINARY..."
 go build -o "$BINARY" ./cmd/budget-store
 echo "    built: $(ls -lh "$BINARY" | awk '{print $5}')"
+for name in "${COMMANDS[@]}"; do
+  go build -o "$name" "./cmd/$name"
+  echo "    built: $name"
+done
 
 # A set BUDGET_STORE_ variable that settings.go does not declare stops the new
 # binary at boot. Ask before the old one is stopped. The test prints a verdict,
@@ -48,6 +55,10 @@ sleep 1
 echo "==> Installing $BINARY to $BIN_DIR..."
 mkdir -p "$BIN_DIR"
 cp "$BINARY" "$BIN_DIR/$BINARY"
+for name in "${COMMANDS[@]}"; do
+  install -m 755 "$name" "$BIN_DIR/$name"
+  echo "    installed: $BIN_DIR/$name"
+done
 
 echo "==> Starting $SERVICE..."
 systemctl --user daemon-reload

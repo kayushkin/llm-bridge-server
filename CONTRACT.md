@@ -40,7 +40,7 @@ A prefix and a zero-padded sequence: `institution_000001`, `account_000001`,
 `account_description_marker_000001`, `category_000001`, `payee_000001`,
 `payee_match_rule_000001`, `import_batch_000001`, `import_row_000001`,
 `transaction_000001`, `posting_000001`, `balance_assertion_000001`,
-`budget_assignment_000001`, `link_000001`. The prefixes let kanban-store's
+`budget_assignment_000001`, `link_000001`, `category_suggestion_000001`. The prefixes let kanban-store's
 entity-type registry match each kind for chips: `budget_account`,
 `budget_transaction`, `budget_category`, `budget_payee` and
 `budget_import_batch` resolve through the matching `GET …/{id}`.
@@ -129,6 +129,26 @@ One amount per expense category per month (`PUT /budget-assignments
 
 Both report `uncategorized_cents`: spending neither view can count until it
 is sorted.
+
+## Category suggestions
+
+A model suggests; only the operator decides. `cmd/budget-suggest-categories`
+reads `GET /category-suggestions/candidates` (wholly Uncategorized
+transactions with no pending suggestion), offers every expense and income
+category by its path (`GET /category-paths`) plus "Needs the operator", and
+runs each batch as one `classification.run` operation on llm-bridge-server
+(role `best` by default) for a principal-store group. It records the answers
+with `POST /category-suggestions {operation_id, model, suggestions:
+[{transaction_id, category_id, confidence, rationale, needs_review}]}`; an
+empty `category_id` means a person must decide. It writes no category itself.
+
+| Route | Does |
+|---|---|
+| `GET /category-suggestions?status=` | with each transaction's date, description, amount and account; statuses in `GET /vocabulary` |
+| `POST /category-suggestions/decisions` | `{decisions: [{suggestion_id, action: accept\|reject, category_id}]}`. Accept writes the suggested category, or `category_id` when given (status `edited`), onto the transaction's Uncategorized posting. A transaction someone already sorted or split is left alone and its suggestion goes `stale`. Deciding one that is not pending is a 409. All or nothing |
+
+A newer suggestion for a transaction supersedes its pending one; a rejected
+one leaves the transaction a candidate again.
 
 ## Not yet served
 

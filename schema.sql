@@ -270,3 +270,24 @@ CREATE TABLE IF NOT EXISTS links (
   created_at   INTEGER NOT NULL,
   UNIQUE (from_id, entity_type, entity_ref)
 );
+
+-- A model's suggested category for one transaction, waiting for the
+-- operator. Accepting one writes the category onto the transaction; nothing
+-- else does. A newer suggestion for the same transaction supersedes an older
+-- pending one.
+CREATE TABLE IF NOT EXISTS category_suggestions (
+  seq                    INTEGER PRIMARY KEY,
+  id                     TEXT NOT NULL UNIQUE,   -- category_suggestion_000001
+  transaction_id         TEXT NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  category_id            TEXT REFERENCES categories(id), -- NULL: the model said a person must decide
+  confidence             REAL NOT NULL,          -- the model's own estimate, 0 to 1
+  rationale              TEXT NOT NULL DEFAULT '',
+  needs_review           INTEGER NOT NULL DEFAULT 0,
+  model                  TEXT NOT NULL,          -- what answered, from the operation receipt
+  operation_id           TEXT NOT NULL,          -- llm-bridge-server operation that produced it
+  status                 TEXT NOT NULL,          -- vocabulary.go: suggestionStatuses
+  decided_category_id    TEXT REFERENCES categories(id), -- what the operator chose, when they changed it
+  decided_at             INTEGER NOT NULL DEFAULT 0,
+  created_at             INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS category_suggestions_status ON category_suggestions(status, transaction_id);
