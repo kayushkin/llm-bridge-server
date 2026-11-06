@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -36,7 +37,22 @@ type sessionMsgState struct {
 	clientRequestID  string                          // caller's per-turn id from the latest user_message, "" between turns
 	turnID           string                          // bridge-minted per-turn id, "" between turns
 	turnPromptText   string                          // text of the prompt that opened the current turn, "" between turns; used to recognize Claude Code's OTel echo of that prompt
+	// unstartedPrompts are prompts sent into the session whose OTel echo has
+	// not arrived yet, oldest first, so an echo can find the client_request_id
+	// of the prompt Claude Code actually started. See AssignMessageID.
+	unstartedPrompts []unstartedPrompt
 }
+
+// unstartedPrompt is a prompt sent into a session that Claude Code has not yet
+// reported starting.
+type unstartedPrompt struct {
+	text            string
+	clientRequestID string
+}
+
+// unstartedPromptsKept bounds sessionMsgState.unstartedPrompts: a harness with
+// no OTel echo never removes its prompts by echo.
+const unstartedPromptsKept = 8
 
 // StoredEvent pairs an event with its database row ID, assigned at insert time.
 type StoredEvent struct {
@@ -314,7 +330,9 @@ func (m *Manager) loadMsgState(bridgeID string) *sessionMsgState {
 //     Claude Code's OTel echo of the prompt that opened the currently-open turn
 //     (source=otel + matching text), in which case it attaches to that turn
 //     instead of minting a second one (Bug 3). The echo is never dropped: in
-//     PTY mode the OTel copy is the only record of the user's input.
+//     PTY mode the OTel copy is the only record of the user's input. The turn
+//     a user_message opens carries the client_request_id turnClientRequestID
+//     picks for it.
 //   - assistant-side events (stream/thinking/tool_call/tool_result/plan/approval/result):
 //     reuse an existing bridge MessageID when the harness id has been seen
 //     before (resume case); split when the harness id changes mid-turn;
@@ -359,13 +377,14 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 			// Attach to the open turn: leave turn/bubble state untouched so
 			// the open assistant bubble isn't closed. ev.TurnID is stamped
 			// from st.turnID at the tail of this method.
+			st.takeUnstartedPrompt(userMessageText(ev))
 			break
 		}
-		st.bridgeMsgID = ""
-		st.harnessMsgID = ""
 		// Latch the caller's per-turn id so we can stamp it on downstream
 		// events coming back from the harness.
-		st.clientRequestID = ev.ClientRequestID
+		st.clientRequestID = turnClientRequestID(st, ev)
+		st.bridgeMsgID = ""
+		st.harnessMsgID = ""
 		// Open a new turn and remember its originating prompt so the OTel
 		// echo of it can be recognized above.
 		st.turnID = ids.NewTurnID()
@@ -404,6 +423,7 @@ func (m *Manager) AssignMessageID(bridgeID string, ev *msg.Event) {
 		if ev.TurnID == "" {
 			ev.TurnID = st.turnID
 		}
+		st.dropUnstartedPromptsOf(ev.ClientRequestID)
 		st.bridgeMsgID = ""
 		st.harnessMsgID = ""
 		st.clientRequestID = ""
@@ -451,6 +471,66 @@ func isOTelUserEcho(ev *msg.Event, openPrompt string) bool {
 		return false
 	}
 	return userMessageText(ev) == openPrompt
+}
+
+// turnClientRequestID picks the client_request_id of the turn a user_message
+// opens. A prompt sent into the session carries its own, and is kept until
+// its OTel echo arrives. An OTel user_message is what Claude Code actually
+// started, and arrives in the order Claude Code runs prompts, which need not
+// be the order they were sent:
+//   - the echo of a prompt sent earlier takes that prompt's id, even when a
+//     later send has opened a turn since (two sends in one moment);
+//   - a prompt Claude Code started by itself (a task notification) while a
+//     turn is open keeps the open turn's id, because Claude Code answers the
+//     open prompt in that same run, with one result.
+//
+// Without this, the turn's id was lost and a chat link never saw the end of
+// the turn it started, so the person's reply was never sent.
+func turnClientRequestID(st *sessionMsgState, ev *msg.Event) string {
+	if !isOTelSourced(ev) {
+		st.unstartedPrompts = append(st.unstartedPrompts, unstartedPrompt{text: userMessageText(ev), clientRequestID: ev.ClientRequestID})
+		if len(st.unstartedPrompts) > unstartedPromptsKept {
+			st.unstartedPrompts = st.unstartedPrompts[len(st.unstartedPrompts)-unstartedPromptsKept:]
+		}
+		return ev.ClientRequestID
+	}
+	if ev.ClientRequestID != "" {
+		return ev.ClientRequestID
+	}
+	if prompt, found := st.takeUnstartedPrompt(userMessageText(ev)); found {
+		return prompt.clientRequestID
+	}
+	if st.turnID != "" {
+		return st.clientRequestID
+	}
+	return ""
+}
+
+// takeUnstartedPrompt removes and returns the oldest unstarted prompt with
+// text; an empty text matches nothing.
+func (st *sessionMsgState) takeUnstartedPrompt(text string) (unstartedPrompt, bool) {
+	if text == "" {
+		return unstartedPrompt{}, false
+	}
+	for index, prompt := range st.unstartedPrompts {
+		if prompt.text == text {
+			st.unstartedPrompts = append(st.unstartedPrompts[:index:index], st.unstartedPrompts[index+1:]...)
+			return prompt, true
+		}
+	}
+	return unstartedPrompt{}, false
+}
+
+// dropUnstartedPromptsOf removes the unstarted prompts a turn with
+// clientRequestID has answered: Claude Code reports no echo of a prompt it
+// takes into a run already going.
+func (st *sessionMsgState) dropUnstartedPromptsOf(clientRequestID string) {
+	if clientRequestID == "" {
+		return
+	}
+	st.unstartedPrompts = slices.DeleteFunc(st.unstartedPrompts, func(prompt unstartedPrompt) bool {
+		return prompt.clientRequestID == clientRequestID
+	})
 }
 
 // isOTelSourced reports whether ev carries extensions.source=="otel", the tag

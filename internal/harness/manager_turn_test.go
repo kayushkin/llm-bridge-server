@@ -211,3 +211,110 @@ func TestManager_TheResultCarriesTheClientRequestIDOfItsTurn(t *testing.T) {
 		t.Fatalf("the operator's turn carried %q", next.ClientRequestID)
 	}
 }
+
+// otelUserMessage is Claude Code's OTel report of a prompt it started.
+func otelUserMessage(bridgeID, text string) *msg.Event {
+	return &msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID,
+		Extensions: map[string]json.RawMessage{"source": json.RawMessage(`"otel"`)},
+		Result:     &msg.ResultEvent{Text: text}}
+}
+
+func seedClaudeCodeSession(t *testing.T, m *Manager, bridgeID string) {
+	t.Helper()
+	if err := m.store.CreateSession(&store.Session{SessionID: bridgeID, Harness: msg.HarnessClaudeCode, State: string(msg.SessionIdle)}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+}
+
+func resultOf(t *testing.T, m *Manager, bridgeID string) *msg.Event {
+	t.Helper()
+	result := &msg.Event{Type: msg.EventResult, BridgeSessionID: bridgeID, Result: &msg.ResultEvent{Text: "reply"}}
+	m.AssignMessageID(bridgeID, result)
+	return result
+}
+
+// TestManager_ATaskNotificationStartedMidTurnKeepsTheOpenTurnsRequestID is
+// what happened on 2026-11-05 at 05:33:59Z: a chat link sent a person's
+// message, and in the same second Claude Code started a run for a background
+// agent's task notification and took the person's message into it. Its OTel
+// report is of the notification, not of the sent prompt. The one result of
+// that run answered the person, so it must carry the delivery's id; it used to
+// carry none, and the reply was never sent.
+func TestManager_ATaskNotificationStartedMidTurnKeepsTheOpenTurnsRequestID(t *testing.T) {
+	m := newTestManager(t)
+	const bridgeID = "br-task-notification-mid-turn"
+	seedClaudeCodeSession(t, m, bridgeID)
+
+	sent := &msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, ClientRequestID: "chat-link-delivery:a", Result: &msg.ResultEvent{Text: "from a person"}}
+	m.AssignMessageID(bridgeID, sent)
+	notification := otelUserMessage(bridgeID, "<task-notification>agent finished</task-notification>")
+	m.AssignMessageID(bridgeID, notification)
+	if notification.TurnID == sent.TurnID {
+		t.Fatalf("a distinct OTel prompt joined the open turn id %q", sent.TurnID)
+	}
+	if result := resultOf(t, m, bridgeID); result.ClientRequestID != "chat-link-delivery:a" {
+		t.Fatalf("result client_request_id = %q, want the delivery's", result.ClientRequestID)
+	}
+
+	// The prompt was answered, so it is no longer waiting for an echo: a
+	// later run Claude Code starts by itself carries no id.
+	m.AssignMessageID(bridgeID, otelUserMessage(bridgeID, "from a person"))
+	if result := resultOf(t, m, bridgeID); result.ClientRequestID != "" {
+		t.Fatalf("a late echo of an answered prompt carried %q", result.ClientRequestID)
+	}
+}
+
+// TestManager_TwoPromptsSentAtOnceEachKeepTheirRequestID is what happened on
+// 2026-11-05 at 06:07:32Z: a chat link's failure report and its next delivery
+// went into the session 11 ms apart. Claude Code ran them one after the
+// other, and reported each by OTel as it started it. The report's result must
+// carry the report's id and the delivery's result the delivery's; both used
+// to carry none.
+func TestManager_TwoPromptsSentAtOnceEachKeepTheirRequestID(t *testing.T) {
+	m := newTestManager(t)
+	const bridgeID = "br-two-prompts-at-once"
+	seedClaudeCodeSession(t, m, bridgeID)
+
+	m.AssignMessageID(bridgeID, &msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, ClientRequestID: "chat-link-report:r", Result: &msg.ResultEvent{Text: "a report"}})
+	m.AssignMessageID(bridgeID, &msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, ClientRequestID: "chat-link-delivery:d", Result: &msg.ResultEvent{Text: "from a person"}})
+
+	m.AssignMessageID(bridgeID, otelUserMessage(bridgeID, "a report"))
+	if result := resultOf(t, m, bridgeID); result.ClientRequestID != "chat-link-report:r" {
+		t.Fatalf("the report's result carried %q", result.ClientRequestID)
+	}
+	m.AssignMessageID(bridgeID, otelUserMessage(bridgeID, "from a person"))
+	if result := resultOf(t, m, bridgeID); result.ClientRequestID != "chat-link-delivery:d" {
+		t.Fatalf("the delivery's result carried %q", result.ClientRequestID)
+	}
+}
+
+// TestManager_ARunClaudeCodeStartsWhileIdleCarriesNoRequestID: a task
+// notification with no turn open is Claude Code's own run, and its reply must
+// never go to a chat link.
+func TestManager_ARunClaudeCodeStartsWhileIdleCarriesNoRequestID(t *testing.T) {
+	m := newTestManager(t)
+	const bridgeID = "br-own-run"
+	seedClaudeCodeSession(t, m, bridgeID)
+
+	m.AssignMessageID(bridgeID, &msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, ClientRequestID: "chat-link-delivery:a", Result: &msg.ResultEvent{Text: "from a person"}})
+	m.AssignMessageID(bridgeID, otelUserMessage(bridgeID, "from a person"))
+	resultOf(t, m, bridgeID)
+	m.AssignMessageID(bridgeID, otelUserMessage(bridgeID, "<task-notification>agent finished</task-notification>"))
+	if result := resultOf(t, m, bridgeID); result.ClientRequestID != "" {
+		t.Fatalf("Claude Code's own run carried %q", result.ClientRequestID)
+	}
+}
+
+// TestManager_UnstartedPromptsAreBounded: a harness with no OTel echo never
+// takes its prompts back by echo, so the list must not grow without end.
+func TestManager_UnstartedPromptsAreBounded(t *testing.T) {
+	m := newTestManager(t)
+	const bridgeID = "br-no-echo"
+	seedClaudeCodeSession(t, m, bridgeID)
+	for range 3 * unstartedPromptsKept {
+		m.AssignMessageID(bridgeID, &msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeID, Result: &msg.ResultEvent{Text: "no id"}})
+	}
+	if kept := len(m.msgState[bridgeID].unstartedPrompts); kept != unstartedPromptsKept {
+		t.Fatalf("kept %d unstarted prompts, want %d", kept, unstartedPromptsKept)
+	}
+}
