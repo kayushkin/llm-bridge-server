@@ -163,8 +163,12 @@ func (s *Store) applyClassification(ctx context.Context, possessionID string, pr
 		if err != nil {
 			return "", "", err
 		}
-		question := fmt.Sprintf("%s has no kind yet. %s thinks it is %s (%s). Is it?", existing["name"], model, proposal.summary(), reason)
-		choices := []Choice{{Label: "Yes: " + proposal.summary(), Resolution: Resolution{Action: "amend", Proposal: &proposal}}, {Label: "Leave it without a kind", Resolution: Resolution{Action: "keep"}}}
+		// The proposal carries no name, so an answer never renames; the
+		// words shown take the possession's own.
+		shown := proposal
+		shown.Name = existing["name"].(string)
+		question := fmt.Sprintf("%s has no kind yet. %s thinks it is %s (%s). Is it?", existing["name"], model, shown.summary(), reason)
+		choices := []Choice{{Label: "Yes: " + shown.summary(), Resolution: Resolution{Action: "amend", Proposal: &proposal}}, {Label: "Leave it without a kind", Resolution: Resolution{Action: "keep"}}}
 		if err := insertQuestion(transaction, sightingID, question, choices, "detail", s.unixNow()); err != nil {
 			return "", "", err
 		}

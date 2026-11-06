@@ -673,8 +673,8 @@ func TestClassifyingGivesKindsWhenSureAndAsksWhenNot(t *testing.T) {
 		t.Fatalf("sofa = %v", sofa)
 	}
 	questions, _ := store.ListQuestions(false, "", "detail", 0, 0)
-	if len(questions) != 1 {
-		t.Fatalf("detail questions = %d", len(questions))
+	if len(questions) != 1 || !strings.HasPrefix(questions[0].Choices[0].Label, "Yes: blue vase · art_and_decor") {
+		t.Fatalf("detail questions = %+v", questions)
 	}
 	yes := 0
 	if _, err := reviewer.AnswerQuestion(ctx, questions[0].ID, Answer{Choice: &yes, AnsweredBy: "principal_000001"}); err != nil {
