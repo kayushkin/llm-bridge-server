@@ -202,6 +202,8 @@ func (models *scriptedModels) Ask(ctx context.Context, role, systemPrompt, promp
 		step = "interpret"
 	case strings.Contains(prompt, "Write the item as it should now read"):
 		step = "detail"
+	case strings.Contains(prompt, "have no kind yet"):
+		step = "classify"
 	}
 	answer, known := models.answers[role+" "+step]
 	if !known {
@@ -613,5 +615,73 @@ func TestAMergeMovesPhotosKindAndLinksOntoTheKeptPossession(t *testing.T) {
 	laptop, _ := store.CreatePossession(ctx, fields(t, `{"name":"laptop","computer":{"form_factor":"laptop"}}`), "principal_000001")
 	if _, err := store.MergePossession(ctx, laptop["id"].(string), keptID, "principal_000001"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("merging a computer into an audio device = %v, want a conflict", err)
+	}
+}
+
+func TestEveryKindCanBeMade(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	for _, kind := range KindTypes {
+		required := ""
+		for _, column := range kind.Columns {
+			if column.Required {
+				required = fmt.Sprintf(`"%s":%q`, column.Name, column.Vocabulary[0])
+			}
+		}
+		made, err := store.CreatePossession(ctx, fields(t, `{"name":"x","room":"office","`+kind.Name+`":{`+required+`}}`), "principal_000001")
+		if err != nil {
+			t.Fatalf("%s: %v", kind.Name, err)
+		}
+		if made["kind"] != kind.Name || made["room"] != "office" {
+			t.Fatalf("%s made as %v", kind.Name, made["kind"])
+		}
+	}
+}
+
+func TestClassifyingGivesKindsWhenSureAndAsksWhenNot(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	box := Box{0.2, 0.2, 0.6, 0.6}
+	scripted := &scriptedModels{answers: map[string]any{
+		"first 1":  firstReading{Items: []readerItem{item("sofa", "yellow sofa", "", "none", box), item("vase", "blue vase", "", "none", Box{0.7, 0.7, 0.9, 0.9})}},
+		"second 1": firstReading{Items: []readerItem{item("sofa", "yellow sofa", "", "none", box), item("vase", "blue vase", "", "none", Box{0.7, 0.7, 0.9, 0.9})}},
+		"first 2": finalReading{Items: []finalItem{{readerItem: item("sofa", "yellow sofa", "", "none", box), FromReadings: []string{"A1", "B1"}},
+			{readerItem: item("vase", "blue vase", "", "none", Box{0.7, 0.7, 0.9, 0.9}), FromReadings: []string{"A2", "B2"}}}},
+		"second 2": finalReading{Items: []finalItem{{readerItem: item("sofa", "yellow sofa", "", "none", box), FromReadings: []string{"A1", "B1"}},
+			{readerItem: item("vase", "blue vase", "", "none", Box{0.7, 0.7, 0.9, 0.9}), FromReadings: []string{"A2", "B2"}}}},
+	}}
+	reviewer := &Reviewer{Store: store, Models: scripted, Photos: fakePhotos{}, FirstReaderRole: "first", SecondReaderRole: "second"}
+	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001")
+	if err := reviewer.Review(ctx, review.ID); err != nil {
+		t.Fatal(err)
+	}
+	loose, _ := store.CreatePossession(ctx, fields(t, `{"name":"black box"}`), "principal_000001")
+	scripted.answers["first classify"] = map[string]any{"items": []map[string]any{
+		{"possession_id": "possession_000001", "kind": "furniture", "kind_fields": []fieldValue{{Name: "furniture_type", Value: "sofa"}, {Name: "primary_color", Value: "yellow"}}, "room": "living_room", "sure": true, "reason": "a sofa"},
+		{"possession_id": "possession_000002", "kind": "art_and_decor", "kind_fields": []fieldValue{{Name: "decor_type", Value: "vase"}}, "room": "", "sure": false, "reason": "a vase or a lamp base"},
+		{"possession_id": loose["id"].(string), "kind": "none", "kind_fields": []fieldValue{}, "room": "", "sure": false, "reason": "cannot tell"},
+	}}
+	run, err := reviewer.ClassifyKindless(ctx, "principal_000001", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Classified) != 1 || len(run.Asked) != 1 || len(run.Left) != 1 {
+		t.Fatalf("run = %+v", run)
+	}
+	sofa, _ := store.GetPossession("possession_000001", false)
+	if sofa["kind"] != "furniture" || sofa["room"] != "living_room" || sofa["name"] != "yellow sofa" {
+		t.Fatalf("sofa = %v", sofa)
+	}
+	questions, _ := store.ListQuestions(false, "", "detail", 0, 0)
+	if len(questions) != 1 {
+		t.Fatalf("detail questions = %d", len(questions))
+	}
+	yes := 0
+	if _, err := reviewer.AnswerQuestion(ctx, questions[0].ID, Answer{Choice: &yes, AnsweredBy: "principal_000001"}); err != nil {
+		t.Fatal(err)
+	}
+	vase, _ := store.GetPossession("possession_000002", false)
+	if vase["kind"] != "art_and_decor" || vase["quantity"] != int64(1) || vase["name"] != "blue vase" {
+		t.Fatalf("vase after yes = %v", vase)
 	}
 }

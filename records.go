@@ -31,6 +31,7 @@ const (
 	ReferenceMusicInstrument ReferenceKind = "music_instrument"
 	ReferenceComputer        ReferenceKind = "computer"      // this store's computers
 	ReferencePurchaseLine    ReferenceKind = "purchase_line" // this store's purchase_lines
+	ReferencePossession      ReferenceKind = "possession"    // this store's possessions
 )
 
 // Column is one field a client may write.
@@ -66,6 +67,7 @@ var possessionType = RecordType{Name: "possession", Table: "possessions", Prefix
 	{Name: "condition", Type: ColumnText, Vocabulary: Conditions},
 	{Name: "status", Type: ColumnText, Vocabulary: PossessionStatuses},
 	{Name: "place_id", Type: ColumnText, Nullable: true, References: ReferencePlace},
+	{Name: "room", Type: ColumnText, Vocabulary: Rooms},
 	{Name: "spot", Type: ColumnText},
 	{Name: "acquired_at", Type: ColumnInteger, Minimum: bound(0)},
 	{Name: "acquired_how", Type: ColumnText, Vocabulary: AcquisitionMethods},
@@ -124,6 +126,78 @@ var KindTypes = []RecordType{
 		{Name: "vehicle_identification_number", Type: ColumnText},
 		{Name: "license_plate", Type: ColumnText},
 		{Name: "registration_state", Type: ColumnText},
+	}},
+	{Name: "furniture", Table: "furniture", Prefix: "furniture", Route: "furniture", Columns: []Column{
+		{Name: "furniture_type", Type: ColumnText, Required: true, Vocabulary: FurnitureTypes},
+		{Name: "materials", Type: ColumnStringList},
+		{Name: "primary_color", Type: ColumnText, Vocabulary: Colors},
+	}},
+	{Name: "fitness_equipment", Table: "fitness_equipment", Prefix: "fitness_equipment", Route: "fitness-equipment", Columns: []Column{
+		{Name: "equipment_type", Type: ColumnText, Required: true, Vocabulary: FitnessEquipmentTypes},
+		{Name: "weight_pounds", Type: ColumnReal, Nullable: true},
+	}},
+	{Name: "sports_gear", Table: "sports_gear", Prefix: "sports_gear", Route: "sports-gear", Columns: []Column{
+		{Name: "sport", Type: ColumnText, Required: true, Vocabulary: Sports},
+		{Name: "gear_type", Type: ColumnText},
+		{Name: "size_label", Type: ColumnText},
+	}},
+	{Name: "tabletop_game", Table: "tabletop_games", Prefix: "tabletop_game", Route: "tabletop-games", Columns: []Column{
+		{Name: "game_type", Type: ColumnText, Required: true, Vocabulary: TabletopGameTypes},
+		{Name: "title", Type: ColumnText},
+		{Name: "publisher", Type: ColumnText},
+		{Name: "minimum_players", Type: ColumnInteger, Nullable: true, Minimum: bound(1)},
+		{Name: "maximum_players", Type: ColumnInteger, Nullable: true, Minimum: bound(1)},
+		{Name: "piece_count", Type: ColumnInteger, Nullable: true, Minimum: bound(1)},
+	}},
+	{Name: "media", Table: "media", Prefix: "media", Route: "media", Columns: []Column{
+		{Name: "media_type", Type: ColumnText, Required: true, Vocabulary: MediaTypes},
+		{Name: "title", Type: ColumnText},
+		{Name: "creator", Type: ColumnText},
+		{Name: "platform_or_format", Type: ColumnText},
+		{Name: "edition", Type: ColumnText},
+	}},
+	{Name: "collectible", Table: "collectibles", Prefix: "collectible", Route: "collectibles", Columns: []Column{
+		{Name: "collectible_type", Type: ColumnText, Required: true, Vocabulary: CollectibleTypes},
+		{Name: "franchise", Type: ColumnText},
+		{Name: "character", Type: ColumnText},
+		{Name: "grade", Type: ColumnText},
+	}},
+	{Name: "art_and_decor", Table: "art_and_decor", Prefix: "art_and_decor", Route: "art-and-decor", Columns: []Column{
+		{Name: "decor_type", Type: ColumnText, Required: true, Vocabulary: DecorTypes},
+		{Name: "subject", Type: ColumnText},
+		{Name: "artist", Type: ColumnText},
+		{Name: "framed", Type: ColumnInteger, Nullable: true, Minimum: bound(0), Maximum: bound(1)},
+		{Name: "width_inches", Type: ColumnReal, Nullable: true},
+		{Name: "height_inches", Type: ColumnReal, Nullable: true},
+	}},
+	{Name: "home_textile", Table: "home_textiles", Prefix: "home_textile", Route: "home-textiles", Columns: []Column{
+		{Name: "textile_type", Type: ColumnText, Required: true, Vocabulary: HomeTextileTypes},
+		{Name: "primary_color", Type: ColumnText, Vocabulary: Colors},
+		{Name: "materials", Type: ColumnStringList},
+	}},
+	{Name: "appliance", Table: "appliances", Prefix: "appliance", Route: "appliances", Columns: []Column{
+		{Name: "appliance_type", Type: ColumnText, Required: true, Vocabulary: ApplianceTypes},
+		{Name: "power_watts", Type: ColumnInteger, Nullable: true, Minimum: bound(0)},
+	}},
+	{Name: "personal_care", Table: "personal_care", Prefix: "personal_care", Route: "personal-care", Columns: []Column{
+		{Name: "care_type", Type: ColumnText, Required: true, Vocabulary: PersonalCareTypes},
+		{Name: "powered", Type: ColumnInteger, Nullable: true, Minimum: bound(0), Maximum: bound(1)},
+	}},
+	{Name: "bag_or_case", Table: "bags_and_cases", Prefix: "bag_or_case", Route: "bags-and-cases", Columns: []Column{
+		{Name: "bag_type", Type: ColumnText, Required: true, Vocabulary: BagTypes},
+		{Name: "holds", Type: ColumnText},
+		{Name: "holds_possession_id", Type: ColumnText, Nullable: true, References: ReferencePossession},
+	}},
+	{Name: "electronic_accessory", Table: "electronic_accessories", Prefix: "electronic_accessory", Route: "electronic-accessories", Columns: []Column{
+		{Name: "accessory_type", Type: ColumnText, Required: true, Vocabulary: ElectronicAccessoryTypes},
+		{Name: "connections", Type: ColumnStringList},
+	}},
+	{Name: "household_tool", Table: "household_tools", Prefix: "household_tool", Route: "household-tools", Columns: []Column{
+		{Name: "tool_type", Type: ColumnText, Required: true, Vocabulary: HouseholdToolTypes},
+	}},
+	{Name: "music_accessory", Table: "music_accessories", Prefix: "music_accessory", Route: "music-accessories", Columns: []Column{
+		{Name: "accessory_type", Type: ColumnText, Required: true, Vocabulary: MusicAccessoryTypes},
+		{Name: "instrument_possession_id", Type: ColumnText, Nullable: true, References: ReferencePossession},
 	}},
 }
 

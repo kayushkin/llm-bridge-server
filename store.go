@@ -101,6 +101,8 @@ var addedColumns = []struct{ table, column, definition string }{
 	// The possession a duplicate was merged into; NULL for one never merged.
 	// A merged possession is also deleted.
 	{"possessions", "merged_into_id", "TEXT REFERENCES possessions(id)"},
+	// Which room of the home it is in; spot says where in the room.
+	{"possessions", "room", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func addColumns(db *sql.DB) error {
@@ -234,6 +236,8 @@ func (s *Store) checkReference(ctx context.Context, transaction *sql.Tx, kind Re
 		return requireRow(transaction, "computers", id)
 	case ReferencePurchaseLine:
 		return requireRow(transaction, "purchase_lines", id)
+	case ReferencePossession:
+		return requireLivePossession(transaction, id)
 	case ReferenceMusicInstrument:
 		return nil
 	}

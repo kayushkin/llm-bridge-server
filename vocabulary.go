@@ -15,10 +15,26 @@ var Fits = []string{"slim", "regular", "relaxed", "oversized"}
 var SizeSystems = []string{"letter", "numeric", "waist_inseam_inches", "neck_sleeve_inches", "us_shoe_men", "us_shoe_women", "eu_shoe", "one_size"}
 var Seasons = []string{"spring", "summer", "fall", "winter"}
 
-var ComputerFormFactors = []string{"desktop", "laptop", "server", "phone", "tablet", "smartwatch", "single_board", "console"}
+var ComputerFormFactors = []string{"desktop", "laptop", "server", "phone", "tablet", "smartwatch", "single_board", "console", "vr_headset"}
 var ComputerPartTypes = []string{"storage_drive", "graphics_card", "memory_module", "processor", "motherboard", "power_supply", "monitor", "keyboard", "mouse", "webcam", "dock", "network_device", "external_enclosure", "other"}
 var AudioDeviceTypes = []string{"headphones", "earbuds", "speakers", "amplifier", "audio_interface", "microphone", "mixer", "effects_pedal", "converter", "turntable", "cable", "other"}
 var VehicleTypes = []string{"car", "truck", "motorcycle", "bicycle", "scooter", "other"}
+
+var Rooms = []string{"bedroom", "living_room", "office", "kitchen", "dining_room", "bathroom", "hallway", "entryway", "closet", "laundry", "garage", "storage", "outdoors", "other"}
+var FurnitureTypes = []string{"bed", "desk", "chair", "office_chair", "sofa", "armchair", "table", "side_table", "coffee_table", "dining_table", "bookcase", "shelving", "cabinet", "dresser", "nightstand", "wardrobe", "stool", "footstool", "bench", "other"}
+var FitnessEquipmentTypes = []string{"weight_plate", "barbell", "curl_bar", "dumbbell", "kettlebell", "power_rack", "weight_bench", "exercise_mat", "resistance_band", "other"}
+var Sports = []string{"skiing", "snowboarding", "ice_skating", "disc_golf", "cycling", "climbing", "hiking", "camping", "swimming", "running", "ball_sports", "other"}
+var TabletopGameTypes = []string{"board_game", "card_game", "jigsaw_puzzle", "dice", "puzzle_toy", "other"}
+var MediaTypes = []string{"book", "magazine", "comic", "vinyl_record", "compact_disc", "video_game", "film", "sheet_music", "other"}
+var CollectibleTypes = []string{"figure", "plush", "replica", "medal", "trading_card", "graded_game", "pin", "other"}
+var DecorTypes = []string{"framed_art", "poster", "painting", "print", "vase", "sign", "plant", "lamp", "mirror", "sculpture", "tray", "clock", "other"}
+var HomeTextileTypes = []string{"blanket", "throw", "pillow", "cushion", "comforter", "sheet", "towel", "curtain", "rug", "mat", "other"}
+var ApplianceTypes = []string{"refrigerator", "freezer", "air_conditioner", "fan", "heater", "microwave", "oven", "dishwasher", "washer", "dryer", "vacuum", "humidifier", "air_purifier", "coffee_maker", "other"}
+var PersonalCareTypes = []string{"toothbrush", "water_flosser", "trimmer", "shaver", "hair_dryer", "comb", "brush", "nail_clipper", "contact_lens_case", "thermometer", "other"}
+var BagTypes = []string{"backpack", "tote", "duffel", "sports_bag", "carrying_case", "instrument_case", "laptop_bag", "suitcase", "pouch", "other"}
+var ElectronicAccessoryTypes = []string{"cable", "power_strip", "adapter", "charger", "stand", "mount", "arm", "hub", "battery", "other"}
+var HouseholdToolTypes = []string{"hand_tool", "power_tool", "cleaning", "laundry", "storage", "kitchen", "garden", "other"}
+var MusicAccessoryTypes = []string{"stand", "bench", "throne", "pedal", "strap", "capo", "tuner", "metronome", "music_books", "other"}
 
 var OutfitStatuses = []string{"suggested", "kept", "rejected"}
 
@@ -50,6 +66,21 @@ func Vocabulary() map[string][]string {
 		"computer_part_types":        ComputerPartTypes,
 		"audio_device_types":         AudioDeviceTypes,
 		"vehicle_types":              VehicleTypes,
+		"rooms":                      Rooms,
+		"furniture_types":            FurnitureTypes,
+		"fitness_equipment_types":    FitnessEquipmentTypes,
+		"sports":                     Sports,
+		"tabletop_game_types":        TabletopGameTypes,
+		"media_types":                MediaTypes,
+		"collectible_types":          CollectibleTypes,
+		"decor_types":                DecorTypes,
+		"home_textile_types":         HomeTextileTypes,
+		"appliance_types":            ApplianceTypes,
+		"personal_care_types":        PersonalCareTypes,
+		"bag_types":                  BagTypes,
+		"electronic_accessory_types": ElectronicAccessoryTypes,
+		"household_tool_types":       HouseholdToolTypes,
+		"music_accessory_types":      MusicAccessoryTypes,
 		"outfit_statuses":            OutfitStatuses,
 		"marketplaces":               Marketplaces,
 		"purchase_sources":           PurchaseSources,

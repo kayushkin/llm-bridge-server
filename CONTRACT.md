@@ -40,6 +40,20 @@ a chat draws an id as a chip.
 | audio device | `audio_device_…` | `/audio-devices/{id}` |
 | musical instrument | `musical_instrument_…` | `/musical-instruments/{id}` |
 | vehicle | `vehicle_…` | `/vehicles/{id}` |
+| furniture | `furniture_…` | `/furniture/{id}` |
+| fitness equipment | `fitness_equipment_…` | `/fitness-equipment/{id}` |
+| sports gear | `sports_gear_…` | `/sports-gear/{id}` |
+| tabletop game | `tabletop_game_…` | `/tabletop-games/{id}` |
+| media | `media_…` | `/media/{id}` |
+| collectible | `collectible_…` | `/collectibles/{id}` |
+| art and decor | `art_and_decor_…` | `/art-and-decor/{id}` |
+| home textile | `home_textile_…` | `/home-textiles/{id}` |
+| appliance | `appliance_…` | `/appliances/{id}` |
+| personal care | `personal_care_…` | `/personal-care/{id}` |
+| bag or case | `bag_or_case_…` | `/bags-and-cases/{id}` |
+| electronic accessory | `electronic_accessory_…` | `/electronic-accessories/{id}` |
+| household tool | `household_tool_…` | `/household-tools/{id}` |
+| music accessory | `music_accessory_…` | `/music-accessories/{id}` |
 | outfit | `outfit_…` | `/outfits/{id}` |
 | purchase | `possession_purchase_…` | `/purchases/{id}` |
 | purchase line | `purchase_line_…` | inside its purchase |
@@ -57,7 +71,7 @@ copies the whole row to `revisions`.
 ### Possession, as every read answers it
 
 ```json
-{"id":"possession_000001","name":"black hoodie","brand":"Carhartt","model":"","serial_number":"",
+{"id":"possession_000001","name":"black hoodie","room":"bedroom","brand":"Carhartt","model":"","serial_number":"",
  "description":"","quantity":1,"condition":"","status":"owned","place_id":null,"spot":"bedroom closet",
  "acquired_at":0,"acquired_how":"","purchase_line_id":null,"price_cents":null,"price_currency":"",
  "disposed_at":0,"tags":[],"created_by":"principal_000001","created_at":…,"updated_at":…,"deleted_at":0,"merged_into_id":null,
@@ -88,9 +102,10 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` | `/possessions/{id}/revisions` | newest first, each the whole row as it was |
 | `GET` | `/possessions/{id}/image` | JPEG: the possession cut from its cover photo's thumbnail by its box, with a margin; the whole thumbnail when the photo has no box. **404** with no photo |
 | `POST` | `/possessions/{id}/photos` | `{photo_id, box_left, box_top, box_right, box_bottom, is_cover, linked_by}`: box sides are fractions 0–1, all four or none. The first photo is the cover until another is chosen. Linking again changes the box or cover |
+| `POST` | `/possessions/classify-kindless` | `{actor, batch_size}` (1–20): the first reader looks at every live possession with no kind, batch_size at a time with their pictures. A sure answer gives it the kind and its fields (and a room when it has none); an unsure one raises a detail question on its sighting whose first choice gives it that kind. Answers `{looked, classified, asked, left:[{possession_id, why}], cost_usd}`. Runs until done, so call it with a long timeout |
 | `POST` | `/possessions/{id}/merge` | `{into, actor}`: folds a duplicate into the possession it duplicates. The kept one takes its photos, sightings, kind (when it has none), and every field it leaves blank; outfits, installed parts, odometer readings and a harness machine move to the kept kind record. The duplicate is deleted with `merged_into_id` set. Different kinds are a **409** |
 | `DELETE` | `/possessions/{id}/photos/{photo_id}` | the photo stays in photo-store; the earliest left becomes cover |
-| `GET` | `/garments`, `/computers`, `/computer-parts`, `/audio-devices`, `/musical-instruments`, `/vehicles` | possessions of that kind, with the same query as `/possessions` |
+| `GET` | each kind's route above, without an id | possessions of that kind, with the same query as `/possessions` |
 | `GET` | `/<kind route>/{id}` and `…/{id}/image` | the possession the kind record extends |
 | `GET` | `/harness-machines/{machine_id}/computer` | the computer tied to a harness-store machine (`m_…`) |
 | `POST` | `/vehicles/{id}/odometer-readings` | `{read_at, miles, source}` |

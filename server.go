@@ -33,6 +33,17 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /possessions/{id}/revisions", server.revisions)
 	mux.HandleFunc("GET /possessions/{id}/image", server.possessionImage)
 	mux.HandleFunc("POST /possessions/{id}/photos", server.linkPhoto)
+	mux.HandleFunc("POST /possessions/classify-kindless", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Actor     string `json:"actor"`
+			BatchSize int    `json:"batch_size"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		run, err := server.Reviewer.ClassifyKindless(r.Context(), body.Actor, body.BatchSize)
+		respond(w, http.StatusOK, run, err)
+	})
 	mux.HandleFunc("POST /possessions/{id}/merge", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Into  string `json:"into"`

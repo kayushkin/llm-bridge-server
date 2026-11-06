@@ -4,9 +4,9 @@
 
 An inventory of the things the operator owns, on `127.0.0.1:8341` with no auth: dash is the front door. `CONTRACT.md` is the route table and the source of truth for every shape.
 
-It owns possessions and their kinds (garments, computers, computer parts, audio devices, musical instruments, vehicles: a table each, with its own id prefix), outfits, purchases and their lines, and the photo review (reviews, model readings, sightings, owner questions). It does not own photos (photo-store), places (location-store), machines (harness-store) or what kind of instrument something is (music-practice-store): it stores their ids and checks each one against the owning store before writing it. Net worth is not here yet; it waits on budget-store.
+It owns possessions and their kinds (twenty: garments, computers, computer parts, audio devices, musical instruments, vehicles, furniture, fitness equipment, sports gear, tabletop games, media, collectibles, art and decor, home textiles, appliances, personal care, bags and cases, electronic accessories, household tools, music accessories — a table each, with its own id prefix; `KindTypes` in `records.go` is the list), outfits, purchases and their lines, and the photo review (reviews, model readings, sightings, owner questions). It does not own photos (photo-store), places (location-store), machines (harness-store) or what kind of instrument something is (music-practice-store): it stores their ids and checks each one against the owning store before writing it. Net worth is not here yet; it waits on budget-store.
 
-A new kind is a new table and a new entry in `KindTypes` (`records.go`), never a column holding the kind's name. Add one when enough possessions share facts worth searching on; until then a possession with no kind is complete.
+A new kind is a new table and a new entry in `KindTypes` (`records.go`), never a column holding the kind's name. Add one when enough possessions share facts worth searching on; until then a possession with no kind is complete. The fourteen after vehicles came on 2026-11-06, when the first 52 photos left 223 of 288 possessions with no kind; `POST /possessions/classify-kindless` sorted the ones already recorded. A room (`Rooms`) is on the possession itself, never on a kind.
 
 # How it works
 

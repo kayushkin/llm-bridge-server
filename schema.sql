@@ -156,6 +156,137 @@ CREATE TABLE IF NOT EXISTS vehicle_odometer_readings (
     PRIMARY KEY (vehicle_id, read_at)
 );
 
+-- Kinds added 2026-11-06, when the first photo reviews left most things
+-- with no kind. Vocabularies are in vocabulary.go.
+
+CREATE TABLE IF NOT EXISTS furniture (
+    id TEXT PRIMARY KEY,                    -- furniture_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    furniture_type TEXT NOT NULL,
+    materials TEXT NOT NULL DEFAULT '[]',
+    primary_color TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS fitness_equipment (
+    id TEXT PRIMARY KEY,                    -- fitness_equipment_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    equipment_type TEXT NOT NULL,
+    weight_pounds REAL
+);
+
+CREATE TABLE IF NOT EXISTS sports_gear (
+    id TEXT PRIMARY KEY,                    -- sports_gear_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    sport TEXT NOT NULL,
+    gear_type TEXT NOT NULL DEFAULT '',
+    size_label TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS tabletop_games (
+    id TEXT PRIMARY KEY,                    -- tabletop_game_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    game_type TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    publisher TEXT NOT NULL DEFAULT '',
+    minimum_players INTEGER,
+    maximum_players INTEGER,
+    piece_count INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS media (
+    id TEXT PRIMARY KEY,                    -- media_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    media_type TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    creator TEXT NOT NULL DEFAULT '',
+    platform_or_format TEXT NOT NULL DEFAULT '',
+    edition TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS collectibles (
+    id TEXT PRIMARY KEY,                    -- collectible_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    collectible_type TEXT NOT NULL,
+    franchise TEXT NOT NULL DEFAULT '',
+    character TEXT NOT NULL DEFAULT '',
+    grade TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS art_and_decor (
+    id TEXT PRIMARY KEY,                    -- art_and_decor_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    decor_type TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    artist TEXT NOT NULL DEFAULT '',
+    framed INTEGER,
+    width_inches REAL,
+    height_inches REAL
+);
+
+CREATE TABLE IF NOT EXISTS home_textiles (
+    id TEXT PRIMARY KEY,                    -- home_textile_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    textile_type TEXT NOT NULL,
+    primary_color TEXT NOT NULL DEFAULT '',
+    materials TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS appliances (
+    id TEXT PRIMARY KEY,                    -- appliance_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    appliance_type TEXT NOT NULL,
+    power_watts INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS personal_care (
+    id TEXT PRIMARY KEY,                    -- personal_care_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    care_type TEXT NOT NULL,
+    powered INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS bags_and_cases (
+    id TEXT PRIMARY KEY,                    -- bag_or_case_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    bag_type TEXT NOT NULL,
+    holds TEXT NOT NULL DEFAULT '',
+    holds_possession_id TEXT REFERENCES possessions(id)
+);
+
+CREATE TABLE IF NOT EXISTS electronic_accessories (
+    id TEXT PRIMARY KEY,                    -- electronic_accessory_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    accessory_type TEXT NOT NULL,
+    connections TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS household_tools (
+    id TEXT PRIMARY KEY,                    -- household_tool_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    tool_type TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS music_accessories (
+    id TEXT PRIMARY KEY,                    -- music_accessory_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    accessory_type TEXT NOT NULL,
+    instrument_possession_id TEXT REFERENCES possessions(id)
+);
+
 -- ---------------------------------------------------------------------------
 -- Outfits.
 -- ---------------------------------------------------------------------------

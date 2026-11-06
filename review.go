@@ -72,6 +72,7 @@ type readerItem struct {
 	Kind        string       `json:"kind"`
 	KindFields  []fieldValue `json:"kind_fields"`
 	VisibleText string       `json:"visible_text"`
+	Room        string       `json:"room"`
 	Confidence  float64      `json:"confidence"`
 }
 
@@ -97,6 +98,7 @@ type Proposal struct {
 	Model                string                     `json:"model"`
 	Description          string                     `json:"description"`
 	Quantity             int                        `json:"quantity"`
+	Room                 string                     `json:"room,omitempty"`
 	Kind                 string                     `json:"kind"`
 	KindFields           map[string]json.RawMessage `json:"kind_fields"`
 	DroppedFields        []string                   `json:"dropped_fields,omitempty"`
@@ -135,9 +137,10 @@ func itemSchema(final bool) map[string]any {
 		"kind":         map[string]any{"type": "string", "enum": append(KindNames(), "none")},
 		"kind_fields":  map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"name", "value"}, "properties": map[string]any{"name": stringSchema(), "value": stringSchema()}}},
 		"visible_text": map[string]any{"type": "string", "description": "Any text you can read on it, as written"},
+		"room":         map[string]any{"type": "string", "enum": append(append([]string{}, Rooms...), ""), "description": "The room it is in, when the photo shows; otherwise empty"},
 		"confidence":   map[string]any{"type": "number", "description": "0 to 1: how sure you are it is an owned possession and identified rightly"},
 	}
-	required := []string{"label", "box", "name", "brand", "model", "description", "quantity", "kind", "kind_fields", "visible_text", "confidence"}
+	required := []string{"label", "box", "name", "brand", "model", "description", "quantity", "kind", "kind_fields", "visible_text", "room", "confidence"}
 	if final {
 		properties["from_readings"] = map[string]any{"type": "array", "items": stringSchema(), "description": "The round-one labels (A1, B3…) this entry stands for; empty for a thing neither listed"}
 		properties["existing_id"] = map[string]any{"type": "string", "description": "possession_… or sighting_… when it is something already listed below; otherwise empty"}
@@ -330,6 +333,13 @@ func truncateWords(text string, limit int) string {
 func normalizeProposal(item readerItem) Proposal {
 	proposal := Proposal{Name: strings.TrimSpace(item.Name), Brand: strings.TrimSpace(item.Brand), Model: strings.TrimSpace(item.Model),
 		Description: strings.TrimSpace(item.Description), Quantity: max(item.Quantity, 1), KindFields: map[string]json.RawMessage{}}
+	if room := strings.TrimSpace(item.Room); room != "" {
+		if contains(Rooms, room) {
+			proposal.Room = room
+		} else {
+			proposal.DroppedFields = append(proposal.DroppedFields, fmt.Sprintf("room: %s (not one of %s)", room, strings.Join(Rooms, ", ")))
+		}
+	}
 	if proposal.Name == "" {
 		proposal.Name = strings.TrimSpace(item.Label)
 	}
@@ -400,6 +410,9 @@ func (proposal Proposal) possessionFields() map[string]json.RawMessage {
 	fields := map[string]json.RawMessage{
 		"name": text(proposal.Name), "brand": text(proposal.Brand), "model": text(proposal.Model),
 		"description": text(proposal.Description), "quantity": json.RawMessage(strconv.Itoa(max(proposal.Quantity, 1))),
+	}
+	if proposal.Room != "" {
+		fields["room"] = text(proposal.Room)
 	}
 	if len(proposal.DroppedFields) > 0 {
 		fields["description"] = text(strings.TrimSpace(proposal.Description + "\n\nThe photo readers also said, in words the inventory could not take: " + strings.Join(proposal.DroppedFields, "; ")))
@@ -1509,7 +1522,7 @@ func (s *Store) applyDetail(ctx context.Context, transaction *sql.Tx, sightingID
 	proposal := resolution.Proposal
 	text := func(value string) json.RawMessage { encoded, _ := json.Marshal(value); return encoded }
 	own := map[string]json.RawMessage{}
-	for name, value := range map[string]string{"name": proposal.Name, "brand": proposal.Brand, "model": proposal.Model, "description": proposal.Description} {
+	for name, value := range map[string]string{"name": proposal.Name, "brand": proposal.Brand, "model": proposal.Model, "description": proposal.Description, "room": proposal.Room} {
 		if value != "" && value != existing[name] {
 			own[name] = text(value)
 		}
