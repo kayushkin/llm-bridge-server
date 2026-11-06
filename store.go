@@ -81,11 +81,51 @@ func Open(dataDir string, references ReferenceChecker) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := addColumns(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	if err := os.Chmod(databasePath, 0o600); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &Store{db: db, dataDir: dataDir, references: references, now: time.Now}, nil
+}
+
+// addedColumns are the columns added after a table was first made, in order.
+// schema.sql never changes a CREATE TABLE; a new column goes here.
+var addedColumns = []struct{ table, column, definition string }{
+	// decision: the sighting waits on the answer. detail: the sighting is
+	// recorded, and the answer only adds to what was recorded.
+	{"owner_questions", "purpose", "TEXT NOT NULL DEFAULT 'decision'"},
+}
+
+func addColumns(db *sql.DB) error {
+	for _, added := range addedColumns {
+		rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, added.table)
+		if err != nil {
+			return err
+		}
+		present := false
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				rows.Close()
+				return err
+			}
+			present = present || name == added.column
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if !present {
+			if _, err := db.Exec(`ALTER TABLE ` + added.table + ` ADD COLUMN ` + added.column + ` ` + added.definition); err != nil {
+				return fmt.Errorf("add %s.%s: %w", added.table, added.column, err)
+			}
+		}
+	}
+	return nil
 }
 
 // Close closes the database.

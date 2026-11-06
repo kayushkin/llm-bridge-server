@@ -548,56 +548,65 @@ func (s *Store) PatchPossession(ctx context.Context, id string, fields map[strin
 		return nil, err
 	}
 	defer transaction.Rollback()
+	if err := s.patchPossessionInTransaction(ctx, transaction, id, own, kind, kindFields, actor); err != nil {
+		return nil, err
+	}
+	if err := transaction.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetPossession(id, false)
+}
+
+// patchPossessionInTransaction changes a possession's own fields and its
+// kind's fields, saving a revision of each row it changes.
+func (s *Store) patchPossessionInTransaction(ctx context.Context, transaction *sql.Tx, id string, own map[string]json.RawMessage, kind *RecordType, kindFields map[string]json.RawMessage, actor string) error {
 	existing, err := possessionView(transaction, id, false)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	values, err := possessionType.decodeFields(own, false)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := checkPrice(values, existing); err != nil {
-		return nil, err
+		return err
 	}
 	if err := s.checkValues(ctx, transaction, values); err != nil {
-		return nil, err
+		return err
 	}
 	now := s.unixNow()
 	if err := saveRevision(transaction, "possessions", "id", id, actor, now); err != nil {
-		return nil, err
+		return err
 	}
 	if err := updateRecord(transaction, possessionType, "id", id, map[string]any{"updated_at": now}, values); err != nil {
-		return nil, err
+		return err
 	}
 	if kind != nil {
 		currentKind := existing["kind"].(string)
 		switch currentKind {
 		case "":
 			if err := s.insertKind(ctx, transaction, *kind, id, kindFields); err != nil {
-				return nil, err
+				return err
 			}
 		case kind.Name:
 			kindValues, err := kind.decodeFields(kindFields, false)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if err := s.checkValues(ctx, transaction, kindValues); err != nil {
-				return nil, err
+				return err
 			}
 			if err := saveRevision(transaction, kind.Table, "possession_id", id, actor, now); err != nil {
-				return nil, err
+				return err
 			}
 			if err := updateRecord(transaction, *kind, "possession_id", id, nil, kindValues); err != nil {
-				return nil, err
+				return err
 			}
 		default:
-			return nil, fmt.Errorf("%w: %s is a %s, not a %s", ErrConflict, id, currentKind, kind.Name)
+			return fmt.Errorf("%w: %s is a %s, not a %s", ErrConflict, id, currentKind, kind.Name)
 		}
 	}
-	if err := transaction.Commit(); err != nil {
-		return nil, err
-	}
-	return s.GetPossession(id, false)
+	return nil
 }
 
 // DeletePossession stamps deleted_at; RestorePossession clears it.

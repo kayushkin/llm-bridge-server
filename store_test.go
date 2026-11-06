@@ -200,6 +200,8 @@ func (models *scriptedModels) Ask(ctx context.Context, role, systemPrompt, promp
 		step = "2"
 	case strings.Contains(prompt, "answered in their own words"):
 		step = "interpret"
+	case strings.Contains(prompt, "Write the item as it should now read"):
+		step = "detail"
 	}
 	answer, known := models.answers[role+" "+step]
 	if !known {
@@ -293,7 +295,7 @@ func TestAReviewRecordsWhatBothReadersAgreeOnAndAsksAboutTheRest(t *testing.T) {
 	if photos := lampView["photos"].([]PhotoLink); len(photos) != 1 || photos[0].PhotoID != "photo_000001" {
 		t.Fatalf("the lamp both readers matched should gain the photo: %v", photos)
 	}
-	questions, err := store.ListQuestions(false, review.ID, 0, 0)
+	questions, err := store.ListQuestions(false, review.ID, "decision", 0, 0)
 	if err != nil || len(questions) != 2 {
 		t.Fatalf("questions = %d %v, want the guitar's brand and the mug only one reader saw", len(questions), err)
 	}
@@ -355,7 +357,7 @@ func TestASightingWaitingOnAnEarlierOneIsSettledWithIt(t *testing.T) {
 	if len(firstModels.prompts) < 3 || !strings.Contains(firstModels.prompts[2], "(nothing yet)") {
 		t.Fatalf("the first review's round two should see an empty inventory")
 	}
-	questions, _ := store.ListQuestions(false, firstReview.ID, 0, 0)
+	questions, _ := store.ListQuestions(false, firstReview.ID, "", 0, 0)
 	choice := 0
 	if _, err := reviewer.AnswerQuestion(ctx, questions[0].ID, Answer{Choice: &choice, AnsweredBy: "principal_000001"}); err != nil {
 		t.Fatal(err)
@@ -387,7 +389,7 @@ func TestAnAnswerInWordsIsReadByTheFirstReader(t *testing.T) {
 	if err := reviewer.Review(ctx, review.ID); err != nil {
 		t.Fatal(err)
 	}
-	questions, _ := store.ListQuestions(false, "", 0, 0)
+	questions, _ := store.ListQuestions(false, "", "", 0, 0)
 	if len(questions) != 1 || !strings.HasPrefix(questions[0].Question, "Only first-model saw this") {
 		t.Fatalf("questions = %+v", questions)
 	}
@@ -484,4 +486,96 @@ func jpegWithExif(t *testing.T) []byte {
 	file := []byte{0xFF, 0xD8, 0xFF, 0xE1, byte((len(segment) + 2) >> 8), byte(len(segment) + 2)}
 	file = append(file, segment...)
 	return append(file, testJPEG()[2:]...)
+}
+
+func TestAnAgreedThingWithADoubtIsRecordedAndItsAnswerAmendsIt(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	box := Box{0.2, 0.2, 0.6, 0.6}
+	mouse := item("mouse", "black mouse", "", "computer_part", box, fieldValue{Name: "part_type", Value: "mouse"})
+	models := &scriptedModels{answers: map[string]any{
+		"first 1":  firstReading{Items: []readerItem{mouse}},
+		"second 1": firstReading{Items: []readerItem{mouse}},
+		"first 2":  finalReading{Items: []finalItem{{readerItem: mouse, FromReadings: []string{"A1", "B1"}, Doubt: "Which model of mouse is it?"}}},
+		"second 2": finalReading{Items: []finalItem{{readerItem: mouse, FromReadings: []string{"A1", "B1"}}}},
+		"first detail": map[string]any{"explanation": "a Logitech G Pro",
+			"item": item("mouse", "Logitech G Pro mouse", "Logitech", "computer_part", box, fieldValue{Name: "part_type", Value: "mouse"})},
+	}}
+	reviewer := &Reviewer{Store: store, Models: models, Photos: fakePhotos{}, FirstReaderRole: "first", SecondReaderRole: "second"}
+	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001")
+	if err := reviewer.Review(ctx, review.ID); err != nil {
+		t.Fatal(err)
+	}
+	done, _ := store.GetPhotoReview(review.ID)
+	if done.Status != "done" || done.Sightings[0].Status != "accepted" {
+		t.Fatalf("an agreed thing with only a detail doubt: review %s, sighting %s; want done and accepted", done.Status, done.Sightings[0].Status)
+	}
+	details, _ := store.ListQuestions(false, review.ID, "detail", 0, 0)
+	if len(details) != 1 || !strings.HasPrefix(details[0].Question, "Recorded as") {
+		t.Fatalf("detail questions = %+v", details)
+	}
+	if _, err := reviewer.AnswerQuestion(ctx, details[0].ID, Answer{Text: "it's a Logitech G Pro", AnsweredBy: "principal_000001"}); err != nil {
+		t.Fatal(err)
+	}
+	amended, _ := store.GetPossession(*done.Sightings[0].PossessionID, false)
+	if amended["brand"] != "Logitech" || amended["name"] != "Logitech G Pro mouse" || amended["kind"] != "computer_part" {
+		t.Fatalf("after the answer the mouse = %v", amended)
+	}
+}
+
+func TestAgreedSightingsHeldBackBeforeAreRecordedOnce(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	box := Box{0.2, 0.2, 0.6, 0.6}
+	models := &scriptedModels{answers: map[string]any{
+		"first 1":  firstReading{Items: []readerItem{item("lamp", "lamp", "", "none", box)}},
+		"second 1": firstReading{Items: []readerItem{item("lamp", "lamp", "", "none", box)}},
+		"first 2":  finalReading{Items: []finalItem{{readerItem: item("lamp", "lamp", "", "none", box), FromReadings: []string{"A1", "B1"}}}},
+		"second 2": finalReading{Items: []finalItem{{readerItem: item("lamp", "lamp", "", "none", box), FromReadings: []string{"A1", "B1"}}}},
+	}}
+	reviewer := &Reviewer{Store: store, Models: models, Photos: fakePhotos{}, FirstReaderRole: "first", SecondReaderRole: "second"}
+	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001")
+	if err := reviewer.Review(ctx, review.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Put the store back as the old rule left it: agreed, unrecorded, asked.
+	possessionID := *mustSighting(t, store, "sighting_000001").PossessionID
+	for _, statement := range []string{
+		`DELETE FROM possession_photos`, `UPDATE sightings SET status = 'proposed', possession_id = NULL, decided_by = '', decided_at = 0`,
+		`DELETE FROM possessions WHERE id = '` + possessionID + `'`, `UPDATE photo_reviews SET status = 'waiting_for_owner'`,
+	} {
+		if _, err := store.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, _ := store.db.Begin()
+	if err := insertQuestion(tx, "sighting_000001", "Both readers agree this is lamp, but: which lamp?", []Choice{rejectChoice}, "decision", 1); err != nil {
+		t.Fatal(err)
+	}
+	tx.Commit()
+	result, err := store.RecordAgreedSightings(ctx, "principal_000001")
+	if err != nil || result.Recorded != 1 || len(result.Failures) != 0 {
+		t.Fatalf("record agreed = %+v %v", result, err)
+	}
+	again, _ := store.RecordAgreedSightings(ctx, "principal_000001")
+	if again.Recorded != 0 {
+		t.Fatalf("a second run recorded %d more", again.Recorded)
+	}
+	question, _ := store.GetQuestion("possession_question_000001")
+	if question.Purpose != "detail" || question.Question != "Recorded as lamp. To add: which lamp?" {
+		t.Fatalf("question = %+v", question)
+	}
+	finished, _ := store.GetPhotoReview(review.ID)
+	if finished.Status != "done" || finished.Sightings[0].Status != "accepted" {
+		t.Fatalf("review %s, sighting %s", finished.Status, finished.Sightings[0].Status)
+	}
+}
+
+func mustSighting(t *testing.T, store *Store, id string) Sighting {
+	t.Helper()
+	sighting, err := store.GetSighting(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sighting
 }

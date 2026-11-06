@@ -29,7 +29,8 @@ var PurchaseLineDispositions = []string{"unreviewed", "possession", "consumable"
 var PhotoReviewStatuses = []string{"queued", "reading", "reconciling", "waiting_for_owner", "done", "failed"}
 var SightingAgreements = []string{"both_agree", "readers_differ", "one_reader_only"}
 var SightingStatuses = []string{"proposed", "accepted", "rejected", "same_as_other_sighting"}
-var ResolutionActions = []string{"accept", "same_as", "same_as_sighting", "reject"}
+var ResolutionActions = []string{"accept", "same_as", "same_as_sighting", "reject", "keep", "amend"}
+var QuestionPurposes = []string{"decision", "detail"}
 
 // Vocabulary is GET /vocabulary.
 func Vocabulary() map[string][]string {
@@ -56,6 +57,7 @@ func Vocabulary() map[string][]string {
 		"photo_review_statuses":      PhotoReviewStatuses,
 		"sighting_agreements":        SightingAgreements,
 		"sighting_statuses":          SightingStatuses,
+		"question_purposes":          QuestionPurposes,
 		"resolution_actions":         ResolutionActions,
 	}
 }

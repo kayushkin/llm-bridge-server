@@ -78,7 +78,7 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 
 | Method | Path | |
 |---|---|---|
-| `GET` | `/health` | `{status, counts:{possessions, outfits, purchases, photo_reviews_queued, photo_reviews_failed, open_questions}}` |
+| `GET` | `/health` | `{status, counts:{possessions, outfits, purchases, photo_reviews_queued, photo_reviews_failed, open_decision_questions, open_detail_questions}}` |
 | `GET` | `/vocabulary`, `/kinds`, `/settings` | |
 | `GET` | `/possessions` | newest first: `?q=` (every word in name, brand, model, description, spot, tags), `?status=`, `?kind=` (a kind, or `none`), `?place_id=`, `?include_deleted=true`, `?limit=` (default 100, max 1000), `?offset=` |
 | `POST` | `/possessions` | `{"actor":…, <possession fields>, "<kind>":{<kind fields>}, "photos":[{photo_id, box_left…, is_cover}]}`. `name` is required; `status` defaults to `owned`; at most one kind. An unknown field, a word outside a vocabulary, a missing required kind field, an id the owning store does not have, or a price with no currency is a **400**. **201** |
@@ -105,9 +105,10 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` | `/photo-reviews/{id}` | with every reading (each model's answer unchanged, tokens, cost) and sighting; `cost_usd` sums the readings |
 | `POST` | `/photo-reviews/{id}/retry` | `{actor}`: a `failed` review only; its readings go to revisions and it is queued again |
 | `GET` | `/sightings/{id}` and `/sightings/{id}/image` | |
-| `GET` | `/owner-questions` | open ones, oldest first; `?include_answered=true`, `?photo_review_id=` |
+| `GET` | `/owner-questions` | open ones, oldest first; `?include_answered=true`, `?photo_review_id=`, `?purpose=decision\|detail` |
 | `GET` | `/owner-questions/{id}` and `…/image` | the image is the sighting cut from its photo |
-| `POST` | `/owner-questions/{id}/answer` | `{choice:<index>}` or `{text:"…"}`, and `answered_by`. Words go to the first reader, which turns them into a resolution before anything is written. A second answer is a **409** |
+| `POST` | `/owner-questions/{id}/answer` | `{choice:<index>}` or `{text:"…"}`, and `answered_by`. Words go to the first reader, which turns them into a resolution before anything is written: for a detail question, the possession as it should now read (`amend`). A second answer is a **409** |
+| `POST` | `/sightings/record-agreed` | `{actor}`: records every sighting both readers agreed on that still waits on a decision question, and makes that question a detail question. For reviews made before agreed sightings were recorded at once. Answers `{recorded, failures:[{sighting_id, error}]}`; running it again records nothing new |
 
 ## Photo review
 
@@ -129,14 +130,16 @@ The worker takes one queued photo at a time:
    when it would ask the owner.
 3. **Agreement.** The store pairs the two final lists by shared round-one
    labels, then by overlapping boxes. A pair with the same kind, brand, model,
-   kind words, quantity and match, and no doubt, is recorded at once: a new
-   possession (`created_by` the review), the photo added to a matched one, or
-   a wait on an earlier sighting. Everything else is a sighting with a
-   question whose choices say what each answer does (`accept`, `same_as`,
-   `same_as_sighting`, `reject`).
+   kind words, quantity and match is recorded at once: a new possession
+   (`created_by` the review), the photo added to a matched one, or a wait on
+   an earlier sighting. A doubt either reader raised about such a pair
+   becomes a **detail** question: optional, answered with "leave it as
+   recorded" or in words, which amend the possession. Everything else waits on
+   a **decision** question whose choices say what each answer does (`accept`,
+   `same_as`, `same_as_sighting`, `reject`).
 
 A kind field a reader gives that does not fit the column is dropped and named
 in the proposal's `dropped_fields`, and the new possession's description keeps
 it in words. When a sighting is settled, every later sighting waiting on it is
 settled the same way. A review is `waiting_for_owner` while any of its
-questions is open, then `done`.
+decision questions is open, then `done`.

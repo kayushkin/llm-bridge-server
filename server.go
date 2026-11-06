@@ -236,6 +236,16 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 		}
 		respond(w, http.StatusOK, review, err)
 	})
+	mux.HandleFunc("POST /sightings/record-agreed", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Actor string `json:"actor"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := server.Store.RecordAgreedSightings(r.Context(), body.Actor)
+		respond(w, http.StatusOK, result, err)
+	})
 	mux.HandleFunc("GET /sightings/{id}", func(w http.ResponseWriter, r *http.Request) {
 		sighting, err := server.Store.GetSighting(r.PathValue("id"))
 		respond(w, http.StatusOK, sighting, err)
@@ -251,7 +261,7 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 			writeError(w, err)
 			return
 		}
-		questions, err := server.Store.ListQuestions(r.URL.Query().Get("include_answered") == "true", r.URL.Query().Get("photo_review_id"), limit, offset)
+		questions, err := server.Store.ListQuestions(r.URL.Query().Get("include_answered") == "true", r.URL.Query().Get("photo_review_id"), r.URL.Query().Get("purpose"), limit, offset)
 		respond(w, http.StatusOK, questions, err)
 	})
 	mux.HandleFunc("GET /owner-questions/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -281,12 +291,13 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 func (server *Server) health(w http.ResponseWriter, r *http.Request) {
 	counts := map[string]int{}
 	for name, query := range map[string]string{
-		"possessions":          `SELECT COUNT(*) FROM possessions WHERE deleted_at = 0`,
-		"outfits":              `SELECT COUNT(*) FROM outfits WHERE deleted_at = 0`,
-		"purchases":            `SELECT COUNT(*) FROM purchases WHERE deleted_at = 0`,
-		"photo_reviews_queued": `SELECT COUNT(*) FROM photo_reviews WHERE status IN ('queued', 'reading', 'reconciling')`,
-		"photo_reviews_failed": `SELECT COUNT(*) FROM photo_reviews WHERE status = 'failed'`,
-		"open_questions":       `SELECT COUNT(*) FROM owner_questions WHERE answered_at = 0`,
+		"possessions":             `SELECT COUNT(*) FROM possessions WHERE deleted_at = 0`,
+		"outfits":                 `SELECT COUNT(*) FROM outfits WHERE deleted_at = 0`,
+		"purchases":               `SELECT COUNT(*) FROM purchases WHERE deleted_at = 0`,
+		"photo_reviews_queued":    `SELECT COUNT(*) FROM photo_reviews WHERE status IN ('queued', 'reading', 'reconciling')`,
+		"photo_reviews_failed":    `SELECT COUNT(*) FROM photo_reviews WHERE status = 'failed'`,
+		"open_decision_questions": `SELECT COUNT(*) FROM owner_questions WHERE answered_at = 0 AND purpose = 'decision'`,
+		"open_detail_questions":   `SELECT COUNT(*) FROM owner_questions WHERE answered_at = 0 AND purpose = 'detail'`,
 	} {
 		var count int
 		if err := server.Store.db.QueryRow(query).Scan(&count); err != nil {

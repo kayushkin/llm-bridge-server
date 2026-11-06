@@ -488,6 +488,7 @@ type OwnerQuestion struct {
 	ID           string          `json:"id"`
 	SightingID   string          `json:"sighting_id"`
 	PhotoID      string          `json:"photo_id"`
+	Purpose      string          `json:"purpose"` // decision: the sighting waits on it; detail: it adds to what is recorded
 	Question     string          `json:"question"`
 	Choices      []Choice        `json:"choices"`
 	AnswerChoice *int            `json:"answer_choice"`
@@ -1001,6 +1002,9 @@ func versionChoice(label string, version Proposal) Choice {
 
 var rejectChoice = Choice{Label: "Not mine, or not worth recording", Resolution: Resolution{Action: "reject"}}
 
+// keepChoice answers a detail question by leaving the record as it is.
+var keepChoice = Choice{Label: "Leave it as recorded", Resolution: Resolution{Action: "keep"}}
+
 // recordReconciliation writes the sightings and questions of one review and
 // records what both readers agreed on, all in one transaction.
 func (s *Store) recordReconciliation(ctx context.Context, reviewID, photoID string, readerNames [2]string, finals [2]finalReading) error {
@@ -1035,6 +1039,7 @@ func (s *Store) recordReconciliation(ctx context.Context, reviewID, photoID stri
 		sighting := Sighting{Label: label, Status: "proposed", Versions: map[string]Proposal{}}
 		var choices []Choice
 		var question string
+		purpose := "decision"
 		if present == 2 {
 			box = averageBox(pair.items[0].Box.clamped(), pair.items[1].Box.clamped())
 			disagreements := differences(readerNames, versions)
@@ -1042,8 +1047,9 @@ func (s *Store) recordReconciliation(ctx context.Context, reviewID, photoID stri
 				sighting.Agreement = "both_agree"
 				sighting.Proposed = merged(versions)
 				if len(doubts) > 0 {
-					question = fmt.Sprintf("Both readers agree this is %s, but: %s", sighting.Proposed.summary(), strings.Join(doubts, " "))
-					choices = []Choice{versionChoice("Yes, as they say", sighting.Proposed), rejectChoice}
+					purpose = "detail"
+					question = fmt.Sprintf("Recorded as %s. To add: %s", sighting.Proposed.summary(), strings.Join(doubts, " "))
+					choices = []Choice{keepChoice}
 				}
 			} else {
 				sighting.Agreement = "readers_differ"
@@ -1086,17 +1092,22 @@ func (s *Store) recordReconciliation(ctx context.Context, reviewID, photoID stri
 			sightingID, sequence, reviewID, label, box.Left, box.Top, box.Right, box.Bottom, string(proposed), string(versionsJSON), sighting.Agreement); err != nil {
 			return err
 		}
-		if question != "" {
-			if err := insertQuestion(transaction, sightingID, question, choices, now); err != nil {
+		if question != "" && purpose == "decision" {
+			if err := insertQuestion(transaction, sightingID, question, choices, purpose, now); err != nil {
 				return err
 			}
 			openQuestions++
 			continue
 		}
-		// Both readers agree and neither doubts: record it.
+		// Both readers agree: record it, and ask any detail they wanted.
 		resolution := versionChoice("", sighting.Proposed).Resolution
 		if err := s.applyResolution(ctx, transaction, sightingID, resolution, "agreement", reviewID, now); err != nil {
 			return fmt.Errorf("record %s: %w", sightingID, err)
+		}
+		if question != "" {
+			if err := insertQuestion(transaction, sightingID, question, choices, purpose, now); err != nil {
+				return err
+			}
 		}
 	}
 	status := "done"
@@ -1109,13 +1120,13 @@ func (s *Store) recordReconciliation(ctx context.Context, reviewID, photoID stri
 	return transaction.Commit()
 }
 
-func insertQuestion(transaction *sql.Tx, sightingID, question string, choices []Choice, now int64) error {
+func insertQuestion(transaction *sql.Tx, sightingID, question string, choices []Choice, purpose string, now int64) error {
 	questionID, sequence, err := nextID(transaction, "owner_questions", "possession_question")
 	if err != nil {
 		return err
 	}
 	encoded, _ := json.Marshal(choices)
-	_, err = transaction.Exec(`INSERT INTO owner_questions (id, seq, sighting_id, question, choices, asked_at) VALUES (?, ?, ?, ?, ?, ?)`, questionID, sequence, sightingID, question, string(encoded), now)
+	_, err = transaction.Exec(`INSERT INTO owner_questions (id, seq, sighting_id, question, choices, purpose, asked_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, questionID, sequence, sightingID, question, string(encoded), purpose, now)
 	return err
 }
 
@@ -1250,9 +1261,9 @@ func questionByID(q querier, id string) (OwnerQuestion, error) {
 	var question OwnerQuestion
 	var choices, resolution string
 	var answerChoice sql.NullInt64
-	err := q.QueryRow(`SELECT owner_questions.id, sighting_id, photo_reviews.photo_id, question, choices, answer_choice, answer_text, resolution, answered_by, asked_at, answered_at
+	err := q.QueryRow(`SELECT owner_questions.id, sighting_id, photo_reviews.photo_id, owner_questions.purpose, question, choices, answer_choice, answer_text, resolution, answered_by, asked_at, answered_at
 		FROM owner_questions JOIN sightings ON sightings.id = owner_questions.sighting_id JOIN photo_reviews ON photo_reviews.id = sightings.photo_review_id WHERE owner_questions.id = ?`, id).Scan(
-		&question.ID, &question.SightingID, &question.PhotoID, &question.Question, &choices, &answerChoice, &question.AnswerText, &resolution, &question.AnsweredBy, &question.AskedAt, &question.AnsweredAt)
+		&question.ID, &question.SightingID, &question.PhotoID, &question.Purpose, &question.Question, &choices, &answerChoice, &question.AnswerText, &resolution, &question.AnsweredBy, &question.AskedAt, &question.AnsweredAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OwnerQuestion{}, fmt.Errorf("%w: no question %s", ErrNotFound, id)
 	}
@@ -1276,9 +1287,16 @@ func questionByID(q querier, id string) (OwnerQuestion, error) {
 func (s *Store) GetQuestion(id string) (OwnerQuestion, error) { return questionByID(s.db, id) }
 
 // ListQuestions answers questions, oldest first; open only unless all.
-func (s *Store) ListQuestions(includeAnswered bool, photoReviewID string, limit, offset int) ([]OwnerQuestion, error) {
+func (s *Store) ListQuestions(includeAnswered bool, photoReviewID, purpose string, limit, offset int) ([]OwnerQuestion, error) {
 	conditions := []string{"1 = 1"}
 	arguments := []any{}
+	if purpose != "" {
+		if !contains(QuestionPurposes, purpose) {
+			return nil, fmt.Errorf("%w: purpose must be one of %s", ErrInvalid, strings.Join(QuestionPurposes, ", "))
+		}
+		conditions = append(conditions, "owner_questions.purpose = ?")
+		arguments = append(arguments, purpose)
+	}
 	if !includeAnswered {
 		conditions = append(conditions, "owner_questions.answered_at = 0")
 	}
@@ -1333,16 +1351,19 @@ func (reviewer *Reviewer) AnswerQuestion(ctx context.Context, questionID string,
 		return OwnerQuestion{}, fmt.Errorf("%w: %s is already answered", ErrConflict, questionID)
 	}
 	var resolution Resolution
-	if answer.Choice != nil {
+	switch {
+	case answer.Choice != nil:
 		if *answer.Choice < 0 || *answer.Choice >= len(question.Choices) {
 			return OwnerQuestion{}, fmt.Errorf("%w: choice is 0 to %d", ErrInvalid, len(question.Choices)-1)
 		}
 		resolution = question.Choices[*answer.Choice].Resolution
-	} else {
+	case question.Purpose == "detail":
+		resolution, err = reviewer.interpretDetail(ctx, question, answer.Text)
+	default:
 		resolution, err = reviewer.interpretAnswer(ctx, question, answer.Text)
-		if err != nil {
-			return OwnerQuestion{}, err
-		}
+	}
+	if err != nil {
+		return OwnerQuestion{}, err
 	}
 	store.writeMutex.Lock()
 	defer store.writeMutex.Unlock()
@@ -1352,7 +1373,11 @@ func (reviewer *Reviewer) AnswerQuestion(ctx context.Context, questionID string,
 	}
 	defer transaction.Rollback()
 	now := store.unixNow()
-	if err := store.applyResolution(ctx, transaction, question.SightingID, resolution, answer.AnsweredBy, answer.AnsweredBy, now); err != nil {
+	if question.Purpose == "detail" {
+		if err := store.applyDetail(ctx, transaction, question.SightingID, resolution, answer.AnsweredBy); err != nil {
+			return OwnerQuestion{}, err
+		}
+	} else if err := store.applyResolution(ctx, transaction, question.SightingID, resolution, answer.AnsweredBy, answer.AnsweredBy, now); err != nil {
 		return OwnerQuestion{}, err
 	}
 	encoded, _ := json.Marshal(resolution)
@@ -1367,7 +1392,7 @@ func (reviewer *Reviewer) AnswerQuestion(ctx context.Context, questionID string,
 	// A review is done once none of its questions is open.
 	if _, err := transaction.Exec(`UPDATE photo_reviews SET status = 'done', finished_at = ? WHERE status = 'waiting_for_owner' AND id = (SELECT photo_review_id FROM sightings WHERE id = ?)
 		AND NOT EXISTS (SELECT 1 FROM owner_questions JOIN sightings ON sightings.id = owner_questions.sighting_id
-			WHERE sightings.photo_review_id = photo_reviews.id AND owner_questions.answered_at = 0)`, now, question.SightingID); err != nil {
+			WHERE sightings.photo_review_id = photo_reviews.id AND owner_questions.answered_at = 0 AND owner_questions.purpose = 'decision')`, now, question.SightingID); err != nil {
 		return OwnerQuestion{}, err
 	}
 	if err := transaction.Commit(); err != nil {
@@ -1455,6 +1480,190 @@ Decide what the answer means. accept records it as a new possession described by
 		resolution.SightingID = strings.TrimSpace(interpretation.SightingID)
 	}
 	return resolution, nil
+}
+
+// applyDetail carries out the answer to a detail question: keep leaves the
+// possession as recorded; amend changes it to what the owner said.
+func (s *Store) applyDetail(ctx context.Context, transaction *sql.Tx, sightingID string, resolution Resolution, actor string) error {
+	switch resolution.Action {
+	case "keep":
+		return nil
+	case "amend":
+	default:
+		return fmt.Errorf("%w: a detail question takes keep or amend, not %q", ErrInvalid, resolution.Action)
+	}
+	if resolution.Proposal == nil {
+		return fmt.Errorf("%w: amend needs a proposal", ErrInvalid)
+	}
+	sighting, err := sightingByID(transaction, sightingID)
+	if err != nil {
+		return err
+	}
+	if sighting.PossessionID == nil {
+		return fmt.Errorf("%w: %s is not recorded yet (it waits on %v); answer that question first", ErrConflict, sightingID, sighting.SameAsSightingID)
+	}
+	existing, err := possessionView(transaction, *sighting.PossessionID, false)
+	if err != nil {
+		return err
+	}
+	proposal := resolution.Proposal
+	text := func(value string) json.RawMessage { encoded, _ := json.Marshal(value); return encoded }
+	own := map[string]json.RawMessage{}
+	for name, value := range map[string]string{"name": proposal.Name, "brand": proposal.Brand, "model": proposal.Model, "description": proposal.Description} {
+		if value != "" && value != existing[name] {
+			own[name] = text(value)
+		}
+	}
+	if proposal.Quantity > 0 && int64(proposal.Quantity) != existing["quantity"] {
+		own["quantity"] = json.RawMessage(strconv.Itoa(proposal.Quantity))
+	}
+	var kind *RecordType
+	if proposal.Kind != "" {
+		currentKind := existing["kind"].(string)
+		if currentKind != "" && currentKind != proposal.Kind {
+			return fmt.Errorf("%w: the answer makes %s a %s, but it is recorded as a %s; change its kind by hand", ErrConflict, *sighting.PossessionID, proposal.Kind, currentKind)
+		}
+		found, _ := KindByName(proposal.Kind)
+		kind = &found
+	}
+	return s.patchPossessionInTransaction(ctx, transaction, *sighting.PossessionID, own, kind, proposal.KindFields, actor)
+}
+
+var detailSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["item","explanation"],"properties":{
+	"item":` + mustJSON(itemSchema(false)) + `,
+	"explanation":{"type":"string","description":"One sentence: what you changed and why"}}}`)
+
+// interpretDetail asks the first reader to turn the owner's answer to a
+// detail question into the possession as it should now read.
+func (reviewer *Reviewer) interpretDetail(ctx context.Context, question OwnerQuestion, text string) (Resolution, error) {
+	sighting, err := sightingByID(reviewer.Store.db, question.SightingID)
+	if err != nil {
+		return Resolution{}, err
+	}
+	if sighting.PossessionID == nil {
+		return Resolution{}, fmt.Errorf("%w: %s is not recorded yet; answer the question it waits on first", ErrConflict, question.SightingID)
+	}
+	possession, err := reviewer.Store.GetPossession(*sighting.PossessionID, false)
+	if err != nil {
+		return Resolution{}, err
+	}
+	photo, _, err := reviewer.Photos.ReviewImage(ctx, sighting.PhotoID)
+	if err != nil {
+		return Resolution{}, err
+	}
+	crop, err := cropJPEG(photo, sighting.Box)
+	if err != nil {
+		return Resolution{}, err
+	}
+	record, _ := json.MarshalIndent(possession, "", "  ")
+	prompt := fmt.Sprintf(`The picture is the %s, cut from a photo of the owner's home. It is recorded in the inventory as:
+%s
+
+The owner was asked:
+%s
+
+The owner answered:
+%q
+
+Write the item as it should now read, keeping everything the answer does not change and correcting what it does. Keep the kind it has unless it has none.`,
+		sighting.Label, record, question.Question, text)
+	answer, err := reviewer.Models.Ask(ctx, reviewer.FirstReaderRole, readerSystemPrompt(), prompt, detailSchema,
+		[]msg.OneShotImage{{MediaType: "image/jpeg", DataBase64: base64.StdEncoding.EncodeToString(crop)}}, 8000)
+	if err != nil {
+		return Resolution{}, fmt.Errorf("interpret the answer: %w", err)
+	}
+	var interpretation struct {
+		Item        readerItem `json:"item"`
+		Explanation string     `json:"explanation"`
+	}
+	if err := json.Unmarshal(answer.Parsed, &interpretation); err != nil {
+		return Resolution{}, fmt.Errorf("%s's interpretation is not one: %w", answer.Model, err)
+	}
+	proposal := normalizeProposal(interpretation.Item)
+	return Resolution{Action: "amend", Proposal: &proposal, Explanation: fmt.Sprintf("%s read the answer as: %s", answer.Model, interpretation.Explanation)}, nil
+}
+
+// AgreedRecording says what RecordAgreedSightings did.
+type AgreedRecording struct {
+	Recorded int                 `json:"recorded"`
+	Failures []map[string]string `json:"failures"`
+}
+
+// RecordAgreedSightings records every sighting both readers agreed on that
+// still waits on a question, and turns that question into a detail
+// question. Reviews made before agreed sightings were recorded at once held
+// them back; this settles them. Each sighting is its own transaction, and a
+// failure is reported, not skipped silently.
+func (s *Store) RecordAgreedSightings(ctx context.Context, actor string) (AgreedRecording, error) {
+	if actor == "" {
+		return AgreedRecording{}, fmt.Errorf("%w: actor is required", ErrInvalid)
+	}
+	rows, err := s.db.Query(`SELECT sightings.id, owner_questions.id, sightings.photo_review_id FROM sightings JOIN owner_questions ON owner_questions.sighting_id = sightings.id
+		WHERE sightings.agreement = 'both_agree' AND sightings.status = 'proposed' AND owner_questions.answered_at = 0 AND owner_questions.purpose = 'decision' ORDER BY sightings.seq`)
+	if err != nil {
+		return AgreedRecording{}, err
+	}
+	type pending struct{ sightingID, questionID, reviewID string }
+	waiting := []pending{}
+	for rows.Next() {
+		var item pending
+		if err := rows.Scan(&item.sightingID, &item.questionID, &item.reviewID); err != nil {
+			rows.Close()
+			return AgreedRecording{}, err
+		}
+		waiting = append(waiting, item)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return AgreedRecording{}, err
+	}
+	result := AgreedRecording{Failures: []map[string]string{}}
+	keepChoices, _ := json.Marshal([]Choice{keepChoice})
+	for _, item := range waiting {
+		err := func() error {
+			s.writeMutex.Lock()
+			defer s.writeMutex.Unlock()
+			transaction, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer transaction.Rollback()
+			sighting, err := sightingByID(transaction, item.sightingID)
+			if err != nil {
+				return err
+			}
+			if sighting.Status != "proposed" {
+				return nil // settled meanwhile by one it waited on
+			}
+			now := s.unixNow()
+			if err := s.applyResolution(ctx, transaction, item.sightingID, versionChoice("", sighting.Proposed).Resolution, "agreement", item.reviewID, now); err != nil {
+				return err
+			}
+			if err := saveRevision(transaction, "owner_questions", "id", item.questionID, actor, now); err != nil {
+				return err
+			}
+			var question string
+			if err := transaction.QueryRow(`SELECT question FROM owner_questions WHERE id = ?`, item.questionID).Scan(&question); err != nil {
+				return err
+			}
+			question = strings.Replace(strings.Replace(question, "Both readers agree this is ", "Recorded as ", 1), ", but: ", ". To add: ", 1)
+			if _, err := transaction.Exec(`UPDATE owner_questions SET purpose = 'detail', question = ?, choices = ? WHERE id = ?`, question, string(keepChoices), item.questionID); err != nil {
+				return err
+			}
+			if _, err := transaction.Exec(`UPDATE photo_reviews SET status = 'done', finished_at = ? WHERE id = ? AND status = 'waiting_for_owner'
+				AND NOT EXISTS (SELECT 1 FROM owner_questions JOIN sightings ON sightings.id = owner_questions.sighting_id
+					WHERE sightings.photo_review_id = photo_reviews.id AND owner_questions.answered_at = 0 AND owner_questions.purpose = 'decision')`, now, item.reviewID); err != nil {
+				return err
+			}
+			return transaction.Commit()
+		}()
+		if err != nil {
+			result.Failures = append(result.Failures, map[string]string{"sighting_id": item.sightingID, "error": err.Error()})
+			continue
+		}
+		result.Recorded++
+	}
+	return result, nil
 }
 
 // SightingImage cuts a sighting out of the photo the readers were shown.
