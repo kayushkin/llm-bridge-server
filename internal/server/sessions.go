@@ -618,8 +618,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// felt like while the picker showed the user's pick.
 	if err := s.snapshotSessionDefaultsIntoSession(r.Context(), sess, req.MaxBudget != nil); err != nil {
 		code := "model_unresolvable"
-		if errors.Is(err, errDeniedReadPathsUnenforceable) {
+		switch {
+		case errors.Is(err, errDeniedReadPathsUnenforceable):
 			code = "denied_read_paths_unenforceable"
+		case errors.Is(err, errBuiltInToolAllowListUnenforceable):
+			code = "built_in_tool_allow_list_unenforceable"
+		case errors.Is(err, errToolStoreUnavailable):
+			code = "tool_store_unavailable"
 		}
 		body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})
 		http.Error(w, string(body), http.StatusUnprocessableEntity)

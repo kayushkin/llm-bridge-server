@@ -152,6 +152,11 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 				setting.Notes = append(setting.Notes, fmt.Sprintf("%s: %v", contribution.record, names))
 			}
 		}
+		if allowed, err := builtInToolAllowListPinnedOn(cfg); err != nil {
+			warn("%v", err)
+		} else if allowed != nil {
+			setting.Notes = append(setting.Notes, fmt.Sprintf("bundle-store bundle %s restricts this session, so it is offered only these built-in tools, tool-store's enabled ones less the disabled: %v; a tool tool-store has not enabled, or has never seen, is not offered", sess.BundleID, allowed))
+		}
 		if len(defaults.DisabledTools) > 0 && setting.Layer == msg.EffectiveLayerSession {
 			setting.Notes = append(setting.Notes, fmt.Sprintf("%s is %v; the session's own list replaces it", harnessRecord("disabled_tools"), defaults.DisabledTools))
 		}

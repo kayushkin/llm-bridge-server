@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -41,6 +42,7 @@ func (s *Server) onSessionInfo(bridgeID string, info *msg.SessionInfo) {
 	if len(names) == 0 {
 		return
 	}
+	s.holdRestrictedSessionToItsAllowList(sess, names)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	created, err := s.reportObservedHarnessTools(ctx, sess.Harness, names)
@@ -50,6 +52,50 @@ func (s *Server) onSessionInfo(bridgeID string, info *msg.SessionInfo) {
 	}
 	if len(created) > 0 {
 		log.Printf("[harness-tools] session %s (%s) reported tools tool-store had never seen: %v; they are registered switched off until reviewed, and this session already has them", bridgeID, sess.Harness, created)
+	}
+}
+
+// holdRestrictedSessionToItsAllowList stops a restricted session whose harness
+// reports a built-in tool that is not on the allow list pinned at create. The
+// harness was told not to offer it (--tools), so a report means the harness did
+// not obey. The report arrives once the process has started, so this is a
+// second line, not the first: it ends the session rather than let it go on.
+func (s *Server) holdRestrictedSessionToItsAllowList(sess *store.Session, reported []string) {
+	cfg, err := parseHarnessConfig(sess)
+	if err != nil {
+		log.Printf("[harness-tools] ERROR session %s: harness_config unreadable, stopping it because its allow list cannot be checked: %v", sess.SessionID, err)
+		s.stopSessionOffItsAllowList(sess.SessionID)
+		return
+	}
+	allowed, err := builtInToolAllowListPinnedOn(cfg)
+	if err != nil {
+		log.Printf("[harness-tools] ERROR session %s: stopping it because its allow list cannot be read: %v", sess.SessionID, err)
+		s.stopSessionOffItsAllowList(sess.SessionID)
+		return
+	}
+	if allowed == nil {
+		return
+	}
+	onList := map[string]bool{}
+	for _, name := range allowed {
+		onList[name] = true
+	}
+	var offList []string
+	for _, name := range reported {
+		if !onList[name] {
+			offList = append(offList, name)
+		}
+	}
+	if len(offList) == 0 {
+		return
+	}
+	log.Printf("[harness-tools] ERROR session %s (%s): its bundle restricts it to %v, and the harness reported %v as well; stopping the session", sess.SessionID, sess.Harness, allowed, offList)
+	s.stopSessionOffItsAllowList(sess.SessionID)
+}
+
+func (s *Server) stopSessionOffItsAllowList(sessionID string) {
+	if err := s.stopSession(sessionID); err != nil {
+		log.Printf("[harness-tools] ERROR session %s: stopping it failed: %v", sessionID, err)
 	}
 }
 

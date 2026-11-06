@@ -28,6 +28,15 @@ import (
 // A bundle may also deny reading paths. Only Claude Code enforces that, with
 // Read deny rules, and a shell reads around a Read rule, so such a session is
 // refused unless every tool tool-store tags runs-commands is off.
+//
+// A deny list cannot turn off a tool nobody has named yet. A harness tool
+// tool-store has never seen is on in the first session that reports it, and is
+// registered switched off and unreviewed only once that session has started.
+// So a session whose bundle denies anything (a restricted session) is also
+// given an allow list: the harness tools tool-store has enabled, less every
+// tool disabled above. A tool tool-store does not know, or has not enabled, is
+// not on the list, and the harness does not offer it. Only claude_code takes an
+// allow list (--tools); a restricted session of any other harness is refused.
 
 const (
 	harnessConfigKeyDeniedReadPaths = "denied_read_paths"
@@ -35,8 +44,15 @@ const (
 	// Read deny rules and the hooks; a caller that sets it replaces both.
 	harnessConfigKeySettings             = "settings"
 	harnessConfigKeyDisabledToolsByLayer = "disabled_tools_by_layer"
-	harnessToolKind                      = "harness"
-	harnessToolTagRunsCommands           = "runs-commands"
+	// harnessConfigKeyBuiltInToolAllowList is Claude Code's --tools: the only
+	// built-in tools it may offer. The server pins it on a restricted session.
+	harnessConfigKeyBuiltInToolAllowList = "tools"
+	// harnessConfigKeyBuiltInToolAllowListPinnedFor names the bundle whose
+	// restriction pinned the allow list. Harness bridges ignore it; the
+	// server reads it to hold a started session to its list.
+	harnessConfigKeyBuiltInToolAllowListPinnedFor = "built_in_tool_allow_list_pinned_for_bundle"
+	harnessToolKind                               = "harness"
+	harnessToolTagRunsCommands                    = "runs-commands"
 )
 
 // harnessTool is one tool-store row of kind harness.
@@ -58,6 +74,11 @@ func (t harnessTool) runsCommands() bool {
 	return false
 }
 
+// errToolStoreUnavailable marks a create refused because tool-store could not
+// say which harness tools are on. Without that read no deny or allow list can
+// be decided, so the session is not created.
+var errToolStoreUnavailable = errors.New("tool-store unavailable")
+
 // harnessTools reads tool-store's harness tools, all of them when harness is
 // empty. tool-store owns the list; nothing here restates it.
 func (s *Server) harnessTools(ctx context.Context, harness msg.Harness) ([]harnessTool, error) {
@@ -75,19 +96,19 @@ func (s *Server) harnessTools(ctx context.Context, harness msg.Harness) ([]harne
 	}
 	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("tool-store unreachable: GET %s: %w", requestURL, err)
+		return nil, fmt.Errorf("%w: GET %s: %v", errToolStoreUnavailable, requestURL, err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read tool-store response: %w", err)
+		return nil, fmt.Errorf("%w: read the response to GET %s: %v", errToolStoreUnavailable, requestURL, err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tool-store GET %s returned %d: %s", requestURL, response.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("%w: GET %s returned %d: %s", errToolStoreUnavailable, requestURL, response.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var tools []harnessTool
 	if err := json.Unmarshal(body, &tools); err != nil {
-		return nil, fmt.Errorf("tool-store GET %s returned unparseable JSON: %w", requestURL, err)
+		return nil, fmt.Errorf("%w: GET %s returned unparseable JSON: %v", errToolStoreUnavailable, requestURL, err)
 	}
 	for _, t := range tools {
 		if t.HarnessToolName == "" || t.Harness == "" {
@@ -103,7 +124,11 @@ type harnessToolDenials struct {
 	Bundle              []string
 	ToolStore           []string
 	CommandRunningTools []string
-	Notes               []string
+	// EnabledInToolStore is this harness's tools that tool-store has
+	// switched on, in tool-store's order: the most a restricted session's
+	// allow list can hold.
+	EnabledInToolStore []string
+	Notes              []string
 }
 
 // decideHarnessToolDenials reads tool-store's harness tools for sess's harness
@@ -128,7 +153,9 @@ func (s *Server) decideHarnessToolDenials(ctx context.Context, harness msg.Harne
 		if t.Harness != string(harness) {
 			continue
 		}
-		if !t.Enabled {
+		if t.Enabled {
+			denials.EnabledInToolStore = append(denials.EnabledInToolStore, t.HarnessToolName)
+		} else {
 			denials.ToolStore = append(denials.ToolStore, t.HarnessToolName)
 		}
 		if t.runsCommands() {
@@ -178,6 +205,60 @@ func unionInOrder(lists ...[]string) []string {
 		}
 	}
 	return out
+}
+
+// bundleRestrictsSession reports whether a session's bundle denies any tool or
+// read path. Such a session gets an allow list of built-in tools, not just a
+// deny list, so a tool nobody has reviewed is off in it from the first session.
+func bundleRestrictsSession(bundle *bundleclient.Resolution) bool {
+	return bundle != nil && (len(bundle.DeniedTools) > 0 || len(bundle.DeniedReadPaths) > 0)
+}
+
+// errBuiltInToolAllowListUnenforceable marks a restricted session refused
+// because the session as asked for could be offered a built-in tool that is not
+// on its allow list.
+var errBuiltInToolAllowListUnenforceable = errors.New("built-in tool allow list cannot be enforced")
+
+// restrictedSessionBuiltInToolAllowList is the built-in tools a restricted
+// session may be offered: the harness tools tool-store has enabled, less every
+// disabled one. It is never nil; an empty list offers no built-in tool. It
+// refuses a harness that takes no allow list, and a caller's own tools, which
+// would replace the list.
+func restrictedSessionBuiltInToolAllowList(harness msg.Harness, enabledInToolStore, disabled []string, callerSetTools bool) ([]string, error) {
+	if harness != msg.HarnessClaudeCode {
+		return nil, fmt.Errorf("%w: the session's bundle restricts its tools, and only claude_code can be held to an allow list; a %s session would be offered a tool tool-store has not reviewed", errBuiltInToolAllowListUnenforceable, harness)
+	}
+	if callerSetTools {
+		return nil, fmt.Errorf("%w: the session's bundle restricts its tools, and harness_config.tools would replace the allow list tool-store decides; leave tools out", errBuiltInToolAllowListUnenforceable)
+	}
+	off := map[string]bool{}
+	for _, name := range disabled {
+		off[name] = true
+	}
+	allowed := []string{}
+	for _, name := range enabledInToolStore {
+		if !off[name] {
+			allowed = append(allowed, name)
+		}
+	}
+	return allowed, nil
+}
+
+// builtInToolAllowListPinnedOn reads a restricted session's allow list. It
+// returns nil when the session has none: no bundle restricted it.
+func builtInToolAllowListPinnedOn(cfg map[string]json.RawMessage) ([]string, error) {
+	if _, pinned := cfg[harnessConfigKeyBuiltInToolAllowListPinnedFor]; !pinned {
+		return nil, nil
+	}
+	raw, ok := cfg[harnessConfigKeyBuiltInToolAllowList]
+	if !ok {
+		return nil, fmt.Errorf("harness_config.%s is set but harness_config.tools is missing", harnessConfigKeyBuiltInToolAllowListPinnedFor)
+	}
+	allowed := []string{}
+	if err := json.Unmarshal(raw, &allowed); err != nil {
+		return nil, fmt.Errorf("harness_config.tools is not a string array: %w", err)
+	}
+	return allowed, nil
 }
 
 // errDeniedReadPathsUnenforceable marks a session refused because its

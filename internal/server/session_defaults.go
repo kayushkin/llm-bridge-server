@@ -188,6 +188,19 @@ func (s *Server) snapshotSessionDefaultsIntoSession(ctx context.Context, sess *s
 			return err
 		}
 	}
+	if bundleRestrictsSession(bundle) {
+		_, callerSetTools := cfg[harnessConfigKeyBuiltInToolAllowList]
+		allowed, err := restrictedSessionBuiltInToolAllowList(sess.Harness, denials.EnabledInToolStore, disabled, callerSetTools)
+		if err != nil {
+			return err
+		}
+		if err := pin(harnessConfigKeyBuiltInToolAllowList, allowed); err != nil {
+			return err
+		}
+		if err := pin(harnessConfigKeyBuiltInToolAllowListPinnedFor, sess.BundleID); err != nil {
+			return err
+		}
+	}
 	if len(deniedReadPaths) > 0 {
 		if err := pin(harnessConfigKeyDeniedReadPaths, deniedReadPaths); err != nil {
 			return err
