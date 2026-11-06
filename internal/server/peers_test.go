@@ -595,6 +595,20 @@ func TestPeerUsersActAsMappedPrincipalsWithinBothGrants(t *testing.T) {
 	if answer := asUser("GET", "/instances"); answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), "peer_user_not_mapped") ||
 		!strings.Contains(answer.Body.String(), remoteUser) {
 		t.Fatalf("an unmapped user = %d %s, want 403 peer_user_not_mapped naming the user", answer.Code, answer.Body)
+	} else {
+		// The calling server's user reads this answer through the proxy, where
+		// every id in it is the other server's. It must name the answering
+		// server and that server's own peer principal, and say the mapping is
+		// made there: on 2026-11-03 a reader posted it to the calling server.
+		body := answer.Body.String()
+		if !strings.Contains(body, accepting.store.ThisServerID()) || !strings.Contains(body, peerID) ||
+			!strings.Contains(body, "not on the calling server") {
+			t.Fatalf("an unmapped user's refusal = %s, want it to name the answering server %s, its peer principal %s, and where the mapping is made",
+				body, accepting.store.ThisServerID(), peerID)
+		}
+		if callingPeerID := initiating.store.ThisServerID(); strings.Contains(body, callingPeerID) {
+			t.Fatalf("an unmapped user's refusal = %s, names the calling server %s", body, callingPeerID)
+		}
 	}
 	if answer := accepting.requestAsAdministrator(t, "POST", "/peer-user-mappings", map[string]any{
 		"peer_principal_id": "principal_999999", "remote_principal_id": remoteUser, "local_principal_id": localUser,

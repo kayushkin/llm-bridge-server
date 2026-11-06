@@ -174,9 +174,14 @@ func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken, socketCo
 func (s *Server) callerForPeerUser(ctx context.Context, peer requestCaller, remotePrincipalID string) (requestCaller, *requestCredentialError) {
 	mapping, err := s.store.LivePeerUserMapping(peer.peer.peerPrincipalID, remotePrincipalID)
 	if errors.Is(err, store.ErrPeerUserMappingNotFound) {
+		// This answer is usually read on the calling server, relayed by its
+		// connection proxy, where both ids belong to the other server. So it
+		// says which server it came from and that the mapping is made there:
+		// on 2026-11-03 a reader posted it to their own server instead.
 		return requestCaller{}, &requestCredentialError{http.StatusForbidden, "peer_user_not_mapped", fmt.Sprintf(
-			"the connected server acting as %s names its user %s, whom no administrator here has mapped to a principal of this server; POST /peer-user-mappings {\"peer_principal_id\":%q,\"remote_principal_id\":%q,\"local_principal_id\":…} maps them",
-			peer.peer.peerPrincipalID, remotePrincipalID, peer.peer.peerPrincipalID, remotePrincipalID)}
+			"%s answers: the connected server acting here as %s names its user %s, whom no administrator of %s has mapped to a principal of it. The mapping is made on %s, not on the calling server: POST /peer-user-mappings {\"peer_principal_id\":%q,\"remote_principal_id\":%q,\"local_principal_id\":…} there, which the calling server reaches through its own connection proxy at /peer-connections/{its connection id}/proxy/peer-user-mappings; both principal ids are %s's",
+			s.thisServerDescription(), peer.peer.peerPrincipalID, remotePrincipalID, s.thisServerDescription(), s.thisServerDescription(),
+			peer.peer.peerPrincipalID, remotePrincipalID, s.thisServerDescription())}
 	}
 	if err != nil {
 		return requestCaller{}, &requestCredentialError{http.StatusInternalServerError, "peer_user_mapping_lookup_failed", err.Error()}

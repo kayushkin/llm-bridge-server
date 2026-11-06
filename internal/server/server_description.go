@@ -37,6 +37,16 @@ func (s *Server) thisServerName() string {
 	return strings.TrimSpace(s.settings.String(config.SettingServerName))
 }
 
+// thisServerDescription names this server in a message another server's
+// user may read: its name when it has one, and always its id, which is what
+// tells servers apart.
+func (s *Server) thisServerDescription() string {
+	if name := s.thisServerName(); name != "" {
+		return fmt.Sprintf("server %q (%s)", name, s.store.ThisServerID())
+	}
+	return "server " + s.store.ThisServerID()
+}
+
 // checkServerNameValue refuses a name that cannot travel in a header or be
 // drawn on one line.
 func checkServerNameValue(value string) error {
