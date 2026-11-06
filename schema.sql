@@ -1,6 +1,4 @@
--- possession-store schema. DRAFT for review: no service reads it yet.
---
--- Create-only and idempotent: Open() will run this whole file on every boot.
+-- possession-store schema. Create-only and idempotent: Open() will run this whole file on every boot.
 -- A new column goes in an additive migration, never in an edit to a CREATE
 -- TABLE below.
 --
@@ -77,7 +75,7 @@ CREATE TABLE IF NOT EXISTS garments (
     seq                   INTEGER NOT NULL UNIQUE,
     possession_id         TEXT NOT NULL UNIQUE REFERENCES possessions(id),
     category              TEXT NOT NULL,             -- vocabulary: top, bottom, one_piece, outerwear, footwear, headwear, accessory, underwear, sleepwear, swimwear
-    garment_type          TEXT NOT NULL DEFAULT '',  -- vocabulary per category: t_shirt, hoodie, jeans, chinos, sneakers, boots...
+    garment_type          TEXT NOT NULL DEFAULT '',  -- free words, lower case: t_shirt, hoodie, jeans, chinos, sneakers, boots...
     layer                 TEXT NOT NULL DEFAULT '',  -- vocabulary: base, mid, outer; '' for footwear and accessories
     primary_color         TEXT NOT NULL DEFAULT '',  -- vocabulary of named colors, so outfit rules can match them
     secondary_colors      TEXT NOT NULL DEFAULT '[]',
@@ -213,6 +211,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_purchases_order ON purchases(marketplace, 
 
 CREATE TABLE IF NOT EXISTS purchase_lines (
     id                    TEXT PRIMARY KEY,          -- purchase_line_000001
+    seq                   INTEGER NOT NULL UNIQUE,
     purchase_id           TEXT NOT NULL REFERENCES purchases(id),
     line_number           INTEGER NOT NULL,
     title                 TEXT NOT NULL,             -- as the seller wrote it
@@ -220,6 +219,7 @@ CREATE TABLE IF NOT EXISTS purchase_lines (
     unit_price_cents      INTEGER,
     product_reference     TEXT NOT NULL DEFAULT '',  -- ASIN, listing id
     disposition           TEXT NOT NULL DEFAULT 'unreviewed', -- vocabulary: unreviewed, possession, consumable, returned, gift_for_someone_else
+    created_at            INTEGER NOT NULL,
     UNIQUE (purchase_id, line_number)
 );
 
@@ -234,6 +234,7 @@ CREATE TABLE IF NOT EXISTS photo_reviews (
     seq                   INTEGER NOT NULL UNIQUE,
     photo_id              TEXT NOT NULL UNIQUE,      -- photo-store photo_…
     status                TEXT NOT NULL,             -- vocabulary: queued, reading, reconciling, waiting_for_owner, done, failed
+    image_source          TEXT NOT NULL DEFAULT '',  -- what the readers were shown: original (longest side 2048) or thumbnail
     error                 TEXT NOT NULL DEFAULT '',  -- why it failed, in full
     queued_by             TEXT NOT NULL,
     queued_at             INTEGER NOT NULL,
@@ -246,48 +247,62 @@ CREATE TABLE IF NOT EXISTS photo_reviews (
 CREATE TABLE IF NOT EXISTS model_readings (
     photo_review_id       TEXT NOT NULL REFERENCES photo_reviews(id),
     round                 INTEGER NOT NULL,
-    model_id              TEXT NOT NULL,             -- model-store id: claude-opus-5-5, gpt-6-astra
+    model_role            TEXT NOT NULL,             -- the model-store role asked: possession-photo-reader…
+    model_id              TEXT NOT NULL,             -- the model that answered: claude-opus-5-5, gpt-6-astra
     answer                TEXT NOT NULL,             -- the model's structured answer as JSON, unchanged
-    input_tokens          INTEGER NOT NULL,
+    input_tokens          INTEGER NOT NULL,          -- input, cache read and cache write together
     output_tokens         INTEGER NOT NULL,
     cost_usd              REAL NOT NULL,             -- at model-store list price
     read_at               INTEGER NOT NULL,
-    PRIMARY KEY (photo_review_id, round, model_id)
+    PRIMARY KEY (photo_review_id, round, model_role)
 );
 
--- One thing the review found in a photo.
+-- One thing the review found in a photo. proposed is what the store would
+-- record: {"possession":{…},"kind":"garment","kind_fields":{…}} or, when the
+-- readers say it is something already recorded, {"existing_possession_id":…}.
+-- versions keeps each reader's own final version, unchanged, when they differ.
 CREATE TABLE IF NOT EXISTS sightings (
     id                    TEXT PRIMARY KEY,          -- sighting_000001
     seq                   INTEGER NOT NULL UNIQUE,
     photo_review_id       TEXT NOT NULL REFERENCES photo_reviews(id),
+    label                 TEXT NOT NULL,             -- a few words: "black hoodie on the chair"
     box_left              REAL NOT NULL,
     box_top               REAL NOT NULL,
     box_right             REAL NOT NULL,
     box_bottom            REAL NOT NULL,
-    proposed              TEXT NOT NULL,             -- the agreed possession and kind fields, as JSON
-    agreement             TEXT NOT NULL,             -- vocabulary: both_agree, models_differ, one_model_only
-    status                TEXT NOT NULL,             -- vocabulary: proposed, accepted, rejected
+    proposed              TEXT NOT NULL,             -- JSON, above
+    versions              TEXT NOT NULL DEFAULT '{}', -- {"<model id>": its version} when the readers differ
+    agreement             TEXT NOT NULL,             -- vocabulary: both_agree, readers_differ, one_reader_only
+    status                TEXT NOT NULL,             -- vocabulary: proposed, accepted, rejected, same_as_other_sighting
+    same_as_sighting_id   TEXT REFERENCES sightings(id), -- an earlier sighting, still waiting on the owner, of the same thing
     possession_id         TEXT REFERENCES possessions(id), -- set when accepted: a new possession or one already known
-    decided_by            TEXT NOT NULL DEFAULT '',  -- principal_… or "agreement" when both models agreed and nothing was asked
+    decided_by            TEXT NOT NULL DEFAULT '',  -- principal_…, or "agreement" when both readers agreed and nothing was asked
     decided_at            INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sightings_review ON sightings(photo_review_id);
+CREATE INDEX IF NOT EXISTS idx_sightings_same_as ON sightings(same_as_sighting_id);
 
 -- A question for the owner: "Is this the same hoodie as possession_000012?",
--- "Opus says Fender, Astra says Squier: which is it?"
+-- "One reader says Fender, the other Squier: which is it?" Each choice
+-- carries what picking it does: {"label":…,"resolution":{"action":…}} with
+-- action accept (and the proposed record to accept), same_as (and
+-- possession_id) or reject. An answer in the owner's own words goes to the
+-- first reader, which turns it into one of those.
 CREATE TABLE IF NOT EXISTS owner_questions (
     id                    TEXT PRIMARY KEY,          -- possession_question_000001
     seq                   INTEGER NOT NULL UNIQUE,
-    sighting_id           TEXT REFERENCES sightings(id),
-    photo_review_id       TEXT REFERENCES photo_reviews(id),
+    sighting_id           TEXT NOT NULL REFERENCES sightings(id),
     question              TEXT NOT NULL,
-    choices               TEXT NOT NULL DEFAULT '[]', -- suggested answers; the owner may write another
-    answer                TEXT NOT NULL DEFAULT '',
+    choices               TEXT NOT NULL DEFAULT '[]',
+    answer_choice         INTEGER,                   -- index into choices; NULL when unanswered or answered in words
+    answer_text           TEXT NOT NULL DEFAULT '',  -- the owner's own words
+    resolution            TEXT NOT NULL DEFAULT '',  -- JSON: what the answer did, once applied
     answered_by           TEXT NOT NULL DEFAULT '',
     asked_at              INTEGER NOT NULL,
     answered_at           INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_owner_questions_open ON owner_questions(answered_at, asked_at);
+CREATE INDEX IF NOT EXISTS idx_owner_questions_sighting ON owner_questions(sighting_id);
 
 -- ---------------------------------------------------------------------------
 -- History.

@@ -16,4 +16,5 @@ thing is kept.
 - **Purchases** from Amazon, Facebook Marketplace and receipts are kept line
   by line. A line becomes a possession once someone confirms it is one.
 
-Status: design draft. `schema.sql` is up for review; no service exists yet.
+`CONTRACT.md` is the API. `deploy.sh` tests, builds and installs the service
+and `possession-add-photos`, which brings photos in and queues them for review.
