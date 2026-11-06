@@ -91,7 +91,7 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `DELETE` | `/possessions/{id}/photos/{photo_id}` | the photo stays in photo-store; the earliest left becomes cover |
 | `GET` | `/garments`, `/computers`, `/computer-parts`, `/audio-devices`, `/musical-instruments`, `/vehicles` | possessions of that kind, with the same query as `/possessions` |
 | `GET` | `/<kind route>/{id}` and `…/{id}/image` | the possession the kind record extends |
-| `GET` | `/computers/by-harness-machine/{machine_id}` | the computer tied to a harness-store machine (`m_…`) |
+| `GET` | `/harness-machines/{machine_id}/computer` | the computer tied to a harness-store machine (`m_…`) |
 | `POST` | `/vehicles/{id}/odometer-readings` | `{read_at, miles, source}` |
 | `GET` | `/outfits` | `?status=`, `?garment_id=`, `?limit=`, `?offset=` |
 | `POST` | `/outfits` | `{actor, name, occasion, weather, status, reasoning, preview_image_path, garment_ids:[…]}`; status is `suggested`, `kept` or `rejected`; every garment must be live. **201** |

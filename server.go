@@ -65,7 +65,7 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 			server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) { return server.Reviewer.PossessionImage(ctx, possessionID) })
 		})
 	}
-	mux.HandleFunc("GET /computers/by-harness-machine/{machine_id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /harness-machines/{machine_id}/computer", func(w http.ResponseWriter, r *http.Request) {
 		possession, err := server.Store.ComputerForHarnessMachine(r.PathValue("machine_id"))
 		respond(w, http.StatusOK, possession, err)
 	})
