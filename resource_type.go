@@ -38,6 +38,12 @@ const (
 	// ResourceTypePeerConnection is one of llm-bridge-server's connections to
 	// another llm-bridge-server, such as peer_connection_000001.
 	ResourceTypePeerConnection = "peer_connection"
+	// ResourceTypeReferenceType is one of reference-store's reference types,
+	// such as prediction or budget_transaction; its name is its id.
+	ResourceTypeReferenceType = "reference_type"
+	// ResourceTypeReference is one record drawn as a reference chip, by the
+	// id written in prose, such as prediction_000012.
+	ResourceTypeReference = "reference"
 )
 
 // resourceTypeDefinition is everything this store knows about one resource
@@ -111,6 +117,16 @@ var resourceTypeDefinitions = []resourceTypeDefinition{
 		owner:         "llm-bridge-server",
 		idDescription: "llm-bridge-server's peer connection id, e.g. peer_connection_000001",
 		nameIsNotAnID: "the connected server's name is not accepted: a server reports its own and may change it",
+	},
+	{
+		name:          ResourceTypeReferenceType,
+		owner:         "reference-store",
+		idDescription: "a reference type as reference-store's GET /types lists it, e.g. prediction",
+	},
+	{
+		name:          ResourceTypeReference,
+		owner:         "reference-store",
+		idDescription: "a record's id as it is written in prose, e.g. prediction_000012, that reference-store's POST /resolve finds",
 	},
 }
 

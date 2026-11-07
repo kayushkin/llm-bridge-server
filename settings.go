@@ -21,16 +21,18 @@ const OwnedEnvironmentVariablePrefix = "GRANT_STORE_"
 
 // Keys of the settings, as GET /settings names them.
 const (
-	SettingListenAddress           = "listen_address"
-	SettingDataDirectory           = "data_directory"
-	SettingServiceToken            = "service_token"
-	SettingPrincipalStoreURL       = "principal_store_url"
-	SettingLLMBridgeServerURL      = "llm_bridge_server_url"
-	SettingSkillStoreURL           = "skill_store_url"
-	SettingToolStoreURL            = "tool_store_url"
-	SettingKanbanStoreURL          = "kanban_store_url"
-	SettingKanbanStoreServiceToken = "kanban_store_service_token"
-	SettingLLMBridgeServiceToken   = "llm_bridge_service_token"
+	SettingListenAddress              = "listen_address"
+	SettingDataDirectory              = "data_directory"
+	SettingServiceToken               = "service_token"
+	SettingPrincipalStoreURL          = "principal_store_url"
+	SettingLLMBridgeServerURL         = "llm_bridge_server_url"
+	SettingSkillStoreURL              = "skill_store_url"
+	SettingToolStoreURL               = "tool_store_url"
+	SettingKanbanStoreURL             = "kanban_store_url"
+	SettingKanbanStoreServiceToken    = "kanban_store_service_token"
+	SettingReferenceStoreURL          = "reference_store_url"
+	SettingReferenceStoreServiceToken = "reference_store_service_token"
+	SettingLLMBridgeServiceToken      = "llm_bridge_service_token"
 )
 
 // DefaultListenAddress is where the service listens with nothing set. Loopback,
@@ -70,6 +72,10 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "Where kanban-store answers. Boards are checked there before a grant names one."},
 		{Key: SettingKanbanStoreServiceToken, EnvironmentVariable: kanbanStoreServiceTokenVariable, Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,
 			Description: "The token sent to kanban-store on board checks. Unset sends none, which is right only for a kanban-store that does not enforce principals; against one that does, every board check is a 401 reported as a 502."},
+		{Key: SettingReferenceStoreURL, EnvironmentVariable: referenceStoreURLVariable, Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultReferenceStoreURL,
+			Description: "Where reference-store answers. Reference types and records are checked there before a grant names one."},
+		{Key: SettingReferenceStoreServiceToken, EnvironmentVariable: referenceStoreServiceTokenVariable, Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,
+			Description: "The token sent to reference-store when a grant names one record. Unset sends none, and every such check is a 401 reported as a 502."},
 		{Key: SettingLLMBridgeServiceToken, EnvironmentVariable: llmBridgeServiceTokenVariable, Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,
 			Description: "The token sent to llm-bridge-server when a grant names an instance, a machine or a peer connection, whose routes are the bridge's operator routes. Unset sends none, and every such check is a 401 reported as a 502."},
 	}

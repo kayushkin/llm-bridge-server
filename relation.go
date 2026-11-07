@@ -47,6 +47,9 @@ const (
 	RelationCanObserveSessionsOn = "can_observe_sessions_on"
 	RelationCanStartSessionsAs   = "can_start_sessions_as"
 	RelationCanCallThrough       = "can_call_through"
+	// RelationCanSeeReferences lets a principal see records drawn as
+	// reference chips: every record of a type, or one record.
+	RelationCanSeeReferences = "can_see_references"
 )
 
 // AllResources is the resource_id that names every resource of the grant's
@@ -140,6 +143,13 @@ var Relations = []RelationDefinition{
 		ResourceTypes:       []string{ResourceTypePeerConnection},
 		Enforced:            true,
 		Description:         "may see this llm-bridge-server peer connection and call the connected server through it; llm-bridge-server reads it on GET /peer-connections and its proxy for a principal restricted to its grants",
+	},
+	{
+		Name:                RelationCanSeeReferences,
+		AcceptsAllResources: true,
+		ResourceTypes:       []string{ResourceTypeReferenceType, ResourceTypeReference},
+		Enforced:            true,
+		Description:         "may see records drawn as reference chips: every record of a reference type (or of every type, with *), or one record; reference-store reads it, an administrator needs none, and holding none shows none",
 	},
 	{
 		Name:                RelationWorksWith,

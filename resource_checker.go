@@ -36,11 +36,19 @@ const (
 	DefaultSkillStoreURL      = "http://127.0.0.1:8301"
 	DefaultToolStoreURL       = "http://127.0.0.1:8302"
 	DefaultKanbanStoreURL     = "http://127.0.0.1:8305"
+	DefaultReferenceStoreURL  = "http://127.0.0.1:8343"
 
 	llmBridgeServerURLVariable = "LLM_BRIDGE_URL"
 	skillStoreURLVariable      = "SKILL_STORE_URL"
 	toolStoreURLVariable       = "TOOL_STORE_URL"
 	kanbanStoreURLVariable     = "KANBAN_STORE_URL"
+	referenceStoreURLVariable  = "REFERENCE_STORE_URL"
+	// referenceStoreServiceTokenVariable is the token reference-store takes
+	// from an internal service to look a record up for nobody. Its name is
+	// reference-store's own, in the host's shared token file.
+	referenceStoreServiceTokenVariable = "REFERENCE_STORE_SERVICE_TOKEN"
+	// ReferenceStoreServiceTokenHeader is where reference-store reads it.
+	ReferenceStoreServiceTokenHeader = "X-Reference-Store-Service-Token"
 	// kanbanStoreServiceTokenVariable holds the token kanban-store accepts from
 	// internal services when it enforces principals. Without it a board check
 	// against an enforcing kanban-store is a 401, reported as the owner being
@@ -76,6 +84,10 @@ type ResourceOwners struct {
 	KanbanStoreURL        string
 	// KanbanStoreServiceToken is sent to kanban-store only.
 	KanbanStoreServiceToken string
+	ReferenceStoreURL       string
+	// ReferenceStoreServiceToken is sent to reference-store only. Without it a
+	// reference check is a 401 reported as the owner being unable to answer.
+	ReferenceStoreServiceToken string
 }
 
 // HTTPResourceChecker asks the real owners over HTTP.
@@ -87,21 +99,25 @@ type HTTPResourceChecker struct {
 	toolStoreURL          string
 	kanbanStoreURL        string
 	// kanbanStoreServiceToken is sent to kanban-store only, and only when set.
-	kanbanStoreServiceToken string
-	client                  *http.Client
+	kanbanStoreServiceToken    string
+	referenceStoreURL          string
+	referenceStoreServiceToken string
+	client                     *http.Client
 }
 
 // NewHTTPResourceChecker builds a checker against the given owners.
 func NewHTTPResourceChecker(owners ResourceOwners) *HTTPResourceChecker {
 	return &HTTPResourceChecker{
-		llmBridgeServerURL:      strings.TrimSuffix(owners.LLMBridgeServerURL, "/"),
-		llmBridgeServiceToken:   owners.LLMBridgeServiceToken,
-		principalStoreURL:       strings.TrimSuffix(owners.PrincipalStoreURL, "/"),
-		skillStoreURL:           strings.TrimSuffix(owners.SkillStoreURL, "/"),
-		toolStoreURL:            strings.TrimSuffix(owners.ToolStoreURL, "/"),
-		kanbanStoreURL:          strings.TrimSuffix(owners.KanbanStoreURL, "/"),
-		kanbanStoreServiceToken: owners.KanbanStoreServiceToken,
-		client:                  &http.Client{Timeout: ownerCheckTimeout},
+		llmBridgeServerURL:         strings.TrimSuffix(owners.LLMBridgeServerURL, "/"),
+		llmBridgeServiceToken:      owners.LLMBridgeServiceToken,
+		principalStoreURL:          strings.TrimSuffix(owners.PrincipalStoreURL, "/"),
+		skillStoreURL:              strings.TrimSuffix(owners.SkillStoreURL, "/"),
+		toolStoreURL:               strings.TrimSuffix(owners.ToolStoreURL, "/"),
+		kanbanStoreURL:             strings.TrimSuffix(owners.KanbanStoreURL, "/"),
+		kanbanStoreServiceToken:    owners.KanbanStoreServiceToken,
+		referenceStoreURL:          strings.TrimSuffix(owners.ReferenceStoreURL, "/"),
+		referenceStoreServiceToken: owners.ReferenceStoreServiceToken,
+		client:                     &http.Client{Timeout: ownerCheckTimeout},
 	}
 }
 
@@ -133,6 +149,11 @@ func (c *HTTPResourceChecker) CheckResourceExists(ctx context.Context, resourceT
 	case ResourceTypePeerConnection:
 		return c.checkByGet(ctx, "llm-bridge-server", llmBridgeServerURLVariable,
 			c.llmBridgeServerURL+"/peer-connections/"+url.PathEscape(resourceID))
+	case ResourceTypeReferenceType:
+		return c.checkByGet(ctx, "reference-store", referenceStoreURLVariable,
+			c.referenceStoreURL+"/types/"+url.PathEscape(resourceID))
+	case ResourceTypeReference:
+		return c.checkReferenceResolves(ctx, resourceID)
 	}
 	// Unreachable through the store, which validates the type first. Reaching it
 	// means a type was added to resource_type.go without an owner check here.
@@ -149,6 +170,9 @@ func (c *HTTPResourceChecker) get(ctx context.Context, owner, requestURL string)
 	}
 	if owner == "kanban-store" && c.kanbanStoreServiceToken != "" {
 		request.Header.Set(KanbanStoreServiceTokenHeader, c.kanbanStoreServiceToken)
+	}
+	if owner == "reference-store" && c.referenceStoreServiceToken != "" {
+		request.Header.Set(ReferenceStoreServiceTokenHeader, c.referenceStoreServiceToken)
 	}
 	if owner == "llm-bridge-server" && c.llmBridgeServiceToken != "" {
 		request.Header.Set(LLMBridgeServiceTokenHeader, c.llmBridgeServiceToken)
@@ -253,4 +277,53 @@ func (c *HTTPResourceChecker) checkOperationTypeInList(ctx context.Context, reso
 		known = append(known, operationType.Type)
 	}
 	return fmt.Errorf("%w: %s runs no operation type %q; it runs %s", ErrResourceNotFound, owner, resourceID, strings.Join(known, ", "))
+}
+
+// checkReferenceResolves asks reference-store, for nobody, what the id names:
+// at least one record exists, none does not, and a store that could not say is
+// a failure rather than a "does not exist".
+func (c *HTTPResourceChecker) checkReferenceResolves(ctx context.Context, resourceID string) error {
+	requestURL := c.referenceStoreURL + "/resolve"
+	body, err := json.Marshal(map[string][]string{"ids": {resourceID}})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("build POST %s: %w", requestURL, err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if c.referenceStoreServiceToken != "" {
+		request.Header.Set(ReferenceStoreServiceTokenHeader, c.referenceStoreServiceToken)
+	}
+	response, err := c.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("reference-store did not answer POST %s: %w", requestURL, err)
+	}
+	defer response.Body.Close()
+	answerBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return fmt.Errorf("reference-store answered POST %s with %s, but the body could not be read: %w", requestURL, response.Status, err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("reference-store answered POST %s with %s: %s (check %s and %s)",
+			requestURL, response.Status, strings.TrimSpace(string(answerBody)), referenceStoreURLVariable, referenceStoreServiceTokenVariable)
+	}
+	var answer struct {
+		Results map[string][]json.RawMessage `json:"results"`
+		Errors  []struct {
+			Type  string `json:"type"`
+			Error string `json:"error"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(answerBody, &answer); err != nil {
+		return fmt.Errorf("reference-store answered POST %s with something that is not its answer: %w", requestURL, err)
+	}
+	if len(answer.Results[resourceID]) > 0 {
+		return nil
+	}
+	if len(answer.Errors) > 0 {
+		return fmt.Errorf("reference-store could not say whether %s exists: %s: %s", resourceID, answer.Errors[0].Type, answer.Errors[0].Error)
+	}
+	return fmt.Errorf("%w: reference-store finds no record with id %s", ErrResourceNotFound, resourceID)
 }

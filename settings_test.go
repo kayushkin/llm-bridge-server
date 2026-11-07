@@ -28,16 +28,18 @@ func TestTheRegistryReadsTheSameValuesTheCommandAlwaysDid(t *testing.T) {
 		t.Fatal(err)
 	}
 	for key, want := range map[string]string{
-		SettingListenAddress:           "127.0.0.1:8315",
-		SettingDataDirectory:           DefaultDataDir(),
-		SettingServiceToken:            "",
-		SettingPrincipalStoreURL:       "http://127.0.0.1:8314",
-		SettingLLMBridgeServerURL:      "http://127.0.0.1:8160",
-		SettingSkillStoreURL:           "http://127.0.0.1:8301",
-		SettingToolStoreURL:            "http://127.0.0.1:8302",
-		SettingKanbanStoreURL:          "http://127.0.0.1:8305",
-		SettingKanbanStoreServiceToken: "",
-		SettingLLMBridgeServiceToken:   "",
+		SettingListenAddress:              "127.0.0.1:8315",
+		SettingDataDirectory:              DefaultDataDir(),
+		SettingServiceToken:               "",
+		SettingPrincipalStoreURL:          "http://127.0.0.1:8314",
+		SettingLLMBridgeServerURL:         "http://127.0.0.1:8160",
+		SettingSkillStoreURL:              "http://127.0.0.1:8301",
+		SettingToolStoreURL:               "http://127.0.0.1:8302",
+		SettingKanbanStoreURL:             "http://127.0.0.1:8305",
+		SettingKanbanStoreServiceToken:    "",
+		SettingLLMBridgeServiceToken:      "",
+		SettingReferenceStoreURL:          "http://127.0.0.1:8343",
+		SettingReferenceStoreServiceToken: "",
 	} {
 		if got := unset.String(key); got != want {
 			t.Errorf("%s with nothing set = %q, want %q", key, got, want)
@@ -45,16 +47,18 @@ func TestTheRegistryReadsTheSameValuesTheCommandAlwaysDid(t *testing.T) {
 	}
 
 	operatorValues := map[string]string{
-		"GRANT_STORE_ADDR":           "127.0.0.1:9999",
-		"GRANT_STORE_DATA_DIR":       "/srv/grants",
-		"GRANT_STORE_SERVICE_TOKEN":  enforcementTestServiceToken,
-		"PRINCIPAL_STORE_URL":        "http://principals.example",
-		"LLM_BRIDGE_URL":             "http://bridge.example",
-		"SKILL_STORE_URL":            "http://skills.example",
-		"TOOL_STORE_URL":             "http://tools.example",
-		"KANBAN_STORE_URL":           "http://kanban.example",
-		"KANBAN_STORE_SERVICE_TOKEN": "kanban-token",
-		"LLMBRIDGE_SERVICE_TOKEN":    "bridge-token",
+		"GRANT_STORE_ADDR":              "127.0.0.1:9999",
+		"GRANT_STORE_DATA_DIR":          "/srv/grants",
+		"GRANT_STORE_SERVICE_TOKEN":     enforcementTestServiceToken,
+		"PRINCIPAL_STORE_URL":           "http://principals.example",
+		"LLM_BRIDGE_URL":                "http://bridge.example",
+		"SKILL_STORE_URL":               "http://skills.example",
+		"TOOL_STORE_URL":                "http://tools.example",
+		"KANBAN_STORE_URL":              "http://kanban.example",
+		"KANBAN_STORE_SERVICE_TOKEN":    "kanban-token",
+		"LLMBRIDGE_SERVICE_TOKEN":       "bridge-token",
+		"REFERENCE_STORE_URL":           "http://references.example",
+		"REFERENCE_STORE_SERVICE_TOKEN": "reference-token",
 	}
 	set, err := NewSettingsRegistry(servicesettings.MapEnvironment(operatorValues))
 	if err != nil {

@@ -138,7 +138,7 @@ func TestCreateRefusesWhatItCannotStoreBeforeAskingAnyone(t *testing.T) {
 		request GrantRequest
 		want    string
 	}{
-		{"unknown relation", GrantRequest{PrincipalID: "principal_000001", Relation: "may_use", ResourceType: "tool", ResourceID: "1"}, "can_use, can_run_as, can_dispatch_on, can_view, can_edit, can_administer, can_run_operation, can_observe_sessions_on, can_start_sessions_as, can_call_through, works_with"},
+		{"unknown relation", GrantRequest{PrincipalID: "principal_000001", Relation: "may_use", ResourceType: "tool", ResourceID: "1"}, "can_use, can_run_as, can_dispatch_on, can_view, can_edit, can_administer, can_run_operation, can_observe_sessions_on, can_start_sessions_as, can_call_through, can_see_references, works_with"},
 		{"case is not normalized", GrantRequest{PrincipalID: "principal_000001", Relation: "Can_Use", ResourceType: "tool", ResourceID: "1"}, "unknown relation"},
 		{"unknown resource type", GrantRequest{PrincipalID: "principal_000001", Relation: "can_use", ResourceType: "robot", ResourceID: "1"}, "agent, instance, machine, skill, tool"},
 		{"relation does not apply to type", GrantRequest{PrincipalID: "principal_000001", Relation: "can_run_as", ResourceType: "tool", ResourceID: "1"}, "can_run_as does not apply to a tool: it applies to agent"},
