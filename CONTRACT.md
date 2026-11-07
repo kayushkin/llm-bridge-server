@@ -116,7 +116,7 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `POST` | `/vehicles/{id}/odometer-readings` | `{read_at, miles, source}` |
 | `GET` | `/outfits` | `?status=`, `?possession_id=`, `?limit=`, `?offset=` |
 | `POST` | `/outfits` | `{actor, name, occasion, weather, status, reasoning, preview_image_path, possession_ids:[…]}`; status is `suggested`, `kept` or `rejected`; every possession must be live and of a wearable kind (`wearable_kinds` in `/vocabulary`: garment, jewelry, watch, eyewear, bag_or_case). **201** |
-| `GET` / `PATCH` | `/outfits/{id}` | a patch changes what it gives; `possession_ids` replaces the list |
+| `GET` / `PATCH` | `/outfits/{id}` | an outfit answers `possession_ids`, `worn_on` (its days) and `photo_ids` (the photo-store photos outfit readings found it in); a patch changes what it gives; `possession_ids` replaces the list |
 | `DELETE` | `/outfits/{id}?actor=` | soft, **204** |
 | `POST` | `/outfits/{id}/wearings` | `{worn_on:"YYYY-MM-DD"}` in the owner's time zone |
 | `GET` / `POST` | `/purchases` | `{seller, marketplace, order_reference, ordered_at, total_cents, currency, source, lines:[{title, quantity, unit_price_cents, product_reference, disposition}]}`. An order already recorded (same marketplace and reference) is a **409** |

@@ -737,7 +737,7 @@ func TestAnOutfitReadingRecordsTheOutfitAndFindsItAgain(t *testing.T) {
 		t.Fatalf("review = %s, outfit %v, worn %q, %d sightings (the lamp is not worn)", review.Status, review.OutfitID, review.WornOn, len(review.Sightings))
 	}
 	outfit, _ := store.GetOutfit(*review.OutfitID, false)
-	if len(outfit.PossessionIDs) != 2 || outfit.PossessionIDs[1] != watchID || len(outfit.WornOn) != 1 || outfit.WornOn[0] != "2026-11-06" {
+	if len(outfit.PossessionIDs) != 2 || outfit.PossessionIDs[1] != watchID || len(outfit.WornOn) != 1 || outfit.WornOn[0] != "2026-11-06" || len(outfit.PhotoIDs) != 1 || outfit.PhotoIDs[0] != "photo_000001" {
 		t.Fatalf("outfit = %+v", outfit)
 	}
 	hoodieID := outfit.PossessionIDs[0]
@@ -776,6 +776,9 @@ func TestAnOutfitReadingRecordsTheOutfitAndFindsItAgain(t *testing.T) {
 	again, _ := store.GetPhotoReview(second.ID)
 	if again.Status != "done" || again.OutfitID == nil || *again.OutfitID != outfit.ID {
 		t.Fatalf("the same three pieces should find outfit %s, got %v (%s)", outfit.ID, again.OutfitID, again.Status)
+	}
+	if final, _ := store.GetOutfit(outfit.ID, false); len(final.PhotoIDs) != 2 {
+		t.Fatalf("both selfies should be the outfit's photos: %v", final.PhotoIDs)
 	}
 	if outfits, _ := store.ListOutfits("", "", 0, 0); len(outfits) != 1 {
 		t.Fatalf("outfits = %d, want one", len(outfits))

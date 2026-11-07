@@ -37,6 +37,7 @@ type Outfit struct {
 	DeletedAt        int64    `json:"deleted_at"`
 	PossessionIDs    []string `json:"possession_ids"`
 	WornOn           []string `json:"worn_on"`
+	PhotoIDs         []string `json:"photo_ids"` // photo-store photos it was read from, oldest first
 }
 
 // checkOutfitPossessions holds an outfit to live possessions of a wearable
@@ -223,6 +224,9 @@ func outfitByID(q querier, id string, includeDeleted bool) (Outfit, error) {
 		return Outfit{}, err
 	}
 	if outfit.PossessionIDs, err = stringColumn(q, `SELECT possession_id FROM outfit_possessions WHERE outfit_id = ? ORDER BY position`, id); err != nil {
+		return Outfit{}, err
+	}
+	if outfit.PhotoIDs, err = stringColumn(q, `SELECT photo_id FROM photo_reviews WHERE outfit_id = ? ORDER BY worn_on, seq`, id); err != nil {
 		return Outfit{}, err
 	}
 	if outfit.WornOn, err = stringColumn(q, `SELECT worn_on FROM outfit_wearings WHERE outfit_id = ? ORDER BY worn_on`, id); err != nil {
