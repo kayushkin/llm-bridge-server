@@ -39,6 +39,14 @@ var importRowOutcomes = []string{
 	"skipped_internal", // a move inside the account that changes no balance (a cash sweep)
 }
 
+// billCadences are the rhythms the bill detector recognizes, with the days
+// one period spans and how many periods make a year.
+var billCadences = []string{"weekly", "monthly", "quarterly", "yearly"}
+
+// billStatuses: suggested waits for the operator; confirmed is a bill;
+// rejected is not one; ended was a bill and has stopped.
+var billStatuses = []string{"suggested", "confirmed", "rejected", "ended"}
+
 func requireOneOf(field, value string, allowed []string) error {
 	if !slices.Contains(allowed, value) {
 		return fmt.Errorf("%w: %s %q is not one of %v", ErrInvalid, field, value, allowed)
@@ -59,5 +67,7 @@ func handleVocabulary(w http.ResponseWriter, _ *http.Request) {
 		"import_row_outcomes":     importRowOutcomes,
 		"budget_views":            budgetViews,
 		"suggestion_statuses":     suggestionStatuses,
+		"bill_cadences":           billCadences,
+		"bill_statuses":           billStatuses,
 	})
 }

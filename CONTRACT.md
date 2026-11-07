@@ -171,6 +171,27 @@ empty `category_id` means a person must decide. It writes no category itself. `-
 A newer suggestion for a transaction supersedes its pending one; a rejected
 one leaves the transaction a candidate again.
 
+## Recurring bills
+
+`POST /recurring-bills/detect` groups payments by payee (or, with none, by the
+description's first words once reference numbers and dates are dropped) and
+looks for a steady rhythm: weekly, monthly, quarterly or yearly, with most
+gaps between payments in that rhythm's band. A payment is money spent (a
+positive expense or Uncategorized posting) or a payment into a loan from
+another account, interest included; paying a credit card is never a bill. A
+new bill is `suggested` only while it is still being paid; a known one keeps
+the operator's decision, has its payments, usual amount (median of the last
+three) and dates refreshed, goes `ended` when confirmed and unpaid past its
+next due date plus grace, and back to `confirmed` when paid again. Answers
+`{suggested, updated, ended, resumed}`.
+
+| Route | Does |
+|---|---|
+| `GET /recurring-bills?status=` | soonest due first, each with `payment_count` and `monthly_equivalent_cents` |
+| `GET /recurring-bills/{id}` | with every payment, oldest first, and each one's change from the one before |
+| `PATCH /recurring-bills/{id}` | `{status: confirmed\|rejected, name, decided_by}`; a status needs `decided_by` |
+| `GET /recurring-bills/totals` | confirmed bills: expected per month, six months and year, and what they actually came to in the last six and twelve months |
+
 ## Not yet served
 
-`statements` and `recurring_charges` have tables and no routes yet.
+`statements` and `recurring_charges` (the first draft of recurring bills, unused) have tables and no routes.

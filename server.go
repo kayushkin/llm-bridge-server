@@ -420,6 +420,32 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusOK, out, err)
 	})
 
+	mux.HandleFunc("POST /recurring-bills/detect", func(w http.ResponseWriter, _ *http.Request) {
+		out, err := s.DetectRecurringBills()
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("GET /recurring-bills", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.ListRecurringBills(r.URL.Query().Get("status"))
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("GET /recurring-bills/totals", func(w http.ResponseWriter, _ *http.Request) {
+		out, err := s.GetRecurringTotals()
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("GET /recurring-bills/{id}", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.GetRecurringBill(r.PathValue("id"))
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("PATCH /recurring-bills/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var patch RecurringBillPatch
+		if err := decodeBody(r, &patch); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.PatchRecurringBill(r.PathValue("id"), patch)
+		respond(w, http.StatusOK, out, err)
+	})
+
 	mux.HandleFunc("GET /links", func(w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListLinks(r.URL.Query().Get("from_id"))
 		respond(w, http.StatusOK, list, err)

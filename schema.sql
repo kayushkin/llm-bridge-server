@@ -311,3 +311,32 @@ CREATE TABLE IF NOT EXISTS loan_payment_facts (
   created_at                    INTEGER NOT NULL,
   UNIQUE (account_id, effective_on)
 );
+
+-- A payment that comes again on a steady rhythm: rent, a utility, a
+-- subscription, a loan payment. The detector suggests them; the operator
+-- confirms or rejects. (recurring_charges above was the first draft and is
+-- unused.)
+CREATE TABLE IF NOT EXISTS recurring_bills (
+  seq                 INTEGER PRIMARY KEY,
+  id                  TEXT NOT NULL UNIQUE,   -- recurring_bill_000001
+  match_key           TEXT NOT NULL UNIQUE,   -- what groups its payments: "payee:payee_000001" or "text:NV ENERGY NORTH"
+  name                TEXT NOT NULL,          -- display only
+  payee_id            TEXT REFERENCES payees(id),
+  cadence             TEXT NOT NULL,          -- vocabulary.go: billCadences
+  expected_cents      INTEGER NOT NULL,       -- the usual payment, positive
+  day_of_month        INTEGER NOT NULL DEFAULT 0, -- usual day for a monthly bill, 0 = not monthly
+  status              TEXT NOT NULL,          -- vocabulary.go: billStatuses
+  first_paid_on       TEXT NOT NULL,
+  last_paid_on        TEXT NOT NULL,
+  next_due_on         TEXT NOT NULL DEFAULT '',
+  decided_by          TEXT NOT NULL DEFAULT '',
+  decided_at          INTEGER NOT NULL DEFAULT 0,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS recurring_bill_payments (
+  recurring_bill_id  TEXT NOT NULL REFERENCES recurring_bills(id) ON DELETE CASCADE,
+  transaction_id     TEXT NOT NULL UNIQUE REFERENCES transactions(id) ON DELETE CASCADE,
+  PRIMARY KEY (recurring_bill_id, transaction_id)
+);
