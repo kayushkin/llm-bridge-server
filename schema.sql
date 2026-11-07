@@ -355,3 +355,49 @@ CREATE TABLE IF NOT EXISTS trip_transactions (
   PRIMARY KEY (trip_ref, transaction_id)
 );
 CREATE INDEX IF NOT EXISTS trip_transactions_transaction ON trip_transactions(transaction_id);
+
+-- An interest the operator follows across categories: skating, dancing.
+CREATE TABLE IF NOT EXISTS interests (
+  seq          INTEGER PRIMARY KEY,
+  id           TEXT NOT NULL UNIQUE,    -- interest_000001
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+
+-- What makes a transaction part of an interest: a category (and every one
+-- under it), a payee, or text in the description.
+CREATE TABLE IF NOT EXISTS interest_rules (
+  seq          INTEGER PRIMARY KEY,
+  id           TEXT NOT NULL UNIQUE,    -- interest_rule_000001
+  interest_id  TEXT NOT NULL REFERENCES interests(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL,           -- vocabulary.go: interestRuleKinds
+  value        TEXT NOT NULL,           -- a category_… or payee_… id, or upper-cased text
+  created_at   INTEGER NOT NULL,
+  UNIQUE (interest_id, kind, value)
+);
+
+-- Where the interest's history lives in other stores, by their ids or
+-- queries: a location-store place (its visits), a calendar-store search.
+CREATE TABLE IF NOT EXISTS interest_history_sources (
+  seq          INTEGER PRIMARY KEY,
+  id           TEXT NOT NULL UNIQUE,    -- interest_history_source_000001
+  interest_id  TEXT NOT NULL REFERENCES interests(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL,           -- vocabulary.go: interestHistoryKinds
+  ref          TEXT NOT NULL,           -- place_000002, or the calendar search text
+  note         TEXT NOT NULL DEFAULT '',
+  created_at   INTEGER NOT NULL,
+  UNIQUE (interest_id, kind, ref)
+);
+
+CREATE TABLE IF NOT EXISTS interest_transactions (
+  interest_id     TEXT NOT NULL REFERENCES interests(id) ON DELETE CASCADE,
+  transaction_id  TEXT NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  status          TEXT NOT NULL,        -- confirmed (a rule or the operator) or removed (the operator)
+  reason          TEXT NOT NULL,
+  decided_by      TEXT NOT NULL DEFAULT '',
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  PRIMARY KEY (interest_id, transaction_id)
+);

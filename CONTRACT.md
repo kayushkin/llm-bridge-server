@@ -210,6 +210,24 @@ or confirmed on another. Removed links are never suggested again.
 | `GET /trips/{trip_ref}/transactions` | its links oldest first, removed ones included, each with date, text, amount, category and account |
 | `PUT /trips/{trip_ref}/transactions/{transaction_id}` | `{status: confirmed\|removed, decided_by, reason}`: decide a suggestion, or add a transaction the dates missed. Confirming drops the transaction's suggestions on other trips; one confirmed on another trip is a 409 |
 
+## Interests
+
+An interest (`interest_000001`) gathers one pursuit's spending across
+categories. Its rules (`interest_rules`) match a category and every category
+under it, a payee, or upper-cased text in the description; a rule's matches
+are confirmed at once, because the rules are the operator's. The operator can
+add a transaction no rule caught or remove one; a removed one stays removed
+when the rules run again. History sources point at another store's record of
+the pursuit: a location-store place (its visits) or a calendar-store search.
+
+| Route | Does |
+|---|---|
+| `GET/POST /interests`, `GET /interests/{id}` | `{name, description}`; each read carries its rules, history sources, and confirmed total and count |
+| `POST /interests/{id}/rules` | `{kind: category\|payee\|description, value}`: adds the rule and confirms what it matches |
+| `POST /interests/{id}/history-sources` | `{kind: location_place\|calendar_search, ref, note}`; a place ref must be `place_000001` |
+| `GET /interests/{id}/transactions`, `PUT /interests/{id}/transactions/{transaction_id}` | newest first, removed included; PUT `{status: confirmed\|removed, decided_by}` |
+| `POST /interests/match` | runs every interest's rules again for new transactions; answers `{added}` |
+
 ## Not yet served
 
 `statements` and `recurring_charges` (the first draft of recurring bills, unused) have tables and no routes.

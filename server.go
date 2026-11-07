@@ -477,6 +477,72 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusOK, out, err)
 	})
 
+	mux.HandleFunc("GET /interests", func(w http.ResponseWriter, _ *http.Request) {
+		out, err := s.ListInterests()
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("POST /interests", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.CreateInterest(in.Name, in.Description)
+		respond(w, http.StatusCreated, out, err)
+	})
+	mux.HandleFunc("POST /interests/match", func(w http.ResponseWriter, _ *http.Request) {
+		count, err := s.MatchInterests()
+		respond(w, http.StatusOK, map[string]int{"added": count}, err)
+	})
+	mux.HandleFunc("GET /interests/{id}", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.GetInterest(r.PathValue("id"))
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("POST /interests/{id}/rules", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Kind  string `json:"kind"`
+			Value string `json:"value"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.AddInterestRule(r.PathValue("id"), in.Kind, in.Value)
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("POST /interests/{id}/history-sources", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Kind string `json:"kind"`
+			Ref  string `json:"ref"`
+			Note string `json:"note"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.AddInterestHistorySource(r.PathValue("id"), in.Kind, in.Ref, in.Note)
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("GET /interests/{id}/transactions", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.ListInterestTransactions(r.PathValue("id"))
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("PUT /interests/{id}/transactions/{transaction_id}", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Status    string `json:"status"`
+			DecidedBy string `json:"decided_by"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.SetInterestTransaction(r.PathValue("id"), r.PathValue("transaction_id"), in.Status, in.DecidedBy)
+		respond(w, http.StatusOK, out, err)
+	})
+
 	mux.HandleFunc("GET /links", func(w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListLinks(r.URL.Query().Get("from_id"))
 		respond(w, http.StatusOK, list, err)
