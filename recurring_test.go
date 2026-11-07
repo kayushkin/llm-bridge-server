@@ -16,6 +16,13 @@ func TestBillsAreFoundByRhythmAndWaitForTheOperator(t *testing.T) {
 		`"08/15/2026","POWER CO PYMT 260815 ACCT1234","-90.10","","Posted"`+"\n"+
 		`"09/15/2026","POWER CO PYMT 260915 ACCT1234","-95.20","","Posted"`+"\n"+
 		`"10/15/2026","POWER CO PYMT 261015 ACCT1234","-101.30","","Posted"`+"\n"+
+		// Rent through a portal that adds a fee the same day: one payment.
+		`"08/01/2026","PROPERTY CO RENT WEB PMTS","-1000.00","","Posted"`+"\n"+
+		`"08/01/2026","PROPERTY CO RENT WEB PMTS FEE","-2.49","","Posted"`+"\n"+
+		`"09/01/2026","PROPERTY CO RENT WEB PMTS","-1000.00","","Posted"`+"\n"+
+		`"09/01/2026","PROPERTY CO RENT WEB PMTS FEE","-2.49","","Posted"`+"\n"+
+		`"10/01/2026","PROPERTY CO RENT WEB PMTS","-1000.00","","Posted"`+"\n"+
+		`"10/01/2026","PROPERTY CO RENT WEB PMTS FEE","-2.49","","Posted"`+"\n"+
 		// Snacks several times a month: not a bill.
 		`"10/01/2026","PURCHASE AUTHORIZED ON 10/01 SNACK BAR S123456789","-2.00","","Posted"`+"\n"+
 		`"10/03/2026","PURCHASE AUTHORIZED ON 10/03 SNACK BAR S123456790","-2.50","","Posted"`+"\n"+
@@ -39,11 +46,22 @@ func TestBillsAreFoundByRhythmAndWaitForTheOperator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Suggested != 1 {
-		t.Fatalf("result = %+v, want only the utility suggested", result)
+	if result.Suggested != 2 {
+		t.Fatalf("result = %+v, want the utility and the rent suggested", result)
 	}
 	bills, _ := s.ListRecurringBills("suggested")
-	bill := bills[0]
+	var bill, rent RecurringBill
+	for _, b := range bills {
+		switch b.Name {
+		case "POWER CO PYMT":
+			bill = b
+		case "PROPERTY CO RENT WEB":
+			rent = b
+		}
+	}
+	if rent.ExpectedCents != 100249 || rent.Cadence != "monthly" || rent.PaymentCount != 6 {
+		t.Fatalf("rent = %+v, want one monthly payment of 1002.49 a month over six transactions", rent)
+	}
 	if bill.Cadence != "monthly" || bill.ExpectedCents != 9520 || bill.DayOfMonth != 15 || bill.NextDueOn != "2026-11-15" || bill.PaymentCount != 3 {
 		t.Fatalf("bill = %+v", bill)
 	}
@@ -56,6 +74,9 @@ func TestBillsAreFoundByRhythmAndWaitForTheOperator(t *testing.T) {
 	}
 	if _, err := s.PatchRecurringBill(bill.ID, RecurringBillPatch{Status: ptr("confirmed")}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("confirming with no decided_by = %v, want invalid", err)
+	}
+	if _, err := s.PatchRecurringBill(rent.ID, RecurringBillPatch{Status: ptr("rejected"), DecidedBy: "the operator, in a test"}); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := s.PatchRecurringBill(bill.ID, RecurringBillPatch{Status: ptr("confirmed"), DecidedBy: "the operator, in a test", Name: ptr("Power company")}); err != nil {
 		t.Fatal(err)

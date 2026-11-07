@@ -163,7 +163,22 @@ func billPayments(q queryer) (map[string][]billPayment, error) {
 	return groups, rows.Err()
 }
 
-// detectCadence finds the rhythm of a group of payments, oldest first.
+// paymentDays folds payments to one payee on one day into one, summed:
+// rent and the portal's convenience fee charged together are one payment.
+func paymentDays(payments []billPayment) []billPayment {
+	out := []billPayment{}
+	for _, p := range payments {
+		if n := len(out); n > 0 && out[n-1].occurredOn.Equal(p.occurredOn) {
+			out[n-1].amountCents += p.amountCents
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// detectCadence finds the rhythm of a group of payments, oldest first, at
+// most one a day.
 func detectCadence(payments []billPayment) (cadenceSpec, bool) {
 	if len(payments) < 2 {
 		return cadenceSpec{}, false
@@ -240,11 +255,14 @@ func (s *Store) DetectRecurringBills() (DetectResult, error) {
 	for _, key := range keys {
 		payments := groups[key]
 		sort.Slice(payments, func(i, j int) bool { return payments[i].occurredOn.Before(payments[j].occurredOn) })
-		spec, found := detectCadence(payments)
+		spec, found := detectCadence(paymentDays(payments))
 		if !found {
 			continue
 		}
-		recent := payments
+		// Usual amount and day from whole days: rent and the portal's fee on
+		// the same day are one payment of the bill.
+		days := paymentDays(payments)
+		recent := days
 		if len(recent) > 3 {
 			recent = recent[len(recent)-3:]
 		}
@@ -255,11 +273,11 @@ func (s *Store) DetectRecurringBills() (DetectResult, error) {
 		expected := medianInt64(amounts)
 		dayOfMonth := 0
 		if spec.months > 0 {
-			days := []int64{}
+			daysOfMonth := []int64{}
 			for _, p := range recent {
-				days = append(days, int64(p.occurredOn.Day()))
+				daysOfMonth = append(daysOfMonth, int64(p.occurredOn.Day()))
 			}
-			dayOfMonth = int(medianInt64(days))
+			dayOfMonth = int(medianInt64(daysOfMonth))
 		}
 		last := payments[len(payments)-1].occurredOn
 		next := addCadence(last, spec, dayOfMonth)
