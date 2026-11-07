@@ -75,7 +75,7 @@ List every piece the owner is wearing or carrying that can be seen: clothes, sho
 
 The owner's wearables already recorded, and pieces from other photos still waiting on the owner:
 %s
-Where a piece is clearly one listed above, put its id in existing_id: the same color, cut, pattern and marks, not merely the same kind of thing. Where it might be one of them but you cannot tell, or anything else that matters is unsure, write the one question you would ask the owner in doubt; otherwise leave doubt empty. from_readings stays empty.`,
+Where a piece is clearly one listed above, put its id in existing_id: the same color, cut, pattern and marks, not merely the same kind of thing. Where it might be one of them but you cannot tell, or anything else that matters is unsure, write the one question you would ask the owner in doubt, and say in doubt_kind whether it is about which piece this is (identity) or only a fact about a piece you are sure of (detail). Otherwise leave both empty. from_readings stays empty.`,
 		face.Left, face.Top, face.Right, face.Bottom, strings.Join(WearableKinds, ", "), candidates)
 }
 
@@ -159,9 +159,14 @@ func (s *Store) recordOutfitReading(ctx context.Context, reviewID, model, wornOn
 			return err
 		}
 		doubt := strings.TrimSpace(item.Doubt)
-		if doubt == "" {
+		if doubt == "" || item.DoubtKind == "detail" {
 			if err := s.applyResolution(ctx, transaction, sightingID, versionChoice("", version).Resolution, "agreement", reviewID, now); err != nil {
 				return fmt.Errorf("record %s: %w", sightingID, err)
+			}
+			if doubt != "" {
+				if err := insertQuestion(transaction, sightingID, fmt.Sprintf("Recorded as %s. To add: %s", version.summary(), doubt), []Choice{keepChoice}, "detail", now); err != nil {
+					return err
+				}
 			}
 			continue
 		}
@@ -285,4 +290,132 @@ func insertStillHaveItQuestion(transaction *sql.Tx, sightingID, name string, now
 		choice("Yes, I still have it", "owned"), choice("No, I gave it away", "given_away"), choice("No, I sold it", "sold"),
 		choice("No, I lost it", "lost"), choice("No, I threw it out", "discarded"),
 	}, "detail", now)
+}
+
+// DoubtTriage says what TriageOutfitDoubts did.
+type DoubtTriage struct {
+	Looked   int                 `json:"looked"`
+	Identity int                 `json:"identity"` // left as decision questions
+	Detail   int                 `json:"detail"`   // recorded, and the question made a detail question
+	Failures []map[string]string `json:"failures"`
+	CostUSD  float64             `json:"cost_usd"`
+}
+
+var doubtTriageSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["items"],"properties":{"items":{"type":"array","items":{
+	"type":"object","additionalProperties":false,"required":["question_id","about"],"properties":{
+	"question_id":{"type":"string"},
+	"about":{"type":"string","enum":["identity","detail"]}}}}}}`)
+
+// TriageOutfitDoubts sorts the open decision questions of outfit readings
+// made before readers labeled their doubts. The first reader reads each
+// question's text: one about which piece it is stays a decision; one about
+// only a fact of a piece the reader was sure of has its piece recorded as the
+// reader proposed, and becomes a detail question.
+func (reviewer *Reviewer) TriageOutfitDoubts(ctx context.Context, actor string) (DoubtTriage, error) {
+	store := reviewer.Store
+	if actor == "" {
+		return DoubtTriage{}, fmt.Errorf("%w: actor is required", ErrInvalid)
+	}
+	ids, err := stringColumn(store.db, `SELECT owner_questions.id FROM owner_questions JOIN sightings ON sightings.id = owner_questions.sighting_id
+		JOIN photo_reviews ON photo_reviews.id = sightings.photo_review_id
+		WHERE owner_questions.answered_at = 0 AND owner_questions.purpose = 'decision' AND photo_reviews.reading = 'outfit' AND sightings.status = 'proposed'
+		ORDER BY owner_questions.seq`)
+	if err != nil {
+		return DoubtTriage{}, err
+	}
+	result := DoubtTriage{Failures: []map[string]string{}}
+	const batchSize = 30
+	for start := 0; start < len(ids); start += batchSize {
+		batch := ids[start:min(start+batchSize, len(ids))]
+		var listing strings.Builder
+		questions := map[string]OwnerQuestion{}
+		for _, id := range batch {
+			question, err := questionByID(store.db, id)
+			if err != nil {
+				return result, err
+			}
+			questions[id] = question
+			fmt.Fprintf(&listing, "- %s: %s\n", id, question.Question)
+		}
+		prompt := `Each line is a question a reader asked the owner about a piece of what they wore in a photo. Say for each whether it is about identity (which piece this is: whether it is one already recorded, which of several, a new piece or a known one, whether it is the owner's or part of their outfit at all, what kind of thing it is) or only about a detail (the piece is clear and the question is a fact about it: material, model, brand, size, color name).
+
+` + listing.String()
+		answer, err := reviewer.Models.Ask(ctx, reviewer.FirstReaderRole, "You sort questions. Answer every one.", prompt, doubtTriageSchema, nil, 8000)
+		if err != nil {
+			return result, fmt.Errorf("sort questions %d to %d: %w", start+1, start+len(batch), err)
+		}
+		result.CostUSD += answer.CostUSD
+		var parsed struct {
+			Items []struct {
+				QuestionID string `json:"question_id"`
+				About      string `json:"about"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(answer.Parsed, &parsed); err != nil {
+			return result, fmt.Errorf("%s's sorting is not one: %w", answer.Model, err)
+		}
+		for _, item := range parsed.Items {
+			question, inBatch := questions[item.QuestionID]
+			if !inBatch {
+				continue
+			}
+			delete(questions, item.QuestionID)
+			result.Looked++
+			if item.About != "detail" {
+				result.Identity++
+				continue
+			}
+			if err := store.recordDetailDoubt(ctx, question, actor); err != nil {
+				result.Failures = append(result.Failures, map[string]string{"question_id": question.ID, "error": err.Error()})
+				continue
+			}
+			result.Detail++
+		}
+		for id := range questions {
+			result.Failures = append(result.Failures, map[string]string{"question_id": id, "error": answer.Model + " did not sort it"})
+		}
+	}
+	return result, nil
+}
+
+// recordDetailDoubt records a sighting as its reader proposed (the
+// question's first choice) and makes its question a detail question.
+func (s *Store) recordDetailDoubt(ctx context.Context, question OwnerQuestion, actor string) error {
+	if len(question.Choices) == 0 {
+		return fmt.Errorf("%s has no choices", question.ID)
+	}
+	s.writeMutex.Lock()
+	defer s.writeMutex.Unlock()
+	transaction, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer transaction.Rollback()
+	sighting, err := sightingByID(transaction, question.SightingID)
+	if err != nil {
+		return err
+	}
+	if sighting.Status != "proposed" {
+		return nil // settled meanwhile
+	}
+	now := s.unixNow()
+	if err := s.applyResolution(ctx, transaction, sighting.ID, question.Choices[0].Resolution, "agreement", sighting.PhotoReviewID, now); err != nil {
+		return err
+	}
+	if err := saveRevision(transaction, "owner_questions", "id", question.ID, actor, now); err != nil {
+		return err
+	}
+	keepChoices, _ := json.Marshal([]Choice{keepChoice})
+	if _, err := transaction.Exec(`UPDATE owner_questions SET purpose = 'detail', choices = ? WHERE id = ?`, string(keepChoices), question.ID); err != nil {
+		return err
+	}
+	if _, err := transaction.Exec(`UPDATE photo_reviews SET status = 'done', finished_at = ? WHERE id = ? AND status = 'waiting_for_owner'
+		AND NOT EXISTS (SELECT 1 FROM owner_questions JOIN sightings ON sightings.id = owner_questions.sighting_id
+			WHERE sightings.photo_review_id = photo_reviews.id AND owner_questions.answered_at = 0 AND owner_questions.purpose = 'decision')`, now, sighting.PhotoReviewID); err != nil {
+		return err
+	}
+	if err := s.addToReviewOutfit(transaction, sighting.ID, now); err != nil {
+		return err
+	}
+	return transaction.Commit()
 }

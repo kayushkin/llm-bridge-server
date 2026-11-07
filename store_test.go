@@ -208,6 +208,8 @@ func (models *scriptedModels) Ask(ctx context.Context, role, systemPrompt, promp
 		step = "detail"
 	case strings.Contains(prompt, "have no kind yet"):
 		step = "classify"
+	case strings.Contains(prompt, "Say for each whether it is about identity"):
+		step = "sort"
 	}
 	answer, known := models.answers[role+" "+step]
 	if !known {
@@ -809,5 +811,58 @@ func TestAPossessionMovesToAnotherKind(t *testing.T) {
 	}
 	if still, _ := store.GetPossession(id, false); still["kind"] != "watch" {
 		t.Fatalf("a refused move should change nothing: %v", still["kind"])
+	}
+}
+
+func TestDoubtsAboutOnlyADetailRecordThePieceAndAskLater(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	necklace := item("necklace", "brown bead necklace", "", "jewelry", Box{0.4, 0.4, 0.6, 0.5}, fieldValue{Name: "jewelry_type", Value: "necklace"})
+	belt := item("belt", "black belt", "", "garment", Box{0.4, 0.6, 0.6, 0.65}, fieldValue{Name: "category", Value: "accessory"}, fieldValue{Name: "garment_type", Value: "belt"})
+	ring := item("ring", "silver ring", "", "jewelry", Box{0.7, 0.5, 0.72, 0.52}, fieldValue{Name: "jewelry_type", Value: "ring"})
+	scripted := &scriptedModels{answers: map[string]any{
+		"first 1": finalReading{Items: []finalItem{
+			{readerItem: necklace, Doubt: "Is the necklace wood or another material?"},
+			{readerItem: belt, Doubt: "Is this your black belt or another one?"},
+			{readerItem: ring, Doubt: "Is the ring sterling silver?", DoubtKind: "detail"},
+		}},
+	}}
+	reviewer := &Reviewer{Store: store, Models: scripted, Photos: fakePhotos{}, FirstReaderRole: "first", SecondReaderRole: "second", OwnerLocation: mustLocation(t, "America/Los_Angeles")}
+	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001", "outfit", "person_000001")
+	if err := reviewer.Review(ctx, review.ID); err != nil {
+		t.Fatal(err)
+	}
+	decisions, _ := store.ListQuestions(false, review.ID, "decision", 0, 0)
+	if len(decisions) != 2 {
+		t.Fatalf("an unlabeled doubt is a decision and a labeled detail is not: %d decisions", len(decisions))
+	}
+	recorded, _ := store.GetPhotoReview(review.ID)
+	if recorded.OutfitID == nil {
+		t.Fatalf("the ring, a labeled detail, should already be in an outfit")
+	}
+	necklaceQuestion, beltQuestion := decisions[0].ID, decisions[1].ID
+	scripted.answers["first sort"] = map[string]any{"items": []map[string]string{
+		{"question_id": necklaceQuestion, "about": "detail"}, {"question_id": beltQuestion, "about": "identity"},
+	}}
+	result, err := reviewer.TriageOutfitDoubts(ctx, "principal_000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Looked != 2 || result.Detail != 1 || result.Identity != 1 || len(result.Failures) != 0 {
+		t.Fatalf("triage = %+v", result)
+	}
+	if question, _ := store.GetQuestion(necklaceQuestion); question.Purpose != "detail" {
+		t.Fatalf("the necklace question should be a detail now: %s", question.Purpose)
+	}
+	if question, _ := store.GetQuestion(beltQuestion); question.Purpose != "decision" {
+		t.Fatalf("the belt question should stay a decision: %s", question.Purpose)
+	}
+	outfit, _ := store.GetOutfit(*recorded.OutfitID, false)
+	if len(outfit.PossessionIDs) != 2 {
+		t.Fatalf("the outfit should hold the ring and the necklace: %v", outfit.PossessionIDs)
+	}
+	again, _ := reviewer.TriageOutfitDoubts(ctx, "principal_000001")
+	if again.Detail != 0 {
+		t.Fatalf("a second pass recorded %d more", again.Detail)
 	}
 }

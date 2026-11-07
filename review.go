@@ -88,6 +88,7 @@ type finalItem struct {
 	FromReadings []string `json:"from_readings"`
 	ExistingID   string   `json:"existing_id"`
 	Doubt        string   `json:"doubt"`
+	DoubtKind    string   `json:"doubt_kind"` // identity or detail; see itemSchema
 }
 
 type finalReading struct {
@@ -149,7 +150,9 @@ func itemSchema(final bool) map[string]any {
 		properties["from_readings"] = map[string]any{"type": "array", "items": stringSchema(), "description": "The round-one labels (A1, B3…) this entry stands for; empty for a thing neither listed"}
 		properties["existing_id"] = map[string]any{"type": "string", "description": "possession_… or sighting_… when it is something already listed below; otherwise empty"}
 		properties["doubt"] = map[string]any{"type": "string", "description": "The question you would ask the owner, when something that matters is unsure; otherwise empty"}
-		required = append(required, "from_readings", "existing_id", "doubt")
+		properties["doubt_kind"] = map[string]any{"type": "string", "enum": []string{"", "identity", "detail"},
+			"description": "identity: the doubt is which thing this is (whether it is one already listed, which of several, whether it is the owner's at all, what kind of thing it is). detail: the thing is clear and the doubt is only a fact about it (material, model, size). Empty with no doubt"}
+		required = append(required, "from_readings", "existing_id", "doubt", "doubt_kind")
 	}
 	return map[string]any{"type": "object", "additionalProperties": false, "required": required, "properties": properties}
 }

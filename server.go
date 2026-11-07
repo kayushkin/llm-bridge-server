@@ -300,6 +300,16 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 		questions, err := server.Store.ListQuestions(r.URL.Query().Get("include_answered") == "true", r.URL.Query().Get("photo_review_id"), r.URL.Query().Get("purpose"), limit, offset)
 		respond(w, http.StatusOK, questions, err)
 	})
+	mux.HandleFunc("POST /owner-questions/triage-outfit-doubts", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Actor string `json:"actor"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := server.Reviewer.TriageOutfitDoubts(r.Context(), body.Actor)
+		respond(w, http.StatusOK, result, err)
+	})
 	mux.HandleFunc("GET /owner-questions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		question, err := server.Store.GetQuestion(r.PathValue("id"))
 		respond(w, http.StatusOK, question, err)

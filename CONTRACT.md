@@ -127,6 +127,7 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `POST` | `/photo-reviews/{id}/retry` | `{actor}`: a `failed` review only; its readings go to revisions and it is queued again |
 | `GET` | `/sightings/{id}` and `/sightings/{id}/image` | |
 | `GET` | `/owner-questions` | open ones, oldest first; `?include_answered=true`, `?photo_review_id=`, `?purpose=decision\|detail` |
+| `POST` | `/owner-questions/triage-outfit-doubts` | `{actor}`: for outfit readings made before readers labeled their doubts. The first reader sorts each open decision question by its text: about which piece it is (stays a decision) or only a fact about a clear piece (the piece is recorded as the reader proposed, joins its outfit, and the question becomes a detail). Answers `{looked, identity, detail, failures, cost_usd}` |
 | `GET` | `/owner-questions/{id}` and `…/image` | the image is the sighting cut from its photo |
 | `POST` | `/owner-questions/{id}/answer` | `{choice:<index>}` or `{text:"…"}`, and `answered_by`. Words go to the first reader, which turns them into a resolution before anything is written: for a detail question, the possession as it should now read (`amend`). A second answer is a **409** |
 | `POST` | `/sightings/record-agreed` | `{actor}`: records every sighting both readers agreed on that still waits on a decision question, and makes that question a detail question. For reviews made before agreed sightings were recorded at once. Answers `{recorded, failures:[{sighting_id, error}]}`; running it again records nothing new |
@@ -172,7 +173,9 @@ has on, given where their face is (photo-store's confirmed face) and every
 wearable already recorded. A piece it is sure of is recorded at once: matched
 to its possession, or a new possession with status `unconfirmed` and a detail
 question, "Do you still have it?", whose choices set its status. A piece it
-doubts waits on a decision question. The recorded pieces make an outfit
+doubts waits on a decision question when the doubt is which piece it is
+(`doubt_kind: identity`); a doubt only about a fact of a clear piece
+(`doubt_kind: detail`) records the piece and asks a detail question. The recorded pieces make an outfit
 (`created_by` the review), or find the live outfit holding exactly the same
 pieces, and get a wearing on the photo's day in the owner's time zone
 (`worn_on` on the review). A piece accepted later, by an answer or by a
