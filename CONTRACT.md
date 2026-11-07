@@ -66,6 +66,7 @@ a chat draws an id as a chip.
 | question | `possession_question_…` | `/owner-questions/{id}` |
 | possession merge | `possession_merge_…` | `/possession-merges/{id}` |
 | outfit merge | `outfit_merge_…` | `/outfit-merges/{id}` |
+| wearable group | `wearable_group_…` | `/wearable-groups/{group}` |
 
 A **possession** holds what every owned thing has. A **kind** (garment,
 computer…) is a table of its own with only that kind's facts, one row per
@@ -130,6 +131,9 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `POST` | `/wearables/check-links` | `{actor}`: the link check, below. Answers an audit run |
 | `POST` | `/wearables/check-duplicates` | `{actor}`: the duplicate check, below. Answers an audit run |
 | `POST` | `/outfits/consolidate` | `{actor}`: outfit consolidation, below. Answers an audit run |
+| `GET` | `/wearable-groups` | every wearable group with a live member or a row: `{id, group, closed, members, owned, unconfirmed, other, changed_by, changed_at}`; `owned` counts owned and lent out, `other` sold, given away, lost and discarded; `id` is null for a group never set |
+| `PUT` | `/wearable-groups/{group}` | `{closed: true\|false, actor}`: the owner declares a group complete, or opens it again. A group is `watch`, `eyewear`, `garment:<category>`, `jewelry:<jewelry type>` or `bag_or_case:<bag type>`; any other is a **400**. Answers the group |
+| `POST` | `/outfit-pieces/rematch` | `{actor}`: the rematch, below. Answers an audit run |
 | `GET` / `POST` | `/purchases` | `{seller, marketplace, order_reference, ordered_at, total_cents, currency, source, lines:[{title, quantity, unit_price_cents, product_reference, disposition}]}`. An order already recorded (same marketplace and reference) is a **409** |
 | `GET` | `/purchases/{id}` | with lines; each line lists the possessions that point at it (`purchase_line_id`) |
 | `PATCH` | `/purchase-lines/{id}` | `{disposition, actor}` |
@@ -137,7 +141,7 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` | `/photo-reviews/{id}` | with every reading (each model's answer unchanged, tokens, cost) and sighting; `cost_usd` sums the readings |
 | `POST` | `/photo-reviews/{id}/retry` | `{actor}`: a `failed` review only; its readings go to revisions and it is queued again |
 | `GET` | `/sightings/{id}` and `/sightings/{id}/image` | |
-| `GET` | `/owner-questions` | open ones, oldest first; `?include_answered=true`, `?photo_review_id=`, `?purpose=decision\|detail`. Each says `asked_by`: `""` when the photo's reading asked it, otherwise `link_check`, `duplicate_check`, `outfit_consolidation` or `picture_match` |
+| `GET` | `/owner-questions` | open ones, oldest first; `?include_answered=true`, `?photo_review_id=`, `?purpose=decision\|detail`. Each says `asked_by`: `""` when the photo's reading asked it, otherwise `link_check`, `duplicate_check`, `outfit_consolidation`, `picture_match` or `closed_group` |
 | `POST` | `/owner-questions/triage-outfit-doubts` | `{actor}`: for outfit readings made before readers labeled their doubts. The first reader sorts each open decision question by its text: about which piece it is (stays a decision) or only a fact about a clear piece (the piece is recorded as the reader proposed, joins its outfit, and the question becomes a detail). Answers `{looked, identity, detail, failures, cost_usd}` |
 | `GET` | `/owner-questions/{id}` and `…/image` | the image is the sighting cut from its photo |
 | `POST` | `/owner-questions/{id}/answer` | `{choice:<index>}` or `{text:"…"}`, and `answered_by`. Words go to the first reader, which turns them into a resolution before anything is written: for a detail question, the possession as it should now read (`amend`). A second answer is a **409** |
@@ -270,3 +274,50 @@ choices `combine_outfits` (with the piece merges both agreed on) and
 
 An answer in words to an audit question goes to the first reader, which
 picks one of its choices; words that fit none are a **400**.
+
+## Closed groups
+
+The owner can declare a wearable group complete (`PUT /wearable-groups/{group}
+{closed:true}`): every watch they own, every ring, is recorded. In a closed
+group nothing is recorded as new, whatever asks:
+
+- **Picture match** (new readings and the rematch): both readers see every
+  owned member (owned or lent out) with up to 6 of its photos, cover first,
+  not the 12 nearest covers. A call holds at most 30 pictures; a group with
+  more is shown in batches, the piece in each, and a reader's pick is the one
+  member it named across the batches (`not_here` in the others); naming two
+  is `cannot_tell`. Each must pick a member or say `cannot_tell`. Both pick
+  the same member: linked. Otherwise a decision question whose choices are
+  every member (`/possessions/{id}/image` draws each) and "not mine".
+- **Accepting a new piece** whose kind and sub-type make a closed group is a
+  **409**, so an older question's "a piece not recorded yet" is refused too.
+- **Link check**: a question about a doubted link offers the other owned
+  members and "not mine", never a new piece.
+- **Duplicate check**: only the members that are not `unconfirmed` are
+  clustered; each `unconfirmed` member is matched as in the rematch's second
+  step.
+- **Merges** keep an owned possession over an unconfirmed one, before photo
+  count and age.
+
+## Rematch
+
+`POST /outfit-pieces/rematch {actor}` runs the picture match again where
+nothing settled:
+
+1. Each outfit-reading sighting still `proposed` behind an open decision
+   question is cut from the photo the reader saw and matched (closed-group
+   rules where its group is closed; a possession the link check unlinked it
+   from is left out). Both readers agree: the sighting is settled as they say
+   (a member, or in an open group a new `unconfirmed` piece when both say
+   none), each of its open decision questions is answered with
+   `answered_by: picture_match`, the resolution, and `answer_choice` when a
+   choice says the same, the piece joins its reading's outfit, and the review
+   is `done` once no decision is open. They differ: the question stays
+   (`disagreed`). The calls are saved as readings of the review.
+2. Each `unconfirmed` possession in a closed group: its photos (up to 6) are
+   matched against the owned members. Both readers pick one member: an
+   undoable merge into it (`merged`). Otherwise a decision question
+   (`asked_by: closed_group`) offers `merge_possessions` into each member and
+   `keep_apart` ("none of these"). One already asked about is left.
+
+Counts: `matched`, `disagreed`, `settled_meanwhile`, `merged`, `asked`.

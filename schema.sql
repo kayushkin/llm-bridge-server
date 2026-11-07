@@ -515,6 +515,23 @@ CREATE INDEX IF NOT EXISTS idx_outfit_merges_duplicate ON outfit_merges(duplicat
 CREATE INDEX IF NOT EXISTS idx_outfit_merges_kept ON outfit_merges(kept_outfit_id);
 
 -- ---------------------------------------------------------------------------
+-- Wearable groups the owner has declared complete. A group is a wearable
+-- kind and sub-type (wearableGroup in wearable_audit.go): "watch",
+-- "jewelry:ring", "garment:top". In a closed group nothing seen in a photo is
+-- recorded as a new piece: it is one of the owned members, or not the
+-- owner's. A group with no row is open.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS wearable_groups (
+    id                    TEXT PRIMARY KEY,          -- wearable_group_000001
+    seq                   INTEGER NOT NULL UNIQUE,
+    group_key             TEXT NOT NULL UNIQUE,
+    closed                INTEGER NOT NULL DEFAULT 0,
+    changed_by            TEXT NOT NULL,
+    changed_at            INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
 -- History.
 -- ---------------------------------------------------------------------------
 

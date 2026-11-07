@@ -1214,6 +1214,15 @@ func (s *Store) applyResolution(ctx context.Context, transaction *sql.Tx, sighti
 		if resolution.Proposal == nil {
 			return fmt.Errorf("%w: accept needs a proposal", ErrInvalid)
 		}
+		if group := proposalGroup(*resolution.Proposal); group != "" {
+			closed, err := groupClosed(transaction, group)
+			if err != nil {
+				return err
+			}
+			if closed {
+				return fmt.Errorf("%w: the owner closed the %s group, so nothing in it is recorded as new; pick one of its members or not mine", ErrConflict, group)
+			}
+		}
 		possessionID, err := s.createPossessionInTransaction(ctx, transaction, resolution.Proposal.possessionFields(), creator)
 		if err != nil {
 			return err

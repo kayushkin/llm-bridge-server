@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -325,13 +326,16 @@ func TestTheLinkCheckUnlinksWhatBothDoubtAndAsksWhatOneDoubts(t *testing.T) {
 // possession ids, per role.
 func clusterAnswers(clusters map[string][][]string, maximumPictures *int) func(role, step, prompt string, pictures int) (any, bool) {
 	line := regexp.MustCompile(`(I\d+) \(picture \d+\) — (possession_\d+):`)
+	var mutex sync.Mutex
 	return func(role, step, prompt string, pictures int) (any, bool) {
 		if step != "duplicates" {
 			return nil, false
 		}
+		mutex.Lock()
 		if maximumPictures != nil && pictures > *maximumPictures {
 			*maximumPictures = pictures
 		}
+		mutex.Unlock()
 		labels := map[string]string{}
 		for _, match := range line.FindAllStringSubmatch(prompt, -1) {
 			labels[match[2]] = match[1]

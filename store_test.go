@@ -207,7 +207,7 @@ func (models *scriptedModels) Ask(ctx context.Context, role, systemPrompt, promp
 		step = "duplicates"
 	case strings.Contains(prompt, "may be one outfit recorded twice"):
 		step = "outfits"
-	case strings.Contains(prompt, "a piece the owner has on in a new photo"):
+	case strings.Contains(prompt, "a piece the owner has on in "):
 		step = "match"
 	case strings.Contains(prompt, "Which choice do they mean?"):
 		step = "choice"

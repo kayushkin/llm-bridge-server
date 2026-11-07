@@ -94,6 +94,26 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /wearables/check-links", server.auditPass(server.Reviewer.CheckWearableLinks))
 	mux.HandleFunc("POST /wearables/check-duplicates", server.auditPass(server.Reviewer.CheckWearableDuplicates))
 	mux.HandleFunc("POST /outfits/consolidate", server.auditPass(server.Reviewer.ConsolidateOutfits))
+	mux.HandleFunc("POST /outfit-pieces/rematch", server.auditPass(server.Reviewer.RematchOutfitPieces))
+	mux.HandleFunc("GET /wearable-groups", func(w http.ResponseWriter, r *http.Request) {
+		groups, err := server.Store.ListWearableGroups()
+		respond(w, http.StatusOK, groups, err)
+	})
+	mux.HandleFunc("PUT /wearable-groups/{group}", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Closed *bool  `json:"closed"`
+			Actor  string `json:"actor"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		if body.Closed == nil {
+			writeError(w, fmt.Errorf("%w: closed (true or false) is required", ErrInvalid))
+			return
+		}
+		group, err := server.Store.SetWearableGroupClosed(r.Context(), r.PathValue("group"), *body.Closed, body.Actor)
+		respond(w, http.StatusOK, group, err)
+	})
 	mux.HandleFunc("POST /outfits/{id}/combine", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Into   string `json:"into"`

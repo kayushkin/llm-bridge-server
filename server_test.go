@@ -38,6 +38,7 @@ func TestTheRoutesRegisterAndAnswer(t *testing.T) {
 		"/possession-merges":                         200,
 		"/possession-merges/possession_merge_000001": 404,
 		"/outfit-merges":                             200,
+		"/wearable-groups":                           200,
 		"/outfit-merges/outfit_merge_000001":         404,
 	} {
 		if got := call("GET", path, ""); got.Code != want {
@@ -51,7 +52,13 @@ func TestTheRoutesRegisterAndAnswer(t *testing.T) {
 	if got := call("PATCH", "/possessions/possession_000001", `{"actor":"principal_000001","nickname":"x"}`); got.Code != 400 {
 		t.Errorf("PATCH with an unknown field = %d, want 400", got.Code)
 	}
-	for _, path := range []string{"/wearables/check-links", "/wearables/check-duplicates", "/outfits/consolidate"} {
+	if got := call("PUT", "/wearable-groups/jewelry:hat", `{"closed":true,"actor":"principal_000001"}`); got.Code != 400 {
+		t.Errorf("closing a group that cannot exist = %d, want 400", got.Code)
+	}
+	if got := call("PUT", "/wearable-groups/watch", `{"closed":true,"actor":"principal_000001"}`); got.Code != 200 || !strings.Contains(got.Body.String(), `"closed":true`) {
+		t.Errorf("closing watch = %d %s", got.Code, got.Body)
+	}
+	for _, path := range []string{"/wearables/check-links", "/wearables/check-duplicates", "/outfits/consolidate", "/outfit-pieces/rematch"} {
 		if got := call("POST", path, `{}`); got.Code != 400 {
 			t.Errorf("POST %s with no actor = %d %s, want 400", path, got.Code, got.Body)
 		}

@@ -74,7 +74,7 @@ var ResolutionActions = []string{"accept", "same_as", "same_as_sighting", "rejec
 var QuestionPurposes = []string{"decision", "detail"}
 
 // What raised a question other than the photo's own reading.
-var QuestionAskers = []string{"link_check", "duplicate_check", "outfit_consolidation", "picture_match"}
+var QuestionAskers = []string{"link_check", "duplicate_check", "outfit_consolidation", "picture_match", "closed_group"}
 
 // Vocabulary is GET /vocabulary.
 func Vocabulary() map[string][]string {

@@ -52,14 +52,31 @@ func (run *AuditRun) leave(about, why string) {
 	run.Left = append(run.Left, map[string]string{"about": about, "why": why})
 }
 
-// pictureCache reads each photo-store thumbnail once per pass.
+// pictureCache reads each photo-store thumbnail, and each photo as the
+// readers are shown it, once per pass.
 type pictureCache struct {
-	photos     PhotoSource
-	thumbnails map[string][]byte
+	photos       PhotoSource
+	thumbnails   map[string][]byte
+	reviewImages map[string][]byte
 }
 
 func newPictureCache(photos PhotoSource) *pictureCache {
-	return &pictureCache{photos: photos, thumbnails: map[string][]byte{}}
+	return &pictureCache{photos: photos, thumbnails: map[string][]byte{}, reviewImages: map[string][]byte{}}
+}
+
+// reviewImage is the photo as an outfit reading showed it to the reader
+// (the original scaled, or the thumbnail without one), which a sighting's
+// box was drawn on.
+func (cache *pictureCache) reviewImage(ctx context.Context, photoID string) ([]byte, error) {
+	if picture, cached := cache.reviewImages[photoID]; cached {
+		return picture, nil
+	}
+	picture, _, err := cache.photos.ReviewImage(ctx, photoID)
+	if err != nil {
+		return nil, err
+	}
+	cache.reviewImages[photoID] = picture
+	return picture, nil
 }
 
 func (cache *pictureCache) thumbnail(ctx context.Context, photoID string) ([]byte, error) {
@@ -200,9 +217,16 @@ func describeWearable(possession map[string]any) string {
 
 func photoCount(possession map[string]any) int { return len(possession["photos"].([]PhotoLink)) }
 
-// keeperOf picks which of two possessions a merge keeps: the one with more
-// photos, then the older.
+// keeperOf picks which of two possessions a merge keeps: one the owner
+// confirmed owning over one only seen in a photo (unconfirmed), then the one
+// with more photos, then the older.
 func keeperOf(first, second map[string]any) (kept, duplicate map[string]any) {
+	if confirmed := func(possession map[string]any) bool { return possession["status"] != "unconfirmed" }; confirmed(first) != confirmed(second) {
+		if confirmed(first) {
+			return first, second
+		}
+		return second, first
+	}
 	if photoCount(first) != photoCount(second) {
 		if photoCount(first) > photoCount(second) {
 			return first, second
@@ -367,7 +391,11 @@ For each crop, say whether it shows this same physical piece. When it does not, 
 					run.Counts["confirmed"]++
 					continue
 				}
-				action, err := store.settleLinkCheck(ctx, possession, *link.SightingID, models, [2]linkVerdict{first, second}, actor)
+				closed, err := groupClosed(store.db, possessionGroup(possession))
+				if err != nil {
+					return run, err
+				}
+				action, err := store.settleLinkCheck(ctx, possession, *link.SightingID, models, [2]linkVerdict{first, second}, closed, actor)
 				if err != nil {
 					run.fail(*link.SightingID, err)
 					continue
@@ -380,8 +408,10 @@ For each crop, say whether it shows this same physical piece. When it does not, 
 	return run, nil
 }
 
-// settleLinkCheck acts on a link at least one reader says is wrong.
-func (s *Store) settleLinkCheck(ctx context.Context, possession map[string]any, sightingID string, models [2]string, verdicts [2]linkVerdict, actor string) (AuditAction, error) {
+// settleLinkCheck acts on a link at least one reader says is wrong. In a
+// closed group the question offers every other owned member and never a
+// new piece.
+func (s *Store) settleLinkCheck(ctx context.Context, possession map[string]any, sightingID string, models [2]string, verdicts [2]linkVerdict, closed bool, actor string) (AuditAction, error) {
 	possessionID := possession["id"].(string)
 	name := possession["name"].(string)
 	s.writeMutex.Lock()
@@ -420,6 +450,16 @@ func (s *Store) settleLinkCheck(ctx context.Context, possession map[string]any, 
 			}
 		}
 	}
+	if closed {
+		members, err := s.closedGroupMembers(possessionGroup(possession), possessionID)
+		if err != nil {
+			return AuditAction{}, err
+		}
+		suggested = []string{}
+		for _, member := range members {
+			suggested = append(suggested, member["id"].(string))
+		}
+	}
 	fresh := sighting.Proposed
 	fresh.ExistingPossessionID, fresh.ExistingSightingID = "", ""
 	if fresh.Name == "" {
@@ -451,7 +491,10 @@ func (s *Store) settleLinkCheck(ctx context.Context, possession map[string]any, 
 		action.Action = "unlinked"
 		question = fmt.Sprintf("Both readers say the %s in this photo is not %s (%s): %s. It is no longer linked. Which piece is it?", sighting.Label, name, possessionID, action.Reason)
 		accept := fresh
-		choices = []Choice{{Label: "A piece not recorded yet: " + fresh.summary(), Resolution: Resolution{Action: "accept", Proposal: &accept}}}
+		choices = []Choice{}
+		if !closed {
+			choices = append(choices, Choice{Label: "A piece not recorded yet: " + fresh.summary(), Resolution: Resolution{Action: "accept", Proposal: &accept}})
+		}
 		for _, other := range suggested {
 			choices = append(choices, Choice{Label: fmt.Sprintf("It is %s (%s)", other, names[other]), Resolution: Resolution{Action: "same_as", PossessionID: other}})
 		}
@@ -460,9 +503,9 @@ func (s *Store) settleLinkCheck(ctx context.Context, possession map[string]any, 
 		action.Action = "asked"
 		question = fmt.Sprintf("Is the %s in this photo %s (%s)? %s.", sighting.Label, name, possessionID, action.Reason)
 		accept := fresh
-		choices = []Choice{
-			{Label: fmt.Sprintf("Yes, it is %s", name), Resolution: Resolution{Action: "keep_link", PossessionID: possessionID}},
-			{Label: "A different piece, not recorded yet: " + fresh.summary(), Resolution: Resolution{Action: "accept", Proposal: &accept, UnlinkPossessionID: possessionID}},
+		choices = []Choice{{Label: fmt.Sprintf("Yes, it is %s", name), Resolution: Resolution{Action: "keep_link", PossessionID: possessionID}}}
+		if !closed {
+			choices = append(choices, Choice{Label: "A different piece, not recorded yet: " + fresh.summary(), Resolution: Resolution{Action: "accept", Proposal: &accept, UnlinkPossessionID: possessionID}})
 		}
 		for _, other := range suggested {
 			choices = append(choices, Choice{Label: fmt.Sprintf("A different piece: %s (%s)", other, names[other]), Resolution: Resolution{Action: "same_as", PossessionID: other, UnlinkPossessionID: possessionID}})
@@ -554,6 +597,24 @@ func (reviewer *Reviewer) CheckWearableDuplicates(ctx context.Context, actor str
 	}
 	sort.Strings(groupNames)
 	cache := newPictureCache(reviewer.Photos)
+	for _, group := range groupNames {
+		closed, err := groupClosed(store.db, group)
+		if err != nil {
+			return run, err
+		}
+		if closed {
+			// Every unconfirmed member of a closed group is one of its owned
+			// members; settleUnconfirmedMembers (after the clustering) finds
+			// which. Only the rest are clustered.
+			owned := []map[string]any{}
+			for _, member := range groups[group] {
+				if member["status"] != "unconfirmed" {
+					owned = append(owned, member)
+				}
+			}
+			groups[group] = owned
+		}
+	}
 	for _, group := range groupNames {
 		members := groups[group]
 		if len(members) < 2 {
@@ -752,6 +813,17 @@ List each set of labels that show one and the same physical piece. Leave out eve
 			}
 			run.Counts["asked"]++
 			run.Actions = append(run.Actions, action)
+		}
+	}
+	allGroups, err := store.ListWearableGroups()
+	if err != nil {
+		return run, err
+	}
+	for _, group := range allGroups {
+		if group.Closed && group.Unconfirmed > 0 {
+			if err := reviewer.settleUnconfirmedMembers(ctx, cache, group.Group, actor, &run); err != nil {
+				return run, err
+			}
 		}
 	}
 	return run, nil

@@ -26,6 +26,8 @@ The vocabularies in `vocabulary.go` feed both validation and the readers' prompt
 
 Agents run the passes on request; nothing schedules them. They answer what they did and `cost_usd`, and run until done, so call them with a long timeout.
 
+**Closed groups and the rematch** (`wearable_groups.go`, `picture_match.go`), asked for on 2026-11-07 after the passes: selfies had left 265 outfit pieces `proposed` behind open decision questions, so they never joined their outfits, and wrist crops matched against close-up covers had made 8 `unconfirmed` watches for an owner of 5. The owner can close a group (`PUT /wearable-groups/{group}`, e.g. `watch`, `jewelry:ring`): then nothing in it is recorded as new anywhere — the picture match shows both readers every owned member with up to 6 photos each and they pick one or say `cannot_tell`, accepting a new piece is a 409, and the link and duplicate checks offer only members. `POST /outfit-pieces/rematch` re-runs the two-reader match on every stuck outfit piece, settling and answering what both agree on (`answered_by: picture_match`), and folds each unconfirmed member of a closed group into the owned member both readers pick, asking otherwise (`asked_by: closed_group`).
+
 ## Bringing photos in
 
 `possession-add-photos -queued-by principal_… [-time-zone America/Los_Angeles] photo…` copies each original to `<data dir>/originals/<sha256>.<ext>`, adds it to photo-store upright with its EXIF date and GPS, and queues it. It reads JPEG, PNG and WebP, not HEIC. `source_machine` is harness-store's one machine with transport `local`. The readers see the original scaled to 2048 pixels when it is in `originals/`, and photo-store's 1024-pixel thumbnail otherwise.
