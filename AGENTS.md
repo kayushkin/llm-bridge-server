@@ -32,7 +32,7 @@ A probability must sit on a fixed ladder (0.001, 0.01, 0.05 … 0.95, 0.99, 0.99
 
 ## Linking a prediction to other records
 
-`POST /predictions/{id}/links` takes `entity_type` and `entity_ref`; both are required, and `entity_type` is free text — the store does not check it against kanban-store's registry (`GET :8305/api/entity-types` is the canonical list). **kanban-store needs no change to link a card to a prediction**: it does not validate `entity_type` either, so `POST /api/cards/{id}/links {"entity_type":"prediction",…}` works as `pull_request` does. Registering the type would only buy chat chips and costs three edits in three repos.
+`POST /predictions/{id}/links` takes `entity_type` and `entity_ref`; both are required, and `entity_type` is free text — the store does not check it against reference-store's list of reference types (its `GET /types` is the canonical list). **kanban-store needs no change to link a card to a prediction**: it does not validate `entity_type` either, so `POST /api/cards/{id}/links {"entity_type":"prediction",…}` works as `pull_request` does. Registering the type would only buy chat chips and costs three edits in three repos.
 
 ## Deleting
 

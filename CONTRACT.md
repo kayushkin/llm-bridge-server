@@ -68,7 +68,7 @@ odds is how a calibration record becomes a flattering one.
 |---|---|
 | `id` | integer, autoincrement. `DELETE /links/{id}` takes this, not the prediction id |
 | `prediction_id` | cascades on purge |
-| `entity_type` | free text, a type from kanban-store's registry (`GET :8305/api/entity-types`). **Not validated here** — kanban-store does not validate it either, and a hardcoded copy of somebody else's vocabulary goes stale silently |
+| `entity_type` | free text, a type from reference-store's list of reference types (`GET /types`). **Not validated here** — kanban-store does not validate it either, and a hardcoded copy of somebody else's vocabulary goes stale silently |
 | `entity_ref` | the id in the store that owns the record |
 | `label` | display only, never read back to find the row |
 | `created_at` | |

@@ -13,11 +13,12 @@ type execer interface {
 }
 
 // knownEntityTypesNote is quoted in the error below. This store deliberately
-// does NOT validate entity_type against kanban-store's registry: kanban-store
-// does not validate it either, unregistered types work end to end there today,
+// does NOT validate entity_type against reference-store's list of reference
+// types: kanban-store does not validate a card link's type either,
+// unregistered types work end to end there today,
 // and a hardcoded copy of somebody else's vocabulary is exactly the kind of
 // second source of truth that goes stale silently.
-const knownEntityTypesNote = "entity_type is free text; the canonical list is GET http://localhost:8305/api/entity-types"
+const knownEntityTypesNote = "entity_type is free text; the canonical list is reference-store's GET /types"
 
 func insertLink(ex execer, predictionID string, l *Link, ts int64) error {
 	entityType := strings.TrimSpace(l.EntityType)
