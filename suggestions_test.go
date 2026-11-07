@@ -124,4 +124,30 @@ func TestADecisionNeedsToSayWhoDecidedAndCandidatesFilterByDate(t *testing.T) {
 	if len(accepted) != 1 || accepted[0].DecidedBy != "a standing instruction" {
 		t.Fatalf("accepted = %+v", accepted)
 	}
+	read, err := s.GetTransaction(old[0].TransactionID)
+	if err != nil || read.CategoryDecision == nil || read.CategoryDecision.DecidedBy != "a standing instruction" {
+		t.Fatalf("the transaction does not say who decided its category: %+v, %v", read.CategoryDecision, err)
+	}
+	home, _ := s.CreateCategory(Category{Name: "Home", Kind: "expense"})
+	under, _ := s.CreateCategory(Category{Name: "Furniture", Kind: "expense", ParentID: home.ID})
+	if _, err := s.SetTransactionCategories(old[0].TransactionID, []CategorySplit{{CategoryID: under.ID, AmountCents: 200}}); err != nil {
+		t.Fatal(err)
+	}
+	if byParent, _ := s.ListTransactions(TransactionFilter{CategoryID: home.ID, IncludeSubcategories: true}); len(byParent) != 1 {
+		t.Fatalf("a parent category with include_subcategories = %+v, want the furniture purchase", byParent)
+	}
+	if onlyParent, _ := s.ListTransactions(TransactionFilter{CategoryID: home.ID}); len(onlyParent) != 0 {
+		t.Fatalf("a parent category alone = %+v, want nothing", onlyParent)
+	}
+	monthly, err := s.SpendingByMonth("2026-09", "2026-11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int64{}
+	for _, m := range monthly {
+		got[m.Month+" "+m.Kind] += m.TotalCents
+	}
+	if got["2026-09 expense"] != 200 || got["2026-11 uncategorized"] != 100 {
+		t.Fatalf("monthly = %+v", monthly)
+	}
 }

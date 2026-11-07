@@ -151,8 +151,23 @@ type Transaction struct {
 	Memo         string    `json:"memo"`
 	Postings     []Posting `json:"postings"`
 	SourceRowIDs []string  `json:"source_row_ids"`
-	CreatedAt    int64     `json:"created_at"`
-	UpdatedAt    int64     `json:"updated_at"`
+	// CategoryDecision is the newest decided category suggestion for this
+	// transaction, when one exists: who decided and how sure the model was.
+	// Nil means its category came another way (a payee rule, a hand edit) or
+	// it has none yet.
+	CategoryDecision *CategoryDecision `json:"category_decision"`
+	CreatedAt        int64             `json:"created_at"`
+	UpdatedAt        int64             `json:"updated_at"`
+}
+
+// CategoryDecision is how a transaction's category was decided through a
+// suggestion.
+type CategoryDecision struct {
+	SuggestionID string  `json:"suggestion_id"`
+	Status       string  `json:"status"` // accepted or edited
+	DecidedBy    string  `json:"decided_by"`
+	Confidence   float64 `json:"confidence"`
+	Model        string  `json:"model"`
 }
 
 // TransactionInput creates a transaction by hand.
@@ -1071,6 +1086,16 @@ func (s *Store) loadTransactionParts(t *Transaction) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	var decision CategoryDecision
+	err = s.db.QueryRow(`SELECT id, status, decided_by, confidence, model FROM category_suggestions
+		WHERE transaction_id = ? AND status IN ('accepted','edited') ORDER BY decided_at DESC, seq DESC LIMIT 1`, t.ID).
+		Scan(&decision.SuggestionID, &decision.Status, &decision.DecidedBy, &decision.Confidence, &decision.Model)
+	switch {
+	case err == nil:
+		t.CategoryDecision = &decision
+	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
 	rows, err = s.db.Query(`SELECT import_row_id FROM transaction_sources WHERE transaction_id = ? ORDER BY import_row_id`, t.ID)
 	if err != nil {
 		return err
@@ -1091,7 +1116,9 @@ func (s *Store) loadTransactionParts(t *Transaction) error {
 type TransactionFilter struct {
 	AccountID     string
 	CategoryID    string
-	Month         string // YYYY-MM
+	// IncludeSubcategories widens CategoryID to every category under it.
+	IncludeSubcategories bool
+	Month                string // YYYY-MM
 	Query         string // substring of description or memo
 	Uncategorized bool
 	Limit         int
@@ -1106,7 +1133,11 @@ func (s *Store) ListTransactions(filter TransactionFilter) ([]Transaction, error
 		where = append(where, `t.id IN (SELECT transaction_id FROM postings WHERE account_id = ?)`)
 		args = append(args, filter.AccountID)
 	}
-	if filter.CategoryID != "" {
+	if filter.CategoryID != "" && filter.IncludeSubcategories {
+		where = append(where, `t.id IN (SELECT transaction_id FROM postings WHERE category_id IN (
+			WITH RECURSIVE tree(id) AS (SELECT ? UNION ALL SELECT c.id FROM categories c JOIN tree ON c.parent_id = tree.id) SELECT id FROM tree))`)
+		args = append(args, filter.CategoryID)
+	} else if filter.CategoryID != "" {
 		where = append(where, `t.id IN (SELECT transaction_id FROM postings WHERE category_id = ?)`)
 		args = append(args, filter.CategoryID)
 	}

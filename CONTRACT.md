@@ -57,9 +57,9 @@ entity-type registry match each kind for chips: `budget_account`,
 | `GET/POST /balance-assertions` | `{account_id, as_of, balance_cents, source}`: a reported balance; each answer carries `ledger_balance_cents` and `difference_cents` (ledger minus reported) as the ledger stands now |
 | `GET/POST /categories`, `GET /categories/{id}` | `{parent_id, name, kind}`; kind `expense`, `income` or `equity`. Two categories carry a `role` the store posts to: `uncategorized` and `opening_balances`. Find them by role, never by name |
 | `GET/POST /payees`, `GET /payees/{id}`, `POST /payees/apply-rules` | `{name, default_category_id, patterns}`: a pattern is upper-cased text matched as a substring of a description; the longest match wins. `apply-rules` names every transaction without a payee and moves one still wholly Uncategorized to the payee's default category. A category someone chose is never overwritten |
-| `GET /transactions` | newest first; `account_id`, `category_id`, `month`, `q`, `uncategorized=true`, `limit` (≤1000, default 200), `offset` |
+| `GET /transactions` | newest first; `account_id`, `category_id` (with `include_subcategories=true`, every category under it too), `month`, `q`, `uncategorized=true`, `limit` (≤1000, default 200), `offset` |
 | `POST /transactions` | `{occurred_on, status, payee_id, description, memo, postings}` by hand |
-| `GET/PATCH /transactions/{id}` | PATCH `{status, payee_id, memo}`. The id of a transaction the transfer matcher folded away answers with the one it was folded into |
+| `GET/PATCH /transactions/{id}` | Every transaction read carries `category_decision`: the newest accepted or edited suggestion (`suggestion_id`, `status`, `decided_by`, `confidence`, `model`), or null when its category came another way. PATCH `{status, payee_id, memo}`. The id of a transaction the transfer matcher folded away answers with the one it was folded into |
 | `PUT /transactions/{id}/categories` | `{splits: [{category_id, amount_cents, memo, tax_year}]}` replaces every category posting; the splits must sum to what the category side summed to, so accounts never change |
 | `POST /transfers/match` | pairs transfers between the operator's own accounts; see below |
 | `POST /transactions/{id}/move-to-account` | `{account_id, reason}`: the transaction's one category posting becomes a posting on that account, for money that in fact moved to or from one of the operator's accounts (a loan paid out into checking). Kept in `transfers_without_partner` with the reason, so it blocks an overlapping import and can be undone like the matcher's. 409 unless the transaction has exactly one account and one category posting |
@@ -67,6 +67,7 @@ entity-type registry match each kind for chips: `budget_account`,
 | `POST /import-batches?source=&account_id=&file_name=&file_id=` | body: the file. One transaction per new row; all or nothing. `file_id` is the file-store id of the original |
 | `GET /import-batches`, `GET /import-batches/{id}`, `POST /import-batches/{id}/undo` | `outcomes` counts each row's fate, `first_row_on`/`last_row_on` the dates the file covers; undo deletes what the batch made and keeps its rows |
 | `GET /reports/spending?month=` | each category's total that month |
+| `GET /reports/monthly?from=&to=` | each category's total in each month from `from` to `to` (YYYY-MM, inclusive, either optional): `[{month, category_id, kind, total_cents, transactions}]` |
 | `GET /budget?month=&view=limit\|envelope`, `PUT /budget-assignments` | see below |
 | `GET /links?from_id=`, `POST /links` | `{from_id, entity_type, entity_ref, note}`: a pointer to another store's record by that store's id |
 

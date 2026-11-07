@@ -225,11 +225,12 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("GET /transactions", func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		filter := TransactionFilter{
-			AccountID:     query.Get("account_id"),
-			CategoryID:    query.Get("category_id"),
-			Month:         query.Get("month"),
-			Query:         query.Get("q"),
-			Uncategorized: query.Get("uncategorized") == "true",
+			AccountID:            query.Get("account_id"),
+			CategoryID:           query.Get("category_id"),
+			Month:                query.Get("month"),
+			Query:                query.Get("q"),
+			Uncategorized:        query.Get("uncategorized") == "true",
+			IncludeSubcategories: query.Get("include_subcategories") == "true",
 		}
 		for name, target := range map[string]*int{"limit": &filter.Limit, "offset": &filter.Offset} {
 			if value := query.Get(name); value != "" {
@@ -323,6 +324,10 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 
 	mux.HandleFunc("GET /reports/spending", func(w http.ResponseWriter, r *http.Request) {
 		list, err := s.SpendingByCategory(r.URL.Query().Get("month"))
+		respond(w, http.StatusOK, list, err)
+	})
+	mux.HandleFunc("GET /reports/monthly", func(w http.ResponseWriter, r *http.Request) {
+		list, err := s.SpendingByMonth(r.URL.Query().Get("from"), r.URL.Query().Get("to"))
 		respond(w, http.StatusOK, list, err)
 	})
 	mux.HandleFunc("GET /budget", func(w http.ResponseWriter, r *http.Request) {

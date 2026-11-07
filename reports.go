@@ -464,3 +464,43 @@ func (s *Store) ListLinks(fromID string) ([]Link, error) {
 	}
 	return out, rows.Err()
 }
+
+// MonthCategoryTotal is one category's postings in one month.
+type MonthCategoryTotal struct {
+	Month        string `json:"month"` // YYYY-MM
+	CategoryID   string `json:"category_id"`
+	Kind         string `json:"kind"`
+	TotalCents   int64  `json:"total_cents"` // spending positive, income negative
+	Transactions int    `json:"transactions"`
+}
+
+// SpendingByMonth totals each category's postings in every month from
+// fromMonth to toMonth inclusive (YYYY-MM; either may be empty for no bound).
+// Transfers between the operator's accounts have no category posting, so they
+// never appear.
+func (s *Store) SpendingByMonth(fromMonth, toMonth string) ([]MonthCategoryTotal, error) {
+	for name, value := range map[string]string{"from": fromMonth, "to": toMonth} {
+		if value != "" {
+			if err := validMonth(value); err != nil {
+				return nil, fmt.Errorf("%s: %w", name, err)
+			}
+		}
+	}
+	rows, err := s.db.Query(`SELECT substr(t.occurred_on,1,7) AS month, c.id, c.kind, SUM(p.amount_cents), COUNT(DISTINCT t.id)
+		FROM postings p JOIN transactions t ON t.id = p.transaction_id JOIN categories c ON c.id = p.category_id
+		WHERE t.status != 'void' AND (? = '' OR substr(t.occurred_on,1,7) >= ?) AND (? = '' OR substr(t.occurred_on,1,7) <= ?)
+		GROUP BY month, c.id ORDER BY month, c.seq`, fromMonth, fromMonth, toMonth, toMonth)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MonthCategoryTotal{}
+	for rows.Next() {
+		var m MonthCategoryTotal
+		if err := rows.Scan(&m.Month, &m.CategoryID, &m.Kind, &m.TotalCents, &m.Transactions); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
