@@ -21,6 +21,9 @@ with an ISO 4217 code.
 | `LLMBRIDGE_URL` | `http://localhost:8160` | the readers are asked through `POST /oneshot` |
 | `LLMBRIDGE_SERVICE_TOKEN` | (secret) | required while the review worker is on; a host-local drop-in |
 | `MODEL_STORE_URL` | `http://localhost:8155` | list prices for a reading's cost |
+| `ARTICLE_STORE_URL` | `http://127.0.0.1:8318` | a product's listing page is saved and read there; a product's `article_id` is checked there |
+| `MAILSTACK_URL` | `http://localhost:8195` | the eBay import reads order confirmations there, read-only |
+| `MAILSTACK_TOKEN` | (secret) | mailstack's bearer; a host-local drop-in. Without it the import answers an error |
 | `POSSESSION_STORE_FIRST_READER_ROLE` | `possession-photo-reader` | model-store role of the first reader; it also reads answers given in words |
 | `POSSESSION_STORE_SECOND_READER_ROLE` | `possession-photo-second-reader` | model-store role of the second reader |
 | `POSSESSION_STORE_REVIEW_WORKER_ENABLED` | `true` | off, queued photos wait |
@@ -61,6 +64,7 @@ a chat draws an id as a chip.
 | outfit | `outfit_…` | `/outfits/{id}` |
 | purchase | `possession_purchase_…` | `/purchases/{id}` |
 | purchase line | `purchase_line_…` | inside its purchase |
+| product | `product_…` | `/products/{id}` |
 | photo review | `photo_review_…` | `/photo-reviews/{id}` |
 | sighting | `sighting_…` | `/sightings/{id}` |
 | question | `possession_question_…` | `/owner-questions/{id}` |
@@ -83,7 +87,7 @@ copies the whole row to `revisions`.
 ```json
 {"id":"possession_000001","name":"black hoodie","room":"bedroom","brand":"Carhartt","model":"","serial_number":"",
  "description":"","quantity":1,"condition":"","status":"owned","place_id":null,"spot":"bedroom closet",
- "acquired_at":0,"acquired_how":"","purchase_line_id":null,"price_cents":null,"price_currency":"",
+ "acquired_at":0,"acquired_how":"","purchase_line_id":null,"product_id":null,"price_cents":null,"price_currency":"",
  "disposed_at":0,"tags":[],"created_by":"principal_000001","created_at":…,"updated_at":…,"deleted_at":0,"merged_into_id":null,
  "kind":"garment",
  "garment":{"id":"garment_000001","category":"top","garment_type":"hoodie","layer":"mid","primary_color":"black",
@@ -149,18 +153,87 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` | `/outfit-rebuilds/{id}` | `{id, rebuilt_by, moved:{outfits_made, outfits_replaced, pieces_added, looks_marked, pieces_removed, wearings_removed, wearings_added, looks, reviews}, rebuilt_at, undone_by, undone_at}`; `pieces_added` and `wearings_added` are what it gave outfits an earlier rebuild made, `pieces_removed` and `wearings_removed` what it took from them when a look left; `looks_marked` is `[{look_id, before, after}]` of `not_an_outfit`; a look or reading move to `new_outfit_id: ""` took it out of every outfit |
 | `POST` | `/outfit-rebuilds/{id}/undo` | `{actor}`: puts back every outfit, look and reading the rebuild changed. A later rebuild not undone, a look that has moved since (a slot answer), or a merge of an outfit it made is a **409** |
 | `POST` | `/outfit-pieces/rematch` | `{actor}`: the rematch, below. Answers an audit run |
-| `GET` / `POST` | `/purchases` | `{seller, marketplace, order_reference, ordered_at, total_cents, currency, source, lines:[{title, quantity, unit_price_cents, product_reference, disposition}]}`. An order already recorded (same marketplace and reference) is a **409** |
+| `GET` / `POST` | `/purchases` | `{seller, marketplace, order_reference, ordered_at, total_cents, currency, source, mail_account_id, mail_message_id, lines:[{title, quantity, unit_price_cents, product_reference, listing_url, disposition}]}`. An order already recorded (same marketplace and reference, or the same mail) is a **409**. A purchase also answers `extracted_by`, the model that read it from mail |
+| `POST` | `/purchases/import-ebay-mail` | `{actor, account, query}`: the eBay import, below. Answers an audit run |
+| `POST` | `/purchase-lines/match` | `{actor, purchase_id}` (`purchase_id` optional): the purchase match, below. Answers an audit run |
+| `GET` / `POST` | `/products` | `GET ?q=` (every word in brand, model number, name, description), `?limit=`, `?offset=`. `POST`: below. **201** |
+| `GET` / `PATCH` | `/products/{id}` | a product with `possession_ids`; a patch takes `actor` and any of brand, model_number, name, listing_url, listing_source, listing_publisher, article_id (checked in article-store), found_by, description, specs, list_price_cents, list_price_currency. A possession points at its product with `PATCH /possessions/{id} {"product_id":…}` |
 | `GET` | `/purchases/{id}` | with lines; each line lists the possessions that point at it (`purchase_line_id`) |
 | `PATCH` | `/purchase-lines/{id}` | `{disposition, actor}` |
 | `GET` / `POST` | `/photo-reviews` | `POST {photo_id, queued_by, reading, wearer_person_id}` queues a photo-store photo for a reading, `inventory` (everything in a room, two readers) or `outfit` (what `wearer_person_id`, a people-store person confirmed on the photo, has on; one reader): **201**, or **200** with the review already made for that photo |
 | `GET` | `/photo-reviews/{id}` | with every reading (each model's answer unchanged, tokens, cost) and sighting; `cost_usd` sums the readings |
 | `POST` | `/photo-reviews/{id}/retry` | `{actor}`: a `failed` review only; its readings go to revisions and it is queued again |
 | `GET` | `/sightings/{id}` and `/sightings/{id}/image` | |
-| `GET` | `/owner-questions` | open ones, oldest first; `?include_answered=true`, `?photo_review_id=`, `?purpose=decision\|detail`. Each says `asked_by`: `""` when the photo's reading asked it, otherwise `link_check`, `duplicate_check`, `outfit_consolidation`, `picture_match`, `closed_group` or `outfit_slots` |
+| `GET` | `/owner-questions` | open ones, oldest first; `?include_answered=true`, `?photo_review_id=`, `?purpose=decision\|detail`. Each says `asked_by`: `""` when the photo's reading asked it, otherwise `link_check`, `duplicate_check`, `outfit_consolidation`, `picture_match`, `closed_group`, `outfit_slots` or `purchase_match` |
 | `POST` | `/owner-questions/triage-outfit-doubts` | `{actor}`: for outfit readings made before readers labeled their doubts. The first reader sorts each open decision question by its text: about which piece it is (stays a decision) or only a fact about a clear piece (the piece is recorded as the reader proposed, joins its outfit, and the question becomes a detail). Answers `{looked, identity, detail, failures, cost_usd}` |
 | `GET` | `/owner-questions/{id}` and `…/image` | the image is the sighting cut from its photo |
 | `POST` | `/owner-questions/{id}/answer` | `{choice:<index>}` or `{text:"…"}`, and `answered_by`. Words go to the first reader, which turns them into a resolution before anything is written: for a detail question, the possession as it should now read (`amend`). A second answer is a **409** |
 | `POST` | `/sightings/record-agreed` | `{actor}`: records every sighting both readers agreed on that still waits on a decision question, and makes that question a detail question. For reviews made before agreed sightings were recorded at once. Answers `{recorded, failures:[{sighting_id, error}]}`; running it again records nothing new |
+
+## Products
+
+A product is a make and model as its listing describes it; any number of
+possessions point at one (`product_id`). The page itself is article-store's:
+a product keeps its `article_id` and what was read from it, never a copy of
+the page.
+
+```json
+{"id":"product_000001","brand":"Acme","model_number":"MW-6","name":"Metronome Watch",
+ "listing_url":"https://maker.example/mw","listing_source":"manufacturer","listing_publisher":"Acme Instruments",
+ "article_id":"article_000007","found_by":"web search \"Acme MW-6\"; the maker's own page",
+ "description":"…the listing's own words…","specs":[{"name":"Tempo range","value":"40-304"}],
+ "list_price_cents":null,"list_price_currency":"","extracted_by":"claude-opus-5-5","extraction_cost_usd":0.03,
+ "created_by":"principal_000001","created_at":…,"updated_at":…,"deleted_at":0,"possession_ids":["possession_000001"]}
+```
+
+`listing_source` is `manufacturer`, `retailer`, `marketplace` or `review`:
+take the maker's own page, and another only when the maker has none.
+`POST /products {actor, brand, model_number, name, listing_url,
+listing_source, listing_publisher, found_by, possession_ids, article_id,
+description, specs, list_price_cents, list_price_currency}`: without
+`article_id` the store saves `listing_url` in article-store (`kind: other`,
+tags `product-listing`, `possession-store`; a URL saved before answers the
+saved article). Without `description` the first reader reads the article's
+text and the whole fetched page (readability drops spec tables) and copies
+the description, every spec, and the list price (`null` for "open price"); a
+reader that says the page does not list that model is a **400**. A second
+product of one brand and model number is a **409**. Finding the listing is
+a web search an agent does before calling.
+
+## Purchases from eBay mail
+
+`POST /purchases/import-ebay-mail {actor, account, query}` searches one
+mailstack account (`query` defaults to `from:ebay@ebay.com (subject:"order
+confirmed" OR subject:"order is confirmed")`), skips each mail already
+imported (`mail_account_id`, `mail_message_id`), and has the first reader
+read the rest, four at a time: order number, seller, total, currency, and
+each item's full title, item number, quantity and price. An order number
+or item number the mail's text does not hold is a failure, not a guess. Each
+order becomes a purchase, oldest mail first: `marketplace: ebay`, `source:
+email_receipt`, `ordered_at` the mail's date, each line's
+`product_reference` its item number and `listing_url`
+`https://www.ebay.com/itm/<item>`. A mail that is not an order confirmation
+is `left`; an order already recorded from another mail is
+`order_already_recorded`. Counts: `orders`, `lines`, `already_imported`,
+`not_an_order`, `order_already_recorded`, `failed`. Mail is only read.
+
+## Purchase match
+
+`POST /purchase-lines/match {actor, purchase_id}` looks at every line still
+`unreviewed` that no possession points at and that was not asked about. It
+shortlists up to 8 live possessions not tied to a line by the title's words
+(a word in the model counts 4, brand 3, name 2, description 1; common
+listing words such as "new" and "vintage" count nothing; at least 2 to be
+shown). Both readers see the line and the shortlist with each cover picture
+and pick one (`C1`…) or none, and say whether they are sure. Both pick the
+same one and both are sure: the possession takes `purchase_line_id`, and
+`acquired_at`, `acquired_how: bought` and the line's price where it has
+none; the line becomes `possession`. Either picks one otherwise: an optional
+detail question on that possession's photo, `asked_by: purchase_match`,
+choices `purchase_line_link` (`possession_id`, `purchase_line_id`) for each
+pick and `purchase_line_not_this`. Both say none, nothing shares its words,
+or the pick has no photo to ask on: the line stays `unreviewed`. Counts:
+`matched`, `asked`, `unmatched`, `failed`.
 
 ## Photo review
 

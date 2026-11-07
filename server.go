@@ -383,6 +383,62 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 		purchase, err := server.Store.GetPurchase(r.PathValue("id"))
 		respond(w, http.StatusOK, purchase, err)
 	})
+	mux.HandleFunc("POST /purchases/import-ebay-mail", func(w http.ResponseWriter, r *http.Request) {
+		var request EbayImportRequest
+		if !decodeBody(w, r, &request) {
+			return
+		}
+		run, err := server.Reviewer.ImportEbayOrders(r.Context(), request)
+		server.writeRun(w, run, err)
+	})
+	mux.HandleFunc("POST /purchase-lines/match", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Actor      string `json:"actor"`
+			PurchaseID string `json:"purchase_id"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		run, err := server.Reviewer.MatchPurchaseLines(r.Context(), body.Actor, body.PurchaseID)
+		server.writeRun(w, run, err)
+	})
+	mux.HandleFunc("GET /products", func(w http.ResponseWriter, r *http.Request) {
+		limit, offset, err := paging(r)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		products, err := server.Store.ListProducts(r.URL.Query().Get("q"), limit, offset)
+		respond(w, http.StatusOK, products, err)
+	})
+	mux.HandleFunc("POST /products", func(w http.ResponseWriter, r *http.Request) {
+		var request ProductRequest
+		if !decodeBody(w, r, &request) {
+			return
+		}
+		product, err := server.Reviewer.CreateProduct(r.Context(), request)
+		respond(w, http.StatusCreated, product, err)
+	})
+	mux.HandleFunc("GET /products/{id}", func(w http.ResponseWriter, r *http.Request) {
+		product, err := server.Store.GetProduct(r.PathValue("id"))
+		respond(w, http.StatusOK, product, err)
+	})
+	mux.HandleFunc("PATCH /products/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		var actor string
+		if raw, has := body["actor"]; has {
+			if err := json.Unmarshal(raw, &actor); err != nil {
+				writeError(w, fmt.Errorf("%w: actor: %v", ErrInvalid, err))
+				return
+			}
+			delete(body, "actor")
+		}
+		product, err := server.Store.PatchProduct(r.Context(), r.PathValue("id"), body, actor)
+		respond(w, http.StatusOK, product, err)
+	})
 	mux.HandleFunc("PATCH /purchase-lines/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Disposition string `json:"disposition"`
@@ -540,12 +596,24 @@ func (server *Server) auditPass(pass func(ctx context.Context, actor string) (Au
 	}
 }
 
+// writeRun answers a pass's run; a pass that stopped on an error after
+// spending answers the error with what it did before it.
+func (server *Server) writeRun(w http.ResponseWriter, run AuditRun, err error) {
+	if err != nil && (len(run.Actions) > 0 || run.CostUSD > 0) {
+		log.Printf("pass stopped: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error(), "done_before_the_error": run})
+		return
+	}
+	respond(w, http.StatusOK, run, err)
+}
+
 func (server *Server) health(w http.ResponseWriter, r *http.Request) {
 	counts := map[string]int{}
 	for name, query := range map[string]string{
 		"possessions":             `SELECT COUNT(*) FROM possessions WHERE deleted_at = 0`,
 		"outfits":                 `SELECT COUNT(*) FROM outfits WHERE deleted_at = 0`,
 		"purchases":               `SELECT COUNT(*) FROM purchases WHERE deleted_at = 0`,
+		"products":                `SELECT COUNT(*) FROM products WHERE deleted_at = 0`,
 		"photo_reviews_queued":    `SELECT COUNT(*) FROM photo_reviews WHERE status IN ('queued', 'reading', 'reconciling')`,
 		"photo_reviews_failed":    `SELECT COUNT(*) FROM photo_reviews WHERE status = 'failed'`,
 		"open_decision_questions": `SELECT COUNT(*) FROM owner_questions WHERE answered_at = 0 AND purpose = 'decision'`,

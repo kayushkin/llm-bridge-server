@@ -88,11 +88,16 @@ var SightingStatuses = []string{"proposed", "accepted", "rejected", "same_as_oth
 // keep_outfits_apart answer the wearable audit's questions (auditActions).
 var ResolutionActions = []string{"accept", "same_as", "same_as_sighting", "reject", "keep", "amend",
 	"keep_link", "merge_possessions", "keep_apart", "combine_outfits", "keep_outfits_apart",
-	"slot_link", "slot_new", "slot_not_mine"}
+	"slot_link", "slot_new", "slot_not_mine",
+	"purchase_line_link", "purchase_line_not_this"}
 var QuestionPurposes = []string{"decision", "detail"}
 
+// Where a product's listing comes from: the maker's own page first; a
+// retailer, a marketplace or a review only when the maker has none.
+var ListingSources = []string{"manufacturer", "retailer", "marketplace", "review"}
+
 // What raised a question other than the photo's own reading.
-var QuestionAskers = []string{"link_check", "duplicate_check", "outfit_consolidation", "picture_match", "closed_group", "outfit_slots"}
+var QuestionAskers = []string{"link_check", "duplicate_check", "outfit_consolidation", "picture_match", "closed_group", "outfit_slots", "purchase_match"}
 
 // Vocabulary is GET /vocabulary.
 func Vocabulary() map[string][]string {
@@ -147,6 +152,7 @@ func Vocabulary() map[string][]string {
 		"grouped_garment_types":      GroupedGarmentTypes,
 		"necklace_jewelry_types":     NecklaceJewelryTypes,
 		"resolution_actions":         ResolutionActions,
+		"listing_sources":            ListingSources,
 	}
 }
 

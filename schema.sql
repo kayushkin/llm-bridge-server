@@ -365,6 +365,33 @@ CREATE INDEX IF NOT EXISTS idx_outfit_possessions_possession ON outfit_possessio
 -- A line becomes a possession once someone confirms it is one.
 -- ---------------------------------------------------------------------------
 
+-- A product: a make and model as its maker (or the most authoritative seller)
+-- lists it. Many possessions can be one product. The page itself lives in
+-- article-store; this row keeps its id and what was read from it.
+CREATE TABLE IF NOT EXISTS products (
+    id                    TEXT PRIMARY KEY,          -- product_000001
+    seq                   INTEGER NOT NULL UNIQUE,
+    brand                 TEXT NOT NULL DEFAULT '',
+    model_number          TEXT NOT NULL DEFAULT '',  -- the maker's own: SMW006A
+    name                  TEXT NOT NULL,             -- the product's name on the listing
+    listing_url           TEXT NOT NULL,             -- the page the description was read from
+    listing_source        TEXT NOT NULL,             -- vocabulary: manufacturer, retailer, marketplace, review
+    listing_publisher     TEXT NOT NULL DEFAULT '',  -- who publishes that page: "Seiko Instruments Inc."
+    article_id            TEXT NOT NULL,             -- article-store article_… holding the page
+    found_by              TEXT NOT NULL DEFAULT '',  -- how the listing was found, in words (the search and why this page)
+    description           TEXT NOT NULL DEFAULT '',  -- the listing's own words about the product
+    specs                 TEXT NOT NULL DEFAULT '[]', -- JSON [{name, value}] as the listing states them
+    list_price_cents      INTEGER,                   -- NULL when the listing gives no price ("open price")
+    list_price_currency   TEXT NOT NULL DEFAULT '',
+    extracted_by          TEXT NOT NULL DEFAULT '',  -- the model that read description and specs from the page; '' when the caller gave them
+    extraction_cost_usd   REAL NOT NULL DEFAULT 0,
+    created_by            TEXT NOT NULL,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL,
+    deleted_at            INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_products_model ON products(lower(brand), lower(model_number)) WHERE model_number != '' AND deleted_at = 0;
+
 CREATE TABLE IF NOT EXISTS purchases (
     id                    TEXT PRIMARY KEY,          -- possession_purchase_000001
     seq                   INTEGER NOT NULL UNIQUE,

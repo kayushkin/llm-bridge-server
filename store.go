@@ -85,6 +85,12 @@ func Open(dataDir string, references ReferenceChecker) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	for _, statement := range addedIndexes {
+		if _, err := db.Exec(statement); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrate: %s: %w", statement, err)
+		}
+	}
 	if err := os.Chmod(databasePath, 0o600); err != nil {
 		db.Close()
 		return nil, err
@@ -130,6 +136,23 @@ var addedColumns = []struct{ table, column, definition string }{
 	// JSON list of lower-case words (outfitTags).
 	{"outfits", "favorite", "INTEGER NOT NULL DEFAULT 0"},
 	{"outfits", "tags", "TEXT NOT NULL DEFAULT '[]'"},
+	// The product a possession is one of (products); NULL when not known.
+	{"possessions", "product_id", "TEXT REFERENCES products(id)"},
+	// The email an imported order was read from: mailstack's account id and
+	// the provider's message id; '' for an order entered another way.
+	{"purchases", "mail_account_id", "TEXT NOT NULL DEFAULT ''"},
+	{"purchases", "mail_message_id", "TEXT NOT NULL DEFAULT ''"},
+	// The model that read the order out of the email; '' when a person or
+	// an export wrote it.
+	{"purchases", "extracted_by", "TEXT NOT NULL DEFAULT ''"},
+	// The marketplace's page for what a line bought (an eBay listing).
+	{"purchase_lines", "listing_url", "TEXT NOT NULL DEFAULT ''"},
+}
+
+// addedIndexes go on columns addedColumns adds, so they are made after it.
+var addedIndexes = []string{
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_purchases_mail ON purchases(mail_account_id, mail_message_id) WHERE mail_message_id != ''`,
+	`CREATE INDEX IF NOT EXISTS idx_possessions_product ON possessions(product_id)`,
 }
 
 func addColumns(db *sql.DB) error {
@@ -269,6 +292,8 @@ func (s *Store) checkReference(ctx context.Context, transaction *sql.Tx, kind Re
 		return requireRow(transaction, "purchase_lines", id)
 	case ReferencePossession:
 		return requireLivePossession(transaction, id)
+	case ReferenceProduct:
+		return requireLiveProduct(transaction, id)
 	case ReferenceMusicInstrument:
 		return nil
 	}
@@ -289,6 +314,7 @@ type ServiceReferences struct {
 	PhotoStoreURL        string
 	LocationStoreURL     string
 	HarnessStoreDatabase string
+	ArticleStoreURL      string
 	HTTPClient           *http.Client
 }
 
@@ -299,6 +325,8 @@ func (references ServiceReferences) Check(ctx context.Context, kind ReferenceKin
 		return references.checkURL(ctx, references.PhotoStoreURL+"/photos/"+url.PathEscape(id), "photo-store", id)
 	case ReferencePlace:
 		return references.checkURL(ctx, references.LocationStoreURL+"/places/"+url.PathEscape(id), "location-store", id)
+	case ReferenceArticle:
+		return references.checkURL(ctx, references.ArticleStoreURL+"/articles/"+url.PathEscape(id), "article-store", id)
 	case ReferenceHarnessMachine:
 		database, err := sql.Open("sqlite3", "file:"+references.HarnessStoreDatabase+"?mode=ro&_busy_timeout=5000")
 		if err != nil {

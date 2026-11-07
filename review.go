@@ -35,6 +35,10 @@ type Reviewer struct {
 	Photos           PhotoSource
 	FirstReaderRole  string
 	SecondReaderRole string
+	// Articles saves and reads product listings (article-store); Mail
+	// reads order confirmations (mailstack), never changing a mailbox.
+	Articles ArticleSource
+	Mail     MailSource
 	// OwnerLocation is the owner's time zone: an outfit read from a photo
 	// was worn on the photo's day there.
 	OwnerLocation *time.Location
@@ -139,8 +143,11 @@ type Resolution struct {
 	PieceMerges  []PieceMerge `json:"piece_merges,omitempty"`
 	// slot_link (with PossessionID), slot_new and slot_not_mine: the
 	// outfit slot the answer relinks.
-	SlotID      string `json:"slot_id,omitempty"`
-	Explanation string `json:"explanation,omitempty"`
+	SlotID string `json:"slot_id,omitempty"`
+	// purchase_line_link (with PossessionID) and purchase_line_not_this:
+	// the order line the purchase match asked about.
+	PurchaseLineID string `json:"purchase_line_id,omitempty"`
+	Explanation    string `json:"explanation,omitempty"`
 }
 
 // PieceMerge is one possession to fold into another.

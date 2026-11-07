@@ -33,6 +33,9 @@ const (
 	SettingReviewWorkerEnabled    = "review_worker_enabled"
 	SettingReviewImageLongestSide = "review_image_longest_side"
 	SettingOwnerTimeZone          = "owner_time_zone"
+	SettingArticleStoreURL        = "article_store_url"
+	SettingMailstackURL           = "mailstack_url"
+	SettingMailstackToken         = "mailstack_token"
 )
 
 // DefaultListenAddress is loopback, deliberately: the service has no auth of
@@ -89,6 +92,12 @@ func SettingDefinitions() []servicesettings.Definition {
 		{Key: SettingReviewWorkerEnabled, EnvironmentVariable: "POSSESSION_STORE_REVIEW_WORKER_ENABLED", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "true",
 			Description: "Whether the service reviews queued photos. Off, photos wait in the queue."},
 		ownerTimeZoneDefinition(),
+		{Key: SettingArticleStoreURL, EnvironmentVariable: "ARTICLE_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: "http://127.0.0.1:8318",
+			Description: "Where article-store answers. A product's listing page is saved there, and its text read from there; a product's article_id is checked there."},
+		{Key: SettingMailstackURL, EnvironmentVariable: "MAILSTACK_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: "http://localhost:8195",
+			Description: "Where mailstack answers. The eBay import reads order confirmations there, read-only."},
+		{Key: SettingMailstackToken, EnvironmentVariable: "MAILSTACK_TOKEN", Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,
+			Description: "mailstack's bearer token, sent only to MAILSTACK_URL; a host-local drop-in. Without it the eBay import answers an error."},
 		{Key: SettingReviewImageLongestSide, EnvironmentVariable: "POSSESSION_STORE_REVIEW_IMAGE_LONGEST_SIDE", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeInteger, Default: "2048",
 			Description: "The longest side, in pixels, of the photo the readers are shown when its original is in originals/. Without one they see photo-store's 1024-pixel thumbnail."},
 	}

@@ -32,6 +32,7 @@ func main() {
 		PhotoStoreURL:        settings.String(possessionstore.SettingPhotoStoreURL),
 		LocationStoreURL:     settings.String(possessionstore.SettingLocationStoreURL),
 		HarnessStoreDatabase: settings.String(possessionstore.SettingHarnessStoreDatabase),
+		ArticleStoreURL:      settings.String(possessionstore.SettingArticleStoreURL),
 		HTTPClient:           &http.Client{Timeout: 30 * time.Second},
 	}
 	store, err := possessionstore.Open(settings.String(possessionstore.SettingDataDirectory), references)
@@ -55,6 +56,15 @@ func main() {
 		},
 		FirstReaderRole:  settings.ModelRole(possessionstore.SettingFirstReaderRole),
 		SecondReaderRole: settings.ModelRole(possessionstore.SettingSecondReaderRole),
+		Articles: possessionstore.ArticleStore{
+			URL:        settings.String(possessionstore.SettingArticleStoreURL),
+			HTTPClient: &http.Client{Timeout: time.Minute},
+		},
+		Mail: possessionstore.Mailstack{
+			URL:        settings.String(possessionstore.SettingMailstackURL),
+			Token:      settings.String(possessionstore.SettingMailstackToken),
+			HTTPClient: &http.Client{Timeout: time.Minute},
+		},
 	}
 	ownerLocation, err := time.LoadLocation(settings.String(possessionstore.SettingOwnerTimeZone))
 	if err != nil {

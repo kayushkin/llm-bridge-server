@@ -32,6 +32,8 @@ const (
 	ReferenceComputer        ReferenceKind = "computer"      // this store's computers
 	ReferencePurchaseLine    ReferenceKind = "purchase_line" // this store's purchase_lines
 	ReferencePossession      ReferenceKind = "possession"    // this store's possessions
+	ReferenceProduct         ReferenceKind = "product"       // this store's products
+	ReferenceArticle         ReferenceKind = "article"       // article-store article_…
 )
 
 // Column is one field a client may write.
@@ -72,6 +74,7 @@ var possessionType = RecordType{Name: "possession", Table: "possessions", Prefix
 	{Name: "acquired_at", Type: ColumnInteger, Minimum: bound(0)},
 	{Name: "acquired_how", Type: ColumnText, Vocabulary: AcquisitionMethods},
 	{Name: "purchase_line_id", Type: ColumnText, Nullable: true, References: ReferencePurchaseLine},
+	{Name: "product_id", Type: ColumnText, Nullable: true, References: ReferenceProduct},
 	{Name: "price_cents", Type: ColumnInteger, Nullable: true, Minimum: bound(0)},
 	{Name: "price_currency", Type: ColumnText},
 	{Name: "disposed_at", Type: ColumnInteger, Minimum: bound(0)},

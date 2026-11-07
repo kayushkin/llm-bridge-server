@@ -127,7 +127,7 @@ func (s *Store) mergePossessionInTransaction(transaction *sql.Tx, duplicateID, k
 			moves.FilledFields[name] = kept[name]
 		}
 	}
-	for _, name := range []string{"place_id", "purchase_line_id", "price_cents"} {
+	for _, name := range []string{"place_id", "purchase_line_id", "product_id", "price_cents"} {
 		if kept[name] == nil && duplicate[name] != nil {
 			fill[name], _ = json.Marshal(duplicate[name])
 			moves.FilledFields[name] = nil
