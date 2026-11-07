@@ -186,6 +186,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "principal-store, which every caller's principal is read from. It has no default: a guessed address would answer who is an administrator."},
 		{Key: "grant_store.url", EnvironmentVariable: "LLMBRIDGE_GRANT_STORE_URL", Kind: wiring, ValueType: text, Required: true,
 			Description: "grant-store, read at spawn for a principal's grants and mounted at /grant-store/. It has no default."},
+		{Key: "reference_store.url", EnvironmentVariable: "LLMBRIDGE_REFERENCE_STORE_URL", Kind: wiring, ValueType: text, Required: true,
+			Description: "reference-store, which says what an id written in prose names and who may see it, mounted at /reference-store/ as the caller. It has no default."},
 		{Key: "kanban_store.url", EnvironmentVariable: "LLMBRIDGE_KANBAN_STORE_URL", Kind: wiring, ValueType: text, Required: true,
 			Description: "kanban-store, which owns the session-to-card link and is mounted at /kanban/. It has no default."},
 		{Key: "chat_links.nats_url", EnvironmentVariable: "LLMBRIDGE_NATS_URL", Kind: wiring, ValueType: text,

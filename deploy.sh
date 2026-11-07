@@ -67,6 +67,12 @@ BACKUP_FILE_STORE_DROPIN=""
 # before session actions refuses to start on LLMBRIDGE_REPO_STORE_URL.
 SESSION_ACTIONS_DROPIN="$DROPIN_DIR/session-actions.conf"
 BACKUP_SESSION_ACTIONS_DROPIN=""
+# reference-store.conf gives the server reference-store's address, read from
+# reference-store's own unit, for the /reference-store/ proxy. It is required,
+# so it is read before the stop; rolled back the same way, because a binary
+# from before the proxy refuses to start on LLMBRIDGE_REFERENCE_STORE_URL.
+REFERENCE_STORE_DROPIN="$DROPIN_DIR/reference-store.conf"
+BACKUP_REFERENCE_STORE_DROPIN=""
 # chat-links.conf gives the server multichat's address and the NATS multichat
 # publishes on, both read from multichat's own unit, and people-store's
 # address, read from its unit. Rolled back the same way: a binary from before
@@ -100,6 +106,11 @@ rollback() {
     sudo cp -p "$BACKUP_SESSION_ACTIONS_DROPIN" "$SESSION_ACTIONS_DROPIN"
   else
     sudo rm -f "$SESSION_ACTIONS_DROPIN"
+  fi
+  if [ -n "$BACKUP_REFERENCE_STORE_DROPIN" ] && [ -f "$BACKUP_REFERENCE_STORE_DROPIN" ]; then
+    sudo cp -p "$BACKUP_REFERENCE_STORE_DROPIN" "$REFERENCE_STORE_DROPIN"
+  else
+    sudo rm -f "$REFERENCE_STORE_DROPIN"
   fi
   if [ -n "$BACKUP_CHAT_LINKS_DROPIN" ] && [ -f "$BACKUP_CHAT_LINKS_DROPIN" ]; then
     sudo cp -p "$BACKUP_CHAT_LINKS_DROPIN" "$CHAT_LINKS_DROPIN"
@@ -220,6 +231,11 @@ if [ -f "$FILE_STORE_DROPIN" ]; then
   sudo cp -p "$FILE_STORE_DROPIN" "$BACKUP_FILE_STORE_DROPIN"
   echo "    file-store drop-in -> $BACKUP_FILE_STORE_DROPIN"
 fi
+if [ -f "$REFERENCE_STORE_DROPIN" ]; then
+  BACKUP_REFERENCE_STORE_DROPIN="$REFERENCE_STORE_DROPIN.backup-$STAMP"
+  sudo cp -p "$REFERENCE_STORE_DROPIN" "$BACKUP_REFERENCE_STORE_DROPIN"
+  echo "    reference-store drop-in -> $BACKUP_REFERENCE_STORE_DROPIN"
+fi
 if [ -f "$SESSION_ACTIONS_DROPIN" ]; then
   BACKUP_SESSION_ACTIONS_DROPIN="$SESSION_ACTIONS_DROPIN.backup-$STAMP"
   sudo cp -p "$SESSION_ACTIONS_DROPIN" "$BACKUP_SESSION_ACTIONS_DROPIN"
@@ -229,6 +245,14 @@ if [ -f "$CHAT_LINKS_DROPIN" ]; then
   BACKUP_CHAT_LINKS_DROPIN="$CHAT_LINKS_DROPIN.backup-$STAMP"
   sudo cp -p "$CHAT_LINKS_DROPIN" "$BACKUP_CHAT_LINKS_DROPIN"
   echo "    chat-links drop-in -> $BACKUP_CHAT_LINKS_DROPIN"
+fi
+
+# reference-store's address, from its own unit. Required at startup, so a
+# missing one stops the deploy here, before the service is touched.
+REFERENCE_STORE_ADDR="$(grep -oP '^Environment=REFERENCE_STORE_ADDR=\K.*' "$HOME/.config/systemd/user/reference-store.service" 2>/dev/null || true)"
+if [ -z "$REFERENCE_STORE_ADDR" ]; then
+  echo "ERROR: no REFERENCE_STORE_ADDR in reference-store's unit; deploy reference-store first. The service was not touched"
+  exit 1
 fi
 
 # Every route but /health is gated. The idle wait below and the readiness poll
@@ -469,6 +493,9 @@ else
 fi
 sudo cp "$TMP_SESSION_ACTIONS_DROPIN" "$SESSION_ACTIONS_DROPIN"
 rm -f "$TMP_SESSION_ACTIONS_DROPIN"
+
+printf '[Service]\nEnvironment=LLMBRIDGE_REFERENCE_STORE_URL=http://%s\n' "$REFERENCE_STORE_ADDR" | sudo tee "$REFERENCE_STORE_DROPIN" >/dev/null
+echo "    reference-store drop-in: LLMBRIDGE_REFERENCE_STORE_URL=http://$REFERENCE_STORE_ADDR"
 
 # Chat links: multichat's port and the NATS it publishes messaging.inbound on,
 # both from multichat's own unit, and people-store's address from its unit,

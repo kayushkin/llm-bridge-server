@@ -113,6 +113,10 @@ type Config struct {
 	// /kanban/ proxies to as the calling principal. Required, via
 	// LLMBRIDGE_KANBAN_STORE_URL.
 	KanbanStoreURL string
+	// ReferenceStoreURL is the base URL of reference-store, which
+	// /reference-store/ proxies to as the calling principal. Required, via
+	// LLMBRIDGE_REFERENCE_STORE_URL.
+	ReferenceStoreURL string
 	// ChatLinksNATSURL and ChatLinksMultichatURL switch chat links on: NATS
 	// carries what people send our accounts, multichat sends the replies.
 	// Either empty turns them off. Configured via LLMBRIDGE_NATS_URL and
@@ -336,6 +340,7 @@ func (c *Config) ValidateRequestAuthorizationSettings() error {
 		{"LLMBRIDGE_PRINCIPAL_STORE_URL", c.PrincipalStoreURL, "the principal-store every caller's principal is read from"},
 		{"LLMBRIDGE_KANBAN_STORE_URL", c.KanbanStoreURL, "the kanban-store /kanban/ forwards to"},
 		{"LLMBRIDGE_GRANT_STORE_URL", c.GrantStoreURL, "the grant-store /grant-store/ forwards to"},
+		{"LLMBRIDGE_REFERENCE_STORE_URL", c.ReferenceStoreURL, "the reference-store /reference-store/ forwards to"},
 	} {
 		if strings.TrimSpace(required.value) == "" {
 			return fmt.Errorf("%s is unset: it is %s, and it has no default", required.environmentVariable, required.purpose)
@@ -415,6 +420,7 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		DiscoveryPrincipalID:             settings.String("discovery.principal_id"),
 		BundleStoreURL:                   settings.String("bundle_store.url"),
 		KanbanStoreURL:                   settings.String("kanban_store.url"),
+		ReferenceStoreURL:                settings.String("reference_store.url"),
 		ChatLinksNATSURL:                 settings.String("chat_links.nats_url"),
 		ChatLinksMultichatURL:            settings.String("chat_links.multichat_url"),
 		ChatLinksPeopleStoreURL:          settings.String("chat_links.people_store_url"),

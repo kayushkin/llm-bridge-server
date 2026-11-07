@@ -814,7 +814,7 @@ func TestPathValueForPatternReadsTheNamedSegment(t *testing.T) {
 // agent-store's and memory-store's routes are registered by those libraries;
 // TestEveryAccessRuleNamesARegisteredRoute covers them from the other side.
 func TestEveryRegisteredRouteIsClassified(t *testing.T) {
-	registration := regexp.MustCompile(`\.(?:HandleFunc|Handle)\(\s*("[^"]+"|kanbanProxyMountPrefix\s*\+\s*"/"|kanbanStoreProxyMountPrefix\s*\+\s*"/"|grantStoreProxyMountPrefix\s*\+\s*"/"|mailstackProxyMountPrefix\s*\+\s*"/")`)
+	registration := regexp.MustCompile(`\.(?:HandleFunc|Handle)\(\s*("[^"]+"|kanbanProxyMountPrefix\s*\+\s*"/"|kanbanStoreProxyMountPrefix\s*\+\s*"/"|grantStoreProxyMountPrefix\s*\+\s*"/"|mailstackProxyMountPrefix\s*\+\s*"/"|referenceStoreProxyMountPrefix\s*\+\s*"/")`)
 	sourceFiles, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -839,6 +839,8 @@ func TestEveryRegisteredRouteIsClassified(t *testing.T) {
 				pattern = grantStoreProxyMountPrefix + "/"
 			case strings.HasPrefix(pattern, "mailstackProxyMountPrefix"):
 				pattern = mailstackProxyMountPrefix + "/"
+			case strings.HasPrefix(pattern, "referenceStoreProxyMountPrefix"):
+				pattern = referenceStoreProxyMountPrefix + "/"
 			default:
 				pattern = strings.Trim(pattern, `"`)
 			}

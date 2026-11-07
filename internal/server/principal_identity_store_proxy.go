@@ -42,6 +42,9 @@ const (
 	// mailstackProxyMountPrefix is where mailstack is mounted; the remainder of
 	// the path is forwarded under mailstack's root, where /api/… lives.
 	mailstackProxyMountPrefix = "/mailstack"
+	// referenceStoreProxyMountPrefix is where reference-store is mounted; the
+	// remainder is forwarded under its root (/types, /resolve, /search).
+	referenceStoreProxyMountPrefix = "/reference-store"
 )
 
 // principalIdentityHeader is the header the stores read the caller's principal
@@ -57,6 +60,7 @@ var requestHeadersNeverForwardedToStores = []string{
 	principalIdentityHeader,
 	"X-Kanban-Store-Service-Token",
 	grantclient.ServiceTokenHeader,
+	"X-Reference-Store-Service-Token",
 	serviceTokenHeader,
 	peerTokenHeader,
 	peerConnectionCredentialHeader,
@@ -133,6 +137,19 @@ func (s *Server) handleGrantStoreProxyAsPrincipal(w http.ResponseWriter, r *http
 		upstreamBaseURL:      s.cfg.GrantStoreURL,
 		upstreamPathPrefix:   "",
 		unavailableErrorCode: "grant_store_unavailable",
+	})
+}
+
+// handleReferenceStoreProxyAsPrincipal forwards /reference-store/<rest> to
+// reference-store /<rest>. reference-store narrows each record to what the
+// caller may see, by X-Principal-Id.
+func (s *Server) handleReferenceStoreProxyAsPrincipal(w http.ResponseWriter, r *http.Request) {
+	s.serveStoreProxyAsPrincipal(w, r, principalIdentityStoreProxy{
+		storeName:            "reference-store",
+		mountPrefix:          referenceStoreProxyMountPrefix,
+		upstreamBaseURL:      s.cfg.ReferenceStoreURL,
+		upstreamPathPrefix:   "",
+		unavailableErrorCode: "reference_store_unavailable",
 	})
 }
 

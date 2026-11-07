@@ -508,6 +508,7 @@ func TestStartupIsRefusedWithoutEachRequiredSetting(t *testing.T) {
 	complete := config.Config{
 		DemoLoginSigningKey: testSigningKey, ServiceToken: testServiceToken,
 		KanbanStoreURL: "http://kanban.invalid", PrincipalStoreURL: "http://principal.invalid", GrantStoreURL: "http://grant.invalid",
+		ReferenceStoreURL: "http://reference.invalid",
 	}
 	if err := complete.ValidateRequestAuthorizationSettings(); err != nil {
 		t.Fatalf("complete configuration: %v, want no error", err)
@@ -523,6 +524,7 @@ func TestStartupIsRefusedWithoutEachRequiredSetting(t *testing.T) {
 		"no principal-store":  {func(c *config.Config) { c.PrincipalStoreURL = "" }, "LLMBRIDGE_PRINCIPAL_STORE_URL"},
 		"no kanban-store":     {func(c *config.Config) { c.KanbanStoreURL = "" }, "LLMBRIDGE_KANBAN_STORE_URL"},
 		"no grant-store":      {func(c *config.Config) { c.GrantStoreURL = "" }, "LLMBRIDGE_GRANT_STORE_URL"},
+		"no reference-store":  {func(c *config.Config) { c.ReferenceStoreURL = "" }, "LLMBRIDGE_REFERENCE_STORE_URL"},
 	} {
 		candidate := complete
 		testCase.mutate(&candidate)

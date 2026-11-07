@@ -435,10 +435,11 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /agents/{slug}":                 catalogRoute("one agent-store agent, unfiltered by can_run_as"),
 
 	// Identity-carrying store proxies.
-	kanbanProxyMountPrefix + "/":      {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store as the caller's principal"},
-	kanbanStoreProxyMountPrefix + "/": {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store, rooted, as the caller's principal"},
-	grantStoreProxyMountPrefix + "/":  {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "grant-store as the caller's principal"},
-	mailstackProxyMountPrefix + "/":   {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "mailstack as the caller's principal"},
+	kanbanProxyMountPrefix + "/":         {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store as the caller's principal"},
+	kanbanStoreProxyMountPrefix + "/":    {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store, rooted, as the caller's principal"},
+	grantStoreProxyMountPrefix + "/":     {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "grant-store as the caller's principal"},
+	mailstackProxyMountPrefix + "/":      {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "mailstack as the caller's principal"},
+	referenceStoreProxyMountPrefix + "/": {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "reference-store as the caller's principal"},
 
 	// Operator.
 	"GET /services":                                operatorRoute("host service inventory"),
@@ -899,8 +900,8 @@ func (s *Server) administratorOfSessionAgentToken(r *http.Request, pattern strin
 	}
 	if !caller.isAdministrator {
 		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
-			"a session agent token is accepted on %s only for a principal principal-store marks is_administrator, and %s is not one; anyone's is accepted on %s/, %s/, %s/ and %s/",
-			pattern, caller.principalID, kanbanProxyMountPrefix, kanbanStoreProxyMountPrefix, grantStoreProxyMountPrefix, mailstackProxyMountPrefix)}
+			"a session agent token is accepted on %s only for a principal principal-store marks is_administrator, and %s is not one; anyone's is accepted on %s/, %s/, %s/, %s/ and %s/",
+			pattern, caller.principalID, kanbanProxyMountPrefix, kanbanStoreProxyMountPrefix, grantStoreProxyMountPrefix, mailstackProxyMountPrefix, referenceStoreProxyMountPrefix)}
 	}
 	if requestCameThroughPublicProxy(r) {
 		return requestCaller{}, &requestCredentialError{http.StatusForbidden, "session_agent_token_not_public", fmt.Sprintf(
@@ -1108,8 +1109,8 @@ func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (stri
 		}
 		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy && !isSessionAgentToken(token) {
 			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
-				"an Authorization header is accepted on %s/, %s/, %s/ and %s/ as a session agent token, and elsewhere only as an administrator's session agent token; this route takes the login cookie or %s",
-				kanbanProxyMountPrefix, kanbanStoreProxyMountPrefix, grantStoreProxyMountPrefix, mailstackProxyMountPrefix, serviceTokenHeader)}
+				"an Authorization header is accepted on %s/, %s/, %s/, %s/ and %s/ as a session agent token, and elsewhere only as an administrator's session agent token; this route takes the login cookie or %s",
+				kanbanProxyMountPrefix, kanbanStoreProxyMountPrefix, grantStoreProxyMountPrefix, mailstackProxyMountPrefix, referenceStoreProxyMountPrefix, serviceTokenHeader)}
 		}
 		if token == "" {
 			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token",
