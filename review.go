@@ -131,7 +131,10 @@ type Resolution struct {
 	OutfitID     string       `json:"outfit_id,omitempty"`
 	IntoOutfitID string       `json:"into_outfit_id,omitempty"`
 	PieceMerges  []PieceMerge `json:"piece_merges,omitempty"`
-	Explanation  string       `json:"explanation,omitempty"`
+	// slot_link (with PossessionID), slot_new and slot_not_mine: the
+	// outfit slot the answer relinks.
+	SlotID      string `json:"slot_id,omitempty"`
+	Explanation string `json:"explanation,omitempty"`
 }
 
 // PieceMerge is one possession to fold into another.

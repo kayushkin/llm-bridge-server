@@ -39,6 +39,10 @@ func TestTheRoutesRegisterAndAnswer(t *testing.T) {
 		"/possession-merges/possession_merge_000001": 404,
 		"/outfit-merges":                             200,
 		"/wearable-groups":                           200,
+		"/outfit-looks":                              200,
+		"/outfit-looks/outfit_look_000001":           404,
+		"/outfit-slots/outfit_slot_000001":           404,
+		"/outfit-rebuilds/outfit_rebuild_000001":     404,
 		"/outfit-merges/outfit_merge_000001":         404,
 	} {
 		if got := call("GET", path, ""); got.Code != want {
@@ -58,7 +62,7 @@ func TestTheRoutesRegisterAndAnswer(t *testing.T) {
 	if got := call("PUT", "/wearable-groups/watch", `{"closed":true,"actor":"principal_000001"}`); got.Code != 200 || !strings.Contains(got.Body.String(), `"closed":true`) {
 		t.Errorf("closing watch = %d %s", got.Code, got.Body)
 	}
-	for _, path := range []string{"/wearables/check-links", "/wearables/check-duplicates", "/outfits/consolidate", "/outfit-pieces/rematch"} {
+	for _, path := range []string{"/wearables/check-links", "/wearables/check-duplicates", "/outfits/consolidate", "/outfit-pieces/rematch", "/outfit-looks/read", "/outfit-slots/identify", "/outfits/rebuild-from-looks"} {
 		if got := call("POST", path, `{}`); got.Code != 400 {
 			t.Errorf("POST %s with no actor = %d %s, want 400", path, got.Code, got.Body)
 		}

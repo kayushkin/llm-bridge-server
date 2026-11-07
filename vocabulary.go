@@ -51,6 +51,17 @@ var ElectronicAccessoryTypes = []string{"cable", "power_strip", "adapter", "char
 var HouseholdToolTypes = []string{"hand_tool", "power_tool", "cleaning", "laundry", "storage", "kitchen", "garden", "other"}
 var MusicAccessoryTypes = []string{"stand", "bench", "throne", "pedal", "strap", "capo", "tuner", "metronome", "music_books", "other"}
 
+// GroupedGarmentTypes are garment types counted as a wearable group of
+// their own rather than with their category: "garment:scarf".
+var GroupedGarmentTypes = []string{"scarf", "belt", "gloves", "tie"}
+
+// ungroupedGarmentTypes are left out of every wearable group: the owner
+// does not track socks.
+var ungroupedGarmentTypes = []string{"socks"}
+
+// NecklaceJewelryTypes are counted together as the group jewelry:necklace.
+var NecklaceJewelryTypes = []string{"necklace", "pendant", "chain"}
+
 // WearableKinds are the kinds an outfit may hold.
 var WearableKinds = []string{"garment", "jewelry", "watch", "eyewear", "bag_or_case"}
 
@@ -64,17 +75,24 @@ var PurchaseLineDispositions = []string{"unreviewed", "possession", "consumable"
 // reader lists what the wearer has on, and the outfit is recorded.
 var PhotoReviewReadings = []string{"inventory", "outfit"}
 var PhotoReviewStatuses = []string{"queued", "reading", "reconciling", "waiting_for_owner", "done", "failed"}
-var SightingAgreements = []string{"both_agree", "readers_differ", "one_reader_only", "single_reader"}
+
+// best_guess: a sighting made for an outfit slot by its identification.
+var SightingAgreements = []string{"both_agree", "readers_differ", "one_reader_only", "single_reader", "best_guess"}
+
+// How the two readers came to a slot: the second reader kept the first's
+// slot, changed it, or added it.
+var SlotAgreements = []string{"both_agree", "second_reader_changed", "second_reader_added"}
 var SightingStatuses = []string{"proposed", "accepted", "rejected", "same_as_other_sighting"}
 
 // keep_link, merge_possessions, keep_apart, combine_outfits and
 // keep_outfits_apart answer the wearable audit's questions (auditActions).
 var ResolutionActions = []string{"accept", "same_as", "same_as_sighting", "reject", "keep", "amend",
-	"keep_link", "merge_possessions", "keep_apart", "combine_outfits", "keep_outfits_apart"}
+	"keep_link", "merge_possessions", "keep_apart", "combine_outfits", "keep_outfits_apart",
+	"slot_link", "slot_new", "slot_not_mine"}
 var QuestionPurposes = []string{"decision", "detail"}
 
 // What raised a question other than the photo's own reading.
-var QuestionAskers = []string{"link_check", "duplicate_check", "outfit_consolidation", "picture_match", "closed_group"}
+var QuestionAskers = []string{"link_check", "duplicate_check", "outfit_consolidation", "picture_match", "closed_group", "outfit_slots"}
 
 // Vocabulary is GET /vocabulary.
 func Vocabulary() map[string][]string {
@@ -125,6 +143,9 @@ func Vocabulary() map[string][]string {
 		"sighting_statuses":          SightingStatuses,
 		"question_purposes":          QuestionPurposes,
 		"question_askers":            QuestionAskers,
+		"slot_agreements":            SlotAgreements,
+		"grouped_garment_types":      GroupedGarmentTypes,
+		"necklace_jewelry_types":     NecklaceJewelryTypes,
 		"resolution_actions":         ResolutionActions,
 	}
 }

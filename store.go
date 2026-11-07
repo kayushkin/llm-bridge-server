@@ -116,6 +116,10 @@ var addedColumns = []struct{ table, column, definition string }{
 	// What raised a question after its photo was read: '' for the reading
 	// itself, otherwise one of QuestionAskers.
 	{"owner_questions", "asked_by", "TEXT NOT NULL DEFAULT ''"},
+	// How many individual pieces the owner says the group holds, as a
+	// range; NULL when not said.
+	{"wearable_groups", "expected_low", "INTEGER"},
+	{"wearable_groups", "expected_high", "INTEGER"},
 }
 
 func addColumns(db *sql.DB) error {

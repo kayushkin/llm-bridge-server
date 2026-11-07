@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
@@ -33,6 +34,11 @@ type PhotoSource interface {
 	// TakenAt answers when photo-store says the photo was taken, epoch
 	// seconds; 0 when it does not know.
 	TakenAt(ctx context.Context, photoID string) (int64, error)
+	// DetailImage answers the photo at full size, turned to stand as its
+	// thumbnail stands, so a box read on the thumbnail cuts the same place:
+	// the original from originals/ ("original"), or the thumbnail itself
+	// when there is none ("thumbnail").
+	DetailImage(ctx context.Context, photoID string) (image.Image, string, error)
 }
 
 // PhotoStoreSource is the PhotoSource over photo-store and originals/.
@@ -123,9 +129,28 @@ func (source PhotoStoreSource) Thumbnail(ctx context.Context, photoID string) ([
 	return source.get(ctx, "/photos/"+url.PathEscape(photoID)+"/thumbnail")
 }
 
-// ReviewImage answers the original scaled to LongestSide when originals/
-// holds it (found by the photo's sha256), and the thumbnail otherwise.
+// ReviewImage answers the photo the readers are shown: the original,
+// turned as its thumbnail stands and scaled to LongestSide, when originals/
+// holds it, and the thumbnail otherwise.
 func (source PhotoStoreSource) ReviewImage(ctx context.Context, photoID string) ([]byte, string, error) {
+	picture, kind, err := source.DetailImage(ctx, photoID)
+	if err != nil {
+		return nil, "", err
+	}
+	if kind == "thumbnail" {
+		thumbnail, err := source.Thumbnail(ctx, photoID)
+		return thumbnail, kind, err
+	}
+	scaled, err := encodeScaled(picture, source.LongestSide)
+	if err != nil {
+		return nil, "", fmt.Errorf("scale the original of %s: %w", photoID, err)
+	}
+	return scaled, kind, nil
+}
+
+// DetailImage finds the original by the photo's sha256 and turns it to
+// match photo-store's thumbnail (alignToThumbnail).
+func (source PhotoStoreSource) DetailImage(ctx context.Context, photoID string) (image.Image, string, error) {
 	body, err := source.get(ctx, "/photos/"+url.PathEscape(photoID))
 	if err != nil {
 		return nil, "", err
@@ -136,26 +161,198 @@ func (source PhotoStoreSource) ReviewImage(ctx context.Context, photoID string) 
 	if err := json.Unmarshal(body, &photo); err != nil {
 		return nil, "", fmt.Errorf("photo-store's %s is not a photo: %w", photoID, err)
 	}
+	thumbnailBytes, err := source.Thumbnail(ctx, photoID)
+	if err != nil {
+		return nil, "", err
+	}
+	thumbnail, _, err := image.Decode(bytes.NewReader(thumbnailBytes))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode the thumbnail of %s: %w", photoID, err)
+	}
 	matches, err := filepath.Glob(filepath.Join(source.OriginalsDir, photo.Sha256+".*"))
 	if err != nil {
 		return nil, "", err
 	}
-	if len(matches) > 0 {
-		original, err := os.ReadFile(matches[0])
-		if err != nil {
-			return nil, "", err
-		}
-		scaled, err := scaleJPEG(original, source.LongestSide)
-		if err != nil {
-			return nil, "", fmt.Errorf("scale %s: %w", matches[0], err)
-		}
-		return scaled, "original", nil
+	if len(matches) == 0 {
+		return thumbnail, "thumbnail", nil
 	}
-	thumbnail, err := source.Thumbnail(ctx, photoID)
+	original, err := os.ReadFile(matches[0])
 	if err != nil {
 		return nil, "", err
 	}
-	return thumbnail, "thumbnail", nil
+	aligned, _, err := alignOriginal(original, thumbnail)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s (%s): %w", photoID, matches[0], err)
+	}
+	return aligned, "original", nil
+}
+
+// alignOriginal decodes an original and turns it to stand as its thumbnail
+// does. Boxes are read on photo-store's thumbnails, which the importer made
+// upright by EXIF; an original is turned by its EXIF orientation too, and
+// this checks that against the thumbnail itself, trying every orientation
+// on a small copy and keeping the one whose shape and pixels match best
+// (EXIF's on a near tie). It answers the orientation used. A picture that
+// matches the thumbnail in no orientation is an error, never a guess.
+func alignOriginal(original []byte, thumbnail image.Image) (image.Image, int, error) {
+	facts, err := ReadExif(original)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read EXIF: %w", err)
+	}
+	decoded, _, err := image.Decode(bytes.NewReader(original))
+	if err != nil {
+		return nil, 0, fmt.Errorf("decode: %w", err)
+	}
+	orientation, err := orientationMatching(decoded, thumbnail, facts.Orientation)
+	if err != nil {
+		return nil, 0, err
+	}
+	return Upright(decoded, orientation), orientation, nil
+}
+
+// orientationMatching answers the orientation (1 to 8, as EXIF numbers
+// them) that turns picture to look like reference.
+func orientationMatching(picture, reference image.Image, exifOrientation int) (int, error) {
+	small := resized(picture, 96)
+	referenceBounds := reference.Bounds()
+	referenceAspect := float64(referenceBounds.Dx()) / float64(referenceBounds.Dy())
+	referenceGray := grayGrid(reference)
+	best, bestDifference := 0, 1e9
+	differences := map[int]float64{}
+	for orientation := 1; orientation <= 8; orientation++ {
+		turned := Upright(small, orientation)
+		bounds := turned.Bounds()
+		aspect := float64(bounds.Dx()) / float64(bounds.Dy())
+		if aspect/referenceAspect > 1.04 || referenceAspect/aspect > 1.04 {
+			continue
+		}
+		difference := grayDifference(grayGrid(turned), referenceGray)
+		differences[orientation] = difference
+		if difference < bestDifference {
+			best, bestDifference = orientation, difference
+		}
+	}
+	if best == 0 {
+		return 0, fmt.Errorf("the original is %dx%d and its thumbnail %dx%d: no orientation gives the thumbnail's shape",
+			picture.Bounds().Dx(), picture.Bounds().Dy(), referenceBounds.Dx(), referenceBounds.Dy())
+	}
+	if bestDifference > 40 {
+		return 0, fmt.Errorf("the original does not look like its thumbnail in any orientation (closest differs by %.0f of 255)", bestDifference)
+	}
+	if exif, measured := differences[exifOrientation]; measured && exif <= bestDifference+2 {
+		return exifOrientation, nil
+	}
+	return best, nil
+}
+
+// resized scales a picture so its longest side is longest.
+func resized(picture image.Image, longest int) image.Image {
+	bounds := picture.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	scale := float64(longest) / float64(max(width, height))
+	target := image.NewRGBA(image.Rect(0, 0, max(int(float64(width)*scale), 1), max(int(float64(height)*scale), 1)))
+	draw.ApproxBiLinear.Scale(target, target.Bounds(), picture, bounds, draw.Src, nil)
+	return target
+}
+
+const grayGridSide = 24
+
+// grayGrid is a picture as a 24×24 grid of gray levels.
+func grayGrid(picture image.Image) []float64 {
+	target := image.NewRGBA(image.Rect(0, 0, grayGridSide, grayGridSide))
+	draw.ApproxBiLinear.Scale(target, target.Bounds(), picture, picture.Bounds(), draw.Src, nil)
+	grid := make([]float64, 0, grayGridSide*grayGridSide)
+	for y := 0; y < grayGridSide; y++ {
+		for x := 0; x < grayGridSide; x++ {
+			red, green, blue, _ := target.At(x, y).RGBA()
+			grid = append(grid, (0.299*float64(red)+0.587*float64(green)+0.114*float64(blue))/257)
+		}
+	}
+	return grid
+}
+
+func grayDifference(first, second []float64) float64 {
+	total := 0.0
+	for index := range first {
+		difference := first[index] - second[index]
+		if difference < 0 {
+			difference = -difference
+		}
+		total += difference
+	}
+	return total / float64(len(first))
+}
+
+// encodeScaled encodes a picture as a JPEG whose longest side is at most
+// longestSide.
+func encodeScaled(picture image.Image, longestSide int) ([]byte, error) {
+	bounds := picture.Bounds()
+	if max(bounds.Dx(), bounds.Dy()) > longestSide {
+		picture = resizedSmooth(picture, longestSide)
+	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, picture, &jpeg.Options{Quality: 85}); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func resizedSmooth(picture image.Image, longest int) image.Image {
+	bounds := picture.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	scale := float64(longest) / float64(max(width, height))
+	target := image.NewRGBA(image.Rect(0, 0, max(int(float64(width)*scale), 1), max(int(float64(height)*scale), 1)))
+	draw.CatmullRom.Scale(target, target.Bounds(), picture, bounds, draw.Src, nil)
+	return target
+}
+
+// Small pieces (jewelry, watches, eyewear) are cut with more room around
+// them and scaled up to at least smallPieceLongestSide, so a reader sees
+// the detail a ring or a dial needs; other pieces are cut tight and kept
+// at most otherPieceLongestSide.
+const (
+	smallPieceLongestSide = 768
+	otherPieceLongestSide = 768
+)
+
+// smallPieceGroup says whether pieces of a group are small enough to cut
+// with room and scale up.
+func smallPieceGroup(group string) bool {
+	return group == "watch" || group == "eyewear" || strings.HasPrefix(group, "jewelry:")
+}
+
+// detailCrop cuts a box out of a full-size picture for identifying the
+// piece in it.
+func detailCrop(picture image.Image, box Box, small bool) ([]byte, error) {
+	bounds := picture.Bounds()
+	margin := 0.08
+	if small {
+		margin = 0.3
+	}
+	marginX, marginY := (box.Right-box.Left)*margin, (box.Bottom-box.Top)*margin
+	padded := Box{box.Left - marginX, box.Top - marginY, box.Right + marginX, box.Bottom + marginY}.clamped()
+	region := image.Rect(
+		bounds.Min.X+int(padded.Left*float64(bounds.Dx())), bounds.Min.Y+int(padded.Top*float64(bounds.Dy())),
+		bounds.Min.X+int(padded.Right*float64(bounds.Dx())), bounds.Min.Y+int(padded.Bottom*float64(bounds.Dy())))
+	if region.Dx() < 1 || region.Dy() < 1 {
+		return nil, fmt.Errorf("the box is smaller than a pixel")
+	}
+	longest := max(region.Dx(), region.Dy())
+	target := longest
+	switch {
+	case small && longest < smallPieceLongestSide:
+		target = smallPieceLongestSide
+	case longest > otherPieceLongestSide:
+		target = otherPieceLongestSide
+	}
+	width, height := region.Dx()*target/longest, region.Dy()*target/longest
+	out := image.NewRGBA(image.Rect(0, 0, max(width, 1), max(height, 1)))
+	draw.CatmullRom.Scale(out, out.Bounds(), picture, region, draw.Src, nil)
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, out, &jpeg.Options{Quality: 88}); err != nil {
+		return nil, err
+	}
+	return encoded.Bytes(), nil
 }
 
 // scaleJPEG decodes an image, stands it upright by its EXIF orientation, and

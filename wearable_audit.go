@@ -29,6 +29,7 @@ type AuditRun struct {
 	Left     []map[string]string `json:"left"`     // what was not looked at, and why
 	Failures []map[string]string `json:"failures"` // what went wrong, with the error in full
 	CostUSD  float64             `json:"cost_usd"`
+	Groups   []GroupCount        `json:"groups,omitempty"` // identification: each group's count against the owner's range
 }
 
 // AuditAction is one change or question an audit made.
@@ -154,15 +155,30 @@ func (reviewer *Reviewer) askBothPrompts(ctx context.Context, systemPrompt strin
 
 const auditSystemPrompt = `You help a person keep an exact inventory of the clothes and accessories they own, from photos. Two readers, made by different companies, answer each question on their own; where they agree the inventory changes at once, so say "same" only when the pictures show it. Judge the physical piece, not the kind of thing: color, cut, pattern, fabric, logos, prints, hardware, wear marks. Light, angle, folds and how it is worn differ between photos; a black t-shirt is not every black t-shirt.`
 
-// wearableGroup is the kind and sub-type a wearable is compared within:
-// a garment's category, a jewelry type, a bag type; watches and eyewear are
-// one group each. "" for a possession that is not a wearable.
+// wearableGroup is the group a wearable is compared and counted within, as
+// the owner thinks of them (2026-11-07): a garment's category (shirts are
+// tops, pants bottoms, jackets outerwear), except the garment types in
+// GroupedGarmentTypes, which are groups of their own (scarves); a jewelry
+// type, with pendants and chains counted as necklaces; a bag type; watches
+// and eyewear one group each. Socks are in no group. "" for a possession
+// that is not in a group.
 func wearableGroup(kind string, fields func(name string) string) string {
 	switch kind {
 	case "garment":
+		garmentType := fields("garment_type")
+		if contains(ungroupedGarmentTypes, garmentType) {
+			return ""
+		}
+		if contains(GroupedGarmentTypes, garmentType) {
+			return "garment:" + garmentType
+		}
 		return "garment:" + fields("category")
 	case "jewelry":
-		return "jewelry:" + fields("jewelry_type")
+		jewelryType := fields("jewelry_type")
+		if contains(NecklaceJewelryTypes, jewelryType) {
+			jewelryType = "necklace"
+		}
+		return "jewelry:" + jewelryType
 	case "bag_or_case":
 		return "bag_or_case:" + fields("bag_type")
 	case "watch", "eyewear":
@@ -590,6 +606,9 @@ func (reviewer *Reviewer) CheckWearableDuplicates(ctx context.Context, actor str
 			continue
 		}
 		group := possessionGroup(possession)
+		if group == "" {
+			continue
+		}
 		if _, seen := groups[group]; !seen {
 			groupNames = append(groupNames, group)
 		}

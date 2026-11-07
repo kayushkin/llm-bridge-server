@@ -201,6 +201,12 @@ type scriptedModels struct {
 func (models *scriptedModels) Ask(ctx context.Context, role, systemPrompt, prompt string, schema json.RawMessage, images []msg.OneShotImage, maxTokens int) (ModelAnswer, error) {
 	step := "1"
 	switch {
+	case strings.Contains(prompt, "Reader A, made by another company, listed the looks"):
+		step = "check_looks"
+	case strings.Contains(prompt, "List the looks:"):
+		step = "looks"
+	case strings.Contains(prompt, "Sort these pictures into the individual physical pieces"):
+		step = "pieces"
 	case strings.Contains(prompt, "inventory says show this same piece"):
 		step = "links"
 	case strings.Contains(prompt, "one physical piece recorded twice"):
@@ -265,6 +271,10 @@ func (fakePhotos) Thumbnail(ctx context.Context, photoID string) ([]byte, error)
 }
 func (fakePhotos) WearerFace(ctx context.Context, photoID, personID string) (Box, error) {
 	return Box{0.4, 0.1, 0.6, 0.3}, nil
+}
+func (fakePhotos) DetailImage(ctx context.Context, photoID string) (image.Image, string, error) {
+	decoded, _, err := image.Decode(bytes.NewReader(testJPEG()))
+	return decoded, "thumbnail", err
 }
 func (fakePhotos) TakenAt(ctx context.Context, photoID string) (int64, error) {
 	return 1794010000, nil // 2026-11-07 00:06 UTC, still 2026-11-06 in Los Angeles

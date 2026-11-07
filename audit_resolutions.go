@@ -12,7 +12,7 @@ import (
 // auditActions answer the wearable audit's questions. They act on the
 // records the resolution names, not on the question's sighting, which only
 // gives the question a picture.
-var auditActions = []string{"keep_link", "merge_possessions", "keep_apart", "combine_outfits", "keep_outfits_apart"}
+var auditActions = []string{"keep_link", "merge_possessions", "keep_apart", "combine_outfits", "keep_outfits_apart", "slot_link", "slot_new", "slot_not_mine"}
 
 // isAudit says whether a question is one the wearable audit asked: any
 // choice is an audit action or undoes a link first.
@@ -37,6 +37,8 @@ func (s *Store) applyAuditResolution(transaction *sql.Tx, question OwnerQuestion
 		}
 		_, err := s.mergePossessionInTransaction(transaction, resolution.PossessionID, resolution.IntoPossessionID, actor, "the owner answered "+question.ID, now)
 		return err
+	case "slot_link", "slot_new", "slot_not_mine":
+		return s.applySlotAnswer(transaction, resolution, actor, now)
 	case "combine_outfits":
 		if resolution.OutfitID == "" || resolution.IntoOutfitID == "" {
 			return fmt.Errorf("%w: combine_outfits needs outfit_id and into_outfit_id", ErrInvalid)

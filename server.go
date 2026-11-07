@@ -95,23 +95,53 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /wearables/check-duplicates", server.auditPass(server.Reviewer.CheckWearableDuplicates))
 	mux.HandleFunc("POST /outfits/consolidate", server.auditPass(server.Reviewer.ConsolidateOutfits))
 	mux.HandleFunc("POST /outfit-pieces/rematch", server.auditPass(server.Reviewer.RematchOutfitPieces))
+	mux.HandleFunc("POST /outfit-looks/read", server.auditPass(server.Reviewer.ReadLooks))
+	mux.HandleFunc("POST /outfit-slots/identify", server.auditPass(server.Reviewer.IdentifySlots))
+	mux.HandleFunc("POST /outfits/rebuild-from-looks", server.auditPass(server.Store.RebuildOutfitsFromLooks))
+	mux.HandleFunc("GET /outfit-looks", func(w http.ResponseWriter, r *http.Request) {
+		limit, offset, err := paging(r)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		looks, err := server.Store.ListLooks(r.URL.Query().Get("worn_on"), r.URL.Query().Get("outfit_id"), limit, offset)
+		respond(w, http.StatusOK, looks, err)
+	})
+	mux.HandleFunc("GET /outfit-looks/{id}", func(w http.ResponseWriter, r *http.Request) {
+		look, err := server.Store.GetLook(r.PathValue("id"))
+		respond(w, http.StatusOK, look, err)
+	})
+	mux.HandleFunc("GET /outfit-slots/{id}", func(w http.ResponseWriter, r *http.Request) {
+		slot, err := server.Store.GetSlot(r.PathValue("id"))
+		respond(w, http.StatusOK, slot, err)
+	})
+	mux.HandleFunc("GET /outfit-slots/{id}/image", func(w http.ResponseWriter, r *http.Request) {
+		server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) { return server.Reviewer.SlotImage(ctx, r.PathValue("id")) })
+	})
+	mux.HandleFunc("GET /outfit-rebuilds/{id}", func(w http.ResponseWriter, r *http.Request) {
+		rebuild, err := server.Store.GetOutfitRebuild(r.PathValue("id"))
+		respond(w, http.StatusOK, rebuild, err)
+	})
+	mux.HandleFunc("POST /outfit-rebuilds/{id}/undo", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Actor string `json:"actor"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		rebuild, err := server.Store.UndoOutfitRebuild(r.Context(), r.PathValue("id"), body.Actor)
+		respond(w, http.StatusOK, rebuild, err)
+	})
 	mux.HandleFunc("GET /wearable-groups", func(w http.ResponseWriter, r *http.Request) {
 		groups, err := server.Store.ListWearableGroups()
 		respond(w, http.StatusOK, groups, err)
 	})
 	mux.HandleFunc("PUT /wearable-groups/{group}", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Closed *bool  `json:"closed"`
-			Actor  string `json:"actor"`
-		}
+		var body WearableGroupChange
 		if !decodeBody(w, r, &body) {
 			return
 		}
-		if body.Closed == nil {
-			writeError(w, fmt.Errorf("%w: closed (true or false) is required", ErrInvalid))
-			return
-		}
-		group, err := server.Store.SetWearableGroupClosed(r.Context(), r.PathValue("group"), *body.Closed, body.Actor)
+		group, err := server.Store.ChangeWearableGroup(r.Context(), r.PathValue("group"), body)
 		respond(w, http.StatusOK, group, err)
 	})
 	mux.HandleFunc("POST /outfits/{id}/combine", func(w http.ResponseWriter, r *http.Request) {

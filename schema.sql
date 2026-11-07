@@ -532,6 +532,73 @@ CREATE TABLE IF NOT EXISTS wearable_groups (
 );
 
 -- ---------------------------------------------------------------------------
+-- Looks and slots (2026-11-07): what the owner wore, read from all of a
+-- day's selfies at once. A look is the selfies of one day showing one set
+-- of clothes (a change of clothes makes two looks). A slot is one piece worn
+-- in a look ("watch, left wrist"), with its box on each selfie that shows
+-- it, the pieces it most likely is, and the one it is linked to.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS outfit_looks (
+    id                    TEXT PRIMARY KEY,          -- outfit_look_000001
+    seq                   INTEGER NOT NULL UNIQUE,
+    worn_on               TEXT NOT NULL,             -- YYYY-MM-DD in the owner's time zone
+    outfit_id             TEXT REFERENCES outfits(id), -- set when outfits are rebuilt from looks
+    created_by            TEXT NOT NULL,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_outfit_looks_outfit ON outfit_looks(outfit_id);
+
+CREATE TABLE IF NOT EXISTS outfit_look_photos (
+    look_id               TEXT NOT NULL REFERENCES outfit_looks(id),
+    photo_id              TEXT NOT NULL UNIQUE,      -- photo-store photo_…; a selfie is in one look
+    photo_review_id       TEXT NOT NULL REFERENCES photo_reviews(id),
+    PRIMARY KEY (look_id, photo_id)
+);
+
+CREATE TABLE IF NOT EXISTS outfit_slots (
+    id                    TEXT PRIMARY KEY,          -- outfit_slot_000001
+    seq                   INTEGER NOT NULL UNIQUE,
+    look_id               TEXT NOT NULL REFERENCES outfit_looks(id),
+    slot                  TEXT NOT NULL,             -- "watch, left wrist", "jacket"
+    group_key             TEXT NOT NULL,             -- the wearable group (wearableGroup)
+    proposed              TEXT NOT NULL,             -- JSON Proposal: kind, kind fields, name, description
+    agreement             TEXT NOT NULL,             -- vocabulary: both_agree, second_reader_changed, second_reader_added
+    possession_id         TEXT REFERENCES possessions(id), -- the piece it is linked to
+    decided_by            TEXT NOT NULL DEFAULT '',  -- best_guess, or who answered; '' before identification
+    candidates            TEXT NOT NULL DEFAULT '[]', -- JSON [{possession_id, likelihood}], most likely first
+    created_by            TEXT NOT NULL,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_outfit_slots_look ON outfit_slots(look_id);
+CREATE INDEX IF NOT EXISTS idx_outfit_slots_possession ON outfit_slots(possession_id);
+
+CREATE TABLE IF NOT EXISTS outfit_slot_photos (
+    slot_id               TEXT NOT NULL REFERENCES outfit_slots(id),
+    photo_id              TEXT NOT NULL,
+    box_left              REAL NOT NULL,             -- on the photo as its thumbnail stands
+    box_top               REAL NOT NULL,
+    box_right             REAL NOT NULL,
+    box_bottom            REAL NOT NULL,
+    sighting_id           TEXT REFERENCES sightings(id), -- made when the slot is linked
+    PRIMARY KEY (slot_id, photo_id)
+);
+
+-- A rebuild of outfits from looks, kept so it can be undone: which outfits
+-- it replaced, which it made, and where each look and reading pointed.
+CREATE TABLE IF NOT EXISTS outfit_rebuilds (
+    id                    TEXT PRIMARY KEY,          -- outfit_rebuild_000001
+    seq                   INTEGER NOT NULL UNIQUE,
+    rebuilt_by            TEXT NOT NULL,
+    moved                 TEXT NOT NULL,             -- JSON: outfitRebuildMoves in rebuild.go
+    rebuilt_at            INTEGER NOT NULL,
+    undone_by             TEXT NOT NULL DEFAULT '',
+    undone_at             INTEGER NOT NULL DEFAULT 0
+);
+
+-- ---------------------------------------------------------------------------
 -- History.
 -- ---------------------------------------------------------------------------
 

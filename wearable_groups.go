@@ -20,8 +20,21 @@ type WearableGroup struct {
 	Owned       int     `json:"owned"` // owned or lent out
 	Unconfirmed int     `json:"unconfirmed"`
 	Other       int     `json:"other"` // sold, given away, lost, discarded
-	ChangedBy   string  `json:"changed_by"`
-	ChangedAt   int64   `json:"changed_at"`
+	// ExpectedLow and ExpectedHigh are how many individual pieces the
+	// owner says the group holds; null when not said.
+	ExpectedLow  *int   `json:"expected_low"`
+	ExpectedHigh *int   `json:"expected_high"`
+	ChangedBy    string `json:"changed_by"`
+	ChangedAt    int64  `json:"changed_at"`
+}
+
+// WearableGroupChange is the body of PUT /wearable-groups/{group}: what is
+// given changes, what is left out stays.
+type WearableGroupChange struct {
+	Closed       *bool  `json:"closed"`
+	ExpectedLow  *int   `json:"expected_low"`
+	ExpectedHigh *int   `json:"expected_high"`
+	Actor        string `json:"actor"`
 }
 
 // ownedStatuses are the statuses of a closed group's members: what the
@@ -34,14 +47,15 @@ func checkGroupKey(group string) error {
 	switch {
 	case (kind == "watch" || kind == "eyewear") && !hasSubType:
 		return nil
-	case kind == "garment" && contains(GarmentCategories, subType):
+	case kind == "garment" && (contains(GarmentCategories, subType) || contains(GroupedGarmentTypes, subType)):
 		return nil
-	case kind == "jewelry" && contains(JewelryTypes, subType):
+	case kind == "jewelry" && contains(JewelryTypes, subType) && (subType == "necklace" || !contains(NecklaceJewelryTypes, subType)):
 		return nil
 	case kind == "bag_or_case" && contains(BagTypes, subType):
 		return nil
 	}
-	return fmt.Errorf("%w: %q is not a wearable group; a group is watch, eyewear, garment:<category>, jewelry:<jewelry type> or bag_or_case:<bag type>", ErrInvalid, group)
+	return fmt.Errorf("%w: %q is not a wearable group; a group is watch, eyewear, garment:<category>, garment:<%s>, jewelry:<jewelry type> (pendants and chains are jewelry:necklace) or bag_or_case:<bag type>",
+		ErrInvalid, group, strings.Join(GroupedGarmentTypes, "|"))
 }
 
 // groupClosed says whether the owner closed a group.
@@ -56,8 +70,18 @@ func groupClosed(q querier, group string) (bool, error) {
 
 // SetWearableGroupClosed closes or opens a group.
 func (s *Store) SetWearableGroupClosed(ctx context.Context, group string, closed bool, actor string) (WearableGroup, error) {
+	return s.ChangeWearableGroup(ctx, group, WearableGroupChange{Closed: &closed, Actor: actor})
+}
+
+// ChangeWearableGroup closes or opens a group and sets how many pieces the
+// owner expects in it.
+func (s *Store) ChangeWearableGroup(ctx context.Context, group string, change WearableGroupChange) (WearableGroup, error) {
+	actor := change.Actor
 	if actor == "" {
 		return WearableGroup{}, fmt.Errorf("%w: actor is required", ErrInvalid)
+	}
+	if change.Closed == nil && change.ExpectedLow == nil && change.ExpectedHigh == nil {
+		return WearableGroup{}, fmt.Errorf("%w: give closed, expected_low or expected_high", ErrInvalid)
 	}
 	if err := checkGroupKey(group); err != nil {
 		return WearableGroup{}, err
@@ -71,27 +95,51 @@ func (s *Store) SetWearableGroupClosed(ctx context.Context, group string, closed
 	defer transaction.Rollback()
 	now := s.unixNow()
 	var id string
-	err = transaction.QueryRow(`SELECT id FROM wearable_groups WHERE group_key = ?`, group).Scan(&id)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	var closed int
+	var low, high sql.NullInt64
+	err = transaction.QueryRow(`SELECT id, closed, expected_low, expected_high FROM wearable_groups WHERE group_key = ?`, group).Scan(&id, &closed, &low, &high)
+	exists := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return WearableGroup{}, err
+	}
+	if change.Closed != nil {
+		closed = boolToInteger(*change.Closed)
+	}
+	if change.ExpectedLow != nil {
+		low = sql.NullInt64{Int64: int64(*change.ExpectedLow), Valid: true}
+	}
+	if change.ExpectedHigh != nil {
+		high = sql.NullInt64{Int64: int64(*change.ExpectedHigh), Valid: true}
+	}
+	if (low.Valid && low.Int64 < 0) || (high.Valid && high.Int64 < 1) || (low.Valid && high.Valid && low.Int64 > high.Int64) {
+		return WearableGroup{}, fmt.Errorf("%w: expected_low is 0 or more, expected_high 1 or more and not below expected_low", ErrInvalid)
+	}
+	if exists {
+		if err := saveRevision(transaction, "wearable_groups", "id", id, actor, now); err != nil {
+			return WearableGroup{}, err
+		}
+		if _, err := transaction.Exec(`UPDATE wearable_groups SET closed = ?, expected_low = ?, expected_high = ?, changed_by = ?, changed_at = ? WHERE id = ?`, closed, low, high, actor, now, id); err != nil {
+			return WearableGroup{}, err
+		}
+	} else {
 		var sequence int64
 		if id, sequence, err = nextID(transaction, "wearable_groups", "wearable_group"); err != nil {
 			return WearableGroup{}, err
 		}
-		if _, err := transaction.Exec(`INSERT INTO wearable_groups (id, seq, group_key, closed, changed_by, changed_at) VALUES (?, ?, ?, ?, ?, ?)`, id, sequence, group, boolToInteger(closed), actor, now); err != nil {
-			return WearableGroup{}, err
-		}
-	case err != nil:
-		return WearableGroup{}, err
-	default:
-		if err := saveRevision(transaction, "wearable_groups", "id", id, actor, now); err != nil {
-			return WearableGroup{}, err
-		}
-		if _, err := transaction.Exec(`UPDATE wearable_groups SET closed = ?, changed_by = ?, changed_at = ? WHERE id = ?`, boolToInteger(closed), actor, now, id); err != nil {
+		if _, err := transaction.Exec(`INSERT INTO wearable_groups (id, seq, group_key, closed, expected_low, expected_high, changed_by, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, sequence, group, closed, low, high, actor, now); err != nil {
 			return WearableGroup{}, err
 		}
 	}
 	if err := transaction.Commit(); err != nil {
+		return WearableGroup{}, err
+	}
+	return s.GetWearableGroup(group)
+}
+
+// GetWearableGroup answers one group, with or without a row.
+func (s *Store) GetWearableGroup(group string) (WearableGroup, error) {
+	if err := checkGroupKey(group); err != nil {
 		return WearableGroup{}, err
 	}
 	groups, err := s.ListWearableGroups()
@@ -103,7 +151,7 @@ func (s *Store) SetWearableGroupClosed(ctx context.Context, group string, closed
 			return listed, nil
 		}
 	}
-	return WearableGroup{}, fmt.Errorf("%s was written but is not listed", group)
+	return WearableGroup{Group: group}, nil
 }
 
 // ListWearableGroups answers every group that has a live member or a row.
@@ -120,6 +168,9 @@ func (s *Store) ListWearableGroups() ([]WearableGroup, error) {
 		return nil, err
 	}
 	for _, possession := range wearables {
+		if possessionGroup(possession) == "" {
+			continue
+		}
 		group := get(possessionGroup(possession))
 		group.Members++
 		switch status := possession["status"].(string); {
@@ -131,7 +182,7 @@ func (s *Store) ListWearableGroups() ([]WearableGroup, error) {
 			group.Other++
 		}
 	}
-	rows, err := s.db.Query(`SELECT id, group_key, closed, changed_by, changed_at FROM wearable_groups`)
+	rows, err := s.db.Query(`SELECT id, group_key, closed, expected_low, expected_high, changed_by, changed_at FROM wearable_groups`)
 	if err != nil {
 		return nil, err
 	}
@@ -140,11 +191,20 @@ func (s *Store) ListWearableGroups() ([]WearableGroup, error) {
 		var id, key, changedBy string
 		var closed int
 		var changedAt int64
-		if err := rows.Scan(&id, &key, &closed, &changedBy, &changedAt); err != nil {
+		var low, high sql.NullInt64
+		if err := rows.Scan(&id, &key, &closed, &low, &high, &changedBy, &changedAt); err != nil {
 			return nil, err
 		}
 		group := get(key)
 		group.ID, group.Closed, group.ChangedBy, group.ChangedAt = &id, closed == 1, changedBy, changedAt
+		if low.Valid {
+			value := int(low.Int64)
+			group.ExpectedLow = &value
+		}
+		if high.Valid {
+			value := int(high.Int64)
+			group.ExpectedHigh = &value
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
