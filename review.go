@@ -35,6 +35,9 @@ type Reviewer struct {
 	Photos           PhotoSource
 	FirstReaderRole  string
 	SecondReaderRole string
+	// OwnerLocation is the owner's time zone: an outfit read from a photo
+	// was worn on the photo's day there.
+	OwnerLocation *time.Location
 	// wake is signalled when a review is queued, so the worker need not wait
 	// for its next poll.
 	wakeOnce sync.Once
@@ -99,6 +102,7 @@ type Proposal struct {
 	Description          string                     `json:"description"`
 	Quantity             int                        `json:"quantity"`
 	Room                 string                     `json:"room,omitempty"`
+	Status               string                     `json:"status,omitempty"` // set when the record should not start as owned
 	Kind                 string                     `json:"kind"`
 	KindFields           map[string]json.RawMessage `json:"kind_fields"`
 	DroppedFields        []string                   `json:"dropped_fields,omitempty"`
@@ -414,6 +418,9 @@ func (proposal Proposal) possessionFields() map[string]json.RawMessage {
 	if proposal.Room != "" {
 		fields["room"] = text(proposal.Room)
 	}
+	if proposal.Status != "" {
+		fields["status"] = text(proposal.Status)
+	}
 	if len(proposal.DroppedFields) > 0 {
 		fields["description"] = text(strings.TrimSpace(proposal.Description + "\n\nThe photo readers also said, in words the inventory could not take: " + strings.Join(proposal.DroppedFields, "; ")))
 	}
@@ -461,6 +468,10 @@ type PhotoReview struct {
 	QueuedBy    string         `json:"queued_by"`
 	QueuedAt    int64          `json:"queued_at"`
 	FinishedAt  int64          `json:"finished_at"`
+	Reading     string         `json:"reading"`          // inventory or outfit (PhotoReviewReadings)
+	WearerID    string         `json:"wearer_person_id"` // an outfit reading: whose outfit, a people-store person_…
+	OutfitID    *string        `json:"outfit_id"`        // an outfit reading: the outfit it recorded
+	WornOn      string         `json:"worn_on"`          // an outfit reading: the photo's day in the owner's time zone
 	Readings    []ModelReading `json:"readings,omitempty"`
 	Sightings   []Sighting     `json:"sightings,omitempty"`
 	CostUSD     float64        `json:"cost_usd"`
@@ -512,11 +523,18 @@ type OwnerQuestion struct {
 	AnsweredAt   int64           `json:"answered_at"`
 }
 
-// QueuePhotoReview queues a photo; a photo already queued answers its
+// QueuePhotoReview queues a photo for a reading (PhotoReviewReadings); an
+// outfit reading names whose outfit it is. A photo already queued answers its
 // existing review and created false.
-func (s *Store) QueuePhotoReview(ctx context.Context, photoID, queuedBy string) (PhotoReview, bool, error) {
+func (s *Store) QueuePhotoReview(ctx context.Context, photoID, queuedBy, reading, wearerPersonID string) (PhotoReview, bool, error) {
 	if photoID == "" || queuedBy == "" {
 		return PhotoReview{}, false, fmt.Errorf("%w: photo_id and queued_by are required", ErrInvalid)
+	}
+	if !contains(PhotoReviewReadings, reading) {
+		return PhotoReview{}, false, fmt.Errorf("%w: reading must be one of %s", ErrInvalid, strings.Join(PhotoReviewReadings, ", "))
+	}
+	if (reading == "outfit") != (wearerPersonID != "") {
+		return PhotoReview{}, false, fmt.Errorf("%w: an outfit reading needs wearer_person_id, and only an outfit reading takes one", ErrInvalid)
 	}
 	if existing, err := s.photoReviewForPhoto(photoID); err == nil {
 		return existing, false, nil
@@ -537,7 +555,7 @@ func (s *Store) QueuePhotoReview(ctx context.Context, photoID, queuedBy string) 
 	if err != nil {
 		return PhotoReview{}, false, err
 	}
-	if _, err := transaction.Exec(`INSERT INTO photo_reviews (id, seq, photo_id, status, queued_by, queued_at) VALUES (?, ?, ?, 'queued', ?, ?)`, id, sequence, photoID, queuedBy, s.unixNow()); err != nil {
+	if _, err := transaction.Exec(`INSERT INTO photo_reviews (id, seq, photo_id, status, queued_by, queued_at, reading, wearer_person_id) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)`, id, sequence, photoID, queuedBy, s.unixNow(), reading, wearerPersonID); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return PhotoReview{}, false, fmt.Errorf("%w: %s is already queued", ErrConflict, photoID)
 		}
@@ -604,8 +622,13 @@ func (s *Store) GetPhotoReview(id string) (PhotoReview, error) {
 
 func photoReviewRow(q querier, id string) (PhotoReview, error) {
 	var review PhotoReview
-	err := q.QueryRow(`SELECT id, photo_id, status, image_source, error, queued_by, queued_at, finished_at FROM photo_reviews WHERE id = ?`, id).Scan(
-		&review.ID, &review.PhotoID, &review.Status, &review.ImageSource, &review.Error, &review.QueuedBy, &review.QueuedAt, &review.FinishedAt)
+	var outfitID sql.NullString
+	err := q.QueryRow(`SELECT id, photo_id, status, image_source, error, queued_by, queued_at, finished_at, reading, wearer_person_id, outfit_id, worn_on FROM photo_reviews WHERE id = ?`, id).Scan(
+		&review.ID, &review.PhotoID, &review.Status, &review.ImageSource, &review.Error, &review.QueuedBy, &review.QueuedAt, &review.FinishedAt,
+		&review.Reading, &review.WearerID, &outfitID, &review.WornOn)
+	if outfitID.Valid {
+		review.OutfitID = &outfitID.String
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return PhotoReview{}, fmt.Errorf("%w: no photo review %s", ErrNotFound, id)
 	}
@@ -799,6 +822,9 @@ func (reviewer *Reviewer) Review(ctx context.Context, reviewID string) error {
 	review, err := photoReviewRow(store.db, reviewID)
 	if err != nil {
 		return err
+	}
+	if review.Reading == "outfit" {
+		return reviewer.reviewOutfit(ctx, review)
 	}
 	photo, imageSource, err := reviewer.Photos.ReviewImage(ctx, review.PhotoID)
 	if err != nil {
@@ -1178,6 +1204,11 @@ func (s *Store) applyResolution(ctx context.Context, transaction *sql.Tx, sighti
 		if err := setStatus("accepted", possessionID, nil); err != nil {
 			return err
 		}
+		if resolution.Proposal.Status == "unconfirmed" {
+			if err := insertStillHaveItQuestion(transaction, sightingID, resolution.Proposal.Name, now); err != nil {
+				return err
+			}
+		}
 	case "same_as":
 		if err := requireLivePossession(transaction, resolution.PossessionID); err != nil {
 			return err
@@ -1228,7 +1259,7 @@ func (s *Store) applyResolution(ctx context.Context, transaction *sql.Tx, sighti
 			return err
 		}
 	}
-	return nil
+	return s.addToReviewOutfit(transaction, sightingID, now)
 }
 
 func sightingByID(q querier, id string) (Sighting, error) {
@@ -1522,7 +1553,7 @@ func (s *Store) applyDetail(ctx context.Context, transaction *sql.Tx, sightingID
 	proposal := resolution.Proposal
 	text := func(value string) json.RawMessage { encoded, _ := json.Marshal(value); return encoded }
 	own := map[string]json.RawMessage{}
-	for name, value := range map[string]string{"name": proposal.Name, "brand": proposal.Brand, "model": proposal.Model, "description": proposal.Description, "room": proposal.Room} {
+	for name, value := range map[string]string{"name": proposal.Name, "brand": proposal.Brand, "model": proposal.Model, "description": proposal.Description, "room": proposal.Room, "status": proposal.Status} {
 		if value != "" && value != existing[name] {
 			own[name] = text(value)
 		}

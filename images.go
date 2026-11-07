@@ -27,6 +27,12 @@ type PhotoSource interface {
 	ReviewImage(ctx context.Context, photoID string) ([]byte, string, error)
 	// Thumbnail answers photo-store's thumbnail of a photo.
 	Thumbnail(ctx context.Context, photoID string) ([]byte, error)
+	// WearerFace answers where a person's face is in a photo, from the face
+	// photo-store confirmed as theirs; an error when none is confirmed.
+	WearerFace(ctx context.Context, photoID, personID string) (Box, error)
+	// TakenAt answers when photo-store says the photo was taken, epoch
+	// seconds; 0 when it does not know.
+	TakenAt(ctx context.Context, photoID string) (int64, error)
 }
 
 // PhotoStoreSource is the PhotoSource over photo-store and originals/.
@@ -55,6 +61,61 @@ func (source PhotoStoreSource) get(ctx context.Context, path string) ([]byte, er
 		return nil, fmt.Errorf("photo-store GET %s: %d %s", path, response.StatusCode, bytes.TrimSpace(body))
 	}
 	return body, nil
+}
+
+// WearerFace finds the person's confirmed face on the photo.
+func (source PhotoStoreSource) WearerFace(ctx context.Context, photoID, personID string) (Box, error) {
+	body, err := source.get(ctx, "/photo-people?photo_id="+url.QueryEscape(photoID)+"&person_id="+url.QueryEscape(personID)+"&status=confirmed")
+	if err != nil {
+		return Box{}, err
+	}
+	var links []struct {
+		FaceID *string `json:"face_id"`
+	}
+	if err := json.Unmarshal(body, &links); err != nil {
+		return Box{}, fmt.Errorf("photo-store's photo-people is not a list: %w", err)
+	}
+	faceID := ""
+	for _, link := range links {
+		if link.FaceID != nil && *link.FaceID != "" {
+			faceID = *link.FaceID
+		}
+	}
+	if faceID == "" {
+		return Box{}, fmt.Errorf("%w: photo-store has no confirmed face of %s on %s", ErrInvalid, personID, photoID)
+	}
+	body, err = source.get(ctx, "/photos/"+url.PathEscape(photoID)+"/faces")
+	if err != nil {
+		return Box{}, err
+	}
+	var faces []struct {
+		ID  string `json:"id"`
+		Box Box    `json:"box"`
+	}
+	if err := json.Unmarshal(body, &faces); err != nil {
+		return Box{}, fmt.Errorf("photo-store's faces are not a list: %w", err)
+	}
+	for _, face := range faces {
+		if face.ID == faceID {
+			return face.Box.clamped(), nil
+		}
+	}
+	return Box{}, fmt.Errorf("photo-store links %s to %s, but the photo has no such face", faceID, photoID)
+}
+
+// TakenAt reads the photo's taken_at.
+func (source PhotoStoreSource) TakenAt(ctx context.Context, photoID string) (int64, error) {
+	body, err := source.get(ctx, "/photos/"+url.PathEscape(photoID))
+	if err != nil {
+		return 0, err
+	}
+	var photo struct {
+		TakenAt int64 `json:"taken_at"`
+	}
+	if err := json.Unmarshal(body, &photo); err != nil {
+		return 0, fmt.Errorf("photo-store's %s is not a photo: %w", photoID, err)
+	}
+	return photo.TakenAt, nil
 }
 
 // Thumbnail answers photo-store's thumbnail.

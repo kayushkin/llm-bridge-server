@@ -103,6 +103,13 @@ var addedColumns = []struct{ table, column, definition string }{
 	{"possessions", "merged_into_id", "TEXT REFERENCES possessions(id)"},
 	// Which room of the home it is in; spot says where in the room.
 	{"possessions", "room", "TEXT NOT NULL DEFAULT ''"},
+	// What the review reads the photo for (PhotoReviewReadings).
+	{"photo_reviews", "reading", "TEXT NOT NULL DEFAULT 'inventory'"},
+	// An outfit reading: whose outfit, the outfit it recorded, and the day
+	// (in the owner's time zone) the photo was taken, the day it was worn.
+	{"photo_reviews", "wearer_person_id", "TEXT NOT NULL DEFAULT ''"},
+	{"photo_reviews", "outfit_id", "TEXT REFERENCES outfits(id)"},
+	{"photo_reviews", "worn_on", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func addColumns(db *sql.DB) error {

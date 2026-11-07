@@ -153,7 +153,7 @@ func (a adder) add(path string) (string, string, error) {
 	if err := json.Unmarshal(found, &photos); err != nil || len(photos) != 1 {
 		return "", "", fmt.Errorf("photo-store does not answer one photo for sha256 %s: %s", hash, found)
 	}
-	reviewBody, _ := json.Marshal(map[string]string{"photo_id": photos[0].ID, "queued_by": a.queuedBy})
+	reviewBody, _ := json.Marshal(map[string]string{"photo_id": photos[0].ID, "queued_by": a.queuedBy, "reading": "inventory"})
 	queued, err := a.call(http.MethodPost, a.possessionURL+"/photo-reviews", reviewBody)
 	if err != nil {
 		return photos[0].ID, "", err

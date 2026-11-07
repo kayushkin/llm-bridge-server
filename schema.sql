@@ -320,6 +320,46 @@ CREATE TABLE IF NOT EXISTS outfit_wearings (
     PRIMARY KEY (outfit_id, worn_on)
 );
 
+-- Wearables split out of garments on 2026-11-06, so an outfit can hold a
+-- watch, a necklace or sunglasses with their own facts.
+CREATE TABLE IF NOT EXISTS jewelry (
+    id TEXT PRIMARY KEY,                    -- jewelry_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    jewelry_type TEXT NOT NULL,
+    metals TEXT NOT NULL DEFAULT '[]',
+    stones TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS watches (
+    id TEXT PRIMARY KEY,                    -- watch_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    movement TEXT NOT NULL DEFAULT '',
+    case_diameter_millimeters REAL,
+    dial_color TEXT NOT NULL DEFAULT '',
+    strap TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS eyewear (
+    id TEXT PRIMARY KEY,                    -- eyewear_000001
+    seq INTEGER NOT NULL UNIQUE,
+    possession_id TEXT NOT NULL UNIQUE REFERENCES possessions(id),
+    eyewear_type TEXT NOT NULL,
+    frame_style TEXT NOT NULL DEFAULT '',
+    frame_color TEXT NOT NULL DEFAULT ''
+);
+
+-- What an outfit is made of: possessions of a wearable kind (WearableKinds).
+-- It replaced outfit_garments, which held garments only and was never filled.
+CREATE TABLE IF NOT EXISTS outfit_possessions (
+    outfit_id TEXT NOT NULL REFERENCES outfits(id),
+    possession_id TEXT NOT NULL REFERENCES possessions(id),
+    position INTEGER NOT NULL,
+    PRIMARY KEY (outfit_id, possession_id)
+);
+CREATE INDEX IF NOT EXISTS idx_outfit_possessions_possession ON outfit_possessions(possession_id);
+
 -- ---------------------------------------------------------------------------
 -- Purchases: orders from Amazon, Facebook Marketplace, a store receipt.
 -- A line becomes a possession once someone confirms it is one.

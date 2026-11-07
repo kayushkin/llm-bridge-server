@@ -3,11 +3,22 @@ package possessionstore
 // The closed sets of words some fields take. GET /vocabulary serves them all,
 // so a client or a model never keeps its own copy.
 
-var PossessionStatuses = []string{"owned", "lent_out", "sold", "given_away", "lost", "discarded"}
+// unconfirmed: seen in a photo of the owner wearing or using it, but not yet
+// confirmed as still owned.
+var PossessionStatuses = []string{"owned", "unconfirmed", "lent_out", "sold", "given_away", "lost", "discarded"}
 var Conditions = []string{"new", "good", "worn", "damaged", "broken"}
 var AcquisitionMethods = []string{"bought", "gift", "made", "inherited", "found"}
 
 var GarmentCategories = []string{"top", "bottom", "one_piece", "outerwear", "footwear", "headwear", "accessory", "underwear", "sleepwear", "swimwear"}
+var GarmentTypes = []string{
+	"t_shirt", "tank_top", "polo", "button_up_shirt", "flannel_shirt", "henley", "long_sleeve_shirt", "sweater", "cardigan", "hoodie", "sweatshirt", "vest", "blouse",
+	"jeans", "chinos", "trousers", "sweatpants", "joggers", "shorts", "skirt", "leggings",
+	"dress", "jumpsuit", "suit", "overalls",
+	"jacket", "denim_jacket", "leather_jacket", "varsity_jacket", "bomber_jacket", "blazer", "coat", "parka", "puffer", "raincoat", "windbreaker",
+	"sneakers", "running_shoes", "boots", "dress_shoes", "loafers", "sandals", "slippers", "skates",
+	"baseball_cap", "beanie", "hat", "headphones_worn",
+	"belt", "scarf", "gloves", "tie", "socks",
+	"underwear", "pajamas", "swimsuit", "other"}
 var GarmentLayers = []string{"base", "mid", "outer"}
 var Colors = []string{"black", "white", "gray", "charcoal", "navy", "blue", "light_blue", "teal", "green", "olive", "yellow", "gold", "orange", "red", "burgundy", "pink", "purple", "brown", "tan", "beige", "cream", "khaki", "silver", "multicolor"}
 var Patterns = []string{"solid", "striped", "plaid", "checked", "graphic", "logo", "floral", "camo", "polka_dot", "geometric", "heathered", "tie_dye", "other"}
@@ -15,6 +26,10 @@ var Fits = []string{"slim", "regular", "relaxed", "oversized"}
 var SizeSystems = []string{"letter", "numeric", "waist_inseam_inches", "neck_sleeve_inches", "us_shoe_men", "us_shoe_women", "eu_shoe", "one_size"}
 var Seasons = []string{"spring", "summer", "fall", "winter"}
 
+var JewelryTypes = []string{"necklace", "pendant", "chain", "ring", "bracelet", "earring", "anklet", "brooch", "cufflinks", "other"}
+var Metals = []string{"gold", "silver", "sterling_silver", "stainless_steel", "titanium", "tungsten", "platinum", "brass", "copper", "leather", "cord", "other"}
+var WatchMovements = []string{"automatic", "manual", "quartz", "solar", "smart", "other"}
+var EyewearTypes = []string{"sunglasses", "prescription", "reading", "blue_light", "safety", "ski_goggles", "other"}
 var ComputerFormFactors = []string{"desktop", "laptop", "server", "phone", "tablet", "smartwatch", "single_board", "console", "vr_headset"}
 var ComputerPartTypes = []string{"storage_drive", "graphics_card", "memory_module", "processor", "motherboard", "power_supply", "monitor", "keyboard", "mouse", "webcam", "dock", "network_device", "external_enclosure", "other"}
 var AudioDeviceTypes = []string{"headphones", "earbuds", "speakers", "amplifier", "audio_interface", "microphone", "mixer", "effects_pedal", "converter", "turntable", "cable", "other"}
@@ -36,14 +51,20 @@ var ElectronicAccessoryTypes = []string{"cable", "power_strip", "adapter", "char
 var HouseholdToolTypes = []string{"hand_tool", "power_tool", "cleaning", "laundry", "storage", "kitchen", "garden", "other"}
 var MusicAccessoryTypes = []string{"stand", "bench", "throne", "pedal", "strap", "capo", "tuner", "metronome", "music_books", "other"}
 
+// WearableKinds are the kinds an outfit may hold.
+var WearableKinds = []string{"garment", "jewelry", "watch", "eyewear", "bag_or_case"}
+
 var OutfitStatuses = []string{"suggested", "kept", "rejected"}
 
 var Marketplaces = []string{"amazon", "facebook_marketplace", "ebay", "in_store", "other"}
 var PurchaseSources = []string{"amazon_export", "facebook_export", "email_receipt", "manual"}
 var PurchaseLineDispositions = []string{"unreviewed", "possession", "consumable", "returned", "gift_for_someone_else"}
 
+// inventory: two readers list everything in a photo of the home. outfit: one
+// reader lists what the wearer has on, and the outfit is recorded.
+var PhotoReviewReadings = []string{"inventory", "outfit"}
 var PhotoReviewStatuses = []string{"queued", "reading", "reconciling", "waiting_for_owner", "done", "failed"}
-var SightingAgreements = []string{"both_agree", "readers_differ", "one_reader_only"}
+var SightingAgreements = []string{"both_agree", "readers_differ", "one_reader_only", "single_reader"}
 var SightingStatuses = []string{"proposed", "accepted", "rejected", "same_as_other_sighting"}
 var ResolutionActions = []string{"accept", "same_as", "same_as_sighting", "reject", "keep", "amend"}
 var QuestionPurposes = []string{"decision", "detail"}
@@ -81,6 +102,13 @@ func Vocabulary() map[string][]string {
 		"electronic_accessory_types": ElectronicAccessoryTypes,
 		"household_tool_types":       HouseholdToolTypes,
 		"music_accessory_types":      MusicAccessoryTypes,
+		"garment_types":              GarmentTypes,
+		"jewelry_types":              JewelryTypes,
+		"metals":                     Metals,
+		"watch_movements":            WatchMovements,
+		"eyewear_types":              EyewearTypes,
+		"photo_review_readings":      PhotoReviewReadings,
+		"wearable_kinds":             WearableKinds,
 		"outfit_statuses":            OutfitStatuses,
 		"marketplaces":               Marketplaces,
 		"purchase_sources":           PurchaseSources,

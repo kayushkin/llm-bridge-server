@@ -371,14 +371,6 @@ func possessionView(q querier, id string, includeDeleted bool) (map[string]any, 
 		delete(record, "possession_id")
 		view["kind"] = kind.Name
 		view[kind.Name] = record
-		if kind.Name == "garment" {
-			outfitIDs, err := stringColumn(q, `SELECT outfit_garments.outfit_id FROM outfit_garments JOIN outfits ON outfits.id = outfit_garments.outfit_id
-				WHERE outfit_garments.garment_id = ? AND outfits.deleted_at = 0 ORDER BY outfits.seq`, record["id"])
-			if err != nil {
-				return nil, err
-			}
-			view["outfit_ids"] = outfitIDs
-		}
 		if kind.Name == "computer" {
 			partIDs, err := stringColumn(q, `SELECT computer_parts.id FROM computer_parts JOIN possessions ON possessions.id = computer_parts.possession_id
 				WHERE computer_parts.installed_in_computer_id = ? AND possessions.deleted_at = 0 ORDER BY computer_parts.seq`, record["id"])
@@ -395,6 +387,12 @@ func possessionView(q querier, id string, includeDeleted bool) (map[string]any, 
 			view["odometer_readings"] = readings
 		}
 	}
+	outfitIDs, err := stringColumn(q, `SELECT outfit_possessions.outfit_id FROM outfit_possessions JOIN outfits ON outfits.id = outfit_possessions.outfit_id
+		WHERE outfit_possessions.possession_id = ? AND outfits.deleted_at = 0 ORDER BY outfits.seq`, id)
+	if err != nil {
+		return nil, err
+	}
+	view["outfit_ids"] = outfitIDs
 	photos, err := possessionPhotos(q, id)
 	if err != nil {
 		return nil, err

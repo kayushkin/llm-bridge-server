@@ -44,6 +44,18 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 		run, err := server.Reviewer.ClassifyKindless(r.Context(), body.Actor, body.BatchSize)
 		respond(w, http.StatusOK, run, err)
 	})
+	mux.HandleFunc("PUT /possessions/{id}/kind", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Kind   string                     `json:"kind"`
+			Fields map[string]json.RawMessage `json:"fields"`
+			Actor  string                     `json:"actor"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		possession, err := server.Store.ChangeKind(r.Context(), r.PathValue("id"), body.Kind, body.Fields, body.Actor)
+		respond(w, http.StatusOK, possession, err)
+	})
 	mux.HandleFunc("POST /possessions/{id}/merge", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Into  string `json:"into"`
@@ -116,7 +128,7 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 			writeError(w, err)
 			return
 		}
-		outfits, err := server.Store.ListOutfits(r.URL.Query().Get("status"), r.URL.Query().Get("garment_id"), limit, offset)
+		outfits, err := server.Store.ListOutfits(r.URL.Query().Get("status"), r.URL.Query().Get("possession_id"), limit, offset)
 		respond(w, http.StatusOK, outfits, err)
 	})
 	mux.HandleFunc("POST /outfits", func(w http.ResponseWriter, r *http.Request) {
@@ -219,13 +231,15 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /photo-reviews", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			PhotoID  string `json:"photo_id"`
-			QueuedBy string `json:"queued_by"`
+			PhotoID        string `json:"photo_id"`
+			QueuedBy       string `json:"queued_by"`
+			Reading        string `json:"reading"`
+			WearerPersonID string `json:"wearer_person_id"`
 		}
 		if !decodeBody(w, r, &body) {
 			return
 		}
-		review, created, err := server.Store.QueuePhotoReview(r.Context(), body.PhotoID, body.QueuedBy)
+		review, created, err := server.Store.QueuePhotoReview(r.Context(), body.PhotoID, body.QueuedBy, body.Reading, body.WearerPersonID)
 		if err != nil {
 			writeError(w, err)
 			return

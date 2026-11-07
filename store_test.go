@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -128,39 +129,42 @@ func TestAComputerIsFoundByItsHarnessMachineAndHoldsItsParts(t *testing.T) {
 	}
 }
 
-func TestAnOutfitHoldsLiveGarmentsOnly(t *testing.T) {
+func TestAnOutfitHoldsLiveWearablesOnly(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
-	shirt, err := store.CreatePossession(ctx, fields(t, `{"name":"shirt","garment":{"category":"top"}}`), "principal_000001")
+	shirt, err := store.CreatePossession(ctx, fields(t, `{"name":"shirt","garment":{"category":"top","garment_type":"t_shirt"}}`), "principal_000001")
 	if err != nil {
 		t.Fatal(err)
 	}
-	jeans, err := store.CreatePossession(ctx, fields(t, `{"name":"jeans","garment":{"category":"bottom"}}`), "principal_000001")
+	watch, err := store.CreatePossession(ctx, fields(t, `{"name":"dive watch","watch":{"movement":"automatic","dial_color":"green"}}`), "principal_000001")
 	if err != nil {
 		t.Fatal(err)
 	}
-	shirtID := shirt["garment"].(map[string]any)["id"].(string)
-	jeansID := jeans["garment"].(map[string]any)["id"].(string)
+	lamp, _ := store.CreatePossession(ctx, fields(t, `{"name":"lamp","art_and_decor":{"decor_type":"lamp"}}`), "principal_000001")
+	shirtID, watchID := shirt["id"].(string), watch["id"].(string)
 	status := "kept"
-	outfit, err := store.CreateOutfit(ctx, OutfitInput{Status: &status, GarmentIDs: []string{shirtID, jeansID}}, "principal_000001")
+	outfit, err := store.CreateOutfit(ctx, OutfitInput{Status: &status, PossessionIDs: []string{shirtID, watchID}}, "principal_000001")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outfit.ID != "outfit_000001" || len(outfit.GarmentIDs) != 2 {
+	if outfit.ID != "outfit_000001" || len(outfit.PossessionIDs) != 2 {
 		t.Fatalf("outfit = %+v", outfit)
 	}
 	if _, err := store.RecordWearing(outfit.ID, "2026-11-06"); err != nil {
 		t.Fatal(err)
 	}
-	view, _ := store.GetPossession(shirt["id"].(string), false)
+	view, _ := store.GetPossession(watchID, false)
 	if ids := view["outfit_ids"].([]string); len(ids) != 1 || ids[0] != outfit.ID {
-		t.Fatalf("the shirt's outfits = %v", ids)
+		t.Fatalf("the watch's outfits = %v", ids)
 	}
-	if err := store.DeletePossession(jeans["id"].(string), "principal_000001"); err != nil {
+	if _, err := store.CreateOutfit(ctx, OutfitInput{Status: &status, PossessionIDs: []string{lamp["id"].(string)}}, "principal_000001"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an outfit with a lamp = %v, want invalid", err)
+	}
+	if err := store.DeletePossession(shirtID, "principal_000001"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateOutfit(ctx, OutfitInput{Status: &status, GarmentIDs: []string{jeansID}}, "principal_000001"); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("an outfit of a deleted garment = %v, want invalid", err)
+	if _, err := store.CreateOutfit(ctx, OutfitInput{Status: &status, PossessionIDs: []string{shirtID}}, "principal_000001"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an outfit of a deleted shirt = %v, want invalid", err)
 	}
 }
 
@@ -233,6 +237,12 @@ func (fakePhotos) ReviewImage(ctx context.Context, photoID string) ([]byte, stri
 func (fakePhotos) Thumbnail(ctx context.Context, photoID string) ([]byte, error) {
 	return testJPEG(), nil
 }
+func (fakePhotos) WearerFace(ctx context.Context, photoID, personID string) (Box, error) {
+	return Box{0.4, 0.1, 0.6, 0.3}, nil
+}
+func (fakePhotos) TakenAt(ctx context.Context, photoID string) (int64, error) {
+	return 1794010000, nil // 2026-11-07 00:06 UTC, still 2026-11-06 in Los Angeles
+}
 
 func item(label, name, brand, kind string, box Box, kindFields ...fieldValue) readerItem {
 	return readerItem{Label: label, Name: name, Brand: brand, Kind: kind, Box: box, Quantity: 1, KindFields: kindFields, Confidence: 0.9}
@@ -269,7 +279,7 @@ func TestAReviewRecordsWhatBothReadersAgreeOnAndAsksAboutTheRest(t *testing.T) {
 		}},
 	}}
 	reviewer := &Reviewer{Store: store, Models: models, Photos: fakePhotos{}, FirstReaderRole: "first", SecondReaderRole: "second"}
-	review, created, err := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001")
+	review, created, err := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001", "inventory", "")
 	if err != nil || !created {
 		t.Fatalf("queue = %v %v", created, err)
 	}
@@ -337,7 +347,7 @@ func TestASightingWaitingOnAnEarlierOneIsSettledWithIt(t *testing.T) {
 		"second 2": finalReading{Items: []finalItem{{readerItem: jacket("North Face"), FromReadings: []string{"A1", "B1"}}}},
 	}}
 	reviewer := &Reviewer{Store: store, Models: firstModels, Photos: fakePhotos{}, FirstReaderRole: "first", SecondReaderRole: "second"}
-	firstReview, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001")
+	firstReview, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001", "inventory", "")
 	if err := reviewer.Review(ctx, firstReview.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +358,7 @@ func TestASightingWaitingOnAnEarlierOneIsSettledWithIt(t *testing.T) {
 		"first 2":  finalReading{Items: []finalItem{{readerItem: jacket(""), FromReadings: []string{"A1", "B1"}, ExistingID: firstSighting}}},
 		"second 2": finalReading{Items: []finalItem{{readerItem: jacket(""), FromReadings: []string{"A1", "B1"}, ExistingID: firstSighting}}},
 	}}
-	secondReview, _, _ := store.QueuePhotoReview(ctx, "photo_000002", "principal_000001")
+	secondReview, _, _ := store.QueuePhotoReview(ctx, "photo_000002", "principal_000001", "inventory", "")
 	if err := reviewer.Review(ctx, secondReview.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +397,7 @@ func TestAnAnswerInWordsIsReadByTheFirstReader(t *testing.T) {
 			"item": item("amp", "Boss Katana amp", "Boss", "audio_device", box, fieldValue{Name: "device_type", Value: "amplifier"})},
 	}}
 	reviewer := &Reviewer{Store: store, Models: models, Photos: fakePhotos{}, FirstReaderRole: "first", SecondReaderRole: "second"}
-	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001")
+	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001", "inventory", "")
 	if err := reviewer.Review(ctx, review.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +514,7 @@ func TestAnAgreedThingWithADoubtIsRecordedAndItsAnswerAmendsIt(t *testing.T) {
 			"item": item("mouse", "Logitech G Pro mouse", "Logitech", "computer_part", box, fieldValue{Name: "part_type", Value: "mouse"})},
 	}}
 	reviewer := &Reviewer{Store: store, Models: models, Photos: fakePhotos{}, FirstReaderRole: "first", SecondReaderRole: "second"}
-	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001")
+	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001", "inventory", "")
 	if err := reviewer.Review(ctx, review.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +546,7 @@ func TestAgreedSightingsHeldBackBeforeAreRecordedOnce(t *testing.T) {
 		"second 2": finalReading{Items: []finalItem{{readerItem: item("lamp", "lamp", "", "none", box), FromReadings: []string{"A1", "B1"}}}},
 	}}
 	reviewer := &Reviewer{Store: store, Models: models, Photos: fakePhotos{}, FirstReaderRole: "first", SecondReaderRole: "second"}
-	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001")
+	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001", "inventory", "")
 	if err := reviewer.Review(ctx, review.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -624,6 +634,9 @@ func TestEveryKindCanBeMade(t *testing.T) {
 	for _, kind := range KindTypes {
 		required := ""
 		for _, column := range kind.Columns {
+			if !column.Required {
+				continue
+			}
 			if column.Required {
 				required = fmt.Sprintf(`"%s":%q`, column.Name, column.Vocabulary[0])
 			}
@@ -651,7 +664,7 @@ func TestClassifyingGivesKindsWhenSureAndAsksWhenNot(t *testing.T) {
 			{readerItem: item("vase", "blue vase", "", "none", Box{0.7, 0.7, 0.9, 0.9}), FromReadings: []string{"A2", "B2"}}}},
 	}}
 	reviewer := &Reviewer{Store: store, Models: scripted, Photos: fakePhotos{}, FirstReaderRole: "first", SecondReaderRole: "second"}
-	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001")
+	review, _, _ := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001", "inventory", "")
 	if err := reviewer.Review(ctx, review.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -683,5 +696,118 @@ func TestClassifyingGivesKindsWhenSureAndAsksWhenNot(t *testing.T) {
 	vase, _ := store.GetPossession("possession_000002", false)
 	if vase["kind"] != "art_and_decor" || vase["quantity"] != int64(1) || vase["name"] != "blue vase" {
 		t.Fatalf("vase after yes = %v", vase)
+	}
+}
+
+func TestAnOutfitReadingRecordsTheOutfitAndFindsItAgain(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	watch, err := store.CreatePossession(ctx, fields(t, `{"name":"dive watch","watch":{"movement":"automatic"}}`), "principal_000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchID := watch["id"].(string)
+	hoodieItem := item("hoodie", "gray hoodie", "", "garment", Box{0.3, 0.3, 0.7, 0.7}, fieldValue{Name: "category", Value: "top"}, fieldValue{Name: "garment_type", Value: "hoodie"})
+	watchItem := item("watch", "dive watch", "", "watch", Box{0.6, 0.6, 0.65, 0.65}, fieldValue{Name: "movement", Value: "automatic"})
+	shoesItem := item("shoes", "white sneakers", "", "garment", Box{0.4, 0.9, 0.6, 1.0}, fieldValue{Name: "category", Value: "footwear"})
+	lampItem := item("lamp", "lamp", "", "art_and_decor", Box{0.0, 0.0, 0.1, 0.1}, fieldValue{Name: "decor_type", Value: "lamp"})
+	scripted := &scriptedModels{answers: map[string]any{
+		"first 1": finalReading{Items: []finalItem{
+			{readerItem: hoodieItem},
+			{readerItem: watchItem, ExistingID: watchID},
+			{readerItem: shoesItem, Doubt: "Are these the Adidas or another pair?"},
+			{readerItem: lampItem},
+		}},
+	}}
+	reviewer := &Reviewer{Store: store, Models: scripted, Photos: fakePhotos{}, FirstReaderRole: "first", SecondReaderRole: "second", OwnerLocation: mustLocation(t, "America/Los_Angeles")}
+	if _, _, err := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001", "outfit", ""); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an outfit reading with no wearer = %v, want invalid", err)
+	}
+	first, _, err := store.QueuePhotoReview(ctx, "photo_000001", "principal_000001", "outfit", "person_000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reviewer.Review(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	review, _ := store.GetPhotoReview(first.ID)
+	if review.Status != "waiting_for_owner" || review.OutfitID == nil || review.WornOn != "2026-11-06" || len(review.Sightings) != 3 {
+		t.Fatalf("review = %s, outfit %v, worn %q, %d sightings (the lamp is not worn)", review.Status, review.OutfitID, review.WornOn, len(review.Sightings))
+	}
+	outfit, _ := store.GetOutfit(*review.OutfitID, false)
+	if len(outfit.PossessionIDs) != 2 || outfit.PossessionIDs[1] != watchID || len(outfit.WornOn) != 1 || outfit.WornOn[0] != "2026-11-06" {
+		t.Fatalf("outfit = %+v", outfit)
+	}
+	hoodieID := outfit.PossessionIDs[0]
+	hoodie, _ := store.GetPossession(hoodieID, false)
+	if hoodie["status"] != "unconfirmed" {
+		t.Fatalf("a piece seen only in a photo should start unconfirmed: %v", hoodie["status"])
+	}
+	decisions, _ := store.ListQuestions(false, first.ID, "decision", 0, 0)
+	details, _ := store.ListQuestions(false, first.ID, "detail", 0, 0)
+	if len(decisions) != 1 || len(details) != 1 || !strings.Contains(details[0].Question, "still have the gray hoodie") {
+		t.Fatalf("decisions %+v, details %+v", decisions, details)
+	}
+	yes := 0
+	if _, err := reviewer.AnswerQuestion(ctx, details[0].ID, Answer{Choice: &yes, AnsweredBy: "principal_000001"}); err != nil {
+		t.Fatal(err)
+	}
+	if confirmed, _ := store.GetPossession(hoodieID, false); confirmed["status"] != "owned" {
+		t.Fatalf("after 'yes, I still have it': %v", confirmed["status"])
+	}
+	if _, err := reviewer.AnswerQuestion(ctx, decisions[0].ID, Answer{Choice: &yes, AnsweredBy: "principal_000001"}); err != nil {
+		t.Fatal(err)
+	}
+	outfit, _ = store.GetOutfit(*review.OutfitID, false)
+	if len(outfit.PossessionIDs) != 3 {
+		t.Fatalf("the answered sneakers should join the outfit: %+v", outfit.PossessionIDs)
+	}
+	shoesID := outfit.PossessionIDs[2]
+
+	scripted.answers["first 1"] = finalReading{Items: []finalItem{
+		{readerItem: hoodieItem, ExistingID: hoodieID}, {readerItem: watchItem, ExistingID: watchID}, {readerItem: shoesItem, ExistingID: shoesID},
+	}}
+	second, _, _ := store.QueuePhotoReview(ctx, "photo_000002", "principal_000001", "outfit", "person_000001")
+	if err := reviewer.Review(ctx, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := store.GetPhotoReview(second.ID)
+	if again.Status != "done" || again.OutfitID == nil || *again.OutfitID != outfit.ID {
+		t.Fatalf("the same three pieces should find outfit %s, got %v (%s)", outfit.ID, again.OutfitID, again.Status)
+	}
+	if outfits, _ := store.ListOutfits("", "", 0, 0); len(outfits) != 1 {
+		t.Fatalf("outfits = %d, want one", len(outfits))
+	}
+}
+
+func mustLocation(t *testing.T, name string) *time.Location {
+	t.Helper()
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return location
+}
+
+func TestAPossessionMovesToAnotherKind(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	watch, _ := store.CreatePossession(ctx, fields(t, `{"name":"Seiko","garment":{"category":"accessory"}}`), "principal_000001")
+	id := watch["id"].(string)
+	moved, err := store.ChangeKind(ctx, id, "watch", fields(t, `{"movement":"quartz"}`), "principal_000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved["kind"] != "watch" || moved["garment"] != nil || moved["watch"].(map[string]any)["movement"] != "quartz" {
+		t.Fatalf("moved = %v", moved)
+	}
+	if _, err := store.ChangeKind(ctx, id, "watch", nil, "principal_000001"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("moving to the kind it has = %v", err)
+	}
+	if _, err := store.ChangeKind(ctx, id, "jewelry", fields(t, `{}`), "principal_000001"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a kind with its required field missing = %v", err)
+	}
+	if still, _ := store.GetPossession(id, false); still["kind"] != "watch" {
+		t.Fatalf("a refused move should change nothing: %v", still["kind"])
 	}
 }

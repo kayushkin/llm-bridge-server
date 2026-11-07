@@ -24,6 +24,7 @@ with an ISO 4217 code.
 | `POSSESSION_STORE_FIRST_READER_ROLE` | `possession-photo-reader` | model-store role of the first reader; it also reads answers given in words |
 | `POSSESSION_STORE_SECOND_READER_ROLE` | `possession-photo-second-reader` | model-store role of the second reader |
 | `POSSESSION_STORE_REVIEW_WORKER_ENABLED` | `true` | off, queued photos wait |
+| `POSSESSION_STORE_OWNER_TIME_ZONE` | `UTC` | the owner's IANA zone: an outfit read from a photo was worn on the photo's day there; set it in a host-local drop-in |
 | `POSSESSION_STORE_REVIEW_IMAGE_LONGEST_SIDE` | `2048` | size of the original the readers see; without an original they see photo-store's 1024-pixel thumbnail |
 
 ## Records and ids
@@ -54,6 +55,9 @@ a chat draws an id as a chip.
 | electronic accessory | `electronic_accessory_…` | `/electronic-accessories/{id}` |
 | household tool | `household_tool_…` | `/household-tools/{id}` |
 | music accessory | `music_accessory_…` | `/music-accessories/{id}` |
+| jewelry | `jewelry_…` | `/jewelry/{id}` |
+| watch | `watch_…` | `/watches/{id}` |
+| eyewear | `eyewear_…` | `/eyewear/{id}` |
 | outfit | `outfit_…` | `/outfits/{id}` |
 | purchase | `possession_purchase_…` | `/purchases/{id}` |
 | purchase line | `purchase_line_…` | inside its purchase |
@@ -103,21 +107,22 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` | `/possessions/{id}/image` | JPEG: the possession cut from its cover photo's thumbnail by its box, with a margin; the whole thumbnail when the photo has no box. **404** with no photo |
 | `POST` | `/possessions/{id}/photos` | `{photo_id, box_left, box_top, box_right, box_bottom, is_cover, linked_by}`: box sides are fractions 0–1, all four or none. The first photo is the cover until another is chosen. Linking again changes the box or cover |
 | `POST` | `/possessions/classify-kindless` | `{actor, batch_size}` (1–20): the first reader looks at every live possession with no kind, batch_size at a time with their pictures. A sure answer gives it the kind and its fields (and a room when it has none); an unsure one raises a detail question on its sighting whose first choice gives it that kind. Answers `{looked, classified, asked, left:[{possession_id, why}], cost_usd}`. Runs until done, so call it with a long timeout |
+| `PUT` | `/possessions/{id}/kind` | `{kind, fields, actor}`: moves a possession to another kind; its old kind record goes to revisions. An empty kind leaves it with none. A computer with installed parts, or a wearable in an outfit moving to a kind that is not wearable, is a **409** |
 | `POST` | `/possessions/{id}/merge` | `{into, actor}`: folds a duplicate into the possession it duplicates. The kept one takes its photos, sightings, kind (when it has none), and every field it leaves blank; outfits, installed parts, odometer readings and a harness machine move to the kept kind record. The duplicate is deleted with `merged_into_id` set. Different kinds are a **409** |
 | `DELETE` | `/possessions/{id}/photos/{photo_id}` | the photo stays in photo-store; the earliest left becomes cover |
 | `GET` | each kind's route above, without an id | possessions of that kind, with the same query as `/possessions` |
 | `GET` | `/<kind route>/{id}` and `…/{id}/image` | the possession the kind record extends |
 | `GET` | `/harness-machines/{machine_id}/computer` | the computer tied to a harness-store machine (`m_…`) |
 | `POST` | `/vehicles/{id}/odometer-readings` | `{read_at, miles, source}` |
-| `GET` | `/outfits` | `?status=`, `?garment_id=`, `?limit=`, `?offset=` |
-| `POST` | `/outfits` | `{actor, name, occasion, weather, status, reasoning, preview_image_path, garment_ids:[…]}`; status is `suggested`, `kept` or `rejected`; every garment must be live. **201** |
-| `GET` / `PATCH` | `/outfits/{id}` | a patch changes what it gives; `garment_ids` replaces the list |
+| `GET` | `/outfits` | `?status=`, `?possession_id=`, `?limit=`, `?offset=` |
+| `POST` | `/outfits` | `{actor, name, occasion, weather, status, reasoning, preview_image_path, possession_ids:[…]}`; status is `suggested`, `kept` or `rejected`; every possession must be live and of a wearable kind (`wearable_kinds` in `/vocabulary`: garment, jewelry, watch, eyewear, bag_or_case). **201** |
+| `GET` / `PATCH` | `/outfits/{id}` | a patch changes what it gives; `possession_ids` replaces the list |
 | `DELETE` | `/outfits/{id}?actor=` | soft, **204** |
 | `POST` | `/outfits/{id}/wearings` | `{worn_on:"YYYY-MM-DD"}` in the owner's time zone |
 | `GET` / `POST` | `/purchases` | `{seller, marketplace, order_reference, ordered_at, total_cents, currency, source, lines:[{title, quantity, unit_price_cents, product_reference, disposition}]}`. An order already recorded (same marketplace and reference) is a **409** |
 | `GET` | `/purchases/{id}` | with lines; each line lists the possessions that point at it (`purchase_line_id`) |
 | `PATCH` | `/purchase-lines/{id}` | `{disposition, actor}` |
-| `GET` / `POST` | `/photo-reviews` | `POST {photo_id, queued_by}` queues a photo-store photo: **201**, or **200** with the review already made for that photo |
+| `GET` / `POST` | `/photo-reviews` | `POST {photo_id, queued_by, reading, wearer_person_id}` queues a photo-store photo for a reading, `inventory` (everything in a room, two readers) or `outfit` (what `wearer_person_id`, a people-store person confirmed on the photo, has on; one reader): **201**, or **200** with the review already made for that photo |
 | `GET` | `/photo-reviews/{id}` | with every reading (each model's answer unchanged, tokens, cost) and sighting; `cost_usd` sums the readings |
 | `POST` | `/photo-reviews/{id}/retry` | `{actor}`: a `failed` review only; its readings go to revisions and it is queued again |
 | `GET` | `/sightings/{id}` and `/sightings/{id}/image` | |
@@ -159,3 +164,16 @@ in the proposal's `dropped_fields`, and the new possession's description keeps
 it in words. When a sighting is settled, every later sighting waiting on it is
 settled the same way. A review is `waiting_for_owner` while any of its
 decision questions is open, then `done`.
+
+## Outfit reading
+
+A review with `reading: outfit` asks the first reader alone what the wearer
+has on, given where their face is (photo-store's confirmed face) and every
+wearable already recorded. A piece it is sure of is recorded at once: matched
+to its possession, or a new possession with status `unconfirmed` and a detail
+question, "Do you still have it?", whose choices set its status. A piece it
+doubts waits on a decision question. The recorded pieces make an outfit
+(`created_by` the review), or find the live outfit holding exactly the same
+pieces, and get a wearing on the photo's day in the owner's time zone
+(`worn_on` on the review). A piece accepted later, by an answer or by a
+sighting it waited on, joins that outfit.

@@ -10,8 +10,8 @@ import (
 )
 
 // OutfitInput is the body of POST /outfits and PATCH /outfits/{id}. On a
-// patch, a nil field is left as it is; garment_ids, when given, replaces the
-// whole list.
+// patch, a nil field is left as it is; possession_ids, when given, replaces
+// the whole list.
 type OutfitInput struct {
 	Name             *string  `json:"name"`
 	Occasion         *string  `json:"occasion"`
@@ -19,7 +19,7 @@ type OutfitInput struct {
 	Status           *string  `json:"status"`
 	Reasoning        *string  `json:"reasoning"`
 	PreviewImagePath *string  `json:"preview_image_path"`
-	GarmentIDs       []string `json:"garment_ids"`
+	PossessionIDs    []string `json:"possession_ids"`
 }
 
 // Outfit is an outfit as the API answers it.
@@ -35,38 +35,42 @@ type Outfit struct {
 	CreatedAt        int64    `json:"created_at"`
 	UpdatedAt        int64    `json:"updated_at"`
 	DeletedAt        int64    `json:"deleted_at"`
-	GarmentIDs       []string `json:"garment_ids"`
+	PossessionIDs    []string `json:"possession_ids"`
 	WornOn           []string `json:"worn_on"`
 }
 
-func (s *Store) checkOutfitGarments(transaction *sql.Tx, garmentIDs []string) error {
-	if len(garmentIDs) == 0 {
-		return fmt.Errorf("%w: an outfit needs at least one garment", ErrInvalid)
+// checkOutfitPossessions holds an outfit to live possessions of a wearable
+// kind, each once.
+func (s *Store) checkOutfitPossessions(transaction *sql.Tx, possessionIDs []string) error {
+	if len(possessionIDs) == 0 {
+		return fmt.Errorf("%w: an outfit needs at least one thing in it", ErrInvalid)
 	}
 	seen := map[string]bool{}
-	for _, garmentID := range garmentIDs {
-		if seen[garmentID] {
-			return fmt.Errorf("%w: %s is in the outfit twice", ErrInvalid, garmentID)
+	for _, possessionID := range possessionIDs {
+		if seen[possessionID] {
+			return fmt.Errorf("%w: %s is in the outfit twice", ErrInvalid, possessionID)
 		}
-		seen[garmentID] = true
-		var deletedAt int64
-		err := transaction.QueryRow(`SELECT possessions.deleted_at FROM garments JOIN possessions ON possessions.id = garments.possession_id WHERE garments.id = ?`, garmentID).Scan(&deletedAt)
-		if errors.Is(err, sql.ErrNoRows) || (err == nil && deletedAt != 0) {
-			return fmt.Errorf("%w: no garment %s", ErrInvalid, garmentID)
+		seen[possessionID] = true
+		view, err := possessionView(transaction, possessionID, false)
+		if errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("%w: no possession %s", ErrInvalid, possessionID)
 		}
 		if err != nil {
 			return err
+		}
+		if !contains(WearableKinds, view["kind"].(string)) {
+			return fmt.Errorf("%w: %s is a %q; an outfit holds only %s", ErrInvalid, possessionID, view["kind"], strings.Join(WearableKinds, ", "))
 		}
 	}
 	return nil
 }
 
-func replaceOutfitGarments(transaction *sql.Tx, outfitID string, garmentIDs []string) error {
-	if _, err := transaction.Exec(`DELETE FROM outfit_garments WHERE outfit_id = ?`, outfitID); err != nil {
+func replaceOutfitPossessions(transaction *sql.Tx, outfitID string, possessionIDs []string) error {
+	if _, err := transaction.Exec(`DELETE FROM outfit_possessions WHERE outfit_id = ?`, outfitID); err != nil {
 		return err
 	}
-	for position, garmentID := range garmentIDs {
-		if _, err := transaction.Exec(`INSERT INTO outfit_garments (outfit_id, garment_id, position) VALUES (?, ?, ?)`, outfitID, garmentID, position); err != nil {
+	for position, possessionID := range possessionIDs {
+		if _, err := transaction.Exec(`INSERT INTO outfit_possessions (outfit_id, possession_id, position) VALUES (?, ?, ?)`, outfitID, possessionID, position); err != nil {
 			return err
 		}
 	}
@@ -97,7 +101,7 @@ func (s *Store) CreateOutfit(ctx context.Context, input OutfitInput, actor strin
 		return Outfit{}, err
 	}
 	defer transaction.Rollback()
-	if err := s.checkOutfitGarments(transaction, input.GarmentIDs); err != nil {
+	if err := s.checkOutfitPossessions(transaction, input.PossessionIDs); err != nil {
 		return Outfit{}, err
 	}
 	id, sequence, err := nextID(transaction, "outfits", "outfit")
@@ -110,7 +114,7 @@ func (s *Store) CreateOutfit(ctx context.Context, input OutfitInput, actor strin
 		valueOr(input.Reasoning, ""), valueOr(input.PreviewImagePath, ""), actor, now, now); err != nil {
 		return Outfit{}, err
 	}
-	if err := replaceOutfitGarments(transaction, id, input.GarmentIDs); err != nil {
+	if err := replaceOutfitPossessions(transaction, id, input.PossessionIDs); err != nil {
 		return Outfit{}, err
 	}
 	if err := transaction.Commit(); err != nil {
@@ -148,11 +152,11 @@ func (s *Store) PatchOutfit(ctx context.Context, id string, input OutfitInput, a
 		valueOr(input.Reasoning, existing.Reasoning), valueOr(input.PreviewImagePath, existing.PreviewImagePath), now, id); err != nil {
 		return Outfit{}, err
 	}
-	if input.GarmentIDs != nil {
-		if err := s.checkOutfitGarments(transaction, input.GarmentIDs); err != nil {
+	if input.PossessionIDs != nil {
+		if err := s.checkOutfitPossessions(transaction, input.PossessionIDs); err != nil {
 			return Outfit{}, err
 		}
-		if err := replaceOutfitGarments(transaction, id, input.GarmentIDs); err != nil {
+		if err := replaceOutfitPossessions(transaction, id, input.PossessionIDs); err != nil {
 			return Outfit{}, err
 		}
 	}
@@ -218,7 +222,7 @@ func outfitByID(q querier, id string, includeDeleted bool) (Outfit, error) {
 	if err != nil {
 		return Outfit{}, err
 	}
-	if outfit.GarmentIDs, err = stringColumn(q, `SELECT garment_id FROM outfit_garments WHERE outfit_id = ? ORDER BY position`, id); err != nil {
+	if outfit.PossessionIDs, err = stringColumn(q, `SELECT possession_id FROM outfit_possessions WHERE outfit_id = ? ORDER BY position`, id); err != nil {
 		return Outfit{}, err
 	}
 	if outfit.WornOn, err = stringColumn(q, `SELECT worn_on FROM outfit_wearings WHERE outfit_id = ? ORDER BY worn_on`, id); err != nil {
@@ -228,8 +232,8 @@ func outfitByID(q querier, id string, includeDeleted bool) (Outfit, error) {
 }
 
 // ListOutfits answers outfits, newest first, optionally only one status or
-// only those holding one garment.
-func (s *Store) ListOutfits(status, garmentID string, limit, offset int) ([]Outfit, error) {
+// only those holding one possession.
+func (s *Store) ListOutfits(status, possessionID string, limit, offset int) ([]Outfit, error) {
 	conditions := []string{"deleted_at = 0"}
 	arguments := []any{}
 	if status != "" {
@@ -239,9 +243,9 @@ func (s *Store) ListOutfits(status, garmentID string, limit, offset int) ([]Outf
 		conditions = append(conditions, "status = ?")
 		arguments = append(arguments, status)
 	}
-	if garmentID != "" {
-		conditions = append(conditions, "id IN (SELECT outfit_id FROM outfit_garments WHERE garment_id = ?)")
-		arguments = append(arguments, garmentID)
+	if possessionID != "" {
+		conditions = append(conditions, "id IN (SELECT outfit_id FROM outfit_possessions WHERE possession_id = ?)")
+		arguments = append(arguments, possessionID)
 	}
 	if limit <= 0 {
 		limit = 100

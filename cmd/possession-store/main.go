@@ -56,6 +56,11 @@ func main() {
 		FirstReaderRole:  settings.ModelRole(possessionstore.SettingFirstReaderRole),
 		SecondReaderRole: settings.ModelRole(possessionstore.SettingSecondReaderRole),
 	}
+	ownerLocation, err := time.LoadLocation(settings.String(possessionstore.SettingOwnerTimeZone))
+	if err != nil {
+		log.Fatalf("read settings: POSSESSION_STORE_OWNER_TIME_ZONE: %v", err)
+	}
+	reviewer.OwnerLocation = ownerLocation
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if workerEnabled {

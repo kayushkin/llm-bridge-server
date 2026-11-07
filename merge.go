@@ -89,13 +89,6 @@ func (s *Store) MergePossession(ctx context.Context, duplicateID, keptID, actor 
 				return nil, err
 			}
 			switch duplicateKind {
-			case "garment":
-				if _, err := transaction.Exec(`INSERT OR IGNORE INTO outfit_garments (outfit_id, garment_id, position) SELECT outfit_id, ?, position FROM outfit_garments WHERE garment_id = ?`, keptKindID, duplicateKindID); err != nil {
-					return nil, err
-				}
-				if _, err := transaction.Exec(`DELETE FROM outfit_garments WHERE garment_id = ?`, duplicateKindID); err != nil {
-					return nil, err
-				}
 			case "computer":
 				if _, err := transaction.Exec(`UPDATE computer_parts SET installed_in_computer_id = ? WHERE installed_in_computer_id = ?`, keptKindID, duplicateKindID); err != nil {
 					return nil, err
@@ -115,6 +108,14 @@ func (s *Store) MergePossession(ctx context.Context, duplicateID, keptID, actor 
 				}
 			}
 		}
+	}
+
+	// Outfits.
+	if _, err := transaction.Exec(`INSERT OR IGNORE INTO outfit_possessions (outfit_id, possession_id, position) SELECT outfit_id, ?, position FROM outfit_possessions WHERE possession_id = ?`, keptID, duplicateID); err != nil {
+		return nil, err
+	}
+	if _, err := transaction.Exec(`DELETE FROM outfit_possessions WHERE possession_id = ?`, duplicateID); err != nil {
+		return nil, err
 	}
 
 	// Photos and sightings.

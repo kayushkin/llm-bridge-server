@@ -82,7 +82,7 @@ var possessionType = RecordType{Name: "possession", Table: "possessions", Prefix
 var KindTypes = []RecordType{
 	{Name: "garment", Table: "garments", Prefix: "garment", Route: "garments", Columns: []Column{
 		{Name: "category", Type: ColumnText, Required: true, Vocabulary: GarmentCategories},
-		{Name: "garment_type", Type: ColumnText},
+		{Name: "garment_type", Type: ColumnText, Vocabulary: GarmentTypes},
 		{Name: "layer", Type: ColumnText, Vocabulary: GarmentLayers},
 		{Name: "primary_color", Type: ColumnText, Vocabulary: Colors},
 		{Name: "secondary_colors", Type: ColumnStringList, Vocabulary: Colors},
@@ -94,6 +94,22 @@ var KindTypes = []RecordType{
 		{Name: "formality", Type: ColumnInteger, Nullable: true, Minimum: bound(1), Maximum: bound(5)},
 		{Name: "warmth", Type: ColumnInteger, Nullable: true, Minimum: bound(1), Maximum: bound(5)},
 		{Name: "seasons", Type: ColumnStringList, Vocabulary: Seasons},
+	}},
+	{Name: "jewelry", Table: "jewelry", Prefix: "jewelry", Route: "jewelry", Columns: []Column{
+		{Name: "jewelry_type", Type: ColumnText, Required: true, Vocabulary: JewelryTypes},
+		{Name: "metals", Type: ColumnStringList, Vocabulary: Metals},
+		{Name: "stones", Type: ColumnStringList},
+	}},
+	{Name: "watch", Table: "watches", Prefix: "watch", Route: "watches", Columns: []Column{
+		{Name: "movement", Type: ColumnText, Vocabulary: WatchMovements},
+		{Name: "case_diameter_millimeters", Type: ColumnReal, Nullable: true},
+		{Name: "dial_color", Type: ColumnText, Vocabulary: Colors},
+		{Name: "strap", Type: ColumnText},
+	}},
+	{Name: "eyewear", Table: "eyewear", Prefix: "eyewear", Route: "eyewear", Columns: []Column{
+		{Name: "eyewear_type", Type: ColumnText, Required: true, Vocabulary: EyewearTypes},
+		{Name: "frame_style", Type: ColumnText},
+		{Name: "frame_color", Type: ColumnText, Vocabulary: Colors},
 	}},
 	{Name: "computer", Table: "computers", Prefix: "computer", Route: "computers", Columns: []Column{
 		{Name: "form_factor", Type: ColumnText, Required: true, Vocabulary: ComputerFormFactors},

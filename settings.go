@@ -32,6 +32,7 @@ const (
 	SettingSecondReaderRole       = "second_reader_role"
 	SettingReviewWorkerEnabled    = "review_worker_enabled"
 	SettingReviewImageLongestSide = "review_image_longest_side"
+	SettingOwnerTimeZone          = "owner_time_zone"
 )
 
 // DefaultListenAddress is loopback, deliberately: the service has no auth of
@@ -87,9 +88,17 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The model-store role of the second photo reader."},
 		{Key: SettingReviewWorkerEnabled, EnvironmentVariable: "POSSESSION_STORE_REVIEW_WORKER_ENABLED", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "true",
 			Description: "Whether the service reviews queued photos. Off, photos wait in the queue."},
+		ownerTimeZoneDefinition(),
 		{Key: SettingReviewImageLongestSide, EnvironmentVariable: "POSSESSION_STORE_REVIEW_IMAGE_LONGEST_SIDE", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeInteger, Default: "2048",
 			Description: "The longest side, in pixels, of the photo the readers are shown when its original is in originals/. Without one they see photo-store's 1024-pixel thumbnail."},
 	}
+}
+
+// OwnerTimeZoneDefinition is the zone a photo's time is read in to get the
+// day an outfit was worn.
+func ownerTimeZoneDefinition() servicesettings.Definition {
+	return servicesettings.Definition{Key: SettingOwnerTimeZone, EnvironmentVariable: "POSSESSION_STORE_OWNER_TIME_ZONE", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeString, Default: "UTC",
+		Description: "The owner's IANA time zone. An outfit read from a photo is recorded as worn on the photo's day in this zone. Set it in a host-local drop-in."}
 }
 
 // NewSettingsRegistry reads this service's settings from environment.
