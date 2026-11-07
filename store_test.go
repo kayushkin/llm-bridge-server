@@ -422,3 +422,36 @@ func TestRowsBeforeAnAccountsFeedStartsMoveOntoItAndBlockAnOverlappingImport(t *
 		t.Fatalf("card balance = %d, want 246000", got)
 	}
 }
+
+func TestACategorizedRowCanBecomeATransferToAnAccount(t *testing.T) {
+	s := openTestStore(t)
+	checking := mustAccount(t, s, AccountInput{Name: "Checking", Kind: "checking"})
+	noFeed := false
+	loan := mustAccount(t, s, AccountInput{Name: "Loan", Kind: "loan", HasOwnFeed: &noFeed})
+	mustImport(t, s, "wells_fargo_csv", checking.ID, wellsFargoHeader+`"08/28/2025","DEPOSIT IN BRANCH","5000.00","","Posted"`+"\n")
+	deposit, _ := s.ListTransactions(TransactionFilter{})
+	if _, err := s.MoveCategoryPostingToAccount(deposit[0].ID, loan.ID, ""); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a move with no reason = %v, want invalid", err)
+	}
+	moved, err := s.MoveCategoryPostingToAccount(deposit[0].ID, loan.ID, "the loan paid out into checking")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range moved.Postings {
+		if p.CategoryID != "" {
+			t.Fatalf("a category posting is left: %+v", moved.Postings)
+		}
+	}
+	if got := balance(t, s, loan.ID); got != -500000 {
+		t.Fatalf("loan balance = %d, want -500000", got)
+	}
+	if spending, _ := s.SpendingByCategory("2025-08"); len(spending) != 0 {
+		t.Fatalf("the loan still counts as income or spending: %+v", spending)
+	}
+	if _, err := s.MoveCategoryPostingToAccount(deposit[0].ID, loan.ID, "again"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("moving a transfer again = %v, want a conflict", err)
+	}
+	if _, err := s.UndoTransferWithoutPartner(deposit[0].ID); err != nil {
+		t.Fatalf("the move cannot be undone: %v", err)
+	}
+}

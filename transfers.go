@@ -278,3 +278,74 @@ func (s *Store) UndoTransferWithoutPartner(transactionID string) (Transaction, e
 	}
 	return s.GetTransaction(transactionID)
 }
+
+// MoveCategoryPostingToAccount turns a transaction's one category posting
+// into a posting on accountID: money a category said came from or went
+// nowhere in particular in fact moved to or from one of the operator's own
+// accounts, such as a loan paid out into checking. The transaction must have
+// exactly one account posting and one category posting. The move is kept in
+// transfers_without_partner with the caller's reason, so an import that may
+// hold the other side is refused until it is undone.
+func (s *Store) MoveCategoryPostingToAccount(transactionID, accountID, reason string) (Transaction, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return Transaction{}, fmt.Errorf("%w: reason is required: say why this money moved to that account", ErrInvalid)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Transaction{}, err
+	}
+	defer tx.Rollback()
+	if err := requireExists(tx, "accounts", "account_id", accountID); err != nil {
+		return Transaction{}, err
+	}
+	found, err := exists(tx, "transactions", transactionID)
+	if err != nil {
+		return Transaction{}, err
+	}
+	if !found {
+		return Transaction{}, ErrNotFound
+	}
+	rows, err := tx.Query(`SELECT id, COALESCE(account_id,''), COALESCE(category_id,'') FROM postings WHERE transaction_id = ?`, transactionID)
+	if err != nil {
+		return Transaction{}, err
+	}
+	var categoryPostingID, existingAccountID string
+	accountPostings, categoryPostings := 0, 0
+	for rows.Next() {
+		var id, account, category string
+		if err := rows.Scan(&id, &account, &category); err != nil {
+			rows.Close()
+			return Transaction{}, err
+		}
+		if account != "" {
+			accountPostings++
+			existingAccountID = account
+		} else {
+			categoryPostings++
+			categoryPostingID = id
+		}
+	}
+	rows.Close()
+	if accountPostings != 1 || categoryPostings != 1 {
+		return Transaction{}, fmt.Errorf("%w: %s has %d account and %d category postings; only one of each can become a transfer", ErrConflict, transactionID, accountPostings, categoryPostings)
+	}
+	if existingAccountID == accountID {
+		return Transaction{}, fmt.Errorf("%w: %s already moves money in %s; a transfer needs two accounts", ErrInvalid, transactionID, accountID)
+	}
+	now := s.unixNow()
+	if _, err := tx.Exec(`UPDATE postings SET category_id = NULL, account_id = ? WHERE id = ?`, accountID, categoryPostingID); err != nil {
+		return Transaction{}, err
+	}
+	if _, err := tx.Exec(`INSERT INTO transfers_without_partner (posting_id, transaction_id, account_id, reason, created_at) VALUES (?,?,?,?,?)`,
+		categoryPostingID, transactionID, accountID, reason, now); err != nil {
+		return Transaction{}, err
+	}
+	if _, err := tx.Exec(`UPDATE transactions SET updated_at = ? WHERE id = ?`, now, transactionID); err != nil {
+		return Transaction{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Transaction{}, err
+	}
+	return s.GetTransaction(transactionID)
+}

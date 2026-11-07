@@ -62,6 +62,7 @@ entity-type registry match each kind for chips: `budget_account`,
 | `GET/PATCH /transactions/{id}` | PATCH `{status, payee_id, memo}`. The id of a transaction the transfer matcher folded away answers with the one it was folded into |
 | `PUT /transactions/{id}/categories` | `{splits: [{category_id, amount_cents, memo, tax_year}]}` replaces every category posting; the splits must sum to what the category side summed to, so accounts never change |
 | `POST /transfers/match` | pairs transfers between the operator's own accounts; see below |
+| `POST /transactions/{id}/move-to-account` | `{account_id, reason}`: the transaction's one category posting becomes a posting on that account, for money that in fact moved to or from one of the operator's accounts (a loan paid out into checking). Kept in `transfers_without_partner` with the reason, so it blocks an overlapping import and can be undone like the matcher's. 409 unless the transaction has exactly one account and one category posting |
 | `POST /transactions/{id}/undo-transfer-without-partner` | puts a posting the matcher moved without a partner back on Uncategorized |
 | `POST /import-batches?source=&account_id=&file_name=&file_id=` | body: the file. One transaction per new row; all or nothing. `file_id` is the file-store id of the original |
 | `GET /import-batches`, `GET /import-batches/{id}`, `POST /import-batches/{id}/undo` | `outcomes` counts each row's fate, `first_row_on`/`last_row_on` the dates the file covers; undo deletes what the batch made and keeps its rows |

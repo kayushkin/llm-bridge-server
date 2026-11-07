@@ -281,6 +281,18 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.UndoTransferWithoutPartner(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
+	mux.HandleFunc("POST /transactions/{id}/move-to-account", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			AccountID string `json:"account_id"`
+			Reason    string `json:"reason"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.MoveCategoryPostingToAccount(r.PathValue("id"), in.AccountID, in.Reason)
+		respond(w, http.StatusOK, out, err)
+	})
 	mux.HandleFunc("POST /transfers/match", func(w http.ResponseWriter, _ *http.Request) {
 		out, err := s.MatchTransfers()
 		respond(w, http.StatusOK, out, err)
