@@ -14,7 +14,7 @@ type fakePeople struct {
 }
 
 func (f fakePeople) PersonByEmail(email string) (string, error) { return f.byEmail[email], nil }
-func (f fakePeople) PersonExists(id string) (bool, error)      { return f.persons[id], nil }
+func (f fakePeople) PersonExists(id string) (bool, error)       { return f.persons[id], nil }
 
 func testStore(t *testing.T) *Store {
 	t.Helper()

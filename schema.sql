@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     -- date a changed copy replaces, as the source wrote it.
     uid                TEXT    NOT NULL,
     recurrence_id      TEXT    NOT NULL DEFAULT '',
+    -- source_event_id is Google's own id for the event, set once a Google
+    -- import has seen it; '' for an event only an .ics file brought. The index
+    -- on it is made in migrate(), since older databases gain the column there.
+    source_event_id    TEXT    NOT NULL DEFAULT '',
     summary            TEXT    NOT NULL DEFAULT '',
     description        TEXT    NOT NULL DEFAULT '',
     location           TEXT    NOT NULL DEFAULT '',
@@ -91,10 +95,15 @@ CREATE TABLE IF NOT EXISTS calendar_imports (
     id          TEXT    NOT NULL UNIQUE,
     calendar_id TEXT    NOT NULL REFERENCES calendars(id),
     file_name   TEXT    NOT NULL DEFAULT '',
+    -- format is how the body was written: ics or google-event-json.
+    format      TEXT    NOT NULL DEFAULT 'ics',
     file_sha256 TEXT    NOT NULL,
     created     INTEGER NOT NULL DEFAULT 0,
     updated     INTEGER NOT NULL DEFAULT 0,
     unchanged   INTEGER NOT NULL DEFAULT 0,
     people_linked INTEGER NOT NULL DEFAULT 0,
+    -- skipped counts events deleted from Google, sent with only their id,
+    -- that the store never held.
+    skipped     INTEGER NOT NULL DEFAULT 0,
     imported_at INTEGER NOT NULL
 );

@@ -63,6 +63,7 @@ type Event struct {
 	CalendarID       string       `json:"calendar_id"`
 	UID              string       `json:"uid"`
 	RecurrenceID     string       `json:"recurrence_id"`
+	SourceEventID    string       `json:"source_event_id"`
 	Summary          string       `json:"summary"`
 	Description      string       `json:"description"`
 	Location         string       `json:"location"`
@@ -93,11 +94,13 @@ type Import struct {
 	ID           string `json:"id"`
 	CalendarID   string `json:"calendar_id"`
 	FileName     string `json:"file_name"`
+	Format       string `json:"format"`
 	FileSHA256   string `json:"file_sha256"`
 	Created      int    `json:"created"`
 	Updated      int    `json:"updated"`
 	Unchanged    int    `json:"unchanged"`
 	PeopleLinked int    `json:"people_linked"`
+	Skipped      int    `json:"skipped"`
 	ImportedAt   int64  `json:"imported_at"`
 }
 
@@ -150,11 +153,39 @@ func Open(dataDir string, people PeopleDirectory) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	if err := os.Chmod(dbPath, 0o600); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &Store{db: db, dataDir: dataDir, people: people, now: time.Now}, nil
+}
+
+// migrate adds the columns later versions brought to a database made before
+// them; schema.sql already holds them for a new one.
+func migrate(db *sql.DB) error {
+	for _, column := range []struct{ table, name, definition string }{
+		{"calendar_events", "source_event_id", "TEXT NOT NULL DEFAULT ''"},
+		{"calendar_imports", "format", "TEXT NOT NULL DEFAULT 'ics'"},
+		{"calendar_imports", "skipped", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, column.table, column.name).Scan(&count); err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE ` + column.table + ` ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+			return fmt.Errorf("add %s.%s: %w", column.table, column.name, err)
+		}
+	}
+	_, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS calendar_events_source_event_id
+		ON calendar_events(calendar_id, source_event_id) WHERE source_event_id != ''`)
+	return err
 }
 
 // Close releases the database handle.
@@ -221,13 +252,14 @@ func (s *Store) Calendars() ([]Calendar, error) {
 	return calendars, rows.Err()
 }
 
-func (s *Store) calendarExists(id string) (bool, error) {
-	var one int
-	err := s.db.QueryRow(`SELECT 1 FROM calendars WHERE id = ?`, id).Scan(&one)
+func (s *Store) calendar(id string) (Calendar, error) {
+	var calendar Calendar
+	err := s.db.QueryRow(`SELECT id, name, source, source_ref, created_at FROM calendars WHERE id = ?`, id).
+		Scan(&calendar.ID, &calendar.Name, &calendar.Source, &calendar.SourceRef, &calendar.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return calendar, fmt.Errorf("%w: calendar %s", ErrNotFound, id)
 	}
-	return err == nil, err
+	return calendar, err
 }
 
 func hashOf(text string) string {
@@ -242,17 +274,40 @@ func hashOf(text string) string {
 // is then asked of people-store, and the attendee-email links of each event
 // the import touched are made again from the answers.
 func (s *Store) ImportICS(calendarID, fileName string, content []byte) (Import, error) {
-	exists, err := s.calendarExists(calendarID)
-	if err != nil {
+	if _, err := s.calendar(calendarID); err != nil {
 		return Import{}, err
-	}
-	if !exists {
-		return Import{}, fmt.Errorf("%w: calendar %s", ErrNotFound, calendarID)
 	}
 	parsed, err := ParseICS(content)
 	if err != nil {
 		return Import{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
+	return s.importParsed(calendarID, fileName, ImportFormatICS, content, parsed)
+}
+
+// ImportGoogleEvents reads a JSON array of Google Calendar event resources
+// into a calendar whose source is google, by the same rules as ImportICS. An
+// event is found first by Google's id, then by (uid, recurrence_id), which is
+// how an event an .ics export brought is found and given its Google id rather
+// than stored twice. An event deleted from Google and sent with only its id
+// marks the row it finds cancelled, keeping the rest; one the store never held
+// is counted in skipped.
+func (s *Store) ImportGoogleEvents(calendarID, fileName string, content []byte) (Import, error) {
+	calendar, err := s.calendar(calendarID)
+	if err != nil {
+		return Import{}, err
+	}
+	if calendar.Source != "google" {
+		return Import{}, fmt.Errorf("%w: calendar %s is kept by %s, not google", ErrInvalid, calendarID, calendar.Source)
+	}
+	parsed, err := ParseGoogleEvents(content)
+	if err != nil {
+		return Import{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	return s.importParsed(calendarID, fileName, ImportFormatGoogleEventJSON, content, parsed)
+}
+
+// importParsed writes parsed events into a calendar in one transaction.
+func (s *Store) importParsed(calendarID, fileName, format string, content []byte, parsed []ParsedEvent) (Import, error) {
 	// Ask people-store before the transaction, so a slow answer holds no lock.
 	personOf := map[string]string{}
 	for _, event := range parsed {
@@ -282,14 +337,22 @@ func (s *Store) ImportICS(calendarID, fileName string, content []byte) (Import, 
 	if err != nil {
 		return Import{}, err
 	}
-	record := Import{ID: importID, CalendarID: calendarID, FileName: fileName, FileSHA256: hashOf(string(content)), ImportedAt: s.now().Unix()}
+	record := Import{ID: importID, CalendarID: calendarID, FileName: fileName, Format: format, FileSHA256: hashOf(string(content)), ImportedAt: s.now().Unix()}
 	seen := map[string]bool{}
 	for _, event := range parsed {
-		key := event.UID + "\x00" + event.RecurrenceID
-		if seen[key] {
-			return Import{}, fmt.Errorf("%w: the file holds event %s (%s) twice", ErrInvalid, event.UID, event.RecurrenceID)
+		keys := []string{"uid\x00" + event.UID + "\x00" + event.RecurrenceID}
+		if event.OnlyStatusKnown {
+			keys = nil
 		}
-		seen[key] = true
+		if event.SourceEventID != "" {
+			keys = append(keys, "id\x00"+event.SourceEventID)
+		}
+		for _, key := range keys {
+			if seen[key] {
+				return Import{}, fmt.Errorf("%w: the import holds event %s (%s %s) twice", ErrInvalid, event.SourceEventID, event.UID, event.RecurrenceID)
+			}
+			seen[key] = true
+		}
 		outcome, eventID, err := s.upsertEvent(tx, calendarID, importID, event)
 		if err != nil {
 			return Import{}, err
@@ -299,6 +362,12 @@ func (s *Store) ImportICS(calendarID, fileName string, content []byte) (Import, 
 			record.Created++
 		case "updated":
 			record.Updated++
+		case "status-updated":
+			record.Updated++
+			continue
+		case "skipped":
+			record.Skipped++
+			continue
 		default:
 			record.Unchanged++
 			continue
@@ -309,9 +378,9 @@ func (s *Store) ImportICS(calendarID, fileName string, content []byte) (Import, 
 		}
 		record.PeopleLinked += linked
 	}
-	if _, err := tx.Exec(`INSERT INTO calendar_imports (seq, id, calendar_id, file_name, file_sha256, created, updated, unchanged, people_linked, imported_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, importSeq, importID, calendarID, fileName, record.FileSHA256,
-		record.Created, record.Updated, record.Unchanged, record.PeopleLinked, record.ImportedAt); err != nil {
+	if _, err := tx.Exec(`INSERT INTO calendar_imports (seq, id, calendar_id, file_name, format, file_sha256, created, updated, unchanged, people_linked, skipped, imported_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, importSeq, importID, calendarID, fileName, format, record.FileSHA256,
+		record.Created, record.Updated, record.Unchanged, record.PeopleLinked, record.Skipped, record.ImportedAt); err != nil {
 		return Import{}, err
 	}
 	return record, tx.Commit()
@@ -319,14 +388,30 @@ func (s *Store) ImportICS(calendarID, fileName string, content []byte) (Import, 
 
 func (s *Store) upsertEvent(tx *sql.Tx, calendarID, importID string, event ParsedEvent) (outcome, eventID string, err error) {
 	rawHash := hashOf(event.Raw)
-	var existingHash string
-	err = tx.QueryRow(`SELECT id, raw_hash FROM calendar_events WHERE calendar_id = ? AND uid = ? AND recurrence_id = ?`,
-		calendarID, event.UID, event.RecurrenceID).Scan(&eventID, &existingHash)
+	eventID, existingHash, err := findEvent(tx, calendarID, event)
 	now := s.now().Unix()
+	if event.OnlyStatusKnown {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return "skipped", "", nil
+		case err != nil:
+			return "", "", err
+		case existingHash == rawHash:
+			return "unchanged", eventID, nil
+		}
+		if err := s.keepRevision(tx, eventID, "import", now); err != nil {
+			return "", "", err
+		}
+		if _, err := tx.Exec(`UPDATE calendar_events SET status = ?, raw = ?, raw_hash = ?, import_id = ?, updated_at = ? WHERE id = ?`,
+			event.Status, event.Raw, rawHash, importID, now, eventID); err != nil {
+			return "", "", fmt.Errorf("update event: %w", err)
+		}
+		return "status-updated", eventID, nil
+	}
 	columns := []any{event.Summary, event.Description, event.Location, event.StartsAt, event.EndsAt, event.AllDay,
 		event.StartDate, event.EndDate, event.TimeZone, event.RecurrenceRule, event.Status, event.Transparency,
 		event.OrganizerEmail, event.OrganizerName, event.SourceCreatedAt, event.SourceModifiedAt, event.Sequence,
-		event.Raw, rawHash, importID}
+		event.Raw, rawHash, importID, event.SourceEventID}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		seq, id, err := nextID(tx, "calendar_events", "calendar_event_")
@@ -338,8 +423,8 @@ func (s *Store) upsertEvent(tx *sql.Tx, calendarID, importID string, event Parse
 		if _, err := tx.Exec(`INSERT INTO calendar_events (seq, id, calendar_id, uid, recurrence_id,
 			summary, description, location, starts_at, ends_at, all_day, start_date, end_date, time_zone,
 			recurrence_rule, status, transparency, organizer_email, organizer_name, source_created_at,
-			source_modified_at, sequence, raw, raw_hash, import_id, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
+			source_modified_at, sequence, raw, raw_hash, import_id, source_event_id, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
 			return "", "", fmt.Errorf("insert event: %w", err)
 		}
 		return "created", id, writeAttendees(tx, id, event.Attendees)
@@ -355,13 +440,40 @@ func (s *Store) upsertEvent(tx *sql.Tx, calendarID, importID string, event Parse
 	if _, err := tx.Exec(`UPDATE calendar_events SET summary = ?, description = ?, location = ?, starts_at = ?,
 		ends_at = ?, all_day = ?, start_date = ?, end_date = ?, time_zone = ?, recurrence_rule = ?, status = ?,
 		transparency = ?, organizer_email = ?, organizer_name = ?, source_created_at = ?, source_modified_at = ?,
-		sequence = ?, raw = ?, raw_hash = ?, import_id = ?, updated_at = ? WHERE id = ?`, args...); err != nil {
+		sequence = ?, raw = ?, raw_hash = ?, import_id = ?, source_event_id = COALESCE(NULLIF(?, ''), source_event_id), updated_at = ? WHERE id = ?`, args...); err != nil {
 		return "", "", fmt.Errorf("update event: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM calendar_event_attendees WHERE event_id = ?`, eventID); err != nil {
 		return "", "", err
 	}
 	return "updated", eventID, writeAttendees(tx, eventID, event.Attendees)
+}
+
+// findEvent finds the row an imported event is: by Google's id when it has
+// one, then by (uid, recurrence_id). A row found by the key that already holds
+// a different Google id, or found by id under a different key, is refused: the
+// two sources disagree about which event this is.
+func findEvent(tx *sql.Tx, calendarID string, event ParsedEvent) (eventID, rawHash string, err error) {
+	if event.SourceEventID != "" {
+		var uid, recurrenceID string
+		err = tx.QueryRow(`SELECT id, raw_hash, uid, recurrence_id FROM calendar_events WHERE calendar_id = ? AND source_event_id = ?`,
+			calendarID, event.SourceEventID).Scan(&eventID, &rawHash, &uid, &recurrenceID)
+		if err == nil && !event.OnlyStatusKnown && (uid != event.UID || recurrenceID != event.RecurrenceID) {
+			return "", "", fmt.Errorf("%w: Google event %s is stored as %s (%s %s) but now names %s %s",
+				ErrConflict, event.SourceEventID, eventID, uid, recurrenceID, event.UID, event.RecurrenceID)
+		}
+		if err == nil || !errors.Is(err, sql.ErrNoRows) || event.OnlyStatusKnown {
+			return eventID, rawHash, err
+		}
+	}
+	var sourceEventID string
+	err = tx.QueryRow(`SELECT id, raw_hash, source_event_id FROM calendar_events WHERE calendar_id = ? AND uid = ? AND recurrence_id = ?`,
+		calendarID, event.UID, event.RecurrenceID).Scan(&eventID, &rawHash, &sourceEventID)
+	if err == nil && event.SourceEventID != "" && sourceEventID != "" && sourceEventID != event.SourceEventID {
+		return "", "", fmt.Errorf("%w: %s (%s %s) is Google event %s, not %s",
+			ErrConflict, eventID, event.UID, event.RecurrenceID, sourceEventID, event.SourceEventID)
+	}
+	return eventID, rawHash, err
 }
 
 func writeAttendees(tx *sql.Tx, eventID string, attendees []Attendee) error {
@@ -417,13 +529,13 @@ type queryer interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 }
 
-const eventColumns = `id, calendar_id, uid, recurrence_id, summary, description, location, starts_at, ends_at,
+const eventColumns = `id, calendar_id, uid, recurrence_id, source_event_id, summary, description, location, starts_at, ends_at,
 	all_day, start_date, end_date, time_zone, recurrence_rule, status, transparency, organizer_email,
 	organizer_name, source_created_at, source_modified_at, sequence, raw, import_id, created_at, updated_at`
 
 func scanEvent(scanner interface{ Scan(...any) error }) (Event, error) {
 	var event Event
-	err := scanner.Scan(&event.ID, &event.CalendarID, &event.UID, &event.RecurrenceID, &event.Summary,
+	err := scanner.Scan(&event.ID, &event.CalendarID, &event.UID, &event.RecurrenceID, &event.SourceEventID, &event.Summary,
 		&event.Description, &event.Location, &event.StartsAt, &event.EndsAt, &event.AllDay, &event.StartDate,
 		&event.EndDate, &event.TimeZone, &event.RecurrenceRule, &event.Status, &event.Transparency,
 		&event.OrganizerEmail, &event.OrganizerName, &event.SourceCreatedAt, &event.SourceModifiedAt,
@@ -628,7 +740,7 @@ func (s *Store) Revisions(eventID string) ([]Revision, error) {
 
 // Imports lists every import, newest first.
 func (s *Store) Imports() ([]Import, error) {
-	rows, err := s.db.Query(`SELECT id, calendar_id, file_name, file_sha256, created, updated, unchanged, people_linked, imported_at FROM calendar_imports ORDER BY seq DESC`)
+	rows, err := s.db.Query(`SELECT id, calendar_id, file_name, format, file_sha256, created, updated, unchanged, people_linked, skipped, imported_at FROM calendar_imports ORDER BY seq DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -636,8 +748,8 @@ func (s *Store) Imports() ([]Import, error) {
 	imports := []Import{}
 	for rows.Next() {
 		var record Import
-		if err := rows.Scan(&record.ID, &record.CalendarID, &record.FileName, &record.FileSHA256, &record.Created,
-			&record.Updated, &record.Unchanged, &record.PeopleLinked, &record.ImportedAt); err != nil {
+		if err := rows.Scan(&record.ID, &record.CalendarID, &record.FileName, &record.Format, &record.FileSHA256, &record.Created,
+			&record.Updated, &record.Unchanged, &record.PeopleLinked, &record.Skipped, &record.ImportedAt); err != nil {
 			return nil, err
 		}
 		imports = append(imports, record)

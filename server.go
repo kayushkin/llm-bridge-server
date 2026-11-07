@@ -22,6 +22,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("GET /calendars", h.listCalendars)
 	mux.HandleFunc("POST /calendars", h.ensureCalendar)
 	mux.HandleFunc("POST /calendars/{id}/imports", h.importICS)
+	mux.HandleFunc("POST /calendars/{id}/google-event-imports", h.importGoogleEvents)
 	mux.HandleFunc("GET /imports", h.listImports)
 	mux.HandleFunc("GET /events", h.listEvents)
 	mux.HandleFunc("GET /events/{id}", h.getEvent)
@@ -110,15 +111,23 @@ func (h *handler) ensureCalendar(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) importICS(w http.ResponseWriter, r *http.Request) {
+	h.importBody(w, r, h.s.ImportICS)
+}
+
+func (h *handler) importGoogleEvents(w http.ResponseWriter, r *http.Request) {
+	h.importBody(w, r, h.s.ImportGoogleEvents)
+}
+
+func (h *handler) importBody(w http.ResponseWriter, r *http.Request, importInto func(calendarID, fileName string, content []byte) (Import, error)) {
 	content, err := io.ReadAll(io.LimitReader(r.Body, MaxImportBytes+1))
 	if respondError(w, err) {
 		return
 	}
 	if len(content) > MaxImportBytes {
-		respondError(w, errors.Join(ErrInvalid, errors.New("the file is larger than 64 MiB")))
+		respondError(w, errors.Join(ErrInvalid, errors.New("the body is larger than 64 MiB")))
 		return
 	}
-	record, err := h.s.ImportICS(r.PathValue("id"), r.URL.Query().Get("file_name"), content)
+	record, err := importInto(r.PathValue("id"), r.URL.Query().Get("file_name"), content)
 	if respondError(w, err) {
 		return
 	}

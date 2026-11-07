@@ -11,8 +11,15 @@ import (
 	ical "github.com/emersion/go-ical"
 )
 
-// ParsedEvent is one VEVENT read from an iCalendar file.
+// ParsedEvent is one event read from an import: a VEVENT of an iCalendar
+// file, or a Google Calendar event resource.
 type ParsedEvent struct {
+	// SourceEventID is Google's event id; an .ics file has none.
+	SourceEventID string
+	// OnlyStatusKnown marks an event deleted from Google that came back with
+	// only its id: the import marks the row it finds cancelled and changes
+	// nothing else.
+	OnlyStatusKnown  bool
 	UID              string
 	RecurrenceID     string
 	Summary          string
