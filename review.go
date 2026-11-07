@@ -42,6 +42,9 @@ type Reviewer struct {
 	// for its next poll.
 	wakeOnce sync.Once
 	wake     chan struct{}
+	// coverCache holds what outfit covers cost to work out (outfit_covers.go).
+	coversOnce sync.Once
+	coverCache *outfitCovers
 }
 
 func (reviewer *Reviewer) wakeChannel() chan struct{} {

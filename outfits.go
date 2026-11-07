@@ -39,6 +39,12 @@ type Outfit struct {
 	WornOn           []string `json:"worn_on"`
 	PhotoIDs         []string `json:"photo_ids"`      // photo-store photos it was read from, oldest first
 	MergedIntoID     *string  `json:"merged_into_id"` // the outfit it was combined into; set only on a deleted one
+	// The photo that shows the most of the outfit, and why (outfit_covers.go);
+	// null with no photo. cover_box is the tall frame cut to the wearer,
+	// filled by the routes that answer an outfit.
+	CoverPhotoID *string            `json:"cover_photo_id"`
+	CoverBox     *Box               `json:"cover_box"`
+	CoverReason  *OutfitCoverReason `json:"cover_reason"`
 }
 
 // checkOutfitPossessions holds an outfit to live possessions of a wearable
@@ -236,6 +242,9 @@ func outfitByID(q querier, id string, includeDeleted bool) (Outfit, error) {
 	}
 	if outfit.WornOn, err = stringColumn(q, `SELECT worn_on FROM outfit_wearings WHERE outfit_id = ? ORDER BY worn_on`, id); err != nil {
 		return Outfit{}, err
+	}
+	if err := chooseOutfitCover(q, &outfit); err != nil {
+		return Outfit{}, fmt.Errorf("choose %s's cover: %w", id, err)
 	}
 	return outfit, nil
 }

@@ -241,6 +241,12 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 			return
 		}
 		outfits, err := server.Store.ListOutfits(r.URL.Query().Get("status"), r.URL.Query().Get("possession_id"), limit, offset)
+		if err == nil {
+			err = server.Reviewer.FillOutfitCoverBoxes(r.Context(), outfits)
+		}
+		if err == nil {
+			server.Reviewer.WarmOutfitCovers(outfits)
+		}
 		respond(w, http.StatusOK, outfits, err)
 	})
 	mux.HandleFunc("POST /outfits", func(w http.ResponseWriter, r *http.Request) {
@@ -252,10 +258,16 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 			return
 		}
 		outfit, err := server.Store.CreateOutfit(r.Context(), body.OutfitInput, body.Actor)
+		if err == nil {
+			err = server.Reviewer.FillOutfitCoverBox(r.Context(), &outfit)
+		}
 		respond(w, http.StatusCreated, outfit, err)
 	})
 	mux.HandleFunc("GET /outfits/{id}", func(w http.ResponseWriter, r *http.Request) {
 		outfit, err := server.Store.GetOutfit(r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
+		if err == nil {
+			err = server.Reviewer.FillOutfitCoverBox(r.Context(), &outfit)
+		}
 		respond(w, http.StatusOK, outfit, err)
 	})
 	mux.HandleFunc("PATCH /outfits/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -267,6 +279,9 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 			return
 		}
 		outfit, err := server.Store.PatchOutfit(r.Context(), r.PathValue("id"), body.OutfitInput, body.Actor)
+		if err == nil {
+			err = server.Reviewer.FillOutfitCoverBox(r.Context(), &outfit)
+		}
 		respond(w, http.StatusOK, outfit, err)
 	})
 	mux.HandleFunc("DELETE /outfits/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +295,29 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("PUT /outfits/{id}/cover", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			PhotoID *string `json:"photo_id"`
+			Actor   string  `json:"actor"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		if body.PhotoID == nil {
+			writeError(w, fmt.Errorf("%w: photo_id is required (\"\" takes the owner's pick away)", ErrInvalid))
+			return
+		}
+		outfit, err := server.Store.SetOutfitCover(r.Context(), r.PathValue("id"), *body.PhotoID, body.Actor)
+		if err == nil {
+			err = server.Reviewer.FillOutfitCoverBox(r.Context(), &outfit)
+		}
+		respond(w, http.StatusOK, outfit, err)
+	})
+	mux.HandleFunc("GET /outfits/{id}/image", func(w http.ResponseWriter, r *http.Request) {
+		server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) {
+			return server.Reviewer.OutfitCoverImage(ctx, r.PathValue("id"))
+		})
 	})
 	mux.HandleFunc("POST /outfits/{id}/wearings", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

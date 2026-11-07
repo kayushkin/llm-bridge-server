@@ -610,3 +610,13 @@ CREATE TABLE IF NOT EXISTS revisions (
     changed_at            INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_revisions_record ON revisions(record_id, id);
+
+-- The photo the owner picked as an outfit's cover (PUT /outfits/{id}/cover).
+-- Without a row, or when the photo is no longer one of the outfit's, the
+-- cover is the photo showing the most of the outfit (outfit_covers.go).
+CREATE TABLE IF NOT EXISTS outfit_cover_choices (
+    outfit_id             TEXT PRIMARY KEY REFERENCES outfits(id),
+    photo_id              TEXT NOT NULL,             -- photo-store photo_…, one of the outfit's photos when chosen
+    chosen_by             TEXT NOT NULL,
+    chosen_at             INTEGER NOT NULL
+);

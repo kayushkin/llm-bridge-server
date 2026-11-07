@@ -160,6 +160,10 @@ func (s *Store) DataDir() string { return s.dataDir }
 // named <sha256>.<extension>.
 func (s *Store) OriginalsDir() string { return filepath.Join(s.dataDir, "originals") }
 
+// CoverImagesDir holds outfit covers already cut (outfit_covers.go); any
+// file there can be deleted and is cut again when asked for.
+func (s *Store) CoverImagesDir() string { return filepath.Join(s.dataDir, "outfit-covers") }
+
 func (s *Store) unixNow() int64 { return s.now().Unix() }
 
 // nextID mints the next id of a table: <prefix>_<seq, six digits or more>.

@@ -125,7 +125,9 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `POST` | `/vehicles/{id}/odometer-readings` | `{read_at, miles, source}` |
 | `GET` | `/outfits` | `?status=`, `?possession_id=`, `?limit=`, `?offset=` |
 | `POST` | `/outfits` | `{actor, name, occasion, weather, status, reasoning, preview_image_path, possession_ids:[…]}`; status is `suggested`, `kept` or `rejected`; every possession must be live and of a wearable kind (`wearable_kinds` in `/vocabulary`: garment, jewelry, watch, eyewear, bag_or_case). **201** |
-| `GET` / `PATCH` | `/outfits/{id}` | an outfit answers `possession_ids`, `worn_on` (its days) and `photo_ids` (the photo-store photos outfit readings found it in); a patch changes what it gives; `possession_ids` replaces the list |
+| `GET` / `PATCH` | `/outfits/{id}` | an outfit answers `possession_ids`, `worn_on` (its days), `photo_ids` (the photo-store photos outfit readings found it in) and its cover: `cover_photo_id`, `cover_box` and `cover_reason` (below); a patch changes what it gives; `possession_ids` replaces the list |
+| `PUT` | `/outfits/{id}/cover` | `{photo_id, actor}`: the owner's pick of the cover, one of the outfit's `photo_ids` (another is a **400**); `""` takes the pick away so the rule chooses again. Answers the outfit |
+| `GET` | `/outfits/{id}/image` | JPEG: the cover photo cut to `cover_box`, 2:3, at most 900 pixels tall, from the original when `originals/` holds it, else the thumbnail. **404** with no photo |
 | `DELETE` | `/outfits/{id}?actor=` | soft, **204** |
 | `POST` | `/outfits/{id}/wearings` | `{worn_on:"YYYY-MM-DD"}` in the owner's time zone |
 | `POST` | `/outfits/{id}/combine` | `{into, actor, reason}`: folds this outfit into `into`: the kept one takes the union of pieces, every wearing and every outfit reading; this one is deleted with `merged_into_id` set. Answers the `outfit_merge` |
@@ -332,6 +334,42 @@ nothing settled:
    `keep_apart` ("none of these"). One already asked about is left.
 
 Counts: `matched`, `disagreed`, `settled_meanwhile`, `merged`, `asked`.
+
+## Outfit covers
+
+Every outfit with a photo has a cover, worked out on each read from boxes
+already stored, with no model call:
+
+1. **Which photo.** Of the outfit's `photo_ids`, the one where the most of
+   its pieces have a box (`possession_photos`, which outfit readings and
+   slot links both write); on a tie, the one where those boxes together
+   span the most of the photo; then the earliest. The owner's pick
+   (`PUT /outfits/{id}/cover`) wins while that photo is one of the outfit's.
+   An outfit rebuilt or combined into a new id starts without a pick.
+2. **The frame.** The smallest box holding the wearer's face (photo-store's
+   face confirmed as the review's `wearer_person_id`) and every piece box on
+   that photo, with 8% of its width and height added on each side, then
+   widened or heightened about its center to 2:3 in pixels and moved to
+   stay inside the photo. A wearer too wide for a 2:3 cut of the photo gets
+   the tallest 2:3 cut that fits, centered on them. With no face and no box,
+   the tallest 2:3 cut from the middle.
+
+```json
+"cover_photo_id":"photo_000123",
+"cover_box":{"left":0.21,"top":0,"right":0.86,"bottom":1},
+"cover_reason":{"rule":"most_pieces_visible","pieces_visible":3,"pieces_total":4,"wearer_area":0.46,"photos_compared":3,
+                "chosen_by":"","chosen_at":0,"ignored_owner_photo_id":"","wearer_face_found":true}
+```
+
+`rule` is `most_pieces_visible` or `owner_choice` (then `chosen_by` and
+`chosen_at` say who and when). `wearer_area` is the share of the photo the
+piece boxes span. `ignored_owner_photo_id` names a pick no longer among the
+outfit's photos. `wearer_face_found` says whether the frame holds a face.
+An outfit with no photo answers all three null. Cutting a full-size original
+takes about a second, so cuts are kept in `<data dir>/outfit-covers/` by
+photo and frame (any file there may be deleted), `GET /outfits` starts
+cutting the listed covers not cut yet in the background, and at most two
+are cut at once.
 
 ## Full-size pictures
 
