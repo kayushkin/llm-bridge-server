@@ -10,6 +10,10 @@ After=network.target
 #   ~/.config/systemd/user/possession-store.service.d/10-llm-bridge-token.conf
 #   [Service]
 #   Environment=LLMBRIDGE_SERVICE_TOKEN=…
+# The eBay import reads mail with mailstack's bearer, in another one:
+#   ~/.config/systemd/user/possession-store.service.d/30-mailstack-token.conf
+#   [Service]
+#   Environment=MAILSTACK_TOKEN=…
 [Service]
 Type=simple
 ExecStart=%h/bin/possession-store
