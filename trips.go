@@ -126,6 +126,7 @@ func (s *Store) SuggestTripTransactions(tripRef string, request TripSuggestReque
 }
 
 // SetTripTransaction confirms, removes or adds a transaction on a trip.
+// Confirming drops the same transaction's suggestions on other trips.
 // Adding one not yet linked needs status confirmed; decided_by is required.
 func (s *Store) SetTripTransaction(tripRef, transactionID, status, decidedBy, reason string) (TripTransaction, error) {
 	if err := validTripRef(tripRef); err != nil {
@@ -160,6 +161,13 @@ func (s *Store) SetTripTransaction(tripRef, transactionID, status, decidedBy, re
 		reason = "added by " + decidedBy
 	}
 	now := s.unixNow()
+	if status == "confirmed" {
+		// Trips a day apart suggest the same late-posting charge for both;
+		// once it is confirmed on one, the other's suggestion is moot.
+		if _, err := tx.Exec(`DELETE FROM trip_transactions WHERE transaction_id = ? AND trip_ref != ? AND status = 'suggested'`, transactionID, tripRef); err != nil {
+			return TripTransaction{}, err
+		}
+	}
 	if _, err := tx.Exec(`INSERT INTO trip_transactions (trip_ref, transaction_id, status, reason, decided_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(trip_ref, transaction_id) DO UPDATE SET status = excluded.status, decided_by = excluded.decided_by, updated_at = excluded.updated_at`,
 		tripRef, transactionID, status, strings.TrimSpace(reason), decidedBy, now, now); err != nil {

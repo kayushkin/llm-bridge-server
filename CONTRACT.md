@@ -208,7 +208,7 @@ or confirmed on another. Removed links are never suggested again.
 |---|---|
 | `GET /trips/totals` | per trip with links: confirmed and suggested spending and counts |
 | `GET /trips/{trip_ref}/transactions` | its links oldest first, removed ones included, each with date, text, amount, category and account |
-| `PUT /trips/{trip_ref}/transactions/{transaction_id}` | `{status: confirmed\|removed, decided_by, reason}`: decide a suggestion, or add a transaction the dates missed. A transaction confirmed on another trip is a 409 |
+| `PUT /trips/{trip_ref}/transactions/{transaction_id}` | `{status: confirmed\|removed, decided_by, reason}`: decide a suggestion, or add a transaction the dates missed. Confirming drops the transaction's suggestions on other trips; one confirmed on another trip is a 409 |
 
 ## Not yet served
 

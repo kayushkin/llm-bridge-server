@@ -44,6 +44,18 @@ func TestTripsSuggestSpendingDuringTheTripButNotHomeChargesOrBills(t *testing.T)
 	if len(totals) != 1 || totals[0].ConfirmedCents != 40000 || totals[0].SuggestedCents != 900 || totals[0].Confirmed != 1 || totals[0].Suggested != 1 {
 		t.Fatalf("totals = %+v", totals)
 	}
+	// A trip a day later suggests the same late charges; confirming one on the
+	// first trip clears it from the second.
+	if n, _ := s.SuggestTripTransactions("trip_002597", TripSuggestRequest{FirstDay: "2026-10-06", LastDay: "2026-10-07"}); n != 1 {
+		t.Fatalf("the second trip suggested %d, want only the late charge (the hotel is confirmed elsewhere)", n)
+	}
+	second, _ := s.ListTripTransactions("trip_002597")
+	if _, err := s.SetTripTransaction("trip_002596", second[0].TransactionID, "confirmed", "the operator, in a test", "posted late"); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := s.ListTripTransactions("trip_002597"); len(left) != 0 {
+		t.Fatalf("the second trip still lists %+v", left)
+	}
 	// A transaction confirmed on one trip cannot be confirmed on another.
 	if _, err := s.SetTripTransaction("trip_002597", byText["HOTEL ELSEWHERE NY"], "confirmed", "the operator, in a test", ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("confirming on a second trip = %v, want a conflict", err)
