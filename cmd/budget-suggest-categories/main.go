@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"slices"
 	"sort"
 	"strings"
@@ -36,6 +37,8 @@ func main() {
 	limit := flag.Int("limit", 200, "the most transactions to categorize in this run")
 	batchSize := flag.Int("batch", 100, "transactions per classification.run operation")
 	maximumCostPerBatch := flag.Float64("max-cost-per-batch", 2, "list-price ceiling in US dollars for one operation")
+	before := flag.String("before", "", "only transactions dated before this day (YYYY-MM-DD)")
+	mustChoose := flag.Bool("must-choose", false, "offer no \""+needsOperatorValue+"\" answer, so the model gives its best guess for every transaction; for when the operator asked for best guesses")
 	flag.Parse()
 
 	settings, err := newSettingsRegistry(servicesettings.ProcessEnvironment())
@@ -55,18 +58,18 @@ func main() {
 	}
 
 	var candidates []budgetstore.SuggestionCandidate
-	if err := run.getJSON(fmt.Sprintf("%s/category-suggestions/candidates?limit=%d", run.budgetStoreURL, *limit), &candidates); err != nil {
+	if err := run.getJSON(fmt.Sprintf("%s/category-suggestions/candidates?limit=%d&before=%s", run.budgetStoreURL, *limit, url.QueryEscape(*before)), &candidates); err != nil {
 		log.Fatalf("read candidates: %v", err)
 	}
 	if len(candidates) == 0 {
 		log.Printf("nothing to categorize")
 		return
 	}
-	taxonomy, categoryByValue, err := run.taxonomy()
+	taxonomy, categoryByValue, err := run.taxonomy(*mustChoose)
 	if err != nil {
 		log.Fatalf("build taxonomy: %v", err)
 	}
-	log.Printf("categorizing %d transactions against %d categories, %d per batch, model role %s", len(candidates), len(categoryByValue), *batchSize, run.modelRole)
+	log.Printf("categorizing %d transactions against %d categories, %d per batch, model role %s, must choose %v", len(candidates), len(categoryByValue), *batchSize, run.modelRole, *mustChoose)
 	runKey := time.Now().UTC().Format("20060102T150405")
 	for start := 0; start < len(candidates); start += *batchSize {
 		batch := candidates[start:min(start+*batchSize, len(candidates))]
@@ -83,11 +86,12 @@ type runner struct {
 	client                                                            *http.Client
 }
 
-// taxonomy offers every expense and income category by its path, plus the
-// answer that sends a transaction to the operator. It returns the map from
+// taxonomy offers every expense and income category by its path, plus, unless
+// mustChoose, the answer that sends a transaction to the operator. It returns
+// the map from
 // each offered value back to the category id it stands for; the map lives
 // only for this run, built from the same read.
-func (r runner) taxonomy() (msg.ClassificationTaxonomy, map[string]string, error) {
+func (r runner) taxonomy(mustChoose bool) (msg.ClassificationTaxonomy, map[string]string, error) {
 	var categories []budgetstore.Category
 	if err := r.getJSON(r.budgetStoreURL+"/categories", &categories); err != nil {
 		return msg.ClassificationTaxonomy{}, nil, err
@@ -114,14 +118,19 @@ func (r runner) taxonomy() (msg.ClassificationTaxonomy, map[string]string, error
 		values = append(values, msg.ClassificationValue{ID: c.ID, Name: path, Description: description})
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i].Name < values[j].Name })
-	values = append(values, msg.ClassificationValue{Name: needsOperatorValue,
-		Description: "Only the account holder can say what this was for: a payment to or from a person (Venmo, Zelle, Cash App, a PayPal transfer to a person, a check), a transfer whose other side is unclear, or a merchant you cannot identify from the text. A PayPal or Square charge that names a merchant is a purchase from that merchant, not this."})
+	axisDescription := "What the money was for. Choose the most specific category that fits; a parent category only when no child fits. Refunds of a purchase go under Refunds."
+	if mustChoose {
+		axisDescription += " The account holder asked for your best guess on every transaction, so always choose one, and put how unsure you are in the confidence and rationale. A payment to a person: guess from the note, the amount and the rest of the text."
+	} else {
+		values = append(values, msg.ClassificationValue{Name: needsOperatorValue,
+			Description: "Only the account holder can say what this was for: a payment to or from a person (Venmo, Zelle, Cash App, a PayPal transfer to a person, a check), a transfer whose other side is unclear, or a merchant you cannot identify from the text. A PayPal or Square charge that names a merchant is a purchase from that merchant, not this."})
+	}
 	taxonomy := msg.ClassificationTaxonomy{
 		Name:   "budget categories",
 		Domain: "one transaction from a person's own checking account, credit card or retirement account; the text gives the date, the account, the bank's description and whether money was spent or received",
 		Axes: []msg.ClassificationAxis{{
 			Name:        categoryAxis,
-			Description: "What the money was for. Choose the most specific category that fits; a parent category only when no child fits. Refunds of a purchase go under Refunds.",
+			Description: axisDescription,
 			Values:      values,
 			Required:    true,
 		}},

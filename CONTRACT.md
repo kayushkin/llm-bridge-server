@@ -133,19 +133,19 @@ is sorted.
 ## Category suggestions
 
 A model suggests; only the operator decides. `cmd/budget-suggest-categories`
-reads `GET /category-suggestions/candidates` (wholly Uncategorized
-transactions with no pending suggestion), offers every expense and income
+reads `GET /category-suggestions/candidates?before=` (wholly Uncategorized
+transactions with no pending suggestion, dated before `before` when given), offers every expense and income
 category by its path (`GET /category-paths`) plus "Needs the operator", and
 runs each batch as one `classification.run` operation on llm-bridge-server
 (role `best` by default) for a principal-store group. It records the answers
 with `POST /category-suggestions {operation_id, model, suggestions:
 [{transaction_id, category_id, confidence, rationale, needs_review}]}`; an
-empty `category_id` means a person must decide. It writes no category itself.
+empty `category_id` means a person must decide. It writes no category itself. `-must-choose` drops "Needs the operator", for when the operator asked for a best guess on everything; `-before` limits it to older transactions.
 
 | Route | Does |
 |---|---|
 | `GET /category-suggestions?status=` | with each transaction's date, description, amount and account; statuses in `GET /vocabulary` |
-| `POST /category-suggestions/decisions` | `{decisions: [{suggestion_id, action: accept\|reject, category_id}]}`. Accept writes the suggested category, or `category_id` when given (status `edited`), onto the transaction's Uncategorized posting. A transaction someone already sorted or split is left alone and its suggestion goes `stale`. Deciding one that is not pending is a 409. All or nothing |
+| `POST /category-suggestions/decisions` | `{decided_by, decisions: [{suggestion_id, action: accept\|reject, category_id}]}`. `decided_by` is required: who decided, in their words (dash writes the signed-in operator), kept on every suggestion it decides, so a category the operator chose can be told from one they let a model guess. Accept writes the suggested category, or `category_id` when given (status `edited`), onto the transaction's Uncategorized posting. A transaction someone already sorted or split is left alone and its suggestion goes `stale`. Deciding one that is not pending is a 409. All or nothing |
 
 A newer suggestion for a transaction supersedes its pending one; a rejected
 one leaves the transaction a candidate again.

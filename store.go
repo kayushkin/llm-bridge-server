@@ -156,21 +156,31 @@ func categoryIDForRole(q queryer, role string) (string, error) {
 // migrate makes the additive changes schema.sql cannot, since an edited
 // CREATE TABLE does nothing to a database that already exists. Each step
 // checks before it acts, so it is safe on every boot.
-func migrate(db *sql.DB) error {
+func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
 	columns := map[string]bool{}
-	rows, err := db.Query(`SELECT name FROM pragma_table_info('import_batches')`)
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('` + table + `')`)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			rows.Close()
-			return err
+			return nil, err
 		}
 		columns[name] = true
 	}
-	rows.Close()
+	return columns, rows.Err()
+}
+
+// migrate makes the additive changes schema.sql cannot, since an edited
+// CREATE TABLE does nothing to a database that already exists. Each step
+// checks before it acts, so it is safe on every boot.
+func migrate(db *sql.DB) error {
+	columns, err := tableColumns(db, "import_batches")
+	if err != nil {
+		return err
+	}
 	if !columns["first_row_on"] {
 		for _, statement := range []string{
 			`ALTER TABLE import_batches ADD COLUMN first_row_on TEXT NOT NULL DEFAULT ''`,
@@ -179,6 +189,23 @@ func migrate(db *sql.DB) error {
 			`UPDATE import_batches SET
 				first_row_on = COALESCE((SELECT MIN(t.occurred_on) FROM import_rows r JOIN transaction_sources ts ON ts.import_row_id = r.id JOIN transactions t ON t.id = ts.transaction_id WHERE r.import_batch_id = import_batches.id), ''),
 				last_row_on  = COALESCE((SELECT MAX(t.occurred_on) FROM import_rows r JOIN transaction_sources ts ON ts.import_row_id = r.id JOIN transactions t ON t.id = ts.transaction_id WHERE r.import_batch_id = import_batches.id), '')`,
+		} {
+			if _, err := db.Exec(statement); err != nil {
+				return err
+			}
+		}
+	}
+	columns, err = tableColumns(db, "category_suggestions")
+	if err != nil {
+		return err
+	}
+	if !columns["decided_by"] {
+		for _, statement := range []string{
+			`ALTER TABLE category_suggestions ADD COLUMN decided_by TEXT NOT NULL DEFAULT ''`,
+			// Decisions from before the column were all the operator's own, on
+			// dash's Budget review page, except supersedes, which the store made.
+			`UPDATE category_suggestions SET decided_by = 'the operator on dash, before decided_by was recorded' WHERE status IN ('accepted','edited','rejected','stale')`,
+			`UPDATE category_suggestions SET decided_by = 'budget-store: a newer suggestion replaced it' WHERE status = 'superseded'`,
 		} {
 			if _, err := db.Exec(statement); err != nil {
 				return err

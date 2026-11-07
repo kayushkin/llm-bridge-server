@@ -16,7 +16,7 @@ func TestSuggestionsWaitForTheOperatorAndOnlyAnAcceptWritesACategory(t *testing.
 	flights, _ := s.CreateCategory(Category{Name: "Flights", Kind: "expense"})
 	car, _ := s.CreateCategory(Category{Name: "Car", Kind: "expense"})
 	household, _ := s.CreateCategory(Category{Name: "Household", Kind: "expense"})
-	candidates, err := s.ListSuggestionCandidates(10)
+	candidates, err := s.ListSuggestionCandidates(10, "")
 	if err != nil || len(candidates) != 4 {
 		t.Fatalf("candidates = %v, %v", candidates, err)
 	}
@@ -35,7 +35,7 @@ func TestSuggestionsWaitForTheOperatorAndOnlyAnAcceptWritesACategory(t *testing.
 	if spending, _ := s.SpendingByCategory("2026-11"); len(spending) != 1 || spending[0].CategoryID == flights.ID {
 		t.Fatalf("a suggestion changed the books before anyone accepted it: %+v", spending)
 	}
-	if left, _ := s.ListSuggestionCandidates(10); len(left) != 0 {
+	if left, _ := s.ListSuggestionCandidates(10, ""); len(left) != 0 {
 		t.Fatalf("transactions with a pending suggestion are still candidates: %+v", left)
 	}
 	pending, err := s.ListSuggestions("pending", 0)
@@ -50,7 +50,7 @@ func TestSuggestionsWaitForTheOperatorAndOnlyAnAcceptWritesACategory(t *testing.
 	if _, err := s.SetTransactionCategories(byText["HARDWARE STORE"], []CategorySplit{{CategoryID: household.ID, AmountCents: 2500}}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := s.DecideSuggestions([]SuggestionDecision{
+	result, err := s.DecideSuggestions("the operator, in a test", []SuggestionDecision{
 		{SuggestionID: id["AIRLINE TICKET"], Action: "accept"},
 		{SuggestionID: id["TIRE SHOP"], Action: "accept", CategoryID: car.ID},
 		{SuggestionID: id["PAYMENT TO A FRIEND"], Action: "reject"},
@@ -70,11 +70,11 @@ func TestSuggestionsWaitForTheOperatorAndOnlyAnAcceptWritesACategory(t *testing.
 	if totals[flights.ID] != 30000 || totals[car.ID] != 20000 {
 		t.Fatalf("November = %+v, want the ticket under Flights and the tires under Car", spending)
 	}
-	if _, err := s.DecideSuggestions([]SuggestionDecision{{SuggestionID: id["AIRLINE TICKET"], Action: "reject"}}); !errors.Is(err, ErrConflict) {
+	if _, err := s.DecideSuggestions("the operator, in a test", []SuggestionDecision{{SuggestionID: id["AIRLINE TICKET"], Action: "reject"}}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("deciding a suggestion twice = %v, want a conflict", err)
 	}
 	// The rejected one is a candidate again for a later run.
-	if again, _ := s.ListSuggestionCandidates(10); len(again) != 1 || again[0].Description != "PAYMENT TO A FRIEND" {
+	if again, _ := s.ListSuggestionCandidates(10, ""); len(again) != 1 || again[0].Description != "PAYMENT TO A FRIEND" {
 		t.Fatalf("candidates after review = %+v", again)
 	}
 }
@@ -90,11 +90,38 @@ func TestSuggestionsRefuseEquityCategoriesAndUnknownTransactions(t *testing.T) {
 	}
 	checking := mustAccount(t, s, AccountInput{Name: "Checking", Kind: "checking"})
 	mustImport(t, s, "wells_fargo_csv", checking.ID, wellsFargoHeader+`"11/03/2026","X","-1.00","","Posted"`+"\n")
-	candidates, _ := s.ListSuggestionCandidates(1)
+	candidates, _ := s.ListSuggestionCandidates(1, "")
 	if _, err := s.CreateSuggestions(SuggestionBatch{OperationID: "o", Model: "m", Suggestions: []SuggestionInput{{TransactionID: candidates[0].TransactionID, CategoryID: opening, Confidence: 0.5}}}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("suggesting an equity category = %v, want invalid", err)
 	}
 	if _, err := s.CreateSuggestions(SuggestionBatch{OperationID: "o", Model: "m", Suggestions: []SuggestionInput{{TransactionID: "transaction_999999", Confidence: 0.5}}}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("suggesting for a missing transaction = %v, want invalid", err)
+	}
+}
+
+func TestADecisionNeedsToSayWhoDecidedAndCandidatesFilterByDate(t *testing.T) {
+	s := openTestStore(t)
+	checking := mustAccount(t, s, AccountInput{Name: "Checking", Kind: "checking"})
+	mustImport(t, s, "wells_fargo_csv", checking.ID, wellsFargoHeader+
+		`"11/03/2026","NEW","-1.00","","Posted"`+"\n"+
+		`"09/03/2026","OLD","-2.00","","Posted"`+"\n")
+	old, err := s.ListSuggestionCandidates(10, "2026-10-06")
+	if err != nil || len(old) != 1 || old[0].Description != "OLD" {
+		t.Fatalf("candidates before 2026-10-06 = %+v, %v", old, err)
+	}
+	household, _ := s.CreateCategory(Category{Name: "Household", Kind: "expense"})
+	if _, err := s.CreateSuggestions(SuggestionBatch{OperationID: "o", Model: "m", Suggestions: []SuggestionInput{{TransactionID: old[0].TransactionID, CategoryID: household.ID, Confidence: 0.5}}}); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := s.ListSuggestions("pending", 0)
+	if _, err := s.DecideSuggestions("  ", []SuggestionDecision{{SuggestionID: pending[0].ID, Action: "accept"}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a decision with no decided_by = %v, want invalid", err)
+	}
+	if _, err := s.DecideSuggestions("a standing instruction", []SuggestionDecision{{SuggestionID: pending[0].ID, Action: "accept"}}); err != nil {
+		t.Fatal(err)
+	}
+	accepted, _ := s.ListSuggestions("accepted", 0)
+	if len(accepted) != 1 || accepted[0].DecidedBy != "a standing instruction" {
+		t.Fatalf("accepted = %+v", accepted)
 	}
 }

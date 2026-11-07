@@ -341,7 +341,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 			writeError(w, err)
 			return
 		}
-		out, err := s.ListSuggestionCandidates(limit)
+		out, err := s.ListSuggestionCandidates(limit, r.URL.Query().Get("before"))
 		respond(w, http.StatusOK, out, err)
 	})
 	mux.HandleFunc("GET /category-suggestions", func(w http.ResponseWriter, r *http.Request) {
@@ -364,13 +364,14 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	})
 	mux.HandleFunc("POST /category-suggestions/decisions", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
+			DecidedBy string               `json:"decided_by"`
 			Decisions []SuggestionDecision `json:"decisions"`
 		}
 		if err := decodeLargeBody(r, &in); err != nil {
 			writeError(w, err)
 			return
 		}
-		out, err := s.DecideSuggestions(in.Decisions)
+		out, err := s.DecideSuggestions(in.DecidedBy, in.Decisions)
 		respond(w, http.StatusOK, out, err)
 	})
 

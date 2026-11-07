@@ -28,6 +28,7 @@ type CategorySuggestion struct {
 	Status            string  `json:"status"`
 	DecidedCategoryID string  `json:"decided_category_id"`
 	DecidedAt         int64   `json:"decided_at"`
+	DecidedBy         string  `json:"decided_by"`
 	CreatedAt         int64   `json:"created_at"`
 	// The transaction, for reading without a second call.
 	OccurredOn  string `json:"occurred_on"`
@@ -98,10 +99,14 @@ func wholeUncategorizedPosting(q queryer, transactionID, uncategorized string) (
 }
 
 // ListSuggestionCandidates returns up to limit transactions, newest first,
-// that are wholly Uncategorized and have no pending suggestion.
-func (s *Store) ListSuggestionCandidates(limit int) ([]SuggestionCandidate, error) {
+// that are wholly Uncategorized and have no pending suggestion; with before
+// set ('YYYY-MM-DD'), only those dated earlier.
+func (s *Store) ListSuggestionCandidates(limit int, before string) ([]SuggestionCandidate, error) {
 	if limit <= 0 || limit > 2000 {
 		limit = 200
+	}
+	if err := validDate("before", before, false); err != nil {
+		return nil, err
 	}
 	uncategorized, err := categoryIDForRole(s.db, "uncategorized")
 	if err != nil {
@@ -116,7 +121,8 @@ func (s *Store) ListSuggestionCandidates(limit int) ([]SuggestionCandidate, erro
 		WHERE t.status != 'void'
 		AND (SELECT COUNT(*) FROM postings p WHERE p.transaction_id = t.id AND p.category_id IS NOT NULL) = 1
 		AND NOT EXISTS (SELECT 1 FROM category_suggestions cs WHERE cs.transaction_id = t.id AND cs.status = 'pending')
-		GROUP BY t.id ORDER BY t.occurred_on DESC, t.seq DESC LIMIT ?`, uncategorized, limit)
+		AND (? = '' OR t.occurred_on < ?)
+		GROUP BY t.id ORDER BY t.occurred_on DESC, t.seq DESC LIMIT ?`, uncategorized, before, before, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +188,7 @@ func (s *Store) CreateSuggestions(batch SuggestionBatch) (int, error) {
 			}
 			categoryID = in.CategoryID
 		}
-		if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'superseded', decided_at = ? WHERE transaction_id = ? AND status = 'pending'`, now, in.TransactionID); err != nil {
+		if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'superseded', decided_at = ?, decided_by = 'budget-store: a newer suggestion replaced it' WHERE transaction_id = ? AND status = 'pending'`, now, in.TransactionID); err != nil {
 			return 0, err
 		}
 		seq, id, err := mintID(tx, "category_suggestions", "category_suggestion")
@@ -215,7 +221,7 @@ func (s *Store) ListSuggestions(status string, limit int) ([]CategorySuggestion,
 		return nil, err
 	}
 	rows, err := s.db.Query(`SELECT cs.id, cs.transaction_id, COALESCE(cs.category_id,''), cs.confidence, cs.rationale, cs.needs_review, cs.model, cs.operation_id,
-		cs.status, COALESCE(cs.decided_category_id,''), cs.decided_at, cs.created_at, t.occurred_on, t.description,
+		cs.status, COALESCE(cs.decided_category_id,''), cs.decided_at, cs.decided_by, cs.created_at, t.occurred_on, t.description,
 		COALESCE((SELECT SUM(amount_cents) FROM postings WHERE transaction_id = t.id AND category_id IS NOT NULL), 0),
 		COALESCE((SELECT a.id FROM postings p JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = t.id ORDER BY p.seq LIMIT 1), ''),
 		COALESCE((SELECT a.name FROM postings p JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = t.id ORDER BY p.seq LIMIT 1), '')
@@ -230,7 +236,7 @@ func (s *Store) ListSuggestions(status string, limit int) ([]CategorySuggestion,
 		var c CategorySuggestion
 		var needsReview int
 		if err := rows.Scan(&c.ID, &c.TransactionID, &c.CategoryID, &c.Confidence, &c.Rationale, &needsReview, &c.Model, &c.OperationID,
-			&c.Status, &c.DecidedCategoryID, &c.DecidedAt, &c.CreatedAt, &c.OccurredOn, &c.Description, &c.AmountCents, &c.AccountID, &c.AccountName); err != nil {
+			&c.Status, &c.DecidedCategoryID, &c.DecidedAt, &c.DecidedBy, &c.CreatedAt, &c.OccurredOn, &c.Description, &c.AmountCents, &c.AccountID, &c.AccountName); err != nil {
 			return nil, err
 		}
 		c.NeedsReview = needsReview == 1
@@ -262,9 +268,16 @@ type DecisionResult struct {
 // DecideSuggestions applies the operator's decisions. Accepting writes the
 // category onto the transaction's Uncategorized posting; a transaction no
 // longer wholly Uncategorized is left alone and its suggestion marked stale.
-// A decision on a suggestion that is not pending is a 409. All or nothing.
-func (s *Store) DecideSuggestions(decisions []SuggestionDecision) (DecisionResult, error) {
+// A decision on a suggestion that is not pending is a 409. decidedBy says
+// who decided, in their words, and is kept on every suggestion decided, so a
+// category the operator chose can be told from one they let a model guess.
+// All or nothing.
+func (s *Store) DecideSuggestions(decidedBy string, decisions []SuggestionDecision) (DecisionResult, error) {
 	result := DecisionResult{Stale: []string{}}
+	decidedBy = strings.TrimSpace(decidedBy)
+	if decidedBy == "" {
+		return result, fmt.Errorf("%w: decided_by is required: say who decided", ErrInvalid)
+	}
 	if len(decisions) == 0 {
 		return result, fmt.Errorf("%w: no decisions", ErrInvalid)
 	}
@@ -292,7 +305,7 @@ func (s *Store) DecideSuggestions(decisions []SuggestionDecision) (DecisionResul
 		}
 		switch d.Action {
 		case "reject":
-			if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'rejected', decided_at = ? WHERE id = ?`, now, d.SuggestionID); err != nil {
+			if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'rejected', decided_at = ?, decided_by = ? WHERE id = ?`, now, decidedBy, d.SuggestionID); err != nil {
 				return result, err
 			}
 			result.Rejected++
@@ -323,7 +336,7 @@ func (s *Store) DecideSuggestions(decisions []SuggestionDecision) (DecisionResul
 			return result, err
 		}
 		if postingID == "" {
-			if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'stale', decided_at = ? WHERE id = ?`, now, d.SuggestionID); err != nil {
+			if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'stale', decided_at = ?, decided_by = ? WHERE id = ?`, now, decidedBy, d.SuggestionID); err != nil {
 				return result, err
 			}
 			result.Stale = append(result.Stale, d.SuggestionID)
@@ -343,7 +356,7 @@ func (s *Store) DecideSuggestions(decisions []SuggestionDecision) (DecisionResul
 		} else {
 			result.Accepted++
 		}
-		if _, err := tx.Exec(`UPDATE category_suggestions SET status = ?, decided_category_id = ?, decided_at = ? WHERE id = ?`, newStatus, decided, now, d.SuggestionID); err != nil {
+		if _, err := tx.Exec(`UPDATE category_suggestions SET status = ?, decided_category_id = ?, decided_at = ?, decided_by = ? WHERE id = ?`, newStatus, decided, now, decidedBy, d.SuggestionID); err != nil {
 			return result, err
 		}
 	}

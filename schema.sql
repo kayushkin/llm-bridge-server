@@ -288,6 +288,7 @@ CREATE TABLE IF NOT EXISTS category_suggestions (
   status                 TEXT NOT NULL,          -- vocabulary.go: suggestionStatuses
   decided_category_id    TEXT REFERENCES categories(id), -- what the operator chose, when they changed it
   decided_at             INTEGER NOT NULL DEFAULT 0,
+  decided_by             TEXT NOT NULL DEFAULT '', -- who decided, in their words: the operator on a page, or a standing instruction they gave
   created_at             INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS category_suggestions_status ON category_suggestions(status, transaction_id);
