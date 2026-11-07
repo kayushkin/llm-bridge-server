@@ -274,6 +274,13 @@ func (socket *peerSocket) run() error {
 			}
 			socket.streamsMutex.Unlock()
 		case peerSocketFrameResponseHead, peerSocketFrameBody, peerSocketFrameEnd:
+			// An honest sender writes an answer in chunks of at most
+			// peerSocketLargestAnswerChunk. A larger one is the other server
+			// trying to make a call hold far more than its buffer was sized
+			// for, so the socket ends rather than keep it.
+			if len(frame.Body) > peerSocketLargestAnswerChunk {
+				return fmt.Errorf("an answer frame for stream %d carries %d bytes, over the %d an answer chunk may carry", frame.Stream, len(frame.Body), peerSocketLargestAnswerChunk)
+			}
 			socket.deliverToCall(frame)
 		default:
 			return fmt.Errorf("a frame of unknown type %q", frame.Type)

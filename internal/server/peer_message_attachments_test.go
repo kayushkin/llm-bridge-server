@@ -124,7 +124,7 @@ func TestAPatchTravelsAsVerifiedFilesAndItsApprovalLandsIt(t *testing.T) {
 		t.Fatalf("sent = %+v, want delivered carrying the upload", sent)
 	}
 	if answer := sendPeerMessageWithAttachments(t, initiating, initiatingID, msg.PeerMessageKindPatch,
-		msg.PeerMessageBody{Repo: "r", BaseCommit: "c"}, uploaded.ID); answer.Code != http.StatusBadRequest {
+		msg.PeerMessageBody{Repo: "r", BaseCommit: "505ffa7"}, uploaded.ID); answer.Code != http.StatusBadRequest {
 		t.Fatalf("sending one upload twice = %d %s, want 400", answer.Code, answer.Body)
 	}
 

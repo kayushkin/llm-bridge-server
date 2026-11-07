@@ -193,10 +193,23 @@ type routeAccessRule struct {
 	// one-time passphrase themselves; every other harness callback takes no
 	// credential and is for this host's own processes alone.
 	answersThroughPublicProxy bool
+	// signsIn marks an open route that makes, reads or ends a person's login
+	// session. Another server never signs anyone in here, so a request that
+	// carries a peer token is refused one, by https or over a peer socket.
+	signsIn bool
 }
 
 func openRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routeOpenToEveryone, reason: reason}
+}
+
+// signInRoute is an open route a person's browser uses to sign in, see who it
+// is signed in as, or sign out. No connected server may call one: until
+// 2026-11-07 a peer token of any level reached POST /auth/demo-login over the
+// socket and could make a login session for anyone on a server that dialed
+// out with demo login on.
+func signInRoute(reason string) routeAccessRule {
+	return routeAccessRule{class: routeOpenToEveryone, reason: reason, signsIn: true}
 }
 func harnessCallbackRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routeHarnessCallback, reason: reason}
@@ -272,11 +285,11 @@ func cannotBeFilteredRoute(reason string) routeAccessRule {
 var routeAccessRules = map[string]routeAccessRule{
 	// Open.
 	"GET /health":                                                 openRoute("liveness for load balancers and healthcheck"),
-	"POST /auth/demo-login":                                       openRoute("how a principal obtains a login; answers 404 itself when switched off"),
-	"GET /auth/entra/start":                                       openRoute("sends the browser to Entra ID to sign in"),
-	"GET /auth/entra/callback":                                    openRoute("Entra ID sends the browser back here; the handler verifies everything it is given"),
-	"GET /auth/principal":                                         openRoute("answers 401 itself without a live login session"),
-	"POST /auth/logout":                                           openRoute("revokes the cookie's live session, checking its CSRF token itself, and clears a dead cookie with none"),
+	"POST /auth/demo-login":                                       signInRoute("how a principal obtains a login; answers 404 itself when switched off"),
+	"GET /auth/entra/start":                                       signInRoute("sends the browser to Entra ID to sign in"),
+	"GET /auth/entra/callback":                                    signInRoute("Entra ID sends the browser back here; the handler verifies everything it is given"),
+	"GET /auth/principal":                                         signInRoute("answers 401 itself without a live login session"),
+	"POST /auth/logout":                                           signInRoute("revokes the cookie's live session, checking its CSRF token itself, and clears a dead cookie with none"),
 	"POST /peer-connection-invites":                               operatorRoute("lets another server connect to this one"),
 	"GET /peer-connection-invites":                                operatorRoute("who was invited to connect, and by whom"),
 	"POST /peer-connections":                                      operatorRoute("connects to another server and stores a credential for it"),
@@ -791,6 +804,11 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 				"%s is called by this host's own processes or as a connection call, never with a peer token", pattern))
 			return
 		}
+		if rule.signsIn {
+			writeJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
+				"%s signs a person in or out of this server, and another server never does that", pattern))
+			return
+		}
 		caller, credentialError := s.callerOfPeerToken(r.Context(), presentedPeerTokens[0], socketConnectionID, arrivedOverPeerSocket)
 		if credentialError != nil {
 			credentialError.write(w)
@@ -813,7 +831,9 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		s.serveAsCaller(w, r, pattern, rule, caller)
+		trackedRequest, forget := s.peerRequestsInFlight.track(r, caller.peer)
+		defer forget()
+		s.serveAsCaller(w, trackedRequest, pattern, rule, caller)
 		return
 	}
 

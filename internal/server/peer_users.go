@@ -24,6 +24,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -255,6 +256,9 @@ func (s *Server) handleRemovePeerUserMapping(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
+	}
+	if ended := s.peerRequestsInFlight.cancelMapping(removed.ID); ended > 0 {
+		log.Printf("[peers] user mapping %s was removed; ended %d request(s) still acting through it", removed.ID, ended)
 	}
 	writeJSON(w, removed)
 }

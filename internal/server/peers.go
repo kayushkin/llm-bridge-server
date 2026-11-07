@@ -747,6 +747,7 @@ func (s *Server) handleGrantPeerAccess(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 			return
 		}
+		s.endRequestsServedUnderGrant(previous.ID)
 		if err := s.undoPeerLevelEffect(r.Context(), previous); err != nil {
 			writeJSONError(w, http.StatusBadGateway, "principal_store_failed", fmt.Sprintf("%s is revoked and its level could not be taken back from %s: %v", previous.ID, peerPrincipalID, err))
 			return
@@ -848,6 +849,7 @@ func (s *Server) revokeLivePeerGrantTelling(ctx context.Context, connection stor
 	if err != nil {
 		return store.PeerGrant{}, "", &requestCredentialError{http.StatusInternalServerError, "store_failed", err.Error()}
 	}
+	s.endRequestsServedUnderGrant(revoked.ID)
 	if err := s.undoPeerLevelEffect(ctx, revoked); err != nil {
 		return store.PeerGrant{}, "", &requestCredentialError{http.StatusBadGateway, "principal_store_failed", fmt.Sprintf(
 			"%s is revoked, so its token no longer works, and its level could not be taken back from %s: %v", revoked.ID, revoked.PeerPrincipalID, err)}
@@ -1305,4 +1307,13 @@ func writeJSONStatus(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(payload)
+}
+
+// endRequestsServedUnderGrant cancels what a revoked grant's token is being
+// served right now, so access that has ended stops at once rather than when
+// an open stream happens to close.
+func (s *Server) endRequestsServedUnderGrant(grantID string) {
+	if ended := s.peerRequestsInFlight.cancelGrant(grantID); ended > 0 {
+		log.Printf("[peers] %s was revoked; ended %d request(s) still being served under it", grantID, ended)
+	}
 }

@@ -76,6 +76,9 @@ type Server struct {
 	principalClient *principalclient.Client
 	// peerSockets holds every open peer socket and every dialer (peer_socket.go).
 	peerSockets *peerSocketRegistry
+	// peerRequestsInFlight lets ending a peer's access end the requests it
+	// is being served right now (peer_requests_in_flight.go).
+	peerRequestsInFlight *peerRequestsInFlight
 	// peerSelfUpdates serializes finishing an approved notice's update.
 	peerSelfUpdates sync.Mutex
 	// keepAwake holds this machine awake while sessions run, once
@@ -161,27 +164,28 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	respCache := newResponseCache()
 	st.SetNotifier(newNotifierFanout(hub, respCache))
 	srv := &Server{
-		mux:             http.NewServeMux(),
-		store:           st,
-		agentStore:      as,
-		memoryStore:     ms,
-		harnessStore:    hs,
-		hookStore:       hks,
-		modelStore:      mds,
-		snapshotStore:   ss,
-		harness:         harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
-		authClient:      authClient,
-		permClient:      permclient.New(cfg.PermissionStoreURL),
-		grantClient:     grantclient.New(cfg.GrantStoreURL, cfg.GrantStoreServiceToken),
-		principalClient: principalclient.New(cfg.PrincipalStoreURL),
-		peerSockets:     newPeerSocketRegistry(),
-		bundleClient:    bundleclient.New(cfg.BundleStoreURL),
-		kanbanClient:    newKanbanClient(cfg.KanbanStoreURL),
-		bridgePrefs:     newBridgePrefsStore(cfg.BridgePrefsPath),
-		cfState:         newConformanceState(cfg.ConformancePath),
-		sessionHub:      hub,
-		parkedAsks:      newParkedAsks(),
-		responseCache:   respCache,
+		mux:                  http.NewServeMux(),
+		store:                st,
+		agentStore:           as,
+		memoryStore:          ms,
+		harnessStore:         hs,
+		hookStore:            hks,
+		modelStore:           mds,
+		snapshotStore:        ss,
+		harness:              harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
+		authClient:           authClient,
+		permClient:           permclient.New(cfg.PermissionStoreURL),
+		grantClient:          grantclient.New(cfg.GrantStoreURL, cfg.GrantStoreServiceToken),
+		principalClient:      principalclient.New(cfg.PrincipalStoreURL),
+		peerSockets:          newPeerSocketRegistry(),
+		peerRequestsInFlight: newPeerRequestsInFlight(),
+		bundleClient:         bundleclient.New(cfg.BundleStoreURL),
+		kanbanClient:         newKanbanClient(cfg.KanbanStoreURL),
+		bridgePrefs:          newBridgePrefsStore(cfg.BridgePrefsPath),
+		cfState:              newConformanceState(cfg.ConformancePath),
+		sessionHub:           hub,
+		parkedAsks:           newParkedAsks(),
+		responseCache:        respCache,
 		signalClassifier: newSignalClassifier(
 			cfg.SignalClassifierModelRole,
 			cfg.SignalClassifierTimeout,

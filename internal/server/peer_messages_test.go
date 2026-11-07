@@ -282,7 +282,7 @@ func TestAPeerMessageBodyCarriesOnlyItsKindsFields(t *testing.T) {
 		{msg.PeerMessageKindRequest, msg.PeerMessageBody{Title: "t", Prompt: "p"}, ""},
 		{msg.PeerMessageKindRequest, msg.PeerMessageBody{Title: "t"}, "needs a title and a prompt"},
 		{msg.PeerMessageKindRequest, msg.PeerMessageBody{Title: "t", Prompt: "p", Summary: "s"}, "not summary"},
-		{msg.PeerMessageKindNotice, msg.PeerMessageBody{Summary: "s", Commits: []msg.PeerRepoCommit{{Repo: "r", Commit: "c"}}}, ""},
+		{msg.PeerMessageKindNotice, msg.PeerMessageBody{Summary: "s", Commits: []msg.PeerRepoCommit{{Repo: "r", Commit: "505ffa7"}}}, ""},
 		{msg.PeerMessageKindNotice, msg.PeerMessageBody{Summary: "s", Commits: []msg.PeerRepoCommit{{Repo: "r"}}}, "needs a repo and a commit"},
 		{msg.PeerMessageKindNotice, msg.PeerMessageBody{Summary: "s"}, "at least one commit"},
 		{msg.PeerMessageKindStatus, msg.PeerMessageBody{Result: msg.PeerMessageStatusFailed, Detail: "d"}, ""},
