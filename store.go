@@ -215,6 +215,15 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
+	columns, err = tableColumns(db, "recurring_bills")
+	if err != nil {
+		return err
+	}
+	if len(columns) > 0 && !columns["added_by_operator"] {
+		if _, err := db.Exec(`ALTER TABLE recurring_bills ADD COLUMN added_by_operator INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
 	columns, err = tableColumns(db, "category_suggestions")
 	if err != nil {
 		return err

@@ -116,6 +116,46 @@ func billTextKey(description string) string {
 	return strings.Join(words, " ")
 }
 
+// billMatchKey is what groups a bill's payments: the payee when there is one,
+// else the words of the description that name who was paid.
+func billMatchKey(payeeID, description string) string {
+	if payeeID != "" {
+		return "payee:" + payeeID
+	}
+	return "text:" + billTextKey(description)
+}
+
+// periodStart is the first day of the period a payment falls in, for a bill
+// the operator named: a month, a quarter, a year, or a week from Monday.
+func periodStart(day time.Time, spec cadenceSpec) time.Time {
+	switch spec.months {
+	case 0:
+		return day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7))
+	case 1:
+		return time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, time.UTC)
+	case 3:
+		return time.Date(day.Year(), ((day.Month()-1)/3)*3+1, 1, 0, 0, 0, 0, time.UTC)
+	default:
+		return time.Date(day.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+	}
+}
+
+// periodPayments folds payments into one per period, summed and dated by the
+// period's last payment: a server bill charged twice in a month is that
+// month's bill.
+func periodPayments(payments []billPayment, spec cadenceSpec) []billPayment {
+	out := []billPayment{}
+	for _, p := range payments {
+		if n := len(out); n > 0 && periodStart(out[n-1].occurredOn, spec).Equal(periodStart(p.occurredOn, spec)) {
+			out[n-1].amountCents += p.amountCents
+			out[n-1].occurredOn = p.occurredOn
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // billPayments reads every transaction that could be a bill payment, with
 // its amount and the key that groups it.
 func billPayments(q queryer) (map[string][]billPayment, error) {
@@ -151,10 +191,7 @@ func billPayments(q queryer) (map[string][]billPayment, error) {
 		default:
 			continue
 		}
-		key := "text:" + billTextKey(p.description)
-		if p.payeeID != "" {
-			key = "payee:" + p.payeeID
-		}
+		key := billMatchKey(p.payeeID, p.description)
 		if key == "text:" {
 			continue
 		}
@@ -255,13 +292,32 @@ func (s *Store) DetectRecurringBills() (DetectResult, error) {
 	for _, key := range keys {
 		payments := groups[key]
 		sort.Slice(payments, func(i, j int) bool { return payments[i].occurredOn.Before(payments[j].occurredOn) })
-		spec, found := detectCadence(paymentDays(payments))
-		if !found {
-			continue
+		var operatorCadence string
+		var addedByOperator int
+		switch err := tx.QueryRow(`SELECT cadence, added_by_operator FROM recurring_bills WHERE match_key = ?`, key).Scan(&operatorCadence, &addedByOperator); {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return result, err
 		}
-		// Usual amount and day from whole days: rent and the portal's fee on
-		// the same day are one payment of the bill.
-		days := paymentDays(payments)
+		var spec cadenceSpec
+		var days []billPayment
+		if addedByOperator == 1 {
+			// The operator said what this is and how often; no rhythm test,
+			// and several charges in one period are that period's payment.
+			var found bool
+			if spec, found = cadenceNamed(operatorCadence); !found {
+				return result, fmt.Errorf("bill %s has unknown cadence %q", key, operatorCadence)
+			}
+			days = periodPayments(paymentDays(payments), spec)
+		} else {
+			var found bool
+			if spec, found = detectCadence(paymentDays(payments)); !found {
+				continue
+			}
+			// Usual amount and day from whole days: rent and the portal's fee
+			// on the same day are one payment of the bill.
+			days = paymentDays(payments)
+		}
 		recent := days
 		if len(recent) > 3 {
 			recent = recent[len(recent)-3:]
@@ -516,4 +572,78 @@ func (s *Store) GetRecurringTotals() (RecurringTotals, error) {
 		}
 	}
 	return totals, nil
+}
+
+// AddRecurringBill makes a bill of the payments a transaction belongs to: the
+// same payee, or with none, the same words naming who was paid. The operator
+// gives the cadence, so no rhythm is tested and several charges in one period
+// count as that period's payment. status is confirmed (the operator says it
+// is a bill) or suggested (an agent proposes it for the operator to decide).
+// An existing bill for the same payments is refused.
+func (s *Store) AddRecurringBill(transactionID, cadence, status, name, decidedBy string) (RecurringBill, error) {
+	if _, found := cadenceNamed(cadence); !found {
+		return RecurringBill{}, requireOneOf("cadence", cadence, billCadences)
+	}
+	if err := requireOneOf("status", status, []string{"confirmed", "suggested"}); err != nil {
+		return RecurringBill{}, err
+	}
+	decidedBy = strings.TrimSpace(decidedBy)
+	if decidedBy == "" {
+		return RecurringBill{}, fmt.Errorf("%w: decided_by is required: say who named it a bill", ErrInvalid)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return RecurringBill{}, err
+	}
+	defer tx.Rollback()
+	var description, payeeID, payeeName string
+	err = tx.QueryRow(`SELECT t.description, COALESCE(t.payee_id,''), COALESCE(p.name,'') FROM transactions t LEFT JOIN payees p ON p.id = t.payee_id WHERE t.id = ?`, transactionID).
+		Scan(&description, &payeeID, &payeeName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RecurringBill{}, fmt.Errorf("%w: transaction_id %q does not exist", ErrInvalid, transactionID)
+	}
+	if err != nil {
+		return RecurringBill{}, err
+	}
+	key := billMatchKey(payeeID, description)
+	if key == "text:" {
+		return RecurringBill{}, fmt.Errorf("%w: %s's description has no words to match other payments by", ErrInvalid, transactionID)
+	}
+	var existing string
+	if err := tx.QueryRow(`SELECT id FROM recurring_bills WHERE match_key = ?`, key).Scan(&existing); err == nil {
+		return RecurringBill{}, fmt.Errorf("%w: these payments are already bill %s; change that one", ErrConflict, existing)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return RecurringBill{}, err
+	}
+	if name = strings.TrimSpace(name); name == "" {
+		name = payeeName
+	}
+	if name == "" {
+		name = strings.TrimPrefix(key, "text:")
+	}
+	var payee any
+	if payeeID != "" {
+		payee = payeeID
+	}
+	seq, id, err := mintID(tx, "recurring_bills", "recurring_bill")
+	if err != nil {
+		return RecurringBill{}, err
+	}
+	now := s.unixNow()
+	var decidedAt int64
+	if status == "confirmed" {
+		decidedAt = now
+	}
+	if _, err := tx.Exec(`INSERT INTO recurring_bills (seq, id, match_key, name, payee_id, cadence, expected_cents, status, first_paid_on, last_paid_on, added_by_operator, decided_by, decided_at, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,0,?,'','',1,?,?,?,?)`, seq, id, key, name, payee, cadence, status, decidedBy, decidedAt, now, now); err != nil {
+		return RecurringBill{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return RecurringBill{}, err
+	}
+	// The detector fills in its payments, usual amount and dates.
+	if _, err := s.DetectRecurringBills(); err != nil {
+		return RecurringBill{}, err
+	}
+	return s.GetRecurringBill(id)
 }

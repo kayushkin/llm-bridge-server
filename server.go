@@ -428,6 +428,21 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.ListRecurringBills(r.URL.Query().Get("status"))
 		respond(w, http.StatusOK, out, err)
 	})
+	mux.HandleFunc("POST /recurring-bills", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			TransactionID string `json:"transaction_id"`
+			Cadence       string `json:"cadence"`
+			Status        string `json:"status"`
+			Name          string `json:"name"`
+			DecidedBy     string `json:"decided_by"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.AddRecurringBill(in.TransactionID, in.Cadence, in.Status, in.Name, in.DecidedBy)
+		respond(w, http.StatusCreated, out, err)
+	})
 	mux.HandleFunc("GET /recurring-bills/totals", func(w http.ResponseWriter, _ *http.Request) {
 		out, err := s.GetRecurringTotals()
 		respond(w, http.StatusOK, out, err)

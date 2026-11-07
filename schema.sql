@@ -329,6 +329,7 @@ CREATE TABLE IF NOT EXISTS recurring_bills (
   first_paid_on       TEXT NOT NULL,
   last_paid_on        TEXT NOT NULL,
   next_due_on         TEXT NOT NULL DEFAULT '',
+  added_by_operator   INTEGER NOT NULL DEFAULT 0, -- 1: the operator named it a bill; its cadence is theirs, not detected
   decided_by          TEXT NOT NULL DEFAULT '',
   decided_at          INTEGER NOT NULL DEFAULT 0,
   created_at          INTEGER NOT NULL,

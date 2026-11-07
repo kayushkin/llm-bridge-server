@@ -187,6 +187,7 @@ next due date plus grace, and back to `confirmed` when paid again. Answers
 
 | Route | Does |
 |---|---|
+| `POST /recurring-bills` | `{transaction_id, cadence, status: confirmed\|suggested, name, decided_by}`: makes a bill of the payments the transaction belongs to (same payee, or the same words naming who was paid). The cadence is the caller's, so no rhythm is tested and several charges in one period are that period's payment. 409 when those payments are already a bill |
 | `GET /recurring-bills?status=` | soonest due first, each with `payment_count` and `monthly_equivalent_cents` |
 | `GET /recurring-bills/{id}` | with every payment, oldest first, and each one's change from the one before |
 | `PATCH /recurring-bills/{id}` | `{status: confirmed\|rejected, name, decided_by}`; a status needs `decided_by` |

@@ -108,3 +108,43 @@ func TestBillTextKeysDropReferenceNumbersAndDates(t *testing.T) {
 		}
 	}
 }
+
+func TestTheOperatorCanNameABillTheRhythmTestMissed(t *testing.T) {
+	s := openTestStore(t)
+	s.now = func() time.Time { return time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC) }
+	card := mustAccount(t, s, AccountInput{Name: "Card", Kind: "credit_card"})
+	// A server host that sometimes charges twice in a month.
+	mustImport(t, s, "wells_fargo_csv", card.ID, wellsFargoHeader+
+		`"07/01/2026","HOSTING CO SERVERS","-40.00",,"Posted"`+"\n"+
+		`"08/01/2026","HOSTING CO SERVERS","-40.00",,"Posted"`+"\n"+
+		`"08/15/2026","HOSTING CO SERVERS","-12.00",,"Posted"`+"\n"+
+		`"09/01/2026","HOSTING CO SERVERS","-40.00",,"Posted"`+"\n"+
+		`"09/03/2026","HOSTING CO SERVERS","-12.00",,"Posted"`+"\n"+
+		`"10/01/2026","HOSTING CO SERVERS","-52.00",,"Posted"`+"\n")
+	if result, _ := s.DetectRecurringBills(); result.Suggested != 0 {
+		t.Fatalf("the rhythm test found %+v; this case is meant to be one it misses", result)
+	}
+	list, _ := s.ListTransactions(TransactionFilter{})
+	if _, err := s.AddRecurringBill(list[0].ID, "monthly", "confirmed", "", ""); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a bill with no decided_by = %v, want invalid", err)
+	}
+	bill, err := s.AddRecurringBill(list[0].ID, "monthly", "confirmed", "Servers", "the operator, in a test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One payment a month, the two August charges summed: 40, 52, 52, 52.
+	if bill.Status != "confirmed" || bill.PaymentCount != 6 || bill.ExpectedCents != 5200 || bill.Cadence != "monthly" || bill.LastPaidOn != "2026-10-01" {
+		t.Fatalf("bill = %+v", bill)
+	}
+	if _, err := s.AddRecurringBill(list[1].ID, "monthly", "confirmed", "", "the operator, in a test"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("naming the same payments twice = %v, want a conflict", err)
+	}
+	// Detecting again keeps the operator's cadence and decision.
+	if _, err := s.DetectRecurringBills(); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := s.GetRecurringBill(bill.ID)
+	if again.Status != "confirmed" || again.ExpectedCents != 5200 || again.Name != "Servers" {
+		t.Fatalf("after detect: %+v", again)
+	}
+}
