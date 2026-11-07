@@ -64,6 +64,8 @@ a chat draws an id as a chip.
 | photo review | `photo_review_…` | `/photo-reviews/{id}` |
 | sighting | `sighting_…` | `/sightings/{id}` |
 | question | `possession_question_…` | `/owner-questions/{id}` |
+| possession merge | `possession_merge_…` | `/possession-merges/{id}` |
+| outfit merge | `outfit_merge_…` | `/outfit-merges/{id}` |
 
 A **possession** holds what every owned thing has. A **kind** (garment,
 computer…) is a table of its own with only that kind's facts, one row per
@@ -108,7 +110,10 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `POST` | `/possessions/{id}/photos` | `{photo_id, box_left, box_top, box_right, box_bottom, is_cover, linked_by}`: box sides are fractions 0–1, all four or none. The first photo is the cover until another is chosen. Linking again changes the box or cover |
 | `POST` | `/possessions/classify-kindless` | `{actor, batch_size}` (1–20): the first reader looks at every live possession with no kind, batch_size at a time with their pictures. A sure answer gives it the kind and its fields (and a room when it has none); an unsure one raises a detail question on its sighting whose first choice gives it that kind. Answers `{looked, classified, asked, left:[{possession_id, why}], cost_usd}`. Runs until done, so call it with a long timeout |
 | `PUT` | `/possessions/{id}/kind` | `{kind, fields, actor}`: moves a possession to another kind; its old kind record goes to revisions. An empty kind leaves it with none. A computer with installed parts, or a wearable in an outfit moving to a kind that is not wearable, is a **409** |
-| `POST` | `/possessions/{id}/merge` | `{into, actor}`: folds a duplicate into the possession it duplicates. The kept one takes its photos, sightings, kind (when it has none), and every field it leaves blank; outfits, installed parts, odometer readings and a harness machine move to the kept kind record. The duplicate is deleted with `merged_into_id` set. Different kinds are a **409** |
+| `POST` | `/possessions/{id}/merge` | `{into, actor, reason}`: folds a duplicate into the possession it duplicates. The kept one takes its photos, sightings, kind (when it has none), and every field it leaves blank; outfits, installed parts, odometer readings and a harness machine move to the kept kind record. The duplicate is deleted with `merged_into_id` set. Different kinds are a **409**. Answers the kept possession with `merge_id`, the `possession_merge_…` that records it |
+| `GET` | `/possession-merges` | newest first: `?possession_id=` (either side), `?limit=`, `?offset=` |
+| `GET` | `/possession-merges/{id}` | `{id, duplicate_possession_id, kept_possession_id, merged_by, reason, moved, merged_at, undone_by, undone_at}`. `moved` names every row the merge changed: `filled_fields` (column → the kept one's value before), `kind_record_moved`, `installed_parts_moved`, `harness_machine_moved`, `odometer_readings_inserted`, `outfit_memberships` (`added_to_kept` when the kept one took the place), `photos_inserted`, `cover_set_photo_id`, `sightings_repointed` |
+| `POST` | `/possession-merges/{id}/undo` | `{actor}`: the duplicate comes back and each moved row is put back. A merge already undone, or one a later merge (not undone) depends on — the same possession, or an outfit it changed — is a **409** naming the later one: undo in reverse order |
 | `DELETE` | `/possessions/{id}/photos/{photo_id}` | the photo stays in photo-store; the earliest left becomes cover |
 | `GET` | each kind's route above, without an id | possessions of that kind, with the same query as `/possessions` |
 | `GET` | `/<kind route>/{id}` and `…/{id}/image` | the possession the kind record extends |
@@ -119,6 +124,12 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` / `PATCH` | `/outfits/{id}` | an outfit answers `possession_ids`, `worn_on` (its days) and `photo_ids` (the photo-store photos outfit readings found it in); a patch changes what it gives; `possession_ids` replaces the list |
 | `DELETE` | `/outfits/{id}?actor=` | soft, **204** |
 | `POST` | `/outfits/{id}/wearings` | `{worn_on:"YYYY-MM-DD"}` in the owner's time zone |
+| `POST` | `/outfits/{id}/combine` | `{into, actor, reason}`: folds this outfit into `into`: the kept one takes the union of pieces, every wearing and every outfit reading; this one is deleted with `merged_into_id` set. Answers the `outfit_merge` |
+| `GET` | `/outfit-merges`, `/outfit-merges/{id}` | `?outfit_id=` (either side). `moved`: `pieces_added`, `wearings_added`, `reviews_repointed` |
+| `POST` | `/outfit-merges/{id}/undo` | `{actor}`: the duplicate outfit comes back, and the kept one loses exactly what the merge gave it. A later merge of either outfit, or a later possession merge that moved a piece of either, is a **409** |
+| `POST` | `/wearables/check-links` | `{actor}`: the link check, below. Answers an audit run |
+| `POST` | `/wearables/check-duplicates` | `{actor}`: the duplicate check, below. Answers an audit run |
+| `POST` | `/outfits/consolidate` | `{actor}`: outfit consolidation, below. Answers an audit run |
 | `GET` / `POST` | `/purchases` | `{seller, marketplace, order_reference, ordered_at, total_cents, currency, source, lines:[{title, quantity, unit_price_cents, product_reference, disposition}]}`. An order already recorded (same marketplace and reference) is a **409** |
 | `GET` | `/purchases/{id}` | with lines; each line lists the possessions that point at it (`purchase_line_id`) |
 | `PATCH` | `/purchase-lines/{id}` | `{disposition, actor}` |
@@ -126,7 +137,7 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` | `/photo-reviews/{id}` | with every reading (each model's answer unchanged, tokens, cost) and sighting; `cost_usd` sums the readings |
 | `POST` | `/photo-reviews/{id}/retry` | `{actor}`: a `failed` review only; its readings go to revisions and it is queued again |
 | `GET` | `/sightings/{id}` and `/sightings/{id}/image` | |
-| `GET` | `/owner-questions` | open ones, oldest first; `?include_answered=true`, `?photo_review_id=`, `?purpose=decision\|detail` |
+| `GET` | `/owner-questions` | open ones, oldest first; `?include_answered=true`, `?photo_review_id=`, `?purpose=decision\|detail`. Each says `asked_by`: `""` when the photo's reading asked it, otherwise `link_check`, `duplicate_check`, `outfit_consolidation` or `picture_match` |
 | `POST` | `/owner-questions/triage-outfit-doubts` | `{actor}`: for outfit readings made before readers labeled their doubts. The first reader sorts each open decision question by its text: about which piece it is (stays a decision) or only a fact about a clear piece (the piece is recorded as the reader proposed, joins its outfit, and the question becomes a detail). Answers `{looked, identity, detail, failures, cost_usd}` |
 | `GET` | `/owner-questions/{id}` and `…/image` | the image is the sighting cut from its photo |
 | `POST` | `/owner-questions/{id}/answer` | `{choice:<index>}` or `{text:"…"}`, and `answered_by`. Words go to the first reader, which turns them into a resolution before anything is written: for a detail question, the possession as it should now read (`amend`). A second answer is a **409** |
@@ -180,3 +191,82 @@ doubts waits on a decision question when the doubt is which piece it is
 pieces, and get a wearing on the photo's day in the owner's time zone
 (`worn_on` on the review). A piece accepted later, by an answer or by a
 sighting it waited on, joins that outfit.
+
+A reading's picture match (below) is saved as readings too: round 1 is the
+outfit reading, and each piece compared is one round more, both readers.
+
+## Picture match in outfit readings
+
+After the reader lists the pieces, each wearable piece is cut from the photo
+and shown to **both** readers beside the covers of up to 12 recorded
+wearables of its kind and sub-type (a garment's category, a jewelry type, a
+bag type; watches and eyewear are one group each), nearest by their words,
+the reader's own match always among them. Each picks one or `none`. Both
+pick the same piece: the sighting is that piece. Both pick none: a new
+piece (`unconfirmed`), or the earlier sighting the reader named. They
+differ: a decision question (`asked_by: picture_match`) with each pick, "a
+piece not recorded yet" and "not mine". A doubt the reader wrote follows a
+recorded piece as a detail question. A piece with no recorded piece of its
+group to compare skips the match. Then the reading's pieces find the outfit
+with exactly those pieces; failing that, the outfit worn on the same day
+that shares the most pieces with them, at least one, which takes the new
+pieces; failing that, a new outfit.
+
+## Wearable audit
+
+Three passes over the wearables and outfits already recorded. Each shows
+pictures to both reader roles; where both agree it acts at once, and every
+merge it makes is an undoable `possession_merge` or `outfit_merge`; where
+they differ it asks a decision question on a sighting, so the owner sees a
+picture. A pair or link asked about once, answered or not, is not asked
+again. Each change is its own transaction with revisions. A pass runs until
+done, so call it with a long timeout, and answers:
+
+```json
+{"looked":…,"counts":{"merged":…,"asked":…},"actions":[{"action":"merged","records":["possession_…","possession_…"],"merge_id":"possession_merge_…","question_id":"","reason":"…"}],
+ "left":[{"about":…,"why":…}],"failures":[{"about":…,"error":…}],"cost_usd":…}
+```
+
+A pass that stops on an error after acting answers the error with
+`done_before_the_error` holding the run so far.
+
+**Link check** (`POST /wearables/check-links`). For each live wearable with
+two or more photos, both readers see its cover crop and each other linked
+crop (photo-store's thumbnail cut by the stored box), at most 19 a call, and
+say per crop whether it is the same physical piece, naming other recorded
+pieces of its group it could be. Both yes: `confirmed`. Both no:
+`unlinked` — the photo link, the sighting (back to `proposed`) and the
+piece's place in that reading's outfit (unless another photo of the outfit
+shows it) are undone, and a decision question asks: a piece not recorded
+yet, one of the pieces the readers named, or not mine. One no: `asked` — the
+link stays and a question offers `keep_link`, or a different piece (new,
+named, or not mine) whose resolution carries `unlink_possession_id`. A link
+a person made (no sighting) is left.
+
+**Duplicate check** (`POST /wearables/check-duplicates`). Live wearables
+with a cover are grouped by kind and sub-type. Both readers see each group's
+crops, labeled, and list clusters of one physical piece. A group of more
+than 20 is cut into chunks of 10 and every two chunks are shown together,
+so every pair is seen side by side at most 20 pictures a call (31 pieces:
+6 calls a reader). A pair both readers cluster in every call that showed
+both is merged into the one with more photos, then the older; pairs join a
+set only when every pair across the sets agreed. A pair only one clusters
+is a question with both pieces, choices `merge_possessions` and
+`keep_apart`; the question's text names both `/possessions/{id}/image`.
+
+**Outfit consolidation** (`POST /outfits/consolidate`). First, outfits
+holding exactly the same pieces are combined without asking (into the one
+worn on more days, then the older). Then each pair of live outfits worn on
+a common day, or whose pieces overlap by half or more (shared over all), is
+shown to both readers: up to 3 selfies of each and the covers of the pieces
+only one holds. Each says whether it is the same outfit and maps each of
+outfit A's own pieces to one of B's own, `none` (B's photos show the place
+and it is not there) or `not_visible`. Only when both say the same outfit
+and map every piece alike, none `none`, one to one and kind to kind, are
+the mapped pieces merged and the outfits combined, in one transaction. Both
+say different: nothing. Anything else is a question listing what differs,
+choices `combine_outfits` (with the piece merges both agreed on) and
+`keep_outfits_apart`. Pairs are compared again after any combine.
+
+An answer in words to an audit question goes to the first reader, which
+picks one of its choices; words that fit none are a **400**.

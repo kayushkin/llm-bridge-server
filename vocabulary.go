@@ -66,8 +66,15 @@ var PhotoReviewReadings = []string{"inventory", "outfit"}
 var PhotoReviewStatuses = []string{"queued", "reading", "reconciling", "waiting_for_owner", "done", "failed"}
 var SightingAgreements = []string{"both_agree", "readers_differ", "one_reader_only", "single_reader"}
 var SightingStatuses = []string{"proposed", "accepted", "rejected", "same_as_other_sighting"}
-var ResolutionActions = []string{"accept", "same_as", "same_as_sighting", "reject", "keep", "amend"}
+
+// keep_link, merge_possessions, keep_apart, combine_outfits and
+// keep_outfits_apart answer the wearable audit's questions (auditActions).
+var ResolutionActions = []string{"accept", "same_as", "same_as_sighting", "reject", "keep", "amend",
+	"keep_link", "merge_possessions", "keep_apart", "combine_outfits", "keep_outfits_apart"}
 var QuestionPurposes = []string{"decision", "detail"}
+
+// What raised a question other than the photo's own reading.
+var QuestionAskers = []string{"link_check", "duplicate_check", "outfit_consolidation", "picture_match"}
 
 // Vocabulary is GET /vocabulary.
 func Vocabulary() map[string][]string {
@@ -117,6 +124,7 @@ func Vocabulary() map[string][]string {
 		"sighting_agreements":        SightingAgreements,
 		"sighting_statuses":          SightingStatuses,
 		"question_purposes":          QuestionPurposes,
+		"question_askers":            QuestionAskers,
 		"resolution_actions":         ResolutionActions,
 	}
 }

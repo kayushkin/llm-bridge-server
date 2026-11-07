@@ -37,7 +37,8 @@ type Outfit struct {
 	DeletedAt        int64    `json:"deleted_at"`
 	PossessionIDs    []string `json:"possession_ids"`
 	WornOn           []string `json:"worn_on"`
-	PhotoIDs         []string `json:"photo_ids"` // photo-store photos it was read from, oldest first
+	PhotoIDs         []string `json:"photo_ids"`      // photo-store photos it was read from, oldest first
+	MergedIntoID     *string  `json:"merged_into_id"` // the outfit it was combined into; set only on a deleted one
 }
 
 // checkOutfitPossessions holds an outfit to live possessions of a wearable
@@ -215,8 +216,12 @@ func (s *Store) GetOutfit(id string, includeDeleted bool) (Outfit, error) {
 
 func outfitByID(q querier, id string, includeDeleted bool) (Outfit, error) {
 	var outfit Outfit
-	err := q.QueryRow(`SELECT id, name, occasion, weather, status, reasoning, preview_image_path, created_by, created_at, updated_at, deleted_at FROM outfits WHERE id = ?`, id).Scan(
-		&outfit.ID, &outfit.Name, &outfit.Occasion, &outfit.Weather, &outfit.Status, &outfit.Reasoning, &outfit.PreviewImagePath, &outfit.CreatedBy, &outfit.CreatedAt, &outfit.UpdatedAt, &outfit.DeletedAt)
+	var mergedInto sql.NullString
+	err := q.QueryRow(`SELECT id, name, occasion, weather, status, reasoning, preview_image_path, created_by, created_at, updated_at, deleted_at, merged_into_id FROM outfits WHERE id = ?`, id).Scan(
+		&outfit.ID, &outfit.Name, &outfit.Occasion, &outfit.Weather, &outfit.Status, &outfit.Reasoning, &outfit.PreviewImagePath, &outfit.CreatedBy, &outfit.CreatedAt, &outfit.UpdatedAt, &outfit.DeletedAt, &mergedInto)
+	if mergedInto.Valid {
+		outfit.MergedIntoID = &mergedInto.String
+	}
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && outfit.DeletedAt != 0 && !includeDeleted) {
 		return Outfit{}, fmt.Errorf("%w: no outfit %s", ErrNotFound, id)
 	}

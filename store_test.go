@@ -191,15 +191,26 @@ func TestAProposalKeepsOnlyFieldsThatFitAndSaysWhatItDropped(t *testing.T) {
 type scriptedModels struct {
 	mutex   sync.Mutex
 	answers map[string]any // "<role> 1", "<role> 2", "<role> interpret"
+	// respond, when set, answers first: by role, step, the prompt and how
+	// many pictures came with it; false falls through to answers.
+	respond func(role, step, prompt string, pictures int) (any, bool)
 	prompts []string
+	calls   map[string]int // "<role> <step>" → how many times asked
 }
 
 func (models *scriptedModels) Ask(ctx context.Context, role, systemPrompt, prompt string, schema json.RawMessage, images []msg.OneShotImage, maxTokens int) (ModelAnswer, error) {
-	models.mutex.Lock()
-	models.prompts = append(models.prompts, prompt)
-	models.mutex.Unlock()
 	step := "1"
 	switch {
+	case strings.Contains(prompt, "inventory says show this same piece"):
+		step = "links"
+	case strings.Contains(prompt, "one physical piece recorded twice"):
+		step = "duplicates"
+	case strings.Contains(prompt, "may be one outfit recorded twice"):
+		step = "outfits"
+	case strings.Contains(prompt, "a piece the owner has on in a new photo"):
+		step = "match"
+	case strings.Contains(prompt, "Which choice do they mean?"):
+		step = "choice"
 	case strings.Contains(prompt, "round two"):
 		step = "2"
 	case strings.Contains(prompt, "answered in their own words"):
@@ -210,6 +221,19 @@ func (models *scriptedModels) Ask(ctx context.Context, role, systemPrompt, promp
 		step = "classify"
 	case strings.Contains(prompt, "Say for each whether it is about identity"):
 		step = "sort"
+	}
+	models.mutex.Lock()
+	models.prompts = append(models.prompts, prompt)
+	if models.calls == nil {
+		models.calls = map[string]int{}
+	}
+	models.calls[role+" "+step]++
+	models.mutex.Unlock()
+	if models.respond != nil {
+		if answer, handled := models.respond(role, step, prompt, len(images)); handled {
+			encoded, _ := json.Marshal(answer)
+			return ModelAnswer{Model: role + "-model", Parsed: encoded, InputTokens: 1000, OutputTokens: 100, CostUSD: 0.01}, nil
+		}
 	}
 	answer, known := models.answers[role+" "+step]
 	if !known {
@@ -607,7 +631,7 @@ func TestAMergeMovesPhotosKindAndLinksOntoTheKeptPossession(t *testing.T) {
 		t.Fatal(err)
 	}
 	keptID, duplicateID := kept["id"].(string), duplicate["id"].(string)
-	merged, err := store.MergePossession(ctx, duplicateID, keptID, "principal_000001")
+	merged, err := store.MergePossession(ctx, duplicateID, keptID, "principal_000001", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -621,11 +645,11 @@ func TestAMergeMovesPhotosKindAndLinksOntoTheKeptPossession(t *testing.T) {
 	if gone["merged_into_id"] != keptID {
 		t.Fatalf("the duplicate should say where it went: %v", gone["merged_into_id"])
 	}
-	if _, err := store.MergePossession(ctx, keptID, keptID, "principal_000001"); !errors.Is(err, ErrInvalid) {
+	if _, err := store.MergePossession(ctx, keptID, keptID, "principal_000001", ""); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("merging into itself = %v", err)
 	}
 	laptop, _ := store.CreatePossession(ctx, fields(t, `{"name":"laptop","computer":{"form_factor":"laptop"}}`), "principal_000001")
-	if _, err := store.MergePossession(ctx, laptop["id"].(string), keptID, "principal_000001"); !errors.Is(err, ErrConflict) {
+	if _, err := store.MergePossession(ctx, laptop["id"].(string), keptID, "principal_000001", ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("merging a computer into an audio device = %v, want a conflict", err)
 	}
 }
@@ -769,6 +793,7 @@ func TestAnOutfitReadingRecordsTheOutfitAndFindsItAgain(t *testing.T) {
 	scripted.answers["first 1"] = finalReading{Items: []finalItem{
 		{readerItem: hoodieItem, ExistingID: hoodieID}, {readerItem: watchItem, ExistingID: watchID}, {readerItem: shoesItem, ExistingID: shoesID},
 	}}
+	scripted.respond = matchByLabel(map[string]string{"hoodie": hoodieID, "watch": watchID, "shoes": shoesID})
 	second, _, _ := store.QueuePhotoReview(ctx, "photo_000002", "principal_000001", "outfit", "person_000001")
 	if err := reviewer.Review(ctx, second.ID); err != nil {
 		t.Fatal(err)
@@ -782,6 +807,22 @@ func TestAnOutfitReadingRecordsTheOutfitAndFindsItAgain(t *testing.T) {
 	}
 	if outfits, _ := store.ListOutfits("", "", 0, 0); len(outfits) != 1 {
 		t.Fatalf("outfits = %d, want one", len(outfits))
+	}
+}
+
+// matchByLabel answers the picture match with the id given for the piece's
+// label, both readers alike.
+func matchByLabel(ids map[string]string) func(role, step, prompt string, pictures int) (any, bool) {
+	return func(role, step, prompt string, pictures int) (any, bool) {
+		if step != "match" {
+			return nil, false
+		}
+		for label, id := range ids {
+			if strings.Contains(prompt, "in a new photo: "+label+" (") {
+				return map[string]string{"match": id, "reason": "same marks"}, true
+			}
+		}
+		return map[string]string{"match": "none", "reason": "not shown"}, true
 	}
 }
 

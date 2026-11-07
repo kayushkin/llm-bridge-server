@@ -476,6 +476,45 @@ CREATE INDEX IF NOT EXISTS idx_owner_questions_open ON owner_questions(answered_
 CREATE INDEX IF NOT EXISTS idx_owner_questions_sighting ON owner_questions(sighting_id);
 
 -- ---------------------------------------------------------------------------
+-- Merges, kept so each can be undone. moved says exactly which rows the
+-- merge inserted, re-pointed or filled; undo puts each back and brings the
+-- duplicate back to life. A merge is undone only in reverse order: a later
+-- merge that touched the same records must be undone first.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS possession_merges (
+    id                    TEXT PRIMARY KEY,          -- possession_merge_000001
+    seq                   INTEGER NOT NULL UNIQUE,
+    duplicate_possession_id TEXT NOT NULL REFERENCES possessions(id),
+    kept_possession_id    TEXT NOT NULL REFERENCES possessions(id),
+    merged_by             TEXT NOT NULL,             -- principal_…, or the audit that merged it
+    reason                TEXT NOT NULL DEFAULT '',  -- why: "both readers saw the same piece"
+    moved                 TEXT NOT NULL,             -- JSON: possessionMergeMoves in merge.go
+    merged_at             INTEGER NOT NULL,
+    merge_order           INTEGER NOT NULL,          -- one count across possession_merges and outfit_merges: which came first
+    undone_by             TEXT NOT NULL DEFAULT '',
+    undone_at             INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_possession_merges_duplicate ON possession_merges(duplicate_possession_id);
+CREATE INDEX IF NOT EXISTS idx_possession_merges_kept ON possession_merges(kept_possession_id);
+
+CREATE TABLE IF NOT EXISTS outfit_merges (
+    id                    TEXT PRIMARY KEY,          -- outfit_merge_000001
+    seq                   INTEGER NOT NULL UNIQUE,
+    duplicate_outfit_id   TEXT NOT NULL REFERENCES outfits(id),
+    kept_outfit_id        TEXT NOT NULL REFERENCES outfits(id),
+    merged_by             TEXT NOT NULL,
+    reason                TEXT NOT NULL DEFAULT '',
+    moved                 TEXT NOT NULL,             -- JSON: outfitMergeMoves in outfit_merge.go
+    merged_at             INTEGER NOT NULL,
+    merge_order           INTEGER NOT NULL,          -- one count across possession_merges and outfit_merges: which came first
+    undone_by             TEXT NOT NULL DEFAULT '',
+    undone_at             INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_outfit_merges_duplicate ON outfit_merges(duplicate_outfit_id);
+CREATE INDEX IF NOT EXISTS idx_outfit_merges_kept ON outfit_merges(kept_outfit_id);
+
+-- ---------------------------------------------------------------------------
 -- History.
 -- ---------------------------------------------------------------------------
 

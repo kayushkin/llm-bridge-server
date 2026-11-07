@@ -110,6 +110,12 @@ var addedColumns = []struct{ table, column, definition string }{
 	{"photo_reviews", "wearer_person_id", "TEXT NOT NULL DEFAULT ''"},
 	{"photo_reviews", "outfit_id", "TEXT REFERENCES outfits(id)"},
 	{"photo_reviews", "worn_on", "TEXT NOT NULL DEFAULT ''"},
+	// The outfit a combined outfit went into; NULL for one never combined.
+	// A combined outfit is also deleted.
+	{"outfits", "merged_into_id", "TEXT REFERENCES outfits(id)"},
+	// What raised a question after its photo was read: '' for the reading
+	// itself, otherwise one of QuestionAskers.
+	{"owner_questions", "asked_by", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func addColumns(db *sql.DB) error {

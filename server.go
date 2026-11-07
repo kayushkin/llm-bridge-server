@@ -58,14 +58,76 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /possessions/{id}/merge", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Into  string `json:"into"`
+			Into   string `json:"into"`
+			Actor  string `json:"actor"`
+			Reason string `json:"reason"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		kept, err := server.Store.MergePossession(r.Context(), r.PathValue("id"), body.Into, body.Actor, body.Reason)
+		respond(w, http.StatusOK, kept, err)
+	})
+	mux.HandleFunc("GET /possession-merges", func(w http.ResponseWriter, r *http.Request) {
+		limit, offset, err := paging(r)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		merges, err := server.Store.ListPossessionMerges(r.URL.Query().Get("possession_id"), limit, offset)
+		respond(w, http.StatusOK, merges, err)
+	})
+	mux.HandleFunc("GET /possession-merges/{id}", func(w http.ResponseWriter, r *http.Request) {
+		merge, err := server.Store.GetPossessionMerge(r.PathValue("id"))
+		respond(w, http.StatusOK, merge, err)
+	})
+	mux.HandleFunc("POST /possession-merges/{id}/undo", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
 			Actor string `json:"actor"`
 		}
 		if !decodeBody(w, r, &body) {
 			return
 		}
-		kept, err := server.Store.MergePossession(r.Context(), r.PathValue("id"), body.Into, body.Actor)
-		respond(w, http.StatusOK, kept, err)
+		merge, err := server.Store.UndoPossessionMerge(r.Context(), r.PathValue("id"), body.Actor)
+		respond(w, http.StatusOK, merge, err)
+	})
+	mux.HandleFunc("POST /wearables/check-links", server.auditPass(server.Reviewer.CheckWearableLinks))
+	mux.HandleFunc("POST /wearables/check-duplicates", server.auditPass(server.Reviewer.CheckWearableDuplicates))
+	mux.HandleFunc("POST /outfits/consolidate", server.auditPass(server.Reviewer.ConsolidateOutfits))
+	mux.HandleFunc("POST /outfits/{id}/combine", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Into   string `json:"into"`
+			Actor  string `json:"actor"`
+			Reason string `json:"reason"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		merge, err := server.Store.CombineOutfits(r.Context(), r.PathValue("id"), body.Into, body.Actor, body.Reason)
+		respond(w, http.StatusOK, merge, err)
+	})
+	mux.HandleFunc("GET /outfit-merges", func(w http.ResponseWriter, r *http.Request) {
+		limit, offset, err := paging(r)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		merges, err := server.Store.ListOutfitMerges(r.URL.Query().Get("outfit_id"), limit, offset)
+		respond(w, http.StatusOK, merges, err)
+	})
+	mux.HandleFunc("GET /outfit-merges/{id}", func(w http.ResponseWriter, r *http.Request) {
+		merge, err := server.Store.GetOutfitMerge(r.PathValue("id"))
+		respond(w, http.StatusOK, merge, err)
+	})
+	mux.HandleFunc("POST /outfit-merges/{id}/undo", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Actor string `json:"actor"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		merge, err := server.Store.UndoOutfitMerge(r.Context(), r.PathValue("id"), body.Actor)
+		respond(w, http.StatusOK, merge, err)
 	})
 	mux.HandleFunc("DELETE /possessions/{id}/photos/{photo_id}", server.unlinkPhoto)
 
@@ -332,6 +394,30 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 			return server.Reviewer.SightingImage(ctx, question.SightingID)
 		})
 	})
+}
+
+// auditPass serves one wearable audit pass. It runs until done; a pass
+// that stops on an error answers the error with what it did before it.
+func (server *Server) auditPass(pass func(ctx context.Context, actor string) (AuditRun, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Actor string `json:"actor"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		run, err := pass(r.Context(), body.Actor)
+		if err != nil && (len(run.Actions) > 0 || run.CostUSD > 0) {
+			status := http.StatusInternalServerError
+			if errors.Is(err, ErrInvalid) {
+				status = http.StatusBadRequest
+			}
+			log.Printf("audit pass stopped: %v", err)
+			writeJSON(w, status, map[string]any{"error": err.Error(), "done_before_the_error": run})
+			return
+		}
+		respond(w, http.StatusOK, run, err)
+	}
 }
 
 func (server *Server) health(w http.ResponseWriter, r *http.Request) {

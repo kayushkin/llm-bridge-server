@@ -111,13 +111,33 @@ type Proposal struct {
 	ExistingSightingID   string                     `json:"existing_sighting_id,omitempty"`
 }
 
-// Resolution is what answering a question does to its sighting.
+// Resolution is what answering a question does to its sighting, or, for
+// the wearable audit's actions (auditActions), to the records it names.
 type Resolution struct {
-	Action       string    `json:"action"` // accept, same_as, same_as_sighting, reject
+	Action       string    `json:"action"` // ResolutionActions
 	Proposal     *Proposal `json:"proposal,omitempty"`
 	PossessionID string    `json:"possession_id,omitempty"`
 	SightingID   string    `json:"sighting_id,omitempty"`
-	Explanation  string    `json:"explanation,omitempty"`
+	// UnlinkPossessionID, with accept, same_as or reject: the sighting is
+	// recorded as this possession and that link is wrong; it is undone
+	// first (photo, sighting, and the piece's place in the reading's
+	// outfit), then the action applies.
+	UnlinkPossessionID string `json:"unlink_possession_id,omitempty"`
+	// merge_possessions: PossessionID is folded into IntoPossessionID.
+	// keep_apart names the same two and changes nothing.
+	IntoPossessionID string `json:"into_possession_id,omitempty"`
+	// combine_outfits: OutfitID is folded into IntoOutfitID after each of
+	// PieceMerges. keep_outfits_apart names the two and changes nothing.
+	OutfitID     string       `json:"outfit_id,omitempty"`
+	IntoOutfitID string       `json:"into_outfit_id,omitempty"`
+	PieceMerges  []PieceMerge `json:"piece_merges,omitempty"`
+	Explanation  string       `json:"explanation,omitempty"`
+}
+
+// PieceMerge is one possession to fold into another.
+type PieceMerge struct {
+	DuplicatePossessionID string `json:"duplicate_possession_id"`
+	KeptPossessionID      string `json:"kept_possession_id"`
 }
 
 // Choice is one suggested answer to a question.
@@ -515,7 +535,8 @@ type OwnerQuestion struct {
 	ID           string          `json:"id"`
 	SightingID   string          `json:"sighting_id"`
 	PhotoID      string          `json:"photo_id"`
-	Purpose      string          `json:"purpose"` // decision: the sighting waits on it; detail: it adds to what is recorded
+	Purpose      string          `json:"purpose"`  // decision: the sighting waits on it; detail: it adds to what is recorded
+	AskedBy      string          `json:"asked_by"` // '' when the photo's reading asked it, otherwise one of QuestionAskers
 	Question     string          `json:"question"`
 	Choices      []Choice        `json:"choices"`
 	AnswerChoice *int            `json:"answer_choice"`
@@ -795,28 +816,9 @@ type readerResult struct {
 	err    error
 }
 
-// askBoth asks the two readers at once.
+// askBoth asks the two readers at once about one photo.
 func (reviewer *Reviewer) askBoth(ctx context.Context, prompts [2]string, schema json.RawMessage, image msg.OneShotImage) ([2]ModelAnswer, error) {
-	roles := [2]string{reviewer.FirstReaderRole, reviewer.SecondReaderRole}
-	results := [2]readerResult{}
-	var group sync.WaitGroup
-	for index := range roles {
-		group.Add(1)
-		go func(index int) {
-			defer group.Done()
-			answer, err := reviewer.Models.Ask(ctx, roles[index], readerSystemPrompt(), prompts[index], schema, []msg.OneShotImage{image}, 16000)
-			results[index] = readerResult{answer, err}
-		}(index)
-	}
-	group.Wait()
-	answers := [2]ModelAnswer{}
-	for index, result := range results {
-		if result.err != nil {
-			return answers, fmt.Errorf("reader %s: %w", roles[index], result.err)
-		}
-		answers[index] = result.answer
-	}
-	return answers, nil
+	return reviewer.askBothPrompts(ctx, readerSystemPrompt(), prompts, schema, []msg.OneShotImage{image}, 16000)
 }
 
 // Review runs one queued review to its end: done, or waiting for the owner.
@@ -1163,13 +1165,18 @@ func (s *Store) recordReconciliation(ctx context.Context, reviewID, photoID stri
 }
 
 func insertQuestion(transaction *sql.Tx, sightingID, question string, choices []Choice, purpose string, now int64) error {
+	_, err := insertQuestionAnsweringID(transaction, sightingID, question, choices, purpose, now)
+	return err
+}
+
+func insertQuestionAnsweringID(transaction *sql.Tx, sightingID, question string, choices []Choice, purpose string, now int64) (string, error) {
 	questionID, sequence, err := nextID(transaction, "owner_questions", "possession_question")
 	if err != nil {
-		return err
+		return "", err
 	}
 	encoded, _ := json.Marshal(choices)
 	_, err = transaction.Exec(`INSERT INTO owner_questions (id, seq, sighting_id, question, choices, purpose, asked_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, questionID, sequence, sightingID, question, string(encoded), purpose, now)
-	return err
+	return questionID, err
 }
 
 // applyResolution settles a sighting, then every later sighting that waits
@@ -1178,6 +1185,16 @@ func (s *Store) applyResolution(ctx context.Context, transaction *sql.Tx, sighti
 	sighting, err := sightingByID(transaction, sightingID)
 	if err != nil {
 		return err
+	}
+	if resolution.UnlinkPossessionID != "" {
+		if resolution.Action != "accept" && resolution.Action != "same_as" && resolution.Action != "reject" {
+			return fmt.Errorf("%w: unlink_possession_id goes with accept, same_as or reject, not %q", ErrInvalid, resolution.Action)
+		}
+		if err := s.unlinkSighting(transaction, sighting, resolution.UnlinkPossessionID, decidedBy, now); err != nil {
+			return err
+		}
+		resolution.UnlinkPossessionID = ""
+		return s.applyResolution(ctx, transaction, sightingID, resolution, decidedBy, creator, now)
 	}
 	if sighting.Status != "proposed" && sighting.Status != "same_as_other_sighting" {
 		return fmt.Errorf("%w: %s is already %s", ErrConflict, sightingID, sighting.Status)
@@ -1308,9 +1325,9 @@ func questionByID(q querier, id string) (OwnerQuestion, error) {
 	var question OwnerQuestion
 	var choices, resolution string
 	var answerChoice sql.NullInt64
-	err := q.QueryRow(`SELECT owner_questions.id, sighting_id, photo_reviews.photo_id, owner_questions.purpose, question, choices, answer_choice, answer_text, resolution, answered_by, asked_at, answered_at
+	err := q.QueryRow(`SELECT owner_questions.id, sighting_id, photo_reviews.photo_id, owner_questions.purpose, owner_questions.asked_by, question, choices, answer_choice, answer_text, resolution, answered_by, asked_at, answered_at
 		FROM owner_questions JOIN sightings ON sightings.id = owner_questions.sighting_id JOIN photo_reviews ON photo_reviews.id = sightings.photo_review_id WHERE owner_questions.id = ?`, id).Scan(
-		&question.ID, &question.SightingID, &question.PhotoID, &question.Purpose, &question.Question, &choices, &answerChoice, &question.AnswerText, &resolution, &question.AnsweredBy, &question.AskedAt, &question.AnsweredAt)
+		&question.ID, &question.SightingID, &question.PhotoID, &question.Purpose, &question.AskedBy, &question.Question, &choices, &answerChoice, &question.AnswerText, &resolution, &question.AnsweredBy, &question.AskedAt, &question.AnsweredAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OwnerQuestion{}, fmt.Errorf("%w: no question %s", ErrNotFound, id)
 	}
@@ -1404,6 +1421,8 @@ func (reviewer *Reviewer) AnswerQuestion(ctx context.Context, questionID string,
 			return OwnerQuestion{}, fmt.Errorf("%w: choice is 0 to %d", ErrInvalid, len(question.Choices)-1)
 		}
 		resolution = question.Choices[*answer.Choice].Resolution
+	case question.isAudit():
+		resolution, err = reviewer.interpretChoice(ctx, question, answer.Text)
 	case question.Purpose == "detail":
 		resolution, err = reviewer.interpretDetail(ctx, question, answer.Text)
 	default:
@@ -1420,7 +1439,11 @@ func (reviewer *Reviewer) AnswerQuestion(ctx context.Context, questionID string,
 	}
 	defer transaction.Rollback()
 	now := store.unixNow()
-	if question.Purpose == "detail" {
+	if contains(auditActions, resolution.Action) {
+		if err := store.applyAuditResolution(transaction, question, resolution, answer.AnsweredBy, now); err != nil {
+			return OwnerQuestion{}, err
+		}
+	} else if question.Purpose == "detail" {
 		if err := store.applyDetail(ctx, transaction, question.SightingID, resolution, answer.AnsweredBy); err != nil {
 			return OwnerQuestion{}, err
 		}

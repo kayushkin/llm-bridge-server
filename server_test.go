@@ -23,18 +23,22 @@ func TestTheRoutesRegisterAndAnswer(t *testing.T) {
 		t.Fatalf("POST /possessions = %d %s", created.Code, created.Body)
 	}
 	for path, want := range map[string]int{
-		"/harness-machines/m_test_machine/computer": 200,
-		"/computers/computer_000001":                200,
-		"/computers":                                200,
-		"/garments":                                 200,
-		"/possessions/possession_000001/image":      200,
-		"/computers/computer_000001/image":          200,
-		"/possessions/possession_999999":            404,
-		"/possessions?kind=lamp":                    400,
-		"/vocabulary":                               200,
-		"/kinds":                                    200,
-		"/health":                                   200,
-		"/owner-questions":                          200,
+		"/harness-machines/m_test_machine/computer":  200,
+		"/computers/computer_000001":                 200,
+		"/computers":                                 200,
+		"/garments":                                  200,
+		"/possessions/possession_000001/image":       200,
+		"/computers/computer_000001/image":           200,
+		"/possessions/possession_999999":             404,
+		"/possessions?kind=lamp":                     400,
+		"/vocabulary":                                200,
+		"/kinds":                                     200,
+		"/health":                                    200,
+		"/owner-questions":                           200,
+		"/possession-merges":                         200,
+		"/possession-merges/possession_merge_000001": 404,
+		"/outfit-merges":                             200,
+		"/outfit-merges/outfit_merge_000001":         404,
 	} {
 		if got := call("GET", path, ""); got.Code != want {
 			t.Errorf("GET %s = %d %s, want %d", path, got.Code, got.Body, want)
@@ -46,6 +50,17 @@ func TestTheRoutesRegisterAndAnswer(t *testing.T) {
 	}
 	if got := call("PATCH", "/possessions/possession_000001", `{"actor":"principal_000001","nickname":"x"}`); got.Code != 400 {
 		t.Errorf("PATCH with an unknown field = %d, want 400", got.Code)
+	}
+	for _, path := range []string{"/wearables/check-links", "/wearables/check-duplicates", "/outfits/consolidate"} {
+		if got := call("POST", path, `{}`); got.Code != 400 {
+			t.Errorf("POST %s with no actor = %d %s, want 400", path, got.Code, got.Body)
+		}
+	}
+	if got := call("POST", "/possession-merges/possession_merge_000001/undo", `{"actor":"principal_000001"}`); got.Code != 404 {
+		t.Errorf("undo of no merge = %d, want 404", got.Code)
+	}
+	if got := call("POST", "/outfit-merges/outfit_merge_000001/undo", `{"actor":"principal_000001"}`); got.Code != 404 {
+		t.Errorf("undo of no outfit merge = %d, want 404", got.Code)
 	}
 	var health struct {
 		Counts map[string]int `json:"counts"`
