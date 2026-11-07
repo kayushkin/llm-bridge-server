@@ -351,3 +351,42 @@ func TestALookWithNoTopOnIsNeverAnOutfit(t *testing.T) {
 		t.Fatalf("after the undo the outfit is whole: %+v", outfit)
 	}
 }
+
+func TestALookShowingOnlyItsTopJoinsThatDaysOutfitOnly(t *testing.T) {
+	store := openAuditStore(t)
+	ctx := context.Background()
+	garment := func(name, category, garmentType string) string {
+		made, err := store.CreatePossession(ctx, fields(t, `{"name":"`+name+`","garment":{"category":"`+category+`","garment_type":"`+garmentType+`"}}`), "principal_000001")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return made["id"].(string)
+	}
+	shirt, jeans := garment("white shirt", "top", "t_shirt"), garment("jeans", "bottom", "jeans")
+	// The top-only look of the day is read first; it still finds the
+	// day's full look.
+	topOnly := addLook(t, store, "2026-11-01", map[string]string{shirt: "garment:top"})
+	full := addLook(t, store, "2026-11-01", map[string]string{shirt: "garment:top", jeans: "garment:bottom"})
+	otherDay := addLook(t, store, "2026-11-02", map[string]string{shirt: "garment:top"})
+
+	rebuilt, err := store.RebuildOutfitsFromLooks(ctx, "principal_000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outfitOf := func(lookID string) string {
+		look, _ := store.GetLook(lookID)
+		if look.OutfitID == nil {
+			t.Fatalf("%s has no outfit", lookID)
+		}
+		return *look.OutfitID
+	}
+	if outfitOf(topOnly) != outfitOf(full) {
+		t.Fatalf("a top-only look joins the outfit worn that day with the same top: %+v", rebuilt.Counts)
+	}
+	if outfitOf(otherDay) == outfitOf(full) {
+		t.Fatalf("on another day one matching top is not enough")
+	}
+	if rebuilt.Counts["outfits_made"] != 2 || rebuilt.Counts["looks_joined"] != 1 {
+		t.Fatalf("rebuilt = %+v", rebuilt.Counts)
+	}
+}

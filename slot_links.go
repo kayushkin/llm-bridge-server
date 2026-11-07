@@ -259,21 +259,21 @@ func (s *Store) placeLook(transaction *sql.Tx, lookID, actor string, now int64) 
 		return err
 	}
 	current := *look.OutfitID
-	othersIdentity, others, err := outfitLooksIdentity(transaction, current, lookID)
+	others, err := outfitLooks(transaction, current, lookID)
 	if err != nil {
 		return err
 	}
 	if err := saveRevision(transaction, "outfits", "id", current, actor, now); err != nil {
 		return err
 	}
-	if others == 0 {
+	if others.looks == 0 {
 		return replaceOutfitPossessions(transaction, current, pieces)
 	}
 	identity, err := looksIdentity(transaction, lookID)
 	if err != nil {
 		return err
 	}
-	if _, same := identityMatch(identity, othersIdentity); same {
+	if _, same := identityMatch(identity, others.identity, contains(others.days, look.WornOn)); same {
 		return refreshOutfitPieces(transaction, current)
 	}
 	outfitIDs, err := stringColumn(transaction, `SELECT DISTINCT outfit_looks.outfit_id FROM outfit_looks JOIN outfits ON outfits.id = outfit_looks.outfit_id
@@ -283,14 +283,14 @@ func (s *Store) placeLook(transaction *sql.Tx, lookID, actor string, now int64) 
 	}
 	candidates := []*identityCandidate{}
 	for _, outfitID := range outfitIDs {
-		candidateIdentity, looks, err := outfitLooksIdentity(transaction, outfitID, "")
+		candidate, err := outfitLooks(transaction, outfitID, "")
 		if err != nil {
 			return err
 		}
-		candidates = append(candidates, &identityCandidate{outfitID: outfitID, identity: candidateIdentity, looks: looks})
+		candidates = append(candidates, candidate)
 	}
 	target := ""
-	if joined := bestIdentityMatch(identity, candidates); joined != nil {
+	if joined := bestIdentityMatch(identity, look.WornOn, candidates); joined != nil {
 		target = joined.outfitID
 		if err := saveRevision(transaction, "outfits", "id", target, actor, now); err != nil {
 			return err

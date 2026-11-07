@@ -49,8 +49,11 @@ func (identity outfitIdentity) add(other outfitIdentity) {
 
 // identityMatch says whether a look with these main pieces is the outfit
 // with those, and how many main pieces they share. In every main group
-// both show, one's pieces must all be among the other's.
-func identityMatch(look, outfit outfitIdentity) (shared int, same bool) {
+// both show, one's pieces must all be among the other's, and at least two
+// main pieces must match; a look that shows only one main piece also
+// matches on that one when the outfit was worn the same day (sameDay: a
+// look of that day is already in it). Across days one piece is not enough.
+func identityMatch(look, outfit outfitIdentity, sameDay bool) (shared int, same bool) {
 	for _, group := range outfitIdentityGroups {
 		lookPieces, outfitPieces := look[group], outfit[group]
 		if len(lookPieces) == 0 || len(outfitPieces) == 0 {
@@ -67,7 +70,18 @@ func identityMatch(look, outfit outfitIdentity) (shared int, same bool) {
 		}
 		shared += inBoth
 	}
-	return shared, shared >= leastMatchingIdentityPieces
+	if shared >= leastMatchingIdentityPieces {
+		return shared, true
+	}
+	return shared, sameDay && shared == 1 && look.pieceCount() == 1
+}
+
+func (identity outfitIdentity) pieceCount() int {
+	count := 0
+	for _, pieces := range identity {
+		count += len(pieces)
+	}
+	return count
 }
 
 // looksIdentity answers the main pieces the slots of these looks are
@@ -99,15 +113,22 @@ func looksIdentity(q querier, lookIDs ...string) (outfitIdentity, error) {
 	return identity, nil
 }
 
-// outfitLooksIdentity answers the main pieces of every look in an outfit,
-// leaving one look out ("" for none), and how many looks that is.
-func outfitLooksIdentity(q querier, outfitID, leaveOut string) (outfitIdentity, int, error) {
+// outfitLooks answers an outfit as a look may join it: the main pieces,
+// count and days of its looks, leaving one look out ("" for none).
+func outfitLooks(q querier, outfitID, leaveOut string) (*identityCandidate, error) {
 	lookIDs, err := stringColumn(q, `SELECT id FROM outfit_looks WHERE outfit_id = ? AND id != ? ORDER BY seq`, outfitID, leaveOut)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
+	}
+	days, err := stringColumn(q, `SELECT DISTINCT worn_on FROM outfit_looks WHERE outfit_id = ? AND id != ? ORDER BY worn_on`, outfitID, leaveOut)
+	if err != nil {
+		return nil, err
 	}
 	identity, err := looksIdentity(q, lookIDs...)
-	return identity, len(lookIDs), err
+	if err != nil {
+		return nil, err
+	}
+	return &identityCandidate{outfitID: outfitID, identity: identity, looks: len(lookIDs), days: days}, nil
 }
 
 // outfitPiecesFromLooks answers the union of the pieces an outfit's looks
@@ -184,16 +205,17 @@ type identityCandidate struct {
 	outfitID string
 	identity outfitIdentity
 	looks    int
+	days     []string // the days of its looks
 }
 
-// bestIdentityMatch answers the candidate a look with these main pieces
-// is: the one sharing the most main pieces, then the one with more looks,
-// then the earlier; nil when none is the same outfit.
-func bestIdentityMatch(identity outfitIdentity, candidates []*identityCandidate) *identityCandidate {
+// bestIdentityMatch answers the candidate a look with these main pieces,
+// worn on this day, is: the one sharing the most main pieces, then the one
+// with more looks, then the earlier; nil when none is the same outfit.
+func bestIdentityMatch(identity outfitIdentity, day string, candidates []*identityCandidate) *identityCandidate {
 	var best *identityCandidate
 	bestShared := 0
 	for _, candidate := range candidates {
-		shared, same := identityMatch(identity, candidate.identity)
+		shared, same := identityMatch(identity, candidate.identity, contains(candidate.days, day))
 		if !same {
 			continue
 		}
@@ -379,7 +401,11 @@ func (s *Store) RebuildOutfitsFromLooks(ctx context.Context, actor string) (Audi
 		run.Counts["looks_not_outfits"]++
 		run.Actions = append(run.Actions, AuditAction{Action: "not_an_outfit", Records: []string{lookID, left}, Reason: reason})
 	}
-	lookIDs, err := stringColumn(transaction, `SELECT id FROM outfit_looks WHERE outfit_id IS NULL ORDER BY worn_on, seq`)
+	// Within a day, the looks showing more main pieces go first, so a look
+	// showing only one finds the outfit of that day it belongs to.
+	lookIDs, err := stringColumn(transaction, `SELECT id FROM outfit_looks WHERE outfit_id IS NULL ORDER BY worn_on,
+		(SELECT COUNT(DISTINCT possession_id) FROM outfit_slots WHERE look_id = outfit_looks.id AND possession_id IS NOT NULL
+			AND group_key IN (`+placeholders(len(outfitIdentityGroups))+`)) DESC, seq`, stringsToAny(outfitIdentityGroups)...)
 	if err != nil {
 		return run, err
 	}
@@ -391,11 +417,11 @@ func (s *Store) RebuildOutfitsFromLooks(ctx context.Context, actor string) (Audi
 		return run, err
 	}
 	for _, outfitID := range earlier {
-		identity, looks, err := outfitLooksIdentity(transaction, outfitID, "")
+		candidate, err := outfitLooks(transaction, outfitID, "")
 		if err != nil {
 			return run, err
 		}
-		candidates = append(candidates, &identityCandidate{outfitID: outfitID, identity: identity, looks: looks})
+		candidates = append(candidates, candidate)
 	}
 	for _, lookID := range lookIDs {
 		run.Looked++
@@ -434,7 +460,7 @@ func (s *Store) RebuildOutfitsFromLooks(ctx context.Context, actor string) (Audi
 			return run, err
 		}
 		var target string
-		if joined := bestIdentityMatch(identity, candidates); joined != nil {
+		if joined := bestIdentityMatch(identity, look.WornOn, candidates); joined != nil {
 			target = joined.outfitID
 			added, err := addOutfitPieces(transaction, target, pieces)
 			if err != nil {
@@ -450,6 +476,9 @@ func (s *Store) RebuildOutfitsFromLooks(ctx context.Context, actor string) (Audi
 			}
 			joined.identity.add(identity)
 			joined.looks++
+			if !contains(joined.days, look.WornOn) {
+				joined.days = append(joined.days, look.WornOn)
+			}
 		} else {
 			var outfitSequence int64
 			if target, outfitSequence, err = nextID(transaction, "outfits", "outfit"); err != nil {
@@ -464,7 +493,7 @@ func (s *Store) RebuildOutfitsFromLooks(ctx context.Context, actor string) (Audi
 			}
 			moves.OutfitsMade = append(moves.OutfitsMade, target)
 			run.Counts["outfits_made"]++
-			made := &identityCandidate{outfitID: target, identity: outfitIdentity{}, looks: 1}
+			made := &identityCandidate{outfitID: target, identity: outfitIdentity{}, looks: 1, days: []string{look.WornOn}}
 			made.identity.add(identity)
 			candidates = append(candidates, made)
 		}
@@ -667,4 +696,12 @@ func (s *Store) UndoOutfitRebuild(ctx context.Context, rebuildID, actor string) 
 		return OutfitRebuild{}, err
 	}
 	return outfitRebuildByID(s.db, rebuildID)
+}
+
+func stringsToAny(values []string) []any {
+	converted := make([]any, len(values))
+	for index, value := range values {
+		converted[index] = value
+	}
+	return converted
 }

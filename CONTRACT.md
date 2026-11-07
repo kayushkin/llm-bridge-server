@@ -491,8 +491,11 @@ headwear, bags, eyewear, footwear and every other group — vary from day to
 day and photo to photo, so they are not part of its identity. A look is an
 outfit when, in each main group both show, one's pieces are all among the
 other's (a group not visible in the look, such as a bottom out of frame,
-does not count against it), and at least two main pieces match. Every look
-without an outfit, in day order, joins the matching outfit — one an earlier
+does not count against it), and at least two main pieces match — or, for a
+look that shows only one main piece, that one, when the outfit was worn the
+same day (a look of that day is already in it); across days one matching
+piece is not enough. Every look without an outfit, in day order and within
+a day those showing more main pieces first, joins the matching outfit — one an earlier
 rebuild made or one this rebuild made — that shares the most main pieces,
 then has more looks, then is older; failing that it makes a new one
 (`created_by` the rebuild). The outfit holds the union of the pieces its
