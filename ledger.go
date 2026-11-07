@@ -27,6 +27,10 @@ type CreditCardDetails struct {
 	PurchaseAPRBasisPoints int    `json:"purchase_apr_basis_points"`
 	AnnualFeeCents         int64  `json:"annual_fee_cents"`
 	Rewards                string `json:"rewards"`
+	// InterestCategoryID and FeeCategoryID name where this card's interest
+	// charges and fees are filed, so a report can find them by id.
+	InterestCategoryID string `json:"interest_category_id"`
+	FeeCategoryID      string `json:"fee_category_id"`
 }
 
 // LoanDetails are the facts only a loan has.
@@ -380,11 +384,24 @@ func (s *Store) CreateAccount(in AccountInput) (Account, error) {
 
 func writeAccountDetails(tx queryer, accountID string, card *CreditCardDetails, loan *LoanDetails, retirement *RetirementDetails) error {
 	if card != nil {
-		if _, err := tx.Exec(`INSERT INTO credit_card_details (account_id, network, credit_limit_cents, statement_day, due_day, purchase_apr_basis_points, annual_fee_cents, rewards)
-			VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET network=excluded.network, credit_limit_cents=excluded.credit_limit_cents,
+		categories := map[string]any{}
+		for field, id := range map[string]string{"credit_card.interest_category_id": card.InterestCategoryID, "credit_card.fee_category_id": card.FeeCategoryID} {
+			if id == "" {
+				categories[field] = nil
+				continue
+			}
+			var kind string
+			if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = ?`, id).Scan(&kind); err != nil || kind != "expense" {
+				return fmt.Errorf("%w: %s %q is not an expense category", ErrInvalid, field, id)
+			}
+			categories[field] = id
+		}
+		if _, err := tx.Exec(`INSERT INTO credit_card_details (account_id, network, credit_limit_cents, statement_day, due_day, purchase_apr_basis_points, annual_fee_cents, rewards, interest_category_id, fee_category_id)
+			VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET network=excluded.network, credit_limit_cents=excluded.credit_limit_cents,
 			statement_day=excluded.statement_day, due_day=excluded.due_day, purchase_apr_basis_points=excluded.purchase_apr_basis_points,
-			annual_fee_cents=excluded.annual_fee_cents, rewards=excluded.rewards`,
-			accountID, card.Network, card.CreditLimitCents, card.StatementDay, card.DueDay, card.PurchaseAPRBasisPoints, card.AnnualFeeCents, card.Rewards); err != nil {
+			annual_fee_cents=excluded.annual_fee_cents, rewards=excluded.rewards, interest_category_id=excluded.interest_category_id, fee_category_id=excluded.fee_category_id`,
+			accountID, card.Network, card.CreditLimitCents, card.StatementDay, card.DueDay, card.PurchaseAPRBasisPoints, card.AnnualFeeCents, card.Rewards,
+			categories["credit_card.interest_category_id"], categories["credit_card.fee_category_id"]); err != nil {
 			return err
 		}
 	}
@@ -569,8 +586,9 @@ func scanAccount(row interface{ Scan(...any) error }) (Account, error) {
 
 func (s *Store) loadAccountExtras(a *Account) error {
 	var card CreditCardDetails
-	err := s.db.QueryRow(`SELECT network, credit_limit_cents, statement_day, due_day, purchase_apr_basis_points, annual_fee_cents, rewards FROM credit_card_details WHERE account_id = ?`, a.ID).
-		Scan(&card.Network, &card.CreditLimitCents, &card.StatementDay, &card.DueDay, &card.PurchaseAPRBasisPoints, &card.AnnualFeeCents, &card.Rewards)
+	err := s.db.QueryRow(`SELECT network, credit_limit_cents, statement_day, due_day, purchase_apr_basis_points, annual_fee_cents, rewards,
+		COALESCE(interest_category_id,''), COALESCE(fee_category_id,'') FROM credit_card_details WHERE account_id = ?`, a.ID).
+		Scan(&card.Network, &card.CreditLimitCents, &card.StatementDay, &card.DueDay, &card.PurchaseAPRBasisPoints, &card.AnnualFeeCents, &card.Rewards, &card.InterestCategoryID, &card.FeeCategoryID)
 	if err == nil {
 		a.CreditCard = &card
 	} else if !errors.Is(err, sql.ErrNoRows) {

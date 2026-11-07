@@ -455,3 +455,16 @@ func TestACategorizedRowCanBecomeATransferToAnAccount(t *testing.T) {
 		t.Fatalf("the move cannot be undone: %v", err)
 	}
 }
+
+func TestACardNamesItsInterestAndFeeCategoriesByID(t *testing.T) {
+	s := openTestStore(t)
+	interest, _ := s.CreateCategory(Category{Name: "Card interest", Kind: "expense"})
+	salary, _ := s.CreateCategory(Category{Name: "Salary", Kind: "income"})
+	card := mustAccount(t, s, AccountInput{Name: "Card", Kind: "credit_card", CreditCard: &CreditCardDetails{Network: "visa", InterestCategoryID: interest.ID}})
+	if card.CreditCard.InterestCategoryID != interest.ID || card.CreditCard.FeeCategoryID != "" {
+		t.Fatalf("card details = %+v", card.CreditCard)
+	}
+	if _, err := s.PatchAccount(card.ID, AccountPatch{CreditCard: &CreditCardDetails{FeeCategoryID: salary.ID}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an income category as the fee category = %v, want invalid", err)
+	}
+}

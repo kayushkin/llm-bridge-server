@@ -62,7 +62,9 @@ CREATE TABLE IF NOT EXISTS credit_card_details (
   due_day                   INTEGER NOT NULL DEFAULT 0,
   purchase_apr_basis_points INTEGER NOT NULL DEFAULT 0,  -- 2499 = 24.99%
   annual_fee_cents          INTEGER NOT NULL DEFAULT 0,
-  rewards                   TEXT NOT NULL DEFAULT ''
+  rewards                   TEXT NOT NULL DEFAULT '',
+  interest_category_id      TEXT REFERENCES categories(id), -- where this card's interest charges go
+  fee_category_id           TEXT REFERENCES categories(id)  -- where its fees go (late, cash advance, annual)
 );
 
 CREATE TABLE IF NOT EXISTS loan_details (

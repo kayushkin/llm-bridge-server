@@ -204,6 +204,17 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	columns, err = tableColumns(db, "credit_card_details")
+	if err != nil {
+		return err
+	}
+	for _, column := range []string{"interest_category_id", "fee_category_id"} {
+		if !columns[column] {
+			if _, err := db.Exec(`ALTER TABLE credit_card_details ADD COLUMN ` + column + ` TEXT REFERENCES categories(id)`); err != nil {
+				return err
+			}
+		}
+	}
 	columns, err = tableColumns(db, "category_suggestions")
 	if err != nil {
 		return err

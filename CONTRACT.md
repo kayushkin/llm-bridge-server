@@ -51,7 +51,7 @@ entity-type registry match each kind for chips: `budget_account`,
 |---|---|
 | `GET /health`, `GET /settings`, `GET /vocabulary` | liveness; declared settings; every closed set of values the store accepts |
 | `GET/POST /institutions` | banks and issuers: `{name, website}` |
-| `GET/POST /accounts`, `GET/PATCH /accounts/{id}` | accounts with `balance_cents` and their detail block (`credit_card`, `loan`, `retirement`). `last_four` must be four digits: a full number is refused. Setting it also adds it as a description marker |
+| `GET/POST /accounts`, `GET/PATCH /accounts/{id}` | accounts with `balance_cents` and their detail block (`credit_card`, `loan`, `retirement`). A card's `interest_category_id` and `fee_category_id`, and a loan's `interest_category_id`, name by id the expense categories its interest and fees are filed under, so a report finds them without matching names. `last_four` must be four digits: a full number is refused. Setting it also adds it as a description marker |
 | `POST /accounts/{id}/description-markers`, `DELETE /accounts/{id}/description-markers/{marker_id}` | `{marker, note}`: text that names this account in another account's rows (an old card number, a loan reference). At least 4 characters. Deleting one leaves what it already matched |
 | `POST /accounts/{id}/opening-balance` | `{as_of, balance_cents, source}`: makes the ledger agree with a reported balance, with one opening-balance transaction dated the day before the account's first posting; replaces any earlier one. Also records an assertion |
 | `GET /accounts/{id}/loan-schedule` | a loan's every payment split into interest and principal, and the projection to payoff; see Loans. Changes nothing |
