@@ -32,6 +32,7 @@ type possessionMergeMoves struct {
 	PhotosInserted     []string           `json:"photos_inserted"` // photo ids linked to the kept possession by the merge
 	CoverSetPhotoID    string             `json:"cover_set_photo_id,omitempty"`
 	SightingsRepointed []string           `json:"sightings_repointed"`
+	SlotsRepointed     []string           `json:"slots_repointed"` // outfit slots linked to the duplicate, now to the kept one
 }
 
 type movedKindRecord struct {
@@ -116,7 +117,7 @@ func (s *Store) mergePossessionInTransaction(transaction *sql.Tx, duplicateID, k
 		}
 	}
 	moves := possessionMergeMoves{FilledFields: map[string]any{}, InstalledPartsMoved: []string{}, OdometerReadingsInserted: []int64{},
-		OutfitMemberships: []outfitMembership{}, PhotosInserted: []string{}, SightingsRepointed: []string{}}
+		OutfitMemberships: []outfitMembership{}, PhotosInserted: []string{}, SightingsRepointed: []string{}, SlotsRepointed: []string{}}
 
 	// Blank fields of the kept possession take the duplicate's values.
 	fill := map[string]json.RawMessage{}
@@ -237,6 +238,12 @@ func (s *Store) mergePossessionInTransaction(transaction *sql.Tx, duplicateID, k
 		return "", err
 	}
 	if _, err := transaction.Exec(`UPDATE sightings SET possession_id = ? WHERE possession_id = ?`, keptID, duplicateID); err != nil {
+		return "", err
+	}
+	if moves.SlotsRepointed, err = stringColumn(transaction, `SELECT id FROM outfit_slots WHERE possession_id = ? ORDER BY seq`, duplicateID); err != nil {
+		return "", err
+	}
+	if _, err := transaction.Exec(`UPDATE outfit_slots SET possession_id = ?, updated_at = ? WHERE possession_id = ?`, keptID, now, duplicateID); err != nil {
 		return "", err
 	}
 	if _, err := transaction.Exec(`UPDATE possessions SET merged_into_id = ?, deleted_at = ?, updated_at = ? WHERE id = ?`, keptID, now, now, duplicateID); err != nil {
@@ -464,6 +471,11 @@ func (s *Store) undoPossessionMergeInTransaction(transaction *sql.Tx, mergeID, a
 	}
 	for _, sightingID := range moves.SightingsRepointed {
 		if _, err := transaction.Exec(`UPDATE sightings SET possession_id = ? WHERE id = ? AND possession_id = ?`, duplicateID, sightingID, keptID); err != nil {
+			return err
+		}
+	}
+	for _, slotID := range moves.SlotsRepointed {
+		if _, err := transaction.Exec(`UPDATE outfit_slots SET possession_id = ?, updated_at = ? WHERE id = ? AND possession_id = ?`, duplicateID, now, slotID, keptID); err != nil {
 			return err
 		}
 	}

@@ -173,7 +173,7 @@ func TestLooksAreReadIdentifiedAndRebuiltIntoOutfits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	watchBox, shirtBox := box(0.6, 0.6, 0.66, 0.66), box(0.3, 0.3, 0.7, 0.7)
+	watchBox, shirtBox, jeansBox := box(0.6, 0.6, 0.66, 0.66), box(0.3, 0.3, 0.7, 0.7), box(0.3, 0.7, 0.7, 0.98)
 	scripted.respond = func(role, step, prompt string, pictures int) (any, bool) {
 		switch {
 		case step == "looks":
@@ -182,11 +182,13 @@ func TestLooksAreReadIdentifiedAndRebuiltIntoOutfits(t *testing.T) {
 			return map[string]any{"looks": []any{map[string]any{"photos": []string{"P1", "P2"}, "slots": []any{
 				lookSlot("watch, left wrist", "watch", "steel watch", "agreed", "S1", onPhoto("P1", watchBox), onPhoto("P2", watchBox)),
 				lookSlot("t-shirt", "garment:top", "white t-shirt", "changed", "S2", onPhoto("P1", shirtBox)),
+				lookSlot("jeans", "garment:bottom", "blue jeans", "agreed", "S4", onPhoto("P2", jeansBox)),
 			}}}, "removed": []any{map[string]any{"slot": "S3", "reason": "a shadow, not a belt"}}}, true
 		case step == "check_looks" && strings.Contains(prompt, "on 2026-11-07."):
 			return map[string]any{"looks": []any{map[string]any{"photos": []string{"P1"}, "slots": []any{
 				lookSlot("watch, left wrist", "watch", "steel watch", "agreed", "S1", onPhoto("P1", watchBox)),
 				lookSlot("t-shirt", "garment:top", "white t-shirt", "added", "", onPhoto("P1", shirtBox)),
+				lookSlot("jeans", "garment:bottom", "blue jeans", "agreed", "S2", onPhoto("P1", jeansBox)),
 			}}}, "removed": []any{}}, true
 		case step == "check_looks":
 			return map[string]any{"looks": []any{}, "removed": []any{}}, true // leaves its photo out: refused
@@ -197,10 +199,13 @@ func TestLooksAreReadIdentifiedAndRebuiltIntoOutfits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if read.Looked != 3 || read.Counts["looks"] != 2 || read.Counts["slots"] != 4 || len(read.Failures) != 1 || len(read.Left) != 1 {
+	if read.Looked != 3 || read.Counts["looks"] != 2 || read.Counts["slots"] != 6 || len(read.Failures) != 1 || len(read.Left) != 1 {
 		t.Fatalf("read = %+v", read)
 	}
 	looks, _ := store.ListLooks("", "", 0, 0)
+	if looks[0].WearerHasNoTop == nil || *looks[0].WearerHasNoTop {
+		t.Fatalf("the second reader's word on a top should be kept: %v", looks[0].WearerHasNoTop)
+	}
 	if len(looks) != 2 || len(looks[0].PhotoIDs) != 2 || looks[0].Slots[0].Agreement != "both_agree" || looks[0].Slots[1].Agreement != "second_reader_changed" || looks[1].Slots[1].Agreement != "second_reader_added" {
 		t.Fatalf("looks = %+v", looks)
 	}
@@ -212,7 +217,7 @@ func TestLooksAreReadIdentifiedAndRebuiltIntoOutfits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if identified.Counts["linked"] != 4 || identified.Counts["merged"] != 1 || identified.Counts["new_pieces"] != 1 || len(identified.Failures) != 0 {
+	if identified.Counts["linked"] != 6 || identified.Counts["merged"] != 1 || identified.Counts["new_pieces"] != 2 || len(identified.Failures) != 0 {
 		t.Fatalf("identified = %+v", identified)
 	}
 	var watchCount GroupCount
@@ -264,7 +269,7 @@ func TestLooksAreReadIdentifiedAndRebuiltIntoOutfits(t *testing.T) {
 			made = outfit
 		}
 	}
-	if len(made.PossessionIDs) != 2 || strings.Join(made.WornOn, ",") != "2026-11-06,2026-11-07" || len(made.PhotoIDs) != 3 {
+	if len(made.PossessionIDs) != 3 || strings.Join(made.WornOn, ",") != "2026-11-06,2026-11-07" || len(made.PhotoIDs) != 3 {
 		t.Fatalf("the rebuilt outfit = %+v", made)
 	}
 	rebuildID := rebuilt.Actions[len(rebuilt.Actions)-1].Records[0]
@@ -292,7 +297,7 @@ func TestLooksAreReadIdentifiedAndRebuiltIntoOutfits(t *testing.T) {
 		t.Fatalf("the look whose shirt changed should leave the shared outfit: %v %v", first.OutfitID, moved.OutfitID)
 	}
 	split, _ := store.GetOutfit(*moved.OutfitID, false)
-	if strings.Join(split.WornOn, ",") != "2026-11-07" || len(split.PossessionIDs) != 2 || contains(split.PossessionIDs, *shirtSlot.PossessionID) || len(split.PhotoIDs) != 1 {
+	if strings.Join(split.WornOn, ",") != "2026-11-07" || len(split.PossessionIDs) != 3 || contains(split.PossessionIDs, *shirtSlot.PossessionID) || len(split.PhotoIDs) != 1 {
 		t.Fatalf("split outfit = %+v", split)
 	}
 	if shared, _ := store.GetOutfit(*first.OutfitID, false); strings.Join(shared.WornOn, ",") != "2026-11-06" || len(shared.PhotoIDs) != 2 {
@@ -400,7 +405,7 @@ func TestALargeGroupIsSortedInBatchesThenAcrossThem(t *testing.T) {
 		items = append(items, clusterItem{Label: fmt.Sprintf("S%d", index+1), SlotID: fmt.Sprintf("outfit_slot_%06d", index+1), Text: fmt.Sprintf("worn as \"t-shirt\": shirt %d", index), Crop: testJPEG()})
 	}
 	run := newAuditRun()
-	sorted, err := reviewer.sortItems(context.Background(), "first", WearableGroup{Group: "garment:top"}, false, items, true, &run)
+	sorted, err := reviewer.sortItems(context.Background(), "first", WearableGroup{Group: "garment:top"}, identificationBrief(WearableGroup{Group: "garment:top"}), items, &run)
 	if err != nil {
 		t.Fatal(err)
 	}

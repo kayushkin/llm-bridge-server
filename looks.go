@@ -21,14 +21,20 @@ import (
 
 // Look is one set of clothes worn on one day, as the API answers it.
 type Look struct {
-	ID        string   `json:"id"`
-	WornOn    string   `json:"worn_on"`
-	OutfitID  *string  `json:"outfit_id"`
-	PhotoIDs  []string `json:"photo_ids"`
-	Slots     []Slot   `json:"slots"`
-	CreatedBy string   `json:"created_by"`
-	CreatedAt int64    `json:"created_at"`
-	UpdatedAt int64    `json:"updated_at"`
+	ID       string  `json:"id"`
+	WornOn   string  `json:"worn_on"`
+	OutfitID *string `json:"outfit_id"`
+	// WearerHasNoTop is the second reader's word that the owner wears
+	// nothing on the upper body; null for a look read before it was asked.
+	WearerHasNoTop *bool `json:"wearer_has_no_top"`
+	// NotAnOutfit is why the last rebuild left the look out of every
+	// outfit; "" when it is one or has not been judged.
+	NotAnOutfit string   `json:"not_an_outfit"`
+	PhotoIDs    []string `json:"photo_ids"`
+	Slots       []Slot   `json:"slots"`
+	CreatedBy   string   `json:"created_by"`
+	CreatedAt   int64    `json:"created_at"`
+	UpdatedAt   int64    `json:"updated_at"`
 }
 
 // Slot is one piece worn in a look.
@@ -65,8 +71,9 @@ type SlotPhoto struct {
 func lookByID(q querier, id string) (Look, error) {
 	var look Look
 	var outfitID sql.NullString
-	err := q.QueryRow(`SELECT id, worn_on, outfit_id, created_by, created_at, updated_at FROM outfit_looks WHERE id = ?`, id).Scan(
-		&look.ID, &look.WornOn, &outfitID, &look.CreatedBy, &look.CreatedAt, &look.UpdatedAt)
+	var noTop sql.NullBool
+	err := q.QueryRow(`SELECT id, worn_on, outfit_id, wearer_has_no_top, not_an_outfit, created_by, created_at, updated_at FROM outfit_looks WHERE id = ?`, id).Scan(
+		&look.ID, &look.WornOn, &outfitID, &noTop, &look.NotAnOutfit, &look.CreatedBy, &look.CreatedAt, &look.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Look{}, fmt.Errorf("%w: no look %s", ErrNotFound, id)
 	}
@@ -75,6 +82,9 @@ func lookByID(q querier, id string) (Look, error) {
 	}
 	if outfitID.Valid {
 		look.OutfitID = &outfitID.String
+	}
+	if noTop.Valid {
+		look.WearerHasNoTop = &noTop.Bool
 	}
 	if look.PhotoIDs, err = stringColumn(q, `SELECT photo_id FROM outfit_look_photos WHERE look_id = ? ORDER BY photo_id`, id); err != nil {
 		return Look{}, err
@@ -208,9 +218,10 @@ func lookSlotSchema(checking bool) map[string]any {
 var SlotStatusWords = []string{"agreed", "changed", "added"}
 
 func lookSchema(checking bool) json.RawMessage {
-	look := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"photos", "slots"}, "properties": map[string]any{
-		"photos": map[string]any{"type": "array", "items": stringSchema(), "description": "The photos (P1…) showing this set of clothes"},
-		"slots":  map[string]any{"type": "array", "items": lookSlotSchema(checking)},
+	look := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"photos", "wearer_has_no_top", "slots"}, "properties": map[string]any{
+		"photos":            map[string]any{"type": "array", "items": stringSchema(), "description": "The photos (P1…) showing this set of clothes"},
+		"wearer_has_no_top": map[string]any{"type": "boolean", "description": "True when the owner wears nothing on the upper body in these photos: no shirt, top, jacket, coat or dress"},
+		"slots":             map[string]any{"type": "array", "items": lookSlotSchema(checking)},
 	}}
 	properties := map[string]any{"looks": map[string]any{"type": "array", "items": look}}
 	required := []string{"looks"}
@@ -241,8 +252,9 @@ type readSlot struct {
 }
 
 type readLook struct {
-	Photos []string   `json:"photos"`
-	Slots  []readSlot `json:"slots"`
+	Photos         []string   `json:"photos"`
+	WearerHasNoTop bool       `json:"wearer_has_no_top"`
+	Slots          []readSlot `json:"slots"`
 }
 
 type lookReading struct {
@@ -365,7 +377,7 @@ func (reviewer *Reviewer) ReadLooks(ctx context.Context, actor string) (AuditRun
 Groups: shirts and other tops are garment:top, pants and shorts garment:bottom, jackets and coats garment:outerwear, scarves garment:scarf; necklaces, pendants and chains are jewelry:necklace. Leave out socks, and anything hidden in every photo. A pair (shoes, earrings) is one slot.`, day, listing.String())
 		listPrompt := common + `
 
-List the looks: one look when every photo shows the same clothes, more when the owner changed clothes between photos; every photo in exactly one look. For each look, list every piece the owner wears as one slot: what and where ("watch, left wrist", "ring, right ring finger", "jacket"), its group, a name, a description that tells it from similar pieces, kind fields you can see, and a box on every photo of the look where it can be seen.`
+List the looks: one look when every photo shows the same clothes, more when the owner changed clothes between photos; every photo in exactly one look. For each look, say whether the owner wears nothing on the upper body (wearer_has_no_top: no shirt, top, jacket, coat or dress), and list every piece the owner wears as one slot: what and where ("watch, left wrist", "ring, right ring finger", "jacket"), its group, a name, a description that tells it from similar pieces, kind fields you can see, and a box on every photo of the look where it can be seen.`
 		listing1, err := reviewer.Models.Ask(ctx, reviewer.FirstReaderRole, auditSystemPrompt, listPrompt, lookSchema(false), images, 16000)
 		if err != nil {
 			run.fail(day, fmt.Errorf("reader %s: %w", reviewer.FirstReaderRole, err))
@@ -389,7 +401,7 @@ List the looks: one look when every photo shows the same clothes, more when the 
 				asMap["label"] = fmt.Sprintf("S%d", number)
 				slots = append(slots, asMap)
 			}
-			labeled = append(labeled, map[string]any{"photos": look.Photos, "slots": slots})
+			labeled = append(labeled, map[string]any{"photos": look.Photos, "wearer_has_no_top": look.WearerHasNoTop, "slots": slots})
 		}
 		firstJSON, _ := json.MarshalIndent(labeled, "", "  ")
 		checkPrompt := common + fmt.Sprintf(`
@@ -397,7 +409,7 @@ List the looks: one look when every photo shows the same clothes, more when the 
 Reader A, made by another company, listed the looks and the pieces in them:
 %s
 
-Check this against the photos and write the final list of looks. For each slot that is right, keep it with status agreed and its S label in from_slot. Correct one that is wrong (status changed, from_slot its label): its group, name, description or boxes. Add a piece A missed (status added). Put in removed each S label that is not a real piece the owner wears, with why. Move photos between looks if A split or joined the looks wrongly; every photo in exactly one look.`, firstJSON)
+Check this against the photos and write the final list of looks. For each slot that is right, keep it with status agreed and its S label in from_slot. Correct one that is wrong (status changed, from_slot its label): its group, name, description or boxes. Add a piece A missed (status added). Put in removed each S label that is not a real piece the owner wears, with why. Move photos between looks if A split or joined the looks wrongly; every photo in exactly one look. Say for each look whether the owner wears nothing on the upper body (wearer_has_no_top), whatever A said.`, firstJSON)
 		checked, err := reviewer.Models.Ask(ctx, reviewer.SecondReaderRole, auditSystemPrompt, checkPrompt, lookSchema(true), images, 16000)
 		if err != nil {
 			run.fail(day, fmt.Errorf("reader %s: %w", reviewer.SecondReaderRole, err))
@@ -460,7 +472,7 @@ func (s *Store) recordLooks(ctx context.Context, day string, labels map[string]l
 		if err != nil {
 			return nil, 0, err
 		}
-		if _, err := transaction.Exec(`INSERT INTO outfit_looks (id, seq, worn_on, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, lookID, sequence, day, actor, now, now); err != nil {
+		if _, err := transaction.Exec(`INSERT INTO outfit_looks (id, seq, worn_on, wearer_has_no_top, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, lookID, sequence, day, look.WearerHasNoTop, actor, now, now); err != nil {
 			return nil, 0, err
 		}
 		inLook := map[string]bool{}

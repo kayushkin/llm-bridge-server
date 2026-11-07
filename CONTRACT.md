@@ -116,7 +116,7 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `PUT` | `/possessions/{id}/kind` | `{kind, fields, actor}`: moves a possession to another kind; its old kind record goes to revisions. An empty kind leaves it with none. A computer with installed parts, or a wearable in an outfit moving to a kind that is not wearable, is a **409** |
 | `POST` | `/possessions/{id}/merge` | `{into, actor, reason}`: folds a duplicate into the possession it duplicates. The kept one takes its photos, sightings, kind (when it has none), and every field it leaves blank; outfits, installed parts, odometer readings and a harness machine move to the kept kind record. The duplicate is deleted with `merged_into_id` set. Different kinds are a **409**. Answers the kept possession with `merge_id`, the `possession_merge_…` that records it |
 | `GET` | `/possession-merges` | newest first: `?possession_id=` (either side), `?limit=`, `?offset=` |
-| `GET` | `/possession-merges/{id}` | `{id, duplicate_possession_id, kept_possession_id, merged_by, reason, moved, merged_at, undone_by, undone_at}`. `moved` names every row the merge changed: `filled_fields` (column → the kept one's value before), `kind_record_moved`, `installed_parts_moved`, `harness_machine_moved`, `odometer_readings_inserted`, `outfit_memberships` (`added_to_kept` when the kept one took the place), `photos_inserted`, `cover_set_photo_id`, `sightings_repointed` |
+| `GET` | `/possession-merges/{id}` | `{id, duplicate_possession_id, kept_possession_id, merged_by, reason, moved, merged_at, undone_by, undone_at}`. `moved` names every row the merge changed: `filled_fields` (column → the kept one's value before), `kind_record_moved`, `installed_parts_moved`, `harness_machine_moved`, `odometer_readings_inserted`, `outfit_memberships` (`added_to_kept` when the kept one took the place), `photos_inserted`, `cover_set_photo_id`, `sightings_repointed`, `slots_repointed` (outfit slots linked to the duplicate) |
 | `POST` | `/possession-merges/{id}/undo` | `{actor}`: the duplicate comes back and each moved row is put back. A merge already undone, or one a later merge (not undone) depends on — the same possession, or an outfit it changed — is a **409** naming the later one: undo in reverse order |
 | `DELETE` | `/possessions/{id}/photos/{photo_id}` | the photo stays in photo-store; the earliest left becomes cover |
 | `GET` | each kind's route above, without an id | possessions of that kind, with the same query as `/possessions` |
@@ -139,12 +139,12 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` | `/wearable-groups` | every wearable group with a live member or a row: `{id, group, closed, expected_low, expected_high, members, owned, unconfirmed, other, changed_by, changed_at}`; `owned` counts owned and lent out, `other` sold, given away, lost and discarded; `id` is null for a group never set |
 | `PUT` | `/wearable-groups/{group}` | `{closed, expected_low, expected_high, actor}`, each optional but one required: closes or opens a group, and sets how many individual pieces the owner says it holds. A group is `watch`, `eyewear`, `garment:<category>`, `garment:scarf\|belt\|gloves\|tie`, `jewelry:<jewelry type>` (pendants and chains are `jewelry:necklace`) or `bag_or_case:<bag type>`; any other, or a range upside down, is a **400**. Answers the group |
 | `POST` | `/outfit-looks/read` | `{actor}`: reads looks and slots from every day's selfies not yet in a look, below. Answers an audit run |
-| `GET` | `/outfit-looks` | by day: `?worn_on=`, `?outfit_id=`, `?limit=`, `?offset=`. A look: `{id, worn_on, outfit_id, photo_ids, slots, created_by, created_at, updated_at}` |
+| `GET` | `/outfit-looks` | by day: `?worn_on=`, `?outfit_id=`, `?limit=`, `?offset=`. A look: `{id, worn_on, outfit_id, wearer_has_no_top, not_an_outfit, photo_ids, slots, created_by, created_at, updated_at}`; `wearer_has_no_top` is the second reader's word (null for a look read before it was asked), `not_an_outfit` why the last rebuild left it out of every outfit (`""` otherwise) |
 | `GET` | `/outfit-looks/{id}`, `/outfit-slots/{id}` | a slot: `{id, look_id, slot, group, proposed, agreement, possession_id, decided_by, candidates:[{possession_id, likelihood}], photos:[{photo_id, box, sighting_id}]}` |
 | `GET` | `/outfit-slots/{id}/image` | JPEG: the slot cut from the full-size photo where its box is largest, as identification shows it |
-| `POST` | `/outfit-slots/identify` | `{actor}`: identification, below. An audit run with `groups:[{group, expected_low, expected_high, slots, pieces, identified, within_range}]` |
+| `POST` | `/outfit-slots/identify` | `{actor}`: identification, below. An audit run with `groups:[{group, expected_low, expected_high, slots, pieces, identified, within_range, pull_in}]`; `pull_in` is `{before, shown, merged, after}` for a group that held more than its expected high, null otherwise |
 | `POST` | `/outfits/rebuild-from-looks` | `{actor}`: rebuilds outfits from looks, below. An audit run; its last action names the `outfit_rebuild` |
-| `GET` | `/outfit-rebuilds/{id}` | `{id, rebuilt_by, moved:{outfits_made, outfits_replaced, wearings_added, looks, reviews}, rebuilt_at, undone_by, undone_at}` |
+| `GET` | `/outfit-rebuilds/{id}` | `{id, rebuilt_by, moved:{outfits_made, outfits_replaced, pieces_added, looks_marked, pieces_removed, wearings_removed, wearings_added, looks, reviews}, rebuilt_at, undone_by, undone_at}`; `pieces_added` and `wearings_added` are what it gave outfits an earlier rebuild made, `pieces_removed` and `wearings_removed` what it took from them when a look left; `looks_marked` is `[{look_id, before, after}]` of `not_an_outfit`; a look or reading move to `new_outfit_id: ""` took it out of every outfit |
 | `POST` | `/outfit-rebuilds/{id}/undo` | `{actor}`: puts back every outfit, look and reading the rebuild changed. A later rebuild not undone, a look that has moved since (a slot answer), or a merge of an outfit it made is a **409** |
 | `POST` | `/outfit-pieces/rematch` | `{actor}`: the rematch, below. Answers an audit run |
 | `GET` / `POST` | `/purchases` | `{seller, marketplace, order_reference, ordered_at, total_cents, currency, source, lines:[{title, quantity, unit_price_cents, product_reference, disposition}]}`. An order already recorded (same marketplace and reference) is a **409** |
@@ -404,7 +404,9 @@ first reader sees all that day's selfies (originals where present, with the
 owner's face box on each) and lists the looks — one per set of clothes, every
 photo in exactly one — and each piece worn as a slot: what and where ("watch,
 left wrist", "ring, right ring finger", "jacket"), its group, name,
-description, kind fields and a box on each photo that shows it. The second
+description, kind fields and a box on each photo that shows it, and says
+per look whether the owner has nothing on the upper body
+(`wearer_has_no_top`: no shirt, top, jacket, coat or dress). The second
 reader sees the same photos and that list and writes the final one: each
 slot kept (`agreement: both_agree`), corrected (`second_reader_changed`) or
 added (`second_reader_added`); a slot it removes is named in `left`. A day
@@ -418,10 +420,16 @@ group from its cover. Each reader on its own sorts the pictures into
 individual pieces, told the owner's expected range; slots are `S` pictures,
 recorded members `R`. A group whose expected high is at most 12 is sorted in
 calls of up to 80 pictures; others in calls of up to 30. A group too big for
-one call is sorted batch by batch (similar words together), then one picture
-of each batch's piece (a recorded one where there is one) is sorted again,
-and so on until one call holds them; a level that finds no two alike stops
-and is named in `left`. The first reader's pieces are the best guess:
+one call is sorted batch by batch (similar names together). Then one picture
+of every piece found so far — a recorded one where the piece has one, and
+every piece of one picture — is sorted across the batches: in one call when
+they fit; otherwise cut into chunks of half a call and every two chunks
+sorted together, so every two pieces are seen side by side once (83
+pictures in batches of 30 that find nothing alike: 3 batch calls, then
+6 chunks of 15 and 15 calls, per reader). Across chunks, two pictures are
+one piece when every call that showed both put them together, and pieces
+join only when no call kept any two of their pictures apart. The first
+reader's pieces are the best guess:
 
 - a piece holding recorded members becomes the one kept by `keeperOf`
   (owned before unconfirmed, then photos, then age); another recorded member
@@ -441,16 +449,64 @@ best_guess`): a sighting on each of its photos (`agreement: best_guess`),
 each photo linked to the possession, and one optional detail question
 (`asked_by: outfit_slots`) whose choices are `slot_link` to each candidate,
 `slot_new` (a piece not recorded yet; not in a closed group) and
-`slot_not_mine`. Answering relinks the slot, its sightings and photos, and
-keeps its look's outfit right: an outfit worn only as that look takes the
-new pieces; one shared with other looks keeps its own, and the look moves to
-the outfit holding exactly its pieces, or a new one, with its day and
-readings.
+`slot_not_mine`. A `slot_link` to a piece merged since the question was
+asked links the piece it was merged into. Answering relinks the slot, its
+sightings and photos, and keeps its look's outfit right: an outfit worn only
+as that look holds the look's pieces; in one shared with other looks the
+look stays while its main pieces still match theirs (below), and the outfit
+holds the union of its looks' pieces; otherwise the look moves, with its day
+and readings, to the other outfit whose looks it matches best, or a new one.
 
-**Rebuilding outfits.** Every look without an outfit is placed in the
-outfit holding exactly its linked pieces: one an earlier rebuild made, or a
-new one (`created_by` the rebuild). A look with nothing linked is left. The
-looks' readings point at the new outfit and its days become wearings. An
-outfit the readings pointed at before, with no reading left, is deleted with
-`merged_into_id` naming the outfit that took most of its readings. One
-transaction, one `outfit_rebuild`, undone by its route.
+**Pulling a group toward its range.** After the slots, every group with an
+expected high that holds more live owned and unconfirmed pieces than that
+gets one more round: both readers see one picture of each piece (the
+largest slot crop linked to it, else its cover), sorted as above, told the
+owner's range, how many pieces the sorting made and that it split pieces
+that are one. Every set of pieces both readers put together (the same
+piece in both sortings) is merged, undoably, into the one `keeperOf` keeps
+— owned before unconfirmed, then photos, then age — so two owned pieces
+merge only when both readers agree. One round, whether or not it reaches
+the range; the group's `pull_in` says `before`, `shown` (pieces with a
+picture), `merged` and `after`. It runs on groups with no new slots too, so
+running identification again with nothing new to identify refines the
+groups still over their range. A merge repoints the slots linked to the
+duplicate (`slots_repointed`), so looks and outfits follow it.
+
+**Not an outfit.** The owner chose on 2026-11-07 that a photo of them with
+no top on is a body check, never an outfit. A look is not an outfit when
+the second reader said `wearer_has_no_top`, or when none of its slots is a
+`garment:top`, `garment:one_piece` or `garment:outerwear` (a slot the owner
+answered "not mine" does not count). The rebuild keeps such a look, sets
+its `not_an_outfit` to the reason, takes it out of any outfit it is in (its
+day's wearing goes when no other look of that outfit was that day, and
+pieces only it held go), and takes its readings off their outfits. An
+outfit left with no look and no reading is removed, `merged_into_id` null.
+A look that is an outfit again (a slot answer) loses its mark at the next
+rebuild.
+
+**Rebuilding outfits.** An outfit is known by its main pieces: the pieces
+of its looks' `garment:top`, `garment:bottom`, `garment:one_piece` and
+`garment:outerwear` slots. Accessories — jewelry, watches, belts, scarves,
+headwear, bags, eyewear, footwear and every other group — vary from day to
+day and photo to photo, so they are not part of its identity. A look is an
+outfit when, in each main group both show, one's pieces are all among the
+other's (a group not visible in the look, such as a bottom out of frame,
+does not count against it), and at least two main pieces match. Every look
+without an outfit, in day order, joins the matching outfit — one an earlier
+rebuild made or one this rebuild made — that shares the most main pieces,
+then has more looks, then is older; failing that it makes a new one
+(`created_by` the rebuild). The outfit holds the union of the pieces its
+looks are linked to; each look keeps its own slots. A look with nothing
+linked is left; one not an outfit is marked as above. The looks' readings
+point at the outfit and their days
+become wearings. An outfit the readings pointed at before, with no reading
+left, is deleted with `merged_into_id` naming the outfit that took most of
+its readings. One transaction, one `outfit_rebuild`, undone by its route;
+pieces and wearings it added to an earlier rebuild's outfit are taken back.
+Covers need nothing more: a rebuilt outfit's photos are its looks'
+readings, and the cover rule counts the boxes of all its pieces.
+
+Outfits rebuilt before 2026-11-07's identity rule were one per identical
+set of pieces. To rebuild them by the rule, undo every rebuild not undone,
+newest first, then rebuild: a rebuild places only looks without an
+outfit.

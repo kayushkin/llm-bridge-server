@@ -38,13 +38,23 @@ const (
 
 // GroupCount says how one group came out of identification.
 type GroupCount struct {
-	Group        string `json:"group"`
-	ExpectedLow  *int   `json:"expected_low"`
-	ExpectedHigh *int   `json:"expected_high"`
-	Slots        int    `json:"slots"`        // slots identified in this pass
-	Pieces       int    `json:"pieces"`       // pieces the first reader sorted them into, recorded ones included
-	Identified   int    `json:"identified"`   // live owned and unconfirmed possessions in the group after the pass
-	WithinRange  *bool  `json:"within_range"` // Identified against the expected range; null when none is set
+	Group        string       `json:"group"`
+	ExpectedLow  *int         `json:"expected_low"`
+	ExpectedHigh *int         `json:"expected_high"`
+	Slots        int          `json:"slots"`        // slots identified in this pass
+	Pieces       int          `json:"pieces"`       // pieces the first reader sorted them into, recorded ones included
+	Identified   int          `json:"identified"`   // live owned and unconfirmed possessions in the group after the pass
+	WithinRange  *bool        `json:"within_range"` // Identified against the expected range; null when none is set
+	PullIn       *GroupPullIn `json:"pull_in"`      // the extra round for a group over its range; null when none ran
+}
+
+// GroupPullIn says what the extra sorting round did to a group that held
+// more pieces than the owner's expected high.
+type GroupPullIn struct {
+	Before int `json:"before"` // live owned and unconfirmed pieces before the round
+	Shown  int `json:"shown"`  // pieces with a picture to show
+	Merged int `json:"merged"` // merges both readers agreed on
+	After  int `json:"after"`
 }
 
 type clusterItem struct {
@@ -53,6 +63,7 @@ type clusterItem struct {
 	PossessionID string
 	Status       string // a recorded item's status
 	Text         string
+	SortKey      string // the name, lowercased: batches put look-alikes together
 	Crop         []byte
 }
 
@@ -209,7 +220,8 @@ func (reviewer *Reviewer) IdentifySlots(ctx context.Context, actor string) (Audi
 		for index, possession := range recordedByGroup[group] {
 			id := possession["id"].(string)
 			if crop, cut := crops[id]; cut {
-				items = append(items, clusterItem{Label: fmt.Sprintf("R%d", index+1), PossessionID: id, Status: possession["status"].(string), Text: describeWearable(possession), Crop: crop})
+				items = append(items, clusterItem{Label: fmt.Sprintf("R%d", index+1), PossessionID: id, Status: possession["status"].(string), Text: describeWearable(possession),
+					SortKey: strings.ToLower(possession["name"].(string)), Crop: crop})
 			} else {
 				run.fail(id, fmt.Errorf("cut its cover: %w", cropFailures[id]))
 			}
@@ -223,7 +235,7 @@ func (reviewer *Reviewer) IdentifySlots(ctx context.Context, actor string) (Audi
 				continue
 			}
 			slotsByID[slot.ID] = slot
-			items = append(items, clusterItem{Label: fmt.Sprintf("S%d", index+1), SlotID: slot.ID, Text: describeSlot(slot), Crop: crop})
+			items = append(items, clusterItem{Label: fmt.Sprintf("S%d", index+1), SlotID: slot.ID, Text: describeSlot(slot), SortKey: strings.ToLower(slot.Proposed.Name), Crop: crop})
 			slotCount++
 		}
 		if slotCount == 0 {
@@ -238,6 +250,34 @@ func (reviewer *Reviewer) IdentifySlots(ctx context.Context, actor string) (Audi
 		count.Slots = slotCount
 		reportGroups = append(reportGroups, count)
 	}
+	// A group left holding more pieces than the owner's expected high gets
+	// one more sorting round, over one picture of each piece.
+	for _, facts := range groupFacts {
+		if ctx.Err() != nil {
+			return run, ctx.Err()
+		}
+		if facts.ExpectedHigh == nil {
+			continue
+		}
+		pullIn, err := reviewer.pullGroupIntoRange(ctx, facts, actor, &run)
+		if err != nil {
+			run.fail(facts.Group, fmt.Errorf("pull it toward its expected range: %w", err))
+			continue
+		}
+		if pullIn == nil {
+			continue
+		}
+		found := false
+		for index := range reportGroups {
+			if reportGroups[index].Group == facts.Group {
+				reportGroups[index].PullIn, found = pullIn, true
+			}
+		}
+		if !found {
+			reportGroups = append(reportGroups, GroupCount{Group: facts.Group, PullIn: pullIn})
+		}
+	}
+	sort.Slice(reportGroups, func(i, j int) bool { return reportGroups[i].Group < reportGroups[j].Group })
 	// Counts after every group is done, against the owner's range.
 	wearables, err = store.liveWearables()
 	if err != nil {
@@ -278,47 +318,80 @@ func (sorted sorting) members(piece int) []int {
 	return members
 }
 
-// sortItems has one reader sort items into pieces, in batches when they do
-// not fit one call (see the constants above).
-func (reviewer *Reviewer) sortItems(ctx context.Context, role string, facts WearableGroup, closed bool, items []clusterItem, wholeGroup bool, run *AuditRun) (sorting, error) {
-	perCall := largeGroupPicturesPerCall
-	if facts.ExpectedHigh != nil && *facts.ExpectedHigh <= smallGroupHighestCount {
-		perCall = smallGroupPicturesPerCall
+// sortingBrief is what a sorting call tells a reader about the pictures:
+// whole when the call holds every picture being sorted, part when it holds
+// some of them.
+type sortingBrief struct {
+	whole string
+	part  string
+}
+
+// identificationBrief tells the readers what identification shows them.
+func identificationBrief(facts WearableGroup) sortingBrief {
+	group := strings.ReplaceAll(facts.Group, ":", " ")
+	brief := sortingBrief{
+		whole: "These pictures are every " + group + " seen on the owner, and the ones already recorded. " + expectedText(facts),
+		part:  "These pictures are part of a larger set of the owner's " + group + ".",
 	}
+	if facts.Closed {
+		closedText := " The owner says every one they own is recorded: every S picture belongs with an R picture of an owned piece."
+		brief.whole += closedText
+		brief.part += closedText
+	}
+	return brief
+}
+
+// picturesPerSortingCall is how many pictures one sorting call of a group
+// holds (see the constants above).
+func picturesPerSortingCall(facts WearableGroup) int {
+	if facts.ExpectedHigh != nil && *facts.ExpectedHigh <= smallGroupHighestCount {
+		return smallGroupPicturesPerCall
+	}
+	return largeGroupPicturesPerCall
+}
+
+// sortItems has one reader sort items into pieces. Items that fit one call
+// are sorted in it. More are sorted in batches of similar words first; then
+// one picture of each piece found so far (a recorded one where the piece has
+// one), every piece of one picture included, is sorted again across the
+// batches: in one call when they fit, otherwise in calls that each hold two
+// chunks of them, so that every two pieces are seen side by side once.
+// Pieces that never shared a batch can so end as one.
+func (reviewer *Reviewer) sortItems(ctx context.Context, role string, facts WearableGroup, brief sortingBrief, items []clusterItem, run *AuditRun) (sorting, error) {
+	perCall := picturesPerSortingCall(facts)
 	if len(items) <= perCall {
-		return reviewer.sortInOneCall(ctx, role, facts, closed, items, wholeGroup, run)
+		return reviewer.sortInOneCall(ctx, role, brief.whole, items, run)
 	}
 	// Batches of similar words together, so a batch holds look-alikes.
 	order := make([]int, len(items))
 	for index := range order {
 		order[index] = index
 	}
-	sort.SliceStable(order, func(i, j int) bool { return items[order[i]].Text < items[order[j]].Text })
+	sort.SliceStable(order, func(i, j int) bool { return items[order[i]].SortKey < items[order[j]].SortKey })
 	result := sorting{piece: make([]int, len(items)), alternatives: make([][]int, len(items))}
 	representatives := []clusterItem{}
-	representativeOf := []int{} // representative index → first piece id
-	pieceCount := 0
+	representativeItem := []int{} // representative index (= piece) → the item it is
 	for start := 0; start < len(order); start += perCall {
 		batch := order[start:min(start+perCall, len(order))]
 		batchItems := []clusterItem{}
 		for _, index := range batch {
 			batchItems = append(batchItems, items[index])
 		}
-		sorted, err := reviewer.sortInOneCall(ctx, role, facts, closed, batchItems, false, run)
+		sorted, err := reviewer.sortInOneCall(ctx, role, brief.part, batchItems, run)
 		if err != nil {
 			return sorting{}, err
 		}
-		seen := map[int]int{} // batch piece → global piece
+		seen := map[int]int{} // batch piece → piece across batches
 		for position, index := range batch {
 			piece, known := seen[sorted.piece[position]]
 			if !known {
-				piece = pieceCount
-				pieceCount++
+				piece = len(representatives)
 				seen[sorted.piece[position]] = piece
 				representatives = append(representatives, items[index])
-				representativeOf = append(representativeOf, piece)
+				representativeItem = append(representativeItem, index)
 			} else if items[index].PossessionID != "" && representatives[piece].PossessionID == "" {
 				representatives[piece] = items[index] // a recorded piece speaks for its batch piece
+				representativeItem[piece] = index
 			}
 			result.piece[index] = piece
 			for _, alternative := range sorted.alternatives[position] {
@@ -326,21 +399,121 @@ func (reviewer *Reviewer) sortItems(ctx context.Context, role string, facts Wear
 			}
 		}
 	}
-	if len(representatives) >= len(items) {
-		run.leave(facts.Group, fmt.Sprintf("%s found no two of %d pictures alike within a batch, so the batches were not sorted together", role, len(items)))
-		return result, nil
+	var across sorting
+	var err error
+	if len(representatives) <= perCall {
+		across, err = reviewer.sortInOneCall(ctx, role, brief.whole, representatives, run)
+	} else {
+		across, err = reviewer.sortEveryPairOfChunks(ctx, role, brief, representatives, perCall, run)
 	}
-	top, err := reviewer.sortItems(ctx, role, facts, closed, representatives, wholeGroup, run)
 	if err != nil {
 		return sorting{}, err
 	}
 	for index := range result.piece {
-		result.piece[index] = top.piece[result.piece[index]]
+		result.piece[index] = across.piece[result.piece[index]]
+	}
+	for representative, alternatives := range across.alternatives {
+		item := representativeItem[representative]
+		for _, alternative := range alternatives {
+			result.alternatives[item] = append(result.alternatives[item], representativeItem[alternative])
+		}
 	}
 	return result, nil
 }
 
-func (reviewer *Reviewer) sortInOneCall(ctx context.Context, role string, facts WearableGroup, closed bool, items []clusterItem, wholeGroup bool, run *AuditRun) (sorting, error) {
+// sortEveryPairOfChunks sorts more items than one call holds: they are cut
+// into chunks of half a call, and every two chunks are sorted together, so
+// every two items are seen side by side in at least one call. Two items are
+// one piece when every call that showed both put them together; pieces
+// join only when no call that showed a member of each kept those two apart.
+func (reviewer *Reviewer) sortEveryPairOfChunks(ctx context.Context, role string, brief sortingBrief, items []clusterItem, perCall int, run *AuditRun) (sorting, error) {
+	chunkSize := max(perCall/2, 1)
+	chunks := [][]int{}
+	for start := 0; start < len(items); start += chunkSize {
+		chunk := []int{}
+		for index := start; index < min(start+chunkSize, len(items)); index++ {
+			chunk = append(chunk, index)
+		}
+		chunks = append(chunks, chunk)
+	}
+	type pair struct{ first, second int }
+	pairOf := func(first, second int) pair {
+		if first > second {
+			first, second = second, first
+		}
+		return pair{first, second}
+	}
+	together, apart := map[pair]bool{}, map[pair]bool{}
+	alternatives := make([][]int, len(items))
+	for first := 0; first < len(chunks); first++ {
+		for second := first + 1; second < len(chunks); second++ {
+			shown := append(append([]int{}, chunks[first]...), chunks[second]...)
+			callItems := []clusterItem{}
+			for _, index := range shown {
+				callItems = append(callItems, items[index])
+			}
+			sorted, err := reviewer.sortInOneCall(ctx, role, brief.part, callItems, run)
+			if err != nil {
+				return sorting{}, err
+			}
+			for position, index := range shown {
+				for other := position + 1; other < len(shown); other++ {
+					if sorted.piece[position] == sorted.piece[other] {
+						together[pairOf(index, shown[other])] = true
+					} else {
+						apart[pairOf(index, shown[other])] = true
+					}
+				}
+				for _, alternative := range sorted.alternatives[position] {
+					if !containsInt(alternatives[index], shown[alternative]) {
+						alternatives[index] = append(alternatives[index], shown[alternative])
+					}
+				}
+			}
+		}
+	}
+	pairs := []pair{}
+	for joined := range together {
+		if !apart[joined] {
+			pairs = append(pairs, joined)
+		}
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].first != pairs[j].first {
+			return pairs[i].first < pairs[j].first
+		}
+		return pairs[i].second < pairs[j].second
+	})
+	result := sorting{piece: make([]int, len(items)), alternatives: alternatives}
+	membersOf := map[int][]int{}
+	for index := range items {
+		result.piece[index] = index
+		membersOf[index] = []int{index}
+	}
+	for _, joined := range pairs {
+		kept, folded := result.piece[joined.first], result.piece[joined.second]
+		if kept == folded {
+			continue
+		}
+		keptApart := false
+		for _, member := range membersOf[kept] {
+			for _, other := range membersOf[folded] {
+				keptApart = keptApart || apart[pairOf(member, other)]
+			}
+		}
+		if keptApart {
+			continue
+		}
+		for _, other := range membersOf[folded] {
+			result.piece[other] = kept
+		}
+		membersOf[kept] = append(membersOf[kept], membersOf[folded]...)
+		delete(membersOf, folded)
+	}
+	return result, nil
+}
+
+func (reviewer *Reviewer) sortInOneCall(ctx context.Context, role string, scope string, items []clusterItem, run *AuditRun) (sorting, error) {
 	images := []msg.OneShotImage{}
 	listing := []string{}
 	labelIndex := map[string]int{}
@@ -348,14 +521,6 @@ func (reviewer *Reviewer) sortInOneCall(ctx context.Context, role string, facts 
 		images = append(images, jpegImage(item.Crop))
 		labelIndex[item.Label] = index
 		listing = append(listing, fmt.Sprintf("%s (picture %d): %s", item.Label, index+1, item.Text))
-	}
-	group := strings.ReplaceAll(facts.Group, ":", " ")
-	scope := "These pictures are part of a larger set of the owner's " + group + "."
-	if wholeGroup {
-		scope = "These pictures are every " + group + " seen on the owner, and the ones already recorded. " + expectedText(facts)
-	}
-	if closed {
-		scope += " The owner says every one they own is recorded: every S picture belongs with an R picture of an owned piece."
 	}
 	prompt := fmt.Sprintf(`Sort these pictures into the individual physical pieces they show. S pictures are cut from photos of the owner wearing the piece; R pictures are pieces already recorded in the inventory, and two R pictures may be one piece recorded twice. %s
 
@@ -423,11 +588,11 @@ func (reviewer *Reviewer) identifyGroup(ctx context.Context, facts WearableGroup
 	store := reviewer.Store
 	count := GroupCount{Group: facts.Group}
 	closed := facts.Closed
-	first, err := reviewer.sortItems(ctx, reviewer.FirstReaderRole, facts, closed, items, true, run)
+	first, err := reviewer.sortItems(ctx, reviewer.FirstReaderRole, facts, identificationBrief(facts), items, run)
 	if err != nil {
 		return count, err
 	}
-	second, err := reviewer.sortItems(ctx, reviewer.SecondReaderRole, facts, closed, items, true, run)
+	second, err := reviewer.sortItems(ctx, reviewer.SecondReaderRole, facts, identificationBrief(facts), items, run)
 	if err != nil {
 		return count, err
 	}
@@ -625,4 +790,168 @@ func rankCandidates(scores map[string]float64, capped bool) []SlotCandidate {
 		candidates = candidates[:5]
 	}
 	return candidates
+}
+
+// groupMembersToCount answers the live owned and unconfirmed possessions of
+// a group: the pieces its count against the owner's range is made of.
+func (s *Store) groupMembersToCount(group string) ([]map[string]any, error) {
+	wearables, err := s.liveWearables()
+	if err != nil {
+		return nil, err
+	}
+	members := []map[string]any{}
+	for _, possession := range wearables {
+		status := possession["status"].(string)
+		if possessionGroup(possession) == group && (contains(ownedStatuses, status) || status == "unconfirmed") {
+			members = append(members, possession)
+		}
+	}
+	return members, nil
+}
+
+// pullInBrief tells the readers that the pieces they see were split too
+// finely.
+func pullInBrief(facts WearableGroup, count int) sortingBrief {
+	group := strings.ReplaceAll(facts.Group, ":", " ")
+	overSplit := fmt.Sprintf(" %s Sorting so far made %d separate pieces, more than that, so it split pieces that are one: put together the pictures that show one physical piece seen from another side, in other light or worn another way. Keep apart only pieces you can see differ.", expectedText(facts), count)
+	return sortingBrief{
+		whole: fmt.Sprintf("These pictures are one of each of the %d %s pieces recorded so far; every one is an R picture.", count, group) + overSplit,
+		part:  fmt.Sprintf("These pictures are some of the %d %s pieces recorded so far; every one is an R picture.", count, group) + overSplit,
+	}
+}
+
+// pullGroupIntoRange runs one more sorting round on a group that holds more
+// pieces than the owner's expected high: both readers see one picture of
+// each piece (the largest slot crop linked to it, else its cover), told the
+// range and that the sorting split too finely, and every set of pieces both
+// put together is merged, undoably, into the one keeperOf keeps (owned
+// before unconfirmed). Since both must agree, two owned pieces merge only
+// on agreement. It answers nil when the group is within its range.
+func (reviewer *Reviewer) pullGroupIntoRange(ctx context.Context, facts WearableGroup, actor string, run *AuditRun) (*GroupPullIn, error) {
+	store := reviewer.Store
+	members, err := store.groupMembersToCount(facts.Group)
+	if err != nil {
+		return nil, err
+	}
+	if facts.ExpectedHigh == nil || len(members) <= *facts.ExpectedHigh {
+		return nil, nil
+	}
+	pullIn := &GroupPullIn{Before: len(members)}
+	requests := []cropRequest{}
+	for _, possession := range members {
+		id := possession["id"].(string)
+		slotIDs, err := stringColumn(store.db, `SELECT id FROM outfit_slots WHERE possession_id = ? ORDER BY seq`, id)
+		if err != nil {
+			return nil, err
+		}
+		best, bestArea := cropRequest{}, -1.0
+		for _, slotID := range slotIDs {
+			slot, err := slotByID(store.db, slotID)
+			if err != nil {
+				return nil, err
+			}
+			if len(slot.Photos) == 0 {
+				continue
+			}
+			if photo := slot.largestPhoto(); photo.Box.area() > bestArea {
+				best, bestArea = cropRequest{key: id, photoID: photo.PhotoID, box: photo.Box, small: smallPieceGroup(facts.Group)}, photo.Box.area()
+			}
+		}
+		if bestArea < 0 {
+			for _, link := range possession["photos"].([]PhotoLink) {
+				if !link.IsCover {
+					continue
+				}
+				box := Box{0, 0, 1, 1}
+				if link.BoxLeft != nil {
+					box = Box{*link.BoxLeft, *link.BoxTop, *link.BoxRight, *link.BoxBottom}
+				}
+				best, bestArea = cropRequest{key: id, photoID: link.PhotoID, box: box, small: smallPieceGroup(facts.Group)}, 0
+			}
+		}
+		if bestArea < 0 {
+			run.leave(id, "no picture of it to show when pulling "+facts.Group+" toward its expected range")
+			continue
+		}
+		requests = append(requests, best)
+	}
+	crops, cropFailures := reviewer.cutCrops(ctx, requests)
+	items := []clusterItem{}
+	for _, possession := range members {
+		id := possession["id"].(string)
+		crop, cut := crops[id]
+		if !cut {
+			if failure, failed := cropFailures[id]; failed {
+				run.fail(id, fmt.Errorf("cut its picture: %w", failure))
+			}
+			continue
+		}
+		items = append(items, clusterItem{Label: fmt.Sprintf("R%d", len(items)+1), PossessionID: id, Status: possession["status"].(string),
+			Text: describeWearable(possession), SortKey: strings.ToLower(possession["name"].(string)), Crop: crop})
+	}
+	pullIn.Shown = len(items)
+	if len(items) < 2 {
+		pullIn.After = len(members)
+		return pullIn, nil
+	}
+	brief := pullInBrief(facts, len(members))
+	first, err := reviewer.sortItems(ctx, reviewer.FirstReaderRole, facts, brief, items, run)
+	if err != nil {
+		return nil, err
+	}
+	second, err := reviewer.sortItems(ctx, reviewer.SecondReaderRole, facts, brief, items, run)
+	if err != nil {
+		return nil, err
+	}
+	// Pieces both readers put together: the same piece in both sortings.
+	type bothPieces struct{ first, second int }
+	together := map[bothPieces][]int{}
+	order := []bothPieces{}
+	for item := range items {
+		key := bothPieces{first.piece[item], second.piece[item]}
+		if _, seen := together[key]; !seen {
+			order = append(order, key)
+		}
+		together[key] = append(together[key], item)
+	}
+	for _, key := range order {
+		set := together[key]
+		if len(set) < 2 {
+			continue
+		}
+		views := []map[string]any{}
+		for _, item := range set {
+			view, err := store.GetPossession(items[item].PossessionID, false)
+			if err != nil {
+				return nil, err
+			}
+			views = append(views, view)
+		}
+		keeper := views[0]
+		for _, view := range views[1:] {
+			keeper, _ = keeperOf(keeper, view)
+		}
+		keptID := keeper["id"].(string)
+		for _, view := range views {
+			duplicateID := view["id"].(string)
+			if duplicateID == keptID {
+				continue
+			}
+			merged, err := store.MergePossession(ctx, duplicateID, keptID, actor, fmt.Sprintf("identification of %s: the group held %d pieces, over the owner's %s, and both readers saw one piece", facts.Group, len(members), strings.TrimSuffix(expectedText(facts), ".")))
+			if err != nil {
+				run.fail(duplicateID, fmt.Errorf("merge into %s: %w", keptID, err))
+				continue
+			}
+			pullIn.Merged++
+			run.Counts["merged_toward_range"]++
+			run.Actions = append(run.Actions, AuditAction{Action: "merged", Records: []string{duplicateID, keptID}, MergeID: merged["merge_id"].(string),
+				Reason: "pulled toward the owner's range; both readers agreed"})
+		}
+	}
+	after, err := store.groupMembersToCount(facts.Group)
+	if err != nil {
+		return nil, err
+	}
+	pullIn.After = len(after)
+	return pullIn, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -154,10 +155,11 @@ func (s *Store) applySlotAnswer(transaction *sql.Tx, resolution Resolution, acto
 	}
 	switch resolution.Action {
 	case "slot_link":
-		if err := requireLivePossession(transaction, resolution.PossessionID); err != nil {
+		possessionID, err := mergedInto(transaction, resolution.PossessionID)
+		if err != nil {
 			return err
 		}
-		return s.relinkSlot(transaction, slot, resolution.PossessionID, actor, now)
+		return s.relinkSlot(transaction, slot, possessionID, actor, now)
 	case "slot_new":
 		closed, err := groupClosed(transaction, slot.Group)
 		if err != nil {
@@ -237,11 +239,13 @@ func lookPieces(q querier, lookID string) ([]string, error) {
 	return stringColumn(q, `SELECT DISTINCT possession_id FROM outfit_slots WHERE look_id = ? AND possession_id IS NOT NULL ORDER BY possession_id`, lookID)
 }
 
-// placeLook keeps a look's outfit holding the look's pieces once outfits
-// are rebuilt from looks. An outfit worn only as this look takes the new
-// pieces; one shared with other looks keeps its pieces, and this look moves
-// to the outfit holding exactly its pieces, or a new one, taking its day
-// and readings along.
+// placeLook keeps a look's outfit right after one of its slots changed,
+// once outfits are rebuilt from looks. An outfit worn only as this look
+// holds the look's pieces. One shared with other looks keeps the look when
+// its main pieces still match theirs (identityMatch), and then holds the
+// union of every look's pieces. Otherwise the look moves, with its day and
+// readings, to the outfit of other looks it matches best, or a new one, and
+// both outfits hold the union of their looks' pieces.
 func (s *Store) placeLook(transaction *sql.Tx, lookID, actor string, now int64) error {
 	look, err := lookByID(transaction, lookID)
 	if err != nil {
@@ -255,15 +259,8 @@ func (s *Store) placeLook(transaction *sql.Tx, lookID, actor string, now int64) 
 		return err
 	}
 	current := *look.OutfitID
-	held, err := stringColumn(transaction, `SELECT possession_id FROM outfit_possessions WHERE outfit_id = ? ORDER BY possession_id`, current)
+	othersIdentity, others, err := outfitLooksIdentity(transaction, current, lookID)
 	if err != nil {
-		return err
-	}
-	if strings.Join(held, ",") == strings.Join(pieces, ",") {
-		return nil
-	}
-	var others int
-	if err := transaction.QueryRow(`SELECT COUNT(*) FROM outfit_looks WHERE outfit_id = ? AND id != ?`, current, lookID).Scan(&others); err != nil {
 		return err
 	}
 	if err := saveRevision(transaction, "outfits", "id", current, actor, now); err != nil {
@@ -272,22 +269,39 @@ func (s *Store) placeLook(transaction *sql.Tx, lookID, actor string, now int64) 
 	if others == 0 {
 		return replaceOutfitPossessions(transaction, current, pieces)
 	}
-	target := ""
-	if len(pieces) > 0 {
-		if target, err = outfitWithExactly(transaction, pieces); err != nil {
+	identity, err := looksIdentity(transaction, lookID)
+	if err != nil {
+		return err
+	}
+	if _, same := identityMatch(identity, othersIdentity); same {
+		return refreshOutfitPieces(transaction, current)
+	}
+	outfitIDs, err := stringColumn(transaction, `SELECT DISTINCT outfit_looks.outfit_id FROM outfit_looks JOIN outfits ON outfits.id = outfit_looks.outfit_id
+		WHERE outfits.deleted_at = 0 AND outfits.status != 'rejected' AND outfit_looks.outfit_id != ? ORDER BY outfits.seq`, current)
+	if err != nil {
+		return err
+	}
+	candidates := []*identityCandidate{}
+	for _, outfitID := range outfitIDs {
+		candidateIdentity, looks, err := outfitLooksIdentity(transaction, outfitID, "")
+		if err != nil {
 			return err
 		}
+		candidates = append(candidates, &identityCandidate{outfitID: outfitID, identity: candidateIdentity, looks: looks})
 	}
-	if target == "" {
+	target := ""
+	if joined := bestIdentityMatch(identity, candidates); joined != nil {
+		target = joined.outfitID
+		if err := saveRevision(transaction, "outfits", "id", target, actor, now); err != nil {
+			return err
+		}
+	} else {
 		var sequence int64
 		if target, sequence, err = nextID(transaction, "outfits", "outfit"); err != nil {
 			return err
 		}
 		if _, err := transaction.Exec(`INSERT INTO outfits (id, seq, name, occasion, weather, status, reasoning, preview_image_path, created_by, created_at, updated_at) VALUES (?, ?, '', '', '', 'kept', ?, '', ?, ?, ?)`,
 			target, sequence, "Split from "+current+" when a piece of "+lookID+" changed", actor, now, now); err != nil {
-			return err
-		}
-		if err := replaceOutfitPossessions(transaction, target, pieces); err != nil {
 			return err
 		}
 	}
@@ -300,8 +314,22 @@ func (s *Store) placeLook(transaction *sql.Tx, lookID, actor string, now int64) 
 	if _, err := transaction.Exec(`INSERT OR IGNORE INTO outfit_wearings (outfit_id, worn_on) VALUES (?, ?)`, target, look.WornOn); err != nil {
 		return err
 	}
-	_, err = transaction.Exec(`DELETE FROM outfit_wearings WHERE outfit_id = ? AND worn_on = ? AND NOT EXISTS (SELECT 1 FROM outfit_looks WHERE outfit_id = ? AND worn_on = ?)`, current, look.WornOn, current, look.WornOn)
-	return err
+	if _, err := transaction.Exec(`DELETE FROM outfit_wearings WHERE outfit_id = ? AND worn_on = ? AND NOT EXISTS (SELECT 1 FROM outfit_looks WHERE outfit_id = ? AND worn_on = ?)`, current, look.WornOn, current, look.WornOn); err != nil {
+		return err
+	}
+	if err := refreshOutfitPieces(transaction, current); err != nil {
+		return err
+	}
+	return refreshOutfitPieces(transaction, target)
+}
+
+// refreshOutfitPieces makes an outfit hold the union of its looks' pieces.
+func refreshOutfitPieces(transaction *sql.Tx, outfitID string) error {
+	pieces, err := outfitPiecesFromLooks(transaction, outfitID)
+	if err != nil {
+		return err
+	}
+	return replaceOutfitPossessions(transaction, outfitID, pieces)
 }
 
 // SlotImage cuts a slot from the full-size photo where its box is largest,
@@ -320,4 +348,29 @@ func (reviewer *Reviewer) SlotImage(ctx context.Context, slotID string) ([]byte,
 		return nil, err
 	}
 	return detailCrop(picture, photo.Box, smallPieceGroup(slot.Group))
+}
+
+// mergedInto answers the live possession a choice means: the possession
+// itself, or the one it was merged into (and so on) since the choice was
+// offered. A possession deleted without a merge is not found.
+func mergedInto(q querier, possessionID string) (string, error) {
+	for id, steps := possessionID, 0; steps < 100; steps++ {
+		var deletedAt int64
+		var into sql.NullString
+		err := q.QueryRow(`SELECT deleted_at, merged_into_id FROM possessions WHERE id = ?`, id).Scan(&deletedAt, &into)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("%w: no possession %s", ErrNotFound, id)
+		}
+		if err != nil {
+			return "", err
+		}
+		if deletedAt == 0 {
+			return id, nil
+		}
+		if !into.Valid {
+			return "", fmt.Errorf("%w: no possession %s", ErrNotFound, id)
+		}
+		id = into.String
+	}
+	return "", fmt.Errorf("%s's merges run in a loop", possessionID)
 }

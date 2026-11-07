@@ -120,6 +120,12 @@ var addedColumns = []struct{ table, column, definition string }{
 	// range; NULL when not said.
 	{"wearable_groups", "expected_low", "INTEGER"},
 	{"wearable_groups", "expected_high", "INTEGER"},
+	// Whether the second reader said the owner has nothing on the upper
+	// body in a look: 1 or 0, NULL for a look read before it was asked.
+	{"outfit_looks", "wearer_has_no_top", "INTEGER"},
+	// Why a rebuild found a look is not an outfit; '' when it is one or has
+	// not been judged.
+	{"outfit_looks", "not_an_outfit", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func addColumns(db *sql.DB) error {
