@@ -211,7 +211,13 @@ func TestTheCoverRoutesCutATallImageAndTakeTheOwnersPick(t *testing.T) {
 	// The list starts cutting the covers in the background; wait for it, so
 	// the image below is read from the kept cut.
 	deadline := time.Now().Add(10 * time.Second)
-	for reviewer.covers().warming.Load() && time.Now().Before(deadline) {
+	warming := func() bool {
+		cache := reviewer.covers()
+		cache.mutex.Lock()
+		defer cache.mutex.Unlock()
+		return cache.warming
+	}
+	for warming() && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if kept, _ := filepath.Glob(filepath.Join(store.CoverImagesDir(), "*.jpg")); len(kept) != 1 {

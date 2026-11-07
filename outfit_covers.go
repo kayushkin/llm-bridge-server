@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"golang.org/x/image/draw"
@@ -271,7 +270,8 @@ type outfitCovers struct {
 	shapes      map[string]float64
 	faces       map[string]cachedFace
 	renderSlots chan struct{}
-	warming     atomic.Bool
+	warming     bool // a goroutine is cutting warmQueue
+	warmQueue   []coverCut
 }
 
 type cachedFace struct {
@@ -465,23 +465,44 @@ func (reviewer *Reviewer) coverImage(ctx context.Context, photoID string, frame 
 
 // WarmOutfitCovers cuts, in the background, every listed outfit's cover
 // not cut yet, so a gallery's images are ready soon after the list is
-// read. One warm runs at a time; a list read while one runs starts none.
+// read. Outfits listed while a warm runs join its queue.
 func (reviewer *Reviewer) WarmOutfitCovers(outfits []Outfit) {
 	cache := reviewer.covers()
-	if !cache.warming.CompareAndSwap(false, true) {
+	cache.mutex.Lock()
+	for _, outfit := range outfits {
+		if outfit.CoverPhotoID != nil && outfit.CoverBox != nil {
+			cache.warmQueue = append(cache.warmQueue, coverCut{photoID: *outfit.CoverPhotoID, frame: *outfit.CoverBox, outfitID: outfit.ID})
+		}
+	}
+	start := !cache.warming && len(cache.warmQueue) > 0
+	cache.warming = cache.warming || start
+	cache.mutex.Unlock()
+	if !start {
 		return
 	}
 	go func() {
-		defer cache.warming.Store(false)
-		for _, outfit := range outfits {
-			if outfit.CoverPhotoID == nil || outfit.CoverBox == nil {
-				continue
+		for {
+			cache.mutex.Lock()
+			if len(cache.warmQueue) == 0 {
+				cache.warming = false
+				cache.mutex.Unlock()
+				return
 			}
-			if _, err := reviewer.coverImage(context.Background(), *outfit.CoverPhotoID, *outfit.CoverBox); err != nil {
-				log.Printf("warm %s's cover: %v", outfit.ID, err)
+			next := cache.warmQueue[0]
+			cache.warmQueue = cache.warmQueue[1:]
+			cache.mutex.Unlock()
+			if _, err := reviewer.coverImage(context.Background(), next.photoID, next.frame); err != nil {
+				log.Printf("warm %s's cover: %v", next.outfitID, err)
 			}
 		}
 	}()
+}
+
+// coverCut is one cover waiting to be cut.
+type coverCut struct {
+	photoID  string
+	frame    Box
+	outfitID string
 }
 
 // cutCover cuts a frame out of a picture and scales it to at most
