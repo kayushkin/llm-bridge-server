@@ -18,6 +18,8 @@ Round one: each reader lists what it sees on its own. Round two: each sees both 
 
 The vocabularies in `vocabulary.go` feed both validation and the readers' prompt (`kindGuide`): change them there and nowhere else. A reader's field that does not fit is dropped and named in `dropped_fields`, never stored.
 
+**Outfit reading** (`reading: outfit`, `outfit_reading.go`): one reader, the first role, reads a photo of the wearer (`wearer_person_id`, located by photo-store's confirmed face) against every wearable already recorded. The operator chose one reader for outfits on 2026-11-06; it costs about $0.09 a selfie. New pieces start `unconfirmed` with a "do you still have it?" detail question, because a photo shows the wearer had a thing then, not now. A reading's pieces make an outfit or find the live one with exactly the same pieces, and add a wearing on the photo's day in `POSSESSION_STORE_OWNER_TIME_ZONE`. Wearable kinds (`WearableKinds`): garment, jewelry, watch, eyewear, bag_or_case; an outfit holds nothing else.
+
 ## Bringing photos in
 
 `possession-add-photos -queued-by principal_… [-time-zone America/Los_Angeles] photo…` copies each original to `<data dir>/originals/<sha256>.<ext>`, adds it to photo-store upright with its EXIF date and GPS, and queues it. It reads JPEG, PNG and WebP, not HEIC. `source_machine` is harness-store's one machine with transport `local`. The readers see the original scaled to 2048 pixels when it is in `originals/`, and photo-store's 1024-pixel thumbnail otherwise.
