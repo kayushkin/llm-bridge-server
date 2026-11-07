@@ -25,7 +25,7 @@ const (
 
 // DefaultListenAddress is loopback, deliberately: what the operator did is
 // private and the service has no auth of its own.
-const DefaultListenAddress = "127.0.0.1:8343"
+const DefaultListenAddress = "127.0.0.1:8344"
 
 // DefaultDataDir is where the database lives when the environment says nothing.
 func DefaultDataDir() string {

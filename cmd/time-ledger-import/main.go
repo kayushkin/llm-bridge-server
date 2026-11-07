@@ -44,7 +44,7 @@ type importer struct {
 func main() {
 	var imp importer
 	var fromDay, toDay string
-	flag.StringVar(&imp.ledgerURL, "time-ledger-store-url", "http://127.0.0.1:8343", "where time-ledger-store answers")
+	flag.StringVar(&imp.ledgerURL, "time-ledger-store-url", "http://127.0.0.1:8344", "where time-ledger-store answers")
 	flag.StringVar(&imp.calendarStoreURL, "calendar-store-url", "http://127.0.0.1:8342", "where calendar-store answers")
 	flag.StringVar(&imp.calendarID, "calendar", "", "the calendar-store calendar to read (calendar_000001); required")
 	flag.StringVar(&imp.locationStoreURL, "location-store-url", "http://127.0.0.1:8333", "where location-store answers")

@@ -42,7 +42,7 @@ type photo struct {
 }
 
 func main() {
-	ledgerURL := flag.String("time-ledger-store-url", "http://127.0.0.1:8343", "where time-ledger-store answers")
+	ledgerURL := flag.String("time-ledger-store-url", "http://127.0.0.1:8344", "where time-ledger-store answers")
 	locationStoreURL := flag.String("location-store-url", "http://127.0.0.1:8333", "where location-store answers")
 	photoStoreURL := flag.String("photo-store-url", "http://127.0.0.1:8329", "where photo-store answers")
 	days := flag.Int("days", 60, "read entries that ended in the last this many days")

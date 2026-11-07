@@ -53,7 +53,7 @@ func main() {
 	}
 	review := reviewer{bridgeURL: settings.String(timeledgerstore.SettingBridgeURL), serviceToken: settings.String(timeledgerstore.SettingBridgeServiceToken),
 		modelStoreURL: settings.String(timeledgerstore.SettingModelStoreURL), httpClient: &http.Client{Timeout: 5 * time.Minute}}
-	flag.StringVar(&review.ledgerURL, "time-ledger-store-url", "http://127.0.0.1:8343", "where time-ledger-store answers")
+	flag.StringVar(&review.ledgerURL, "time-ledger-store-url", "http://127.0.0.1:8344", "where time-ledger-store answers")
 	flag.StringVar(&review.role, "role", "time-entry-reviewer", "the model-store role whose model reviews")
 	flag.IntVar(&review.maxLinksPerType, "max-links-per-type", 40, "the most records of one link type shown for one entry; the model is told how many more there are")
 	maxEntries := flag.Int("max-entries", 50, "the most entries reviewed in one run")

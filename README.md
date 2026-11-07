@@ -12,7 +12,7 @@ Go, SQLite, one HTTP service on loopback, and three commands: `time-ledger-impor
 
 ```bash
 go test ./... && go build ./cmd/time-ledger-store
-curl -s -X POST localhost:8343/time-entries -d '{"title":"Dinner","starts_at":1767225600,"ends_at":1767231000,"time_zone":"UTC","by":"me","by_kind":"operator","reason":"I went"}'
+curl -s -X POST localhost:8344/time-entries -d '{"title":"Dinner","starts_at":1767225600,"ends_at":1767231000,"time_zone":"UTC","by":"me","by_kind":"operator","reason":"I went"}'
 ```
 
 MIT licensed.

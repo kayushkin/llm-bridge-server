@@ -1,5 +1,5 @@
 // Command time-ledger-store serves the time ledger, on
-// 127.0.0.1:8343.
+// 127.0.0.1:8344.
 package main
 
 import (

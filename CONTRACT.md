@@ -1,6 +1,6 @@
 # time-ledger-store contract
 
-`127.0.0.1:8343` (`TIME_LEDGER_STORE_ADDR`), no auth: keep it on loopback and put a front door in front. JSON everywhere. Times are epoch seconds.
+`127.0.0.1:8344` (`TIME_LEDGER_STORE_ADDR`), no auth: keep it on loopback and put a front door in front. JSON everywhere. Times are epoch seconds.
 
 ## Ids
 
