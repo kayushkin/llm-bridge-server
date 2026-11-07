@@ -192,6 +192,24 @@ next due date plus grace, and back to `confirmed` when paid again. Answers
 | `PATCH /recurring-bills/{id}` | `{status: confirmed\|rejected, name, decided_by}`; a status needs `decided_by` |
 | `GET /recurring-bills/totals` | confirmed bills: expected per month, six months and year, and what they actually came to in the last six and twelve months |
 
+## Trips
+
+A trip is location-store's (`trip_000001`); this store keeps which
+transactions belong to it, by that id, in `trip_transactions`.
+`cmd/budget-match-trips` reads location-store's journeys and, for each, calls
+`POST /trips/{trip_ref}/suggest {first_day, last_day, home_markers}`: spending
+dated from the first day to three days after the last (card charges post
+late) is suggested, except payments of confirmed or suggested recurring bills,
+charges whose text holds a home marker (the caller's data, such as a city and
+state as the bank prints them), and transactions already linked to this trip
+or confirmed on another. Removed links are never suggested again.
+
+| Route | Does |
+|---|---|
+| `GET /trips/totals` | per trip with links: confirmed and suggested spending and counts |
+| `GET /trips/{trip_ref}/transactions` | its links oldest first, removed ones included, each with date, text, amount, category and account |
+| `PUT /trips/{trip_ref}/transactions/{transaction_id}` | `{status: confirmed\|removed, decided_by, reason}`: decide a suggestion, or add a transaction the dates missed. A transaction confirmed on another trip is a 409 |
+
 ## Not yet served
 
 `statements` and `recurring_charges` (the first draft of recurring bills, unused) have tables and no routes.

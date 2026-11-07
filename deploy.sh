@@ -12,7 +12,7 @@ SERVICE="budget-store.service"
 BINARY="budget-store"
 # Commands an operator or a scheduler job runs, built from cmd/<name> and
 # installed as ~/bin/<name>.
-COMMANDS=(budget-suggest-categories)
+COMMANDS=(budget-suggest-categories budget-match-trips)
 UNIT_SRC="$REPO_DIR/$SERVICE"
 UNIT_DEST="$HOME/.config/systemd/user/$SERVICE"
 

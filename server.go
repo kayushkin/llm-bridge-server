@@ -446,6 +446,37 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusOK, out, err)
 	})
 
+	mux.HandleFunc("GET /trips/totals", func(w http.ResponseWriter, _ *http.Request) {
+		out, err := s.ListTripTotals()
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("GET /trips/{trip_ref}/transactions", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.ListTripTransactions(r.PathValue("trip_ref"))
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("POST /trips/{trip_ref}/suggest", func(w http.ResponseWriter, r *http.Request) {
+		var in TripSuggestRequest
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		count, err := s.SuggestTripTransactions(r.PathValue("trip_ref"), in)
+		respond(w, http.StatusOK, map[string]int{"suggested": count}, err)
+	})
+	mux.HandleFunc("PUT /trips/{trip_ref}/transactions/{transaction_id}", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Status    string `json:"status"`
+			DecidedBy string `json:"decided_by"`
+			Reason    string `json:"reason"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.SetTripTransaction(r.PathValue("trip_ref"), r.PathValue("transaction_id"), in.Status, in.DecidedBy, in.Reason)
+		respond(w, http.StatusOK, out, err)
+	})
+
 	mux.HandleFunc("GET /links", func(w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListLinks(r.URL.Query().Get("from_id"))
 		respond(w, http.StatusOK, list, err)

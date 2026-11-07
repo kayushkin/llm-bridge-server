@@ -47,6 +47,10 @@ var billCadences = []string{"weekly", "monthly", "quarterly", "yearly"}
 // rejected is not one; ended was a bill and has stopped.
 var billStatuses = []string{"suggested", "confirmed", "rejected", "ended"}
 
+// tripTransactionStatuses: suggested waits for the operator; confirmed
+// belongs to the trip; removed does not, and is never suggested again.
+var tripTransactionStatuses = []string{"suggested", "confirmed", "removed"}
+
 func requireOneOf(field, value string, allowed []string) error {
 	if !slices.Contains(allowed, value) {
 		return fmt.Errorf("%w: %s %q is not one of %v", ErrInvalid, field, value, allowed)
@@ -56,18 +60,19 @@ func requireOneOf(field, value string, allowed []string) error {
 
 func handleVocabulary(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"account_kinds":           accountKinds,
-		"liability_account_kinds": liabilityAccountKinds,
-		"retirement_plan_kinds":   retirementPlanKinds,
-		"tax_treatments":          taxTreatments,
-		"category_kinds":          categoryKinds,
-		"category_roles":          categoryRoles,
-		"transaction_statuses":    transactionStatuses,
-		"import_sources":          importSources,
-		"import_row_outcomes":     importRowOutcomes,
-		"budget_views":            budgetViews,
-		"suggestion_statuses":     suggestionStatuses,
-		"bill_cadences":           billCadences,
-		"bill_statuses":           billStatuses,
+		"account_kinds":             accountKinds,
+		"liability_account_kinds":   liabilityAccountKinds,
+		"retirement_plan_kinds":     retirementPlanKinds,
+		"tax_treatments":            taxTreatments,
+		"category_kinds":            categoryKinds,
+		"category_roles":            categoryRoles,
+		"transaction_statuses":      transactionStatuses,
+		"import_sources":            importSources,
+		"import_row_outcomes":       importRowOutcomes,
+		"budget_views":              budgetViews,
+		"suggestion_statuses":       suggestionStatuses,
+		"bill_cadences":             billCadences,
+		"bill_statuses":             billStatuses,
+		"trip_transaction_statuses": tripTransactionStatuses,
 	})
 }

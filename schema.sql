@@ -340,3 +340,18 @@ CREATE TABLE IF NOT EXISTS recurring_bill_payments (
   transaction_id     TEXT NOT NULL UNIQUE REFERENCES transactions(id) ON DELETE CASCADE,
   PRIMARY KEY (recurring_bill_id, transaction_id)
 );
+
+-- Which transactions belong to which trip. The trip is location-store's
+-- (trip_000001); this store keeps only its id. A suggestion comes from the
+-- trip's dates; the operator confirms, removes or adds.
+CREATE TABLE IF NOT EXISTS trip_transactions (
+  trip_ref        TEXT NOT NULL,
+  transaction_id  TEXT NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  status          TEXT NOT NULL,   -- vocabulary.go: tripTransactionStatuses
+  reason          TEXT NOT NULL,   -- why it was linked: "dated during the trip", or the operator's words
+  decided_by      TEXT NOT NULL DEFAULT '',
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  PRIMARY KEY (trip_ref, transaction_id)
+);
+CREATE INDEX IF NOT EXISTS trip_transactions_transaction ON trip_transactions(transaction_id);
