@@ -46,33 +46,61 @@ func holds(outer, inner Box) bool {
 	return outer.Left <= inner.Left+slack && outer.Top <= inner.Top+slack && outer.Right >= inner.Right-slack && outer.Bottom >= inner.Bottom-slack
 }
 
-func TestACoverFrameHoldsTheWearerInATallFrameInsideThePhoto(t *testing.T) {
-	face := Box{0.4, 0.1, 0.55, 0.25}
-	jacket := Box{0.3, 0.25, 0.7, 0.6}
-	watch := Box{0.65, 0.5, 0.7, 0.55}
-	for _, photoAspect := range []float64{0.75, 1, 4.0 / 3} {
-		frame := coverFrame(&face, []Box{jacket, watch}, photoAspect)
-		if aspect := pixelAspect(frame, photoAspect); math.Abs(aspect-coverAspect) > 0.01 {
-			t.Fatalf("photo %.2f: frame %v is %.3f wide over tall, want %.3f", photoAspect, frame, aspect, coverAspect)
-		}
-		if !holds(Box{0, 0, 1, 1}, frame) || !holds(frame, Box{0.3 - 0.4*coverMargin, 0.1 - 0.5*coverMargin, 0.7 + 0.4*coverMargin, 0.6 + 0.5*coverMargin}) {
-			t.Fatalf("photo %.2f: frame %v should be inside the photo and hold the face and every piece, with the margin", photoAspect, frame)
-		}
+func inShapeRange(aspect float64) bool {
+	return aspect >= coverNarrowest-0.005 && aspect <= coverWidest+0.005
+}
+
+func TestACoverFrameAroundTheWearerIsTightAndKeepsItsShapeInRange(t *testing.T) {
+	// A standing mirror shot: a narrow, tall wearer. The frame is the box
+	// with 3% of its height around it, widened only to 1:2.4.
+	wearer := Box{0.4, 0.1, 0.6, 0.95}
+	frame := coverFrameAroundWearer(wearer, 0.75)
+	margin := coverWearerMargin * 0.85
+	if math.Abs(frame.Top-(0.1-margin)) > 1e-6 || math.Abs(frame.Bottom-(0.95+margin)) > 1e-6 {
+		t.Fatalf("frame %v should run from the head to the shoes with %.3f of room", frame, margin)
+	}
+	if aspect := pixelAspect(frame, 0.75); math.Abs(aspect-coverNarrowest) > 0.005 {
+		t.Fatalf("a narrow wearer should be widened to 1:2.4 exactly, got %.3f", aspect)
+	}
+	if !holds(frame, wearer) || !holds(Box{0, 0, 1, 1}, frame) {
+		t.Fatalf("frame %v should hold the wearer and stay inside the photo", frame)
 	}
 
-	// A wearer as wide as a landscape photo cannot fit at 2:3: the frame is
-	// the tallest that fits, centered on the wearer, and stays inside.
-	frame := coverFrame(nil, []Box{{0, 0.2, 1, 0.9}}, 16.0/9)
-	if aspect := pixelAspect(frame, 16.0/9); math.Abs(aspect-coverAspect) > 0.01 || frame.Top != 0 || frame.Bottom != 1 {
-		t.Fatalf("a wide wearer: frame %v (aspect %.3f), want full height at 2:3", frame, aspect)
+	// A wearer whose own shape is in range keeps it.
+	wearer = Box{0.2, 0.2, 0.8, 0.9}
+	frame = coverFrameAroundWearer(wearer, 0.75)
+	want := (0.6*0.75 + 2*coverWearerMargin*0.7) / (0.7 * (1 + 2*coverWearerMargin))
+	if aspect := pixelAspect(frame, 0.75); math.Abs(aspect-want) > 0.005 {
+		t.Fatalf("a wearer in range should keep its shape %.3f, got %.3f", want, aspect)
+	}
+
+	// A selfie: the wearer fills a landscape photo's width. Too wide for
+	// 3:4 at full height, so the frame is full height at 3:4, centered.
+	frame = coverFrameAroundWearer(Box{0, 0.1, 1, 1}, 4.0/3)
+	if aspect := pixelAspect(frame, 4.0/3); math.Abs(aspect-coverWidest) > 0.005 || frame.Top != 0 || frame.Bottom != 1 {
+		t.Fatalf("a wide wearer: frame %v (aspect %.3f), want full height at 3:4", frame, aspect)
 	}
 	if center := (frame.Left + frame.Right) / 2; math.Abs(center-0.5) > 0.01 {
 		t.Fatalf("a wide wearer: frame %v should be centered on the wearer", frame)
 	}
+}
 
+func TestACoverFrameAroundThePiecesHoldsFaceAndPiecesInRange(t *testing.T) {
+	face := Box{0.4, 0.1, 0.55, 0.25}
+	jacket := Box{0.3, 0.25, 0.7, 0.6}
+	watch := Box{0.65, 0.5, 0.7, 0.55}
+	for _, photoAspect := range []float64{0.75, 1, 4.0 / 3} {
+		frame := coverFrameAroundPieces(&face, []Box{jacket, watch}, photoAspect)
+		if aspect := pixelAspect(frame, photoAspect); !inShapeRange(aspect) {
+			t.Fatalf("photo %.2f: frame %v is %.3f wide over tall, want 1:2.4 to 3:4", photoAspect, frame, aspect)
+		}
+		if !holds(Box{0, 0, 1, 1}, frame) || !holds(frame, Box{0.3, 0.1, 0.7, 0.6}) {
+			t.Fatalf("photo %.2f: frame %v should be inside the photo and hold the face and every piece", photoAspect, frame)
+		}
+	}
 	// Nothing known: the tallest 2:3 cut from the middle.
-	frame = coverFrame(nil, nil, 1)
-	if math.Abs(pixelAspect(frame, 1)-coverAspect) > 0.01 || frame.Top != 0 || frame.Bottom != 1 {
+	frame := coverFrameAroundPieces(nil, nil, 1)
+	if math.Abs(pixelAspect(frame, 1)-coverMiddleAspect) > 0.01 || frame.Top != 0 || frame.Bottom != 1 {
 		t.Fatalf("no boxes: frame %v, want the middle of the photo, full height", frame)
 	}
 }
@@ -184,26 +212,57 @@ func TestTheCoverRoutesCutATallImageAndTakeTheOwnersPick(t *testing.T) {
 	store := openTestStore(t)
 	outfit := outfitWithTwoPhotos(t, store, [2]Box{{0.1, 0.1, 0.9, 0.9}, {0.3, 0.3, 0.6, 0.6}})
 	mux := http.NewServeMux()
-	reviewer := &Reviewer{Store: store, Photos: portraitPhotos{}}
+	models := &scriptedModels{respond: func(role, step, prompt string, pictures int) (any, bool) {
+		if step != "wearer_box" {
+			return nil, false
+		}
+		return map[string]any{"wearer_found": true, "box": Box{0.35, 0.04, 0.62, 0.9}}, true
+	}}
+	reviewer := &Reviewer{Store: store, Photos: portraitPhotos{}, Models: models, FirstReaderRole: "first"}
 	(&Server{Store: store, Reviewer: reviewer}).RegisterHandlers(mux)
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		mux.ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
 		return recorder
 	}
+	read := func(response *httptest.ResponseRecorder) Outfit {
+		t.Helper()
+		var answered Outfit
+		if err := json.Unmarshal(response.Body.Bytes(), &answered); err != nil || response.Code != 200 {
+			t.Fatalf("outfit = %d %s", response.Code, response.Body)
+		}
+		return answered
+	}
 
-	got := call("GET", "/outfits/"+outfit.ID, "")
-	var answered Outfit
-	if err := json.Unmarshal(got.Body.Bytes(), &answered); err != nil || got.Code != 200 {
-		t.Fatalf("GET outfit = %d %s", got.Code, got.Body)
+	// Before the wearer box is read, the frame holds the face (0.4–0.6
+	// across, from 0.05 down) and both pieces, and says so.
+	answered := read(call("GET", "/outfits/"+outfit.ID, ""))
+	if answered.CoverBox == nil || answered.CoverReason.WearerFaceFound == nil || !*answered.CoverReason.WearerFaceFound ||
+		answered.CoverReason.FrameFrom != CoverFrameFromPieceBoxes {
+		t.Fatalf("the outfit should answer its frame from the piece boxes, with the face found: %+v", answered.CoverReason)
 	}
-	if answered.CoverBox == nil || answered.CoverReason.WearerFaceFound == nil || !*answered.CoverReason.WearerFaceFound {
-		t.Fatalf("the outfit should answer its frame, with the face found: %s", got.Body)
-	}
-	// The frame holds the face (0.4–0.6 across, from 0.05 down) and both pieces.
 	if !holds(*answered.CoverBox, Box{0.3, 0.05, 0.65, 0.6}) {
 		t.Fatalf("frame %v should hold the face and the pieces", *answered.CoverBox)
 	}
+
+	// The reader is asked once per cover photo, told where the face is.
+	response := call("POST", "/outfit-covers/read-wearer-boxes", `{"actor":"principal_000001"}`)
+	if response.Code != 200 || !strings.Contains(response.Body.String(), `"cover_photos":1,"already_read":0,"read":1,"failed":[],"cost_usd":0.01`) {
+		t.Fatalf("read wearer boxes = %d %s", response.Code, response.Body)
+	}
+	if !strings.Contains(models.prompts[len(models.prompts)-1], "face is in the box left 0.400, top 0.050") {
+		t.Fatalf("the reader should be told where the face is: %s", models.prompts[len(models.prompts)-1])
+	}
+	answered = read(call("GET", "/outfits/"+outfit.ID, ""))
+	wearerFrame := coverFrameAroundWearer(Box{0.35, 0.04, 0.62, 0.9}, 0.75)
+	if answered.CoverReason.FrameFrom != CoverFrameFromWearerBox || math.Abs(answered.CoverBox.Top-wearerFrame.Top) > 1e-3 ||
+		math.Abs(answered.CoverBox.Bottom-wearerFrame.Bottom) > 1e-3 || answered.CoverAspect == nil || !inShapeRange(*answered.CoverAspect) {
+		t.Fatalf("the frame should now be the wearer box with its margin, %v; got %v from %s, aspect %v", wearerFrame, *answered.CoverBox, answered.CoverReason.FrameFrom, answered.CoverAspect)
+	}
+	if again := call("POST", "/outfit-covers/read-wearer-boxes", `{"actor":"principal_000001"}`); !strings.Contains(again.Body.String(), `"already_read":1,"read":0`) {
+		t.Fatalf("a photo read once is not read again: %s", again.Body)
+	}
+
 	listed := call("GET", "/outfits", "")
 	if listed.Code != 200 || !strings.Contains(listed.Body.String(), `"cover_box":{`) {
 		t.Fatalf("GET /outfits = %d %s", listed.Code, listed.Body)
@@ -232,14 +291,19 @@ func TestTheCoverRoutesCutATallImageAndTakeTheOwnersPick(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bounds := decoded.Bounds(); math.Abs(float64(bounds.Dx())/float64(bounds.Dy())-coverAspect) > 0.02 || bounds.Dy() > coverImageHeight {
-		t.Fatalf("the cover image is %dx%d, want 2:3 and at most %d tall", bounds.Dx(), bounds.Dy(), coverImageHeight)
+	if bounds := decoded.Bounds(); math.Abs(float64(bounds.Dx())/float64(bounds.Dy())-*answered.CoverAspect) > 0.02 || bounds.Dy() > coverImageHeight {
+		t.Fatalf("the cover image is %dx%d, want %.3f wide over tall and at most %d tall", bounds.Dx(), bounds.Dy(), *answered.CoverAspect, coverImageHeight)
 	}
 
-	// The owner's pick of photo_000001, which has no confirmed face.
+	// The owner's pick of photo_000001, which has no confirmed face: its
+	// wearer box is read at once, without a face.
 	put := call("PUT", "/outfits/"+outfit.ID+"/cover", `{"photo_id":"photo_000001","actor":"principal_000001"}`)
-	if put.Code != 200 || !strings.Contains(put.Body.String(), `"rule":"owner_choice"`) || !strings.Contains(put.Body.String(), `"wearer_face_found":false`) {
+	if put.Code != 200 || !strings.Contains(put.Body.String(), `"rule":"owner_choice"`) || !strings.Contains(put.Body.String(), `"wearer_face_found":false`) ||
+		!strings.Contains(put.Body.String(), `"frame_from":"wearer_box"`) {
 		t.Fatalf("PUT cover = %d %s", put.Code, put.Body)
+	}
+	if models.calls["first wearer_box"] != 2 || strings.Contains(models.prompts[len(models.prompts)-1], "face is in the box") {
+		t.Fatalf("the new cover photo should be read once, with no face given: %v", models.calls)
 	}
 	for body, want := range map[string]int{
 		`{"photo_id":"photo_000009","actor":"principal_000001"}`: 400,

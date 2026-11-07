@@ -123,15 +123,17 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` | `/<kind route>/{id}` and `…/{id}/image` | the possession the kind record extends |
 | `GET` | `/harness-machines/{machine_id}/computer` | the computer tied to a harness-store machine (`m_…`) |
 | `POST` | `/vehicles/{id}/odometer-readings` | `{read_at, miles, source}` |
-| `GET` | `/outfits` | `?status=`, `?possession_id=`, `?limit=`, `?offset=` |
-| `POST` | `/outfits` | `{actor, name, occasion, weather, status, reasoning, preview_image_path, possession_ids:[…]}`; status is `suggested`, `kept` or `rejected`; every possession must be live and of a wearable kind (`wearable_kinds` in `/vocabulary`: garment, jewelry, watch, eyewear, bag_or_case). **201** |
-| `GET` / `PATCH` | `/outfits/{id}` | an outfit answers `possession_ids`, `worn_on` (its days), `photo_ids` (the photo-store photos outfit readings found it in) and its cover: `cover_photo_id`, `cover_box` and `cover_reason` (below); a patch changes what it gives; `possession_ids` replaces the list |
-| `PUT` | `/outfits/{id}/cover` | `{photo_id, actor}`: the owner's pick of the cover, one of the outfit's `photo_ids` (another is a **400**); `""` takes the pick away so the rule chooses again. Answers the outfit |
-| `GET` | `/outfits/{id}/image` | JPEG: the cover photo cut to `cover_box`, 2:3, at most 900 pixels tall, from the original when `originals/` holds it, else the thumbnail. **404** with no photo |
+| `GET` | `/outfits` | `?status=`, `?possession_id=`, `?favorite=true`, `?tag=` (one tag, tidied as below), `?limit=`, `?offset=` |
+| `GET` | `/outfit-tags` | every tag on a live outfit with its count, most used first: `[{tag, outfits}]` |
+| `POST` | `/outfits` | `{actor, name, occasion, weather, status, reasoning, preview_image_path, favorite, tags, possession_ids:[…]}`; status is `suggested`, `kept` or `rejected`; every possession must be live and of a wearable kind (`wearable_kinds` in `/vocabulary`: garment, jewelry, watch, eyewear, bag_or_case). **201** |
+| `GET` / `PATCH` | `/outfits/{id}` | an outfit answers `possession_ids`, `favorite`, `tags`, `worn_on` (its days), `photo_ids` (the photo-store photos outfit readings found it in) and its cover: `cover_photo_id`, `cover_box`, `cover_aspect` and `cover_reason` (below); a patch changes what it gives; `possession_ids` and `tags` each replace the list. `favorite` is the owner's mark; `tags` are the owner's words, each trimmed, its spaces made one, lower case and kept once, in the order given; an empty tag or one over 40 characters is a **400** |
+| `PUT` | `/outfits/{id}/cover` | `{photo_id, actor}`: the owner's pick of the cover, one of the outfit's `photo_ids` (another is a **400**); `""` takes the pick away so the rule chooses again. The new cover photo's wearer box is read at once when it has none; when that read fails the pick stays and the answer is the error. Answers the outfit |
+| `POST` | `/outfit-covers/read-wearer-boxes` | `{actor}`: reads the wearer box of every live outfit's cover photo that has none, four at a time. Answers `{cover_photos, already_read, read, failed:[{photo_id, why}], cost_usd}` |
+| `GET` | `/outfits/{id}/image` | JPEG: the cover photo cut to `cover_box` (`cover_aspect` wide over tall), at most 900 pixels tall, from the original when `originals/` holds it, else the thumbnail. **404** with no photo |
 | `DELETE` | `/outfits/{id}?actor=` | soft, **204** |
 | `POST` | `/outfits/{id}/wearings` | `{worn_on:"YYYY-MM-DD"}` in the owner's time zone |
-| `POST` | `/outfits/{id}/combine` | `{into, actor, reason}`: folds this outfit into `into`: the kept one takes the union of pieces, every wearing and every outfit reading; this one is deleted with `merged_into_id` set. Answers the `outfit_merge` |
-| `GET` | `/outfit-merges`, `/outfit-merges/{id}` | `?outfit_id=` (either side). `moved`: `pieces_added`, `wearings_added`, `reviews_repointed` |
+| `POST` | `/outfits/{id}/combine` | `{into, actor, reason}`: folds this outfit into `into`: the kept one takes the union of pieces, every wearing, every outfit reading, the tags it lacked, and favorite when this one was; this one is deleted with `merged_into_id` set. Answers the `outfit_merge` |
+| `GET` | `/outfit-merges`, `/outfit-merges/{id}` | `?outfit_id=` (either side). `moved`: `pieces_added`, `wearings_added`, `reviews_repointed`, `favorite_set`, `tags_added` |
 | `POST` | `/outfit-merges/{id}/undo` | `{actor}`: the duplicate outfit comes back, and the kept one loses exactly what the merge gave it. A later merge of either outfit, or a later possession merge that moved a piece of either, is a **409** |
 | `POST` | `/wearables/check-links` | `{actor}`: the link check, below. Answers an audit run |
 | `POST` | `/wearables/check-duplicates` | `{actor}`: the duplicate check, below. Answers an audit run |
@@ -346,26 +348,44 @@ already stored, with no model call:
    span the most of the photo; then the earliest. The owner's pick
    (`PUT /outfits/{id}/cover`) wins while that photo is one of the outfit's.
    An outfit rebuilt or combined into a new id starts without a pick.
-2. **The frame.** The smallest box holding the wearer's face (photo-store's
-   face confirmed as the review's `wearer_person_id`) and every piece box on
-   that photo, with 8% of its width and height added on each side, then
-   widened or heightened about its center to 2:3 in pixels and moved to
-   stay inside the photo. A wearer too wide for a 2:3 cut of the photo gets
-   the tallest 2:3 cut that fits, centered on them. With no face and no box,
-   the tallest 2:3 cut from the middle.
+2. **The frame.** The first reader role is asked once per cover photo for
+   a tight box around the wearer, from the top of the head to the lowest
+   clothing or shoe that shows, told where photo-store's confirmed face of
+   the review's `wearer_person_id` is when it has one
+   (`outfit_cover_wearer_boxes`, keyed by photo and wearer, with the model,
+   tokens and cost). The frame is that box with 3% of its height added on
+   every side, in its own shape as long as that is between 1:2.4 and 3:4
+   wide over tall in pixels; outside that it is widened or heightened about
+   its center to the nearest end, then moved to stay inside the photo. A
+   wearer too wide for a 3:4 cut at the photo's full height gets the
+   tallest 3:4 cut, centered on them. On 2026-11-07 the read cost
+   $0.037 a photo on claude-opus-5-5 (72 photos, $2.64, about 5,600 tokens
+   in and 340 out each).
+
+   Until a cover photo's box is read, the frame is the smallest box holding
+   the wearer's face and every piece box on that photo, with 8% of its width
+   and height added on each side, shaped the same way; with no face and no
+   box, the tallest 2:3 cut from the middle. `cover_reason.frame_from` says
+   which: `wearer_box` or `piece_boxes`. A new cover photo — a pick, a
+   rebuild or a combine — is read when `PUT /outfits/{id}/cover` sets it,
+   or in the background, one at a time, once `GET /outfits` lists it with
+   the review worker on (a photo the reader fails on waits an hour before
+   it is tried again, and the failure is logged);
+   `POST /outfit-covers/read-wearer-boxes` reads every one missing.
 
 ```json
 "cover_photo_id":"photo_000123",
-"cover_box":{"left":0.21,"top":0,"right":0.86,"bottom":1},
+"cover_box":{"left":0.21,"top":0.02,"right":0.62,"bottom":0.98},
+"cover_aspect":0.427,
 "cover_reason":{"rule":"most_pieces_visible","pieces_visible":3,"pieces_total":4,"wearer_area":0.46,"photos_compared":3,
-                "chosen_by":"","chosen_at":0,"ignored_owner_photo_id":"","wearer_face_found":true}
+                "chosen_by":"","chosen_at":0,"ignored_owner_photo_id":"","wearer_face_found":true,"frame_from":"wearer_box"}
 ```
 
 `rule` is `most_pieces_visible` or `owner_choice` (then `chosen_by` and
 `chosen_at` say who and when). `wearer_area` is the share of the photo the
 piece boxes span. `ignored_owner_photo_id` names a pick no longer among the
 outfit's photos. `wearer_face_found` says whether the frame holds a face.
-An outfit with no photo answers all three null. Cutting a full-size original
+An outfit with no photo answers all four null. Cutting a full-size original
 takes about a second, so cuts are kept in `<data dir>/outfit-covers/` by
 photo and frame (any file there may be deleted), `GET /outfits` starts
 cutting the listed covers not cut yet in the background, and at most two

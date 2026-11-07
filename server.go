@@ -240,14 +240,40 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 			writeError(w, err)
 			return
 		}
-		outfits, err := server.Store.ListOutfits(r.URL.Query().Get("status"), r.URL.Query().Get("possession_id"), limit, offset)
+		query := r.URL.Query()
+		favoriteOnly := false
+		switch query.Get("favorite") {
+		case "", "false":
+		case "true":
+			favoriteOnly = true
+		default:
+			writeError(w, fmt.Errorf("%w: favorite is true or false", ErrInvalid))
+			return
+		}
+		outfits, err := server.Store.FindOutfits(OutfitFilter{Status: query.Get("status"), PossessionID: query.Get("possession_id"),
+			FavoriteOnly: favoriteOnly, Tag: query.Get("tag"), Limit: limit, Offset: offset})
 		if err == nil {
 			err = server.Reviewer.FillOutfitCoverBoxes(r.Context(), outfits)
 		}
 		if err == nil {
 			server.Reviewer.WarmOutfitCovers(outfits)
+			server.Reviewer.QueueCoverWearerReads(outfits)
 		}
 		respond(w, http.StatusOK, outfits, err)
+	})
+	mux.HandleFunc("GET /outfit-tags", func(w http.ResponseWriter, r *http.Request) {
+		counts, err := server.Store.OutfitTagCounts()
+		respond(w, http.StatusOK, counts, err)
+	})
+	mux.HandleFunc("POST /outfit-covers/read-wearer-boxes", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Actor string `json:"actor"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := server.Reviewer.ReadMissingCoverWearerBoxes(r.Context(), body.Actor)
+		respond(w, http.StatusOK, result, err)
 	})
 	mux.HandleFunc("POST /outfits", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -309,6 +335,12 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 			return
 		}
 		outfit, err := server.Store.SetOutfitCover(r.Context(), r.PathValue("id"), *body.PhotoID, body.Actor)
+		if err == nil {
+			// The pick is kept even when the reader fails; the error says so.
+			if readErr := server.Reviewer.EnsureCoverWearerBox(r.Context(), outfit, body.Actor); readErr != nil {
+				err = fmt.Errorf("the cover is now %s, but its wearer box could not be read, so it is cut to the piece boxes: %w", valueOrEmpty(outfit.CoverPhotoID), readErr)
+			}
+		}
 		if err == nil {
 			err = server.Reviewer.FillOutfitCoverBox(r.Context(), &outfit)
 		}
@@ -711,4 +743,11 @@ func writeError(w http.ResponseWriter, err error) {
 		log.Printf("error: %v", err)
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func valueOrEmpty(pointer *string) string {
+	if pointer == nil {
+		return ""
+	}
+	return *pointer
 }

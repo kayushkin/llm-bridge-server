@@ -620,3 +620,24 @@ CREATE TABLE IF NOT EXISTS outfit_cover_choices (
     chosen_by             TEXT NOT NULL,
     chosen_at             INTEGER NOT NULL
 );
+
+-- The box around the wearer on a photo used as an outfit's cover, read once
+-- per photo by the first reader role, from the top of their head to the
+-- lowest piece of clothing or shoe that shows (outfit_covers.go). The cover
+-- is cut to it. A photo whose wearer is not found has no row.
+CREATE TABLE IF NOT EXISTS outfit_cover_wearer_boxes (
+    photo_id              TEXT NOT NULL,             -- photo-store photo_…
+    person_id             TEXT NOT NULL,             -- the review's wearer_person_id; '' when it names none
+    box_left              REAL NOT NULL,             -- fractions of the photo as its thumbnail stands
+    box_top               REAL NOT NULL,
+    box_right             REAL NOT NULL,
+    box_bottom            REAL NOT NULL,
+    face_given            INTEGER NOT NULL,          -- 1 when the reader was told where the wearer's face is
+    model                 TEXT NOT NULL,             -- the model that read it
+    input_tokens          INTEGER NOT NULL,
+    output_tokens         INTEGER NOT NULL,
+    cost_usd              REAL NOT NULL,
+    read_by               TEXT NOT NULL,             -- who asked: an actor, or "cover" for a read the outfit list started
+    read_at               INTEGER NOT NULL,
+    PRIMARY KEY (photo_id, person_id)
+);

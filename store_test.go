@@ -201,6 +201,8 @@ type scriptedModels struct {
 func (models *scriptedModels) Ask(ctx context.Context, role, systemPrompt, prompt string, schema json.RawMessage, images []msg.OneShotImage, maxTokens int) (ModelAnswer, error) {
 	step := "1"
 	switch {
+	case strings.Contains(prompt, "This photo will be cut to show the owner's outfit"):
+		step = "wearer_box"
 	case strings.Contains(prompt, "Reader A, made by another company, listed the looks"):
 		step = "check_looks"
 	case strings.Contains(prompt, "List the looks:"):

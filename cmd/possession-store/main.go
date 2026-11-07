@@ -61,6 +61,9 @@ func main() {
 		log.Fatalf("read settings: POSSESSION_STORE_OWNER_TIME_ZONE: %v", err)
 	}
 	reviewer.OwnerLocation = ownerLocation
+	// Reading a cover's wearer box is a model call, so it runs only where
+	// the review worker may call models.
+	reviewer.ReadCoverWearersInBackground = workerEnabled
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if workerEnabled {

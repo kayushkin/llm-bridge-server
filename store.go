@@ -126,6 +126,10 @@ var addedColumns = []struct{ table, column, definition string }{
 	// Why a rebuild found a look is not an outfit; '' when it is one or has
 	// not been judged.
 	{"outfit_looks", "not_an_outfit", "TEXT NOT NULL DEFAULT ''"},
+	// The owner's marks on an outfit: a favorite, and their own tags as a
+	// JSON list of lower-case words (outfitTags).
+	{"outfits", "favorite", "INTEGER NOT NULL DEFAULT 0"},
+	{"outfits", "tags", "TEXT NOT NULL DEFAULT '[]'"},
 }
 
 func addColumns(db *sql.DB) error {

@@ -3,6 +3,7 @@ package possessionstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -20,6 +21,11 @@ type OutfitInput struct {
 	Reasoning        *string  `json:"reasoning"`
 	PreviewImagePath *string  `json:"preview_image_path"`
 	PossessionIDs    []string `json:"possession_ids"`
+	// Favorite marks an outfit the owner likes; tags are the owner's own
+	// words for it (outfitTags tidies them). Tags, when given, replaces the
+	// whole list; [] clears it.
+	Favorite *bool     `json:"favorite"`
+	Tags     *[]string `json:"tags"`
 }
 
 // Outfit is an outfit as the API answers it.
@@ -36,6 +42,8 @@ type Outfit struct {
 	UpdatedAt        int64    `json:"updated_at"`
 	DeletedAt        int64    `json:"deleted_at"`
 	PossessionIDs    []string `json:"possession_ids"`
+	Favorite         bool     `json:"favorite"`
+	Tags             []string `json:"tags"` // lower case, each once, in the order given
 	WornOn           []string `json:"worn_on"`
 	PhotoIDs         []string `json:"photo_ids"`      // photo-store photos it was read from, oldest first
 	MergedIntoID     *string  `json:"merged_into_id"` // the outfit it was combined into; set only on a deleted one
@@ -45,6 +53,9 @@ type Outfit struct {
 	CoverPhotoID *string            `json:"cover_photo_id"`
 	CoverBox     *Box               `json:"cover_box"`
 	CoverReason  *OutfitCoverReason `json:"cover_reason"`
+	// CoverAspect is cover_box's width over its height in pixels, between
+	// 1:2.4 and 3:4, so a gallery can lay the cover out before it loads.
+	CoverAspect *float64 `json:"cover_aspect"`
 }
 
 // checkOutfitPossessions holds an outfit to live possessions of a wearable
@@ -112,14 +123,21 @@ func (s *Store) CreateOutfit(ctx context.Context, input OutfitInput, actor strin
 	if err := s.checkOutfitPossessions(transaction, input.PossessionIDs); err != nil {
 		return Outfit{}, err
 	}
+	tags := []string{}
+	if input.Tags != nil {
+		if tags, err = outfitTags(*input.Tags); err != nil {
+			return Outfit{}, err
+		}
+	}
+	favorite := input.Favorite != nil && *input.Favorite
 	id, sequence, err := nextID(transaction, "outfits", "outfit")
 	if err != nil {
 		return Outfit{}, err
 	}
 	now := s.unixNow()
-	if _, err := transaction.Exec(`INSERT INTO outfits (id, seq, name, occasion, weather, status, reasoning, preview_image_path, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, sequence, valueOr(input.Name, ""), valueOr(input.Occasion, ""), valueOr(input.Weather, ""), status,
-		valueOr(input.Reasoning, ""), valueOr(input.PreviewImagePath, ""), actor, now, now); err != nil {
+	if _, err := transaction.Exec(`INSERT INTO outfits (id, seq, name, occasion, weather, status, reasoning, preview_image_path, favorite, tags, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, sequence, valueOr(input.Name, ""), valueOr(input.Occasion, ""), valueOr(input.Weather, ""), status,
+		valueOr(input.Reasoning, ""), valueOr(input.PreviewImagePath, ""), favorite, mustJSON(tags), actor, now, now); err != nil {
 		return Outfit{}, err
 	}
 	if err := replaceOutfitPossessions(transaction, id, input.PossessionIDs); err != nil {
@@ -151,13 +169,23 @@ func (s *Store) PatchOutfit(ctx context.Context, id string, input OutfitInput, a
 	if !contains(OutfitStatuses, status) {
 		return Outfit{}, fmt.Errorf("%w: status must be one of %s", ErrInvalid, strings.Join(OutfitStatuses, ", "))
 	}
+	tags := existing.Tags
+	if input.Tags != nil {
+		if tags, err = outfitTags(*input.Tags); err != nil {
+			return Outfit{}, err
+		}
+	}
+	favorite := existing.Favorite
+	if input.Favorite != nil {
+		favorite = *input.Favorite
+	}
 	now := s.unixNow()
 	if err := saveRevision(transaction, "outfits", "id", id, actor, now); err != nil {
 		return Outfit{}, err
 	}
-	if _, err := transaction.Exec(`UPDATE outfits SET name = ?, occasion = ?, weather = ?, status = ?, reasoning = ?, preview_image_path = ?, updated_at = ? WHERE id = ?`,
+	if _, err := transaction.Exec(`UPDATE outfits SET name = ?, occasion = ?, weather = ?, status = ?, reasoning = ?, preview_image_path = ?, favorite = ?, tags = ?, updated_at = ? WHERE id = ?`,
 		valueOr(input.Name, existing.Name), valueOr(input.Occasion, existing.Occasion), valueOr(input.Weather, existing.Weather), status,
-		valueOr(input.Reasoning, existing.Reasoning), valueOr(input.PreviewImagePath, existing.PreviewImagePath), now, id); err != nil {
+		valueOr(input.Reasoning, existing.Reasoning), valueOr(input.PreviewImagePath, existing.PreviewImagePath), favorite, mustJSON(tags), now, id); err != nil {
 		return Outfit{}, err
 	}
 	if input.PossessionIDs != nil {
@@ -223,8 +251,9 @@ func (s *Store) GetOutfit(id string, includeDeleted bool) (Outfit, error) {
 func outfitByID(q querier, id string, includeDeleted bool) (Outfit, error) {
 	var outfit Outfit
 	var mergedInto sql.NullString
-	err := q.QueryRow(`SELECT id, name, occasion, weather, status, reasoning, preview_image_path, created_by, created_at, updated_at, deleted_at, merged_into_id FROM outfits WHERE id = ?`, id).Scan(
-		&outfit.ID, &outfit.Name, &outfit.Occasion, &outfit.Weather, &outfit.Status, &outfit.Reasoning, &outfit.PreviewImagePath, &outfit.CreatedBy, &outfit.CreatedAt, &outfit.UpdatedAt, &outfit.DeletedAt, &mergedInto)
+	var tags string
+	err := q.QueryRow(`SELECT id, name, occasion, weather, status, reasoning, preview_image_path, favorite, tags, created_by, created_at, updated_at, deleted_at, merged_into_id FROM outfits WHERE id = ?`, id).Scan(
+		&outfit.ID, &outfit.Name, &outfit.Occasion, &outfit.Weather, &outfit.Status, &outfit.Reasoning, &outfit.PreviewImagePath, &outfit.Favorite, &tags, &outfit.CreatedBy, &outfit.CreatedAt, &outfit.UpdatedAt, &outfit.DeletedAt, &mergedInto)
 	if mergedInto.Valid {
 		outfit.MergedIntoID = &mergedInto.String
 	}
@@ -233,6 +262,9 @@ func outfitByID(q querier, id string, includeDeleted bool) (Outfit, error) {
 	}
 	if err != nil {
 		return Outfit{}, err
+	}
+	if err := json.Unmarshal([]byte(tags), &outfit.Tags); err != nil {
+		return Outfit{}, fmt.Errorf("%s holds tags that are not a JSON list: %w", id, err)
 	}
 	if outfit.PossessionIDs, err = stringColumn(q, `SELECT possession_id FROM outfit_possessions WHERE outfit_id = ? ORDER BY position`, id); err != nil {
 		return Outfit{}, err
@@ -249,26 +281,53 @@ func outfitByID(q querier, id string, includeDeleted bool) (Outfit, error) {
 	return outfit, nil
 }
 
+// OutfitFilter narrows a list of outfits; a zero field narrows nothing.
+type OutfitFilter struct {
+	Status       string
+	PossessionID string
+	FavoriteOnly bool
+	Tag          string // one tag, matched after outfitTags tidies it
+	Limit        int    // default 100
+	Offset       int
+}
+
 // ListOutfits answers outfits, newest first, optionally only one status or
 // only those holding one possession.
 func (s *Store) ListOutfits(status, possessionID string, limit, offset int) ([]Outfit, error) {
+	return s.FindOutfits(OutfitFilter{Status: status, PossessionID: possessionID, Limit: limit, Offset: offset})
+}
+
+// FindOutfits answers the live outfits the filter leaves, newest first.
+func (s *Store) FindOutfits(filter OutfitFilter) ([]Outfit, error) {
 	conditions := []string{"deleted_at = 0"}
 	arguments := []any{}
-	if status != "" {
-		if !contains(OutfitStatuses, status) {
+	if filter.Status != "" {
+		if !contains(OutfitStatuses, filter.Status) {
 			return nil, fmt.Errorf("%w: status must be one of %s", ErrInvalid, strings.Join(OutfitStatuses, ", "))
 		}
 		conditions = append(conditions, "status = ?")
-		arguments = append(arguments, status)
+		arguments = append(arguments, filter.Status)
 	}
-	if possessionID != "" {
+	if filter.PossessionID != "" {
 		conditions = append(conditions, "id IN (SELECT outfit_id FROM outfit_possessions WHERE possession_id = ?)")
-		arguments = append(arguments, possessionID)
+		arguments = append(arguments, filter.PossessionID)
 	}
+	if filter.FavoriteOnly {
+		conditions = append(conditions, "favorite = 1")
+	}
+	if filter.Tag != "" {
+		tags, err := outfitTags([]string{filter.Tag})
+		if err != nil {
+			return nil, err
+		}
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM json_each(outfits.tags) WHERE json_each.value = ?)")
+		arguments = append(arguments, tags[0])
+	}
+	limit := filter.Limit
 	if limit <= 0 {
 		limit = 100
 	}
-	arguments = append(arguments, limit, offset)
+	arguments = append(arguments, limit, filter.Offset)
 	ids, err := stringColumn(s.db, `SELECT id FROM outfits WHERE `+strings.Join(conditions, " AND ")+` ORDER BY seq DESC LIMIT ? OFFSET ?`, arguments...)
 	if err != nil {
 		return nil, err
@@ -282,4 +341,53 @@ func (s *Store) ListOutfits(status, possessionID string, limit, offset int) ([]O
 		outfits = append(outfits, outfit)
 	}
 	return outfits, nil
+}
+
+// outfitTagLongest is the most characters one tag may hold.
+const outfitTagLongest = 40
+
+// outfitTags tidies the owner's tags: each trimmed, its inner spaces made
+// one, in lower case, and each once, in the order first given. An empty
+// tag, or one longer than outfitTagLongest, is refused rather than dropped.
+func outfitTags(given []string) ([]string, error) {
+	tags := []string{}
+	for _, tag := range given {
+		tidy := strings.ToLower(strings.Join(strings.Fields(tag), " "))
+		if tidy == "" {
+			return nil, fmt.Errorf("%w: a tag is empty", ErrInvalid)
+		}
+		if len([]rune(tidy)) > outfitTagLongest {
+			return nil, fmt.Errorf("%w: the tag %q is longer than %d characters", ErrInvalid, tidy, outfitTagLongest)
+		}
+		if !contains(tags, tidy) {
+			tags = append(tags, tidy)
+		}
+	}
+	return tags, nil
+}
+
+// OutfitTagCount is one tag and how many live outfits carry it.
+type OutfitTagCount struct {
+	Tag     string `json:"tag"`
+	Outfits int    `json:"outfits"`
+}
+
+// OutfitTagCounts answers every tag on a live outfit, the most used first,
+// then by name.
+func (s *Store) OutfitTagCounts() ([]OutfitTagCount, error) {
+	rows, err := s.db.Query(`SELECT json_each.value, COUNT(*) FROM outfits, json_each(outfits.tags) WHERE outfits.deleted_at = 0
+		GROUP BY json_each.value ORDER BY COUNT(*) DESC, json_each.value`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := []OutfitTagCount{}
+	for rows.Next() {
+		var count OutfitTagCount
+		if err := rows.Scan(&count.Tag, &count.Outfits); err != nil {
+			return nil, err
+		}
+		counts = append(counts, count)
+	}
+	return counts, rows.Err()
 }

@@ -42,6 +42,9 @@ type Reviewer struct {
 	// for its next poll.
 	wakeOnce sync.Once
 	wake     chan struct{}
+	// ReadCoverWearersInBackground lets the outfit list start reading the
+	// wearer box of covers that have none (QueueCoverWearerReads).
+	ReadCoverWearersInBackground bool
 	// coverCache holds what outfit covers cost to work out (outfit_covers.go).
 	coversOnce sync.Once
 	coverCache *outfitCovers

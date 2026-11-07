@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -19,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge/msg"
 	"golang.org/x/image/draw"
 )
 
@@ -29,19 +32,40 @@ import (
 // and readings both write), then the one where those boxes span the most of
 // the photo, then the earliest. The owner can pick another photo
 // (outfit_cover_choices), which holds while it is one of the outfit's
-// photos. The frame (coverFrame) is the union of the wearer's confirmed
-// face and every piece box on the cover photo, with a margin, widened or
-// heightened to coverAspect without leaving the photo.
+// photos. The frame is the wearer's outfit: the first reader is asked once
+// per cover photo for a tight box around the wearer, from the top of the
+// head to the lowest clothing or shoe that shows (outfit_cover_wearer_boxes),
+// and the cover is that box with a small margin, in its own shape between
+// coverNarrowest and coverWidest (coverFrameAroundWearer). Until that box is
+// read, the frame is the union of the wearer's confirmed face and every
+// piece box, with a wider margin (coverFrameAroundPieces), and the reason
+// says so.
 
 const (
-	// coverAspect is the cover's width over its height: 2:3, portrait.
-	coverAspect = 2.0 / 3.0
-	// coverMargin is the room left around the wearer, as a share of the
-	// wearer's width and height on each side.
+	// coverNarrowest and coverWidest bound a cover's width over its height:
+	// a frame keeps the wearer's own shape between 1:2.4 and 3:4, and is
+	// widened or heightened only to stay in that range.
+	coverNarrowest = 1 / 2.4
+	coverWidest    = 3.0 / 4.0
+	// coverMiddleAspect is the shape of the cut from the middle of a photo
+	// with neither a face nor a box.
+	coverMiddleAspect = 2.0 / 3.0
+	// coverWearerMargin is the room left around the wearer's box, as a
+	// share of its height, on every side.
+	coverWearerMargin = 0.03
+	// coverMargin is the room left around the face and piece boxes, as a
+	// share of their span's width and height on each side: model piece
+	// boxes are loose and miss what is between them.
 	coverMargin = 0.08
 	// coverImageHeight is the tallest a cover image is served; a smaller
 	// cut keeps its own size.
 	coverImageHeight = 900
+)
+
+// What a cover's frame was worked out from.
+const (
+	CoverFrameFromWearerBox  = "wearer_box"  // the reader's box around the wearer
+	CoverFrameFromPieceBoxes = "piece_boxes" // the face and piece boxes, while the wearer box is not read yet
 )
 
 // Cover rules: how the cover photo was chosen.
@@ -67,6 +91,9 @@ type OutfitCoverReason struct {
 	// confirmed on the cover photo; without it the frame holds the pieces
 	// only. Set only where the frame is worked out (cover_box present).
 	WearerFaceFound *bool `json:"wearer_face_found,omitempty"`
+	// FrameFrom says what the frame was cut to: CoverFrameFromWearerBox or
+	// CoverFrameFromPieceBoxes. Set with cover_box.
+	FrameFrom string `json:"frame_from,omitempty"`
 }
 
 // photoPieceBoxes answers, for each of the photos, the boxes of the given
@@ -217,47 +244,68 @@ func (s *Store) SetOutfitCover(ctx context.Context, outfitID, photoID, actor str
 	return s.GetOutfit(outfitID, false)
 }
 
-// coverFrame cuts a photo to the wearer: the union of the face (when known)
-// and the piece boxes, with coverMargin around it, made coverAspect wide
-// over tall in pixels and kept inside the photo. photoAspect is the photo's
-// width over its height. With neither a face nor a box the frame is the
-// tallest coverAspect cut from the middle of the photo. When the wearer is
-// wider or taller than the photo allows at coverAspect, the frame is the
-// largest that fits, centered on the wearer, and cuts its sides.
-func coverFrame(face *Box, pieces []Box, photoAspect float64) Box {
+// coverFrameAroundWearer cuts a photo to the reader's box around the
+// wearer, with coverWearerMargin of its height on every side, in its own
+// shape kept between coverNarrowest and coverWidest, inside the photo.
+// photoAspect is the photo's width over its height.
+func coverFrameAroundWearer(wearer Box, photoAspect float64) Box {
+	margin := coverWearerMargin * (wearer.Bottom - wearer.Top)
+	return shapedFrame(wearer, margin, margin, photoAspect)
+}
+
+// coverFrameAroundPieces cuts a photo to the union of the face (when known)
+// and the piece boxes, with coverMargin of the union's width and height on
+// each side, shaped as coverFrameAroundWearer. With neither a face nor a
+// box the frame is the tallest coverMiddleAspect cut from the middle.
+func coverFrameAroundPieces(face *Box, pieces []Box, photoAspect float64) Box {
 	all := append([]Box{}, pieces...)
 	if face != nil {
 		all = append(all, *face)
 	}
-	wearer, found := spanOf(all)
+	span, found := spanOf(all)
 	if !found {
-		wearer = Box{0.5, 0.5, 0.5, 0.5}
+		width := min(coverMiddleAspect, photoAspect)
+		height := width / coverMiddleAspect
+		left, top := (photoAspect-width)/2, (1-height)/2
+		return Box{left / photoAspect, top, (left + width) / photoAspect, top + height}.clamped()
 	}
+	return shapedFrame(span, coverMargin*(span.Right-span.Left)*photoAspect, coverMargin*(span.Bottom-span.Top), photoAspect)
+}
+
+// shapedFrame grows a box by the margins (in units of the photo's height,
+// across and down), widens or heightens it about its center only as far as
+// the shape range needs, and keeps it inside the photo. When the box is
+// taller or wider than the photo allows in that range, the frame is the
+// largest that fits, centered on the box, and cuts its sides.
+func shapedFrame(span Box, marginAcross, marginDown, photoAspect float64) Box {
 	// Work in units where the photo is photoAspect wide and 1 tall, so a
 	// unit is the same length across and down.
-	width := (wearer.Right - wearer.Left) * photoAspect
-	height := wearer.Bottom - wearer.Top
-	width += 2 * coverMargin * width
-	height += 2 * coverMargin * height
-	centerX := (wearer.Left + wearer.Right) / 2 * photoAspect
-	centerY := (wearer.Top + wearer.Bottom) / 2
-	if width/max(height, 1e-9) > coverAspect {
-		height = width / coverAspect
-	} else {
-		width = height * coverAspect
+	width := (span.Right-span.Left)*photoAspect + 2*marginAcross
+	height := span.Bottom - span.Top + 2*marginDown
+	centerX := (span.Left + span.Right) / 2 * photoAspect
+	centerY := (span.Top + span.Bottom) / 2
+	height = max(height, 1e-6)
+	if width < height*coverNarrowest {
+		width = height * coverNarrowest
+	} else if width > height*coverWidest {
+		height = width / coverWidest
 	}
 	if height > 1 {
-		width, height = width/height, 1
+		height = 1
+		width = min(width, coverWidest)
 	}
 	if width > photoAspect {
-		width, height = photoAspect, height*photoAspect/width
-	}
-	if !found {
-		width, height = min(coverAspect, photoAspect), min(coverAspect, photoAspect)/coverAspect
+		width = photoAspect
+		height = min(height, width/coverNarrowest)
 	}
 	left := min(max(centerX-width/2, 0), photoAspect-width)
 	top := min(max(centerY-height/2, 0), 1-height)
 	return Box{left / photoAspect, top, (left + width) / photoAspect, top + height}.clamped()
+}
+
+// frameAspect is a frame's width over its height in pixels.
+func frameAspect(frame Box, photoAspect float64) float64 {
+	return (frame.Right - frame.Left) * photoAspect / max(frame.Bottom-frame.Top, 1e-9)
 }
 
 // outfitCovers caches what a cover's frame costs to work out: each photo's
@@ -272,6 +320,11 @@ type outfitCovers struct {
 	renderSlots chan struct{}
 	warming     bool // a goroutine is cutting warmQueue
 	warmQueue   []coverCut
+	// The background reads of wearer boxes (QueueCoverWearerReads).
+	wearerReading  bool
+	wearerQueue    []string
+	wearerQueued   map[string]bool
+	wearerFailedAt map[string]time.Time
 }
 
 type cachedFace struct {
@@ -288,6 +341,7 @@ const (
 func (reviewer *Reviewer) covers() *outfitCovers {
 	reviewer.coversOnce.Do(func() {
 		reviewer.coverCache = &outfitCovers{shapes: map[string]float64{}, faces: map[string]cachedFace{},
+			wearerQueued: map[string]bool{}, wearerFailedAt: map[string]time.Time{},
 			renderSlots: make(chan struct{}, coverRendersAtOnce)}
 	})
 	return reviewer.coverCache
@@ -351,17 +405,42 @@ func (reviewer *Reviewer) wearerFaceOn(ctx context.Context, photoID, personID st
 	return box, nil
 }
 
+// wearerOnPhoto answers the person an outfit reading of the photo says is
+// the wearer, "" when no review names one.
+func (reviewer *Reviewer) wearerOnPhoto(photoID string) (string, error) {
+	var personID string
+	err := reviewer.Store.db.QueryRow(`SELECT wearer_person_id FROM photo_reviews WHERE photo_id = ?`, photoID).Scan(&personID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	return personID, nil
+}
+
+// storedWearerBox answers the reader's box around the wearer on a photo,
+// or nil when it has not been read.
+func (s *Store) storedWearerBox(photoID, personID string) (*Box, error) {
+	var box Box
+	err := s.db.QueryRow(`SELECT box_left, box_top, box_right, box_bottom FROM outfit_cover_wearer_boxes WHERE photo_id = ? AND person_id = ?`, photoID, personID).Scan(
+		&box.Left, &box.Top, &box.Right, &box.Bottom)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &box, nil
+}
+
 // FillOutfitCoverBox works out the frame of an outfit's cover and sets
-// cover_box and the reason's wearer_face_found. An outfit with no cover is
-// left as it is.
+// cover_box, cover_aspect and the reason's wearer_face_found and
+// frame_from. An outfit with no cover is left as it is.
 func (reviewer *Reviewer) FillOutfitCoverBox(ctx context.Context, outfit *Outfit) error {
 	if outfit.CoverPhotoID == nil {
 		return nil
 	}
 	photoID := *outfit.CoverPhotoID
-	var personID string
-	err := reviewer.Store.db.QueryRow(`SELECT wearer_person_id FROM photo_reviews WHERE photo_id = ?`, photoID).Scan(&personID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	personID, err := reviewer.wearerOnPhoto(photoID)
+	if err != nil {
 		return err
 	}
 	face, err := reviewer.wearerFaceOn(ctx, photoID, personID)
@@ -372,17 +451,254 @@ func (reviewer *Reviewer) FillOutfitCoverBox(ctx context.Context, outfit *Outfit
 	if err != nil {
 		return err
 	}
-	boxes, err := photoPieceBoxes(reviewer.Store.db, []string{photoID}, outfit.PossessionIDs)
+	wearer, err := reviewer.Store.storedWearerBox(photoID, personID)
 	if err != nil {
 		return err
 	}
-	frame := coverFrame(face, boxesOf(boxes[photoID]), aspect)
+	var frame Box
+	if wearer != nil {
+		frame = coverFrameAroundWearer(*wearer, aspect)
+		outfit.CoverReason.FrameFrom = CoverFrameFromWearerBox
+	} else {
+		boxes, err := photoPieceBoxes(reviewer.Store.db, []string{photoID}, outfit.PossessionIDs)
+		if err != nil {
+			return err
+		}
+		frame = coverFrameAroundPieces(face, boxesOf(boxes[photoID]), aspect)
+		outfit.CoverReason.FrameFrom = CoverFrameFromPieceBoxes
+	}
 	rounded := Box{roundTo(frame.Left), roundTo(frame.Top), roundTo(frame.Right), roundTo(frame.Bottom)}
 	outfit.CoverBox = &rounded
+	shape := math.Round(frameAspect(rounded, aspect)*1000) / 1000
+	outfit.CoverAspect = &shape
 	faceFound := face != nil
 	outfit.CoverReason.WearerFaceFound = &faceFound
 	return nil
 }
+
+// coverWearerSchema is the answer the reader gives about the wearer.
+var coverWearerSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["wearer_found","box"],
+"properties":{"wearer_found":{"type":"boolean"},
+"box":{"type":"object","additionalProperties":false,"required":["left","top","right","bottom"],
+"properties":{"left":{"type":"number"},"top":{"type":"number"},"right":{"type":"number"},"bottom":{"type":"number"}}}}}`)
+
+func coverWearerPrompt(face *Box) string {
+	who := "The owner is the person whose photo this is: the one taking the selfie or standing in the mirror, or the only person, or the largest one in front."
+	if face != nil {
+		who = fmt.Sprintf("The owner's face is in the box left %.3f, top %.3f, right %.3f, bottom %.3f.", face.Left, face.Top, face.Right, face.Bottom)
+	}
+	return who + ` This photo will be cut to show the owner's outfit, so give one tight box around the owner as they appear in it:
+- top: the top of their head, or of their hat;
+- bottom: the lowest point of their clothing or shoes that can be seen (the bottom edge of the photo when they run past it);
+- left and right: the outermost points of their body, clothes and what they carry, arms included.
+Leave out other people, furniture, mirrors, doorways and the background. Do not add any room around the box; the cut adds its own.
+Sides are fractions of the photo, 0 to 1, measured from its top left. Set wearer_found to false, with any box, only when the owner cannot be seen at all.`
+}
+
+// readCoverWearerBox asks the first reader for the box around the wearer
+// on a photo and stores it, with what it cost. readBy says who asked.
+func (reviewer *Reviewer) readCoverWearerBox(ctx context.Context, photoID, readBy string) (Box, ModelAnswer, error) {
+	personID, err := reviewer.wearerOnPhoto(photoID)
+	if err != nil {
+		return Box{}, ModelAnswer{}, err
+	}
+	face, err := reviewer.wearerFaceOn(ctx, photoID, personID)
+	if err != nil {
+		return Box{}, ModelAnswer{}, fmt.Errorf("the wearer's face on %s: %w", photoID, err)
+	}
+	photo, _, err := reviewer.Photos.ReviewImage(ctx, photoID)
+	if err != nil {
+		return Box{}, ModelAnswer{}, err
+	}
+	answer, err := reviewer.Models.Ask(ctx, reviewer.FirstReaderRole, "You find people in photos and give exact boxes around them.", coverWearerPrompt(face),
+		coverWearerSchema, []msg.OneShotImage{{MediaType: "image/jpeg", DataBase64: base64.StdEncoding.EncodeToString(photo)}}, 4000)
+	if err != nil {
+		return Box{}, ModelAnswer{}, fmt.Errorf("reader %s on %s: %w", reviewer.FirstReaderRole, photoID, err)
+	}
+	var reading struct {
+		WearerFound bool `json:"wearer_found"`
+		Box         Box  `json:"box"`
+	}
+	if err := json.Unmarshal(answer.Parsed, &reading); err != nil {
+		return Box{}, answer, fmt.Errorf("%s's answer about %s is not a wearer box: %w", answer.Model, photoID, err)
+	}
+	box := reading.Box.clamped()
+	if !reading.WearerFound {
+		return Box{}, answer, fmt.Errorf("%w: %s found no wearer on %s", ErrInvalid, answer.Model, photoID)
+	}
+	if !box.valid() {
+		return Box{}, answer, fmt.Errorf("%w: %s gave %s a box with no area: %+v", ErrInvalid, answer.Model, photoID, reading.Box)
+	}
+	store := reviewer.Store
+	store.writeMutex.Lock()
+	defer store.writeMutex.Unlock()
+	if _, err := store.db.Exec(`INSERT OR REPLACE INTO outfit_cover_wearer_boxes (photo_id, person_id, box_left, box_top, box_right, box_bottom, face_given, model, input_tokens, output_tokens, cost_usd, read_by, read_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, photoID, personID, box.Left, box.Top, box.Right, box.Bottom, face != nil, answer.Model,
+		answer.InputTokens, answer.OutputTokens, answer.CostUSD, readBy, store.unixNow()); err != nil {
+		return Box{}, answer, err
+	}
+	return box, answer, nil
+}
+
+// EnsureCoverWearerBox reads the box around the wearer on the outfit's
+// cover photo when it has not been read, so a cover the owner just picked
+// is cut tight at once.
+func (reviewer *Reviewer) EnsureCoverWearerBox(ctx context.Context, outfit Outfit, actor string) error {
+	if outfit.CoverPhotoID == nil {
+		return nil
+	}
+	personID, err := reviewer.wearerOnPhoto(*outfit.CoverPhotoID)
+	if err != nil {
+		return err
+	}
+	stored, err := reviewer.Store.storedWearerBox(*outfit.CoverPhotoID, personID)
+	if err != nil || stored != nil {
+		return err
+	}
+	_, _, err = reviewer.readCoverWearerBox(ctx, *outfit.CoverPhotoID, actor)
+	return err
+}
+
+// CoverWearerReading is what POST /outfit-covers/read-wearer-boxes did.
+type CoverWearerReading struct {
+	CoverPhotos int                  `json:"cover_photos"` // distinct cover photos of live outfits
+	AlreadyRead int                  `json:"already_read"`
+	Read        int                  `json:"read"`
+	Failed      []CoverWearerFailure `json:"failed"`
+	CostUSD     float64              `json:"cost_usd"`
+}
+
+// CoverWearerFailure is a cover photo whose wearer box could not be read.
+type CoverWearerFailure struct {
+	PhotoID string `json:"photo_id"`
+	Why     string `json:"why"`
+}
+
+// coverWearerReadsAtOnce is how many wearer boxes are read together.
+const coverWearerReadsAtOnce = 4
+
+// ReadMissingCoverWearerBoxes reads the wearer box of every live outfit's
+// cover photo that has none, coverWearerReadsAtOnce at a time. A photo the
+// reader fails on is named in failed with why; the rest go on.
+func (reviewer *Reviewer) ReadMissingCoverWearerBoxes(ctx context.Context, actor string) (CoverWearerReading, error) {
+	if actor == "" {
+		return CoverWearerReading{}, fmt.Errorf("%w: say who is asking (the actor)", ErrInvalid)
+	}
+	outfits, err := reviewer.Store.FindOutfits(OutfitFilter{Limit: math.MaxInt32})
+	if err != nil {
+		return CoverWearerReading{}, err
+	}
+	result := CoverWearerReading{Failed: []CoverWearerFailure{}}
+	seen := map[string]bool{}
+	missing := []string{}
+	for _, outfit := range outfits {
+		if outfit.CoverPhotoID == nil || seen[*outfit.CoverPhotoID] {
+			continue
+		}
+		photoID := *outfit.CoverPhotoID
+		seen[photoID] = true
+		result.CoverPhotos++
+		personID, err := reviewer.wearerOnPhoto(photoID)
+		if err != nil {
+			return result, err
+		}
+		stored, err := reviewer.Store.storedWearerBox(photoID, personID)
+		if err != nil {
+			return result, err
+		}
+		if stored != nil {
+			result.AlreadyRead++
+			continue
+		}
+		missing = append(missing, photoID)
+	}
+	var mutex sync.Mutex
+	var group sync.WaitGroup
+	slots := make(chan struct{}, coverWearerReadsAtOnce)
+	for _, photoID := range missing {
+		group.Add(1)
+		slots <- struct{}{}
+		go func(photoID string) {
+			defer group.Done()
+			defer func() { <-slots }()
+			_, answer, err := reviewer.readCoverWearerBox(ctx, photoID, actor)
+			mutex.Lock()
+			defer mutex.Unlock()
+			result.CostUSD += answer.CostUSD
+			if err != nil {
+				result.Failed = append(result.Failed, CoverWearerFailure{PhotoID: photoID, Why: err.Error()})
+				return
+			}
+			result.Read++
+		}(photoID)
+	}
+	group.Wait()
+	result.CostUSD = math.Round(result.CostUSD*10000) / 10000
+	return result, ctx.Err()
+}
+
+// QueueCoverWearerReads reads, in the background and one at a time, the
+// wearer box of every listed outfit whose cover is still cut to its piece
+// boxes, so a cover that changed (a rebuild, a combine) is cut tight soon
+// after the gallery lists it. Only with ReadCoverWearersInBackground. A
+// photo that failed is not tried again for coverWearerRetryAfter; failures
+// are logged.
+func (reviewer *Reviewer) QueueCoverWearerReads(outfits []Outfit) {
+	if !reviewer.ReadCoverWearersInBackground {
+		return
+	}
+	cache := reviewer.covers()
+	cache.mutex.Lock()
+	for _, outfit := range outfits {
+		if outfit.CoverPhotoID == nil || outfit.CoverReason == nil || outfit.CoverReason.FrameFrom != CoverFrameFromPieceBoxes {
+			continue
+		}
+		photoID := *outfit.CoverPhotoID
+		if cache.wearerQueued[photoID] || time.Since(cache.wearerFailedAt[photoID]) < coverWearerRetryAfter {
+			continue
+		}
+		cache.wearerQueued[photoID] = true
+		cache.wearerQueue = append(cache.wearerQueue, photoID)
+	}
+	start := !cache.wearerReading && len(cache.wearerQueue) > 0
+	cache.wearerReading = cache.wearerReading || start
+	cache.mutex.Unlock()
+	if !start {
+		return
+	}
+	go func() {
+		for {
+			cache.mutex.Lock()
+			if len(cache.wearerQueue) == 0 {
+				cache.wearerReading = false
+				cache.mutex.Unlock()
+				return
+			}
+			photoID := cache.wearerQueue[0]
+			cache.wearerQueue = cache.wearerQueue[1:]
+			cache.mutex.Unlock()
+			_, answer, err := reviewer.readCoverWearerBox(context.Background(), photoID, coverWearerReadByList)
+			cache.mutex.Lock()
+			delete(cache.wearerQueued, photoID)
+			if err != nil {
+				cache.wearerFailedAt[photoID] = time.Now()
+			}
+			cache.mutex.Unlock()
+			if err != nil {
+				log.Printf("read the wearer box on cover photo %s: %v", photoID, err)
+			} else {
+				log.Printf("read the wearer box on cover photo %s ($%.4f)", photoID, answer.CostUSD)
+			}
+		}
+	}()
+}
+
+const (
+	// coverWearerReadByList is read_by on a wearer box the outfit list
+	// started reading.
+	coverWearerReadByList = "cover"
+	coverWearerRetryAfter = time.Hour
+)
 
 func roundTo(value float64) float64 { return math.Round(value*10000) / 10000 }
 

@@ -16,6 +16,10 @@ type outfitMergeMoves struct {
 	PiecesAdded      []outfitMembership `json:"pieces_added"`      // the duplicate's pieces the kept outfit did not hold
 	WearingsAdded    []string           `json:"wearings_added"`    // the duplicate's days the kept outfit had not been worn on
 	ReviewsRepointed []string           `json:"reviews_repointed"` // outfit readings that now answer the kept outfit
+	// The owner's marks the kept outfit took from the duplicate: favorite
+	// when only the duplicate was one, and the duplicate's tags it lacked.
+	FavoriteSet bool     `json:"favorite_set"`
+	TagsAdded   []string `json:"tags_added"`
 }
 
 // OutfitMerge is one combining of two outfits as the API answers it.
@@ -39,15 +43,30 @@ func (s *Store) combineOutfitsInTransaction(transaction *sql.Tx, duplicateID, ke
 	if duplicateID == keptID {
 		return "", fmt.Errorf("%w: an outfit cannot be combined with itself", ErrInvalid)
 	}
+	sides := map[string]Outfit{}
 	for _, id := range []string{duplicateID, keptID} {
-		if _, err := outfitByID(transaction, id, false); err != nil {
+		outfit, err := outfitByID(transaction, id, false)
+		if err != nil {
 			return "", err
 		}
+		sides[id] = outfit
 		if err := saveRevision(transaction, "outfits", "id", id, actor, now); err != nil {
 			return "", err
 		}
 	}
-	moves := outfitMergeMoves{PiecesAdded: []outfitMembership{}}
+	moves := outfitMergeMoves{PiecesAdded: []outfitMembership{}, TagsAdded: []string{}}
+	kept, duplicate := sides[keptID], sides[duplicateID]
+	moves.FavoriteSet = duplicate.Favorite && !kept.Favorite
+	keptTags := append([]string{}, kept.Tags...)
+	for _, tag := range duplicate.Tags {
+		if !contains(keptTags, tag) {
+			keptTags = append(keptTags, tag)
+			moves.TagsAdded = append(moves.TagsAdded, tag)
+		}
+	}
+	if _, err := transaction.Exec(`UPDATE outfits SET favorite = ?, tags = ? WHERE id = ?`, kept.Favorite || duplicate.Favorite, mustJSON(keptTags), keptID); err != nil {
+		return "", err
+	}
 	var err error
 	rows, err := transaction.Query(`SELECT possession_id FROM outfit_possessions WHERE outfit_id = ? AND possession_id NOT IN (SELECT possession_id FROM outfit_possessions WHERE outfit_id = ?) ORDER BY position`, duplicateID, keptID)
 	if err != nil {
@@ -234,6 +253,22 @@ func (s *Store) UndoOutfitMerge(ctx context.Context, mergeID, actor string) (Out
 	}
 	for _, day := range merge.Moved.WearingsAdded {
 		if _, err := transaction.Exec(`DELETE FROM outfit_wearings WHERE outfit_id = ? AND worn_on = ?`, merge.KeptOutfitID, day); err != nil {
+			return OutfitMerge{}, err
+		}
+	}
+	if merge.Moved.FavoriteSet || len(merge.Moved.TagsAdded) > 0 {
+		kept, err := outfitByID(transaction, merge.KeptOutfitID, false)
+		if err != nil {
+			return OutfitMerge{}, err
+		}
+		tags := []string{}
+		for _, tag := range kept.Tags {
+			if !contains(merge.Moved.TagsAdded, tag) {
+				tags = append(tags, tag)
+			}
+		}
+		favorite := kept.Favorite && !merge.Moved.FavoriteSet
+		if _, err := transaction.Exec(`UPDATE outfits SET favorite = ?, tags = ? WHERE id = ?`, favorite, mustJSON(tags), merge.KeptOutfitID); err != nil {
 			return OutfitMerge{}, err
 		}
 	}
