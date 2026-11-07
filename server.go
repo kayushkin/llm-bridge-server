@@ -146,6 +146,29 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.DeleteDescriptionMarker(r.PathValue("id"), r.PathValue("marker_id"))
 		respond(w, http.StatusOK, out, err)
 	})
+	mux.HandleFunc("GET /accounts/{id}/loan-schedule", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.GetLoanSchedule(r.PathValue("id"))
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("POST /accounts/{id}/loan-schedule/apply", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.ApplyLoanSchedule(r.PathValue("id"))
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("GET /accounts/{id}/loan-payment-facts", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.ListLoanPaymentFacts(r.PathValue("id"))
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("POST /accounts/{id}/loan-payment-facts", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Facts []LoanPaymentFact `json:"facts"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.RecordLoanPaymentFacts(r.PathValue("id"), in.Facts)
+		respond(w, http.StatusOK, out, err)
+	})
 	mux.HandleFunc("POST /accounts/{id}/opening-balance", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			AsOf         string `json:"as_of"`
@@ -328,6 +351,11 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	})
 	mux.HandleFunc("GET /reports/monthly", func(w http.ResponseWriter, r *http.Request) {
 		list, err := s.SpendingByMonth(r.URL.Query().Get("from"), r.URL.Query().Get("to"))
+		respond(w, http.StatusOK, list, err)
+	})
+	mux.HandleFunc("GET /reports/by-account", func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		list, err := s.SpendingByAccountAndMonth(query["category_id"], query.Get("from"), query.Get("to"))
 		respond(w, http.StatusOK, list, err)
 	})
 	mux.HandleFunc("GET /budget", func(w http.ResponseWriter, r *http.Request) {

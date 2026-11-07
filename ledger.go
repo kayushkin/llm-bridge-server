@@ -38,6 +38,9 @@ type LoanDetails struct {
 	MaturityOn             string `json:"maturity_on"`
 	ScheduledPaymentCents  int64  `json:"scheduled_payment_cents"`
 	SecuredBy              string `json:"secured_by"`
+	// InterestCategoryID is where the interest part of each payment goes
+	// when the loan schedule is applied.
+	InterestCategoryID string `json:"interest_category_id"`
 }
 
 // RetirementDetails are the facts only a retirement account has.
@@ -386,11 +389,20 @@ func writeAccountDetails(tx queryer, accountID string, card *CreditCardDetails, 
 		}
 	}
 	if loan != nil {
-		if _, err := tx.Exec(`INSERT INTO loan_details (account_id, original_principal_cents, apr_basis_points, term_months, first_payment_on, maturity_on, scheduled_payment_cents, secured_by)
-			VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET original_principal_cents=excluded.original_principal_cents,
+		var interestCategory any
+		if loan.InterestCategoryID != "" {
+			var kind string
+			if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = ?`, loan.InterestCategoryID).Scan(&kind); err != nil || kind != "expense" {
+				return fmt.Errorf("%w: loan.interest_category_id %q is not an expense category", ErrInvalid, loan.InterestCategoryID)
+			}
+			interestCategory = loan.InterestCategoryID
+		}
+		if _, err := tx.Exec(`INSERT INTO loan_details (account_id, original_principal_cents, apr_basis_points, term_months, first_payment_on, maturity_on, scheduled_payment_cents, secured_by, interest_category_id)
+			VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET original_principal_cents=excluded.original_principal_cents,
 			apr_basis_points=excluded.apr_basis_points, term_months=excluded.term_months, first_payment_on=excluded.first_payment_on,
-			maturity_on=excluded.maturity_on, scheduled_payment_cents=excluded.scheduled_payment_cents, secured_by=excluded.secured_by`,
-			accountID, loan.OriginalPrincipalCents, loan.APRBasisPoints, loan.TermMonths, loan.FirstPaymentOn, loan.MaturityOn, loan.ScheduledPaymentCents, loan.SecuredBy); err != nil {
+			maturity_on=excluded.maturity_on, scheduled_payment_cents=excluded.scheduled_payment_cents, secured_by=excluded.secured_by,
+			interest_category_id=excluded.interest_category_id`,
+			accountID, loan.OriginalPrincipalCents, loan.APRBasisPoints, loan.TermMonths, loan.FirstPaymentOn, loan.MaturityOn, loan.ScheduledPaymentCents, loan.SecuredBy, interestCategory); err != nil {
 			return err
 		}
 	}
@@ -565,8 +577,8 @@ func (s *Store) loadAccountExtras(a *Account) error {
 		return err
 	}
 	var loan LoanDetails
-	err = s.db.QueryRow(`SELECT original_principal_cents, apr_basis_points, term_months, first_payment_on, maturity_on, scheduled_payment_cents, secured_by FROM loan_details WHERE account_id = ?`, a.ID).
-		Scan(&loan.OriginalPrincipalCents, &loan.APRBasisPoints, &loan.TermMonths, &loan.FirstPaymentOn, &loan.MaturityOn, &loan.ScheduledPaymentCents, &loan.SecuredBy)
+	err = s.db.QueryRow(`SELECT original_principal_cents, apr_basis_points, term_months, first_payment_on, maturity_on, scheduled_payment_cents, secured_by, COALESCE(interest_category_id,'') FROM loan_details WHERE account_id = ?`, a.ID).
+		Scan(&loan.OriginalPrincipalCents, &loan.APRBasisPoints, &loan.TermMonths, &loan.FirstPaymentOn, &loan.MaturityOn, &loan.ScheduledPaymentCents, &loan.SecuredBy, &loan.InterestCategoryID)
 	if err == nil {
 		a.Loan = &loan
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -1114,15 +1126,15 @@ func (s *Store) loadTransactionParts(t *Transaction) error {
 
 // TransactionFilter narrows ListTransactions. Empty fields do not filter.
 type TransactionFilter struct {
-	AccountID     string
-	CategoryID    string
+	AccountID  string
+	CategoryID string
 	// IncludeSubcategories widens CategoryID to every category under it.
 	IncludeSubcategories bool
 	Month                string // YYYY-MM
-	Query         string // substring of description or memo
-	Uncategorized bool
-	Limit         int
-	Offset        int
+	Query                string // substring of description or memo
+	Uncategorized        bool
+	Limit                int
+	Offset               int
 }
 
 // ListTransactions returns transactions newest first.

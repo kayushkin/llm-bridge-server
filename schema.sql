@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS loan_details (
   first_payment_on          TEXT NOT NULL DEFAULT '',
   maturity_on               TEXT NOT NULL DEFAULT '',
   scheduled_payment_cents   INTEGER NOT NULL DEFAULT 0,
-  secured_by                TEXT NOT NULL DEFAULT ''
+  secured_by                TEXT NOT NULL DEFAULT '',
+  interest_category_id      TEXT REFERENCES categories(id) -- where the interest part of each payment goes
 );
 
 CREATE TABLE IF NOT EXISTS retirement_details (
@@ -292,3 +293,19 @@ CREATE TABLE IF NOT EXISTS category_suggestions (
   created_at             INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS category_suggestions_status ON category_suggestions(status, transaction_id);
+
+-- What a loan statement says about one payment: its exact split and the
+-- principal left after it. The loan schedule uses these over its own daily
+-- interest arithmetic wherever they exist.
+CREATE TABLE IF NOT EXISTS loan_payment_facts (
+  seq                           INTEGER PRIMARY KEY,
+  id                            TEXT NOT NULL UNIQUE, -- loan_payment_fact_000001
+  account_id                    TEXT NOT NULL REFERENCES accounts(id),
+  effective_on                  TEXT NOT NULL,        -- the date the lender applied the payment
+  interest_cents                INTEGER NOT NULL,
+  principal_cents               INTEGER NOT NULL,
+  principal_balance_after_cents INTEGER NOT NULL,     -- what is still owed, as a positive number
+  source                        TEXT NOT NULL,        -- "statement 10/23/26"
+  created_at                    INTEGER NOT NULL,
+  UNIQUE (account_id, effective_on)
+);

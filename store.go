@@ -195,6 +195,15 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
+	columns, err = tableColumns(db, "loan_details")
+	if err != nil {
+		return err
+	}
+	if !columns["interest_category_id"] {
+		if _, err := db.Exec(`ALTER TABLE loan_details ADD COLUMN interest_category_id TEXT REFERENCES categories(id)`); err != nil {
+			return err
+		}
+	}
 	columns, err = tableColumns(db, "category_suggestions")
 	if err != nil {
 		return err

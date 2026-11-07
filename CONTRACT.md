@@ -54,6 +54,9 @@ entity-type registry match each kind for chips: `budget_account`,
 | `GET/POST /accounts`, `GET/PATCH /accounts/{id}` | accounts with `balance_cents` and their detail block (`credit_card`, `loan`, `retirement`). `last_four` must be four digits: a full number is refused. Setting it also adds it as a description marker |
 | `POST /accounts/{id}/description-markers`, `DELETE /accounts/{id}/description-markers/{marker_id}` | `{marker, note}`: text that names this account in another account's rows (an old card number, a loan reference). At least 4 characters. Deleting one leaves what it already matched |
 | `POST /accounts/{id}/opening-balance` | `{as_of, balance_cents, source}`: makes the ledger agree with a reported balance, with one opening-balance transaction dated the day before the account's first posting; replaces any earlier one. Also records an assertion |
+| `GET /accounts/{id}/loan-schedule` | a loan's every payment split into interest and principal, and the projection to payoff; see Loans. Changes nothing |
+| `POST /accounts/{id}/loan-schedule/apply` | writes the schedule onto the payments: the loan gets the principal, `loan.interest_category_id` the interest. Run again after a new fact or payment |
+| `GET/POST /accounts/{id}/loan-payment-facts` | `{facts:[{effective_on, interest_cents, principal_cents, principal_balance_after_cents, source}]}`: what a statement says about one payment; replaces one on the same date |
 | `GET/POST /balance-assertions` | `{account_id, as_of, balance_cents, source}`: a reported balance; each answer carries `ledger_balance_cents` and `difference_cents` (ledger minus reported) as the ledger stands now |
 | `GET/POST /categories`, `GET /categories/{id}` | `{parent_id, name, kind}`; kind `expense`, `income` or `equity`. Two categories carry a `role` the store posts to: `uncategorized` and `opening_balances`. Find them by role, never by name |
 | `GET/POST /payees`, `GET /payees/{id}`, `POST /payees/apply-rules` | `{name, default_category_id, patterns}`: a pattern is upper-cased text matched as a substring of a description; the longest match wins. `apply-rules` names every transaction without a payee and moves one still wholly Uncategorized to the payee's default category. A category someone chose is never overwritten |
@@ -68,6 +71,7 @@ entity-type registry match each kind for chips: `budget_account`,
 | `GET /import-batches`, `GET /import-batches/{id}`, `POST /import-batches/{id}/undo` | `outcomes` counts each row's fate, `first_row_on`/`last_row_on` the dates the file covers; undo deletes what the batch made and keeps its rows |
 | `GET /reports/spending?month=` | each category's total that month |
 | `GET /reports/monthly?from=&to=` | each category's total in each month from `from` to `to` (YYYY-MM, inclusive, either optional): `[{month, category_id, kind, total_cents, transactions}]` |
+| `GET /reports/by-account?category_id=…&category_id=…&from=&to=` | those categories and every one under them, per month, category and account of the transaction: card interest per card per month |
 | `GET /budget?month=&view=limit\|envelope`, `PUT /budget-assignments` | see below |
 | `GET /links?from_id=`, `POST /links` | `{from_id, entity_type, entity_ref, note}`: a pointer to another store's record by that store's id |
 
@@ -116,6 +120,21 @@ cover one of those moves is a 409** naming them, since the file may hold the
 other side and the transfer would count twice. `POST
 /transactions/{id}/undo-transfer-without-partner` puts the posting back on
 Uncategorized; import, then match again.
+
+## Loans
+
+`GET /accounts/{id}/loan-schedule` assumes simple interest charged daily on
+the principal owed: a payment's interest is principal × `loan.apr_basis_points`
+× days since the last payment / 365, rounded half up to the cent. The payout
+is the loan's one transfer into another account; payments are its transfers
+from another account, each dated on `loan.first_payment_on`'s day of month
+when it posted within 7 days of it. A statement's own split
+(`loan_payment_facts`) is used for its payment instead, and where computed
+payments meet one, the last computed payment moves the difference between
+interest and principal so the principal owed matches the statement, and says
+so. Each row's `source` is `statement`, `computed`, `computed, adjusted to meet
+a statement`, or `projected` (the scheduled payment on each due day until
+payoff). `schedule_applied_to_all` says whether the postings already carry it.
 
 ## Budgets
 
