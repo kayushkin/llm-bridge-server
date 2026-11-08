@@ -404,7 +404,33 @@ func possessionView(q querier, id string, includeDeleted bool) (map[string]any, 
 			view["cover_photo_id"] = photo.PhotoID
 		}
 	}
+	// The product it is, read with it so a chip shows the listing without a
+	// second call; the product route has the rest.
+	view["product"] = nil
+	if productID := derefString(view["product_id"]); productID != "" {
+		product, err := scanProduct(q.QueryRow(`SELECT `+productColumns+` FROM products WHERE id = ?`, productID))
+		if err != nil {
+			return nil, fmt.Errorf("read product %s of %s: %w", productID, id, err)
+		}
+		view["product"] = map[string]any{"id": product.ID, "brand": product.Brand, "model_number": product.ModelNumber, "name": product.Name,
+			"listing_url": product.ListingURL, "listing_source": product.ListingSource, "listing_publisher": product.ListingPublisher,
+			"article_id": product.ArticleID, "description": product.Description, "list_price_cents": product.ListPriceCents, "list_price_currency": product.ListPriceCurrency}
+	}
 	return view, nil
+}
+
+// derefString is a view's text value, whether read as a string or a
+// pointer to one; "" for NULL.
+func derefString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case *string:
+		if typed != nil {
+			return *typed
+		}
+	}
+	return ""
 }
 
 func stringColumn(q querier, query string, arguments ...any) ([]string, error) {

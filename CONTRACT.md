@@ -100,7 +100,10 @@ copies the whole row to `revisions`.
  "cover_photo_id":"photo_000123"}
 ```
 
-`kind` is `""` and no kind key is present for a possession with no kind. A
+`kind` is `""` and no kind key is present for a possession with no kind.
+`product` is null, or the product `product_id` names, read with it: `{id,
+brand, model_number, name, listing_url, listing_source, listing_publisher,
+article_id, description, list_price_cents, list_price_currency}`. A
 computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 
 ## Routes

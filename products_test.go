@@ -65,6 +65,9 @@ func TestAProductIsReadFromItsListingAndServesItsPossessions(t *testing.T) {
 	if err != nil || fmt.Sprint(read["product_id"]) != "product_000001" {
 		t.Fatalf("possession product_id = %v %v", read["product_id"], err)
 	}
+	if embedded, _ := read["product"].(map[string]any); embedded["description"] != "A watch that keeps tempo." || embedded["listing_url"] != "https://maker.example/mw" {
+		t.Fatalf("the possession's product = %v", read["product"])
+	}
 	_, err = reviewer.CreateProduct(ctx, ProductRequest{Actor: "principal_000001", Brand: "acme", ModelNumber: "mw-6", Name: "again", ListingURL: "https://maker.example/mw",
 		ListingSource: "manufacturer", ArticleID: "article_000007", Description: "given"})
 	if !errors.Is(err, ErrConflict) {
