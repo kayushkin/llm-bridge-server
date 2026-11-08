@@ -576,8 +576,8 @@ func (s *Store) QueuePhotoReview(ctx context.Context, photoID, queuedBy, reading
 	if !contains(PhotoReviewReadings, reading) {
 		return PhotoReview{}, false, fmt.Errorf("%w: reading must be one of %s", ErrInvalid, strings.Join(PhotoReviewReadings, ", "))
 	}
-	if (reading == "outfit") != (wearerPersonID != "") {
-		return PhotoReview{}, false, fmt.Errorf("%w: an outfit reading needs wearer_person_id, and only an outfit reading takes one", ErrInvalid)
+	if (reading == "outfit" || reading == "look") != (wearerPersonID != "") {
+		return PhotoReview{}, false, fmt.Errorf("%w: an outfit or look reading needs wearer_person_id, and only those take one", ErrInvalid)
 	}
 	if existing, err := s.photoReviewForPhoto(photoID); err == nil {
 		return existing, false, nil
@@ -802,7 +802,7 @@ func (reviewer *Reviewer) Run(ctx context.Context) {
 	for {
 		for {
 			var id string
-			err := reviewer.Store.db.QueryRow(`SELECT id FROM photo_reviews WHERE status = 'queued' ORDER BY seq LIMIT 1`).Scan(&id)
+			err := reviewer.Store.db.QueryRow(`SELECT id FROM photo_reviews WHERE status = 'queued' AND reading != 'look' ORDER BY seq LIMIT 1`).Scan(&id)
 			if errors.Is(err, sql.ErrNoRows) {
 				break
 			}
@@ -847,8 +847,11 @@ func (reviewer *Reviewer) Review(ctx context.Context, reviewID string) error {
 	if err != nil {
 		return err
 	}
-	if review.Reading == "outfit" {
+	switch review.Reading {
+	case "outfit":
 		return reviewer.reviewOutfit(ctx, review)
+	case "look":
+		return fmt.Errorf("%w: %s is a look reading, read with the day's other photos by POST /outfit-looks/read", ErrInvalid, reviewID)
 	}
 	photo, imageSource, err := reviewer.Photos.ReviewImage(ctx, review.PhotoID)
 	if err != nil {

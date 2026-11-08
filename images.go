@@ -34,6 +34,9 @@ type PhotoSource interface {
 	// TakenAt answers when photo-store says the photo was taken, epoch
 	// seconds; 0 when it does not know.
 	TakenAt(ctx context.Context, photoID string) (int64, error)
+	// WhyACopy answers why photo-store's photo is a copy of another photo
+	// rather than a photo of its own day (a screenshot), "" when it is not.
+	WhyACopy(ctx context.Context, photoID string) (string, error)
 	// DetailImage answers the photo at full size, turned to stand as its
 	// thumbnail stands, so a box read on the thumbnail cuts the same place:
 	// the original from originals/ ("original"), or the thumbnail itself
@@ -122,6 +125,36 @@ func (source PhotoStoreSource) TakenAt(ctx context.Context, photoID string) (int
 		return 0, fmt.Errorf("photo-store's %s is not a photo: %w", photoID, err)
 	}
 	return photo.TakenAt, nil
+}
+
+// WhyACopy reads photo-store's source path and tags: a file whose name
+// begins "Screenshot", or a photo tagged screenshot, is a copy.
+func (source PhotoStoreSource) WhyACopy(ctx context.Context, photoID string) (string, error) {
+	body, err := source.get(ctx, "/photos/"+url.PathEscape(photoID))
+	if err != nil {
+		return "", err
+	}
+	var photo struct {
+		SourcePath string   `json:"source_path"`
+		Tags       []string `json:"tags"`
+	}
+	if err := json.Unmarshal(body, &photo); err != nil {
+		return "", fmt.Errorf("photo-store's %s is not a photo: %w", photoID, err)
+	}
+	return whyACopy(photo.SourcePath, photo.Tags), nil
+}
+
+func whyACopy(sourcePath string, tags []string) string {
+	name := sourcePath[strings.LastIndexAny(sourcePath, `/\`)+1:]
+	if strings.HasPrefix(strings.ToLower(name), "screenshot") {
+		return "a screenshot (" + name + "), not a photo of its own day"
+	}
+	for _, tag := range tags {
+		if strings.EqualFold(tag, "screenshot") {
+			return "tagged screenshot in photo-store, not a photo of its own day"
+		}
+	}
+	return ""
 }
 
 // Thumbnail answers photo-store's thumbnail.

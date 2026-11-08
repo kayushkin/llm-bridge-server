@@ -144,6 +144,9 @@ func (reviewer *Reviewer) IdentifySlots(ctx context.Context, actor string) (Audi
 	if actor == "" {
 		return run, fmt.Errorf("%w: actor is required", ErrInvalid)
 	}
+	if err := store.unlinkUnpickedBestGuesses(ctx, actor, &run); err != nil {
+		return run, err
+	}
 	slotIDs, err := stringColumn(store.db, `SELECT id FROM outfit_slots WHERE decided_by = '' ORDER BY seq`)
 	if err != nil {
 		return run, err
@@ -688,6 +691,7 @@ func (reviewer *Reviewer) identifyGroup(ctx context.Context, facts WearableGroup
 			continue
 		}
 		scores := map[string]float64{}
+		picked := map[string]bool{} // pieces a reader put the slot with, not only named as a maybe
 		secondMates := second.members(second.piece[item])
 		for _, piece := range pieceOrder {
 			possessionID, known := possessionOf[piece]
@@ -711,9 +715,12 @@ func (reviewer *Reviewer) identifyGroup(ctx context.Context, facts WearableGroup
 			if score == 0 {
 				continue
 			}
+			readerPicked := first.piece[item] == piece || jaccard(secondMates, pieceMembers) > 0
 			scores[possessionID] = math.Max(scores[possessionID], score)
+			picked[possessionID] = picked[possessionID] || readerPicked
 			for _, extra := range extraOf[piece] {
 				scores[extra] = math.Max(scores[extra], score*0.5)
+				picked[extra] = picked[extra] || readerPicked
 			}
 		}
 		for _, member := range members {
@@ -726,7 +733,20 @@ func (reviewer *Reviewer) identifyGroup(ctx context.Context, facts WearableGroup
 			run.leave(slotID, "no piece to link it to")
 			continue
 		}
-		questionID, err := store.linkSlotBestGuess(ctx, slots[slotID], candidates, closed)
+		if !picked[candidates[0].PossessionID] {
+			// No reader put the slot with any recorded piece: in a closed
+			// group every member is only a choice. Leave it unlinked, its
+			// candidates and question kept.
+			questionID, err := store.linkSlotBestGuess(ctx, slots[slotID], candidates, closed, false)
+			if err != nil {
+				run.fail(slotID, err)
+				continue
+			}
+			run.Counts["unpicked"]++
+			run.Actions = append(run.Actions, AuditAction{Action: "unpicked", Records: []string{slotID}, QuestionID: questionID, Reason: "no reader put it with a recorded piece"})
+			continue
+		}
+		questionID, err := store.linkSlotBestGuess(ctx, slots[slotID], candidates, closed, true)
 		if err != nil {
 			run.fail(slotID, err)
 			continue
@@ -954,4 +974,38 @@ func (reviewer *Reviewer) pullGroupIntoRange(ctx context.Context, facts Wearable
 	}
 	pullIn.After = len(after)
 	return pullIn, nil
+}
+
+// unlinkUnpickedBestGuesses unlinks each slot an earlier identification
+// linked though no reader picked a piece for it: in a closed group every
+// member was a choice at the same score, and the first by id was linked.
+// Its candidates, all alike, say so. The slot keeps them and its question,
+// decided_by no_pick.
+func (s *Store) unlinkUnpickedBestGuesses(ctx context.Context, actor string, run *AuditRun) error {
+	slotIDs, err := stringColumn(s.db, `SELECT id FROM outfit_slots WHERE decided_by = 'best_guess' ORDER BY seq`)
+	if err != nil {
+		return err
+	}
+	for _, slotID := range slotIDs {
+		slot, err := slotByID(s.db, slotID)
+		if err != nil {
+			return err
+		}
+		if len(slot.Candidates) < 2 {
+			continue
+		}
+		alike := true
+		for _, candidate := range slot.Candidates[1:] {
+			alike = alike && candidate.Likelihood == slot.Candidates[0].Likelihood
+		}
+		if !alike {
+			continue
+		}
+		if err := s.unlinkSlot(ctx, slot, actor); err != nil {
+			return err
+		}
+		run.Counts["unlinked_unpicked"]++
+		run.Actions = append(run.Actions, AuditAction{Action: "unlinked", Records: []string{slotID, *slot.PossessionID}, Reason: "an earlier best guess no reader picked: every candidate had the same likelihood"})
+	}
+	return nil
 }

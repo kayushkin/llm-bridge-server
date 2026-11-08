@@ -73,7 +73,9 @@ var PurchaseLineDispositions = []string{"unreviewed", "possession", "consumable"
 
 // inventory: two readers list everything in a photo of the home. outfit: one
 // reader lists what the wearer has on, and the outfit is recorded.
-var PhotoReviewReadings = []string{"inventory", "outfit"}
+// PhotoReviewReadings: inventory and outfit readings are made by the review
+// worker; a look reading waits, queued, for POST /outfit-looks/read.
+var PhotoReviewReadings = []string{"inventory", "outfit", "look"}
 var PhotoReviewStatuses = []string{"queued", "reading", "reconciling", "waiting_for_owner", "done", "failed"}
 
 // best_guess: a sighting made for an outfit slot by its identification.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -316,8 +317,12 @@ func (reviewer *Reviewer) ReadLooks(ctx context.Context, actor string) (AuditRun
 	if actor == "" {
 		return run, fmt.Errorf("%w: actor is required", ErrInvalid)
 	}
+	if err := reviewer.dateLookReadings(ctx, &run); err != nil {
+		return run, err
+	}
 	rows, err := store.db.Query(`SELECT worn_on, id, photo_id, wearer_person_id FROM photo_reviews
-		WHERE reading = 'outfit' AND worn_on != '' AND status IN ('done', 'waiting_for_owner') AND photo_id NOT IN (SELECT photo_id FROM outfit_look_photos)
+		WHERE ((reading = 'outfit' AND status IN ('done', 'waiting_for_owner')) OR (reading = 'look' AND status = 'queued'))
+			AND worn_on != '' AND photo_id NOT IN (SELECT photo_id FROM outfit_look_photos)
 		ORDER BY worn_on, seq`)
 	if err != nil {
 		return run, err
@@ -341,11 +346,21 @@ func (reviewer *Reviewer) ReadLooks(ctx context.Context, actor string) (AuditRun
 	if err := rows.Err(); err != nil {
 		return run, err
 	}
+	type part struct {
+		day     string
+		selfies []selfie
+	}
+	parts := []part{}
 	for _, day := range order {
+		for start := 0; start < len(days[day]); start += lookPhotosPerCall {
+			parts = append(parts, part{day, days[day][start:min(start+lookPhotosPerCall, len(days[day]))]})
+		}
+	}
+	for _, part := range parts {
 		if ctx.Err() != nil {
 			return run, ctx.Err()
 		}
-		selfies := days[day]
+		day, selfies := part.day, part.selfies
 		run.Looked++
 		images := []msg.OneShotImage{}
 		var listing strings.Builder
@@ -372,7 +387,7 @@ func (reviewer *Reviewer) ReadLooks(ctx context.Context, actor string) (AuditRun
 		if failed {
 			continue
 		}
-		common := fmt.Sprintf(`These are the photos the owner took of themself on %s. Boxes are fractions of each photo from the top left. Other people may be in them: describe only what the owner wears.
+		common := fmt.Sprintf(`These are photos of the owner on %s: selfies, and photos other people took. Boxes are fractions of each photo from the top left. The owner is the person whose face is in the box given for each photo; other people may be in them, even many: never list their clothes, only what the owner wears. Leave out a piece the owner wears only where it cannot be seen.
 %s
 Groups: shirts and other tops are garment:top, pants and shorts garment:bottom, jackets and coats garment:outerwear, scarves garment:scarf; necklaces, pendants and chains are jewelry:necklace. Leave out socks, and anything hidden in every photo. A pair (shoes, earrings) is one slot.`, day, listing.String())
 		listPrompt := common + `
@@ -524,5 +539,58 @@ func (s *Store) recordLooks(ctx context.Context, day string, labels map[string]l
 		}
 		lookIDs = append(lookIDs, lookID)
 	}
+	for _, selfie := range labels {
+		if _, err := transaction.Exec(`UPDATE photo_reviews SET status = 'done', finished_at = ? WHERE id = ? AND reading = 'look'`, now, selfie.reviewID); err != nil {
+			return nil, 0, err
+		}
+	}
 	return lookIDs, slotCount, transaction.Commit()
+}
+
+// lookPhotosPerCall is the most photos of one day read in one look reading:
+// a day with more is read in parts, in time order, and the rebuild joins
+// the same clothes across parts by the same-day rule.
+const lookPhotosPerCall = 12
+
+// dateLookReadings gives each queued look reading the day its photo was
+// taken in the owner's time zone. A photo photo-store has no date for is a
+// failure, left queued.
+func (reviewer *Reviewer) dateLookReadings(ctx context.Context, run *AuditRun) error {
+	rows, err := reviewer.Store.db.Query(`SELECT id, photo_id FROM photo_reviews WHERE reading = 'look' AND status = 'queued' AND worn_on = '' ORDER BY seq`)
+	if err != nil {
+		return err
+	}
+	type undated struct{ reviewID, photoID string }
+	pending := []undated{}
+	for rows.Next() {
+		var item undated
+		if err := rows.Scan(&item.reviewID, &item.photoID); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, item)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(pending) > 0 && reviewer.OwnerLocation == nil {
+		return errors.New("the reviewer has no owner time zone")
+	}
+	for _, item := range pending {
+		takenAt, err := reviewer.Photos.TakenAt(ctx, item.photoID)
+		if err != nil {
+			run.fail(item.photoID, err)
+			continue
+		}
+		if takenAt == 0 {
+			run.fail(item.photoID, fmt.Errorf("photo-store does not know when %s was taken, so its look has no day", item.photoID))
+			continue
+		}
+		wornOn := time.Unix(takenAt, 0).In(reviewer.OwnerLocation).Format("2006-01-02")
+		if _, err := reviewer.Store.db.Exec(`UPDATE photo_reviews SET worn_on = ? WHERE id = ?`, wornOn, item.reviewID); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -178,13 +178,13 @@ func TestLooksAreReadIdentifiedAndRebuiltIntoOutfits(t *testing.T) {
 		switch {
 		case step == "looks":
 			return map[string]any{"looks": []any{}}, true // the checker's list is the one recorded
-		case step == "check_looks" && strings.Contains(prompt, "on 2026-11-06."):
+		case step == "check_looks" && strings.Contains(prompt, "on 2026-11-06:"):
 			return map[string]any{"looks": []any{map[string]any{"photos": []string{"P1", "P2"}, "slots": []any{
 				lookSlot("watch, left wrist", "watch", "steel watch", "agreed", "S1", onPhoto("P1", watchBox), onPhoto("P2", watchBox)),
 				lookSlot("t-shirt", "garment:top", "white t-shirt", "changed", "S2", onPhoto("P1", shirtBox)),
 				lookSlot("jeans", "garment:bottom", "blue jeans", "agreed", "S4", onPhoto("P2", jeansBox)),
 			}}}, "removed": []any{map[string]any{"slot": "S3", "reason": "a shadow, not a belt"}}}, true
-		case step == "check_looks" && strings.Contains(prompt, "on 2026-11-07."):
+		case step == "check_looks" && strings.Contains(prompt, "on 2026-11-07:"):
 			return map[string]any{"looks": []any{map[string]any{"photos": []string{"P1"}, "slots": []any{
 				lookSlot("watch, left wrist", "watch", "steel watch", "agreed", "S1", onPhoto("P1", watchBox)),
 				lookSlot("t-shirt", "garment:top", "white t-shirt", "added", "", onPhoto("P1", shirtBox)),
@@ -255,7 +255,7 @@ func TestLooksAreReadIdentifiedAndRebuiltIntoOutfits(t *testing.T) {
 		t.Fatalf("the slot's question = %+v", shirtQuestion)
 	}
 
-	rebuilt, err := store.RebuildOutfitsFromLooks(ctx, "principal_000001")
+	rebuilt, err := store.RebuildOutfitsFromLooks(ctx, "principal_000001", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestLooksAreReadIdentifiedAndRebuiltIntoOutfits(t *testing.T) {
 	if outfits, _ := store.ListOutfits("", "", 0, 0); len(outfits) != len(oldOutfits) {
 		t.Fatalf("after the undo the old outfits are back alone: %d", len(outfits))
 	}
-	rebuilt, err = store.RebuildOutfitsFromLooks(ctx, "principal_000001")
+	rebuilt, err = store.RebuildOutfitsFromLooks(ctx, "principal_000001", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

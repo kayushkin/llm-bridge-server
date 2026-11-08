@@ -38,9 +38,11 @@ func (s *Store) createPieceFromSlot(ctx context.Context, slot Slot, actor string
 
 // linkSlotBestGuess links a slot to its most likely piece: a sighting on
 // each of its photos, recorded as that piece, the photos linked to it, and
-// one optional question whose choices are its ranked pieces. It answers the
-// question's id.
-func (s *Store) linkSlotBestGuess(ctx context.Context, slot Slot, candidates []SlotCandidate, closed bool) (string, error) {
+// one optional question whose choices are its ranked pieces. Without link
+// (no reader picked any piece) the slot stays unlinked, decided_by
+// no_pick, its sightings proposed, with the same candidates and question.
+// It answers the question's id.
+func (s *Store) linkSlotBestGuess(ctx context.Context, slot Slot, candidates []SlotCandidate, closed, link bool) (string, error) {
 	s.writeMutex.Lock()
 	defer s.writeMutex.Unlock()
 	transaction, err := s.db.BeginTx(ctx, nil)
@@ -60,9 +62,13 @@ func (s *Store) linkSlotBestGuess(ctx context.Context, slot Slot, candidates []S
 	if err := requireLivePossession(transaction, best); err != nil {
 		return "", err
 	}
+	linked, decidedBy := best, "best_guess"
+	if !link {
+		linked, decidedBy = "", "no_pick"
+	}
 	firstSighting := ""
 	for _, photo := range current.Photos {
-		sightingID, err := s.slotSighting(transaction, current, photo, best, now)
+		sightingID, err := s.slotSighting(transaction, current, photo, linked, now)
 		if err != nil {
 			return "", err
 		}
@@ -74,7 +80,11 @@ func (s *Store) linkSlotBestGuess(ctx context.Context, slot Slot, candidates []S
 	if err := saveRevision(transaction, "outfit_slots", "id", slot.ID, "best_guess", now); err != nil {
 		return "", err
 	}
-	if _, err := transaction.Exec(`UPDATE outfit_slots SET possession_id = ?, decided_by = 'best_guess', candidates = ?, updated_at = ? WHERE id = ?`, best, string(encoded), now, slot.ID); err != nil {
+	var possessionID any
+	if link {
+		possessionID = best
+	}
+	if _, err := transaction.Exec(`UPDATE outfit_slots SET possession_id = ?, decided_by = ?, candidates = ?, updated_at = ? WHERE id = ?`, possessionID, decidedBy, string(encoded), now, slot.ID); err != nil {
 		return "", err
 	}
 	choices := []Choice{}
@@ -95,6 +105,9 @@ func (s *Store) linkSlotBestGuess(ctx context.Context, slot Slot, candidates []S
 		pictures = append(pictures, "/possessions/"+candidate.PossessionID+"/image")
 	}
 	question := fmt.Sprintf("Linked as the best guess: the %s on %s is %s. Pictures of each choice: %s.", current.Slot, lookDay(transaction, current.LookID), best, strings.Join(pictures, ", "))
+	if !link {
+		question = fmt.Sprintf("Neither reader matched the %s on %s to a recorded piece, so it is not linked. Is it one of these? Pictures of each choice: %s.", current.Slot, lookDay(transaction, current.LookID), strings.Join(pictures, ", "))
+	}
 	questionID, err := insertQuestionAnsweringID(transaction, firstSighting, question, choices, "detail", now)
 	if err != nil {
 		return "", err
@@ -117,7 +130,8 @@ func lookDay(q querier, lookID string) string {
 }
 
 // slotSighting makes the sighting of a slot on one photo, recorded as a
-// possession, and links the photo to it.
+// possession, and links the photo to it; with no possession ("") the
+// sighting waits, proposed.
 func (s *Store) slotSighting(transaction *sql.Tx, slot Slot, photo SlotPhoto, possessionID string, now int64) (string, error) {
 	var reviewID string
 	if err := transaction.QueryRow(`SELECT photo_review_id FROM outfit_look_photos WHERE look_id = ? AND photo_id = ?`, slot.LookID, photo.PhotoID).Scan(&reviewID); err != nil {
@@ -130,10 +144,20 @@ func (s *Store) slotSighting(transaction *sql.Tx, slot Slot, photo SlotPhoto, po
 	proposed := slot.Proposed
 	proposed.ExistingPossessionID = possessionID
 	encoded, _ := json.Marshal(proposed)
+	status, decidedBy, decidedAt, linked := "accepted", "best_guess", now, any(possessionID)
+	if possessionID == "" {
+		status, decidedBy, decidedAt, linked = "proposed", "", int64(0), nil
+	}
 	if _, err := transaction.Exec(`INSERT INTO sightings (id, seq, photo_review_id, label, box_left, box_top, box_right, box_bottom, proposed, versions, agreement, status, possession_id, decided_by, decided_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 'best_guess', 'accepted', ?, 'best_guess', ?)`,
-		sightingID, sequence, reviewID, slot.Slot, photo.Box.Left, photo.Box.Top, photo.Box.Right, photo.Box.Bottom, string(encoded), possessionID, now); err != nil {
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 'best_guess', ?, ?, ?, ?)`,
+		sightingID, sequence, reviewID, slot.Slot, photo.Box.Left, photo.Box.Top, photo.Box.Right, photo.Box.Bottom, string(encoded), status, linked, decidedBy, decidedAt); err != nil {
 		return "", err
+	}
+	if possessionID == "" {
+		if _, err := transaction.Exec(`UPDATE outfit_slot_photos SET sighting_id = ? WHERE slot_id = ? AND photo_id = ?`, sightingID, slot.ID, photo.PhotoID); err != nil {
+			return "", err
+		}
+		return sightingID, nil
 	}
 	box := photo.Box
 	if err := s.linkPhotoInTransaction(context.Background(), transaction, possessionID, PhotoLink{PhotoID: photo.PhotoID, BoxLeft: &box.Left, BoxTop: &box.Top, BoxRight: &box.Right, BoxBottom: &box.Bottom,
@@ -373,4 +397,24 @@ func mergedInto(q querier, possessionID string) (string, error) {
 		id = into.String
 	}
 	return "", fmt.Errorf("%s's merges run in a loop", possessionID)
+}
+
+// unlinkSlot takes a best-guess link no reader picked off a slot: its
+// sightings and photo links go, and it is decided_by no_pick.
+func (s *Store) unlinkSlot(ctx context.Context, slot Slot, actor string) error {
+	s.writeMutex.Lock()
+	defer s.writeMutex.Unlock()
+	transaction, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer transaction.Rollback()
+	now := s.unixNow()
+	if err := s.relinkSlot(transaction, slot, "", actor, now); err != nil {
+		return err
+	}
+	if _, err := transaction.Exec(`UPDATE outfit_slots SET decided_by = 'no_pick' WHERE id = ?`, slot.ID); err != nil {
+		return err
+	}
+	return transaction.Commit()
 }

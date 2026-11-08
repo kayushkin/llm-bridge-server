@@ -165,7 +165,7 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` / `PATCH` | `/products/{id}` | a product with `possession_ids`; a patch takes `actor` and any of brand, model_number, name, listing_url, listing_source, listing_publisher, article_id (checked in article-store), found_by, description, specs, list_price_cents, list_price_currency. A possession points at its product with `PATCH /possessions/{id} {"product_id":…}` |
 | `GET` | `/purchases/{id}` | with lines; each line lists the possessions that point at it (`purchase_line_id`) |
 | `PATCH` | `/purchase-lines/{id}` | `{disposition, actor}` |
-| `GET` / `POST` | `/photo-reviews` | `POST {photo_id, queued_by, reading, wearer_person_id}` queues a photo-store photo for a reading, `inventory` (everything in a room, two readers) or `outfit` (what `wearer_person_id`, a people-store person confirmed on the photo, has on; one reader): **201**, or **200** with the review already made for that photo |
+| `GET` / `POST` | `/photo-reviews` | `POST {photo_id, queued_by, reading, wearer_person_id}` queues a photo-store photo for a reading, `inventory` (everything in a room, two readers) `outfit` (what `wearer_person_id`, a people-store person confirmed on the photo, has on; one reader) or `look` (a photo of `wearer_person_id` waiting for `POST /outfit-looks/read`; the review worker does not read it): **201**, or **200** with the review already made for that photo |
 | `GET` | `/photo-reviews/{id}` | with every reading (each model's answer unchanged, tokens, cost) and sighting; `cost_usd` sums the readings |
 | `POST` | `/photo-reviews/{id}/retry` | `{actor}`: a `failed` review only; its readings go to revisions and it is queued again |
 | `GET` | `/sightings/{id}` and `/sightings/{id}/image` | |
@@ -509,8 +509,14 @@ Run in this order: set each group's expected range, `POST /outfit-looks/read`,
 `POST /outfit-slots/identify`, `POST /outfits/rebuild-from-looks`; then the
 owner answers the slot questions.
 
-**Reading looks.** For each day with outfit selfies not yet in a look, the
-first reader sees all that day's selfies (originals where present, with the
+**Reading looks.** Looks are read from outfit readings' photos and from
+photos queued for a look reading (`POST /photo-reviews` with `reading:
+look` and `wearer_person_id`: any photo of the owner, selfie or taken by
+someone else, group photos included; the review worker leaves these
+queued, the look read dates each by photo-store's `taken_at` in the
+owner's zone and marks it `done`). For each day with such photos not yet
+in a look, up to 12 at a time in time order, the first reader sees that
+day's photos (originals where present, with the
 owner's face box on each) and lists the looks — one per set of clothes, every
 photo in exactly one — and each piece worn as a slot: what and where ("watch,
 left wrist", "ring, right ring finger", "jacket"), its group, name,
@@ -548,6 +554,15 @@ reader's pieces are the best guess:
 - a piece with no recorded member becomes a new `unconfirmed` possession,
   except in a closed group, where its slots are ranked against the owned
   members only.
+
+A slot is linked only to a piece a reader put it with (the first reader's
+piece, or the second reader's piece overlapping it); a maybe (`uncertain`)
+alone, or a closed group's member listed only as a choice, is not a pick.
+A slot no reader picked a piece for stays unlinked, `decided_by: no_pick`,
+with its candidates, proposed sightings and the same question, whose answer
+links it. Identification first unlinks so each earlier best guess whose
+candidates all had the same likelihood (no reader's pick; a closed group's
+first member by id took it), counted as `unlinked_unpicked`.
 
 Each slot's candidates are scored: 0.5 when the first reader put it in the
 piece, plus 0.5 × the overlap (Jaccard) of the second reader's piece for it
@@ -599,27 +614,31 @@ of its looks' `garment:top`, `garment:bottom`, `garment:one_piece` and
 `garment:outerwear` slots. Accessories — jewelry, watches, belts, scarves,
 headwear, bags, eyewear, footwear and every other group — vary from day to
 day and photo to photo, so they are not part of its identity. A look is an
-outfit when, in each main group both show, one's pieces are all among the
-other's (a group not visible in the look, such as a bottom out of frame,
-does not count against it), and at least two main pieces match — or, for a
-look that shows only one main piece, that one, when the outfit was worn the
-same day (a look of that day is already in it); across days one matching
-piece is not enough. Every look without an outfit, in day order and within
-a day those showing more main pieces first, joins the matching outfit — one an earlier
-rebuild made or one this rebuild made — that shares the most main pieces,
-then has more looks, then is older; failing that it makes a new one
-(`created_by` the rebuild). The outfit holds the union of the pieces its
-looks are linked to; each look keeps its own slots. A look with nothing
-linked is left; one not an outfit is marked as above. The looks' readings
-point at the outfit and their days
-become wearings. An outfit the readings pointed at before, with no reading
-left, is deleted with `merged_into_id` naming the outfit that took most of
-its readings. One transaction, one `outfit_rebuild`, undone by its route;
-pieces and wearings it added to an earlier rebuild's outfit are taken back.
-Covers need nothing more: a rebuilt outfit's photos are its looks'
-readings, and the cover rule counts the boxes of all its pieces.
+outfit when no main piece visible in both differs — in each main group
+both show, one's pieces are all among the other's; a piece out of view
+never counts against — and they share a top, one-piece or outerwear, or
+two main pieces, on any day. A look showing only one main piece (a bottom,
+say) also matches on it an outfit worn the same day (a look of that day is
+already in it).
 
-Outfits rebuilt before 2026-11-07's identity rule were one per identical
-set of pieces. To rebuild them by the rule, undo every rebuild not undone,
-newest first, then rebuild: a rebuild places only looks without an
-outfit.
+Every rebuild places **every** look again, in day order and within a day
+those showing more main pieces first: each joins the matching outfit
+sharing the most main pieces, then with more looks, then the earlier, or
+starts one. Each resulting outfit keeps the live outfit most of its looks
+were in (an earlier group's pick aside), or is new (`created_by` the
+rebuild), so outfits that match under the rules join, wherever they came
+from. The outfit holds the union of its looks' pieces (each look keeps its
+own slots), is worn on its looks' days, and takes the owner's marks of the
+outfits its looks came from: favorite when any was, the union of tags, and
+the owner's cover pick when it has none and the pick's photo is one of its
+looks' photos. A look whose every photo is a copy — photo-store's file name
+begins `Screenshot`, or the photo is tagged `screenshot` — joins its outfit
+but adds no day of its own. A look with nothing linked, or not an outfit,
+leaves its outfit. The looks' readings point at their look's outfit (none
+for those). An outfit left with no look and no reading is deleted, with
+`merged_into_id` naming the outfit that took most of its looks (null when
+none did). One transaction, one `outfit_rebuild`; `moved.outfits_before`
+holds every existing outfit it changed as it was (pieces, days, favorite,
+tags, cover pick, deleted), and undo restores each whole — so an owner's
+mark made after the rebuild is undone with it. Covers need nothing more: a
+rebuilt outfit's photos are its looks' readings.

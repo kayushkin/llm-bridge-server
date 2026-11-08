@@ -97,7 +97,7 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /outfit-pieces/rematch", server.auditPass(server.Reviewer.RematchOutfitPieces))
 	mux.HandleFunc("POST /outfit-looks/read", server.auditPass(server.Reviewer.ReadLooks))
 	mux.HandleFunc("POST /outfit-slots/identify", server.auditPass(server.Reviewer.IdentifySlots))
-	mux.HandleFunc("POST /outfits/rebuild-from-looks", server.auditPass(server.Store.RebuildOutfitsFromLooks))
+	mux.HandleFunc("POST /outfits/rebuild-from-looks", server.auditPass(server.Reviewer.RebuildOutfitsFromLooks))
 	mux.HandleFunc("GET /outfit-looks", func(w http.ResponseWriter, r *http.Request) {
 		limit, offset, err := paging(r)
 		if err != nil {
@@ -618,7 +618,7 @@ func (server *Server) health(w http.ResponseWriter, r *http.Request) {
 		"outfits":                 `SELECT COUNT(*) FROM outfits WHERE deleted_at = 0`,
 		"purchases":               `SELECT COUNT(*) FROM purchases WHERE deleted_at = 0`,
 		"products":                `SELECT COUNT(*) FROM products WHERE deleted_at = 0`,
-		"photo_reviews_queued":    `SELECT COUNT(*) FROM photo_reviews WHERE status IN ('queued', 'reading', 'reconciling')`,
+		"photo_reviews_queued":    `SELECT COUNT(*) FROM photo_reviews WHERE status IN ('queued', 'reading', 'reconciling') AND reading != 'look'`,
 		"photo_reviews_failed":    `SELECT COUNT(*) FROM photo_reviews WHERE status = 'failed'`,
 		"open_decision_questions": `SELECT COUNT(*) FROM owner_questions WHERE answered_at = 0 AND purpose = 'decision'`,
 		"open_detail_questions":   `SELECT COUNT(*) FROM owner_questions WHERE answered_at = 0 AND purpose = 'detail'`,

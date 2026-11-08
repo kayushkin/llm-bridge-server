@@ -278,6 +278,13 @@ func (fakePhotos) DetailImage(ctx context.Context, photoID string) (image.Image,
 	decoded, _, err := image.Decode(bytes.NewReader(testJPEG()))
 	return decoded, "thumbnail", err
 }
+func (fakePhotos) WhyACopy(ctx context.Context, photoID string) (string, error) {
+	if photoID == "photo_000039" {
+		return whyACopy(`C:\\photos\\Screenshot_20260913_093002_Gallery.jpg`, nil), nil
+	}
+	return "", nil
+}
+
 func (fakePhotos) TakenAt(ctx context.Context, photoID string) (int64, error) {
 	return 1794010000, nil // 2026-11-07 00:06 UTC, still 2026-11-06 in Los Angeles
 }
