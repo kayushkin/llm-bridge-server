@@ -93,10 +93,11 @@ func (reviewer *Reviewer) readEbayOrder(ctx context.Context, mail MailMessage) (
 }
 
 // ImportEbayOrders reads every eBay order confirmation the search finds in
-// one mailstack account and records each order as a purchase with its
-// lines. A mail already imported is skipped, so running it again records
-// only new orders. The first reader reads each mail (in parallel, four at
-// a time); orders are written oldest first.
+// one mailstack account and records each order, with its lines, in
+// budget-store, which finds the charge that paid for it. A mail whose order
+// budget-store already holds is skipped, so running it again records only
+// new orders. The first reader reads each mail (four at a time); orders are
+// sent oldest first.
 func (reviewer *Reviewer) ImportEbayOrders(ctx context.Context, request EbayImportRequest) (AuditRun, error) {
 	run := newAuditRun()
 	if request.Actor == "" {
@@ -105,8 +106,8 @@ func (reviewer *Reviewer) ImportEbayOrders(ctx context.Context, request EbayImpo
 	if request.Account == "" {
 		return run, fmt.Errorf("%w: account, a mailstack account id, is required", ErrInvalid)
 	}
-	if reviewer.Mail == nil {
-		return run, fmt.Errorf("mailstack is not wired, so mail cannot be read")
+	if reviewer.Mail == nil || reviewer.Budget == nil {
+		return run, fmt.Errorf("mailstack and budget-store must both be wired to import orders")
 	}
 	query := request.Query
 	if query == "" {
@@ -125,13 +126,17 @@ func (reviewer *Reviewer) ImportEbayOrders(ctx context.Context, request EbayImpo
 		cursor = next
 	}
 	run.Looked = len(ids)
+	recorded, err := reviewer.Budget.ListOrders(ctx)
+	if err != nil {
+		return run, err
+	}
+	recordedMail := map[string]bool{}
+	for _, order := range recorded {
+		recordedMail[order.MailAccountID+":"+order.MailMessageID] = true
+	}
 	fresh := []string{}
 	for _, id := range ids {
-		recorded, err := stringColumn(reviewer.Store.db, `SELECT id FROM purchases WHERE mail_account_id = ? AND mail_message_id = ?`, request.Account, id)
-		if err != nil {
-			return run, err
-		}
-		if len(recorded) > 0 {
+		if recordedMail[request.Account+":"+id] {
 			run.Counts["already_imported"]++
 			continue
 		}
@@ -182,21 +187,21 @@ func (reviewer *Reviewer) ImportEbayOrders(ctx context.Context, request EbayImpo
 			run.leave(about, fmt.Sprintf("%s says %q is not an order confirmation: %s", read.answer.Model, read.mail.Subject, read.order.Why))
 			continue
 		}
-		purchase := Purchase{Seller: read.order.Seller, Marketplace: "ebay", OrderReference: read.order.OrderNumber, OrderedAt: read.mail.Date.Unix(),
-			Currency: read.order.Currency, Source: "email_receipt", MailAccountID: request.Account, MailMessageID: read.mail.ID, ExtractedBy: read.answer.Model}
+		order := BudgetOrder{Marketplace: "ebay", OrderNumber: read.order.OrderNumber, Seller: read.order.Seller, OrderedAt: read.mail.Date.Unix(),
+			Currency: read.order.Currency, MailAccountID: request.Account, MailMessageID: read.mail.ID, ExtractedBy: read.answer.Model, CreatedBy: request.Actor}
 		if read.order.TotalCents >= 0 {
 			total := read.order.TotalCents
-			purchase.TotalCents = &total
+			order.TotalCents = &total
 		}
 		for _, line := range read.order.Lines {
-			recorded := PurchaseLine{Title: line.Title, Quantity: line.Quantity, ProductReference: line.ItemID, ListingURL: "https://www.ebay.com/itm/" + line.ItemID}
+			recordedLine := BudgetOrderLine{Title: line.Title, ItemNumber: line.ItemID, Quantity: line.Quantity, ListingURL: "https://www.ebay.com/itm/" + line.ItemID}
 			if line.UnitPriceCents >= 0 {
 				price := line.UnitPriceCents
-				recorded.UnitPriceCents = &price
+				recordedLine.UnitPriceCents = &price
 			}
-			purchase.Lines = append(purchase.Lines, recorded)
+			order.Lines = append(order.Lines, recordedLine)
 		}
-		created, err := reviewer.Store.CreatePurchase(ctx, purchase)
+		created, err := reviewer.Budget.CreateOrder(ctx, order)
 		if errors.Is(err, ErrConflict) {
 			run.Counts["order_already_recorded"]++
 			run.leave(about, err.Error())
@@ -209,12 +214,20 @@ func (reviewer *Reviewer) ImportEbayOrders(ctx context.Context, request EbayImpo
 		}
 		run.Counts["orders"]++
 		run.Counts["lines"] += len(created.Lines)
+		matched := created.MatchedBy
+		if matched == "" {
+			matched = "no_transaction"
+		}
+		run.Counts["matched_by_"+matched]++
 		records := []string{created.ID}
+		if created.TransactionID != "" {
+			records = append(records, created.TransactionID)
+		}
 		for _, line := range created.Lines {
 			records = append(records, line.ID)
 		}
 		run.Actions = append(run.Actions, AuditAction{Action: "recorded", Records: records,
-			Reason: fmt.Sprintf("%s order %s from %s, read from mail %s by %s", purchase.Marketplace, purchase.OrderReference, purchase.Seller, about, read.answer.Model)})
+			Reason: fmt.Sprintf("ebay order %s from %s, read from mail %s by %s; transaction found by %s", order.OrderNumber, order.Seller, about, read.answer.Model, matched)})
 	}
 	return run, nil
 }

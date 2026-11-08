@@ -39,6 +39,7 @@ type Reviewer struct {
 	// reads order confirmations (mailstack), never changing a mailbox.
 	Articles ArticleSource
 	Mail     MailSource
+	Budget   BudgetOrders
 	// OwnerLocation is the owner's time zone: an outfit read from a photo
 	// was worn on the photo's day there.
 	OwnerLocation *time.Location
@@ -144,10 +145,12 @@ type Resolution struct {
 	// slot_link (with PossessionID), slot_new and slot_not_mine: the
 	// outfit slot the answer relinks.
 	SlotID string `json:"slot_id,omitempty"`
-	// purchase_line_link (with PossessionID) and purchase_line_not_this:
-	// the order line the purchase match asked about.
-	PurchaseLineID string `json:"purchase_line_id,omitempty"`
-	Explanation    string `json:"explanation,omitempty"`
+	// order_line_link (with PossessionID) and order_line_not_this: the
+	// budget-store order line the purchase match asked about, and the
+	// transaction its order was paid by when asked ('' for none).
+	MarketplaceOrderLineID string `json:"marketplace_order_line_id,omitempty"`
+	BudgetTransactionID    string `json:"budget_transaction_id,omitempty"`
+	Explanation            string `json:"explanation,omitempty"`
 }
 
 // PieceMerge is one possession to fold into another.

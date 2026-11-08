@@ -28,12 +28,13 @@ const (
 	// ReferenceMusicInstrument is music-practice-store's music_instrument_….
 	// It is stored unchecked: music-practice-store answers only requests that
 	// come through dash signed in.
-	ReferenceMusicInstrument ReferenceKind = "music_instrument"
-	ReferenceComputer        ReferenceKind = "computer"      // this store's computers
-	ReferencePurchaseLine    ReferenceKind = "purchase_line" // this store's purchase_lines
-	ReferencePossession      ReferenceKind = "possession"    // this store's possessions
-	ReferenceProduct         ReferenceKind = "product"       // this store's products
-	ReferenceArticle         ReferenceKind = "article"       // article-store article_…
+	ReferenceMusicInstrument   ReferenceKind = "music_instrument"
+	ReferenceComputer          ReferenceKind = "computer"           // this store's computers
+	ReferencePurchaseLine      ReferenceKind = "purchase_line"      // this store's purchase_lines
+	ReferencePossession        ReferenceKind = "possession"         // this store's possessions
+	ReferenceProduct           ReferenceKind = "product"            // this store's products
+	ReferenceArticle           ReferenceKind = "article"            // article-store article_…
+	ReferenceBudgetTransaction ReferenceKind = "budget_transaction" // budget-store transaction_…
 )
 
 // Column is one field a client may write.
@@ -75,6 +76,7 @@ var possessionType = RecordType{Name: "possession", Table: "possessions", Prefix
 	{Name: "acquired_how", Type: ColumnText, Vocabulary: AcquisitionMethods},
 	{Name: "purchase_line_id", Type: ColumnText, Nullable: true, References: ReferencePurchaseLine},
 	{Name: "product_id", Type: ColumnText, Nullable: true, References: ReferenceProduct},
+	{Name: "budget_transaction_id", Type: ColumnText, Nullable: true, References: ReferenceBudgetTransaction},
 	{Name: "price_cents", Type: ColumnInteger, Nullable: true, Minimum: bound(0)},
 	{Name: "price_currency", Type: ColumnText},
 	{Name: "disposed_at", Type: ColumnInteger, Minimum: bound(0)},

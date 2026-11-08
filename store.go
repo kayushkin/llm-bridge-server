@@ -51,7 +51,14 @@ type Store struct {
 	// the write's transaction.
 	writeMutex sync.Mutex
 	now        func() time.Time
+	// budget links order lines to possessions (UseBudgetStore); nil leaves
+	// order lines unlinkable.
+	budget BudgetOrders
 }
+
+// UseBudgetStore wires budget-store, where an answer that a possession came
+// from an order line is written as a link.
+func (s *Store) UseBudgetStore(budget BudgetOrders) { s.budget = budget }
 
 // Open creates the data directory (0700) if needed, opens the database and
 // applies the schema.
@@ -90,6 +97,10 @@ func Open(dataDir string, references ReferenceChecker) (*Store, error) {
 			db.Close()
 			return nil, fmt.Errorf("migrate: %s: %w", statement, err)
 		}
+	}
+	if err := dropColumns(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	if err := os.Chmod(databasePath, 0o600); err != nil {
 		db.Close()
@@ -138,20 +149,24 @@ var addedColumns = []struct{ table, column, definition string }{
 	{"outfits", "tags", "TEXT NOT NULL DEFAULT '[]'"},
 	// The product a possession is one of (products); NULL when not known.
 	{"possessions", "product_id", "TEXT REFERENCES products(id)"},
-	// The email an imported order was read from: mailstack's account id and
-	// the provider's message id; '' for an order entered another way.
-	{"purchases", "mail_account_id", "TEXT NOT NULL DEFAULT ''"},
-	{"purchases", "mail_message_id", "TEXT NOT NULL DEFAULT ''"},
-	// The model that read the order out of the email; '' when a person or
-	// an export wrote it.
-	{"purchases", "extracted_by", "TEXT NOT NULL DEFAULT ''"},
-	// The marketplace's page for what a line bought (an eBay listing).
-	{"purchase_lines", "listing_url", "TEXT NOT NULL DEFAULT ''"},
+	// The budget-store transaction that paid for a possession; NULL when
+	// not known.
+	{"possessions", "budget_transaction_id", "TEXT"},
+}
+
+// droppedColumns were added and then given up; each is dropped where it is
+// still present. The eBay order columns on purchases lasted one day
+// (2026-11-07): orders and their charges belong to budget-store.
+var droppedColumns = []struct{ table, column string }{
+	{"purchases", "mail_account_id"},
+	{"purchases", "mail_message_id"},
+	{"purchases", "extracted_by"},
+	{"purchase_lines", "listing_url"},
 }
 
 // addedIndexes go on columns addedColumns adds, so they are made after it.
 var addedIndexes = []string{
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_purchases_mail ON purchases(mail_account_id, mail_message_id) WHERE mail_message_id != ''`,
+	`DROP INDEX IF EXISTS idx_purchases_mail`,
 	`CREATE INDEX IF NOT EXISTS idx_possessions_product ON possessions(product_id)`,
 }
 
@@ -178,6 +193,22 @@ func addColumns(db *sql.DB) error {
 			if _, err := db.Exec(`ALTER TABLE ` + added.table + ` ADD COLUMN ` + added.column + ` ` + added.definition); err != nil {
 				return fmt.Errorf("add %s.%s: %w", added.table, added.column, err)
 			}
+		}
+	}
+	return nil
+}
+
+func dropColumns(db *sql.DB) error {
+	for _, dropped := range droppedColumns {
+		present, err := stringColumn(db, `SELECT name FROM pragma_table_info(?) WHERE name = ?`, dropped.table, dropped.column)
+		if err != nil {
+			return err
+		}
+		if len(present) == 0 {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE ` + dropped.table + ` DROP COLUMN ` + dropped.column); err != nil {
+			return fmt.Errorf("drop %s.%s: %w", dropped.table, dropped.column, err)
 		}
 	}
 	return nil
@@ -315,6 +346,7 @@ type ServiceReferences struct {
 	LocationStoreURL     string
 	HarnessStoreDatabase string
 	ArticleStoreURL      string
+	BudgetStoreURL       string
 	HTTPClient           *http.Client
 }
 
@@ -325,6 +357,8 @@ func (references ServiceReferences) Check(ctx context.Context, kind ReferenceKin
 		return references.checkURL(ctx, references.PhotoStoreURL+"/photos/"+url.PathEscape(id), "photo-store", id)
 	case ReferencePlace:
 		return references.checkURL(ctx, references.LocationStoreURL+"/places/"+url.PathEscape(id), "location-store", id)
+	case ReferenceBudgetTransaction:
+		return references.checkURL(ctx, references.BudgetStoreURL+"/transactions/"+url.PathEscape(id), "budget-store", id)
 	case ReferenceArticle:
 		return references.checkURL(ctx, references.ArticleStoreURL+"/articles/"+url.PathEscape(id), "article-store", id)
 	case ReferenceHarnessMachine:

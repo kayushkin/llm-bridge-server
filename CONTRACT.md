@@ -22,6 +22,7 @@ with an ISO 4217 code.
 | `LLMBRIDGE_SERVICE_TOKEN` | (secret) | required while the review worker is on; a host-local drop-in |
 | `MODEL_STORE_URL` | `http://localhost:8155` | list prices for a reading's cost |
 | `ARTICLE_STORE_URL` | `http://127.0.0.1:8318` | a product's listing page is saved and read there; a product's `article_id` is checked there |
+| `BUDGET_STORE_URL` | `http://127.0.0.1:8340` | the eBay import records orders there; a `budget_transaction_id` is checked there; an order line is linked to its possession there |
 | `MAILSTACK_URL` | `http://localhost:8195` | the eBay import reads order confirmations there, read-only |
 | `MAILSTACK_TOKEN` | (secret) | mailstack's bearer; a host-local drop-in. Without it the import answers an error |
 | `POSSESSION_STORE_FIRST_READER_ROLE` | `possession-photo-reader` | model-store role of the first reader; it also reads answers given in words |
@@ -87,7 +88,7 @@ copies the whole row to `revisions`.
 ```json
 {"id":"possession_000001","name":"black hoodie","room":"bedroom","brand":"Carhartt","model":"","serial_number":"",
  "description":"","quantity":1,"condition":"","status":"owned","place_id":null,"spot":"bedroom closet",
- "acquired_at":0,"acquired_how":"","purchase_line_id":null,"product_id":null,"price_cents":null,"price_currency":"",
+ "acquired_at":0,"acquired_how":"","purchase_line_id":null,"product_id":null,"budget_transaction_id":null,"price_cents":null,"price_currency":"",
  "disposed_at":0,"tags":[],"created_by":"principal_000001","created_at":…,"updated_at":…,"deleted_at":0,"merged_into_id":null,
  "kind":"garment",
  "garment":{"id":"garment_000001","category":"top","garment_type":"hoodie","layer":"mid","primary_color":"black",
@@ -153,9 +154,10 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` | `/outfit-rebuilds/{id}` | `{id, rebuilt_by, moved:{outfits_made, outfits_replaced, pieces_added, looks_marked, pieces_removed, wearings_removed, wearings_added, looks, reviews}, rebuilt_at, undone_by, undone_at}`; `pieces_added` and `wearings_added` are what it gave outfits an earlier rebuild made, `pieces_removed` and `wearings_removed` what it took from them when a look left; `looks_marked` is `[{look_id, before, after}]` of `not_an_outfit`; a look or reading move to `new_outfit_id: ""` took it out of every outfit |
 | `POST` | `/outfit-rebuilds/{id}/undo` | `{actor}`: puts back every outfit, look and reading the rebuild changed. A later rebuild not undone, a look that has moved since (a slot answer), or a merge of an outfit it made is a **409** |
 | `POST` | `/outfit-pieces/rematch` | `{actor}`: the rematch, below. Answers an audit run |
-| `GET` / `POST` | `/purchases` | `{seller, marketplace, order_reference, ordered_at, total_cents, currency, source, mail_account_id, mail_message_id, lines:[{title, quantity, unit_price_cents, product_reference, listing_url, disposition}]}`. An order already recorded (same marketplace and reference, or the same mail) is a **409**. A purchase also answers `extracted_by`, the model that read it from mail |
-| `POST` | `/purchases/import-ebay-mail` | `{actor, account, query}`: the eBay import, below. Answers an audit run |
-| `POST` | `/purchase-lines/match` | `{actor, purchase_id}` (`purchase_id` optional): the purchase match, below. Answers an audit run |
+| `GET` / `POST` | `/purchases` | `{seller, marketplace, order_reference, ordered_at, total_cents, currency, source, lines:[{title, quantity, unit_price_cents, product_reference, disposition}]}`. An order already recorded (same marketplace and reference) is a **409**. eBay orders are not purchases here: they are budget-store marketplace orders (below) |
+| `DELETE` | `/purchases/{id}?actor=&reason=` | soft, with a revision; a possession whose `purchase_line_id` is one of its lines is a **409**. Every open question about one of its lines is withdrawn: answered by `actor`, `answer_text` "withdrawn: <reason>", resolution `withdrawn`. Answers `{deleted, withdrawn_question_ids}` |
+| `POST` | `/marketplace-orders/import-ebay-mail` | `{actor, account, query}`: the eBay import, below. Answers an audit run |
+| `POST` | `/marketplace-order-lines/match` | `{actor, marketplace_order_id}` (the order optional): the purchase match, below. Answers an audit run |
 | `GET` / `POST` | `/products` | `GET ?q=` (every word in brand, model number, name, description), `?limit=`, `?offset=`. `POST`: below. **201** |
 | `GET` / `PATCH` | `/products/{id}` | a product with `possession_ids`; a patch takes `actor` and any of brand, model_number, name, listing_url, listing_source, listing_publisher, article_id (checked in article-store), found_by, description, specs, list_price_cents, list_price_currency. A possession points at its product with `PATCH /possessions/{id} {"product_id":…}` |
 | `GET` | `/purchases/{id}` | with lines; each line lists the possessions that point at it (`purchase_line_id`) |
@@ -200,38 +202,50 @@ reader that says the page does not list that model is a **400**. A second
 product of one brand and model number is a **409**. Finding the listing is
 a web search an agent does before calling.
 
-## Purchases from eBay mail
+## eBay orders, in budget-store
 
-`POST /purchases/import-ebay-mail {actor, account, query}` searches one
-mailstack account (`query` defaults to `from:ebay@ebay.com (subject:"order
-confirmed" OR subject:"order is confirmed")`), skips each mail already
-imported (`mail_account_id`, `mail_message_id`), and has the first reader
-read the rest, four at a time: order number, seller, total, currency, and
-each item's full title, item number, quantity and price. An order number
-or item number the mail's text does not hold is a failure, not a guess. Each
-order becomes a purchase, oldest mail first: `marketplace: ebay`, `source:
-email_receipt`, `ordered_at` the mail's date, each line's
-`product_reference` its item number and `listing_url`
-`https://www.ebay.com/itm/<item>`. A mail that is not an order confirmation
-is `left`; an order already recorded from another mail is
-`order_already_recorded`. Counts: `orders`, `lines`, `already_imported`,
-`not_an_order`, `order_already_recorded`, `failed`. Mail is only read.
+An eBay order and the charge that paid it are budget-store's: a
+`marketplace_order_…` with its `marketplace_order_line_…`s, and the
+`transaction_…` it found (budget-store's CONTRACT.md, "Marketplace orders").
+A possession points at that transaction by `budget_transaction_id`, checked
+against budget-store, and the order line links to the possession there
+(`entity_type: possession`). possession-store keeps no copy of the order. The
+operator chose this on 2026-11-07: the purchase is the budget-store
+transaction, and its chip shows the order.
+
+`POST /marketplace-orders/import-ebay-mail {actor, account, query}` searches
+one mailstack account (`query` defaults to `from:ebay@ebay.com
+(subject:"order confirmed" OR subject:"order is confirmed")`), skips each
+mail whose order budget-store already holds (by `mail_account_id` and
+`mail_message_id`), and has the first reader read the rest, four at a time:
+order number, seller, total, currency, and each item's full title, item
+number, quantity and price. An order number or item number the mail's text
+does not hold is a failure, not a guess. Each order is posted to budget-store
+oldest mail first, with `ordered_at` the mail's date, `listing_url`
+`https://www.ebay.com/itm/<item>` and `extracted_by` the model; budget-store
+finds its charge. Counts: `orders`, `lines`, `matched_by_order_number`,
+`matched_by_amount_and_date`, `matched_by_no_transaction`,
+`already_imported`, `not_an_order`, `order_already_recorded`, `failed`. Mail
+is only read.
 
 ## Purchase match
 
-`POST /purchase-lines/match {actor, purchase_id}` looks at every line still
-`unreviewed` that no possession points at and that was not asked about. It
-shortlists up to 8 live possessions not tied to a line by the title's words
-(a word in the model counts 4, brand 3, name 2, description 1; common
-listing words such as "new" and "vintage" count nothing; at least 2 to be
-shown). Both readers see the line and the shortlist with each cover picture
-and pick one (`C1`…) or none, and say whether they are sure. Both pick the
-same one and both are sure: the possession takes `purchase_line_id`, and
-`acquired_at`, `acquired_how: bought` and the line's price where it has
-none; the line becomes `possession`. Either picks one otherwise: an optional
-detail question on that possession's photo, `asked_by: purchase_match`,
-choices `purchase_line_link` (`possession_id`, `purchase_line_id`) for each
-pick and `purchase_line_not_this`. Both say none, nothing shares its words,
+`POST /marketplace-order-lines/match {actor, marketplace_order_id}` reads
+budget-store's orders and looks at every line still `unreviewed` with no
+possession linked from it and not asked about. It shortlists up to 8 live
+possessions not already tied to an order (no `budget_transaction_id`, no
+`purchase_line_id`, no line linking to them) by the title's words (a word in
+the model counts 4, brand 3, name 2, description 1; common listing words such
+as "new" and "vintage" count nothing; at least 2 to be shown). Both readers
+see the line and the shortlist with each cover picture, pick one (`C1`…) or
+none, and say whether they are sure. Both pick the same one and both are
+sure: linked — the possession takes `budget_transaction_id` (when the order
+has a charge), and `acquired_at`, `acquired_how: bought` and the line's price
+where it has none; budget-store links the line to it and marks it
+`possession`. Either picks one otherwise: an optional detail question on that
+possession's photo, `asked_by: purchase_match`, choices `order_line_link`
+(`possession_id`, `marketplace_order_line_id`, `budget_transaction_id`) for
+each pick and `order_line_not_this`. Both say none, nothing shares its words,
 or the pick has no photo to ask on: the line stays `unreviewed`. Counts:
 `matched`, `asked`, `unmatched`, `failed`.
 

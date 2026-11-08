@@ -3,9 +3,9 @@ package possessionstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 )
 
@@ -17,28 +17,22 @@ type PurchaseLine struct {
 	Quantity         int      `json:"quantity"`
 	UnitPriceCents   *int64   `json:"unit_price_cents"`
 	ProductReference string   `json:"product_reference"`
-	ListingURL       string   `json:"listing_url"` // the marketplace's page for the item: https://www.ebay.com/itm/<item>
 	Disposition      string   `json:"disposition"`
 	PossessionIDs    []string `json:"possession_ids"` // the possessions that came from this line
 }
 
 // Purchase is one order with its lines.
 type Purchase struct {
-	ID             string `json:"id"`
-	Seller         string `json:"seller"`
-	Marketplace    string `json:"marketplace"`
-	OrderReference string `json:"order_reference"`
-	OrderedAt      int64  `json:"ordered_at"`
-	TotalCents     *int64 `json:"total_cents"`
-	Currency       string `json:"currency"`
-	Source         string `json:"source"`
-	// The email the order was read from: a mailstack account and the
-	// provider's message id. dash opens it at /mail?account=&message=.
-	MailAccountID string         `json:"mail_account_id"`
-	MailMessageID string         `json:"mail_message_id"`
-	ExtractedBy   string         `json:"extracted_by"` // the model that read the email; '' otherwise
-	CreatedAt     int64          `json:"created_at"`
-	Lines         []PurchaseLine `json:"lines"`
+	ID             string         `json:"id"`
+	Seller         string         `json:"seller"`
+	Marketplace    string         `json:"marketplace"`
+	OrderReference string         `json:"order_reference"`
+	OrderedAt      int64          `json:"ordered_at"`
+	TotalCents     *int64         `json:"total_cents"`
+	Currency       string         `json:"currency"`
+	Source         string         `json:"source"`
+	CreatedAt      int64          `json:"created_at"`
+	Lines          []PurchaseLine `json:"lines"`
 }
 
 // CreatePurchase records an order. An order already recorded, found by its
@@ -56,9 +50,6 @@ func (s *Store) CreatePurchase(ctx context.Context, purchase Purchase) (Purchase
 	if purchase.TotalCents != nil && len(purchase.Currency) != 3 {
 		return Purchase{}, fmt.Errorf("%w: total_cents needs currency, a three-letter ISO 4217 code", ErrInvalid)
 	}
-	if (purchase.MailAccountID == "") != (purchase.MailMessageID == "") {
-		return Purchase{}, fmt.Errorf("%w: mail_account_id and mail_message_id go together", ErrInvalid)
-	}
 	if len(purchase.Lines) == 0 {
 		return Purchase{}, fmt.Errorf("%w: a purchase needs at least one line", ErrInvalid)
 	}
@@ -74,12 +65,8 @@ func (s *Store) CreatePurchase(ctx context.Context, purchase Purchase) (Purchase
 		return Purchase{}, err
 	}
 	now := s.unixNow()
-	if _, err := transaction.Exec(`INSERT INTO purchases (id, seq, seller, marketplace, order_reference, ordered_at, total_cents, currency, source, mail_account_id, mail_message_id, extracted_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, sequence, purchase.Seller, purchase.Marketplace, purchase.OrderReference, purchase.OrderedAt, purchase.TotalCents, purchase.Currency, purchase.Source,
-		purchase.MailAccountID, purchase.MailMessageID, purchase.ExtractedBy, now); err != nil {
-		if strings.Contains(err.Error(), "idx_purchases_mail") || strings.Contains(err.Error(), "purchases.mail_account_id") {
-			return Purchase{}, fmt.Errorf("%w: the order in mail %s %s is already recorded", ErrConflict, purchase.MailAccountID, purchase.MailMessageID)
-		}
+	if _, err := transaction.Exec(`INSERT INTO purchases (id, seq, seller, marketplace, order_reference, ordered_at, total_cents, currency, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, sequence, purchase.Seller, purchase.Marketplace, purchase.OrderReference, purchase.OrderedAt, purchase.TotalCents, purchase.Currency, purchase.Source, now); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return Purchase{}, fmt.Errorf("%w: %s order %s is already recorded", ErrConflict, purchase.Marketplace, purchase.OrderReference)
 		}
@@ -95,11 +82,6 @@ func (s *Store) CreatePurchase(ctx context.Context, purchase Purchase) (Purchase
 		if line.Disposition == "" {
 			line.Disposition = "unreviewed"
 		}
-		if line.ListingURL != "" {
-			if parsed, err := url.Parse(line.ListingURL); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-				return Purchase{}, fmt.Errorf("%w: line %d: listing_url must be an http or https URL", ErrInvalid, index+1)
-			}
-		}
 		if !contains(PurchaseLineDispositions, line.Disposition) {
 			return Purchase{}, fmt.Errorf("%w: line %d: disposition must be one of %s", ErrInvalid, index+1, strings.Join(PurchaseLineDispositions, ", "))
 		}
@@ -107,8 +89,8 @@ func (s *Store) CreatePurchase(ctx context.Context, purchase Purchase) (Purchase
 		if err != nil {
 			return Purchase{}, err
 		}
-		if _, err := transaction.Exec(`INSERT INTO purchase_lines (id, seq, purchase_id, line_number, title, quantity, unit_price_cents, product_reference, listing_url, disposition, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			lineID, lineSequence, id, index+1, line.Title, line.Quantity, line.UnitPriceCents, line.ProductReference, line.ListingURL, line.Disposition, now); err != nil {
+		if _, err := transaction.Exec(`INSERT INTO purchase_lines (id, seq, purchase_id, line_number, title, quantity, unit_price_cents, product_reference, disposition, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			lineID, lineSequence, id, index+1, line.Title, line.Quantity, line.UnitPriceCents, line.ProductReference, line.Disposition, now); err != nil {
 			return Purchase{}, err
 		}
 	}
@@ -122,9 +104,8 @@ func (s *Store) CreatePurchase(ctx context.Context, purchase Purchase) (Purchase
 func (s *Store) GetPurchase(id string) (Purchase, error) {
 	var purchase Purchase
 	var total sql.NullInt64
-	err := s.db.QueryRow(`SELECT id, seller, marketplace, order_reference, ordered_at, total_cents, currency, source, mail_account_id, mail_message_id, extracted_by, created_at FROM purchases WHERE id = ? AND deleted_at = 0`, id).Scan(
-		&purchase.ID, &purchase.Seller, &purchase.Marketplace, &purchase.OrderReference, &purchase.OrderedAt, &total, &purchase.Currency, &purchase.Source,
-		&purchase.MailAccountID, &purchase.MailMessageID, &purchase.ExtractedBy, &purchase.CreatedAt)
+	err := s.db.QueryRow(`SELECT id, seller, marketplace, order_reference, ordered_at, total_cents, currency, source, created_at FROM purchases WHERE id = ? AND deleted_at = 0`, id).Scan(
+		&purchase.ID, &purchase.Seller, &purchase.Marketplace, &purchase.OrderReference, &purchase.OrderedAt, &total, &purchase.Currency, &purchase.Source, &purchase.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Purchase{}, fmt.Errorf("%w: no purchase %s", ErrNotFound, id)
 	}
@@ -134,7 +115,7 @@ func (s *Store) GetPurchase(id string) (Purchase, error) {
 	if total.Valid {
 		purchase.TotalCents = &total.Int64
 	}
-	rows, err := s.db.Query(`SELECT id, line_number, title, quantity, unit_price_cents, product_reference, listing_url, disposition FROM purchase_lines WHERE purchase_id = ? ORDER BY line_number`, id)
+	rows, err := s.db.Query(`SELECT id, line_number, title, quantity, unit_price_cents, product_reference, disposition FROM purchase_lines WHERE purchase_id = ? ORDER BY line_number`, id)
 	if err != nil {
 		return Purchase{}, err
 	}
@@ -143,7 +124,7 @@ func (s *Store) GetPurchase(id string) (Purchase, error) {
 	for rows.Next() {
 		var line PurchaseLine
 		var price sql.NullInt64
-		if err := rows.Scan(&line.ID, &line.LineNumber, &line.Title, &line.Quantity, &price, &line.ProductReference, &line.ListingURL, &line.Disposition); err != nil {
+		if err := rows.Scan(&line.ID, &line.LineNumber, &line.Title, &line.Quantity, &price, &line.ProductReference, &line.Disposition); err != nil {
 			return Purchase{}, err
 		}
 		if price.Valid {
@@ -208,4 +189,65 @@ func (s *Store) SetPurchaseLineDisposition(lineID, disposition, actor string) er
 		return err
 	}
 	return transaction.Commit()
+}
+
+// DeletePurchase soft-deletes an order, saving the row to revisions first.
+// A possession that came from one of its lines is a conflict: move it
+// first. Every open question asking whether one of its lines bought a
+// possession is withdrawn (answered with the reason, resolution
+// withdrawn). Answers the withdrawn questions' ids.
+func (s *Store) DeletePurchase(ctx context.Context, id, actor, reason string) ([]string, error) {
+	if actor == "" || reason == "" {
+		return nil, fmt.Errorf("%w: actor and reason are required", ErrInvalid)
+	}
+	s.writeMutex.Lock()
+	defer s.writeMutex.Unlock()
+	transaction, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer transaction.Rollback()
+	var deletedAt int64
+	if err := transaction.QueryRow(`SELECT deleted_at FROM purchases WHERE id = ?`, id).Scan(&deletedAt); errors.Is(err, sql.ErrNoRows) || deletedAt != 0 {
+		return nil, fmt.Errorf("%w: no purchase %s", ErrNotFound, id)
+	} else if err != nil {
+		return nil, err
+	}
+	holders, err := stringColumn(transaction, `SELECT id FROM possessions WHERE deleted_at = 0 AND purchase_line_id IN (SELECT id FROM purchase_lines WHERE purchase_id = ?)`, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(holders) > 0 {
+		return nil, fmt.Errorf("%w: %s came from it; point them elsewhere first", ErrConflict, strings.Join(holders, ", "))
+	}
+	lineIDs, err := stringColumn(transaction, `SELECT id FROM purchase_lines WHERE purchase_id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	now := s.unixNow()
+	withdrawn := []string{}
+	resolution, _ := json.Marshal(Resolution{Action: "withdrawn", Explanation: reason})
+	for _, lineID := range lineIDs {
+		questions, err := stringColumn(transaction, `SELECT id FROM owner_questions WHERE answered_at = 0 AND instr(choices, ?) > 0`, jsonField("purchase_line_id", lineID))
+		if err != nil {
+			return nil, err
+		}
+		for _, questionID := range questions {
+			if err := saveRevision(transaction, "owner_questions", "id", questionID, actor, now); err != nil {
+				return nil, err
+			}
+			if _, err := transaction.Exec(`UPDATE owner_questions SET answer_text = ?, resolution = ?, answered_by = ?, answered_at = ? WHERE id = ?`,
+				"withdrawn: "+reason, string(resolution), actor, now, questionID); err != nil {
+				return nil, err
+			}
+			withdrawn = append(withdrawn, questionID)
+		}
+	}
+	if err := saveRevision(transaction, "purchases", "id", id, actor, now); err != nil {
+		return nil, err
+	}
+	if _, err := transaction.Exec(`UPDATE purchases SET deleted_at = ? WHERE id = ?`, now, id); err != nil {
+		return nil, err
+	}
+	return withdrawn, transaction.Commit()
 }

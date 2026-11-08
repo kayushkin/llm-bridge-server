@@ -43,45 +43,36 @@ func titleWords(text string) []string {
 
 type purchaseCandidate struct {
 	ID, Name, Brand, Model, Description, Kind string
-	PurchaseLineID                            string
-	score                                     int
+	// Bought says the possession is already tied to an order: a budget-store
+	// line links to it, or it names the transaction that paid for it.
+	Bought bool
+	score  int
 }
 
-// openPurchaseLine is a line no possession points at yet, with its order.
-type openPurchaseLine struct {
-	ID, PurchaseID, Title, Seller, Marketplace, Currency string
-	OrderedAt                                            int64
-	UnitPriceCents                                       *int64
+// openOrderLine is a budget-store order line no possession is linked from
+// yet, with its order.
+type openOrderLine struct {
+	ID, Title, ItemNumber, Seller, Marketplace, Currency, TransactionID string
+	OrderedAt                                                           int64
+	UnitPriceCents                                                      *int64
 }
 
-func (s *Store) openPurchaseLines(purchaseID string) ([]openPurchaseLine, error) {
-	query := `SELECT purchase_lines.id, purchases.id, purchase_lines.title, purchases.seller, purchases.marketplace, purchases.currency, purchases.ordered_at, purchase_lines.unit_price_cents
-		FROM purchase_lines JOIN purchases ON purchases.id = purchase_lines.purchase_id
-		WHERE purchases.deleted_at = 0 AND purchase_lines.disposition = 'unreviewed'
-		AND NOT EXISTS (SELECT 1 FROM possessions WHERE possessions.purchase_line_id = purchase_lines.id AND possessions.deleted_at = 0)`
-	arguments := []any{}
-	if purchaseID != "" {
-		query += ` AND purchases.id = ?`
-		arguments = append(arguments, purchaseID)
-	}
-	rows, err := s.db.Query(query+` ORDER BY purchases.ordered_at, purchase_lines.line_number`, arguments...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	lines := []openPurchaseLine{}
-	for rows.Next() {
-		var line openPurchaseLine
-		var price sql.NullInt64
-		if err := rows.Scan(&line.ID, &line.PurchaseID, &line.Title, &line.Seller, &line.Marketplace, &line.Currency, &line.OrderedAt, &price); err != nil {
-			return nil, err
+func openOrderLines(orders []BudgetOrder, orderID string) []openOrderLine {
+	lines := []openOrderLine{}
+	for _, order := range orders {
+		if orderID != "" && order.ID != orderID {
+			continue
 		}
-		if price.Valid {
-			line.UnitPriceCents = &price.Int64
+		for _, line := range order.Lines {
+			if line.Disposition != "unreviewed" || len(line.PossessionIDs) > 0 {
+				continue
+			}
+			lines = append(lines, openOrderLine{ID: line.ID, Title: line.Title, ItemNumber: line.ItemNumber, Seller: order.Seller, Marketplace: order.Marketplace,
+				Currency: order.Currency, TransactionID: order.TransactionID, OrderedAt: order.OrderedAt, UnitPriceCents: line.UnitPriceCents})
 		}
-		lines = append(lines, line)
 	}
-	return lines, rows.Err()
+	sort.SliceStable(lines, func(a, b int) bool { return lines[a].OrderedAt < lines[b].OrderedAt })
+	return lines
 }
 
 // purchaseCandidates reads every live possession, with its kind, once per
@@ -97,7 +88,7 @@ func (s *Store) purchaseCandidates() ([]purchaseCandidate, error) {
 			kinds[id] = kind.Name
 		}
 	}
-	rows, err := s.db.Query(`SELECT id, name, brand, model, description, COALESCE(purchase_line_id, '') FROM possessions WHERE deleted_at = 0 ORDER BY seq`)
+	rows, err := s.db.Query(`SELECT id, name, brand, model, description, budget_transaction_id IS NOT NULL OR purchase_line_id IS NOT NULL FROM possessions WHERE deleted_at = 0 ORDER BY seq`)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +96,7 @@ func (s *Store) purchaseCandidates() ([]purchaseCandidate, error) {
 	candidates := []purchaseCandidate{}
 	for rows.Next() {
 		var candidate purchaseCandidate
-		if err := rows.Scan(&candidate.ID, &candidate.Name, &candidate.Brand, &candidate.Model, &candidate.Description, &candidate.PurchaseLineID); err != nil {
+		if err := rows.Scan(&candidate.ID, &candidate.Name, &candidate.Brand, &candidate.Model, &candidate.Description, &candidate.Bought); err != nil {
 			return nil, err
 		}
 		candidate.Kind = kinds[candidate.ID]
@@ -116,12 +107,12 @@ func (s *Store) purchaseCandidates() ([]purchaseCandidate, error) {
 
 // shortlist ranks possessions by the title's words they share: a word in
 // the model counts 4, in the brand 3, in the name 2, in the description 1.
-// Possessions already tied to an order line are left out.
+// Possessions already tied to an order are left out.
 func shortlist(title string, candidates []purchaseCandidate) []purchaseCandidate {
 	words := titleWords(title)
 	ranked := []purchaseCandidate{}
 	for _, candidate := range candidates {
-		if candidate.PurchaseLineID != "" {
+		if candidate.Bought {
 			continue
 		}
 		model, brand, name, description := wordSet(candidate.Model), wordSet(candidate.Brand), wordSet(candidate.Name), wordSet(candidate.Description)
@@ -165,7 +156,7 @@ var purchaseMatchSchema = json.RawMessage(`{"type":"object","additionalPropertie
 
 const purchaseMatchSystemPrompt = `You link a person's online orders to the things in their inventory. An order line is a seller's title; the inventory entries were written from photos of the person's home and outfits. Match only the thing the order bought: the same make and model, or the same distinctive item; a similar thing is not a match. Many orders were gifts, used up, returned or never photographed, so "none" is often right.`
 
-func purchaseMatchPrompt(line openPurchaseLine, candidates []purchaseCandidate, pictureOf map[string]int) string {
+func purchaseMatchPrompt(line openOrderLine, candidates []purchaseCandidate, pictureOf map[string]int) string {
 	var prompt strings.Builder
 	price := "price not shown"
 	if line.UnitPriceCents != nil {
@@ -195,30 +186,45 @@ func purchaseMatchPrompt(line openPurchaseLine, candidates []purchaseCandidate, 
 	return prompt.String()
 }
 
-// MatchPurchaseLines links order lines to the possessions they bought.
-// For each line no possession points at, still unreviewed and not asked
-// about before, both readers see the line and up to 8 possessions sharing
-// its words, with their pictures. Both pick the same one and both are sure:
-// the possession takes the line (and its price and the order's date when it
-// has none). Either picks one otherwise: an optional question on that
-// possession's photo, asked_by purchase_match. Both say none, or no
-// possession shares its words: the line stays unreviewed.
-func (reviewer *Reviewer) MatchPurchaseLines(ctx context.Context, actor, purchaseID string) (AuditRun, error) {
+// MatchOrderLines links budget-store's marketplace order lines to the
+// possessions they bought. For each line no possession is linked from,
+// still unreviewed and not asked about before, both readers see the line
+// and up to 8 possessions sharing its words, with their pictures. Both pick
+// the same one and both are sure: linked (LinkOrderLine). Either picks one
+// otherwise: an optional question on that possession's photo, asked_by
+// purchase_match. Both say none, or no possession shares its words: the line
+// stays unreviewed.
+func (reviewer *Reviewer) MatchOrderLines(ctx context.Context, actor, orderID string) (AuditRun, error) {
 	run := newAuditRun()
 	if actor == "" {
 		return run, fmt.Errorf("%w: say who is matching (the actor)", ErrInvalid)
 	}
-	lines, err := reviewer.Store.openPurchaseLines(purchaseID)
+	if reviewer.Budget == nil {
+		return run, fmt.Errorf("budget-store is not wired, so order lines cannot be read")
+	}
+	orders, err := reviewer.Budget.ListOrders(ctx)
 	if err != nil {
 		return run, err
 	}
+	lines := openOrderLines(orders, orderID)
 	candidates, err := reviewer.Store.purchaseCandidates()
 	if err != nil {
 		return run, err
 	}
+	linked := map[string]bool{}
+	for _, order := range orders {
+		for _, line := range order.Lines {
+			for _, possessionID := range line.PossessionIDs {
+				linked[possessionID] = true
+			}
+		}
+	}
+	for index := range candidates {
+		candidates[index].Bought = candidates[index].Bought || linked[candidates[index].ID]
+	}
 	pictures := newPictureCache(reviewer.Photos)
 	for _, line := range lines {
-		asked, err := questionAboutExists(reviewer.Store.db, `"action":"purchase_line_link"`, jsonField("purchase_line_id", line.ID))
+		asked, err := questionAboutExists(reviewer.Store.db, `"action":"order_line_link"`, jsonField("marketplace_order_line_id", line.ID))
 		if err != nil {
 			return run, err
 		}
@@ -276,14 +282,14 @@ func (reviewer *Reviewer) MatchPurchaseLines(ctx context.Context, actor, purchas
 		}
 		switch {
 		case picks[0] != "" && picks[0] == picks[1] && sure[0] && sure[1]:
-			if err := reviewer.Store.LinkPurchaseLine(ctx, picks[0], line.ID, actor); err != nil {
+			if err := reviewer.Store.LinkOrderLine(ctx, picks[0], line.ID, line.TransactionID, actor, "both readers: "+strings.Join(said[:], "; ")); err != nil {
 				run.Counts["failed"]++
 				run.fail(line.ID, err)
 				continue
 			}
 			for index := range candidates {
 				if candidates[index].ID == picks[0] {
-					candidates[index].PurchaseLineID = line.ID
+					candidates[index].Bought = true
 				}
 			}
 			run.Counts["matched"]++
@@ -319,7 +325,7 @@ func orNone(id string) string {
 
 // askAboutPurchaseLine asks the owner whether the order line bought the
 // possession either reader picked, on that possession's photo.
-func (s *Store) askAboutPurchaseLine(ctx context.Context, line openPurchaseLine, picks [2]string, said [2]string, shortlisted []purchaseCandidate) (AuditAction, error) {
+func (s *Store) askAboutPurchaseLine(ctx context.Context, line openOrderLine, picks [2]string, said [2]string, shortlisted []purchaseCandidate) (AuditAction, error) {
 	names := map[string]string{}
 	for _, candidate := range shortlisted {
 		names[candidate.ID] = candidate.Name
@@ -353,9 +359,9 @@ func (s *Store) askAboutPurchaseLine(ctx context.Context, line openPurchaseLine,
 	choices := []Choice{}
 	for _, pick := range distinct {
 		choices = append(choices, Choice{Label: fmt.Sprintf("Yes: %s (%s) came from this order", names[pick], pick),
-			Resolution: Resolution{Action: "purchase_line_link", PossessionID: pick, PurchaseLineID: line.ID}})
+			Resolution: Resolution{Action: "order_line_link", PossessionID: pick, MarketplaceOrderLineID: line.ID, BudgetTransactionID: line.TransactionID}})
 	}
-	choices = append(choices, Choice{Label: "No, not from this order", Resolution: Resolution{Action: "purchase_line_not_this", PurchaseLineID: line.ID}})
+	choices = append(choices, Choice{Label: "No, not from this order", Resolution: Resolution{Action: "order_line_not_this", MarketplaceOrderLineID: line.ID}})
 	questionID, err := insertQuestionAnsweringID(transaction, sightingID, question, choices, "detail", s.unixNow())
 	if err != nil {
 		return AuditAction{}, err
@@ -366,8 +372,12 @@ func (s *Store) askAboutPurchaseLine(ctx context.Context, line openPurchaseLine,
 	return AuditAction{Action: "asked", Records: append([]string{line.ID}, distinct...), QuestionID: questionID, Reason: question}, transaction.Commit()
 }
 
-// LinkPurchaseLine records that a possession came from an order line.
-func (s *Store) LinkPurchaseLine(ctx context.Context, possessionID, lineID, actor string) error {
+// LinkOrderLine records that a possession came from a budget-store order
+// line: the possession names the transaction that paid for it (when the
+// order has one), takes the order's date, "bought" and the line's price
+// where it has none, and budget-store links the line to it. A possession
+// already paid by another transaction is a conflict.
+func (s *Store) LinkOrderLine(ctx context.Context, possessionID, lineID, transactionID, actor, note string) error {
 	s.writeMutex.Lock()
 	defer s.writeMutex.Unlock()
 	transaction, err := s.db.BeginTx(ctx, nil)
@@ -375,54 +385,58 @@ func (s *Store) LinkPurchaseLine(ctx context.Context, possessionID, lineID, acto
 		return err
 	}
 	defer transaction.Rollback()
-	if err := s.linkPurchaseLineInTransaction(ctx, transaction, possessionID, lineID, actor, s.unixNow()); err != nil {
+	if err := s.linkOrderLineInTransaction(ctx, transaction, possessionID, lineID, transactionID, actor, note); err != nil {
 		return err
 	}
 	return transaction.Commit()
 }
 
-// linkPurchaseLineInTransaction points the possession at the line, fills
-// its acquired date, how and price where it has none, and marks the line a
-// possession. A possession already from another line is a conflict.
-func (s *Store) linkPurchaseLineInTransaction(ctx context.Context, transaction *sql.Tx, possessionID, lineID, actor string, now int64) error {
+func (s *Store) linkOrderLineInTransaction(ctx context.Context, transaction *sql.Tx, possessionID, lineID, transactionID, actor, note string) error {
+	if s.budget == nil {
+		return fmt.Errorf("budget-store is not wired, so an order line cannot be linked")
+	}
+	order, line, err := s.budget.OrderOfLine(ctx, lineID)
+	if err != nil {
+		return err
+	}
+	if transactionID != order.TransactionID {
+		// The order found its charge, or lost it, since the question was asked.
+		transactionID = order.TransactionID
+	}
 	possession, err := possessionView(transaction, possessionID, false)
 	if err != nil {
 		return err
 	}
-	if existing, _ := possession["purchase_line_id"].(*string); existing != nil && *existing != lineID {
-		return fmt.Errorf("%w: %s already came from %s", ErrConflict, possessionID, *existing)
-	}
-	if existing, _ := possession["purchase_line_id"].(string); existing != "" && existing != lineID {
-		return fmt.Errorf("%w: %s already came from %s", ErrConflict, possessionID, existing)
-	}
-	var orderedAt int64
-	var currency string
-	var price sql.NullInt64
-	if err := transaction.QueryRow(`SELECT purchases.ordered_at, purchases.currency, purchase_lines.unit_price_cents FROM purchase_lines JOIN purchases ON purchases.id = purchase_lines.purchase_id WHERE purchase_lines.id = ?`, lineID).
-		Scan(&orderedAt, &currency, &price); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: no purchase line %s", ErrInvalid, lineID)
+	existing := ""
+	switch value := possession["budget_transaction_id"].(type) {
+	case string:
+		existing = value
+	case *string:
+		if value != nil {
+			existing = *value
 		}
-		return err
+	}
+	if existing != "" && transactionID != "" && existing != transactionID {
+		return fmt.Errorf("%w: %s was already paid by %s", ErrConflict, possessionID, existing)
 	}
 	fields := map[string]json.RawMessage{}
-	fields["purchase_line_id"], _ = json.Marshal(lineID)
+	if transactionID != "" && existing == "" {
+		fields["budget_transaction_id"], _ = json.Marshal(transactionID)
+	}
 	if possession["acquired_at"] == int64(0) {
-		fields["acquired_at"], _ = json.Marshal(orderedAt)
+		fields["acquired_at"], _ = json.Marshal(order.OrderedAt)
 	}
 	if possession["acquired_how"] == "" {
 		fields["acquired_how"], _ = json.Marshal("bought")
 	}
-	if possession["price_cents"] == nil && price.Valid && len(currency) == 3 {
-		fields["price_cents"], _ = json.Marshal(price.Int64)
-		fields["price_currency"], _ = json.Marshal(currency)
+	if possession["price_cents"] == nil && line.UnitPriceCents != nil && len(order.Currency) == 3 {
+		fields["price_cents"], _ = json.Marshal(*line.UnitPriceCents)
+		fields["price_currency"], _ = json.Marshal(order.Currency)
 	}
-	if err := s.patchPossessionInTransaction(ctx, transaction, possessionID, fields, nil, nil, actor); err != nil {
-		return err
+	if len(fields) > 0 {
+		if err := s.patchPossessionInTransaction(ctx, transaction, possessionID, fields, nil, nil, actor); err != nil {
+			return err
+		}
 	}
-	if err := saveRevision(transaction, "purchase_lines", "id", lineID, actor, now); err != nil {
-		return err
-	}
-	_, err = transaction.Exec(`UPDATE purchase_lines SET disposition = 'possession' WHERE id = ?`, lineID)
-	return err
+	return s.budget.LinkPossession(ctx, lineID, possessionID, note)
 }

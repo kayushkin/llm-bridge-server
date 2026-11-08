@@ -25,7 +25,7 @@ func (articles *fakeArticles) ReadListing(ctx context.Context, articleID string)
 
 func openProductTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(t.TempDir(), fakeReferences{known: map[string]bool{"photo_000001": true, "article_000007": true}})
+	store, err := Open(t.TempDir(), fakeReferences{known: map[string]bool{"photo_000001": true, "article_000007": true, "transaction_000001": true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,9 +93,63 @@ func (mail fakeMail) Message(ctx context.Context, account, id string) (MailMessa
 	return mail.messages[id], nil
 }
 
-func TestEbayConfirmationsBecomePurchasesOnceAndMatchTheirPossessions(t *testing.T) {
+// fakeBudget is budget-store's orders, with the charge it would find.
+type fakeBudget struct {
+	orders      []BudgetOrder
+	transaction string // the charge every order is matched to
+}
+
+func (budget *fakeBudget) ListOrders(ctx context.Context) ([]BudgetOrder, error) {
+	return budget.orders, nil
+}
+
+func (budget *fakeBudget) CreateOrder(ctx context.Context, order BudgetOrder) (BudgetOrder, error) {
+	for _, existing := range budget.orders {
+		if existing.OrderNumber != "" && existing.OrderNumber == order.OrderNumber {
+			return BudgetOrder{}, fmt.Errorf("%w: order %s is already %s", ErrConflict, order.OrderNumber, existing.ID)
+		}
+	}
+	order.ID = fmt.Sprintf("marketplace_order_%06d", len(budget.orders)+1)
+	order.TransactionID, order.MatchedBy = budget.transaction, "order_number"
+	for index := range order.Lines {
+		order.Lines[index].ID = fmt.Sprintf("marketplace_order_line_%06d", len(budget.orders)*10+index+1)
+		order.Lines[index].OrderID = order.ID
+		order.Lines[index].Disposition = "unreviewed"
+	}
+	budget.orders = append(budget.orders, order)
+	return order, nil
+}
+
+func (budget *fakeBudget) LinkPossession(ctx context.Context, lineID, possessionID, note string) error {
+	for orderIndex := range budget.orders {
+		for lineIndex := range budget.orders[orderIndex].Lines {
+			line := &budget.orders[orderIndex].Lines[lineIndex]
+			if line.ID == lineID {
+				line.PossessionIDs = append(line.PossessionIDs, possessionID)
+				line.Disposition = "possession"
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: no line %s", ErrInvalid, lineID)
+}
+
+func (budget *fakeBudget) OrderOfLine(ctx context.Context, lineID string) (BudgetOrder, BudgetOrderLine, error) {
+	for _, order := range budget.orders {
+		for _, line := range order.Lines {
+			if line.ID == lineID {
+				return order, line, nil
+			}
+		}
+	}
+	return BudgetOrder{}, BudgetOrderLine{}, fmt.Errorf("%w: no line %s", ErrInvalid, lineID)
+}
+
+func TestEbayConfirmationsBecomeBudgetOrdersOnceAndMatchTheirPossessions(t *testing.T) {
 	store := openProductTestStore(t)
 	ctx := context.Background()
+	budget := &fakeBudget{transaction: "transaction_000001"}
+	store.UseBudgetStore(budget)
 	watch, err := store.CreatePossession(ctx, fields(t, `{"name":"metronome wristwatch","brand":"Acme","watch":{}}`), "principal_000001")
 	if err != nil {
 		t.Fatal(err)
@@ -127,29 +181,27 @@ func TestEbayConfirmationsBecomePurchasesOnceAndMatchTheirPossessions(t *testing
 		}
 		return nil, false
 	}}
-	reviewer := &Reviewer{Store: store, Models: models, Photos: fakePhotos{}, Mail: mail, FirstReaderRole: "first", SecondReaderRole: "second"}
+	reviewer := &Reviewer{Store: store, Models: models, Photos: fakePhotos{}, Mail: mail, Budget: budget, FirstReaderRole: "first", SecondReaderRole: "second"}
 	run, err := reviewer.ImportEbayOrders(ctx, EbayImportRequest{Actor: "principal_000001", Account: "mail-account"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Looked != 3 || run.Counts["orders"] != 1 || run.Counts["lines"] != 1 || run.Counts["not_an_order"] != 1 || run.Counts["failed"] != 1 {
+	if run.Looked != 3 || run.Counts["orders"] != 1 || run.Counts["lines"] != 1 || run.Counts["not_an_order"] != 1 || run.Counts["failed"] != 1 ||
+		run.Counts["matched_by_order_number"] != 1 {
 		t.Fatalf("run = %+v", run)
 	}
-	purchase, err := store.GetPurchase(run.Actions[0].Records[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if purchase.Seller != "seller_one" || purchase.Marketplace != "ebay" || purchase.Source != "email_receipt" || purchase.Currency != "USD" ||
-		purchase.MailAccountID != "mail-account" || purchase.MailMessageID != "m1" || purchase.OrderedAt != ordered.Unix() || *purchase.TotalCents != 29015 ||
-		purchase.Lines[0].ListingURL != "https://www.ebay.com/itm/206000000001" || purchase.Lines[0].ProductReference != "206000000001" {
-		t.Fatalf("purchase = %+v", purchase)
+	order := budget.orders[0]
+	if order.Seller != "seller_one" || order.Marketplace != "ebay" || order.Currency != "USD" || order.MailAccountID != "mail-account" || order.MailMessageID != "m1" ||
+		order.OrderedAt != ordered.Unix() || *order.TotalCents != 29015 || order.ExtractedBy != "first-model" || order.CreatedBy != "principal_000001" ||
+		order.Lines[0].ListingURL != "https://www.ebay.com/itm/206000000001" || order.Lines[0].ItemNumber != "206000000001" {
+		t.Fatalf("order = %+v", order)
 	}
 	again, err := reviewer.ImportEbayOrders(ctx, EbayImportRequest{Actor: "principal_000001", Account: "mail-account"})
 	if err != nil || again.Counts["already_imported"] != 1 || again.Counts["orders"] != 0 {
 		t.Fatalf("a second import = %+v %v, want the order skipped", again, err)
 	}
 
-	matched, err := reviewer.MatchPurchaseLines(ctx, "principal_000001", "")
+	matched, err := reviewer.MatchOrderLines(ctx, "principal_000001", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,28 +212,28 @@ func TestEbayConfirmationsBecomePurchasesOnceAndMatchTheirPossessions(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(linked["purchase_line_id"]) != purchase.Lines[0].ID || linked["acquired_at"] != ordered.Unix() || linked["acquired_how"] != "bought" ||
-		linked["price_cents"] != int64(26800) || linked["price_currency"] != "USD" {
+	if fmt.Sprint(linked["budget_transaction_id"]) != "transaction_000001" || linked["acquired_at"] != ordered.Unix() || linked["acquired_how"] != "bought" ||
+		linked["price_cents"] != int64(26800) || linked["price_currency"] != "USD" || linked["purchase_line_id"] != nil {
 		t.Fatalf("linked possession = %v", linked)
 	}
-	purchase, _ = store.GetPurchase(purchase.ID)
-	if purchase.Lines[0].Disposition != "possession" || len(purchase.Lines[0].PossessionIDs) != 1 {
-		t.Fatalf("line after the match = %+v", purchase.Lines[0])
+	if line := budget.orders[0].Lines[0]; line.Disposition != "possession" || len(line.PossessionIDs) != 1 {
+		t.Fatalf("line after the match = %+v", line)
 	}
-	if rerun, err := reviewer.MatchPurchaseLines(ctx, "principal_000001", ""); err != nil || rerun.Looked != 0 {
+	if rerun, err := reviewer.MatchOrderLines(ctx, "principal_000001", ""); err != nil || rerun.Looked != 0 {
 		t.Fatalf("a second match = %+v %v, want nothing left to look at", rerun, err)
 	}
 }
 
-func TestAPurchaseLineAnswerLinksThePossession(t *testing.T) {
+func TestAnOrderLineAnswerLinksThePossession(t *testing.T) {
 	store := openProductTestStore(t)
 	ctx := context.Background()
+	budget := &fakeBudget{}
+	store.UseBudgetStore(budget)
 	lamp, err := store.CreatePossession(ctx, fields(t, `{"name":"desk lamp","acquired_at":5}`), "principal_000001")
 	if err != nil {
 		t.Fatal(err)
 	}
-	purchase, err := store.CreatePurchase(ctx, Purchase{Seller: "s", Marketplace: "ebay", OrderReference: "1", OrderedAt: 100, Source: "manual",
-		Lines: []PurchaseLine{{Title: "Lamp"}}})
+	order, err := budget.CreateOrder(ctx, BudgetOrder{Marketplace: "ebay", OrderNumber: "1", OrderedAt: 100, Currency: "USD", Lines: []BudgetOrderLine{{Title: "Lamp"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,14 +242,71 @@ func TestAPurchaseLineAnswerLinksThePossession(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.applyAuditResolution(transaction, OwnerQuestion{ID: "possession_question_000001"},
-		Resolution{Action: "purchase_line_link", PossessionID: lamp["id"].(string), PurchaseLineID: purchase.Lines[0].ID}, "principal_000001", 200); err != nil {
+		Resolution{Action: "order_line_link", PossessionID: lamp["id"].(string), MarketplaceOrderLineID: order.Lines[0].ID}, "principal_000001", 200); err != nil {
 		t.Fatal(err)
 	}
 	if err := transaction.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	read, _ := store.GetPossession(lamp["id"].(string), false)
-	if fmt.Sprint(read["purchase_line_id"]) != purchase.Lines[0].ID || read["acquired_at"] != int64(5) || read["price_cents"] != nil {
-		t.Fatalf("answered possession = %v; acquired_at kept and no price invented", read)
+	if read["budget_transaction_id"] != nil || read["acquired_at"] != int64(5) || read["price_cents"] != nil || read["acquired_how"] != "bought" {
+		t.Fatalf("answered possession = %v; an order with no charge names none, acquired_at is kept and no price invented", read)
+	}
+	if budget.orders[0].Lines[0].PossessionIDs[0] != lamp["id"] {
+		t.Fatalf("budget-store line = %+v, want a link to the lamp", budget.orders[0].Lines[0])
+	}
+}
+
+func TestDeletingAPurchaseWithdrawsItsQuestionsAndRefusesWhileAPossessionCameFromIt(t *testing.T) {
+	store := openProductTestStore(t)
+	ctx := context.Background()
+	purchase, err := store.CreatePurchase(ctx, Purchase{Marketplace: "ebay", OrderReference: "1", OrderedAt: 100, Source: "manual", Lines: []PurchaseLine{{Title: "Lamp"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lamp, err := store.CreatePossession(ctx, fields(t, `{"name":"desk lamp","purchase_line_id":"`+purchase.Lines[0].ID+`"}`), "principal_000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeletePurchase(ctx, purchase.ID, "principal_000001", "moved"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("deleting a purchase a possession came from = %v, want a conflict", err)
+	}
+	if _, err := store.PatchPossession(ctx, lamp["id"].(string), fields(t, `{"purchase_line_id":null}`), "principal_000001"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeletePurchase(ctx, purchase.ID, "principal_000001", "moved"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetPurchase(purchase.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a deleted purchase read = %v, want not found", err)
+	}
+}
+
+func TestOpenDropsTheOrderColumnsPurchasesHeldForADay(t *testing.T) {
+	directory := t.TempDir()
+	store, err := Open(directory, fakeReferences{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE purchases ADD COLUMN mail_account_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE purchases ADD COLUMN mail_message_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE purchases ADD COLUMN extracted_by TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE purchase_lines ADD COLUMN listing_url TEXT NOT NULL DEFAULT ''`,
+		`CREATE UNIQUE INDEX idx_purchases_mail ON purchases(mail_account_id, mail_message_id) WHERE mail_message_id != ''`,
+	} {
+		if _, err := store.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.Close()
+	store, err = Open(directory, fakeReferences{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	left, err := stringColumn(store.db, `SELECT name FROM pragma_table_info('purchases') WHERE name IN ('mail_account_id','mail_message_id','extracted_by')`)
+	if err != nil || len(left) != 0 {
+		t.Fatalf("columns left = %v %v", left, err)
 	}
 }

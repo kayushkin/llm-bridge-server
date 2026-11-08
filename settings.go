@@ -36,6 +36,7 @@ const (
 	SettingArticleStoreURL        = "article_store_url"
 	SettingMailstackURL           = "mailstack_url"
 	SettingMailstackToken         = "mailstack_token"
+	SettingBudgetStoreURL         = "budget_store_url"
 )
 
 // DefaultListenAddress is loopback, deliberately: the service has no auth of
@@ -94,6 +95,8 @@ func SettingDefinitions() []servicesettings.Definition {
 		ownerTimeZoneDefinition(),
 		{Key: SettingArticleStoreURL, EnvironmentVariable: "ARTICLE_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: "http://127.0.0.1:8318",
 			Description: "Where article-store answers. A product's listing page is saved there, and its text read from there; a product's article_id is checked there."},
+		{Key: SettingBudgetStoreURL, EnvironmentVariable: "BUDGET_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: "http://127.0.0.1:8340",
+			Description: "Where budget-store answers. The eBay import records orders there; a possession's budget_transaction_id is checked there, and the order line it came from links to it there."},
 		{Key: SettingMailstackURL, EnvironmentVariable: "MAILSTACK_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: "http://localhost:8195",
 			Description: "Where mailstack answers. The eBay import reads order confirmations there, read-only."},
 		{Key: SettingMailstackToken, EnvironmentVariable: "MAILSTACK_TOKEN", Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString,

@@ -89,7 +89,7 @@ var SightingStatuses = []string{"proposed", "accepted", "rejected", "same_as_oth
 var ResolutionActions = []string{"accept", "same_as", "same_as_sighting", "reject", "keep", "amend",
 	"keep_link", "merge_possessions", "keep_apart", "combine_outfits", "keep_outfits_apart",
 	"slot_link", "slot_new", "slot_not_mine",
-	"purchase_line_link", "purchase_line_not_this"}
+	"order_line_link", "order_line_not_this", "withdrawn"}
 var QuestionPurposes = []string{"decision", "detail"}
 
 // Where a product's listing comes from: the maker's own page first; a

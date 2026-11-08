@@ -33,6 +33,7 @@ func main() {
 		LocationStoreURL:     settings.String(possessionstore.SettingLocationStoreURL),
 		HarnessStoreDatabase: settings.String(possessionstore.SettingHarnessStoreDatabase),
 		ArticleStoreURL:      settings.String(possessionstore.SettingArticleStoreURL),
+		BudgetStoreURL:       settings.String(possessionstore.SettingBudgetStoreURL),
 		HTTPClient:           &http.Client{Timeout: 30 * time.Second},
 	}
 	store, err := possessionstore.Open(settings.String(possessionstore.SettingDataDirectory), references)
@@ -40,6 +41,8 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+	budget := possessionstore.BudgetStore{URL: settings.String(possessionstore.SettingBudgetStoreURL), HTTPClient: &http.Client{Timeout: time.Minute}}
+	store.UseBudgetStore(budget)
 	reviewer := &possessionstore.Reviewer{
 		Store: store,
 		Models: &possessionstore.BridgeModelCaller{
@@ -60,6 +63,7 @@ func main() {
 			URL:        settings.String(possessionstore.SettingArticleStoreURL),
 			HTTPClient: &http.Client{Timeout: time.Minute},
 		},
+		Budget: budget,
 		Mail: possessionstore.Mailstack{
 			URL:        settings.String(possessionstore.SettingMailstackURL),
 			Token:      settings.String(possessionstore.SettingMailstackToken),

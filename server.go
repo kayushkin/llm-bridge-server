@@ -379,11 +379,15 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 		created, err := server.Store.CreatePurchase(r.Context(), purchase)
 		respond(w, http.StatusCreated, created, err)
 	})
+	mux.HandleFunc("DELETE /purchases/{id}", func(w http.ResponseWriter, r *http.Request) {
+		withdrawn, err := server.Store.DeletePurchase(r.Context(), r.PathValue("id"), r.URL.Query().Get("actor"), r.URL.Query().Get("reason"))
+		respond(w, http.StatusOK, map[string]any{"deleted": r.PathValue("id"), "withdrawn_question_ids": withdrawn}, err)
+	})
 	mux.HandleFunc("GET /purchases/{id}", func(w http.ResponseWriter, r *http.Request) {
 		purchase, err := server.Store.GetPurchase(r.PathValue("id"))
 		respond(w, http.StatusOK, purchase, err)
 	})
-	mux.HandleFunc("POST /purchases/import-ebay-mail", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /marketplace-orders/import-ebay-mail", func(w http.ResponseWriter, r *http.Request) {
 		var request EbayImportRequest
 		if !decodeBody(w, r, &request) {
 			return
@@ -391,15 +395,15 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 		run, err := server.Reviewer.ImportEbayOrders(r.Context(), request)
 		server.writeRun(w, run, err)
 	})
-	mux.HandleFunc("POST /purchase-lines/match", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /marketplace-order-lines/match", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Actor      string `json:"actor"`
-			PurchaseID string `json:"purchase_id"`
+			Actor              string `json:"actor"`
+			MarketplaceOrderID string `json:"marketplace_order_id"`
 		}
 		if !decodeBody(w, r, &body) {
 			return
 		}
-		run, err := server.Reviewer.MatchPurchaseLines(r.Context(), body.Actor, body.PurchaseID)
+		run, err := server.Reviewer.MatchOrderLines(r.Context(), body.Actor, body.MarketplaceOrderID)
 		server.writeRun(w, run, err)
 	})
 	mux.HandleFunc("GET /products", func(w http.ResponseWriter, r *http.Request) {
