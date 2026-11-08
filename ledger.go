@@ -163,8 +163,12 @@ type Transaction struct {
 	// Nil means its category came another way (a payee rule, a hand edit) or
 	// it has none yet.
 	CategoryDecision *CategoryDecision `json:"category_decision"`
-	CreatedAt        int64             `json:"created_at"`
-	UpdatedAt        int64             `json:"updated_at"`
+	// MarketplaceOrders are the orders this charge paid for, with what each
+	// line bought; Links point this transaction at other stores' records.
+	MarketplaceOrders []MarketplaceOrder `json:"marketplace_orders"`
+	Links             []Link             `json:"links"`
+	CreatedAt         int64              `json:"created_at"`
+	UpdatedAt         int64              `json:"updated_at"`
 }
 
 // CategoryDecision is how a transaction's category was decided through a
@@ -1124,6 +1128,12 @@ func (s *Store) loadTransactionParts(t *Transaction) error {
 	case err == nil:
 		t.CategoryDecision = &decision
 	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+	if t.MarketplaceOrders, err = s.marketplaceOrders(`WHERE transaction_id = ? ORDER BY seq`, t.ID); err != nil {
+		return err
+	}
+	if t.Links, err = s.ListLinks(t.ID); err != nil {
 		return err
 	}
 	rows, err = s.db.Query(`SELECT import_row_id FROM transaction_sources WHERE transaction_id = ? ORDER BY import_row_id`, t.ID)

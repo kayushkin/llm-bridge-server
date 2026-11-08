@@ -402,3 +402,42 @@ CREATE TABLE IF NOT EXISTS interest_transactions (
   updated_at      INTEGER NOT NULL,
   PRIMARY KEY (interest_id, transaction_id)
 );
+
+-- An order placed on a marketplace (an eBay order) and what it bought, as the
+-- order confirmation says. The charge it made is a transaction; transaction_id
+-- is NULL until one is found (an order older than the ledger has none).
+CREATE TABLE IF NOT EXISTS marketplace_orders (
+  seq              INTEGER PRIMARY KEY,
+  id               TEXT NOT NULL UNIQUE,       -- marketplace_order_000001
+  marketplace      TEXT NOT NULL,              -- vocabulary.go: marketplaces
+  order_number     TEXT NOT NULL DEFAULT '',   -- the marketplace's own; '' when the confirmation shows none
+  seller           TEXT NOT NULL DEFAULT '',   -- the seller's user name on the marketplace
+  ordered_at       INTEGER NOT NULL,           -- epoch seconds: when the confirmation was sent
+  total_cents      INTEGER,                    -- the order total charged, in currency; NULL when not shown
+  currency         TEXT NOT NULL,              -- ISO 4217 of total and line prices
+  transaction_id   TEXT REFERENCES transactions(id),
+  matched_by       TEXT NOT NULL DEFAULT '',   -- vocabulary.go: orderMatchMethods; '' while transaction_id is NULL
+  mail_account_id  TEXT NOT NULL DEFAULT '',   -- the confirmation email: a mailstack account
+  mail_message_id  TEXT NOT NULL DEFAULT '',   -- and the provider's message id in it
+  extracted_by     TEXT NOT NULL DEFAULT '',   -- the model that read the email; '' when a person entered it
+  created_by       TEXT NOT NULL,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_orders_number ON marketplace_orders(marketplace, order_number) WHERE order_number != '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_orders_mail ON marketplace_orders(mail_account_id, mail_message_id) WHERE mail_message_id != '';
+CREATE INDEX IF NOT EXISTS idx_marketplace_orders_transaction ON marketplace_orders(transaction_id);
+
+CREATE TABLE IF NOT EXISTS marketplace_order_lines (
+  seq              INTEGER PRIMARY KEY,
+  id               TEXT NOT NULL UNIQUE,       -- marketplace_order_line_000001
+  order_id         TEXT NOT NULL REFERENCES marketplace_orders(id),
+  line_number      INTEGER NOT NULL,
+  title            TEXT NOT NULL,              -- as the seller wrote it
+  item_number      TEXT NOT NULL DEFAULT '',   -- the marketplace's listing id (eBay item number)
+  listing_url      TEXT NOT NULL DEFAULT '',   -- https://www.ebay.com/itm/<item number>
+  quantity         INTEGER NOT NULL DEFAULT 1,
+  unit_price_cents INTEGER,                    -- in the order's currency; NULL when not shown
+  disposition      TEXT NOT NULL DEFAULT 'unreviewed', -- vocabulary.go: orderLineDispositions
+  UNIQUE (order_id, line_number)
+);

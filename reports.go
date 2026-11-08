@@ -403,6 +403,9 @@ var linkableTables = map[string]string{
 	"payee_":       "payees",
 	"category_":    "categories",
 	"statement_":   "statements",
+	// A line links to the possession it bought.
+	"marketplace_order_":      "marketplace_orders",
+	"marketplace_order_line_": "marketplace_order_lines",
 }
 
 // CreateLink records a pointer from one of this store's records to another

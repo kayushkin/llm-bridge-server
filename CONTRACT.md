@@ -40,7 +40,8 @@ A prefix and a zero-padded sequence: `institution_000001`, `account_000001`,
 `account_description_marker_000001`, `category_000001`, `payee_000001`,
 `payee_match_rule_000001`, `import_batch_000001`, `import_row_000001`,
 `transaction_000001`, `posting_000001`, `balance_assertion_000001`,
-`budget_assignment_000001`, `link_000001`, `category_suggestion_000001`. The prefixes let kanban-store's
+`budget_assignment_000001`, `link_000001`, `category_suggestion_000001`,
+`marketplace_order_000001`, `marketplace_order_line_000001`. The prefixes let kanban-store's
 entity-type registry match each kind for chips: `budget_account`,
 `budget_transaction`, `budget_category`, `budget_payee` and
 `budget_import_batch` resolve through the matching `GET …/{id}`.
@@ -73,7 +74,8 @@ entity-type registry match each kind for chips: `budget_account`,
 | `GET /reports/monthly?from=&to=` | each category's total in each month from `from` to `to` (YYYY-MM, inclusive, either optional): `[{month, category_id, kind, total_cents, transactions}]` |
 | `GET /reports/by-account?category_id=…&category_id=…&from=&to=` | those categories and every one under them, per month, category and account of the transaction: card interest per card per month |
 | `GET /budget?month=&view=limit\|envelope`, `PUT /budget-assignments` | see below |
-| `GET /links?from_id=`, `POST /links` | `{from_id, entity_type, entity_ref, note}`: a pointer to another store's record by that store's id |
+| `GET /links?from_id=`, `POST /links` | `{from_id, entity_type, entity_ref, note}`: a pointer to another store's record by that store's id. It starts at an account, transaction, payee, category, statement, marketplace order or order line |
+| `GET/POST /marketplace-orders`, `GET /marketplace-orders/{id}`, `POST /marketplace-orders/match-transactions`, `GET/PATCH /marketplace-order-lines/{id}` | see Marketplace orders |
 
 ## Importing
 
@@ -228,6 +230,46 @@ the pursuit: a location-store place (its visits) or a calendar-store search.
 | `POST /interests/{id}/history-sources` | `{kind: location_place\|calendar_search, ref, note}`; a place ref must be `place_000001` |
 | `GET /interests/{id}/transactions`, `PUT /interests/{id}/transactions/{transaction_id}` | newest first, removed included; PUT `{status: confirmed\|removed, decided_by}` |
 | `POST /interests/match` | runs every interest's rules again for new transactions; answers `{added}` |
+
+## Marketplace orders
+
+An order placed on a marketplace (`marketplaces` in `GET /vocabulary`: `ebay`)
+and what each line bought, as its order confirmation says; the charge is its
+transaction. possession-store's eBay import reads the confirmations from
+mailstack and posts them here.
+
+`POST /marketplace-orders {marketplace, order_number, seller, ordered_at,
+total_cents, currency, mail_account_id, mail_message_id, extracted_by,
+created_by, lines:[{title, item_number, listing_url, quantity,
+unit_price_cents, disposition}]}` → **201**. `ordered_at` is epoch seconds,
+money is cents in `currency` (ISO 4217; the ledger is USD, an order may not
+be), `mail_account_id` and `mail_message_id` are the confirmation's mailstack
+account and provider message id (dash opens it at
+`/mail?account=&message=`), `extracted_by` the model that read it. An order
+already recorded — the same marketplace and order number, or the same email
+— is a **409** naming it. The store finds the charge itself and the caller
+never sends one:
+
+1. `order_number`: the one transaction whose description holds the order
+   number (`EBAY O*19-14929-85390`).
+2. `amount_and_date`: else, for a USD total, the one transaction not already
+   an order's, dated from the day before the order to 7 days after, whose
+   account postings sum to minus the total and whose description names the
+   marketplace (`EBAY`), as card charges print it (`Ebay Commerce Inc.`).
+
+Neither, or more than one: `transaction_id` stays empty (`matched_by` `""`):
+an order older than the ledger has no charge here. `POST
+/marketplace-orders/match-transactions` tries every such order again, after
+an import, and answers `{order_number, amount_and_date, unmatched}`.
+
+`GET /marketplace-orders?transaction_id=&unmatched=true&limit=&offset=`,
+newest first. Every transaction read carries `marketplace_orders` (the orders
+it paid, with lines) and `links` (from it), so its chip can show what it
+bought. A line answers `possession_ids`, the `possession` links from it;
+possession-store writes those, and the possession points back at the
+transaction by `budget_transaction_id`. `PATCH /marketplace-order-lines/{id}
+{disposition}`: `unreviewed`, `possession`, `consumable`, `returned` or
+`gift_for_someone_else`.
 
 ## Not yet served
 

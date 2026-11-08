@@ -492,6 +492,57 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusOK, out, err)
 	})
 
+	mux.HandleFunc("POST /marketplace-orders", func(w http.ResponseWriter, r *http.Request) {
+		var in MarketplaceOrder
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		order, err := s.CreateMarketplaceOrder(in)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, order)
+	})
+	mux.HandleFunc("GET /marketplace-orders", func(w http.ResponseWriter, r *http.Request) {
+		limit, err := optionalWholeNumber(r, "limit")
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		offset, err := optionalWholeNumber(r, "offset")
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		orders, err := s.ListMarketplaceOrders(MarketplaceOrderFilter{TransactionID: r.URL.Query().Get("transaction_id"),
+			Unmatched: r.URL.Query().Get("unmatched") == "true", Limit: limit, Offset: offset})
+		respond(w, http.StatusOK, orders, err)
+	})
+	mux.HandleFunc("POST /marketplace-orders/match-transactions", func(w http.ResponseWriter, _ *http.Request) {
+		counts, err := s.MatchMarketplaceOrders()
+		respond(w, http.StatusOK, counts, err)
+	})
+	mux.HandleFunc("GET /marketplace-orders/{id}", func(w http.ResponseWriter, r *http.Request) {
+		order, err := s.GetMarketplaceOrder(r.PathValue("id"))
+		respond(w, http.StatusOK, order, err)
+	})
+	mux.HandleFunc("GET /marketplace-order-lines/{id}", func(w http.ResponseWriter, r *http.Request) {
+		line, err := s.GetMarketplaceOrderLine(r.PathValue("id"))
+		respond(w, http.StatusOK, line, err)
+	})
+	mux.HandleFunc("PATCH /marketplace-order-lines/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Disposition string `json:"disposition"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		line, err := s.SetOrderLineDisposition(r.PathValue("id"), in.Disposition)
+		respond(w, http.StatusOK, line, err)
+	})
 	mux.HandleFunc("GET /interests", func(w http.ResponseWriter, _ *http.Request) {
 		out, err := s.ListInterests()
 		respond(w, http.StatusOK, out, err)
