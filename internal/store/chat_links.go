@@ -109,6 +109,7 @@ func (s *Store) addChatLinkMessageSenderColumns() error {
 		{"sender_principal_id", "TEXT NOT NULL DEFAULT ''"},
 		{"sender_person_display_name", "TEXT NOT NULL DEFAULT ''"},
 		{"sender_resolved_at", "DATETIME"},
+		{"sent_body", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if existing[column.name] {
 			continue
@@ -256,7 +257,7 @@ func (s *Store) EndChatLink(sessionID, linkID string, endedAt time.Time) (ChatLi
 const chatLinkMessageSelect = `SELECT id, link_id, direction, state, body, attachments, platform_message_ids, bus_event_id,
 	delivery_id, bridge_message_id, attempts, error, created_at, updated_at, next_attempt_at,
 	sender_platform_user_id, sender_platform_display_name, sender_person_id, sender_principal_id,
-	sender_person_display_name, sender_resolved_at FROM chat_link_messages`
+	sender_person_display_name, sender_resolved_at, sent_body FROM chat_link_messages`
 
 func scanChatLinkMessage(scanner interface{ Scan(...any) error }) (ChatLinkMessage, error) {
 	var message ChatLinkMessage
@@ -266,7 +267,7 @@ func scanChatLinkMessage(scanner interface{ Scan(...any) error }) (ChatLinkMessa
 	if err := scanner.Scan(&rowID, &linkRowID, &direction, &state, &message.Body, &attachments, &platformMessageIDs, &message.BusEventID,
 		&message.DeliveryID, &message.BridgeMessageID, &message.Attempts, &message.Error, &message.CreatedAt, &message.UpdatedAt, &nextAttemptAt,
 		&message.SenderPlatformUserID, &message.SenderPlatformDisplayName, &message.SenderPersonID, &message.SenderPrincipalID,
-		&message.SenderPersonDisplayName, &senderResolvedAt); err != nil {
+		&message.SenderPersonDisplayName, &senderResolvedAt, &message.SentBody); err != nil {
 		return ChatLinkMessage{}, err
 	}
 	if senderResolvedAt.Valid {
@@ -522,4 +523,34 @@ func (s *Store) RecordChatLinkSendFailed(messageID, reason string, nextAttemptAt
 func (s *Store) DueOutboundChatLinkMessages(now time.Time) ([]ChatLinkMessage, error) {
 	return s.queryChatLinkMessages(chatLinkMessageSelect+` WHERE direction = ? AND state = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY id`,
 		string(msg.ChatLinkOutbound), string(msg.ChatLinkMessagePending), now.UTC())
+}
+
+// SetChatLinkMessageSentBody records what an outbound reply was sent as, when
+// that is not its body: its references drawn for the person it went to.
+func (s *Store) SetChatLinkMessageSentBody(messageID, sentBody string) error {
+	rowID, ok := ChatLinkMessageRowID(messageID)
+	if !ok {
+		return fmt.Errorf("not a chat link message id: %q", messageID)
+	}
+	_, err := s.db.Exec(`UPDATE chat_link_messages SET sent_body = ? WHERE id = ?`, sentBody, rowID)
+	return err
+}
+
+// ChatLinkRecipientPrincipalID is the principal of the person a link talks
+// with: the newest inbound message's sender whose principal is known and is
+// not the one the session runs as (the operator writing in their own link).
+// Empty when no message from them has been tied to a principal.
+func (s *Store) ChatLinkRecipientPrincipalID(linkID, sessionPrincipalID string) (string, error) {
+	linkRowID, ok := rowIDWithPrefix(linkID, chatLinkIDPrefix)
+	if !ok {
+		return "", fmt.Errorf("not a chat link id: %q", linkID)
+	}
+	var principalID string
+	err := s.db.QueryRow(`SELECT sender_principal_id FROM chat_link_messages
+		WHERE link_id = ? AND direction = ? AND sender_principal_id != '' AND sender_principal_id != ?
+		ORDER BY id DESC LIMIT 1`, linkRowID, string(msg.ChatLinkInbound), sessionPrincipalID).Scan(&principalID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return principalID, err
 }

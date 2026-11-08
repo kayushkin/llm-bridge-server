@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"errors"
 	"testing"
 	"time"
@@ -108,5 +109,43 @@ func TestChatLinkLifecycle(t *testing.T) {
 	}
 	if _, err := s.GetChatLink("br_2", link.ID); !errors.Is(err, ErrChatLinkNotFound) {
 		t.Fatalf("another session's link: %v", err)
+	}
+}
+
+func TestTheRecipientIsTheNewestSenderWhoIsNotTheSessionsPrincipal(t *testing.T) {
+	s := testStore(t)
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	link, err := s.CreateChatLink(ChatLink{SessionID: "br_1", AccountID: "message_account_000002", Platform: "discord", ConversationID: "dm-1", CreatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ChatLinkRecipientPrincipalID(link.ID, "principal_000001"); err != nil || got != "" {
+		t.Fatalf("no messages yet: %q %v", got, err)
+	}
+	for i, sender := range []string{"principal_000009", "principal_000001", ""} {
+		if _, err := s.AddInboundChatLinkMessage(InboundChatLinkMessage{LinkID: link.ID, BusEventID: fmt.Sprintf("discord:%d", i), Body: "hi", At: now}); err != nil {
+			t.Fatal(err)
+		}
+		if sender != "" {
+			if err := s.RecordChatLinkMessageSender(fmt.Sprintf("chat_link_message_%06d", i+1), ChatLinkMessageSender{PrincipalID: sender}, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// The operator wrote last, and an unresolved sender after that: the
+	// recipient is still the other person.
+	if got, err := s.ChatLinkRecipientPrincipalID(link.ID, "principal_000001"); err != nil || got != "principal_000009" {
+		t.Fatalf("recipient: %q %v", got, err)
+	}
+	reply, err := s.AddOutboundChatLinkMessage(link.ID, "chat-link-delivery:x", "see prediction_000012", msg.ChatLinkMessagePending, "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetChatLinkMessageSentBody(reply.ID, "see [it rains](https://dash.example/predictions?id=prediction_000012)"); err != nil {
+		t.Fatal(err)
+	}
+	read, err := s.DueOutboundChatLinkMessages(now.Add(time.Hour))
+	if err != nil || len(read) != 1 || read[0].SentBody == "" || read[0].Body != "see prediction_000012" {
+		t.Fatalf("sent body kept beside the body: %+v %v", read, err)
 	}
 }

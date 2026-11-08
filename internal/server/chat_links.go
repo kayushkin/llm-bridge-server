@@ -71,6 +71,8 @@ type chatLinks struct {
 	// sendIntoSession runs POST /sessions/{id}/send through the server's own
 	// routes (serveInternally); a test replaces it.
 	sendIntoSession func(sessionID string, request msg.SendMessageRequest) (int, []byte)
+	// references reads reference-store's id patterns, once a while.
+	references chatLinkReferencePatterns
 }
 
 var errChatLinksOff = errors.New("chat links are off: LLMBRIDGE_NATS_URL, LLMBRIDGE_MULTICHAT_URL and LLMBRIDGE_PEOPLE_STORE_URL must all be set")
@@ -614,12 +616,18 @@ func (s *Server) sendDueChatLinkReplies(ctx context.Context) {
 }
 
 func (s *Server) sendChatLinkReply(ctx context.Context, link store.ChatLink, reply store.ChatLinkMessage) {
+	body := s.chatLinkReplyForRecipient(ctx, link, reply.Body)
 	var result multichatSendResult
 	status, err := s.chatLinks.call(ctx, http.MethodPost, "/api/messages/send", map[string]string{
-		"account_id": link.AccountID, "channel_id": link.ConversationID, "body": reply.Body,
+		"account_id": link.AccountID, "channel_id": link.ConversationID, "body": body,
 	}, &result)
 	now := s.chatLinks.now()
 	if err == nil {
+		if body != reply.Body {
+			if err := s.store.SetChatLinkMessageSentBody(reply.ID, body); err != nil {
+				log.Printf("[chat-links] ERROR: %s: %s was sent with its references drawn but that was not recorded: %v", link.ID, reply.ID, err)
+			}
+		}
 		if err := s.store.SetChatLinkMessageState(reply.ID, msg.ChatLinkMessageDelivered, "", result.MessageIDs, now); err != nil {
 			log.Printf("[chat-links] ERROR: %s: %s was sent as %v but not marked: %v", link.ID, reply.ID, result.MessageIDs, err)
 		}

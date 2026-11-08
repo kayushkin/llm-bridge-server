@@ -40,6 +40,7 @@ const (
 	SettingSessionActionsReviewModelRole     = "session_actions.review_model_role"
 	SettingImageGenerationInstanceID         = "image_generation.instance_id"
 	SettingServerName                        = "server.name"
+	SettingChatLinksReferencePageBaseURL     = "chat_links.reference_page_base_url"
 	SettingSelfUpdateCommand                 = "self_update.command"
 	SettingOrchestratorURL                   = "orchestrator.url"
 	SettingKeepAwakeEnabled                  = "keep_awake.enabled"
@@ -144,6 +145,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The model-store role that reviews a run_command button's command when an agent offers it, and whose verdict the button shows. A command it rejects cannot be run; a role none of whose models answers refuses the offer."},
 		{Key: SettingOperationsGrantEnforcement, EnvironmentVariable: "LLMBRIDGE_OPERATIONS_GRANT_ENFORCEMENT", Kind: behavior, ValueType: text, Editable: true, Default: OperationsGrantEnforcementLenient,
 			Description: "How grant-store's can_run_operation grants are applied to a principal starting an operation. lenient: a principal holding no such grant may start any type, and one holding any may start only those. strict: a principal may start only the types its grants name. Administrators and the service token are never checked."},
+		{Key: SettingChatLinksReferencePageBaseURL, EnvironmentVariable: "LLMBRIDGE_CHAT_LINKS_REFERENCE_PAGE_BASE_URL", Kind: behavior, ValueType: text, Editable: true,
+			Description: "The site a chat link's reply links a record to, such as https://dash.example: a reference id in the reply that the person may see becomes the record's name linked to its page there (reference-store's page_url, or /ref/<id> for a record with no page of its own). A record whose page is on another site keeps that site. Empty leaves every id that would link here as it was written."},
 		{Key: SettingServerName, EnvironmentVariable: "LLMBRIDGE_SERVER_NAME", Kind: behavior, ValueType: text, Editable: true,
 			Description: "What this server calls itself: shown at the top of its own session list, and reported to every server it is connected to, which shows it as this server's name. Empty means it has none, and is shown as such."},
 		{Key: SettingSelfUpdateCommand, EnvironmentVariable: "LLMBRIDGE_SELF_UPDATE_COMMAND", Kind: behavior, ValueType: text, Editable: true,
@@ -353,6 +356,7 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 		SettingSessionActionsReviewModelRole: c.SessionActionsReviewModelRole,
 		SettingImageGenerationInstanceID:     c.ImageGenerationInstanceID,
 		SettingServerName:                    c.ServerName,
+		SettingChatLinksReferencePageBaseURL: c.ChatLinksReferencePageBaseURL,
 		SettingSelfUpdateCommand:             c.SelfUpdateCommand,
 		SettingOrchestratorURL:               c.OrchestratorURL,
 	} {

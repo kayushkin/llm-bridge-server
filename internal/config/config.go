@@ -44,6 +44,8 @@ type Config struct {
 	// KeepAwakeGraceMinutes seed keep_awake.enabled and
 	// keep_awake.grace_minutes. Each is seeded only when set.
 	ServerName string
+	// ChatLinksReferencePageBaseURL seeds chat_links.reference_page_base_url.
+	ChatLinksReferencePageBaseURL string
 	// SelfUpdateCommand and OrchestratorURL seed self_update.command and
 	// orchestrator.url; both are read from the settings record when used.
 	SelfUpdateCommand     string
@@ -392,6 +394,7 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		UsageStoreURL:                    settings.String("usage_store.url"),
 		OperationsGrantEnforcement:       settings.String(SettingOperationsGrantEnforcement),
 		ServerName:                       settings.String(SettingServerName),
+		ChatLinksReferencePageBaseURL:    settings.String(SettingChatLinksReferencePageBaseURL),
 		SelfUpdateCommand:                settings.String(SettingSelfUpdateCommand),
 		OrchestratorURL:                  settings.String(SettingOrchestratorURL),
 		KeepAwakeEnabled:                 settings.Boolean(SettingKeepAwakeEnabled),
