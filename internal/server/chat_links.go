@@ -616,11 +616,13 @@ func (s *Server) sendDueChatLinkReplies(ctx context.Context) {
 }
 
 func (s *Server) sendChatLinkReply(ctx context.Context, link store.ChatLink, reply store.ChatLinkMessage) {
-	body := s.chatLinkReplyForRecipient(ctx, link, reply.Body)
+	body, files := s.chatLinkReplyForRecipient(ctx, link, reply.Body)
+	send := map[string]any{"account_id": link.AccountID, "channel_id": link.ConversationID, "body": body}
+	if len(files) > 0 {
+		send["files"] = files
+	}
 	var result multichatSendResult
-	status, err := s.chatLinks.call(ctx, http.MethodPost, "/api/messages/send", map[string]string{
-		"account_id": link.AccountID, "channel_id": link.ConversationID, "body": body,
-	}, &result)
+	status, err := s.chatLinks.call(ctx, http.MethodPost, "/api/messages/send", send, &result)
 	now := s.chatLinks.now()
 	if err == nil {
 		if body != reply.Body {
