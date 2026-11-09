@@ -441,3 +441,37 @@ CREATE TABLE IF NOT EXISTS marketplace_order_lines (
   disposition      TEXT NOT NULL DEFAULT 'unreviewed', -- vocabulary.go: orderLineDispositions
   UNIQUE (order_id, line_number)
 );
+
+-- A bank linked through Plaid. Plaid's access token for it lives in
+-- auth-store; this row keeps that credential's id, and where the transaction
+-- sync left off.
+CREATE TABLE IF NOT EXISTS plaid_items (
+  seq                   INTEGER PRIMARY KEY,
+  id                    TEXT NOT NULL UNIQUE,   -- plaid_item_000001
+  plaid_item_id         TEXT NOT NULL UNIQUE,   -- Plaid's own item_id
+  institution_id        TEXT NOT NULL DEFAULT '',
+  institution_name      TEXT NOT NULL DEFAULT '',
+  access_credential_id  TEXT NOT NULL,          -- auth-store credential holding the access token
+  environment           TEXT NOT NULL,          -- the Plaid keys' environment it was linked with
+  sync_cursor           TEXT NOT NULL DEFAULT '',
+  last_synced_at        INTEGER NOT NULL DEFAULT 0,
+  last_error            TEXT NOT NULL DEFAULT '',
+  created_at            INTEGER NOT NULL,
+  updated_at            INTEGER NOT NULL
+);
+
+-- One account inside a linked bank, and which budget-store account its
+-- transactions go to. Rows dated before sync_from_on are skipped: the
+-- account's history before then came from downloaded files.
+CREATE TABLE IF NOT EXISTS plaid_accounts (
+  plaid_account_id  TEXT PRIMARY KEY,            -- Plaid's account_id
+  plaid_item_id     TEXT NOT NULL REFERENCES plaid_items(id) ON DELETE CASCADE,
+  account_id        TEXT REFERENCES accounts(id), -- NULL until matched
+  name              TEXT NOT NULL,
+  mask              TEXT NOT NULL DEFAULT '',
+  type              TEXT NOT NULL DEFAULT '',
+  subtype           TEXT NOT NULL DEFAULT '',
+  sync_from_on      TEXT NOT NULL DEFAULT '',
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
+);

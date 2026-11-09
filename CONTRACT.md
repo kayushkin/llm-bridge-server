@@ -271,6 +271,34 @@ transaction by `budget_transaction_id`. `PATCH /marketplace-order-lines/{id}
 {disposition}`: `unreviewed`, `possession`, `consumable`, `returned` or
 `gift_for_someone_else`.
 
+## Plaid: banks that stay current
+
+Off unless `BUDGET_STORE_PLAID_ENVIRONMENT` names an environment (`sandbox`,
+`production`) and auth-store is configured (`BUDGET_STORE_AUTH_STORE_URL`,
+`BUDGET_STORE_AUTH_STORE_TOKEN`, the token in a host-local drop-in); every
+route here answers 503 while off. The team's keys are auth-store's credential
+of provider `plaid` whose `account` is the environment, with `client_id`, the
+secret as `api_key`, and `base_url` (where that Plaid answers). Each linked
+bank's access token is its own auth-store credential (provider `plaid-item`,
+account = Plaid's item id); this store keeps only that credential's id. A
+Plaid refusal answers 502 with Plaid's error code.
+
+| Route | Does |
+|---|---|
+| `POST /plaid/link-token` | `{redirect_uri}`: a Plaid Link token for linking one more bank. `redirect_uri` is where a bank's own sign-in page sends the browser back, registered in Plaid's dashboard |
+| `POST /plaid/items` | `{public_token, institution_id, institution_name}` from Link's success: trades the token, saves the access token in auth-store, records the bank and its accounts. An account whose mask matches exactly one open account's `last_four` is matched to it and syncs from the day after that account's newest row from a downloaded file |
+| `GET /plaid/items` | every linked bank with its accounts, matches, sync start, last sync and last error |
+| `PUT /plaid/accounts/{plaid_account_id}` | `{account_id, sync_from_on}`: match or unmatch an account; an empty `sync_from_on` is the day after the file rows |
+| `POST /plaid/sync` | `/transactions/sync` for every bank from its stored cursor: `{added, updated, voided, before_sync_start, unmatched_account, errors}`. All of a bank's pages are read before anything is written, restarting when Plaid says the data moved mid-way |
+
+A Plaid transaction becomes an import row (`source` `plaid`, `dedupe_key`
+`plaid:<transaction_id>`, the whole answer as `raw_json`) in one batch per
+account per sync. A changed transaction, or a posted one whose
+`pending_transaction_id` names a pending one already imported, updates that
+transaction (amount on a plain two-posting transaction, status, date, text)
+and adds its row (outcome `updated`); a removed one is voided. Plaid's amount
+is positive for money out, so its sign is flipped.
+
 ## Not yet served
 
 `statements` and `recurring_charges` (the first draft of recurring bills, unused) have tables and no routes.

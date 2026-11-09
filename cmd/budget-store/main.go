@@ -28,6 +28,14 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+	if environment := settings.String(budgetstore.SettingPlaidEnvironment); environment != "" {
+		authURL, authToken := settings.String(budgetstore.SettingAuthStoreURL), settings.String(budgetstore.SettingAuthStoreToken)
+		if authURL == "" || authToken == "" {
+			log.Fatalf("BUDGET_STORE_PLAID_ENVIRONMENT is %q but BUDGET_STORE_AUTH_STORE_URL or BUDGET_STORE_AUTH_STORE_TOKEN is unset: Plaid's keys live in auth-store", environment)
+		}
+		store.SetPlaidVault(budgetstore.AuthStoreVault{BaseURL: authURL, Token: authToken, PlaidEnvironment: environment, Client: &http.Client{Timeout: 30 * time.Second}})
+		log.Printf("plaid on, environment %s", environment)
+	}
 
 	mux := http.NewServeMux()
 	budgetstore.RegisterHandlers(mux, store)

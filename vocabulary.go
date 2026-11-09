@@ -30,13 +30,14 @@ var transactionStatuses = []string{"pending", "posted", "void"}
 
 // importSources are the file formats the store can read. importing.go has one
 // parser per source.
-var importSources = []string{"wells_fargo_csv", "inspira_csv"}
+var importSources = []string{"wells_fargo_csv", "inspira_csv", "plaid"}
 
 // importRowOutcomes say what became of each source row.
 var importRowOutcomes = []string{
 	"created",          // a new transaction
 	"duplicate",        // an earlier, still-live batch already holds this row
 	"skipped_internal", // a move inside the account that changes no balance (a cash sweep)
+	"updated",          // a newer version of a row already imported (a Plaid change, or a pending charge posting)
 }
 
 // billCadences are the rhythms the bill detector recognizes, with the days

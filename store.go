@@ -33,6 +33,7 @@ type Store struct {
 	db      *sql.DB
 	dataDir string
 	now     func() time.Time
+	plaid   PlaidVault // nil: Plaid is off
 }
 
 // Open creates the data directory if needed (mode 700: it holds finances),

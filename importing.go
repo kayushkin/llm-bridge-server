@@ -213,7 +213,10 @@ type ImportRequest struct {
 func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, error) {
 	parser, found := sourceParsers[request.Source]
 	if !found {
-		return ImportBatch{}, requireOneOf("source", request.Source, importSources)
+		if err := requireOneOf("source", request.Source, importSources); err != nil {
+			return ImportBatch{}, err
+		}
+		return ImportBatch{}, fmt.Errorf("%w: source %q arrives through its own sync, not as a file", ErrInvalid, request.Source)
 	}
 	content, err := io.ReadAll(file)
 	if err != nil {

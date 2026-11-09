@@ -31,6 +31,12 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case errors.Is(err, ErrConflict):
 		status = http.StatusConflict
+	case errors.Is(err, ErrPlaidOff):
+		status = http.StatusServiceUnavailable
+	}
+	var plaidErr *PlaidError
+	if errors.As(err, &plaidErr) {
+		status = http.StatusBadGateway
 	}
 	if status == http.StatusInternalServerError {
 		log.Printf("internal error: %v", err)
@@ -606,6 +612,51 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 			return
 		}
 		out, err := s.SetInterestTransaction(r.PathValue("id"), r.PathValue("transaction_id"), in.Status, in.DecidedBy)
+		respond(w, http.StatusOK, out, err)
+	})
+
+	mux.HandleFunc("POST /plaid/link-token", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			RedirectURI string `json:"redirect_uri"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		token, err := s.CreatePlaidLinkToken(r.Context(), in.RedirectURI)
+		respond(w, http.StatusOK, map[string]string{"link_token": token}, err)
+	})
+	mux.HandleFunc("GET /plaid/items", func(w http.ResponseWriter, _ *http.Request) {
+		out, err := s.ListPlaidItems()
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("POST /plaid/items", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			PublicToken     string `json:"public_token"`
+			InstitutionID   string `json:"institution_id"`
+			InstitutionName string `json:"institution_name"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.LinkPlaidItem(r.Context(), in.PublicToken, in.InstitutionID, in.InstitutionName)
+		respond(w, http.StatusCreated, out, err)
+	})
+	mux.HandleFunc("PUT /plaid/accounts/{plaid_account_id}", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			AccountID  string `json:"account_id"`
+			SyncFromOn string `json:"sync_from_on"`
+		}
+		if err := decodeBody(r, &in); err != nil {
+			writeError(w, err)
+			return
+		}
+		out, err := s.MatchPlaidAccount(r.PathValue("plaid_account_id"), in.AccountID, in.SyncFromOn)
+		respond(w, http.StatusOK, out, err)
+	})
+	mux.HandleFunc("POST /plaid/sync", func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.SyncPlaid(r.Context())
 		respond(w, http.StatusOK, out, err)
 	})
 
