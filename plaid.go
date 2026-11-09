@@ -162,7 +162,7 @@ type plaidAccountAnswer struct {
 // account to a budget-store account with the same last four digits when
 // exactly one has them. A matched account syncs from the day after its last
 // row from a downloaded file, so nothing a file already brought is counted
-// twice.
+// twice. It then syncs the new bank once.
 func (s *Store) LinkPlaidItem(ctx context.Context, publicToken, institutionID, institutionName string) (PlaidItem, error) {
 	if s.plaid == nil {
 		return PlaidItem{}, ErrPlaidOff
@@ -241,6 +241,15 @@ func (s *Store) LinkPlaidItem(ctx context.Context, publicToken, institutionID, i
 	}
 	if err := tx.Commit(); err != nil {
 		return PlaidItem{}, err
+	}
+	// A first sync now, so the bank's recent rows arrive without waiting for
+	// the schedule. Plaid may not have them ready yet; a failure is kept on
+	// the bank as last_error and the next scheduled sync tries again.
+	var first PlaidSyncResult
+	if err := s.syncPlaidItem(ctx, keys, id, &first); err != nil {
+		if _, dbErr := s.db.Exec(`UPDATE plaid_items SET last_error = ?, updated_at = ? WHERE id = ?`, err.Error(), s.unixNow(), id); dbErr != nil {
+			return PlaidItem{}, dbErr
+		}
 	}
 	return s.GetPlaidItem(id)
 }

@@ -286,7 +286,7 @@ Plaid refusal answers 502 with Plaid's error code.
 | Route | Does |
 |---|---|
 | `POST /plaid/link-token` | `{redirect_uri}`: a Plaid Link token for linking one more bank. `redirect_uri` is where a bank's own sign-in page sends the browser back, registered in Plaid's dashboard |
-| `POST /plaid/items` | `{public_token, institution_id, institution_name}` from Link's success: trades the token, saves the access token in auth-store, records the bank and its accounts. An account whose mask matches exactly one open account's `last_four` is matched to it and syncs from the day after that account's newest row from a downloaded file |
+| `POST /plaid/items` | `{public_token, institution_id, institution_name}` from Link's success: trades the token, saves the access token in auth-store, records the bank and its accounts. An account whose mask matches exactly one open account's `last_four` is matched to it and syncs from the day after that account's newest row from a downloaded file. Then syncs the bank once; a failure there is kept as its `last_error`, not refused |
 | `GET /plaid/items` | every linked bank with its accounts, matches, sync start, last sync and last error |
 | `PUT /plaid/accounts/{plaid_account_id}` | `{account_id, sync_from_on}`: match or unmatch an account; an empty `sync_from_on` is the day after the file rows |
 | `POST /plaid/sync` | `/transactions/sync` for every bank from its stored cursor: `{added, updated, voided, before_sync_start, unmatched_account, errors}`. All of a bank's pages are read before anything is written, restarting when Plaid says the data moved mid-way |

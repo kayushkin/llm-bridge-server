@@ -117,6 +117,10 @@ func TestPlaidLinksABankAndSyncsWithoutCountingAnythingTwice(t *testing.T) {
 		t.Fatalf("savings matched %q with no budget-store account having 9999", accounts["plaid-savings"].AccountID)
 	}
 
+	// Linking ran a first sync, with nothing in it yet.
+	if plaid.syncCalls != 1 {
+		t.Fatalf("linking made %d sync calls, want one first sync", plaid.syncCalls)
+	}
 	plaid.pages = [][]map[string]any{
 		{{"added": []any{
 			plaidTxn("t-old", "", "plaid-checking", 50.00, "2026-11-03", "GROCERY", false), // the file has it
