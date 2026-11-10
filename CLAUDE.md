@@ -65,6 +65,8 @@ curl -s http://localhost:8092/api/jobs/<id>/runs
 curl -s -X DELETE http://localhost:8092/api/jobs/<id>
 ```
 
+A job's reference id is its row id as `scheduler_job_` and six digits: job 76 is `scheduler_job_000076`. Write that in prose and chats draw the job as a chip. `GET /api/job-references/scheduler_job_000076` answers the job with `reference_id` and its newest run without output (`last_run`, null before the first run); reference-store reads it there.
+
 ## Timeouts, and a slow job never stacks
 
 A shell job's wall-clock cap is **per-job**: `timeout_seconds` on create or PATCH, `0` meaning the 5-minute default. Set it generously for anything that legitimately runs long (`harness-watch` is 1800; four of the six nightly `repo-*` guards are 3600, and `repo-elf-guard` and `repo-nul-guard` are 600 — re-measured 2026-08-21, when the count was still written as five) — the cap is enforced by killing the job's whole process group, so a job that outlives it is killed, not left to run. A tick that arrives while the previous run of that same job is **still in flight is dropped, not stacked**, so a slow job can no longer pile up concurrent copies of itself.

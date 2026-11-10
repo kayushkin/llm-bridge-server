@@ -617,6 +617,21 @@ func (s *Store) LatestRuns() ([]RunHeader, error) {
 	return runs, rows.Err()
 }
 
+// LatestRun is job id's newest run without its output, or nil when it has
+// never run.
+func (s *Store) LatestRun(jobID int64) (*RunHeader, error) {
+	var r RunHeader
+	err := s.db.QueryRow(`SELECT id, job_id, status, started_at, finished_at FROM runs WHERE job_id=? ORDER BY id DESC LIMIT 1`, jobID).
+		Scan(&r.ID, &r.JobID, &r.Status, &r.StartedAt, &r.FinishedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 func (s *Store) SetHold(id int64, until time.Time) error {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(`UPDATE jobs SET hold_until=?, updated_at=? WHERE id=?`, until.UTC(), now, id)

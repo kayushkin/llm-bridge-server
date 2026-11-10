@@ -62,6 +62,7 @@ func New(store *db.Store, scheduler *cronpkg.Scheduler, token string, settings *
 	s.mux.HandleFunc("/api/jobs", s.handleJobs)
 	s.mux.HandleFunc("/api/jobs/", s.handleJobSub)
 	s.mux.HandleFunc("GET /api/runs/latest", s.handleLatestRuns)
+	s.mux.HandleFunc("GET /api/job-references/{reference}", s.handleJobReference)
 	s.mux.HandleFunc("GET /api/event-trigger-subjects", s.handleEventTriggerSubjects)
 	s.mux.HandleFunc("/api/calendar/events", s.handleCalendarEvents)
 	// At the root, not under /api: dash sends /api/scheduler/settings here, as
