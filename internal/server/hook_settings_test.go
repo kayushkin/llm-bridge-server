@@ -338,23 +338,24 @@ func TestPublicBaseURL(t *testing.T) {
 	}
 }
 
-// TestInjectHookSettings_OnlyClaudeCodeAndCodexGetAPermissionGate pins which
+// TestInjectHookSettings_OnlyGatedHarnessesGetAPermissionGate pins which
 // harnesses the prehook gate is actually installed for.
 //
 // This exists because three doc comments used to call the prehook "the
 // universal gate" and told the UI that every harness supports the restrictive
 // permission modes. It is installed by a switch with no default arm, so only
-// the two harnesses named below ever receive a gate URL; for every other
+// the harnesses named below ever receive a gate URL; for every other
 // harness the injector writes nothing and no permission decision is ever
 // evaluated. Card 49a697df.
 //
 // The population is msg.AllHarnesses rather than a list written out here, so
 // adding a harness to the canonical set without deciding whether it gets a
 // gate reddens this test instead of silently joining the ungated majority.
-func TestInjectHookSettings_OnlyClaudeCodeAndCodexGetAPermissionGate(t *testing.T) {
+func TestInjectHookSettings_OnlyGatedHarnessesGetAPermissionGate(t *testing.T) {
 	gatedHarnesses := map[msg.Harness]string{
 		msg.HarnessClaudeCode: "/permission/cc-prehook/",
 		msg.HarnessCodex:      "/permission/codex-prehook/",
+		msg.HarnessDevin:      "/permission/devin-prehook/",
 	}
 
 	for _, harness := range msg.AllHarnesses {
@@ -402,5 +403,52 @@ func TestSupportedPermissionModesForOutrunsTheGate(t *testing.T) {
 	srv.injectHookSettings(sess)
 	if len(sess.HarnessConfig) != 0 {
 		t.Fatalf("characterisation drifted: aider now receives a gate (%q) — card 49a697df's decision may have been taken", sess.HarnessConfig)
+	}
+}
+
+// TestInjectDevinHookSettingsPutsTheGateInDevinsHookTree pins the two keys
+// llm-bridge-devin needs: devin_hooks, whose first PreToolUse entry is the
+// curl to /permission/devin-prehook/<session> (the wrapper refuses to start
+// without one), and devin_permission_url, the same gate for a
+// session/request_permission. An explicit devin_hooks is left alone.
+func TestInjectDevinHookSettingsPutsTheGateInDevinsHookTree(t *testing.T) {
+	srv := testServerWithoutHookStore(t)
+	sess := &store.Session{SessionID: "s1", Harness: msg.HarnessDevin, HarnessConfig: json.RawMessage(`{"model":"swe-2-flash-medium"}`)}
+	if err := srv.injectHookSettings(sess); err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Model      string `json:"model"`
+		DevinHooks map[string][]struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+				Timeout int    `json:"timeout"`
+			} `json:"hooks"`
+		} `json:"devin_hooks"`
+		DevinPermissionURL string `json:"devin_permission_url"`
+	}
+	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model != "swe-2-flash-medium" {
+		t.Error("existing harness_config was dropped")
+	}
+	pre := cfg.DevinHooks["PreToolUse"]
+	if len(pre) == 0 || pre[0].Matcher != ".*" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Type != "command" ||
+		!strings.Contains(pre[0].Hooks[0].Command, "/permission/devin-prehook/s1") || pre[0].Hooks[0].Timeout != 86400 {
+		t.Fatalf("PreToolUse gate entry = %+v", pre)
+	}
+	if !strings.HasSuffix(cfg.DevinPermissionURL, "/permission/devin-prehook/s1") {
+		t.Errorf("devin_permission_url = %q", cfg.DevinPermissionURL)
+	}
+
+	override := &store.Session{SessionID: "s2", Harness: msg.HarnessDevin, HarnessConfig: json.RawMessage(`{"devin_hooks":{"PreToolUse":[]}}`)}
+	if err := srv.injectHookSettings(override); err != nil {
+		t.Fatal(err)
+	}
+	if string(override.HarnessConfig) != `{"devin_hooks":{"PreToolUse":[]}}` {
+		t.Errorf("explicit devin_hooks was rewritten: %s", override.HarnessConfig)
 	}
 }

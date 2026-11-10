@@ -128,7 +128,7 @@ func bypassBoolToMode(b bool) string {
 // Each harness bridge owns the translation from "auto"/"bypass" to its
 // own gating mechanism (codex: ApprovalMode + SandboxPolicy; claudecode:
 // --permission-mode flag; etc.). The prehook backs those translations for
-// claude_code and codex only — injectHookSettings installs no gate for any
+// claude_code, codex and devin only — injectHookSettings installs no gate for any
 // other harness, so it is not the universal gate this comment used to call
 // it, and an ungated harness receives the mode with nothing enforcing it
 // (card 49a697df).

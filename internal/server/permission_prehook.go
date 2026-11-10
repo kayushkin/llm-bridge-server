@@ -256,7 +256,7 @@ func (s *Server) writeHookNoVerdict(w http.ResponseWriter, unattended bool, reas
 // This is the single source of truth for what "auto" means at the prehook
 // level. Each harness binary chooses its own translation of the mode for
 // its native gate; the prehook decision here is the floor for the harnesses
-// that have a prehook at all — claude_code and codex. It is not the
+// that have a prehook at all — claude_code, codex and devin. It is not the
 // universal floor this comment used to claim: injectHookSettings installs
 // no gate for any other harness, so nothing consults this set for them
 // (card 49a697df).
@@ -275,6 +275,15 @@ var autoModeSafeTools = map[string]struct{}{
 	// Planning / harness-side state
 	"TodoWrite":    {},
 	"ExitPlanMode": {},
+	// devin's names for the same tools (devin 3000.12; its shell is exec)
+	"read":              {},
+	"grep":              {},
+	"find_file_by_name": {},
+	"notebook_read":     {},
+	"edit":              {},
+	"write":             {},
+	"notebook_edit":     {},
+	"todo_write":        {},
 }
 
 func isAutoModeSafeTool(name string) bool {
@@ -293,6 +302,12 @@ var planModeTools = map[string]struct{}{
 	"NotebookRead": {},
 	"TodoWrite":    {},
 	"ExitPlanMode": {},
+	// devin's names (devin 3000.12)
+	"read":              {},
+	"grep":              {},
+	"find_file_by_name": {},
+	"notebook_read":     {},
+	"todo_write":        {},
 }
 
 func isPlanModeTool(name string) bool {
@@ -310,6 +325,11 @@ var readOnlyTools = map[string]struct{}{
 	"Grep":         {},
 	"LS":           {},
 	"NotebookRead": {},
+	// devin's names (devin 3000.12)
+	"read":              {},
+	"grep":              {},
+	"find_file_by_name": {},
+	"notebook_read":     {},
 }
 
 func isReadOnlyTool(name string) bool {

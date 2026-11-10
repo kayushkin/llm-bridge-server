@@ -270,6 +270,7 @@ var routeDescriptions = map[string]routeDescription{
 	"/api/harness-proxy/{harness}/{rest...}":     {routeGroupRunners, "Forward to a harness backend (inber, hermes) on this host. Checks no credential; nothing calls it"},
 	"POST /permission/cc-prehook/{bridge_id}":    {routeGroupRunners, "Claude Code's permission check before each tool call"},
 	"POST /permission/codex-prehook/{bridge_id}": {routeGroupRunners, "The same for codex"},
+	"POST /permission/devin-prehook/{bridge_id}": {routeGroupRunners, "The same for devin"},
 	"POST /sidecar/event/{bridge_id}":            {routeGroupRunners, "Events from a pty-mode session's sidecar"},
 	"POST /hooks/exec/{id}":                      {routeGroupRunners, "A harness runs a registered hook (hook-store)"},
 

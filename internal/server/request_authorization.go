@@ -332,6 +332,7 @@ var routeAccessRules = map[string]routeAccessRule{
 	// runners, none of which carry a login.
 	"POST /permission/cc-prehook/{bridge_id}":    harnessCallbackRoute("Claude Code PreToolUse hook, a curl from the harness child"),
 	"POST /permission/codex-prehook/{bridge_id}": harnessCallbackRoute("codex PreToolUse hook, a curl from the harness child"),
+	"POST /permission/devin-prehook/{bridge_id}": harnessCallbackRoute("devin PreToolUse hook, a curl from the harness child, and llm-bridge-devin itself for session/request_permission"),
 	"POST /sidecar/event/{bridge_id}":            harnessCallbackRoute("OTel sidecar of a pty session posts translated events"),
 	"POST /hooks/exec/{id}":                      harnessCallbackRoute("registered hook fired by the harness child via curl"),
 	"GET /api/runner/ws":                         runnerRoute("runner WebSocket; the handler authenticates the runner's bearer token"),

@@ -459,6 +459,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/hooks/exec/{id}` | A harness runs a registered hook (hook-store) | harness callback |
 | `POST` | `/permission/cc-prehook/{bridge_id}` | Claude Code's permission check before each tool call | harness callback |
 | `POST` | `/permission/codex-prehook/{bridge_id}` | The same for codex | harness callback |
+| `POST` | `/permission/devin-prehook/{bridge_id}` | The same for devin | harness callback |
 | `POST` | `/sidecar/event/{bridge_id}` | Events from a pty-mode session's sidecar | harness callback |
 
 ### agent-store, mounted in this process

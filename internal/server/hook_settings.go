@@ -120,6 +120,7 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 var hookConfigKeyByHarness = map[msg.Harness]string{
 	msg.HarnessClaudeCode: "settings",
 	msg.HarnessCodex:      "codex_hooks",
+	msg.HarnessDevin:      "devin_hooks",
 }
 
 func (s *Server) injectHookSettings(sess *store.Session) error {
@@ -132,6 +133,8 @@ func (s *Server) injectHookSettings(sess *store.Session) error {
 		return s.injectClaudeCodeHookSettings(sess)
 	case msg.HarnessCodex:
 		return s.injectCodexHookSettings(sess)
+	case msg.HarnessDevin:
+		return s.injectDevinHookSettings(sess)
 	}
 	return nil
 }
@@ -210,6 +213,50 @@ func (s *Server) injectCodexHookSettings(sess *store.Session) error {
 	}
 	cfg["codex_hooks"] = encoded
 
+	merged, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("re-marshal harness_config for %s: %w", sess.SessionID, err)
+	}
+	sess.HarnessConfig = merged
+	return nil
+}
+
+// injectDevinHookSettings writes the hooks devin runs into
+// HarnessConfig.devin_hooks, and the permission gate's URL into
+// devin_permission_url. llm-bridge-devin puts the tree into the config file it
+// starts `devin acp` with; devin's hooks.v1 file has the same shape as codex's
+// hooks tree, and devin honors the hookSpecificOutput.permissionDecision
+// answer the prehook gives, so the codex builder serves both with the route
+// swapped. llm-bridge-devin refuses to start without devin_hooks, so a session
+// can never run ungated. An explicit devin_hooks in harness_config is left
+// alone, like the other harnesses' overrides.
+func (s *Server) injectDevinHookSettings(sess *store.Session) error {
+	cfg := map[string]json.RawMessage{}
+	if len(sess.HarnessConfig) > 0 {
+		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
+			return fmt.Errorf("harness_config of %s is unparseable: %w", sess.SessionID, err)
+		}
+	}
+	if _, ok := cfg["devin_hooks"]; ok {
+		return nil
+	}
+	tree, err := s.buildPrehookCommandHookTree(sess, msg.HarnessDevin, "devin-prehook")
+	if err != nil {
+		return fmt.Errorf("synthesize devin hooks for %s: %w", sess.SessionID, err)
+	}
+	if tree == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(tree)
+	if err != nil {
+		return fmt.Errorf("encode devin hooks for %s: %w", sess.SessionID, err)
+	}
+	cfg["devin_hooks"] = encoded
+	gateURL, err := json.Marshal(fmt.Sprintf("%s/permission/devin-prehook/%s", publicBaseURL(s.cfg.ListenAddr), escapePathSegment(sess.SessionID)))
+	if err != nil {
+		return err
+	}
+	cfg["devin_permission_url"] = gateURL
 	merged, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("re-marshal harness_config for %s: %w", sess.SessionID, err)
@@ -368,6 +415,14 @@ func (s *Server) collectApplicableHooks(sess *store.Session, harness msg.Harness
 // Returns nil when there's nothing to inject so the caller can skip the
 // HarnessConfig write entirely.
 func (s *Server) buildCodexHookConfig(sess *store.Session) (map[string][]any, error) {
+	return s.buildPrehookCommandHookTree(sess, msg.HarnessCodex, "codex-prehook")
+}
+
+// buildPrehookCommandHookTree builds the {event: [{matcher, hooks:[{type:
+// "command", command, timeout}]}]} tree codex and devin both read: the
+// permission gate at /permission/<gateRoute>/<session> first, then the
+// hook-store hooks scoped to harness.
+func (s *Server) buildPrehookCommandHookTree(sess *store.Session, harness msg.Harness, gateRoute string) (map[string][]any, error) {
 	base := publicBaseURL(s.cfg.ListenAddr)
 	byEvent := make(map[string][]any, 4)
 
@@ -380,7 +435,7 @@ func (s *Server) buildCodexHookConfig(sess *store.Session) (map[string][]any, er
 	// approval flow doesn't hit the codex hook timeout.
 	if sess.SessionID != "" {
 		cmd := hookCurlCommand(
-			fmt.Sprintf("%s/permission/codex-prehook/%s", base, escapePathSegment(sess.SessionID)),
+			fmt.Sprintf("%s/permission/%s/%s", base, gateRoute, escapePathSegment(sess.SessionID)),
 			"--max-time", "86400",
 		)
 		permEntry := map[string]any{
@@ -399,7 +454,7 @@ func (s *Server) buildCodexHookConfig(sess *store.Session) (map[string][]any, er
 	// User-registered hooks from hook-store scoped to codex. These run
 	// AFTER the permission gate so denied calls never trigger them.
 	if s.hookStore != nil {
-		applicable, err := s.collectApplicableHooks(sess, msg.HarnessCodex)
+		applicable, err := s.collectApplicableHooks(sess, harness)
 		if err != nil {
 			return nil, err
 		}

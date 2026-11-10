@@ -49,6 +49,7 @@ func (s *Server) handleCreateHook(w http.ResponseWriter, r *http.Request) {
 var hookMatcherHelpByHarness = map[msg.Harness]string{
 	msg.HarnessClaudeCode: "A tool-name pattern such as Bash or Edit|Write; empty matches every tool. Only tool events (PreToolUse, PostToolUse) use it.",
 	msg.HarnessCodex:      "A regular expression over the tool name, such as .* or apply_patch; empty matches every tool.",
+	msg.HarnessDevin:      "A regular expression over devin's tool name, such as exec or ^(edit|write)$; empty matches every tool.",
 }
 
 // handleHookOptions serves what a hook editor must not hardcode: the harnesses

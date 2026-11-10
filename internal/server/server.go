@@ -450,6 +450,13 @@ func (s *Server) routes() {
 	// are byte-identical to CC's, so the same handler serves both URLs.
 	s.mux.HandleFunc("POST /permission/codex-prehook/{bridge_id}", s.handleCCPermissionPrehook)
 
+	// PreToolUse permission gate for devin. llm-bridge-devin writes
+	// devin_hooks (injectDevinHookSettings) into the config devin starts
+	// with; devin's PreToolUse payload and its reading of
+	// hookSpecificOutput.permissionDecision match CC's, so the same handler
+	// serves it. The wrapper also posts here for a session/request_permission.
+	s.mux.HandleFunc("POST /permission/devin-prehook/{bridge_id}", s.handleCCPermissionPrehook)
+
 	// Sidecar event ingest for PTY-mode sessions. llm-bridge-claudecode's
 	// -otel-sidecar process POSTs translated OTel events here so they flow
 	// through the normal store + SSE + derivation pipeline. PTY sessions

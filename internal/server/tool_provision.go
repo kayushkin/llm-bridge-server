@@ -249,6 +249,8 @@ func (s *Server) resolveGrantedToolOffer(ctx context.Context, sess *store.Sessio
 var harnessesThatStartProvisionedMCPServers = map[msg.Harness]bool{
 	msg.HarnessClaudeCode: true,
 	msg.HarnessInber:      true,
+	// llm-bridge-devin hands the servers to devin in ACP session/new.
+	msg.HarnessDevin: true,
 }
 
 func (s *Server) injectMCPConfig(sess *store.Session) error {

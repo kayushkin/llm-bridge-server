@@ -49,6 +49,7 @@ var harnessMetadata = map[msg.Harness]harnessMeta{
 	msg.HarnessOpenCode:   {Label: "OpenCode", Emoji: "🔓", Image: "opencode.svg", Tint: "#8b5cf6"},
 	msg.HarnessForgecode:  {Label: "ForgeCode", Emoji: "🔥", Image: "forgecode.png", Tint: "#ef4444"},
 	msg.HarnessGemini:     {Label: "Gemini", Emoji: "✨", Tint: "#4285f4"},
+	msg.HarnessDevin:      {Label: "Devin", Emoji: "🛰️", Tint: "#2f6fed"},
 	msg.HarnessDatabricks: {Label: "Databricks", Emoji: "🧱", Tint: "#ff3621"},
 	msg.HarnessMock:       {Label: "Mock", Emoji: "🧪", Tint: "#6b7280"},
 }
@@ -76,6 +77,10 @@ var oneShotOnlyHarnesses = map[msg.Harness]string{
 // only emit observation-style lifecycle notifications (e.g. Codex) or run
 // agents remotely without any local hook point are absent here.
 var harnessHookEvents = map[msg.Harness][]string{
+	// devin runs PreToolUse hooks from its config in every permission mode,
+	// over ACP too (measured on devin 3000.12.43). Its other hook events are
+	// not yet measured under ACP, so they are not offered.
+	msg.HarnessDevin: {"PreToolUse"},
 	msg.HarnessClaudeCode: {
 		"PreToolUse",
 		"PostToolUse",
@@ -130,7 +135,7 @@ var harnessSupportsDisableNetwork = map[msg.Harness]bool{
 // This table says what the UI is OFFERED, not what is ENFORCED. The
 // bridge-side prehook that carries out block_all / plan / read / ask_all /
 // ask / bypass is installed by injectHookSettings, whose switch has no
-// default arm: only claude_code and codex ever receive a gate URL. For
+// default arm: only claude_code, codex and devin ever receive a gate URL. For
 // every other harness the mode is recorded and nothing evaluates it.
 //
 // This comment used to call the prehook universal and say the restrictive
@@ -138,9 +143,22 @@ var harnessSupportsDisableNetwork = map[msg.Harness]bool{
 // audit log agrees: every tool name in >=10,000 evaluations to 2026-08-15
 // is a Claude Code name. Card 49a697df holds the repair — give the gate a
 // default arm, or report only the modes a harness can enforce. Pinned by
-// TestInjectHookSettings_OnlyClaudeCodeAndCodexGetAPermissionGate.
+// TestInjectHookSettings_OnlyGatedHarnessesGetAPermissionGate.
 var harnessSupportedPermissionModes = map[msg.Harness][]string{
 	msg.HarnessClaudeCode: {
+		msg.PermissionModeBlockAll,
+		msg.PermissionModePlan,
+		msg.PermissionModeRead,
+		msg.PermissionModeAskAll,
+		msg.PermissionModeAsk,
+		msg.PermissionModeAuto,
+		msg.PermissionModeBypass,
+	},
+	// devin: every mode is carried out by the prehook, which devin calls
+	// through its PreToolUse hook on every tool call (llm-bridge-devin runs
+	// devin in its own bypass mode, so the gate is the only judge). Auto is
+	// translated by the devin tool names in autoModeSafeTools.
+	msg.HarnessDevin: {
 		msg.PermissionModeBlockAll,
 		msg.PermissionModePlan,
 		msg.PermissionModeRead,
@@ -171,7 +189,7 @@ var harnessSupportedPermissionModes = map[msg.Harness][]string{
 // That default is wider than what the bridge can enforce, and deliberately
 // left so pending card 49a697df. block_all / plan / read / ask_all / ask /
 // bypass are carried out by the prehook, and the prehook is installed only
-// for claude_code and codex — so an unlisted harness is handed a set
+// for claude_code, codex and devin — so an unlisted harness is handed a set
 // nothing keeps, and bridge-ui offers a user "Block All" on a session that
 // has no gate. The comment here used to call that subset prehook-enforced.
 // Narrowing the set is a visible UI change, which is why it is reserved
@@ -311,6 +329,13 @@ var harnessCapabilities = map[msg.Harness][]string{
 	msg.HarnessOpenCode:   {},
 	msg.HarnessForgecode:  {},
 	msg.HarnessGemini:     {},
+	// devin (llm-bridge-devin): model and effort switch live through ACP
+	// session/set_config_option (each effort is its own devin model variant);
+	// compact runs devin's /compact; system_prompt is reported in
+	// SessionInfo. fork is withheld (devin's ACP has no fork; the wrapper
+	// fails it with FORK_UNSUPPORTED), and tools is withheld (devin reads
+	// disabled_tools only at start and the wrapper reports no tool list).
+	msg.HarnessDevin:      {"compact", "model", "effort", "system_prompt"},
 	msg.HarnessDatabricks: {},
 	msg.HarnessMock:       {"compact", "tools", "system_prompt"},
 }
