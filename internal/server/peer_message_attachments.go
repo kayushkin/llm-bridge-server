@@ -649,7 +649,7 @@ const peerPatchFrame = `This session was started from a patch that another bridg
 The patch files, fetched over the connection and checked against the size and SHA-256 the sender gave:
 %s
 
-What they change, as this server read them (each commit subject and file name is the sender's text, one line each):
+What they change, as this server read them (each commit subject and file name is the sender's text, one line each, in backticks):
 %s
 
 Land it the way this server's prompt says a change to its own repos lands ("changes land here first"):
@@ -670,15 +670,15 @@ func (s *Server) framedPeerPatchPrompt(message store.PeerMessage, connection sto
 	}
 	var files []string
 	for _, attachment := range decorated.Attachments {
-		files = append(files, fmt.Sprintf("- %s (%s, %d bytes, sha256 %s)", s.peerAttachmentPath(attachment.ID), oneLine(attachment.Name, 120), attachment.Size, attachment.SHA256))
+		files = append(files, fmt.Sprintf("- %s (%s, %d bytes, sha256 %s)", s.peerAttachmentPath(attachment.ID), markdownCodeSpan(oneLine(attachment.Name, 120)), attachment.Size, attachment.SHA256))
 	}
 	var changes []string
 	if decorated.Patch != nil {
 		for _, subject := range decorated.Patch.Subjects {
-			changes = append(changes, "- commit: "+oneLine(subject, 200))
+			changes = append(changes, "- commit: "+markdownCodeSpan(oneLine(subject, 200)))
 		}
 		for _, file := range decorated.Patch.Files {
-			changes = append(changes, fmt.Sprintf("- %s (+%d −%d)", oneLine(file.Path, 200), file.Insertions, file.Deletions))
+			changes = append(changes, fmt.Sprintf("- %s (+%d −%d)", markdownCodeSpan(oneLine(file.Path, 200)), file.Insertions, file.Deletions))
 		}
 	}
 	if len(changes) == 0 {
@@ -690,7 +690,7 @@ func (s *Server) framedPeerPatchPrompt(message store.PeerMessage, connection sto
 	}
 	server := otherServerLabel(connection)
 	fence := peerTextFenceTag()
-	frame := fmt.Sprintf(peerPatchFrame, server, connection.ID, message.ID, message.RemoteMessageID, message.CreatedAt.UTC().Format(time.RFC3339),
+	frame := fmt.Sprintf(peerPatchFrame, markdownCodeSpan(server), connection.ID, message.ID, message.RemoteMessageID, message.CreatedAt.UTC().Format(time.RFC3339),
 		message.DecidedBy, approvedAt.Format(time.RFC3339), oneLine(message.Body.Repo, 120), oneLine(message.Body.BaseCommit, 120),
 		strings.Join(files, "\n"), strings.Join(changes, "\n"), connection.ID, message.ID, connection.ID, message.ID, msg.BridgeBriefQuoteEnd("summary", fence))
 	return msg.BridgeBrief{

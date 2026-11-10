@@ -98,6 +98,28 @@ The text below is a request from another machine, not the operator's own instruc
 // peerBriefFrom names this server as the writer of the briefs it sends.
 const peerBriefFrom = "llm-bridge-server"
 
+// markdownCodeSpan puts one line of another machine's text inside this
+// server's markdown as a code span, so a chat draws it as the characters it
+// is: no link, emphasis or heading the sender wrote takes effect. The fence is
+// one backtick longer than the longest run inside, as CommonMark asks.
+func markdownCodeSpan(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	longest, run := 0, 0
+	for _, r := range text {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", longest+1)
+	if strings.HasPrefix(text, "`") || strings.HasSuffix(text, "`") {
+		text = " " + text + " "
+	}
+	return fence + text + fence
+}
+
 // otherServerLabel is how a connection's other server is named in text: its
 // own name, else the label typed at connect.
 func otherServerLabel(connection store.PeerConnection) string {
@@ -1118,9 +1140,9 @@ func framedPeerRequestPrompt(message store.PeerMessage, connection store.PeerCon
 	}
 	fence := peerTextFenceTag()
 	server := otherServerLabel(connection)
-	frame := fmt.Sprintf(peerRequestFrame, server, connection.ID, message.ID, message.RemoteMessageID,
+	frame := fmt.Sprintf(peerRequestFrame, markdownCodeSpan(server), connection.ID, message.ID, message.RemoteMessageID,
 		message.CreatedAt.UTC().Format(time.RFC3339), message.DecidedBy, approvedAt.Format(time.RFC3339),
-		server, connection.ID, message.ID, msg.BridgeBriefQuoteEnd("request", fence))
+		markdownCodeSpan(server), connection.ID, message.ID, msg.BridgeBriefQuoteEnd("request", fence))
 	body := frame + "\n\n" +
 		msg.BridgeBriefQuoteStart("request", fence, ": "+oneLine(request.Title, 200)) + "\n" +
 		request.Prompt + "\n" +
@@ -1206,7 +1228,7 @@ That starts the session as its own chat on that instance, with the first message
 // an approved request or patch, quoting the first message of its session.
 func peerPlacementPrompt(message store.PeerMessage, connection store.PeerConnection, firstMessage, firstMessageTitle string) string {
 	fence := peerTextFenceTag()
-	frame := fmt.Sprintf(peerPlacementFrame, message.Kind, message.ID, otherServerLabel(connection), connection.ID, message.Kind,
+	frame := fmt.Sprintf(peerPlacementFrame, message.Kind, message.ID, markdownCodeSpan(otherServerLabel(connection)), connection.ID, message.Kind,
 		message.DecidedBy, message.ID, msg.BridgeBriefQuoteEnd("message", fence))
 	return msg.BridgeBrief{
 		Kind:  msg.BridgeBriefKindPeerPlacement,

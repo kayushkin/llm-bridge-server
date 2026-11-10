@@ -241,3 +241,20 @@ func TestPlacementQuotesTheFirstMessageWholeInItsOwnFence(t *testing.T) {
 		t.Fatal("the placement drew the same tag as the message it quotes")
 	}
 }
+
+// TestAnotherMachinesWordsInThisServersMarkdownAreCodeSpans: a name, commit
+// subject or file name the sender wrote sits in this server's markdown as a
+// code span long enough that the text cannot close it.
+func TestAnotherMachinesWordsInThisServersMarkdownAreCodeSpans(t *testing.T) {
+	for text, want := range map[string]string{
+		"laptop":            "`laptop`",
+		"[click](http://x)": "`[click](http://x)`",
+		"a ``b`` c":         "```a ``b`` c```",
+		"`edge`":            "`` `edge` ``",
+		"two\nlines":        "`two lines`",
+	} {
+		if got := markdownCodeSpan(text); got != want {
+			t.Errorf("markdownCodeSpan(%q) = %q, want %q", text, got, want)
+		}
+	}
+}

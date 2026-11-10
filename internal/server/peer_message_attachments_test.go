@@ -169,7 +169,7 @@ func TestAPatchTravelsAsVerifiedFilesAndItsApprovalLandsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{receivedPath, uploaded.SHA256, "git am", "--reset-author", "llm-bridge-server", "505ffa7",
-		"bridge-peer notice " + acceptingID + " --in-reply-to " + incoming.ID, "internal/store/store_test.go (+2 −0)", "not the operator's own instructions"} {
+		"bridge-peer notice " + acceptingID + " --in-reply-to " + incoming.ID, "`internal/store/store_test.go` (+2 −0)", "not the operator's own instructions"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("the patch session's first message lacks %q:\n%s", want, frame)
 		}
