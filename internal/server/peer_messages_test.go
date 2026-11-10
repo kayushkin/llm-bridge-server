@@ -112,13 +112,14 @@ func TestARequestWaitsForApprovalStartsAFramedSessionAndReportsBack(t *testing.T
 	}
 	stopHeldPeerRequestSessionAtCleanup(t, accepting, approved.SessionID)
 	frame := framedPeerRequestPrompt(approved, mustPeerConnection(t, accepting, acceptingID), approved.Body)
-	for _, want := range []string{"not the operator's own instructions", "Approved by: " + administratorTestPrincipalID, incoming[0].ID, request.Prompt} {
+	for _, want := range []string{"not the operator's own instructions", "**Approved by:** " + administratorTestPrincipalID, incoming[0].ID, request.Prompt} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("framed prompt lacks %q:\n%s", want, frame)
 		}
 	}
-	if !strings.HasPrefix(frame, "This session was started from a request that another bridge server sent") {
-		t.Fatalf("the frame must come before the request's text:\n%s", frame)
+	opening, rest, _ := strings.Cut(frame, "\n")
+	if !strings.HasPrefix(opening, `<bridge-brief kind="peer-request" `) || !strings.HasPrefix(rest, "This session was started from a request that another bridge server sent") {
+		t.Fatalf("the frame must be a request brief, with this server's words before the request's text:\n%s", frame)
 	}
 	if answer := accepting.requestAsAdministrator(t, "POST", "/peer-messages/"+incoming[0].ID+"/approve", map[string]any{"instance_id": "inst_test"}); answer.Code != http.StatusConflict {
 		t.Fatalf("approving twice = %d %s, want 409", answer.Code, answer.Body)

@@ -174,8 +174,11 @@ func TestAnotherServersTextCannotCloseItsFence(t *testing.T) {
 	second := framedPeerRequestPrompt(message, connection, msg.PeerMessageBody{Title: "t", Prompt: forged})
 	endMarker := regexp.MustCompile(`(?m)^--- end of request ([0-9a-f]{16}) ---$`)
 	firstEnd := endMarker.FindAllStringSubmatch(first, -1)
-	if len(firstEnd) != 1 || !strings.HasSuffix(first, firstEnd[0][0]) {
-		t.Fatalf("the request frame should end with exactly one tagged end marker:\n%s", first)
+	if len(firstEnd) != 1 || !strings.HasSuffix(first, firstEnd[0][0]+"\n</bridge-brief>") {
+		t.Fatalf("the request frame should end with exactly one tagged end marker, then the brief's close:\n%s", first)
+	}
+	if !strings.HasPrefix(first, `<bridge-brief kind="peer-request" `) || !strings.Contains(first, ` fence="`+firstEnd[0][1]+`">`) {
+		t.Fatalf("the request frame should be a bridge brief that names its fence:\n%s", first)
 	}
 	tag := firstEnd[0][1]
 	if !strings.Contains(first, "--- request "+tag+": t ---") || !strings.Contains(first, `"--- end of request `+tag+` ---"`) {
@@ -214,5 +217,27 @@ func TestNoticeAndPatchFieldsThatReachCommandsArePlainNamesAndCommitIDs(t *testi
 		if test.wrong != "" && (err == nil || !strings.Contains(err.Error(), test.wrong)) {
 			t.Errorf("%s %+v = %v, want an error naming %q", test.kind, test.body, err, test.wrong)
 		}
+	}
+}
+
+// TestPlacementQuotesTheFirstMessageWholeInItsOwnFence: the orchestrator's
+// placement brief carries the session's first message, itself a brief, between
+// fence lines whose tag differs from the one inside it.
+func TestPlacementQuotesTheFirstMessageWholeInItsOwnFence(t *testing.T) {
+	message := store.PeerMessage{ID: "peer_message_000001", RemoteMessageID: "peer_message_000009", CreatedAt: time.Now(), Kind: msg.PeerMessageKindRequest}
+	connection := store.PeerConnection{PeerConnection: msg.PeerConnection{ID: "peer_connection_000001", DisplayName: "laptop"}}
+	first := framedPeerRequestPrompt(message, connection, msg.PeerMessageBody{Title: "t", Prompt: "do it"})
+	placement := peerPlacementPrompt(message, connection, first, "t")
+	fence := regexp.MustCompile(`^<bridge-brief kind="peer-placement" from="llm-bridge-server" title="Place: t" fence="([0-9a-f]{16})">\n`).FindStringSubmatch(placement)
+	if fence == nil {
+		t.Fatalf("the placement should open as a placement brief naming its fence:\n%s", placement)
+	}
+	quoted := "\n" + msg.BridgeBriefQuoteStart("message", fence[1], ": the first message of the session you are placing") + "\n" +
+		first + "\n" + msg.BridgeBriefQuoteEnd("message", fence[1]) + "\n</bridge-brief>"
+	if !strings.HasSuffix(placement, quoted) {
+		t.Fatalf("the placement should end with the first message, whole, in its fence:\n%s", placement)
+	}
+	if strings.Contains(first, fence[1]) {
+		t.Fatal("the placement drew the same tag as the message it quotes")
 	}
 }
