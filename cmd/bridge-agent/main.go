@@ -380,9 +380,8 @@ func (d *delegate) createSession(ctx context.Context, harness, instance, manager
 // endpoint than the one asked for, and does so silently — net/http drops a
 // fragment and everything after it before the request leaves, and the server
 // routes on the path alone, so the wrong request gets an ordinary answer.
-// stop is the sharpest of the three: it reports only transport errors, so a
-// stop aimed at the wrong endpoint leaves the delegate session running and
-// says nothing.
+// stop is the sharpest of the three: a stop aimed at the wrong endpoint
+// leaves the delegate session running.
 //
 // PathEscape is a no-op for every well-formed session id, so no legitimate
 // call changes.
@@ -409,15 +408,29 @@ func (d *delegate) send(ctx context.Context, sessionID, prompt string) error {
 // stop tears the delegate down. llm-bridge-server also reaps delegate sessions
 // on their first result, but this makes the teardown synchronous with the CLI
 // exiting so the MCP servers are gone by the time the caller reads stdout.
+// A stop the server could not be reached for, or refused, is a warning on
+// stderr: the CLI is exiting either way, and the delegate may still be running.
 func (d *delegate) stop(sessionID string) {
+	if err := d.requestStop(sessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "[bridge-agent] warning: stop session %s: %v\n", sessionID, err)
+	}
+}
+
+// requestStop asks llm-bridge-server to stop the session and returns an error
+// when the request fails or the server answers with anything but 2xx — a 404
+// or 403 means the delegate was not stopped.
+func (d *delegate) requestStop(sessionID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	resp, err := d.post(ctx, "/sessions/"+escapePathSegment(sessionID)+"/stop", nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[bridge-agent] warning: stop session %s: %v\n", sessionID, err)
-		return
+		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return httpError(resp)
+	}
+	return nil
 }
 
 // subscribe opens the SSE event stream and decodes each frame into a msg.Event.
