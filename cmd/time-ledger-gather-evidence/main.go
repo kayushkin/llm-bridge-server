@@ -1,8 +1,11 @@
 // Command time-ledger-gather-evidence links to each time entry the records
-// that show where the operator was while it ran: location-store visits that
-// overlap it and photo-store photos taken during it. Every link it makes
-// bears on the entry as context: the reviewer, not this program, decides
-// whether a visit or a photo shows the entry happened.
+// that show where the operator was while it ran, and what it cost:
+// location-store visits that overlap it, photo-store photos taken during it,
+// and the spending budget-store keeps on a trip, linked to the entry the trip
+// is the source of. Visits and photos bear on the entry as context: the
+// reviewer, not this program, decides whether they show the entry happened.
+// A trip charge bears on it as cost once budget-store has it confirmed, and as
+// context while it is only suggested (see gatherTripSpending).
 //
 // It reads entries that have ended and last at most -longest (a journey's
 // visits are the trip itself), widens each span by -margin on both sides,
@@ -45,6 +48,7 @@ func main() {
 	ledgerURL := flag.String("time-ledger-store-url", "http://127.0.0.1:8344", "where time-ledger-store answers")
 	locationStoreURL := flag.String("location-store-url", "http://127.0.0.1:8333", "where location-store answers")
 	photoStoreURL := flag.String("photo-store-url", "http://127.0.0.1:8329", "where photo-store answers")
+	budgetStoreURL := flag.String("budget-store-url", "http://127.0.0.1:8340", "where budget-store answers")
 	days := flag.Int("days", 60, "read entries that ended in the last this many days")
 	longest := flag.Duration("longest", 24*time.Hour, "skip entries longer than this")
 	margin := flag.Duration("margin", 30*time.Minute, "how far before and after an entry to look")
@@ -83,6 +87,11 @@ func main() {
 		}
 	}
 	log.Printf("read %d entries; %d links added", entriesRead, linked)
+	changes, err := gatherTripSpending(*ledgerURL, *budgetStoreURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	logSpendingChanges(changes)
 }
 
 func gather(ledgerURL, locationStoreURL, photoStoreURL string, entry timeledgerstore.TimeEntry, lookFrom, lookTo int64, window string) (int, error) {
