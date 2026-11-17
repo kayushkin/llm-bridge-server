@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,6 +38,18 @@ import (
 // maximumFileNamedByToolsBytes is the largest file the content route returns.
 const maximumFileNamedByToolsBytes = 1 << 20
 
+// maximumImageNamedByToolsBytes is the largest image the image route returns.
+const maximumImageNamedByToolsBytes = 16 << 20
+
+// How the routes below serve a file, by what its first bytes look like and
+// its size: as text from the content route, as an image from the image route,
+// or not at all. The chat links a mention only to a file one of them serves.
+const (
+	fileServedAsText  = "text"
+	fileServedAsImage = "image"
+	fileNotServed     = ""
+)
+
 // maximumOutputLinesScannedPerToolResult bounds the scan of one result, so a
 // `find /` that printed a million lines does not stall the request.
 const maximumOutputLinesScannedPerToolResult = 5000
@@ -50,6 +63,12 @@ type FileNamedByTools struct {
 	Path       string    `json:"path"`
 	Size       int64     `json:"size"`
 	ModifiedAt time.Time `json:"modified_at"`
+	// MediaType is what the file's first 512 bytes look like
+	// (http.DetectContentType).
+	MediaType string `json:"media_type"`
+	// ServedAs is "text" when the content route returns it, "image" when the
+	// image route does, and "" when neither does (another kind, or too large).
+	ServedAs string `json:"served_as"`
 }
 
 // FileNamedByToolsContent is one such file's current content on disk.
@@ -71,24 +90,8 @@ func (s *Server) handleFilesNamedByTools(w http.ResponseWriter, r *http.Request)
 // handleFileNamedByToolsContent returns one file's current content, but only
 // for a path on the session's list.
 func (s *Server) handleFileNamedByToolsContent(w http.ResponseWriter, r *http.Request) {
-	requested := r.URL.Query().Get("path")
-	if requested == "" || !filepath.IsAbs(requested) {
-		writeJSONError(w, http.StatusBadRequest, "path_not_absolute", "path must be an absolute path from files-named-by-tools")
-		return
-	}
-	files, ok := s.filesNamedByToolsOrWriteError(w, r.PathValue("id"))
+	found, ok := s.fileNamedByToolsOrWriteError(w, r)
 	if !ok {
-		return
-	}
-	var found *FileNamedByTools
-	for i := range files {
-		if files[i].Path == requested {
-			found = &files[i]
-			break
-		}
-	}
-	if found == nil {
-		writeJSONError(w, http.StatusNotFound, "file_not_named_by_session_tools", "no tool in this session named that file, or it no longer exists")
 		return
 	}
 	if found.Size > maximumFileNamedByToolsBytes {
@@ -106,6 +109,27 @@ func (s *Server) handleFileNamedByToolsContent(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, FileNamedByToolsContent{FileNamedByTools: *found, Content: string(content)})
+}
+
+// fileNamedByToolsOrWriteError finds the request's ?path= on the session's
+// list, or writes why not.
+func (s *Server) fileNamedByToolsOrWriteError(w http.ResponseWriter, r *http.Request) (*FileNamedByTools, bool) {
+	requested := r.URL.Query().Get("path")
+	if requested == "" || !filepath.IsAbs(requested) {
+		writeJSONError(w, http.StatusBadRequest, "path_not_absolute", "path must be an absolute path from files-named-by-tools")
+		return nil, false
+	}
+	files, ok := s.filesNamedByToolsOrWriteError(w, r.PathValue("id"))
+	if !ok {
+		return nil, false
+	}
+	for i := range files {
+		if files[i].Path == requested {
+			return &files[i], true
+		}
+	}
+	writeJSONError(w, http.StatusNotFound, "file_not_named_by_session_tools", "no tool in this session named that file, or it no longer exists")
+	return nil, false
 }
 
 func (s *Server) filesNamedByToolsOrWriteError(w http.ResponseWriter, sessionID string) ([]FileNamedByTools, bool) {
@@ -147,9 +171,73 @@ func (s *Server) filesNamedByToolsOrWriteError(w http.ResponseWriter, sessionID 
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		files = append(files, FileNamedByTools{Path: candidate, Size: info.Size(), ModifiedAt: info.ModTime().UTC()})
+		mediaType, err := sniffedMediaTypeOf(candidate)
+		if err != nil {
+			continue
+		}
+		files = append(files, FileNamedByTools{Path: candidate, Size: info.Size(), ModifiedAt: info.ModTime().UTC(),
+			MediaType: mediaType, ServedAs: fileServedAs(mediaType, info.Size())})
 	}
 	return files, true
+}
+
+// sniffedMediaTypeOf reads a file's first 512 bytes and says what they look
+// like. A file that cannot be opened is left off the list, as one that no
+// longer exists is.
+func sniffedMediaTypeOf(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	head := make([]byte, 512)
+	count, err := io.ReadFull(file, head)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return http.DetectContentType(head[:count]), nil
+}
+
+// fileServedAs says which route serves a file of this media type and size.
+func fileServedAs(mediaType string, size int64) string {
+	switch {
+	case strings.HasPrefix(mediaType, "text/") && size <= maximumFileNamedByToolsBytes:
+		return fileServedAsText
+	case strings.HasPrefix(mediaType, "image/") && size <= maximumImageNamedByToolsBytes:
+		return fileServedAsImage
+	default:
+		return fileNotServed
+	}
+}
+
+// handleImageNamedByTools returns one image's bytes with its media type, but
+// only for a path on the session's list that the list says is an image.
+func (s *Server) handleImageNamedByTools(w http.ResponseWriter, r *http.Request) {
+	found, ok := s.fileNamedByToolsOrWriteError(w, r)
+	if !ok {
+		return
+	}
+	if found.ServedAs != fileServedAsImage {
+		writeJSONError(w, http.StatusUnsupportedMediaType, "file_not_image",
+			fmt.Sprintf("the file looks like %s; this route returns images of at most %d bytes", found.MediaType, maximumImageNamedByToolsBytes))
+		return
+	}
+	content, err := os.ReadFile(found.Path)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "read_file", err.Error())
+		return
+	}
+	// Sniffed again from what is sent, so a file replaced since the list was
+	// read is labelled by its own bytes.
+	mediaType := http.DetectContentType(content)
+	if !strings.HasPrefix(mediaType, "image/") {
+		writeJSONError(w, http.StatusUnsupportedMediaType, "file_not_image", "the file changed and is no longer an image: "+mediaType)
+		return
+	}
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, no-cache")
+	w.Write(content)
 }
 
 // pathsNamedByToolEvents walks the session's tool events in order and returns

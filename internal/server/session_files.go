@@ -60,6 +60,14 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 	if caller, ok := callerOfRequest(r); ok && caller.postingAgentOfSessionID != "" {
 		sharedBy = msg.SessionFileSharedByAgent
 	}
+	// A person sharing a file is its sender, as for a message they send.
+	var sender messageSender
+	if sharedBy == msg.SessionFileSharedByUser {
+		if sender, err = s.messageSenderOfRequest(r); err != nil {
+			writeJSONError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
+			return
+		}
+	}
 
 	// Refused before the bytes are spooled, not after: file-store would refuse
 	// an oversized file anyway, but only once it had been written to disk here.
@@ -69,7 +77,7 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	record, failure := s.shareFileIntoSession(session, http.MaxBytesReader(w, r.Body, limits.MaximumFileBytes), limits.MaximumFileBytes, mediaType, filename, sharedBy)
+	record, failure := s.shareFileIntoSession(session, http.MaxBytesReader(w, r.Body, limits.MaximumFileBytes), limits.MaximumFileBytes, mediaType, filename, sharedBy, sender)
 	if failure != nil {
 		failure.write(w)
 		return
@@ -111,7 +119,7 @@ func (failure *sessionFileShareFailure) write(w http.ResponseWriter) {
 // the session_file event that puts it in the conversation. content must
 // already be held to maximumFileBytes, which is named in the refusal when it
 // is not.
-func (s *Server) shareFileIntoSession(session *store.Session, content io.Reader, maximumFileBytes int64, mediaType, filename string, sharedBy msg.SessionFileSharer) (store.SessionFile, *sessionFileShareFailure) {
+func (s *Server) shareFileIntoSession(session *store.Session, content io.Reader, maximumFileBytes int64, mediaType, filename string, sharedBy msg.SessionFileSharer, sender messageSender) (store.SessionFile, *sessionFileShareFailure) {
 	failed := func(status int, code, message string) (store.SessionFile, *sessionFileShareFailure) {
 		return store.SessionFile{}, &sessionFileShareFailure{status: status, code: code, message: message}
 	}
@@ -186,6 +194,7 @@ func (s *Server) shareFileIntoSession(session *store.Session, content io.Reader,
 		Timestamp:       record.CreatedAt,
 		SessionFile:     &record,
 	}
+	sender.stamp(&event)
 	if _, err := s.harness.BroadcastEvent(&event); err != nil {
 		// The file is kept and listed; only the timeline entry is missing, and
 		// the caller has to know that rather than find it out.

@@ -319,6 +319,7 @@ func (s *Server) routes() {
 	// chat-page endpoints — projected sidebar list, recent-bundle warmer,
 	// and the cheap validators staleness check. See dash docs/chat-architecture.md §5.
 	s.mux.HandleFunc("GET /sessions/summary", s.handleSessionsSummary)
+	s.mux.HandleFunc("GET /sessions/principals", s.handleSessionPrincipals)
 	// Same query, POST body: the id lookups (session_ids, manager_session_ids)
 	// outgrow a URL — a long-enough query string kills the whole HTTP/2
 	// connection at nginx, not just the request. See handleSessionsSummaryLookup.
@@ -338,6 +339,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/files/{file_id}/content", s.handleSessionFileContent)
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools", s.handleFilesNamedByTools)
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/content", s.handleFileNamedByToolsContent)
+	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/image", s.handleImageNamedByTools)
 	s.mux.HandleFunc("POST /sessions/{id}/chat-links", s.handleCreateChatLink)
 	s.mux.HandleFunc("GET /sessions/{id}/chat-links", s.handleListChatLinks)
 	s.mux.HandleFunc("GET /sessions/{id}/chat-links/{link_id}", s.handleGetChatLink)

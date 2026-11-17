@@ -210,6 +210,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/sessions` | Create a session; `auto_start` starts it | principal, as itself |
 | `GET` | `/sessions/aggregates` | Totals across sessions, answered by log-store | operator |
 | `GET` | `/sessions/discover` | Import sessions the harness CLIs have on this host's disk | operator |
+| `GET` | `/sessions/principals` | Who the sessions you may see were started as, with names and counts | principal, own sessions only |
 | `GET` | `/sessions/recent-bundle` | Recent sessions, to warm the chat page | principal, own sessions only |
 | `GET` | `/sessions/search` | Full-text search, answered by log-store | operator |
 | `GET` | `/sessions/summary` | The chat sidebar's list, projected small | principal, own sessions only |
@@ -243,6 +244,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/sessions/{id}/files` | Share a file into the session (its owner, or its own agent with LLM_BRIDGE_SESSION_POSTING_TOKEN) | owner, or the session's own agent |
 | `GET` | `/sessions/{id}/files-named-by-tools` | Files on disk that the session's tool calls and their output named | owner |
 | `GET` | `/sessions/{id}/files-named-by-tools/content` | One such file's current text, only for a path on that list | owner |
+| `GET` | `/sessions/{id}/files-named-by-tools/image` | One such file's bytes when it is an image, only for a path on that list | owner |
 | `GET` | `/sessions/{id}/files/{file_id}/content` | One shared file's bytes, relayed from file-store | owner |
 | `PUT` | `/sessions/{id}/folder` | Move into a folder | operator |
 | `POST` | `/sessions/{id}/fork` | Branch a new session from this one | owner |

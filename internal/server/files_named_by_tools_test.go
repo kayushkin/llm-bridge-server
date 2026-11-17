@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -79,6 +81,35 @@ func TestPathIsDenied(t *testing.T) {
 	} {
 		if got := pathIsDenied(path, denied, "/home/someone"); got != want {
 			t.Errorf("pathIsDenied(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+func TestFileServedAsFollowsTheBytesAndTheSize(t *testing.T) {
+	directory := t.TempDir()
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	cases := []struct {
+		name, content string
+		size          int64
+		want          string
+	}{
+		{"notes.md", "# a heading\n", 12, fileServedAsText},
+		{"shot.png", string(png), int64(len(png)), fileServedAsImage},
+		{"big.png", string(png), maximumImageNamedByToolsBytes + 1, fileNotServed},
+		{"big.log", "line\n", maximumFileNamedByToolsBytes + 1, fileNotServed},
+		{"data.db", "SQLite format 3\x00\x10\x00", 18, fileNotServed},
+	}
+	for _, c := range cases {
+		path := filepath.Join(directory, c.name)
+		if err := os.WriteFile(path, []byte(c.content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mediaType, err := sniffedMediaTypeOf(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fileServedAs(mediaType, c.size); got != c.want {
+			t.Errorf("%s (%s, %d bytes) served as %q, want %q", c.name, mediaType, c.size, got, c.want)
 		}
 	}
 }

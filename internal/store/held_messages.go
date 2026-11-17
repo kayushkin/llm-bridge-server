@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -31,6 +32,9 @@ type HeldMessage struct {
 	SessionID     string
 	// Request is the send exactly as it arrived.
 	Request msg.SendMessageRequest
+	// SenderPrincipalID is who wrote it, so the replay records them as its
+	// sender. Empty when the caller acted as no principal.
+	SenderPrincipalID string
 	// Source names the path that would have sent it: "send" for
 	// POST /sessions/{id}/send, "signal_answer" for an answered question.
 	Source string
@@ -54,7 +58,14 @@ func (s *Store) migrateHeldMessages() error {
 		return err
 	}
 	_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS held_messages_unclaimed ON held_messages (held_message_id) WHERE delivery_claimed_at IS NULL`)
-	return err
+	if err != nil {
+		return err
+	}
+	// sender_principal_id came after the table; a store made before it gets it here.
+	if _, err := s.db.Exec(`ALTER TABLE held_messages ADD COLUMN sender_principal_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("add held_messages.sender_principal_id: %w", err)
+	}
+	return nil
 }
 
 // HoldMessage records a message the server will send once its restart wait
@@ -64,8 +75,8 @@ func (s *Store) HoldMessage(held HeldMessage) error {
 	if err != nil {
 		return fmt.Errorf("encode held message %s: %w", held.HeldMessageID, err)
 	}
-	_, err = s.db.Exec(`INSERT INTO held_messages (held_message_id, session_id, request_json, source, held_at) VALUES (?, ?, ?, ?, ?)`,
-		held.HeldMessageID, held.SessionID, string(request), held.Source, held.HeldAt.UTC())
+	_, err = s.db.Exec(`INSERT INTO held_messages (held_message_id, session_id, request_json, sender_principal_id, source, held_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		held.HeldMessageID, held.SessionID, string(request), held.SenderPrincipalID, held.Source, held.HeldAt.UTC())
 	if err != nil {
 		return fmt.Errorf("hold message %s: %w", held.HeldMessageID, err)
 	}
@@ -75,7 +86,7 @@ func (s *Store) HoldMessage(held HeldMessage) error {
 // UnclaimedHeldMessages lists the held messages no delivery has claimed yet,
 // oldest first, which is the order they were sent in.
 func (s *Store) UnclaimedHeldMessages() ([]HeldMessage, error) {
-	rows, err := s.db.Query(`SELECT held_message_id, session_id, request_json, source, held_at FROM held_messages
+	rows, err := s.db.Query(`SELECT held_message_id, session_id, request_json, sender_principal_id, source, held_at FROM held_messages
 		WHERE delivery_claimed_at IS NULL ORDER BY held_message_id`)
 	if err != nil {
 		return nil, fmt.Errorf("list unclaimed held messages: %w", err)
@@ -85,7 +96,7 @@ func (s *Store) UnclaimedHeldMessages() ([]HeldMessage, error) {
 	for rows.Next() {
 		var message HeldMessage
 		var request string
-		if err := rows.Scan(&message.HeldMessageID, &message.SessionID, &request, &message.Source, &message.HeldAt); err != nil {
+		if err := rows.Scan(&message.HeldMessageID, &message.SessionID, &request, &message.SenderPrincipalID, &message.Source, &message.HeldAt); err != nil {
 			return nil, fmt.Errorf("read held message: %w", err)
 		}
 		if err := json.Unmarshal([]byte(request), &message.Request); err != nil {

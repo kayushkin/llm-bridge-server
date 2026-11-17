@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -92,6 +93,9 @@ type SessionSummaryFilter struct {
 	Purposes    []string
 	Modes       []string
 	InstanceIDs []string
+	// PrincipalIDs are the principals the sessions were started as; '' matches
+	// a session started as no principal (the scheduler, an agent, a script).
+	PrincipalIDs []string
 
 	// SessionIDs names the exact rows wanted, and is NOT one of the sidebar's
 	// six chip axes — it is a LOOKUP. A caller that already holds ids and needs
@@ -154,6 +158,7 @@ func (f SessionSummaryFilter) axes() []summaryFilterAxis {
 		{`COALESCE(purpose, '')`, f.Purposes},
 		{`COALESCE(mode, '')`, f.Modes},
 		{`COALESCE(instance_id, '')`, f.InstanceIDs},
+		{`COALESCE(principal_id, '')`, f.PrincipalIDs},
 	}
 }
 
@@ -418,4 +423,47 @@ func (s *Store) MaxSessionUpdatedAt() (string, error) {
 		return "", nil
 	}
 	return v.String, nil
+}
+
+// SessionCountOfPrincipal is how many sessions were started as one principal;
+// PrincipalID ” counts the sessions started as no principal.
+type SessionCountOfPrincipal struct {
+	PrincipalID  string
+	SessionCount int
+}
+
+// SessionCountsByPrincipal counts sessions by the principal they were started
+// as, most sessions first. ownedByPrincipalID and throughPeerPrincipalID narrow
+// it as they narrow the summary (SessionSummaryFilter); both empty counts every
+// session.
+func (s *Store) SessionCountsByPrincipal(ownedByPrincipalID, throughPeerPrincipalID string) ([]SessionCountOfPrincipal, error) {
+	query := `SELECT COALESCE(principal_id, ''), COUNT(*) FROM sessions`
+	var conditions []string
+	var args []any
+	if ownedByPrincipalID != "" {
+		conditions = append(conditions, `principal_id = ?`)
+		args = append(args, ownedByPrincipalID)
+	}
+	if throughPeerPrincipalID != "" {
+		conditions = append(conditions, `COALESCE(NULLIF(session_id, ''), bridge_id) IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = ?)`)
+		args = append(args, throughPeerPrincipalID)
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
+	}
+	query += ` GROUP BY 1 ORDER BY 2 DESC, 1`
+	rows, err := s.dbRO.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("count sessions by principal: %w", err)
+	}
+	defer rows.Close()
+	var counts []SessionCountOfPrincipal
+	for rows.Next() {
+		var count SessionCountOfPrincipal
+		if err := rows.Scan(&count.PrincipalID, &count.SessionCount); err != nil {
+			return nil, fmt.Errorf("read a session count: %w", err)
+		}
+		counts = append(counts, count)
+	}
+	return counts, rows.Err()
 }

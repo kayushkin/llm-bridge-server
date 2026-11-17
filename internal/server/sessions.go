@@ -843,7 +843,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	// While the server drains before a restart, a new turn waits: the
 	// message is kept and sent once the drain ends (restart_drain.go).
-	if heldMessageID, held, err := s.holdMessageIfRestartDraining(bridgeID, req, "send"); err != nil {
+	if heldMessageID, held, err := s.holdMessageIfRestartDraining(bridgeID, req, senderPrincipalIDOfRequest(r), "send"); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "hold_failed", err.Error())
 		return
 	} else if held {
@@ -874,6 +874,10 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		ClientRequestID: req.ClientRequestID,
 		Timestamp:       time.Now(),
 		Result:          &msg.ResultEvent{Text: req.Message, Blocks: req.Blocks},
+	}
+	if err := s.stampMessageSender(r, &userEvent); err != nil {
+		writeJSONError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
+		return
 	}
 	// Persist before forwarding to the harness. If either store can't take
 	// the user_message, refuse the send — otherwise the assistant runs against

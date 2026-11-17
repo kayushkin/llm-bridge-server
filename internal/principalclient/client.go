@@ -58,8 +58,10 @@ const KindPeer = "peer"
 // older than that answer sends none, which reads as false: no token is issued
 // or accepted until principal-store says the kind may hold one.
 type Principal struct {
-	ID                    string `json:"id"`
-	Kind                  string `json:"kind"`
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	// DisplayName is for showing only; never look a principal up by it.
+	DisplayName           string `json:"display_name"`
 	DisabledAt            int64  `json:"disabled_at"`
 	IsAdministrator       bool   `json:"is_administrator"`
 	ActsAsCaller          bool   `json:"acts_as_caller"`

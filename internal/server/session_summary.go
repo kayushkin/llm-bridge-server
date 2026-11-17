@@ -16,8 +16,8 @@ import (
 // cursor-paginated:
 // GET /sessions/summary?limit=100&before=<cursor>&type=interactive&type=herald.
 //
-// The six filter axes (`harness`, `status`, `type`, `purpose`, `mode`,
-// `machine`) are the sidebar's own, spelled the same way, and each is REPEATED
+// The seven filter axes (`harness`, `status`, `type`, `purpose`, `mode`,
+// `machine`, `principal`) are the sidebar's own, spelled the same way, and each is REPEATED
 // rather than comma-separated: a purpose on this box can read
 // "browser verification + A/B perf", and nothing stops one containing a
 // comma, so splitting on one would silently cut a value in half. Omitting an
@@ -44,6 +44,8 @@ func (s *Server) handleSessionsSummary(w http.ResponseWriter, r *http.Request) {
 		Purposes:    query["purpose"],
 		Modes:       query["mode"],
 		InstanceIDs: query["machine"],
+		// `principal=` (empty) asks for the sessions started as no principal.
+		PrincipalIDs: query["principal"],
 	}
 	sessionIDs, err := summaryIDLookupFromQuery(query, "session_id")
 	if err != nil {
@@ -97,12 +99,13 @@ func (s *Server) handleSessionsSummaryLookup(w http.ResponseWriter, r *http.Requ
 		limit = req.Limit
 	}
 	filter := store.SessionSummaryFilter{
-		Harnesses:   req.Harnesses,
-		States:      req.States,
-		Types:       req.Types,
-		Purposes:    req.Purposes,
-		Modes:       req.Modes,
-		InstanceIDs: req.Machines,
+		Harnesses:    req.Harnesses,
+		States:       req.States,
+		Types:        req.Types,
+		Purposes:     req.Purposes,
+		Modes:        req.Modes,
+		InstanceIDs:  req.Machines,
+		PrincipalIDs: req.Principals,
 	}
 	sessionIDs, err := summaryIDLookupFromBody(req.SessionIDs, "session_ids")
 	if err != nil {

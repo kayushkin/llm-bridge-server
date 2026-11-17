@@ -13,6 +13,7 @@ package server
 // harness starts on its own to finish background work, are not held.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -139,7 +140,7 @@ func (s *Server) endRestartDrain(why string) {
 // check and the record happen under the drain's lock, so a message is either
 // held before the drain ends, and sent by the delivery that follows, or not
 // held at all.
-func (s *Server) holdMessageIfRestartDraining(sessionID string, request msg.SendMessageRequest, source string) (heldMessageID string, held bool, err error) {
+func (s *Server) holdMessageIfRestartDraining(sessionID string, request msg.SendMessageRequest, senderPrincipalID, source string) (heldMessageID string, held bool, err error) {
 	drain := &s.restartDrain
 	drain.mu.Lock()
 	if !drain.draining {
@@ -148,7 +149,7 @@ func (s *Server) holdMessageIfRestartDraining(sessionID string, request msg.Send
 	}
 	heldMessageID = serverids.NewHeldMessageID()
 	err = s.store.HoldMessage(store.HeldMessage{HeldMessageID: heldMessageID, SessionID: sessionID,
-		Request: request, Source: source, HeldAt: time.Now()})
+		Request: request, SenderPrincipalID: senderPrincipalID, Source: source, HeldAt: time.Now()})
 	drain.mu.Unlock()
 	if err != nil {
 		return "", false, err
@@ -212,7 +213,8 @@ func (s *Server) deliverHeldMessages() {
 }
 
 func (s *Server) deliverHeldMessage(message store.HeldMessage) {
-	status, body := s.serveInternally(http.MethodPost, "/sessions/"+url.PathEscape(message.SessionID)+"/send", message.Request)
+	status, body := s.serveInternallyWithContext(withHeldMessageSender(context.Background(), message.SenderPrincipalID),
+		http.MethodPost, "/sessions/"+url.PathEscape(message.SessionID)+"/send", message.Request)
 	outcome, subtype, detail := store.HeldMessageDelivered, msg.SystemSubtypeHeldMessageDelivered, ""
 	if status == http.StatusAccepted {
 		log.Printf("[restart-drain] held %s for session %s was held again: a new drain began while it was sent", message.HeldMessageID, message.SessionID)

@@ -665,11 +665,16 @@ func (s *Server) sendMessageInternally(sessionID, message string) (string, error
 // for its session already — so an action sends, forks and creates exactly as
 // those routes do when a person calls them.
 func (s *Server) serveInternally(method, path string, body any) (int, []byte) {
+	return s.serveInternallyWithContext(context.Background(), method, path, body)
+}
+
+// serveInternallyWithContext is serveInternally with the request's context.
+func (s *Server) serveInternallyWithContext(ctx context.Context, method, path string, body any) (int, []byte) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return http.StatusInternalServerError, []byte(err.Error())
 	}
-	request := httptest.NewRequest(method, path, strings.NewReader(string(encoded)))
+	request := httptest.NewRequest(method, path, strings.NewReader(string(encoded))).WithContext(ctx)
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	s.mux.ServeHTTP(recorder, request)

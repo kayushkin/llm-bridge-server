@@ -1,6 +1,8 @@
 package store
 
 import (
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -794,5 +796,67 @@ func TestListSessionSummaries_CarriesTheWorkingDirectory(t *testing.T) {
 	}
 	if got["in-repo"] != "/srv/repos/dash" || got["nowhere"] != "" {
 		t.Errorf("working directories = %v, want in-repo at /srv/repos/dash and nowhere empty", got)
+	}
+}
+
+// The principal axis narrows to the sessions started as one principal, '' to
+// those started as none, and the counts by principal agree with it.
+func TestListSessionSummaries_PrincipalAxisAndCounts(t *testing.T) {
+	s := testStore(t)
+	for id, principalID := range map[string]string{"a": "principal_000001", "b": "principal_000001", "c": "principal_000002", "d": ""} {
+		if err := s.CreateSession(&Session{SessionID: id, Harness: "claude_code", State: "idle", PrincipalID: principalID,
+			Type: msg.SessionType("interactive"), Mode: msg.SessionModeEvents}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idsOf := func(filter SessionSummaryFilter) string {
+		rows, err := s.ListSessionSummaries(100, "", filter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, row := range rows {
+			ids = append(ids, row.SessionID)
+		}
+		sort.Strings(ids)
+		return strings.Join(ids, ",")
+	}
+	if got := idsOf(SessionSummaryFilter{PrincipalIDs: []string{"principal_000002", ""}}); got != "c,d" {
+		t.Errorf("principal_000002 or none = %q, want c,d", got)
+	}
+	if got := idsOf(SessionSummaryFilter{PrincipalIDs: []string{"principal_000001"}}); got != "a,b" {
+		t.Errorf("principal_000001 = %q, want a,b", got)
+	}
+
+	counts, err := s.SessionCountsByPrincipal("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SessionCountOfPrincipal{{"principal_000001", 2}, {"", 1}, {"principal_000002", 1}}
+	if !reflect.DeepEqual(counts, want) {
+		t.Errorf("counts = %+v, want %+v", counts, want)
+	}
+	own, err := s.SessionCountsByPrincipal("principal_000002", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(own, []SessionCountOfPrincipal{{"principal_000002", 1}}) {
+		t.Errorf("counts narrowed to principal_000002 = %+v", own)
+	}
+}
+
+// A held message keeps who wrote it.
+func TestAHeldMessageKeepsItsSender(t *testing.T) {
+	s := testStore(t)
+	if err := s.HoldMessage(HeldMessage{HeldMessageID: "held_1", SessionID: "a", Request: msg.SendMessageRequest{Message: "hi"},
+		SenderPrincipalID: "principal_000002", Source: "send", HeldAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	held, err := s.UnclaimedHeldMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held) != 1 || held[0].SenderPrincipalID != "principal_000002" {
+		t.Fatalf("held = %+v, want one with sender principal_000002", held)
 	}
 }

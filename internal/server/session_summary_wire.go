@@ -73,6 +73,8 @@ type SummaryLookupRequest struct {
 	Purposes  []string `json:"purposes,omitempty"`
 	Modes     []string `json:"modes,omitempty"`
 	Machines  []string `json:"machines,omitempty"`
+	// Principals: an empty string in it asks for sessions started as no principal.
+	Principals []string `json:"principals,omitempty"`
 
 	SessionIDs        *[]string `json:"session_ids,omitempty"`
 	ManagerSessionIDs *[]string `json:"manager_session_ids,omitempty"`

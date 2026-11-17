@@ -207,7 +207,7 @@ func (s *Server) shareGeneratedImageIntoSession(session *store.Session, image ms
 	if problem := plainFilenameProblem(filename); problem != "" {
 		return store.SessionFile{}, &sessionFileShareFailure{status: http.StatusBadGateway, code: "generated_image_unnamable", message: problem}
 	}
-	return s.shareFileIntoSession(session, file, maximumFileBytes, image.MediaType, filename, sharedBy)
+	return s.shareFileIntoSession(session, file, maximumFileBytes, image.MediaType, filename, sharedBy, messageSender{})
 }
 
 func generatedImagePaths(images []msg.GeneratedImage) string {
