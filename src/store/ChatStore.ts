@@ -61,6 +61,9 @@ export interface FilterState {
   purpose: string[];
   mode: string[];
   machine: string[];
+  /** Principal ids the sessions were started as (`SessionSummary.principalId`);
+   *  '' selects the sessions started as no principal. */
+  principal: string[];
   folder: string | null;
   search: string;
 }
@@ -72,6 +75,7 @@ export const EMPTY_FILTER: FilterState = {
   purpose: [],
   mode: [],
   machine: [],
+  principal: [],
   folder: null,
   search: '',
 };

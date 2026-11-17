@@ -76,6 +76,7 @@ export function matchesFilter(
   }
   if (f.mode.length && !f.mode.includes(s.mode)) return false;
   if (f.machine.length && !f.machine.includes(s.instanceId)) return false;
+  if (f.principal.length && !f.principal.includes(s.principalId)) return false;
   if (f.folder && s.folderName !== f.folder) return false;
   // Trimmed: the user's raw `filter.search` may carry surrounding spaces, which no
   // display name contains and which `contentHits.query` (always trimmed) never
@@ -383,6 +384,9 @@ export interface Facets {
   purpose: Record<string, number>;
   mode: Record<string, number>;
   machine: Record<string, number>;
+  /** Keyed by `principalId`, with '' counting sessions started as no principal —
+   *  unlike the other axes, where '' is an unknown value and is skipped. */
+  principal: Record<string, number>;
 }
 
 function tally(map: Record<string, number>, value: string): void {
@@ -408,6 +412,7 @@ export function selectFacets(state: ChatState): Facets {
     purpose: {},
     mode: {},
     machine: {},
+    principal: {},
   };
   for (const s of sessions.values()) {
     tally(result.harness, s.harness);
@@ -416,6 +421,7 @@ export function selectFacets(state: ChatState): Facets {
     tally(result.purpose, s.purpose);
     tally(result.mode, s.mode);
     tally(result.machine, s.instanceId);
+    result.principal[s.principalId] = (result.principal[s.principalId] ?? 0) + 1;
   }
   facetsCache.set(sessions, result);
   return result;

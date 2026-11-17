@@ -40,6 +40,7 @@ export const PERSISTED_FILTER_AXES = [
   'purpose',
   'mode',
   'machine',
+  'principal',
 ] as const;
 
 export type PersistedFilterAxis = (typeof PERSISTED_FILTER_AXES)[number];
@@ -74,7 +75,7 @@ interface PersistedFilterRecord {
 
 /** No axis filtered — what an absent, unreadable or wrong-version record yields. */
 export function emptyPersistedFilterAxes(): PersistedFilterAxes {
-  return { harness: [], status: [], type: [], purpose: [], mode: [], machine: [] };
+  return { harness: [], status: [], type: [], purpose: [], mode: [], machine: [], principal: [] };
 }
 
 /** Keep the strings, drop everything else, de-duplicate, and bound the length. Pure,

@@ -50,7 +50,7 @@ function storedAxes(storage: WebStorageLike): Record<string, string[]> {
   return (JSON.parse(raw) as { axes: Record<string, string[]> }).axes;
 }
 
-/** The six axes this suite pins, written out rather than read from `filterStorage`.
+/** The seven axes this suite pins, written out rather than read from `filterStorage`.
  *
  *  ⚠️ Do not replace this with `PERSISTED_FILTER_AXES`. Comparing the shipped table
  *  against itself agrees by construction: measured 2026-08-10, dropping `machine` from
@@ -59,7 +59,7 @@ function storedAxes(storage: WebStorageLike): Record<string, string[]> {
  *  including the one named "restores all six axes and only those six". The word "six"
  *  was asserted by nothing. Changing an axis should have to change this line too, and
  *  the diff is where that decision becomes visible. */
-const EXPECTED_PERSISTED_AXES = ['harness', 'status', 'type', 'purpose', 'mode', 'machine'];
+const EXPECTED_PERSISTED_AXES = ['harness', 'status', 'type', 'purpose', 'mode', 'machine', 'principal'];
 
 describe('the sidebar filter survives a reload', () => {
   it('reads every persisted axis back synchronously at construction', () => {
@@ -73,7 +73,7 @@ describe('the sidebar filter survives a reload', () => {
     expect(second.getState().filter.status).toEqual(['running']);
   });
 
-  it('restores all six axes and only those six', () => {
+  it('restores all seven axes and only those seven', () => {
     const storage = fakeStorage();
     const first = createChatStore({ filterStorage: storage, draftStorage: null });
     first.getState().actions.setFilter({
@@ -83,12 +83,13 @@ describe('the sidebar filter survives a reload', () => {
       purpose: ['coding'],
       mode: ['events'],
       machine: ['inst-1'],
+      principal: ['principal_000002'],
     });
 
     const restored = createChatStore({ filterStorage: storage, draftStorage: null }).getState().filter;
 
     // The count first, against the literal above — otherwise every line below is a claim
-    // about however many axes happen to ship, and "six" is decoration.
+    // about however many axes happen to ship, and "seven" is decoration.
     expect([...PERSISTED_FILTER_AXES].sort()).toEqual([...EXPECTED_PERSISTED_AXES].sort());
     for (const axis of EXPECTED_PERSISTED_AXES) {
       expect(restored[axis as PersistedFilterAxis]).toHaveLength(1);

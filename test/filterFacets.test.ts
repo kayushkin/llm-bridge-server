@@ -217,3 +217,20 @@ describe('matchesFilter — a content hit belongs to the query that produced it'
     expect(matchesFilter(contentOnly, f, hitsFor('budget', ['br_zzz']))).toBe(false);
   });
 });
+
+describe('the principal axis — who a session was started as', () => {
+  const started = [
+    summary({ sessionId: 'p1', principalId: 'principal_000001' }),
+    summary({ sessionId: 'p2', principalId: 'principal_000002' }),
+    summary({ sessionId: 'p3', principalId: '' }),
+  ];
+  it("matches the selected principals, and '' matches sessions started as no principal", () => {
+    const f = { ...EMPTY_FILTER, principal: ['principal_000002', ''] };
+    expect(started.map((s) => matchesFilter(s, f))).toEqual([false, true, true]);
+  });
+  it("counts every principal, '' included", () => {
+    const store = createChatStore();
+    store.getState().actions.setSessions(started);
+    expect(selectFacets(store.getState()).principal).toEqual({ principal_000001: 1, principal_000002: 1, '': 1 });
+  });
+});
