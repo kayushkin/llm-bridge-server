@@ -82,6 +82,27 @@ func TestPromotedFields_ClientRequestIDSurvivesToThePage(t *testing.T) {
 	}
 }
 
+func TestPromotedFields_TheSenderSurvivesToThePage(t *testing.T) {
+	// The chat says who wrote a message from these, with raw dropped from the page.
+	base := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	rows := []storeRow{
+		{id: 1, ev: msg.Event{Type: msg.EventUserMessage, TurnID: "t", Timestamp: base,
+			SenderPrincipalID: "principal_000002", SenderDisplayName: "Priya Raman", Result: &msg.ResultEvent{Text: "hi"}}},
+		{id: 2, ev: msg.Event{Type: msg.EventUserMessage, TurnID: "u", Timestamp: base.Add(time.Second), Result: &msg.ResultEvent{Text: "from a script"}}},
+	}
+	m := buildTurnModel("sess", mkRows(t, rows), false)
+	for id, e := range m.Entries {
+		e.Raw = nil
+		m.Entries[id] = e
+	}
+	if got := entryByEventID(t, m, 1); got.SenderPrincipalID != "principal_000002" || got.SenderDisplayName != "Priya Raman" {
+		t.Errorf("sender = %q / %q, want principal_000002 / Priya Raman", got.SenderPrincipalID, got.SenderDisplayName)
+	}
+	if got := entryByEventID(t, m, 2); got.SenderPrincipalID != "" || got.SenderDisplayName != "" {
+		t.Errorf("a message with no recorded sender got %q / %q", got.SenderPrincipalID, got.SenderDisplayName)
+	}
+}
+
 func TestPromotedFields_EventTypeIsCarriedForEveryEvent(t *testing.T) {
 	// The terminal-state selector reads it for the event types that have no Kind of
 	// their own, so it has to be present on all of them and not just the ones with a

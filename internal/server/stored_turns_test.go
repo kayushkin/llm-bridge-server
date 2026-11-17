@@ -272,8 +272,8 @@ func TestTurnMaterializer_BuildsTurnsWhenTheyEnd(t *testing.T) {
 // turn holds, bump materializerVersion in stored_turns.go so every stored turn is
 // rebuilt on its next read. Either way, then update both constants below.
 const (
-	fingerprintedMaterializerVersion = 5
-	materializerRulesFingerprint     = "21d6226fe0549ada2e53ac6b1754c384725f51fbf96ed0a1ee2b80f6e52a87c1"
+	fingerprintedMaterializerVersion = 6
+	materializerRulesFingerprint     = "c8b71fcb75f57dd1cd8802c2c8e950d27dcd63ddaf848bf21e4666cbe4265e19"
 )
 
 func TestMaterializerVersionTracksTheRules(t *testing.T) {

@@ -77,6 +77,13 @@ type Entry struct {
 	// normalized text, which cannot tell two identical prompts apart.
 	ClientRequestID string `json:"clientRequestId,omitempty"`
 
+	// SenderPrincipalID and SenderDisplayName are Event.SenderPrincipalID and
+	// Event.SenderDisplayName: who wrote a user message, and their name then,
+	// for the chat to say who spoke instead of "you". Empty for a message the
+	// server recorded no sender for.
+	SenderPrincipalID string `json:"senderPrincipalId,omitempty"`
+	SenderDisplayName string `json:"senderDisplayName,omitempty"`
+
 	// EventType is the canonical Event.Type. chat-core's terminal-state
 	// selector reads it to decide whether a session ended (reduce/terminalState.ts)
 	// for the event types that carry no dedicated Kind of their own.
@@ -502,8 +509,10 @@ func buildTurnModelWithAggregateSources(sessionID string, rows []store.EventRow,
 			Raw:     append(json.RawMessage(nil), r.Data...),
 			// Promoted off `raw` so the projected page can drop it — see the
 			// field comments on Entry.
-			ClientRequestID: ev.ClientRequestID,
-			EventType:       string(ev.Type),
+			ClientRequestID:   ev.ClientRequestID,
+			SenderPrincipalID: ev.SenderPrincipalID,
+			SenderDisplayName: ev.SenderDisplayName,
+			EventType:         string(ev.Type),
 		}
 		switch ev.Type {
 		case msg.EventUserMessage, msg.EventResult, msg.EventThinking, msg.EventStream, msg.EventBlock, msg.EventError, msg.EventSystem:
