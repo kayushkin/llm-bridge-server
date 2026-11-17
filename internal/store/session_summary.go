@@ -57,6 +57,9 @@ type SessionSummaryRow struct {
 	// table's own working_dir column, the same value the full record's
 	// working_dir carries. "" when none was recorded.
 	WorkingDir string
+
+	// PrincipalID is who the session was started as; "" for no principal.
+	PrincipalID string
 }
 
 // summarySessionIDExpression is the projected session id: session_id falling
@@ -73,7 +76,7 @@ const summarySessionIDExpression = `COALESCE(NULLIF(session_id, ''), bridge_id)`
 // summaryColumns are the projected columns, in scan order. The raw updated_at is
 // selected a second time (as text) as the timestamp half of the cursor; the id
 // half is the already-projected session id, assembled in Go.
-const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), COALESCE(bundle_id, ''), updated_at, created_at, COALESCE(manager_session_id, ''), CAST(updated_at AS TEXT), COALESCE(spend_usd, 0), COALESCE(status, ''), COALESCE(working_dir, '')`
+const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), COALESCE(bundle_id, ''), updated_at, created_at, COALESCE(manager_session_id, ''), CAST(updated_at AS TEXT), COALESCE(spend_usd, 0), COALESCE(status, ''), COALESCE(working_dir, ''), COALESCE(principal_id, '')`
 
 // SessionSummaryFilter narrows ListSessionSummaries to the rows matching every
 // non-empty axis. An empty axis constrains nothing, and the values within one
@@ -288,7 +291,7 @@ func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSum
 		if err := rows.Scan(
 			&r.SessionID, &r.State, &r.Harness, &r.InstanceID, &r.Type, &r.Purpose,
 			&r.Mode, &r.FolderName, &r.DisplayName, &r.AgentID, &r.BundleID, &r.UpdatedAt, &r.CreatedAt,
-			&r.ManagerSessionID, &updatedAtText, &r.SpendUSD, &statusJSON, &r.WorkingDir,
+			&r.ManagerSessionID, &updatedAtText, &r.SpendUSD, &statusJSON, &r.WorkingDir, &r.PrincipalID,
 		); err != nil {
 			return nil, err
 		}

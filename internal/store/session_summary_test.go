@@ -860,3 +860,19 @@ func TestAHeldMessageKeepsItsSender(t *testing.T) {
 		t.Fatalf("held = %+v, want one with sender principal_000002", held)
 	}
 }
+
+// A summary row says who the session was started as.
+func TestListSessionSummaries_RowCarriesItsPrincipal(t *testing.T) {
+	s := testStore(t)
+	if err := s.CreateSession(&Session{SessionID: "a", Harness: "claude_code", State: "idle", PrincipalID: "principal_000002",
+		Type: msg.SessionType("interactive"), Mode: msg.SessionModeEvents}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ListSessionSummaries(10, "", SessionSummaryFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].PrincipalID != "principal_000002" {
+		t.Fatalf("rows = %+v, want one started as principal_000002", rows)
+	}
+}

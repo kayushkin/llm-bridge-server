@@ -51,6 +51,10 @@ type SessionSummary struct {
 	// lets a list reader place a session by its repo without fetching each
 	// session whole.
 	WorkingDir string `json:"workingDir"`
+	// PrincipalID is who the session was started as, principal-store's id;
+	// "" for a session started as no principal. The sidebar's starter marker
+	// and its principal filter read it.
+	PrincipalID string `json:"principalId"`
 }
 
 // SummaryLookupRequest is the POST /sessions/summary body: the same query the
@@ -144,6 +148,7 @@ func summaryFromRow(r store.SessionSummaryRow) SessionSummary {
 		SpendUSD:         r.SpendUSD,
 		Status:           r.Status,
 		WorkingDir:       r.WorkingDir,
+		PrincipalID:      r.PrincipalID,
 	}
 }
 

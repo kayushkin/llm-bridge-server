@@ -78,6 +78,7 @@ func (principal *Principal) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		ID                    string `json:"id"`
 		Kind                  string `json:"kind"`
+		DisplayName           string `json:"display_name"`
 		DisabledAt            int64  `json:"disabled_at"`
 		IsAdministrator       bool   `json:"is_administrator"`
 		ActsAsCaller          *bool  `json:"acts_as_caller"`
@@ -91,7 +92,7 @@ func (principal *Principal) UnmarshalJSON(data []byte) error {
 	if wire.ActsAsCaller == nil || wire.RestrictedToItsGrants == nil {
 		return fmt.Errorf("principal %q has no acts_as_caller or restricted_to_its_grants, so principal-store is older than this server needs: deploy principal-store first", wire.ID)
 	}
-	*principal = Principal{ID: wire.ID, Kind: wire.Kind, DisabledAt: wire.DisabledAt, IsAdministrator: wire.IsAdministrator,
+	*principal = Principal{ID: wire.ID, Kind: wire.Kind, DisplayName: wire.DisplayName, DisabledAt: wire.DisabledAt, IsAdministrator: wire.IsAdministrator,
 		ActsAsCaller: *wire.ActsAsCaller, RestrictedToItsGrants: *wire.RestrictedToItsGrants, HoldsServicePrincipalTokens: wire.HoldsServicePrincipalTokens}
 	return nil
 }
