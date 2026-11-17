@@ -154,6 +154,7 @@ export type {
   EntryUsage,
   ToolResultImage,
   SessionFile,
+  SessionFileGeneration,
   SessionFileSharer,
   SessionAction,
   SessionActionOffer,

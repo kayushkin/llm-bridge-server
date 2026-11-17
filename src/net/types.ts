@@ -168,9 +168,21 @@ export interface ToolResultImage {
 /** Who shared a file into a session — `msg.SessionFileSharer`. */
 export type SessionFileSharer = 'user' | 'agent';
 
+/** How an image the server's image route made came to be — `msg.SessionFileGeneration`:
+ *  the prompt it was asked with, the reference images passed beside it, and the
+ *  instance whose harness made it. */
+export interface SessionFileGeneration {
+  prompt: string;
+  reference_image_paths?: string[];
+  instance_id: string;
+}
+
 /** A file shared into a session — the canonical `msg.SessionFile`, snake_case as
  *  llm-bridge-server and log-store send it. `path` is where the session's agent reads
- *  the same bytes; the browser reads them through `ApiClient.sessionFileContentUrl`. */
+ *  the same bytes; the browser reads them through `ApiClient.sessionFileContentUrl`.
+ *  `source_path` is where the agent that shared it said it took the bytes from, and
+ *  `generation` how the image route made it; a file shared before the server recorded
+ *  either, or uploaded from a browser, carries neither. */
 export interface SessionFile {
   file_id: string;
   session_id: string;
@@ -180,6 +192,8 @@ export interface SessionFile {
   shared_by: SessionFileSharer;
   path: string;
   created_at: string;
+  source_path?: string;
+  generation?: SessionFileGeneration;
 }
 
 /** What a session action does when a person confirms it — `msg.SessionActionType`. */
