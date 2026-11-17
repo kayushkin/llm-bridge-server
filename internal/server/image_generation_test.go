@@ -74,7 +74,7 @@ func testServerForImages(t *testing.T, harnessAnswer string, harnessExitCode int
 var onePixelPNGForImageTests = []byte("\x89PNG-test-bytes")
 
 func TestAnAgentMakesAnImageAndItIsSharedIntoItsOwnSession(t *testing.T) {
-	srv, _, harnessRecordDirectory := testServerForImages(t, "", 0)
+	srv, imageDirectory, harnessRecordDirectory := testServerForImages(t, "", 0)
 	session := newSessionForSignals(t, srv.store, "br_images", msg.SessionTypeInteractive)
 	environment := map[string]string{}
 	for _, variable := range srv.sessionPostingEnvironment(session) {
@@ -86,7 +86,7 @@ func TestAnAgentMakesAnImageAndItIsSharedIntoItsOwnSession(t *testing.T) {
 	}
 	events := srv.harness.Subscribe("br_images")
 
-	body := `{"prompt":"a red crab","reference_image_paths":["/tmp/reference.png"]}`
+	body := `{"prompt":"a red crab","reference_image_paths":["/work/renders/reference.png"]}`
 	request := httptest.NewRequest(http.MethodPost, "/sessions/br_images/images", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+environment[sessionPostingTokenEnvironmentVariable])
 	recorder := httptest.NewRecorder()
@@ -108,10 +108,34 @@ func TestAnAgentMakesAnImageAndItIsSharedIntoItsOwnSession(t *testing.T) {
 	if onDisk, err := os.ReadFile(shared.Path); err != nil || string(onDisk) != string(onePixelPNGForImageTests) {
 		t.Errorf("agent copy = %q, %v", onDisk, err)
 	}
+	// The record says where the image came from: the path the harness saved
+	// it at, and the prompt, references and instance that made it.
+	wantGeneration := msg.SessionFileGeneration{Prompt: "a red crab", ReferenceImagePaths: []string{"/work/renders/reference.png"}, InstanceID: "inst_images"}
+	assertOrigin := func(where string, file msg.SessionFile) {
+		t.Helper()
+		if file.SourcePath != filepath.Join(imageDirectory, "exec-1.png") {
+			t.Errorf("%s: source_path = %q", where, file.SourcePath)
+		}
+		if file.Generation == nil || file.Generation.Prompt != wantGeneration.Prompt || file.Generation.InstanceID != wantGeneration.InstanceID ||
+			len(file.Generation.ReferenceImagePaths) != 1 || file.Generation.ReferenceImagePaths[0] != wantGeneration.ReferenceImagePaths[0] {
+			t.Errorf("%s: generation = %+v, want %+v", where, file.Generation, wantGeneration)
+		}
+	}
+	assertOrigin("answer", shared)
+	if !strings.Contains(recorder.Body.String(), `"generation":{"prompt":"a red crab","reference_image_paths":["/work/renders/reference.png"],"instance_id":"inst_images"}`) {
+		t.Errorf("answer JSON does not carry generation as the wire contract names it: %s", recorder.Body)
+	}
+	listed, err := srv.store.ListSessionFiles("br_images")
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("listed = %+v, %v", listed, err)
+	}
+	assertOrigin("list", listed[0])
 	select {
 	case event := <-events:
 		if event.Type != msg.EventSessionFile || event.SessionFile == nil || event.SessionFile.FileID != shared.FileID {
 			t.Errorf("event = %+v", event)
+		} else {
+			assertOrigin("event", *event.SessionFile)
 		}
 	default:
 		t.Error("no session_file event was written")

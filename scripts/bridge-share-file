@@ -27,8 +27,11 @@ for path in "$@"; do
   name=$(basename -- "$path")
   media_type=$(file --brief --mime-type -- "$path")
   encoded_name=$(jq -rn --arg name "$name" '$name | @uri')
+  # Where the bytes were read from, so the chat can say which file this was.
+  source_path=$(realpath -- "$path")
+  encoded_source_path=$(jq -rn --arg path "$source_path" '$path | @uri')
   curl --fail-with-body --silent --show-error -X POST \
-    "$LLM_BRIDGE_SESSION_FILES_URL?filename=$encoded_name" \
+    "$LLM_BRIDGE_SESSION_FILES_URL?filename=$encoded_name&source_path=$encoded_source_path" \
     -H "Authorization: Bearer $LLM_BRIDGE_SESSION_POSTING_TOKEN" \
     -H "Content-Type: $media_type" \
     --data-binary "@$path"

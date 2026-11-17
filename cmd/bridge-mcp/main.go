@@ -182,8 +182,18 @@ func shareOneFile(ctx context.Context, filesURL, token, path string) (map[string
 	if err != nil {
 		return nil, fmt.Errorf("%s is not a URL: %w", filesURLEnvironmentVariable, err)
 	}
+	// source_path is where the bytes were read from, the way realpath says it,
+	// so the person can see which file on this machine was shared.
+	sourcePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	if sourcePath, err = filepath.EvalSymlinks(sourcePath); err != nil {
+		return nil, err
+	}
 	query := address.Query()
 	query.Set("filename", filepath.Base(path))
+	query.Set("source_path", sourcePath)
 	address.RawQuery = query.Encode()
 	answer, err := postToSession(ctx, address.String(), token, mediaType, file)
 	if err != nil {

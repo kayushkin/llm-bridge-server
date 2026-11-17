@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -36,15 +37,66 @@ func (s *Store) migrateSessionFiles() error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_session_files_session ON session_files(session_id, created_at);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.addSessionFileOriginColumns()
+}
+
+// addSessionFileOriginColumns adds where a shared file came from (2026-11-17):
+// source_path, the path the sharing agent read it from, and generation, the
+// JSON of how the image route made it. Each is added only when missing, so
+// rows written before keep reading with both empty; any other failure is
+// returned.
+func (s *Store) addSessionFileOriginColumns() error {
+	existing := map[string]bool{}
+	rows, err := s.db.Query(`PRAGMA table_info(session_files)`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var position, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&position, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, column := range []struct{ name, definition string }{
+		{"source_path", "TEXT NOT NULL DEFAULT ''"},
+		{"generation", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if existing[column.name] {
+			continue
+		}
+		if _, err := s.db.Exec(`ALTER TABLE session_files ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+			return fmt.Errorf("add session_files.%s: %w", column.name, err)
+		}
+	}
+	return nil
 }
 
 // InsertSessionFile records a file shared into a session.
 func (s *Store) InsertSessionFile(file SessionFile) error {
+	generation := ""
+	if file.Generation != nil {
+		encoded, err := json.Marshal(file.Generation)
+		if err != nil {
+			return fmt.Errorf("encode generation of session file %s: %w", file.FileID, err)
+		}
+		generation = string(encoded)
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO session_files (file_id, session_id, filename, media_type, size_bytes, shared_by, path, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		file.FileID, file.SessionID, file.Filename, file.MediaType, file.SizeBytes, string(file.SharedBy), file.Path, file.CreatedAt.UTC(),
+		`INSERT INTO session_files (file_id, session_id, filename, media_type, size_bytes, shared_by, path, source_path, generation, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		file.FileID, file.SessionID, file.Filename, file.MediaType, file.SizeBytes, string(file.SharedBy), file.Path, file.SourcePath, generation, file.CreatedAt.UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("insert session file %s: %w", file.FileID, err)
@@ -55,7 +107,7 @@ func (s *Store) InsertSessionFile(file SessionFile) error {
 // ListSessionFiles returns every file shared into a session, oldest first.
 func (s *Store) ListSessionFiles(sessionID string) ([]SessionFile, error) {
 	rows, err := s.db.Query(
-		`SELECT file_id, session_id, filename, media_type, size_bytes, shared_by, path, created_at
+		`SELECT file_id, session_id, filename, media_type, size_bytes, shared_by, path, source_path, generation, created_at
 		 FROM session_files WHERE session_id = ? ORDER BY created_at, file_id`, sessionID)
 	if err != nil {
 		return nil, err
@@ -77,7 +129,7 @@ func (s *Store) ListSessionFiles(sessionID string) ([]SessionFile, error) {
 // the session in the path is what access was checked against.
 func (s *Store) GetSessionFile(sessionID, fileID string) (SessionFile, error) {
 	row := s.db.QueryRow(
-		`SELECT file_id, session_id, filename, media_type, size_bytes, shared_by, path, created_at
+		`SELECT file_id, session_id, filename, media_type, size_bytes, shared_by, path, source_path, generation, created_at
 		 FROM session_files WHERE session_id = ? AND file_id = ?`, sessionID, fileID)
 	file, err := scanSessionFile(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -92,12 +144,18 @@ type sessionFileScanner interface {
 
 func scanSessionFile(scanner sessionFileScanner) (SessionFile, error) {
 	var file SessionFile
-	var sharedBy string
+	var sharedBy, generation string
 	var createdAt time.Time
-	if err := scanner.Scan(&file.FileID, &file.SessionID, &file.Filename, &file.MediaType, &file.SizeBytes, &sharedBy, &file.Path, &createdAt); err != nil {
+	if err := scanner.Scan(&file.FileID, &file.SessionID, &file.Filename, &file.MediaType, &file.SizeBytes, &sharedBy, &file.Path, &file.SourcePath, &generation, &createdAt); err != nil {
 		return SessionFile{}, err
 	}
 	file.SharedBy = msg.SessionFileSharer(sharedBy)
+	if generation != "" {
+		file.Generation = &msg.SessionFileGeneration{}
+		if err := json.Unmarshal([]byte(generation), file.Generation); err != nil {
+			return SessionFile{}, fmt.Errorf("session file %s: stored generation is not valid JSON: %w", file.FileID, err)
+		}
+	}
 	file.CreatedAt = createdAt.UTC()
 	return file, nil
 }

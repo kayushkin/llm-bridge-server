@@ -175,7 +175,12 @@ func (s *Server) handleGenerateImagesIntoSession(w http.ResponseWriter, r *http.
 		return
 	}
 	for _, image := range response.Images {
-		record, shareFailure := s.shareGeneratedImageIntoSession(session, image, limits.MaximumFileBytes, sharedBy)
+		generation := &msg.SessionFileGeneration{
+			Prompt:              request.Prompt,
+			ReferenceImagePaths: request.ReferenceImagePaths,
+			InstanceID:          response.InstanceID,
+		}
+		record, shareFailure := s.shareGeneratedImageIntoSession(session, image, limits.MaximumFileBytes, sharedBy, generation)
 		if shareFailure != nil {
 			// The images exist; the caller is told where, so none is lost to a
 			// failed share.
@@ -192,8 +197,9 @@ func (s *Server) handleGenerateImagesIntoSession(w http.ResponseWriter, r *http.
 	writeJSON(w, response)
 }
 
-// shareGeneratedImageIntoSession shares one image file the harness saved.
-func (s *Server) shareGeneratedImageIntoSession(session *store.Session, image msg.GeneratedImage, maximumFileBytes int64, sharedBy msg.SessionFileSharer) (store.SessionFile, *sessionFileShareFailure) {
+// shareGeneratedImageIntoSession shares one image file the harness saved,
+// recording the path it was saved at and how it was made.
+func (s *Server) shareGeneratedImageIntoSession(session *store.Session, image msg.GeneratedImage, maximumFileBytes int64, sharedBy msg.SessionFileSharer, generation *msg.SessionFileGeneration) (store.SessionFile, *sessionFileShareFailure) {
 	if image.SizeBytes > maximumFileBytes {
 		return store.SessionFile{}, &sessionFileShareFailure{status: http.StatusRequestEntityTooLarge, code: "file_too_large",
 			message: fmt.Sprintf("%s is %d bytes; a session file may be at most %d (file-store's maximum_file_bytes)", image.Path, image.SizeBytes, maximumFileBytes)}
@@ -207,7 +213,7 @@ func (s *Server) shareGeneratedImageIntoSession(session *store.Session, image ms
 	if problem := plainFilenameProblem(filename); problem != "" {
 		return store.SessionFile{}, &sessionFileShareFailure{status: http.StatusBadGateway, code: "generated_image_unnamable", message: problem}
 	}
-	return s.shareFileIntoSession(session, file, maximumFileBytes, image.MediaType, filename, sharedBy, messageSender{})
+	return s.shareFileIntoSession(session, file, maximumFileBytes, image.MediaType, filename, sharedBy, messageSender{}, sessionFileOrigin{sourcePath: image.Path, generation: generation})
 }
 
 func generatedImagePaths(images []msg.GeneratedImage) string {

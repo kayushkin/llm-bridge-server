@@ -60,6 +60,21 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 	if caller, ok := callerOfRequest(r); ok && caller.postingAgentOfSessionID != "" {
 		sharedBy = msg.SessionFileSharedByAgent
 	}
+	// source_path is the agent's own statement of where it read the bytes; a
+	// person's browser has no such path, so from anyone else it is refused
+	// rather than recorded or dropped. The server never opens it.
+	var origin sessionFileOrigin
+	if r.URL.Query().Has("source_path") {
+		if sharedBy != msg.SessionFileSharedByAgent {
+			writeJSONError(w, http.StatusBadRequest, "source_path_not_accepted", "source_path is taken only from the session's own agent, with its session posting token")
+			return
+		}
+		origin.sourcePath = r.URL.Query().Get("source_path")
+		if problem := sourcePathProblem(origin.sourcePath); problem != "" {
+			writeJSONError(w, http.StatusBadRequest, "invalid_source_path", problem)
+			return
+		}
+	}
 	// A person sharing a file is its sender, as for a message they send.
 	var sender messageSender
 	if sharedBy == msg.SessionFileSharedByUser {
@@ -77,7 +92,7 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	record, failure := s.shareFileIntoSession(session, http.MaxBytesReader(w, r.Body, limits.MaximumFileBytes), limits.MaximumFileBytes, mediaType, filename, sharedBy, sender)
+	record, failure := s.shareFileIntoSession(session, http.MaxBytesReader(w, r.Body, limits.MaximumFileBytes), limits.MaximumFileBytes, mediaType, filename, sharedBy, sender, origin)
 	if failure != nil {
 		failure.write(w)
 		return
@@ -114,12 +129,39 @@ func (failure *sessionFileShareFailure) write(w http.ResponseWriter) {
 	writeJSONError(w, failure.status, failure.code, failure.message)
 }
 
+// sessionFileOrigin is where a shared file came from, recorded as it was
+// stated: sourcePath, the path the sharer read the bytes from on its own
+// machine, and generation, how the image route made it. Both are empty for a
+// person's upload.
+type sessionFileOrigin struct {
+	sourcePath string
+	generation *msg.SessionFileGeneration
+}
+
+// maximumSourcePathBytes bounds a stated source_path, the usual PATH_MAX.
+const maximumSourcePathBytes = 4096
+
+// sourcePathProblem says why a stated source_path cannot be recorded, or ""
+// when it can: it must be absolute, at most maximumSourcePathBytes, and free
+// of control characters.
+func sourcePathProblem(sourcePath string) string {
+	switch {
+	case !strings.HasPrefix(sourcePath, "/"):
+		return "source_path must be an absolute path, starting with /"
+	case len(sourcePath) > maximumSourcePathBytes:
+		return fmt.Sprintf("source_path is longer than %d bytes", maximumSourcePathBytes)
+	case strings.IndexFunc(sourcePath, unicode.IsControl) >= 0:
+		return "source_path cannot contain a control character"
+	}
+	return ""
+}
+
 // shareFileIntoSession stores content in file-store, copies it to the
-// session's directory for the agent, records it in session_files and writes
-// the session_file event that puts it in the conversation. content must
-// already be held to maximumFileBytes, which is named in the refusal when it
-// is not.
-func (s *Server) shareFileIntoSession(session *store.Session, content io.Reader, maximumFileBytes int64, mediaType, filename string, sharedBy msg.SessionFileSharer, sender messageSender) (store.SessionFile, *sessionFileShareFailure) {
+// session's directory for the agent, records it and its origin in
+// session_files and writes the session_file event that puts it in the
+// conversation. content must already be held to maximumFileBytes, which is
+// named in the refusal when it is not.
+func (s *Server) shareFileIntoSession(session *store.Session, content io.Reader, maximumFileBytes int64, mediaType, filename string, sharedBy msg.SessionFileSharer, sender messageSender, origin sessionFileOrigin) (store.SessionFile, *sessionFileShareFailure) {
 	failed := func(status int, code, message string) (store.SessionFile, *sessionFileShareFailure) {
 		return store.SessionFile{}, &sessionFileShareFailure{status: status, code: code, message: message}
 	}
@@ -176,14 +218,16 @@ func (s *Server) shareFileIntoSession(session *store.Session, content io.Reader,
 	keepSpool = true
 
 	record := store.SessionFile{
-		FileID:    stored.ID,
-		SessionID: session.SessionID,
-		Filename:  filename,
-		MediaType: stored.ContentType,
-		SizeBytes: stored.SizeBytes,
-		SharedBy:  sharedBy,
-		Path:      agentPath,
-		CreatedAt: time.Now().UTC(),
+		FileID:     stored.ID,
+		SessionID:  session.SessionID,
+		Filename:   filename,
+		MediaType:  stored.ContentType,
+		SizeBytes:  stored.SizeBytes,
+		SharedBy:   sharedBy,
+		Path:       agentPath,
+		SourcePath: origin.sourcePath,
+		Generation: origin.generation,
+		CreatedAt:  time.Now().UTC(),
 	}
 	if err := s.store.InsertSessionFile(record); err != nil {
 		return failed(http.StatusInternalServerError, "record_session_file", err.Error())

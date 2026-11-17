@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,6 +249,84 @@ func TestAnAgentSharesIntoItsOwnSessionAndNoOther(t *testing.T) {
 	// (delegate_sessions.go), which its own session is not.
 	if code := withToken(httptest.NewRequest(http.MethodPost, "/sessions/br_agent/send", strings.NewReader(`{"message":"x"}`))).Code; code != http.StatusNotFound {
 		t.Errorf("token on send to its own session: %d, want 404", code)
+	}
+}
+
+func TestAnAgentSaysWhereTheFileItSharesCameFrom(t *testing.T) {
+	srv, st, _, _ := testServerWithFileStore(t)
+	session := newSessionForSignals(t, st, "br_origin", msg.SessionTypeInteractive)
+	token := postingTokenOf(t, srv, session)
+	events := srv.harness.Subscribe("br_origin")
+
+	request := shareRequest("br_origin", "hood.png", "image/png", []byte("HOOD"))
+	request.URL.RawQuery += "&source_path=" + url.QueryEscape("/work/renders/hood one.png")
+	request.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+	srv.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("agent share with source_path: %d %s", recorder.Code, recorder.Body)
+	}
+	if !strings.Contains(recorder.Body.String(), `"source_path":"/work/renders/hood one.png"`) || strings.Contains(recorder.Body.String(), `"generation"`) {
+		t.Errorf("answer = %s, want source_path and no generation", recorder.Body)
+	}
+	var shared msg.SessionFile
+	if err := json.Unmarshal(recorder.Body.Bytes(), &shared); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder = httptest.NewRecorder()
+	asInternalService(srv).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/sessions/br_origin/files", nil))
+	var listed []msg.SessionFile
+	if err := json.Unmarshal(recorder.Body.Bytes(), &listed); err != nil || len(listed) != 1 || listed[0].SourcePath != "/work/renders/hood one.png" || listed[0].Generation != nil {
+		t.Errorf("list = %d %s (%v)", recorder.Code, recorder.Body, err)
+	}
+
+	select {
+	case stored := <-events:
+		if stored.Event.SessionFile == nil || stored.Event.SessionFile.FileID != shared.FileID || stored.Event.SessionFile.SourcePath != "/work/renders/hood one.png" {
+			t.Errorf("event = %+v", stored.Event.SessionFile)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no session_file event reached a subscriber")
+	}
+}
+
+func TestOnlyTheSessionsAgentMayStateASourcePath(t *testing.T) {
+	srv, st, fake, _ := testServerWithFileStore(t)
+	newSessionForSignals(t, st, "br_upload", msg.SessionTypeInteractive)
+	request := shareRequest("br_upload", "hood.png", "image/png", []byte("HOOD"))
+	request.URL.RawQuery += "&source_path=" + url.QueryEscape("/work/renders/hood.png")
+	recorder := httptest.NewRecorder()
+	asInternalService(srv).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "source_path_not_accepted") {
+		t.Errorf("person's share with source_path: %d %s, want 400 source_path_not_accepted", recorder.Code, recorder.Body)
+	}
+	if len(fake.uploads) != 0 {
+		t.Errorf("file-store kept %d refused uploads", len(fake.uploads))
+	}
+}
+
+func TestAStatedSourcePathMustBeAPlainAbsolutePath(t *testing.T) {
+	srv, st, fake, _ := testServerWithFileStore(t)
+	session := newSessionForSignals(t, st, "br_badpath", msg.SessionTypeInteractive)
+	token := postingTokenOf(t, srv, session)
+	for name, sourcePath := range map[string]string{
+		"empty":               "",
+		"relative":            "renders/hood.png",
+		"longer than allowed": "/" + strings.Repeat("a", maximumSourcePathBytes),
+		"a control character": "/work/renders/hood\n.png",
+	} {
+		request := shareRequest("br_badpath", "hood.png", "image/png", []byte("HOOD"))
+		request.URL.RawQuery += "&source_path=" + url.QueryEscape(sourcePath)
+		request.Header.Set("Authorization", "Bearer "+token)
+		recorder := httptest.NewRecorder()
+		srv.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid_source_path") {
+			t.Errorf("%s: %d %s, want 400 invalid_source_path", name, recorder.Code, recorder.Body)
+		}
+	}
+	if len(fake.uploads) != 0 {
+		t.Errorf("file-store kept %d refused uploads", len(fake.uploads))
 	}
 }
 
