@@ -34,7 +34,8 @@ import (
 //	            possession-store asks, each on its own and then each shown
 //	            the other's answer, what possessions a photo shows. The
 //	            operator chose claude-opus-5-5 and gpt-6-astra on 2026-11-06
-//	            so that two different makers' models must agree. Each holds
+//	            so that two different makers' models must agree, and moved
+//	            the second reader to gpt-6.2-astra on 2026-11-17. Each holds
 //	            one model and no fallback: a reader that cannot answer stops
 //	            the review rather than let a third model stand in.
 //
