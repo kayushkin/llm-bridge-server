@@ -70,3 +70,30 @@ CREATE TABLE IF NOT EXISTS suggestions (
     note_id    TEXT NOT NULL DEFAULT ''           -- noteboard todo made on accept
 );
 CREATE INDEX IF NOT EXISTS suggestions_by_project ON suggestions (project_id, status, id);
+
+-- What the session filer concluded about one chat session, each time it
+-- judged it: filed it under a project by itself, proposed a project (or none)
+-- for a person to decide, or found nothing to file. A row is never rewritten
+-- to a new verdict: a later judgment of the same session is a new row, and
+-- the proposal before it that nobody decided on becomes superseded.
+CREATE TABLE IF NOT EXISTS session_filings (
+    id            TEXT PRIMARY KEY,               -- session_filing_000001
+    session_id    TEXT NOT NULL,                  -- llm-bridge-server's id, br_…
+    session_label TEXT NOT NULL DEFAULT '',       -- the session's name when judged, for display only
+    evidence      TEXT NOT NULL,                  -- brief | name | none
+    goal          TEXT NOT NULL DEFAULT '',       -- the brief's overall goal as judged; '' without a brief
+    repo_store_ids TEXT NOT NULL DEFAULT '[]',    -- JSON array: repo-store ids of the repos the session moved refs in
+    project_id    TEXT NOT NULL DEFAULT '',       -- the project picked; '' when none fits
+    confidence    REAL NOT NULL DEFAULT 0,        -- the model's odds for project_id, 0 to 1
+    why           TEXT NOT NULL DEFAULT '',
+    model         TEXT NOT NULL DEFAULT '',       -- the model that answered; '' when no model was asked
+    status        TEXT NOT NULL,                  -- filed | proposed | accepted | dismissed | superseded | nothing_to_file
+    link_id       INTEGER NOT NULL DEFAULT 0,     -- the project_links row a filed or accepted filing made or found
+    filed_project_id TEXT NOT NULL DEFAULT '',    -- the project of link_id: project_id when filed, the person's choice when accepted
+    created_by    TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL,
+    decided_by    TEXT NOT NULL DEFAULT '',
+    decided_at    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS session_filings_by_session ON session_filings (session_id, id);
+CREATE INDEX IF NOT EXISTS session_filings_by_status ON session_filings (status, id);

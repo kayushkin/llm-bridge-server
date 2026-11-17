@@ -32,6 +32,12 @@ const (
 	SettingBridgeURL               = "bridge_url"
 	SettingBridgeServiceToken      = "bridge_service_token"
 	SettingSuggestionModelRole     = "suggestion_model_role"
+
+	SettingSessionFilerModelRole                      = "session_filer_model_role"
+	SettingSessionFilerMinimumConfidence              = "session_filer_minimum_confidence"
+	SettingSessionFilerQuietBeforeFilingWithoutABrief = "session_filer_quiet_before_filing_without_a_brief"
+	SettingSessionFilerWindow                         = "session_filer_window"
+	SettingSessionFilerSessionsPerPass                = "session_filer_sessions_per_pass"
 )
 
 // DefaultListenAddress is where the service listens with nothing set.
@@ -80,6 +86,16 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The token llm-bridge-server takes from an internal service. Without it every session check is 401, so the service refuses to start."},
 		{Key: SettingSuggestionModelRole, EnvironmentVariable: "PROJECT_STORE_SUGGESTION_MODEL_ROLE", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeString, Default: "balanced",
 			Description: "The model-store role llm-bridge-server's one-shot router asks for a project's suggested next steps. Empty refuses suggestions."},
+		{Key: SettingSessionFilerModelRole, EnvironmentVariable: "PROJECT_STORE_SESSION_FILER_MODEL_ROLE", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeString, Default: "balanced",
+			Description: "The model-store role llm-bridge-server's one-shot router asks which project a chat session belongs to. Empty refuses every filing pass."},
+		{Key: SettingSessionFilerMinimumConfidence, EnvironmentVariable: "PROJECT_STORE_SESSION_FILER_MINIMUM_CONFIDENCE", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeDecimal, Default: "0.85",
+			Description: "The lowest odds, from 0 to 1, at which the session filer files a session under the project the model picked. Below it the pick waits as a proposal for a person. Raising it files fewer sessions and proposes more."},
+		{Key: SettingSessionFilerQuietBeforeFilingWithoutABrief, EnvironmentVariable: "PROJECT_STORE_SESSION_FILER_QUIET_BEFORE_FILING_WITHOUT_A_BRIEF", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeDuration, Default: "1h",
+			Description: "How long a chat with no brief must have been unchanged before the session filer judges it from its name alone. A chat gets its brief when its first turn ends, so a shorter wait judges chats whose brief is about to be written."},
+		{Key: SettingSessionFilerWindow, EnvironmentVariable: "PROJECT_STORE_SESSION_FILER_WINDOW", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeDuration, Default: "48h",
+			Description: "How far back a filing pass looks for changed chats when its caller names no window. It must be longer than the longest time the scheduler job may be off, or chats changed in the gap are never judged."},
+		{Key: SettingSessionFilerSessionsPerPass, EnvironmentVariable: "PROJECT_STORE_SESSION_FILER_SESSIONS_PER_PASS", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeInteger, Default: "20",
+			Description: "The most sessions one filing pass judges, each with one model call, when its caller names no limit. The rest wait for the next pass."},
 	}
 }
 

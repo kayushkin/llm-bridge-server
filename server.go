@@ -14,6 +14,8 @@ import (
 type Handlers struct {
 	Store  *Store
 	Owners *Owners
+	// SessionFiler runs the filing passes of POST /session-filings/run.
+	SessionFiler *SessionFiler
 }
 
 // RegisterHandlers mounts every route on mux.
@@ -22,7 +24,8 @@ func RegisterHandlers(mux *http.ServeMux, handlers *Handlers) {
 		writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("GET /vocabulary", func(writer http.ResponseWriter, _ *http.Request) {
-		writeJSON(writer, http.StatusOK, map[string]any{"kinds": Kinds, "stages": Stages, "activity_kinds": ActivityKinds, "suggestion_statuses": SuggestionStatuses, "default_stage": DefaultStage, "entity_types": EntityTypes})
+		writeJSON(writer, http.StatusOK, map[string]any{"kinds": Kinds, "stages": Stages, "activity_kinds": ActivityKinds, "suggestion_statuses": SuggestionStatuses,
+			"session_filing_statuses": SessionFilingStatuses, "session_filing_evidence_kinds": SessionFilingEvidenceKinds, "default_stage": DefaultStage, "entity_types": EntityTypes})
 	})
 	mux.HandleFunc("GET /projects", handlers.listProjects)
 	mux.HandleFunc("GET /digest", handlers.digest)
@@ -41,6 +44,10 @@ func RegisterHandlers(mux *http.ServeMux, handlers *Handlers) {
 	mux.HandleFunc("POST /projects/{id}/suggestions", handlers.requestSuggestions)
 	mux.HandleFunc("POST /suggestions/{suggestion_id}/accept", handlers.acceptSuggestion)
 	mux.HandleFunc("POST /suggestions/{suggestion_id}/dismiss", handlers.dismissSuggestion)
+	mux.HandleFunc("GET /session-filings", handlers.listSessionFilings)
+	mux.HandleFunc("POST /session-filings/run", handlers.runSessionFiler)
+	mux.HandleFunc("POST /session-filings/{session_filing_id}/accept", handlers.acceptSessionFiling)
+	mux.HandleFunc("POST /session-filings/{session_filing_id}/dismiss", handlers.dismissSessionFiling)
 }
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {
@@ -264,6 +271,14 @@ func (handlers *Handlers) addLink(writer http.ResponseWriter, request *http.Requ
 	if err != nil {
 		writeError(writer, err)
 		return
+	}
+	if created.EntityType == EntitySession {
+		// Someone filed the session directly, so what the filer proposed
+		// for it no longer waits on anyone.
+		if err := handlers.Store.SupersedeProposedSessionFilings(created.EntityRef, created.CreatedBy); err != nil {
+			writeError(writer, fmt.Errorf("link %d was made, but closing the session's filing proposals failed: %w", created.ID, err))
+			return
+		}
 	}
 	writeJSON(writer, http.StatusCreated, created)
 }

@@ -46,7 +46,19 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	projectstore.RegisterHandlers(mux, &projectstore.Handlers{Store: store, Owners: owners})
+	sessionFiler := &projectstore.SessionFiler{
+		Store:                          store,
+		Owners:                         owners,
+		ModelRole:                      settings.String(projectstore.SettingSessionFilerModelRole),
+		MinimumConfidence:              settings.Decimal(projectstore.SettingSessionFilerMinimumConfidence),
+		QuietBeforeFilingWithoutABrief: settings.Duration(projectstore.SettingSessionFilerQuietBeforeFilingWithoutABrief),
+		Window:                         settings.Duration(projectstore.SettingSessionFilerWindow),
+		SessionsPerPass:                settings.Integer(projectstore.SettingSessionFilerSessionsPerPass),
+	}
+	if err := sessionFiler.Validate(); err != nil {
+		log.Fatalf("settings: %v", err)
+	}
+	projectstore.RegisterHandlers(mux, &projectstore.Handlers{Store: store, Owners: owners, SessionFiler: sessionFiler})
 	projectstore.RegisterSettingsHandler(mux, settings)
 
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
