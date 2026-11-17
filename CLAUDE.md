@@ -12,7 +12,7 @@ A new kind is a new table and a new entry in `KindTypes` (`records.go`), never a
 
 ## Photo review
 
-Two model-store roles read each queued photo: `possession-photo-reader` (claude-opus-5-5) and `possession-photo-second-reader` (gpt-6-astra), chosen by the operator on 2026-11-06 so that two makers' models must agree. Each holds one model and no fallback. Calls go through llm-bridge-server's `POST /oneshot` with the service token from the unit's host-local drop-in; costs come from model-store list prices.
+Two model-store roles read each queued photo: `possession-photo-reader` (claude-opus-5-5) and `possession-photo-second-reader` (gpt-6.2-astra), chosen by the operator on 2026-11-06 so that two makers' models must agree; the operator moved the second reader from gpt-6-astra to gpt-6.2-astra on 2026-11-17. Each holds one model and no fallback. Calls go through llm-bridge-server's `POST /oneshot` with the service token from the unit's host-local drop-in; costs come from model-store list prices.
 
 Round one: each reader lists what it sees on its own. Round two: each sees both lists and the inventory and writes a final list. `recordReconciliation` (`review.go`) pairs the two lists. What both agree on is recorded at once; a doubt either raised about it becomes an optional **detail** question, whose answer in words amends the possession. The rest waits on a **decision** question whose choices carry their resolution. An answer in words goes to the first reader, which turns it into a resolution. The operator chose on 2026-11-06 that agreement records without waiting: holding agreed things for a detail made 62% of sightings into questions. Settling a sighting settles every later one waiting on it (`same_as_other_sighting`).
 
