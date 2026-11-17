@@ -728,6 +728,10 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
   // Carried on every event type rather than in the switch, same as the two above,
   // and for the same reason the page carries them: so nothing has to read `raw`.
   if (raw.client_request_id) next.clientRequestId = raw.client_request_id;
+  // Who wrote a user message, as the page carries it (log-store's promoted
+  // senderPrincipalId / senderDisplayName).
+  if (raw.sender_principal_id) next.senderPrincipalId = raw.sender_principal_id;
+  if (raw.sender_display_name) next.senderDisplayName = raw.sender_display_name;
   if (raw.type) next.eventType = raw.type;
   next.raw = raw;
   return next;

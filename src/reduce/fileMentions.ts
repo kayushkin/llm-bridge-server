@@ -16,6 +16,12 @@ export interface FileNamedByTools {
   size: number;
   /** RFC 3339, when the file last changed on disk. */
   modified_at: string;
+  /** What the file's first bytes look like (Go's http.DetectContentType). */
+  media_type: string;
+  /** How the server serves it: `text` from the content route, `image` from the
+   *  image route, '' not at all (another kind, or too large). The chat links a
+   *  mention only to a file served one way or the other. */
+  served_as: 'text' | 'image' | '';
 }
 
 /** A file on the list with its current text. */

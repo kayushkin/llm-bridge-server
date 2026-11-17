@@ -40,6 +40,7 @@ export {
   REF_TRANSCRIPT_TURNS,
   type RefDetailState,
   useFilesNamedByTools,
+  useSessionPrincipals,
   useFileNamedByToolsContent,
 } from './react/refDetail.js';
 export {
@@ -165,6 +166,7 @@ export type {
   TurnModel,
   TurnAggregates,
   SessionInfo,
+  SessionPrincipal,
   ToolInfo,
   McpServerInfo,
   HarnessConfig,

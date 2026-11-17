@@ -358,6 +358,11 @@ export interface Entry {
    *  prompts apart. Carried as a field so it starts working the day something does
    *  send one, rather than being invented here. */
   clientRequestId?: string;
+  /** Who wrote a user message: principal-store's id, and their name when it was
+   *  written, for display only. Absent when the server recorded no sender — the
+   *  message came from a script, an agent, or before senders were recorded. */
+  senderPrincipalId?: string;
+  senderDisplayName?: string;
   /** The canonical `Event.Type`. Read by the terminal-state selector for the event
    *  types that carry no `kind` of their own. */
   eventType?: string;
@@ -714,6 +719,17 @@ export interface SessionSummaryFilterAxes {
   purpose?: string[];
   mode?: string[];
   machine?: string[];
+  /** Principal ids the sessions were started as; '' is "started as no principal". */
+  principal?: string[];
+}
+
+/** One principal sessions were started as, among those the caller may see. */
+export interface SessionPrincipal {
+  /** principal-store's id, or '' for sessions started as no principal. */
+  principalId: string;
+  /** principal-store's name, read when asked; for display only. '' for no principal. */
+  displayName: string;
+  sessionCount: number;
 }
 
 /** The axis names, which are also the query parameter names. Iterated rather than
@@ -725,6 +741,7 @@ export const SUMMARY_FILTER_AXES = [
   'purpose',
   'mode',
   'machine',
+  'principal',
 ] as const satisfies readonly (keyof SessionSummaryFilterAxes)[];
 
 /** True when the filter constrains nothing, so a caller can tell an unfiltered

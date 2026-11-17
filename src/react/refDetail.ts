@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useChatContext } from './context.js';
 import type { ApiClient } from '../net/ApiClient.js';
-import type { ManagedSessionDetail, TurnModel } from '../net/types.js';
+import type { ManagedSessionDetail, SessionPrincipal, TurnModel } from '../net/types.js';
 import type { NoteboardItem } from '../net/NoteboardClient.js';
 import type { ResolvedRefMatch, ResolveResponse } from '../net/ReferenceStoreClient.js';
 import type { FileNamedByTools, FileNamedByToolsContent } from '../reduce/fileMentions.js';
@@ -92,6 +92,7 @@ const transcriptCache = new ClientScopedCache<TurnModel>();
 const resolvedRefCache = new ClientScopedCache<ResolvedRefMatch[]>();
 const filesNamedByToolsCache = new ClientScopedCache<FileNamedByTools[]>();
 const fileNamedByToolsContentCache = new ClientScopedCache<FileNamedByToolsContent>();
+const sessionPrincipalsCache = new ClientScopedCache<SessionPrincipal[]>();
 
 export function clearRefDetailCache(): void {
   sessionDetailCache.clear();
@@ -100,6 +101,7 @@ export function clearRefDetailCache(): void {
   resolvedRefCache.clear();
   filesNamedByToolsCache.clear();
   fileNamedByToolsContentCache.clear();
+  sessionPrincipalsCache.clear();
 }
 
 // --- batched reference resolution ---
@@ -362,5 +364,17 @@ export function useFileNamedByToolsContent(
   const key = `${sessionId}\u0000${path}`;
   return useCachedRef(`${clientKey(api)}|${key}`, enabled && sessionId !== '' && path !== '', () =>
     takeCached(fileNamedByToolsContentCache, api, key, () => api.getFileNamedByToolsContent(sessionId, path)),
+  );
+}
+
+/**
+ * Who the sessions this caller may see were started as, with names and counts
+ * (GET /sessions/principals): the sidebar's "started by" marker and filter read
+ * it. One request per cache window however many rows ask.
+ */
+export function useSessionPrincipals(): RefDetailState<SessionPrincipal[]> {
+  const { api } = useChatContext();
+  return useCachedRef(`${clientKey(api)}|session-principals`, true, () =>
+    takeCached(sessionPrincipalsCache, api, 'session-principals', () => api.listSessionPrincipals()),
   );
 }

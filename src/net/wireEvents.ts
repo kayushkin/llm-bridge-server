@@ -30,6 +30,9 @@ export interface WireEventData {
   turn_id?: string;
   harness_message_id?: string;
   client_request_id?: string;
+  /** Who wrote a user_message (msg.Event.SenderPrincipalID), and their name then. */
+  sender_principal_id?: string;
+  sender_display_name?: string;
   /** The tool_use_id of the Task call that spawned the subagent this event came
    *  from. Present only on a subagent's OWN frames, and the only thing that
    *  separates them from the parent's: Claude Code runs a subagent inside the

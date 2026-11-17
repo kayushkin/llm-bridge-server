@@ -19,6 +19,7 @@ import type {
   SessionSummaryFilterAxes,
   SummaryResponse,
   ValidatorsResponse,
+  SessionPrincipal,
 } from './types.js';
 import type { FileNamedByTools, FileNamedByToolsContent } from '../reduce/fileMentions.js';
 import { SUMMARY_FILTER_AXES } from './types.js';
@@ -343,6 +344,7 @@ export class ApiClient {
         ...(opts.filter?.purpose?.length ? { purposes: opts.filter.purpose } : {}),
         ...(opts.filter?.mode?.length ? { modes: opts.filter.mode } : {}),
         ...(opts.filter?.machine?.length ? { machines: opts.filter.machine } : {}),
+        ...(opts.filter?.principal?.length ? { principals: opts.filter.principal } : {}),
         ...(opts.sessionIds?.length ? { session_ids: opts.sessionIds } : {}),
         ...(opts.managerSessionIds?.length ? { manager_session_ids: opts.managerSessionIds } : {}),
       });
@@ -680,6 +682,26 @@ export class ApiClient {
     return this.getJSON<FileNamedByToolsContent>(
       `/sessions/${encodeURIComponent(sessionId)}/files-named-by-tools/content?path=${encodeURIComponent(path)}`,
     );
+  }
+
+  /** Where a browser reads the bytes of an image on the files-named-by-tools list
+   *  (`served_as: 'image'`): GET /sessions/{id}/files-named-by-tools/image?path=. */
+  fileNamedByToolsImageUrl(sessionId: string, path: string): string {
+    return `${this.basePath}/sessions/${encodeURIComponent(sessionId)}/files-named-by-tools/image?path=${encodeURIComponent(path)}`;
+  }
+
+  /** Who the sessions the caller may see were started as, most sessions first,
+   *  with each principal's current name: GET /sessions/principals. A row with
+   *  `principalId` '' counts the sessions started as no principal. */
+  async listSessionPrincipals(): Promise<SessionPrincipal[]> {
+    const body = await this.getJSON<{ principals: { principal_id: string; display_name: string; session_count: number }[] }>(
+      '/sessions/principals',
+    );
+    return body.principals.map((row) => ({
+      principalId: row.principal_id,
+      displayName: row.display_name,
+      sessionCount: row.session_count,
+    }));
   }
 
   /** Where a browser reads a shared file's bytes. `inline` asks for it to be shown
