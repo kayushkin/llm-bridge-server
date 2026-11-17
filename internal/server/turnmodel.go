@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -460,6 +461,12 @@ func buildTurnModelWithAggregateSources(sessionID string, rows []store.EventRow,
 	// from the Entry.
 	textBlockIDs := map[string]bool{}
 
+	// Entry ids of stream deltas that carry prose: a harness's own text delta, not
+	// reasoning and not a tool's input. They are the candidates of
+	// surfaceStreamedMessages, collected here for the reason textBlockIDs is: only
+	// the event says which kind of delta it was.
+	streamTextIDs := map[string]bool{}
+
 	var maxEventID int64
 
 	// Aggregate accumulators (Phase 2). Computed from the events actually read
@@ -556,6 +563,9 @@ func buildTurnModelWithAggregateSources(sessionID string, rows []store.EventRow,
 		if ev.Type == msg.EventBlock && ev.Block != nil && ev.Block.Block != nil && ev.Block.Block.Text != nil {
 			textBlockIDs[id] = true
 		}
+		if ev.Type == msg.EventStream && ev.Stream != nil && ev.Stream.Delta != nil && ev.Stream.Delta.Type == msg.DeltaText {
+			streamTextIDs[id] = true
+		}
 		e.HarnessParentID = ev.HarnessParentID
 		e.MessageID = ev.MessageID
 		if isRecovered(&ev) {
@@ -638,6 +648,11 @@ func buildTurnModelWithAggregateSources(sessionID string, rows []store.EventRow,
 	// acting, and the result never repeats it — hiding it as "superseded"
 	// erased it from every reload while the live view drew it.
 	surfaceNarrationBlocks(entries, textBlockIDs)
+
+	// Give a message whose text was only ever streamed one visible entry holding
+	// all of it. A harness that streams deltas and sends no block (Codex) left
+	// nothing on the page for any message but the one its result repeats.
+	surfaceStreamedMessages(turns, entries, streamTextIDs, textBlockIDs)
 
 	// Validator is derived from the events actually present. maxEventID is the
 	// high-water row id in this page; the count endpoint (/validators) reports
@@ -835,7 +850,8 @@ func supersedesBlocks(e Entry) bool {
 //   - Stream deltas. A delta is a FRAGMENT of a message, so promoting one would put a
 //     bubble per chunk in the collapsed view. 1,817 groups have a block and no result,
 //     93 have a stream and no result, and none have both — so leaving streams alone
-//     costs the block population nothing.
+//     costs the block population nothing. A streamed message is surfaced whole, by
+//     its own rule, in surfaceStreamedMessages.
 //   - Thinking blocks. They classify to kind "text" as well (see textBlockIDs), and
 //     they are reasoning rather than prose.
 func surfaceUnsupersededBlocks(turns []Turn, entries map[string]Entry, textBlockIDs map[string]bool) {
@@ -912,6 +928,114 @@ func surfaceNarrationBlocks(entries map[string]Entry, textBlockIDs map[string]bo
 		e.Primary = true
 		e.Duplicate = false
 		entries[eid] = e
+	}
+}
+
+// surfaceStreamedMessages gives a message whose text was only ever streamed one
+// visible text atom: its first delta, made primary and given the text of every delta
+// of the message, joined in order. Mutates `entries` in place. The other deltas keep
+// their own text and stay hidden, so every event is still one entry.
+//
+// This is what chat-core's live reducer already does with the same events: it folds
+// a message's text deltas into one text entry (`applyPayload` in
+// reduce/TurnReducer.ts). Until this pass the settled page did not, so a message
+// that was streamed and never sent as a block had no entry a reader could see.
+// That is every message Codex writes before its final answer: llm-bridge-codex
+// streams an agent message as deltas and sends no block, and only the final answer
+// is repeated by the turn's result. Measured over the 600,000 newest events on this
+// host (2026-11-07 to 2026-11-17): 2,776 streamed Codex messages, none with a block,
+// 226 with a result of their own, so 2,550 were drawn while a browser watched them
+// arrive and gone on a reload. chat-core also kept its live copy of such a message
+// for good, because the page never reported it, and ordered it after everything
+// the page did report: after the answer, and after a file shared later.
+//
+// A streamed message is surfaced when all of these hold:
+//
+//   - It has a message id. The join is the canonical MessageID, as in
+//     surfaceNarrationBlocks; a delta with none cannot be told from its neighbors.
+//   - No text block of the message exists. A block is the message whole, and the
+//     block passes above decide whether it shows.
+//   - No result with text carries the message's id. The result repeats the text of
+//     the message it ends on: all 226 measured Codex results with text shared their
+//     id with a streamed message, so the answer stays the result alone.
+//   - The message is finished: after its last delta the turn holds a result, an
+//     error or a turn_complete, or an entry of a message that began after this one
+//     did. A page read in the middle of a turn would otherwise report half a
+//     message, and chat-core drops its own fuller live copy of whatever a page
+//     reports. An entry of an earlier message does not count, since a tool begun
+//     before the message can report while the message is still being written.
+//
+// Reasoning deltas are never candidates: they are kind "thinking", not prose.
+func surfaceStreamedMessages(turns []Turn, entries map[string]Entry, streamTextIDs, textBlockIDs map[string]bool) {
+	if len(streamTextIDs) == 0 {
+		return
+	}
+	reportedWhole := map[string]bool{}
+	for eid, e := range entries {
+		if e.MessageID == "" || e.Text == "" {
+			continue
+		}
+		if textBlockIDs[eid] || (e.Kind == "result" && e.Role == "assistant") {
+			reportedWhole[e.MessageID] = true
+		}
+	}
+
+	type streamedMessage struct {
+		firstDelta string
+		lastDelta  int
+		text       strings.Builder
+	}
+	for _, turn := range turns {
+		begins := map[string]int{} // message id → index of its first entry in the turn
+		streamed := map[string]*streamedMessage{}
+		var order []string // streamed message ids, by first delta
+		for i, eid := range turn.EntryIDs {
+			e := entries[eid]
+			if e.MessageID == "" {
+				continue
+			}
+			if _, seen := begins[e.MessageID]; !seen {
+				begins[e.MessageID] = i
+			}
+			if !streamTextIDs[eid] || e.Source != sourceHarness || e.Recovered {
+				continue
+			}
+			message := streamed[e.MessageID]
+			if message == nil {
+				message = &streamedMessage{firstDelta: eid}
+				streamed[e.MessageID] = message
+				order = append(order, e.MessageID)
+			}
+			message.lastDelta = i
+			message.text.WriteString(e.Text)
+		}
+
+		for _, messageID := range order {
+			message := streamed[messageID]
+			if reportedWhole[messageID] || strings.TrimSpace(message.text.String()) == "" {
+				continue
+			}
+			finished := false
+			for _, eid := range turn.EntryIDs[message.lastDelta+1:] {
+				e := entries[eid]
+				if e.Kind == "result" || e.Kind == "error" || e.EventType == string(msg.EventTurnComplete) {
+					finished = true
+					break
+				}
+				if e.MessageID != "" && e.MessageID != messageID && begins[e.MessageID] > begins[messageID] {
+					finished = true
+					break
+				}
+			}
+			if !finished {
+				continue
+			}
+			first := entries[message.firstDelta]
+			first.Text = message.text.String()
+			first.Primary = true
+			first.Duplicate = false
+			entries[message.firstDelta] = first
+		}
 	}
 }
 

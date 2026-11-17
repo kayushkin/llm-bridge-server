@@ -662,12 +662,15 @@ func TestBuildTurnModel_BlocksStayVisibleWhenResultTextIsEmpty(t *testing.T) {
 	}
 }
 
-// Stream deltas are FRAGMENTS, not whole messages, so they are deliberately NOT
-// promoted: rendering them would put one bubble per delta in the collapsed view.
-// Measured over this host's 26,038 stored (session, turn) groups: 1,817 have a block
-// and no result, 93 have a stream and no result, and ZERO have both — so scoping the
-// promotion to blocks leaves the block population whole. The stream population is
-// filed separately rather than guessed at here.
+// Stream deltas are FRAGMENTS, not whole messages, so no delta is promoted as one:
+// rendering them would put one bubble per delta in the collapsed view. Measured
+// over this host's 26,038 stored (session, turn) groups: 1,817 have a block and no
+// result, 93 have a stream and no result, and ZERO have both — so scoping the block
+// promotion to blocks leaves the block population whole.
+//
+// A streamed message is surfaced whole, as one entry, by surfaceStreamedMessages
+// (turnmodel_streamed_test.go). That rule joins on the message id, so deltas that
+// carry none, as these do, still stay hidden.
 func TestBuildTurnModel_StreamDeltasStayHiddenEvenWithNoResult(t *testing.T) {
 	base := time.Date(2026, 4, 13, 6, 8, 30, 0, time.UTC)
 	rows := []store.EventRow{
