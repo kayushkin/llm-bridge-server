@@ -484,9 +484,25 @@ func (s *Server) handleSessionsByHarnessID(w http.ResponseWriter, r *http.Reques
 
 // handleAggregates returns per-session token and duration totals: the result
 // events' sums, and the api_call events' sums per query source, which is
-// where a subagent's calls are counted. No cost: see msg.SessionAggregate.
+// where a subagent's calls are counted.
+//
+// With no query it lists every session's whole-life totals, and no cost. With
+// ?since=<RFC 3339 time> it lists the sessions that used anything from the
+// clock hour holding that time on, with what each did from then on and how
+// much its cost estimate grew. See msg.SessionAggregate.
 func (s *Server) handleAggregates(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.ListSessionAggregates()
+	var rows []store.SessionAggregateRow
+	var err error
+	if sinceText := r.URL.Query().Get("since"); sinceText != "" {
+		since, parseErr := time.Parse(time.RFC3339, sinceText)
+		if parseErr != nil {
+			http.Error(w, fmt.Sprintf("since must be an RFC 3339 time such as 2026-01-02T15:04:05Z: %v", parseErr), http.StatusBadRequest)
+			return
+		}
+		rows, err = s.store.ListSessionAggregatesSince(since)
+	} else {
+		rows, err = s.store.ListSessionAggregates()
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -514,6 +530,7 @@ func (s *Server) handleAggregates(w http.ResponseWriter, r *http.Request) {
 			DurationMS:       r.DurationMS,
 			Model:            r.Model,
 			APICallUsage:     apiCallUsage,
+			SessionCostUSD:   r.SessionCostUSD,
 		})
 	}
 	writeJSON(w, out)

@@ -48,9 +48,14 @@ func main() {
 	// service, not before it: llm-bridge-server drops an event it has failed
 	// to push here for 30 seconds. Until it finishes, the aggregates of older
 	// sessions are short of their cache tokens and API call totals.
+	// One after the other: each reads a large part of the events table, and
+	// two at once would only take turns at the disk.
 	go func() {
 		if _, err := s.BackfillTokenUsage(); err != nil {
 			log.Printf("[log-store] token usage backfill STOPPED, older sessions' cache tokens and API call totals are missing until the next start: %v", err)
+		}
+		if _, err := s.BackfillUsageByHour(); err != nil {
+			log.Printf("[log-store] hourly usage backfill STOPPED, a windowed aggregate is short of what happened before this start until the next one: %v", err)
 		}
 	}()
 

@@ -166,6 +166,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateTokenUsageProjections(); err != nil {
 		return err
 	}
+	if err := s.migrateUsageByHourProjections(); err != nil {
+		return err
+	}
 	// The cache columns of a row rebuilt below must not count an event the
 	// pending token usage backfill will add later. See token_usage.go.
 	cacheTokensCountedAfterEventID, err := s.eventIDTheTokenUsageBackfillStillOwes()
@@ -326,6 +329,10 @@ func (s *Store) StoreEvent(sessionID, eventType string, data []byte) (int64, err
 	}
 	if err := s.updateSessionProjection(sessionID, eventType, data); err != nil {
 		log.Printf("[log-store] update sessions projection for %s/%s: %v", sessionID, eventType, err)
+	}
+	// Its own call, so a failure in one projection does not skip the other.
+	if err := s.addEventToUsageByHour(id, sessionID, eventType, data); err != nil {
+		log.Printf("[log-store] update hourly usage for %s/%s: %v", sessionID, eventType, err)
 	}
 	return id, nil
 }
@@ -785,6 +792,9 @@ type SessionAggregateRow struct {
 	DurationMS       int64
 	Model            string
 	APICallUsage     []APICallUsageRow
+	// SessionCostUSD is set only by ListSessionAggregatesSince: how much the
+	// session's session_cost total grew inside the window.
+	SessionCostUSD float64
 }
 
 // ListSessionAggregates returns per-session token totals from the sessions

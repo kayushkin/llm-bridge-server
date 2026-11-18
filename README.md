@@ -21,7 +21,8 @@ statistics to [logstack](https://github.com/kayushkin/logstack).
   │   SQLite (WAL): events (the record) + derived, rebuildable:    │
   │   turn_index_sessions, event_turns, turns, turn_entries,       │
   │   dedup_candidates, sessions (per-session totals),             │
-  │   session_api_call_usage (API calls per query source)          │
+  │   session_api_call_usage (API calls per query source),         │
+  │   session_usage_by_hour, session_api_call_usage_by_hour        │
   └────────────┬───────────────────────────────────────────────────┘
                │ result events
                ▼
@@ -82,7 +83,7 @@ curl 'http://localhost:8175/api/v1/sessions/abc123/events?after=42'
 | `GET` | `/api/v1/sessions/{id}/events?after=N&types=` | Raw events with row id > N, `event_id` spliced in |
 | `GET` | `/api/v1/sessions/{id}/turn-state` | Whether a turn is in flight |
 | `GET` | `/api/v1/sessions/search?q=` | Sessions whose events contain `q` |
-| `GET` | `/api/v1/sessions/aggregates` | Per-session turn, duration and token totals from two records: the result events' input, output, cache read and cache write tokens (the main conversation's finished turns), and `api_call_usage`, the `api_call` events summed per `query_source` (every model call the harness reported, a subagent's included). No cost: a session's cost is llm-bridge-server's `spend_usd` / the `session_cost` event |
+| `GET` | `/api/v1/sessions/aggregates?since=` | Per-session turn, duration and token totals from two records: the result events' input, output, cache read and cache write tokens (the main conversation's finished turns), and `api_call_usage`, the `api_call` events summed per `query_source` (every model call the harness reported, a subagent's included). With no `since`: every session's whole-life totals, and no cost — a session's whole-life cost is llm-bridge-server's `spend_usd`. With `since` (an RFC 3339 time): only the sessions that used anything from the clock hour holding that time on, with what each did from then on and `session_cost_usd`, how much its `session_cost` total grew in the window; 400 for a `since` that does not parse |
 | `GET` | `/api/v1/sessions/by-harness-id?harness_session_id=` | Sessions holding a harness session id |
 | `GET` | `/health` | `{"status": "ok"}` plus forwarder state |
 | `GET` | `/settings` | Every environment variable the service reads, with the value in force and its source; read-only |
@@ -108,6 +109,16 @@ Until it finishes, older sessions' aggregates are short of their cache tokens an
 call totals. It reads for about a minute on a 20 GB database and runs beside the
 service, never before it, because llm-bridge-server drops an event it has failed to
 push for 30 seconds.
+
+Those totals are since a session began, so they cannot say what was used in the last
+day. `session_usage_by_hour` and `session_api_call_usage_by_hour` hold the same counts
+per session and clock hour (`internal/store/usage_by_hour.go`), plus the highest
+`session_cost` total seen in the hour, and `?since=` sums them. An event belongs to the
+hour of its `events.created_at`. They are filled the same way: `StoreEvent` adds each
+new event, and a second background pass, after the first, adds the older ones. That
+pass writes a few hundred sessions per transaction and records the last session it
+wrote, so the single writer is never held for long and an interrupted pass is taken up
+where it stopped.
 
 ## Configuration
 

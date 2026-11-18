@@ -74,34 +74,66 @@ func (s *Store) migrateTokenUsageProjections() error {
 			PRIMARY KEY (session_id, query_source)
 		);
 		CREATE TABLE IF NOT EXISTS projection_backfills (
-			name             TEXT PRIMARY KEY,
-			through_event_id INTEGER NOT NULL,
-			completed_at     DATETIME
+			name                    TEXT PRIMARY KEY,
+			through_event_id        INTEGER NOT NULL,
+			completed_at            DATETIME,
+			resume_after_session_id TEXT NOT NULL DEFAULT ''
 		);
 	`); err != nil {
 		return fmt.Errorf("create token usage tables: %w", err)
 	}
-	if _, err := tx.Exec(`
-		INSERT OR IGNORE INTO projection_backfills (name, through_event_id)
-		SELECT ?, COALESCE(MAX(id), 0) FROM events
-	`, tokenUsageBackfillName); err != nil {
-		return fmt.Errorf("draw the token usage backfill line: %w", err)
+	// The table's first version, live for one deploy, had no
+	// resume_after_session_id.
+	var resumeColumnPresent int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('projection_backfills') WHERE name = 'resume_after_session_id'`).Scan(&resumeColumnPresent); err != nil {
+		return fmt.Errorf("inspect projection_backfills columns: %w", err)
+	}
+	if resumeColumnPresent == 0 {
+		if _, err := tx.Exec(`ALTER TABLE projection_backfills ADD COLUMN resume_after_session_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add projection_backfills.resume_after_session_id: %w", err)
+		}
+	}
+	if err := drawBackfillLine(tx, tokenUsageBackfillName); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
 
-// tokenUsageBackfillLine reads the event id the backfill works up to, and
-// whether the backfill has finished.
-func (s *Store) tokenUsageBackfillLine() (throughEventID int64, completed bool, err error) {
-	var completedAt sql.NullString
-	err = s.writer.QueryRow(
-		`SELECT through_event_id, completed_at FROM projection_backfills WHERE name = ?`,
-		tokenUsageBackfillName,
-	).Scan(&throughEventID, &completedAt)
-	if err != nil {
-		return 0, false, fmt.Errorf("read the token usage backfill line: %w", err)
+// drawBackfillLine writes down, once, the newest event id a projection's
+// backfill is to work up to. It must run in the transaction that creates the
+// projection, before any new event can be stored: from then on StoreEvent
+// adds every event after the line and the backfill every event up to it.
+func drawBackfillLine(tx *sql.Tx, name string) error {
+	if _, err := tx.Exec(`
+		INSERT OR IGNORE INTO projection_backfills (name, through_event_id)
+		SELECT ?, COALESCE(MAX(id), 0) FROM events
+	`, name); err != nil {
+		return fmt.Errorf("draw the %s backfill line: %w", name, err)
 	}
-	return throughEventID, completedAt.Valid, nil
+	return nil
+}
+
+// projectionBackfillLine is one projection's backfill as recorded: the event
+// id it works up to, whether it has finished, and — for a backfill that
+// writes session by session — the last session an unfinished run wrote.
+type projectionBackfillLine struct {
+	throughEventID       int64
+	completed            bool
+	resumeAfterSessionID string
+}
+
+func (s *Store) backfillLine(name string) (projectionBackfillLine, error) {
+	var line projectionBackfillLine
+	var completedAt sql.NullString
+	err := s.writer.QueryRow(
+		`SELECT through_event_id, completed_at, resume_after_session_id FROM projection_backfills WHERE name = ?`,
+		name,
+	).Scan(&line.throughEventID, &completedAt, &line.resumeAfterSessionID)
+	if err != nil {
+		return line, fmt.Errorf("read the %s backfill line: %w", name, err)
+	}
+	line.completed = completedAt.Valid
+	return line, nil
 }
 
 // eventIDTheTokenUsageBackfillStillOwes is the newest event id the pending
@@ -109,14 +141,14 @@ func (s *Store) tokenUsageBackfillLine() (throughEventID int64, completed bool, 
 // sessions row rebuilt from events while the backfill is pending counts cache
 // tokens only after this id, because the backfill adds the rest on top.
 func (s *Store) eventIDTheTokenUsageBackfillStillOwes() (int64, error) {
-	throughEventID, completed, err := s.tokenUsageBackfillLine()
+	line, err := s.backfillLine(tokenUsageBackfillName)
 	if err != nil {
 		return 0, err
 	}
-	if completed {
+	if line.completed {
 		return 0, nil
 	}
-	return throughEventID, nil
+	return line.throughEventID, nil
 }
 
 // addAPICallToSessionUsage adds one newly stored api_call event to its
@@ -222,12 +254,13 @@ type TokenUsageBackfillReport struct {
 // begins again from the same line.
 func (s *Store) BackfillTokenUsage() (TokenUsageBackfillReport, error) {
 	started := time.Now()
-	throughEventID, completed, err := s.tokenUsageBackfillLine()
+	line, err := s.backfillLine(tokenUsageBackfillName)
 	if err != nil {
 		return TokenUsageBackfillReport{}, err
 	}
-	report := TokenUsageBackfillReport{ThroughEventID: throughEventID, AlreadyComplete: completed}
-	if completed {
+	throughEventID := line.throughEventID
+	report := TokenUsageBackfillReport{ThroughEventID: throughEventID, AlreadyComplete: line.completed}
+	if line.completed {
 		return report, nil
 	}
 
