@@ -163,11 +163,21 @@ func (s *Store) migrate() error {
 	if err := s.dropSessionsCostColumn(); err != nil {
 		return err
 	}
+	if err := s.migrateTokenUsageProjections(); err != nil {
+		return err
+	}
+	// The cache columns of a row rebuilt below must not count an event the
+	// pending token usage backfill will add later. See token_usage.go.
+	cacheTokensCountedAfterEventID, err := s.eventIDTheTokenUsageBackfillStillOwes()
+	if err != nil {
+		return err
+	}
 	// Backfill from events for any session not already projected. Runs once
 	// per session — guarded by NOT IN to skip already-populated sessions.
 	if _, err := s.writer.Exec(`
 		INSERT INTO sessions (
 			session_id, turn_count, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens,
 			duration_ms, model, started_at, last_active, ended_at
 		)
 		SELECT
@@ -175,6 +185,8 @@ func (s *Store) migrate() error {
 			COALESCE(SUM(CASE WHEN e.type = 'user_message' THEN 1 ELSE 0 END), 0)               AS turn_count,
 			COALESCE(SUM(CASE WHEN e.type = 'result' THEN json_extract(e.data, '$.result.usage.input_tokens') ELSE 0 END), 0)  AS input_tokens,
 			COALESCE(SUM(CASE WHEN e.type = 'result' THEN json_extract(e.data, '$.result.usage.output_tokens') ELSE 0 END), 0) AS output_tokens,
+			COALESCE(SUM(CASE WHEN e.type = 'result' AND e.id > ?1 THEN json_extract(e.data, '$.result.usage.cache_read_tokens') ELSE 0 END), 0)  AS cache_read_tokens,
+			COALESCE(SUM(CASE WHEN e.type = 'result' AND e.id > ?1 THEN json_extract(e.data, '$.result.usage.cache_write_tokens') ELSE 0 END), 0) AS cache_write_tokens,
 			COALESCE(SUM(CASE WHEN e.type = 'result' THEN json_extract(e.data, '$.result.duration_ms') ELSE 0 END), 0)         AS duration_ms,
 			COALESCE((
 				SELECT json_extract(e2.data, '$.result.model')
@@ -193,7 +205,7 @@ func (s *Store) migrate() error {
 		FROM events e
 		WHERE e.session_id NOT IN (SELECT session_id FROM sessions)
 		GROUP BY e.session_id
-	`); err != nil {
+	`, cacheTokensCountedAfterEventID); err != nil {
 		return fmt.Errorf("backfill sessions projection: %w", err)
 	}
 	return nil
@@ -369,8 +381,10 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 		var ev struct {
 			Result struct {
 				Usage struct {
-					InputTokens  int64 `json:"input_tokens"`
-					OutputTokens int64 `json:"output_tokens"`
+					InputTokens      int64 `json:"input_tokens"`
+					OutputTokens     int64 `json:"output_tokens"`
+					CacheReadTokens  int64 `json:"cache_read_tokens"`
+					CacheWriteTokens int64 `json:"cache_write_tokens"`
 				} `json:"usage"`
 				DurationMS int64  `json:"duration_ms"`
 				Model      string `json:"model"`
@@ -390,17 +404,23 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 			`UPDATE sessions SET
 				input_tokens = input_tokens + ?,
 				output_tokens = output_tokens + ?,
+				cache_read_tokens = cache_read_tokens + ?,
+				cache_write_tokens = cache_write_tokens + ?,
 				duration_ms = duration_ms + ?,
 				model = CASE WHEN ? != '' THEN ? ELSE model END,
 				ended_at = CURRENT_TIMESTAMP
 			WHERE session_id = ?`,
 			ev.Result.Usage.InputTokens,
 			ev.Result.Usage.OutputTokens,
+			ev.Result.Usage.CacheReadTokens,
+			ev.Result.Usage.CacheWriteTokens,
 			ev.Result.DurationMS,
 			ev.Result.Model, ev.Result.Model,
 			sessionID,
 		)
 		return err
+	case "api_call":
+		return s.addAPICallToSessionUsage(sessionID, data)
 	case "error":
 		_, err := s.writer.Exec(
 			`UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE session_id = ?`,
@@ -750,29 +770,43 @@ func (s *Store) SessionsHoldingHarnessSessionID(harnessSessionID string) ([]Held
 // SessionAggregateRow is one session's summed totals as returned by
 // ListSessionAggregates. JSON marshalling lives on msg.SessionAggregate;
 // the handler converts row → response struct.
+//
+// InputTokens, OutputTokens, CacheReadTokens and CacheWriteTokens are the
+// result events' sums; APICallUsage is the api_call events' sums, one row per
+// query source, and holds every model call the harness reported — a
+// subagent's included, which no result event counts.
 type SessionAggregateRow struct {
-	SessionID    string
-	Turns        int
-	InputTokens  int64
-	OutputTokens int64
-	DurationMS   int64
-	Model        string
+	SessionID        string
+	Turns            int
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	DurationMS       int64
+	Model            string
+	APICallUsage     []APICallUsageRow
 }
 
-// ListSessionAggregates returns per-session token/cost totals from the
-// sessions projection table maintained by StoreEvent. Sessions with no
-// result events are omitted (no usage to report) — matches the previous
-// on-demand-aggregation behavior.
+// ListSessionAggregates returns per-session token totals from the sessions
+// projection table and the per-query-source API call totals, both maintained
+// by StoreEvent. A session with no tokens in either is omitted: it has no
+// usage to report.
 //
 // Turns counts user_message events (one per user turn). The previous
 // implementation accidentally counted result events as "turns"; the
 // projection's turn_count field is the corrected definition.
 func (s *Store) ListSessionAggregates() ([]SessionAggregateRow, error) {
+	apiCallUsageBySession, err := s.apiCallUsageBySession()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.reader.Query(`
 		SELECT session_id, turn_count, input_tokens, output_tokens,
-		       duration_ms, model
+		       cache_read_tokens, cache_write_tokens, duration_ms, model
 		FROM sessions
 		WHERE input_tokens > 0 OR output_tokens > 0
+		   OR cache_read_tokens > 0 OR cache_write_tokens > 0
+		   OR session_id IN (SELECT session_id FROM session_api_call_usage)
 	`)
 	if err != nil {
 		return nil, err
@@ -781,9 +815,11 @@ func (s *Store) ListSessionAggregates() ([]SessionAggregateRow, error) {
 	var out []SessionAggregateRow
 	for rows.Next() {
 		var r SessionAggregateRow
-		if err := rows.Scan(&r.SessionID, &r.Turns, &r.InputTokens, &r.OutputTokens, &r.DurationMS, &r.Model); err != nil {
+		if err := rows.Scan(&r.SessionID, &r.Turns, &r.InputTokens, &r.OutputTokens,
+			&r.CacheReadTokens, &r.CacheWriteTokens, &r.DurationMS, &r.Model); err != nil {
 			return nil, err
 		}
+		r.APICallUsage = apiCallUsageBySession[r.SessionID]
 		out = append(out, r)
 	}
 	return out, rows.Err()

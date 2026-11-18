@@ -482,8 +482,9 @@ func (s *Server) handleSessionsByHarnessID(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// handleAggregates returns per-session token and duration totals summed from the
-// stored result events. No cost: see msg.SessionAggregate.
+// handleAggregates returns per-session token and duration totals: the result
+// events' sums, and the api_call events' sums per query source, which is
+// where a subagent's calls are counted. No cost: see msg.SessionAggregate.
 func (s *Server) handleAggregates(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.store.ListSessionAggregates()
 	if err != nil {
@@ -492,13 +493,27 @@ func (s *Server) handleAggregates(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]msg.SessionAggregate, 0, len(rows))
 	for _, r := range rows {
+		var apiCallUsage []msg.SessionAPICallUsage
+		for _, u := range r.APICallUsage {
+			apiCallUsage = append(apiCallUsage, msg.SessionAPICallUsage{
+				QuerySource:      u.QuerySource,
+				Calls:            u.Calls,
+				InputTokens:      u.InputTokens,
+				OutputTokens:     u.OutputTokens,
+				CacheReadTokens:  u.CacheReadTokens,
+				CacheWriteTokens: u.CacheWriteTokens,
+			})
+		}
 		out = append(out, msg.SessionAggregate{
-			SessionID:    r.SessionID,
-			Turns:        r.Turns,
-			InputTokens:  r.InputTokens,
-			OutputTokens: r.OutputTokens,
-			DurationMS:   r.DurationMS,
-			Model:        r.Model,
+			SessionID:        r.SessionID,
+			Turns:            r.Turns,
+			InputTokens:      r.InputTokens,
+			OutputTokens:     r.OutputTokens,
+			CacheReadTokens:  r.CacheReadTokens,
+			CacheWriteTokens: r.CacheWriteTokens,
+			DurationMS:       r.DurationMS,
+			Model:            r.Model,
+			APICallUsage:     apiCallUsage,
 		})
 	}
 	writeJSON(w, out)

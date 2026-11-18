@@ -20,7 +20,8 @@ statistics to [logstack](https://github.com/kayushkin/logstack).
   │            │                                                   │
   │   SQLite (WAL): events (the record) + derived, rebuildable:    │
   │   turn_index_sessions, event_turns, turns, turn_entries,       │
-  │   dedup_candidates, sessions (per-session totals)              │
+  │   dedup_candidates, sessions (per-session totals),             │
+  │   session_api_call_usage (API calls per query source)          │
   └────────────┬───────────────────────────────────────────────────┘
                │ result events
                ▼
@@ -81,7 +82,7 @@ curl 'http://localhost:8175/api/v1/sessions/abc123/events?after=42'
 | `GET` | `/api/v1/sessions/{id}/events?after=N&types=` | Raw events with row id > N, `event_id` spliced in |
 | `GET` | `/api/v1/sessions/{id}/turn-state` | Whether a turn is in flight |
 | `GET` | `/api/v1/sessions/search?q=` | Sessions whose events contain `q` |
-| `GET` | `/api/v1/sessions/aggregates` | Per-session token, turn and duration totals. No cost: a session's cost is llm-bridge-server's `spend_usd` / the `session_cost` event |
+| `GET` | `/api/v1/sessions/aggregates` | Per-session turn, duration and token totals from two records: the result events' input, output, cache read and cache write tokens (the main conversation's finished turns), and `api_call_usage`, the `api_call` events summed per `query_source` (every model call the harness reported, a subagent's included). No cost: a session's cost is llm-bridge-server's `spend_usd` / the `session_cost` event |
 | `GET` | `/api/v1/sessions/by-harness-id?harness_session_id=` | Sessions holding a harness session id |
 | `GET` | `/health` | `{"status": "ok"}` plus forwarder state |
 | `GET` | `/settings` | Every environment variable the service reads, with the value in force and its source; read-only |
@@ -95,6 +96,18 @@ it only when the turn gains an event, a dual-emitted copy changes what it pairs 
 (`dedup.go`), or `materializerVersion` changes. Everything but `events` is derived and
 can be dropped and rebuilt; sessions written before the index are indexed in the
 background at startup, newest first.
+
+### Per-session token totals
+
+`sessions` holds each session's result-event sums and `session_api_call_usage` its
+`api_call` events summed per query source; `StoreEvent` adds each new event to both
+(`internal/store/token_usage.go`). The cache columns and the API call table were added
+after millions of events were stored, so one background pass at startup adds the older
+events: `projection_backfills` holds the event id it works up to and when it finished.
+Until it finishes, older sessions' aggregates are short of their cache tokens and API
+call totals. It reads for about a minute on a 20 GB database and runs beside the
+service, never before it, because llm-bridge-server drops an event it has failed to
+push for 30 seconds.
 
 ## Configuration
 

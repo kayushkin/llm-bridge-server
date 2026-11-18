@@ -43,6 +43,17 @@ func main() {
 		}
 	}()
 
+	// Add the events stored before the token usage projections existed. It
+	// reads for about a minute on a large database, so it runs beside the
+	// service, not before it: llm-bridge-server drops an event it has failed
+	// to push here for 30 seconds. Until it finishes, the aggregates of older
+	// sessions are short of their cache tokens and API call totals.
+	go func() {
+		if _, err := s.BackfillTokenUsage(); err != nil {
+			log.Printf("[log-store] token usage backfill STOPPED, older sessions' cache tokens and API call totals are missing until the next start: %v", err)
+		}
+	}()
+
 	log.Printf("[log-store] listening on %s (db: %s)", cfg.ListenAddr, cfg.DBPath)
 	if err := http.ListenAndServe(cfg.ListenAddr, srv); err != nil {
 		log.Fatalf("[log-store] server error: %v", err)
