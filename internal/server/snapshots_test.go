@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
-	snapshotstore "github.com/kayushkin/snapshot-store"
 )
 
 // Two session ids reach this handler and only one of them is the key the rows

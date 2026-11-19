@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	hookstore "github.com/kayushkin/hook-store"
+	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"

@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	harnessstore "github.com/kayushkin/harness-store"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
+	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"

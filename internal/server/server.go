@@ -13,8 +13,7 @@ import (
 	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
-	harnessstore "github.com/kayushkin/harness-store"
-	hookstore "github.com/kayushkin/hook-store"
+	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -23,18 +22,19 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
+	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
+	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	memorystore "github.com/kayushkin/memory-store"
 	modelstore "github.com/kayushkin/model-store"
-	snapshotstore "github.com/kayushkin/snapshot-store"
 )
 
 // autoResumeWindow caps how recently a session must have been active (by

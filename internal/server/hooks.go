@@ -11,7 +11,7 @@ import (
 	"os/exec"
 	"time"
 
-	hookstore "github.com/kayushkin/hook-store"
+	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge/msg"

@@ -11,7 +11,7 @@ The store is a pure data layer. It does not execute hooks, render settings JSON,
 ```go
 import (
     "github.com/kayushkin/llm-bridge/msg"
-    hookstore "github.com/kayushkin/hook-store"
+    hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 )
 
 s, err := hookstore.Open("~/.llm-bridge/hooks.db")

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	snapshotstore "github.com/kayushkin/snapshot-store"
+	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 )
 
 // snapshotRetention is how long captured snapshot rows are kept before the

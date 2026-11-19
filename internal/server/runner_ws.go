@@ -9,7 +9,7 @@ import (
 	"database/sql"
 
 	"github.com/gorilla/websocket"
-	harnessstore "github.com/kayushkin/harness-store"
+	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 )
 
 var runnerUpgrader = websocket.Upgrader{

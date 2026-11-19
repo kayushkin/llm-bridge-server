@@ -12,8 +12,8 @@ import (
 	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
-	harnessstore "github.com/kayushkin/harness-store"
-	hookstore "github.com/kayushkin/hook-store"
+	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
+	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
@@ -21,7 +21,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	memorystore "github.com/kayushkin/memory-store"
 	modelstore "github.com/kayushkin/model-store"
-	snapshotstore "github.com/kayushkin/snapshot-store"
+	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 )
 
 func main() {

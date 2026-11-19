@@ -7,7 +7,7 @@ import (
 	"path"
 	"testing"
 
-	harnessstore "github.com/kayushkin/harness-store"
+	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 

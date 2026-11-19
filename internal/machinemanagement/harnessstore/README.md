@@ -4,16 +4,14 @@ SQLite registry for harness instances and credential bindings. Part of the [llm-
 
 Tracks which harness instances are deployed across machines (local or SSH), which credentials are bound to each instance, and display metadata for harness types. This is configuration storage only -- runtime state (active sessions, credential slot occupancy) lives in [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server).
 
-## Install
+## Where it lives
 
-```bash
-go get github.com/kayushkin/harness-store
-```
+This package is internal to llm-bridge-server, so only code in this repo can import it.
 
 ## Usage
 
 ```go
-import store "github.com/kayushkin/harness-store"
+import store "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 
 // Open (creates DB and runs migrations if needed)
 s, err := store.Open("~/.config/harness-store/harness.db")

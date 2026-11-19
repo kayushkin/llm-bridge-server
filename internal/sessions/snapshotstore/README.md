@@ -7,7 +7,7 @@ Captures file contents before and after tool calls (e.g. Claude Code `Edit`/`Wri
 ## Usage
 
 ```go
-import "github.com/kayushkin/snapshot-store"
+import "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 
 s, err := snapshotstore.Open(snapshotstore.Config{
     DBPath: "~/.llm-bridge/snapshots.db",

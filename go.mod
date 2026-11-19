@@ -8,13 +8,10 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/kayushkin/agent-store v0.0.0
 	github.com/kayushkin/bus v0.0.0
-	github.com/kayushkin/harness-store v0.0.0-00010101000000-000000000000
-	github.com/kayushkin/hook-store v0.0.0-00010101000000-000000000000
 	github.com/kayushkin/llm-bridge v0.0.0
 	github.com/kayushkin/log-store v0.0.0
 	github.com/kayushkin/memory-store v0.0.0
 	github.com/kayushkin/model-store v0.0.0
-	github.com/kayushkin/snapshot-store v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/nats-io/nats.go v1.49.0
 	github.com/oklog/ulid/v2 v2.1.1
@@ -55,14 +52,8 @@ replace github.com/kayushkin/agent-store => ../agent-store
 
 replace github.com/kayushkin/bus => ../bus
 
-replace github.com/kayushkin/harness-store => ../harness-store
-
 replace github.com/kayushkin/memory-store => ../memory-store
 
 replace github.com/kayushkin/aiauth => ../aiauth
 
 replace github.com/kayushkin/model-store => ../model-store
-
-replace github.com/kayushkin/hook-store => ../hook-store
-
-replace github.com/kayushkin/snapshot-store => ../snapshot-store

@@ -11,10 +11,12 @@
 #     agent-store/
 #     ...
 #
+# harness-store, hook-store and snapshot-store are no longer siblings: they
+# live in this repo under internal/.
+#
 # Re-running is safe: existing checkouts are left alone (the script prints
-# "exists" and continues). Sibling repos without a published GitHub remote
-# (currently: snapshot-store) are reported as missing — the server degrades
-# gracefully without those stores, so this is not fatal.
+# "exists" and continues). A sibling with no published GitHub remote is
+# reported as missing.
 
 set -euo pipefail
 
@@ -30,18 +32,15 @@ declare -A SIBLINGS=(
   [logstack]="https://github.com/kayushkin/logstack.git"
   [agent-store]="https://github.com/kayushkin/agent-store.git"
   [bus]="https://github.com/kayushkin/bus.git"
-  [harness-store]="https://github.com/kayushkin/harness-store.git"
   [memory-store]="https://github.com/kayushkin/memory-store.git"
   [aiauth]="https://github.com/kayushkin/aiauth.git"
   [model-store]="https://github.com/kayushkin/model-store.git"
-  [hook-store]="https://github.com/kayushkin/hook-store.git"
-  [snapshot-store]=""
 )
 
 # Order matters only for human-readable output.
 ORDER=(
-  llm-bridge log-store logstack agent-store bus harness-store memory-store
-  aiauth model-store hook-store snapshot-store
+  llm-bridge log-store logstack agent-store bus memory-store
+  aiauth model-store
 )
 
 echo "==> Bootstrapping sibling repos into $PARENT_DIR"
