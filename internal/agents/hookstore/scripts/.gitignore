@@ -1,0 +1,4 @@
+# The sabotage engine here vendors tree_hold.py next to itself (card `ec8921ef`) and
+# imports it, so a run leaves a __pycache__ directory. Untracked litter in a repo reads
+# as somebody's work in progress, which this box's standing rule says not to throw away.
+__pycache__/
