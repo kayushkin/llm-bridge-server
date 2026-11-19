@@ -1,0 +1,54 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "boundFilterValues always answers its failure value -- the suite MUST redden, or nothing exercises this file",
+    "edits": [
+      {
+        "file": "src/store/filterStorage.ts",
+        "old": "export function boundFilterValues(\n  value: unknown,\n  maxCount = MAX_PERSISTED_FILTER_VALUES,\n): string[] {\n",
+        "new": "export function boundFilterValues(\n  value: unknown,\n  maxCount = MAX_PERSISTED_FILTER_VALUES,\n): string[] {\n  if (true) return [];\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/store/filterStorage.ts",
+        "old": "export function boundFilterValues(\n  value: unknown,\n  maxCount = MAX_PERSISTED_FILTER_VALUES,\n): string[] {\n",
+        "new": "export function boundFilterValues(\n  value: unknown,\n  maxCount = MAX_PERSISTED_FILTER_VALUES,\n): string[] {\n  const unusedControl = 1;\n  void unusedControl;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "F1-not-an-array-A",
+    "kind": "A",
+    "describes": "producer 1 of []: a stored axis that is not an array (a string, an object, a number) stops yielding `no filter` and is iterated instead",
+    "edits": [
+      {
+        "file": "src/store/filterStorage.ts",
+        "old": "  if (!Array.isArray(value)) return [];\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "F1-not-an-array-B",
+    "kind": "B",
+    "describes": "producer 1 widened to any iterable: a stored STRING now passes the guard and each CHARACTER becomes a selected filter value",
+    "edits": [
+      {
+        "file": "src/store/filterStorage.ts",
+        "old": "  if (!Array.isArray(value)) return [];",
+        "new": "  if (typeof (value as { [Symbol.iterator]?: unknown })?.[Symbol.iterator] !== 'function') return [];"
+      }
+    ],
+    "tests": []
+  }
+]

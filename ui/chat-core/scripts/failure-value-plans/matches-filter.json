@@ -1,0 +1,184 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "matchesFilter admits everything -- the suite MUST redden, or it never ran",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "  if (f.harness.length && !f.harness.includes(s.harness)) return false;",
+        "new": "  if (f !== undefined) return true;\n  if (f.harness.length && !f.harness.includes(s.harness)) return false;"
+      }
+    ]
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "  if (f.harness.length && !f.harness.includes(s.harness)) return false;",
+        "new": "  const unusedControl = 1;\n  void unusedControl;\n  if (f.harness.length && !f.harness.includes(s.harness)) return false;"
+      }
+    ]
+  },
+  {
+    "id": "MF-harness",
+    "kind": "A",
+    "describes": "drop the harness facet guard",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "  if (f.harness.length && !f.harness.includes(s.harness)) return false;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "MF-status",
+    "kind": "A",
+    "describes": "drop the status facet guard",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "  if (f.status.length && !f.status.includes(s.state)) return false;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "MF-type-selected",
+    "kind": "A",
+    "describes": "drop the explicit type-selection guard (the `f.type.length` half)",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "    if (!f.type.includes(s.type)) return false;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "MF-type-default-hidden",
+    "kind": "A",
+    "describes": "drop the DEFAULT_HIDDEN_SESSION_TYPES guard (the else half) -- hidden types become visible with no filter set",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "  } else if (DEFAULT_HIDDEN_SESSION_TYPES.has(s.type)) {\n    return false;\n  }",
+        "new": "  }"
+      }
+    ]
+  },
+  {
+    "id": "MF-purpose",
+    "kind": "A",
+    "describes": "drop the purpose facet guard",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "  if (f.purpose.length && !f.purpose.includes(s.purpose)) return false;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "MF-mode",
+    "kind": "A",
+    "describes": "drop the mode facet guard",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "  if (f.mode.length && !f.mode.includes(s.mode)) return false;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "MF-machine",
+    "kind": "A",
+    "describes": "drop the machine facet guard",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "  if (f.machine.length && !f.machine.includes(s.instanceId)) return false;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "MF-folder",
+    "kind": "A",
+    "describes": "drop the folder exact-match guard",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "  if (f.folder && s.folderName !== f.folder) return false;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "MF-search",
+    "kind": "A",
+    "describes": "drop the search miss guard",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "    if (!nameHit && !contentHit) return false;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "MF-search-trim",
+    "kind": "B",
+    "describes": "stop trimming the query -- the documented past bug where a stray space matched nothing",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "  const search = f.search.trim();",
+        "new": "  const search = f.search;"
+      }
+    ]
+  },
+  {
+    "id": "MF-search-id-half",
+    "kind": "B",
+    "describes": "match the name only, not the id -- the documented past bug where pasting a br_ id matched nothing",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "      (s.displayName ?? '').toLowerCase().includes(q) || s.sessionId.toLowerCase().includes(q);",
+        "new": "      (s.displayName ?? '').toLowerCase().includes(q);"
+      }
+    ]
+  },
+  {
+    "id": "MF-content-query-equality",
+    "kind": "B",
+    "describes": "accept a content-hit set answering a DIFFERENT query -- stale hits leak across queries",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/selectors.ts",
+        "old": "      contentHits.query === search &&\n",
+        "new": ""
+      }
+    ]
+  }
+]

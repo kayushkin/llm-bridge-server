@@ -1,0 +1,163 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "budgetHaltFromRefusal returns null unconditionally -- the suite MUST redden, or it never ran",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "export function budgetHaltFromRefusal(sessionId: string, thrown: unknown): BudgetHalt | null {\n  if (!(thrown instanceof ApiError)) return null;",
+        "new": "export function budgetHaltFromRefusal(sessionId: string, thrown: unknown): BudgetHalt | null {\n  return null;\n  if (!(thrown instanceof ApiError)) return null;"
+      }
+    ]
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green, or it is red for an unrelated reason",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "  const err = parsed?.error;\n  if (!err || err.code !== ERR_CODE_BUDGET_EXCEEDED) return null;",
+        "new": "  const unusedControl = 1;\n  void unusedControl;\n  const err = parsed?.error;\n  if (!err || err.code !== ERR_CODE_BUDGET_EXCEEDED) return null;"
+      }
+    ]
+  },
+  {
+    "id": "R1-A",
+    "kind": "A",
+    "describes": "delete the `thrown instanceof ApiError` guard (test: 'reports null for a thrown value that is not an ApiError')",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "  if (!(thrown instanceof ApiError)) return null;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "R1-B",
+    "kind": "B",
+    "describes": "delete the instanceof guard AND let the status guard read duck-typed, so an earlier producer covers it",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "  if (!(thrown instanceof ApiError)) return null;\n",
+        "new": ""
+      },
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "  if (thrown.status !== 402) return null;",
+        "new": "  if ((thrown as { status?: number } | null | undefined)?.status !== 402) return null;"
+      }
+    ]
+  },
+  {
+    "id": "R2-A",
+    "kind": "A",
+    "describes": "delete the `status !== 402` guard (test: 'reports null for every status but 402')",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "  if (thrown.status !== 402) return null;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "R3-A",
+    "kind": "A",
+    "describes": "delete the JSON.parse try/catch (test: 'reports null for a body that does not parse')",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "  let parsed: RefusalBody;\n  try {\n    parsed = JSON.parse(thrown.body) as RefusalBody;\n  } catch {\n    return null;\n  }",
+        "new": "  const parsed: RefusalBody = JSON.parse(thrown.body) as RefusalBody;"
+      }
+    ]
+  },
+  {
+    "id": "R4-A",
+    "kind": "A",
+    "describes": "delete the code comparison half of the refusal guard (test: 'reports null for a 402 that is not a budget refusal')",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "  const err = parsed?.error;\n  if (!err || err.code !== ERR_CODE_BUDGET_EXCEEDED) return null;",
+        "new": "  const err = parsed?.error;\n  if (!err) return null;"
+      }
+    ]
+  },
+  {
+    "id": "R4-B",
+    "kind": "B",
+    "describes": "delete the `!err` half of the refusal guard -- the code comparison is the other producer of that same null",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "  const err = parsed?.error;\n  if (!err || err.code !== ERR_CODE_BUDGET_EXCEEDED) return null;",
+        "new": "  const err = parsed?.error;\n  if (err && err.code !== ERR_CODE_BUDGET_EXCEEDED) return null;"
+      }
+    ]
+  },
+  {
+    "id": "E1-A",
+    "kind": "A",
+    "describes": "event half: delete the code comparison (test: 'ignores every other error event')",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "  const err = event.data?.error;\n  if (!err || err.code !== ERR_CODE_BUDGET_EXCEEDED) return null;",
+        "new": "  const err = event.data?.error;\n  if (!err) return null;"
+      }
+    ]
+  },
+  {
+    "id": "E1-B",
+    "kind": "B",
+    "describes": "event half: delete the `!err` half -- the mirror of R4-B, and the contrast that says whether R4-B is a real hole",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "  const err = event.data?.error;\n  if (!err || err.code !== ERR_CODE_BUDGET_EXCEEDED) return null;",
+        "new": "  const err = event.data?.error;\n  if (err && err.code !== ERR_CODE_BUDGET_EXCEEDED) return null;"
+      }
+    ]
+  },
+  {
+    "id": "R5-A",
+    "kind": "A",
+    "describes": "the spendUSD field guard reads the wrong type, so a reported figure is dropped",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "    ...(typeof err.spend_usd === 'number' ? { spendUSD: err.spend_usd } : {}),",
+        "new": "    ...(typeof err.spend_usd === 'string' ? { spendUSD: err.spend_usd } : {}),"
+      }
+    ]
+  },
+  {
+    "id": "R6-A",
+    "kind": "A",
+    "describes": "the message fallback fires even when the server sent words of its own",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/budgetHalt.ts",
+        "old": "      typeof err.message === 'string' && err.message\n        ? err.message\n        : 'this session has reached its spend ceiling',",
+        "new": "      'this session has reached its spend ceiling',"
+      }
+    ]
+  }
+]

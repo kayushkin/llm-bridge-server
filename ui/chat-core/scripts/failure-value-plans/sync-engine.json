@@ -1,0 +1,67 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "validatorsEqual always answers its failure value -- the suite MUST redden, or nothing exercises this file",
+    "edits": [
+      {
+        "file": "src/sync/SyncEngine.ts",
+        "old": "function validatorsEqual(a: Validator | undefined, b: Validator | undefined): boolean {\n",
+        "new": "function validatorsEqual(a: Validator | undefined, b: Validator | undefined): boolean {\n  if (true) return false;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/sync/SyncEngine.ts",
+        "old": "function validatorsEqual(a: Validator | undefined, b: Validator | undefined): boolean {\n",
+        "new": "function validatorsEqual(a: Validator | undefined, b: Validator | undefined): boolean {\n  const unusedControl = 1;\n  void unusedControl;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "S1-missing-validator-A",
+    "kind": "A",
+    "describes": "producer 1 of false: a MISSING validator on either side stops counting as `not equal` and reads fields off undefined",
+    "edits": [
+      {
+        "file": "src/sync/SyncEngine.ts",
+        "old": "  if (!a || !b) return false;\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "S1-missing-validator-B",
+    "kind": "B",
+    "describes": "producer 1 inverted: two absent validators are called EQUAL, so a session the cache knows nothing about looks already-reconciled and is never repaired",
+    "edits": [
+      {
+        "file": "src/sync/SyncEngine.ts",
+        "old": "  if (!a || !b) return false;",
+        "new": "  if (!a && !b) return true;\n  if (!a || !b) return false;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "S2-no-last-event-id-A",
+    "kind": "A",
+    "describes": "producer 2 of undefined: a session with nothing cached sends Last-Event-ID: \"0\" instead of omitting the header, so the server is asked to resume from an event id that does not exist",
+    "edits": [
+      {
+        "file": "src/sync/SyncEngine.ts",
+        "old": "    return max > 0 ? String(Math.floor(max)) : undefined;",
+        "new": "    return String(Math.floor(max));"
+      }
+    ],
+    "tests": []
+  }
+]

@@ -1,0 +1,80 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "the canonical folder reverts to the lowercase spelling the server never writes -- the suite MUST redden, or nothing here observes the constant",
+    "edits": [
+      {
+        "file": "src/store/markDone.ts",
+        "old": "export const ARCHIVE_FOLDER = 'Archive';",
+        "new": "export const ARCHIVE_FOLDER = 'archive';"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement at the top of setSessionDone -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/store/markDone.ts",
+        "old": "  const { store, api } = deps;\n  const prior = store.getState().sessions.get(sessionId);",
+        "new": "  const unusedControl = 1;\n  void unusedControl;\n  const { store, api } = deps;\n  const prior = store.getState().sessions.get(sessionId);"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R1-no-such-session-guard",
+    "kind": "A",
+    "describes": "producer 1 of the bare `return`: setSessionDone stops checking the store holds the row, so it writes a session-shaped object with no id into the cache and POSTs mark-done for an id it cannot show",
+    "edits": [
+      {
+        "file": "src/store/markDone.ts",
+        "old": "  const prior = store.getState().sessions.get(sessionId);\n  if (!prior) return;\n",
+        "new": "  const prior = store.getState().sessions.get(sessionId);\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R2-archive-insert-ignores-done",
+    "kind": "B",
+    "describes": "producer 2a: the Archive mirror stops reading `done`, so UN-marking a session invents the Archive folder the server's SetSessionFolder was never asked to insert",
+    "edits": [
+      {
+        "file": "src/store/markDone.ts",
+        "old": "  if (done && !priorFolders.includes(ARCHIVE_FOLDER)) {",
+        "new": "  if (!priorFolders.includes(ARCHIVE_FOLDER)) {"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R3-archive-insert-ignores-existing",
+    "kind": "B",
+    "describes": "producer 2b: the Archive mirror stops checking the list already holds Archive, so marking a SECOND session done appends a duplicate Archive header -- the mirror of an INSERT that is a no-op server-side",
+    "edits": [
+      {
+        "file": "src/store/markDone.ts",
+        "old": "  if (done && !priorFolders.includes(ARCHIVE_FOLDER)) {",
+        "new": "  if (done) {"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R4-revert-drops-the-folder-list",
+    "kind": "B",
+    "describes": "producer 3: a refused mark-done reverts the row but not the folder list, leaving the invented Archive folder behind as an empty group",
+    "edits": [
+      {
+        "file": "src/store/markDone.ts",
+        "old": "    store.getState().actions.setFolders(priorFolders);\n    store.getState().actions.upsertSession(prior);",
+        "new": "    store.getState().actions.upsertSession(prior);"
+      }
+    ],
+    "tests": []
+  }
+]

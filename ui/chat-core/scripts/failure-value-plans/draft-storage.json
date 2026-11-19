@@ -1,0 +1,55 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "isPersistedDraft always answers its failure value -- the suite MUST redden, or nothing exercises this file",
+    "edits": [
+      {
+        "file": "src/store/draftStorage.ts",
+        "old": "function isPersistedDraft(value: unknown): value is PersistedDraft {\n",
+        "new": "function isPersistedDraft(value: unknown): value is PersistedDraft {\n  if (true) return false;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/store/draftStorage.ts",
+        "old": "function isPersistedDraft(value: unknown): value is PersistedDraft {\n",
+        "new": "function isPersistedDraft(value: unknown): value is PersistedDraft {\n  const unusedControl = 1;\n  void unusedControl;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "D1-not-an-object-A",
+    "kind": "A",
+    "describes": "producer 1 of false: the `is it even an object` guard goes, so a null entry in the stored record reads its fields and throws instead of being discarded",
+    "edits": [
+      {
+        "file": "src/store/draftStorage.ts",
+        "old": "  if (typeof value !== 'object' || value === null) return false;\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "D1-not-an-object-B",
+    "kind": "B",
+    "describes": "producer 1 narrowed to null alone: a stored STRING or NUMBER where a draft record belongs now reaches the field checks",
+    "edits": [
+      {
+        "file": "src/store/draftStorage.ts",
+        "old": "  if (typeof value !== 'object' || value === null) return false;",
+        "new": "  if (value === null) return false;"
+      }
+    ],
+    "tests": [],
+    "expected_unnoticed": "the `typeof value !== 'object'` half is unreachable through this file's only input path. The value always comes from JSON.parse of the stored record, and for every JSON-producible value the remaining field checks reach the same verdict: measured over 19 of them (null, booleans, numbers, strings, arrays, and objects missing or mistyping each field) with 0 differences. A primitive has no `.text`, so it is refused one line later instead of one line earlier. The ONLY shape the two forms disagree on is a function carrying both fields, which JSON.parse cannot produce. D1-not-an-object-A is what pins the guard (it is the null case, where the typeof test alone would read a field off null). This declaration goes stale the moment isPersistedDraft is called with anything that did not come from JSON.parse."
+  }
+]

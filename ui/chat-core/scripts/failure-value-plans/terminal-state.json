@@ -1,0 +1,80 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "terminalStateFromTail always answers its failure value -- the suite MUST redden, or nothing exercises this file",
+    "edits": [
+      {
+        "file": "src/reduce/terminalState.ts",
+        "old": "  if (!model) return null;\n",
+        "new": "  if (!model) return null;\n  if (true) return null;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/reduce/terminalState.ts",
+        "old": "  if (!model) return null;\n",
+        "new": "  if (!model) return null;\n  const unusedControl = 1;\n  void unusedControl;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "T1-no-model-A",
+    "kind": "A",
+    "describes": "producer 1 of null: a session whose turns have never been fetched stops answering `not terminal` and throws a TypeError instead. selectors.ts:393 feeds this `state.turnsBySession.get(sessionId)`, so undefined is the ordinary input for every sidebar row that has not been opened -- not an edge case",
+    "edits": [
+      {
+        "file": "src/reduce/terminalState.ts",
+        "old": "  if (!model) return null;\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "T1-no-model-B",
+    "kind": "B",
+    "describes": "producer 1 confused with producer 2: an unfetched session is reported as a COMPLETED turn rather than as no information. This is the B shape -- the guard still fires, so nothing throws, and the wrong answer is a plausible one",
+    "edits": [
+      {
+        "file": "src/reduce/terminalState.ts",
+        "old": "  if (!model) return null;\n",
+        "new": "  if (!model) return 'completed';\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "T2-no-terminal-entry-A",
+    "kind": "A",
+    "describes": "producer 2 of null: a tail carrying no terminal signal at all stops answering null and reports the turn completed",
+    "edits": [
+      {
+        "file": "src/reduce/terminalState.ts",
+        "old": "  return best ? best.state : null;",
+        "new": "  return best ? best.state : 'completed';"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "T2-no-terminal-entry-B",
+    "kind": "B",
+    "describes": "producer 2 narrowed rather than deleted: an informational `api_error` is admitted as a terminal error, so the not-terminal answer is produced for a strictly smaller set of tails. The card's B shape -- another producer covers the input, so `best` is set and the null never happens",
+    "edits": [
+      {
+        "file": "src/reduce/terminalState.ts",
+        "old": "    } else if (e.kind === 'error' && e.code && TERMINAL_ERROR_CODES.has(e.code)) {",
+        "new": "    } else if (e.kind === 'error' && e.code) {"
+      }
+    ],
+    "tests": []
+  }
+]

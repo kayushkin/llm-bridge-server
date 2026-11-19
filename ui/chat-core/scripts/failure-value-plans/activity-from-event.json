@@ -1,0 +1,171 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "every event reads as idle -- the suite MUST redden, or it never ran",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "  const type = event.type;\n",
+        "new": "  const type = event.type;\n  if (type !== undefined) return IDLE_ACTIVITY;\n"
+      }
+    ]
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "  const type = event.type;\n",
+        "new": "  const type = event.type;\n  const unusedControl = 1;\n  void unusedControl;\n"
+      }
+    ]
+  },
+  {
+    "id": "P1-terminal-types-A",
+    "kind": "A",
+    "describes": "producer 1 of IDLE: drop the TERMINAL_EVENT_TYPES ending entirely",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "  if (TERMINAL_EVENT_TYPES.has(type)) return IDLE_ACTIVITY;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "P1-terminal-types-B",
+    "kind": "B",
+    "describes": "producer 1 narrowed to `result` alone -- turn_complete/close fall through to another producer (the switch default's null)",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "  if (TERMINAL_EVENT_TYPES.has(type)) return IDLE_ACTIVITY;",
+        "new": "  if (type === 'result') return IDLE_ACTIVITY;"
+      }
+    ]
+  },
+  {
+    "id": "P2-error-code-A",
+    "kind": "A",
+    "describes": "producer 2 of IDLE: a terminal error code no longer ends the turn (always null)",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "    return code && TERMINAL_ERROR_CODES.has(code) ? IDLE_ACTIVITY : null;",
+        "new": "    return null;"
+      }
+    ]
+  },
+  {
+    "id": "P2-error-code-B",
+    "kind": "B",
+    "describes": "producer 2 of null: the informational half is gone, so the IDLE producer covers every error",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "    return code && TERMINAL_ERROR_CODES.has(code) ? IDLE_ACTIVITY : null;",
+        "new": "    return IDLE_ACTIVITY;"
+      }
+    ]
+  },
+  {
+    "id": "P3-missing-state-A",
+    "kind": "B",
+    "describes": "producer 3 of null: drop the `no state` guard and let isRunningState(undefined) drive the SAME event to the IDLE producer below",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "    if (!state) return null;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "P4-running-state-A",
+    "kind": "A",
+    "describes": "producer 4: a session_state event never ends the turn (always null)",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "    return isRunningState(state) ? null : IDLE_ACTIVITY;",
+        "new": "    return null;"
+      }
+    ]
+  },
+  {
+    "id": "P4-running-state-B",
+    "kind": "B",
+    "describes": "producer 4 inverted: a RUNNING session_state now reaches the IDLE producer, blanking a live label",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "    return isRunningState(state) ? null : IDLE_ACTIVITY;",
+        "new": "    return IDLE_ACTIVITY;"
+      }
+    ]
+  },
+  {
+    "id": "P5-switch-default-A",
+    "kind": "A",
+    "describes": "producer 5 of null: an event that says nothing now reads as idle, blanking the label between two deltas",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "    default:\n      return null;",
+        "new": "    default:\n      return IDLE_ACTIVITY;"
+      }
+    ]
+  },
+  {
+    "id": "P6-tool-name-fallback-A",
+    "kind": "A",
+    "describes": "producer 6: the empty-name fallback goes, so a nameless tool_call carries `undefined`",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "      return { kind: 'tool', name: event.data.tool_call?.name ?? '' };",
+        "new": "      return { kind: 'tool', name: event.data.tool_call?.name as string };"
+      }
+    ]
+  },
+  {
+    "id": "P7-same-kind-A",
+    "kind": "A",
+    "describes": "producer 7 of false: sameActivity stops separating two different kinds",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "  if (a.kind !== b.kind) return false;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "P8-same-tool-name-A",
+    "kind": "A",
+    "describes": "producer 8 of false: two tool activities naming DIFFERENT tools now read as the same",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/activity.ts",
+        "old": "  if (a.kind === 'tool' && b.kind === 'tool') return a.name === b.name;\n",
+        "new": ""
+      }
+    ]
+  }
+]

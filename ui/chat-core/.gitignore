@@ -1,0 +1,26 @@
+# Both forms: the trailing-slash rule matches only a directory, and an
+# accidental node_modules SYMLINK slipped past it into 6f078b1.
+node_modules/
+node_modules
+dist/
+*.tsbuildinfo
+coverage/
+
+# Host-specific config goes under ./.local/ (OSS convention)
+.local/
+.env
+.env.*
+*.key
+*.pem
+credentials.*
+secrets.*
+# ...but never ignore source files that happen to match the globs above
+!*.ts
+!*.tsx
+
+# Scratch output from scripts/sabotage-failure-value.py and its scan
+mutation-results.json
+failure-value-tests.json
+
+# Playwright/vitest run output
+test-results/

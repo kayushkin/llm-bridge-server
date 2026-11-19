@@ -1,0 +1,126 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "inProgressTodoText always answers its failure value -- the suite MUST redden, or nothing exercises the todo readout",
+    "edits": [
+      {
+        "file": "src/store/liveStatus.ts",
+        "old": "  if (typeof input !== 'object' || input === null) return undefined;\n",
+        "new": "  if (true) return undefined;\n  if (typeof input !== 'object' || input === null) return undefined;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/store/liveStatus.ts",
+        "old": "  if (typeof input !== 'object' || input === null) return undefined;\n",
+        "new": "  const unusedControl = 1;\n  void unusedControl;\n  if (typeof input !== 'object' || input === null) return undefined;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "L1-not-an-object-A",
+    "kind": "A",
+    "describes": "producer 1 of undefined: a non-object toolInput (a bare string, a number, null) stops being rejected and reaches the `.todos` read on a primitive",
+    "edits": [
+      {
+        "file": "src/store/liveStatus.ts",
+        "old": "  if (typeof input !== 'object' || input === null) return undefined;\n",
+        "new": ""
+      }
+    ],
+    "tests": [],
+    "expected_unnoticed": "neither half of this guard is observable through the function's only call path, measured rather than assumed. `inProgressTodoText` has exactly one caller, `deriveStatus` (liveStatus.ts:176), and it skips any entry whose `toolInput === undefined`. A wire `tool_call` carrying `input: null` is normalized to `toolInput: undefined` by TurnReducer -- probed directly -- so NULL CAN NEVER ARRIVE HERE, and the `input === null` half has no reachable input. For every non-null primitive the remaining path reaches the identical `undefined` one line later: a string, a number and a boolean all have no `.todos`, so producer 2's `!Array.isArray(todos)` refuses them. L1-and-the-caller-filter-jointly is what pins the pair, and it IS caught. This declaration goes stale the moment `inProgressTodoText` gains a second caller, or `deriveStatus` stops filtering `toolInput === undefined`, or TurnReducer starts preserving a null tool input."
+  },
+  {
+    "id": "L1-not-an-object-B",
+    "kind": "B",
+    "describes": "producer 1 narrowed: null is admitted while other primitives are still rejected. The B shape -- the guard still fires for most inputs, so only the null case changes and producer 2 covers it",
+    "edits": [
+      {
+        "file": "src/store/liveStatus.ts",
+        "old": "  if (typeof input !== 'object' || input === null) return undefined;\n",
+        "new": "  if (typeof input !== 'object') return undefined;\n"
+      }
+    ],
+    "tests": [],
+    "expected_unnoticed": "neither half of this guard is observable through the function's only call path, measured rather than assumed. `inProgressTodoText` has exactly one caller, `deriveStatus` (liveStatus.ts:176), and it skips any entry whose `toolInput === undefined`. A wire `tool_call` carrying `input: null` is normalized to `toolInput: undefined` by TurnReducer -- probed directly -- so NULL CAN NEVER ARRIVE HERE, and the `input === null` half has no reachable input. For every non-null primitive the remaining path reaches the identical `undefined` one line later: a string, a number and a boolean all have no `.todos`, so producer 2's `!Array.isArray(todos)` refuses them. L1-and-the-caller-filter-jointly is what pins the pair, and it IS caught. This declaration goes stale the moment `inProgressTodoText` gains a second caller, or `deriveStatus` stops filtering `toolInput === undefined`, or TurnReducer starts preserving a null tool input."
+  },
+  {
+    "id": "L1-and-the-caller-filter-jointly",
+    "kind": "B",
+    "describes": "producer 1 AND the caller's undefined filter, removed together: a TodoWrite whose wire input was null now reaches the body as `undefined` with no guard in front of it, and `undefined.todos` throws out of deriveStatus -- taking tool calls and subagents down with the todo readout. This is the pair the two L1 declarations lean on; it exists so that 'unobservable separately' is a measurement rather than an excuse",
+    "edits": [
+      {
+        "file": "src/store/liveStatus.ts",
+        "old": "  if (typeof input !== 'object' || input === null) return undefined;\n",
+        "new": ""
+      },
+      {
+        "file": "src/store/liveStatus.ts",
+        "old": "      if (entry.toolName !== 'TodoWrite' || entry.toolInput === undefined) continue;\n",
+        "new": "      if (entry.toolName !== 'TodoWrite') continue;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "L2-todos-not-an-array-A",
+    "kind": "A",
+    "describes": "producer 2 of undefined: a TodoWrite input whose `todos` is not an array stops being rejected -- an untyped wire blob reaches the for-of and throws",
+    "edits": [
+      {
+        "file": "src/store/liveStatus.ts",
+        "old": "  if (!Array.isArray(todos)) return undefined;\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "L2-todos-not-an-array-B",
+    "kind": "B",
+    "describes": "producer 2 loosened to a truthiness test: a non-empty string `todos` passes the guard and is iterated character by character, so a wire blob spelling todos as text yields a one-character status readout",
+    "edits": [
+      {
+        "file": "src/store/liveStatus.ts",
+        "old": "  if (!Array.isArray(todos)) return undefined;\n",
+        "new": "  if (!todos) return undefined;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "L3-no-in-progress-item-A",
+    "kind": "A",
+    "describes": "producer 3 of undefined: a todo list with nothing in progress stops answering `no readout` and reports the LAST item whatever its status",
+    "edits": [
+      {
+        "file": "src/store/liveStatus.ts",
+        "old": "    if (record.status !== 'in_progress') continue;\n    return asString(record.activeForm) ?? asString(record.content);\n  }\n  return undefined;",
+        "new": "    return asString(record.activeForm) ?? asString(record.content);\n  }\n  return undefined;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "L3-no-in-progress-item-B",
+    "kind": "B",
+    "describes": "producer 3 covered by a neighbor: `completed` is admitted alongside `in_progress`, so a finished list reports its last completed item as though it were live work",
+    "edits": [
+      {
+        "file": "src/store/liveStatus.ts",
+        "old": "    if (record.status !== 'in_progress') continue;\n",
+        "new": "    if (record.status !== 'in_progress' && record.status !== 'completed') continue;\n"
+      }
+    ],
+    "tests": []
+  }
+]

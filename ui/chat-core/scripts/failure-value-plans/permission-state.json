@@ -1,0 +1,54 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "the prior-detail snapshot always answers its failure value -- the suite MUST redden, or nothing exercises this file",
+    "edits": [
+      {
+        "file": "src/store/permissionState.ts",
+        "old": "  const prior = store.getState().sessionDetail.get(sessionId) ?? null;\n",
+        "new": "  const prior = null;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/store/permissionState.ts",
+        "old": "  const prior = store.getState().sessionDetail.get(sessionId) ?? null;\n",
+        "new": "  const unusedControl = 1;\n  void unusedControl;\n  const prior = store.getState().sessionDetail.get(sessionId) ?? null;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R1-no-prior-detail-A",
+    "kind": "A",
+    "describes": "producer 1 of null: the revert branch stops distinguishing `there was no cached detail` from `there was one`, so a failed PUT writes an undefined detail into the cache",
+    "edits": [
+      {
+        "file": "src/store/permissionState.ts",
+        "old": "    if (prior) store.getState().actions.setSessionDetail(sessionId, prior);",
+        "new": "    store.getState().actions.setSessionDetail(sessionId, prior as never);"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R1-no-prior-detail-B",
+    "kind": "B",
+    "describes": "producer 1's whole point: the revert is dropped, so a server refusal leaves the optimistic patch on screen describing a state the server is not in",
+    "edits": [
+      {
+        "file": "src/store/permissionState.ts",
+        "old": "    if (prior) store.getState().actions.setSessionDetail(sessionId, prior);\n    throw e;",
+        "new": "    throw e;"
+      }
+    ],
+    "tests": []
+  }
+]

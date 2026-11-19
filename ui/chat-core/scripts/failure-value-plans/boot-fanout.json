@@ -1,0 +1,120 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "the boot summary read always answers its failure value -- the suite MUST redden, or nothing exercises the boot fan-out",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "      .then((resp) => {\n        // `resp.next` is the only truncation signal the endpoint offers (it carries no\n",
+        "new": "      .then((resp) => {\n        if (true) return null;\n        // `resp.next` is the only truncation signal the endpoint offers (it carries no\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "      .then((resp) => {\n        // `resp.next` is the only truncation signal the endpoint offers (it carries no\n",
+        "new": "      .then((resp) => {\n        const unusedControl = 1;\n        void unusedControl;\n        // `resp.next` is the only truncation signal the endpoint offers (it carries no\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P1-summary-catch-A",
+    "kind": "A",
+    "describes": "producer 1 of null: the summary read stops swallowing its failure, so a rejected boot read rejects the Promise.all and takes the whole boot down instead of degrading",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "        return resp;\n      })\n      .catch(() => null);\n",
+        "new": "        return resp;\n      });\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P1-summary-catch-B",
+    "kind": "B",
+    "describes": "producer 1 answers an EMPTY RESULT instead of a failure: a sidebar that failed to load is now indistinguishable from an account with no sessions. This is `d80db401` item 2's shape -- a partial failure landing in a value with no field to hold it -- moved from dash's fan-out into this one",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "        return resp;\n      })\n      .catch(() => null);\n",
+        "new": "        return resp;\n      })\n      .catch(() => {\n        actions.setSessions([], null);\n        return null;\n      });\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P2-bundle-catch-A",
+    "kind": "A",
+    "describes": "producer 2 of null: the recent-bundle read stops swallowing its failure, so one failed bundle fetch rejects boot for every session rather than leaving the turns unhydrated",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "        return bundle;\n      })\n      .catch(() => null);\n",
+        "new": "        return bundle;\n      });\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P3-validators-catch-A",
+    "kind": "A",
+    "describes": "producer 3 of null: the validator read stops swallowing its failure. Unlike the others this one has a sibling producing the same null on the empty-id branch, so a caller that cannot tell them apart is the thing at risk",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "        ? this.api.getValidators(cachedIds).catch(() => null)\n",
+        "new": "        ? this.api.getValidators(cachedIds)\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P3-validators-catch-B",
+    "kind": "B",
+    "describes": "producer 3 confused with its sibling: a FAILED validator read now answers exactly what `no cached ids` answers, so a cache that could not be revalidated is treated as a cache with nothing to revalidate",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "        ? this.api.getValidators(cachedIds).catch(() => null)\n        : Promise.resolve(null);\n",
+        "new": "        ? this.api.getValidators(cachedIds).catch(() => null)\n        : this.api.getValidators([]).catch(() => null);\n"
+      }
+    ],
+    "tests": [],
+    "expected_unnoticed": "no request is made either way and the value is discarded, so nothing downstream can see it -- measured on both halves. `ApiClient.getValidators` short-circuits an empty id list to `Promise.resolve({})` BEFORE building a url (ApiClient.ts:429), so the mutated empty-ids branch issues no HTTP call and the url recorder cannot separate them. And `validatorsP` is consumed only by `await Promise.all([...])` with the result discarded, so `{}` and `null` reach no consumer at all. P3-validators-catch-A is what pins this read -- it fails the boot when the request rejects, and 'does issue the validator read when there ARE cached ids' pins that the branch is reachable. This declaration goes stale the moment `getValidators` stops short-circuiting an empty list, or `Promise.all`'s result is destructured and the validator value read."
+  },
+  {
+    "id": "P4-folders-catch-A",
+    "kind": "A",
+    "describes": "producer 4 of null: the folder read stops swallowing its failure. The comment above it states the intended degradation -- `A failure leaves folders empty, which grouping already treats as not loaded` -- so this mutation asks whether that stated contract is pinned anywhere",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "        return folders;\n      })\n      .catch(() => null);\n",
+        "new": "        return folders;\n      });\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P4-folders-catch-B",
+    "kind": "B",
+    "describes": "producer 4 writes an empty folder list on failure instead of leaving it unset: grouping can no longer tell `folders never loaded` from `this account has no folders`, and the degradation the comment promises is exactly what stops happening",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "        return folders;\n      })\n      .catch(() => null);\n",
+        "new": "        return folders;\n      })\n      .catch(() => {\n        actions.setFolders([]);\n        return null;\n      });\n"
+      }
+    ],
+    "tests": []
+  }
+]

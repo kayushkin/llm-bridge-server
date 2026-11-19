@@ -1,0 +1,66 @@
+{
+  "name": "@kayushkin/chat-core",
+  "version": "0.0.1",
+  "description": "Framework-light data layer for dash's chat surface: in-memory store, IndexedDB cache, SSE sync engine, and a non-destructive turn reducer. Renders from memory; the network only reconciles.",
+  "license": "MIT",
+  "author": "Slava Kayushkin <slava@kayushkin.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kayushkin/chat-core.git"
+  },
+  "homepage": "https://github.com/kayushkin/chat-core#readme",
+  "bugs": {
+    "url": "https://github.com/kayushkin/chat-core/issues"
+  },
+  "keywords": [
+    "chat",
+    "sse",
+    "indexeddb",
+    "zustand",
+    "react",
+    "offline-first",
+    "optimistic-ui",
+    "data-layer"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "prepare": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "//check": "The assertion the nightly repo-node-guard runs. `test` only, deliberately: tsconfig.json has include:[src] and excludes test/, and dist/ + *.tsbuildinfo are gitignored, so in a clean clone `build` (tsc -b) already type-checks exactly the files `typecheck` (tsc --noEmit) would. Adding typecheck here would re-run the build stage's own check and still not reach the test tree.",
+    "check": "npm run test"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "dependencies": {
+    "idb": "^8.0.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.2.4",
+    "fake-indexeddb": "^6.0.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.8",
+    "typescript": "~5.9.3",
+    "vitest": "^2.1.0"
+  }
+}

@@ -1,0 +1,80 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "getPendingHooks always answers its failure value -- the suite MUST redden, or nothing exercises the parked-hook hydration",
+    "edits": [
+      {
+        "file": "src/net/ApiClient.ts",
+        "old": "    if (!Array.isArray(events)) return [];\n",
+        "new": "    if (true) return [];\n    if (!Array.isArray(events)) return [];\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/net/ApiClient.ts",
+        "old": "    if (!Array.isArray(events)) return [];\n",
+        "new": "    const unusedControl = 1;\n    void unusedControl;\n    if (!Array.isArray(events)) return [];\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "A1-hooks-not-an-array-A",
+    "kind": "A",
+    "describes": "producer of []: a /hooks/pending body that is not an array (an error object, null, a bare string) stops being rejected and reaches the for-of, taking the hydration down with a TypeError instead of showing no banner",
+    "edits": [
+      {
+        "file": "src/net/ApiClient.ts",
+        "old": "    if (!Array.isArray(events)) return [];\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "A1-hooks-not-an-array-B",
+    "kind": "B",
+    "describes": "the guard loosened to a truthiness test: a non-array truthy body passes and is iterated, so an object body yields no hooks while a string body is walked character by character. The B shape -- null still returns [], so the obvious case still behaves",
+    "edits": [
+      {
+        "file": "src/net/ApiClient.ts",
+        "old": "    if (!Array.isArray(events)) return [];\n",
+        "new": "    if (!events) return [];\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "A2-signals-404-A",
+    "kind": "A",
+    "describes": "producer of null: a bridge-server predating the signals API stops being recognized, and its 404 falls through to the throw -- every signal surface shows an error instead of rendering nothing",
+    "edits": [
+      {
+        "file": "src/net/ApiClient.ts",
+        "old": "    if (res.status === 404) return null;\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "A2-signals-404-B",
+    "kind": "B",
+    "describes": "the 404 test widened to every non-2xx: a real server failure is now swallowed as `this server has no signals feature` and renders nothing, which is the lie the docstring says `[]` would be -- in the other direction",
+    "edits": [
+      {
+        "file": "src/net/ApiClient.ts",
+        "old": "    if (res.status === 404) return null;\n",
+        "new": "    if (!res.ok) return null;\n"
+      }
+    ],
+    "tests": []
+  }
+]

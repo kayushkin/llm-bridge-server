@@ -1,0 +1,54 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "raiseCeiling always answers a refusal -- the suite MUST redden, or nothing exercises this hook",
+    "edits": [
+      {
+        "file": "src/react/hooks.ts",
+        "old": "      actions.clearBudgetHalt(sessionId);\n      return null;\n",
+        "new": "      actions.clearBudgetHalt(sessionId);\n      return 'control refusal';\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/react/hooks.ts",
+        "old": "      actions.clearBudgetHalt(sessionId);\n      return null;\n",
+        "new": "      const unusedControl = 1;\n      void unusedControl;\n      actions.clearBudgetHalt(sessionId);\n      return null;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "H1-raised-ok-A",
+    "kind": "A",
+    "describes": "producer of null: the `raised, nothing to report` answer becomes the empty string. Any caller testing `!message` still reads success, so only a caller that distinguishes null from '' notices",
+    "edits": [
+      {
+        "file": "src/react/hooks.ts",
+        "old": "      actions.clearBudgetHalt(sessionId);\n      return null;\n",
+        "new": "      actions.clearBudgetHalt(sessionId);\n      return '';\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "H1-raised-ok-B",
+    "kind": "B",
+    "describes": "the refusal path is covered by the success producer: a server that refused the raise now answers null, so the UI reads `raised` and clears nothing. This is exactly the silence the docstring says would make the very next send be refused again",
+    "edits": [
+      {
+        "file": "src/react/hooks.ts",
+        "old": "        return e instanceof Error ? e.message : String(e);\n",
+        "new": "        return null;\n"
+      }
+    ],
+    "tests": []
+  }
+]

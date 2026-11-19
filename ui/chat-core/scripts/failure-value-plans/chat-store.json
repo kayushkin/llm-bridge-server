@@ -1,0 +1,67 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "patchPending always answers its failure value -- the suite MUST redden, or nothing exercises this file",
+    "edits": [
+      {
+        "file": "src/store/ChatStore.ts",
+        "old": "      patchPending(patch) {\n        const current = get().pending;",
+        "new": "      patchPending(patch) {\n        if (true) return null;\n        const current = get().pending;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/store/ChatStore.ts",
+        "old": "      patchPending(patch) {\n        const current = get().pending;",
+        "new": "      patchPending(patch) {\n        const unusedControl = 1;\n        void unusedControl;\n        const current = get().pending;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "C1-patch-config-uncached-A",
+    "kind": "A",
+    "describes": "producer 1 of null: patching the harness config of a session with NO cached detail stops being a no-op and throws instead",
+    "edits": [
+      {
+        "file": "src/store/ChatStore.ts",
+        "old": "        const prev = get().sessionDetail.get(sessionId);\n        if (!prev) return null;",
+        "new": "        const prev = get().sessionDetail.get(sessionId)!;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "C1-patch-config-uncached-B",
+    "kind": "B",
+    "describes": "producer 1 made lossy: the no-op branch still returns null, but a cached session now reports null as its PRIOR config, so a caller that reverts on failure reverts to nothing",
+    "edits": [
+      {
+        "file": "src/store/ChatStore.ts",
+        "old": "        set({ sessionDetail });\n        return prevConfig;",
+        "new": "        set({ sessionDetail });\n        return null;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "C2-patch-pending-no-pane-A",
+    "kind": "A",
+    "describes": "producer 2 of null: with no pending pane open, `{ ...current }` spreads null into a FRESH pane -- so touching a select in a controls bar silently starts a new chat, which the comment above the guard says must not happen",
+    "edits": [
+      {
+        "file": "src/store/ChatStore.ts",
+        "old": "        // No pane, nothing to patch. Deliberately NOT \"open one\": a select in a\n        // controls bar must not be able to start a new chat by being touched.\n        if (!current) return null;\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  }
+]

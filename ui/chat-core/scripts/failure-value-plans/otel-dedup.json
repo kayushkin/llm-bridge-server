@@ -1,0 +1,80 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "dedupClass always answers its failure value -- the suite MUST redden, or nothing exercises this file",
+    "edits": [
+      {
+        "file": "src/reduce/otelDedup.ts",
+        "old": "function dedupClass(entry: Entry): 'assistant' | 'user' | null {\n",
+        "new": "function dedupClass(entry: Entry): 'assistant' | 'user' | null {\n  if (true) return null;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/reduce/otelDedup.ts",
+        "old": "function dedupClass(entry: Entry): 'assistant' | 'user' | null {\n",
+        "new": "function dedupClass(entry: Entry): 'assistant' | 'user' | null {\n  const unusedControl = 1;\n  void unusedControl;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "O1-not-a-dual-emit-class-A",
+    "kind": "A",
+    "describes": "producer 1 of null: an entry in NEITHER dual-emit class (a tool call, an error) falls through to 'assistant' instead of being excluded from dedup entirely",
+    "edits": [
+      {
+        "file": "src/reduce/otelDedup.ts",
+        "old": "  if (entry.role === 'user' && entry.kind === 'text') {\n    return 'user';\n  }\n  return null;\n}",
+        "new": "  if (entry.role === 'user' && entry.kind === 'text') {\n    return 'user';\n  }\n  return 'assistant';\n}"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "O1-not-a-dual-emit-class-B",
+    "kind": "B",
+    "describes": "producer 1 narrowed: assistant `result` entries stop being a dual-emit class, so a result and its OTel copy are no longer paired",
+    "edits": [
+      {
+        "file": "src/reduce/otelDedup.ts",
+        "old": "  if (entry.role === 'assistant' && (entry.kind === 'text' || entry.kind === 'result')) {",
+        "new": "  if (entry.role === 'assistant' && entry.kind === 'text') {"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "O2-groupMembers-unknown-id-A",
+    "kind": "A",
+    "describes": "producer 2 of []: an id matching no entry stops answering `no members` and takes the caller down with a TypeError instead",
+    "edits": [
+      {
+        "file": "src/reduce/otelDedup.ts",
+        "old": "  const target = entries.find((e) => e.id === entryId);\n  if (!target) return [];\n",
+        "new": "  const target = entries.find((e) => e.id === entryId)!;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "O2-groupMembers-unknown-id-B",
+    "kind": "B",
+    "describes": "producer 2 confused with the ungrouped case: an unknown id now answers with the whole entry list rather than nothing",
+    "edits": [
+      {
+        "file": "src/reduce/otelDedup.ts",
+        "old": "  if (!target) return [];\n  if (!target.groupId) return [target];",
+        "new": "  if (!target) return entries;\n  if (!target.groupId) return [target];"
+      }
+    ],
+    "tests": []
+  }
+]

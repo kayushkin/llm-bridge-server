@@ -1,0 +1,81 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "pendingHookFromWire always answers its failure value -- the suite MUST redden, or nothing exercises this file",
+    "edits": [
+      {
+        "file": "src/store/pendingHooks.ts",
+        "old": "export function pendingHookFromWire(w: HookEventWire | undefined): PendingHook | null {\n",
+        "new": "export function pendingHookFromWire(w: HookEventWire | undefined): PendingHook | null {\n  if (true) return null;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/store/pendingHooks.ts",
+        "old": "export function pendingHookFromWire(w: HookEventWire | undefined): PendingHook | null {\n",
+        "new": "export function pendingHookFromWire(w: HookEventWire | undefined): PendingHook | null {\n  const unusedControl = 1;\n  void unusedControl;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "H1-absent-hook-A",
+    "kind": "A",
+    "describes": "producer 1 of null, first half: an event carrying NO hook payload at all stops being refused",
+    "edits": [
+      {
+        "file": "src/store/pendingHooks.ts",
+        "old": "  if (!w || !w.request_id) return null;",
+        "new": "  if (!w) return { requestId: '', event: '', phase: '', source: '' };\n  if (!w.request_id) return null;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "H2-no-request-id-A",
+    "kind": "A",
+    "describes": "producer 1 of null, second half: a hook with no request_id is projected anyway, so an entry keyed on '' parks a card the resolve endpoint can never address",
+    "edits": [
+      {
+        "file": "src/store/pendingHooks.ts",
+        "old": "  if (!w || !w.request_id) return null;",
+        "new": "  if (!w) return null;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "H3-resolve-prior-A",
+    "kind": "A",
+    "describes": "producer 2 of null: a refused resolve for a hook that was NOT in the map stops being distinguishable from one that was, so the catch restores an undefined entry",
+    "edits": [
+      {
+        "file": "src/store/pendingHooks.ts",
+        "old": "  const prior = store.getState().pendingHooks.get(sessionId)?.get(input.requestId) ?? null;",
+        "new": "  const prior = store.getState().pendingHooks.get(sessionId)?.get(input.requestId) as PendingHook;"
+      }
+    ],
+    "tests": [],
+    "expected_unnoticed": "`?? null` is a normalization with no observable consequence here: `prior` has exactly one consumer, `if (prior)`, and undefined and null are both falsy, so the restore is skipped identically either way. No assertion over the store or the thrown error can separate them. H3-resolve-prior-B is what pins the mechanism the snapshot exists for -- that a refused resolve puts a genuinely-parked hook back. This declaration goes stale the moment `prior` gets a second consumer, or the guard becomes a `!== null` test, which undefined would then pass."
+  },
+  {
+    "id": "H3-resolve-prior-B",
+    "kind": "B",
+    "describes": "producer 2's consumer: the restore-on-failure branch is removed, so a server refusal clears the card off screen for good and the parked tool call becomes unreachable",
+    "edits": [
+      {
+        "file": "src/store/pendingHooks.ts",
+        "old": "    if (prior) store.getState().actions.upsertPendingHook(sessionId, prior);\n    throw e;",
+        "new": "    throw e;"
+      }
+    ],
+    "tests": []
+  }
+]

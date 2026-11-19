@@ -1,0 +1,38 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "Prefetcher never runs the bound -- the two prime tests MUST redden",
+    "tests": ["test/listBoundWiring.test.ts"],
+    "edits": [{"file": "src/boot/Prefetcher.ts",
+      "old": "      void enforceCacheBound(this.cache, this.cacheLimit, this.sessionsPerPage);",
+      "new": "      void 0;"}]
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- MUST stay green",
+    "tests": ["test/listBoundWiring.test.ts"],
+    "edits": [{"file": "src/boot/Prefetcher.ts",
+      "old": "      void enforceCacheBound(this.cache, this.cacheLimit, this.sessionsPerPage);",
+      "new": "      void 1;\n      void enforceCacheBound(this.cache, this.cacheLimit, this.sessionsPerPage);"}]
+  },
+  {
+    "id": "LB-sweep-bound-removed",
+    "kind": "A",
+    "describes": "SyncEngine sweep never runs the bound -- the three sweep tests MUST redden",
+    "tests": ["test/listBoundWiring.test.ts"],
+    "edits": [{"file": "src/sync/SyncEngine.ts",
+      "old": "        void enforceCacheBound(this.cache, this.sweepLimit, this.sessionsPerPage);",
+      "new": "        void 0;"}]
+  },
+  {
+    "id": "LB-page-size-ignored",
+    "kind": "B",
+    "describes": "the bound uses the default constant instead of the configured page size -- a 200-row page is trimmed to 100",
+    "tests": ["test/listBoundWiring.test.ts"],
+    "edits": [{"file": "src/boot/Prefetcher.ts",
+      "old": "      void enforceCacheBound(this.cache, this.cacheLimit, this.sessionsPerPage);",
+      "new": "      void enforceCacheBound(this.cache, this.cacheLimit, 100);"}]
+  }
+]

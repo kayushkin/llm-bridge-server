@@ -1,0 +1,184 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "the transformer is replaced wholesale by its failure value -- walk() declines every node, so nothing is ever chipped. The suite MUST redden, or nothing here observes remarkRefChips at all",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "    const walk = (parent: MdParent): void => {\n      // `link` nodes keep their text verbatim (a linkified id keeps its link).\n      if (parent.type === 'link') return;",
+        "new": "    const walk = (parent: MdParent): void => {\n      if (true as boolean) return;\n      // `link` nodes keep their text verbatim (a linkified id keeps its link).\n      if (parent.type === 'link') return;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement at the top of the transformer -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "  return (tree: MdParent): void => {\n    const walk = (parent: MdParent): void => {",
+        "new": "  return (tree: MdParent): void => {\n    const unusedControl = 1;\n    void unusedControl;\n    const walk = (parent: MdParent): void => {"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R1-link-subtree-is-no-longer-verbatim",
+    "kind": "A",
+    "describes": "producer 1, the bare `return`: walk() stops declining `link` parents, so an id inside a pasted URL is cut out of the middle of the address",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "      // `link` nodes keep their text verbatim (a linkified id keeps its link).\n      if (parent.type === 'link') return;\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R2-link-decline-narrowed-to-the-root-call",
+    "kind": "B",
+    "describes": "producer 1 again, but only the RECURSIVE arm: the root call still declines a link tree, so a top-level link stays verbatim and only a link NESTED under a paragraph gets cut. Distinguishes 'link is declined' from 'the declining happens on every descent'",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "        if (isParent(node)) walk(node);",
+        "new": "        if (isParent(node)) {\n          for (let j = 0; j < node.children.length; j++) {\n            const inner = node.children[j];\n            if (inner === undefined) continue;\n            if (inner.type === 'text') {\n              const segs = parseRefChips((inner as MdText).value);\n              if (!segs.some((s) => s.type === 'chip')) continue;\n              const rep: MdNode[] = segs.map((s) =>\n                s.type === 'text' ? { type: 'text', value: s.value } : chip(s.kind, s.refId),\n              );\n              node.children.splice(j, 1, ...rep);\n              j += rep.length - 1;\n            }\n          }\n        }"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R3-undefined-hole-is-no-longer-skipped",
+    "kind": "A",
+    "describes": "producer 2: the sparse-hole guard goes, so a children array with a hole in it throws on `node.type` instead of skipping the hole",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "        const node = parent.children[i];\n        if (node === undefined) continue;",
+        "new": "        const node = parent.children[i] as MdNode;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R4-text-node-rewritten-with-no-chip-in-it",
+    "kind": "A",
+    "describes": "producer 3: the text branch stops checking a chip was actually found, so every plain-text node is spliced out and rebuilt. Identity is lost even where nothing matched",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "          // Only rewrite when at least one chip was found.\n          if (!segments.some((s) => s.type === 'chip')) continue;\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R5-empty-text-node-is-rewritten-away",
+    "kind": "B",
+    "describes": "producer 3 narrowed: the guard survives for text that HAS content but not for the empty string, which parseRefChips answers with zero segments -- so an empty text node is spliced out and vanishes rather than being left alone. The `.some()` and the emptiness are two separate reasons to decline and only one of them is being asked",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "          // Only rewrite when at least one chip was found.\n          if (!segments.some((s) => s.type === 'chip')) continue;",
+        "new": "          // Only rewrite when at least one chip was found.\n          if (segments.length > 0 && !segments.some((s) => s.type === 'chip')) continue;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R6-code-span-rewritten-with-no-chip-in-it",
+    "kind": "A",
+    "describes": "producer 4: the inlineCode branch stops checking a chip was found, so a backticked span holding no reference is torn into pieces and reassembled",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "          const segments = parseRefChips((node as MdInlineCode).value);\n          if (!segments.some((s) => s.type === 'chip')) continue;",
+        "new": "          const segments = parseRefChips((node as MdInlineCode).value);"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R7-fenced-block-is-chipped-like-an-inline-span",
+    "kind": "A",
+    "describes": "producer 5, the decline that is spelled as an ABSENCE: `code` is left alone only because the branch names `inlineCode` and nothing else. Widen the name and a fenced block -- a curl command, a JSON body -- is chipped and what a reader copies out is corrupted",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "        if (node.type === 'inlineCode') {",
+        "new": "        if (node.type === 'inlineCode' || node.type === 'code') {"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R8-code-span-leftover-stops-staying-code",
+    "kind": "A",
+    "describes": "producer 6: the non-reference leftover of a code span stops being re-emitted as code and becomes plain text, so `todo: <uuid>` in backticks loses the styling the author asked for",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "              : s.value.trim() === ''\n                ? { type: 'text', value: s.value }\n                : { type: 'inlineCode', value: s.value },",
+        "new": "              : { type: 'text', value: s.value },"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R9-whitespace-leftover-becomes-a-stray-code-span",
+    "kind": "B",
+    "describes": "producer 6's OTHER half: the whitespace-only escape hatch goes while the code re-emission stays, so a span that is entirely cue-word-plus-uuid leaves an empty inlineCode behind -- the stray tick-mark box the comment names. R8 deletes both halves at once and cannot tell them apart",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "              : s.value.trim() === ''\n                ? { type: 'text', value: s.value }\n                : { type: 'inlineCode', value: s.value },",
+        "new": "              : { type: 'inlineCode', value: s.value },"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R10-inserted-text-branch-nodes-are-rescanned",
+    "kind": "A",
+    "describes": "producer 7: the text branch's skip-past guard goes, so the loop walks back over the nodes it just inserted",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "          parent.children.splice(i, 1, ...replacement);\n          // Skip past the inserted nodes so their text is never re-scanned.\n          i += replacement.length - 1;\n          continue;",
+        "new": "          parent.children.splice(i, 1, ...replacement);\n          continue;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R11-inserted-code-branch-nodes-are-rescanned",
+    "kind": "A",
+    "describes": "producer 8: the inlineCode branch's own skip-past guard goes. Separate from R10 -- the two branches each carry the guard and a test of one says nothing about the other",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "          parent.children.splice(i, 1, ...replacement);\n          i += replacement.length - 1;\n          continue;\n        }\n        if (isParent(node)) walk(node);",
+        "new": "          parent.children.splice(i, 1, ...replacement);\n          continue;\n        }\n        if (isParent(node)) walk(node);"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R12-descent-stops-at-the-first-level",
+    "kind": "A",
+    "describes": "producer 9: the recursion goes entirely, so an id nested inside any container -- a list item, a blockquote, emphasis -- is never reached and silently renders as text",
+    "edits": [
+      {
+        "file": "src/reduce/refChips.ts",
+        "old": "        if (isParent(node)) walk(node);",
+        "new": ""
+      }
+    ],
+    "tests": []
+  }
+]

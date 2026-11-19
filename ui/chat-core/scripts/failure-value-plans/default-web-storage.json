@@ -1,0 +1,112 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "defaultWebStorage always answers `no storage here` -- the suite MUST redden, or nothing exercises this file",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/webStorage.ts",
+        "old": "  try {\n    // Ask whether there is a document first.",
+        "new": "  if (true) return null;\n  try {\n    // Ask whether there is a document first."
+      }
+    ]
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/webStorage.ts",
+        "old": "  try {\n    // Ask whether there is a document first.",
+        "new": "  const unusedControl = 1;\n  void unusedControl;\n  try {\n    // Ask whether there is a document first."
+      }
+    ]
+  },
+  {
+    "id": "W1-no-window-A",
+    "kind": "A",
+    "describes": "producer 1 of null: drop the `is there a window` guard, so a server reads Node's lazy localStorage stub",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/webStorage.ts",
+        "old": "    if (typeof (globalThis as { window?: unknown }).window === 'undefined') return null;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W2-no-candidate-alone",
+    "kind": "B",
+    "describes": "producer 2 of null alone: the guard goes, the read below throws on the same input, and producer 4's catch turns that throw into the identical null",
+    "expected_unnoticed": "producers 2 and 4 answer the same input with the same value by two different routes, so no assertion over the return value can separate them; W2-and-W4-jointly is what pins the pair, and this declaration goes stale the moment that stops being true",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/webStorage.ts",
+        "old": "    if (!candidate) return null;\n    if (\n      typeof candidate.getItem !== 'function' ||",
+        "new": "    if (\n      typeof candidate!.getItem !== 'function' ||"
+      }
+    ]
+  },
+  {
+    "id": "W2-and-W4-jointly",
+    "kind": "B",
+    "describes": "producers 2 and 4 removed TOGETHER: with no guard and no catch, an absent localStorage throws out of the function instead of answering null",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/webStorage.ts",
+        "old": "    if (!candidate) return null;\n    if (\n      typeof candidate.getItem !== 'function' ||",
+        "new": "    if (\n      typeof candidate!.getItem !== 'function' ||"
+      },
+      {
+        "file": "src/store/webStorage.ts",
+        "old": "  } catch {\n    return null;\n  }",
+        "new": "  } catch (thrown) {\n    throw thrown;\n  }"
+      }
+    ]
+  },
+  {
+    "id": "W3-method-probe-A",
+    "kind": "A",
+    "describes": "producer 3 of null: drop the method probe, so an object that merely EXISTS is handed back as storage",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/webStorage.ts",
+        "old": "    if (\n      typeof candidate.getItem !== 'function' ||\n      typeof candidate.setItem !== 'function' ||\n      typeof candidate.removeItem !== 'function'\n    ) {\n      return null;\n    }\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "W3-method-probe-B",
+    "kind": "B",
+    "describes": "producer 3 narrowed to getItem alone -- a read-only stub with no setItem now passes the probe",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/webStorage.ts",
+        "old": "      typeof candidate.getItem !== 'function' ||\n      typeof candidate.setItem !== 'function' ||\n      typeof candidate.removeItem !== 'function'\n",
+        "new": "      typeof candidate.getItem !== 'function'\n"
+      }
+    ]
+  },
+  {
+    "id": "W4-throwing-read-A",
+    "kind": "A",
+    "describes": "producer 4 of null: a browser that throws on reading localStorage now takes the caller down with it",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/store/webStorage.ts",
+        "old": "  } catch {\n    return null;\n  }",
+        "new": "  } catch (thrown) {\n    throw thrown;\n  }"
+      }
+    ]
+  }
+]

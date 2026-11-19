@@ -1,0 +1,82 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "selectEvictions always evicts everything -- the suite MUST redden, or nothing exercises this file",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/evict.ts",
+        "old": "  if (keys.length <= limit) return [];\n  const sorted = keys",
+        "new": "  if (true) return keys.map((k) => k.sessionId);\n  const sorted = keys"
+      }
+    ]
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/evict.ts",
+        "old": "  if (keys.length <= limit) return [];\n  const sorted = keys",
+        "new": "  const unusedControl = 1;\n  void unusedControl;\n  if (keys.length <= limit) return [];\n  const sorted = keys"
+      }
+    ]
+  },
+  {
+    "id": "E1-under-limit-fast-path-A",
+    "kind": "A",
+    "describes": "producer 1 of []: drop the `nothing is over the limit` guard entirely, so an under-full cache takes the sort-and-slice path instead of returning early",
+    "expected_unnoticed": "the guard is a fast path and NOT a decision: with keys.length <= limit, `sorted.slice(limit)` is itself [], so the function returns the identical value by the longer route. No assertion over the return value can separate them, and none should be written -- E1-under-limit-fast-path-B is what pins the bound this guard is a shortcut for. This declaration goes stale the moment the post-guard path stops returning [] for a short input.",
+    "edits": [
+      {
+        "file": "src/cache/evict.ts",
+        "old": "  if (keys.length <= limit) return [];\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "E1-under-limit-fast-path-B",
+    "kind": "B",
+    "describes": "the bound the guard shortcuts: evict from `limit + 1` instead of `limit`, so the oldest session over the cap survives. This is the assertion E1-A cannot have.",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/evict.ts",
+        "old": "  return sorted.slice(limit).map((k) => k.sessionId);",
+        "new": "  return sorted.slice(limit + 1).map((k) => k.sessionId);"
+      }
+    ]
+  },
+  {
+    "id": "E2-list-bound-not-over-A",
+    "kind": "A",
+    "describes": "producer 2 of []: drop the `nothing is over the list limit` guard, so an under-full list store reaches `slice(0, over)` with a NEGATIVE `over` -- which slices from the END and evicts almost every row it was asked to keep",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/evict.ts",
+        "old": "  if (over <= 0) return [];\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "E2-list-bound-not-over-B",
+    "kind": "B",
+    "describes": "producer 2 narrowed to the strict case: `over < 0` lets the exactly-at-limit tick fall through to `slice(0, 0)`, which is still [] -- the boundary the A form cannot distinguish",
+    "expected_unnoticed": "at exactly the limit `over` is 0, and `oldestFirst.slice(0, 0)` is [] with an empty evictListRows call, so the two routes agree on both the return value and the write. The observable difference is one no-op DB call. E2-list-bound-not-over-A is what pins the guard; this declaration goes stale if evictListRows ever stops tolerating an empty victim list.",
+    "edits": [
+      {
+        "file": "src/cache/evict.ts",
+        "old": "  if (over <= 0) return [];",
+        "new": "  if (over < 0) return [];"
+      }
+    ],
+    "tests": []
+  }
+]

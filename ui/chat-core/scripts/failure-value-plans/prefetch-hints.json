@@ -1,0 +1,93 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "prefetch() is replaced wholesale by its failure value -- every hover hint is refused. The suite MUST redden, or nothing observes the hover/idle warm path at all",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "  prefetch(sessionId: string): void {\n    if (!sessionId) return;",
+        "new": "  prefetch(sessionId: string): void {\n    if (true as boolean) return;\n    if (!sessionId) return;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement at the top of prefetch() -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "  prefetch(sessionId: string): void {\n    if (!sessionId) return;",
+        "new": "  prefetch(sessionId: string): void {\n    const unusedControl = 1;\n    void unusedControl;\n    if (!sessionId) return;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "H1-disabled-cache-is-hydrated-anyway",
+    "kind": "A",
+    "describes": "hydrateFromCache's bare `return`: a DISABLED cache is hydrated anyway. The try/catch below swallows whatever a disabled cache throws, so the only thing standing between 'cache off' and a call into it is this one line",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "  async hydrateFromCache(): Promise<void> {\n    if (!this.cache.isEnabled) return;",
+        "new": "  async hydrateFromCache(): Promise<void> {"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P1-empty-session-id-is-prefetched",
+    "kind": "A",
+    "describes": "prefetch producer 1: the empty-id guard goes, so a hover over a row with no id yet fires GET /sessions//messages",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "    if (!sessionId) return;\n    if (this.store.getState().turnsBySession.has(sessionId)) return;",
+        "new": "    if (this.store.getState().turnsBySession.has(sessionId)) return;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P2-already-warm-session-is-refetched",
+    "kind": "A",
+    "describes": "prefetch producer 2: the already-warm guard goes, so hovering a session whose turns are already in the store spends a request re-fetching them. warm() re-checks before writing, so the STORE is unchanged and the outgoing request is the only observable",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "    if (this.store.getState().turnsBySession.has(sessionId)) return;\n    if (this.inFlight.has(sessionId)) return;",
+        "new": "    if (this.inFlight.has(sessionId)) return;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P3-in-flight-session-is-fetched-twice",
+    "kind": "A",
+    "describes": "prefetch producer 3: the in-flight guard goes, so two hover events over the same COLD row in one tick each start a request. Distinct from P2 -- nothing is in the store yet, so the already-warm guard cannot refuse either of them",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "    if (this.inFlight.has(sessionId)) return;\n    this.inFlight.add(sessionId);",
+        "new": "    this.inFlight.add(sessionId);"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P4-in-flight-is-never-released",
+    "kind": "B",
+    "describes": "producer 3 inverted: the guard stays but the release goes, so a session prefetched once can never be prefetched again -- a warm that FAILED leaves the row permanently unwarmable and the hover silently stops working. P3 shows the guard fires; only this shows it stops firing",
+    "edits": [
+      {
+        "file": "src/boot/Prefetcher.ts",
+        "old": "    } finally {\n      this.inFlight.delete(sessionId);\n    }",
+        "new": "    } finally {\n      void sessionId;\n    }"
+      }
+    ],
+    "tests": []
+  }
+]

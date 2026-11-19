@@ -1,0 +1,67 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "pendingSessionConfig always answers its failure value -- the suite MUST redden, or nothing exercises this file",
+    "edits": [
+      {
+        "file": "src/store/pendingConfig.ts",
+        "old": "export function pendingSessionConfig(opts: NewSessionOpts | null | undefined): SessionConfig | null {\n",
+        "new": "export function pendingSessionConfig(opts: NewSessionOpts | null | undefined): SessionConfig | null {\n  if (true) return null;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/store/pendingConfig.ts",
+        "old": "export function pendingSessionConfig(opts: NewSessionOpts | null | undefined): SessionConfig | null {\n",
+        "new": "export function pendingSessionConfig(opts: NewSessionOpts | null | undefined): SessionConfig | null {\n  const unusedControl = 1;\n  void unusedControl;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P1-no-opts-A",
+    "kind": "A",
+    "describes": "producer 1 of null: no pending pane at all stops short-circuiting and reads fields off null",
+    "edits": [
+      {
+        "file": "src/store/pendingConfig.ts",
+        "old": "  if (!opts) return null;\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P2-empty-config-A",
+    "kind": "A",
+    "describes": "producer 2 of null: a pane that carried NO settings now yields an empty config object instead of null, so the caller POSTs an empty body to /sessions/{id}/config instead of skipping the call",
+    "edits": [
+      {
+        "file": "src/store/pendingConfig.ts",
+        "old": "  return Object.keys(config).length > 0 ? config : null;",
+        "new": "  return config;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "P2-empty-config-B",
+    "kind": "B",
+    "describes": "producer 2 widened to truthiness: `maxBudget: 0` (NO CEILING) and `disabledTools: []` (disable nothing) are read as absent, so the two values the doc comment says are the subtle ones stop reaching the body",
+    "edits": [
+      {
+        "file": "src/store/pendingConfig.ts",
+        "old": "  if (opts.maxBudget !== undefined) config.maxBudget = opts.maxBudget;\n  if (opts.disabledTools !== undefined) config.disabledTools = opts.disabledTools;",
+        "new": "  if (opts.maxBudget) config.maxBudget = opts.maxBudget;\n  if (opts.disabledTools?.length) config.disabledTools = opts.disabledTools;"
+      }
+    ],
+    "tests": []
+  }
+]

@@ -1,0 +1,236 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "every cache is disabled -- the round-trip tests MUST redden, or the suite never ran",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  constructor(enabled = true) {\n    this.enabled = enabled;\n  }",
+        "new": "  constructor(enabled = true) {\n    void enabled;\n    this.enabled = false;\n  }"
+      }
+    ]
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  constructor(enabled = true) {\n    this.enabled = enabled;\n  }",
+        "new": "  constructor(enabled = true) {\n    const unusedControl = 1;\n    void unusedControl;\n    this.enabled = enabled;\n  }"
+      }
+    ]
+  },
+  {
+    "id": "SC-putList",
+    "kind": "A",
+    "describes": "putList stops honoring `disabled` and reaches db(), which rejects",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  async putList(summaries: SessionSummary[]): Promise<void> {\n    if (!this.enabled) return;\n",
+        "new": "  async putList(summaries: SessionSummary[]): Promise<void> {\n"
+      }
+    ]
+  },
+  {
+    "id": "SC-putSummary",
+    "kind": "A",
+    "describes": "putSummary stops honoring `disabled`",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  async putSummary(summary: SessionSummary): Promise<void> {\n    if (!this.enabled) return;\n",
+        "new": "  async putSummary(summary: SessionSummary): Promise<void> {\n"
+      }
+    ]
+  },
+  {
+    "id": "SC-getList",
+    "kind": "A",
+    "describes": "getList stops honoring `disabled` -- the empty list producer goes",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  async getList(): Promise<SessionSummary[]> {\n    if (!this.enabled) return [];\n",
+        "new": "  async getList(): Promise<SessionSummary[]> {\n"
+      }
+    ]
+  },
+  {
+    "id": "SC-deleteSession",
+    "kind": "A",
+    "describes": "deleteSession stops honoring `disabled`",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  async deleteSession(sessionId: string): Promise<void> {\n    if (!this.enabled) return;\n",
+        "new": "  async deleteSession(sessionId: string): Promise<void> {\n"
+      }
+    ]
+  },
+  {
+    "id": "SC-putTurns",
+    "kind": "A",
+    "describes": "putTurns stops honoring `disabled`",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  async putTurns(model: TurnModel): Promise<void> {\n    if (!this.enabled) return;\n",
+        "new": "  async putTurns(model: TurnModel): Promise<void> {\n"
+      }
+    ]
+  },
+  {
+    "id": "SC-getTurns",
+    "kind": "A",
+    "describes": "getTurns stops honoring `disabled` -- the undefined producer goes",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  async getTurns(sessionId: string): Promise<TurnModel | undefined> {\n    if (!this.enabled) return undefined;\n",
+        "new": "  async getTurns(sessionId: string): Promise<TurnModel | undefined> {\n"
+      }
+    ]
+  },
+  {
+    "id": "SC-putValidator",
+    "kind": "A",
+    "describes": "putValidator stops honoring `disabled`",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  async putValidator(sessionId: string, validator: Validator): Promise<void> {\n    if (!this.enabled) return;\n",
+        "new": "  async putValidator(sessionId: string, validator: Validator): Promise<void> {\n"
+      }
+    ]
+  },
+  {
+    "id": "SC-getValidator-disabled",
+    "kind": "A",
+    "describes": "getValidator stops honoring `disabled` -- the first of its TWO undefined producers",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  async getValidator(sessionId: string): Promise<Validator | undefined> {\n    if (!this.enabled) return undefined;\n",
+        "new": "  async getValidator(sessionId: string): Promise<Validator | undefined> {\n"
+      }
+    ]
+  },
+  {
+    "id": "SC-getValidator-missing-row",
+    "kind": "B",
+    "describes": "the SECOND undefined producer in getValidator: an absent row is destructured instead of refused, handing back an object that is not a Validator",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "    if (!row) return undefined;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "SC-hydrate",
+    "kind": "A",
+    "describes": "hydrate stops honoring `disabled` -- the empty-everything producer goes",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "    if (!this.enabled) {\n      return { list: [], turns: new Map(), validators: new Map() };\n    }\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "SC-listKeysOldestFirst",
+    "kind": "A",
+    "describes": "listKeysOldestFirst stops honoring `disabled` -- the evictor's empty-keys producer goes",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  async listKeysOldestFirst(): Promise<string[]> {\n    if (!this.enabled) return [];\n",
+        "new": "  async listKeysOldestFirst(): Promise<string[]> {\n"
+      }
+    ]
+  },
+  {
+    "id": "SC-evictListRows-disabled",
+    "kind": "A",
+    "describes": "evictListRows stops honoring `disabled` -- the FIRST half of its two-part guard",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "    if (!this.enabled || sessionIds.length === 0) return;",
+        "new": "    if (sessionIds.length === 0) return;"
+      }
+    ]
+  },
+  {
+    "id": "SC-evictListRows-empty",
+    "kind": "B",
+    "describes": "the SECOND half: an empty eviction opens a read-write transaction instead of returning, so a no-op evict wakes the database",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "    if (!this.enabled || sessionIds.length === 0) return;",
+        "new": "    if (!this.enabled) return;"
+      }
+    ]
+  },
+  {
+    "id": "SC-turnKeys",
+    "kind": "A",
+    "describes": "turnKeys stops honoring `disabled` -- the evictor's other empty-keys producer goes",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  async turnKeys(): Promise<{ sessionId: string; updatedAt: string }[]> {\n    if (!this.enabled) return [];\n",
+        "new": "  async turnKeys(): Promise<{ sessionId: string; updatedAt: string }[]> {\n"
+      }
+    ]
+  },
+  {
+    "id": "SC-evictTurns",
+    "kind": "A",
+    "describes": "evictTurns stops honoring `disabled`",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "  async evictTurns(sessionId: string): Promise<void> {\n    if (!this.enabled) return;\n",
+        "new": "  async evictTurns(sessionId: string): Promise<void> {\n"
+      }
+    ]
+  },
+  {
+    "id": "SC-close-never-opened",
+    "kind": "A",
+    "describes": "close stops guarding on a database that was never opened, so closing a cold cache throws",
+    "tests": [],
+    "edits": [
+      {
+        "file": "src/cache/SessionCache.ts",
+        "old": "    if (!this.dbPromise) return;\n",
+        "new": ""
+      }
+    ]
+  }
+]

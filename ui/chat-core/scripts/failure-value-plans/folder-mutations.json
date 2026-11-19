@@ -1,0 +1,145 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "revert() stops putting anything back -- the suite MUST redden, or nothing in this file's refusal paths is exercised at all",
+    "edits": [
+      {
+        "file": "src/store/folders.ts",
+        "old": "  const { actions } = store.getState();\n  actions.setFolders(folders);\n  for (const s of sessions) actions.upsertSession(s);",
+        "new": "  void store;\n  void folders;\n  void sessions;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement in revert() -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/store/folders.ts",
+        "old": "function revert(store: ChatStoreApi, folders: string[], sessions: SessionSummary[]): void {",
+        "new": "function revert(store: ChatStoreApi, folders: string[], sessions: SessionSummary[]): void {\n  const unusedControl = 1;\n  void unusedControl;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R1-delete-blank-name-guard",
+    "kind": "A",
+    "describes": "producer 1 of the bare `return`: deleteFolder stops refusing a blank name, so a DELETE /folders/ goes out aimed at no folder and every session in the un-filed bucket is patched",
+    "edits": [
+      {
+        "file": "src/store/folders.ts",
+        "old": "export async function deleteFolder(deps: FolderMutationDeps, name: string): Promise<void> {\n  if (!name) return;\n",
+        "new": "export async function deleteFolder(deps: FolderMutationDeps, name: string): Promise<void> {\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R2-create-blank-name-guard",
+    "kind": "A",
+    "describes": "producer 2: createFolder stops refusing a blank name, so a whitespace-only name is POSTed and the handler's 400 becomes an error the user did not ask for",
+    "edits": [
+      {
+        "file": "src/store/folders.ts",
+        "old": "  const name = rawName.trim();\n  if (!name) return;\n",
+        "new": "  const name = rawName.trim();\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R3-create-dedupe-guard",
+    "kind": "B",
+    "describes": "producer 3: createFolder appends a name the list already holds, so the sidebar draws the folder twice while the server's ON CONFLICT DO NOTHING inserts once",
+    "edits": [
+      {
+        "file": "src/store/folders.ts",
+        "old": "  if (!priorFolders.includes(name)) {\n    store.getState().actions.setFolders([...priorFolders, name]);\n  }",
+        "new": "  {\n    store.getState().actions.setFolders([...priorFolders, name]);\n  }"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R4-move-folder-dedupe-guard",
+    "kind": "B",
+    "describes": "producer 4: moveSessionToFolder appends a folder the list already holds, so filing a second session into an existing folder duplicates its header",
+    "edits": [
+      {
+        "file": "src/store/folders.ts",
+        "old": "  if (folder && !priorFolders.includes(folder)) actions.setFolders([...priorFolders, folder]);",
+        "new": "  if (folder) actions.setFolders([...priorFolders, folder]);"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R5-move-no-such-session-guard",
+    "kind": "A",
+    "describes": "producer 5: moveSessionToFolder stops checking the store holds the row, so it patches a session-shaped object with no id and aims a PUT at an id this client cannot show the result of",
+    "edits": [
+      {
+        "file": "src/store/folders.ts",
+        "old": "  const priorSession = store.getState().sessions.get(sessionId);\n  if (!priorSession) return;\n",
+        "new": "  const priorSession = store.getState().sessions.get(sessionId);\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R6-rename-drops-empty-old-name",
+    "kind": "A",
+    "describes": "producer 6a: renameFolder stops refusing an empty OLD name, one of the three cases Store.RenameFolder itself treats as a no-op",
+    "edits": [
+      {
+        "file": "src/store/folders.ts",
+        "old": "  if (!oldName || !newName || oldName === newName) return;",
+        "new": "  if (!newName || oldName === newName) return;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R7-rename-drops-empty-new-name",
+    "kind": "A",
+    "describes": "producer 6b: renameFolder stops refusing an empty NEW name, so a whitespace-only rename is sent",
+    "edits": [
+      {
+        "file": "src/store/folders.ts",
+        "old": "  if (!oldName || !newName || oldName === newName) return;",
+        "new": "  if (!oldName || oldName === newName) return;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R8-rename-drops-same-name",
+    "kind": "A",
+    "describes": "producer 6c: renameFolder stops refusing a rename to the SAME name, the third of RenameFolder's own no-op cases",
+    "edits": [
+      {
+        "file": "src/store/folders.ts",
+        "old": "  if (!oldName || !newName || oldName === newName) return;",
+        "new": "  if (!oldName || !newName) return;"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "R9-sessions-in-folder-matches-everything",
+    "kind": "B",
+    "describes": "producer 7 of the empty array: sessionsInFolder stops filtering, so deleting or renaming one folder un-files or re-files every loaded session in every other folder",
+    "edits": [
+      {
+        "file": "src/store/folders.ts",
+        "old": "    if (s.folderName === folder) out.push(s);",
+        "new": "    out.push(s);"
+      }
+    ],
+    "tests": []
+  }
+]

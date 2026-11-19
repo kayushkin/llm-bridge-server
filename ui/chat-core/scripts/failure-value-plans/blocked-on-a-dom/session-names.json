@@ -1,0 +1,80 @@
+[
+  {
+    "id": "CONTROL-POSITIVE",
+    "kind": "control",
+    "describes": "the `missing` filter answers its failure value for every id -- nothing is ever fetched, so the suite MUST redden or it never exercises this hook",
+    "edits": [
+      {
+        "file": "src/react/sessionNames.ts",
+        "old": "      if (id === '' || loaded.has(id) || inFlight.has(id)) return false;\n",
+        "new": "      if (true) return false;\n      if (id === '' || loaded.has(id) || inFlight.has(id)) return false;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "CONTROL-NEGATIVE",
+    "kind": "control",
+    "describes": "a no-op statement -- the suite MUST stay green",
+    "edits": [
+      {
+        "file": "src/react/sessionNames.ts",
+        "old": "      if (id === '' || loaded.has(id) || inFlight.has(id)) return false;\n",
+        "new": "      const unusedControl = 1;\n      void unusedControl;\n      if (id === '' || loaded.has(id) || inFlight.has(id)) return false;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "N1-skip-guard-A",
+    "kind": "A",
+    "describes": "producer of false, deleted whole: an id that is empty, already in the store, or already in flight is no longer skipped -- it falls through to the TTL test and is refetched",
+    "edits": [
+      {
+        "file": "src/react/sessionNames.ts",
+        "old": "      if (id === '' || loaded.has(id) || inFlight.has(id)) return false;\n",
+        "new": ""
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "N1a-empty-id-B",
+    "kind": "B",
+    "describes": "disjunct 1 only: the empty id stops being skipped, so a wantedKey with a stray separator asks the server to summarize the session named ''",
+    "edits": [
+      {
+        "file": "src/react/sessionNames.ts",
+        "old": "      if (id === '' || loaded.has(id) || inFlight.has(id)) return false;\n",
+        "new": "      if (loaded.has(id) || inFlight.has(id)) return false;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "N1b-already-loaded-B",
+    "kind": "B",
+    "describes": "disjunct 2 only: a session the store already holds is fetched again anyway -- the name is on screen and the request is pure waste",
+    "edits": [
+      {
+        "file": "src/react/sessionNames.ts",
+        "old": "      if (id === '' || loaded.has(id) || inFlight.has(id)) return false;\n",
+        "new": "      if (id === '' || inFlight.has(id)) return false;\n"
+      }
+    ],
+    "tests": []
+  },
+  {
+    "id": "N1c-in-flight-B",
+    "kind": "B",
+    "describes": "disjunct 3 only: the in-flight dedupe goes. The effect refires on every signals refetch (30s), so an id whose request has not landed yet is requested again on each pass -- the exact duplicate-request defect the set exists to stop",
+    "edits": [
+      {
+        "file": "src/react/sessionNames.ts",
+        "old": "      if (id === '' || loaded.has(id) || inFlight.has(id)) return false;\n",
+        "new": "      if (id === '' || loaded.has(id)) return false;\n"
+      }
+    ],
+    "tests": []
+  }
+]
