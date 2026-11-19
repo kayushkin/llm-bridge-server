@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 )
 
 // The computer-use tool a runner can hand to a session.
@@ -90,6 +92,7 @@ func windowsLocalAppDataInWSL() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "cmd.exe", "/c", "echo %LOCALAPPDATA%")
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	cmd.Dir = "/mnt/c" // cmd.exe complains when started in a Linux directory
 	out, err := cmd.Output()
 	if err != nil {

@@ -6,10 +6,13 @@ import (
 	"io"
 	"log"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 )
 
 // Subprocess wraps a single harness binary spawned for a session. The
@@ -211,10 +214,21 @@ func (r *SubprocessRegistry) Spawn(sessionID string, spawn *msg.RunnerSpawn) err
 	if spawn.WorkingDir != "" {
 		cmd.Dir = spawn.WorkingDir
 	}
+	// The child gets this runner's environment, less the server's own secrets.
+	// A runner on another machine holds none of them; one started beside the
+	// server on the same machine must not pass them to an agent either way.
+	//
 	// Always propagate LLMBRIDGE_SERVER so wrappers can fall back to the
 	// bridge's harness-proxy for service-style harnesses (inber, hermes).
 	// Spawn-supplied Env wins for everything else.
-	cmd.Env = append(cmd.Environ(), "LLMBRIDGE_SERVER="+r.serverURL)
+	cmd.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(), "LLMBRIDGE_SERVER="+r.serverURL)
+	if spawn.WorkingDir != "" {
+		// exec sets PWD to the working directory by itself only when Env is
+		// left unset, and this code used to rely on that.
+		if workingDirectory, err := filepath.Abs(spawn.WorkingDir); err == nil {
+			cmd.Env = append(cmd.Env, "PWD="+workingDirectory)
+		}
+	}
 	if len(spawn.Env) > 0 {
 		cmd.Env = append(cmd.Env, spawn.Env...)
 	}

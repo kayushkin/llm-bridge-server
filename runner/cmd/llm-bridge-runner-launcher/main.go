@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 )
 
 // A runner that exits sooner than this after starting is failing, not
@@ -47,6 +49,7 @@ func main() {
 	for {
 		started := time.Now()
 		cmd := exec.Command(runner, os.Args[1:]...)
+		cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, os.Stdout, os.Stderr
 		if err := cmd.Start(); err != nil {
 			log.Printf("cannot start %s: %v; trying again in %s", runner, err, pauseAfterQuickExit)

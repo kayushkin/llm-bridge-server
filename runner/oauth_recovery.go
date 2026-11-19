@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 )
 
 var claudeAuthorizationURL = regexp.MustCompile(`https://claude\.com/cai/oauth/authorize\?[^[:space:]]+`)
@@ -41,6 +43,7 @@ func (r *ClaudeOAuthRecovery) Start(recoveryID string) {
 	r.mu.Unlock()
 
 	command := exec.Command("claude", "auth", "login", "--claudeai")
+	command.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		r.Failed(recoveryID, err)

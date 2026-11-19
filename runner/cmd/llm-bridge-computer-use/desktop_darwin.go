@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 )
 
 // The main display, through tools every Mac has, so the program builds
@@ -122,6 +124,7 @@ func runOSAScript(script string, command any) (string, error) {
 		return "", err
 	}
 	cmd := exec.Command("osascript", "-l", "JavaScript", "-e", script, string(argument))
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

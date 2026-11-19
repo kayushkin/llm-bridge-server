@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 )
 
 // ServiceRegistry tracks long-lived backend services the runner deploys
@@ -104,7 +106,7 @@ func (r *ServiceRegistry) start(m msg.HarnessService) error {
 	}
 
 	cmd := exec.Command(binPath, m.Args...)
-	cmd.Env = append(os.Environ(), m.Env...)
+	cmd.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(), m.Env...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
