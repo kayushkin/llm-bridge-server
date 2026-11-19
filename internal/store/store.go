@@ -576,6 +576,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateSessionPostingSpawns(); err != nil {
 		return fmt.Errorf("migrate session posting spawns: %w", err)
 	}
+	if err := s.migrateRunnerSpawns(); err != nil {
+		return fmt.Errorf("migrate session posting spawns: %w", err)
+	}
 	if err := s.migrateLoginSessions(); err != nil {
 		return err
 	}
@@ -1267,7 +1270,14 @@ func (s *Store) ReconcileSessions(states ...msg.SessionState) ([]ReconciledSessi
 		args[i] = string(st)
 	}
 	in := strings.Join(placeholders, ",")
-	rows, err := s.db.Query(`SELECT `+sessionColumns+` FROM sessions WHERE state IN (`+in+`)`, args...)
+	// A session whose process a runner may still be holding is left as it is:
+	// the runner says, when it reconnects, whether the process is alive. So
+	// is a harness subagent of such a session, which lives in that process.
+	// The watchdog deals with either if no runner ever claims it.
+	notHeld := ` AND session_id NOT IN (SELECT session_id FROM runner_spawns WHERE ended = 0)
+		AND NOT (controlled_by = '` + string(msg.ControlledByHarness) + `'
+			AND COALESCE(manager_session_id, '') IN (SELECT session_id FROM runner_spawns WHERE ended = 0))`
+	rows, err := s.db.Query(`SELECT `+sessionColumns+` FROM sessions WHERE state IN (`+in+`)`+notHeld, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1287,7 +1297,7 @@ func (s *Store) ReconcileSessions(states ...msg.SessionState) ([]ReconciledSessi
 	if len(sessions) == 0 {
 		return nil, nil
 	}
-	if _, err := s.db.Exec(`UPDATE sessions SET pid=0 WHERE state IN (`+in+`)`, args...); err != nil {
+	if _, err := s.db.Exec(`UPDATE sessions SET pid=0 WHERE state IN (`+in+`)`+notHeld, args...); err != nil {
 		return nil, err
 	}
 	// One status per session rather than one UPDATE for the lot: a client

@@ -869,8 +869,14 @@ func (s *Server) watchdogTick() {
 			// resume never happened. While the parent's process runs, the
 			// subagent is running; once it is gone, nothing will ever report
 			// the task's end, so record that end here.
+			// A runner that is away may still be holding this session's
+			// process (or, for a subagent, its parent's). It says so when it
+			// returns, and until then the session is left as it is.
+			if s.harness.AwaitingRunner(sess.SessionID) {
+				continue
+			}
 			if sess.ControlledBy == msg.ControlledByHarness {
-				if sess.ManagerSessionID != "" && s.harness.HasProcess(sess.ManagerSessionID) {
+				if sess.ManagerSessionID != "" && (s.harness.HasProcess(sess.ManagerSessionID) || s.harness.AwaitingRunner(sess.ManagerSessionID)) {
 					continue
 				}
 				log.Printf("[watchdog] %s: subagent at state=%s, and the process it ran in is gone; recording error (parent_process_exited)", sess.SessionID, st)

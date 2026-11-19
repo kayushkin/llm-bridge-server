@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -41,6 +42,60 @@ type RunnerRegistry struct {
 	// machineStatsReceiver gets each machine_stats frame, filed under the
 	// machine the runner's token belongs to. Nil drops them.
 	machineStatsReceiver func(machineID string, stats msg.MachineStats)
+
+	// heldSessions settles the spawns a reconnecting runner says it kept:
+	// which the server takes back, and from where. Nil takes none back.
+	heldSessions func(connection *RunnerConnection, held []runnerprotocol.RunnerHeldSession) []runnerprotocol.RunnerAdoptSession
+	// holdPolicy says whether runners are asked to keep their processes when
+	// the connection drops, and how long those may work with no server. Nil
+	// asks for no holding.
+	holdPolicy func() (hold bool, holdFor time.Duration)
+
+	// startedAt and absentSince say since when a machine has had no runner
+	// connected: since it was last seen to go, or since this server started.
+	startedAt   time.Time
+	absentSince map[string]time.Time // machineID → when its connection closed
+}
+
+// SetHeldSessionsHandler sets what settles a reconnecting runner's held spawns.
+func (r *RunnerRegistry) SetHeldSessionsHandler(handler func(connection *RunnerConnection, held []runnerprotocol.RunnerHeldSession) []runnerprotocol.RunnerAdoptSession) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.heldSessions = handler
+}
+
+// SetHoldPolicy sets what decides whether runners hold their sessions.
+func (r *RunnerRegistry) SetHoldPolicy(policy func() (hold bool, holdFor time.Duration)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.holdPolicy = policy
+}
+
+// HoldPolicy is what the server currently asks of runners.
+func (r *RunnerRegistry) HoldPolicy() (hold bool, holdFor time.Duration) {
+	r.mu.RLock()
+	policy := r.holdPolicy
+	r.mu.RUnlock()
+	if policy == nil {
+		return false, 0
+	}
+	return policy()
+}
+
+// MachineHasNoRunnerSince reports whether no runner is connected for the
+// machine, and since when.
+func (r *RunnerRegistry) MachineHasNoRunnerSince(machineID string) (time.Time, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, connection := range r.conns {
+		if connection.MachineID == machineID {
+			return time.Time{}, false
+		}
+	}
+	if since, seen := r.absentSince[machineID]; seen {
+		return since, true
+	}
+	return r.startedAt, true
 }
 
 // SetMachineStatsReceiver sets what receives runners' machine stats.
@@ -52,7 +107,7 @@ func (r *RunnerRegistry) SetMachineStatsReceiver(receiver func(machineID string,
 
 // NewRunnerRegistry constructs an empty registry.
 func NewRunnerRegistry() *RunnerRegistry {
-	return &RunnerRegistry{conns: make(map[string]*RunnerConnection)}
+	return &RunnerRegistry{conns: make(map[string]*RunnerConnection), startedAt: time.Now(), absentSince: make(map[string]time.Time)}
 }
 
 // Get returns the active connection for a machine name, or nil if no
@@ -92,6 +147,7 @@ func (r *RunnerRegistry) deregister(c *RunnerConnection) {
 	defer r.mu.Unlock()
 	if r.conns[c.MachineName] == c {
 		delete(r.conns, c.MachineName)
+		r.absentSince[c.MachineID] = time.Now()
 	}
 }
 
@@ -205,19 +261,47 @@ func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn,
 		sessions:    make(map[string]*RunnerProcess),
 	}
 
-	if prev := r.register(rc); prev != nil {
+	runnerVersion := hello.Hello.ProtocolVersion
+	if runnerVersion == 0 {
+		runnerVersion = 1
+	}
+	if runnerVersion < runnerprotocol.CurrentProtocolVersion-1 {
+		_ = sendError(conn, "runner_too_old", fmt.Sprintf("this server speaks runner protocol %d and the one before it; this runner speaks %d and must be updated", runnerprotocol.CurrentProtocolVersion, runnerVersion))
+		return fmt.Errorf("runner on %s speaks protocol %d, older than this server accepts", machine.Name, runnerVersion)
+	}
+
+	// An older connection for this machine goes first, so the sessions it
+	// carried are torn down before any of them is taken back on this one.
+	if prev := r.Get(rc.MachineName); prev != nil {
 		log.Printf("[runner-server] replacing stale connection for %s", rc.MachineName)
 		prev.close()
 	}
 
+	// Held spawns are settled before the connection is offered for new
+	// spawns, so nothing can start a second process for a session whose
+	// first is about to be handed back.
+	var adopt []runnerprotocol.RunnerAdoptSession
+	r.mu.RLock()
+	heldSessions := r.heldSessions
+	r.mu.RUnlock()
+	if heldSessions != nil && runnerVersion >= runnerprotocol.ProtocolVersionSequencedOutput {
+		adopt = heldSessions(rc, hello.Hello.HeldSessions)
+	}
+	r.register(rc)
+
+	hold, holdFor := r.HoldPolicy()
 	welcome := &runnerprotocol.RunnerMessage{
 		Type: runnerprotocol.RunnerMsgWelcome,
 		Welcome: &runnerprotocol.RunnerWelcome{
-			MachineID:        machine.ID,
-			MachineName:      machine.Name,
-			ServerVersion:    serverVersion,
-			PingIntervalSecs: RunnerPingIntervalSecs,
-			AcceptedAt:       time.Now(),
+			MachineID:                 machine.ID,
+			MachineName:               machine.Name,
+			ServerVersion:             serverVersion,
+			PingIntervalSecs:          RunnerPingIntervalSecs,
+			AcceptedAt:                time.Now(),
+			ProtocolVersion:           runnerprotocol.CurrentProtocolVersion,
+			HoldSessionsWithoutServer: hold,
+			HoldWithoutServerSeconds:  int(holdFor / time.Second),
+			Adopt:                     adopt,
 		},
 	}
 	if err := writeRunnerJSON(conn, welcome); err != nil {
@@ -313,6 +397,10 @@ func (c *RunnerConnection) handleStdout(m *runnerprotocol.RunnerMessage) {
 	if p == nil {
 		return
 	}
+	if p.sequenced() {
+		p.acceptSequencedOutput(m.Stdout)
+		return
+	}
 	var ev msg.Event
 	if err := json.Unmarshal([]byte(m.Stdout.Data), &ev); err != nil {
 		log.Printf("[runner-server] %s/%s: parse stdout: %v (line=%q)", c.MachineName, m.SessionID, err, m.Stdout.Data)
@@ -335,6 +423,15 @@ func (c *RunnerConnection) handleExit(m *runnerprotocol.RunnerMessage) {
 	}
 	if m.Exit != nil && m.Exit.Error != "" {
 		log.Printf("[runner-server] %s/%s exited: code=%d err=%s", c.MachineName, m.SessionID, m.Exit.ExitCode, m.Exit.Error)
+	}
+	c.mu.Lock()
+	p := c.sessions[m.SessionID]
+	c.mu.Unlock()
+	if p != nil && p.sequenced() && m.Exit != nil && m.Exit.Sequence != 0 {
+		// The exit is an entry like any other: it takes its turn after the
+		// lines before it, and the session is closed when it is reached.
+		p.acceptSequencedExit(m.Exit)
+		return
 	}
 	c.deregisterSession(m.SessionID)
 }
@@ -384,6 +481,21 @@ type RunnerProcess struct {
 	conn      *RunnerConnection
 	events    chan msg.Event
 	closeOnce sync.Once
+
+	// The rest is set only for a sequenced spawn (runner_sequenced.go).
+	spawnID string
+	store   *store.Store
+	// incoming holds entries accepted from the runner and not yet handled.
+	incoming chan sequencedEntry
+	// handled is how the manager says it has finished the event it was given.
+	handled chan struct{}
+	// done is closed when the session is torn down on this connection.
+	done chan struct{}
+	// lastAccepted is the newest entry taken from the runner; only the
+	// connection's reader touches it.
+	lastAccepted uint64
+	// currentSequence is the entry whose event the manager is handling now.
+	currentSequence atomic.Uint64
 }
 
 // PID returns 0 — the local PID lives on the runner machine and isn't
@@ -437,6 +549,13 @@ func (p *RunnerProcess) Kill() error {
 		SessionID: p.sessionID,
 		Signal:    &runnerprotocol.RunnerSignal{Signal: runnerprotocol.RunnerSignalKill},
 	})
+	if p.sequenced() {
+		// The server has given this spawn up. Recorded so a runner that
+		// never got the signal is not handed it back after a restart.
+		if endErr := p.store.EndRunnerSpawn(p.sessionID, p.spawnID); endErr != nil {
+			log.Printf("[runner-server] %s/%s: %v", p.conn.MachineName, p.sessionID, endErr)
+		}
+	}
 	p.conn.deregisterSession(p.sessionID)
 	return err
 }
@@ -464,9 +583,16 @@ func (p *RunnerProcess) sendRequest(method string, params any) error {
 }
 
 // closeEvents closes the events channel exactly once, releasing the
-// reader in the harness manager.
+// reader in the harness manager. For a sequenced spawn the goroutine that
+// writes to the channel closes it, on seeing done.
 func (p *RunnerProcess) closeEvents() {
-	p.closeOnce.Do(func() { close(p.events) })
+	p.closeOnce.Do(func() {
+		if p.sequenced() {
+			close(p.done)
+			return
+		}
+		close(p.events)
+	})
 }
 
 // startRunner asks the runner registered for inst.Machine.Name to spawn
@@ -526,6 +652,20 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 		conn:      conn,
 		events:    make(chan msg.Event, 100),
 	}
+	// A runner that numbers output gets a spawn id, and the spawn is recorded
+	// before it is asked for: a server that stops right after asking must
+	// still know the spawn when the runner reports holding it.
+	spawnID := ""
+	if conn.Hello.ProtocolVersion >= runnerprotocol.ProtocolVersionSequencedOutput && m.store != nil {
+		spawnID, err = newRunnerSpawnID()
+		if err != nil {
+			return nil, err
+		}
+		if err := m.store.RecordRunnerSpawn(sess.SessionID, spawnID, conn.MachineID); err != nil {
+			return nil, err
+		}
+		rp = newSequencedRunnerProcess(sess.SessionID, spawnID, conn, m.store, 0)
+	}
 	conn.registerSession(rp)
 
 	spawn := &runnerprotocol.RunnerMessage{
@@ -538,9 +678,15 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 			Provision:   provision,
 			Env:         sessionEnvironment,
 			ComputerUse: sessionHasComputerUse(sess),
+			SpawnID:     spawnID,
 		},
 	}
 	if err := conn.Send(spawn); err != nil {
+		if spawnID != "" {
+			if endErr := m.store.EndRunnerSpawn(sess.SessionID, spawnID); endErr != nil {
+				log.Printf("[runner-server] %s/%s: %v", conn.MachineName, sess.SessionID, endErr)
+			}
+		}
 		conn.deregisterSession(sess.SessionID)
 		return nil, fmt.Errorf("send spawn: %w", err)
 	}

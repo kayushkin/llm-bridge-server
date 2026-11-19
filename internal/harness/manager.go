@@ -262,7 +262,15 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL st
 		ptyRingBytes:          ptyRingBytes,
 	}
 	m.logStoreWrites = newLogStoreQueue(ls.PushEvent)
+	m.runners.SetHeldSessionsHandler(m.adoptHeldRunnerSessions)
 	return m
+}
+
+// SetRunnerHoldPolicy sets what decides whether runners are asked to keep
+// their processes running when their connection to this server drops, and for
+// how long those may work alone. Until it is set, no runner is asked to.
+func (m *Manager) SetRunnerHoldPolicy(policy func() (hold bool, holdFor time.Duration)) {
+	m.runners.SetHoldPolicy(policy)
 }
 
 // PendingHooks returns the awaiting_resolution HookEvents currently
@@ -860,6 +868,7 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 				}
 				return ""
 			}())
+			eventHandled(proc)
 			continue
 		}
 
@@ -935,7 +944,13 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 		// Persist event keyed by bridge_id (stable PK) and capture row ID.
 		var rowID int64
 		if data, err := json.Marshal(event); err == nil {
-			rowID, err = m.store.StoreEventReturningID(routeID, string(event.Type), event.MessageID, event.HarnessMessageID, data)
+			// An event that came as a numbered entry from a runner is stored
+			// with its number, in one write: see runner_sequenced.go.
+			if spawnID, sequence, sequenced := entryBeingHandled(proc); sequenced {
+				rowID, err = m.store.StoreEventAdvancingRunnerSpawn(routeID, string(event.Type), event.MessageID, event.HarnessMessageID, data, bridgeID, spawnID, sequence)
+			} else {
+				rowID, err = m.store.StoreEventReturningID(routeID, string(event.Type), event.MessageID, event.HarnessMessageID, data)
+			}
 			if err != nil {
 				log.Printf("[harness] failed to store event: %v", err)
 			}
@@ -1039,6 +1054,7 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 				go observer(routeID, &startedTurn)
 			}
 		}
+		eventHandled(proc)
 	}
 
 	// Process exited — drain everything still queued for log-store before
@@ -1056,8 +1072,14 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 			close(ch)
 		}
 		delete(m.subscribers, id)
-		delete(m.processes, id)
-		delete(m.processStartedAt, id)
+		// A session taken back from a runner gets a new handle only after
+		// this teardown has finished (adoptHeldRunnerSessions waits for it),
+		// so the handle in the map is still this one. The check keeps it so
+		// if that ever changes.
+		if id != bridgeID || m.processes[id] == proc {
+			delete(m.processes, id)
+			delete(m.processStartedAt, id)
+		}
 		delete(m.msgState, id)
 		delete(m.derivation, id)
 	}
@@ -1074,6 +1096,25 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 	subagents.settleUnfinished()
 
 	m.store.UpdateSessionPID(bridgeID, 0)
+}
+
+// eventHandled tells a process whose output is numbered that the event it
+// last gave has been dealt with, so it may give the next and acknowledge.
+func eventHandled(proc HarnessProcess) {
+	if sequenced, ok := proc.(interface{ EventHandled() }); ok {
+		sequenced.EventHandled()
+	}
+}
+
+// entryBeingHandled names the runner spawn and entry the event now being
+// handled came as, for a process whose output is numbered.
+func entryBeingHandled(proc HarnessProcess) (spawnID string, sequence uint64, sequenced bool) {
+	if source, ok := proc.(interface {
+		EntryBeingHandled() (string, uint64, bool)
+	}); ok {
+		return source.EntryBeingHandled()
+	}
+	return "", 0, false
 }
 
 // deriveAndBroadcast runs the convenience-event derivation against

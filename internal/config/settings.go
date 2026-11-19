@@ -45,6 +45,8 @@ const (
 	SettingOrchestratorURL                   = "orchestrator.url"
 	SettingKeepAwakeEnabled                  = "keep_awake.enabled"
 	SettingKeepAwakeGraceMinutes             = "keep_awake.grace_minutes"
+	SettingSessionHostHoldSessions           = "session_host.hold_sessions_without_server"
+	SettingSessionHostHoldMinutes            = "session_host.hold_without_server_minutes"
 	SettingPeerAttachmentMaximumBytes        = "peer_messages.attachment_maximum_bytes"
 	SettingPeerAttachmentsMaximumTotalBytes  = "peer_messages.attachments_maximum_total_bytes"
 )
@@ -161,6 +163,10 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The most bytes all the files of one message to or from a connected server may come to together."},
 		{Key: SettingKeepAwakeGraceMinutes, EnvironmentVariable: "LLMBRIDGE_KEEP_AWAKE_GRACE_MINUTES", Kind: behavior, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "30",
 			Description: "How many minutes the machine is kept awake after the last session stops running or was last sent a message, when keep_awake.enabled is on. 0 releases the hold as soon as no session runs."},
+		{Key: SettingSessionHostHoldSessions, EnvironmentVariable: "LLMBRIDGE_SESSION_HOST_HOLD_SESSIONS", Kind: behavior, ValueType: msg.ServiceSettingValueTypeBoolean, Editable: true, Default: "false",
+			Description: "Ask runners to keep their harness processes running when their connection to this server drops, a restart of this server included, and to hand them back when it returns. Off, a runner ends every process when the connection drops. Leave it off while a harness's permission gate can fail open with this server away: a held process could then run a tool that no rule checked. A runner learns the setting when it next connects."},
+		{Key: SettingSessionHostHoldMinutes, EnvironmentVariable: "LLMBRIDGE_SESSION_HOST_HOLD_MINUTES", Kind: behavior, ValueType: msg.ServiceSettingValueTypeInteger, Editable: true, Default: "30",
+			Description: "How many minutes a held harness process may go on working with this server away, when session_host.hold_sessions_without_server is on. After that the runner interrupts its turn and keeps the process."},
 
 		// Behavior read once at start.
 		{Key: "session.purpose_folders", EnvironmentVariable: "LLMBRIDGE_PURPOSE_FOLDERS", Kind: behavior, ValueType: msg.ServiceSettingValueTypeStringMap,
@@ -369,6 +375,12 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 	}
 	if c.KeepAwakeGraceMinutes > 0 {
 		seeds[SettingKeepAwakeGraceMinutes] = strconv.Itoa(c.KeepAwakeGraceMinutes)
+	}
+	if c.SessionHostHoldSessions {
+		seeds[SettingSessionHostHoldSessions] = "true"
+	}
+	if c.SessionHostHoldMinutes > 0 {
+		seeds[SettingSessionHostHoldMinutes] = strconv.Itoa(c.SessionHostHoldMinutes)
 	}
 	if c.PeerAttachmentMaximumBytes > 0 {
 		seeds[SettingPeerAttachmentMaximumBytes] = strconv.Itoa(c.PeerAttachmentMaximumBytes)

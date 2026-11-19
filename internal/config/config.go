@@ -52,6 +52,11 @@ type Config struct {
 	OrchestratorURL       string
 	KeepAwakeEnabled      bool
 	KeepAwakeGraceMinutes int
+	// SessionHostHoldSessions and SessionHostHoldMinutes seed
+	// session_host.hold_sessions_without_server and
+	// session_host.hold_without_server_minutes, each only when set.
+	SessionHostHoldSessions bool
+	SessionHostHoldMinutes  int
 	// PeerAttachmentMaximumBytes and PeerAttachmentsMaximumTotalBytes seed
 	// the two limits on files in messages between servers, when set.
 	PeerAttachmentMaximumBytes       int
@@ -399,6 +404,8 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		OrchestratorURL:                  settings.String(SettingOrchestratorURL),
 		KeepAwakeEnabled:                 settings.Boolean(SettingKeepAwakeEnabled),
 		KeepAwakeGraceMinutes:            settings.Integer(SettingKeepAwakeGraceMinutes),
+		SessionHostHoldSessions:          settings.Boolean(SettingSessionHostHoldSessions),
+		SessionHostHoldMinutes:           settings.Integer(SettingSessionHostHoldMinutes),
 		AgentStoreDB:                     settings.String("agent_store.database_path"),
 		MemoryStoreDB:                    settings.String("memory_store.database_path"),
 		HarnessStoreDB:                   settings.String("harness_store.database_path"),

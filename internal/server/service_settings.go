@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -65,6 +67,13 @@ func (s *Server) wireServiceSettings() {
 	s.settings.SetValidator(config.SettingOperationsGrantEnforcement, checkOperationGrantEnforcementValue)
 	s.settings.SetValidator(config.SettingServerName, checkServerNameValue)
 	s.settings.SetValidator(config.SettingKeepAwakeGraceMinutes, checkKeepAwakeGraceMinutesValue)
+	s.settings.SetValidator(config.SettingSessionHostHoldMinutes, checkSessionHostHoldMinutesValue)
+	// Read when a runner connects, so a change reaches each runner at its
+	// next connection.
+	s.harness.SetRunnerHoldPolicy(func() (bool, time.Duration) {
+		return s.settings.Boolean(config.SettingSessionHostHoldSessions),
+			time.Duration(s.settings.Integer(config.SettingSessionHostHoldMinutes)) * time.Minute
+	})
 	s.settings.OnChange(func(key string) {
 		switch key {
 		case config.SettingServerName:
@@ -116,4 +125,15 @@ func (s *Server) retuneFromServiceSettings() {
 	if s.questionTriage != nil {
 		s.questionTriage.retune(s.settings.ModelRole(config.SettingQuestionTriageModelRole), tuning.timeout)
 	}
+}
+
+// checkSessionHostHoldMinutesValue refuses a hold limit under a minute: zero
+// would have a runner interrupt every held process the moment it lost this
+// server, which is not holding at all.
+func checkSessionHostHoldMinutesValue(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "-") || trimmed == "0" || trimmed == "" {
+		return errors.New("session_host.hold_without_server_minutes is 1 or more")
+	}
+	return nil
 }
