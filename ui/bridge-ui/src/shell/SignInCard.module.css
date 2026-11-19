@@ -1,0 +1,56 @@
+.page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+  flex-wrap: wrap;
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 2rem;
+  min-width: 320px;
+  max-width: 440px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+.title { margin: 0; text-align: center; }
+.prompt { margin: 0; text-align: center; color: var(--text-muted); font-size: 0.9rem; }
+.error { margin: 0; color: var(--error); font-size: 0.85rem; }
+.input {
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: inherit;
+  font-size: 1rem;
+}
+.submit {
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: var(--accent-on);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.submit:disabled { opacity: 0.6; cursor: wait; }
+:global([data-theme="zine"]) .card {
+  border-radius: 2px;
+  border: 2px solid var(--zine-ink);
+  box-shadow: 6px 6px 0 var(--zine-ink);
+  transform: rotate(-1.2deg);
+  background: var(--zine-cream);
+}
+:global([data-theme="zine"]) .title { font-family: 'Archivo Black', sans-serif; color: var(--zine-ink); font-size: 1.8rem; }
+:global([data-theme="zine"]) .prompt { color: var(--zine-ink); font-size: 1.15rem; font-weight: 700; }
+:global([data-theme="zine"]) .prompt u { text-decoration: none; border-bottom: 3px solid var(--zine-pink); }
+.divider { margin: 0; text-align: center; color: var(--text-muted); font-size: 0.85rem; }
+.link { text-align: center; text-decoration: none; }

@@ -1,0 +1,74 @@
+/* The 3D models page. A CSS module, like Previews, so the page carries its own
+   styles into dist/ beside its .js (scripts/copy-css.mjs). Colors are
+   theme.css variables so every theme works. */
+
+.page { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
+.header { display: flex; flex-direction: column; gap: 4px; }
+.title { margin: 0; font-size: 1.2em; color: var(--text); }
+.subtitle { margin: 0; font-size: 0.85em; color: var(--text-muted); max-width: 100ch; }
+.muted { color: var(--text-muted); font-size: 0.8em; }
+.warning { color: var(--warning, var(--error)); font-size: 0.8em; }
+.empty { color: var(--text-dim); font-size: 0.85em; padding: 8px 0; }
+.error {
+  margin: 0; padding: 8px 10px; font-size: 0.85em; white-space: pre-wrap;
+  color: var(--error); background: var(--error-bg); border: 1px solid var(--error); border-radius: 6px;
+}
+.problems { font-size: 0.8em; color: var(--text-muted); }
+.problems ul { margin: 4px 0 0; padding-left: 18px; }
+
+.columns { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 3.5fr); gap: 12px; flex: 1; min-height: 0; }
+@media (max-width: 900px) { .columns { grid-template-columns: 1fr; } }
+
+.list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; }
+.listHeading, .sectionHeading { margin: 6px 0 2px; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.tree, .children, .modelList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.children { margin: 4px 0 4px 14px; padding-left: 8px; border-left: 2px solid var(--border); }
+
+.row, .modelRow {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 6px 8px; text-align: left;
+  font: inherit; color: var(--text); background: var(--bg-surface); cursor: pointer;
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.rowSelected { border-color: var(--accent); }
+.rowName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9em; }
+.rowFacts { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 0.75em; color: var(--text-muted); }
+.state { font-family: var(--font-mono, monospace); }
+.state[data-state="model_generating"], .state[data-state="tool_running"], .state[data-state="starting"], .state[data-state="background_tasks_running"] { color: var(--accent); }
+.childToggle {
+  margin: 2px 0 0 4px; padding: 0; font: inherit; font-size: 0.75em; color: var(--text-muted);
+  background: none; border: none; cursor: pointer; text-align: left;
+}
+.linkButton { padding: 0; font: inherit; color: var(--accent); background: none; border: none; cursor: pointer; }
+
+.detail { display: flex; flex-direction: column; gap: 12px; min-width: 0; overflow-y: auto; min-height: 0; }
+.detailHeader { display: flex; flex-direction: column; gap: 4px; }
+.detailTitle { margin: 0; font-size: 1em; color: var(--text); overflow-wrap: anywhere; }
+.folders { font-size: 0.8em; color: var(--text-muted); }
+.folders ul { margin: 4px 0 0; padding-left: 18px; }
+
+.models { display: grid; grid-template-columns: minmax(0, 3fr) minmax(200px, 1fr); gap: 12px; }
+@media (max-width: 1100px) { .models { grid-template-columns: 1fr; } }
+.viewerColumn { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.viewerBar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; font-size: 0.85em; }
+.modelList { max-height: 60vh; overflow-y: auto; }
+
+.glbViewer { display: flex; flex-direction: column; gap: 4px; }
+.glbCanvas {
+  position: relative; height: 55vh; min-height: 320px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  background: radial-gradient(circle at 50% 40%, #fbf6ee, #e9e1d6);
+}
+.glbCanvas canvas { display: block; width: 100%; height: 100%; }
+.glbBar { display: flex; align-items: center; gap: 12px; font-size: 0.85em; }
+
+.renders { display: flex; flex-direction: column; gap: 6px; }
+.renderGrid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.render { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.render img {
+  display: block; width: 100%; height: 180px; object-fit: contain;
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px;
+}
+.renderGone {
+  display: flex; align-items: center; justify-content: center; height: 180px; font-size: 0.8em; color: var(--text-dim);
+  border: 1px dashed var(--border); border-radius: 6px;
+}
+.renderName { font-size: 0.8em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

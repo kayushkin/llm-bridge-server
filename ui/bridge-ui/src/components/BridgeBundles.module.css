@@ -1,0 +1,114 @@
+/* The Bundles page. A CSS module rather than rules in styles.css, so the page
+   carries its own styles into dist/ beside its .js (scripts/copy-css.mjs).
+   Colors come from theme.css variables, so both themes work. */
+
+.page { display: flex; flex-direction: column; gap: 16px; max-width: 1400px; }
+.header { display: flex; flex-direction: column; gap: 4px; }
+.title { margin: 0; font-size: 1.2em; color: var(--text); }
+.subtitle { margin: 0; font-size: 0.85em; color: var(--text-muted); max-width: 75ch; }
+.error {
+  margin: 0; padding: 8px 10px; font-size: 0.85em; white-space: pre-wrap;
+  color: var(--error); background: var(--error-bg); border: 1px solid var(--error); border-radius: 6px;
+}
+
+.columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 1000px) { .columns { grid-template-columns: 1fr; } }
+.column {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0;
+  padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface);
+}
+.heading { margin: 0; font-size: 0.95em; color: var(--text); }
+.empty { color: var(--text-dim); font-size: 0.85em; }
+.muted { color: var(--text-muted); font-size: 0.8em; }
+
+.card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
+}
+.cardHead { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.name { font-weight: 600; color: var(--text); }
+.bundleName { font-size: 0.8em; color: var(--text-muted); }
+.disabledBadge {
+  font-size: 0.7em; padding: 1px 6px; border-radius: 3px;
+  color: var(--error); border: 1px solid var(--error);
+}
+.description { font-size: 0.82em; color: var(--text-muted); }
+
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip { font-size: 0.72em; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); white-space: nowrap; }
+.repoTag { color: var(--text-muted); }
+.matchTag { color: var(--info); background: var(--info-bg); border-color: var(--info); }
+.skill { color: var(--success); background: var(--success-bg); border-color: var(--success); }
+.tool { color: var(--warning); background: var(--warning-bg); border-color: var(--warning); }
+.memberID { font-family: monospace; opacity: 0.75; }
+.condition { font-style: italic; opacity: 0.85; }
+
+.taskInput {
+  width: 100%; box-sizing: border-box;
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 6px 10px; border-radius: 6px; font-size: 0.85em;
+}
+.taskInput:focus { outline: none; border-color: var(--accent); }
+
+.repoList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 70vh; overflow-y: auto; }
+.repoRow {
+  display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text); cursor: pointer; font: inherit;
+}
+.repoRow:hover { border-color: var(--accent); }
+.repoRowSelected { border-color: var(--accent); background: var(--accent-soft, rgba(99, 102, 241, 0.12)); }
+.repoName { font-weight: 600; font-size: 0.88em; }
+
+.previewRow { display: flex; gap: 4px; flex-wrap: wrap; align-items: baseline; }
+.previewLabel { font-size: 0.7em; text-transform: uppercase; color: var(--text-dim); width: 60px; flex: none; }
+
+/* Writing bundles: the column head with its New button, the card actions, and
+   the composer form with its member pickers. */
+.columnHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cardActions { display: inline-flex; gap: 4px; margin-left: auto; }
+.smallButton {
+  font: inherit; font-size: 0.75em; padding: 2px 8px; border-radius: 4px; cursor: pointer;
+  background: var(--bg); color: var(--text-muted); border: 1px solid var(--border);
+}
+.smallButton:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.smallButton:disabled { opacity: 0.6; cursor: default; }
+.dangerButton:hover:not(:disabled) { color: var(--error); border-color: var(--error); }
+.primaryButton {
+  font: inherit; font-size: 0.8em; padding: 4px 10px; border-radius: 4px; cursor: pointer;
+  background: var(--accent); color: var(--accent-on, #fff); border: 1px solid var(--accent);
+}
+.primaryButton:hover:not(:disabled) { background: var(--accent-hover, var(--accent)); }
+.primaryButton:disabled { opacity: 0.6; cursor: default; }
+
+.composer {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px; border: 1px solid var(--accent); border-radius: 6px; background: var(--bg);
+}
+.composerTitle { font-weight: 600; font-size: 0.9em; color: var(--text); }
+.composerActions { display: flex; gap: 6px; align-items: center; }
+.field { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.fieldRow { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.checkField { flex-direction: row; align-items: center; gap: 6px; flex: none; padding-bottom: 6px; }
+.fieldLabel { font-size: 0.7em; text-transform: uppercase; color: var(--text-dim); }
+.fieldHint { font-size: 0.75em; color: var(--text-muted); }
+.fieldWarning { font-size: 0.75em; color: var(--warning); }
+.input {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 0.85em;
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 5px 8px; border-radius: 6px;
+}
+.input:focus { outline: none; border-color: var(--accent); }
+.memberRow { display: flex; gap: 6px; align-items: center; }
+.conditionInput { flex: 1; font-size: 0.78em; padding: 3px 6px; }
+
+.picker { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 200px; }
+.pickerList {
+  list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px;
+  max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px;
+}
+.pickerRow {
+  display: flex; gap: 6px; align-items: center; width: 100%; text-align: left;
+  padding: 4px 6px; border: 0; background: transparent; color: var(--text); cursor: pointer; font: inherit;
+}
+.pickerRow:hover { background: var(--accent-soft, rgba(99, 102, 241, 0.12)); }

@@ -1,0 +1,2071 @@
+/* chat — chat-ONLY elements. Everything else inherits bridge-ui's stylesheet
+   (@kayushkin/bridge-ui/styles.css) via the bc-* class names the components emit.
+   These rules cover the handful of affordances bridge-ui's chat surface lacks — the
+   Turns/Raw/Timeline audit features (sources badge, raw-entry meta, inline tool
+   blocks) and a couple of virtualization/spacing shims — styled with the same theme
+   + --bc-* custom properties styles.css defines (scoped to .bc-container) so they
+   visually belong. */
+
+/* ---- Virtualized scrollers (virtua) ---- */
+
+/* chat's sidebar root, carried alongside bridge-ui's `bc-session-list`.
+   bridge-ui's own SessionList puts its rows directly in that box and lets the box
+   scroll (`styles.css`: `overflow-y: auto`, no `display`), which is right for it.
+   chat puts a virtua `VList` in there instead, and virtua writes `height: 100%`
+   as an INLINE style on the VList root — inline beats the `flex: 1; min-height: 0`
+   in `.list` below, so with a block parent that 100% resolved to the whole sidebar
+   height while the "+ New" button and the search box sat above it. The box then
+   overflowed by exactly their height and drew a second scrollbar around the
+   virtualizer's own.
+   As a flex column, `flex-basis: 0%` from `.list` supersedes that inline height on
+   the main axis and the VList takes the leftover, so the sidebar has nothing to
+   scroll — hence `overflow: hidden`, and hence the `flex: 0 0 auto` shims further
+   down finally mean something. Specificity 0-2-0 to outrank bridge-ui's own
+   `.bc-session-list` however the two stylesheets end up ordered. */
+:global(.bc-session-list).sessionListColumn {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The chip filter is the one sibling that can outgrow the whole sidebar — measured
+   at 613px of a 798px column with every axis expanded. Block flow simply pushed the
+   list off the bottom and let the sidebar scroll to it; a column would instead hand
+   the filter every pixel it asks for and settle `.list` at its `flex-basis: 0`,
+   leaving the sessions at zero height with no scrollbar to reach them. So the list
+   keeps a floor and the filter gives up the difference to its own scroll. */
+:global(.bc-session-list).sessionListColumn :global(.bc-inst-filter) {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* The scrollable body of the sidebar list (bc-session-item rows sit flush,
+   full-width). The floor is what the rule above shrinks the filter against: an
+   explicit min-height also does the job `min-height: 0` used to do here, since what
+   breaks a flex scroller is the AUTOMATIC minimum size, not a nonzero one. */
+.list {
+  flex: 1;
+  min-height: 160px;
+  overflow-y: auto;
+}
+
+/* virtua positions rows itself and drops the flex `gap` bc-turns-body relies on,
+   so each virtualized turn item carries its own bottom margin to reproduce the
+   10px inter-turn rhythm. */
+.vrow {
+  margin-bottom: 10px;
+}
+
+/* Load-older affordance (chat pages back through history) — a dashed ghost
+   button at the top of the turns/timeline scroller. */
+.loadOlder {
+  display: block;
+  width: 100%;
+  padding: 6px;
+  margin-bottom: 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--bc-radius-xs, 8px);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+.loadOlder:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* The sidebar's load-older button reuses bridge-ui's own `bc-session-show-more` —
+   the old chat's affordance for the same job — so only the bits that class does not
+   carry live here: it must not stretch as a flex child, and it must read as inert
+   while a page is in flight. */
+.sessionPagerShim {
+  flex: 0 0 auto;
+}
+.sessionPagerShim:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* The "N of M transcript matches shown" line under the search box. It is a
+   correction, not a warning: the list is under-returning and the user cannot tell.
+   Sized down and dimmed so it reads as a footnote to the search box rather than an
+   error, and it does not stretch as a flex child. */
+.searchReach {
+  flex: 0 0 auto;
+  padding: 2px 10px 6px;
+  font-size: 0.78em;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+
+/* ---- Filter chip count (chat facet-count enhancement) ---- */
+.chipCount {
+  margin-left: 4px;
+  font-family: monospace;
+  font-size: 0.85em;
+  color: var(--text-dim);
+}
+
+/* ---- Turn entries ---- */
+.entry {
+  min-width: 0;
+}
+
+/* Inline tool blocks. bridge-ui shows tools in a separate pane; chat's collapsed
+   Turns view renders them inline, so they get a compact bc-styled block. */
+.entryTool {
+  padding: 5px 8px;
+  background: var(--bc-surface-thin, var(--bg-surface));
+  border-left: 3px solid var(--border);
+  border-radius: var(--bc-radius-xs, 8px);
+  font-family: monospace;
+  font-size: 0.72rem;
+}
+.entryToolName {
+  font-weight: 600;
+  color: var(--accent);
+}
+.entryPre {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--bc-radius-xs, 8px);
+  font-family: monospace;
+  font-size: 0.68rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* Recovered marker — subtle inline note under a recovered assistant message. */
+.recoveredMarker {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.66rem;
+  font-style: italic;
+  color: var(--text-dim);
+}
+
+/* Ref chip (chat-core RefChip) — linkified session id / noteboard item uuid.
+
+   Only `.refChip` is a module class: it is the one class chat-core takes as a
+   prop. Everything else the component emits is an unhashed `ref-chip-*` name, so
+   those rules are `:global` — the same arrangement the bridge-ui classes above
+   use. chat-core ships no CSS of its own; all of the chip's appearance is here. */
+.refChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  border: none;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-family: monospace;
+  font-size: 0.85em;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.refChip:hover {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* ---- Error chip — informational api_error / terminal codes ---- */
+.errorChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid;
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: normal;
+  word-break: break-word;
+}
+.errorChipTerminal {
+  color: var(--error, #ef4444);
+  border-color: color-mix(in srgb, var(--error, #ef4444) 45%, transparent);
+  background: color-mix(in srgb, var(--error, #ef4444) 10%, var(--bg-surface));
+}
+.errorChipRetryable {
+  color: var(--warning, #f59e0b);
+  border-color: color-mix(in srgb, var(--warning, #f59e0b) 45%, transparent);
+  background: color-mix(in srgb, var(--warning, #f59e0b) 10%, var(--bg-surface));
+}
+.errorChipCode {
+  font-family: monospace;
+  font-size: 0.66rem;
+  font-weight: 600;
+  opacity: 0.85;
+}
+.errorChipStatus {
+  font-family: monospace;
+  font-size: 0.62rem;
+  opacity: 0.7;
+}
+
+/* ---- Raw view: per-entry meta line (chat audit surface) ---- */
+.rawMeta {
+  font-family: monospace;
+  font-size: 0.62rem;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+.rawDupTag {
+  color: var(--warning, #f59e0b);
+  margin-left: 6px;
+}
+
+/* ---- "N sources: harness + otel" badge + drill-down (chat dual-emit audit) ---- */
+.sourcesBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bc-surface-thin, var(--bg-surface));
+  color: var(--text-dim);
+  font-size: 0.62rem;
+  font-family: monospace;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.sourcesBadge:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+/* The Turns-view sources badge — same vocabulary as .sourcesBadge, but it sits inline in
+   bc-turns-meta beside the timestamp and is a label, not a control (no pointer, no hover
+   affordance): the per-copy detail it would reveal lives in the Raw view. */
+.turnsSourcesBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bc-surface-thin, var(--bg-surface));
+  color: var(--text-dim);
+  font-size: 0.62rem;
+  font-family: monospace;
+  white-space: nowrap;
+  cursor: default;
+}
+.sourcesReveal {
+  margin-top: 5px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--bc-radius-xs, 8px);
+  background: var(--bg);
+}
+.sourceCopy {
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.7rem;
+}
+.sourceCopy:last-child {
+  border-bottom: none;
+}
+.sourceMeta {
+  font-family: monospace;
+  font-size: 0.62rem;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+.sourcePrimary {
+  color: var(--success, #22c55e);
+}
+.sourceDup {
+  color: var(--warning, #f59e0b);
+}
+
+/* ---- Header Tools drawer (chat hosts ToolsPanel inline under the header) ---- */
+.toolsDrawer {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.toolsLoading {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  padding: 6px 2px;
+}
+
+/* (The composer status row is gone: paused/stopped/disconnected/error render in the
+   turns pane's session status slot — see "Session status slot" below.) */
+
+/* Sidebar strip shown while the session-list SSE stream is not open. The rows below it
+   are still painted from memory and are still useful — they are just no longer being
+   updated — so this is a muted note, not an error banner. */
+.sidebarDisconnected {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Header permission controls: the mode select, the sandbox "No network" checkbox, and
+   the Custom-mode approval/sandbox knobs. Laid out as one inline group so the three
+   read as one setting — which they are, on the wire and in harness_config. The selects
+   themselves keep bridge-ui's .bc-ctrl-select styling; only the grouping lives here. */
+.permissionControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.permissionNetwork {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.permissionNetwork input {
+  margin: 0;
+  cursor: pointer;
+}
+.permissionNetwork input:disabled,
+.permissionNetwork:has(input:disabled) {
+  opacity: 0.4;
+  cursor: default;
+}
+.permissionCustom {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ============================================================================
+   The compact top bar.
+
+   Everything a session is doing lives on ONE row now — status, name, cost, the
+   model picker, the view toggles, done — with the context readout as a strip
+   across the bottom edge and everything else behind the details dropdown.
+
+   The row used to wrap to two and three lines, and the cause was not the number
+   of controls: bridge-ui's `.bc-header-row` is `flex-wrap: wrap` and every chip
+   in it carries `flex-shrink: 0`, while `.bc-session-name` has no `min-width: 0`
+   at all. So nothing could give, and a long session name pushed the whole right
+   cluster onto a second line. `.headerName` below is what fixes that — it is the
+   one element allowed to shrink, and it truncates instead of wrapping.
+   ============================================================================ */
+
+/* The row itself. `flex-wrap: nowrap` is the point of the redesign: with a
+   shrinkable name there is always something to give, so wrapping is no longer
+   how the row copes with being narrow — truncating the name is.
+
+   ⚠️ COMPOUNDED WITH `:global(.bc-header-row)` ON PURPOSE, and every rule in this
+   file that overrides a bridge-ui class has to do the same. A bare `.headerRow`
+   has specificity (0,1,0) — identical to bridge-ui's own `.bc-header-row`, which
+   declares `flex-wrap: wrap` twice. Ties go to whichever rule the bundler emits
+   LAST, and bridge-ui's stylesheet is concatenated after this module (measured:
+   this rule landed at byte 114788 of the built CSS, bridge-ui's at 128801 and
+   201510). So the bare version lost silently: the class was on the element, the
+   declaration was in the bundle, and the row still wrapped.
+
+   The compound selector is (0,2,0) and wins on specificity rather than on
+   ordering, which is the only version of this that survives a bundler change. */
+:global(.bc-header-row).headerRow {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+
+/* The one shrinkable element on the row. `min-width: 0` is not optional: a flex
+   item's default `min-width: auto` refuses to shrink below its content, which is
+   exactly why the name used to shove everything else onto the next line.
+
+   This one does NOT need the `:global` compound the row above does — bridge-ui's
+   `.bc-session-name` only sets `font-weight`, `color` and `letter-spacing`, so
+   nothing here collides with it. Compounding it anyway would suggest a conflict
+   that does not exist. */
+.headerName {
+  /* grow 1, SHRINK 100, basis auto. The oversized shrink factor is what orders the
+     degradation: flex distributes shrinkage in proportion to these factors, so
+     against the cluster's factor of 1 the name absorbs ~99% of every pixel lost.
+     It reaches its 3ch floor first, and only then does the cluster start to give
+     and wrap. With both at 1 they would shrink together and the controls would
+     start wrapping while the name still had room to spare. */
+  flex: 1 100 auto;
+  min-width: 3ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The right-hand cluster: model picker, view emojis, markdown, done, details.
+   `flex-shrink: 0` so the controls never compress into each other — the name
+   absorbs every pixel of narrowing instead.
+
+   ⚠️ `flex-wrap: wrap` here is NOT a contradiction of the `nowrap` on the row, and
+   removing it costs three controls. The row must not wrap, because that is what
+   used to push the whole cluster onto a second line the moment a name got long.
+   But `nowrap` on its own does not mean "always fits" — it means "never wrap",
+   and once the name has shrunk to its 3ch floor a fixed-width cluster simply
+   overflows the row and is CLIPPED. Measured at 800px: `scrollWidth` 603 against
+   `clientWidth` 496, with the markdown toggle, Done and the ⋯ sitting up to 84px
+   past the edge, invisible and unclickable — including the ⋯ that is the only way
+   to reach everything already behind it.
+
+   Clipping is strictly worse than the wrapping it replaced: a wrapped control is
+   ugly, a clipped one is gone. So the cluster wraps INTERNALLY as a last resort.
+
+   ⚠️ "Last resort" is what this was designed to be and NOT what it measures as.
+   The wrap engages at the exact pixel the name first truncates — 1290px with a
+   98-character name, 780px with a short one — and the cluster's BOX does not get
+   narrower when it does (320px either side of the threshold), so the second line
+   costs a doubled header height and buys nothing. Flex distributes shrinkage in
+   PROPORTION, so `flex-shrink: 100` on the name (below) means it shrinks 100x
+   faster, NOT that it shrinks first: the cluster always absorbs a sub-pixel share
+   the moment anything shrinks at all, and a container whose contents sit exactly
+   at max-content wraps on any share whatsoever. Measured 2026-08-07 against the
+   deployed bundle; noteboard `5edd3f42`, which needs a design call (a real
+   breakpoint, compressible cluster contents, or accepting the second line).
+   `e2e/chat-header-overflow.spec.ts` pins the part that IS settled — nothing is
+   clipped and every control stays clickable at every width from 660 to 1000px.
+
+   `justify-content: flex-end` keeps the overflow row right-aligned under the rest
+   rather than leaving it stranded in the middle of the bar.
+
+   ⚠️ COMPOUNDED, and for a reason that cost a second round of this bug: bridge-ui's
+   `.bc-header-right` sets `flex-shrink: 0`, so a bare `.headerCluster` lost the
+   tie exactly as `.headerRow` did. And `flex-shrink: 0` is precisely what makes
+   `flex-wrap` dead code here — an item that cannot shrink keeps its max-content
+   width forever, so the container is never narrow enough for its own contents to
+   wrap. The rule was present, correct, and inert; the clipping simply moved to
+   769–899px.
+
+   `flex-shrink: 1` + `min-width: 0` is what lets the row squeeze the cluster at
+   all. The name still gives way first because it carries a far larger shrink
+   factor (see `.headerName`) — flex distributes shrinkage in proportion, so a
+   factor of 100 against 1 means the name is at its floor long before the controls
+   move. */
+:global(.bc-header-right).headerCluster {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+/* A hairline between groups of controls that do unrelated things, so a row of
+   twelve icons reads as four groups of three. Cheaper than spacing them apart,
+   which is what pushed the row over its width budget in the first place. */
+.headerDivider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 3px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+/* Icon-only buttons — the view emojis, compact, done, the details caret. Square,
+   so a row of them is a predictable width regardless of which glyph each one
+   carries. Every one of these MUST carry an aria-label: the glyph is not an
+   accessible name, and dropping the text is what would otherwise make these
+   unreachable to a screen reader and to the e2e specs that locate them by role. */
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s, opacity 0.12s;
+  opacity: 0.6;
+}
+.iconButton:hover:not(:disabled) {
+  opacity: 1;
+  color: var(--text);
+  border-color: var(--border);
+}
+.iconButton:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+/* `aria-pressed` is the source of truth for the on state rather than a second
+   class, so the thing the specs assert and the thing the user sees can never
+   disagree. */
+.iconButton[aria-pressed='true'] {
+  opacity: 1;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* The header is a size container so the view tabs can shorten by the header's own
+   width, not the window's: a narrow chat pane beside a wide sidebar needs the short
+   tabs as much as a narrow window does. */
+:global(.bc-header) {
+  container: session-header / inline-size;
+}
+
+/* The view tabs: short words in one joined strip, the pressed ones filled. The
+   strip is the header's widest control, so below 640px of header it drops to the
+   one- or two-letter forms. Not sooner: above that the name is what gives way as the
+   header narrows, and the controls keep one width (chat-header-overflow.spec.ts). */
+.viewTabs {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.viewTab {
+  padding: 0 6px;
+  height: 24px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: none;
+  color: var(--text-dim);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.viewTab:first-child { border-left: none; }
+.viewTab:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.viewTab[aria-pressed='true'] {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.viewTabShort { display: none; }
+@container session-header (max-width: 640px) {
+  .viewTabLabel { display: none; }
+  .viewTabShort { display: inline; }
+  .viewTab { padding: 0 5px; }
+}
+
+/* The usage group: the context ring and the cost chip, side by side. */
+.usageGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Done is the one icon that earns a color: it is the only control on the row
+   that changes what the session IS rather than how it is displayed. */
+.iconButtonDone[aria-pressed='true'] {
+  color: #22c55e;
+  background: color-mix(in srgb, #22c55e 14%, transparent);
+  border-color: color-mix(in srgb, #22c55e 45%, transparent);
+}
+
+/* The model picker. Narrower than bridge-ui's 180px `.bc-ctrl-select` because it
+   now carries a short name (`opus-4.6`) rather than a full one — and it keeps the
+   full name plus the running model on its title, so nothing is lost by the
+   shortening, it just moves to the tooltip.
+
+   Compounded for the same reason `.headerRow` is: every property here overrides
+   one `.bc-ctrl-select` also sets, at the same specificity, from a stylesheet
+   emitted later. */
+:global(.bc-ctrl-select).modelPicker {
+  max-width: 116px;
+  padding: 3px 6px;
+  font-size: 0.72rem;
+}
+
+/* A refused model or effort change, stated on the row itself.
+
+   Width-capped and ellipsised because the row is `nowrap`: an unbounded server
+   message ("model claude-opus-9 is not available on this instance") would push the
+   view toggles and Done straight off the right edge. Capped, it still says which
+   control was refused and roughly why, and the full sentence stays on `title` and
+   `aria-label`. A bare ⚠ with the message on hover only was the alternative, and
+   hover is not a channel on a touch screen — a hover-only refusal is a silent one
+   with extra steps. */
+.settingsError {
+  max-width: 190px;
+  min-width: 0;
+  overflow: hidden;
+  flex-shrink: 1;
+}
+.settingsError > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The context ring: a readout, not a control, beside the cost chip. Its arc is
+   the fill, and the percentage is printed inside it in tabular figures so it does
+   not jitter as the count climbs during a turn.
+
+   ⚠️ It renders ONLY when there is a real measurement (tokens > 0 && limit > 0);
+   see `ContextRing`. */
+.contextRing {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  cursor: default;
+}
+.contextRingSvg {
+  width: 24px;
+  height: 24px;
+}
+.contextRingTrack {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 2.4;
+}
+.contextRingArc {
+  fill: none;
+  stroke: var(--bc-harness, var(--accent));
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.3s ease, stroke 0.2s ease;
+}
+/* The number inside the ring. Three digits (over the limit) still fit at this size. */
+.contextRingNumber {
+  fill: currentColor;
+  font-size: 8.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+/* The readout's words, for screen readers: the ring and its number draw it on screen. */
+.contextRingReadout {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.contextRingWarn { color: #f59e0b; }
+.contextRingWarn .contextRingArc { stroke: #f59e0b; }
+.contextRingCrit { color: #ef4444; }
+.contextRingCrit .contextRingArc { stroke: #ef4444; }
+
+/* ---- The details dropdown ----
+
+   Home for everything the top bar no longer shows: the harness and machine by
+   full name, the nav arrows, the permission controls, Tools, Prompt, Fork and
+   Effort, plus the field-by-field session detail list that was already here.
+
+   It is a panel of CONTROLS as well as facts, which is why it is not merely the
+   old `SessionDetailsPanel` with more rows: the things inside it still write. */
+.detailsPanel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 340px;
+  max-width: 460px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  box-shadow: 0 12px 32px -8px rgb(0 0 0 / 45%);
+}
+.detailsSection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.detailsSection:last-of-type {
+  border-bottom: none;
+}
+.detailsSectionLabel {
+  width: 100%;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* A refused sidebar mutation — a folder move, create, rename, delete, or a mark-done.
+   Deliberately NOT `.sidebarDisconnected`'s muted grey: a dropped stream is a
+   condition the client recovers from on its own, while this is a change the SERVER
+   turned down and the optimistic row has already been put back. Without a visible
+   line the revert is indistinguishable from a race, which is exactly how chat's
+   archive button spent a year 404ing in silence. */
+.sidebarError {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  color: #ef4444;
+  border-top: 1px solid var(--border);
+  word-break: break-word;
+}
+
+/* ---- Vibe rails (Turns prose) ------------------------------------------------------
+   `remarkVibes` (vibes.ts) wraps every top-level markdown block in a
+   `div[data-vibe="…"]` and changes nothing inside it, so all of the styling below hangs
+   off that one attribute. Six values, a closed set — a `data-vibe` this file has no rule
+   for renders as an unstyled div, which is the same page chat drew before any of this
+   existed.
+
+   Every color is a THEME token (--error / --warning / --accent / --success / --info /
+   --border), so light and dark both come from the palette that already clears contrast
+   in `index.css` rather than from six hex literals that would only have been checked in
+   one of them. */
+
+.vibeProse > div[data-vibe] {
+  position: relative;
+  /* The gutter is a fixed column on EVERY block, descriptive included. An indent that
+     appeared only beside the unusual blocks would make the paragraph above a warning
+     jump left, which reads as the layout twitching rather than as an annotation.
+     18px holds the 6px rail plus the glyph overlaid on it; the glyph used to sit in a
+     column of its own and cost 26px. */
+  padding-left: 18px;
+}
+
+/* The rail, as an absolutely-positioned pseudo-element rather than the `box-shadow: inset`
+   this used to be. Both avoid the reflow a `border-left` would cause — and reflow is a
+   real concern here, since a block's vibe is re-derived on every streamed token and a
+   paragraph can be `descriptive` at 40 characters and `question` at 60 — but only an
+   absolute box can be told to start ABOVE its own element, which is what bridges the
+   collapsed margin between two blocks of one run. */
+.vibeProse > div[data-vibe]::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background: var(--vibe-hue, var(--border-subtle));
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+/* A run is drawn as ONE stripe. The wrapper divs have no vertical padding or border, so
+   the prose margins inside them collapse THROUGH the wrappers and land as a gap between
+   them — 0.6em between paragraphs, 0.8em before a heading (bridge-ui `styles.css`). Every
+   block after the first in its run extends its rail up by the larger of the two to close
+   that gap. Overshooting into the block above is harmless: by definition it is the same
+   vibe and the same color, so the two stripes union. */
+.vibeProse > div[data-vibe-run='mid']::after,
+.vibeProse > div[data-vibe-run='end']::after {
+  top: -0.8em;
+}
+
+/* Square the joins so a run reads as one stripe with two rounded ends. */
+.vibeProse > div[data-vibe-run='start']::after,
+.vibeProse > div[data-vibe-run='mid']::after {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.vibeProse > div[data-vibe-run='mid']::after,
+.vibeProse > div[data-vibe-run='end']::after {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+/* The glyph caps the rail, overlaid on it, at the top of the RUN — once per stripe rather
+   than once per block. `mid` and `end` get no glyph at all: they are the continuation of
+   a stripe that has already announced itself.
+
+   It sits over the rail rather than beside it, which is what reclaimed the 8px, and it
+   is deliberately NOT given a background to mask the stripe behind it. Masking was tried
+   and looked worse: an opaque chip cuts a notch out of the top of every stripe, which
+   reads as the rail being broken rather than as a glyph capping it. The emoji is mostly
+   opaque and wider than the 6px rail, so letting the stripe run through behind it is what
+   makes it read as overlaid.
+
+   11px because 9px was measured unreadable — at that size a glyph is a colored speck and
+   the reader is getting the hue twice instead of a hue and a symbol.
+
+   CSS alt text (`/ "warning"`) so a screen reader gets the vibe's NAME rather than an
+   emoji read aloud, and so a copy of the transcript does not pick the character up as
+   prose. */
+.vibeProse > div[data-vibe-run='start']::before,
+.vibeProse > div[data-vibe-run='solo']::before {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 1;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* Descriptive is the default and must look like no annotation at all: the faintest
+   possible rail, no tint, and NO glyph. This is the block most of an ordinary answer is
+   made of, so a 📝 capping every prose run would be a mark that appears constantly and
+   distinguishes nothing — the absence of a glyph is what "ordinary" looks like. A
+   pseudo-element with no `content` generates no box, so dropping the declaration is the
+   whole of it. */
+.vibeProse > div[data-vibe='descriptive'] {
+  --vibe-hue: var(--border-subtle);
+}
+
+/* The five that mean something. A 4% wash of the same hue the rail uses — enough to find
+   when skimming, not enough to fight the text on top of it. */
+.vibeProse > div[data-vibe='danger'],
+.vibeProse > div[data-vibe='warning'],
+.vibeProse > div[data-vibe='question'],
+.vibeProse > div[data-vibe='action'],
+.vibeProse > div[data-vibe='info'] {
+  background: color-mix(in srgb, var(--vibe-hue) 4%, transparent);
+}
+
+.vibeProse > div[data-vibe='danger'] {
+  --vibe-hue: var(--error);
+}
+.vibeProse > div[data-vibe='danger']::before {
+  content: '🚨' / 'danger';
+}
+.vibeProse > div[data-vibe='warning'] {
+  --vibe-hue: var(--warning);
+}
+.vibeProse > div[data-vibe='warning']::before {
+  content: '⚠️' / 'warning';
+}
+.vibeProse > div[data-vibe='question'] {
+  --vibe-hue: var(--accent);
+}
+.vibeProse > div[data-vibe='question']::before {
+  content: '❓' / 'question';
+}
+.vibeProse > div[data-vibe='action'] {
+  --vibe-hue: var(--success);
+}
+.vibeProse > div[data-vibe='action']::before {
+  content: '⚡' / 'action';
+}
+.vibeProse > div[data-vibe='info'] {
+  --vibe-hue: var(--info);
+}
+.vibeProse > div[data-vibe='info']::before {
+  content: 'ℹ️' / 'info';
+}
+
+/* Kill the glyph on the continuation of a run. This has to come AFTER the five content
+   rules above and cancel `content` specifically: those rules key on `data-vibe` alone, so
+   a `mid` block would otherwise still generate a ::before — and since only `start`/`solo`
+   are positioned, that box would land INLINE at the head of the paragraph rather than in
+   the gutter. Equal specificity to the rules above, so source order is what decides it. */
+.vibeProse > div[data-vibe-run='mid']::before,
+.vibeProse > div[data-vibe-run='end']::before {
+  content: none;
+}
+
+/* bridge-ui zeroes the first and last child's outer margins on `.bc-turns-md` so prose
+   sits flush in its bubble. Those rules are `>` selectors and the wrappers are now the
+   direct children, so the margin they were canceling moved one level down with the
+   content. Re-cancel it there — without this a reply that opens with a heading gains
+   0.8em of space it never had. */
+.vibeProse > div[data-vibe]:first-child > :first-child {
+  margin-top: 0;
+}
+.vibeProse > div[data-vibe]:last-child > :last-child {
+  margin-bottom: 0;
+}
+
+/* ---- Vibe legend ---- */
+/* The corner row (`.paneCorner`) floats top-right of the Turns pane, above the scroller. Mirrors `.bc-jump-latest`'s
+   treatment (bridge-ui styles.css) so the pane's two floating controls read as a pair —
+   this one at the top because the other one moves, and two controls in the same corner
+   would overlap the moment new messages arrived. */
+.paneCorner {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: min(360px, 80%);
+}
+/* The lens chip in the header: two halves joined into one pill beside the view tabs.
+   A pressed half is filled. */
+.lensChip {
+  display: inline-flex;
+  flex-shrink: 0;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.lensHalf {
+  padding: 0 3px;
+  border: none;
+  background: none;
+  font-family: monospace;
+  font-size: 0.58rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.lensHalf + .lensHalf { border-left: 1px solid var(--border); }
+.lensHalf:hover { color: var(--text); }
+.lensHalf:disabled { opacity: 0.35; cursor: default; }
+.lensHalf[aria-pressed='true'] {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.vibeLegend {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: min(300px, 70%);
+}
+.vibeLegendToggle {
+  white-space: nowrap;
+  padding: 2px 8px;
+  font-family: monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.vibeLegendToggle:hover {
+  color: var(--text);
+  opacity: 1;
+}
+.vibeLegendBody {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px -8px rgb(0 0 0 / 45%);
+  font-size: 0.68rem;
+}
+/* Each row is its own grid item pair — `display: contents` keeps the dt/dd on the
+   legend's two columns instead of the wrapper starting a grid of its own. */
+.vibeLegendRow {
+  display: contents;
+}
+.vibeLegendTerm {
+  white-space: nowrap;
+  color: var(--text);
+}
+.vibeLegendMeaning {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+/* The legend has to SHOW the colors it is explaining, or it is a list of words. Each
+   row carries its vibe as a data attribute and draws the same rail the prose does, from
+   the same tokens — a legend with its own palette would be the second copy of the one
+   thing here that must not have two. */
+.vibeLegendRow[data-vibe='descriptive'] .vibeLegendTerm {
+  --vibe-hue: var(--border-subtle);
+}
+.vibeLegendRow[data-vibe='danger'] .vibeLegendTerm {
+  --vibe-hue: var(--error);
+}
+.vibeLegendRow[data-vibe='warning'] .vibeLegendTerm {
+  --vibe-hue: var(--warning);
+}
+.vibeLegendRow[data-vibe='question'] .vibeLegendTerm {
+  --vibe-hue: var(--accent);
+}
+.vibeLegendRow[data-vibe='action'] .vibeLegendTerm {
+  --vibe-hue: var(--success);
+}
+.vibeLegendRow[data-vibe='info'] .vibeLegendTerm {
+  --vibe-hue: var(--info);
+}
+.vibeLegendRow .vibeLegendTerm {
+  padding-left: 6px;
+  border-left: 3px solid var(--vibe-hue, var(--border-subtle));
+}
+
+/* ---- Session status slot (turns pane) ---- */
+/* The ONE fixed-height line under the turns scroller: live activity, compacting,
+   paused, stopped, disconnected and action errors all render here, one at a time.
+   Pinned as a pane-level sibling of the scroll body (a VList child would be
+   virtualized away). Height is FIXED — content swaps, the box never moves — that
+   is the whole point of unifying the four strips this replaces. Accent-toned;
+   violet stays reserved for compaction. */
+.statusSlot {
+  position: relative; /* anchors the subagents popover */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  box-sizing: border-box;
+  flex: none;
+  padding: 0 10px;
+  margin: 4px 0;
+  font-family: monospace;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  border-top: 1px dashed color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+/* The ticker: the live activity text scrolls to its end and back when it does not
+   fit. `--ticker-shift` and `--ticker-seconds` are set inline by `Ticker`. */
+.ticker { display: block; }
+.tickerTape { display: inline-block; white-space: nowrap; }
+.ticker[data-ticker='on'] { text-overflow: clip; }
+.ticker[data-ticker='on'] .tickerTape {
+  animation: bc-ticker var(--ticker-seconds, 6s) ease-in-out 1s infinite alternate;
+}
+.ticker[data-ticker='on']:hover .tickerTape { animation-play-state: paused; }
+@keyframes bc-ticker {
+  0%, 15% { transform: translateX(0); }
+  85%, 100% { transform: translateX(var(--ticker-shift, 0)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ticker[data-ticker='on'] { text-overflow: ellipsis; }
+  .ticker[data-ticker='on'] .tickerTape { animation: none; }
+}
+
+/* The empty stand-in that holds the transcript still after the slot empties, until
+   the user scrolls. Same box, nothing drawn. */
+.statusSpacer {
+  border-top-color: transparent;
+}
+/* The squishing bar the old compaction strip used; the keyframes are bridge-ui's
+   global bc-compact-anim, which chat already loads. */
+.statusPulse {
+  width: 6px;
+  height: 12px;
+  border-radius: 2px;
+  flex: none;
+  background: var(--accent);
+  animation: bc-compact-anim 1.4s ease-in-out infinite;
+}
+.statusPulseViolet {
+  background: #a78bfa;
+}
+.statusCompacting {
+  color: #a78bfa;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  font-size: 0.68rem;
+}
+.statusTodo {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  color: var(--accent);
+}
+.statusSep {
+  flex: none;
+  opacity: 0.6;
+}
+/* The slot is three columns: what it is saying (takes the slack, and is the only
+   part that shrinks), then the subagents chip and the clock at FIXED places. Before
+   this the chip sat straight after the activity text and slid left and right every
+   time a tool call changed the text's width. */
+.statusMain {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.statusText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.statusError {
+  color: var(--error);
+}
+.statusWarn {
+  color: var(--warning);
+}
+/* Fixed width and tabular digits: `9s` becoming `10s` or `1m 00s` must not nudge the
+   chip beside it. Wide enough for `23:59:59 · 59m 59s`. Kept (empty) when there is no
+   clock to show, so the chip does not move when one appears. */
+.statusTime {
+  flex: none;
+  width: 19ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+/* Inline "⑂ N agents" chip; the per-subagent rows live in its popover so the slot
+   never grows a row per agent. */
+.statusAgentsChip {
+  flex: none;
+  min-width: 11ch; /* `⑂ 12 agents` — the count changing must not resize it */
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.statusAgentsChip:hover,
+.statusAgentsChip[aria-expanded='true'] {
+  border-color: var(--accent);
+}
+/* Above the slot, overlaying the transcript — expanding must not shift layout,
+   which is the reason this is a popover and not more rows. z-index clears the
+   turns items (virtua wrappers make stacking contexts) but stays under the
+   body-portaled ref-chip panel (300). */
+/* The chip's own positioning context. The popover used to anchor to the whole
+   status slot, which only worked because the slot was the one place the chip
+   appeared; the Timeline pane mounts it too, so it anchors to its trigger now.
+   Visible effect in the Turns pane: the popover right-aligns to the chip rather
+   than sitting 10px from the slot's right edge. */
+.subagentsAnchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.statusPopover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  z-index: 250;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* ONE width, whatever the rows say. It used to size to its content between 320
+     and 560px, so a longer description or a ticking clock resized the whole panel. */
+  width: min(620px, calc(100vw - 32px));
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--bc-radius-xs, 8px);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
+}
+/* A grid with fixed tracks, so every row's columns line up and none of them moves
+   when another row's text changes: kind | description | last tool | elapsed | open. */
+.statusAgentRow {
+  display: grid;
+  grid-template-columns: 14ch minmax(0, 1fr) 16ch 8ch 7ch;
+  align-items: baseline;
+  column-gap: 8px;
+  white-space: nowrap;
+}
+.statusAgentRow > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Finished while the popover was open: kept in place, dimmed, its clock stopped. */
+.statusAgentRowDone {
+  opacity: 0.5;
+}
+.statusAgentKind {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.statusAgentDescription {
+  color: var(--text);
+}
+.statusAgentTool {
+  color: var(--text-dim);
+}
+.statusAgentElapsed {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.statusOpen {
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--bc-radius-xs, 8px);
+  background: transparent;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.statusOpen:hover {
+  border-color: var(--accent);
+}
+
+/* ===========================================================================
+   Per-session question markers — the `?` on a session row and the rollup on a
+   folder header (Sidebar.tsx / QuestionMarkers.tsx).
+
+   ⚠️ EVERY class the markers render has a rule here, and that is a hard rule
+   rather than tidiness: bridge-ui shipped a status value whose `.bc-status-dot-*`
+   rule did not exist, and it rendered a real, laid-out, INVISIBLE dot — a control
+   nobody could see and everybody could click. A `?` that cannot be seen is worse
+   than no `?` at all, so nothing below is left to inherit its appearance.
+   =========================================================================== */
+
+/* The marker's positioning context. On a session row it fills the status column
+   of the row's grid (`bc-session-item`), where the plain dot sits otherwise. */
+.questionMarkerAnchor {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.questionMarker {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 3px;
+  border: 1px solid transparent;
+  border-radius: var(--bc-radius-xs, 8px);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.questionMarker:hover {
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text);
+}
+/* Keyboard reach has to be visible: the marker is one of two controls on the row
+   and tabbing between them is the only way to open a question without a mouse. */
+.questionMarker:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.questionMarkerOpen {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--text);
+}
+
+/* The disclosure caret. Small, but it is drawn from THIS stylesheet, so the
+   marker carries a visible mark of its own even if the state's dot rule ever
+   goes missing upstream. */
+.questionMarkerCaret {
+  font-size: 0.6rem;
+  line-height: 1;
+  opacity: 0.75;
+}
+.questionMarkerOpen .questionMarkerCaret {
+  opacity: 1;
+}
+
+/* The dropdown, PORTALED onto document.body and positioned from the marker's
+   measured rect (useAnchoredDropdown supplies top/left inline).
+
+   `fixed` and body-level for the same two reasons the ref-chip panel above is:
+   the session list is an inner scroller that would clip an inline panel opened
+   on the last visible row, and virtua's list-item wrapper sets
+   `contain: layout style`, a stacking context no z-index escapes from inside.
+   z-index matches the ref-chip panel (300), above dash's own overlays (max 200). */
+.questionPanel {
+  position: fixed;
+  z-index: 300;
+  box-sizing: border-box;
+  min-width: 300px;
+  max-width: min(420px, calc(100vw - 16px));
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
+  font-family: system-ui, sans-serif;
+  font-size: 0.78rem;
+  text-align: left;
+  white-space: normal;
+  cursor: default;
+}
+
+.questionPanelTitle {
+  margin-bottom: 6px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border-subtle);
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Loading, and the two honest empty cases: a bridge-server with no /signals
+   route, and a waiting session with no signal recorded for it. */
+.questionPanelNote {
+  margin: 4px 0;
+  color: var(--text-muted);
+  font-style: italic;
+  line-height: 1.45;
+}
+.questionPanelError {
+  margin: 4px 0;
+  color: var(--error);
+  line-height: 1.45;
+}
+
+/* ---- Folder header rollup ---- */
+
+/* The header is a flex row (bridge-ui's `.bc-folder-header`) and is now a DIV
+   holding two controls, so the chevron/name/count moved into this button. It
+   carries no padding of its own: the header row still supplies it. */
+.folderHeaderMain {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  /* All five inherited from the header row on purpose. A <button> is where the UA
+     stylesheet stops inheritance dead — Blink's own rule resets `font`,
+     `letter-spacing`, `word-spacing`, `line-height` and `text-transform` on form
+     controls — and the glass theme dresses `.bc-folder-header` with exactly those
+     (uppercase, 0.08em tracking). While the header WAS the button that rule landed on
+     it directly; now it lands on the wrapper, so the label has to be told to keep
+     following its parent or the folder names quietly lose their casing. */
+  font: inherit;
+  letter-spacing: inherit;
+  word-spacing: inherit;
+  line-height: inherit;
+  text-transform: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.folderHeaderMain:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Same pill in both forms — a button while the folder is collapsed (it reveals
+   the rows that carry the answerable markers) and a plain label once it is open,
+   because there is nothing left for it to do. */
+.folderQuestionRollup,
+.folderQuestionRollupStatic {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 0.75em;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.folderQuestionRollup {
+  cursor: pointer;
+}
+.folderQuestionRollup:hover {
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 26%, transparent);
+}
+.folderQuestionRollup:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Unclickable, so it reads as a label rather than offering an act it cannot do. */
+.folderQuestionRollupStatic {
+  cursor: default;
+}
+.folderQuestionGlyph {
+  font-weight: 700;
+}
+.folderQuestionCount {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===========================================================================
+   Signal cards (chat-core SignalCard / SignalRequestCard).
+
+   chat-core ships no CSS — every element it emits carries a stable, unhashed
+   `signal-*` class and the host styles it, exactly as with the ref chip above.
+   These are `:global` for that reason. They are NOT bridge-ui's `bc-signal-*`
+   rules: that prefix belongs to bridge-ui's own components, and dash's copies
+   render from chat-core.
+
+   Rendered in three places today — the question dropdown above, the
+   `SessionSignals` mount inside the ref-chip session panel, and
+   `AwaitingYouBanner` at the top of the chat pane, which is where the open
+   session's own questions are answered.
+   =========================================================================== */
+
+/* One line of chrome on a permission card, and the only rule here in bridge-ui's
+   `bc-pending-*` namespace. It lives in dash because dash is the only thing that
+   emits it: `AwaitingYouBanner` says on a parked question with no signal record
+   that it can be allowed or denied but not answered. bridge-ui's own banner has
+   no such case, so putting the rule in its stylesheet would be styling a class
+   nothing there renders. */
+:global(.bc-pending-note) {
+  margin: 0 0 6px;
+  color: var(--text-muted);
+  font-size: 0.8em;
+  line-height: 1.45;
+}
+:global(.signals) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+:global(.signals-title) {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ===========================================================================
+   Signals inbox — the sidebar's "Needs you" panel (SignalsInbox.tsx).
+
+   Sits between the filter chips and the session list, which is the same slot
+   bridge-ui's SessionList gives its own inbox.
+
+   The flex rules are not decoration, and getting them wrong is not subtle.
+   `.sessionListColumn` is a flex column with `overflow: hidden`, and `.list`
+   below carries `flex: 1; min-height: 160px`.
+
+   This shipped once as `flex: 0 0 auto` — do not grow, and crucially DO NOT
+   SHRINK — with a cap on the body alone. With a real inbox (21 open signals on
+   this host) the panel then held its full height, `.list` was pinned at its
+   160px floor, and the column overflowed hidden: the session list was pushed
+   off the bottom and only ONE of two rows was reachable. Caught by
+   `chat-sidebar-collapse`, which counts rendered rows.
+
+   So the panel must give space BACK when the column is tight: `0 1 auto` with
+   `min-height: 0`, and the body carries the scroll. Same shape as the chip
+   filter's rule further up, and for the same reason — it is the other sibling
+   that can outgrow the whole sidebar.
+   =========================================================================== */
+.inbox {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--warning) 5%, transparent);
+}
+
+/* The whole header is the toggle: a caret alone is a small target, and the count
+   is the part the eye lands on. */
+.inboxHeader {
+  display: flex;
+  /* Never shrinks. When the panel is squeezed it is the BODY that gives way —
+     losing the header would take the count and the toggle with it, so a full
+     inbox on a short screen would have no way to say what it is holding or to
+     get out of the way. */
+  flex: 0 0 auto;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-align: left;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.inboxHeader:hover {
+  color: var(--text);
+}
+.inboxCaret {
+  font-size: 0.68rem;
+}
+.inboxTitle {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inboxCount {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  color: var(--warning);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The part that gives way. `flex: 1 1 auto; min-height: 0` lets it shrink below
+   its content inside a squeezed panel — without the `min-height: 0` a flex item
+   refuses to go under its automatic minimum size, which is what broke this the
+   first time.
+
+   The 32vh cap is the OTHER half: on a tall screen there is room for both, and a
+   panel that took a third of the sidebar just because it could would bury the
+   session list under a backlog. Contained scroll so the wheel does not chain out
+   to the list underneath once it bottoms. */
+.inboxBody {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  max-height: 24vh;
+  padding: 0 10px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* A rule between requests, for the same reason the signals page frames each
+   one: without it a request's Answer and Dismiss buttons sit right on the next
+   request's session line. A rule rather than a frame, because the sidebar has
+   no width to spare for padding. */
+.inboxBody > :global(.signal-request) + :global(.signal-request) {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* The card header — the session a signal belongs to, and the way into it. This
+   is the whole reason the inbox is not just a count: a marker tells you which
+   ROW, and these signals have no row, so the card has to say which session
+   itself. */
+.inboxSessionButton {
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.74rem;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.inboxSessionButton:hover {
+  text-decoration: underline;
+}
+
+.inboxError {
+  margin: 0;
+  padding: 0 12px 6px;
+  color: var(--error);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+/* ── The subagent tree in the sidebar ──────────────────────────────────────────
+   A session that spawned others gets a disclosure control, and its children draw
+   under it as ordinary session rows.
+
+   The children are NOT a lightweight rendering of a session — they are the same
+   `SessionRow`, so they carry the same status dot, the same question marker and
+   the same click-to-open. Only the indent and the running accent are added here,
+   which is why there is no `.subagentRow *` rule reaching inside one. */
+
+/* The caret + count, sitting where the question marker sits: a sibling of
+   `bc-session-item-main`, because buttons do not nest. */
+.subagentToggle {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.subagentToggle:hover {
+  color: var(--text);
+}
+.subagentToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* The count reads as a number, not a badge: it is how many rows appear if you
+   open it, and dressing it up as a notification pill would claim they need
+   attention. */
+.subagentToggleCount {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+/* A child row. The indent is the only thing saying "this belongs to the row
+   above", so it is a border rather than padding — a padded row loses the
+   relationship the moment the list scrolls the parent off the top. It is one
+   fixed step, the same for every child, and the row keeps the parent's column
+   grid inside it, so children line up with each other. */
+.subagentRow {
+  width: auto;
+  margin-left: 14px;
+  padding-left: 2px;
+  border-left: 2px solid var(--border);
+}
+
+/* Still working. ⚠️ This exists because the status dot cannot answer it on its
+   own here: subagent sessions settle to `idle` rather than `completed`, so a
+   finished child and one that never started carry the same state, and the one
+   question this list is opened to answer is which are still going. */
+.subagentRowRunning {
+  border-left-color: var(--accent);
+}
+
+/* A surfaced harness task-notification (TurnList NotificationChip): the seam a
+   background task made, formatted and auto-collapsed; expands to the raw text. */
+.notificationChip {
+  margin: 2px 0;
+}
+.notificationChipSummary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5em;
+  cursor: pointer;
+  color: var(--bc-muted, #8a8f98);
+  font-size: 0.85em;
+}
+.notificationChipSummary:hover {
+  color: var(--bc-fg, #e6e6e6);
+}
+.notificationChipLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60ch;
+}
+
+/* ===========================================================================
+   Signals page — "Needs you" opened out over the thread pane (SignalsPage.tsx).
+   The header stays put and the body scrolls, so Refresh and Back stay in reach
+   however many cards there are.
+   =========================================================================== */
+/* The signals page's own route: the page fills what the layout gives it, and
+   its body scrolls inside. */
+.signalsRoute {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.signalsPage {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.signalsPageHeader {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.signalsPageTitle {
+  margin: 0;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+}
+.signalsPageSpacer {
+  flex: 1;
+}
+.signalsPageBody {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  padding: 14px 16px 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.signalsPageSection {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 860px;
+}
+
+/* One frame per request: the session line, the question and its Answer and
+   Dismiss buttons together. Framing only the question left the buttons loose
+   directly above the next request's session line, where they read as the next
+   question's. The question's own frame is dropped inside, so it is one box,
+   not a box in a box. */
+.signalsPageSection > :global(.signal-request) {
+  /* A card off screen is neither laid out nor painted. The page can hold
+     hundreds, and laying them all out is what made scrolling stall. The
+     intrinsic size is a typical card's, so the scrollbar stays about right. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 160px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+.signalsPageSection > :global(.signal-request) :global(.signal-card) {
+  padding: 0;
+  border: none;
+  background: none;
+}
+.signalsPageSectionTitle {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.signalsPageEmpty {
+  margin: 0;
+  color: var(--text-dim);
+}
+.signalsPageDetails {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.signalsPageMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  color: var(--text-dim);
+  font-size: 0.74rem;
+}
+.signalsPageDraft {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.signalsPageDraft summary {
+  cursor: pointer;
+}
+.signalsPageDraftSubject {
+  margin: 4px 0 0;
+  font-weight: 600;
+}
+.signalsPageDraftBody {
+  margin: 4px 0 0;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The sidebar inbox's way into the page: the first thing inside the open fold. */
+.inboxHeaderRow {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+.inboxHeaderRow .inboxHeader {
+  flex: 1;
+  min-width: 0;
+}
+.inboxOpenPage {
+  align-self: flex-end;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+.inboxOpenPage:hover {
+  color: var(--text);
+}
+
+/* ---- Background agents' signals ----
+   The inbox's second group: what autoworkers and other background sessions raised.
+   Deliberately quieter than "Needs you" — no warning tint, a neutral count — because
+   none of it is the operator's to answer; it is there to be read when wanted. */
+.backgroundInbox {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 1px solid var(--border);
+}
+.backgroundInboxHeader {
+  display: flex;
+  flex: 1 0 auto;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  padding: 4px 12px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-align: left;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.backgroundInboxHeader:hover {
+  color: var(--text);
+}
+.backgroundInboxCount {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-dim) 15%, transparent);
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The signals page's background section: a <details> under the operator's own. */
+/* One chat's brief card on the signals page. */
+.chatBriefCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
+}
+.chatBriefFields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 0;
+  font-size: 0.86rem;
+}
+.chatBriefFields dt {
+  color: var(--text-dim);
+}
+.chatBriefFields dd {
+  margin: 0;
+  color: var(--text);
+}
+.chatBriefLooseEnd,
+.chatBriefRemark {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-surface);
+  border-radius: 6px;
+}
+.chatBriefRemark {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.chatBriefLooseEndHead {
+  display: flex;
+  gap: 10px;
+  color: var(--text-dim);
+  font-size: 0.74rem;
+}
+.chatBriefLooseEndKind {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.chatBriefLooseEndText,
+.chatBriefRemarkText {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+.chatBriefRemarkText {
+  flex: 1;
+}
+.chatBriefLooseEndContext {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.chatBriefLooseEndActions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.chatBriefLooseEndInput {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.84rem;
+}
+.chatBriefRequests {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.chatBriefHistory {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.chatBriefHistory summary {
+  cursor: pointer;
+}
+.chatBriefHistory ol {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.chatBriefHistoryTime {
+  color: var(--text-dim);
+}
+
+.signalsPageBackground {
+  width: 100%;
+  max-width: 860px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.signalsPageBackground > .signalsPageSection {
+  margin-top: 16px;
+}
+.signalsPageBackgroundSummary {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.signalsPageBackgroundNote {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* ---- Group by project ---- */
+
+/* The ↗ beside a project group's name opens that project's page. Quiet until the
+   header is hovered, so a column of headers does not read as a column of links. */
+.projectGroupOpen {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+  opacity: 0.5;
+}
+:global(.bc-folder-header):hover .projectGroupOpen,
+.projectGroupOpen:focus-visible { opacity: 1; color: var(--accent); }
+
+.projectStoreErrorRow {
+  padding: 2px 10px 4px;
+  font-size: 0.8em;
+}
+.groupByProjectError {
+  color: var(--error);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- The session header's project filing control ---- */
+
+.projectFiling { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 0.8em; }
+.projectFilingLabel { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); }
+.projectFilingPrefix { white-space: nowrap; }
+.projectFilingSelect {
+  max-width: 220px;
+  padding: 1px 4px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.projectFiling:not([data-filed]) .projectFilingSelect { color: var(--text-muted); border-style: dashed; }
+.projectFilingError {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--error);
+}
+
+/* A bridge brief (TurnList BridgeBriefCard): a message a service wrote into the
+   session, drawn as a card with the text it quotes in a box of its own. */
+.brief {
+  min-width: 0;
+}
+.briefSummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25em 0.6em;
+  cursor: pointer;
+  padding: 2px 0 4px;
+}
+.briefKind {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.briefTitle {
+  font-weight: 600;
+}
+.briefQuote {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-left: 3px solid color-mix(in srgb, var(--text, #e6e6e6) 35%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text, #e6e6e6) 5%, transparent);
+}
+.briefQuoteCaption {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.briefQuoteNote {
+  font-weight: 400;
+}
+.briefQuoteText {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}

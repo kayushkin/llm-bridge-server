@@ -1,0 +1,123 @@
+/*
+ * @kayushkin/bridge-ui default theme
+ *
+ * Optional. Import once if you want a working out-of-the-box look:
+ *   `import '@kayushkin/bridge-ui/theme.css'`
+ *
+ * This file DEFINES the CSS variables that `styles.css` consumes (--bg,
+ * --bg-surface, --border, --text, --accent, --success, …) plus a base reset,
+ * scrollbar styling, and body defaults. Hosts that already define their own
+ * theme (e.g. dash defines its own :root palette) should NOT import
+ * this — define the same variables at :root to override.
+ *
+ * Toggle light mode by setting `data-theme="light"` on a parent element.
+ */
+
+/* ===== Theme Variables ===== */
+:root {
+  --bg: #1a1a2e;
+  --bg-surface: #16213e;
+  --bg-overlay: rgba(0,0,0,0.85);
+  --border: #2a2a4a;
+  --border-subtle: #1e1e3a;
+  --scrollbar-track: #121228;
+  --scrollbar-thumb: #2a2a4a;
+  --scrollbar-thumb-hover: #3a3a5e;
+  --text: #e0e0e0;
+  --text-muted: #888;
+  --text-dim: #666;
+  --text-faint: #555;
+  --accent: #c9a0dc;
+  --accent-hover: #dbb8ec;
+  --accent-on: #1a1a2e;
+  --success: #6fcf97;
+  --success-bg: #2a4a3e;
+  --error: #cf6f6f;
+  --error-bg: #4a2a2a;
+  --warning: #cfcf6f;
+  --warning-bg: #3a3a2a;
+  --info: #6fb3cf;
+  --info-bg: #2a3a4e;
+}
+
+[data-theme="light"] {
+  --bg: #f5f7fa;
+  --bg-surface: #ffffff;
+  --bg-overlay: rgba(0,0,0,0.5);
+  --border: #d8dce3;
+  --border-subtle: #e8ecf0;
+  --scrollbar-track: #eaecf0;
+  --scrollbar-thumb: #c8ccd3;
+  --scrollbar-thumb-hover: #a8adb5;
+  --text: #1a1a2e;
+  --text-muted: #555;
+  --text-dim: #777;
+  --text-faint: #999;
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+  --accent-on: #ffffff;
+  --success: #16a34a;
+  --success-bg: #dcfce7;
+  --error: #dc2626;
+  --error-bg: #fef2f2;
+  --warning: #ca8a04;
+  --warning-bg: #fefce8;
+  --info: #2563eb;
+  --info-bg: #eff6ff;
+}
+
+/* ===== Reset ===== */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* ===== Scrollbars ===== */
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* Webkit (Chrome, Safari, Edge) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
+}
+
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  height: 100%;
+  overflow: hidden;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  transition: background 0.2s, color 0.2s;
+}
+
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+a { color: inherit; text-decoration: none; }

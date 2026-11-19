@@ -1,0 +1,109 @@
+/* The work graph (`?view=work-graph`). A CSS module, like the Previews page, so
+   the view carries its own styles into dist/ beside its .js
+   (scripts/copy-css.mjs). Colors are theme variables, so the dark, light and
+   zine themes each draw it in their own inks; only a session's color is
+   computed (src/workGraph.ts `sessionColor`). */
+
+.page { min-height: 0; }
+
+.repoPicker {
+  max-width: 260px; padding: 3px 6px; font: inherit; font-size: 0.85em;
+  color: var(--text); background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px;
+}
+
+.muted { color: var(--text-muted); font-size: 0.8em; }
+.notice { margin: 16px; color: var(--text-muted); font-size: 0.9em; }
+.error {
+  margin: 8px 12px 0; padding: 8px 10px; font-size: 0.85em; white-space: pre-wrap;
+  color: var(--error); background: var(--error-bg); border: 1px solid var(--error); border-radius: 6px;
+}
+
+.body { display: flex; flex: 1 1 auto; min-height: 0; }
+@media (max-width: 900px) { .body { flex-direction: column; overflow-y: auto; } }
+
+.graphScroll { flex: 1 1 auto; min-width: 0; overflow: auto; overscroll-behavior: contain; padding: 6px 0 16px; }
+.graph { position: relative; min-width: 100%; }
+.graphSvg { position: absolute; top: 0; left: 0; pointer-events: none; }
+
+.rows { list-style: none; margin: 0; padding: 0; }
+.row {
+  display: flex; align-items: center; gap: 8px; padding-right: 12px;
+  font-size: 0.85em; color: var(--text); cursor: pointer; white-space: nowrap;
+  border-left: 2px solid transparent;
+}
+.row:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.rowSelected { background: color-mix(in srgb, var(--accent) 14%, transparent); border-left-color: var(--accent); }
+.rowDimmed { opacity: 0.4; }
+
+.subject { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.author { flex: 0 0 auto; max-width: 14ch; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); font-size: 0.9em; }
+.sha { flex: 0 0 auto; font-family: var(--font-mono, monospace); color: var(--text-muted); font-size: 0.9em; }
+.time { flex: 0 0 7ch; text-align: right; color: var(--text-dim); font-size: 0.9em; }
+
+.branch {
+  display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
+  padding: 1px 7px; border-radius: 999px; font-size: 0.85em; line-height: 1.5;
+  border: 1px solid var(--border); background: var(--bg-surface); color: var(--text);
+}
+.branchLocal { font-weight: 600; }
+.branchRemote { font-style: italic; color: var(--text-muted); background: transparent; border-style: dashed; }
+.branchUnmerged { border-color: var(--warning); }
+.branchDefault { border-color: var(--accent); color: var(--accent); }
+.branchTouched { box-shadow: 0 0 0 2px var(--accent); }
+.branchMark { color: var(--warning); font-size: 0.7em; }
+.branchWorktree { color: var(--text-muted); font-weight: 400; font-size: 0.9em; }
+.branchSessionDot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+
+.more { display: flex; justify-content: center; padding: 10px; }
+
+.side {
+  flex: 0 0 340px; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+  border-left: 1px solid var(--border); background: var(--bg-surface);
+  display: flex; flex-direction: column;
+}
+@media (max-width: 900px) { .side { flex: 0 0 auto; border-left: none; border-top: 1px solid var(--border); overflow: visible; } }
+
+.sideSection { padding: 10px 12px; border-bottom: 1px solid var(--border-subtle, var(--border)); }
+.sideTitle { margin: 0 0 8px; font-size: 0.85em; font-weight: 600; color: var(--text); text-transform: none; }
+
+.sessionList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.session { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.sessionHighlighted { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.sessionPick {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 0; text-align: left;
+  font: inherit; font-size: 0.85em; color: var(--text); background: none; border: none; cursor: pointer;
+}
+.sessionName { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.swatch { display: inline-block; flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
+.sessionId {
+  display: block; margin: 3px 0; padding: 0; text-align: left; word-break: break-all;
+  font-family: var(--font-mono, monospace); font-size: 0.8em; color: var(--accent);
+  background: none; border: none; cursor: pointer;
+}
+.sessionId:hover { text-decoration: underline; }
+.sessionDid { font-size: 0.8em; color: var(--text); display: flex; flex-direction: column; gap: 1px; }
+
+.legendNote { margin: 10px 0 0; font-size: 0.75em; color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
+
+.branchList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.branchListItem { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.85em; }
+.branchListItem .branch { max-width: 100%; white-space: normal; overflow-wrap: anywhere; flex-wrap: wrap; }
+.branchListItemHighlighted { background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 6px; }
+
+.shaLink {
+  padding: 0; font-family: var(--font-mono, monospace); font-size: 0.9em; color: var(--accent);
+  background: none; border: none; cursor: pointer; text-align: left;
+}
+.shaLink:disabled { color: var(--text-muted); cursor: default; }
+/* A link out to GitHub: the accent color, like the in-graph sha links, but
+   underlined on hover only, so a row of them does not read as a wall of links. */
+.shaGitHub { color: var(--accent); text-decoration: none; }
+.shaGitHub:hover { text-decoration: underline; }
+
+.details { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.detailsHeader { display: flex; align-items: center; justify-content: space-between; }
+.detailsSubject { margin: 0 0 8px; font-size: 0.9em; color: var(--text); font-weight: 600; }
+.detailsList { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 10px; font-size: 0.8em; color: var(--text); }
+.detailsList dt { color: var(--text-muted); }
+.detailsList dd { margin: 0; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.fullSha { word-break: break-all; font-family: var(--font-mono, monospace); user-select: all; }

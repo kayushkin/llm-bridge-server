@@ -1,0 +1,483 @@
+/* The Messages pages: Conversations, Search, Contacts. A CSS module, like
+   Previews, so the pages carry their styles into dist/ beside their .js
+   (scripts/copy-css.mjs). Colors are theme.css variables so both themes work;
+   a tag's own color is set inline, as a border and a dot only. */
+
+.page { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
+.header { display: flex; flex-direction: column; gap: 4px; }
+.title { margin: 0; font-size: 1.2em; color: var(--text); }
+.subtitle { margin: 0; font-size: 0.85em; color: var(--text-muted); max-width: 90ch; }
+.muted { color: var(--text-muted); font-size: 0.8em; }
+.empty { color: var(--text-dim); font-size: 0.85em; padding: 8px 0; }
+.error {
+  margin: 0; padding: 8px 10px; font-size: 0.85em; white-space: pre-wrap;
+  color: var(--error); background: var(--error-bg); border: 1px solid var(--error); border-radius: 6px;
+}
+
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.input {
+  font: inherit; font-size: 0.9em; color: var(--text); background: var(--bg-surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; min-width: 0;
+}
+.input:focus { outline: none; border-color: var(--accent); }
+.filters > input.input { flex: 1 1 200px; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 0.85em; color: var(--text-muted); }
+.thresholdInput { width: 5em; }
+
+.columns { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 2.5fr); gap: 12px; flex: 1; min-height: 0; }
+.listColumn { display: flex; flex-direction: column; gap: 8px; min-height: 0; max-height: 80vh; }
+
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.row {
+  display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; min-width: 0;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface);
+}
+.rowSelected { border-color: var(--accent); }
+/* A hidden room, listed because Show hidden is on. */
+.rowHidden { opacity: 0.55; }
+.rowPick {
+  width: 100%; text-align: left; font: inherit; color: var(--text); cursor: pointer;
+}
+button.rowPick:not(.row) { padding: 0; background: none; border: none; }
+.rowHead { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.rowMeta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.name { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+a.name { text-decoration: none; }
+a.name:hover { text-decoration: underline; }
+.time { margin-left: auto; font-size: 0.75em; color: var(--text-dim); white-space: nowrap; }
+.preview { font-size: 0.8em; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.platform {
+  font-size: 0.72em; padding: 0 7px; border-radius: 999px; border: 1px solid var(--border);
+  color: var(--text-muted); text-transform: capitalize; white-space: nowrap;
+}
+.chevron { margin-left: auto; color: var(--text-dim); }
+.roomID { font-family: var(--font-mono, monospace); font-size: 0.72em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.viewer {
+  display: flex; flex-direction: column; min-height: 60vh; max-height: 80vh; min-width: 0;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg-surface);
+}
+.viewer > .empty { padding: 16px; }
+.thread { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.threadBar {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; padding: 8px 10px; font-size: 0.9em;
+  border-bottom: 1px solid var(--border);
+}
+.threadBar .shortName { margin-left: auto; }
+/* The address a person types to open the room, and the control to change it. */
+.shortName { display: inline-flex; align-items: baseline; flex-wrap: wrap; justify-content: flex-end; gap: 6px; min-width: 0; }
+.shortNamePath { font-family: var(--font-mono, monospace); font-size: 0.85em; color: var(--text-muted); }
+.shortNameForm { display: inline-flex; align-items: baseline; gap: 4px; }
+.shortNameInput {
+  font: inherit; font-family: var(--font-mono, monospace); font-size: 0.85em; width: 14ch; padding: 1px 6px;
+  color: var(--text); background: var(--bg-surface); border: 1px solid var(--border); border-radius: 4px;
+}
+.shortNameInput:focus { outline: none; border-color: var(--accent); }
+.shortNameError { flex-basis: 100%; text-align: right; font-size: 0.8em; color: var(--error); white-space: pre-wrap; }
+.rowShortName { font-family: var(--font-mono, monospace); font-size: 0.72em; color: var(--text-dim); }
+/* The member list opens over the messages rather than pushing them down. */
+.memberList { position: relative; }
+.memberList > summary { cursor: pointer; }
+.memberList > ul {
+  position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; margin: 0; padding: 6px 10px; list-style: none;
+  min-width: 180px; max-height: 50vh; overflow-y: auto; white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
+}
+.memberList > ul > li { padding: 2px 0; }
+.thread > .error { margin: 8px 10px 0; }
+.messages { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+/* Few messages sit at the bottom, above the composer, as in any chat; a
+   margin rather than justify-content, which would cut off the top once the
+   list overflows. */
+.messages > :first-child { margin-top: auto; }
+.olderButton {
+  align-self: center; font: inherit; font-size: 0.8em; color: var(--text-muted); cursor: pointer;
+  background: none; border: 1px dashed var(--border); border-radius: 6px; padding: 4px 10px;
+}
+.olderButton:hover { color: var(--text); }
+.message {
+  position: relative;
+  align-self: flex-start; max-width: min(75%, 70ch); padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+}
+.messageMine { align-self: flex-end; border-color: var(--accent); }
+.messageHead { display: flex; align-items: baseline; gap: 10px; font-size: 0.75em; margin-bottom: 2px; }
+.sender { color: var(--info); font-weight: 600; }
+.messageMine .sender { color: var(--accent); }
+.messageBody { font-size: 0.9em; color: var(--text); overflow-wrap: anywhere; min-width: 0; }
+.composer { position: relative; display: flex; align-items: flex-end; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--border); }
+.composer > textarea.input { flex: 1; resize: vertical; }
+.thread > .error:last-child { margin: 0 10px 8px; }
+
+.hits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.hit { padding: 4px 0 4px 8px; border-left: 2px solid var(--border); }
+.mark { background: var(--warning-bg); color: var(--text); border-radius: 3px; padding: 0 2px; }
+
+.tag {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 0.72em; padding: 0 7px;
+  border: 1px solid; border-radius: 999px; color: var(--text); white-space: nowrap;
+}
+.tagDot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.tagRemove {
+  font: inherit; line-height: 1; padding: 0 0 0 2px; color: var(--text-muted); background: none; border: none; cursor: pointer;
+}
+.tagRemove:hover { color: var(--error); }
+.tagAdd {
+  font: inherit; font-size: 0.72em; padding: 0 7px; border-radius: 999px; cursor: pointer;
+  color: var(--text-muted); background: none; border: 1px dashed var(--border);
+}
+.tagAdd:hover { color: var(--text); border-color: var(--text-muted); }
+.tagRow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* The open conversation's tags, under its name. A tag that comes from the DM
+   partner's contact is dashed: it changes on the Contacts page, not here. */
+/* One tab per room of a linked conversation, above the open room. */
+.tabs { display: flex; gap: 4px; padding: 0 10px; border-bottom: 1px solid var(--border); }
+.tab {
+  background: none; border: none; border-bottom: 2px solid transparent; padding: 6px 12px; cursor: pointer;
+  color: var(--text-muted); font: inherit; font-size: 0.9em; text-transform: capitalize;
+}
+.tab:hover { color: var(--text); }
+.tabActive { color: var(--accent); border-bottom-color: var(--accent); }
+/* Above the thread: the person (or the linked rooms), their tabs, and the
+   other chats they are in. */
+.rowHeader { display: flex; flex-direction: column; border-bottom: 1px solid var(--border); }
+.rowHeaderName { display: flex; align-items: baseline; gap: 8px; padding: 8px 10px 2px; }
+.rowHeader .tabs { border-bottom: none; flex-wrap: wrap; row-gap: 0; }
+/* Between a person's own chats and the other chats they are in. */
+.tabDivider { width: 1px; align-self: stretch; margin: 6px 6px; background: var(--border); }
+.tabOther { text-transform: none; font-size: 0.85em; padding: 6px 8px; }
+/* A stored chat no room carries: read only, so drawn quieter. */
+.tabHistory { font-style: italic; }
+.platformHistory { font-style: italic; opacity: 0.8; }
+.tabApp { margin-left: 5px; font-size: 0.8em; color: var(--text-dim); text-transform: capitalize; }
+.otherChats {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 10px 6px; font-size: 0.85em;
+  border-top: 1px solid var(--border-subtle);
+}
+.otherChat { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.otherChatOpen, .otherChatAdd {
+  display: inline-flex; align-items: center; gap: 4px; font: inherit; background: none; border: none; cursor: pointer;
+  padding: 1px 8px; color: var(--text);
+}
+.otherChatOpen:hover { background: var(--bg-hover, var(--border-subtle)); }
+.otherChatOpen .platform { border: none; padding: 0; }
+.otherChatAdd { color: var(--text-dim); border-left: 1px solid var(--border); font-size: 0.9em; }
+.otherChatAdd:hover:not(:disabled) { color: var(--accent); }
+.personMark { margin-right: 4px; font-weight: normal; }
+/* A room's settings, folded away under the header. */
+.roomSettings { border-bottom: 1px solid var(--border-subtle); }
+.roomSettings > summary { padding: 4px 10px; cursor: pointer; font-size: 0.85em; }
+.roomSettings > .threadTags:last-child { border-bottom: none; }
+/* In a merged thread: a message's app, which picks it as the chat to answer
+   in, and the row of chats the Send button sends to. */
+button.platformPick { font: inherit; font-size: 0.72em; background: none; cursor: pointer; }
+button.platformPick:hover:not(:disabled) { color: var(--text); border-color: var(--text-muted); }
+.platformPicked, button.platformPicked { color: var(--accent); border-color: var(--accent); }
+.sendTarget { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 10px 0; font-size: 0.9em; }
+.threadTags {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 10px; font-size: 0.9em;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.tagFromContact > .tag { border-style: dashed; opacity: 0.8; }
+.tagSelect {
+  font: inherit; font-size: 0.8em; padding: 0 6px; border-radius: 999px; cursor: pointer;
+  color: var(--text-muted); background: none; border: 1px dashed var(--border);
+  /* A select is as wide as its longest option; the link picker lists every room. */
+  max-width: 100%;
+}
+.tagManager {
+  display: flex; flex-direction: column; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 6px;
+}
+
+.identities { display: flex; flex-direction: column; gap: 6px; padding: 6px 0 2px; border-top: 1px solid var(--border-subtle); }
+.identity { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px 8px; }
+.identity > .tagRow { grid-column: 1 / -1; }
+
+/* A message's content (MessageContent), on Conversations and the Discord page.
+   Plain text keeps its newlines; formatted text is laid out by its own tags. */
+.plainText { white-space: pre-wrap; overflow-wrap: anywhere; }
+.richText { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
+.richText > :first-child { margin-top: 0; }
+.richText > :last-child { margin-bottom: 0; }
+.richText :is(p, ul, ol, blockquote, pre, table, details) { margin: 0.35em 0; }
+.richText :is(h1, h2, h3, h4, h5, h6) { margin: 0.4em 0 0.2em; line-height: 1.25; color: var(--text); }
+.richText h1 { font-size: 1.3em; }
+.richText h2 { font-size: 1.18em; }
+.richText h3 { font-size: 1.08em; }
+.richText :is(h4, h5, h6) { font-size: 1em; }
+.richText :is(ul, ol) { padding-left: 1.4em; }
+.richText blockquote { padding-left: 0.7em; border-left: 3px solid var(--border); color: var(--text-muted); }
+.richText code { font-family: var(--font-mono, monospace); font-size: 0.9em; padding: 0 3px; border-radius: 3px; background: var(--bg-surface); }
+.richText pre { padding: 6px 8px; border-radius: 6px; background: var(--bg-surface); overflow-x: auto; white-space: pre; }
+.richText pre code { padding: 0; background: none; }
+.richText a { color: var(--accent); }
+.richText table { border-collapse: collapse; }
+.richText :is(th, td) { border: 1px solid var(--border); padding: 2px 6px; }
+.richText hr { border: none; border-top: 1px solid var(--border); }
+.inlineEmoji { height: 1.375em; width: auto; vertical-align: -0.3em; object-fit: contain; }
+.inlineImage { max-width: 100%; max-height: 320px; height: auto; vertical-align: middle; }
+.mention { padding: 0 3px; border-radius: 4px; color: var(--accent); background: var(--bg-surface); font-weight: 500; }
+.spoiler { background: var(--text); color: transparent; border-radius: 3px; transition: color 0.1s; }
+.spoiler:hover, .spoiler:focus { background: var(--bg-surface); color: inherit; }
+.imageLink { display: inline-block; line-height: 0; }
+.messageImage {
+  max-width: min(100%, 360px); max-height: 270px; width: auto; height: auto;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--bg-surface);
+}
+
+/* Reactions under a message. */
+.reactions { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+.reactionChip {
+  display: inline-flex; align-items: center; gap: 3px; padding: 0 5px; font-size: 0.72em; line-height: 1.4;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface); color: var(--text); cursor: default;
+}
+.reactionChipMine { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--bg-surface)); }
+button.reactionChip { cursor: pointer; font: inherit; font-size: 0.72em; }
+button.reactionChip:hover:not(:disabled) { border-color: var(--accent); }
+button.reactionChip:disabled { cursor: default; opacity: 0.85; }
+/* The message tools — the quick-react favorites and the react button — sit
+   just outside the bubble, beside its bottom corner on the side away from the
+   page edge, and show while the message is hovered or a tool has focus, so
+   they add no height to a message. The hide waits a moment so the pointer can
+   cross the gap to reach them. */
+.messageTools {
+  position: absolute; bottom: 2px; left: calc(100% + 3px);
+  display: inline-flex; align-items: center; gap: 2px; white-space: nowrap;
+  /* Hidden, they cannot be clicked either (visibility, not only opacity), so
+     a stray click beside a bubble does nothing. */
+  opacity: 0; visibility: hidden; transition: opacity 0.12s ease 0.25s, visibility 0s linear 0.37s;
+}
+.messageMine .messageTools { left: auto; right: calc(100% + 3px); flex-direction: row-reverse; }
+.message:hover .messageTools, .messageTools:focus-within, .messageTools:has([aria-expanded="true"]) {
+  opacity: 1; visibility: visible; transition-delay: 0s;
+}
+.reactButton, .quickReaction {
+  display: inline-flex; align-items: center; padding: 0 4px; font-size: 0.72em; line-height: 1.5; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text-muted);
+}
+.quickReaction { font-size: 0.8em; color: var(--text); }
+.quickReaction .customEmoji { height: 1.2em; }
+.quickReactionMine { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--bg)); }
+.reactButton:hover:not(:disabled), .reactButton[aria-expanded="true"], .quickReaction:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+.quickReaction:disabled { cursor: default; opacity: 0.6; }
+/* A touch screen has no hover: keep the tools faintly in view there. */
+@media (hover: none) { .messageTools { opacity: 0.5; visibility: visible; } }
+.emojiPanelHeading { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8em; color: var(--text-muted); }
+.emojiPanelHeading > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.emojiPanelClose { background: none; border: none; cursor: pointer; color: var(--text-muted); }
+.reactionImage { height: 1.15em; width: auto; object-fit: contain; }
+.reactionText { font-size: 1.1em; }
+.reactionCount { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* The composer's emoji picker: a button beside the text box, and a panel
+   above it. */
+.emojiPickerWrap { position: static; }
+.emojiButton {
+  font-size: 1.2em; line-height: 1; padding: 5px 7px; cursor: pointer;
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+}
+.emojiButton:hover, .emojiButton[aria-expanded="true"] { border-color: var(--accent); }
+.emojiPanel {
+  position: absolute; bottom: calc(100% + 4px); left: 10px; z-index: 20;
+  width: min(360px, calc(100% - 20px)); height: 320px; display: flex; flex-direction: column; gap: 6px; padding: 8px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+.emojiGroups { flex: 1; min-height: 0; overflow-y: auto; }
+.emojiGroupName { position: sticky; top: 0; padding: 4px 2px; font-size: 0.72em; color: var(--text-muted); background: var(--bg); }
+.emojiGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); }
+.emojiCell {
+  font-size: 1.35em; line-height: 1; padding: 5px 0; cursor: pointer;
+  background: none; border: none; border-radius: 6px;
+}
+.emojiCell:hover, .emojiCell:focus-visible { background: var(--bg-surface); outline: none; }
+
+/* A custom emoji drawn at text size, in pickers and suggestions. */
+.customEmoji { height: 1.1em; width: auto; object-fit: contain; vertical-align: -0.2em; }
+.emojiCell .customEmoji { height: 1em; }
+.emojiPanelFoot { display: flex; justify-content: space-between; gap: 8px; font-size: 0.72em; }
+.emojiPanelFoot a { color: var(--text-muted); }
+
+/* The composer's `:` suggestions, above the text box. */
+.emojiSuggestions {
+  position: absolute; bottom: calc(100% + 4px); left: 10px; z-index: 21; margin: 0; padding: 4px; list-style: none;
+  width: min(340px, calc(100% - 20px)); max-height: 280px; overflow-y: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+.emojiSuggestion { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; font-size: 0.85em; }
+.emojiSuggestion > .muted:nth-last-child(-n+2) { margin-left: auto; }
+.emojiSuggestion > .muted + .muted { margin-left: 0; }
+.emojiSuggestionActive { background: var(--bg-surface); }
+.emojiSuggestionDisabled { cursor: default; opacity: 0.55; }
+.emojiSuggestionFace { font-size: 1.3em; line-height: 1; min-width: 1.3em; text-align: center; }
+img.emojiSuggestionFace { height: 1.3em; min-width: 0; }
+
+/* The Emoji page. */
+.emojiPageSection { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--border); }
+.emojiPageHeading { margin: 0; font-size: 1em; }
+.emojiPageHeadingRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.emojiPageHeadingRow > input { max-width: 320px; }
+.emojiSetting { display: flex; align-items: center; gap: 10px; }
+.emojiSetting > input[type="number"] { width: 5em; }
+.emojiToneRow { display: flex; gap: 2px; }
+.emojiCellFavorite { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.emojiFavoriteList { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; max-width: 480px; }
+.emojiFavorite { display: flex; align-items: center; gap: 8px; padding: 2px 6px; border-radius: 6px; }
+.emojiFavorite:hover { background: var(--bg-surface); }
+.emojiFavoriteButtons { margin-left: auto; display: inline-flex; gap: 2px; }
+
+/* The emoji grid draws only the rows in view: each row sits at its own top in
+   a canvas as tall as every row together. */
+.emojiGridCanvas { position: relative; }
+.emojiGridHeading, .emojiGridRow { position: absolute; left: 0; right: 0; }
+.emojiGridHeading { display: flex; align-items: center; padding: 0 2px; font-size: 0.72em; color: var(--text-muted); }
+.emojiGridRow { display: grid; align-items: center; }
+.emojiGridRow .emojiCell { height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+/* Section icons above the grid: each jumps to its section. */
+.emojiJumpBar { display: flex; gap: 2px; overflow-x: auto; padding-bottom: 2px; border-bottom: 1px solid var(--border); flex: none; }
+.emojiJumpButton { flex: none; padding: 2px 4px; font-size: 1.05em; line-height: 1; cursor: pointer; background: none; border: none; border-radius: 6px; opacity: 0.6; }
+.emojiJumpButton .customEmoji { height: 1.05em; }
+.emojiJumpButton:hover, .emojiJumpButtonCurrent { opacity: 1; background: var(--bg-surface); }
+.emojiPageGrid { height: 60vh; min-height: 280px; display: flex; flex-direction: column; gap: 4px; }
+
+/* A file message: the image, player or link, then the caption sent with it. */
+.mediaMessage { display: flex; flex-direction: column; gap: 4px; }
+button.imageLink { padding: 0; border: none; background: none; cursor: zoom-in; }
+.messageVideo { max-width: min(100%, 420px); max-height: 320px; border-radius: 6px; background: #000; }
+/* An image shown large over the page. */
+
+/* Files waiting in the composer, above the text box. */
+.attachmentTray { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 6px 10px 0; list-style: none; border-top: 1px solid var(--border); }
+.attachment {
+  display: flex; align-items: center; gap: 6px; max-width: 260px; padding: 4px 6px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font-size: 0.8em;
+}
+.attachmentThumbnail { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; flex: none; }
+.attachmentIcon { width: 40px; text-align: center; font-size: 1.6em; flex: none; }
+.attachmentName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A drag carrying files over the thread. */
+.thread { position: relative; }
+.threadDragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.dropHint {
+  position: absolute; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; pointer-events: none;
+  background: color-mix(in srgb, var(--bg) 70%, transparent); font-weight: 600;
+}
+
+/* Linking one person's accounts across apps. */
+.personLinkPicker { display: flex; flex-direction: column; gap: 4px; flex: 1 1 220px; min-width: 0; }
+.personLinkCandidates { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.personLinkCandidates .tagAdd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; text-align: left; }
+.identityLink { display: inline-flex; align-items: center; gap: 6px; }
+
+/* The Auto-reactions page's emoji panel, placed in the window by
+   emojiPanelBox in BridgeAutoReactions.tsx wherever its button sits. */
+.autoReactionEmojiFloat { position: fixed; z-index: 20; }
+.autoReactionEmojiFloat > .emojiPanel { position: static; width: 100%; }
+
+/* A narrow screen shows one column at a time: the list, or the open room with
+   a link back to the list. minmax(0, …) lets a long preview ellipsize instead
+   of widening the column past the screen. Last in the file so it overrides
+   the base rules above. Removed by accident on 2026-10-02 with the emoji
+   panel's old placement rules, which left the "← Conversations" bar showing on
+   a desktop and both columns on a phone. */
+.backToList { display: none; }
+@media (max-width: 900px) {
+  .columns { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .columns:not(.columnsRoomOpen) > .viewer { display: none; }
+  .columnsRoomOpen > .listColumn { display: none; }
+  .pageRoomOpen > .header { display: none; }
+  .listColumn { max-height: none; min-height: 0; }
+  .viewer { min-height: 0; max-height: none; }
+  .backToList {
+    display: block; align-self: flex-start; padding: 8px 10px; font: inherit; font-size: 0.9em;
+    color: var(--accent); background: none; border: none; cursor: pointer;
+  }
+  .threadBar .roomID { display: none; }
+  .message { max-width: 88%; }
+}
+
+/* Waiting on you: a dot on each waiting row, its dismiss button, the cleared
+   heading, and the alert settings above the list. */
+.waitingDot {
+  display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%;
+  background: var(--warning); vertical-align: middle;
+}
+.awaitingRow { display: flex; align-items: stretch; gap: 4px; }
+.awaitingRow > .row { flex: 1; }
+.awaitingDismiss {
+  flex: none; padding: 0 8px; font: inherit; color: var(--text-muted); background: none;
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+}
+.awaitingDismiss:hover { color: var(--text); border-color: var(--accent); }
+.awaitingSectionHeading {
+  margin: 12px 2px 0; font-size: 0.75em; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.awaitingSettingsToggle {
+  margin-left: 12px; padding: 2px 8px; font: inherit; font-size: 0.6em; vertical-align: middle;
+  color: var(--accent); background: none; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+}
+.awaitingSettings { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
+.awaitingSettingsRow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
+.awaitingSettingsLabel { min-width: 11em; color: var(--text-muted); font-size: 0.9em; }
+
+/* A conversation opened in the chat's thread pane. */
+.chatConversationPane { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; padding: 8px 12px 12px; box-sizing: border-box; }
+.chatConversationBar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.chatConversationViewer { flex: 1; min-height: 0; max-height: none; }
+
+/* The account picker at the top of Conversations: "Me" or one of the bots. */
+.accountPicker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.accountPick {
+  font: inherit; font-size: 0.85em; padding: 2px 10px; cursor: pointer;
+  color: var(--text-muted); background: var(--bg-surface); border: 1px solid var(--border); border-radius: 999px;
+}
+.accountPick:hover { color: var(--text); }
+.accountPickPicked { color: var(--text); border-color: var(--accent); font-weight: 600; }
+.accountPickerError { font-size: 0.8em; color: var(--error); white-space: pre-wrap; }
+
+/* A bot's card (a Discord embed) and the buttons under its message. */
+.embedCard {
+  display: flex; gap: 10px; margin-top: 6px; padding: 6px 10px; max-width: 520px;
+  border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px; background: var(--bg-surface);
+}
+.embedMain { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.embedAuthor { font-size: 0.8em; font-weight: 600; color: var(--text-muted); }
+.embedTitle { font-weight: 600; color: var(--text); }
+.embedTitle a { color: var(--accent); }
+.embedFields { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.embedField { flex: 1 1 100%; min-width: 0; }
+.embedFieldInline { flex: 1 1 140px; }
+.embedFieldName { font-size: 0.8em; font-weight: 600; color: var(--text-muted); }
+.embedImage { max-width: 100%; max-height: 300px; border-radius: 4px; object-fit: contain; align-self: flex-start; }
+.embedThumbnail { width: 64px; height: 64px; border-radius: 4px; object-fit: cover; flex-shrink: 0; }
+.embedFooter { font-size: 0.75em; color: var(--text-dim); }
+.buttonChips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.buttonChip {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 0.8em; padding: 1px 10px;
+  border: 1px solid var(--border); border-radius: 4px; background: var(--bg-surface); color: var(--text-muted);
+  text-decoration: none; cursor: default;
+}
+a.buttonChip { color: var(--accent); cursor: pointer; }
+a.buttonChip:hover { text-decoration: underline; }
+.buttonChipDisabled { opacity: 0.55; }
+
+/* Discord's `-# ` small text (remarkDiscordSubtext). */
+.discordSubtext {
+  font-style: normal;
+  font-size: 0.8em;
+  color: var(--text-muted);
+}
+
+/* A bot view's list row: the name gives way, cut short, so the time keeps its place. */
+.rowHeadOneLine { flex-wrap: nowrap; }
+.rowHeadOneLine > .name { flex: 1 1 auto; }
+
+/* Sending as a bot account, under its conversation. */
+.accountComposer { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-top: 1px solid var(--border); }
+.accountComposerHead { display: flex; justify-content: space-between; gap: 8px; font-size: 0.8em; color: var(--text-muted); }
+.accountComposerRow { display: flex; align-items: flex-end; gap: 8px; }
+.accountComposerRow > textarea.input { flex: 1; resize: vertical; }
+
+/* A line the platform wrote (someone added to a thread, a pin), in a bot view. */
+.accountSystemLine { color: var(--text-muted); font-style: italic; }

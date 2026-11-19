@@ -1,0 +1,37 @@
+# Both forms: the trailing-slash rule matches only a directory, and a node_modules
+# SYMLINK (a worktree pointing at the main clone's) slipped past it into 2a366e3.
+node_modules/
+node_modules
+*.tsbuildinfo
+
+# Build output. Not committed: `npm install` builds it (the prepare script) and
+# every host's deploy rebuilds every linked library before bundling (dash's
+# scripts/build-linked-libraries.mjs). 525 tracked files of compiled output
+# shadowed every grep of the source until 2026-09-10.
+/dist/
+
+# Standalone launcher build output (the published package ships dist/ +
+# the two stylesheets only — see "files" in package.json).
+/standalone/dist/
+
+# Host-local config (machine-specific systemd drop-ins, dev secrets, etc.).
+# Put anything that should never leave this machine under ./.local/
+/.local/
+
+# Defensive: never accidentally commit credentials.
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+credentials.*
+secrets.*
+
+# The globs above target secret *data* files, but they also match source files:
+# `credentials.*` swallowed internal/harness/credentials.go in llm-bridge-server,
+# leaving the committed tree unbuildable while `git status` stayed clean. Source
+# is never a secret. Files under /.local/ stay ignored — git cannot re-include
+# through an excluded directory.
+!*.ts
+!*.tsx
+!*.js

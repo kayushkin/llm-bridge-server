@@ -1,0 +1,1175 @@
+/* ===== The zine theme =====
+   A two-ink risograph print: cream paper with a halftone dot grain, navy ink
+   lines, flat orange and pink, chunky pink headlines with a cream outline, and
+   sticker-like cards with hard offset shadows. The pictures (the crab, the
+   conductor, the status icons, stars) are PNGs in zine/, painted by code in
+   the zine-art repo (github.com/kayushkin/zine-art).
+
+   Opt in with `import '@kayushkin/bridge-ui/zine.css'` after styles.css and
+   `data-theme="zine"` on a parent element. It sets the variables styles.css
+   reads, loads its own fonts, and styles bridge-ui's class names: the top bar
+   and tabs (.bridge-*), the chat (.bc-*) and kanban (.bk-*). A host page title
+   gets the pink headline by carrying class `page-title`. */
+
+@import '@fontsource/archivo-black/400.css';
+@import '@fontsource/nunito/400.css';
+@import '@fontsource/nunito/700.css';
+@import '@fontsource/space-mono/400.css';
+@import '@fontsource/space-mono/700.css';
+
+/* The raw inks, set everywhere so a component can use one outside the theme
+   switch too (the LIVE stamp is only drawn in zine, but reads these). */
+:root {
+  --zine-paper: #EFE7D6;
+  --zine-cream: #FBF5E8;
+  --zine-ink: #2E3B7A;
+  --zine-ink-dark: #222C5E;
+  --zine-orange: #EE7E43;
+  --zine-orange-dark: #C2521F;
+  --zine-pink: #EC6FA4;
+  --zine-pink-dark: #C24880;
+  --zine-pink-light: #F5B2CC;
+}
+
+[data-theme="zine"] {
+  --bg: var(--zine-paper);
+  --bg-surface: var(--zine-cream);
+  --bg-overlay: rgba(46, 59, 122, 0.45);
+  --border: color-mix(in srgb, var(--zine-ink) 55%, var(--zine-paper));
+  --border-subtle: color-mix(in srgb, var(--zine-ink) 22%, var(--zine-paper));
+  --scrollbar-track: var(--zine-paper);
+  --scrollbar-thumb: color-mix(in srgb, var(--zine-ink) 55%, var(--zine-paper));
+  --scrollbar-thumb-hover: var(--zine-ink);
+  --text: var(--zine-ink-dark);
+  --text-muted: #4B568C;
+  --text-dim: #6A739F;
+  --text-faint: #8F95B8;
+  --accent: var(--zine-orange-dark);
+  --accent-hover: #A5421A;
+  --accent-on: var(--zine-cream);
+  --accent-soft: color-mix(in srgb, var(--zine-pink) 22%, var(--zine-cream));
+  --success: #2F7A4B;
+  --success-bg: #D8EBD3;
+  --error: #C23B4A;
+  --error-bg: #F8D9DC;
+  --warning: #9A6A00;
+  --warning-bg: #F6E7BF;
+  --info: var(--zine-ink);
+  --info-bg: #DCE0F2;
+  --mono: 'Space Mono', ui-monospace, monospace;
+
+  /* bridge-ui's chat surfaces mix toward white for their edges, which vanishes
+     on paper; give them ink instead. */
+  --bc-edge: color-mix(in srgb, var(--zine-ink) 40%, var(--zine-cream));
+  --bc-edge-lit: var(--zine-ink);
+  --bc-radius: 6px;
+  --bc-radius-sm: 4px;
+  --bc-radius-xs: 3px;
+  --bc-shadow: 4px 4px 0 var(--zine-ink);
+  --bc-halo: 0 0 0 2px var(--zine-pink);
+}
+
+/* Paper: the flat cream, a fine pink halftone, and a coarser navy one offset
+   from it, the way two riso drums never quite line up. */
+[data-theme="zine"] body {
+  font-family: 'Nunito', system-ui, sans-serif;
+  background-color: var(--zine-paper);
+  background-image:
+    radial-gradient(circle, rgba(236, 111, 164, 0.13) 1px, transparent 1.4px),
+    radial-gradient(circle, rgba(46, 59, 122, 0.07) 1.2px, transparent 1.7px);
+  background-size: 7px 7px, 13px 13px;
+  background-position: 0 0, 3px 5px;
+}
+[data-theme="zine"] ::selection { background: var(--zine-pink-light); color: var(--zine-ink-dark); }
+[data-theme="zine"] ::-webkit-scrollbar-thumb { border-radius: 0; border: 2px solid var(--zine-paper); }
+/* ---------- the top bar ---------- */
+[data-theme="zine"] .bridge-shell-bar {
+  background: var(--zine-cream);
+  border-bottom: 3px solid var(--zine-ink);
+  min-height: 54px;
+}
+[data-theme="zine"] .bridge-shell-start { border-right: 2px dashed var(--border); }
+[data-theme="zine"] .bridge-group-tab {
+  font-family: 'Archivo Black', sans-serif;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.85rem;
+}
+[data-theme="zine"] .bridge-tab { color: var(--text-muted); transition: color 0.2s, transform 0.25s cubic-bezier(0.34, 1.8, 0.64, 1); }
+[data-theme="zine"] .bridge-tab:hover { color: var(--zine-ink-dark); transform: rotate(-3deg) translateY(-1px); }
+/* the active tab: a pink marker underline, a little crooked, and a star */
+[data-theme="zine"] .bridge-tab-active {
+  color: var(--zine-ink-dark);
+  border-bottom-color: transparent;
+  background-image: linear-gradient(transparent 70%, var(--zine-pink-light) 70%, var(--zine-pink-light) 92%, transparent 92%);
+  background-size: calc(100% - 20px) 100%;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+[data-theme="zine"] .bridge-group-tab.bridge-tab-active::before {
+  content: '';
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  background: url('./zine/star.png') center / contain no-repeat;
+  transform: rotate(-12deg);
+}
+[data-theme="zine"] .bridge-nav-pages {
+  background: color-mix(in srgb, var(--zine-orange) 16%, var(--zine-paper));
+  border-bottom: 2px solid var(--zine-ink);
+}
+[data-theme="zine"] .bridge-nav-pages .bridge-tab { font-weight: 700; }
+
+/* ---------- headlines ---------- */
+/* A page's title (class `page-title` on each of dash's pages), as in the
+   reference: huge pink letters, a cream outline, a navy offset shadow, set slightly crooked, with a star stuck beside it. */
+[data-theme="zine"] .page-title {
+  font-family: 'Archivo Black', sans-serif;
+  font-weight: 400;
+  font-size: clamp(2rem, 4vw, 3rem);
+  line-height: 1.05;
+  color: var(--zine-pink);
+  -webkit-text-stroke: 7px var(--zine-cream);
+  paint-order: stroke fill;
+  text-shadow: 4px 4px 0 var(--zine-ink);
+  transform: rotate(-1.5deg);
+  transform-origin: left center;
+  letter-spacing: -0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+[data-theme="zine"] .page-title::after {
+  content: '';
+  width: 0.9em;
+  height: 0.9em;
+  flex-shrink: 0;
+  background: url('./zine/star.png') center / contain no-repeat;
+  transform: rotate(14deg);
+  animation: zineSpin 9s linear infinite;
+}
+[data-theme="zine"] .bridge-content h2:not(.page-title),
+[data-theme="zine"] .bridge-content h3 { font-family: 'Archivo Black', sans-serif; font-weight: 400; color: var(--zine-ink-dark); letter-spacing: 0.01em; }
+@keyframes zineSpin { to { transform: rotate(374deg); } }
+
+/* ---------- buttons, inputs ---------- */
+[data-theme="zine"] button { transition: transform 0.15s cubic-bezier(0.34, 1.8, 0.64, 1); }
+[data-theme="zine"] button:not(:disabled):active { transform: translate(1px, 2px) scale(0.97); }
+[data-theme="zine"] input:focus-visible,
+[data-theme="zine"] textarea:focus-visible,
+[data-theme="zine"] select:focus-visible { outline: 2px solid var(--zine-pink); outline-offset: 1px; }
+
+/* ---------- chat ---------- */
+/* The agent writes on the paper itself, with an ink rule down the left; a person's
+   messages are pink notes stuck on, a little crooked. The note turns about its
+   top-left corner: turned about its middle, a long note's top swung left under the
+   sidebar, but turned counter-clockwise about the top, everything below the pivot
+   moves right, into the space the note leaves free. */
+[data-theme="zine"] .bc-turns-assistant {
+  border: none;
+  border-left: 3px solid var(--zine-ink);
+  border-radius: 0;
+  background: transparent;
+}
+[data-theme="zine"] .bc-turns-user {
+  border: 2px solid var(--zine-ink);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--zine-pink) 20%, var(--zine-cream));
+  box-shadow: 3px 3px 0 var(--zine-ink);
+  transform: rotate(-0.4deg);
+  transform-origin: top left;
+}
+[data-theme="zine"] .bc-turns-aside { font-family: 'Nunito', sans-serif; }
+[data-theme="zine"] .bc-turns-actor { font-family: 'Space Mono', monospace; }
+[data-theme="zine"] .bc-turns-user .bc-turns-actor { color: var(--zine-pink-dark); }
+[data-theme="zine"] .bc-composer-input {
+  border: 2px solid var(--zine-ink);
+  border-radius: 4px;
+  background: var(--zine-cream);
+  box-shadow: 3px 3px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bc-composer-input:focus { border-color: var(--zine-ink); box-shadow: 3px 3px 0 var(--zine-pink); }
+
+/* The composer is a paper slip: pencilled in — dashed — while empty, inked once there
+   is text. A send lifts a copy of the slip out of the box (bridge-ui's
+   `.bc-composer-sent`, placed over the box by its `--sent-*` variables) while the
+   message itself slides up into the chat and glows pink for a moment, so the eye
+   follows it from the box to the transcript. */
+[data-theme="zine"] .bc-composer-input:placeholder-shown { border-style: dashed; }
+[data-theme="zine"] .bc-composer-wrap { position: relative; }
+/* Only with motion: under reduced motion it stays hidden, as bridge-ui leaves it. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-theme="zine"] .bc-composer-sent { display: block; }
+}
+[data-theme="zine"] .bc-composer-sent {
+  position: absolute;
+  z-index: 5;
+  left: var(--sent-left);
+  top: var(--sent-top);
+  width: var(--sent-width);
+  height: var(--sent-height);
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border: 2px solid var(--zine-ink);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--zine-pink) 20%, var(--zine-cream));
+  box-shadow: 3px 3px 0 var(--zine-ink);
+  color: var(--zine-ink-dark);
+  font-size: 0.93em;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow: hidden;
+  pointer-events: none;
+  animation: zineSlipLift 0.7s ease-out forwards;
+}
+@keyframes zineSlipLift {
+  0% { transform: none; }
+  25% { transform: translateY(-6px) rotate(-1deg) scale(1.02); opacity: 1; }
+  100% { transform: translateY(-90px) rotate(-2deg) scale(0.92); opacity: 0; }
+}
+/* `data-arriving` (TurnList) marks a row on its first mount only; virtua mounts a row
+   again whenever it scrolls back into view, and the slip must not replay then. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-theme="zine"] .bc-turns-user[data-arriving] {
+    animation: zineSlipIn 0.8s cubic-bezier(0.2, 0.8, 0.3, 1.2) 0.15s both, zineSlipGlow 1.8s ease-out 0.15s;
+  }
+}
+@keyframes zineSlipIn { from { transform: translateY(48px) rotate(-3deg) scale(0.96); opacity: 0; } }
+@keyframes zineSlipGlow {
+  from { box-shadow: 3px 3px 0 var(--zine-ink), 0 0 0 6px color-mix(in srgb, var(--zine-pink) 55%, transparent); }
+}
+
+/* A permission request lands like a rubber stamp. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-theme="zine"] .bc-pending-card { animation: zineStampIn 0.35s cubic-bezier(0.34, 1.6, 0.64, 1); }
+}
+@keyframes zineStampIn { from { transform: scale(1.35) rotate(-4deg); opacity: 0; } }
+
+/* A finished turn — the newest reply, not streaming, not an error, with the slot gone
+   from the pane — gets a "done" stamp in its header. */
+[data-theme="zine"] .bc-turns-pane:not(:has(.bc-status-slot)) .bc-turns-assistant[data-latest]:not(.bc-turns-streaming):not(.bc-turns-error) > .bc-turns-meta::after {
+  content: 'done \2713';
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 2px solid var(--zine-pink-dark);
+  border-radius: 3px;
+  color: var(--zine-pink-dark);
+  font: 700 0.72rem 'Space Mono', monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transform: rotate(-6deg);
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-theme="zine"] .bc-turns-pane:not(:has(.bc-status-slot)) .bc-turns-assistant[data-latest][data-arriving]:not(.bc-turns-streaming):not(.bc-turns-error) > .bc-turns-meta::after {
+    animation: zineStampDone 0.4s cubic-bezier(0.34, 1.6, 0.64, 1);
+  }
+}
+@keyframes zineStampDone { from { transform: scale(2.4) rotate(-18deg); opacity: 0; } }
+
+/* While the model writes, an ink caret blinks at the end of the reply. The reply's markdown
+   wraps each block in a div, so the last paragraph or list item is one level down. */
+[data-theme="zine"] .bc-turns-pane:has(.bc-status-slot[data-mood="thinking"]) .bc-turns-streaming .bc-turns-md > div:last-child > p:last-child::after,
+[data-theme="zine"] .bc-turns-pane:has(.bc-status-slot[data-mood="thinking"]) .bc-turns-streaming .bc-turns-md > div:last-child > :is(ul, ol):last-child > li:last-child::after {
+  content: '';
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 3px;
+  vertical-align: -0.14em;
+  background: var(--zine-pink);
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-theme="zine"] .bc-turns-pane:has(.bc-status-slot[data-mood="thinking"]) .bc-turns-streaming .bc-turns-md > div:last-child > p:last-child::after,
+  [data-theme="zine"] .bc-turns-pane:has(.bc-status-slot[data-mood="thinking"]) .bc-turns-streaming .bc-turns-md > div:last-child > :is(ul, ol):last-child > li:last-child::after {
+    animation: zineCaret 0.9s steps(1) infinite;
+  }
+}
+@keyframes zineCaret { 50% { opacity: 0; } }
+
+/* The header's view tabs: cassette labels in one strip, the playing ones pink. */
+[data-theme="zine"] .bc-pane-toggles { border: 2px solid var(--zine-ink); border-radius: 3px; box-shadow: 2px 2px 0 var(--zine-ink); }
+[data-theme="zine"] .bc-pane-toggles button {
+  font-family: 'Archivo Black', sans-serif;
+  font-weight: 400;
+  /* Archivo Black runs wide; a size down keeps the strip as wide as bridge-ui's own. */
+  font-size: 0.58rem;
+  letter-spacing: 0;
+  padding: 0 4px;
+  color: var(--zine-ink);
+  border-left-color: var(--zine-ink);
+}
+[data-theme="zine"] .bc-pane-toggles button[aria-pressed="true"] { background: var(--zine-pink-light); }
+[data-theme="zine"] .bc-pane-toggles button:hover { background: color-mix(in srgb, var(--zine-pink-light) 50%, transparent); }
+
+/* The context ring draws in pink ink; the lens chip is a small ink-edged label. */
+[data-theme="zine"] .bc-header circle[data-fill] { stroke: var(--zine-pink); }
+[data-theme="zine"] [aria-label="How the text is drawn"] { border: 1.5px solid var(--zine-ink); opacity: 1; }
+[data-theme="zine"] [aria-label="How the text is drawn"] button { color: var(--zine-ink); font-family: 'Space Mono', monospace; }
+[data-theme="zine"] [aria-label="How the text is drawn"] button + button { border-left-color: var(--zine-ink); }
+[data-theme="zine"] [aria-label="How the text is drawn"] button[aria-pressed="true"] { background: var(--zine-pink-light); }
+
+/* The status row: Space Mono ticker tape, and the crab animated in the slot's mood
+   (bridge-ui sets `data-mood` and leaves `.bc-status-mascot` empty for us). Each mood is
+   a strip of frames (zine-art's pieces.js, MOOD_FRAMES) played by `zineStrip`. */
+[data-theme="zine"] .bc-status-slot { font-family: 'Space Mono', monospace; border-top: 2px dashed var(--zine-ink); }
+[data-theme="zine"] .bc-status-mascot {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 36px;
+  height: 33px;
+  margin: -6px 0 -4px -4px;
+  background: 0 0 / auto 100% no-repeat;
+  animation: zineStrip var(--zine-strip-loop) steps(var(--zine-strip-frames)) infinite;
+}
+[data-theme="zine"] .bc-status-slot[data-mood="thinking"] .bc-status-mascot { background-image: url('./zine/crab-mini-thinking-frames.png'); --zine-strip-frames: 6; --zine-strip-loop: 1.5s; }
+[data-theme="zine"] .bc-status-slot[data-mood="working"] .bc-status-mascot { background-image: url('./zine/crab-mini-working-frames.png'); --zine-strip-frames: 4; --zine-strip-loop: 0.45s; }
+[data-theme="zine"] .bc-status-slot[data-mood="waiting"] .bc-status-mascot { background-image: url('./zine/crab-mini-waiting-frames.png'); --zine-strip-frames: 6; --zine-strip-loop: 1.1s; }
+[data-theme="zine"] .bc-status-slot[data-mood="resting"] .bc-status-mascot { background-image: url('./zine/crab-mini-resting-frames.png'); --zine-strip-frames: 6; --zine-strip-loop: 3s; }
+[data-theme="zine"] .bc-status-slot[data-mood="trouble"] .bc-status-mascot { background-image: url('./zine/crab-mini-trouble-frames.png'); --zine-strip-frames: 4; --zine-strip-loop: 0.45s; }
+/* A strip of n frames, each as wide as the element, drawn at 100% height: a percentage
+   background position p puts frame p·(n−1) at the left edge, so running to n/(n−1) in
+   n steps shows every frame once and loops. */
+@keyframes zineStrip { to { background-position-x: calc(100% * var(--zine-strip-frames) / (var(--zine-strip-frames) - 1)); } }
+/* While you type, the crab turns to look down at the text box, a claw cupped to listen. */
+[data-theme="zine"] .bc-workspace:has(.bc-composer-input:not(:placeholder-shown)) .bc-status-slot .bc-status-mascot {
+  background-image: url('./zine/crab-mini-noticing-frames.png');
+  --zine-strip-frames: 6;
+  --zine-strip-loop: 1.2s;
+}
+
+/* The conductor: the orchestrator's figure at the head of its sidebar row (bridge-ui's
+   `.bc-conductor`, on `.bc-orchestrator`). It is drawn by `data-state`, each a strip of
+   frames (zine-art's pieces.js, CONDUCTOR_FRAMES); with the pointer on the row, it turns
+   to you. */
+[data-theme="zine"] .bc-conductor-crab .bc-orchestrator-badge,
+[data-theme="zine"] .bc-conductor-crab .bc-orchestrator-dot { display: none; }
+[data-theme="zine"] .bc-conductor-mascot {
+  display: block;
+  flex: none;
+  width: 34px;
+  height: 31px;
+  margin: -4px 0 -4px -4px;
+  background: 0 0 / auto 100% no-repeat;
+  animation: zineStrip var(--zine-strip-loop) steps(var(--zine-strip-frames)) infinite;
+}
+[data-theme="zine"] .bc-conductor[data-state="conducting"] .bc-conductor-mascot { background-image: url('./zine/conductor-conducting-frames.png'); --zine-strip-frames: 8; --zine-strip-loop: 1.6s; }
+[data-theme="zine"] .bc-conductor[data-state="busy"] .bc-conductor-mascot { background-image: url('./zine/conductor-busy-frames.png'); --zine-strip-frames: 6; --zine-strip-loop: 0.6s; }
+[data-theme="zine"] .bc-conductor[data-state="alert"] .bc-conductor-mascot { background-image: url('./zine/conductor-alert-frames.png'); --zine-strip-frames: 6; --zine-strip-loop: 1s; }
+[data-theme="zine"] .bc-conductor[data-state="trouble"] .bc-conductor-mascot { background-image: url('./zine/conductor-trouble-frames.png'); --zine-strip-frames: 4; --zine-strip-loop: 0.45s; }
+[data-theme="zine"] .bc-conductor[data-state="resting"] .bc-conductor-mascot { background-image: url('./zine/conductor-resting-frames.png'); --zine-strip-frames: 6; --zine-strip-loop: 3s; }
+/* unreachable: asleep, faded, and still */
+[data-theme="zine"] .bc-conductor[data-state="offline"] .bc-conductor-mascot { background-image: url('./zine/conductor-resting-frames.png'); animation: none; filter: grayscale(1) opacity(0.55); }
+[data-theme="zine"] .bc-conductor:not([data-state="offline"]) .bc-conductor-crab:hover .bc-conductor-mascot,
+[data-theme="zine"] .bc-conductor:not([data-state="offline"]) .bc-conductor-crab:focus-visible .bc-conductor-mascot {
+  background-image: url('./zine/conductor-glance-frames.png');
+  --zine-strip-frames: 6;
+  --zine-strip-loop: 1.2s;
+}
+[data-theme="zine"] .bc-orchestrator-status { font-family: 'Space Mono', monospace; font-size: 0.66rem; color: var(--zine-ink); letter-spacing: 0; }
+[data-theme="zine"] .bc-conductor[data-state="alert"] .bc-orchestrator-status { color: var(--zine-pink-dark); }
+[data-theme="zine"] .bc-orchestrator-signals { font-family: 'Archivo Black', sans-serif; color: var(--zine-ink-dark); }
+[data-theme="zine"] .bc-orchestrator-signals:hover { border-color: var(--zine-ink); color: var(--zine-ink-dark); }
+[data-theme="zine"] .bc-orchestrator-needs-count { background: var(--zine-pink-dark); color: var(--zine-cream); border: 1.5px solid var(--zine-ink); }
+[data-theme="zine"] .bc-orchestrator-page-link { color: var(--zine-pink-dark); font-weight: 700; }
+[data-theme="zine"] .bc-needs-you-dropdown { border-top: 2px solid var(--zine-ink); background: var(--zine-cream); }
+
+/* An empty chat: the crab waves hello with a speech bubble. */
+[data-theme="zine"] .bc-turns-empty {
+  font-family: 'Space Mono', monospace;
+  font-style: normal;
+  color: var(--zine-ink);
+  padding-top: 32px;
+}
+[data-theme="zine"] .bc-turns-empty::before {
+  content: '';
+  display: block;
+  width: 320px;
+  max-width: 80%;
+  aspect-ratio: 620 / 560;
+  margin: 0 auto 14px;
+  /* the crab waving under its "hi!" bubble, frame by frame (crab-hello-frames) */
+  background: url('./zine/crab-hello-frames.png') 0 0 / auto 100% no-repeat;
+  --zine-strip-frames: 6;
+  animation: zineStrip 1.2s steps(6) infinite;
+}
+
+/* Nothing to show in a list: the crab is asleep. */
+[data-theme="zine"] .bc-timeline-empty::before,
+[data-theme="zine"] .bc-session-list-empty::before {
+  content: '';
+  display: block;
+  width: 120px;
+  aspect-ratio: 620 / 560;
+  margin: 0 auto 8px;
+  background: url('./zine/crab-sleep.png') center / contain no-repeat;
+}
+/* ---------- panels: the chat and the sidebar as pasted-up prints ----------
+   Both panels are sheets pasted onto the paper: square-ish corners, a heavy ink edge,
+   a hard offset shadow, and strips of tape holding their top corners down. */
+[data-theme="zine"] .bc-workspace,
+[data-theme="zine"] .bc-session-list {
+  position: relative;
+  border: 2.5px solid var(--zine-ink);
+  border-radius: 5px;
+  background: var(--zine-cream);
+  box-shadow: 6px 6px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bc-session-list { box-shadow: 5px 5px 0 var(--zine-ink); }
+/* the tape: translucent strips over the top corners, set at odd angles */
+[data-theme="zine"] .bc-workspace::before,
+[data-theme="zine"] .bc-workspace::after,
+[data-theme="zine"] .bc-session-list::before {
+  content: '';
+  position: absolute;
+  z-index: 3;
+  /* the panel's parent clips anything above it, so the tape starts just inside */
+  top: -4px;
+  width: 78px;
+  height: 16px;
+  background: color-mix(in srgb, var(--zine-pink-light) 75%, transparent);
+  border-left: 2px dotted rgba(255, 255, 255, 0.6);
+  border-right: 2px dotted rgba(255, 255, 255, 0.6);
+  pointer-events: none;
+}
+[data-theme="zine"] .bc-workspace::before { left: 26px; transform: rotate(-4deg); }
+[data-theme="zine"] .bc-workspace::after { right: 30px; transform: rotate(3deg); background: color-mix(in srgb, var(--zine-orange) 45%, transparent); }
+[data-theme="zine"] .bc-session-list::before { left: 50%; margin-left: -39px; transform: rotate(2deg); background: color-mix(in srgb, var(--zine-orange) 45%, transparent); }
+
+/* ---------- the session header: a masthead ----------
+   A band of pink halftone fading in from the left, a double ink rule under it, the
+   session name set in the headline face with a marker stroke under it, and the
+   status, harness and machine marks as round stickers. */
+[data-theme="zine"] .bc-header {
+  border-bottom: 5px double var(--zine-ink);
+  border-radius: 3px 3px 0 0;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+/* the dots fade out toward the right, so the controls sit on clean paper */
+[data-theme="zine"] .bc-header {
+  background:
+    linear-gradient(90deg, transparent 0%, var(--zine-cream) 55%),
+    radial-gradient(circle, color-mix(in srgb, var(--zine-pink) 55%, transparent) 1.1px, transparent 1.5px) 0 0 / 6px 6px,
+    var(--zine-cream);
+}
+[data-theme="zine"] .bc-header .bc-session-name {
+  font-family: 'Archivo Black', sans-serif;
+  font-size: 1.02rem;
+  color: var(--zine-ink-dark);
+  letter-spacing: 0.01em;
+  /* a marker stroke under the words only: the name's box fills the row */
+  text-decoration: underline;
+  text-decoration-color: var(--zine-pink-light);
+  text-decoration-thickness: 7px;
+  text-underline-offset: -3px;
+  text-decoration-skip-ink: none;
+}
+[data-theme="zine"] .bc-header .bc-status-dot {
+  box-shadow: 0 0 0 2px var(--zine-cream), 0 0 0 3.5px var(--zine-ink);
+}
+/* spend in a receipt box */
+[data-theme="zine"] .bc-header .bc-cost {
+  font-family: 'Space Mono', monospace;
+  font-weight: 700;
+  color: var(--zine-ink);
+  border: 1.5px dashed var(--zine-ink);
+  border-radius: 2px;
+  background: var(--zine-cream);
+  padding: 1px 6px;
+}
+[data-theme="zine"] .bc-header circle[data-fill] { stroke-width: 3; }
+
+/* ---------- sidebar ----------
+   Folder headers are masking-tape labels; rows are ruled like a ledger; the open
+   session is a pink sticker; a working session carries a moving stripe on its edge;
+   a session waiting on you gets a pink halftone wash; subagents hang off circuit
+   traces. */
+[data-theme="zine"] .bc-folder-header {
+  /* Full width, like the Filters and Needs you ribbons, so the three read as one set
+     of section labels. A smaller tilt than a short label: across the whole sidebar
+     1.5deg lifts one end several pixels. */
+  width: auto;
+  margin: 10px 8px 4px;
+  padding: 3px 12px 3px 8px;
+  background: color-mix(in srgb, var(--zine-orange) 30%, var(--zine-cream));
+  color: var(--zine-ink-dark);
+  font-family: 'Archivo Black', sans-serif;
+  letter-spacing: 0.06em;
+  transform: rotate(-0.5deg);
+  /* torn ends */
+  clip-path: polygon(0 12%, 4% 0, 96% 6%, 100% 0, 98% 50%, 100% 100%, 3% 94%, 0 100%, 2% 50%);
+}
+/* The server tabs: index-card tabs in ink, the shown one cream and lifted onto
+   the list, so a server never reads like one of its folders. */
+[data-theme="zine"] .bc-server-tabs { border-bottom: 2px solid var(--zine-ink); padding: 0 8px; gap: 3px; }
+[data-theme="zine"] .bc-server-tab {
+  border: 2px solid var(--zine-ink);
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  background: color-mix(in srgb, var(--zine-ink) 14%, var(--zine-cream));
+  color: var(--zine-ink-dark);
+  font-family: 'Archivo Black', sans-serif;
+  font-weight: 400;
+  font-size: 0.68rem;
+  margin-bottom: 0;
+  padding: 4px 5px;
+}
+[data-theme="zine"] .bc-server-tab-shown { background: var(--zine-cream); position: relative; top: 2px; }
+[data-theme="zine"] .bc-server-tab-count {
+  font-family: 'Archivo Black', sans-serif;
+  padding: 0 5px;
+  border: 1.5px solid var(--zine-ink);
+  border-radius: 9px;
+  background: var(--zine-cream);
+  color: var(--zine-ink);
+}
+[data-theme="zine"] .bc-server-tab-blocked { opacity: 0.55; }
+[data-theme="zine"] .bc-session-day-heading { font-family: 'Archivo Black', sans-serif; color: var(--zine-ink); opacity: 0.7; }
+[data-theme="zine"] .bc-session-server-tag {
+  border: 1.5px solid var(--zine-ink);
+  border-radius: 2px;
+  background: var(--zine-cream);
+  color: var(--zine-ink);
+  font-family: 'Archivo Black', sans-serif;
+  font-size: 0.58rem;
+}
+/* the filters: a card dropped from the search box */
+[data-theme="zine"] .bc-filter-popover {
+  border: 2px solid var(--zine-ink);
+  border-radius: 3px;
+  background: var(--zine-cream);
+  box-shadow: 4px 4px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bc-filter-funnel-active { background: var(--zine-pink-light); color: var(--zine-ink-dark); border-color: var(--zine-ink); }
+[data-theme="zine"] .bc-filter-badge {
+  background: var(--zine-orange);
+  color: var(--zine-cream);
+  border: 1.5px solid var(--zine-ink);
+  font-family: 'Archivo Black', sans-serif;
+}
+[data-theme="zine"] .bc-session-row-grid {
+  border-bottom: 1px dotted color-mix(in srgb, var(--zine-ink) 28%, transparent);
+  transition: background 0.15s, transform 0.2s cubic-bezier(0.34, 1.8, 0.64, 1);
+}
+[data-theme="zine"] .bc-session-row-grid:hover {
+  background: color-mix(in srgb, var(--zine-orange) 10%, transparent);
+  transform: translateX(2px);
+}
+[data-theme="zine"] .bc-session-row-grid:hover .bc-session-label {
+  text-decoration: underline wavy var(--zine-pink);
+  text-underline-offset: 3px;
+}
+[data-theme="zine"] .bc-session-item-selected.bc-session-row-grid {
+  margin: 3px 6px;
+  width: auto;
+  border: 2px solid var(--zine-ink);
+  border-radius: 3px;
+  background: var(--zine-pink-light);
+  box-shadow: 3px 3px 0 var(--zine-ink);
+  transform: rotate(-0.7deg);
+  color: var(--zine-ink-dark);
+}
+[data-theme="zine"] .bc-session-item-selected .bc-session-label { font-weight: 800; }
+/* working: a barber-pole stripe down the left edge, drawn on its own layer so it
+   shows on the selected sticker too */
+[data-theme="zine"] .bc-session-row-grid { position: relative; }
+[data-theme="zine"] .bc-session-row-grid:has(.bc-status-dot-model_generating, .bc-status-dot-tool_running, .bc-status-dot-running, .bc-status-dot-starting, .bc-status-dot-compacting, .bc-status-dot-background_tasks_running)::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: repeating-linear-gradient(-45deg, var(--zine-orange) 0 4px, var(--zine-pink) 4px 8px) 0 0 / 4px 22.6px;
+  animation: zineStripe 0.8s linear infinite;
+  pointer-events: none;
+}
+@keyframes zineStripe { to { background-position: 0 22.6px; } }
+/* waiting on you: a pink halftone wash */
+[data-theme="zine"] .bc-session-row-grid:has(button[aria-haspopup="dialog"]) {
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--zine-pink) 45%, transparent) 1px, transparent 1.4px);
+  background-size: 5px 5px;
+}
+/* finished or stopped sessions fade back */
+[data-theme="zine"] .bc-session-row-grid:has(.bc-status-dot-completed, .bc-status-dot-aborted) .bc-session-label { opacity: 0.6; }
+/* subagents: a dotted circuit trace down the side, with a node at each branch */
+[data-theme="zine"] .bc-session-row-grid[class*="subagentRow"] {
+  position: relative;
+  margin-left: 16px;
+  border-left: 2px dotted var(--zine-ink);
+}
+[data-theme="zine"] .bc-session-row-grid[class*="subagentRow"]::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--zine-cream);
+  border: 2px solid var(--zine-ink);
+  box-sizing: border-box;
+}
+[data-theme="zine"] .bc-session-row-grid[class*="subagentRowRunning"]::before { background: var(--zine-orange); }
+
+/* the filter chips: small ink-edged labels, the chosen ones filled pink */
+[data-theme="zine"] .bc-inst-filter-chips button {
+  border: 1.5px solid color-mix(in srgb, var(--zine-ink) 45%, transparent);
+  border-radius: 3px;
+  background: var(--zine-cream);
+}
+[data-theme="zine"] .bc-inst-filter-chips button.bc-filter-chip-on {
+  border-color: var(--zine-ink);
+  background: var(--zine-pink-light);
+  color: var(--zine-ink-dark);
+}
+/* a question waiting on you is an index card: a pink rule across the top */
+[data-theme="zine"] .signal-card {
+  border: 2px solid var(--zine-ink);
+  border-top: 5px solid var(--zine-pink);
+  border-radius: 2px;
+  background: var(--zine-cream);
+  box-shadow: 2px 2px 0 var(--zine-ink);
+}
+
+/* ---------- status icons ----------
+   bridge-ui draws each session state as a colored dot with a symbol; zine swaps in a
+   painted icon per state (zine-art's pieces.js, "status icons"). A state where something is
+   happening is an animation: its PNG is a strip of square frames, left to right, and
+   `zineFrames` steps the background across them — --zine-status-frames frames in
+   --zine-status-loop. Under reduced motion the animation is off and frame 0 shows. */
+[data-theme="zine"] .bc-status-dot {
+  --zine-status-size: 16px;
+  width: var(--zine-status-size);
+  height: var(--zine-status-size);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent center / contain no-repeat;
+  font-size: 0;
+  animation: none;
+}
+[data-theme="zine"] .bc-status-dot::before,
+[data-theme="zine"] .bc-status-dot::after { content: none; display: none; }
+[data-theme="zine"] .bc-status-dot .bc-status-dot-blip { display: none; }
+[data-theme="zine"] .bc-status-dot-running,
+[data-theme="zine"] .bc-status-dot-tool_running,
+[data-theme="zine"] .bc-status-dot-starting { background-image: url('./zine/status-working-frames.png'); --zine-status-frames: 6; --zine-status-loop: 0.6s; }
+[data-theme="zine"] .bc-status-dot-model_generating { background-image: url('./zine/status-thinking-frames.png'); --zine-status-frames: 8; --zine-status-loop: 1.1s; }
+[data-theme="zine"] .bc-status-dot-background_tasks_running { background-image: url('./zine/status-background-frames.png'); --zine-status-frames: 8; --zine-status-loop: 2s; }
+[data-theme="zine"] .bc-status-dot-compacting { background-image: url('./zine/status-compacting-frames.png'); --zine-status-frames: 6; --zine-status-loop: 0.9s; }
+[data-theme="zine"] .bc-status-dot-rate_limited { background-image: url('./zine/status-rate-limited-frames.png'); --zine-status-frames: 7; --zine-status-loop: 3.5s; }
+[data-theme="zine"] .bc-status-dot-awaiting_user { background-image: url('./zine/status-asking-frames.png'); --zine-status-frames: 6; --zine-status-loop: 1.2s; }
+[data-theme="zine"] .bc-status-dot-awaiting_permission,
+[data-theme="zine"] .bc-status-dot-waiting_on_approval { background-image: url('./zine/status-permission-frames.png'); --zine-status-frames: 6; --zine-status-loop: 0.9s; }
+[data-theme="zine"] .bc-status-dot:where(.bc-status-dot-running, .bc-status-dot-tool_running, .bc-status-dot-starting, .bc-status-dot-model_generating, .bc-status-dot-background_tasks_running, .bc-status-dot-compacting, .bc-status-dot-rate_limited, .bc-status-dot-awaiting_user, .bc-status-dot-awaiting_permission, .bc-status-dot-waiting_on_approval) {
+  background-size: auto 100%;
+  background-position: 0 0;
+  animation: zineFrames var(--zine-status-loop) steps(var(--zine-status-frames)) infinite;
+}
+[data-theme="zine"] .bc-status-dot-idle { background-image: url('./zine/status-idle.png'); }
+[data-theme="zine"] .bc-status-dot-completed { background-image: url('./zine/status-done.png'); }
+[data-theme="zine"] .bc-status-dot-aborted { background-image: url('./zine/status-aborted.png'); }
+[data-theme="zine"] .bc-status-dot-error { background-image: url('./zine/status-error.png'); }
+[data-theme="zine"] .bc-status-dot-paused { background-image: url('./zine/status-paused.png'); }
+[data-theme="zine"] .bc-status-dot-disconnected { background-image: url('./zine/status-disconnected.png'); }
+[data-theme="zine"] .bc-status-dot-empty,
+[data-theme="zine"] .bc-status-dot-placeholder { background-image: url('./zine/status-empty.png'); }
+/* a background session waiting on a human: the asking picture, held still and grey */
+[data-theme="zine"] .bc-status-dot.bc-status-dot-background-waiting { background-color: transparent; animation: none; filter: grayscale(1); opacity: 0.5; }
+@keyframes zineFrames { to { background-position: calc(var(--zine-status-frames) * -1 * var(--zine-status-size)) 0; } }
+/* the header's ring round the dot belonged to the plain dot */
+[data-theme="zine"] .bc-header .bc-status-dot { box-shadow: none; --zine-status-size: 18px; }
+
+/* the archive button on a row: the painted file box instead of bridge-ui's line icon */
+[data-theme="zine"] .bc-session-menu-btn { width: 20px; height: 20px; padding: 0; background: center / contain no-repeat url('./zine/archive-box.png'); }
+[data-theme="zine"] .bc-session-menu-btn[data-archived="true"] { background-image: url('./zine/archive-reopen.png'); }
+[data-theme="zine"] .bc-session-menu-btn svg { display: none; }
+[data-theme="zine"] .bc-session-menu-btn:hover { background-color: transparent; transform: rotate(-8deg) scale(1.15); }
+
+/* ---------- the top of the sidebar ----------
+   New is a big orange stamp with its harness picker joined on; collapse is a small ink
+   button; the Orchestrator row is a ticket; search is an inked field with a pink focus;
+   Filters and Needs you are tape labels like the folder headers below them. */
+[data-theme="zine"] .bc-new-session-btn,
+[data-theme="zine"] .bc-new-session-caret-btn {
+  border: 2px solid var(--zine-ink);
+  background: var(--zine-orange);
+  color: var(--zine-cream);
+  font-family: 'Archivo Black', sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  box-shadow: 3px 3px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bc-new-session-btn { border-radius: 4px 0 0 4px; border-right-width: 1px; }
+[data-theme="zine"] .bc-new-session-caret-btn { border-radius: 0 4px 4px 0; border-left: 1px dashed var(--zine-cream); background: var(--zine-orange-dark); }
+[data-theme="zine"] .bc-new-session-btn:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--zine-ink); }
+[data-theme="zine"] .bc-sidebar-collapse-btn,
+[data-theme="zine"] .bc-sidebar-page-btn {
+  border: 2px solid var(--zine-ink);
+  border-radius: 3px;
+  background: var(--zine-cream);
+  color: var(--zine-ink);
+  box-shadow: 2px 2px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bc-sidebar-page-btn-selected { background: var(--zine-ink); color: var(--zine-cream); }
+[data-theme="zine"] .bc-orchestrator {
+  border: 2px solid var(--zine-ink);
+  border-radius: 3px;
+  background:
+    radial-gradient(circle at 0 50%, var(--zine-paper) 6px, transparent 6.5px),
+    radial-gradient(circle at 100% 50%, var(--zine-paper) 6px, transparent 6.5px),
+    var(--zine-pink-light);
+  box-shadow: 2px 2px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bc-orchestrator .bc-session-item-main { font-family: 'Archivo Black', sans-serif; color: var(--zine-ink-dark); letter-spacing: 0.02em; font-size: 0.85rem; }
+/* the ticket is the outer .bc-orchestrator, so the inner row must not paint over it:
+   bridge-ui's selected and hover fills are opaque and dulled the selected ticket.
+   Selection lifts the ticket the way it lifts a session sticker. */
+[data-theme="zine"] .bc-orchestrator .bc-session-item,
+[data-theme="zine"] .bc-orchestrator .bc-session-item:hover,
+[data-theme="zine"] .bc-orchestrator .bc-session-item-selected { background: transparent; box-shadow: none; }
+[data-theme="zine"] .bc-orchestrator:has(.bc-session-item-selected) {
+  box-shadow: 3px 3px 0 var(--zine-ink);
+  transform: rotate(-0.7deg);
+}
+[data-theme="zine"] .bc-session-search-input {
+  border: 2px solid var(--zine-ink);
+  border-radius: 3px;
+  background: var(--zine-cream) no-repeat 8px 50% / 14px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%232E3B7A' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='4.5'/%3E%3Cpath d='M10.5 10.5 14 14'/%3E%3C/svg%3E");
+  padding-left: 28px;
+  font-family: 'Nunito', sans-serif;
+}
+[data-theme="zine"] .bc-session-search-input:focus { border-color: var(--zine-ink); box-shadow: 3px 3px 0 var(--zine-pink); }
+[data-theme="zine"] [aria-label="Signals needing you"] > :first-child button:first-child {
+  width: calc(100% - 16px);
+  margin: 0 8px;
+  padding: 3px 12px 3px 8px;
+  background: color-mix(in srgb, var(--zine-pink) 40%, var(--zine-cream));
+  color: var(--zine-ink-dark);
+  font-family: 'Archivo Black', sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  transform: rotate(-0.4deg);
+  clip-path: polygon(0 10%, 5% 0, 95% 8%, 100% 0, 97% 50%, 100% 100%, 4% 92%, 0 100%, 3% 50%);
+}
+
+/* ---------- chat: the vibe classifier ----------
+   bridge-ui marks each block of an answer with data-vibe (danger, warning,
+   question, action, info, descriptive) and draws a rail and an emoji beside the
+   ones that ask for attention. Here the emoji become stickers in the two inks,
+   each vibe its own shape as well as its own color, the rails take the print's
+   inks, and the flat tint behind a flagged block becomes halftone dots. The
+   legend reuses the same stickers. */
+[data-theme="zine"] {
+  --zine-vibe-hue-danger: var(--zine-pink-dark);
+  --zine-vibe-hue-warning: var(--zine-orange);
+  --zine-vibe-hue-question: var(--zine-ink);
+  --zine-vibe-hue-action: var(--success);
+  --zine-vibe-hue-info: color-mix(in srgb, var(--zine-ink) 45%, var(--zine-paper));
+  --zine-vibe-danger: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17' height='17' viewBox='0 0 19 19'%3E%3Cpolygon points='5.7 1 12.3 1 17 5.7 17 12.3 12.3 17 5.7 17 1 12.3 1 5.7' fill='%232E3B7A' transform='translate(1.5 1.5)'/%3E%3Cpolygon points='5.7 1 12.3 1 17 5.7 17 12.3 12.3 17 5.7 17 1 12.3 1 5.7' fill='%23C24880' stroke='%232E3B7A' stroke-width='1.5' stroke-linejoin='round'/%3E%3Crect x='8' y='4.3' width='2' height='7' rx='1' fill='%23FBF5E8'/%3E%3Ccircle cx='9' cy='13.8' r='1.2' fill='%23FBF5E8'/%3E%3C/svg%3E");
+  --zine-vibe-warning: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17' height='17' viewBox='0 0 19 19'%3E%3Cpolygon points='9 1.5 17 16 1 16' fill='%232E3B7A' transform='translate(1.5 1.5)'/%3E%3Cpolygon points='9 1.5 17 16 1 16' fill='%23EE7E43' stroke='%232E3B7A' stroke-width='1.5' stroke-linejoin='round'/%3E%3Crect x='8.1' y='6.2' width='1.8' height='5.4' rx='0.9' fill='%232E3B7A'/%3E%3Ccircle cx='9' cy='13.6' r='1' fill='%232E3B7A'/%3E%3C/svg%3E");
+  --zine-vibe-question: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17' height='17' viewBox='0 0 19 19'%3E%3Ccircle cx='9' cy='9' r='7.8' fill='%232E3B7A' transform='translate(1.5 1.5)'/%3E%3Ccircle cx='9' cy='9' r='7.8' fill='%232E3B7A' stroke='%232E3B7A' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M6.4 7.1a2.7 2.7 0 1 1 3.7 2.5c-.8.4-1.1.9-1.1 1.7' fill='none' stroke='%23FBF5E8' stroke-width='2' stroke-linecap='round'/%3E%3Ccircle cx='9' cy='13.9' r='1.2' fill='%23FBF5E8'/%3E%3C/svg%3E");
+  --zine-vibe-action: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17' height='17' viewBox='0 0 19 19'%3E%3Crect x='1.5' y='1.5' width='15' height='15' rx='2' fill='%232E3B7A' transform='translate(1.5 1.5) rotate(-6 9 9)'/%3E%3Crect x='1.5' y='1.5' width='15' height='15' rx='2' transform='rotate(-6 9 9)' fill='%232F7A4B' stroke='%232E3B7A' stroke-width='1.5'/%3E%3Cpolygon points='10.4 3 5 10 8.6 10 7.6 15 13 8 9.4 8' fill='%23FBF5E8'/%3E%3C/svg%3E");
+  --zine-vibe-info: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17' height='17' viewBox='0 0 19 19'%3E%3Ccircle cx='9' cy='9' r='7.8' fill='%232E3B7A' transform='translate(1.5 1.5)'/%3E%3Ccircle cx='9' cy='9' r='7.8' fill='%23FBF5E8' stroke='%232E3B7A' stroke-width='1.5' stroke-linejoin='round'/%3E%3Ccircle cx='9' cy='5.2' r='1.3' fill='%232E3B7A'/%3E%3Crect x='8' y='7.6' width='2' height='6.4' rx='1' fill='%232E3B7A'/%3E%3C/svg%3E");
+}
+[data-theme="zine"] [class*="vibeProse"] > div[data-vibe='danger'],
+[data-theme="zine"] [class*="vibeLegendRow"][data-vibe='danger'] [class*="vibeLegendTerm"] { --vibe-hue: var(--zine-vibe-hue-danger); }
+[data-theme="zine"] [class*="vibeProse"] > div[data-vibe='warning'],
+[data-theme="zine"] [class*="vibeLegendRow"][data-vibe='warning'] [class*="vibeLegendTerm"] { --vibe-hue: var(--zine-vibe-hue-warning); }
+[data-theme="zine"] [class*="vibeProse"] > div[data-vibe='question'],
+[data-theme="zine"] [class*="vibeLegendRow"][data-vibe='question'] [class*="vibeLegendTerm"] { --vibe-hue: var(--zine-vibe-hue-question); }
+[data-theme="zine"] [class*="vibeProse"] > div[data-vibe='action'],
+[data-theme="zine"] [class*="vibeLegendRow"][data-vibe='action'] [class*="vibeLegendTerm"] { --vibe-hue: var(--zine-vibe-hue-action); }
+[data-theme="zine"] [class*="vibeProse"] > div[data-vibe='info'],
+[data-theme="zine"] [class*="vibeLegendRow"][data-vibe='info'] [class*="vibeLegendTerm"] { --vibe-hue: var(--zine-vibe-hue-info); }
+[data-theme="zine"] [class*="vibeProse"] > div[data-vibe]::after { width: 4px; border-radius: 0; }
+[data-theme="zine"] [class*="vibeProse"] > div:is([data-vibe='danger'], [data-vibe='warning'], [data-vibe='question'], [data-vibe='action'], [data-vibe='info']) {
+  /* two staggered grids, so the dots read as a tone and not as rows of leaders */
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--vibe-hue) 22%, transparent) 0.9px, transparent 1.3px) 0 0 / 6px 6px,
+    radial-gradient(circle, color-mix(in srgb, var(--vibe-hue) 22%, transparent) 0.9px, transparent 1.3px) 3px 3px / 6px 6px;
+}
+/* the sticker sits centered on the rail and hangs into the turn's left padding */
+[data-theme="zine"] [class*="vibeProse"] > div:is([data-vibe-run='start'], [data-vibe-run='solo'])::before {
+  left: -6px;
+  top: 1px;
+  width: 17px;
+  height: 17px;
+  line-height: 0;
+}
+[data-theme="zine"] [class*="vibeProse"] > div[data-vibe='danger']:is([data-vibe-run='start'], [data-vibe-run='solo'])::before { content: var(--zine-vibe-danger) / 'danger'; }
+[data-theme="zine"] [class*="vibeProse"] > div[data-vibe='warning']:is([data-vibe-run='start'], [data-vibe-run='solo'])::before { content: var(--zine-vibe-warning) / 'warning'; }
+[data-theme="zine"] [class*="vibeProse"] > div[data-vibe='question']:is([data-vibe-run='start'], [data-vibe-run='solo'])::before { content: var(--zine-vibe-question) / 'question'; }
+[data-theme="zine"] [class*="vibeProse"] > div[data-vibe='action']:is([data-vibe-run='start'], [data-vibe-run='solo'])::before { content: var(--zine-vibe-action) / 'action'; }
+[data-theme="zine"] [class*="vibeProse"] > div[data-vibe='info']:is([data-vibe-run='start'], [data-vibe-run='solo'])::before { content: var(--zine-vibe-info) / 'info'; }
+[data-theme="zine"] [class*="vibeLegendToggle"] {
+  padding: 3px 12px 3px 8px;
+  border: none;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--zine-orange) 30%, var(--zine-cream));
+  color: var(--zine-ink-dark);
+  font-family: 'Archivo Black', sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 1;
+  transform: rotate(1.5deg);
+  clip-path: polygon(0 12%, 4% 0, 96% 6%, 100% 0, 98% 50%, 100% 100%, 3% 94%, 0 100%, 2% 50%);
+}
+[data-theme="zine"] [class*="vibeLegendToggle"]:hover { background: color-mix(in srgb, var(--zine-orange) 50%, var(--zine-cream)); }
+[data-theme="zine"] [class*="vibeLegendBody"] {
+  border: 2px solid var(--zine-ink);
+  border-radius: 3px;
+  background: var(--zine-cream);
+  box-shadow: 3px 3px 0 var(--zine-ink);
+  font-family: 'Nunito', sans-serif;
+}
+[data-theme="zine"] [class*="vibeLegendTerm"] { font-family: 'Space Mono', monospace; color: var(--zine-ink-dark); }
+[data-theme="zine"] [class*="vibeLegendRow"] [aria-hidden='true'] {
+  display: inline-block;
+  width: 17px;
+  height: 17px;
+  vertical-align: middle;
+  font-size: 0;
+  background: no-repeat center / contain;
+}
+[data-theme="zine"] [class*="vibeLegendRow"][data-vibe='danger'] [aria-hidden='true'] { background-image: var(--zine-vibe-danger); }
+[data-theme="zine"] [class*="vibeLegendRow"][data-vibe='warning'] [aria-hidden='true'] { background-image: var(--zine-vibe-warning); }
+[data-theme="zine"] [class*="vibeLegendRow"][data-vibe='question'] [aria-hidden='true'] { background-image: var(--zine-vibe-question); }
+[data-theme="zine"] [class*="vibeLegendRow"][data-vibe='action'] [aria-hidden='true'] { background-image: var(--zine-vibe-action); }
+[data-theme="zine"] [class*="vibeLegendRow"][data-vibe='info'] [aria-hidden='true'] { background-image: var(--zine-vibe-info); }
+[data-theme="zine"] [class*="vibeLegendRow"][data-vibe='descriptive'] [aria-hidden='true'] { height: 4px; background: var(--border-subtle); }
+
+/* ---------- composer: the send button is a rubber stamp ---------- */
+[data-theme="zine"] .bc-composer-btn {
+  font-family: 'Archivo Black', sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 2px solid var(--zine-ink);
+  border-radius: 4px;
+  background: var(--zine-orange);
+  color: var(--zine-cream);
+  box-shadow: 3px 3px 0 var(--zine-ink);
+  transform: rotate(-1.5deg);
+}
+[data-theme="zine"] .bc-composer-btn:disabled { background: color-mix(in srgb, var(--zine-orange) 40%, var(--zine-cream)); box-shadow: 1px 1px 0 var(--zine-ink); }
+[data-theme="zine"] .bc-composer-btn.bc-btn-stop { background: var(--zine-pink); transform: rotate(1.5deg); }
+[data-theme="zine"] .bc-composer-btn:not(:disabled):hover { transform: rotate(0) translate(-1px, -1px); box-shadow: 4px 4px 0 var(--zine-ink); }
+
+/* ---------- kanban ---------- */
+[data-theme="zine"] .bk-column {
+  background: var(--zine-cream);
+  border: 2px solid var(--zine-ink);
+  border-radius: 4px;
+  box-shadow: 4px 4px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bk-column-title { font-family: 'Archivo Black', sans-serif; font-weight: 400; }
+/* cards are stickers: crooked by turns, straighten and lift on hover */
+[data-theme="zine"] .bk-card {
+  background: var(--zine-cream);
+  border: 2px solid var(--zine-ink);
+  border-radius: 3px;
+  box-shadow: 2px 2px 0 var(--zine-ink);
+  transition: transform 0.2s cubic-bezier(0.34, 1.8, 0.64, 1), box-shadow 0.2s;
+}
+[data-theme="zine"] .bk-card:nth-child(odd) { transform: rotate(-0.6deg); }
+[data-theme="zine"] .bk-card:nth-child(even) { transform: rotate(0.5deg); }
+[data-theme="zine"] .bk-card:hover { transform: rotate(0) translate(-2px, -3px); box-shadow: 5px 6px 0 var(--zine-pink); border-color: var(--zine-ink); }
+[data-theme="zine"] .bk-tag { background: var(--zine-pink-light); color: var(--zine-ink-dark); border-radius: 2px; }
+[data-theme="zine"] .bk-status-done { background: #D8EBD3; color: #2F7A4B; }
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="zine"] .bc-status-mascot,
+  [data-theme="zine"] .bc-status-dot,
+  [data-theme="zine"] .bc-session-row-grid::after,
+  [data-theme="zine"] .page-title::after,
+  [data-theme="zine"] .bc-turns-empty::before,
+  [data-theme="zine"] .bc-conductor-mascot { animation: none; }
+}
+
+/* ---------- phones ---------- */
+/* bridge-ui turns the composer into one rounded field on a phone. Here that field
+   is a paper slip with an ink border and offset shadow, the text inside it plain,
+   and the send stamp a round orange button. The page title shrinks so it and the
+   buttons beside it fit one screen. */
+@media (max-width: 640px) {
+  [data-theme="zine"] .bc-composer {
+    border: 2px solid var(--zine-ink);
+    border-radius: 22px;
+    background: var(--zine-cream);
+    box-shadow: 3px 3px 0 var(--zine-ink);
+  }
+  [data-theme="zine"] .bc-composer:focus-within { box-shadow: 3px 3px 0 var(--zine-pink); }
+  /* here the whole field is the slip: dashed while empty */
+  [data-theme="zine"] .bc-composer:has(.bc-composer-input:placeholder-shown) { border-style: dashed; }
+  [data-theme="zine"] .bc-composer-input,
+  [data-theme="zine"] .bc-composer-input:focus {
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  [data-theme="zine"] .bc-composer-input:focus-visible { outline: none; }
+  [data-theme="zine"] .bc-composer-attach { color: var(--zine-ink); }
+  [data-theme="zine"] .bc-composer-btn,
+  [data-theme="zine"] .bc-composer-btn:not(:disabled):hover {
+    border: 2px solid var(--zine-ink);
+    border-radius: 50%;
+    box-shadow: 2px 2px 0 var(--zine-ink);
+    transform: none;
+  }
+  [data-theme="zine"] .bc-composer-btn:disabled { box-shadow: none; border-color: color-mix(in srgb, var(--zine-ink) 35%, transparent); }
+  [data-theme="zine"] .bc-composer-btn.bc-btn-stop { transform: none; }
+
+  [data-theme="zine"] .bridge-shell-bar { min-height: 46px; border-bottom-width: 2px; }
+  [data-theme="zine"] .bridge-group-tab { font-size: 0.74rem; }
+  [data-theme="zine"] .bridge-group-tab.bridge-tab-active::before { width: 14px; height: 14px; margin-right: 4px; }
+  [data-theme="zine"] .page-title { font-size: 1.7rem; -webkit-text-stroke-width: 5px; text-shadow: 3px 3px 0 var(--zine-ink); }
+}
+
+/* Waiting on you: the count, the dot on a waiting row, and the pop-up, in the
+   zine's inks — orange marks with navy outlines on cream. */
+[data-theme="zine"] .bc-awaiting-count {
+  background: var(--zine-orange); color: var(--zine-cream); border: 1.5px solid var(--zine-ink); box-shadow: 1.5px 1.5px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bc-awaiting-dot { background: var(--zine-orange); border: 1.5px solid var(--zine-ink); }
+[data-theme="zine"] .bc-awaiting-section .bc-folder-header { background: var(--zine-pink-light); }
+[data-theme="zine"] .bc-awaiting-row:hover .bc-session-label { text-decoration: none; }
+[data-theme="zine"] .bc-awaiting-row:hover .bc-awaiting-name { text-decoration: underline wavy var(--zine-pink); text-underline-offset: 3px; }
+[data-theme="zine"] .bc-awaiting-platform,
+[data-theme="zine"] .bc-awaiting-preview { color: var(--zine-ink); opacity: 0.75; }
+[data-theme="zine"] .bc-awaiting-dismiss { color: var(--zine-ink); }
+[data-theme="zine"] .bc-awaiting-popup {
+  background: var(--zine-cream); color: var(--zine-ink); border: 2.5px solid var(--zine-ink);
+  border-radius: 10px; box-shadow: 5px 5px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bc-awaiting-popup-meta,
+[data-theme="zine"] .bc-awaiting-popup-close { color: var(--zine-ink); opacity: 0.7; }
+
+/* ---------- the Machines page ----------
+   A spec sheet: one strip per machine, pasted onto the paper with a hard ink
+   edge, its columns under a typed heading row. A runner's WSL machine hangs
+   under its Windows strip as a dashed sub-strip. The measures print in the
+   zine's inks: CPU orange, GPU pink, memory navy, drives a navy halftone over
+   pink, batteries green. A level past a threshold turns riso yellow or red,
+   with navy stripes or dashes, and always a word.
+
+   The pictures are empty `.bc-machine-picture` hooks that bridge-ui hides in
+   the other themes, named by `data-picture`: server, desktop and laptop at
+   the start of a strip; cpu, gpu, memory, drive and battery in the column
+   headings (`data-size="small"`); crab-waiting where a server does not report
+   machine stats yet. Each is zine/machine-<name>.png. */
+[data-theme="zine"] .bc-machines {
+  --machine-hue-cpu: var(--zine-orange);
+  --machine-hue-gpu: var(--zine-pink-dark);
+  --machine-hue-memory: var(--zine-ink);
+  --machine-hue-swap: color-mix(in srgb, var(--zine-ink) 55%, var(--zine-cream));
+  --machine-hue-drive: var(--zine-ink);
+  --machine-hue-battery: var(--success);
+  --machine-track: var(--zine-paper);
+  --machine-edge: var(--zine-ink);
+  --machine-warning: #E3B23C;
+  --machine-danger: #D8404F;
+  --machine-stripes: repeating-linear-gradient(-45deg, transparent 0 4px, rgba(46, 59, 122, 0.45) 4px 7px);
+  --machine-card-radius: 4px;
+  font-family: 'Nunito', system-ui, sans-serif;
+}
+
+[data-theme="zine"] .bc-machine-picture {
+  display: inline-block;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  background: center / contain no-repeat;
+}
+[data-theme="zine"] .bc-machine-picture[data-size="small"] { width: 18px; height: 18px; }
+[data-theme="zine"] .bc-machine-picture[data-picture="cpu"] { background-image: url('./zine/machine-cpu.png'); }
+[data-theme="zine"] .bc-machine-picture[data-picture="gpu"] { background-image: url('./zine/machine-gpu.png'); }
+[data-theme="zine"] .bc-machine-picture[data-picture="memory"] { background-image: url('./zine/machine-memory.png'); }
+[data-theme="zine"] .bc-machine-picture[data-picture="drive"] { background-image: url('./zine/machine-drive.png'); }
+[data-theme="zine"] .bc-machine-picture[data-picture="battery"] { background-image: url('./zine/machine-battery.png'); }
+[data-theme="zine"] .bc-machine-picture:is([data-picture="server"], [data-picture="desktop"], [data-picture="laptop"]) {
+  width: 50px;
+  height: 50px;
+  margin: 2px 0 0 -2px;
+  transform: rotate(-4deg);
+}
+[data-theme="zine"] .bc-machine-picture[data-picture="server"] { background-image: url('./zine/machine-server.png'); }
+[data-theme="zine"] .bc-machine-picture[data-picture="desktop"] { background-image: url('./zine/machine-desktop.png'); }
+[data-theme="zine"] .bc-machine-picture[data-picture="laptop"] { background-image: url('./zine/machine-laptop.png'); }
+[data-theme="zine"] .bc-machine-picture[data-picture="crab-waiting"] {
+  width: 120px;
+  height: 90px;
+  background-image: url('./zine/machine-crab-waiting.png');
+}
+
+/* a server's name is a stamped label in navy, set a little crooked */
+[data-theme="zine"] .bc-machine-server-heading {
+  font-family: 'Archivo Black', sans-serif;
+  font-weight: 400;
+  align-items: center;
+}
+[data-theme="zine"] .bc-machine-server-heading > :first-child {
+  display: inline-block;
+  padding: 2px 10px 3px;
+  background: var(--zine-ink);
+  color: var(--zine-cream);
+  font-size: 1rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  box-shadow: 3px 3px 0 var(--zine-pink);
+  transform: rotate(-1.2deg);
+}
+[data-theme="zine"] .bc-machine-server-heading > :last-child {
+  font-family: 'Space Mono', monospace;
+  color: var(--zine-ink);
+  border: 1.5px dashed var(--zine-ink);
+  border-radius: 2px;
+  background: var(--zine-cream);
+}
+
+/* the column headings, typed */
+[data-theme="zine"] .bc-machine-columns,
+[data-theme="zine"] .bc-machine-cell-label {
+  font-family: 'Space Mono', monospace;
+  color: var(--zine-ink-dark);
+}
+
+/* a strip: heavy ink edge and a hard shadow; the first of a group taped down */
+[data-theme="zine"] .bc-machine-row {
+  position: relative;
+  background: var(--zine-cream);
+  border: 2px solid var(--zine-ink);
+  box-shadow: 4px 4px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bc-machine-row:hover { border-color: var(--zine-ink); box-shadow: 4px 4px 0 var(--zine-pink); }
+[data-theme="zine"] .bc-machine-columns + .bc-machine-strip > .bc-machine-row:first-child::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  width: 70px;
+  height: 14px;
+  margin-left: -35px;
+  background: color-mix(in srgb, var(--zine-pink-light) 75%, transparent);
+  border-left: 2px dotted rgba(255, 255, 255, 0.6);
+  border-right: 2px dotted rgba(255, 255, 255, 0.6);
+  transform: rotate(-2.5deg);
+  pointer-events: none;
+}
+[data-theme="zine"] .bc-machine-subrow {
+  background: color-mix(in srgb, var(--zine-paper) 70%, var(--zine-cream));
+  border: 2px dashed var(--zine-ink);
+  border-top: none;
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--zine-ink) 35%, transparent);
+}
+[data-theme="zine"] .bc-machine-strip[data-freshness="stale"] > .bc-machine-row,
+[data-theme="zine"] .bc-machine-strip[data-freshness="never reported"] > .bc-machine-row {
+  border-style: dashed;
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--zine-ink) 35%, transparent);
+}
+[data-theme="zine"] .bc-machine-row > * { border-left-color: color-mix(in srgb, var(--zine-ink) 40%, transparent); }
+[data-theme="zine"] .bc-machine-name {
+  font-family: 'Archivo Black', sans-serif;
+  font-weight: 400;
+  font-size: 1.15rem;
+  color: var(--zine-ink-dark);
+  text-decoration: underline;
+  text-decoration-color: var(--zine-pink-light);
+  text-decoration-thickness: 7px;
+  text-underline-offset: -2px;
+  text-decoration-skip-ink: none;
+}
+[data-theme="zine"] .bc-machine-subrow .bc-machine-name { font-size: 0.95rem; }
+[data-theme="zine"] .bc-machine-big { font-family: 'Archivo Black', sans-serif; font-weight: 400; color: var(--zine-ink-dark); }
+[data-theme="zine"] .bc-machine-freshness { font-family: 'Space Mono', monospace; color: var(--zine-ink); }
+[data-theme="zine"] .bc-machine-freshness-dot { border: 1.5px solid var(--zine-ink); width: 8px; height: 8px; }
+[data-theme="zine"] .bc-machine-os-line { font-family: 'Space Mono', monospace; font-size: 0.66rem; color: var(--zine-ink); opacity: 0.85; }
+[data-theme="zine"] .bc-machine-error-chip { font-family: 'Space Mono', monospace; border: 1.5px solid var(--zine-ink); background: var(--machine-warning); }
+[data-theme="zine"] .bc-machine-button {
+  font-family: 'Space Mono', monospace;
+  font-weight: 700;
+  background: var(--zine-cream);
+  color: var(--zine-ink);
+  border: 1.5px solid var(--zine-ink);
+  border-radius: 3px;
+  box-shadow: 1.5px 1.5px 0 var(--zine-ink);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+[data-theme="zine"] .bc-machine-button:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 2.5px 2.5px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bc-machine-button[aria-expanded="true"],
+[data-theme="zine"] .bc-machine-range .bc-machine-button[aria-pressed="true"] { background: var(--zine-pink-light); }
+
+/* open: the details and history as a sheet clipped under the strip */
+[data-theme="zine"] .bc-machine-panel {
+  background: var(--zine-cream);
+  border: 2px solid var(--zine-ink);
+  border-top: 2px dashed var(--zine-ink);
+  box-shadow: 4px 4px 0 var(--zine-ink);
+}
+[data-theme="zine"] .bc-machine-facts dt { font-family: 'Space Mono', monospace; color: var(--zine-pink-dark); }
+[data-theme="zine"] .bc-machine-part-heading {
+  font-family: 'Space Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--zine-ink-dark);
+  background: color-mix(in srgb, var(--zine-orange) 50%, transparent);
+  border: none;
+  border-radius: 0;
+  padding: 1px 10px;
+  transform: rotate(-1.5deg);
+}
+
+/* bars: inked outlines, flat fills */
+[data-theme="zine"] .bc-machine-bar { height: 12px; border: 2px solid var(--zine-ink); border-radius: 2px; }
+[data-theme="zine"] .bc-machine-bar > div { border-right: 2px solid var(--zine-ink); border-radius: 0; }
+/* a drive prints as navy halftone over pink: two drums, slightly off register */
+[data-theme="zine"] .bc-machine-bar[data-hue="drive"] > div[data-level="normal"] {
+  background:
+    radial-gradient(circle, var(--zine-ink) 1px, transparent 1.4px) 0 0 / 4px 4px,
+    radial-gradient(circle, var(--zine-ink) 1px, transparent 1.4px) 2px 2px / 4px 4px,
+    var(--zine-pink-light);
+}
+[data-theme="zine"] .bc-machine-mount-point { font-family: 'Space Mono', monospace; }
+
+[data-theme="zine"] .bc-machine-memory-bar {
+  height: 13px;
+  border: 2px solid var(--zine-ink);
+  border-radius: 2px;
+  background: var(--zine-ink);
+}
+[data-theme="zine"] .bc-machines [data-segment="cached"] {
+  background:
+    radial-gradient(circle, var(--zine-ink) 0.9px, transparent 1.2px) 0 0 / 4px 4px,
+    var(--zine-cream);
+}
+[data-theme="zine"] .bc-machines [data-segment="free"] { background: var(--zine-paper); }
+[data-theme="zine"] .bc-machines [data-segment="compressed"][data-level="normal"] {
+  background: repeating-linear-gradient(45deg, var(--zine-ink) 0 2.5px, var(--zine-pink-light) 2.5px 5.5px);
+}
+
+/* the battery: a thick ink outline, a green fill, a yellow bolt */
+[data-theme="zine"] .bc-machine-battery [data-part="body"] { stroke: var(--zine-ink); stroke-width: 4; fill: var(--zine-cream); }
+[data-theme="zine"] .bc-machine-battery [data-part="nub"] { fill: var(--zine-ink); }
+[data-theme="zine"] .bc-machine-battery [data-part="bolt"] { fill: #E3B23C; stroke: var(--zine-ink); stroke-width: 1.8; }
+
+/* history: hairlines dashed like a ruled notebook */
+[data-theme="zine"] .bc-machine-chart line { stroke-dasharray: 3 3; }
+[data-theme="zine"] .bc-machine-chart-title { font-family: 'Space Mono', monospace; color: var(--zine-ink); }
+
+[data-theme="zine"] .bc-machine-not-reported p {
+  font-family: 'Space Mono', monospace;
+  color: var(--zine-ink);
+  border: 2px dashed var(--zine-ink);
+  background: var(--zine-cream);
+}

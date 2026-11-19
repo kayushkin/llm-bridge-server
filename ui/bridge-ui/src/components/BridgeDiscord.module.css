@@ -1,0 +1,82 @@
+/* The Discord page. A CSS module, like Previews, so the page carries its own
+   styles into dist/ beside its .js (scripts/copy-css.mjs). Colors are
+   theme.css variables so both themes work. */
+
+.page { display: flex; flex-direction: column; gap: 12px; max-width: 1200px; }
+.header { display: flex; flex-direction: column; gap: 4px; }
+.title { margin: 0; font-size: 1.2em; color: var(--text); }
+.subtitle { margin: 0; font-size: 0.85em; color: var(--text-muted); max-width: 90ch; }
+.heading { margin: 8px 0 0; font-size: 1em; color: var(--text); }
+.muted { color: var(--text-muted); font-size: 0.8em; }
+.empty { color: var(--text-dim); font-size: 0.85em; }
+.id { font-size: 0.72em; color: var(--text-dim); font-family: var(--mono, monospace); word-break: break-all; }
+.error {
+  margin: 0; padding: 8px 10px; font-size: 0.85em; white-space: pre-wrap;
+  color: var(--error); background: var(--error-bg); border: 1px solid var(--error); border-radius: 6px;
+}
+.alert {
+  display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; font-size: 0.9em; font-weight: 600;
+  color: var(--error); background: var(--error-bg); border: 1px solid var(--error); border-radius: 6px;
+}
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
+.tab {
+  background: none; border: none; border-bottom: 2px solid transparent; padding: 6px 12px; cursor: pointer;
+  color: var(--text-muted); font-size: 0.9em; display: inline-flex; align-items: center; gap: 6px;
+}
+.tab:hover { color: var(--text); }
+.tabActive { color: var(--accent); border-bottom-color: var(--accent); }
+.tabWarning {
+  display: inline-block; min-width: 1.2em; padding: 0 4px; border-radius: 999px; font-size: 0.8em; font-weight: 700;
+  color: var(--accent-on); background: var(--error);
+}
+
+.section { display: flex; flex-direction: column; gap: 10px; }
+.filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 0.8em; color: var(--text-muted); min-width: 200px; }
+.fieldWide { flex: 1; }
+.field :is(input, select) {
+  box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 6px 10px; border-radius: 6px; font-size: 1.05em;
+}
+.button {
+  align-self: flex-start; background: var(--bg-surface); border: 1px solid var(--border); color: var(--text);
+  padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85em;
+}
+.button:hover { border-color: var(--accent); }
+.button:disabled { opacity: 0.6; cursor: default; }
+
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.row { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.rowDeleted { border-left: 3px solid var(--warning); }
+.rowAlert { background: var(--error-bg); }
+tr.rowAlert td { color: var(--text); }
+.rowHead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.85em; }
+.sender { font-weight: 600; color: var(--text); }
+.channel { color: var(--accent); text-decoration: none; }
+.channel:hover { text-decoration: underline; }
+.body {
+  margin: 0; padding: 6px 8px; border-radius: 6px; background: var(--bg); color: var(--text);
+  font-size: 0.9em; overflow-wrap: anywhere; min-width: 0;
+}
+.flag { padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); font-size: 0.85em; color: var(--text-muted); }
+.systemMessage { font-size: 0.85em; font-style: italic; color: var(--text-muted); padding: 0 8px; }
+.flagButton {
+  font: inherit; font-size: 0.85em; padding: 1px 8px; border-radius: 999px; cursor: pointer;
+  border: 1px dashed var(--border); background: none; color: var(--text-muted);
+}
+.flagButton:hover, .flagButton[aria-expanded="true"] { color: var(--text); border-color: var(--accent); }
+.flagWarning { border-color: var(--warning); color: var(--warning); }
+.flagAlert { border-color: var(--error); color: var(--error); font-weight: 600; }
+.flagGood { border-color: var(--success); color: var(--success); }
+.times { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0; font-size: 0.8em; }
+.times dt { color: var(--text-muted); }
+.times dd { margin: 0; color: var(--text); }
+.versions { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 6px; }
+
+.server { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); }
+.serverName { font-weight: 600; font-size: 1.05em; color: var(--text); }
+.tableWrap { overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: 0.82em; }
+.table th { text-align: left; padding: 6px 8px; color: var(--text-muted); font-weight: 500; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--text); }

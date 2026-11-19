@@ -1,0 +1,255 @@
+/* The projects view (`?view=projects`). A CSS module, like the work graph, so
+   the view carries its own styles into dist/ beside its .js
+   (scripts/copy-css.mjs). Every color is a theme variable, so the zine, light
+   and dark themes each draw it in their own inks. */
+
+.page { min-height: 0; }
+.headerRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.headerEnd { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+.scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px 16px 32px; }
+
+.notice { margin: 16px; color: var(--text-muted); font-size: 0.9em; }
+.muted { color: var(--text-muted); font-size: 0.85em; }
+.mono { font-family: var(--font-mono, monospace); }
+.error {
+  margin: 8px 12px 0; padding: 8px 10px; font-size: 0.85em; white-space: pre-wrap;
+  color: var(--error); background: var(--error-bg); border: 1px solid var(--error); border-radius: 6px;
+}
+
+.section { margin: 0 0 20px; }
+.sectionTitle { margin: 4px 0 8px; font-size: 1.25em; }
+.pageTitle { margin: 0; font-size: 1.4em; }
+.subTitle { margin: 0 0 8px; font-size: 1em; font-weight: 600; color: var(--text); }
+
+.cardList { display: flex; flex-direction: column; gap: 10px; }
+.card {
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-surface); color: var(--text);
+}
+.cardChild { border-left: 3px solid var(--accent); }
+.cardHead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cardName {
+  padding: 0; font: inherit; font-size: 1.05em; font-weight: 700; color: var(--text);
+  background: none; border: none; cursor: pointer; text-align: left;
+}
+.cardName:hover { color: var(--accent); text-decoration: underline; }
+.goal { margin: 4px 0 6px; font-size: 0.9em; color: var(--text); }
+
+.stageChip {
+  display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 0.75em; line-height: 1.6;
+  border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap;
+}
+
+.stats { display: flex; flex-wrap: wrap; gap: 18px; margin: 6px 0; }
+.stat { min-width: 0; }
+.statValue { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; font-weight: 600; }
+.statLabel { font-size: 0.75em; color: var(--text-muted); }
+
+.stateChip {
+  display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 0.85em; font-weight: 500;
+  border: 1px solid var(--border);
+}
+.stateWaiting { color: var(--warning); border-color: var(--warning); font-weight: 700; }
+
+.deploys { margin: 4px 0 0; font-size: 0.8em; color: var(--text-muted); }
+
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; font-size: 0.9em; }
+.facts dt { color: var(--text-muted); }
+.facts dd { margin: 0; }
+
+.group { margin: 0 0 10px; }
+.groupTitle { margin: 0 0 4px; font-size: 0.9em; font-weight: 600; text-transform: capitalize; }
+.plainList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 0.9em; }
+.sessionRow { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.branch { font-weight: 600; }
+
+.linkButton {
+  padding: 0; font: inherit; color: var(--accent); background: none; border: none; cursor: pointer; text-align: left;
+}
+.linkButton:hover { text-decoration: underline; }
+.sessionPill {
+  margin-left: 6px; padding: 0 6px; font: inherit; font-size: 0.85em; border-radius: 999px;
+  color: var(--accent); background: none; border: 1px solid var(--accent); cursor: pointer;
+}
+
+/* Landing: what needs a person, and each card's activity and next step. */
+.needsYou { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.needsYouRow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.attention { display: inline-flex; flex-wrap: wrap; gap: 4px; margin: 2px 0; }
+.nextStepLine { margin: 4px 0; font-size: 0.9em; }
+.deployItem { display: inline-flex; align-items: baseline; gap: 4px; margin-right: 12px; }
+.commitBars { display: inline-flex; align-items: flex-end; gap: 2px; height: 18px; margin-left: auto; }
+.commitBar { width: 4px; border-radius: 1px; background: var(--accent); }
+.commitBar[data-empty] { background: var(--border); }
+
+/* One project's page: a main column and a side column, stacked when narrow. */
+.projectPage { max-width: 1200px; }
+.pageColumns { display: grid; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 860px) { .pageColumns { grid-template-columns: minmax(0, 1fr); } }
+.mainColumn, .sideColumn { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+.panel { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); }
+.panelHead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.panelHead .subTitle { margin: 0; }
+.panelActions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.countBadge {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 0.8em; font-weight: 600;
+  color: var(--text-muted); border: 1px solid var(--border);
+}
+
+.purpose { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.purpose .facts { flex: 1 1 320px; }
+.purposeForm { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; max-width: 720px; }
+.field { display: flex; flex-direction: column; gap: 2px; }
+.fieldLabel { font-size: 0.8em; color: var(--text-muted); }
+.textInput {
+  font: inherit; font-size: 0.9em; padding: 5px 8px; border-radius: 6px;
+  color: var(--text); background: var(--bg); border: 1px solid var(--border);
+}
+.formButtons { display: flex; gap: 8px; }
+
+.stepList { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.stepRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.9em; }
+.stepDone { opacity: 0.65; }
+.priority { font-size: 0.75em; font-weight: 700; color: var(--warning); }
+.addStep { display: flex; gap: 6px; }
+.addStep .textInput { flex: 1 1 auto; }
+
+.suggestionList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.suggestion {
+  display: flex; gap: 10px; align-items: flex-start; padding: 8px; border-radius: 6px;
+  border: 1px dashed var(--accent); background: var(--info-bg);
+}
+.suggestionText { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.suggestionTitle { font-weight: 600; }
+.suggestionButtons { display: flex; gap: 6px; flex: 0 0 auto; }
+
+.toFile > summary { cursor: pointer; }
+.toFileSummary { display: flex; align-items: baseline; gap: 8px; }
+.toFileSummary .sectionTitle { display: inline; }
+.toFileCount {
+  font-size: 0.8em; font-weight: 700; padding: 0 7px; border-radius: 999px;
+  color: var(--accent); border: 1px solid var(--accent);
+}
+/* A row is the chat's text beside its controls. On a narrow screen the
+   controls drop under the text instead of squeezing it into a thin column. */
+.toFileRow { flex-wrap: wrap; }
+.toFileRow .suggestionText { flex: 1 1 320px; }
+.toFileRow .mono { overflow-wrap: anywhere; }
+.toFileButtons { display: flex; flex-direction: column; gap: 6px; flex: 1 1 200px; align-items: stretch; max-width: 260px; }
+@media (max-width: 640px) {
+  .toFileButtons { max-width: none; }
+}
+
+.issueRow { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+
+.segmented { display: inline-flex; gap: 2px; }
+
+.activityDay { margin: 0 0 10px; }
+.activityDayTitle {
+  margin: 0 0 4px; font-size: 0.8em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle); padding-bottom: 2px;
+}
+.activityList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.activityRow { display: grid; grid-template-columns: max-content 1.6em minmax(0, 1fr); align-items: baseline; font-size: 0.88em; }
+.activityTime { white-space: nowrap; min-width: 4.2em; color: var(--text-faint); font-variant-numeric: tabular-nums; font-size: 0.9em; }
+.activityIcon { text-align: center; color: var(--text-muted); }
+.activityRow[data-kind='deployed'] .activityIcon,
+.activityRow[data-kind='pull_request_merged'] .activityIcon,
+.activityRow[data-kind='note_completed'] .activityIcon { color: var(--success); }
+.activityBody { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; min-width: 0; }
+.oldValue { text-decoration: line-through; color: var(--text-muted); }
+
+.repoList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.repoRow { display: flex; flex-direction: column; gap: 2px; }
+.repoHead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+
+/* The landing's view tabs. */
+.viewTabs { display: inline-flex; gap: 2px; margin: 0 0 14px; }
+
+/* Steps done of all, as a bar. */
+.progress { display: inline-flex; align-items: center; gap: 8px; margin: 2px 0; }
+.progressTrack { display: inline-block; width: 120px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.progressFill { display: block; height: 100%; background: var(--success); }
+
+/* A project's direction, at the top of its page. */
+.direction {
+  display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 10px 18px; margin: 10px 0 8px;
+  padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-surface);
+}
+@media (max-width: 860px) { .direction { grid-template-columns: minmax(0, 1fr); } }
+.directionLabel { font-size: 0.72em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.directionGoal p, .directionFinish p { margin: 2px 0 0; }
+.directionGoalText { font-size: 1.15em; font-weight: 600; line-height: 1.35; }
+.directionFinish { padding-left: 14px; border-left: 3px solid var(--success); }
+.directionFoot { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+.directionNow { display: inline-flex; align-items: baseline; gap: 6px; }
+
+/* Questions the project's sessions ask. */
+.questionGroup { margin: 0 0 10px; padding: 0 0 8px; border-bottom: 1px solid var(--border-subtle); }
+.questionGroup:last-child { border-bottom: none; }
+.questionFrom { display: flex; align-items: baseline; gap: 6px; margin: 0 0 4px; font-size: 0.9em; }
+
+/* The timeline: a row per project, a column per day. */
+/* The right padding leaves the zine skin's crab, which peeks in over the page's
+   right edge, room beside the totals. */
+.timeline { display: flex; flex-direction: column; gap: 2px; overflow-x: auto; padding: 0 56px 6px 0; }
+.timelineRow { display: grid; align-items: stretch; gap: 2px; min-width: 760px; }
+.timelineName { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 0.88em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.timelineHeadCell { font-size: 0.68em; color: var(--text-muted); white-space: nowrap; overflow: visible; align-self: end; }
+.timelineTotal { font-size: 0.8em; color: var(--text-muted); text-align: right; align-self: center; font-variant-numeric: tabular-nums; }
+.timelineError, .timelineLoading { font-size: 0.8em; color: var(--text-muted); align-self: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timelineError { color: var(--error); }
+.timelineCell {
+  position: relative; height: 24px; border-radius: 3px; background: var(--bg-surface);
+  border: 1px solid var(--border-subtle); overflow: hidden; cursor: default;
+}
+.timelineToday { outline: 1px solid var(--accent); outline-offset: -1px; }
+.timelineHeadCell.timelineToday { outline: none; color: var(--accent); font-weight: 700; }
+.timelineHeat { position: absolute; inset: 0; background: var(--accent); }
+.timelineMarks { position: absolute; inset: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; font-size: 9px; line-height: 1; gap: 0 1px; }
+.markDeploy { color: var(--success); text-shadow: 0 0 2px var(--bg); }
+.markMerge { color: var(--info); text-shadow: 0 0 2px var(--bg); }
+.markStep { color: var(--success); font-weight: 700; text-shadow: 0 0 2px var(--bg); }
+.markStage { color: var(--warning); text-shadow: 0 0 2px var(--bg); }
+
+.monthStrip { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; }
+.monthStripLabel { font-size: 0.72em; color: var(--text-muted); white-space: nowrap; }
+.monthStripCells { flex: 1 1 auto; display: grid; gap: 2px; }
+.monthStripCells .timelineCell { height: 16px; }
+
+/* The stage board: a column per stage. */
+.stageBoard {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: start; padding-bottom: 8px;
+}
+.stageColumn { display: flex; flex-direction: column; gap: 8px; min-height: 120px; padding: 8px;
+  border-radius: 8px; background: var(--bg-surface); border: 1px dashed var(--border);
+}
+.stageColumnOver { border-color: var(--accent); background: var(--info-bg); }
+.stageColumnTitle { margin: 0 0 2px; font-size: 0.85em; font-weight: 700; text-transform: capitalize; color: var(--text); }
+.stageCard {
+  display: flex; flex-direction: column; gap: 4px; padding: 8px; border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--border); cursor: grab;
+}
+.stageCard:active { cursor: grabbing; }
+.stageCardDragging { opacity: 0.4; }
+.stageCardHead { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.stageCardGoal {
+  margin: 0; font-size: 0.8em; color: var(--text-muted);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+/* The effort chart: a commits bar and a spend bar per project, and a tick at the target. */
+.effort { display: flex; flex-direction: column; gap: 8px; }
+.effortRow { display: grid; grid-template-columns: minmax(140px, 220px) minmax(0, 1fr) minmax(12em, max-content); gap: 12px; align-items: center; font-size: 0.88em; }
+.effortName { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.effortBars { position: relative; display: flex; flex-direction: column; gap: 2px; }
+.effortTrack { display: block; height: 8px; border-radius: 2px; background: var(--border-subtle); }
+.effortCommits { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
+.effortSpend { display: block; height: 100%; border-radius: 2px; background: var(--warning); }
+.effortTarget { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); }
+.effortNumbers { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.legendCommits { color: var(--accent); }
+.legendSpend { color: var(--warning); }
+.legendTarget { color: var(--text); font-weight: 700; }
