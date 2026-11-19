@@ -170,6 +170,8 @@ var routeDescriptions = map[string]routeDescription{
 
 	// Harnesses, models and settings.
 	"GET /health":                        {routeGroupHarnessesModels, "Health, harnesses present, session counts"},
+	"GET /ui/":                           {routeGroupHarnessesModels, "The front end compiled into this server: a file of the build, or its index.html for a page"},
+	"GET /{$}":                           {routeGroupHarnessesModels, "Redirects to /ui/"},
 	"GET /harnesses":                     {routeGroupHarnessesModels, "Each harness's name, label, image, capabilities and hook events"},
 	"GET /harnesses/{name}/capabilities": {routeGroupHarnessesModels, "One harness's capabilities"},
 	"GET /harnesses/{name}/agents":       {routeGroupHarnessesModels, "Its named agents"},

@@ -34,3 +34,6 @@ secrets.*
 !*.go
 __pycache__/
 /bridge-mcp
+
+# The front end build that scripts/build-ui.sh writes and the ui package embeds.
+/ui/built/app/

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -31,6 +32,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge-server/ui"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	memorystore "github.com/kayushkin/memory-store"
@@ -63,7 +65,9 @@ type Server struct {
 	hookStore      *hookstore.Store
 	modelStore     *modelstore.Store
 	snapshotStore  *snapshotstore.Store
-	harness        *harness.Manager
+	// userInterfaceBuild is the built front end served at /ui/ (user_interface.go).
+	userInterfaceBuild fs.FS
+	harness            *harness.Manager
 	// harnessStartLockBySessionID holds a *sync.Mutex per session id, so
 	// startOnInstance spawns at most one harness process per session.
 	harnessStartLockBySessionID sync.Map
@@ -165,6 +169,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	st.SetNotifier(newNotifierFanout(hub, respCache))
 	srv := &Server{
 		mux:                  http.NewServeMux(),
+		userInterfaceBuild:   ui.Build(),
 		store:                st,
 		agentStore:           as,
 		memoryStore:          ms,
@@ -312,6 +317,12 @@ func (s *Server) routes() {
 
 	// Static harness images
 	s.mux.Handle("/images/", http.StripPrefix("/images/", http.FileServer(http.Dir(s.cfg.ImagesDir))))
+
+	// The front end, compiled into this binary. The pattern is written out,
+	// not built from userInterfacePathPrefix, because the route classification
+	// test reads patterns from this file's string literals.
+	s.mux.HandleFunc("GET /ui/", s.handleUserInterface)
+	s.mux.HandleFunc("GET /{$}", s.handleRootRedirectsToUserInterface)
 
 	// Session routes
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)

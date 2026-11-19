@@ -25,7 +25,14 @@ import '../zine.css'
 // server proxies to localhost:8160). The page must be on the bridge's origin
 // for its login cookie, so a build is served behind a proxy that forwards that
 // prefix to the bridge.
-const BASE = import.meta.env.VITE_BRIDGE_BASE ?? '/api/bridge'
+//
+// `npm run build:served-by-the-bridge` makes the build llm-bridge-server serves
+// itself, at /ui/ on its own address (its `ui` package). There the bridge's
+// routes sit at the root of the page's origin, so the base is empty, and the
+// pages live under Vite's base (/ui/), which the router takes as its basename.
+const SERVED_BY_THE_BRIDGE = import.meta.env.VITE_SERVED_BY_THE_BRIDGE === 'true'
+const BASE = SERVED_BY_THE_BRIDGE ? '' : (import.meta.env.VITE_BRIDGE_BASE ?? '/api/bridge')
+const ROUTER_BASENAME = import.meta.env.BASE_URL === '/' ? undefined : import.meta.env.BASE_URL.replace(/\/$/, '')
 
 /** Stores reached through the bridge's own gateway, as the signed-in person:
  *  every host that runs the bridge carries these. */
@@ -58,7 +65,7 @@ const STORE_PATHS: Partial<BridgeConfig> = {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={ROUTER_BASENAME}>
       <BridgeThemeProvider storageKey="bridge-standalone-theme" defaultTheme="dark">
         <BridgeSignInGate basePath={BASE} title="Bridge">
           {({ fetch, logOut }) => (

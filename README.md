@@ -358,6 +358,8 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/server` | This server's name and whether it is holding its machine awake | principal |
 | `GET` | `/settings` | Every server setting, its value and what decided it | operator |
 | `PUT` | `/settings/{key}` | Change a stored setting without a restart | operator |
+| `GET` | `/ui/` | The front end compiled into this server: a file of the build, or its index.html for a page | anyone |
+| `GET` | `/{$}` | Redirects to /ui/ | anyone |
 
 ### Folders, labels and housekeeping
 

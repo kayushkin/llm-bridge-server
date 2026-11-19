@@ -868,8 +868,11 @@ func TestEveryAccessRuleNamesARegisteredRoute(t *testing.T) {
 		if !hasMethod {
 			method, path = "GET", pattern
 		}
-		concretePath := wildcard.ReplaceAllString(path, "x")
-		if strings.HasSuffix(concretePath, "/") {
+		// "{$}" is the mux's mark for "this path and nothing under it", not a
+		// wildcard, so its sample request is the path before the mark.
+		matchesThisPathOnly := strings.HasSuffix(path, "{$}")
+		concretePath := wildcard.ReplaceAllString(strings.TrimSuffix(path, "{$}"), "x")
+		if strings.HasSuffix(concretePath, "/") && !matchesThisPathOnly {
 			concretePath += "x"
 		}
 		_, matched := server.mux.Handler(httptest.NewRequest(method, concretePath, nil))
