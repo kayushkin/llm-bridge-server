@@ -195,11 +195,15 @@ EOF
   done
   write_unit "$UNIT_PREFIX" "llm-bridge test instance: the server" llm-bridge-server "$ROOT/env/server.env" "$ROOT/env/secrets.env" <<EOF
 EOF
-  write_unit "$UNIT_PREFIX-runner" "llm-bridge test instance: its runner" "llm-bridge-runner run" /dev/null <<EOF
+  # The runner's own environment reaches every harness it starts, so this is
+  # where a test sets a harness's variables (the mock harness reads
+  # MOCK_HARNESS_DELAY_MS, say). Written once and then left to whoever edits it.
+  if [ ! -f "$ROOT/env/runner.env" ]; then
+    echo "# Variables for the test runner and the harnesses it starts. Restart $UNIT_PREFIX-runner after a change." > "$ROOT/env/runner.env"
+  fi
+  write_unit "$UNIT_PREFIX-runner" "llm-bridge test instance: its runner" "llm-bridge-runner run" "$ROOT/env/runner.env" <<EOF
 Environment=LLMBRIDGE_RUNNER_CONFIG=$ROOT/runner/config.json
 EOF
-  # /dev/null stood in for "no environment file"; systemd would refuse it.
-  sed -i '\|^EnvironmentFile=/dev/null$|d' "$UNIT_DIR/$UNIT_PREFIX-runner.service"
   systemctl --user daemon-reload
 
   step "starting the stores"

@@ -430,7 +430,11 @@ func (r *SubprocessRegistry) ApplyWelcome(ctx context.Context, welcome *runnerpr
 			r.discardSequenced(session)
 			continue
 		}
-		log.Printf("[runner] the server takes session %s back; sending from entry %d of %d", session.sessionID, adopt.ResumeAfterSequence+1, session.log.LastSequence())
+		if waiting := session.log.LastSequence() - adopt.ResumeAfterSequence; waiting == 0 {
+			log.Printf("[runner] the server takes session %s back; it has everything through entry %d", session.sessionID, adopt.ResumeAfterSequence)
+		} else {
+			log.Printf("[runner] the server takes session %s back; sending entries %d to %d", session.sessionID, adopt.ResumeAfterSequence+1, session.log.LastSequence())
+		}
 		session.mutex.Lock()
 		finished := session.exited && adopt.ResumeAfterSequence >= session.log.LastSequence()
 		session.mutex.Unlock()

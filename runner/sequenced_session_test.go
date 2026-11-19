@@ -341,3 +341,45 @@ func TestAnExitIsTheLastEntryAndItsLogGoesOnceAcknowledged(t *testing.T) {
 	sendFrame(t, first, &runnerprotocol.RunnerMessage{Type: runnerprotocol.RunnerMsgAck, SessionID: sessionID, Ack: &runnerprotocol.RunnerAck{SpawnID: spawnID, Sequence: 3}})
 	waitUntil(t, "the acknowledged spawn is dropped", func() bool { return len(client.registry.HeldSessions()) == 0 })
 }
+
+func TestAHeldProcessIsInterruptedAndKeptWhenNoServerReturnsInTime(t *testing.T) {
+	server := newStandInServer(t)
+	client := startRunnerAgainst(t, server)
+	const sessionID = "br_left_alone"
+
+	// A harness that notes an interrupt and carries on, as a real one does
+	// when it stops a turn and waits for the next.
+	folder := t.TempDir()
+	marker := filepath.Join(folder, "interrupted")
+	path := filepath.Join(folder, "patient-harness")
+	script := "#!/bin/sh\nread start\ntrap 'touch \"" + marker + "\"' INT\necho '{\"said\":\"ready\"}'\nwhile :; do sleep 0.1; done\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	first, _ := server.nextConnection(t)
+	welcome := welcomeFrame(true)
+	welcome.Welcome.HoldWithoutServerSeconds = 1
+	sendFrame(t, first, welcome)
+	sendFrame(t, first, spawnFrame(sessionID, "spawn_1", path))
+	readFrameOfType(t, first, runnerprotocol.RunnerMsgStdout)
+	pid := client.registry.Get(sessionID).Pid()
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the process was interrupted before the connection dropped")
+	}
+	first.Close()
+
+	// The runner reconnects, and this server never welcomes it: for the
+	// runner there is still no server.
+	server.nextConnection(t)
+	waitUntil(t, "the held process is interrupted once the limit has passed", func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	})
+	if !processIsAlive(pid) {
+		t.Error("the process was ended at the limit; it must be interrupted and kept")
+	}
+	if held := client.registry.HeldSessions(); len(held) != 1 || held[0].Exited {
+		t.Errorf("after the interrupt the runner holds %+v, want the session, still running", held)
+	}
+}
