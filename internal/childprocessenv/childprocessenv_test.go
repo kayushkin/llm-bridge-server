@@ -123,7 +123,7 @@ func checkFileSpawnsWithScrubbedEnvironment(t *testing.T, fileSet *token.FileSet
 		}
 		if selector.Sel.Name == "Environ" {
 			t.Errorf("%s: calls %s — build a child environment with childprocessenv.EnvironmentWithoutServerSecrets instead",
-				fileSet.Position(call.Pos()), string(source[call.Pos()-1:call.End()-1]))
+				fileSet.Position(call.Pos()), string(source[fileSet.Position(call.Pos()).Offset:fileSet.Position(call.End()).Offset]))
 		}
 		return true
 	})

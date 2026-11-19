@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 )
 
 // initBlobRepo ensures the bare git repo exists and is configured so that
@@ -94,7 +96,7 @@ func (s *Store) GC() error {
 
 func (s *Store) git(args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
-	cmd.Env = append(os.Environ(), "GIT_DIR="+s.gitDir)
+	cmd.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(), "GIT_DIR="+s.gitDir)
 	return cmd
 }
 
