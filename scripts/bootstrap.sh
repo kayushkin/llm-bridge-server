@@ -85,4 +85,5 @@ echo
 echo "Next steps:"
 echo "  - cp .env.example .env  &&  edit values to taste"
 echo "  - ./scripts/e2e-smoke.sh        # mock-harness end-to-end smoke test"
+echo "  - export POSTGRESTEST_ADMINISTRATOR_URL=\"\$(scripts/test-postgres.sh start)\"   # the storage tests need a Postgres"
 echo "  - go test ./...                 # unit + conformance tests"
