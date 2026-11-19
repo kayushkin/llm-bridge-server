@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
 
@@ -79,6 +81,16 @@ type SubprocessRegistry struct {
 	installCurrentBin func(harness msg.Harness) (string, error)
 	serverURL         string // propagated to subprocesses as LLMBRIDGE_SERVER
 	services          *ServiceRegistry
+
+	// Spawns the server gave a SpawnID, whose output is numbered and kept
+	// (sequenced_session.go). outputFolder holds their logs.
+	sequenced    map[string]*sequencedSession
+	outputFolder string
+	// connection is the context of the connection to the server, or nil
+	// while there is none. A sequenced spawn sends only while it is set.
+	connection context.Context
+	// holdTimer limits how long held spawns work with no server.
+	holdTimer *time.Timer
 }
 
 // NewSubprocessRegistry constructs a registry that ships subprocess output
@@ -103,7 +115,40 @@ func NewSubprocessRegistry(outgoing chan<- *runnerprotocol.RunnerMessage, instal
 		installCurrentBin: installCurrentBin,
 		serverURL:         serverURL,
 		services:          services,
+		sequenced:         make(map[string]*sequencedSession),
+		outputFolder:      sequencedOutputFolder(),
 	}
+}
+
+// Connected records the context of a new connection to the server; Spawn
+// starts sending a sequenced spawn's output under it.
+func (r *SubprocessRegistry) Connected(ctx context.Context) {
+	r.mu.Lock()
+	r.connection = ctx
+	r.mu.Unlock()
+}
+
+// Disconnected records that the connection to the server is gone.
+func (r *SubprocessRegistry) Disconnected() {
+	r.mu.Lock()
+	r.connection = nil
+	r.mu.Unlock()
+}
+
+// Signal delivers the server's signal to a session's process. Killing a
+// sequenced spawn also says the server wants no more of its output.
+func (r *SubprocessRegistry) Signal(sessionID string, signal runnerprotocol.RunnerSignalType) error {
+	r.mu.Lock()
+	process, session := r.procs[sessionID], r.sequenced[sessionID]
+	r.mu.Unlock()
+	if signal == runnerprotocol.RunnerSignalKill && session != nil {
+		r.discardSequenced(session)
+		return nil
+	}
+	if process == nil {
+		return nil
+	}
+	return process.Signal(signal)
 }
 
 // Get returns the Subprocess for a session or nil if none.
@@ -161,6 +206,13 @@ func (r *SubprocessRegistry) Spawn(sessionID string, spawn *runnerprotocol.Runne
 	if _, exists := r.procs[sessionID]; exists {
 		r.mu.Unlock()
 		return fmt.Errorf("subprocess already exists for session %s", sessionID)
+	}
+	if held := r.sequenced[sessionID]; held != nil {
+		// An earlier spawn of this session ended and its output is still
+		// waiting for the server. A new spawn means the server has moved on.
+		r.mu.Unlock()
+		r.discardSequenced(held)
+		r.mu.Lock()
 	}
 	r.mu.Unlock()
 
@@ -251,10 +303,26 @@ func (r *SubprocessRegistry) Spawn(sessionID string, spawn *runnerprotocol.Runne
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
+	// A spawn with a SpawnID keeps its output in a log. Opened before the
+	// process starts: a process whose output cannot be kept must not run.
+	var sequenced *sequencedSession
+	if spawn.SpawnID != "" {
+		sequenced, err = r.beginSequenced(sessionID, spawn.SpawnID)
+		if err != nil {
+			stdin.Close()
+			stdout.Close()
+			stderr.Close()
+			return err
+		}
+	}
+
 	if err := cmd.Start(); err != nil {
 		stdin.Close()
 		stdout.Close()
 		stderr.Close()
+		if sequenced != nil {
+			r.forgetSequenced(sequenced)
+		}
 		return fmt.Errorf("start %s: %w", binPath, err)
 	}
 
@@ -263,6 +331,11 @@ func (r *SubprocessRegistry) Spawn(sessionID string, spawn *runnerprotocol.Runne
 		cmd:       cmd,
 		stdin:     stdin,
 	}
+	if sequenced != nil {
+		sequenced.mutex.Lock()
+		sequenced.process = sp
+		sequenced.mutex.Unlock()
+	}
 
 	// Send the harness's start params as the first stdin line. This mirrors
 	// what llm-bridge-server's local subprocess transport does — the harness
@@ -270,6 +343,10 @@ func (r *SubprocessRegistry) Spawn(sessionID string, spawn *runnerprotocol.Runne
 	startReq := fmt.Sprintf(`{"method":"start","params":%s}`, string(spawn.StartParams))
 	if err := sp.WriteLine(startReq); err != nil {
 		cmd.Process.Kill()
+		if sequenced != nil {
+			cmd.Process.Wait()
+			r.forgetSequenced(sequenced)
+		}
 		return fmt.Errorf("send start: %w", err)
 	}
 
@@ -282,14 +359,30 @@ func (r *SubprocessRegistry) Spawn(sessionID string, spawn *runnerprotocol.Runne
 			delete(r.startingStdin, sessionID)
 			r.mu.Unlock()
 			cmd.Process.Kill()
+			if sequenced != nil {
+				cmd.Process.Wait()
+				r.forgetSequenced(sequenced)
+			}
 			return fmt.Errorf("deliver input that arrived during the spawn: %w", err)
 		}
 	}
 	delete(r.startingStdin, sessionID)
 	r.procs[sessionID] = sp
+	connection := r.connection
 	r.mu.Unlock()
 
 	log.Printf("[runner] spawned %s (session=%s pid=%d)", binPath, sessionID, sp.Pid())
+
+	if sequenced != nil {
+		stdoutDone := make(chan struct{})
+		go r.pumpSequencedStdout(sequenced, stdout, stdoutDone)
+		go r.pumpSequencedStderr(sessionID, stderr)
+		go r.waitSequencedExit(sequenced, sp, stdout, stdoutDone)
+		if connection != nil {
+			r.startSending(connection, sequenced, 0)
+		}
+		return nil
+	}
 
 	go r.pumpStdout(sessionID, stdout)
 	go r.pumpStderr(sessionID, stderr)
@@ -376,5 +469,16 @@ func (r *SubprocessRegistry) KillAll() {
 		if sp.cmd.Process != nil {
 			sp.cmd.Process.Kill()
 		}
+	}
+	// The sequenced spawns' processes were killed above; their logs go too,
+	// since nothing will be left to hand back.
+	r.mu.Lock()
+	sessions := make([]*sequencedSession, 0, len(r.sequenced))
+	for _, session := range r.sequenced {
+		sessions = append(sessions, session)
+	}
+	r.mu.Unlock()
+	for _, session := range sessions {
+		r.discardSequenced(session)
 	}
 }

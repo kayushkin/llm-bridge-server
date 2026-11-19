@@ -40,6 +40,10 @@ const (
 	RunnerMsgStdout RunnerMessageType = "stdout" // runner → server
 	RunnerMsgStderr RunnerMessageType = "stderr" // runner → server
 	RunnerMsgExit   RunnerMessageType = "exit"   // runner → server
+	// RunnerMsgAck tells the runner the server has stored a session's output
+	// up to a sequence number, so the runner may drop it. Server → runner,
+	// only for a spawn that carries a SpawnID.
+	RunnerMsgAck RunnerMessageType = "ack"
 
 	// Seeding (no SessionID; carry context/skill files from the bridge to the runner).
 	RunnerMsgSeedDelta    RunnerMessageType = "seed_delta"    // server → runner, single-file delta (push)
@@ -72,6 +76,7 @@ type RunnerMessage struct {
 	Stderr *RunnerStderr `json:"stderr,omitempty"`
 	Signal *RunnerSignal `json:"signal,omitempty"`
 	Exit   *RunnerExit   `json:"exit,omitempty"`
+	Ack    *RunnerAck    `json:"ack,omitempty"`
 
 	SeedDelta           *RunnerSeedDelta           `json:"seed_delta,omitempty"`
 	SeedSnapshot        *RunnerSeedSnapshot        `json:"seed_snapshot,omitempty"`
@@ -92,6 +97,19 @@ type RunnerClaudeOAuthRecovery struct {
 	Message          string `json:"message,omitempty"`
 }
 
+// ProtocolVersionSequencedOutput is the first version in which a runner
+// numbers a session's output, keeps it until the server acknowledges it, and
+// can hold a session's process while the server is away. A side that leaves
+// ProtocolVersion out is version 1, where output is neither numbered nor kept
+// and a runner ends every process when the connection drops.
+//
+// A server takes the current version and the one before it; a runner on
+// anything older is refused and told to update.
+const (
+	ProtocolVersionSequencedOutput = 2
+	CurrentProtocolVersion         = ProtocolVersionSequencedOutput
+)
+
 // RunnerHello is sent by the runner immediately after the WS upgrade.
 // Authentication is the Authorization: Bearer header on the upgrade
 // request — the server resolves the token to a Machine row by hash.
@@ -111,6 +129,34 @@ type RunnerHello struct {
 	// can hand to a session; nil when it has none (no screen it can reach,
 	// or the install failed, which the runner logs).
 	ComputerUse *ComputerUseTool `json:"computer_use,omitempty"`
+	// ProtocolVersion is the version this runner speaks; absent means 1.
+	ProtocolVersion int `json:"protocol_version,omitempty"`
+	// HeldSessions are the spawns this runner kept while it had no
+	// connection: processes still running, and ones that ended with output the
+	// server has not acknowledged. The server answers each in its Welcome,
+	// under Adopt or Release.
+	HeldSessions []RunnerHeldSession `json:"held_sessions,omitempty"`
+}
+
+// RunnerHeldSession is one spawn a runner kept across a lost connection.
+type RunnerHeldSession struct {
+	SessionID string `json:"session_id"`
+	SpawnID   string `json:"spawn_id"`
+	// LastSequence is the number of the newest output entry the runner has
+	// for this spawn.
+	LastSequence uint64 `json:"last_sequence"`
+	// Exited says the process has ended; its exit is the last entry.
+	Exited bool `json:"exited,omitempty"`
+}
+
+// RunnerAdoptSession tells a runner the server takes a held spawn back, and
+// from where to send its output again.
+type RunnerAdoptSession struct {
+	SessionID string `json:"session_id"`
+	SpawnID   string `json:"spawn_id"`
+	// ResumeAfterSequence is the last entry the server has stored. The runner
+	// sends everything after it, and may drop everything up to it.
+	ResumeAfterSequence uint64 `json:"resume_after_sequence"`
 }
 
 // ComputerUseTool is a runner's computer-use MCP server: the command a
@@ -140,6 +186,21 @@ type RunnerWelcome struct {
 	ServerVersion    string    `json:"server_version"`
 	PingIntervalSecs int       `json:"ping_interval_secs"` // app-level ping cadence the runner should follow
 	AcceptedAt       time.Time `json:"accepted_at"`
+	// ProtocolVersion is the version this server speaks; absent means 1.
+	ProtocolVersion int `json:"protocol_version,omitempty"`
+	// HoldSessionsWithoutServer says the runner should keep its processes
+	// running when this connection drops, instead of ending them, and keep
+	// their output for the server's return. Off unless the server's operator
+	// switched it on.
+	HoldSessionsWithoutServer bool `json:"hold_sessions_without_server,omitempty"`
+	// HoldWithoutServerSeconds is how long a held process may go on working
+	// with no server before the runner interrupts it. The process is kept.
+	HoldWithoutServerSeconds int `json:"hold_without_server_seconds,omitempty"`
+	// Adopt lists the held spawns the server takes back. Release lists the
+	// sessions whose held spawns it does not want: the runner ends them. A
+	// held spawn named in neither is ended too.
+	Adopt   []RunnerAdoptSession `json:"adopt,omitempty"`
+	Release []string             `json:"release,omitempty"`
 }
 
 // RunnerError reports a fatal error before the connection is closed.
@@ -170,6 +231,12 @@ type RunnerSpawn struct {
 	// ComputerUse says the session was given the runner's computer-use tool,
 	// so the runner makes the tool current before starting the harness.
 	ComputerUse bool `json:"computer_use,omitempty"`
+	// SpawnID names this one start of the session's process. When set, the
+	// runner numbers the process's output from 1, keeps each entry until the
+	// server acknowledges it, and stamps every Stdout and the Exit with the id
+	// and a sequence number. The server makes the id; a runner never does.
+	// Empty means the old way: output is sent once and not kept.
+	SpawnID string `json:"spawn_id,omitempty"`
 }
 
 // HarnessService describes one long-lived backend daemon a harness needs
@@ -196,6 +263,12 @@ type RunnerStdin struct {
 // subprocess stdout. The server's existing pipeline parses it as msg.Event.
 type RunnerStdout struct {
 	Data string `json:"data"`
+	// SpawnID and Sequence are set for a spawn that carries a SpawnID.
+	SpawnID  string `json:"spawn_id,omitempty"`
+	Sequence uint64 `json:"sequence,omitempty"`
+	// LineTooLong says a line longer than the runner reads stood here. Data
+	// is empty; the entry exists so the sequence has no gap.
+	LineTooLong bool `json:"line_too_long,omitempty"`
 }
 
 // RunnerStderr carries one line of subprocess stderr, forwarded for
@@ -221,6 +294,17 @@ type RunnerSignal struct {
 type RunnerExit struct {
 	ExitCode int    `json:"exit_code"`
 	Error    string `json:"error,omitempty"` // non-empty if the process couldn't be reaped cleanly
+	// SpawnID and Sequence are set for a spawn that carries a SpawnID. The
+	// exit is the spawn's last entry, numbered after its last line.
+	SpawnID  string `json:"spawn_id,omitempty"`
+	Sequence uint64 `json:"sequence,omitempty"`
+}
+
+// RunnerAck tells the runner that the server has stored every entry of a
+// spawn up to and including Sequence.
+type RunnerAck struct {
+	SpawnID  string `json:"spawn_id"`
+	Sequence uint64 `json:"sequence"`
 }
 
 // SeedSource discriminates which store provided a seeded file. Lets the

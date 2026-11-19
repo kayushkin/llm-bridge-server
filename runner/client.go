@@ -62,6 +62,11 @@ type Client struct {
 	machineMu   sync.Mutex
 	machineID   string
 	reconcilers map[runnerprotocol.SeedSource]*SeedReconciler
+
+	// What the server's last Welcome said about a lost connection: whether to
+	// keep sequenced spawns running, and for how long before interrupting.
+	holdSessionsWithoutServer bool
+	holdWithoutServer         time.Duration
 }
 
 // NewClient constructs a runner client. The returned Client must be Run.
@@ -71,6 +76,7 @@ func NewClient(cfg *Config) *Client {
 		return installCurrentHarnessBinary(cfg.ServerURL, h)
 	}
 	services := NewServiceRegistry()
+	clearSequencedOutputLeftByAnEarlierRunner()
 	c := &Client{
 		cfg:           cfg,
 		outgoing:      outgoing,
@@ -160,7 +166,7 @@ func (c *Client) Run(ctx context.Context) {
 			return
 		}
 		log.Printf("[runner] disconnected: %v", err)
-		c.registry.KillAll()
+		c.registry.ConnectionLost(c.holdSessionsWithoutServer, c.holdWithoutServer)
 
 		select {
 		case <-time.After(backoff):
@@ -189,8 +195,12 @@ func (c *Client) runOnce(ctx context.Context) error {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+c.cfg.RunnerToken)
 
-	// Self-update first, while no session is running.
-	if replaced, err := installCurrentRunner(c.cfg.ServerURL); err != nil {
+	// Self-update first, while no session is running. A runner holding
+	// sessions for the server's return runs some, so it keeps its binary: the
+	// service manager would end them with the old process.
+	if c.registry.HoldsSequencedSessions() {
+		log.Printf("[runner] holding sessions; not checking for a newer runner build until they are handed back or ended")
+	} else if replaced, err := installCurrentRunner(c.cfg.ServerURL); err != nil {
 		log.Printf("[runner] WARNING: could not check this runner against the bridge's build; running this one: %v", err)
 	} else if replaced {
 		return errRunnerReplaced
@@ -221,6 +231,8 @@ func (c *Client) runOnce(ctx context.Context) error {
 			AvailableHarnesses: DetectHarnesses(),
 			RunnerVersion:      Version,
 			ComputerUse:        computerUse,
+			ProtocolVersion:    runnerprotocol.CurrentProtocolVersion,
+			HeldSessions:       c.registry.HeldSessions(),
 		},
 	}
 	if err := writeJSON(conn, hello); err != nil {
@@ -278,6 +290,15 @@ func (c *Client) runOnce(ctx context.Context) error {
 
 	connCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Only a server that numbers output can take a held spawn back, so only
+	// such a server can ask for holding.
+	sequencedServer := welcome.Welcome.ProtocolVersion >= runnerprotocol.ProtocolVersionSequencedOutput
+	c.holdSessionsWithoutServer = sequencedServer && welcome.Welcome.HoldSessionsWithoutServer
+	c.holdWithoutServer = time.Duration(welcome.Welcome.HoldWithoutServerSeconds) * time.Second
+	c.registry.Connected(connCtx)
+	defer c.registry.Disconnected()
+	c.registry.ApplyWelcome(connCtx, welcome.Welcome)
 
 	// One goroutine owns ALL writes — outgoing messages and the periodic
 	// ping. gorilla/websocket connections aren't safe for concurrent
@@ -348,13 +369,14 @@ func (c *Client) reader(conn *websocket.Conn) error {
 			if m.Signal == nil || m.SessionID == "" {
 				continue
 			}
-			sp := c.registry.Get(m.SessionID)
-			if sp == nil {
-				continue
-			}
-			if err := sp.Signal(m.Signal.Signal); err != nil {
+			if err := c.registry.Signal(m.SessionID, m.Signal.Signal); err != nil {
 				log.Printf("[runner] signal failed (session=%s): %v", m.SessionID, err)
 			}
+		case runnerprotocol.RunnerMsgAck:
+			if m.Ack == nil || m.SessionID == "" {
+				continue
+			}
+			c.registry.AcknowledgeSequenced(m.SessionID, m.Ack.SpawnID, m.Ack.Sequence)
 		case runnerprotocol.RunnerMsgPing:
 			c.outgoing <- &runnerprotocol.RunnerMessage{Type: runnerprotocol.RunnerMsgPong}
 		case runnerprotocol.RunnerMsgPong:
