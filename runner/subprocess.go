@@ -13,6 +13,8 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // Subprocess wraps a single harness binary spawned for a session. The
@@ -47,14 +49,14 @@ func (s *Subprocess) WriteLine(data string) error {
 
 // Signal delivers an OS signal mapped from the wire signal type. Returns
 // an error if the process is no longer running.
-func (s *Subprocess) Signal(sig msg.RunnerSignalType) error {
+func (s *Subprocess) Signal(sig runnerprotocol.RunnerSignalType) error {
 	if s.cmd.Process == nil {
 		return fmt.Errorf("subprocess %s not running", s.sessionID)
 	}
 	switch sig {
-	case msg.RunnerSignalInterrupt:
+	case runnerprotocol.RunnerSignalInterrupt:
 		return s.cmd.Process.Signal(syscall.SIGINT)
-	case msg.RunnerSignalKill:
+	case runnerprotocol.RunnerSignalKill:
 		return s.cmd.Process.Kill()
 	default:
 		return fmt.Errorf("unknown signal: %s", sig)
@@ -73,7 +75,7 @@ type SubprocessRegistry struct {
 	// unknown session") and the harness then waited forever for a prompt
 	// (br_1792016658336160620, 2026-10-14).
 	startingStdin     map[string][]string
-	outgoing          chan<- *msg.RunnerMessage // single shared sink to the WS writer
+	outgoing          chan<- *runnerprotocol.RunnerMessage // single shared sink to the WS writer
 	installCurrentBin func(harness msg.Harness) (string, error)
 	serverURL         string // propagated to subprocesses as LLMBRIDGE_SERVER
 	services          *ServiceRegistry
@@ -93,7 +95,7 @@ type SubprocessRegistry struct {
 //
 // serverURL is exported to every spawned subprocess as LLMBRIDGE_SERVER so
 // wrappers can refer back to the bridge for any side-channel needs.
-func NewSubprocessRegistry(outgoing chan<- *msg.RunnerMessage, installCurrentBin func(harness msg.Harness) (string, error), serverURL string, services *ServiceRegistry) *SubprocessRegistry {
+func NewSubprocessRegistry(outgoing chan<- *runnerprotocol.RunnerMessage, installCurrentBin func(harness msg.Harness) (string, error), serverURL string, services *ServiceRegistry) *SubprocessRegistry {
 	return &SubprocessRegistry{
 		procs:             make(map[string]*Subprocess),
 		startingStdin:     make(map[string][]string),
@@ -154,7 +156,7 @@ func (r *SubprocessRegistry) Get(sessionID string) *Subprocess {
 // On any subprocess exit (clean or error) the registry sends an Exit
 // message upstream and removes the entry. Stdout/Stderr lines are
 // streamed as RunnerMsgStdout / RunnerMsgStderr events.
-func (r *SubprocessRegistry) Spawn(sessionID string, spawn *msg.RunnerSpawn) error {
+func (r *SubprocessRegistry) Spawn(sessionID string, spawn *runnerprotocol.RunnerSpawn) error {
 	r.mu.Lock()
 	if _, exists := r.procs[sessionID]; exists {
 		r.mu.Unlock()
@@ -306,10 +308,10 @@ func (r *SubprocessRegistry) pumpStdout(sessionID string, stdout io.ReadCloser) 
 		if line == "" {
 			continue
 		}
-		r.outgoing <- &msg.RunnerMessage{
-			Type:      msg.RunnerMsgStdout,
+		r.outgoing <- &runnerprotocol.RunnerMessage{
+			Type:      runnerprotocol.RunnerMsgStdout,
 			SessionID: sessionID,
-			Stdout:    &msg.RunnerStdout{Data: line},
+			Stdout:    &runnerprotocol.RunnerStdout{Data: line},
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -327,10 +329,10 @@ func (r *SubprocessRegistry) pumpStderr(sessionID string, stderr io.ReadCloser) 
 		if line == "" {
 			continue
 		}
-		r.outgoing <- &msg.RunnerMessage{
-			Type:      msg.RunnerMsgStderr,
+		r.outgoing <- &runnerprotocol.RunnerMessage{
+			Type:      runnerprotocol.RunnerMsgStderr,
 			SessionID: sessionID,
-			Stderr:    &msg.RunnerStderr{Data: line},
+			Stderr:    &runnerprotocol.RunnerStderr{Data: line},
 		}
 	}
 }
@@ -352,10 +354,10 @@ func (r *SubprocessRegistry) waitExit(sessionID string, sp *Subprocess) {
 	delete(r.procs, sessionID)
 	r.mu.Unlock()
 	log.Printf("[runner] exit session=%s code=%d err=%q", sessionID, exitCode, errStr)
-	r.outgoing <- &msg.RunnerMessage{
-		Type:      msg.RunnerMsgExit,
+	r.outgoing <- &runnerprotocol.RunnerMessage{
+		Type:      runnerprotocol.RunnerMsgExit,
 		SessionID: sessionID,
-		Exit:      &msg.RunnerExit{ExitCode: exitCode, Error: errStr},
+		Exit:      &runnerprotocol.RunnerExit{ExitCode: exitCode, Error: errStr},
 	}
 }
 

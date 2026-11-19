@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kayushkin/llm-bridge/msg"
-
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 var claudeAuthorizationURL = regexp.MustCompile(`https://claude\.com/cai/oauth/authorize\?[^[:space:]]+`)
@@ -22,10 +22,10 @@ var claudeAuthorizationURL = regexp.MustCompile(`https://claude\.com/cai/oauth/a
 type ClaudeOAuthRecovery struct {
 	mu        sync.Mutex
 	processes map[string]io.WriteCloser
-	outgoing  chan<- *msg.RunnerMessage
+	outgoing  chan<- *runnerprotocol.RunnerMessage
 }
 
-func NewClaudeOAuthRecovery(outgoing chan<- *msg.RunnerMessage) *ClaudeOAuthRecovery {
+func NewClaudeOAuthRecovery(outgoing chan<- *runnerprotocol.RunnerMessage) *ClaudeOAuthRecovery {
 	return &ClaudeOAuthRecovery{processes: make(map[string]io.WriteCloser), outgoing: outgoing}
 }
 
@@ -110,5 +110,5 @@ func (r *ClaudeOAuthRecovery) Failed(recoveryID string, err error) {
 }
 
 func (r *ClaudeOAuthRecovery) send(recoveryID, action, url, message string) {
-	r.outgoing <- &msg.RunnerMessage{Type: msg.RunnerMsgClaudeOAuthRecovery, ClaudeOAuthRecovery: &msg.RunnerClaudeOAuthRecovery{RecoveryID: recoveryID, Action: action, AuthorizationURL: url, Message: message}}
+	r.outgoing <- &runnerprotocol.RunnerMessage{Type: runnerprotocol.RunnerMsgClaudeOAuthRecovery, ClaudeOAuthRecovery: &runnerprotocol.RunnerClaudeOAuthRecovery{RecoveryID: recoveryID, Action: action, AuthorizationURL: url, Message: message}}
 }

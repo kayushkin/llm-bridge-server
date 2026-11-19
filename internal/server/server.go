@@ -37,6 +37,8 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 	memorystore "github.com/kayushkin/memory-store"
 	modelstore "github.com/kayushkin/model-store"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // autoResumeWindow caps how recently a session must have been active (by
@@ -515,10 +517,10 @@ func (s *Server) routes() {
 	if s.agentStore != nil {
 		agentstore.RegisterHandlersWithHookSet(s.mux, s.agentStore, agentstore.HandlerHooks{
 			OnFileSaved: func(f *agentstore.TrackedFile, v *agentstore.TrackedFileVersion) {
-				s.broadcastSeedSnapshot(msg.SeedSourceAgentStore, "save")
+				s.broadcastSeedSnapshot(runnerprotocol.SeedSourceAgentStore, "save")
 			},
 			OnScanCompleted: func(_ *agentstore.ScanResult) {
-				s.broadcastSeedSnapshot(msg.SeedSourceAgentStore, "scan")
+				s.broadcastSeedSnapshot(runnerprotocol.SeedSourceAgentStore, "scan")
 			},
 			OnPromptDriftsDetected: s.onPromptDriftsDetected,
 		})
@@ -1319,12 +1321,12 @@ func (s *Server) discoverOnce(ctx context.Context) error {
 //	source — "agent-store" (default) or "skill-store"
 //	reason — free-text label included in logs and the runner's snapshot event
 func (s *Server) handleSeedBroadcast(w http.ResponseWriter, r *http.Request) {
-	source := msg.SeedSource(r.URL.Query().Get("source"))
+	source := runnerprotocol.SeedSource(r.URL.Query().Get("source"))
 	if source == "" {
-		source = msg.SeedSourceAgentStore
+		source = runnerprotocol.SeedSourceAgentStore
 	}
 	switch source {
-	case msg.SeedSourceAgentStore, msg.SeedSourceSkillStore:
+	case runnerprotocol.SeedSourceAgentStore, runnerprotocol.SeedSourceSkillStore:
 	default:
 		http.Error(w, "unknown source", http.StatusBadRequest)
 		return
@@ -1417,7 +1419,7 @@ func envOrDefault(key, def string) string {
 // Send failures (closed conns, full outgoing buffers) are logged and
 // swallowed; the runner will reconcile on its next periodic tick or
 // reconnect anyway.
-func (s *Server) broadcastSeedSnapshot(source msg.SeedSource, reason string) {
+func (s *Server) broadcastSeedSnapshot(source runnerprotocol.SeedSource, reason string) {
 	if s.harness == nil {
 		return
 	}
@@ -1425,9 +1427,9 @@ func (s *Server) broadcastSeedSnapshot(source msg.SeedSource, reason string) {
 	if len(conns) == 0 {
 		return
 	}
-	m := &msg.RunnerMessage{
-		Type: msg.RunnerMsgSeedSnapshot,
-		SeedSnapshot: &msg.RunnerSeedSnapshot{
+	m := &runnerprotocol.RunnerMessage{
+		Type: runnerprotocol.RunnerMsgSeedSnapshot,
+		SeedSnapshot: &runnerprotocol.RunnerSeedSnapshot{
 			Source: source,
 			Reason: reason,
 		},

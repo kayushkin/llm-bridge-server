@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/msg"
-
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // The computer-use tool a runner can hand to a session.
@@ -37,7 +37,7 @@ const computerUseToolName = "computer-use" // its /api/runner/binary name
 // installCurrentComputerUseTool installs or updates this machine's
 // computer-use tool and describes it, or returns nil with no error on a
 // machine that has none.
-func installCurrentComputerUseTool(serverURL string) (*msg.ComputerUseTool, error) {
+func installCurrentComputerUseTool(serverURL string) (*runnerprotocol.ComputerUseTool, error) {
 	command, goos, goarch, err := computerUseToolLocation()
 	if err != nil || command == "" {
 		return nil, err
@@ -53,7 +53,7 @@ func installCurrentComputerUseTool(serverURL string) (*msg.ComputerUseTool, erro
 	if err != nil {
 		return nil, err
 	}
-	return &msg.ComputerUseTool{Command: command, Version: version}, nil
+	return &runnerprotocol.ComputerUseTool{Command: command, Version: version}, nil
 }
 
 // computerUseToolLocation is where this machine keeps its computer-use tool

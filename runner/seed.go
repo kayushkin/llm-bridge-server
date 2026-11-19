@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // SeedReconciler keeps a single seed source (agent-store or skill-store) in
@@ -33,10 +33,10 @@ import (
 // manage paths that appear in the bridge's manifest plus paths recorded in
 // our local sidecar manifest.
 type SeedReconciler struct {
-	source     msg.SeedSource
-	strategy   seedStrategy
-	cfg        *Config
-	machineID  func() string
+	source    runnerprotocol.SeedSource
+	strategy  seedStrategy
+	cfg       *Config
+	machineID func() string
 
 	mu          sync.Mutex
 	sidecarPath string
@@ -50,7 +50,7 @@ type SeedReconciler struct {
 // API prefix on the bridge and how to build the drift/observe payloads
 // that source expects.
 type seedStrategy interface {
-	source() msg.SeedSource
+	source() runnerprotocol.SeedSource
 	fetchManifest(machineID string) ([]seedEntry, error)
 	fetchContent(e seedEntry) ([]byte, error)
 	postDrift(machineID string, e seedEntry, content []byte, note string) error
@@ -81,9 +81,9 @@ type seedEntry struct {
 // re-fetching the manifest first). Stored at
 // ~/.config/llm-bridge-runner/seed-<source>.json.
 type SidecarManifest struct {
-	Source    msg.SeedSource          `json:"source"`
-	UpdatedAt int64                   `json:"updated_at"`
-	Entries   map[string]SidecarEntry `json:"entries"` // keyed by install_path
+	Source    runnerprotocol.SeedSource `json:"source"`
+	UpdatedAt int64                     `json:"updated_at"`
+	Entries   map[string]SidecarEntry   `json:"entries"` // keyed by install_path
 }
 
 // SidecarEntry records one file we manage on disk.
@@ -96,7 +96,7 @@ type SidecarEntry struct {
 }
 
 // NewSeedReconciler builds a reconciler bound to one source.
-func NewSeedReconciler(source msg.SeedSource, cfg *Config, machineIDFn func() string) (*SeedReconciler, error) {
+func NewSeedReconciler(source runnerprotocol.SeedSource, cfg *Config, machineIDFn func() string) (*SeedReconciler, error) {
 	strat, err := newStrategy(source, cfg)
 	if err != nil {
 		return nil, err
@@ -121,12 +121,12 @@ func NewSeedReconciler(source msg.SeedSource, cfg *Config, machineIDFn func() st
 	return r, nil
 }
 
-func newStrategy(source msg.SeedSource, cfg *Config) (seedStrategy, error) {
+func newStrategy(source runnerprotocol.SeedSource, cfg *Config) (seedStrategy, error) {
 	httpClient := &http.Client{Timeout: 60 * time.Second}
 	switch source {
-	case msg.SeedSourceAgentStore:
+	case runnerprotocol.SeedSourceAgentStore:
 		return &agentSeedStrategy{cfg: cfg, http: httpClient, prefix: "/api/agent-store"}, nil
-	case msg.SeedSourceSkillStore:
+	case runnerprotocol.SeedSourceSkillStore:
 		return &skillSeedStrategy{cfg: cfg, http: httpClient, prefix: "/api/skill-store"}, nil
 	}
 	return nil, fmt.Errorf("unknown seed source: %s", source)
@@ -410,7 +410,9 @@ type agentSeedStrategy struct {
 	prefix string
 }
 
-func (s *agentSeedStrategy) source() msg.SeedSource { return msg.SeedSourceAgentStore }
+func (s *agentSeedStrategy) source() runnerprotocol.SeedSource {
+	return runnerprotocol.SeedSourceAgentStore
+}
 
 type agentManifest struct {
 	Entries []agentEntry `json:"entries"`
@@ -500,7 +502,9 @@ type skillSeedStrategy struct {
 	prefix string
 }
 
-func (s *skillSeedStrategy) source() msg.SeedSource { return msg.SeedSourceSkillStore }
+func (s *skillSeedStrategy) source() runnerprotocol.SeedSource {
+	return runnerprotocol.SeedSourceSkillStore
+}
 
 type skillManifest struct {
 	Enabled bool         `json:"enabled"`

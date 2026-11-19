@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/msg"
-
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // ServiceRegistry tracks long-lived backend services the runner deploys
@@ -27,14 +27,14 @@ import (
 // Operations are idempotent: Ensure(svc) does nothing if the named
 // service is already running and healthchecks pass, and starts it
 // otherwise. The bridge side decides what services a harness needs
-// per-spawn via msg.HarnessService manifests.
+// per-spawn via runnerprotocol.HarnessService manifests.
 type ServiceRegistry struct {
 	mu       sync.Mutex
 	services map[string]*managedService
 }
 
 type managedService struct {
-	manifest msg.HarnessService
+	manifest runnerprotocol.HarnessService
 	cmd      *exec.Cmd
 	logFile  *os.File
 }
@@ -47,7 +47,7 @@ func NewServiceRegistry() *ServiceRegistry {
 // Ensure makes the named service running and healthy. Returns nil when
 // the service already passes its healthcheck — no restart, no extra
 // state churn — or after a successful start.
-func (r *ServiceRegistry) Ensure(m msg.HarnessService) error {
+func (r *ServiceRegistry) Ensure(m runnerprotocol.HarnessService) error {
 	if m.Name == "" {
 		return fmt.Errorf("service manifest missing name")
 	}
@@ -87,7 +87,7 @@ func (r *ServiceRegistry) Ensure(m msg.HarnessService) error {
 // with the manifest's args + env, and waits for the health check to
 // come up green. Caller already holds no locks; we serialize start
 // internally.
-func (r *ServiceRegistry) start(m msg.HarnessService) error {
+func (r *ServiceRegistry) start(m runnerprotocol.HarnessService) error {
 	binPath, err := resolveServiceBinary(m)
 	if err != nil {
 		return fmt.Errorf("resolve %s binary: %w", m.Name, err)
@@ -163,7 +163,7 @@ func (r *ServiceRegistry) KillAll() {
 // disk. Mirrors installCurrentHarnessBinary for wrapper binaries but uses the
 // service's `Name` for the install path so unrelated services don't
 // collide.
-func resolveServiceBinary(m msg.HarnessService) (string, error) {
+func resolveServiceBinary(m runnerprotocol.HarnessService) (string, error) {
 	if m.BinaryPath != "" {
 		if _, err := os.Stat(m.BinaryPath); err == nil {
 			return m.BinaryPath, nil

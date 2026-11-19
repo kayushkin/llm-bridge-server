@@ -12,12 +12,14 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // Computer use on runner machines.
 //
 // A runner that installed a computer-use MCP server names its command in its
-// Hello (msg.RunnerHello.ComputerUse). A session asks for it with
+// Hello (runnerprotocol.RunnerHello.ComputerUse). A session asks for it with
 // harness_config "computer_use": true, and gets it only when all of these
 // hold, or the spawn is refused saying which one failed:
 //
@@ -29,7 +31,7 @@ import (
 //   - the machine's runner is connected now and reported the tool.
 //
 // The tool joins whatever MCP servers the session already has, under
-// msg.ComputerUseMCPServerName, and "computer_use" stays in the config so the
+// runnerprotocol.ComputerUseMCPServerName, and "computer_use" stays in the config so the
 // runner is told to make the tool current before it starts the harness.
 
 const harnessConfigComputerUseKey = "computer_use"
@@ -139,7 +141,7 @@ func (s *Server) inlineMCPConfigForRunner(sess *store.Session, inst *msg.Instanc
 // asked for it, or refuses the spawn naming the condition that failed.
 // runnerComputerUse is the tool a machine's connected runner reported
 // (harness.Manager.RunnerComputerUse in the spawn).
-func (s *Server) injectComputerUse(sess *store.Session, inst *msg.Instance, runnerComputerUse func(machineName string) *msg.ComputerUseTool) error {
+func (s *Server) injectComputerUse(sess *store.Session, inst *msg.Instance, runnerComputerUse func(machineName string) *runnerprotocol.ComputerUseTool) error {
 	cfg, err := harnessConfigMap(sess)
 	if err != nil {
 		return err
@@ -169,11 +171,11 @@ func (s *Server) injectComputerUse(sess *store.Session, inst *msg.Instance, runn
 	if err != nil {
 		return err
 	}
-	servers[msg.ComputerUseMCPServerName] = server
+	servers[runnerprotocol.ComputerUseMCPServerName] = server
 	if err := setInlineMCPConfig(cfg, servers); err != nil {
 		return err
 	}
-	log.Printf("[computer-use] session %s on %s gets %s (%s, version %s)", sess.SessionID, machine.Name, msg.ComputerUseMCPServerName, tool.Command, tool.Version)
+	log.Printf("[computer-use] session %s on %s gets %s (%s, version %s)", sess.SessionID, machine.Name, runnerprotocol.ComputerUseMCPServerName, tool.Command, tool.Version)
 	return s.replaceHarnessConfig(sess, cfg)
 }
 

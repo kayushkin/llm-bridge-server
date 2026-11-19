@@ -10,6 +10,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge/machinestats"
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // The runner reads its machine's health — CPU, memory, drives, batteries,
@@ -44,7 +46,7 @@ func (c *Client) sendMachineStats(ctx context.Context) {
 		log.Printf("[machine-stats] %s", collectionError)
 	}
 	select {
-	case c.outgoing <- &msg.RunnerMessage{Type: msg.RunnerMsgMachineStats, MachineStats: &msg.RunnerMachineStats{Stats: stats}}:
+	case c.outgoing <- &runnerprotocol.RunnerMessage{Type: runnerprotocol.RunnerMsgMachineStats, MachineStats: &msg.RunnerMachineStats{Stats: stats}}:
 	default:
 		log.Printf("[machine-stats] outgoing queue full; dropped a reading")
 	}

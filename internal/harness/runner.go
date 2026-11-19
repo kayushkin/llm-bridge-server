@@ -11,6 +11,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // PingIntervalSecs is the app-level ping cadence advertised to runners in
@@ -98,13 +100,13 @@ func (r *RunnerRegistry) deregister(c *RunnerConnection) {
 // per-session messages to RunnerProcess instances.
 type RunnerConnection struct {
 	MachineName string
-	MachineID   string           // resolved at accept time from the bearer token
-	Hello       *msg.RunnerHello // received at handshake
+	MachineID   string                      // resolved at accept time from the bearer token
+	Hello       *runnerprotocol.RunnerHello // received at handshake
 	ConnectedAt time.Time
 
 	conn     *websocket.Conn
 	registry *RunnerRegistry
-	outgoing chan *msg.RunnerMessage
+	outgoing chan *runnerprotocol.RunnerMessage
 
 	mu       sync.Mutex
 	sessions map[string]*RunnerProcess // sessionID → RunnerProcess
@@ -118,7 +120,7 @@ func (c *RunnerConnection) Name() string { return c.MachineName }
 // Send queues a message for the writer goroutine. Returns an error if
 // the connection is closed or the outgoing buffer is full (i.e. the
 // peer is too slow / stalled).
-func (c *RunnerConnection) Send(m *msg.RunnerMessage) error {
+func (c *RunnerConnection) Send(m *runnerprotocol.RunnerMessage) error {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -183,11 +185,11 @@ func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn,
 	conn.SetReadLimit(8 * 1024 * 1024) // 8MB per frame max
 
 	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	var hello msg.RunnerMessage
+	var hello runnerprotocol.RunnerMessage
 	if err := conn.ReadJSON(&hello); err != nil {
 		return fmt.Errorf("read hello: %w", err)
 	}
-	if hello.Type != msg.RunnerMsgHello || hello.Hello == nil {
+	if hello.Type != runnerprotocol.RunnerMsgHello || hello.Hello == nil {
 		_ = sendError(conn, "bad_hello", "expected hello message")
 		return fmt.Errorf("expected hello, got %s", hello.Type)
 	}
@@ -199,7 +201,7 @@ func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn,
 		ConnectedAt: time.Now(),
 		conn:        conn,
 		registry:    r,
-		outgoing:    make(chan *msg.RunnerMessage, runnerOutgoingBuffer),
+		outgoing:    make(chan *runnerprotocol.RunnerMessage, runnerOutgoingBuffer),
 		sessions:    make(map[string]*RunnerProcess),
 	}
 
@@ -208,9 +210,9 @@ func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn,
 		prev.close()
 	}
 
-	welcome := &msg.RunnerMessage{
-		Type: msg.RunnerMsgWelcome,
-		Welcome: &msg.RunnerWelcome{
+	welcome := &runnerprotocol.RunnerMessage{
+		Type: runnerprotocol.RunnerMsgWelcome,
+		Welcome: &runnerprotocol.RunnerWelcome{
 			MachineID:        machine.ID,
 			MachineName:      machine.Name,
 			ServerVersion:    serverVersion,
@@ -258,24 +260,24 @@ func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn,
 // messages are dispatched to the matching RunnerProcess.
 func (c *RunnerConnection) reader() error {
 	for {
-		var m msg.RunnerMessage
+		var m runnerprotocol.RunnerMessage
 		if err := c.conn.ReadJSON(&m); err != nil {
 			return fmt.Errorf("read: %w", err)
 		}
 		switch m.Type {
-		case msg.RunnerMsgStdout:
+		case runnerprotocol.RunnerMsgStdout:
 			c.handleStdout(&m)
-		case msg.RunnerMsgStderr:
+		case runnerprotocol.RunnerMsgStderr:
 			if m.Stderr != nil {
 				log.Printf("[runner:%s/%s stderr] %s", c.MachineName, m.SessionID, m.Stderr.Data)
 			}
-		case msg.RunnerMsgExit:
+		case runnerprotocol.RunnerMsgExit:
 			c.handleExit(&m)
-		case msg.RunnerMsgPong:
+		case runnerprotocol.RunnerMsgPong:
 			// Read deadline is reset by SetPongHandler.
-		case msg.RunnerMsgPing:
-			_ = c.Send(&msg.RunnerMessage{Type: msg.RunnerMsgPong})
-		case msg.RunnerMsgMachineStats:
+		case runnerprotocol.RunnerMsgPing:
+			_ = c.Send(&runnerprotocol.RunnerMessage{Type: runnerprotocol.RunnerMsgPong})
+		case runnerprotocol.RunnerMsgMachineStats:
 			c.handleMachineStats(&m)
 		default:
 			log.Printf("[runner-server] unexpected message from %s: %s", c.MachineName, m.Type)
@@ -285,7 +287,7 @@ func (c *RunnerConnection) reader() error {
 
 // handleMachineStats hands a machine_stats frame to the registry's receiver,
 // under this connection's machine id rather than anything the runner says.
-func (c *RunnerConnection) handleMachineStats(m *msg.RunnerMessage) {
+func (c *RunnerConnection) handleMachineStats(m *runnerprotocol.RunnerMessage) {
 	if m.MachineStats == nil {
 		log.Printf("[runner-server] machine_stats from %s with no payload", c.MachineName)
 		return
@@ -301,7 +303,7 @@ func (c *RunnerConnection) handleMachineStats(m *msg.RunnerMessage) {
 
 // handleStdout parses a runner stdout line as msg.Event and forwards it
 // to the matching RunnerProcess events channel.
-func (c *RunnerConnection) handleStdout(m *msg.RunnerMessage) {
+func (c *RunnerConnection) handleStdout(m *runnerprotocol.RunnerMessage) {
 	if m.Stdout == nil || m.SessionID == "" {
 		return
 	}
@@ -327,7 +329,7 @@ func (c *RunnerConnection) handleStdout(m *msg.RunnerMessage) {
 }
 
 // handleExit closes the matching session's events channel.
-func (c *RunnerConnection) handleExit(m *msg.RunnerMessage) {
+func (c *RunnerConnection) handleExit(m *runnerprotocol.RunnerMessage) {
 	if m.SessionID == "" {
 		return
 	}
@@ -355,7 +357,7 @@ func (c *RunnerConnection) writer(ctx context.Context) {
 
 // writeRunnerJSON marshals m and writes it as a single text frame. Used
 // by both the registry (handshake) and the per-connection writer.
-func writeRunnerJSON(conn *websocket.Conn, m *msg.RunnerMessage) error {
+func writeRunnerJSON(conn *websocket.Conn, m *runnerprotocol.RunnerMessage) error {
 	conn.SetWriteDeadline(time.Now().Add(runnerWriteTimeout))
 	data, err := json.Marshal(m)
 	if err != nil {
@@ -367,9 +369,9 @@ func writeRunnerJSON(conn *websocket.Conn, m *msg.RunnerMessage) error {
 // sendError sends a RunnerError message and is best-effort — used during
 // handshake rejection just before closing.
 func sendError(conn *websocket.Conn, code, message string) error {
-	return writeRunnerJSON(conn, &msg.RunnerMessage{
-		Type: msg.RunnerMsgError,
-		Err:  &msg.RunnerError{Code: code, Message: message},
+	return writeRunnerJSON(conn, &runnerprotocol.RunnerMessage{
+		Type: runnerprotocol.RunnerMsgError,
+		Err:  &runnerprotocol.RunnerError{Code: code, Message: message},
 	})
 }
 
@@ -417,10 +419,10 @@ func (p *RunnerProcess) SendJSONRPC(method string, params json.RawMessage) error
 
 // Interrupt asks the runner to deliver SIGINT to the subprocess.
 func (p *RunnerProcess) Interrupt() error {
-	return p.conn.Send(&msg.RunnerMessage{
-		Type:      msg.RunnerMsgSignal,
+	return p.conn.Send(&runnerprotocol.RunnerMessage{
+		Type:      runnerprotocol.RunnerMsgSignal,
 		SessionID: p.sessionID,
-		Signal:    &msg.RunnerSignal{Signal: msg.RunnerSignalInterrupt},
+		Signal:    &runnerprotocol.RunnerSignal{Signal: runnerprotocol.RunnerSignalInterrupt},
 	})
 }
 
@@ -430,10 +432,10 @@ func (p *RunnerProcess) Interrupt() error {
 // reader path; this Kill also closes early so callers don't block if
 // the runner is unresponsive.
 func (p *RunnerProcess) Kill() error {
-	err := p.conn.Send(&msg.RunnerMessage{
-		Type:      msg.RunnerMsgSignal,
+	err := p.conn.Send(&runnerprotocol.RunnerMessage{
+		Type:      runnerprotocol.RunnerMsgSignal,
 		SessionID: p.sessionID,
-		Signal:    &msg.RunnerSignal{Signal: msg.RunnerSignalKill},
+		Signal:    &runnerprotocol.RunnerSignal{Signal: runnerprotocol.RunnerSignalKill},
 	})
 	p.conn.deregisterSession(p.sessionID)
 	return err
@@ -454,10 +456,10 @@ func (p *RunnerProcess) sendRequest(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	return p.conn.Send(&msg.RunnerMessage{
-		Type:      msg.RunnerMsgStdin,
+	return p.conn.Send(&runnerprotocol.RunnerMessage{
+		Type:      runnerprotocol.RunnerMsgStdin,
 		SessionID: p.sessionID,
-		Stdin:     &msg.RunnerStdin{Data: string(data)},
+		Stdin:     &runnerprotocol.RunnerStdin{Data: string(data)},
 	})
 }
 
@@ -526,10 +528,10 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 	}
 	conn.registerSession(rp)
 
-	spawn := &msg.RunnerMessage{
-		Type:      msg.RunnerMsgSpawn,
+	spawn := &runnerprotocol.RunnerMessage{
+		Type:      runnerprotocol.RunnerMsgSpawn,
 		SessionID: sess.SessionID,
-		Spawn: &msg.RunnerSpawn{
+		Spawn: &runnerprotocol.RunnerSpawn{
 			Harness:     msg.Harness(sess.Harness),
 			WorkingDir:  workDir,
 			StartParams: params,
@@ -548,7 +550,7 @@ func (m *Manager) startRunner(ctx context.Context, sess *store.Session, inst *ms
 
 // RunnerComputerUse is the computer-use tool the runner on machineName
 // reported when it connected, or nil when it is not connected or reported none.
-func (m *Manager) RunnerComputerUse(machineName string) *msg.ComputerUseTool {
+func (m *Manager) RunnerComputerUse(machineName string) *runnerprotocol.ComputerUseTool {
 	if m.runners == nil {
 		return nil
 	}

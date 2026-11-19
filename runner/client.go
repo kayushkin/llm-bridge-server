@@ -15,6 +15,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/kayushkin/llm-bridge/machinestats"
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // seedTickInterval is the runner-side backstop polling cadence. The
@@ -45,7 +47,7 @@ const (
 // and reconnects with exponential backoff.
 type Client struct {
 	cfg           *Config
-	outgoing      chan *msg.RunnerMessage
+	outgoing      chan *runnerprotocol.RunnerMessage
 	registry      *SubprocessRegistry
 	services      *ServiceRegistry
 	oauthRecovery *ClaudeOAuthRecovery
@@ -59,12 +61,12 @@ type Client struct {
 	// configured seed source (agent-store, skill-store).
 	machineMu   sync.Mutex
 	machineID   string
-	reconcilers map[msg.SeedSource]*SeedReconciler
+	reconcilers map[runnerprotocol.SeedSource]*SeedReconciler
 }
 
 // NewClient constructs a runner client. The returned Client must be Run.
 func NewClient(cfg *Config) *Client {
-	outgoing := make(chan *msg.RunnerMessage, outgoingBuffer)
+	outgoing := make(chan *runnerprotocol.RunnerMessage, outgoingBuffer)
 	installCurrent := func(h msg.Harness) (string, error) {
 		return installCurrentHarnessBinary(cfg.ServerURL, h)
 	}
@@ -75,7 +77,7 @@ func NewClient(cfg *Config) *Client {
 		services:      services,
 		registry:      NewSubprocessRegistry(outgoing, installCurrent, cfg.ServerURL, services),
 		oauthRecovery: NewClaudeOAuthRecovery(outgoing),
-		reconcilers:   make(map[msg.SeedSource]*SeedReconciler),
+		reconcilers:   make(map[runnerprotocol.SeedSource]*SeedReconciler),
 
 		machineStatsCollector: machinestats.NewCollector(),
 	}
@@ -88,9 +90,9 @@ func NewClient(cfg *Config) *Client {
 // arrive (Welcome, SeedSnapshot WS message). The reconciler internally backs
 // off when machineID is unset, so starting before Welcome is safe.
 func (c *Client) initReconcilers() {
-	for _, source := range []msg.SeedSource{
-		msg.SeedSourceAgentStore,
-		msg.SeedSourceSkillStore,
+	for _, source := range []runnerprotocol.SeedSource{
+		runnerprotocol.SeedSourceAgentStore,
+		runnerprotocol.SeedSourceSkillStore,
 	} {
 		rec, err := NewSeedReconciler(source, c.cfg, c.currentMachineID)
 		if err != nil {
@@ -118,7 +120,7 @@ func (c *Client) setMachineID(id string) {
 
 // triggerSeed pokes one reconciler (specific source) or all of them
 // (zero-value source).
-func (c *Client) triggerSeed(source msg.SeedSource) {
+func (c *Client) triggerSeed(source runnerprotocol.SeedSource) {
 	if source == "" {
 		for _, r := range c.reconcilers {
 			r.Trigger()
@@ -208,9 +210,9 @@ func (c *Client) runOnce(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	hello := &msg.RunnerMessage{
-		Type: msg.RunnerMsgHello,
-		Hello: &msg.RunnerHello{
+	hello := &runnerprotocol.RunnerMessage{
+		Type: runnerprotocol.RunnerMsgHello,
+		Hello: &runnerprotocol.RunnerHello{
 			Hostname:           c.cfg.Hostname,
 			OS:                 c.cfg.OS,
 			Arch:               c.cfg.Arch,
@@ -226,12 +228,12 @@ func (c *Client) runOnce(ctx context.Context) error {
 	}
 
 	conn.SetReadDeadline(time.Now().Add(welcomeTimeout))
-	var welcome msg.RunnerMessage
+	var welcome runnerprotocol.RunnerMessage
 	if err := conn.ReadJSON(&welcome); err != nil {
 		return fmt.Errorf("read welcome: %w", err)
 	}
 	switch welcome.Type {
-	case msg.RunnerMsgWelcome:
+	case runnerprotocol.RunnerMsgWelcome:
 		if welcome.Welcome == nil {
 			return fmt.Errorf("welcome payload missing")
 		}
@@ -253,7 +255,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 		// on the bridge's canonical context before any harness spawns.
 		c.setMachineID(welcome.Welcome.MachineID)
 		c.triggerSeed("")
-	case msg.RunnerMsgError:
+	case runnerprotocol.RunnerMsgError:
 		if welcome.Err != nil {
 			return fmt.Errorf("server rejected hello: %s — %s",
 				welcome.Err.Code, welcome.Err.Message)
@@ -301,12 +303,12 @@ func (c *Client) runOnce(ctx context.Context) error {
 // Signal, Ping, Pong (echoed). Anything unexpected is logged and ignored.
 func (c *Client) reader(conn *websocket.Conn) error {
 	for {
-		var m msg.RunnerMessage
+		var m runnerprotocol.RunnerMessage
 		if err := conn.ReadJSON(&m); err != nil {
 			return fmt.Errorf("read: %w", err)
 		}
 		switch m.Type {
-		case msg.RunnerMsgSpawn:
+		case runnerprotocol.RunnerMsgSpawn:
 			if m.Spawn == nil || m.SessionID == "" {
 				log.Printf("[runner] invalid spawn: missing fields")
 				continue
@@ -319,18 +321,18 @@ func (c *Client) reader(conn *websocket.Conn) error {
 			// Marked as starting here, on the read loop, so stdin that
 			// arrives before the process exists is held, not dropped.
 			c.registry.BeginSpawn(m.SessionID)
-			go func(sessionID string, spawn *msg.RunnerSpawn) {
+			go func(sessionID string, spawn *runnerprotocol.RunnerSpawn) {
 				if err := c.registry.Spawn(sessionID, spawn); err != nil {
 					c.registry.AbandonSpawn(sessionID)
 					log.Printf("[runner] spawn failed (session=%s): %v", sessionID, err)
-					c.outgoing <- &msg.RunnerMessage{
-						Type:      msg.RunnerMsgExit,
+					c.outgoing <- &runnerprotocol.RunnerMessage{
+						Type:      runnerprotocol.RunnerMsgExit,
 						SessionID: sessionID,
-						Exit:      &msg.RunnerExit{ExitCode: -1, Error: err.Error()},
+						Exit:      &runnerprotocol.RunnerExit{ExitCode: -1, Error: err.Error()},
 					}
 				}
 			}(m.SessionID, m.Spawn)
-		case msg.RunnerMsgStdin:
+		case runnerprotocol.RunnerMsgStdin:
 			if m.Stdin == nil || m.SessionID == "" {
 				continue
 			}
@@ -342,7 +344,7 @@ func (c *Client) reader(conn *websocket.Conn) error {
 			if err != nil {
 				log.Printf("[runner] stdin write failed (session=%s): %v", m.SessionID, err)
 			}
-		case msg.RunnerMsgSignal:
+		case runnerprotocol.RunnerMsgSignal:
 			if m.Signal == nil || m.SessionID == "" {
 				continue
 			}
@@ -353,23 +355,23 @@ func (c *Client) reader(conn *websocket.Conn) error {
 			if err := sp.Signal(m.Signal.Signal); err != nil {
 				log.Printf("[runner] signal failed (session=%s): %v", m.SessionID, err)
 			}
-		case msg.RunnerMsgPing:
-			c.outgoing <- &msg.RunnerMessage{Type: msg.RunnerMsgPong}
-		case msg.RunnerMsgPong:
+		case runnerprotocol.RunnerMsgPing:
+			c.outgoing <- &runnerprotocol.RunnerMessage{Type: runnerprotocol.RunnerMsgPong}
+		case runnerprotocol.RunnerMsgPong:
 			// Pongs reset the read deadline via SetPongHandler.
-		case msg.RunnerMsgSeedSnapshot:
+		case runnerprotocol.RunnerMsgSeedSnapshot:
 			if m.SeedSnapshot == nil {
 				continue
 			}
 			log.Printf("[runner] seed snapshot: source=%s reason=%s",
 				m.SeedSnapshot.Source, m.SeedSnapshot.Reason)
 			c.triggerSeed(m.SeedSnapshot.Source)
-		case msg.RunnerMsgSeedDelta:
+		case runnerprotocol.RunnerMsgSeedDelta:
 			// Per-file deltas are not used in v1 — the snapshot trigger
 			// drives a full reconcile and the manifest endpoint is the
 			// source of truth for what to apply. Ignore but log for debug.
 			log.Printf("[runner] seed_delta received (unused in v1)")
-		case msg.RunnerMsgClaudeOAuthRecovery:
+		case runnerprotocol.RunnerMsgClaudeOAuthRecovery:
 			if m.ClaudeOAuthRecovery == nil {
 				log.Printf("[runner] invalid Claude OAuth recovery message")
 				continue
@@ -420,7 +422,7 @@ func (c *Client) writer(ctx context.Context, conn *websocket.Conn, pingInterval 
 
 // writeJSON marshals m and writes it as a single text frame with the
 // configured deadline.
-func writeJSON(conn *websocket.Conn, m *msg.RunnerMessage) error {
+func writeJSON(conn *websocket.Conn, m *runnerprotocol.RunnerMessage) error {
 	conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	data, err := json.Marshal(m)
 	if err != nil {

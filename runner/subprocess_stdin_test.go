@@ -6,12 +6,14 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // /bin/cat echoes its stdin, so the order lines reach the process is the
 // order they come back out.
 func TestStdinBeforeTheProcessExistsIsHeldAndDeliveredInOrder(t *testing.T) {
-	outgoing := make(chan *msg.RunnerMessage, 16)
+	outgoing := make(chan *runnerprotocol.RunnerMessage, 16)
 	registry := NewSubprocessRegistry(outgoing, nil, "http://bridge.invalid", nil)
 	const session = "br_test"
 
@@ -24,7 +26,7 @@ func TestStdinBeforeTheProcessExistsIsHeldAndDeliveredInOrder(t *testing.T) {
 			t.Fatalf("DeliverStdin(%q) during the spawn = %v, %v", line, known, err)
 		}
 	}
-	err := registry.Spawn(session, &msg.RunnerSpawn{
+	err := registry.Spawn(session, &runnerprotocol.RunnerSpawn{
 		Harness: msg.HarnessClaudeCode, BinaryPath: "/bin/cat", StartParams: json.RawMessage(`{}`),
 	})
 	if err != nil {
@@ -39,7 +41,7 @@ func TestStdinBeforeTheProcessExistsIsHeldAndDeliveredInOrder(t *testing.T) {
 	for i, w := range want {
 		select {
 		case m := <-outgoing:
-			if m.Type != msg.RunnerMsgStdout || m.Stdout.Data != w {
+			if m.Type != runnerprotocol.RunnerMsgStdout || m.Stdout.Data != w {
 				t.Fatalf("line %d = %+v, want %q", i, m, w)
 			}
 		case <-time.After(5 * time.Second):
@@ -49,7 +51,7 @@ func TestStdinBeforeTheProcessExistsIsHeldAndDeliveredInOrder(t *testing.T) {
 }
 
 func TestAnAbandonedSpawnStopsHoldingInput(t *testing.T) {
-	registry := NewSubprocessRegistry(make(chan *msg.RunnerMessage, 1), nil, "", nil)
+	registry := NewSubprocessRegistry(make(chan *runnerprotocol.RunnerMessage, 1), nil, "", nil)
 	registry.BeginSpawn("br_failed")
 	registry.AbandonSpawn("br_failed")
 	if known, _ := registry.DeliverStdin("br_failed", "late"); known {

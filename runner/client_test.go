@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // syncBuffer is a log sink the test can poll while Run writes to it.
@@ -92,7 +92,7 @@ func TestRunKillsManagedServicesWhenCanceledDuringBackoff(t *testing.T) {
 	// what is under test here — shutdown is.
 	client.services.mu.Lock()
 	client.services.services["stand-in"] = &managedService{
-		manifest: msg.HarnessService{Name: "stand-in"},
+		manifest: runnerprotocol.HarnessService{Name: "stand-in"},
 		cmd:      service,
 	}
 	client.services.mu.Unlock()

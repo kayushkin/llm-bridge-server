@@ -10,6 +10,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // The resolved directory is handed to four different things, and this file
@@ -72,9 +74,9 @@ func TestARunnerSpawnCarriesTheSessionWorkingDirectory(t *testing.T) {
 	registry := NewRunnerRegistry()
 	conn := &RunnerConnection{
 		MachineName: "remote",
-		Hello:       &msg.RunnerHello{OS: "linux", Arch: "amd64"},
+		Hello:       &runnerprotocol.RunnerHello{OS: "linux", Arch: "amd64"},
 		registry:    registry,
-		outgoing:    make(chan *msg.RunnerMessage, 4),
+		outgoing:    make(chan *runnerprotocol.RunnerMessage, 4),
 		sessions:    map[string]*RunnerProcess{},
 	}
 	registry.register(conn)
@@ -199,10 +201,10 @@ func TestARunnerSpawnCarriesTheSessionEnvironmentAndComputerUse(t *testing.T) {
 	registry := NewRunnerRegistry()
 	conn := &RunnerConnection{
 		MachineName: "remote",
-		Hello: &msg.RunnerHello{OS: "linux", Arch: "amd64",
-			ComputerUse: &msg.ComputerUseTool{Command: "/mnt/c/x/llm-bridge-computer-use.exe"}},
+		Hello: &runnerprotocol.RunnerHello{OS: "linux", Arch: "amd64",
+			ComputerUse: &runnerprotocol.ComputerUseTool{Command: "/mnt/c/x/llm-bridge-computer-use.exe"}},
 		registry: registry,
-		outgoing: make(chan *msg.RunnerMessage, 4),
+		outgoing: make(chan *runnerprotocol.RunnerMessage, 4),
 		sessions: map[string]*RunnerProcess{},
 	}
 	registry.register(conn)

@@ -9,6 +9,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 func computerUseSession(t *testing.T, harnessName msg.Harness, config string) *store.Session {
@@ -22,11 +24,11 @@ func runnerInstance(allowed bool) *msg.Instance {
 	}}
 }
 
-func reportedTool(name string) *msg.ComputerUseTool {
+func reportedTool(name string) *runnerprotocol.ComputerUseTool {
 	if name != "SSDawn" {
 		return nil
 	}
-	return &msg.ComputerUseTool{Command: "/mnt/c/Users/slava/AppData/Local/llm-bridge/llm-bridge-computer-use.exe", Version: "test"}
+	return &runnerprotocol.ComputerUseTool{Command: "/mnt/c/Users/slava/AppData/Local/llm-bridge/llm-bridge-computer-use.exe", Version: "test"}
 }
 
 func mcpServerNames(t *testing.T, sess *store.Session) map[string]json.RawMessage {
@@ -65,8 +67,8 @@ func TestComputerUseJoinsTheSessionsOtherServersUnderItsOwnName(t *testing.T) {
 	var computer struct {
 		Command string `json:"command"`
 	}
-	if err := json.Unmarshal(servers[msg.ComputerUseMCPServerName], &computer); err != nil || !strings.HasSuffix(computer.Command, "llm-bridge-computer-use.exe") {
-		t.Errorf("computer-use server = %s (%v)", servers[msg.ComputerUseMCPServerName], err)
+	if err := json.Unmarshal(servers[runnerprotocol.ComputerUseMCPServerName], &computer); err != nil || !strings.HasSuffix(computer.Command, "llm-bridge-computer-use.exe") {
+		t.Errorf("computer-use server = %s (%v)", servers[runnerprotocol.ComputerUseMCPServerName], err)
 	}
 	if _, reserved := servers["computer-use"]; reserved {
 		t.Error("the server is named computer-use, which Claude Code drops")

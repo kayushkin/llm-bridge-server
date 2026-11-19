@@ -8,6 +8,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // These two tests pin the premise that pickAnthropicKey's doc comment now
@@ -20,7 +22,7 @@ import (
 // comment above pickAnthropicKey has to be rewritten with them. That is
 // the point of pinning it.
 
-func envValue(t *testing.T, svc msg.HarnessService, key string) string {
+func envValue(t *testing.T, svc runnerprotocol.HarnessService, key string) string {
 	t.Helper()
 	prefix := key + "="
 	for _, kv := range svc.Env {

@@ -8,6 +8,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
 // ManifestContext is the bridge-side state a manifest builder needs to
@@ -28,14 +30,14 @@ type ManifestContext struct {
 // Each harness type has a manifest builder that knows what backend, if
 // any, it depends on. Wrapper-CLI harnesses (claude_code, codex…) return
 // nil — they shell out to a CLI on PATH and have no daemon to deploy.
-func BuildProvision(harness msg.Harness, ctx ManifestContext) ([]msg.HarnessService, error) {
+func BuildProvision(harness msg.Harness, ctx ManifestContext) ([]runnerprotocol.HarnessService, error) {
 	if b := manifestBuilders[harness]; b != nil {
 		return b(ctx)
 	}
 	return nil, nil
 }
 
-type manifestBuilder func(ctx ManifestContext) ([]msg.HarnessService, error)
+type manifestBuilder func(ctx ManifestContext) ([]runnerprotocol.HarnessService, error)
 
 // manifestBuilders maps harness types to their deployment recipes.
 var manifestBuilders = map[msg.Harness]manifestBuilder{
@@ -45,12 +47,12 @@ var manifestBuilders = map[msg.Harness]manifestBuilder{
 // buildInberManifest emits a single inber-server backend service. The
 // runner downloads the cross-compiled binary, runs it with the resolved
 // Anthropic key in env, and waits for /health.
-func buildInberManifest(ctx ManifestContext) ([]msg.HarnessService, error) {
+func buildInberManifest(ctx ManifestContext) ([]runnerprotocol.HarnessService, error) {
 	apiKey, err := pickAnthropicKey(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("inber needs an Anthropic credential: %w", err)
 	}
-	return []msg.HarnessService{{
+	return []runnerprotocol.HarnessService{{
 		Name:      "inber-server",
 		BinaryURL: assetURL(ctx.ServerURL, "inber-server", ctx.OS, ctx.Arch),
 		Args:      []string{},
