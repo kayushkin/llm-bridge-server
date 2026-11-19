@@ -2,8 +2,12 @@ package postgresstorage_test
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -295,6 +299,99 @@ func TestProvisionChangesNothingThatIsAlreadyInPlace(t *testing.T) {
 	if err := notes.QueryRowContext(ctx, "SELECT count(*) FROM notes").Scan(&kept); err != nil || kept != 1 {
 		t.Errorf("after provisioning again the table holds %d rows (err %v), want 1", kept, err)
 	}
+}
+
+// An install's login is rarely a superuser, and a managed Postgres has none to
+// give. This runs the whole path as a login holding only what Provision says it
+// needs, with roles nobody made before.
+func TestALoginThatIsNotASuperuserProvisionsOpensAndMigrates(t *testing.T) {
+	ctx := context.Background()
+	suffix := randomLowerHex(t)
+	login, password := "install_login_"+suffix, "password_"+suffix+randomLowerHex(t)
+	notes, ledger := notesModule, ledgerModule
+	notes.Role, ledger.Role = "notes_role_"+suffix, "ledger_role_"+suffix
+
+	// Registered before the database, so it runs after the database is gone:
+	// a role cannot be dropped while it still owns a schema there.
+	t.Cleanup(func() {
+		server, err := sql.Open("pgx", os.Getenv(postgrestest.AdministratorURLVariable))
+		if err != nil {
+			t.Errorf("cleaning up roles: %v", err)
+			return
+		}
+		defer server.Close()
+		for _, role := range []string{notes.Role, ledger.Role, login} {
+			if _, err := server.ExecContext(context.Background(), "DROP ROLE IF EXISTS "+role); err != nil {
+				t.Errorf("dropping role %s: %v", role, err)
+			}
+		}
+	})
+
+	database := postgrestest.NewDatabase(t)
+	superuser := database.OpenAsAdministrator()
+	if _, err := superuser.ExecContext(ctx, "CREATE ROLE "+login+" LOGIN CREATEROLE PASSWORD '"+password+"'"); err != nil {
+		t.Fatal(err)
+	}
+	var databaseName string
+	if err := superuser.QueryRowContext(ctx, "SELECT current_database()").Scan(&databaseName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := superuser.ExecContext(ctx, `GRANT CREATE ON DATABASE "`+databaseName+`" TO `+login); err != nil {
+		t.Fatal(err)
+	}
+
+	loginURL, err := url.Parse(database.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginURL.User = url.UserPassword(login, password)
+	asLogin, err := sql.Open("pgx", loginURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer asLogin.Close()
+	var isSuperuser bool
+	if err := asLogin.QueryRowContext(ctx, "SELECT rolsuper FROM pg_roles WHERE rolname = current_user").Scan(&isSuperuser); err != nil {
+		t.Fatal(err)
+	}
+	if isSuperuser {
+		t.Fatal("the login under test is a superuser, so this test would prove nothing")
+	}
+
+	pools := map[string]*sql.DB{}
+	for _, module := range []postgresstorage.Module{notes, ledger} {
+		// Twice: the second call finds everything in place.
+		for range 2 {
+			if err := postgresstorage.Provision(ctx, asLogin, module); err != nil {
+				t.Fatalf("provisioning %s as a login that is not a superuser: %v", module.Schema, err)
+			}
+		}
+		db, err := postgresstorage.Open(ctx, loginURL.String(), module)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := postgresstorage.Migrate(ctx, db, module); err != nil {
+			t.Fatalf("migrating %s: %v", module.Schema, err)
+		}
+		pools[module.Schema] = db
+	}
+
+	if _, err := pools["ledger"].ExecContext(ctx, "INSERT INTO entries (amount) VALUES (7)"); err != nil {
+		t.Fatalf("the ledger module cannot write its own table: %v", err)
+	}
+	if _, err := pools["notes"].ExecContext(ctx, "SELECT 1 FROM ledger.entries"); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("err = %v, want permission denied: the wall must hold for an ordinary login too", err)
+	}
+}
+
+func randomLowerHex(t *testing.T) string {
+	t.Helper()
+	buffer := make([]byte, 6)
+	if _, err := rand.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(buffer)
 }
 
 func TestSchemaAndRoleNamesThatWouldNeedQuotingAreRefused(t *testing.T) {

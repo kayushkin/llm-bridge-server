@@ -17,7 +17,7 @@
 set -euo pipefail
 
 CONTAINER_NAME="llm-bridge-test-postgres"
-POSTGRES_IMAGE="${POSTGRESTEST_IMAGE:-postgres:17}"
+POSTGRES_IMAGE="${POSTGRESTEST_IMAGE:-postgres:18}"
 
 running() {
   [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" = "true" ]
@@ -38,7 +38,7 @@ case "${1:-}" in
       docker run -d --name "$CONTAINER_NAME" \
         -e POSTGRES_PASSWORD="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')" \
         -p 127.0.0.1::5432 \
-        --tmpfs /var/lib/postgresql/data:rw,size=2g \
+        --tmpfs /var/lib/postgresql:rw,size=2g \
         --shm-size 256m \
         "$POSTGRES_IMAGE" \
         -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_connections=300 >/dev/null

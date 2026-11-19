@@ -93,33 +93,34 @@ func Open(ctx context.Context, url string, module Module) (*sql.DB, error) {
 }
 
 // Provision makes the module's role and schema if they are missing, and lets
-// the login that administrator connects as act as the role. administrator must
-// be a login that may create roles and schemas. It changes nothing that is
-// already in place, so every start may call it.
+// the login that administrator connects as act as the role. It changes nothing
+// that is already in place, so every start may call it.
+//
+// The login needs no superuser: CREATEROLE, and CREATE on the database, are
+// enough. A role that already exists must be one this login may grant (one it
+// made, or one it was given WITH ADMIN OPTION).
 func Provision(ctx context.Context, administrator *sql.DB, module Module) error {
 	if err := module.check(); err != nil {
 		return err
 	}
-	if module.Role == "" {
-		if _, err := administrator.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+module.Schema); err != nil {
-			return fmt.Errorf("postgresstorage: creating schema %s: %w", module.Schema, err)
-		}
-		return nil
-	}
-	// Two servers starting together would both see the role missing and both
-	// try to create it; the lock makes one wait for the other.
 	return InTransaction(ctx, administrator, func(tx *sql.Tx) error {
+		// Servers that start together would both find the schema missing and
+		// both try to create it; the lock makes one wait for the other.
 		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "postgresstorage.provision"); err != nil {
 			return fmt.Errorf("postgresstorage: taking the provisioning lock: %w", err)
 		}
-		var roleExists bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)", module.Role).Scan(&roleExists); err != nil {
-			return fmt.Errorf("postgresstorage: looking for role %s: %w", module.Role, err)
-		}
-		if !roleExists {
-			if _, err := tx.ExecContext(ctx, "CREATE ROLE "+module.Role+" NOLOGIN"); err != nil {
-				return fmt.Errorf("postgresstorage: creating role %s: %w", module.Role, err)
+		if module.Role == "" {
+			if _, err := tx.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+module.Schema); err != nil {
+				return fmt.Errorf("postgresstorage: creating schema %s: %w", module.Schema, err)
 			}
+			return nil
+		}
+		// A role belongs to the whole server, not to one database, and the lock
+		// above reaches one database only. So "it already exists" is taken as
+		// done here rather than checked first: another database's server may
+		// be making the same role at this moment.
+		if _, err := tx.ExecContext(ctx, `DO $$ BEGIN CREATE ROLE `+module.Role+` NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$`); err != nil {
+			return fmt.Errorf("postgresstorage: creating role %s: %w", module.Role, err)
 		}
 		if _, err := tx.ExecContext(ctx, "GRANT "+module.Role+" TO CURRENT_USER"); err != nil {
 			return fmt.Errorf("postgresstorage: letting this login act as role %s: %w", module.Role, err)
