@@ -23,8 +23,8 @@ import (
 // The id lands in two different KINDS of place and they do not have the same
 // safe form:
 //
-//	claude-code  a JSON "url" value, consumed by CC's native http hook
-//	codex        a shell command line, run by codex as a type:"command" hook
+//	every gate   a shell command line, run as a type:"command" hook (Claude
+//	             Code's was a JSON "url" for an http hook until 2026-11-23)
 //
 // So there are two properties pinned by two instruments. The URL property is
 // checked by parsing. The shell property is checked by handing the generated
@@ -121,10 +121,14 @@ func assertSegments(t *testing.T, label, rawURL, id string, template ...string) 
 	}
 }
 
-func TestCCPermissionHookURLKeepsTheSessionIDInOneSegment(t *testing.T) {
+func TestCCPermissionHookCommandRunsExactlyOneCurl(t *testing.T) {
 	for _, probe := range pathProbes() {
 		t.Run(probe.name, func(t *testing.T) {
-			id := strings.ReplaceAll(probe.id, "MARKER", filepath.Join(t.TempDir(), "INJECTED"))
+			marker := filepath.Join(t.TempDir(), "INJECTED")
+			id := strings.ReplaceAll(probe.id, "MARKER", marker)
+			if !strings.Contains(probe.id, "MARKER") {
+				marker = ""
+			}
 			srv, _ := testServerWithHookStore(t)
 			got, err := srv.buildClaudeCodeSettings(&store.Session{SessionID: id, Harness: msg.HarnessClaudeCode})
 			if err != nil {
@@ -133,8 +137,8 @@ func TestCCPermissionHookURLKeepsTheSessionIDInOneSegment(t *testing.T) {
 			parsed := parseSettings(t, got)
 			pre := parsed["hooks"].(map[string]any)["PreToolUse"].([]any)
 			inner := pre[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
-			raw, _ := inner["url"].(string)
-			assertSegments(t, probe.name, raw, id, "permission", "cc-prehook", "")
+			cmd, _ := inner["command"].(string)
+			assertOneCurlRun(t, probe.name, cmd, marker, id, "permission", "cc-prehook", "")
 		})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -286,27 +287,24 @@ func (s *Server) buildClaudeCodeSettings(sess *store.Session) (string, error) {
 	base := publicBaseURL(s.cfg.ListenAddr)
 	byEvent := make(map[string][]any, 4)
 
-	// Permission gate: a PreToolUse HTTP hook routed to bridge-server's
-	// /permission/cc-prehook endpoint. Replaces the embedded bridge_perm
-	// MCP path (see permission-store/docs/cc-mcp-retrospective.md). CC
-	// supports type:"http" natively and honors the per-hook timeout
-	// field, so no curl wrapper or env-var clamp logic is needed.
+	// Permission gate: a PreToolUse command hook that posts the tool call to
+	// /permission/cc-prehook and blocks the call when that post fails
+	// (permissionGateCommand). It was a type:"http" hook until 2026-11-23, and
+	// Claude Code ignores an http hook it cannot reach: measured on 2.1.330, a
+	// dead port or a 503 let the tool run, and the wrapper starts every session
+	// in bypassPermissions so this hook is the only gate.
 	//
 	// matcher "*" → fires on every tool call. Prepended to PreToolUse
 	// so the permission decision lands before any snapshot hooks run;
 	// CC's hook executor processes entries in the order we declare.
-	//
-	// Timeout: 86400s = 1 day. Long enough that no human-driven approval
-	// flow will hit it; far below the 24-day Node-side TIMEOUT_MAX
-	// trap that bit the MCP path.
 	if sess.SessionID != "" {
 		permEntry := map[string]any{
 			"matcher": "*",
 			"hooks": []map[string]any{
 				{
-					"type":    "http",
-					"url":     fmt.Sprintf("%s/permission/cc-prehook/%s", base, escapePathSegment(sess.SessionID)),
-					"timeout": 86400,
+					"type":    "command",
+					"command": permissionGateCommand(fmt.Sprintf("%s/permission/cc-prehook/%s", base, escapePathSegment(sess.SessionID))),
+					"timeout": permissionGateHookTimeoutSeconds,
 				},
 			},
 		}
@@ -430,21 +428,14 @@ func (s *Server) buildPrehookCommandHookTree(sess *store.Session, harness msg.Ha
 	// MCP tool call codex routes through PreToolUse (per the codex docs,
 	// not every tool fires the event — but for the gate we want to match
 	// everything that does).
-	//
-	// timeout 86400s = 1 day; same headroom as the CC gate so a human-driven
-	// approval flow doesn't hit the codex hook timeout.
 	if sess.SessionID != "" {
-		cmd := hookCurlCommand(
-			fmt.Sprintf("%s/permission/%s/%s", base, gateRoute, escapePathSegment(sess.SessionID)),
-			"--max-time", "86400",
-		)
 		permEntry := map[string]any{
 			"matcher": ".*",
 			"hooks": []map[string]any{
 				{
 					"type":    "command",
-					"command": cmd,
-					"timeout": 86400,
+					"command": permissionGateCommand(fmt.Sprintf("%s/permission/%s/%s", base, gateRoute, escapePathSegment(sess.SessionID))),
+					"timeout": permissionGateHookTimeoutSeconds,
 				},
 			},
 		}
@@ -515,6 +506,37 @@ func escapePathSegment(segment string) string {
 // a session id of `a&touch /tmp/x` created /tmp/x when the generated hook ran.
 func shellSingleQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+// permissionGateHookTimeoutSeconds is how long a harness waits for the
+// permission gate's hook: a day, so a person has time to answer a parked
+// prompt, and far below the 24-day Node timer limit that broke the old MCP gate.
+const permissionGateHookTimeoutSeconds = 86400
+
+// permissionGateCurlMaxTimeSeconds ends the gate's curl five minutes before the
+// harness would kill the hook. A hook the harness kills for running too long
+// is a hook that failed in the harness's own way, which lets the tool run; a
+// curl that gives up first takes the blocking exit below instead.
+const permissionGateCurlMaxTimeSeconds = permissionGateHookTimeoutSeconds - 300
+
+// permissionGateUnreachableMessage is what the agent reads when the gate's
+// call fails. It holds no single quote, because it is written into the
+// command inside one.
+const permissionGateUnreachableMessage = "The bridge permission check could not be reached, so this tool call is blocked. Try again once the bridge answers."
+
+// permissionGateCommand is the command every harness runs as its permission
+// gate: post the tool call to targetURL and print the gate's answer, and when
+// the post fails for any reason (no connection, a non-2xx answer, the time
+// limit) exit 2. Exit 2 is the one hook exit that blocks the tool call in
+// Claude Code, codex and devin; any other failing exit is logged and the tool
+// runs. With the bridge's own permission prompts off (bypassPermissions), a
+// gate that failed any other way let every tool call through unchecked.
+//
+// When the post succeeds the command's output and exit are curl's own, so
+// a harness that reaches the gate sees exactly what it saw before.
+func permissionGateCommand(targetURL string) string {
+	return hookCurlCommand(targetURL, "--max-time", strconv.Itoa(permissionGateCurlMaxTimeSeconds)) +
+		" || { printf '%s\\n' " + shellSingleQuote(permissionGateUnreachableMessage) + " >&2; exit 2; }"
 }
 
 // hookCurlCommand renders the curl invocation that a type:"command" hook
