@@ -6,7 +6,8 @@
 # The server, the runner and the mock harness come from this repo, with the
 # front end built first so it is compiled into the server. log-store,
 # tool-store, principal-store and grant-store come from their own repos beside
-# this one, as they are checked out there.
+# this one, as they are checked out there, and so do kanban-store,
+# reference-store and permission-store.
 #
 # Every binary is built for linux/amd64 with no dependency on the system C
 # library, so a folder built on one distribution runs on an older one: copy it
@@ -29,10 +30,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/llm-bridge-server" ./cmd
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/llm-bridge-runner" ./runner
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/llm-bridge-mock" ./cmd/mock-harness
 
-echo "==> Building log-store..."
-(cd "$PARENT_DIR/log-store" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/log-store" ./cmd/log-store)
+# These use a SQLite driver written in Go, or none, so they build with no C.
+build_pure() { # <repo>
+  echo "==> Building $1..."
+  (cd "$PARENT_DIR/$1" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/$1" "./cmd/$1")
+}
+build_pure log-store
+build_pure reference-store
+build_pure permission-store
 
-# These three use the SQLite driver that is C code, so they are linked whole
+# These four use the SQLite driver that is C code, so they are linked whole
 # (static) instead. principal-store's search needs SQLite's FTS5, as its own
 # deploy script says.
 build_static() { # <repo> <extra build tags>
@@ -46,6 +53,7 @@ build_static() { # <repo> <extra build tags>
 build_static tool-store ""
 build_static principal-store "sqlite_fts5"
 build_static grant-store ""
+build_static kanban-store ""
 
 cp "$REPO_DIR/scripts/test-instance.sh" "$OUT/test-instance.sh"
 echo "==> Built into $OUT:"

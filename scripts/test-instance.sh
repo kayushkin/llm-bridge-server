@@ -11,19 +11,21 @@
 #   scripts/test-instance.sh uninstall          stop it and delete the folder
 #
 # <folder of binaries> holds llm-bridge-server, llm-bridge-runner,
-# llm-bridge-mock, log-store, tool-store, principal-store and grant-store, built
-# for this machine. The machine itself needs no Go or Node, only systemd user
+# llm-bridge-mock and the seven stores below, built for this machine. The machine itself needs no Go or Node, only systemd user
 # units, curl, jq and sqlite3. Running install again replaces the binaries and
 # restarts; settings, secrets and data are kept.
 #
 # What it runs:
 #   the server, with its front end at /ui/ and demo login switched on
-#   log-store, tool-store, principal-store and grant-store, each its own unit
+#   log-store, tool-store, principal-store, grant-store, kanban-store,
+#   reference-store and permission-store, each its own unit
 #   a runner enrolled with this server, offering the mock harness
 #
-# kanban-store, reference-store and permission-store are not installed. The
-# server requires their addresses, so they are set to a port nothing listens
-# on, and the pages that need them answer an error.
+# Every address a store would otherwise default to is set here, because the
+# defaults are a real install's ports, and on a machine with a real runner
+# 127.0.0.1:8160 is a tunnel to the real server. A service the test instance
+# does not run (noteboard, bundle-store, auth-store, skill-store) is set to a
+# port nothing listens on, and what needs it answers an error.
 #
 # Demo login lets anyone who can reach the server sign in as any person, with
 # no password. That is acceptable here only because the server listens on
@@ -33,7 +35,7 @@ set -euo pipefail
 ROOT="${BRIDGE_TEST_INSTANCE_DIR:-$HOME/.local/opt/llm-bridge-test}"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_PREFIX="llm-bridge-test"
-STORES=(log-store tool-store principal-store grant-store)
+STORES=(log-store tool-store principal-store grant-store kanban-store reference-store permission-store)
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -102,16 +104,24 @@ install_instance() {
   mkdir -p "$ROOT"/{bin,data,env,home,runner,runner-assets} "$UNIT_DIR"
   chmod 700 "$ROOT" "$ROOT/env"
 
-  if [ ! -f "$ROOT/env/ports.env" ]; then
-    local base="${BRIDGE_TEST_PORT_BASE:-18160}"
-    cat > "$ROOT/env/ports.env" <<EOF
-BRIDGE_PORT=$base
-LOG_STORE_PORT=$((base + 15))
-TOOL_STORE_PORT=$((base + 142))
-PRINCIPAL_STORE_PORT=$((base + 154))
-GRANT_STORE_PORT=$((base + 155))
-EOF
-  fi
+  # Ports keep a real install's offsets from the server's port. A key already
+  # in ports.env keeps its value, so an instance installed before a store was
+  # added gets that store's port without the others moving.
+  local base
+  base="$(sed -n 's/^BRIDGE_PORT=//p' "$ROOT/env/ports.env" 2>/dev/null)"
+  base="${base:-${BRIDGE_TEST_PORT_BASE:-18160}}"
+  touch "$ROOT/env/ports.env"
+  add_port() { # <key> <port>
+    grep -q "^$1=" "$ROOT/env/ports.env" || echo "$1=$2" >> "$ROOT/env/ports.env"
+  }
+  add_port BRIDGE_PORT "$base"
+  add_port LOG_STORE_PORT $((base + 15))
+  add_port TOOL_STORE_PORT $((base + 142))
+  add_port PRINCIPAL_STORE_PORT $((base + 154))
+  add_port GRANT_STORE_PORT $((base + 155))
+  add_port PERMISSION_STORE_PORT $((base + 144))
+  add_port KANBAN_STORE_PORT $((base + 145))
+  add_port REFERENCE_STORE_PORT $((base + 183))
   load_settings
   local nowhere="http://127.0.0.1:1"
 
@@ -125,6 +135,16 @@ KANBAN_STORE_SERVICE_TOKEN=$(random_hex 32)
 EOF
     )
   fi
+
+  # reference-store's token is for its own callers. Nothing here presents it,
+  # but the store will not start without one. It has a file of its own, so it
+  # reaches no other process.
+  if [ ! -f "$ROOT/env/reference-store-secrets.env" ]; then
+    ( umask 077; echo "REFERENCE_STORE_SERVICE_TOKEN=$(random_hex 32)" > "$ROOT/env/reference-store-secrets.env" )
+  fi
+  # kanban-store gets only the two tokens it declares, copied from the server's
+  # file on every install so the two never differ.
+  ( umask 077; grep -E '^(KANBAN_STORE_SERVICE_TOKEN|GRANT_STORE_SERVICE_TOKEN)=' "$ROOT/env/secrets.env" > "$ROOT/env/kanban-store-secrets.env" )
 
   cat > "$ROOT/env/server.env" <<EOF
 LLMBRIDGE_LISTEN_ADDR=127.0.0.1:$BRIDGE_PORT
@@ -147,9 +167,9 @@ LLMBRIDGE_LOG_STORE_URL=http://127.0.0.1:$LOG_STORE_PORT
 LLMBRIDGE_TOOL_STORE_URL=http://127.0.0.1:$TOOL_STORE_PORT
 LLMBRIDGE_PRINCIPAL_STORE_URL=http://127.0.0.1:$PRINCIPAL_STORE_PORT
 LLMBRIDGE_GRANT_STORE_URL=http://127.0.0.1:$GRANT_STORE_PORT
-LLMBRIDGE_KANBAN_STORE_URL=$nowhere
-LLMBRIDGE_REFERENCE_STORE_URL=$nowhere
-LLMBRIDGE_PERMISSION_STORE_URL=$nowhere
+LLMBRIDGE_KANBAN_STORE_URL=http://127.0.0.1:$KANBAN_STORE_PORT
+LLMBRIDGE_REFERENCE_STORE_URL=http://127.0.0.1:$REFERENCE_STORE_PORT
+LLMBRIDGE_PERMISSION_STORE_URL=http://127.0.0.1:$PERMISSION_STORE_PORT
 EOF
 
   # One file per store: a store refuses to start when a variable carrying its
@@ -168,8 +188,29 @@ PRINCIPAL_STORE_URL=http://127.0.0.1:$PRINCIPAL_STORE_PORT
 TOOL_STORE_URL=http://127.0.0.1:$TOOL_STORE_PORT
 LLM_BRIDGE_URL=http://127.0.0.1:$BRIDGE_PORT
 SKILL_STORE_URL=$nowhere
-KANBAN_STORE_URL=$nowhere
+KANBAN_STORE_URL=http://127.0.0.1:$KANBAN_STORE_PORT
 EOF
+  cat > "$ROOT/env/kanban-store.env" <<EOF
+KANBAN_LISTEN_HOST=127.0.0.1
+KANBAN_PORT=$KANBAN_STORE_PORT
+KANBAN_DB=$ROOT/data/kanban-store.db
+KANBAN_NOTEBOARD_URL=$nowhere
+PRINCIPAL_STORE_URL=http://127.0.0.1:$PRINCIPAL_STORE_PORT
+REFERENCE_STORE_URL=http://127.0.0.1:$REFERENCE_STORE_PORT
+LLM_BRIDGE_URL=http://127.0.0.1:$BRIDGE_PORT
+BUNDLE_STORE_URL=$nowhere
+AUTH_STORE_URL=$nowhere
+GRANT_STORE_URL=http://127.0.0.1:$GRANT_STORE_PORT
+EOF
+  cat > "$ROOT/env/reference-store.env" <<EOF
+REFERENCE_STORE_ADDR=127.0.0.1:$REFERENCE_STORE_PORT
+REFERENCE_STORE_SERVICE_URLS=llm-bridge-server:http://127.0.0.1:$BRIDGE_PORT,tool-store:http://127.0.0.1:$TOOL_STORE_PORT,principal-store:http://127.0.0.1:$PRINCIPAL_STORE_PORT
+REFERENCE_STORE_PRINCIPAL_STORE_URL=http://127.0.0.1:$PRINCIPAL_STORE_PORT
+REFERENCE_STORE_GRANT_STORE_URL=http://127.0.0.1:$GRANT_STORE_PORT
+EOF
+  # permission-store reads no environment; its port and database are flags in
+  # its unit.
+  : > "$ROOT/env/permission-store.env"
   rm -f "$ROOT/env/stores.env"
 
   step "stopping what is running, to replace the binaries"
@@ -186,12 +227,20 @@ EOF
 
   step "writing units"
   for store in "${STORES[@]}"; do
-    # Only grant-store presents tokens to the others; the rest are given none.
-    if [ "$store" = grant-store ]; then
-      write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" "$ROOT/env/secrets.env" </dev/null
-    else
-      write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" </dev/null
-    fi
+    # Each store gets only its own files: grant-store presents the server's
+    # store tokens, kanban-store holds its two, reference-store its own.
+    case "$store" in
+      grant-store)
+        write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" "$ROOT/env/secrets.env" </dev/null ;;
+      kanban-store)
+        write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" "$ROOT/env/kanban-store-secrets.env" </dev/null ;;
+      reference-store)
+        write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" "$ROOT/env/reference-store-secrets.env" </dev/null ;;
+      permission-store)
+        write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store --port $PERMISSION_STORE_PORT --db $ROOT/data/permission-store.db" "$ROOT/env/$store.env" </dev/null ;;
+      *)
+        write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" </dev/null ;;
+    esac
   done
   write_unit "$UNIT_PREFIX" "llm-bridge test instance: the server" llm-bridge-server "$ROOT/env/server.env" "$ROOT/env/secrets.env" <<EOF
 EOF
@@ -211,6 +260,9 @@ EOF
   wait_for principal-store "http://127.0.0.1:$PRINCIPAL_STORE_PORT/kinds"
   wait_for tool-store "http://127.0.0.1:$TOOL_STORE_PORT/tools"
   wait_for log-store "http://127.0.0.1:$LOG_STORE_PORT/health"
+  wait_for kanban-store "http://127.0.0.1:$KANBAN_STORE_PORT/health"
+  wait_for reference-store "http://127.0.0.1:$REFERENCE_STORE_PORT/types"
+  wait_for permission-store "http://127.0.0.1:$PERMISSION_STORE_PORT/healthz"
 
   step "starting the server"
   systemctl --user enable --now "$UNIT_PREFIX.service" >/dev/null 2>&1
