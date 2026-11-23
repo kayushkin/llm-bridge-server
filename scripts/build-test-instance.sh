@@ -35,6 +35,14 @@ build_pure() { # <repo>
   echo "==> Building $1..."
   (cd "$PARENT_DIR/$1" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/$1" "./cmd/$1")
 }
+# The real harness wrappers. The machine supplies the agent programs
+# themselves (claude, codex) and their logins; scripts/test-instance.sh
+# use-machine-logins links them in.
+for wrapper in llm-bridge-claudecode llm-bridge-codex; do
+  echo "==> Building $wrapper..."
+  (cd "$PARENT_DIR/$wrapper" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/$wrapper" .)
+done
+
 build_pure log-store
 build_pure reference-store
 build_pure permission-store

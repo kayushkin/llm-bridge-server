@@ -9,6 +9,8 @@
 #   scripts/test-instance.sh status
 #   scripts/test-instance.sh service-token      print the token for API calls
 #   scripts/test-instance.sh uninstall          stop it and delete the folder
+#   scripts/test-instance.sh use-machine-logins run real Claude Code and codex
+#                                               on this machine's own logins
 #
 # <folder of binaries> holds llm-bridge-server, llm-bridge-runner,
 # llm-bridge-mock and the seven stores below, built for this machine. The machine itself needs no Go or Node, only systemd user
@@ -221,6 +223,11 @@ EOF
   for binary in llm-bridge-server llm-bridge-runner llm-bridge-mock "${STORES[@]}"; do
     install -m 755 "$binaries/$binary" "$ROOT/bin/$binary"
   done
+  # The real harness wrappers. They run only once use-machine-logins has put
+  # the agent programs and their logins in place.
+  for wrapper in llm-bridge-claudecode llm-bridge-codex; do
+    if [ -x "$binaries/$wrapper" ]; then install -m 755 "$binaries/$wrapper" "$ROOT/bin/$wrapper"; fi
+  done
   # The server offers runners the build in this folder. It is the same file the
   # test runner runs, so the two never disagree about which is newer.
   install -m 755 "$binaries/llm-bridge-runner" "$ROOT/runner-assets/llm-bridge-runner-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
@@ -309,6 +316,16 @@ status_instance() {
     printf '  %-36s %s\n' "$unit" "$(systemctl --user is-active "$unit.service" 2>/dev/null || true)"
   done
   echo "  server:     $BASE   (front end: $BASE/ui/)"
+  local real_home file
+  real_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
+  for file in "${LOGIN_FILES[@]}"; do
+    [ -e "$ROOT/home/$file" ] || continue
+    if [ "$(stat -c %i "$ROOT/home/$file")" = "$(stat -c %i "$real_home/$file" 2>/dev/null)" ]; then
+      echo "  login:      $file shared with $real_home"
+    else
+      echo "  login:      WARNING: $file is no longer the same file as $real_home/$file; run use-machine-logins again"
+    fi
+  done
   if curl -fsS -o /dev/null "$BASE/health" 2>/dev/null; then
     echo "  machines:   $(bridge_curl "$BASE/machines" | jq -r '[.[] | "\(.name) (\(.transport))"] | join(", ")')"
     echo "  instances:  $(bridge_curl "$BASE/instances" | jq -r '[.[] | "\(.id) \(.harness_type // .harness)"] | join(", ")')"
@@ -316,6 +333,54 @@ status_instance() {
   else
     echo "  the server is not answering"
   fi
+}
+
+# The login files the agent programs keep, relative to a home folder.
+LOGIN_FILES=(.claude/.credentials.json .codex/auth.json)
+
+# use-machine-logins lets the test runner start real Claude Code and codex
+# sessions on the logins this machine's own user already has.
+#
+# The programs are linked into the test folder's bin. Each login file is a
+# HARD link, not a symbolic one: Claude Code opens its credentials with
+# O_NOFOLLOW and treats a symbolic link as no login at all (read in the 2.1.330
+# binary). It rewrites the file in place (O_TRUNC), so with a hard link both
+# installs read one file, and a token refreshed by either is the token both
+# use. Everything else -- history, projects, settings -- stays in the test
+# home, so the machine's own runner never discovers a test session. status
+# reports a login file whose link has come apart.
+use_machine_logins() {
+  load_settings
+  local real_home program path wrapper file
+  real_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
+  [ "$(stat -c %d "$real_home")" = "$(stat -c %d "$ROOT")" ] || fail "$ROOT and $real_home are on different file systems, so a login file cannot be hard linked"
+  for program in claude codex node; do
+    path="$(PATH="$real_home/.local/bin:$PATH" command -v "$program")" || fail "this machine has no $program"
+    ln -sfn "$path" "$ROOT/bin/$program"
+  done
+  for wrapper in llm-bridge-claudecode llm-bridge-codex; do
+    [ -x "$ROOT/bin/$wrapper" ] || fail "$ROOT/bin/$wrapper is missing; install a folder built by build-test-instance.sh"
+  done
+  for file in "${LOGIN_FILES[@]}"; do
+    [ -f "$real_home/$file" ] || fail "this machine has no login at $real_home/$file"
+    mkdir -p "$(dirname "$ROOT/home/$file")"
+    chmod 700 "$(dirname "$ROOT/home/$file")"
+    ln -f "$real_home/$file" "$ROOT/home/$file"
+  done
+  # The agent programs must not update themselves from inside the test home.
+  grep -q '^DISABLE_AUTOUPDATER=' "$ROOT/env/runner.env" || echo 'DISABLE_AUTOUPDATER=1' >> "$ROOT/env/runner.env"
+
+  # The sessions need models the agent programs know. The registry is the
+  # server's own database, which no route writes.
+  step "adding a Claude model and a codex model to the registry"
+  sqlite3 "$ROOT/data/models.db" \
+    "INSERT OR IGNORE INTO providers (id, name) VALUES ('anthropic', 'Anthropic'), ('openai', 'OpenAI');
+     INSERT OR IGNORE INTO models (id, provider, name) VALUES ('claude-haiku-5-5', 'anthropic', 'Claude Haiku 5.5'), ('gpt-5.6-luna', 'openai', 'GPT-5.6 Luna');"
+
+  step "restarting the runner, which offers every harness it finds on its PATH"
+  systemctl --user restart "$UNIT_PREFIX-runner.service"
+  sleep 3
+  status_instance
 }
 
 uninstall_instance() {
@@ -337,5 +402,6 @@ case "${1:-}" in
   status)        status_instance ;;
   service-token) load_settings; service_token ;;
   uninstall)     uninstall_instance ;;
-  *)             echo "usage: $0 install <folder of binaries> | status | service-token | uninstall" >&2; exit 2 ;;
+  use-machine-logins) use_machine_logins ;;
+  *)             echo "usage: $0 install <folder of binaries> | status | service-token | uninstall | use-machine-logins" >&2; exit 2 ;;
 esac
