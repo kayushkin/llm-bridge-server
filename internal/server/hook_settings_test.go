@@ -79,12 +79,14 @@ func TestBuildCCSettings_PermissionHookPresentWithNoHookEntries(t *testing.T) {
 		t.Errorf("permission hook matcher = %v, want \"*\"", entry["matcher"])
 	}
 	inner := entry["hooks"].([]any)[0].(map[string]any)
-	if inner["type"] != "http" {
-		t.Errorf("permission hook type = %v, want \"http\"", inner["type"])
+	// A command hook, not type:"http": Claude Code lets a tool run when it
+	// cannot reach an http hook (TestPermissionGateCommandBlocksWhenThePostFails).
+	if inner["type"] != "command" {
+		t.Errorf("permission hook type = %v, want \"command\"", inner["type"])
 	}
-	url, _ := inner["url"].(string)
-	if !strings.Contains(url, "/permission/cc-prehook/b1") {
-		t.Errorf("permission hook url = %q, want containing /permission/cc-prehook/b1", url)
+	command, _ := inner["command"].(string)
+	if !strings.Contains(command, "/permission/cc-prehook/b1") {
+		t.Errorf("permission hook command = %q, want one posting to /permission/cc-prehook/b1", command)
 	}
 	// timeout must be present and large enough that human approval flows
 	// can complete; the JSON number type round-trips as float64.
