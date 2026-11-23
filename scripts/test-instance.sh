@@ -377,6 +377,15 @@ use_machine_logins() {
     "INSERT OR IGNORE INTO providers (id, name) VALUES ('anthropic', 'Anthropic'), ('openai', 'OpenAI');
      INSERT OR IGNORE INTO models (id, provider, name) VALUES ('claude-haiku-5-5', 'anthropic', 'Claude Haiku 5.5'), ('gpt-5.6-luna', 'openai', 'GPT-5.6 Luna');"
 
+  # A chat started from the front end takes the harness's default model; the
+  # registry's own default is the mock harness's stand-in, which Claude Code
+  # answers with a 404. Set one per harness, keeping any already chosen.
+  step "making them the default models of their harnesses"
+  local prefs
+  prefs="$(bridge_curl -f "$BASE/bridge-prefs")" || fail "could not read $BASE/bridge-prefs"
+  prefs="$(jq '.defaults.claude_code.model //= "claude-haiku-5-5" | .defaults.codex.model //= "gpt-5.6-luna"' <<<"$prefs")"
+  bridge_curl -f -o /dev/null -X PUT "$BASE/bridge-prefs" -H 'Content-Type: application/json' -d "$prefs" || fail "could not write $BASE/bridge-prefs"
+
   step "restarting the runner, which offers every harness it finds on its PATH"
   systemctl --user restart "$UNIT_PREFIX-runner.service"
   sleep 3
