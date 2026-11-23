@@ -320,7 +320,7 @@ status_instance() {
   real_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
   for file in "${LOGIN_FILES[@]}"; do
     [ -e "$ROOT/home/$file" ] || continue
-    if [ "$(stat -c %i "$ROOT/home/$file")" = "$(stat -c %i "$real_home/$file" 2>/dev/null)" ]; then
+    if [ "$(stat -L -c %d:%i "$ROOT/home/$file")" = "$(stat -L -c %d:%i "$real_home/$file" 2>/dev/null)" ]; then
       echo "  login:      $file shared with $real_home"
     else
       echo "  login:      WARNING: $file is no longer the same file as $real_home/$file; run use-machine-logins again"
@@ -342,7 +342,8 @@ LOGIN_FILES=(.claude/.credentials.json .codex/auth.json)
 # sessions on the logins this machine's own user already has.
 #
 # The programs are linked into the test folder's bin. Each login file is a
-# HARD link, not a symbolic one: Claude Code opens its credentials with
+# HARD link (or, when the test folder is on a disk of its own, a bind mount
+# made as root), never a symbolic one: Claude Code opens its credentials with
 # O_NOFOLLOW and treats a symbolic link as no login at all (read in the 2.1.330
 # binary). It rewrites the file in place (O_TRUNC), so with a hard link both
 # installs read one file, and a token refreshed by either is the token both
@@ -353,7 +354,6 @@ use_machine_logins() {
   load_settings
   local real_home program path wrapper file
   real_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
-  [ "$(stat -c %d "$real_home")" = "$(stat -c %d "$ROOT")" ] || fail "$ROOT and $real_home are on different file systems, so a login file cannot be hard linked"
   for program in claude codex node; do
     path="$(PATH="$real_home/.local/bin:$PATH" command -v "$program")" || fail "this machine has no $program"
     ln -sfn "$path" "$ROOT/bin/$program"
@@ -363,6 +363,14 @@ use_machine_logins() {
   done
   for file in "${LOGIN_FILES[@]}"; do
     [ -f "$real_home/$file" ] || fail "this machine has no login at $real_home/$file"
+    # Already the same file: a hard link from an earlier run, or a bind mount
+    # when the test folder lives on a disk of its own (a hard link cannot
+    # cross disks, and a copy would split the login in two).
+    if [ "$(stat -L -c %d:%i "$ROOT/home/$file" 2>/dev/null)" = "$(stat -L -c %d:%i "$real_home/$file")" ]; then
+      continue
+    fi
+    [ "$(stat -L -c %d "$real_home")" = "$(stat -L -c %d "$ROOT/home")" ] ||
+      fail "$ROOT/home is on another disk than $real_home, so $file cannot be hard linked; bind-mount $real_home/$file onto $ROOT/home/$file as root first"
     mkdir -p "$(dirname "$ROOT/home/$file")"
     chmod 700 "$(dirname "$ROOT/home/$file")"
     ln -f "$real_home/$file" "$ROOT/home/$file"
