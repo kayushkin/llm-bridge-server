@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	workgraphstore "github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	workgraphstore "github.com/kayushkin/work-graph-store"
 )
 
 func main() {

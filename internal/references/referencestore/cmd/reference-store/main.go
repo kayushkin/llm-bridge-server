@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	referencestore "github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	referencestore "github.com/kayushkin/reference-store"
 )
 
 func main() {

@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	workgraphstore "github.com/kayushkin/work-graph-store"
+	workgraphstore "github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
 )
 
 func main() {

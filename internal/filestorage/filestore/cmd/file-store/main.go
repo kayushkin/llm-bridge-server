@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	filestore "github.com/kayushkin/file-store"
+	filestore "github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 

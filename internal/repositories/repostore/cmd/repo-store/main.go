@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	repostore "github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	repostore "github.com/kayushkin/repo-store"
 )
 
 func main() {

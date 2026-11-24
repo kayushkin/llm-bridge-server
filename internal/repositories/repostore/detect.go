@@ -1,6 +1,6 @@
 package repostore
 
-import "github.com/kayushkin/repodetect"
+import "github.com/kayushkin/llm-bridge-server/internal/repositories/repodetect"
 
 // Signature and Detect are re-exported from the repodetect module — the single
 // source of the detection ruleset — so the store/server keep a stable local
