@@ -13,3 +13,4 @@ packages:
       - "activity.go"
       - "suggestions.go"
       - "session_filings.go"
+      - "goals.go"

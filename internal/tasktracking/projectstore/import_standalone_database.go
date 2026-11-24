@@ -27,6 +27,10 @@ var standaloneColumns = map[string][]string{
 		"decided_at", "note_id"},
 	"session_filings": {"id", "session_id", "session_label", "evidence", "goal", "repo_store_ids", "project_id", "confidence",
 		"why", "model", "status", "link_id", "filed_project_id", "created_by", "created_at", "decided_by", "decided_at"},
+	"goals": {"id", "project_id", "parent_goal_id", "statement", "done_when", "state", "priority", "target_at", "created_by",
+		"created_at", "updated_at", "closed_by", "closed_at", "closed_because"},
+	"goal_changes": {"id", "goal_id", "field", "old_value", "new_value", "changed_by", "changed_at"},
+	"goal_links":   {"id", "goal_id", "entity_type", "entity_ref", "label", "note", "created_by", "created_at"},
 }
 
 // ImportCounts says how many rows of each table an import copied, and the
@@ -37,6 +41,12 @@ type ImportCounts struct {
 	Changes                 int   `json:"changes"`
 	Suggestions             int   `json:"suggestions"`
 	SessionFilings          int   `json:"session_filings"`
+	Goals                   int   `json:"goals"`
+	GoalChanges             int   `json:"goal_changes"`
+	GoalLinks               int   `json:"goal_links"`
+	LastGoalNumber          int64 `json:"last_goal_number"`
+	LastGoalChangeID        int64 `json:"last_goal_change_id"`
+	LastGoalLinkID          int64 `json:"last_goal_link_id"`
 	LastProjectNumber       int64 `json:"last_project_number"`
 	LastSuggestionNumber    int64 `json:"last_suggestion_number"`
 	LastSessionFilingNumber int64 `json:"last_session_filing_number"`
@@ -76,7 +86,7 @@ func ImportStandaloneDatabase(ctx context.Context, db *sql.DB, sqlitePath string
 	}
 
 	err = postgresstorage.InTransaction(ctx, db, func(tx *sql.Tx) error {
-		for _, table := range []string{"projects", "project_links", "project_changes", "suggestions", "session_filings"} {
+		for _, table := range []string{"projects", "project_links", "project_changes", "suggestions", "session_filings", "goals", "goal_changes", "goal_links"} {
 			var held int
 			if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&held); err != nil {
 				return fmt.Errorf("counting %s: %w", table, err)
@@ -101,6 +111,17 @@ func ImportStandaloneDatabase(ctx context.Context, db *sql.DB, sqlitePath string
 		if err := importSessionFilings(ctx, source, tx, projects, &counts); err != nil {
 			return err
 		}
+		goals, err := importGoals(ctx, source, tx, projects, &counts)
+		if err != nil {
+			return err
+		}
+		if err := importGoalChanges(ctx, source, tx, goals, &counts); err != nil {
+			return err
+		}
+		if err := importGoalLinks(ctx, source, tx, goals, &counts); err != nil {
+			return err
+		}
+		counts.LastGoalNumber = max(counts.LastGoalNumber, handedOut[GoalIDPrefix])
 		counts.LastProjectNumber = max(counts.LastProjectNumber, handedOut[ProjectIDPrefix])
 		counts.LastSuggestionNumber = max(counts.LastSuggestionNumber, handedOut[SuggestionIDPrefix])
 		counts.LastSessionFilingNumber = max(counts.LastSessionFilingNumber, handedOut[SessionFilingIDPrefix])
@@ -113,6 +134,9 @@ func ImportStandaloneDatabase(ctx context.Context, db *sql.DB, sqlitePath string
 			{"session_filings", "number", counts.LastSessionFilingNumber},
 			{"project_links", "id", counts.LastLinkID},
 			{"project_changes", "id", counts.LastChangeID},
+			{"goals", "number", counts.LastGoalNumber},
+			{"goal_changes", "id", counts.LastGoalChangeID},
+			{"goal_links", "id", counts.LastGoalLinkID},
 		} {
 			if err := postgresstorage.ContinueNumberingAfter(ctx, tx, numbering.table, numbering.column, numbering.last); err != nil {
 				return err
@@ -168,7 +192,7 @@ func standaloneSequences(ctx context.Context, source *sql.DB) (map[string]int64,
 			return nil, err
 		}
 		switch name {
-		case ProjectIDPrefix, SuggestionIDPrefix, SessionFilingIDPrefix:
+		case ProjectIDPrefix, SuggestionIDPrefix, SessionFilingIDPrefix, GoalIDPrefix:
 			handedOut[name] = next - 1
 		default:
 			return nil, fmt.Errorf("id_sequences numbers %q, which is not an id type this store has", name)
@@ -405,6 +429,146 @@ func importSessionFilings(ctx context.Context, source *sql.DB, tx *sql.Tx, proje
 		}
 		counts.SessionFilings++
 		counts.LastSessionFilingNumber = max(counts.LastSessionFilingNumber, number)
+	}
+	return rows.Err()
+}
+
+// importGoals copies the goals and answers the numbers it copied. Parents are
+// set once every goal is in, since a goal may name a parent made after it.
+func importGoals(ctx context.Context, source *sql.DB, tx *sql.Tx, projects map[int64]bool, counts *ImportCounts) (map[int64]bool, error) {
+	rows, err := source.QueryContext(ctx, `SELECT id, project_id, parent_goal_id, statement, done_when, state, priority, target_at, created_by,
+		created_at, updated_at, closed_by, closed_at, closed_because FROM goals ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("reading goals: %w", err)
+	}
+	defer rows.Close()
+	parents := map[int64]sql.NullString{}
+	for rows.Next() {
+		var id, statement, doneWhen, state, createdBy, closedBy, closedBecause string
+		var projectID, parentGoalID sql.NullString
+		var priority int
+		var targetAt, createdAt, updatedAt, closedAt int64
+		if err := rows.Scan(&id, &projectID, &parentGoalID, &statement, &doneWhen, &state, &priority, &targetAt, &createdBy,
+			&createdAt, &updatedAt, &closedBy, &closedAt, &closedBecause); err != nil {
+			return nil, fmt.Errorf("reading the goal after %d: %w", counts.LastGoalNumber, err)
+		}
+		rowName := "goal " + id
+		number, err := importedNumber(GoalIDPrefix, id, rowName)
+		if err != nil {
+			return nil, err
+		}
+		project, err := importedProjectReference(projectID, projects, rowName)
+		if err != nil {
+			return nil, err
+		}
+		if project == nil {
+			return nil, fmt.Errorf("%s names no project", rowName)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO goals (number, project_number, statement, done_when, state, priority, target_at, created_by, created_at, updated_at, closed_by, closed_at, closed_because)
+			OVERRIDING SYSTEM VALUE VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+			number, project, statement, doneWhen, state, priority, targetAt, createdBy, createdAt, updatedAt, closedBy, closedAt, closedBecause); err != nil {
+			return nil, fmt.Errorf("copying %s: %w", rowName, err)
+		}
+		parents[number] = parentGoalID
+		counts.Goals++
+		counts.LastGoalNumber = max(counts.LastGoalNumber, number)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	goals := map[int64]bool{}
+	for number := range parents {
+		goals[number] = true
+	}
+	for number, parentGoalID := range parents {
+		parent, err := importedGoalReference(parentGoalID, goals, "goal "+formatGoalID(number))
+		if err != nil {
+			return nil, err
+		}
+		if parent == nil {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE goals SET parent_goal_number = $1 WHERE number = $2`, parent, number); err != nil {
+			return nil, fmt.Errorf("setting the parent of %s: %w", formatGoalID(number), err)
+		}
+	}
+	return goals, nil
+}
+
+// importedGoalReference is a stored reference to a goal: NULL for "" or NULL,
+// and otherwise the number of a goal the file holds.
+func importedGoalReference(id sql.NullString, goals map[int64]bool, rowName string) (any, error) {
+	if !id.Valid || id.String == "" {
+		return nil, nil
+	}
+	number, err := importedNumber(GoalIDPrefix, id.String, rowName)
+	if err != nil {
+		return nil, err
+	}
+	if !goals[number] {
+		return nil, fmt.Errorf("%s points at %s, which the file does not hold", rowName, id.String)
+	}
+	return number, nil
+}
+
+func importGoalChanges(ctx context.Context, source *sql.DB, tx *sql.Tx, goals map[int64]bool, counts *ImportCounts) error {
+	rows, err := source.QueryContext(ctx, `SELECT id, goal_id, field, old_value, new_value, changed_by, changed_at FROM goal_changes ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("reading goal_changes: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, changedAt int64
+		var goalID sql.NullString
+		var field, oldValue, newValue, changedBy string
+		if err := rows.Scan(&id, &goalID, &field, &oldValue, &newValue, &changedBy, &changedAt); err != nil {
+			return fmt.Errorf("reading the goal change after %d: %w", counts.LastGoalChangeID, err)
+		}
+		rowName := fmt.Sprintf("goal change %d", id)
+		goal, err := importedGoalReference(goalID, goals, rowName)
+		if err != nil {
+			return err
+		}
+		if goal == nil {
+			return fmt.Errorf("%s names no goal", rowName)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO goal_changes (id, goal_number, field, old_value, new_value, changed_by, changed_at)
+			OVERRIDING SYSTEM VALUE VALUES ($1, $2, $3, $4, $5, $6, $7)`, id, goal, field, oldValue, newValue, changedBy, changedAt); err != nil {
+			return fmt.Errorf("copying %s: %w", rowName, err)
+		}
+		counts.GoalChanges++
+		counts.LastGoalChangeID = id
+	}
+	return rows.Err()
+}
+
+func importGoalLinks(ctx context.Context, source *sql.DB, tx *sql.Tx, goals map[int64]bool, counts *ImportCounts) error {
+	rows, err := source.QueryContext(ctx, `SELECT id, goal_id, entity_type, entity_ref, label, note, created_by, created_at FROM goal_links ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("reading goal_links: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, createdAt int64
+		var goalID sql.NullString
+		var entityType, entityRef, label, note, createdBy string
+		if err := rows.Scan(&id, &goalID, &entityType, &entityRef, &label, &note, &createdBy, &createdAt); err != nil {
+			return fmt.Errorf("reading the goal link after %d: %w", counts.LastGoalLinkID, err)
+		}
+		rowName := fmt.Sprintf("goal link %d", id)
+		goal, err := importedGoalReference(goalID, goals, rowName)
+		if err != nil {
+			return err
+		}
+		if goal == nil {
+			return fmt.Errorf("%s names no goal", rowName)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO goal_links (id, goal_number, entity_type, entity_ref, label, note, created_by, created_at)
+			OVERRIDING SYSTEM VALUE VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, goal, entityType, entityRef, label, note, createdBy, createdAt); err != nil {
+			return fmt.Errorf("copying %s: %w", rowName, err)
+		}
+		counts.GoalLinks++
+		counts.LastGoalLinkID = id
 	}
 	return rows.Err()
 }

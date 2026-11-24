@@ -17,6 +17,10 @@ import (
 // repoFifteenName is repo 15's name in the fake repo-store; a test renames it.
 var repoFifteenName = func() string { return "dash" }
 
+// noteboardItemIsGone says whether the fake noteboard has lost an item it once
+// had; a test sets it to delete an item after linking it.
+var noteboardItemIsGone = func(id string) bool { return false }
+
 func fakeOwners(t *testing.T) *Owners {
 	t.Helper()
 	// Commits a day apart on main, newest first; the third is older than
@@ -35,10 +39,15 @@ func fakeOwners(t *testing.T) *Owners {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if strings.HasPrefix(request.URL.Path, "/api/items/") && request.Method == http.MethodGet {
+			id := strings.TrimPrefix(request.URL.Path, "/api/items/")
+			if id == "n-broken" {
+				http.Error(writer, "boom", http.StatusInternalServerError)
+				return
+			}
 			noteboardLock.Lock()
-			item, found := noteboardItems[strings.TrimPrefix(request.URL.Path, "/api/items/")]
+			item, found := noteboardItems[id]
 			noteboardLock.Unlock()
-			if !found {
+			if !found || noteboardItemIsGone(id) {
 				http.NotFound(writer, request)
 				return
 			}
@@ -55,7 +64,7 @@ func fakeOwners(t *testing.T) *Owners {
 			answer := map[string]any{"items": []any{}, "missing_ids": []string{}}
 			noteboardLock.Lock()
 			for _, id := range query.IDs {
-				if item, found := noteboardItems[id]; found {
+				if item, found := noteboardItems[id]; found && !noteboardItemIsGone(id) {
 					answer["items"] = append(answer["items"].([]any), item)
 				} else {
 					answer["missing_ids"] = append(answer["missing_ids"].([]string), id)

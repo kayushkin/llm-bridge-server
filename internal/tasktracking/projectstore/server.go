@@ -27,7 +27,8 @@ func (handlers *Handlers) Health(writer http.ResponseWriter, _ *http.Request) {
 // a caller must not hardcode.
 func (handlers *Handlers) Vocabulary(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]any{"kinds": Kinds, "stages": Stages, "activity_kinds": ActivityKinds, "suggestion_statuses": SuggestionStatuses,
-		"session_filing_statuses": SessionFilingStatuses, "session_filing_evidence_kinds": SessionFilingEvidenceKinds, "default_stage": DefaultStage, "entity_types": EntityTypes})
+		"session_filing_statuses": SessionFilingStatuses, "session_filing_evidence_kinds": SessionFilingEvidenceKinds, "default_stage": DefaultStage, "entity_types": EntityTypes,
+		"goal_states": GoalStates, "default_goal_state": DefaultGoalState, "goal_link_entity_types": GoalLinkEntityTypes})
 }
 
 // RegisterHandlers mounts every route on mux at the paths the standalone
@@ -53,6 +54,16 @@ func RegisterHandlers(mux *http.ServeMux, handlers *Handlers) {
 	mux.HandleFunc("POST /projects/{id}/suggestions", handlers.RequestSuggestions)
 	mux.HandleFunc("POST /suggestions/{suggestion_id}/accept", handlers.AcceptSuggestion)
 	mux.HandleFunc("POST /suggestions/{suggestion_id}/dismiss", handlers.DismissSuggestion)
+	mux.HandleFunc("GET /projects/{id}/goals", handlers.ListProjectGoals)
+	mux.HandleFunc("POST /projects/{id}/goals", handlers.CreateGoal)
+	mux.HandleFunc("GET /goals", handlers.ListGoals)
+	mux.HandleFunc("GET /goals/{goal_id}", handlers.GetGoal)
+	mux.HandleFunc("PATCH /goals/{goal_id}", handlers.PatchGoal)
+	mux.HandleFunc("GET /goals/{goal_id}/changes", handlers.GoalChanges)
+	mux.HandleFunc("GET /goals/{goal_id}/links", handlers.GoalLinks)
+	mux.HandleFunc("POST /goals/{goal_id}/links", handlers.AddGoalLink)
+	mux.HandleFunc("DELETE /goals/{goal_id}/links/{link_id}", handlers.DeleteGoalLink)
+	mux.HandleFunc("GET /goal-links", handlers.FindGoalLinks)
 	mux.HandleFunc("GET /session-filings", handlers.ListSessionFilings)
 	mux.HandleFunc("POST /session-filings/run", handlers.RunSessionFiler)
 	mux.HandleFunc("POST /session-filings/{session_filing_id}/accept", handlers.AcceptSessionFiling)

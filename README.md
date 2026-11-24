@@ -594,6 +594,14 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
 | `GET` | `/project-store/digest` | Every live project's rollup as plain text for an agent | operator |
+| `GET` | `/project-store/goal-links` | Which goals a record serves, by `entity_type` and `entity_ref` | operator |
+| `GET` | `/project-store/goals` | Every project's goals, each project's together; `state`, `project_id` | operator |
+| `GET` | `/project-store/goals/{goal_id}` | One goal | operator |
+| `PATCH` | `/project-store/goals/{goal_id}` | Change a goal's fields, recording each change; a state move the rules do not allow is 409 | operator |
+| `GET` | `/project-store/goals/{goal_id}/changes` | Every change to the goal's fields, oldest first | operator |
+| `GET` | `/project-store/goals/{goal_id}/links` | What serves the goal; `entity_type` narrows | operator |
+| `POST` | `/project-store/goals/{goal_id}/links` | Link a note or a session its own store has to the goal; 400, 502 or 409 as a project link | operator |
+| `DELETE` | `/project-store/goals/{goal_id}/links/{link_id}` | Remove one goal link | operator |
 | `GET` | `/project-store/health` | `{"status":"ok"}` | operator |
 | `GET` | `/project-store/links` | Which projects own a record, by `entity_type` and `entity_ref` | operator |
 | `GET` | `/project-store/projects` | Projects by name; `q`, `kind`, `parent_id`, `include_archived` | operator |
@@ -602,11 +610,13 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `PATCH` | `/project-store/projects/{id}` | Change a project's fields, recording each change; `archived` archives or restores it | operator |
 | `GET` | `/project-store/projects/{id}/activity` | What happened in the project, newest first, over `days` (default 14) | operator |
 | `GET` | `/project-store/projects/{id}/changes` | Every change to the project's fields, oldest first | operator |
+| `GET` | `/project-store/projects/{id}/goals` | One project's goals, parents before their children; `state` narrows, and without it every state but `dismissed` | operator |
+| `POST` | `/project-store/projects/{id}/goals` | Make a goal of a project: `statement` required, `open` or `proposed`; 400 for an archived project | operator |
 | `GET` | `/project-store/projects/{id}/links` | What the project owns; `entity_type` narrows | operator |
 | `POST` | `/project-store/projects/{id}/links` | Link a record its own store has; 400 when it has none, 502 when it cannot answer, 409 when linked already | operator |
 | `DELETE` | `/project-store/projects/{id}/links/{link_id}` | Remove one link | operator |
 | `POST` | `/project-store/projects/{id}/next-steps` | Make a noteboard todo tagged `next-step` and link it to the project | operator |
-| `GET` | `/project-store/projects/{id}/rollup` | Worked out on request: children, links, cards, repos, notes and suggestions | operator |
+| `GET` | `/project-store/projects/{id}/rollup` | Worked out on request: children, links, cards, repos, notes, suggestions and goals | operator |
 | `GET` | `/project-store/projects/{id}/suggestions` | The project's suggested next steps, oldest first; `status` narrows | operator |
 | `POST` | `/project-store/projects/{id}/suggestions` | Ask a model for up to five next steps, superseding the undecided ones | operator |
 | `GET` | `/project-store/session-filings` | What the session filer concluded about each chat, newest first; `status`, `session_id`, `project_id`, `limit` | operator |

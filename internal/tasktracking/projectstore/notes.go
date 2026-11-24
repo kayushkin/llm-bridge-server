@@ -71,27 +71,65 @@ func (item NoteboardItem) linkedNote(linkID int64) LinkedNote {
 // todos come first, the most urgent first; the rest follow, newest first.
 // Links whose item noteboard no longer has are returned as missing ids.
 func (owners *Owners) LinkedNotes(ctx context.Context, links []Link) ([]LinkedNote, []string, error) {
-	notes, missing := []LinkedNote{}, []string{}
-	linkByNote := map[string]int64{}
-	ids := []string{}
-	for _, link := range links {
-		if link.EntityType == EntityNote {
-			linkByNote[link.EntityRef] = link.ID
-			ids = append(ids, link.EntityRef)
-		}
-	}
-	if len(ids) == 0 {
-		return notes, missing, nil
-	}
-	found, missingIDs, err := owners.Noteboard.LinkedItems(ctx, ids)
+	items, err := owners.noteboardItemsByID(ctx, noteIDsOfLinks(links))
 	if err != nil {
 		return nil, nil, fmt.Errorf("notes linked to the project: %w", err)
 	}
-	for _, item := range found {
-		notes = append(notes, item.linkedNote(linkByNote[item.ID]))
+	notes, missing := linkedNotesOf(links, items)
+	return notes, missing, nil
+}
+
+// noteIDsOfLinks lists the noteboard ids a project's note links name.
+func noteIDsOfLinks(links []Link) []string {
+	ids := []string{}
+	for _, link := range links {
+		if link.EntityType == EntityNote {
+			ids = append(ids, link.EntityRef)
+		}
 	}
-	if missingIDs != nil {
-		missing = missingIDs
+	return ids
+}
+
+// noteboardItemsByID reads the given items from noteboard in one call. An id
+// noteboard no longer has is absent from the answer.
+func (owners *Owners) noteboardItemsByID(ctx context.Context, ids []string) (map[string]NoteboardItem, error) {
+	items := map[string]NoteboardItem{}
+	asked := map[string]bool{}
+	distinct := []string{}
+	for _, id := range ids {
+		if !asked[id] {
+			asked[id] = true
+			distinct = append(distinct, id)
+		}
+	}
+	if len(distinct) == 0 {
+		return items, nil
+	}
+	found, _, err := owners.Noteboard.LinkedItems(ctx, distinct)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range found {
+		items[item.ID] = item
+	}
+	return items, nil
+}
+
+// linkedNotesOf pairs a project's note links with their noteboard items: open
+// todos first, the most urgent first, then the rest, newest first. The second
+// answer is the ids of note links whose item is not among items.
+func linkedNotesOf(links []Link, items map[string]NoteboardItem) ([]LinkedNote, []string) {
+	notes, missing := []LinkedNote{}, []string{}
+	for _, link := range links {
+		if link.EntityType != EntityNote {
+			continue
+		}
+		item, found := items[link.EntityRef]
+		if !found {
+			missing = append(missing, link.EntityRef)
+			continue
+		}
+		notes = append(notes, item.linkedNote(link.ID))
 	}
 	sort.SliceStable(notes, func(left, right int) bool {
 		leftOpen, rightOpen := notes[left].isOpenTodo(), notes[right].isOpenTodo()
@@ -103,7 +141,7 @@ func (owners *Owners) LinkedNotes(ctx context.Context, links []Link) ([]LinkedNo
 		}
 		return notes[left].UpdatedAt > notes[right].UpdatedAt
 	})
-	return notes, missing, nil
+	return notes, missing
 }
 
 func (note LinkedNote) isOpenTodo() bool { return note.Type == "todo" && note.Status == "open" }

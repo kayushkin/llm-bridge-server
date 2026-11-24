@@ -115,6 +115,53 @@ type Rollup struct {
 	MissingNoteIDs []string `json:"missing_note_ids"`
 	// Suggestions are the model's proposed next steps nobody has decided on.
 	Suggestions []Suggestion `json:"suggestions"`
+	// Goals are the project's proposed and open goals, parents before their
+	// children.
+	Goals []GoalRollup `json:"goals"`
+}
+
+// GoalRollup is a goal with the work that serves it.
+type GoalRollup struct {
+	Goal  Goal       `json:"goal"`
+	Links []GoalLink `json:"links"`
+	// OpenTodos and DoneTodos count the noteboard todos the goal's note links
+	// name, by noteboard's status. An archived todo counts as neither.
+	OpenTodos int `json:"open_todos"`
+	DoneTodos int `json:"done_todos"`
+	// MissingNoteIDs are the goal's note links whose noteboard item is gone.
+	MissingNoteIDs []string `json:"missing_note_ids"`
+}
+
+// goalRollupsOf pairs each goal with its links and counts its linked todos
+// from the noteboard items already read.
+func goalRollupsOf(goals []Goal, links []GoalLink, items map[string]NoteboardItem) []GoalRollup {
+	rollups := make([]GoalRollup, 0, len(goals))
+	indexByGoal := map[string]int{}
+	for _, goal := range goals {
+		indexByGoal[goal.ID] = len(rollups)
+		rollups = append(rollups, GoalRollup{Goal: goal, Links: []GoalLink{}, MissingNoteIDs: []string{}})
+	}
+	for _, link := range links {
+		index, shown := indexByGoal[link.GoalID]
+		if !shown {
+			continue
+		}
+		rollup := &rollups[index]
+		rollup.Links = append(rollup.Links, link)
+		if link.EntityType != EntityNote {
+			continue
+		}
+		item, found := items[link.EntityRef]
+		switch {
+		case !found:
+			rollup.MissingNoteIDs = append(rollup.MissingNoteIDs, link.EntityRef)
+		case item.Type == "todo" && item.Status == "open":
+			rollup.OpenTodos++
+		case item.Type == "todo" && item.Status == "done":
+			rollup.DoneTodos++
+		}
+	}
+	return rollups
 }
 
 // BuildRollup works out a project's rollup.
@@ -123,7 +170,7 @@ func BuildRollup(ctx context.Context, store *Store, owners *Owners, id string) (
 	if err != nil {
 		return Rollup{}, err
 	}
-	rollup := Rollup{Project: project, CardsByWorkState: map[string]int{}, Repos: []RepoRollup{}}
+	rollup := Rollup{Project: project, CardsByWorkState: map[string]int{}, Repos: []RepoRollup{}, Goals: []GoalRollup{}}
 	if rollup.Suggestions, err = store.Suggestions(id, SuggestionProposed); err != nil {
 		return rollup, err
 	}
@@ -164,9 +211,27 @@ func BuildRollup(ctx context.Context, store *Store, owners *Owners, id string) (
 		}
 		rollup.Repos = append(rollup.Repos, repo)
 	}
-	if rollup.Notes, rollup.MissingNoteIDs, err = owners.LinkedNotes(ctx, rollup.Links); err != nil {
+	goals, err := store.Goals(GoalFilter{ProjectID: id, States: []string{GoalProposed, GoalOpen}})
+	if err != nil {
 		return rollup, err
 	}
+	goalLinks, err := store.GoalLinks(GoalLinkFilter{ProjectID: id})
+	if err != nil {
+		return rollup, err
+	}
+	// One noteboard call reads the project's notes and its goals' todos.
+	noteIDs := noteIDsOfLinks(rollup.Links)
+	for _, link := range goalLinks {
+		if link.EntityType == EntityNote {
+			noteIDs = append(noteIDs, link.EntityRef)
+		}
+	}
+	items, err := owners.noteboardItemsByID(ctx, noteIDs)
+	if err != nil {
+		return rollup, fmt.Errorf("notes linked to %s and its goals: %w", id, err)
+	}
+	rollup.Notes, rollup.MissingNoteIDs = linkedNotesOf(rollup.Links, items)
+	rollup.Goals = goalRollupsOf(goals, goalLinks, items)
 	return rollup, nil
 }
 
@@ -406,6 +471,7 @@ func DigestText(projects []Project, rollups map[string]Rollup, now time.Time) st
 		if project.DoneWhen != "" {
 			fmt.Fprintf(&text, "%s  done when: %s\n", indent, project.DoneWhen)
 		}
+		writeGoalLines(&text, indent, rollup.Goals)
 		if len(rollup.CardsByWorkState) > 0 {
 			var states []string
 			for state, count := range rollup.CardsByWorkState {
@@ -491,6 +557,47 @@ func DigestText(projects []Project, rollups map[string]Rollup, now time.Time) st
 		}
 	}
 	return text.String()
+}
+
+// writeGoalLines writes a project's open goals to the digest, one line each
+// with a child indented under its parent, and its proposed goals as a count.
+func writeGoalLines(text *strings.Builder, indent string, goals []GoalRollup) {
+	depthByGoal := map[string]int{}
+	proposed, wroteHeading := 0, false
+	for _, rollup := range goals {
+		goal := rollup.Goal
+		if goal.State != GoalOpen {
+			if goal.State == GoalProposed {
+				proposed++
+			}
+			continue
+		}
+		// Goals come parents first, so an open parent's depth is known here;
+		// a goal under a proposed parent is written at the top.
+		depth := 0
+		if parentDepth, parentWritten := depthByGoal[goal.ParentGoalID]; parentWritten {
+			depth = parentDepth + 1
+		}
+		depthByGoal[goal.ID] = depth
+		if !wroteHeading {
+			fmt.Fprintf(text, "%s  open goals:\n", indent)
+			wroteHeading = true
+		}
+		fmt.Fprintf(text, "%s    %s%s  %s", indent, strings.Repeat("  ", depth), goal.ID, goal.Statement)
+		if goal.DoneWhen != "" {
+			fmt.Fprintf(text, "; done when: %s", goal.DoneWhen)
+		}
+		if goal.TargetAt != 0 {
+			fmt.Fprintf(text, "; target %s", time.Unix(goal.TargetAt, 0).UTC().Format("2006-01-02"))
+		}
+		if rollup.OpenTodos+rollup.DoneTodos > 0 {
+			fmt.Fprintf(text, "; todos: %d open, %d done", rollup.OpenTodos, rollup.DoneTodos)
+		}
+		text.WriteString("\n")
+	}
+	if proposed > 0 {
+		fmt.Fprintf(text, "%s  proposed goals awaiting a decision: %d\n", indent, proposed)
+	}
 }
 
 func roundedAge(age time.Duration) string {

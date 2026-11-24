@@ -92,6 +92,12 @@ func TestTaskTrackingRoutesServeTheStoresUnderTheirPrefixes(t *testing.T) {
 	if links := gated.requestAsService(t, "GET", "/project-store/links?entity_type=note&entity_ref="+note.NoteID); !strings.Contains(links.Body.String(), "project_000001") {
 		t.Fatalf("reverse lookup = %d %s", links.Code, links.Body)
 	}
+	if goal := gated.requestAsServiceWithJSON(t, "POST", "/project-store/projects/project_000001/goals", map[string]any{"statement": "Every chat in one list"}); goal.Code != http.StatusCreated || !strings.Contains(goal.Body.String(), `"id":"goal_000001"`) {
+		t.Fatalf("create goal = %d %s", goal.Code, goal.Body)
+	}
+	if linked := gated.requestAsServiceWithJSON(t, "POST", "/project-store/goals/goal_000001/links", map[string]any{"entity_type": "note", "entity_ref": note.NoteID}); linked.Code != http.StatusCreated {
+		t.Fatalf("link a goal to the next step = %d %s", linked.Code, linked.Body)
+	}
 	if missing := gated.requestAsService(t, "GET", "/project-store/projects/project_0000001"); missing.Code != http.StatusNotFound {
 		t.Fatalf("an id of the wrong form = %d %s, want 404", missing.Code, missing.Body)
 	}

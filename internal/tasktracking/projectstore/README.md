@@ -1,6 +1,7 @@
 # project-store
 
-Projects: what each is for, and what it owns in other stores by their ids.
+Projects: what each is for, the goals it wants reached, and what it owns in
+other stores by their ids.
 `CONTRACT.md` is the route table.
 
 ## Where it runs
@@ -10,7 +11,7 @@ Postgres module `projects` (role `projects_module`), built by the migrations in
 `migrations/`, and the server answers its routes under `/project-store/` with
 the same paths behind the prefix. The server's `database.postgres_url`
 (`LLMBRIDGE_POSTGRES_URL`) names the Postgres; with it empty the routes answer
-503 `project_store_off`. Ids keep their form: `project_000001`,
+503 `project_store_off`. Ids keep their form: `project_000001`, `goal_000001`,
 `suggestion_000001` and `session_filing_000001` are `FormatRecordID` over the
 row's identity number, and only an id of exactly that form names a record.
 

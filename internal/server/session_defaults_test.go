@@ -26,9 +26,9 @@ func bundleStoreNaming(t *testing.T, model, effort string) string {
 	})
 	mux.HandleFunc("POST /resolve", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"bundles": []map[string]any{{"id": 6, "name": "reviewer"}},
+			"bundles":      []map[string]any{{"id": 6, "name": "reviewer"}},
 			"denied_tools": []map[string]any{}, "denied_read_paths": []string{},
-			"model":   model, "effort": effort,
+			"model": model, "effort": effort,
 		})
 	})
 	server := httptest.NewServer(mux)
