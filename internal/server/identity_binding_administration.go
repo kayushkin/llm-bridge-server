@@ -3,8 +3,9 @@ package server
 // Administrator routes over principal-store's identity bindings: which Entra
 // identity signs in as which principal.
 //
-// principal-store has no authentication and cannot tell an administrator
-// from anyone; it records linked_by and unlinked_by as it is told. So these
+// principal-store has no authentication of its own and cannot tell an
+// administrator from anyone; it records linked_by and unlinked_by as it is
+// told. It runs in this process; these routes call its handlers directly. So these
 // routes are operator routes, and the bridge — not the body — says who made
 // the change: linked_by and unlinked_by are the caller's principal, and a body
 // that tries to set either is refused rather than quietly overwritten.
@@ -21,17 +22,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
-	"time"
 )
-
-// principalStoreAdministrationHTTPClient calls principal-store for the
-// identity binding routes.
-var principalStoreAdministrationHTTPClient = &http.Client{
-	Timeout:       15 * time.Second,
-	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-}
 
 // identityBindingLinkRequest is the body POST /admin/identity-bindings takes.
 // linked_by is not in it: the bridge sets it.
@@ -67,10 +61,14 @@ func (answer principalStoreAnswer) writeUnchanged(w http.ResponseWriter) {
 	_, _ = w.Write(answer.body)
 }
 
-// askPrincipalStore sends one request to principal-store and reads the whole
-// answer.
+// askPrincipalStore sends one request to principal-store's own route, in this
+// process, and keeps the whole answer.
 func (s *Server) askPrincipalStore(r *http.Request, method, escapedPath, rawQuery string, body []byte) (principalStoreAnswer, error) {
-	target := strings.TrimSuffix(s.principalClient.BaseURL(), "/") + escapedPath
+	handlers := s.access.Load()
+	if handlers == nil {
+		return principalStoreAnswer{}, errAccessOff
+	}
+	target := escapedPath
 	if rawQuery != "" {
 		target += "?" + rawQuery
 	}
@@ -78,29 +76,19 @@ func (s *Server) askPrincipalStore(r *http.Request, method, escapedPath, rawQuer
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	outbound, err := http.NewRequestWithContext(r.Context(), method, target, reader)
+	inner, err := http.NewRequestWithContext(r.Context(), method, target, reader)
 	if err != nil {
 		return principalStoreAnswer{}, fmt.Errorf("build %s %s: %w", method, target, err)
 	}
 	if body != nil {
-		outbound.Header.Set("Content-Type", "application/json")
+		inner.Header.Set("Content-Type", "application/json")
 	}
-	outbound.Header.Set("Accept", "application/json")
-	response, err := principalStoreAdministrationHTTPClient.Do(outbound)
-	if err != nil {
-		return principalStoreAnswer{}, fmt.Errorf("principal-store unreachable: %s %s: %w", method, target, err)
-	}
-	defer response.Body.Close()
-	answerBody, err := io.ReadAll(response.Body)
-	if err != nil {
-		return principalStoreAnswer{}, fmt.Errorf("read principal-store's answer to %s %s: %w", method, target, err)
-	}
-	header := response.Header.Clone()
-	for _, hopByHop := range hopByHopHeaders {
-		header.Del(hopByHop)
-	}
+	inner.Header.Set("Accept", "application/json")
+	recorder := httptest.NewRecorder()
+	handlers.principalStoreRoot.ServeHTTP(recorder, inner)
+	header := recorder.Header().Clone()
 	header.Del("Content-Length")
-	return principalStoreAnswer{status: response.StatusCode, header: header, body: answerBody}, nil
+	return principalStoreAnswer{status: recorder.Code, header: header, body: recorder.Body.Bytes()}, nil
 }
 
 // decodeAdministrationBody reads a JSON object into target, refusing any key
@@ -152,7 +140,7 @@ func administratorMakingIdentityBindingChange(w http.ResponseWriter, r *http.Req
 func (s *Server) handleListIdentityBindings(w http.ResponseWriter, r *http.Request) {
 	answer, err := s.askPrincipalStore(r, http.MethodGet, "/identity-bindings", r.URL.RawQuery, nil)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
+		writePrincipalStoreCallError(w, err)
 		return
 	}
 	answer.writeUnchanged(w)
@@ -183,7 +171,7 @@ func (s *Server) handleLinkIdentityBinding(w http.ResponseWriter, r *http.Reques
 	}
 	answer, err := s.askPrincipalStore(r, http.MethodPost, "/identity-bindings", "", body)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
+		writePrincipalStoreCallError(w, err)
 		return
 	}
 	answer.writeUnchanged(w)
@@ -208,7 +196,7 @@ func (s *Server) handleUnlinkIdentityBinding(w http.ResponseWriter, r *http.Requ
 	}
 	answer, err := s.askPrincipalStore(r, http.MethodPost, "/identity-bindings/"+url.PathEscape(bindingID)+"/unlink", "", body)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
+		writePrincipalStoreCallError(w, err)
 		return
 	}
 	if answer.status == http.StatusOK {

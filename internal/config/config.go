@@ -95,20 +95,6 @@ type Config struct {
 	// localhost:port (the WSL-via-SSH-tunnel case).
 	PublicURL    string
 	ToolStoreURL string
-	// PermissionStoreURL is the base URL of the permission-store service
-	// consulted by the PreToolUse permission-prehook handler. Defaults to
-	// localhost:8304.
-	PermissionStoreURL string
-	// GrantStoreURL is the base URL of grant-store, read at spawn for the
-	// effective grants of a session's principal — which tools it may be
-	// offered — and proxied at /grant-store/ as the calling principal.
-	// Required, via LLMBRIDGE_GRANT_STORE_URL.
-	GrantStoreURL string
-	// PrincipalStoreURL is the base URL of principal-store: asked at session
-	// creation whether a principal_id names a real principal, and asked on
-	// every gated request whether the caller is active and an administrator.
-	// Required, via LLMBRIDGE_PRINCIPAL_STORE_URL.
-	PrincipalStoreURL string
 	// DiscoveryPrincipalID explicitly owns local imports; empty leaves them unowned.
 	DiscoveryPrincipalID string
 	// BundleStoreURL is the base URL of bundle-store, asked at session
@@ -128,15 +114,35 @@ type Config struct {
 	// login that provisions them. Empty switches those modules off, and their
 	// routes answer 503. LLMBRIDGE_POSTGRES_URL.
 	PostgresURL string
-	// ChatLinksNATSURL and ChatLinksMultichatURL switch chat links on: NATS
-	// carries what people send our accounts, multichat sends the replies.
-	// Either empty turns them off. Configured via LLMBRIDGE_NATS_URL and
-	// LLMBRIDGE_MULTICHAT_URL.
-	ChatLinksNATSURL      string
-	ChatLinksMultichatURL string
-	// ChatLinksPeopleStoreURL is people-store, which says who owns the
-	// account a chat link message came from. Chat links need it too.
-	ChatLinksPeopleStoreURL string
+	// ChatLinksNATSURL and MultichatURL switch chat links on: NATS carries
+	// what people send our accounts, multichat sends the replies. Either
+	// empty turns them off. Configured via LLMBRIDGE_NATS_URL and
+	// LLMBRIDGE_MULTICHAT_URL. sign-in-store sends sign-in links through the
+	// same multichat.
+	ChatLinksNATSURL string
+	MultichatURL     string
+	// PeopleStoreURL is people-store, which says who owns the account a chat
+	// link message came from, and which person owns a handle typed on the
+	// sign-in page. Chat links need it too.
+	PeopleStoreURL string
+	// SkillStoreURL is skill-store, asked whether a skill a grant names exists.
+	SkillStoreURL string
+	// AuthStoreURL and AuthStoreToken reach auth-store, which sign-in-store
+	// reads multichat's token and Discord's client secret from.
+	AuthStoreURL   string
+	AuthStoreToken string
+	// KanbanStoreServiceToken and ReferenceStoreServiceToken are sent when
+	// grant-store checks that a board, a reference or a reference type exists.
+	KanbanStoreServiceToken    string
+	ReferenceStoreServiceToken string
+	// Sign-in-store's wiring (sign_in.*). SignInPageURL and
+	// SignInCookieDomain empty switch its routes off.
+	SignInPageURL                         string
+	SignInCookieDomain                    string
+	SignInMultichatCredentialID           string
+	SignInDiscordApplicationID            string
+	SignInDiscordClientSecretCredentialID string
+	SignInDiscordRedirectURL              string
 	// MailstackURL is the base URL of mailstack, asked for the sender and
 	// subject of the mail behind a card when question triage drafts a reply
 	// to the customer. Configured via LLMBRIDGE_MAILSTACK_URL. MailstackToken
@@ -238,12 +244,6 @@ type Config struct {
 	// long: every route is gated, and an internal service reaches the operator
 	// routes only by presenting it.
 	ServiceToken string
-	// GrantStoreServiceToken is sent to grant-store as
-	// X-Grant-Store-Service-Token on every call this server makes as itself
-	// (the spawn-time effective-grants read), from
-	// GRANT_STORE_SERVICE_TOKEN. Optional: empty sends no token,
-	// which a grant-store that enforces per-principal access answers with 401.
-	GrantStoreServiceToken string
 }
 
 // Names of the environment variables that hold this server's own secrets.
@@ -262,8 +262,18 @@ const (
 	// grant token was read as empty, so grant-store answered every spawn-time
 	// read with 401, and the real variables were not on the strip list below,
 	// so every harness child inherited both tokens.
+	//
+	// grant-store now runs in this process and this server reads no grant
+	// token, but the shared file still carries GRANT_STORE_SERVICE_TOKEN for
+	// the standalone grant-store, dash and kanban-store until they move, and
+	// this unit still loads that file. It stays on the strip list so no
+	// harness child inherits it.
 	GrantStoreServiceTokenEnvironmentVariable  = "GRANT_STORE_SERVICE_TOKEN"
 	KanbanStoreServiceTokenEnvironmentVariable = kanbanclient.ServiceTokenEnvironmentVariable
+	// reference-store's own name for the token it takes from an internal
+	// service, in the same shared file. Read here for grant-store's check that
+	// a reference exists; whoever holds it looks any record up for nobody.
+	ReferenceStoreServiceTokenEnvironmentVariable = "REFERENCE_STORE_SERVICE_TOKEN"
 	// file-store's token is file-store's own name for it, loaded from its own
 	// host-local file (~/.config/file-store-tokens.env) — never the shared
 	// principal-gating file. It reads every file file-store holds.
@@ -276,6 +286,13 @@ const (
 	// and may carry its password. An agent holding it could read and rewrite
 	// every module's tables past every rule this server enforces.
 	PostgresURLEnvironmentVariable = "LLMBRIDGE_POSTGRES_URL"
+)
+
+// The two sign-in settings that switch sign-in-store's routes on, named here
+// so the message that says they are off names them too.
+const (
+	SignInPageURLEnvironmentVariable      = "LLMBRIDGE_SIGN_IN_PAGE_URL"
+	SignInCookieDomainEnvironmentVariable = "LLMBRIDGE_SIGN_IN_COOKIE_DOMAIN"
 )
 
 // SecretEnvironmentVariableNames lists every environment variable that must
@@ -295,6 +312,7 @@ func SecretEnvironmentVariableNames() []string {
 		ServiceTokenEnvironmentVariable,
 		GrantStoreServiceTokenEnvironmentVariable,
 		KanbanStoreServiceTokenEnvironmentVariable,
+		ReferenceStoreServiceTokenEnvironmentVariable,
 		FileStoreServiceTokenEnvironmentVariable,
 		EntraClientSecretEnvironmentVariable,
 		PostgresURLEnvironmentVariable,
@@ -354,9 +372,8 @@ func (c *Config) ValidateRequestAuthorizationSettings() error {
 		value               string
 		purpose             string
 	}{
-		{"LLMBRIDGE_PRINCIPAL_STORE_URL", c.PrincipalStoreURL, "the principal-store every caller's principal is read from"},
+		{PostgresURLEnvironmentVariable, c.PostgresURL, "the Postgres every caller's principal and grants are read from (access)"},
 		{"LLMBRIDGE_KANBAN_STORE_URL", c.KanbanStoreURL, "the kanban-store /kanban/ forwards to"},
-		{"LLMBRIDGE_GRANT_STORE_URL", c.GrantStoreURL, "the grant-store /grant-store/ forwards to"},
 		{"LLMBRIDGE_REFERENCE_STORE_URL", c.ReferenceStoreURL, "the reference-store /reference-store/ forwards to"},
 	} {
 		if strings.TrimSpace(required.value) == "" {
@@ -395,83 +412,90 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		return nil, err
 	}
 	cfg := &Config{
-		Settings:                         settings,
-		ListenAddr:                       settings.String("listen_address"),
-		DBPath:                           settings.String("database.path"),
-		OperationsDBPath:                 settings.String("operations.database_path"),
-		OperationsWorkerCount:            settings.Integer("operations.worker_count"),
-		OperationsLeaseDuration:          settings.Duration("operations.lease_duration"),
-		OneShotInstanceByProvider:        settings.StringMap(SettingOneShotInstanceByProvider),
-		OperationsCompletionModelRole:    settings.ModelRole(SettingOperationsCompletionModelRole),
-		SessionActionsReviewModelRole:    settings.ModelRole(SettingSessionActionsReviewModelRole),
-		ImageGenerationInstanceID:        settings.String(SettingImageGenerationInstanceID),
-		SessionRenamerModelRole:          settings.ModelRole(SettingSessionRenamerModelRole),
-		UsageStoreURL:                    settings.String("usage_store.url"),
-		OperationsGrantEnforcement:       settings.String(SettingOperationsGrantEnforcement),
-		ServerName:                       settings.String(SettingServerName),
-		ChatLinksReferencePageBaseURL:    settings.String(SettingChatLinksReferencePageBaseURL),
-		SelfUpdateCommand:                settings.String(SettingSelfUpdateCommand),
-		OrchestratorURL:                  settings.String(SettingOrchestratorURL),
-		KeepAwakeEnabled:                 settings.Boolean(SettingKeepAwakeEnabled),
-		KeepAwakeGraceMinutes:            settings.Integer(SettingKeepAwakeGraceMinutes),
-		SessionHostHoldSessions:          settings.Boolean(SettingSessionHostHoldSessions),
-		SessionHostHoldMinutes:           settings.Integer(SettingSessionHostHoldMinutes),
-		AgentStoreDB:                     settings.String("agent_store.database_path"),
-		MemoryStoreDB:                    settings.String("memory_store.database_path"),
-		HarnessStoreDB:                   settings.String("harness_store.database_path"),
-		HookStoreDB:                      settings.String("hook_store.database_path"),
-		ModelStoreDB:                     settings.String("model_store.database_path"),
-		ModelStoreURL:                    settings.String("model_store.url"),
-		AgentStoreURL:                    settings.String("agent_store.url"),
-		ImagesDir:                        settings.String("images.directory"),
-		SessionFilesDir:                  settings.String("session_files.directory"),
-		FileStoreURL:                     settings.String("file_store.url"),
-		RepoStoreURL:                     settings.String("repo_store.url"),
-		SchedulerURL:                     settings.String("scheduler.url"),
-		FileStoreServiceToken:            settings.String("file_store.service_token"),
-		BridgePrefsPath:                  settings.String("bridge_preferences.path"),
-		ConformancePath:                  settings.String("conformance.path"),
-		LogStoreURL:                      settings.String("log_store.url"),
-		PublicURL:                        settings.String("public_url"),
-		ToolStoreURL:                     settings.String("tool_store.url"),
-		PermissionStoreURL:               settings.String("permission_store.url"),
-		GrantStoreURL:                    settings.String("grant_store.url"),
-		PrincipalStoreURL:                settings.String("principal_store.url"),
-		DiscoveryPrincipalID:             settings.String("discovery.principal_id"),
-		BundleStoreURL:                   settings.String("bundle_store.url"),
-		KanbanStoreURL:                   settings.String("kanban_store.url"),
-		ReferenceStoreURL:                settings.String("reference_store.url"),
-		PostgresURL:                      settings.String("database.postgres_url"),
-		ChatLinksNATSURL:                 settings.String("chat_links.nats_url"),
-		ChatLinksMultichatURL:            settings.String("chat_links.multichat_url"),
-		ChatLinksPeopleStoreURL:          settings.String("chat_links.people_store_url"),
-		MailstackURL:                     settings.String("mailstack.url"),
-		MailstackToken:                   settings.String("mailstack.token"),
-		HealthcheckURL:                   settings.String("healthcheck.url"),
-		SnapshotStoreDB:                  settings.String("snapshot_store.database_path"),
-		SnapshotStoreGit:                 settings.String("snapshot_store.git_path"),
-		PurposeFolders:                   purposeFoldersOver(settings.StringMap("session.purpose_folders")),
-		PTYRingBufferBytes:               settings.Integer("pty.ring_buffer_bytes"),
-		IdleTimeout:                      settings.Duration(SettingSessionIdleTimeout),
-		PTYIdleTimeout:                   settings.Duration(SettingSessionPTYIdleTimeout),
-		ExternalActivityPollInterval:     settings.Duration(SettingExternalActivityPollInterval),
-		SignalClassifierModelRole:        settings.ModelRole(SettingSignalClassifierModelRole),
-		QuestionTriageModelRole:          settings.ModelRole(SettingQuestionTriageModelRole),
-		SignalClassifierOptOut:           harnessSetOf(settings.StringList(SettingSignalClassifierOptOutHarnesses)),
-		PromptDriftTaggerModelRole:       settings.ModelRole(SettingPromptDriftTaggerModelRole),
-		SignalClassifierTimeout:          settings.Duration(SettingSignalClassifierTimeout),
-		SignalClassifierMaxChars:         settings.Integer(SettingSignalClassifierMaximumCharacters),
-		DemoLoginSigningKey:              settings.String("demo_login.signing_key"),
-		DemoLoginEnabled:                 settings.Boolean("demo_login.enabled"),
-		EntraTenantID:                    settings.String("entra.tenant_id"),
-		EntraClientID:                    settings.String("entra.client_id"),
-		EntraClientSecret:                settings.String("entra.client_secret"),
-		EntraRedirectURL:                 settings.String("entra.redirect_url"),
-		EntraAuthorityURL:                settings.String("entra.authority_url"),
-		ServiceToken:                     settings.String("service_token"),
-		GrantStoreServiceToken:           settings.String("grant_store.service_token"),
-		PeerAttachmentMaximumBytes:       settings.Integer(SettingPeerAttachmentMaximumBytes),
-		PeerAttachmentsMaximumTotalBytes: settings.Integer(SettingPeerAttachmentsMaximumTotalBytes),
+		Settings:                              settings,
+		ListenAddr:                            settings.String("listen_address"),
+		DBPath:                                settings.String("database.path"),
+		OperationsDBPath:                      settings.String("operations.database_path"),
+		OperationsWorkerCount:                 settings.Integer("operations.worker_count"),
+		OperationsLeaseDuration:               settings.Duration("operations.lease_duration"),
+		OneShotInstanceByProvider:             settings.StringMap(SettingOneShotInstanceByProvider),
+		OperationsCompletionModelRole:         settings.ModelRole(SettingOperationsCompletionModelRole),
+		SessionActionsReviewModelRole:         settings.ModelRole(SettingSessionActionsReviewModelRole),
+		ImageGenerationInstanceID:             settings.String(SettingImageGenerationInstanceID),
+		SessionRenamerModelRole:               settings.ModelRole(SettingSessionRenamerModelRole),
+		UsageStoreURL:                         settings.String("usage_store.url"),
+		OperationsGrantEnforcement:            settings.String(SettingOperationsGrantEnforcement),
+		ServerName:                            settings.String(SettingServerName),
+		ChatLinksReferencePageBaseURL:         settings.String(SettingChatLinksReferencePageBaseURL),
+		SelfUpdateCommand:                     settings.String(SettingSelfUpdateCommand),
+		OrchestratorURL:                       settings.String(SettingOrchestratorURL),
+		KeepAwakeEnabled:                      settings.Boolean(SettingKeepAwakeEnabled),
+		KeepAwakeGraceMinutes:                 settings.Integer(SettingKeepAwakeGraceMinutes),
+		SessionHostHoldSessions:               settings.Boolean(SettingSessionHostHoldSessions),
+		SessionHostHoldMinutes:                settings.Integer(SettingSessionHostHoldMinutes),
+		AgentStoreDB:                          settings.String("agent_store.database_path"),
+		MemoryStoreDB:                         settings.String("memory_store.database_path"),
+		HarnessStoreDB:                        settings.String("harness_store.database_path"),
+		HookStoreDB:                           settings.String("hook_store.database_path"),
+		ModelStoreDB:                          settings.String("model_store.database_path"),
+		ModelStoreURL:                         settings.String("model_store.url"),
+		AgentStoreURL:                         settings.String("agent_store.url"),
+		ImagesDir:                             settings.String("images.directory"),
+		SessionFilesDir:                       settings.String("session_files.directory"),
+		FileStoreURL:                          settings.String("file_store.url"),
+		RepoStoreURL:                          settings.String("repo_store.url"),
+		SchedulerURL:                          settings.String("scheduler.url"),
+		FileStoreServiceToken:                 settings.String("file_store.service_token"),
+		BridgePrefsPath:                       settings.String("bridge_preferences.path"),
+		ConformancePath:                       settings.String("conformance.path"),
+		LogStoreURL:                           settings.String("log_store.url"),
+		PublicURL:                             settings.String("public_url"),
+		ToolStoreURL:                          settings.String("tool_store.url"),
+		SkillStoreURL:                         settings.String("skill_store_proxy.url"),
+		AuthStoreURL:                          settings.String("auth_store.url"),
+		AuthStoreToken:                        settings.String("auth_store.token"),
+		KanbanStoreServiceToken:               settings.String("kanban_store.service_token"),
+		ReferenceStoreServiceToken:            settings.String("reference_store.service_token"),
+		SignInPageURL:                         settings.String("sign_in.page_url"),
+		SignInCookieDomain:                    settings.String("sign_in.cookie_domain"),
+		SignInMultichatCredentialID:           settings.String("sign_in.multichat_credential_id"),
+		SignInDiscordApplicationID:            settings.String("sign_in.discord_application_id"),
+		SignInDiscordClientSecretCredentialID: settings.String("sign_in.discord_client_secret_credential_id"),
+		SignInDiscordRedirectURL:              settings.String("sign_in.discord_redirect_url"),
+		DiscoveryPrincipalID:                  settings.String("discovery.principal_id"),
+		BundleStoreURL:                        settings.String("bundle_store.url"),
+		KanbanStoreURL:                        settings.String("kanban_store.url"),
+		ReferenceStoreURL:                     settings.String("reference_store.url"),
+		PostgresURL:                           settings.String("database.postgres_url"),
+		ChatLinksNATSURL:                      settings.String("chat_links.nats_url"),
+		MultichatURL:                          settings.String("multichat.url"),
+		PeopleStoreURL:                        settings.String("people_store.url"),
+		MailstackURL:                          settings.String("mailstack.url"),
+		MailstackToken:                        settings.String("mailstack.token"),
+		HealthcheckURL:                        settings.String("healthcheck.url"),
+		SnapshotStoreDB:                       settings.String("snapshot_store.database_path"),
+		SnapshotStoreGit:                      settings.String("snapshot_store.git_path"),
+		PurposeFolders:                        purposeFoldersOver(settings.StringMap("session.purpose_folders")),
+		PTYRingBufferBytes:                    settings.Integer("pty.ring_buffer_bytes"),
+		IdleTimeout:                           settings.Duration(SettingSessionIdleTimeout),
+		PTYIdleTimeout:                        settings.Duration(SettingSessionPTYIdleTimeout),
+		ExternalActivityPollInterval:          settings.Duration(SettingExternalActivityPollInterval),
+		SignalClassifierModelRole:             settings.ModelRole(SettingSignalClassifierModelRole),
+		QuestionTriageModelRole:               settings.ModelRole(SettingQuestionTriageModelRole),
+		SignalClassifierOptOut:                harnessSetOf(settings.StringList(SettingSignalClassifierOptOutHarnesses)),
+		PromptDriftTaggerModelRole:            settings.ModelRole(SettingPromptDriftTaggerModelRole),
+		SignalClassifierTimeout:               settings.Duration(SettingSignalClassifierTimeout),
+		SignalClassifierMaxChars:              settings.Integer(SettingSignalClassifierMaximumCharacters),
+		DemoLoginSigningKey:                   settings.String("demo_login.signing_key"),
+		DemoLoginEnabled:                      settings.Boolean("demo_login.enabled"),
+		EntraTenantID:                         settings.String("entra.tenant_id"),
+		EntraClientID:                         settings.String("entra.client_id"),
+		EntraClientSecret:                     settings.String("entra.client_secret"),
+		EntraRedirectURL:                      settings.String("entra.redirect_url"),
+		EntraAuthorityURL:                     settings.String("entra.authority_url"),
+		ServiceToken:                          settings.String("service_token"),
+		PeerAttachmentMaximumBytes:            settings.Integer(SettingPeerAttachmentMaximumBytes),
+		PeerAttachmentsMaximumTotalBytes:      settings.Integer(SettingPeerAttachmentsMaximumTotalBytes),
 	}
 	productiondefaults.PanicIfUsedUnderTest(cfg.GuardedAddresses())
 	return cfg, nil
@@ -486,24 +510,23 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 // itself into the same check.
 func (c *Config) GuardedAddresses() map[string]string {
 	return map[string]string{
-		"ListenAddr":         c.ListenAddr,
-		"DBPath":             c.DBPath,
-		"AgentStoreDB":       c.AgentStoreDB,
-		"MemoryStoreDB":      c.MemoryStoreDB,
-		"HarnessStoreDB":     c.HarnessStoreDB,
-		"HookStoreDB":        c.HookStoreDB,
-		"ModelStoreDB":       c.ModelStoreDB,
-		"BridgePrefsPath":    c.BridgePrefsPath,
-		"ConformancePath":    c.ConformancePath,
-		"LogStoreURL":        c.LogStoreURL,
-		"ToolStoreURL":       c.ToolStoreURL,
-		"PermissionStoreURL": c.PermissionStoreURL,
-		"MailstackURL":       c.MailstackURL,
-		"HealthcheckURL":     c.HealthcheckURL,
-		"UsageStoreURL":      c.UsageStoreURL,
-		"SnapshotStoreDB":    c.SnapshotStoreDB,
-		"SnapshotStoreGit":   c.SnapshotStoreGit,
-		"OperationsDBPath":   c.OperationsDBPath,
+		"ListenAddr":       c.ListenAddr,
+		"DBPath":           c.DBPath,
+		"AgentStoreDB":     c.AgentStoreDB,
+		"MemoryStoreDB":    c.MemoryStoreDB,
+		"HarnessStoreDB":   c.HarnessStoreDB,
+		"HookStoreDB":      c.HookStoreDB,
+		"ModelStoreDB":     c.ModelStoreDB,
+		"BridgePrefsPath":  c.BridgePrefsPath,
+		"ConformancePath":  c.ConformancePath,
+		"LogStoreURL":      c.LogStoreURL,
+		"ToolStoreURL":     c.ToolStoreURL,
+		"MailstackURL":     c.MailstackURL,
+		"HealthcheckURL":   c.HealthcheckURL,
+		"UsageStoreURL":    c.UsageStoreURL,
+		"SnapshotStoreDB":  c.SnapshotStoreDB,
+		"SnapshotStoreGit": c.SnapshotStoreGit,
+		"OperationsDBPath": c.OperationsDBPath,
 	}
 }
 

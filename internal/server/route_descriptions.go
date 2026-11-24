@@ -30,6 +30,10 @@ const (
 	routeGroupAgentStorePrompt routeGroup = "agent-store prompt source, mounted in this process"
 	routeGroupMemoryStore      routeGroup = "memory-store, mounted in this process"
 	routeGroupPredictionStore  routeGroup = "prediction-store, mounted in this process"
+	routeGroupPrincipalStore   routeGroup = "principal-store, mounted in this process"
+	routeGroupGrantStore       routeGroup = "grant-store, mounted in this process"
+	routeGroupSignInStore      routeGroup = "sign-in-store, mounted in this process"
+	routeGroupPermissionStore  routeGroup = "permission-store, mounted in this process"
 )
 
 // routeGroupsInReadmeOrder is the order the README lists the groups in.
@@ -50,6 +54,10 @@ var routeGroupsInReadmeOrder = []routeGroup{
 	routeGroupAgentStorePrompt,
 	routeGroupMemoryStore,
 	routeGroupPredictionStore,
+	routeGroupPrincipalStore,
+	routeGroupGrantStore,
+	routeGroupSignInStore,
+	routeGroupPermissionStore,
 }
 
 var routeDescriptions = map[string]routeDescription{
@@ -262,7 +270,6 @@ var routeDescriptions = map[string]routeDescription{
 	kanbanProxyMountPrefix + "/":                                  {routeGroupLogin, "kanban-store `/api/…`, as the caller"},
 	kanbanStoreProxyMountPrefix + "/":                             {routeGroupLogin, "kanban-store at its root (`/api/…`, `/settings`), as the caller"},
 	referenceStoreProxyMountPrefix + "/":                          {routeGroupLogin, "reference-store (`/types`, `/resolve`, `/search`): what an id names, narrowed to what the caller may see"},
-	grantStoreProxyMountPrefix + "/":                              {routeGroupLogin, "grant-store `/…`, as the caller"},
 	mailstackProxyMountPrefix + "/":                               {routeGroupLogin, "mailstack `/…`, as the caller, checked against their mail grants and tickets"},
 
 	// Runners and harness callbacks.
@@ -358,6 +365,68 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /prediction-store/predictions/{id}/links":      {routeGroupPredictionStore, "What the prediction is about"},
 	"POST /prediction-store/predictions/{id}/links":     {routeGroupPredictionStore, "Link it to a record by the owning store's id; linking twice is a no-op"},
 	"DELETE /prediction-store/links/{id}":               {routeGroupPredictionStore, "Remove one link by its number"},
+
+	// principal-store, mounted in this process.
+	"GET /principal-store/health":                                  {routeGroupPrincipalStore, "`{\"status\":\"ok\",\"counts\":{principals,humans,groups,disabled}}`"},
+	"GET /principal-store/kinds":                                   {routeGroupPrincipalStore, "The principal kinds"},
+	"GET /principal-store/kind-definitions":                        {routeGroupPrincipalStore, "Each kind with what it may do"},
+	"GET /principal-store/availability-reasons":                    {routeGroupPrincipalStore, "The reasons an availability answer can give"},
+	"GET /principal-store/weekday-codes":                           {routeGroupPrincipalStore, "The day codes a working week uses"},
+	"GET /principal-store/identity-providers":                      {routeGroupPrincipalStore, "The providers an identity binding can name"},
+	"GET /principal-store/principals":                              {routeGroupPrincipalStore, "List principals by `q`, `kind`, `include_disabled`, `available_at`, page"},
+	"POST /principal-store/principals":                             {routeGroupPrincipalStore, "Create a principal"},
+	"POST /principal-store/contacts/resolve":                       {routeGroupPrincipalStore, "Turn an email address into one contact principal"},
+	"GET /principal-store/principals/{id}":                         {routeGroupPrincipalStore, "One principal with its groups or members"},
+	"PATCH /principal-store/principals/{id}":                       {routeGroupPrincipalStore, "Change the name, email, working week or administrator flag"},
+	"POST /principal-store/principals/{id}/disable":                {routeGroupPrincipalStore, "Disable a principal"},
+	"POST /principal-store/principals/{id}/enable":                 {routeGroupPrincipalStore, "Enable a principal"},
+	"GET /principal-store/principals/{id}/members":                 {routeGroupPrincipalStore, "A group's members"},
+	"PUT /principal-store/principals/{group}/members/{member}":     {routeGroupPrincipalStore, "Put a principal in a group"},
+	"DELETE /principal-store/principals/{group}/members/{member}":  {routeGroupPrincipalStore, "Take a principal out of a group"},
+	"GET /principal-store/principals/{id}/groups":                  {routeGroupPrincipalStore, "The groups a principal is in"},
+	"GET /principal-store/principals/{id}/availability":            {routeGroupPrincipalStore, "Whether a person is available at `at`, and why"},
+	"GET /principal-store/principals/{id}/time-off":                {routeGroupPrincipalStore, "A person's time off"},
+	"POST /principal-store/principals/{id}/time-off":               {routeGroupPrincipalStore, "Add time off"},
+	"DELETE /principal-store/principals/{id}/time-off/{timeOffID}": {routeGroupPrincipalStore, "Remove time off"},
+	"GET /principal-store/identity-bindings":                       {routeGroupPrincipalStore, "Identity bindings, by principal, provider, tenant"},
+	"POST /principal-store/identity-bindings":                      {routeGroupPrincipalStore, "Link an identity to a principal, as the calling administrator (as `POST /admin/identity-bindings`)"},
+	"GET /principal-store/identity-bindings/resolve":               {routeGroupPrincipalStore, "Which principal an identity signs in as"},
+	"GET /principal-store/identity-bindings/{id}":                  {routeGroupPrincipalStore, "One identity binding"},
+	"POST /principal-store/identity-bindings/{id}/unlink":          {routeGroupPrincipalStore, "Unlink an identity and end its login sessions (as `POST /admin/identity-bindings/{id}/unlink`)"},
+
+	// grant-store, mounted in this process.
+	"GET /grant-store/health":                    {routeGroupGrantStore, "`{\"status\":\"ok\",\"counts\":…}`"},
+	"GET /grant-store/relations":                 {routeGroupGrantStore, "Each relation with its resource types and whether it is enforced"},
+	"GET /grant-store/resource-types":            {routeGroupGrantStore, "The resource types a grant can name"},
+	"GET /grant-store/grants":                    {routeGroupGrantStore, "List grants, narrowed to what the caller may read"},
+	"POST /grant-store/grants":                   {routeGroupGrantStore, "Grant a relation on a resource, once both owners confirm them"},
+	"GET /grant-store/grants/{id}":               {routeGroupGrantStore, "One grant"},
+	"POST /grant-store/grants/{id}/revoke":       {routeGroupGrantStore, "Revoke a grant"},
+	"GET /grant-store/principals/{id}/effective": {routeGroupGrantStore, "A principal's own and inherited active grants"},
+
+	// sign-in-store, mounted in this process.
+	"GET /sign-in-store/health":                            {routeGroupSignInStore, "`{\"status\":\"ok\"}`"},
+	"POST /sign-in-store/link-requests":                    {routeGroupSignInStore, "Send a sign-in link to a person's own chat; the same answer whether or not they have an account"},
+	"POST /sign-in-store/redeem":                           {routeGroupSignInStore, "Spend a link's secret and open a session cookie"},
+	"GET /sign-in-store/session":                           {routeGroupSignInStore, "Who the browser's `sign_in_session` cookie signs in as"},
+	"POST /sign-in-store/sign-out":                         {routeGroupSignInStore, "End the browser's session"},
+	"GET /sign-in-store/discord/start":                     {routeGroupSignInStore, "Start Sign in with Discord, or linking a Discord account"},
+	"GET /sign-in-store/discord/callback":                  {routeGroupSignInStore, "Finish a Discord round trip"},
+	"POST /sign-in-store/sign-in-links":                    {routeGroupSignInStore, "Make a one-time sign-in link for a principal, as the calling administrator"},
+	"GET /sign-in-store/sign-in-links":                     {routeGroupSignInStore, "Sign-in links made, newest first"},
+	"GET /sign-in-store/sessions":                          {routeGroupSignInStore, "Sign-in sessions, newest first"},
+	"POST /sign-in-store/sessions/{id}/revoke":             {routeGroupSignInStore, "End a sign-in session, as the calling administrator"},
+	"POST /sign-in-store/principals/{id}/discord-messages": {routeGroupSignInStore, "Send a message to a member's one-to-one Discord chat"},
+
+	// permission-store, mounted in this process.
+	"GET /permission-store/healthz":       {routeGroupPermissionStore, "`{\"status\":\"ok\"}`"},
+	"GET /permission-store/rules":         {routeGroupPermissionStore, "Rules, by `scope`"},
+	"POST /permission-store/rules":        {routeGroupPermissionStore, "Create a rule"},
+	"GET /permission-store/rules/{id}":    {routeGroupPermissionStore, "One rule"},
+	"PATCH /permission-store/rules/{id}":  {routeGroupPermissionStore, "Change a rule"},
+	"DELETE /permission-store/rules/{id}": {routeGroupPermissionStore, "Delete a rule"},
+	"POST /permission-store/evaluate":     {routeGroupPermissionStore, "The verdict on one tool call; writes an audit row"},
+	"GET /permission-store/audit":         {routeGroupPermissionStore, "Verdicts given, newest first"},
 
 	"POST /memories":         {routeGroupMemoryStore, "Save a memory"},
 	"GET /memories/{id}":     {routeGroupMemoryStore, "One memory"},

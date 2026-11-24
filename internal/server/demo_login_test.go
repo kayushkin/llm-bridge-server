@@ -185,14 +185,15 @@ func demoLoginTestServer(t *testing.T, principalStoreURL, kanbanStoreURL string)
 	}
 	t.Cleanup(func() { bridgeStore.Close() })
 	cfg := &config.Config{
-		ImagesDir:         filepath.Join(directory, "images"),
-		BridgePrefsPath:   filepath.Join(directory, "prefs.json"),
-		LogStoreURL:       "http://localhost:0",
-		PrincipalStoreURL: principalStoreURL,
-		KanbanStoreURL:    kanbanStoreURL,
+		ImagesDir:       filepath.Join(directory, "images"),
+		BridgePrefsPath: filepath.Join(directory, "prefs.json"),
+		LogStoreURL:     "http://localhost:0",
+		KanbanStoreURL:  kanbanStoreURL,
 	}
 	testAuthorizationConfig(cfg)
-	return New(bridgeStore, nil, nil, nil, nil, testModelStore(t), nil, cfg)
+	server := New(bridgeStore, nil, nil, nil, nil, testModelStore(t), nil, cfg)
+	useFakePrincipalStore(server, principalStoreURL)
+	return server
 }
 
 func serve(server *Server, request *http.Request) *httptest.ResponseRecorder {
@@ -507,7 +508,7 @@ func TestAClientSentPrincipalHeaderIsRefusedWithoutTheServiceToken(t *testing.T)
 func TestStartupIsRefusedWithoutEachRequiredSetting(t *testing.T) {
 	complete := config.Config{
 		DemoLoginSigningKey: testSigningKey, ServiceToken: testServiceToken,
-		KanbanStoreURL: "http://kanban.invalid", PrincipalStoreURL: "http://principal.invalid", GrantStoreURL: "http://grant.invalid",
+		KanbanStoreURL: "http://kanban.invalid", PostgresURL: "postgres://postgres.invalid/bridge",
 		ReferenceStoreURL: "http://reference.invalid",
 	}
 	if err := complete.ValidateRequestAuthorizationSettings(); err != nil {
@@ -521,9 +522,8 @@ func TestStartupIsRefusedWithoutEachRequiredSetting(t *testing.T) {
 		"short signing key":   {func(c *config.Config) { c.DemoLoginSigningKey = "short" }, "LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY"},
 		"no service token":    {func(c *config.Config) { c.ServiceToken = "" }, "LLMBRIDGE_SERVICE_TOKEN"},
 		"short service token": {func(c *config.Config) { c.ServiceToken = "short" }, "LLMBRIDGE_SERVICE_TOKEN"},
-		"no principal-store":  {func(c *config.Config) { c.PrincipalStoreURL = "" }, "LLMBRIDGE_PRINCIPAL_STORE_URL"},
+		"no postgres":         {func(c *config.Config) { c.PostgresURL = "" }, "LLMBRIDGE_POSTGRES_URL"},
 		"no kanban-store":     {func(c *config.Config) { c.KanbanStoreURL = "" }, "LLMBRIDGE_KANBAN_STORE_URL"},
-		"no grant-store":      {func(c *config.Config) { c.GrantStoreURL = "" }, "LLMBRIDGE_GRANT_STORE_URL"},
 		"no reference-store":  {func(c *config.Config) { c.ReferenceStoreURL = "" }, "LLMBRIDGE_REFERENCE_STORE_URL"},
 	} {
 		candidate := complete
@@ -568,8 +568,6 @@ func TestNewRefusesAServerThatCouldNotIdentifyACaller(t *testing.T) {
 				ImagesDir:           filepath.Join(directory, "images"),
 				BridgePrefsPath:     filepath.Join(directory, "prefs.json"),
 				LogStoreURL:         "http://localhost:0",
-				PrincipalStoreURL:   "http://principal-store.invalid",
-				GrantStoreURL:       "http://grant-store.invalid",
 				DemoLoginSigningKey: credentials.signingKey,
 				ServiceToken:        credentials.serviceToken,
 			})

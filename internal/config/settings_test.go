@@ -74,8 +74,8 @@ func TestLoadReadsTheSameValuesItAlwaysDid(t *testing.T) {
 	if cfg.SignalClassifierModelRole != "balanced" || cfg.SignalClassifierTimeout != 20*time.Second {
 		t.Errorf("classifier defaults moved: %q %v", cfg.SignalClassifierModelRole, cfg.SignalClassifierTimeout)
 	}
-	if err := cfg.Settings.CheckRequired(); err == nil || !strings.Contains(err.Error(), "LLMBRIDGE_PRINCIPAL_STORE_URL") {
-		t.Errorf("CheckRequired = %v, want it to name the unset principal-store URL", err)
+	if err := cfg.Settings.CheckRequired(); err == nil || !strings.Contains(err.Error(), "LLMBRIDGE_POSTGRES_URL") {
+		t.Errorf("CheckRequired = %v, want it to name the unset Postgres URL", err)
 	}
 }
 

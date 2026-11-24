@@ -20,7 +20,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestoreclient"
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
@@ -28,8 +27,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
-	"github.com/kayushkin/llm-bridge-server/internal/permclient"
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -79,12 +76,17 @@ type Server struct {
 	// startOnInstance spawns at most one harness process per session.
 	harnessStartLockBySessionID sync.Map
 	authClient                  *authstoreclient.Client
-	permClient                  *permclient.Client
-	// grantClient reads a session principal's effective grants at spawn;
-	// principalClient checks a principal_id at creation. See tool_provision.go
-	// and handleCreateSession.
-	grantClient     *grantclient.Client
-	principalClient *principalclient.Client
+	// permClient, grantClient and principalClient are the access stores in
+	// this process (access_routes.go): permission-store's verdict on a tool
+	// call, a session principal's effective grants at spawn, and the
+	// principal behind every request. EnableAccess sets them; nil until then,
+	// and every use of a nil one answers that access is off.
+	permClient      permissionEvaluator
+	grantClient     grantReader
+	principalClient principalDirectory
+	// access answers /principal-store/, /grant-store/, /sign-in-store/ and
+	// /permission-store/ once EnableAccess has run; nil answers them 503.
+	access atomic.Pointer[accessRouteHandlers]
 	// peerSockets holds every open peer socket and every dialer (peer_socket.go).
 	peerSockets *peerSocketRegistry
 	// peerRequestsInFlight lets ending a peer's access end the requests it
@@ -186,9 +188,6 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		snapshotStore:        ss,
 		harness:              harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
 		authClient:           authClient,
-		permClient:           permclient.New(cfg.PermissionStoreURL),
-		grantClient:          grantclient.New(cfg.GrantStoreURL, cfg.GrantStoreServiceToken),
-		principalClient:      principalclient.New(cfg.PrincipalStoreURL),
 		peerSockets:          newPeerSocketRegistry(),
 		peerRequestsInFlight: newPeerRequestsInFlight(),
 		bundleClient:         bundleclient.New(cfg.BundleStoreURL),
@@ -218,10 +217,10 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	// machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
 	srv.harness.SetUnpromptedTurnStartObserver(srv.onUnpromptedTurnStart)
-	if cfg.ChatLinksNATSURL != "" && cfg.ChatLinksMultichatURL != "" && cfg.ChatLinksPeopleStoreURL != "" {
+	if cfg.ChatLinksNATSURL != "" && cfg.MultichatURL != "" && cfg.PeopleStoreURL != "" {
 		srv.chatLinks = &chatLinks{
-			multichatURL:   cfg.ChatLinksMultichatURL,
-			peopleStoreURL: cfg.ChatLinksPeopleStoreURL,
+			multichatURL:   cfg.MultichatURL,
+			peopleStoreURL: cfg.PeopleStoreURL,
 			httpClient:     &http.Client{Timeout: 60 * time.Second},
 			token: func(ctx context.Context) (string, error) {
 				resolved, err := authClient.ResolveByProvider(ctx, chatLinkMultichatProvider, "", "", "read multichat's accounts and send a chat link's reply")
@@ -281,7 +280,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	if cfg.EntraSignInEnabled() {
 		srv.entraSignIn = newEntraSignIn(cfg)
 	}
-	srv.principalLookupCache = newPrincipalLookupCache(srv.principalClient)
+	srv.principalLookupCache = newPrincipalLookupCache(srv)
 	srv.sessionActionModels = srv
 	srv.wireServiceSettings()
 	srv.routes()
@@ -315,6 +314,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.registerLoginAndStoreProxyRoutes()
 	s.registerPredictionStoreRoutes()
+	s.registerAccessRoutes()
 	// This server's own settings, served the way every service serves them.
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)

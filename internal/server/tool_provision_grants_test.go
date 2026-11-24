@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -101,7 +100,7 @@ func fakeToolStoreWithOptIns(t *testing.T, optIns map[string][]map[string]any) (
 }
 
 func newServerWithGrants(toolStoreURL, grantStoreURL string) *Server {
-	return &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, grantClient: grantclient.New(grantStoreURL, ""),
+	return &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, grantClient: testGrantReaderAt(grantStoreURL),
 		principalLookupCache: principalLookupCacheAnswering(humanPrincipalForGrantTests)}
 }
 

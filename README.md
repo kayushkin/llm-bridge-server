@@ -400,7 +400,6 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/auth/principal` | Who the login cookie names, and the session's CSRF token | anyone |
 | `GET` | `/auth/sessions` | The caller's login sessions; an administrator names anyone's with principal_id | principal, own logins only |
 | `POST` | `/auth/sessions/{id}/revoke` | End a login session, with a reason | principal, own logins only |
-| `*` | `/grant-store/` | grant-store `/…`, as the caller | principal or session agent |
 | `*` | `/kanban-store/` | kanban-store at its root (`/api/…`, `/settings`), as the caller | principal or session agent |
 | `*` | `/kanban/` | kanban-store `/api/…`, as the caller | principal or session agent |
 | `*` | `/mailstack/` | mailstack `/…`, as the caller, checked against their mail grants and tickets | principal or session agent |
@@ -565,6 +564,80 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/prediction-store/predictions/{id}/restore` | Undo a soft delete | operator |
 | `GET` | `/prediction-store/tags` | Tags on live predictions with their counts, most used first | operator |
 | `GET` | `/prediction-store/vocabulary` | Categories, provenances, statuses, outcomes, `group_by` keys and the probability ladder | operator |
+
+### principal-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/principal-store/availability-reasons` | The reasons an availability answer can give | principal |
+| `POST` | `/principal-store/contacts/resolve` | Turn an email address into one contact principal | operator |
+| `GET` | `/principal-store/health` | `{"status":"ok","counts":{principals,humans,groups,disabled}}` | operator |
+| `GET` | `/principal-store/identity-bindings` | Identity bindings, by principal, provider, tenant | operator |
+| `POST` | `/principal-store/identity-bindings` | Link an identity to a principal, as the calling administrator (as `POST /admin/identity-bindings`) | operator |
+| `GET` | `/principal-store/identity-bindings/resolve` | Which principal an identity signs in as | operator |
+| `GET` | `/principal-store/identity-bindings/{id}` | One identity binding | operator |
+| `POST` | `/principal-store/identity-bindings/{id}/unlink` | Unlink an identity and end its login sessions (as `POST /admin/identity-bindings/{id}/unlink`) | operator |
+| `GET` | `/principal-store/identity-providers` | The providers an identity binding can name | principal |
+| `GET` | `/principal-store/kind-definitions` | Each kind with what it may do | principal |
+| `GET` | `/principal-store/kinds` | The principal kinds | principal |
+| `GET` | `/principal-store/principals` | List principals by `q`, `kind`, `include_disabled`, `available_at`, page | operator |
+| `POST` | `/principal-store/principals` | Create a principal | operator |
+| `DELETE` | `/principal-store/principals/{group}/members/{member}` | Take a principal out of a group | operator |
+| `PUT` | `/principal-store/principals/{group}/members/{member}` | Put a principal in a group | operator |
+| `GET` | `/principal-store/principals/{id}` | One principal with its groups or members | operator |
+| `PATCH` | `/principal-store/principals/{id}` | Change the name, email, working week or administrator flag | operator |
+| `GET` | `/principal-store/principals/{id}/availability` | Whether a person is available at `at`, and why | operator |
+| `POST` | `/principal-store/principals/{id}/disable` | Disable a principal | operator |
+| `POST` | `/principal-store/principals/{id}/enable` | Enable a principal | operator |
+| `GET` | `/principal-store/principals/{id}/groups` | The groups a principal is in | operator |
+| `GET` | `/principal-store/principals/{id}/members` | A group's members | operator |
+| `GET` | `/principal-store/principals/{id}/time-off` | A person's time off | operator |
+| `POST` | `/principal-store/principals/{id}/time-off` | Add time off | operator |
+| `DELETE` | `/principal-store/principals/{id}/time-off/{timeOffID}` | Remove time off | operator |
+| `GET` | `/principal-store/weekday-codes` | The day codes a working week uses | principal |
+
+### grant-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/grant-store/grants` | List grants, narrowed to what the caller may read | principal or session agent |
+| `POST` | `/grant-store/grants` | Grant a relation on a resource, once both owners confirm them | principal or session agent |
+| `GET` | `/grant-store/grants/{id}` | One grant | principal or session agent |
+| `POST` | `/grant-store/grants/{id}/revoke` | Revoke a grant | principal or session agent |
+| `GET` | `/grant-store/health` | `{"status":"ok","counts":…}` | principal or session agent |
+| `GET` | `/grant-store/principals/{id}/effective` | A principal's own and inherited active grants | principal or session agent |
+| `GET` | `/grant-store/relations` | Each relation with its resource types and whether it is enforced | principal or session agent |
+| `GET` | `/grant-store/resource-types` | The resource types a grant can name | principal or session agent |
+
+### sign-in-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/sign-in-store/discord/callback` | Finish a Discord round trip | anyone |
+| `GET` | `/sign-in-store/discord/start` | Start Sign in with Discord, or linking a Discord account | anyone |
+| `GET` | `/sign-in-store/health` | `{"status":"ok"}` | anyone |
+| `POST` | `/sign-in-store/link-requests` | Send a sign-in link to a person's own chat; the same answer whether or not they have an account | anyone |
+| `POST` | `/sign-in-store/principals/{id}/discord-messages` | Send a message to a member's one-to-one Discord chat | operator |
+| `POST` | `/sign-in-store/redeem` | Spend a link's secret and open a session cookie | anyone |
+| `GET` | `/sign-in-store/session` | Who the browser's `sign_in_session` cookie signs in as | anyone |
+| `GET` | `/sign-in-store/sessions` | Sign-in sessions, newest first | operator |
+| `POST` | `/sign-in-store/sessions/{id}/revoke` | End a sign-in session, as the calling administrator | operator |
+| `GET` | `/sign-in-store/sign-in-links` | Sign-in links made, newest first | operator |
+| `POST` | `/sign-in-store/sign-in-links` | Make a one-time sign-in link for a principal, as the calling administrator | operator |
+| `POST` | `/sign-in-store/sign-out` | End the browser's session | anyone |
+
+### permission-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/permission-store/audit` | Verdicts given, newest first | operator |
+| `POST` | `/permission-store/evaluate` | The verdict on one tool call; writes an audit row | operator |
+| `GET` | `/permission-store/healthz` | `{"status":"ok"}` | operator |
+| `GET` | `/permission-store/rules` | Rules, by `scope` | operator |
+| `POST` | `/permission-store/rules` | Create a rule | operator |
+| `DELETE` | `/permission-store/rules/{id}` | Delete a rule | operator |
+| `GET` | `/permission-store/rules/{id}` | One rule | operator |
+| `PATCH` | `/permission-store/rules/{id}` | Change a rule | operator |
 <!-- route-table:end -->
 
 ## Testing

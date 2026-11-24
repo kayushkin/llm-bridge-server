@@ -10,7 +10,6 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -70,7 +69,7 @@ func fakeBundleStore(t *testing.T, bundleID string, toolIDs []int64, skillIDs []
 func newServerWithBundles(toolStoreURL, bundleStoreURL, grantStoreURL string) *Server {
 	s := &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, bundleClient: bundleclient.New(bundleStoreURL)}
 	if grantStoreURL != "" {
-		s.grantClient = grantclient.New(grantStoreURL, "")
+		s.grantClient = testGrantReaderAt(grantStoreURL)
 		s.principalLookupCache = principalLookupCacheAnswering(humanPrincipalForGrantTests)
 	}
 	return s

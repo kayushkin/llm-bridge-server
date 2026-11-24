@@ -49,14 +49,13 @@ const AllowInTestsEnvironmentVariable = "LLMBRIDGE_ALLOW_PRODUCTION_IN_TESTS"
 
 // Addresses of the services this gateway talks to over HTTP.
 const (
-	ListenAddr         = ":8160"
-	LogStoreURL        = "http://localhost:8175"
-	ToolStoreURL       = "http://localhost:8302"
-	PermissionStoreURL = "http://localhost:8304"
-	BundleStoreURL     = "http://localhost:8307"
-	MailstackURL       = "http://localhost:8195"
-	HealthcheckURL     = "http://localhost:8099"
-	UsageStoreURL      = "http://localhost:8185"
+	ListenAddr     = ":8160"
+	LogStoreURL    = "http://localhost:8175"
+	ToolStoreURL   = "http://localhost:8302"
+	BundleStoreURL = "http://localhost:8307"
+	MailstackURL   = "http://localhost:8195"
+	HealthcheckURL = "http://localhost:8099"
+	UsageStoreURL  = "http://localhost:8185"
 	// kanban-store, principal-store and grant-store have no default here, and
 	// so no row in the three tables below. Request authorization reads all
 	// three on a gated request and main refuses to start without
@@ -127,48 +126,46 @@ func ConformancePath() string {
 // variable that overrides it. Reported in the panic so the message says how to
 // fix the test rather than only what it did wrong.
 var EnvironmentVariableByConfigField = map[string]string{
-	"ListenAddr":         "LLMBRIDGE_LISTEN_ADDR",
-	"DBPath":             "LLMBRIDGE_DB_PATH",
-	"AgentStoreDB":       "LLMBRIDGE_AGENT_DB",
-	"MemoryStoreDB":      "LLMBRIDGE_MEMORY_DB",
-	"HarnessStoreDB":     "LLMBRIDGE_HARNESS_DB",
-	"HookStoreDB":        "LLMBRIDGE_HOOK_DB",
-	"ModelStoreDB":       "LLMBRIDGE_MODEL_STORE_DB",
-	"BridgePrefsPath":    "LLMBRIDGE_BRIDGE_PREFS",
-	"ConformancePath":    "LLMBRIDGE_CONFORMANCE_PATH",
-	"LogStoreURL":        "LLMBRIDGE_LOG_STORE_URL",
-	"ToolStoreURL":       "LLMBRIDGE_TOOL_STORE_URL",
-	"PermissionStoreURL": "LLMBRIDGE_PERMISSION_STORE_URL",
-	"MailstackURL":       "LLMBRIDGE_MAILSTACK_URL",
-	"HealthcheckURL":     "LLMBRIDGE_HEALTHCHECK_URL",
-	"UsageStoreURL":      "LLMBRIDGE_USAGE_STORE_URL",
-	"SnapshotStoreDB":    "LLMBRIDGE_SNAPSHOT_DB",
-	"SnapshotStoreGit":   "LLMBRIDGE_SNAPSHOT_GIT",
-	"OperationsDBPath":   "LLMBRIDGE_OPERATIONS_DB",
+	"ListenAddr":       "LLMBRIDGE_LISTEN_ADDR",
+	"DBPath":           "LLMBRIDGE_DB_PATH",
+	"AgentStoreDB":     "LLMBRIDGE_AGENT_DB",
+	"MemoryStoreDB":    "LLMBRIDGE_MEMORY_DB",
+	"HarnessStoreDB":   "LLMBRIDGE_HARNESS_DB",
+	"HookStoreDB":      "LLMBRIDGE_HOOK_DB",
+	"ModelStoreDB":     "LLMBRIDGE_MODEL_STORE_DB",
+	"BridgePrefsPath":  "LLMBRIDGE_BRIDGE_PREFS",
+	"ConformancePath":  "LLMBRIDGE_CONFORMANCE_PATH",
+	"LogStoreURL":      "LLMBRIDGE_LOG_STORE_URL",
+	"ToolStoreURL":     "LLMBRIDGE_TOOL_STORE_URL",
+	"MailstackURL":     "LLMBRIDGE_MAILSTACK_URL",
+	"HealthcheckURL":   "LLMBRIDGE_HEALTHCHECK_URL",
+	"UsageStoreURL":    "LLMBRIDGE_USAGE_STORE_URL",
+	"SnapshotStoreDB":  "LLMBRIDGE_SNAPSHOT_DB",
+	"SnapshotStoreGit": "LLMBRIDGE_SNAPSHOT_GIT",
+	"OperationsDBPath": "LLMBRIDGE_OPERATIONS_DB",
 }
 
 // AddressByConfigField returns the production address each guarded config
 // field holds when nothing overrides it.
 func AddressByConfigField() map[string]string {
 	return map[string]string{
-		"ListenAddr":         ListenAddr,
-		"DBPath":             BridgeDatabasePath(),
-		"AgentStoreDB":       AgentStoreDatabasePath(),
-		"MemoryStoreDB":      MemoryStoreDatabasePath(),
-		"HarnessStoreDB":     HarnessStoreDatabasePath(),
-		"HookStoreDB":        HookStoreDatabasePath(),
-		"ModelStoreDB":       ModelStoreDatabasePath(),
-		"BridgePrefsPath":    BridgePreferencesPath(),
-		"ConformancePath":    ConformancePath(),
-		"LogStoreURL":        LogStoreURL,
-		"ToolStoreURL":       ToolStoreURL,
-		"PermissionStoreURL": PermissionStoreURL,
-		"MailstackURL":       MailstackURL,
-		"HealthcheckURL":     HealthcheckURL,
-		"UsageStoreURL":      UsageStoreURL,
-		"SnapshotStoreDB":    SnapshotStoreDatabasePath(),
-		"SnapshotStoreGit":   SnapshotStoreGitPath(),
-		"OperationsDBPath":   OperationsDatabasePath(),
+		"ListenAddr":       ListenAddr,
+		"DBPath":           BridgeDatabasePath(),
+		"AgentStoreDB":     AgentStoreDatabasePath(),
+		"MemoryStoreDB":    MemoryStoreDatabasePath(),
+		"HarnessStoreDB":   HarnessStoreDatabasePath(),
+		"HookStoreDB":      HookStoreDatabasePath(),
+		"ModelStoreDB":     ModelStoreDatabasePath(),
+		"BridgePrefsPath":  BridgePreferencesPath(),
+		"ConformancePath":  ConformancePath(),
+		"LogStoreURL":      LogStoreURL,
+		"ToolStoreURL":     ToolStoreURL,
+		"MailstackURL":     MailstackURL,
+		"HealthcheckURL":   HealthcheckURL,
+		"UsageStoreURL":    UsageStoreURL,
+		"SnapshotStoreDB":  SnapshotStoreDatabasePath(),
+		"SnapshotStoreGit": SnapshotStoreGitPath(),
+		"OperationsDBPath": OperationsDatabasePath(),
 	}
 }
 

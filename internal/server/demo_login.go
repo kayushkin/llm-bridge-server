@@ -113,7 +113,6 @@ func (s *Server) registerLoginAndStoreProxyRoutes() {
 	s.mux.HandleFunc("DELETE /restart-drain", s.handleEndRestartDrain)
 	s.mux.HandleFunc(kanbanProxyMountPrefix+"/", s.handleKanbanStoreProxyAsPrincipal)
 	s.mux.HandleFunc(kanbanStoreProxyMountPrefix+"/", s.handleKanbanStoreRootProxyAsPrincipal)
-	s.mux.HandleFunc(grantStoreProxyMountPrefix+"/", s.handleGrantStoreProxyAsPrincipal)
 	s.mux.HandleFunc(mailstackProxyMountPrefix+"/", s.handleMailstackProxyAsPrincipal)
 	s.mux.HandleFunc(referenceStoreProxyMountPrefix+"/", s.handleReferenceStoreProxyAsPrincipal)
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
+	"github.com/kayushkin/llm-bridge-server/internal/access"
 	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
@@ -37,8 +38,14 @@ func main() {
 		case "import-prediction-store":
 			importPredictionStoreCmd(os.Args[2:])
 			return
+		case "import-principal-store", "import-grant-store", "import-sign-in-store", "import-permission-store":
+			importAccessStoreCmd(os.Args[1], os.Args[2:])
+			return
+		case "make-sign-in-link":
+			makeSignInLinkCmd(os.Args[2:])
+			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file>]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id>]")
 			os.Exit(0)
 		}
 	}
@@ -77,8 +84,8 @@ func main() {
 	} else {
 		log.Printf("Entra ID sign-in is OFF: no LLMBRIDGE_ENTRA_* settings")
 	}
-	log.Printf("every route is gated (service token or login session); /kanban/ proxies to kanban-store %s and /grant-store/ to grant-store %s carrying X-Principal-Id, so neither store may be reachable except through here; principals read from principal-store %s",
-		cfg.KanbanStoreURL, cfg.GrantStoreURL, cfg.PrincipalStoreURL)
+	log.Printf("every route is gated (service token or login session); /kanban/ proxies to kanban-store %s carrying X-Principal-Id, so it may not be reachable except through here; principals, grants, sign-in and tool-call rules are the access stores in this process, on Postgres",
+		cfg.KanbanStoreURL)
 
 	// Say where the two stores that outlive this process are, before writing
 	// to either. The local DB is per-instance and disposable; log-store is
@@ -183,6 +190,17 @@ func main() {
 	}
 
 	srv := server.New(st, as, ms, hs, hks, mds, ss, cfg)
+
+	// access: who may sign in and what they may use. Every request's principal
+	// is read from it, so it is not optional: a module that cannot be
+	// provisioned, migrated or opened stops the server here.
+	accessStores, err := access.OpenStores(context.Background(), cfg.PostgresURL)
+	if err != nil {
+		log.Fatalf("access: %v", err)
+	}
+	defer accessStores.Close()
+	srv.EnableAccess(accessStores)
+	log.Printf("postgres: access open, served at /principal-store/, /grant-store/, /sign-in-store/ and /permission-store/")
 
 	// The modules that keep their records in Postgres. With no URL they are
 	// off and their routes answer 503; with one, a module that cannot be

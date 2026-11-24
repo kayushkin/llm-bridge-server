@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -217,7 +216,7 @@ func postPrehook(t *testing.T, srv *Server, bridgeID, body string) (decision, re
 func prehookServerWithDeadStore(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
 	srv, st := testServer(t)
-	srv.permClient = permclient.New("http://127.0.0.1:1")
+	srv.permClient = testPermissionEvaluatorAt("http://127.0.0.1:1")
 	return srv, st
 }
 
@@ -325,7 +324,7 @@ func TestPrehookSendsScopeUnderPermissionStoreKeys(t *testing.T) {
 		_, _ = w.Write([]byte(`{"outcome":"allow","matched_rule_id":"test-allow","atoms":[]}`))
 	}))
 	defer fakeStore.Close()
-	srv.permClient = permclient.New(fakeStore.URL)
+	srv.permClient = testPermissionEvaluatorAt(fakeStore.URL)
 
 	decision, _ := postPrehook(t, srv, "bridge-scoped",
 		`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)
