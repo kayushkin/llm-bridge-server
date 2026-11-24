@@ -1,0 +1,15 @@
+[Unit]
+Description=Prediction Store — the calibration ledger: resolvable claims, the odds stated for them, and what actually happened
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/kayushkincom/bin/prediction-store
+Environment=PREDICTION_STORE_ADDR=:8313
+Environment=HOME=/home/kayushkincom
+WorkingDirectory=/home/kayushkincom/repos/prediction-store
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
