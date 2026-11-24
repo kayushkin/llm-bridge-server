@@ -1,0 +1,21 @@
+[Unit]
+Description=skill-store — SKILL.md registry ingested from upstream repos
+After=network.target
+
+# A systemd user unit: deploy.sh installs it to ~/.config/systemd/user/ and the
+# binary to ~/bin. %h is the user's home directory, so nothing here names a user.
+[Service]
+Type=simple
+ExecStart=%h/bin/skill-store
+
+# Loopback, deliberately. The service has no auth of its own; put a front door
+# that adds it in front. settings.go defaults to the same address, so an empty
+# environment is safe too.
+Environment=SKILL_STORE_ADDR=127.0.0.1:8301
+
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
