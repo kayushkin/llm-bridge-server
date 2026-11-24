@@ -12,10 +12,7 @@ import (
 func newStoreForContextTest(t *testing.T) *Store {
 	t.Helper()
 
-	store, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
+	store := openTestStore(t)
 	t.Cleanup(func() { store.Close() })
 	return store
 }

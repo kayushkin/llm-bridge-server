@@ -66,7 +66,7 @@ func (s *Store) Compact(minAge time.Duration, minCount int) ([]CompactionResult,
 	query := `
 	SELECT id, content, importance, access_count, created_at
 	FROM memories
-	WHERE created_at < ? AND access_count < ? AND importance < 0.7 AND importance > 0
+	WHERE created_at < $1 AND access_count < $2 AND importance < 0.7 AND importance > 0
 	`
 	rows, err := s.db.Query(query, cutoff, minCount)
 	if err != nil {
@@ -98,31 +98,14 @@ func (s *Store) Compact(minAge time.Duration, minCount int) ([]CompactionResult,
 	}
 
 	// Fetch tags for candidates
-	tagMap := make(map[string][]string)
-	if len(candidateIDs) > 0 {
-		placeholders := make([]string, len(candidateIDs))
-		args := make([]interface{}, len(candidateIDs))
-		for i, id := range candidateIDs {
-			placeholders[i] = "?"
-			args[i] = id
-		}
-		tagQuery := fmt.Sprintf("SELECT memory_id, tag FROM memory_tags WHERE memory_id IN (%s)",
-			strings.Join(placeholders, ","))
-		tagRows, err := s.db.Query(tagQuery, args...)
-		if err == nil {
-			defer tagRows.Close()
-			for tagRows.Next() {
-				var memID, tag string
-				if err := tagRows.Scan(&memID, &tag); err == nil {
-					tagMap[memID] = append(tagMap[memID], tag)
-				}
-			}
-		}
+	// Tags for every candidate, through the one tag loader. This used to build
+	// its own IN list and drop the query's error, which grouped every
+	// candidate as untagged.
+	tagMap, err := s.loadTagsForMemories(candidateIDs)
+	if err != nil {
+		return nil, err
 	}
 
-	// Group by primary tag. Compaction MERGES content and destroys the
-	// originals, so the grouping key has to be a real identity. It was not, in
-	// two separate ways, and both are load-bearing — read before changing.
 	groups := make(map[string][]candidate)
 	groupTags := make(map[string]map[string]bool)
 	groupPrimaryTag := make(map[string]string)
@@ -183,7 +166,7 @@ func (s *Store) Compact(minAge time.Duration, minCount int) ([]CompactionResult,
 
 		// Soft-delete originals
 		for _, id := range origIDs {
-			s.db.Exec("UPDATE memories SET importance = 0 WHERE id = ?", id)
+			s.db.Exec("UPDATE memories SET importance = 0 WHERE id = $1", id)
 		}
 
 		results = append(results, CompactionResult{

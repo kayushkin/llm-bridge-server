@@ -1,13 +1,11 @@
 package memorystore
 
 import (
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	_ "modernc.org/sqlite"
 )
 
 // contains checks if a string contains a substring
@@ -16,16 +14,7 @@ func contains(s, substr string) bool {
 }
 
 func TestBuildContext(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "build-context-*.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	store, err := NewStore(tmpFile.Name())
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
+	store := openTestStore(t)
 	defer store.Close()
 
 	// Set up test memories
@@ -68,7 +57,8 @@ func TestBuildContext(t *testing.T) {
 		},
 		{
 			ID:         uuid.NewString(),
-			Content:    "Low importance filler content that is very long and uses many tokens to test budget limits and size filtering" + string(make([]byte, 1000)),
+			// Padded with letters: Postgres refuses a NUL byte in text, which SQLite took.
+			Content:    "Low importance filler content that is very long and uses many tokens to test budget limits and size filtering" + strings.Repeat("x", 1000),
 			Tags:       []string{"filler"},
 			Importance: 0.2,
 			Source:     "system",

@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/google/uuid"
-	_ "modernc.org/sqlite"
 )
 
 // newTestServer builds a real mux over a throwaway store, so these tests go
@@ -17,13 +15,7 @@ import (
 func newTestServer(t *testing.T) *http.ServeMux {
 	t.Helper()
 
-	dbPath := "/tmp/test_provenance_" + uuid.New().String() + ".db"
-	t.Cleanup(func() { os.Remove(dbPath) })
-
-	store, err := NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
+	store := openTestStore(t)
 	t.Cleanup(func() { store.Close() })
 
 	mux := http.NewServeMux()

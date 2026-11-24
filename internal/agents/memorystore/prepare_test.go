@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 func TestPrepareSession(t *testing.T) {
@@ -49,16 +48,7 @@ func TestPrepareSession(t *testing.T) {
 	}
 
 	// Create temp DB
-	dbFile, err := os.CreateTemp("", "prepare-session-*.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(dbFile.Name())
-
-	store, err := NewStore(dbFile.Name())
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
+	store := openTestStore(t)
 	defer store.Close()
 
 	// Prepare session
@@ -176,16 +166,7 @@ func TestPrepareSession_WithIdentityFile(t *testing.T) {
 	}
 
 	// Create temp DB
-	dbFile, err := os.CreateTemp("", "prepare-session-*.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(dbFile.Name())
-
-	store, err := NewStore(dbFile.Name())
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
+	store := openTestStore(t)
 	defer store.Close()
 
 	// Prepare session with identity file

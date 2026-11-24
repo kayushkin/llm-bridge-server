@@ -56,14 +56,14 @@ type Memory struct {
 	Orchestrator string // "inber", "openclaw", etc. — which orchestrator owns this memory
 }
 
-// Store handles persistent memory storage via SQLite.
+// Store keeps memories in the module's Postgres schema.
 type Store struct {
 	db       *sql.DB
 	embedder *Embedder
 }
 
 // MemoryStore defines the interface for persistent memory storage.
-// Different backends can implement this interface (SQLite, Redis, filesystem, in-memory, etc.).
+// Store is the implementation, over Postgres.
 type MemoryStore interface {
 	// Core memory operations
 	Save(m Memory) error

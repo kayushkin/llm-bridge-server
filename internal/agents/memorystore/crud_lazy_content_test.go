@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
 )
 
 // A lazy memory stores a path instead of its text, and Get reads the file on the
@@ -22,10 +21,7 @@ import (
 func newLazyContentTestStore(t *testing.T) *Store {
 	t.Helper()
 
-	store, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
+	store := openTestStore(t)
 	t.Cleanup(func() { store.Close() })
 	return store
 }

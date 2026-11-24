@@ -2,23 +2,15 @@ package memorystore
 
 import (
 	"math"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	_ "modernc.org/sqlite"
 )
 
 func TestStore(t *testing.T) {
 	// Create temporary database
-	dbPath := "/tmp/test_memory_" + uuid.New().String() + ".db"
-	defer os.Remove(dbPath)
-
-	store, err := NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
+	store := openTestStore(t)
 	defer store.Close()
 
 	// Test Save
@@ -147,13 +139,7 @@ func TestEmbedding(t *testing.T) {
 }
 
 func TestDecayImportance(t *testing.T) {
-	dbPath := "/tmp/test_decay_" + uuid.New().String() + ".db"
-	defer os.Remove(dbPath)
-
-	store, err := NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
+	store := openTestStore(t)
 	defer store.Close()
 
 	// Create a memory with old access time

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 // This package turns a timestamp into a number in three places, and each one
@@ -82,10 +81,7 @@ func TestRecencyBonusStraddlesTheOneDayAndOneWeekCuts(t *testing.T) {
 // id tie-break the comparator falls back on would produce the opposite order.
 // A passing run therefore means the bonus decided it.
 func TestBuildContextRanksAcrossTheOneDayRecencyCut(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "recency-cut.db"))
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	now := time.Now()
@@ -142,10 +138,7 @@ func TestBuildContextRanksAcrossTheOneDayRecencyCut(t *testing.T) {
 //
 // This test reads through ListRecent, which does not bump, and asserts values.
 func TestDecayImportanceStraddlesTheOneDayCut(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "decay-cut.db"))
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	const startingImportance = 0.8
@@ -221,10 +214,7 @@ func recentFileFixture(t *testing.T, agesByName map[string]time.Duration) map[st
 		}
 	}
 
-	s, err := NewStore(filepath.Join(t.TempDir(), "recent-files.db"))
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
+	s := openTestStore(t)
 	t.Cleanup(func() { s.Close() })
 
 	cfg := PrepareSessionConfig{

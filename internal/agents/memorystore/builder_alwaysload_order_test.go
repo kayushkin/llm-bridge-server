@@ -1,11 +1,9 @@
 package memorystore
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 // alwaysLoadRow is one row of the head under test. It carries the three inputs
@@ -38,10 +36,7 @@ func hostAlwaysLoadRows(now time.Time) []alwaysLoadRow {
 func storeWithAlwaysLoad(t *testing.T, name string, rows []alwaysLoadRow) *Store {
 	t.Helper()
 
-	s, err := NewStore(filepath.Join(t.TempDir(), name+".db"))
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
+	s := openTestStore(t)
 	t.Cleanup(func() { s.Close() })
 
 	for _, r := range rows {
@@ -274,10 +269,7 @@ func TestAlwaysLoadHeadSurvivesImportanceConvergingOnTheCap(t *testing.T) {
 // The ids below sort in the OPPOSITE order to the scores, so the two hypotheses
 // cannot both be satisfied.
 func TestOrdinaryMemoriesAreStillRankedByScore(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "ranked.db"))
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	now := time.Now()

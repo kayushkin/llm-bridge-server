@@ -3,7 +3,6 @@ package memorystore
 import (
 	"testing"
 
-	_ "modernc.org/sqlite"
 )
 
 // Forget is the destructive half of the prefix contract Get settled: the id it
@@ -13,10 +12,7 @@ import (
 
 func newForgetTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := NewStore(t.TempDir() + "/memory.db")
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	store := openTestStore(t)
 	t.Cleanup(func() { store.Close() })
 	return store
 }
@@ -24,7 +20,7 @@ func newForgetTestStore(t *testing.T) *Store {
 func storedImportance(t *testing.T, s *Store, id string) float64 {
 	t.Helper()
 	var importance float64
-	if err := s.db.QueryRow("SELECT importance FROM memories WHERE id = ?", id).Scan(&importance); err != nil {
+	if err := s.db.QueryRow("SELECT importance FROM memories WHERE id = $1", id).Scan(&importance); err != nil {
 		t.Fatalf("read importance for %q: %v", id, err)
 	}
 	return importance

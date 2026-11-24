@@ -1,25 +1,14 @@
 package memorystore
 
 import (
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	_ "modernc.org/sqlite"
 )
 
 func TestUnifiedFields(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "memory-unified-*.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	store, err := NewStore(tmpFile.Name())
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
+	store := openTestStore(t)
 	defer store.Close()
 
 	// Test AlwaysLoad (identity)

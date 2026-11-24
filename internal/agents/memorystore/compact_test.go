@@ -2,23 +2,17 @@ package memorystore
 
 import (
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 func TestCompact_NoEligible(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewStore(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
+	store := openTestStore(t)
 	defer store.Close()
 
 	// Save a high-importance memory
-	err = store.Save(Memory{
+	err := store.Save(Memory{
 		ID:         "mem-1",
 		Content:    "important memory",
 		Tags:       []string{"test"},
@@ -39,17 +33,13 @@ func TestCompact_NoEligible(t *testing.T) {
 }
 
 func TestCompact_GroupsAndCompacts(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewStore(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
+	store := openTestStore(t)
 	defer store.Close()
 
 	// Save old, low-importance, low-access memories with same tag
 	oldTime := time.Now().Add(-10 * 24 * time.Hour)
 	for i := 0; i < 3; i++ {
-		err = store.Save(Memory{
+		err := store.Save(Memory{
 			ID:          fmt.Sprintf("old-mem-%d", i),
 			Content:     fmt.Sprintf("old content %d", i),
 			Tags:        []string{"project-x"},

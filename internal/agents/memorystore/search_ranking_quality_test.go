@@ -245,10 +245,7 @@ func reciprocalRank(got []string, relevant []string) float64 {
 
 func storeWithRankingCorpus(t *testing.T) *Store {
 	t.Helper()
-	s, err := NewStore(t.TempDir() + "/ranking.db")
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	t.Cleanup(func() { s.Close() })
 	for _, m := range rankingCorpus() {
 		if err := s.Save(m); err != nil {

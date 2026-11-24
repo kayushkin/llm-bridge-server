@@ -2,13 +2,11 @@ package memorystore
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
-	_ "modernc.org/sqlite"
 )
 
 // TestCompactionContentStaysValidUTF8 pins the defect that compaction cut its
@@ -24,11 +22,7 @@ import (
 func TestCompactionContentStaysValidUTF8(t *testing.T) {
 	for pad := 0; pad < 4; pad++ {
 		t.Run(fmt.Sprintf("pad=%d", pad), func(t *testing.T) {
-			dir := t.TempDir()
-			store, err := NewStore(filepath.Join(dir, "test.db"))
-			if err != nil {
-				t.Fatalf("failed to create store: %v", err)
-			}
+			store := openTestStore(t)
 			defer store.Close()
 
 			// Long enough that the 2000-byte cut lands inside this first
@@ -41,7 +35,7 @@ func TestCompactionContentStaysValidUTF8(t *testing.T) {
 				if i > 0 {
 					content = fmt.Sprintf("old content %d", i)
 				}
-				err = store.Save(Memory{
+				err := store.Save(Memory{
 					ID:          fmt.Sprintf("old-mem-%d", i),
 					Content:     content,
 					Tags:        []string{"project-x"},

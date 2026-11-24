@@ -2,7 +2,9 @@
 
 Persistent memory with full-text search for the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
 
-SQLite-backed memory store that gives AI agents cross-session knowledge retention. Memories are ranked by BM25 relevance over an FTS5 index, weighted by importance and recency, and automatically decayed and compacted over time. A context builder assembles prompt context within a token budget.
+A memory store that gives AI agents cross-session knowledge retention. Memories are ranked by BM25 relevance, weighted by importance and recency, and automatically decayed and compacted over time. A context builder assembles prompt context within a token budget.
+
+It is a module of llm-bridge-server: its records live in Postgres (schema `memories`, role `memories_module`, built by `migrations/*.sql`) and its routes are mounted on the server at the same paths as before (`/memories…`), as operator routes. Until 2026-11 it kept a SQLite file and had a standalone command; `llm-bridge-server import-memory-store -sqlite <file>` copies such a file into the module, keeping every id (`ImportStandaloneDatabase`).
 
 ```
   ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
@@ -26,8 +28,8 @@ SQLite-backed memory store that gives AI agents cross-session knowledge retentio
   ║   └──────────────────────────┬─────────────────────────┘   ║
   ║                              │                             ║
   ║   ┌──────────────────────────▼─────────────────────────┐   ║
-  ║   │              SQLite + FTS5 (porter)                │   ║
-  ║   │        bm25() · importance · recency decay         │   ║
+  ║   │        Postgres tsvector (Snowball stemmer)        │   ║
+  ║   │       BM25 · importance · recency decay            │   ║
   ║   └────────────────────────────────────────────────────┘   ║
   ╚════════════════════════════════════════════════════════════╝
 ```
@@ -37,11 +39,10 @@ SQLite-backed memory store that gives AI agents cross-session knowledge retentio
 ### As a library
 
 ```go
-import memorystore "github.com/kayushkin/memory-store"
+import memorystore "github.com/kayushkin/llm-bridge-server/internal/agents/memorystore"
 
-// Open or create a store
-store, _ := memorystore.NewStore("/path/to/memory.db")
-defer store.Close()
+// The server provisions, migrates and opens the module, then hands its pool here.
+store := memorystore.New(db)
 
 // Save a memory
 store.Save(memorystore.Memory{
@@ -66,40 +67,10 @@ memories, tokens, _ := store.BuildContext(memorystore.BuildContextRequest{
 ### With HTTP handlers
 
 ```go
-mux := http.NewServeMux()
 memorystore.RegisterHandlers(mux, store)
-http.ListenAndServe(":8080", mux)
 ```
 
-When used with [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server), memory-store handlers are mounted automatically.
-
-### As a standalone service
-
-For local development, `cmd/memory-store` boots the same HTTP surface on its own
-port:
-
-```sh
-go run ./cmd/memory-store           # listens on :8165 by default
-MEMORY_STORE_ADDR=:9000 MEMORY_STORE_DB=/tmp/mem.db go run ./cmd/memory-store
-```
-
-`MEMORY_STORE_DB` defaults to `$HOME/.config/memory-store/memory.db` (the same
-canonical path llm-bridge-server uses). In production the library is mounted
-into llm-bridge-server rather than run as this binary; the standalone entrypoint
-exists mainly for development and for the clean-checkout smoke below.
-
-### Smoke test
-
-`scripts/e2e-smoke.sh` builds the standalone binary from the current checkout,
-boots it against a throwaway DB on a throwaway port, and drives the real HTTP
-surface (save → read back → search → forget), asserting on parsed bodies. It is
-picked up automatically by the repo-smoke-guard (scheduler job 27), which runs
-it from a clean clone nightly and flags any repo whose committed source no
-longer boots and answers.
-
-```sh
-./scripts/e2e-smoke.sh            # E2E_PORT / E2E_KEEP tunable
-```
+llm-bridge-server mounts them on its own mux.
 
 ## API
 
@@ -164,20 +135,22 @@ The `Embedding` field is still written and returned, and nothing ranks on it any
 
 ### Search
 
-Content and summary are indexed into an SQLite FTS5 table with the `porter unicode61` tokenizer, so `scheduling` finds `scheduler`. A query is tokenized, stop words are dropped, and each remaining term is quoted and OR-ed — quoting is what stops a query containing `NEAR`, `OR`, `*` or a stray quote from being read as FTS5 syntax rather than as words.
+Content and summary are kept as a generated `tsvector` column (`search_document`) with a GIN index, under the text search configuration `memory_text`: every ASCII punctuation mark separates words, as FTS5's `unicode61` tokenizer did, and every word is stemmed with the Snowball English stemmer and none dropped, so `scheduling` finds `scheduler`. A query is tokenized on every rune that is not a letter or a number, stop words are dropped, and each remaining term becomes a quoted tsquery operand, OR-ed — so a query holding `NEAR`, `OR`, `*`, `&` or a stray quote is only ever words. Being a column of the row, the search document can never fall behind a save or need a backfill, as the SQLite store's separate FTS5 index could.
+
+BM25 is computed in the query with FTS5's own formula and constants (`k1` 1.2, `b` 0.75, IDF `ln((N − n + 0.5)/(n + 0.5))` taken as 1e-6 when not positive, document length counted over every word), so a ranking moved from SQLite keeps its order; `TestSearchRanksAsFTS5Bm25Did` holds Search to a real FTS5 index over the ranking corpus. Two differences remain: Snowball and SQLite's Porter stemmer disagree on a few endings, and FTS5's `unicode61` also folded accents, which this does not.
 
 Search scores combine three signals:
 
 ```
-score = -bm25(memories_fts) × importance × recencyBoost
+score = bm25 × importance × recencyBoost
 ```
 
-`bm25()` is negative and orders ascending, so the sign flip turns it into a score that composes with the other two. Recency decays exponentially: `0.99^daysSinceAccess`. Accessing a memory boosts its importance by 1% (capped at 1.0).
+Recency decays exponentially: `0.99^daysSinceAccess`. Accessing a memory boosts its importance by 1% (capped at 1.0).
 
 Two behaviors are worth knowing:
 
 - **A query that matches nothing returns nothing.** It used to return the store's first `limit` rows sorted by id, because an unmatched query scored 0 against everything and 0 sorts as a tie.
-- **When BM25 separates no candidate from another** — every query term appears in every matched memory, so every term has zero IDF — importance and recency decide the order instead of the id tie-break.
+- **When BM25 separates no candidate from another** — every query term appears in every matched memory, so every term has next to no IDF — importance and recency decide the order instead of the id tie-break.
 
 #### What this replaced, and by how much
 
@@ -229,14 +202,6 @@ Sessions record agent name, model, token usage, cost, and summary. Memory usage 
 
 ## Configuration
 
-```go
-// Store creation
-store, _ := memorystore.NewStore("/path/to/memory.db")
-
-// Or auto-create in .inber/memory.db
-store, _ := memorystore.OpenOrCreate("/project/root")
-```
-
 ### BuildContext defaults
 
 | Parameter | Default |
@@ -256,7 +221,7 @@ store, _ := memorystore.OpenOrCreate("/project/root")
 ## Dependencies
 
 ```
-modernc.org/sqlite    — Pure Go SQLite
+Postgres, through llm-bridge-server's postgresstorage (pgx)
 github.com/google/uuid — UUID generation
 ```
 
@@ -264,4 +229,4 @@ No external HTTP framework — uses stdlib `net/http` with Go 1.22+ path pattern
 
 ## Part of the llm-bridge ecosystem
 
-This store is one component of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem. See the llm-bridge README for the full picture — harness bridges, provider bridges, stores, and example consumers. When used with [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server), memory-store is loaded automatically and its endpoints are mounted on the server.
+This store is one component of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem. See the llm-bridge README for the full picture — harness bridges, provider bridges, stores, and example consumers. It runs inside [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server), which mounts its endpoints.

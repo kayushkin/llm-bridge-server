@@ -12,10 +12,7 @@ import (
 // correct.
 func seedOrchestratorMemories(t *testing.T, orchestrators ...string) *Store {
 	t.Helper()
-	s, err := NewStore(t.TempDir() + "/memory.db")
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	t.Cleanup(func() { s.Close() })
 
 	for i, orch := range orchestrators {
@@ -61,10 +58,7 @@ func TestListByOrchestratorReturnsATagLookupFailureRatherThanUntaggedMemories(t 
 // The failure has to survive the page being empty of tags for an innocent
 // reason too: a memory with no tags is not evidence the lookup worked.
 func TestListByOrchestratorReportsATagFailureEvenWhenNoMemoryHasTags(t *testing.T) {
-	s, err := NewStore(t.TempDir() + "/memory.db")
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	t.Cleanup(func() { s.Close() })
 
 	if err := s.Save(Memory{
@@ -157,10 +151,7 @@ func TestListByOrchestratorTagsSurviveAPageLargerThanOneChunk(t *testing.T) {
 		t.Skip("seeds more than one tag-lookup chunk")
 	}
 	const n = tagLookupChunkSize + 7
-	s, err := NewStore(t.TempDir() + "/memory.db")
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	t.Cleanup(func() { s.Close() })
 
 	for i := 0; i < n; i++ {

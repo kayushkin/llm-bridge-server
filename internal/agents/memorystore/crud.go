@@ -79,7 +79,7 @@ func (s *Store) Save(m Memory) error {
 	// Upsert memory (insert or update on conflict)
 	query := `
 	INSERT INTO memories (id, content, summary, original_id, importance, access_count, last_accessed, created_at, source, embedding, always_load, expires_at, tokens, ref_type, ref_target, is_lazy, orchestrator)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 	ON CONFLICT(id) DO UPDATE SET
 		content = excluded.content,
 		summary = excluded.summary,
@@ -106,20 +106,15 @@ func (s *Store) Save(m Memory) error {
 		return fmt.Errorf("insert memory: %w", err)
 	}
 
-	// Keep the full-text index in step with the row, inside the same
-	// transaction. On the same connection and outside it, a rolled-back Save
-	// would leave the index describing a memory the store does not have, and
-	// Search would rank a candidate whose row the join then drops.
-	if err := indexMemoryText(tx, m.ID, m.Content, m.Summary); err != nil {
-		return err
-	}
+	// The search document is a generated column of the row, so the upsert
+	// above has already re-indexed the memory.
 
 	// Replace tags (delete old, insert new)
-	if _, err := tx.Exec("DELETE FROM memory_tags WHERE memory_id = ?", m.ID); err != nil {
+	if _, err := tx.Exec("DELETE FROM memory_tags WHERE memory_id = $1", m.ID); err != nil {
 		return fmt.Errorf("delete old tags: %w", err)
 	}
 	if len(m.Tags) > 0 {
-		tagStmt, err := tx.Prepare("INSERT INTO memory_tags (memory_id, tag) VALUES (?, ?)")
+		tagStmt, err := tx.Prepare("INSERT INTO memory_tags (memory_id, tag) VALUES ($1, $2)")
 		if err != nil {
 			return fmt.Errorf("prepare tag insert: %w", err)
 		}
@@ -150,14 +145,14 @@ func (s *Store) Save(m Memory) error {
 func (s *Store) Get(id string) (*Memory, error) {
 	// An exact id beats a prefix of it. Without the ordering, a store holding
 	// both "abc123" and "abc123-derived" answers Get("abc123") with whichever
-	// row SQLite reaches first, so the caller silently reads the wrong memory.
+	// row the database reaches first, so the caller silently reads the wrong memory.
 	query := `
 	SELECT id, content, summary, original_id, importance, access_count, last_accessed, created_at, source, embedding, always_load, expires_at, tokens, ref_type, ref_target, is_lazy, orchestrator
 	FROM memories
-	WHERE id = ? OR id LIKE ? ESCAPE '\'
-	ORDER BY (id = ?) DESC
+	WHERE id = $1 OR id LIKE $2 ESCAPE '\'
+	ORDER BY (id = $1) DESC
 	`
-	row := s.db.QueryRow(query, id, likePrefixPattern(id), id)
+	row := s.db.QueryRow(query, id, likePrefixPattern(id))
 
 	var m Memory
 	var summary, originalID, refTarget sql.NullString
@@ -201,7 +196,7 @@ func (s *Store) Get(id string) (*Memory, error) {
 
 	// Fetch tags. Keyed on the resolved row id, not the caller's, which may be
 	// a prefix that matches no memory_tags row.
-	tagRows, err := s.db.Query("SELECT tag FROM memory_tags WHERE memory_id = ?", m.ID)
+	tagRows, err := s.db.Query("SELECT tag FROM memory_tags WHERE memory_id = $1 ORDER BY insertion_order", m.ID)
 	if err != nil {
 		return nil, fmt.Errorf("query tags: %w", err)
 	}

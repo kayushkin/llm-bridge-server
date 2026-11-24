@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 // These three tests pin compactionGroupKeyForMemory. Compaction concatenates

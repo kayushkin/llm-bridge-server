@@ -1,26 +1,14 @@
 package memorystore
 
 import (
-	"os"
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
-	_ "modernc.org/sqlite"
 )
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	dbPath := "/tmp/test_tool_registry_" + uuid.New().String() + ".db"
-	store, err := NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	t.Cleanup(func() {
-		store.Close()
-		os.Remove(dbPath)
-	})
-	return store
+	return openTestStore(t)
 }
 
 func TestLoadToolRegistryEmpty(t *testing.T) {

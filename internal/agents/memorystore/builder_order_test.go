@@ -2,11 +2,9 @@ package memorystore
 
 import (
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 // storeWithTiedMemories saves n memories that score identically — same
@@ -27,10 +25,7 @@ import (
 func storeWithTiedMemories(t *testing.T, name string, n int, insertOrder []int) *Store {
 	t.Helper()
 
-	s, err := NewStore(filepath.Join(t.TempDir(), name+".db"))
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
+	s := openTestStore(t)
 	t.Cleanup(func() { s.Close() })
 
 	stamped := time.Now()

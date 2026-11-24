@@ -2,12 +2,10 @@ package memorystore
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 // Boundary VALUES, as opposed to boundary mechanisms.
@@ -69,10 +67,7 @@ func compactionHeader(members int) string {
 // tag, all old enough and cheap enough to be compaction candidates.
 func saveCompactable(t *testing.T, tag string, contents []string, importance float64) *Store {
 	t.Helper()
-	store, err := NewStore(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
+	store := openTestStore(t)
 	t.Cleanup(func() { store.Close() })
 
 	oldTime := time.Now().Add(-10 * 24 * time.Hour)
@@ -281,7 +276,7 @@ func TestCompactedMemoryTakesImportanceOneHalf(t *testing.T) {
 	}
 
 	var importance float64
-	err = store.db.QueryRow("SELECT importance FROM memories WHERE id = ?",
+	err = store.db.QueryRow("SELECT importance FROM memories WHERE id = $1",
 		results[0].NewID).Scan(&importance)
 	if err != nil {
 		t.Fatalf("failed to read the compacted row: %v", err)
@@ -393,10 +388,7 @@ func TestPreviewLeavesContentOneByteOverTheBudgetWhole(t *testing.T) {
 // uses: BuildContext is the function's only caller and it substitutes 300 for
 // any TruncatePreview of zero or less.
 func TestBuildContextPreviewDefaultsToThreeHundredBytes(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
+	store := openTestStore(t)
 	defer store.Close()
 
 	// No space, no newline, so the walk-back finds no break and the plain cut
@@ -434,10 +426,7 @@ func TestBuildContextPreviewDefaultsToThreeHundredBytes(t *testing.T) {
 // content long enough that a 300-byte preview is under the >50% rule.
 func saveOneBigMemory(t *testing.T, tag string, content string, tokens int) *Store {
 	t.Helper()
-	store, err := NewStore(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
+	store := openTestStore(t)
 	t.Cleanup(func() { store.Close() })
 	if err := store.Save(Memory{ID: "big", Content: content, Tags: []string{tag}, Tokens: tokens}); err != nil {
 		t.Fatalf("failed to save: %v", err)

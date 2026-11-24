@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 // Store.Compact selects what to destroy with four numeric cuts written into one
@@ -179,7 +178,7 @@ func TestCompactDoesNotReviveTheMemoriesItAlreadySoftDeleted(t *testing.T) {
 	live := saveCompactionPair(t, store, "live-just-above-the-floor", 10*24*time.Hour, 0.05, 1)
 	deleted := saveCompactionPair(t, store, "already-soft-deleted", 10*24*time.Hour, 0.3, 1)
 	for _, id := range deleted {
-		if _, err := store.db.Exec("UPDATE memories SET importance = 0 WHERE id = ?", id); err != nil {
+		if _, err := store.db.Exec("UPDATE memories SET importance = 0 WHERE id = $1", id); err != nil {
 			t.Fatalf("soft-delete %s: %v", id, err)
 		}
 	}

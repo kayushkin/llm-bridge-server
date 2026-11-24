@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -36,9 +35,9 @@ func (s *Store) Forget(id string) error {
 	var resolved string
 	err := s.db.QueryRow(`
 	SELECT id FROM memories
-	WHERE id = ? OR id LIKE ? ESCAPE '\'
-	ORDER BY (id = ?) DESC
-	`, id, likePrefixPattern(id), id).Scan(&resolved)
+	WHERE id = $1 OR id LIKE $2 ESCAPE '\'
+	ORDER BY (id = $1) DESC
+	`, id, likePrefixPattern(id)).Scan(&resolved)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("memory not found: %s", id)
 	}
@@ -46,7 +45,7 @@ func (s *Store) Forget(id string) error {
 		return fmt.Errorf("forget memory: %w", err)
 	}
 
-	if _, err := s.db.Exec(`UPDATE memories SET importance = 0 WHERE id = ?`, resolved); err != nil {
+	if _, err := s.db.Exec(`UPDATE memories SET importance = 0 WHERE id = $1`, resolved); err != nil {
 		return fmt.Errorf("forget memory: %w", err)
 	}
 	return nil
@@ -58,8 +57,8 @@ func (s *Store) DecayImportance() error {
 	now := time.Now()
 	query := `
 	UPDATE memories
-	SET importance = importance * ?
-	WHERE last_accessed < ?
+	SET importance = importance * $1
+	WHERE last_accessed < $2
 	`
 	dayAgo := now.Add(-24 * time.Hour).Unix()
 	_, err := s.db.Exec(query, 0.99, dayAgo)
@@ -72,11 +71,11 @@ func (s *Store) ListByOrchestrator(orchestrator string, limit int, minImportance
 	query := `
 	SELECT id, content, summary, original_id, importance, access_count, last_accessed, created_at, source, embedding, always_load, expires_at, tokens, ref_type, ref_target, is_lazy, orchestrator
 	FROM memories
-	WHERE importance >= ?
-	  AND (expires_at IS NULL OR expires_at > ?)
-	  AND orchestrator = ?
+	WHERE importance >= $1
+	  AND (expires_at IS NULL OR expires_at > $2)
+	  AND orchestrator = $3
 	ORDER BY created_at DESC
-	LIMIT ?
+	LIMIT $4
 	`
 	rows, err := s.db.Query(query, minImportance, now.Unix(), orchestrator, limit)
 	if err != nil {
@@ -132,8 +131,8 @@ func (s *Store) ListByOrchestrator(orchestrator string, limit int, minImportance
 	// list and a nil error — the same answer a page of genuinely untagged
 	// memories gives. searchInternal (search.go) carried the identical swallow,
 	// was repaired, and this site was left behind; loadTagsForMemories is the
-	// helper that repair introduced. It chunks under SQLite's bound-parameter
-	// ceiling and returns its failures, so both callers now fail the same way.
+	// helper that repair introduced. It reads the tags in bounded chunks
+	// and returns its failures, so both callers now fail the same way.
 	if len(result) > 0 {
 		ids := make([]string, len(result))
 		for i := range result {
@@ -158,7 +157,7 @@ func (s *Store) ListByOrchestrator(orchestrator string, limit int, minImportance
 func (s *Store) CountByOrchestrator(orchestrator string) (int, error) {
 	var count int
 	err := s.db.QueryRow(
-		"SELECT COUNT(*) FROM memories WHERE orchestrator = ? AND importance > 0",
+		"SELECT COUNT(*) FROM memories WHERE orchestrator = $1 AND importance > 0",
 		orchestrator,
 	).Scan(&count)
 	return count, err
@@ -188,10 +187,10 @@ func (s *Store) ListRecent(limit int, minImportance float64) ([]Memory, error) {
 	query := `
 	SELECT id, content, summary, original_id, importance, access_count, last_accessed, created_at, source, embedding, always_load, expires_at, tokens, ref_type, ref_target, is_lazy
 	FROM memories
-	WHERE importance >= ?
-	  AND (expires_at IS NULL OR expires_at > ?)
+	WHERE importance >= $1
+	  AND (expires_at IS NULL OR expires_at > $2)
 	ORDER BY created_at DESC
-	LIMIT ?
+	LIMIT $3
 	`
 	rows, err := s.db.Query(query, minImportance, now.Unix(), limit)
 	if err != nil {
@@ -241,34 +240,16 @@ func (s *Store) ListRecent(limit int, minImportance float64) ([]Memory, error) {
 		return nil, err
 	}
 
-	// Fetch tags for all memories
+	// Fetch tags for all memories. This used to build its own IN list and drop
+	// the query's error, answering every memory with no tags; it now shares
+	// loadTagsForMemories and returns the error.
 	if len(memoryIDs) > 0 {
-		tagMap := make(map[string][]string)
-		
-		placeholders := make([]string, len(memoryIDs))
-		args := make([]interface{}, len(memoryIDs))
-		for i, id := range memoryIDs {
-			placeholders[i] = "?"
-			args[i] = id
+		tagsByMemory, err := s.loadTagsForMemories(memoryIDs)
+		if err != nil {
+			return nil, err
 		}
-		
-		tagQuery := fmt.Sprintf("SELECT memory_id, tag FROM memory_tags WHERE memory_id IN (%s)", 
-			strings.Join(placeholders, ","))
-		
-		tagRows, err := s.db.Query(tagQuery, args...)
-		if err == nil {
-			defer tagRows.Close()
-			for tagRows.Next() {
-				var memID, tag string
-				if err := tagRows.Scan(&memID, &tag); err == nil {
-					tagMap[memID] = append(tagMap[memID], tag)
-				}
-			}
-		}
-		
-		// Attach tags to memories
 		for i := range result {
-			result[i].Tags = tagMap[result[i].ID]
+			result[i].Tags = tagsByMemory[result[i].ID]
 			if result[i].Tags == nil {
 				result[i].Tags = []string{}
 			}

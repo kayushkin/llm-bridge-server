@@ -1,32 +1,46 @@
 package memorystore
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 )
 
 // seedTaggedMemories writes n memories, each carrying two tags, and returns the
-// store. Content is unique per memory so an embedding is too.
+// store. Content is unique per memory. The rows go in with two statements
+// rather than n Saves: 32,767 Saves, each its own transaction, take minutes
+// against Postgres, and what these tests measure is the reads.
 func seedTaggedMemories(t *testing.T, n int) *Store {
 	t.Helper()
-	s, err := NewStore(t.TempDir() + "/memory.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { s.Close() })
-
+	s := openTestStore(t)
+	stamped := time.Now().Unix()
+	ids := make([]string, n)
+	contents := make([]string, n)
+	embeddings := make([][]byte, n)
 	for i := 0; i < n; i++ {
-		m := Memory{
-			ID:         fmt.Sprintf("mem-%06d", i),
-			Content:    fmt.Sprintf("memory number %d about authentication and handlers", i),
-			Importance: 0.5,
-			Source:     "test",
-			Tags:       []string{"code", fmt.Sprintf("batch-%d", i%7)},
+		ids[i] = fmt.Sprintf("mem-%06d", i)
+		contents[i] = fmt.Sprintf("memory number %d about authentication and handlers", i)
+		// The embedding Save would have written.
+		embedding, err := json.Marshal(s.embedder.Embed(contents[i]))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if err := s.Save(m); err != nil {
-			t.Fatalf("remember %d: %v", i, err)
-		}
+		embeddings[i] = embedding
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO memories (id, content, importance, last_accessed, created_at, source, embedding, tokens)
+		SELECT seeded.id, seeded.content, 0.5, $4, $4, 'test', seeded.embedding, (length(seeded.content) + 2) / 3
+		FROM unnest($1::text[], $2::text[], $3::bytea[]) AS seeded(id, content, embedding)`, ids, contents, embeddings, stamped); err != nil {
+		t.Fatalf("remember %d memories: %v", n, err)
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO memory_tags (memory_id, tag)
+		SELECT format('mem-%s', lpad(number::text, 6, '0')), tag
+		FROM generate_series(0, $1 - 1) AS number
+		CROSS JOIN LATERAL (VALUES (1, 'code'), (2, format('batch-%s', number % 7))) AS tags(place, tag)
+		ORDER BY number, place`, n); err != nil {
+		t.Fatalf("tag %d memories: %v", n, err)
 	}
 	return s
 }
@@ -169,10 +183,7 @@ func TestBuildContextDoesNotCarryEmbeddings(t *testing.T) {
 // The sort that replaced the quadratic one must still put the highest score
 // first, and must still return exactly `limit` results.
 func TestSearchStillRanksHighestScoreFirst(t *testing.T) {
-	s, err := NewStore(t.TempDir() + "/memory.db")
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	// Same content, different importance: score is similarity × importance ×

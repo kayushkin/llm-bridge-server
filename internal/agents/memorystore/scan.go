@@ -44,6 +44,6 @@ func (s *Store) scanMemory(scanner interface {
 // loadTags is gone deliberately. It read one memory's tags per call and
 // discarded a row-scan failure with `continue`, and its last caller was the
 // swallow in ListByOrchestrator. Every tag lookup now goes through
-// loadTagsForMemories (builder.go), which is batched, chunked under SQLite's
-// bound-parameter ceiling, and returns its errors. A second tag-loading path is
+// loadTagsForMemories (builder.go), which is batched, read in bounded chunks,
+// and returns its errors. A second tag-loading path is
 // how one site came to be repaired and the other left broken.

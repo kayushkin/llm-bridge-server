@@ -3,7 +3,6 @@ package memorystore
 import (
 	"testing"
 
-	_ "modernc.org/sqlite"
 )
 
 // Get accepts a prefix of a memory's id because that is what the recall
@@ -14,10 +13,7 @@ import (
 
 func newGetTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := NewStore(t.TempDir() + "/memory.db")
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	store := openTestStore(t)
 	t.Cleanup(func() { store.Close() })
 	return store
 }
@@ -25,7 +21,7 @@ func newGetTestStore(t *testing.T) *Store {
 func storedAccessCount(t *testing.T, s *Store, id string) int {
 	t.Helper()
 	var count int
-	if err := s.db.QueryRow("SELECT access_count FROM memories WHERE id = ?", id).Scan(&count); err != nil {
+	if err := s.db.QueryRow("SELECT access_count FROM memories WHERE id = $1", id).Scan(&count); err != nil {
 		t.Fatalf("read access_count for %q: %v", id, err)
 	}
 	return count

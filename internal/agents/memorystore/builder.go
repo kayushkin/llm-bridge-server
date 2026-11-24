@@ -61,20 +61,16 @@ func (s *Store) BuildContext(req BuildContextRequest) ([]Memory, int, error) {
 	query := `
 	SELECT id, content, summary, original_id, importance, access_count, last_accessed, created_at, source, always_load, expires_at, tokens, ref_type, ref_target, is_lazy
 	FROM memories
-	WHERE importance >= ?
-	  AND (expires_at IS NULL OR expires_at > ?)
+	WHERE importance >= $1
+	  AND (expires_at IS NULL OR expires_at > $2)
 	`
 	args := []interface{}{req.MinImportance, now.Unix()}
 
 	// Add exclusion filter if needed
 	if len(req.ExcludeTags) > 0 {
-		placeholders := make([]string, len(req.ExcludeTags))
-		for i := range req.ExcludeTags {
-			placeholders[i] = "?"
-			args = append(args, req.ExcludeTags[i])
-		}
+		args = append(args, req.ExcludeTags)
 		query += ` AND id NOT IN (
-			SELECT memory_id FROM memory_tags WHERE tag IN (` + join(placeholders, ",") + `)
+			SELECT memory_id FROM memory_tags WHERE tag = ANY($3::text[])
 		)`
 	}
 
@@ -261,14 +257,13 @@ func (s *Store) scanMemoryRowWithoutEmbedding(row *sql.Rows) (Memory, error) {
 	return m, nil
 }
 
-// tagLookupChunkSize is how many memory ids go into one `IN (...)` list.
+// tagLookupChunkSize is how many memory ids go into one lookup.
 //
-// It is a correctness bound, not a tuning knob. Every id becomes a bound
-// parameter, and SQLite refuses a statement with more parameters than
-// SQLITE_MAX_VARIABLE_NUMBER — measured against this driver, 32,766 ids answer
-// and 32,767 fail with "too many SQL variables". That ceiling has been 999 in
-// older SQLite builds, so the chunk stays under the lower of the two and the
-// query cannot depend on which build it is linked against.
+// The ids travel as one array parameter, which Postgres takes at any length.
+// The chunk was a correctness bound under SQLite, which refused a statement
+// with more bound parameters than SQLITE_MAX_VARIABLE_NUMBER; it stays so one
+// lookup reads a bounded number of rows, and so the tests that cross a chunk
+// boundary keep proving every chunk is read.
 const tagLookupChunkSize = 900
 
 // loadTagsForMemories returns the tags of every named memory, keyed by memory id.
@@ -285,16 +280,7 @@ func (s *Store) loadTagsForMemories(ids []string) (map[string][]string, error) {
 		}
 		chunk := ids[start:end]
 
-		placeholders := make([]string, len(chunk))
-		args := make([]interface{}, len(chunk))
-		for i, id := range chunk {
-			placeholders[i] = "?"
-			args[i] = id
-		}
-
-		query := "SELECT memory_id, tag FROM memory_tags WHERE memory_id IN (" +
-			join(placeholders, ",") + ")"
-		rows, err := s.db.Query(query, args...)
+		rows, err := s.db.Query("SELECT memory_id, tag FROM memory_tags WHERE memory_id = ANY($1::text[]) ORDER BY insertion_order", chunk)
 		if err != nil {
 			return nil, fmt.Errorf("load tags for %d memories: %w", len(chunk), err)
 		}

@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 	"unicode/utf8"
 )
@@ -74,9 +73,4 @@ func truncateAtRuneBoundary(s string, maxBytes int) string {
 		cut--
 	}
 	return s[:cut]
-}
-
-// DefaultMemoryPath returns the default path for the memory database.
-func DefaultMemoryPath(rootDir string) string {
-	return filepath.Join(rootDir, ".inber", "memory.db")
 }

@@ -1,13 +1,10 @@
 package memorystore
 
 import (
-	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 func saveMemory(t *testing.T, s *Store, id, content string) {
@@ -42,10 +39,7 @@ func searchIDs(t *testing.T, s *Store, query string, limit int) []string {
 // first `limit` of it. A caller asking about something the store has never seen
 // got a confident answer built from the alphabetically-first memories.
 func TestSearchReturnsNothingForAQueryTheStoreDoesNotContain(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	saveMemory(t, s, "a", "the scheduler kills a job's process group on timeout")
@@ -60,10 +54,7 @@ func TestSearchReturnsNothingForAQueryTheStoreDoesNotContain(t *testing.T) {
 // A query made entirely of stop words has nothing to search for, and must not
 // be answered with the store's first `limit` rows either.
 func TestSearchReturnsNothingForAQueryOfOnlyStopWords(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	saveMemory(t, s, "a", "the scheduler kills a job's process group on timeout")
@@ -80,10 +71,7 @@ func TestSearchReturnsNothingForAQueryOfOnlyStopWords(t *testing.T) {
 // unescaped user string can change what is asked — or fail to parse at all,
 // which turns an ordinary search into a 500.
 func TestSearchTreatsFTSOperatorsInTheQueryAsText(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	saveMemory(t, s, "wanted", "the scheduler reloads its cron schedule on the next tick")
@@ -116,10 +104,7 @@ func TestSearchTreatsFTSOperatorsInTheQueryAsText(t *testing.T) {
 // characters or fewer to keep the hash vocabulary small; the query side must
 // not, or "ssh", "api" and "db" are unaskable while the index holds them.
 func TestSearchFindsShortTechnicalTerms(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	saveMemory(t, s, "ssh", "the runner needs no inbound ssh because the socket is outbound")
@@ -137,10 +122,7 @@ func TestSearchFindsShortTechnicalTerms(t *testing.T) {
 // The porter tokenizer is why "scheduling" reaches "scheduler". Dropping it
 // from the index definition costs recall on ordinary English and nothing says so.
 func TestSearchStemsTheQueryOntoTheIndex(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	saveMemory(t, s, "sched", "the scheduler runs jobs")
@@ -155,10 +137,7 @@ func TestSearchStemsTheQueryOntoTheIndex(t *testing.T) {
 // same call is both the insert and the update, and an index that only ever
 // inserts answers with the text the memory used to hold.
 func TestSavingOverAMemoryReindexesIt(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	saveMemory(t, s, "m", "the scheduler runs jobs on a cron expression")
@@ -179,10 +158,7 @@ func TestSavingOverAMemoryReindexesIt(t *testing.T) {
 // A memory whose importance was zeroed by Forget must leave the results, and
 // the index is not where that is decided — the join against `memories` is.
 func TestSearchDropsForgottenMemories(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	saveMemory(t, s, "keep", "the scheduler runs jobs on a cron expression")
@@ -199,93 +175,59 @@ func TestSearchDropsForgottenMemories(t *testing.T) {
 	}
 }
 
-// Opening a store written before the index existed has to index what is already
-// there. Without the backfill, every memory in every store on this box becomes
-// unsearchable the moment the binary is replaced — silently, because an empty
-// index is a valid index and answers every query with nothing.
-func TestOpeningAStoreIndexesMemoriesTheIndexIsMissing(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "memory.db")
-
-	s, err := NewStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	saveMemory(t, s, "a", "the scheduler runs jobs on a cron expression")
-	saveMemory(t, s, "b", "plex library thumbnails are cached on disk")
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Empty the index behind the store's back, which is the state a database
-	// written by a binary without it is already in.
-	raw, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := raw.Exec(`DELETE FROM ` + ftsTableName); err != nil {
-		t.Fatal(err)
-	}
-	var remaining int
-	if err := raw.QueryRow(`SELECT count(*) FROM ` + ftsTableName).Scan(&remaining); err != nil {
-		t.Fatal(err)
-	}
-	if remaining != 0 {
-		t.Fatalf("setup: index still holds %d rows", remaining)
-	}
-	if err := raw.Close(); err != nil {
+// The search document is a generated column of the row, so a memory is
+// searchable however its row was written, and with no backfill. The SQLite
+// store kept a separate FTS5 index that every save had to write beside the row
+// and every open had to backfill; a row the index missed answered every query
+// with nothing. This writes a row straight into the table, as an import does,
+// and searches for it.
+func TestAMemoryWrittenStraightIntoTheTableIsSearchable(t *testing.T) {
+	s := openTestStore(t)
+	stamped := time.Now().Unix()
+	if _, err := s.db.Exec(`INSERT INTO memories (id, content, last_accessed, created_at, source, embedding)
+		VALUES ($1, $2, $3, $3, 'test', '[]'), ($4, $5, $3, $3, 'test', '[]')`,
+		"a", "the scheduler runs jobs on a cron expression", stamped,
+		"b", "plex library thumbnails are cached on disk"); err != nil {
 		t.Fatal(err)
 	}
 
-	reopened, err := NewStore(path)
-	if err != nil {
-		t.Fatal(err)
+	if got := searchIDs(t, s, "scheduler", 10); len(got) != 1 || got[0] != "a" {
+		t.Errorf("query \"scheduler\" returned %v, want [a]", got)
 	}
-	defer reopened.Close()
-
-	if got := searchIDs(t, reopened, "scheduler", 10); len(got) != 1 || got[0] != "a" {
-		t.Errorf("query \"scheduler\" after reopen returned %v, want [a]", got)
-	}
-	if got := searchIDs(t, reopened, "thumbnails", 10); len(got) != 1 || got[0] != "b" {
-		t.Errorf("query \"thumbnails\" after reopen returned %v, want [b]", got)
+	if got := searchIDs(t, s, "thumbnails", 10); len(got) != 1 || got[0] != "b" {
+		t.Errorf("query \"thumbnails\" returned %v, want [b]", got)
 	}
 }
 
-// The backfill must not index a memory twice, or its terms are counted twice
-// and every reopen inflates the same memory's ranking a little further.
-func TestReopeningAStoreDoesNotIndexTheSameMemoryTwice(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "memory.db")
-
-	s, err := NewStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+// Saving a memory again must not count its words again, or every save
+// inflates the same memory's ranking a little further. The SQLite store pinned
+// this on its index rows; here it is the row's word count and its relevance.
+func TestSavingAMemoryAgainDoesNotCountItsWordsTwice(t *testing.T) {
+	s := openTestStore(t)
 	saveMemory(t, s, "a", "the scheduler runs jobs on a cron expression")
-	if err := s.Close(); err != nil {
+	saveMemory(t, s, "b", "plex library thumbnails are cached on disk")
+	first, err := s.Search("scheduler", 10)
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	for i := 0; i < 3; i++ {
-		again, err := NewStore(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := again.Close(); err != nil {
-			t.Fatal(err)
-		}
+		saveMemory(t, s, "a", "the scheduler runs jobs on a cron expression")
 	}
 
-	raw, err := sql.Open("sqlite", path)
+	var words int
+	if err := s.db.QueryRow(`SELECT search_word_count FROM memories WHERE id = $1`, "a").Scan(&words); err != nil {
+		t.Fatal(err)
+	}
+	if words != 8 {
+		t.Fatalf("memory 'a' counts %d words after four saves, want the 8 it holds", words)
+	}
+	again, err := s.Search("scheduler", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
-
-	var rows int
-	if err := raw.QueryRow(`SELECT count(*) FROM `+ftsTableName+` WHERE memory_id = ?`, "a").Scan(&rows); err != nil {
-		t.Fatal(err)
-	}
-	if rows != 1 {
-		t.Fatalf("memory 'a' has %d index rows after four opens, want 1", rows)
+	if len(first) != 1 || len(again) != 1 || again[0].ID != first[0].ID {
+		t.Fatalf("search after re-saving returned %v, before %v", idsOf(again), idsOf(first))
 	}
 }
 
@@ -297,10 +239,7 @@ func TestReopeningAStoreDoesNotIndexTheSameMemoryTwice(t *testing.T) {
 // 0 × importance × recency = 0, the whole ranking collapses onto the id
 // tie-break, and the two signals that DO differ are silently discarded.
 func TestImportanceDecidesWhenBM25SeparatesNothing(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	// Identical text, so every candidate has an identical zero BM25 score. Ids
@@ -335,10 +274,7 @@ func TestImportanceDecidesWhenBM25SeparatesNothing(t *testing.T) {
 // The orchestrator filter still applies, and it is applied to the join rather
 // than to the index.
 func TestSearchFilteredStillScopesByOrchestrator(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	stamped := time.Now()
@@ -377,10 +313,7 @@ func TestSearchFilteredStillScopesByOrchestrator(t *testing.T) {
 // An expired memory must not come back, and expiry is checked against the join
 // rather than the index too.
 func TestSearchDropsExpiredMemories(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openTestStore(t)
 	defer s.Close()
 
 	stamped := time.Now()
@@ -399,121 +332,53 @@ func TestSearchDropsExpiredMemories(t *testing.T) {
 	}
 }
 
-func TestFTSMatchExpression(t *testing.T) {
+// The query is cut into terms on every rune that is not a letter or a number,
+// so no operator, quote or parenthesis reaches the tsquery, and each lexeme is
+// then quoted as an operand.
+func TestTokenizeForSearch(t *testing.T) {
 	cases := []struct {
 		name  string
 		query string
-		want  string
-		ok    bool
+		want  []string
 	}{
-		{"plain words", "scheduler cron", `"scheduler" OR "cron"`, true},
-		{"lowercased", "Scheduler CRON", `"scheduler" OR "cron"`, true},
-		{"stop words dropped", "the scheduler and the cron", `"scheduler" OR "cron"`, true},
-		{"short terms kept", "ssh api db", `"ssh" OR "api" OR "db"`, true},
-		{"punctuation splits", "auth-store:8303/resolve", `"auth" OR "store" OR "8303" OR "resolve"`, true},
-		{"operators are text", "scheduler NEAR(cron)", `"scheduler" OR "near" OR "cron"`, true},
-		{"empty", "", "", false},
-		{"only punctuation", "!!! ???", "", false},
-		{"only stop words", "the and for", "", false},
+		{"plain words", "scheduler cron", []string{"scheduler", "cron"}},
+		{"lowercased", "Scheduler CRON", []string{"scheduler", "cron"}},
+		{"stop words dropped", "the scheduler and the cron", []string{"scheduler", "cron"}},
+		{"short terms kept", "ssh api db", []string{"ssh", "api", "db"}},
+		{"punctuation splits", "auth-store:8303/resolve", []string{"auth", "store", "8303", "resolve"}},
+		{"operators are text", "scheduler NEAR(cron)", []string{"scheduler", "near", "cron"}},
+		{"empty", "", nil},
+		{"only punctuation", "!!! ???", nil},
+		{"only stop words", "the and for", nil},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := ftsMatchExpression(c.query)
-			if ok != c.ok {
-				t.Fatalf("ftsMatchExpression(%q) ok = %v, want %v", c.query, ok, c.ok)
-			}
-			if got != c.want {
-				t.Fatalf("ftsMatchExpression(%q) = %q, want %q", c.query, got, c.want)
+			got := tokenizeForSearch(c.query)
+			if strings.Join(got, ",") != strings.Join(c.want, ",") || len(got) != len(c.want) {
+				t.Fatalf("tokenizeForSearch(%q) = %q, want %q", c.query, got, c.want)
 			}
 		})
 	}
 }
 
-// queryPlan returns SQLite's plan for a statement as one string.
-func queryPlan(t *testing.T, s *Store, statement string) string {
-	t.Helper()
-	rows, err := s.db.Query("EXPLAIN QUERY PLAN " + statement)
-	if err != nil {
-		t.Fatalf("explain %q: %v", statement, err)
-	}
-	defer rows.Close()
-
-	var plan []string
-	for rows.Next() {
-		var id, parent, notUsed int
-		var detail string
-		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
-			t.Fatal(err)
-		}
-		plan = append(plan, detail)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return strings.Join(plan, " | ")
-}
-
-// The index writer's DELETE has to be keyed on the rowid, and this pins that
-// structurally rather than by timing.
-//
-// An FTS5 virtual table cannot carry a secondary index, so a WHERE on any
-// ordinary column of it — including the UNINDEXED memory_id it stores — is a
-// full scan of the whole index. Keyed that way, re-saving one memory in a store
-// of n costs a scan of n: the first version of this index was written that way
-// and TestTagsSurviveACandidateSetLargerThanSQLitesParameterLimit, which seeds
-// 32,767 memories, went from 271 seconds to a ten-minute timeout under -race.
-//
-// The assertion is that the two plans DIFFER, not that either equals a literal.
-// SQLite's plan text for a virtual table is an implementation detail that has
-// changed between releases; whether a constraint was used at all has not.
-func TestTheIndexWriterDeletesByRowidAndNotByAScan(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	saveMemory(t, s, "a", "the scheduler runs jobs")
-
-	// The statement the index writer actually runs, not a copy of it.
-	byRowid := queryPlan(t, s, strings.ReplaceAll(ftsDeleteStatement, "?", "1"))
-	byMemoryID := queryPlan(t, s, "DELETE FROM "+ftsTableName+" WHERE memory_id = 'a'")
-	unconstrained := queryPlan(t, s, "DELETE FROM "+ftsTableName)
-
-	if byRowid == byMemoryID {
-		t.Errorf("the index writer's DELETE (%q) plans the same as a scan by memory_id (%q) — it is not keyed on the rowid", ftsDeleteStatement, byRowid)
-	}
-	// The other half: memory_id really is unindexed, so a WHERE on it is the
-	// same plan as no WHERE at all. Without this, the test above would pass on
-	// any two plans that happened to differ for an unrelated reason.
-	if byMemoryID != unconstrained {
-		t.Errorf("a WHERE on the UNINDEXED memory_id (%q) plans differently from no WHERE at all (%q); this test's premise no longer holds", byMemoryID, unconstrained)
+func TestAnyOfTheLexemesQuotesEachOperand(t *testing.T) {
+	got := anyOfTheLexemes([]string{"schedul", "o'brien", `back\slash`, "or"})
+	want := `'schedul' | 'o''brien' | 'back\\slash' | 'or'`
+	if got != want {
+		t.Fatalf("anyOfTheLexemes = %s, want %s", got, want)
 	}
 }
 
-// The rowid mapping is the one thing between a hit and the memory it describes,
-// and a VACUUM of `memories` can renumber it. Search must refuse rather than
-// answer with the wrong memory.
-func TestSearchRefusesWhenTheIndexIsKeyedToTheWrongRow(t *testing.T) {
-	s, err := NewStore(filepath.Join(t.TempDir(), "memory.db"))
-	if err != nil {
+// A lexeme that looks like tsquery syntax is only ever a word: Postgres reads
+// the quoted operands back as the lexemes themselves.
+func TestTheTsqueryReadsBackAsTheLexemes(t *testing.T) {
+	s := openTestStore(t)
+	var read string
+	if err := s.db.QueryRow(`SELECT $1::tsquery::text`, anyOfTheLexemes([]string{"o'brien", "!", "&"})).Scan(&read); err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
-
-	saveMemory(t, s, "a", "the scheduler runs jobs on a cron expression")
-	saveMemory(t, s, "b", "plex library thumbnails are cached on disk")
-
-	// Rewrite the memory_id stored beside one index row, which is what a
-	// renumbering leaves behind: the index row now describes a different memory
-	// from the one its rowid joins to.
-	if _, err := s.db.Exec(`UPDATE `+ftsTableName+` SET memory_id = ? WHERE memory_id = ?`, "b", "a"); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := s.Search("scheduler", 10); err == nil {
-		t.Fatal("search answered from an index keyed to the wrong row instead of refusing")
-	} else if !strings.Contains(err.Error(), "keyed to the wrong row") {
-		t.Fatalf("search failed for the wrong reason: %v", err)
+	if want := `'o''brien' | '!' | '&'`; read != want {
+		t.Fatalf("the tsquery reads back as %s, want %s", read, want)
 	}
 }
