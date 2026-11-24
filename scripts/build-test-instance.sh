@@ -4,10 +4,16 @@
 #   scripts/build-test-instance.sh <output folder>
 #
 # The server, the runner and the mock harness come from this repo, with the
-# front end built first so it is compiled into the server. log-store,
-# tool-store, principal-store and grant-store come from their own repos beside
-# this one, as they are checked out there, and so do kanban-store,
-# reference-store and permission-store.
+# front end built first so it is compiled into the server; the server holds
+# principal-store, grant-store, permission-store, tool-store and the other
+# stores moved into it. log-store, kanban-store and reference-store come from
+# their own repos beside this one, as they are checked out there.
+#
+# The runner's disk-usage and computer-use helpers are left out on purpose. A
+# runner in WSL installs them into the Windows user's own app data, where the
+# machine's real runner keeps its copies. The test runner's PATH does not reach
+# cmd.exe, so it cannot find that folder and offers neither (it logs an ERROR
+# for each), and the test server offers no helper to fetch either way.
 #
 # Every binary is built for linux/amd64 with no dependency on the system C
 # library, so a folder built on one distribution runs on an older one: copy it
@@ -45,11 +51,9 @@ done
 
 build_pure log-store
 build_pure reference-store
-build_pure permission-store
 
-# These four use the SQLite driver that is C code, so they are linked whole
-# (static) instead. principal-store's search needs SQLite's FTS5, as its own
-# deploy script says.
+# kanban-store uses the SQLite driver that is C code, so it is linked whole
+# (static) instead.
 build_static() { # <repo> <extra build tags>
   echo "==> Building $1..."
   (cd "$PARENT_DIR/$1" && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
@@ -58,9 +62,6 @@ build_static() { # <repo> <extra build tags>
     -o "$OUT/$1" "./cmd/$1" 2>&1 | grep -v -E 'warning: Using|statically linked applications requires|: in function' || true)
   [ -x "$OUT/$1" ] || { echo "ERROR: $1 did not build" >&2; exit 1; }
 }
-build_static tool-store ""
-build_static principal-store "sqlite_fts5"
-build_static grant-store ""
 build_static kanban-store ""
 
 cp "$REPO_DIR/scripts/test-instance.sh" "$OUT/test-instance.sh"
