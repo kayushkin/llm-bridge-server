@@ -115,9 +115,9 @@ func TestImportKeepsEveryRowAndItsID(t *testing.T) {
 
 func TestImportRefusesAFileItCannotCopyWhole(t *testing.T) {
 	cases := map[string]string{
-		"an unknown column": `ALTER TABLE repos ADD COLUMN owner TEXT NOT NULL DEFAULT ''`,
+		"an unknown column":        `ALTER TABLE repos ADD COLUMN owner TEXT NOT NULL DEFAULT ''`,
 		"tags that are not a list": `INSERT INTO repos (name, tags, created_at, updated_at) VALUES ('webapp', 'go,react', 1, 1)`,
-		"an unknown provenance": `INSERT INTO repos (name, provenance, created_at, updated_at) VALUES ('webapp', 'borrowed', 1, 1)`,
+		"an unknown provenance":    `INSERT INTO repos (name, provenance, created_at, updated_at) VALUES ('webapp', 'borrowed', 1, 1)`,
 	}
 	for name, statement := range cases {
 		t.Run(name, func(t *testing.T) {

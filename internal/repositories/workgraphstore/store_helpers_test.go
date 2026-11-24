@@ -22,7 +22,9 @@ func newTestStore(t *testing.T) *Store {
 // fakeRepoDirectory is repo-store holding repos.
 type fakeRepoDirectory struct{ repos []Repo }
 
-func (directory fakeRepoDirectory) Repos(context.Context) ([]Repo, error) { return directory.repos, nil }
+func (directory fakeRepoDirectory) Repos(context.Context) ([]Repo, error) {
+	return directory.repos, nil
+}
 
 func (directory fakeRepoDirectory) Repo(_ context.Context, id int64) (Repo, error) {
 	for _, repo := range directory.repos {
