@@ -1,0 +1,20 @@
+[Unit]
+Description=usage-store — token + subscription-limit + per-key spend aggregator
+After=network.target
+
+[Service]
+ExecStart=/home/kayushkincom/bin/usage-store-server
+Restart=on-failure
+RestartSec=3
+Environment=USAGE_STORE_LISTEN_ADDR=:8185
+# Codex limits come from `codex app-server`. The npm codex is a node script, so
+# PATH must reach node as well as codex; mise's shims provide both.
+Environment=PATH=/home/kayushkincom/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+Environment=USAGE_STORE_CODEX_COMMAND=codex
+# Spend collection is disabled until AUTH_STORE_TOKEN is set in a host-local
+# drop-in (admin keys are then auto-discovered from auth-store by api_key
+# prefix — no per-provider config needed). Recommended path:
+#   ~/.config/systemd/user/usage-store.service.d/spend.conf
+
+[Install]
+WantedBy=default.target
