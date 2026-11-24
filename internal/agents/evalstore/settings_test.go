@@ -128,8 +128,8 @@ func TestEveryEnvironmentVariableTheServiceReadsIsDeclared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat("go.mod"); err != nil {
-		t.Fatalf("the scan starts somewhere that is not the repository root: %v", err)
+	if _, err := os.Stat("CONTRACT.md"); err != nil {
+		t.Fatalf("the scan starts somewhere that is not the store's directory: %v", err)
 	}
 	if filesRead < 5 {
 		t.Fatalf("the scan read %d files; it is not looking at the service", filesRead)

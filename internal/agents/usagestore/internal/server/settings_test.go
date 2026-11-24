@@ -11,8 +11,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	usagestore "github.com/kayushkin/usage-store"
-	"github.com/kayushkin/usage-store/internal/config"
+	usagestore "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/internal/config"
 )
 
 func serverWithSettings(t *testing.T, environment map[string]string) *Server {

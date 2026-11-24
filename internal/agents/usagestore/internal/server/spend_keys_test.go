@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	usagestore "github.com/kayushkin/usage-store"
-	"github.com/kayushkin/usage-store/internal/config"
-	"github.com/kayushkin/usage-store/spend"
+	usagestore "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/spend"
 )
 
 // The /api/usage/spend/keys mechanism is what the Usage page reads to answer

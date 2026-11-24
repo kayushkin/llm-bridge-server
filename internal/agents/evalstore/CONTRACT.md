@@ -3,7 +3,7 @@
 Port 8323, set by `EVAL_STORE_ADDR` in `eval-store.service` (loopback only). Judged
 runs of several models on a fixed set of real model calls.
 
-Module `github.com/kayushkin/eval-store`, root package `evalstore`, binary
+Module `github.com/kayushkin/llm-bridge-server/internal/agents/evalstore`, root package `evalstore`, binary
 `cmd/eval-store` installed at `~/bin/eval-store`. SQLite at
 `<EVAL_STORE_DATA_DIR>/eval-store.db` (default `~/.config/eval-store`), WAL, foreign
 keys on. The directory is 700 and the file 600, and `Open` refuses a directory

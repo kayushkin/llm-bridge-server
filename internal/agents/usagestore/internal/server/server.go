@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	usagestore "github.com/kayushkin/usage-store"
-	"github.com/kayushkin/usage-store/anthropic"
-	"github.com/kayushkin/usage-store/codex"
-	"github.com/kayushkin/usage-store/internal/boundedtext"
-	"github.com/kayushkin/usage-store/spend"
+	usagestore "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/anthropic"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/codex"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/internal/boundedtext"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/spend"
 
 	_ "modernc.org/sqlite"
 )

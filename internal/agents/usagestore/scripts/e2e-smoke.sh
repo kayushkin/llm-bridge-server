@@ -132,7 +132,7 @@ import (
 	"os"
 	"strconv"
 
-	usagestore "github.com/kayushkin/usage-store"
+	usagestore "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
 )
 
 // usage: seed-usage <db> <agent> <orchestrator> <model> <session> <harness> <in> <out> <cost>

@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	evalstore "github.com/kayushkin/eval-store"
+	evalstore "github.com/kayushkin/llm-bridge-server/internal/agents/evalstore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 

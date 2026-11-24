@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	usagestore "github.com/kayushkin/usage-store"
+	usagestore "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
 )
 
 // FetchLimits reads one provider's current limits and the raw response.

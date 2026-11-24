@@ -11,14 +11,14 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	usagestore "github.com/kayushkin/usage-store"
-	"github.com/kayushkin/usage-store/anthropic"
-	"github.com/kayushkin/usage-store/codex"
-	"github.com/kayushkin/usage-store/internal/authstore"
-	"github.com/kayushkin/usage-store/internal/config"
-	"github.com/kayushkin/usage-store/internal/limitsrefresh"
-	"github.com/kayushkin/usage-store/internal/server"
-	"github.com/kayushkin/usage-store/spend"
+	usagestore "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/anthropic"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/codex"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/internal/authstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/internal/limitsrefresh"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/internal/server"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/spend"
 )
 
 func main() {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	usagestore "github.com/kayushkin/usage-store"
+	usagestore "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
 )
 
 var testIntervals = Intervals{Idle: 15 * time.Minute, Watched: 2 * time.Minute, WatcherExpiry: 3 * time.Minute}

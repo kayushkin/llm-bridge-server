@@ -17,13 +17,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"io"
 	"os/exec"
 	"strings"
 	"syscall"
 	"time"
 
-	usagestore "github.com/kayushkin/usage-store"
+	usagestore "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
 )
 
 // Window names exposed in ProviderLimits.Windows.
@@ -90,6 +91,8 @@ func (r *Reader) Read(ctx context.Context) (*usagestore.ProviderLimits, []byte, 
 
 	// read-only sandbox and no approvals: this process only answers questions.
 	cmd := exec.CommandContext(ctx, r.Command, "-s", "read-only", "-a", "never", "app-server")
+	// The server's own secrets never reach a process it starts.
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	// The npm `codex` is a node wrapper around the native binary. Give the pair its
 	// own process group so a timeout kills both, not just the wrapper.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

@@ -4,7 +4,7 @@ Token usage tracking + subscription-limit aggregator. Library + service.
 
 ## Library
 
-`github.com/kayushkin/usage-store` exposes `Open`, `Track`, `Query`, `Stats`, `Summary`, `TotalCost` for per-request token accounting (used by `model-store`), plus `SaveLimits`, `LatestLimits`, `HistoryLimits` for subscription-limit snapshots.
+`github.com/kayushkin/llm-bridge-server/internal/agents/usagestore` exposes `Open`, `Track`, `Query`, `Stats`, `Summary`, `TotalCost` for per-request token accounting (used by `model-store`), plus `SaveLimits`, `LatestLimits`, `HistoryLimits` for subscription-limit snapshots.
 
 Sub-packages:
 - `anthropic` — fetches Claude OAuth subscription usage from `https://api.anthropic.com/api/oauth/usage` using the token in `~/.claude/.credentials.json`.
