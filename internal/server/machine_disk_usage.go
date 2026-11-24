@@ -262,7 +262,7 @@ func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Requ
 		writeJSONError(w, http.StatusBadRequest, "invalid_kind", `kind must be "file" or "directory"`)
 		return
 	}
-	name := body.Path[strings.LastIndex(body.Path, `\`)+1:]
+	name := diskPathName(body.Path)
 	if name == "" || body.ConfirmationName != name {
 		writeJSONError(w, http.StatusBadRequest, "confirmation_mismatch", fmt.Sprintf("confirmation_name must be exactly %q, the name of what is deleted", name))
 		return
@@ -358,4 +358,14 @@ func decodeStrictJSON(r *http.Request, into any) error {
 		return errors.New("one JSON object only")
 	}
 	return nil
+}
+
+// diskPathName is the last part of a path on a runner machine: a Windows
+// path splits on backslashes, a WSL path, which starts with /, on slashes.
+func diskPathName(path string) string {
+	separator := `\`
+	if strings.HasPrefix(path, "/") {
+		separator = "/"
+	}
+	return path[strings.LastIndex(path, separator)+1:]
 }
