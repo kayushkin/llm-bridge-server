@@ -37,8 +37,17 @@ func main() {
 		case "import-prediction-store":
 			importPredictionStoreCmd(os.Args[2:])
 			return
+		case "import-tool-store":
+			importToolStoreCmd(os.Args[2:])
+			return
+		case "import-skill-store":
+			importSkillStoreCmd(os.Args[2:])
+			return
+		case "import-bundle-store":
+			importBundleStoreCmd(os.Args[2:])
+			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file>]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file>]")
 			os.Exit(0)
 		}
 	}
@@ -198,6 +207,9 @@ func main() {
 		srv.EnablePredictionStore(predictionstore.New(predictionStoreDB))
 		log.Printf("postgres: prediction-store open, served at /prediction-store/")
 	}
+
+	closeAgentsStoreModules := enableAgentsStoreModules(context.Background(), srv, cfg)
+	defer closeAgentsStoreModules()
 
 	operationStore, err := operationstore.Open(cfg.OperationsDBPath)
 	if err != nil {

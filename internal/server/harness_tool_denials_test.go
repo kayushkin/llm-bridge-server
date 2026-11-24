@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -15,41 +15,26 @@ import (
 
 // bundleStoreDenying is a bundle-store that knows bundle 6 and resolves it to
 // the given denied tool ids and denied read paths, and nothing else.
-func bundleStoreDenying(t *testing.T, deniedToolIDs []int64, deniedReadPaths []string) string {
+func bundleStoreDenying(t *testing.T, deniedToolIDs []int64, deniedReadPaths []string) *fakeBundleResolver {
 	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /bundles/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("id") != "6" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": 6, "name": "support-read-only", "enabled": true})
-	})
-	mux.HandleFunc("POST /resolve", func(w http.ResponseWriter, r *http.Request) {
-		denied := []map[string]any{}
-		for _, id := range deniedToolIDs {
-			denied = append(denied, map[string]any{"id": id, "name": "denied"})
-		}
-		if deniedReadPaths == nil {
-			deniedReadPaths = []string{}
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"bundles": []map[string]any{{"id": 6, "name": "support-read-only"}},
-			"skills":  []any{}, "tools": []any{},
-			"denied_tools": denied, "denied_read_paths": deniedReadPaths,
-		})
-	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	return server.URL
+	if deniedReadPaths == nil {
+		deniedReadPaths = []string{}
+	}
+	return &fakeBundleResolver{bundleID: "6", resolution: &bundleclient.Resolution{
+		Bundles:         []bundlestore.BundleRef{{ID: 6, Name: "support-read-only"}},
+		Skills:          []bundlestore.MemberRef{},
+		Tools:           []bundlestore.MemberRef{},
+		DeniedTools:     memberRefs("denied", deniedToolIDs...),
+		DeniedReadPaths: deniedReadPaths,
+	}}
 }
 
-func serverWithBundleAndToolStore(t *testing.T, bundleStoreURL string) (*Server, *store.Store, string) {
+func serverWithBundleAndToolStore(t *testing.T, bundles bundleResolver) (*Server, *store.Store, string) {
 	t.Helper()
 	srv, st, instanceID := serverWithHarnessDefaults(t, msg.HarnessDefaults{})
 	tools, _ := fakeToolStoreWithOptIns(t, nil)
-	srv.cfg.ToolStoreURL = tools.URL
-	srv.bundleClient = bundleclient.New(bundleStoreURL)
+	srv.toolRegistry = tools
+	srv.bundleClient = bundles
 	return srv, st, instanceID
 }
 
@@ -125,8 +110,8 @@ func TestDeniedReadPathsWithACommandRunningToolOnAreRefused(t *testing.T) {
 func TestDeniedReadPathsOnACodexSessionAreRefused(t *testing.T) {
 	srv, _, instanceID := testServerWithInstance(t, msg.HarnessCodex)
 	tools, _ := fakeToolStoreWithOptIns(t, nil)
-	srv.cfg.ToolStoreURL = tools.URL
-	srv.bundleClient = bundleclient.New(bundleStoreDenying(t, []int64{103}, []string{"/proc/**"}))
+	srv.toolRegistry = tools
+	srv.bundleClient = bundleStoreDenying(t, []int64{103}, []string{"/proc/**"})
 	body := createSessionExpectingRefusal(t, srv, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6", Harness: msg.HarnessCodex})
 	if !strings.Contains(body, "only claude_code enforces") {
 		t.Errorf("refusal %q does not say codex cannot enforce it", body)
@@ -190,11 +175,11 @@ func TestACallersOwnSettingsAreRefusedAtCreateWhenTheBundleDeniesReadPaths(t *te
 }
 
 // A harness tool the bundle includes is never sent to tool-store's
-// /provision, which provisions MCP servers only.
+// provision, which provisions MCP servers only.
 func TestABundlesIncludedHarnessToolIsNotProvisioned(t *testing.T) {
 	bundles, _ := fakeBundleStore(t, "6", []int64{101, 13}, nil)
 	tools, provisioned := fakeToolStoreWithOptIns(t, nil)
-	s := newServerWithBundles(tools.URL, bundles.URL, "")
+	s := newServerWithBundles(tools, bundles, "")
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6"}
 	if err := s.injectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)

@@ -1,79 +1,57 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// observingToolStore is a tool-store that serves its harness tools and, like
-// the real one, registers a reported name it has never seen as a harness tool
-// switched off and tagged unreviewed.
+// observingToolStore is a tool registry that serves its harness tools and,
+// like the real one, registers a reported name it has never seen as a harness
+// tool switched off and tagged unreviewed.
 type observingToolStore struct {
-	mu   sync.Mutex
-	rows []map[string]any
-	URL  string
+	*fakeToolRegistry
+	mu sync.Mutex
 }
 
 func newObservingToolStore(t *testing.T, rows []map[string]any) *observingToolStore {
 	t.Helper()
-	fake := &observingToolStore{rows: rows}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /tools", func(w http.ResponseWriter, r *http.Request) {
-		fake.mu.Lock()
-		defer fake.mu.Unlock()
-		matching := []map[string]any{}
-		for _, row := range fake.rows {
-			if harness := r.URL.Query().Get("harness"); harness == "" || row["harness"] == harness {
-				matching = append(matching, row)
-			}
-		}
-		_ = json.NewEncoder(w).Encode(matching)
-	})
-	mux.HandleFunc("POST /harness-tools/observed", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Harness   string   `json:"harness"`
-			ToolNames []string `json:"tool_names"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		fake.mu.Lock()
-		defer fake.mu.Unlock()
-		known := map[string]bool{}
-		for _, row := range fake.rows {
-			if row["harness"] == body.Harness {
-				known[row["harness_tool_name"].(string)] = true
-			}
-		}
-		created := []string{}
-		for _, name := range body.ToolNames {
-			if !known[name] {
-				fake.rows = append(fake.rows, map[string]any{"id": 900 + len(fake.rows), "name": body.Harness + "." + name, "kind": "harness",
-					"harness": body.Harness, "harness_tool_name": name, "enabled": false, "tags": []string{"unreviewed"}})
-				created = append(created, name)
-			}
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"created": created, "seen": len(body.ToolNames)})
-	})
-	mux.HandleFunc("GET /instances/{id}/tools", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode([]any{})
-	})
-	mux.HandleFunc("POST /provision", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"mcpServers": map[string]any{}})
-	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	fake.URL = server.URL
+	fake := &observingToolStore{fakeToolRegistry: newFakeToolRegistry(t)}
+	fake.harnessTools = rows
+	fake.provisionAnswer = provisionAnswering(`{"mcpServers":{}}`)
 	return fake
+}
+
+func (fake *observingToolStore) ListTools(ctx context.Context, filter toolstore.ListFilter) ([]toolstore.Tool, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return fake.fakeToolRegistry.ListTools(ctx, filter)
+}
+
+func (fake *observingToolStore) RecordObservedHarnessTools(_ context.Context, request toolstore.ObservedHarnessToolsRequest) (toolstore.ObservedHarnessToolsResponse, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	known := map[string]bool{}
+	for _, row := range fake.harnessTools {
+		if row["harness"] == request.Harness {
+			known[row["harness_tool_name"].(string)] = true
+		}
+	}
+	created := []string{}
+	for _, name := range request.ToolNames {
+		if !known[name] {
+			fake.harnessTools = append(fake.harnessTools, map[string]any{"id": 900 + len(fake.harnessTools), "name": request.Harness + "." + name, "kind": "harness",
+				"harness": request.Harness, "harness_tool_name": name, "enabled": false, "tags": []string{"unreviewed"}})
+			created = append(created, name)
+		}
+	}
+	return toolstore.ObservedHarnessToolsResponse{Created: created, Seen: len(request.ToolNames)}, nil
 }
 
 // reviewedClaudeCodeTools is tool-store as a person left it: Read reviewed and
@@ -102,11 +80,11 @@ func allowListPinnedOn(t *testing.T, sess *store.Session) pinnedAllowList {
 	return pinned
 }
 
-func restrictedServer(t *testing.T, toolStoreURL string, deniedToolIDs []int64, deniedReadPaths []string) (*Server, *store.Store, string) {
+func restrictedServer(t *testing.T, tools toolRegistry, deniedToolIDs []int64, deniedReadPaths []string) (*Server, *store.Store, string) {
 	t.Helper()
 	srv, st, instanceID := serverWithHarnessDefaults(t, msg.HarnessDefaults{})
-	srv.cfg.ToolStoreURL = toolStoreURL
-	srv.bundleClient = bundleclient.New(bundleStoreDenying(t, deniedToolIDs, deniedReadPaths))
+	srv.toolRegistry = tools
+	srv.bundleClient = bundleStoreDenying(t, deniedToolIDs, deniedReadPaths)
 	return srv, st, instanceID
 }
 
@@ -118,7 +96,7 @@ func restrictedServer(t *testing.T, toolStoreURL string, deniedToolIDs []int64, 
 // session is stopped. The next restricted session finds it registered off.
 func TestANewlyObservedToolIsNotOfferedInItsFirstRestrictedSession(t *testing.T) {
 	toolStore := newObservingToolStore(t, reviewedClaudeCodeTools())
-	srv, st, instanceID := restrictedServer(t, toolStore.URL, []int64{102}, []string{"~/.config/**"})
+	srv, st, instanceID := restrictedServer(t, toolStore, []int64{102}, []string{"~/.config/**"})
 
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6"})
 	pinned := allowListPinnedOn(t, sess)
@@ -153,7 +131,7 @@ func TestANewlyObservedToolIsNotOfferedInItsFirstRestrictedSession(t *testing.T)
 // only what it was allowed goes on.
 func TestAReviewedReadToolIsOfferedAndTheSessionGoesOn(t *testing.T) {
 	toolStore := newObservingToolStore(t, reviewedClaudeCodeTools())
-	srv, st, instanceID := restrictedServer(t, toolStore.URL, []int64{102}, []string{"~/.config/**"})
+	srv, st, instanceID := restrictedServer(t, toolStore, []int64{102}, []string{"~/.config/**"})
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6"})
 
 	srv.onSessionInfo(sess.SessionID, &msg.SessionInfo{Tools: []msg.ToolInfo{{Name: "Read"}, {Name: "mcp__ticketing__get_ticket"}}})
@@ -175,7 +153,7 @@ func TestAReviewedReadToolIsOfferedAndTheSessionGoesOn(t *testing.T) {
 // Code reads as no built-in tool, never a missing one, which would be all.
 func TestARestrictedSessionWithNothingLeftIsOfferedNoBuiltInTool(t *testing.T) {
 	toolStore := newObservingToolStore(t, reviewedClaudeCodeTools())
-	srv, st, instanceID := restrictedServer(t, toolStore.URL, []int64{101, 102}, nil)
+	srv, st, instanceID := restrictedServer(t, toolStore, []int64{101, 102}, nil)
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6"})
 	if !strings.Contains(string(sess.HarnessConfig), `"tools":[]`) {
 		t.Errorf("harness_config = %s; want tools pinned as []", sess.HarnessConfig)
@@ -186,7 +164,7 @@ func TestARestrictedSessionWithNothingLeftIsOfferedNoBuiltInTool(t *testing.T) {
 // default set: the allow list is for restricted sessions only.
 func TestAnUnrestrictedSessionGetsNoAllowList(t *testing.T) {
 	toolStore := newObservingToolStore(t, reviewedClaudeCodeTools())
-	srv, st, instanceID := restrictedServer(t, toolStore.URL, nil, nil)
+	srv, st, instanceID := restrictedServer(t, toolStore, nil, nil)
 	for _, bundleID := range []string{"", "6"} {
 		sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: bundleID})
 		if pinned := allowListPinnedOn(t, sess); pinned.Tools != nil || pinned.PinnedFor != "" {
@@ -202,7 +180,7 @@ func TestAnUnrestrictedSessionGetsNoAllowList(t *testing.T) {
 // A caller's own tools would replace the list tool-store decides.
 func TestARestrictedSessionRefusesTheCallersOwnTools(t *testing.T) {
 	toolStore := newObservingToolStore(t, reviewedClaudeCodeTools())
-	srv, _, instanceID := restrictedServer(t, toolStore.URL, []int64{102}, nil)
+	srv, _, instanceID := restrictedServer(t, toolStore, []int64{102}, nil)
 	body := createSessionExpectingRefusal(t, srv, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6", HarnessConfig: json.RawMessage(`{"tools":["Read","NewWriteTool"]}`)})
 	if !strings.Contains(body, "built_in_tool_allow_list_unenforceable") {
 		t.Errorf("refusal %q does not name the allow list", body)
@@ -214,8 +192,8 @@ func TestARestrictedSessionRefusesTheCallersOwnTools(t *testing.T) {
 func TestARestrictedCodexSessionIsRefused(t *testing.T) {
 	srv, _, instanceID := testServerWithInstance(t, msg.HarnessCodex)
 	toolStore := newObservingToolStore(t, reviewedClaudeCodeTools())
-	srv.cfg.ToolStoreURL = toolStore.URL
-	srv.bundleClient = bundleclient.New(bundleStoreDenying(t, []int64{102}, nil))
+	srv.toolRegistry = toolStore
+	srv.bundleClient = bundleStoreDenying(t, []int64{102}, nil)
 	body := createSessionExpectingRefusal(t, srv, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6", Harness: msg.HarnessCodex})
 	if !strings.Contains(body, "built_in_tool_allow_list_unenforceable") || !strings.Contains(body, "only claude_code") {
 		t.Errorf("refusal %q does not say codex cannot be held to an allow list", body)
@@ -225,10 +203,7 @@ func TestARestrictedCodexSessionIsRefused(t *testing.T) {
 // With tool-store down nothing can say which tools are on, so the session is
 // refused, under a code that names tool-store.
 func TestARestrictedSessionIsRefusedVisiblyWhenToolStoreIsDown(t *testing.T) {
-	down := httptest.NewServer(http.NotFoundHandler())
-	downURL := down.URL
-	down.Close()
-	srv, _, instanceID := restrictedServer(t, downURL, []int64{102}, []string{"~/.config/**"})
+	srv, _, instanceID := restrictedServer(t, unreachableToolRegistry(t), []int64{102}, []string{"~/.config/**"})
 	body := createSessionExpectingRefusal(t, srv, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6"})
 	if !strings.Contains(body, "tool_store_unavailable") {
 		t.Errorf("refusal %q does not name tool-store", body)

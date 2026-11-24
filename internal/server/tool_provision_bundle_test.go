@@ -2,12 +2,12 @@ package server
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
@@ -15,60 +15,24 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// fakeBundleStore answers GET /bundles/{id} and POST /resolve for one bundle
-// it knows, in bundle-store's own words for everything else: 404 for a
-// missing id, 400 "invalid id" for a name, and /resolve refusing an id it
-// lacks with 404 rather than composing a smaller bundle.
-func fakeBundleStore(t *testing.T, bundleID string, toolIDs []int64, skillIDs []int64) (*httptest.Server, *[]map[string]any) {
+// fakeBundleStore knows bundle 6 and resolves it, with base, to the given
+// tools and skills, and answers any other id as bundle-store does a missing
+// one: an error wrapping bundleclient.ErrNotFound, never a smaller bundle. It
+// records each id it was asked to resolve.
+func fakeBundleStore(t *testing.T, bundleID string, toolIDs []int64, skillIDs []int64) (*fakeBundleResolver, *[]string) {
 	t.Helper()
-	var resolveBodies []map[string]any
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /bundles/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		if strings.Trim(id, "0123456789") != "" {
-			w.WriteHeader(400)
-			_, _ = w.Write([]byte(`{"error":"invalid id"}`))
-			return
-		}
-		if id != bundleID {
-			w.WriteHeader(404)
-			_, _ = w.Write([]byte(`{"error":"bundle not found"}`))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": 6, "name": "docker", "enabled": true})
-	})
-	mux.HandleFunc("POST /resolve", func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		resolveBodies = append(resolveBodies, body)
-		ids, _ := body["bundle_ids"].([]any)
-		if len(ids) != 1 || ids[0] != float64(6) {
-			w.WriteHeader(404)
-			_, _ = w.Write([]byte(`{"error":"bundle not applicable: bundle id does not exist"}`))
-			return
-		}
-		var tools, skills []map[string]any
-		for _, id := range toolIDs {
-			tools = append(tools, map[string]any{"id": id, "name": "tool"})
-		}
-		for _, id := range skillIDs {
-			skills = append(skills, map[string]any{"id": id, "name": "skill"})
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"bundles": []map[string]any{{"id": 1, "name": "base"}, {"id": 6, "name": "docker"}},
-			"skills":  skills, "tools": tools,
-			"denied_tools": []map[string]any{}, "denied_read_paths": []string{},
-		})
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv, &resolveBodies
+	resolver := &fakeBundleResolver{bundleID: bundleID, resolution: &bundleclient.Resolution{
+		Bundles:         []bundlestore.BundleRef{{ID: 1, Name: "base"}, {ID: 6, Name: "docker"}},
+		Skills:          memberRefs("skill", skillIDs...),
+		Tools:           memberRefs("tool", toolIDs...),
+		DeniedTools:     []bundlestore.MemberRef{},
+		DeniedReadPaths: []string{},
+	}}
+	return resolver, &resolver.resolveCalls
 }
 
-func newServerWithBundles(toolStoreURL, bundleStoreURL, grantStoreURL string) *Server {
-	s := &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, bundleClient: bundleclient.New(bundleStoreURL)}
+func newServerWithBundles(tools toolRegistry, bundles bundleResolver, grantStoreURL string) *Server {
+	s := &Server{cfg: &config.Config{}, toolRegistry: tools, bundleClient: bundles}
 	if grantStoreURL != "" {
 		s.grantClient = grantclient.New(grantStoreURL, "")
 		s.principalLookupCache = principalLookupCacheAnswering(humanPrincipalForGrantTests)
@@ -81,7 +45,7 @@ func newServerWithBundles(toolStoreURL, bundleStoreURL, grantStoreURL string) *S
 func TestInjectMCPConfigProvisionsTheBundlesTools(t *testing.T) {
 	bundles, resolved := fakeBundleStore(t, "6", []int64{13, 14}, nil)
 	tools, asked := fakeToolStoreWithOptIns(t, map[string][]map[string]any{"inst-1": {mcpTool12}})
-	s := newServerWithBundles(tools.URL, bundles.URL, "")
+	s := newServerWithBundles(tools, bundles, "")
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6"}
 
 	if err := s.injectMCPConfig(sess); err != nil {
@@ -110,7 +74,7 @@ func TestInjectMCPConfigBundleNarrowedByGrants(t *testing.T) {
 	bundles, _ := fakeBundleStore(t, "6", []int64{13, 14}, nil)
 	grants := fakeGrantStore(t, "principal_000001", []string{"14", "99"})
 	tools, asked := fakeToolStoreWithOptIns(t, nil)
-	s := newServerWithBundles(tools.URL, bundles.URL, grants.URL)
+	s := newServerWithBundles(tools, bundles, grants.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6", PrincipalID: "principal_000001"}
 
 	if err := s.injectMCPConfig(sess); err != nil {
@@ -130,7 +94,7 @@ func TestInjectMCPConfigBundleWithUngrantedPrincipalIsUnchanged(t *testing.T) {
 	bundles, _ := fakeBundleStore(t, "6", []int64{13}, nil)
 	grants := fakeGrantStore(t, "principal_000002", nil)
 	tools, asked := fakeToolStoreWithOptIns(t, nil)
-	s := newServerWithBundles(tools.URL, bundles.URL, grants.URL)
+	s := newServerWithBundles(tools, bundles, grants.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6", PrincipalID: "principal_000002"}
 
 	if err := s.injectMCPConfig(sess); err != nil {
@@ -149,7 +113,7 @@ func TestInjectMCPConfigBundleWithUngrantedPrincipalIsUnchanged(t *testing.T) {
 func TestInjectMCPConfigEmptyBundleDoesNotFallThroughToTheInstance(t *testing.T) {
 	bundles, _ := fakeBundleStore(t, "6", nil, []int64{487})
 	tools, asked := fakeToolStoreWithOptIns(t, map[string][]map[string]any{"inst-1": {mcpTool12}})
-	s := newServerWithBundles(tools.URL, bundles.URL, "")
+	s := newServerWithBundles(tools, bundles, "")
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6", HarnessConfig: json.RawMessage(`{"settings":"{}"}`)}
 
 	if err := s.injectMCPConfig(sess); err != nil {
@@ -168,10 +132,9 @@ func TestInjectMCPConfigEmptyBundleDoesNotFallThroughToTheInstance(t *testing.T)
 // other than what was asked for.
 func TestInjectMCPConfigBundleUnresolvableAbortsTheSpawn(t *testing.T) {
 	tools, asked := fakeToolStoreWithOptIns(t, map[string][]map[string]any{"inst-1": {mcpTool12}})
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
-	for name, bundleStoreURL := range map[string]string{"down": closed.URL} {
-		s := newServerWithBundles(tools.URL, bundleStoreURL, "")
+	down := &fakeBundleResolver{bundleID: "6", err: errors.New("bundle-store could not resolve bundle 6: connection refused")}
+	for name, bundles := range map[string]bundleResolver{"down": down} {
+		s := newServerWithBundles(tools, bundles, "")
 		sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6"}
 		err := s.injectMCPConfig(sess)
 		if err == nil || !strings.Contains(err.Error(), "bundle 6") {
@@ -179,7 +142,7 @@ func TestInjectMCPConfigBundleUnresolvableAbortsTheSpawn(t *testing.T) {
 		}
 	}
 	bundles, _ := fakeBundleStore(t, "6", []int64{13}, nil)
-	s := newServerWithBundles(tools.URL, bundles.URL, "")
+	s := newServerWithBundles(tools, bundles, "")
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "7"}
 	err := s.injectMCPConfig(sess)
 	if err == nil || !strings.Contains(err.Error(), "bundle 7") {
@@ -195,7 +158,7 @@ func TestInjectMCPConfigBundleUnresolvableAbortsTheSpawn(t *testing.T) {
 func TestInjectMCPConfigNamedToolsBeatTheBundle(t *testing.T) {
 	bundles, resolved := fakeBundleStore(t, "6", []int64{13}, nil)
 	srv := fakeToolStore(t, `{"mcpServers":{"x":{"command":"x"}}}`)
-	s := newServerWithBundles(srv.URL, bundles.URL, "")
+	s := newServerWithBundles(srv, bundles, "")
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", BundleID: "6", HarnessConfig: json.RawMessage(`{"tool_store_tools":["brave-search"]}`)}
 	if err := s.injectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
@@ -207,11 +170,10 @@ func TestInjectMCPConfigNamedToolsBeatTheBundle(t *testing.T) {
 	t.Cleanup(func() { os.Remove(path) })
 }
 
-// bundleclient refuses a name before any call: bundle-store keys by id.
+// bundleclient refuses a name before it asks the store: bundle-store keys by
+// id. A client with no store would panic if it asked.
 func TestBundleClientRefusesANameWithoutCalling(t *testing.T) {
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
-	c := bundleclient.New(closed.URL)
+	c := bundleclient.New(nil)
 	if err := c.CheckExists(t.Context(), "docker"); err == nil || !strings.Contains(err.Error(), "renameable") {
 		t.Fatalf("want a refusal naming the reason, got %v", err)
 	}

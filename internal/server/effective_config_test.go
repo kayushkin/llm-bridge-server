@@ -32,7 +32,7 @@ func TestEffectiveConfigReportsBundleToolsNarrowedByGrants(t *testing.T) {
 	bundles, _ := fakeBundleStore(t, "6", []int64{13, 14}, nil)
 	grants := fakeGrantStore(t, "principal_000001", []string{"14", "99"})
 	tools, asked := fakeToolStoreWithOptIns(t, nil)
-	s := newServerWithBundles(tools.URL, bundles.URL, grants.URL)
+	s := newServerWithBundles(tools, bundles, grants.URL)
 	// Pinned at create, as every real row is; this bare server has no
 	// model-store to resolve one live.
 	sess := &store.Session{

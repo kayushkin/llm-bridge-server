@@ -179,7 +179,7 @@ func storeProxyRequest(t *testing.T, envKey, requestPath string) string {
 	return *got
 }
 
-// The two seed store proxies are the same shape dash carries: a
+// The seed store proxy is the same shape dash carries: a
 // mount prefix sliced off r.URL.Path and pasted onto the upstream base.
 func TestTheStoreProxiesForwardAnEscapedSegment(t *testing.T) {
 	for _, tc := range []struct {
@@ -188,10 +188,9 @@ func TestTheStoreProxiesForwardAnEscapedSegment(t *testing.T) {
 		request string
 		want    string
 	}{
-		{"skill-store", "SKILL_STORE_URL", "/api/skill-store/skills/a%2Fb/files", "/skills/a%2Fb/files"},
 		{"agent-store", "AGENT_STORE_URL", "/api/agent-store/agents/a%2Fb", "/agents/a%2Fb"},
-		{"encoded question mark", "SKILL_STORE_URL", "/api/skill-store/skills/a%3Fx=1", "/skills/a%3Fx=1"},
-		{"encoded hash", "SKILL_STORE_URL", "/api/skill-store/skills/a%23frag", "/skills/a%23frag"},
+		{"encoded question mark", "AGENT_STORE_URL", "/api/agent-store/agents/a%3Fx=1", "/agents/a%3Fx=1"},
+		{"encoded hash", "AGENT_STORE_URL", "/api/agent-store/agents/a%23frag", "/agents/a%23frag"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := storeProxyRequest(t, tc.env, tc.request); got != tc.want {
@@ -206,11 +205,12 @@ func TestTheStoreProxiesForwardAnEscapedSegment(t *testing.T) {
 // decodes into real separators that Clean then RESOLVES, so a single segment
 // the caller sent walks up the upstream's path instead.
 //
-// Measured on the decoded read: /api/skill-store/a%2F..%2F..%2Fadmin reached
+// Measured on the decoded read: /api/skill-store/a%2F..%2F..%2Fadmin (the
+// skill-store proxy, which was the same shape until skill-store moved in) reached
 // the upstream as /admin. On the escaped form a %2F is an ordinary character
 // and stays inside its segment, so it arrives whole.
 func TestCleanDoesNotResolveAnEscapedDotDotIntoATraversal(t *testing.T) {
-	got := storeProxyRequest(t, "SKILL_STORE_URL", "/api/skill-store/a%2F..%2F..%2Fadmin")
+	got := storeProxyRequest(t, "AGENT_STORE_URL", "/api/agent-store/a%2F..%2F..%2Fadmin")
 
 	if want := "/a%2F..%2F..%2Fadmin"; got != want {
 		t.Errorf("upstream received %q, want %q\n"+
@@ -241,7 +241,7 @@ func TestRealDotSegmentsAreNormalizedByTheMuxNotTheHandler(t *testing.T) {
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
-	resp, err := noRedirect.Get(ts.URL + "/api/skill-store/skills/./x/../y")
+	resp, err := noRedirect.Get(ts.URL + "/api/agent-store/agents/./x/../y")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -251,21 +251,21 @@ func TestRealDotSegmentsAreNormalizedByTheMuxNotTheHandler(t *testing.T) {
 	control := httptest.NewRecorder()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { t.Error("unclean path reached handler") })
-	mux.ServeHTTP(control, httptest.NewRequest(http.MethodGet, "/api/skill-store/skills/./x/../y", nil))
+	mux.ServeHTTP(control, httptest.NewRequest(http.MethodGet, "/api/agent-store/agents/./x/../y", nil))
 	if resp.StatusCode != control.Code {
 		t.Errorf("status = %d, want standard mux status %d", resp.StatusCode, control.Code)
 	}
-	if got, want := resp.Header.Get("Location"), "/api/skill-store/skills/y"; got != want {
+	if got, want := resp.Header.Get("Location"), "/api/agent-store/agents/y"; got != want {
 		t.Errorf("Location = %q, want %q", got, want)
 	}
 
 	// The other layer: called directly, the helper does clean. This is the half
 	// that a caller which is not the mux relies on.
-	u, _ := url.Parse("/api/skill-store/skills/./x/../y")
-	if got, want := cleanEscapedPathAfterPrefix(u, "/api/skill-store"), "/skills/y"; got != want {
+	u, _ := url.Parse("/api/agent-store/agents/./x/../y")
+	if got, want := cleanEscapedPathAfterPrefix(u, "/api/agent-store"), "/agents/y"; got != want {
 		t.Errorf("cleanEscapedPathAfterPrefix = %q, want %q", got, want)
 	}
-	if path.Clean("/skills/./x/../y") != "/skills/y" {
+	if path.Clean("/agents/./x/../y") != "/agents/y" {
 		t.Fatal("path.Clean no longer resolves dot segments; this case rests on it")
 	}
 }
@@ -280,15 +280,15 @@ func TestRealDotSegmentsAreNormalizedByTheMuxNotTheHandler(t *testing.T) {
 // true, this case fails and says the guidance is stale rather than quietly
 // becoming a real test.
 func TestASpaceDoesNotWitnessTheEscapingDefect(t *testing.T) {
-	fixed := storeProxyRequest(t, "SKILL_STORE_URL", "/api/skill-store/skills/a%20b")
-	if fixed != "/skills/a%20b" {
-		t.Errorf("upstream received %q, want /skills/a%%20b", fixed)
+	fixed := storeProxyRequest(t, "AGENT_STORE_URL", "/api/agent-store/agents/a%20b")
+	if fixed != "/agents/a%20b" {
+		t.Errorf("upstream received %q, want /agents/a%%20b", fixed)
 	}
 
 	// The same value forwarded the broken way, through the decoded path.
 	up, got := recordUpstreamRequestLine(t)
-	u, _ := url.Parse("/api/skill-store/skills/a%20b")
-	resp, err := http.Get(up.URL + path.Clean("/"+u.Path[len("/api/skill-store"):]))
+	u, _ := url.Parse("/api/agent-store/agents/a%20b")
+	resp, err := http.Get(up.URL + path.Clean("/"+u.Path[len("/api/agent-store"):]))
 	if err != nil {
 		t.Fatalf("probe the broken read: %v", err)
 	}

@@ -23,7 +23,10 @@
 # What it runs:
 #   the server, with its front end at /ui/ and demo login switched on
 #   log-store, tool-store, principal-store, grant-store, kanban-store,
-#   reference-store and permission-store, each its own unit
+#   reference-store and permission-store, each its own unit. The server keeps
+#   its own tool, skill and bundle registries in its Postgres modules; the
+#   standalone tool-store runs only for grant-store and reference-store, which
+#   still call one over HTTP, so a tool id there and in the server can differ
 #   a Postgres of its own (llm-bridge-test-postgres), data under data/postgres,
 #   on 127.0.0.1 and a socket inside the folder, holding database bridge for
 #   the server's login bridge_server, which may create roles
@@ -32,7 +35,8 @@
 # Every address a store would otherwise default to is set here, because the
 # defaults are a real install's ports, and on a machine with a real runner
 # 127.0.0.1:8160 is a tunnel to the real server. A service the test instance
-# does not run (noteboard, bundle-store, auth-store, skill-store) is set to a
+# does not run (noteboard, standalone bundle-store, auth-store, standalone
+# skill-store) is set to a
 # port nothing listens on, and what needs it answers an error.
 #
 # Demo login lets anyone who can reach the server sign in as any person, with
@@ -231,7 +235,7 @@ LLMBRIDGE_IMAGES_DIR=$ROOT/data/images
 LLMBRIDGE_SESSION_FILES_DIR=$ROOT/data/session-files
 LLMBRIDGE_RUNNER_ASSETS_DIR=$ROOT/runner-assets
 LLMBRIDGE_LOG_STORE_URL=http://127.0.0.1:$LOG_STORE_PORT
-LLMBRIDGE_TOOL_STORE_URL=http://127.0.0.1:$TOOL_STORE_PORT
+LLMBRIDGE_SKILL_STORE_DATA_DIRECTORY=$ROOT/data/skill-store
 LLMBRIDGE_PRINCIPAL_STORE_URL=http://127.0.0.1:$PRINCIPAL_STORE_PORT
 LLMBRIDGE_GRANT_STORE_URL=http://127.0.0.1:$GRANT_STORE_PORT
 LLMBRIDGE_KANBAN_STORE_URL=http://127.0.0.1:$KANBAN_STORE_PORT

@@ -51,12 +51,13 @@ const AllowInTestsEnvironmentVariable = "LLMBRIDGE_ALLOW_PRODUCTION_IN_TESTS"
 const (
 	ListenAddr         = ":8160"
 	LogStoreURL        = "http://localhost:8175"
-	ToolStoreURL       = "http://localhost:8302"
 	PermissionStoreURL = "http://localhost:8304"
-	BundleStoreURL     = "http://localhost:8307"
-	MailstackURL       = "http://localhost:8195"
-	HealthcheckURL     = "http://localhost:8099"
-	UsageStoreURL      = "http://localhost:8185"
+	// PinchtabURL is where tool-store's in-process browser tool finds
+	// PinchTab with nothing set.
+	PinchtabURL    = "http://localhost:9867"
+	MailstackURL   = "http://localhost:8195"
+	HealthcheckURL = "http://localhost:8099"
+	UsageStoreURL  = "http://localhost:8185"
 	// kanban-store, principal-store and grant-store have no default here, and
 	// so no row in the three tables below. Request authorization reads all
 	// three on a gated request and main refuses to start without
@@ -85,6 +86,20 @@ func SessionFilesDirectory() string {
 // OperationsDatabasePath is where operations, their events and leases are kept.
 func OperationsDatabasePath() string {
 	return filepath.Join(homeDirectory(), ".llm-bridge", "operations.db")
+}
+
+// SkillStoreDataDirectory is where the skill-store module keeps skill files
+// and cloned sources. It is under this server's own folder, not the standalone
+// store's ~/.config/skill-store, so the module and a standalone store still
+// running beside it never prune each other's files.
+func SkillStoreDataDirectory() string {
+	return filepath.Join(homeDirectory(), ".llm-bridge", "skill-store")
+}
+
+// SkillStoreInstallDirectory is where an installed skill is copied: where
+// Claude Code reads a user's skills.
+func SkillStoreInstallDirectory() string {
+	return filepath.Join(homeDirectory(), ".claude", "skills")
 }
 
 func AgentStoreDatabasePath() string {
@@ -137,7 +152,6 @@ var EnvironmentVariableByConfigField = map[string]string{
 	"BridgePrefsPath":    "LLMBRIDGE_BRIDGE_PREFS",
 	"ConformancePath":    "LLMBRIDGE_CONFORMANCE_PATH",
 	"LogStoreURL":        "LLMBRIDGE_LOG_STORE_URL",
-	"ToolStoreURL":       "LLMBRIDGE_TOOL_STORE_URL",
 	"PermissionStoreURL": "LLMBRIDGE_PERMISSION_STORE_URL",
 	"MailstackURL":       "LLMBRIDGE_MAILSTACK_URL",
 	"HealthcheckURL":     "LLMBRIDGE_HEALTHCHECK_URL",
@@ -161,7 +175,6 @@ func AddressByConfigField() map[string]string {
 		"BridgePrefsPath":    BridgePreferencesPath(),
 		"ConformancePath":    ConformancePath(),
 		"LogStoreURL":        LogStoreURL,
-		"ToolStoreURL":       ToolStoreURL,
 		"PermissionStoreURL": PermissionStoreURL,
 		"MailstackURL":       MailstackURL,
 		"HealthcheckURL":     HealthcheckURL,

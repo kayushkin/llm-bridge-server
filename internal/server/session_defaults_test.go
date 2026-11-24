@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -14,26 +14,15 @@ import (
 
 // bundleStoreNaming is a bundle-store that knows bundle 6 and resolves it to
 // the given model and effort, with no tools or skills.
-func bundleStoreNaming(t *testing.T, model, effort string) string {
+func bundleStoreNaming(t *testing.T, model, effort string) *fakeBundleResolver {
 	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /bundles/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("id") != "6" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": 6, "name": "reviewer", "enabled": true})
-	})
-	mux.HandleFunc("POST /resolve", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"bundles": []map[string]any{{"id": 6, "name": "reviewer"}},
-			"denied_tools": []map[string]any{}, "denied_read_paths": []string{},
-			"model":   model, "effort": effort,
-		})
-	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	return server.URL
+	return &fakeBundleResolver{bundleID: "6", resolution: &bundleclient.Resolution{
+		Bundles:         []bundlestore.BundleRef{{ID: 6, Name: "reviewer"}},
+		DeniedTools:     []bundlestore.MemberRef{},
+		DeniedReadPaths: []string{},
+		Model:           model,
+		Effort:          effort,
+	}}
 }
 
 func serverWithHarnessDefaults(t *testing.T, defaults msg.HarnessDefaults) (*Server, *store.Store, string) {
@@ -119,7 +108,7 @@ func TestACreatorWhoNamesNothingGetsTheHarnessDefaultsPinnedByTheServer(t *testi
 
 func TestTheBundleOutranksTheHarnessDefaultForModelAndEffort(t *testing.T) {
 	srv, st, instanceID := serverWithHarnessDefaults(t, dispatcherDefaults)
-	srv.bundleClient = bundleclient.New(bundleStoreNaming(t, "alt", "low"))
+	srv.bundleClient = bundleStoreNaming(t, "alt", "low")
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6"})
 	pinned := pinnedOn(t, sess)
 
@@ -143,7 +132,7 @@ func TestTheBundleOutranksTheHarnessDefaultForModelAndEffort(t *testing.T) {
 
 func TestTheSessionsOwnValueOutranksTheBundleAndTheDefaultEvenWhenItIsZeroOrEmpty(t *testing.T) {
 	srv, st, instanceID := serverWithHarnessDefaults(t, dispatcherDefaults)
-	srv.bundleClient = bundleclient.New(bundleStoreNaming(t, "alt", "low"))
+	srv.bundleClient = bundleStoreNaming(t, "alt", "low")
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{
 		InstanceID: instanceID, BundleID: "6", MaxBudget: float64Ptr(0),
 		HarnessConfig: json.RawMessage(`{"model":"mock-model","effort":"medium","disabled_tools":[]}`),
@@ -195,7 +184,7 @@ func TestAPinnedSettingDoesNotMoveWhenTheDefaultChangesAndBecomesTheSessionsOwnW
 
 func TestADryRunReportsWhatCreateWouldPinForADispatcher(t *testing.T) {
 	srv, _, instanceID := serverWithHarnessDefaults(t, dispatcherDefaults)
-	srv.bundleClient = bundleclient.New(bundleStoreNaming(t, "", "low"))
+	srv.bundleClient = bundleStoreNaming(t, "", "low")
 	resp := doJSON(t, srv, "GET", "/effective-config?instance_id="+instanceID+"&bundle_id=6", nil)
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

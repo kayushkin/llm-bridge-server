@@ -1,0 +1,10 @@
+# build output
+/bundle-store
+
+# sqlite data
+*.db
+*.db-wal
+*.db-shm
+
+# Python bytecode from scripts/
+__pycache__/

@@ -1,22 +1,20 @@
 package server
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // onSessionInfo forwards the built-in tools a harness reports at session
-// start to tool-store's POST /harness-tools/observed. tool-store records when
+// start to the tool-store module (RecordObservedHarnessTools, what its
+// POST /harness-tools/observed answers). tool-store records when
 // each was last seen and registers a name it has never seen as a harness tool
 // that is switched off and tagged unreviewed; every later session then gets it
 // in disabled_tools until a person reviews it. MCP tools (mcp__…) are
@@ -99,39 +97,15 @@ func (s *Server) stopSessionOffItsAllowList(sessionID string) {
 	}
 }
 
-// reportObservedHarnessTools posts names to tool-store and returns the names
+// reportObservedHarnessTools hands names to tool-store and returns the names
 // it registered for the first time.
 func (s *Server) reportObservedHarnessTools(ctx context.Context, harness msg.Harness, names []string) ([]string, error) {
-	if s.cfg == nil || s.cfg.ToolStoreURL == "" {
-		return nil, fmt.Errorf("this server has no tool-store (LLMBRIDGE_TOOL_STORE_URL)")
+	if s.toolRegistry == nil {
+		return nil, fmt.Errorf("%s", toolStoreOffMessage)
 	}
-	payload, err := json.Marshal(map[string]any{"harness": string(harness), "tool_names": names})
+	answer, err := s.toolRegistry.RecordObservedHarnessTools(ctx, toolstore.ObservedHarnessToolsRequest{Harness: string(harness), ToolNames: names})
 	if err != nil {
-		return nil, err
-	}
-	requestURL := s.cfg.ToolStoreURL + "/harness-tools/observed"
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("build POST %s: %w", requestURL, err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("tool-store unreachable: POST %s: %w", requestURL, err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read tool-store response: %w", err)
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tool-store POST %s returned %d: %s", requestURL, response.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var answer struct {
-		Created []string `json:"created"`
-	}
-	if err := json.Unmarshal(body, &answer); err != nil {
-		return nil, fmt.Errorf("tool-store POST %s answered unparseable JSON: %w", requestURL, err)
+		return nil, fmt.Errorf("tool-store could not record the harness tools %s reported: %w", harness, err)
 	}
 	return answer.Created, nil
 }

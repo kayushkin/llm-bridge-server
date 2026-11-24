@@ -30,6 +30,9 @@ const (
 	routeGroupAgentStorePrompt routeGroup = "agent-store prompt source, mounted in this process"
 	routeGroupMemoryStore      routeGroup = "memory-store, mounted in this process"
 	routeGroupPredictionStore  routeGroup = "prediction-store, mounted in this process"
+	routeGroupToolStore        routeGroup = "tool-store, mounted in this process"
+	routeGroupSkillStore       routeGroup = "skill-store, mounted in this process"
+	routeGroupBundleStore      routeGroup = "bundle-store, mounted in this process"
 )
 
 // routeGroupsInReadmeOrder is the order the README lists the groups in.
@@ -50,6 +53,9 @@ var routeGroupsInReadmeOrder = []routeGroup{
 	routeGroupAgentStorePrompt,
 	routeGroupMemoryStore,
 	routeGroupPredictionStore,
+	routeGroupToolStore,
+	routeGroupSkillStore,
+	routeGroupBundleStore,
 }
 
 var routeDescriptions = map[string]routeDescription{
@@ -272,7 +278,6 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /api/runner/binary":                     {routeGroupRunners, "Runner and wrapper binaries (`?os=&arch=&name=`)"},
 	"POST /api/runner/seed/broadcast":            {routeGroupRunners, "Tell every runner to re-sync agent and skill files"},
 	"/api/agent-store/":                          {routeGroupRunners, "Runners read agent-store through this"},
-	"/api/skill-store/":                          {routeGroupRunners, "Runners read skill-store through this"},
 	"/api/harness-proxy/{harness}/{rest...}":     {routeGroupRunners, "Forward to a harness backend (inber, hermes) on this host. Checks no credential; nothing calls it"},
 	"POST /permission/cc-prehook/{bridge_id}":    {routeGroupRunners, "Claude Code's permission check before each tool call"},
 	"POST /permission/codex-prehook/{bridge_id}": {routeGroupRunners, "The same for codex"},
@@ -339,6 +344,61 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /prompt-delivery-options":              {routeGroupAgentStorePrompt, "The ways a harness can get it"},
 
 	// memory-store.
+	// tool-store, skill-store and bundle-store, mounted in this process.
+	"GET /tool-store/health":                                 {routeGroupToolStore, "`{\"status\":\"ok\"}`"},
+	"GET /tool-store/kinds":                                  {routeGroupToolStore, "The tool kinds (`mcp`, `cli`, `local`, `harness`), each with a one-line description"},
+	"GET /tool-store/tools":                                  {routeGroupToolStore, "List tools by `kind`, `harness`, `tag`, `q`, `enabled`, `not_seen_since`, `limit`"},
+	"POST /tool-store/tools":                                 {routeGroupToolStore, "Create or replace a tool by name; never writes `last_seen_at`"},
+	"GET /tool-store/tools/{id}":                             {routeGroupToolStore, "One tool"},
+	"PATCH /tool-store/tools/{id}":                           {routeGroupToolStore, "Change a tool's `tags`, `description` or `enabled`"},
+	"DELETE /tool-store/tools/{id}":                          {routeGroupToolStore, "Delete a tool and its instance opt-ins"},
+	"POST /tool-store/tools/{id}/enable":                     {routeGroupToolStore, "Switch a tool on everywhere (the master switch)"},
+	"POST /tool-store/tools/{id}/disable":                    {routeGroupToolStore, "Switch a tool off in every instance and session"},
+	"GET /tool-store/tools/by-name/{name}":                   {routeGroupToolStore, "One tool by name"},
+	"GET /tool-store/tools/by-name/{name}/spec":              {routeGroupToolStore, "A CLI or MCP tool's launch spec; 409 for a harness tool"},
+	"POST /tool-store/tools/by-name/{name}/invoke":           {routeGroupToolStore, "Run a local or CLI tool in this process; 409 for a harness tool"},
+	"GET /tool-store/tools/by-name/{name}/instances":         {routeGroupToolStore, "Every instance opted in to a tool"},
+	"POST /tool-store/harness-tools/observed":                {routeGroupToolStore, "Record the built-in tools a harness reported; registers an unknown one switched off and `unreviewed`"},
+	"GET /tool-store/locals":                                 {routeGroupToolStore, "The in-process tools compiled into this server"},
+	"POST /tool-store/provision":                             {routeGroupToolStore, "MCP config for `tools`, `tool_ids` or an `instance_id`'s opt-ins, with credentials resolved from auth-store"},
+	"GET /tool-store/instances/{id}/tools":                   {routeGroupToolStore, "The tools an instance opted in to that are on"},
+	"POST /tool-store/instances/{id}/tools/by-name/{name}":   {routeGroupToolStore, "Opt an instance in to a tool; refused while the tool is off"},
+	"DELETE /tool-store/instances/{id}/tools/by-name/{name}": {routeGroupToolStore, "Opt an instance out of a tool"},
+	"GET /skill-store/health":                                {routeGroupSkillStore, "`{\"status\":\"ok\"}`"},
+	"GET /skill-store/sources":                               {routeGroupSkillStore, "Every skill source"},
+	"POST /skill-store/sources":                              {routeGroupSkillStore, "Register a git or local source"},
+	"GET /skill-store/sources/{id}":                          {routeGroupSkillStore, "One source"},
+	"DELETE /skill-store/sources/{id}":                       {routeGroupSkillStore, "Delete a source and its skills"},
+	"POST /skill-store/sources/{id}/sync":                    {routeGroupSkillStore, "Clone or read the source and record each SKILL.md in it"},
+	"GET /skill-store/skills":                                {routeGroupSkillStore, "List skills by `source`, `source_id`, `q`, `limit`"},
+	"GET /skill-store/skills/{id}":                           {routeGroupSkillStore, "One skill with its SKILL.md"},
+	"DELETE /skill-store/skills/{id}":                        {routeGroupSkillStore, "Delete a skill"},
+	"GET /skill-store/skills/{id}/files":                     {routeGroupSkillStore, "The files beside a skill's SKILL.md"},
+	"GET /skill-store/skills/{id}/files/{path...}":           {routeGroupSkillStore, "One of a skill's files"},
+	"POST /skill-store/skills/{id}/install":                  {routeGroupSkillStore, "Copy a skill into this host's skills directory"},
+	"POST /skill-store/skills/{id}/uninstall":                {routeGroupSkillStore, "Remove an installed skill"},
+	"GET /skill-store/installations":                         {routeGroupSkillStore, "Every installed skill"},
+	"GET /skill-store/seed/profile":                          {routeGroupSkillStore, "Whether a machine is seeded with installed skills"},
+	"PUT /skill-store/seed/profile":                          {routeGroupSkillStore, "Switch seeding on or off for a machine"},
+	"GET /skill-store/seed/manifest":                         {routeGroupSkillStore, "The installed skill files a machine should hold, with version ids"},
+	"GET /skill-store/versions/{vid}/content":                {routeGroupSkillStore, "The bytes of one skill file version"},
+	"POST /skill-store/seed/observe":                         {routeGroupSkillStore, "Record the hashes a machine holds"},
+	"POST /skill-store/seed/drift":                           {routeGroupSkillStore, "Keep the bytes of a file a machine changed"},
+	"GET /api/skill-store/seed/manifest":                     {routeGroupRunners, "A runner's skill seed manifest"},
+	"GET /api/skill-store/versions/{vid}/content":            {routeGroupRunners, "A runner fetches one skill file version"},
+	"POST /api/skill-store/seed/observe":                     {routeGroupRunners, "A runner reports the skill file hashes it holds"},
+	"POST /api/skill-store/seed/drift":                       {routeGroupRunners, "A runner sends a skill file it changed"},
+	"GET /bundle-store/health":                               {routeGroupBundleStore, "`{\"status\":\"ok\"}`"},
+	"GET /bundle-store/member-effects":                       {routeGroupBundleStore, "The effects a bundle member may carry (`include`, `deny`)"},
+	"GET /bundle-store/bundles":                              {routeGroupBundleStore, "List bundles"},
+	"POST /bundle-store/bundles":                             {routeGroupBundleStore, "Create or replace a bundle by name, with member ids"},
+	"GET /bundle-store/bundles/{id}":                         {routeGroupBundleStore, "One bundle with its members"},
+	"DELETE /bundle-store/bundles/{id}":                      {routeGroupBundleStore, "Delete a bundle; refused while another extends it"},
+	"POST /bundle-store/bundles/{id}/enable":                 {routeGroupBundleStore, "Switch a bundle on"},
+	"POST /bundle-store/bundles/{id}/disable":                {routeGroupBundleStore, "Switch a bundle off"},
+	"GET /bundle-store/bundles/by-name/{name}":               {routeGroupBundleStore, "One bundle by name"},
+	"POST /bundle-store/resolve":                             {routeGroupBundleStore, "Compose bundles by repo and task tags or `bundle_ids`: tools, skills, denials, model and effort"},
+
 	// prediction-store, mounted in this process.
 	"GET /prediction-store/health":                      {routeGroupPredictionStore, "`{\"status\":\"ok\",\"counts\":{predictions,open,overdue}}`"},
 	"GET /prediction-store/vocabulary":                  {routeGroupPredictionStore, "Categories, provenances, statuses, outcomes, `group_by` keys and the probability ladder"},

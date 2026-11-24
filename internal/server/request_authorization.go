@@ -231,6 +231,18 @@ func peerConnectionReadRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalSeesPeerConnectionsItMayCallThrough, reason: reason}
 }
 
+// The rules of the agents stores mounted in this process. None of the three
+// keeps an owner on a row, and tool-store's provision answers with resolved
+// credentials and its invoke runs in-process tools, so all three are the
+// operator's, as they were behind dash's login. Runners keep their four
+// skill-store seed routes.
+var (
+	toolStoreRoute            = operatorRoute("tool-store is one registry with no owner on a row; provision answers resolved credentials and invoke runs tools in this process")
+	skillStoreRoute           = operatorRoute("skill-store is one registry with no owner on a row, and install writes into this host's skills directory")
+	bundleStoreRoute          = operatorRoute("bundle-store is one registry with no owner on a row, and every session given a bundle is composed from it")
+	skillStoreRunnerSeedRoute = runnerRoute("skill-store seed route for runners; the handler authenticates the runner's bearer token")
+)
+
 // predictionStoreRoute is the rule of every prediction-store route.
 var predictionStoreRoute = operatorRoute("prediction-store keeps one ledger with no owner on a row, so any caller could rewrite, resolve or purge anyone's prediction")
 
@@ -346,7 +358,6 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /api/runner/install.sh":                 runnerRoute("bootstrap script fetched by a machine before it has a runner token"),
 	"GET /api/runner/binary":                     runnerRoute("runner and harness binaries fetched by a machine during bootstrap"),
 	"/api/agent-store/":                          runnerRoute("seed proxy for runners; the handler authenticates the runner's bearer token"),
-	"/api/skill-store/":                          runnerRoute("seed proxy for runners; the handler authenticates the runner's bearer token"),
 	"/api/harness-proxy/{harness}/{rest...}":     harnessCallbackRoute("harness backend proxy for wrappers on runners; unauthenticated today (noteboard card f4e5e1ef)"),
 
 	// Sessions.
@@ -569,6 +580,61 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /seed/drift":                             operatorRoute("agent-store seed"),
 	"GET /seed/state":                              operatorRoute("agent-store seed"),
 	"GET /context/resolve":                         operatorRoute("agent-store context"),
+
+	// tool-store, skill-store and bundle-store, mounted in this process.
+	"GET /tool-store/health":                                 toolStoreRoute,
+	"GET /tool-store/kinds":                                  toolStoreRoute,
+	"GET /tool-store/tools":                                  toolStoreRoute,
+	"POST /tool-store/tools":                                 toolStoreRoute,
+	"GET /tool-store/tools/{id}":                             toolStoreRoute,
+	"PATCH /tool-store/tools/{id}":                           toolStoreRoute,
+	"DELETE /tool-store/tools/{id}":                          toolStoreRoute,
+	"POST /tool-store/tools/{id}/enable":                     toolStoreRoute,
+	"POST /tool-store/tools/{id}/disable":                    toolStoreRoute,
+	"GET /tool-store/tools/by-name/{name}":                   toolStoreRoute,
+	"GET /tool-store/tools/by-name/{name}/spec":              toolStoreRoute,
+	"POST /tool-store/tools/by-name/{name}/invoke":           toolStoreRoute,
+	"GET /tool-store/tools/by-name/{name}/instances":         toolStoreRoute,
+	"POST /tool-store/harness-tools/observed":                toolStoreRoute,
+	"GET /tool-store/locals":                                 toolStoreRoute,
+	"POST /tool-store/provision":                             toolStoreRoute,
+	"GET /tool-store/instances/{id}/tools":                   toolStoreRoute,
+	"POST /tool-store/instances/{id}/tools/by-name/{name}":   toolStoreRoute,
+	"DELETE /tool-store/instances/{id}/tools/by-name/{name}": toolStoreRoute,
+	"GET /skill-store/health":                                skillStoreRoute,
+	"GET /skill-store/sources":                               skillStoreRoute,
+	"POST /skill-store/sources":                              skillStoreRoute,
+	"GET /skill-store/sources/{id}":                          skillStoreRoute,
+	"DELETE /skill-store/sources/{id}":                       skillStoreRoute,
+	"POST /skill-store/sources/{id}/sync":                    skillStoreRoute,
+	"GET /skill-store/skills":                                skillStoreRoute,
+	"GET /skill-store/skills/{id}":                           skillStoreRoute,
+	"DELETE /skill-store/skills/{id}":                        skillStoreRoute,
+	"GET /skill-store/skills/{id}/files":                     skillStoreRoute,
+	"GET /skill-store/skills/{id}/files/{path...}":           skillStoreRoute,
+	"POST /skill-store/skills/{id}/install":                  skillStoreRoute,
+	"POST /skill-store/skills/{id}/uninstall":                skillStoreRoute,
+	"GET /skill-store/installations":                         skillStoreRoute,
+	"GET /skill-store/seed/profile":                          skillStoreRoute,
+	"PUT /skill-store/seed/profile":                          skillStoreRoute,
+	"GET /skill-store/seed/manifest":                         skillStoreRoute,
+	"GET /skill-store/versions/{vid}/content":                skillStoreRoute,
+	"POST /skill-store/seed/observe":                         skillStoreRoute,
+	"POST /skill-store/seed/drift":                           skillStoreRoute,
+	"GET /api/skill-store/seed/manifest":                     skillStoreRunnerSeedRoute,
+	"GET /api/skill-store/versions/{vid}/content":            skillStoreRunnerSeedRoute,
+	"POST /api/skill-store/seed/observe":                     skillStoreRunnerSeedRoute,
+	"POST /api/skill-store/seed/drift":                       skillStoreRunnerSeedRoute,
+	"GET /bundle-store/health":                               bundleStoreRoute,
+	"GET /bundle-store/member-effects":                       bundleStoreRoute,
+	"GET /bundle-store/bundles":                              bundleStoreRoute,
+	"POST /bundle-store/bundles":                             bundleStoreRoute,
+	"GET /bundle-store/bundles/{id}":                         bundleStoreRoute,
+	"DELETE /bundle-store/bundles/{id}":                      bundleStoreRoute,
+	"POST /bundle-store/bundles/{id}/enable":                 bundleStoreRoute,
+	"POST /bundle-store/bundles/{id}/disable":                bundleStoreRoute,
+	"GET /bundle-store/bundles/by-name/{name}":               bundleStoreRoute,
+	"POST /bundle-store/resolve":                             bundleStoreRoute,
 
 	// memory-store's library routes.
 	// prediction-store, mounted in this process. Its ledger has no owner on a

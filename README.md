@@ -459,7 +459,10 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/api/runner/install.sh` | Runner install script | harness callback |
 | `POST` | `/api/runner/seed/broadcast` | Tell every runner to re-sync agent and skill files | operator |
 | `GET` | `/api/runner/ws` | A runner's WebSocket | harness callback |
-| `*` | `/api/skill-store/` | Runners read skill-store through this | harness callback |
+| `POST` | `/api/skill-store/seed/drift` | A runner sends a skill file it changed | harness callback |
+| `GET` | `/api/skill-store/seed/manifest` | A runner's skill seed manifest | harness callback |
+| `POST` | `/api/skill-store/seed/observe` | A runner reports the skill file hashes it holds | harness callback |
+| `GET` | `/api/skill-store/versions/{vid}/content` | A runner fetches one skill file version | harness callback |
 | `POST` | `/hooks/exec/{id}` | A harness runs a registered hook (hook-store) | harness callback |
 | `POST` | `/permission/cc-prehook/{bridge_id}` | Claude Code's permission check before each tool call | harness callback |
 | `POST` | `/permission/codex-prehook/{bridge_id}` | The same for codex | harness callback |
@@ -565,6 +568,70 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/prediction-store/predictions/{id}/restore` | Undo a soft delete | operator |
 | `GET` | `/prediction-store/tags` | Tags on live predictions with their counts, most used first | operator |
 | `GET` | `/prediction-store/vocabulary` | Categories, provenances, statuses, outcomes, `group_by` keys and the probability ladder | operator |
+
+### tool-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `POST` | `/tool-store/harness-tools/observed` | Record the built-in tools a harness reported; registers an unknown one switched off and `unreviewed` | operator |
+| `GET` | `/tool-store/health` | `{"status":"ok"}` | operator |
+| `GET` | `/tool-store/instances/{id}/tools` | The tools an instance opted in to that are on | operator |
+| `DELETE` | `/tool-store/instances/{id}/tools/by-name/{name}` | Opt an instance out of a tool | operator |
+| `POST` | `/tool-store/instances/{id}/tools/by-name/{name}` | Opt an instance in to a tool; refused while the tool is off | operator |
+| `GET` | `/tool-store/kinds` | The tool kinds (`mcp`, `cli`, `local`, `harness`), each with a one-line description | operator |
+| `GET` | `/tool-store/locals` | The in-process tools compiled into this server | operator |
+| `POST` | `/tool-store/provision` | MCP config for `tools`, `tool_ids` or an `instance_id`'s opt-ins, with credentials resolved from auth-store | operator |
+| `GET` | `/tool-store/tools` | List tools by `kind`, `harness`, `tag`, `q`, `enabled`, `not_seen_since`, `limit` | operator |
+| `POST` | `/tool-store/tools` | Create or replace a tool by name; never writes `last_seen_at` | operator |
+| `GET` | `/tool-store/tools/by-name/{name}` | One tool by name | operator |
+| `GET` | `/tool-store/tools/by-name/{name}/instances` | Every instance opted in to a tool | operator |
+| `POST` | `/tool-store/tools/by-name/{name}/invoke` | Run a local or CLI tool in this process; 409 for a harness tool | operator |
+| `GET` | `/tool-store/tools/by-name/{name}/spec` | A CLI or MCP tool's launch spec; 409 for a harness tool | operator |
+| `DELETE` | `/tool-store/tools/{id}` | Delete a tool and its instance opt-ins | operator |
+| `GET` | `/tool-store/tools/{id}` | One tool | operator |
+| `PATCH` | `/tool-store/tools/{id}` | Change a tool's `tags`, `description` or `enabled` | operator |
+| `POST` | `/tool-store/tools/{id}/disable` | Switch a tool off in every instance and session | operator |
+| `POST` | `/tool-store/tools/{id}/enable` | Switch a tool on everywhere (the master switch) | operator |
+
+### skill-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/skill-store/health` | `{"status":"ok"}` | operator |
+| `GET` | `/skill-store/installations` | Every installed skill | operator |
+| `POST` | `/skill-store/seed/drift` | Keep the bytes of a file a machine changed | operator |
+| `GET` | `/skill-store/seed/manifest` | The installed skill files a machine should hold, with version ids | operator |
+| `POST` | `/skill-store/seed/observe` | Record the hashes a machine holds | operator |
+| `GET` | `/skill-store/seed/profile` | Whether a machine is seeded with installed skills | operator |
+| `PUT` | `/skill-store/seed/profile` | Switch seeding on or off for a machine | operator |
+| `GET` | `/skill-store/skills` | List skills by `source`, `source_id`, `q`, `limit` | operator |
+| `DELETE` | `/skill-store/skills/{id}` | Delete a skill | operator |
+| `GET` | `/skill-store/skills/{id}` | One skill with its SKILL.md | operator |
+| `GET` | `/skill-store/skills/{id}/files` | The files beside a skill's SKILL.md | operator |
+| `GET` | `/skill-store/skills/{id}/files/{path...}` | One of a skill's files | operator |
+| `POST` | `/skill-store/skills/{id}/install` | Copy a skill into this host's skills directory | operator |
+| `POST` | `/skill-store/skills/{id}/uninstall` | Remove an installed skill | operator |
+| `GET` | `/skill-store/sources` | Every skill source | operator |
+| `POST` | `/skill-store/sources` | Register a git or local source | operator |
+| `DELETE` | `/skill-store/sources/{id}` | Delete a source and its skills | operator |
+| `GET` | `/skill-store/sources/{id}` | One source | operator |
+| `POST` | `/skill-store/sources/{id}/sync` | Clone or read the source and record each SKILL.md in it | operator |
+| `GET` | `/skill-store/versions/{vid}/content` | The bytes of one skill file version | operator |
+
+### bundle-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/bundle-store/bundles` | List bundles | operator |
+| `POST` | `/bundle-store/bundles` | Create or replace a bundle by name, with member ids | operator |
+| `GET` | `/bundle-store/bundles/by-name/{name}` | One bundle by name | operator |
+| `DELETE` | `/bundle-store/bundles/{id}` | Delete a bundle; refused while another extends it | operator |
+| `GET` | `/bundle-store/bundles/{id}` | One bundle with its members | operator |
+| `POST` | `/bundle-store/bundles/{id}/disable` | Switch a bundle off | operator |
+| `POST` | `/bundle-store/bundles/{id}/enable` | Switch a bundle on | operator |
+| `GET` | `/bundle-store/health` | `{"status":"ok"}` | operator |
+| `GET` | `/bundle-store/member-effects` | The effects a bundle member may carry (`include`, `deny`) | operator |
+| `POST` | `/bundle-store/resolve` | Compose bundles by repo and task tags or `bundle_ids`: tools, skills, denials, model and effort | operator |
 <!-- route-table:end -->
 
 ## Testing

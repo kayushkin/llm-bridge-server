@@ -54,7 +54,7 @@ func (s *Server) sessionBundleResolution(ctx context.Context, sess *store.Sessio
 		return nil, nil
 	}
 	if s.bundleClient == nil {
-		return nil, fmt.Errorf("session %s names bundle %s and this server has no bundle-store to resolve it with", sess.SessionID, sess.BundleID)
+		return nil, fmt.Errorf("session %s names bundle %s and %s", sess.SessionID, sess.BundleID, bundleStoreOffMessage)
 	}
 	resolution, err := s.bundleClient.Resolve(ctx, sess.BundleID)
 	if err != nil {
