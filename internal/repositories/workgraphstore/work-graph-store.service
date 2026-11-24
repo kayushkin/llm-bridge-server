@@ -1,0 +1,15 @@
+[Unit]
+Description=Work Graph Store — which agent session moved which git branch, and each repo's commit graph
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/kayushkincom/bin/work-graph-store
+Environment=WORK_GRAPH_STORE_ADDR=127.0.0.1:8319
+Environment=HOME=/home/kayushkincom
+WorkingDirectory=/home/kayushkincom/repos/work-graph-store
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
