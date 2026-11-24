@@ -1,15 +1,86 @@
 package logstack
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
-	logstackclient "github.com/kayushkin/logstack/client"
-	"github.com/kayushkin/logstack/models"
 )
+
+// logstack stays a service of its own, so this package does not import its
+// code: it writes the body of logstack's POST /api/v1/logs, which logstack's
+// models.LogEntry defines, with the fields a result event fills.
+type logEntry struct {
+	ID           string         `json:"id"`
+	Timestamp    time.Time      `json:"timestamp"`
+	Orchestrator string         `json:"orchestrator"`
+	Agent        string         `json:"agent,omitempty"`
+	SessionID    string         `json:"session_id,omitempty"`
+	Level        string         `json:"level"`
+	Type         string         `json:"type"`
+	Content      map[string]any `json:"content"`
+	Stats        *turnStats     `json:"stats,omitempty"`
+}
+
+type turnStats struct {
+	InputTokens         int            `json:"input_tokens,omitempty"`
+	OutputTokens        int            `json:"output_tokens,omitempty"`
+	CacheReadTokens     int            `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int            `json:"cache_creation_tokens,omitempty"`
+	ContextTokens       int            `json:"context_tokens,omitempty"`
+	ContextLimit        int            `json:"context_limit,omitempty"`
+	Cost                float64        `json:"cost,omitempty"`
+	DurationMs          int64          `json:"duration_ms,omitempty"`
+	DurationAPIMs       int64          `json:"duration_api_ms,omitempty"`
+	NumTurns            int            `json:"num_turns,omitempty"`
+	Model               string         `json:"model,omitempty"`
+	ToolCalls           int            `json:"tool_calls,omitempty"`
+	Tools               []toolEvent    `json:"tools,omitempty"`
+	APICalls            int            `json:"api_calls,omitempty"`
+	APICallUsages       []apiCallUsage `json:"api_call_usages,omitempty"`
+}
+
+type apiCallUsage struct {
+	InputTokens      int `json:"input_tokens"`
+	OutputTokens     int `json:"output_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+}
+
+type toolEvent struct {
+	Tool       string `json:"tool"`
+	ToolInput  string `json:"tool_input,omitempty"`
+	ToolOutput string `json:"tool_output,omitempty"`
+}
+
+// logstackClient posts one entry to logstack, as logstack's own Go client does.
+type logstackClient struct {
+	baseURL    string
+	httpClient *http.Client
+}
+
+func (c *logstackClient) Log(entry logEntry) error {
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("marshal entry: %w", err)
+	}
+	resp, err := c.httpClient.Post(c.baseURL+"/api/v1/logs", "application/json", bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("post request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error: %s - %s", resp.Status, string(body))
+	}
+	return nil
+}
 
 // repeatSummaryInterval is how long a still-failing forwarder stays quiet
 // after it has already announced. Failures inside the window are counted into
@@ -64,7 +135,7 @@ func (h ForwardingHealth) Degraded() bool {
 
 // Forwarder sends summarized stats to logstack on result events.
 type Forwarder struct {
-	client     *logstackclient.Client
+	client     *logstackClient
 	targetURL  string
 	httpClient *http.Client
 
@@ -90,7 +161,7 @@ type Forwarder struct {
 
 func NewForwarder(logstackURL string) *Forwarder {
 	return &Forwarder{
-		client:     logstackclient.New(logstackURL),
+		client:     &logstackClient{baseURL: logstackURL, httpClient: &http.Client{Timeout: 10 * time.Second}},
 		targetURL:  logstackURL,
 		now:        time.Now,
 		httpClient: &http.Client{Timeout: preflightTimeout},
@@ -235,10 +306,10 @@ func (f *Forwarder) recordSuccess() {
 	}
 }
 
-func buildLogEntry(ev msg.Event) models.LogEntry {
+func buildLogEntry(ev msg.Event) logEntry {
 	r := ev.Result
 
-	stats := &models.TurnStats{
+	stats := &turnStats{
 		InputTokens:         r.Usage.InputTokens,
 		OutputTokens:        r.Usage.OutputTokens,
 		CacheReadTokens:     r.Usage.CacheReadTokens,
@@ -255,7 +326,7 @@ func buildLogEntry(ev msg.Event) models.LogEntry {
 		stats.Cost = r.Cost.TotalUSD
 	}
 	for _, u := range r.APICallUsages {
-		stats.APICallUsages = append(stats.APICallUsages, models.APICallUsage{
+		stats.APICallUsages = append(stats.APICallUsages, apiCallUsage{
 			InputTokens:      u.InputTokens,
 			OutputTokens:     u.OutputTokens,
 			CacheReadTokens:  u.CacheReadTokens,
@@ -263,7 +334,7 @@ func buildLogEntry(ev msg.Event) models.LogEntry {
 		})
 	}
 	for _, t := range r.ToolEvents {
-		stats.Tools = append(stats.Tools, models.ToolEvent{
+		stats.Tools = append(stats.Tools, toolEvent{
 			Tool:       t.Tool,
 			ToolInput:  t.Input,
 			ToolOutput: t.Output,
@@ -277,15 +348,15 @@ func buildLogEntry(ev msg.Event) models.LogEntry {
 	}
 
 	sid := ev.BridgeSessionID
-	return models.LogEntry{
+	return logEntry{
 		ID:           sid + "-" + ts.Format("20060102T150405"),
 		Timestamp:    ts,
 		Orchestrator: "llm-bridge",
 		Agent:        string(ev.Harness),
 		SessionID:    sid,
-		Level:        models.LevelInfo,
+		Level:        "info",
 		Type:         "outbound",
-		Content:      map[string]interface{}{"text": r.Text},
+		Content:      map[string]any{"text": r.Text},
 		Stats:        stats,
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/log-store/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 )
 
 // The wire types below mirror chat-core/src/net/types.ts EXACTLY (camelCase

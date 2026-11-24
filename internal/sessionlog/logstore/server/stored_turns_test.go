@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/log-store/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 )
 
 // ingestJSON stores an event body through the store, as the ingest handler does.
@@ -273,7 +273,7 @@ func TestTurnMaterializer_BuildsTurnsWhenTheyEnd(t *testing.T) {
 // rebuilt on its next read. Either way, then update both constants below.
 const (
 	fingerprintedMaterializerVersion = 7
-	materializerRulesFingerprint     = "093a5fc7ae93b921c72b9d2786cd5809bf094ec14ed47c9d20c117ada667f772"
+	materializerRulesFingerprint     = "da66381e008959fc31a65342d00169b367ee392ef03052646e89c3142263c36c"
 )
 
 func TestMaterializerVersionTracksTheRules(t *testing.T) {

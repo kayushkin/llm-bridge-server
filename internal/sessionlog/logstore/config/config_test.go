@@ -90,7 +90,7 @@ func TestEveryEnvironmentVariableTheServiceReadsIsDeclared(t *testing.T) {
 	}
 	// Read by name and not settings of this service.
 	notSettings := map[string]bool{}
-	const repositoryRoot = "../.."
+	const repositoryRoot = ".."
 
 	filesRead := 0
 	err := filepath.WalkDir(repositoryRoot, func(path string, entry fs.DirEntry, err error) error {

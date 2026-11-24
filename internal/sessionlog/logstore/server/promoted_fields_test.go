@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/log-store/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 )
 
 // Four scalars that used to be reachable only by digging back into `raw`.

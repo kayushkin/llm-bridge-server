@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	ls "github.com/kayushkin/log-store/internal/logstack"
-	"github.com/kayushkin/log-store/internal/store"
+	ls "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/logstack"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )

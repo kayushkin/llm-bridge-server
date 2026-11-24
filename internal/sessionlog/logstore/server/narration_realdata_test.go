@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/log-store/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 )
 
 // Step-1 verification from dash docs/chat-turns-per-message.md, run against

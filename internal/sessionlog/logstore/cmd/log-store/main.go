@@ -5,10 +5,10 @@ import (
 	"net/http"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/kayushkin/log-store/internal/config"
-	ls "github.com/kayushkin/log-store/internal/logstack"
-	"github.com/kayushkin/log-store/internal/server"
-	"github.com/kayushkin/log-store/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/config"
+	ls "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/logstack"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 )
 
 func main() {

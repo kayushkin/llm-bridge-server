@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/log-store/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 )
 
 // A 1x1 PNG, base64.

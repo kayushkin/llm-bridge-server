@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/log-store/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 )
 
 // The stored read path for /messages and /bundle.

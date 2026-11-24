@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge/msg"
-	ls "github.com/kayushkin/log-store/internal/logstack"
-	"github.com/kayushkin/log-store/internal/store"
+	ls "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/logstack"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 )
 
 // serverWithForwarder wires a Server whose forwarder points at logstackURL.

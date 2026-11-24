@@ -9,7 +9,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/kayushkin/log-store/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/config"
 )
 
 // newTestSettings is the registry a test server describes itself from.
