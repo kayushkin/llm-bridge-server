@@ -537,6 +537,12 @@ var routeAccessRules = map[string]routeAccessRule{
 	"DELETE /machines/{id}":                        operatorRoute("machine registry"),
 	"GET /machines/stats":                          operatorRoute("machine health readings"),
 	"GET /machines/{id}/stats/history":             operatorRoute("machine health readings"),
+	"GET /machines/{id}/disk-usage":                  operatorRoute("what fills a machine's drives"),
+	"POST /machines/{id}/disk-usage/scans":           operatorRoute("scans a machine's drive"),
+	"GET /machines/{id}/disk-usage/entries":          operatorRoute("what fills a machine's drives"),
+	"POST /machines/{id}/disk-usage/deletion-checks": operatorRoute("what fills a machine's drives"),
+	"POST /machines/{id}/disk-usage/deletions":       operatorRoute("deletes files on a machine for good"),
+	"GET /machines/{id}/disk-usage/deletions":        operatorRoute("the record of deletions on a machine"),
 	"POST /api/runner/seed/broadcast":              operatorRoute("tells every runner to reconcile"),
 
 	// Identity bindings in principal-store: who an Entra identity signs in as.

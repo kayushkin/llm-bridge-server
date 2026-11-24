@@ -1,8 +1,8 @@
 package store
 
 import (
-	"fmt"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 

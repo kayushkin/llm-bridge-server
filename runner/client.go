@@ -51,6 +51,7 @@ type Client struct {
 	registry      *SubprocessRegistry
 	services      *ServiceRegistry
 	oauthRecovery *ClaudeOAuthRecovery
+	diskUsage     *DiskUsage // keeps each drive's scan across connections
 
 	// machineStatsCollector keeps CPU counters between readings, so it lives
 	// across connections.
@@ -83,6 +84,7 @@ func NewClient(cfg *Config) *Client {
 		services:      services,
 		registry:      NewSubprocessRegistry(outgoing, installCurrent, cfg.ServerURL, services),
 		oauthRecovery: NewClaudeOAuthRecovery(outgoing),
+		diskUsage:     NewDiskUsage(outgoing),
 		reconcilers:   make(map[runnerprotocol.SeedSource]*SeedReconciler),
 
 		machineStatsCollector: machinestats.NewCollector(),
@@ -213,6 +215,18 @@ func (c *Client) runOnce(ctx context.Context) error {
 		log.Printf("[runner] computer-use tool %s (%s)", computerUse.Command, computerUse.Version)
 	}
 
+	diskUsageTool, err := installCurrentDiskUsageTool(c.cfg.ServerURL)
+	if err != nil {
+		log.Printf("[runner] ERROR: the Machines page cannot show or free this machine's disk space: %v", err)
+	} else if diskUsageTool != nil {
+		log.Printf("[runner] disk-usage helper %s (%s)", diskUsageTool.Command, diskUsageTool.Version)
+	}
+	if diskUsageTool != nil {
+		c.diskUsage.SetHelper(diskUsageTool.Command)
+	} else {
+		c.diskUsage.SetHelper("")
+	}
+
 	log.Printf("[runner] dialing %s", wsURL)
 	conn, _, err := dialer.DialContext(ctx, wsURL, headers)
 	if err != nil {
@@ -231,6 +245,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 			AvailableHarnesses: DetectHarnesses(),
 			RunnerVersion:      Version,
 			ComputerUse:        computerUse,
+			DiskUsage:          diskUsageTool,
 			ProtocolVersion:    runnerprotocol.CurrentProtocolVersion,
 			HeldSessions:       c.registry.HeldSessions(),
 		},
@@ -408,6 +423,13 @@ func (c *Client) reader(conn *websocket.Conn) error {
 			default:
 				log.Printf("[runner] invalid Claude OAuth recovery action: %s", m.ClaudeOAuthRecovery.Action)
 			}
+		case runnerprotocol.RunnerMsgDiskUsage:
+			if m.DiskUsage == nil || m.DiskUsage.Request == nil || m.DiskUsage.RequestID == "" {
+				log.Printf("[runner] invalid disk-usage message")
+				continue
+			}
+			// Off the read loop: the helper can take seconds to answer.
+			go c.diskUsage.Handle(m.DiskUsage.RequestID, m.DiskUsage.Request)
 		default:
 			log.Printf("[runner] unexpected message type: %s", m.Type)
 		}

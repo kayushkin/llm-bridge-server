@@ -21,8 +21,8 @@ type subagentTask struct {
 	// harnessSessionID is the harness's own session id for the subagent, when
 	// the harness gives it one (msg.SystemEvent.SubagentHarnessSessionID).
 	harnessSessionID string
-	bridgeID    string // the subagent's own session, once minted
-	settled     bool   // a terminal task_updated/task_notification has landed
+	bridgeID         string // the subagent's own session, once minted
+	settled          bool   // a terminal task_updated/task_notification has landed
 }
 
 // unpromotedTask is a task the router deliberately gave no session — a

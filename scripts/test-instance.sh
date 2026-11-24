@@ -13,7 +13,8 @@
 #                                               on this machine's own logins
 #
 # <folder of binaries> holds llm-bridge-server, llm-bridge-runner,
-# llm-bridge-mock and the seven stores below, built for this machine. The machine itself needs no Go or Node, only systemd user
+# llm-bridge-mock and the three stores below, built for this machine. The
+# machine itself needs no Go or Node, only systemd user
 # units, curl, jq, sqlite3 and the Postgres 18 server programs (initdb,
 # postgres, pg_isready, psql) in $BRIDGE_TEST_POSTGRES_BIN, by default where the
 # Postgres project's packages put them. Install those with no cluster of the
@@ -21,12 +22,14 @@
 # binaries and restarts; settings, secrets and data are kept.
 #
 # What it runs:
-#   the server, with its front end at /ui/ and demo login switched on
-#   log-store, tool-store, principal-store, grant-store, kanban-store,
-#   reference-store and permission-store, each its own unit. The server keeps
-#   its own tool, skill and bundle registries in its Postgres modules; the
-#   standalone tool-store runs only for grant-store and reference-store, which
-#   still call one over HTTP, so a tool id there and in the server can differ
+#   the server, with its front end at /ui/ and demo login switched on. It holds
+#   principal-store, grant-store, sign-in-store, permission-store, tool-store,
+#   skill-store, bundle-store, noteboard, project-store and prediction-store in
+#   its own process, in Postgres modules, each under /<store>/
+#   log-store, kanban-store and reference-store, each its own unit. kanban-store
+#   and reference-store reach the stores the server holds through its prefixes,
+#   with the server's service token, because the server answers nothing without
+#   a credential
 #   a Postgres of its own (llm-bridge-test-postgres), data under data/postgres,
 #   on 127.0.0.1 and a socket inside the folder, holding database bridge for
 #   the server's login bridge_server, which may create roles
@@ -35,9 +38,14 @@
 # Every address a store would otherwise default to is set here, because the
 # defaults are a real install's ports, and on a machine with a real runner
 # 127.0.0.1:8160 is a tunnel to the real server. A service the test instance
-# does not run (noteboard, standalone bundle-store, auth-store, standalone
-# skill-store) is set to a
-# port nothing listens on, and what needs it answers an error.
+# does not run (auth-store, PinchTab) is set to a port nothing listens on, and
+# what needs it answers an error.
+#
+# An instance installed before principal-store, grant-store, tool-store and
+# permission-store moved into the server ran each as a unit of its own. The
+# first install of a server that holds them copies each one's SQLite file into
+# the server's module, once (import-<store>, keeping every id), then removes
+# the unit and leaves the file where it was, unused.
 #
 # Demo login lets anyone who can reach the server sign in as any person, with
 # no password. That is acceptable here only because the server listens on
@@ -47,7 +55,10 @@ set -euo pipefail
 ROOT="${BRIDGE_TEST_INSTANCE_DIR:-$HOME/.local/opt/llm-bridge-test}"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_PREFIX="llm-bridge-test"
-STORES=(log-store tool-store principal-store grant-store kanban-store reference-store permission-store)
+STORES=(log-store kanban-store reference-store)
+# The stores the server now holds, which an older instance ran as units of its
+# own. Only install's import and the unit clean-up name them.
+RETIRED_STORES=(principal-store grant-store tool-store permission-store)
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 POSTGRES_BIN="${BRIDGE_TEST_POSTGRES_BIN:-/usr/lib/postgresql/18/bin}"
 # The login the server provisions its Postgres modules as, and its database.
@@ -79,6 +90,23 @@ wait_for() { # <what> <url>
     sleep 0.2
   done
   fail "$1 did not answer at $2; see: journalctl --user -u '$UNIT_PREFIX*' -n 50"
+}
+
+# server_command runs the server binary for a one-off command (mint-enroll,
+# import-<store>) with the unit's environment. The files are read line by
+# line, not sourced: the Postgres URL holds a "&", which a shell would take for
+# the end of a command.
+server_command() { # <argument>...
+  (
+    local file line
+    for file in "$ROOT/env/server.env" "$ROOT/env/secrets.env" "$ROOT/env/server-store-tokens.env"; do
+      while IFS= read -r line; do
+        case "$line" in ''|'#'*) continue ;; esac
+        export "${line?}"
+      done < "$file"
+    done
+    HOME="$ROOT/home" exec "$ROOT/bin/llm-bridge-server" "$@"
+  )
 }
 
 random_hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
@@ -155,6 +183,57 @@ SELECT 'CREATE DATABASE $POSTGRES_DATABASE OWNER $POSTGRES_SERVER_LOGIN'
 EOF
 }
 
+# retired_store_database is where an older instance's standalone store kept its
+# SQLite file: permission-store took a flag in its unit, the others their own
+# default under the test home.
+retired_store_database() { # <store>
+  case "$1" in
+    permission-store) echo "$ROOT/data/permission-store.db" ;;
+    *)                echo "$ROOT/home/.config/$1/$1.db" ;;
+  esac
+}
+
+# import_retired_stores copies each retired store's SQLite file into the
+# server's module of that store, once: data/imported/<store> records that it
+# was done and what was copied. The import refuses a module that already holds
+# records, so it runs before the server's first start on a build that holds the
+# store, and a failed import stops the install with the store's file and unit
+# left as they were. The store is stopped by then; the file read is a .backup
+# of it, so its write-ahead log is included.
+import_retired_stores() {
+  local store database copy
+  mkdir -p "$ROOT/data/imported"
+  for store in "${RETIRED_STORES[@]}"; do
+    database="$(retired_store_database "$store")"
+    [ -f "$ROOT/data/imported/$store" ] && continue
+    [ -f "$database" ] || continue
+    step "importing $store's data into the server ($database)"
+    copy="$ROOT/data/imported/$store.copy.db"
+    rm -f "$copy" "$copy-shm" "$copy-wal"
+    sqlite3 "$database" ".backup '$copy'"
+    server_command "import-$store" -sqlite "$copy" > "$ROOT/data/imported/$store.out" 2>&1 ||
+      fail "import-$store failed; nothing of it was imported, and $UNIT_PREFIX-$store is left in place: see $ROOT/data/imported/$store.out"
+    rm -f "$copy" "$copy-shm" "$copy-wal"
+    mv "$ROOT/data/imported/$store.out" "$ROOT/data/imported/$store"
+    echo "    $(cat "$ROOT/data/imported/$store")"
+  done
+}
+
+# remove_retired_store_units takes away the units and programs of the stores
+# the server now holds, once their data is in it. Their data files stay where
+# they were.
+remove_retired_store_units() {
+  local store
+  for store in "${RETIRED_STORES[@]}"; do
+    rm -f "$ROOT/bin/$store"
+    [ -f "$UNIT_DIR/$UNIT_PREFIX-$store.service" ] || continue
+    step "removing $UNIT_PREFIX-$store: the server holds $store now"
+    systemctl --user disable --now "$UNIT_PREFIX-$store.service" >/dev/null 2>&1 || true
+    rm -f "$UNIT_DIR/$UNIT_PREFIX-$store.service"
+  done
+  systemctl --user daemon-reload
+}
+
 install_instance() {
   local binaries="${1:-}"
   [ -n "$binaries" ] && [ -d "$binaries" ] || fail "usage: $0 install <folder of binaries>"
@@ -184,15 +263,13 @@ install_instance() {
   }
   add_port BRIDGE_PORT "$base"
   add_port LOG_STORE_PORT $((base + 15))
-  add_port TOOL_STORE_PORT $((base + 142))
-  add_port PRINCIPAL_STORE_PORT $((base + 154))
-  add_port GRANT_STORE_PORT $((base + 155))
-  add_port PERMISSION_STORE_PORT $((base + 144))
   add_port KANBAN_STORE_PORT $((base + 145))
   add_port REFERENCE_STORE_PORT $((base + 183))
   # A real Postgres is on 5432, below the server's port, so there is no offset
   # to keep; 18432 says which it is.
   add_port POSTGRES_PORT $((base + 272))
+  # The retired stores' ports go: nothing listens on them any more.
+  sed -i -E '/^(TOOL_STORE|PRINCIPAL_STORE|GRANT_STORE|PERMISSION_STORE)_PORT=/d' "$ROOT/env/ports.env"
   load_settings
   local nowhere="http://127.0.0.1:1"
 
@@ -201,21 +278,32 @@ install_instance() {
     ( umask 077; cat > "$ROOT/env/secrets.env" <<EOF
 LLMBRIDGE_SERVICE_TOKEN=$(random_hex 32)
 LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY=$(random_hex 32)
-GRANT_STORE_SERVICE_TOKEN=$(random_hex 32)
 KANBAN_STORE_SERVICE_TOKEN=$(random_hex 32)
 EOF
     )
   fi
+  # grant-store's own token was for the standalone grant-store, which kanban-store
+  # and the server called over HTTP. Nothing presents it any more.
+  sed -i '/^GRANT_STORE_SERVICE_TOKEN=/d' "$ROOT/env/secrets.env"
 
-  # reference-store's token is for its own callers. Nothing here presents it,
-  # but the store will not start without one. It has a file of its own, so it
-  # reaches no other process.
-  if [ ! -f "$ROOT/env/reference-store-secrets.env" ]; then
-    ( umask 077; echo "REFERENCE_STORE_SERVICE_TOKEN=$(random_hex 32)" > "$ROOT/env/reference-store-secrets.env" )
-  fi
-  # kanban-store gets only the two tokens it declares, copied from the server's
-  # file on every install so the two never differ.
-  ( umask 077; grep -E '^(KANBAN_STORE_SERVICE_TOKEN|GRANT_STORE_SERVICE_TOKEN)=' "$ROOT/env/secrets.env" > "$ROOT/env/kanban-store-secrets.env" )
+  # reference-store's token is for its own callers: the server presents it when
+  # grant-store checks that a reference it is asked to grant exists. It is made
+  # once and kept.
+  local reference_store_token server_token
+  reference_store_token="$(sed -n 's/^REFERENCE_STORE_SERVICE_TOKEN=//p' "$ROOT/env/reference-store-secrets.env" 2>/dev/null)"
+  [ -n "$reference_store_token" ] || reference_store_token="$(random_hex 32)"
+  server_token="$(service_token)"
+  # Each process gets only the tokens it declares, written from these on every
+  # install so no two copies differ. kanban-store and reference-store hold the
+  # server's service token, which makes them its unrestricted internal caller:
+  # the server answers its principal-store, grant-store, tool-store and the
+  # rest to nobody without a credential, and they have no narrower one.
+  ( umask 077
+    { echo "REFERENCE_STORE_SERVICE_TOKEN=$reference_store_token"
+      echo "REFERENCE_STORE_BRIDGE_SERVICE_TOKEN=$server_token"; } > "$ROOT/env/reference-store-secrets.env"
+    { grep -E '^KANBAN_STORE_SERVICE_TOKEN=' "$ROOT/env/secrets.env"
+      echo "LLM_BRIDGE_SERVICE_TOKEN=$server_token"; } > "$ROOT/env/kanban-store-secrets.env"
+    echo "REFERENCE_STORE_SERVICE_TOKEN=$reference_store_token" > "$ROOT/env/server-store-tokens.env" )
 
   cat > "$ROOT/env/server.env" <<EOF
 LLMBRIDGE_LISTEN_ADDR=127.0.0.1:$BRIDGE_PORT
@@ -236,58 +324,51 @@ LLMBRIDGE_SESSION_FILES_DIR=$ROOT/data/session-files
 LLMBRIDGE_RUNNER_ASSETS_DIR=$ROOT/runner-assets
 LLMBRIDGE_LOG_STORE_URL=http://127.0.0.1:$LOG_STORE_PORT
 LLMBRIDGE_SKILL_STORE_DATA_DIRECTORY=$ROOT/data/skill-store
-LLMBRIDGE_PRINCIPAL_STORE_URL=http://127.0.0.1:$PRINCIPAL_STORE_PORT
-LLMBRIDGE_GRANT_STORE_URL=http://127.0.0.1:$GRANT_STORE_PORT
+LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_URL=$nowhere
 LLMBRIDGE_KANBAN_STORE_URL=http://127.0.0.1:$KANBAN_STORE_PORT
 LLMBRIDGE_REFERENCE_STORE_URL=http://127.0.0.1:$REFERENCE_STORE_PORT
-LLMBRIDGE_PERMISSION_STORE_URL=http://127.0.0.1:$PERMISSION_STORE_PORT
 LLMBRIDGE_POSTGRES_URL=postgres://$POSTGRES_SERVER_LOGIN@/$POSTGRES_DATABASE?host=$POSTGRES_SOCKET_DIR&port=$POSTGRES_PORT
 EOF
 
   # One file per store: a store refuses to start when a variable carrying its
-  # own prefix is set that it does not declare, so grant-store's
-  # PRINCIPAL_STORE_URL must not reach principal-store.
+  # own prefix is set that it does not declare.
   cat > "$ROOT/env/log-store.env" <<EOF
 LOG_STORE_LISTEN_ADDR=127.0.0.1:$LOG_STORE_PORT
 LOG_STORE_DB_PATH=$ROOT/data/log-store.db
 LOG_STORE_LOGSTACK_URL=$nowhere
 EOF
-  echo "TOOL_STORE_ADDR=127.0.0.1:$TOOL_STORE_PORT" > "$ROOT/env/tool-store.env"
-  echo "PRINCIPAL_STORE_ADDR=127.0.0.1:$PRINCIPAL_STORE_PORT" > "$ROOT/env/principal-store.env"
-  cat > "$ROOT/env/grant-store.env" <<EOF
-GRANT_STORE_ADDR=127.0.0.1:$GRANT_STORE_PORT
-PRINCIPAL_STORE_URL=http://127.0.0.1:$PRINCIPAL_STORE_PORT
-TOOL_STORE_URL=http://127.0.0.1:$TOOL_STORE_PORT
-LLM_BRIDGE_URL=http://127.0.0.1:$BRIDGE_PORT
-SKILL_STORE_URL=$nowhere
-KANBAN_STORE_URL=http://127.0.0.1:$KANBAN_STORE_PORT
-EOF
+  # kanban-store keeps its cards' text in noteboard and reads principals, board
+  # grants and bundles; the server holds all four. Its noteboard client sends
+  # no credential, so a card's text is not reachable here yet.
   cat > "$ROOT/env/kanban-store.env" <<EOF
 KANBAN_LISTEN_HOST=127.0.0.1
 KANBAN_PORT=$KANBAN_STORE_PORT
 KANBAN_DB=$ROOT/data/kanban-store.db
 KANBAN_NOTEBOARD_URL=$nowhere
-PRINCIPAL_STORE_URL=http://127.0.0.1:$PRINCIPAL_STORE_PORT
+PRINCIPAL_STORE_URL=$BASE/principal-store
 REFERENCE_STORE_URL=http://127.0.0.1:$REFERENCE_STORE_PORT
-LLM_BRIDGE_URL=http://127.0.0.1:$BRIDGE_PORT
-BUNDLE_STORE_URL=$nowhere
+LLM_BRIDGE_URL=$BASE
+BUNDLE_STORE_URL=$BASE/bundle-store
 AUTH_STORE_URL=$nowhere
-GRANT_STORE_URL=http://127.0.0.1:$GRANT_STORE_PORT
+GRANT_STORE_URL=$BASE/grant-store
+KANBAN_BRIDGE_HOSTED_STORES=principal-store,grant-store,bundle-store
 EOF
+  # reference-store looks records up in every store the server holds, and reads
+  # who may see what from its principal-store and grant-store.
+  local hosted="principal-store grant-store tool-store skill-store bundle-store noteboard project-store prediction-store" urls="llm-bridge-server:$BASE" service
+  for service in $hosted; do urls="$urls,$service:$BASE/$service"; done
   cat > "$ROOT/env/reference-store.env" <<EOF
 REFERENCE_STORE_ADDR=127.0.0.1:$REFERENCE_STORE_PORT
-REFERENCE_STORE_SERVICE_URLS=llm-bridge-server:http://127.0.0.1:$BRIDGE_PORT,tool-store:http://127.0.0.1:$TOOL_STORE_PORT,principal-store:http://127.0.0.1:$PRINCIPAL_STORE_PORT
-REFERENCE_STORE_PRINCIPAL_STORE_URL=http://127.0.0.1:$PRINCIPAL_STORE_PORT
-REFERENCE_STORE_GRANT_STORE_URL=http://127.0.0.1:$GRANT_STORE_PORT
+REFERENCE_STORE_SERVICE_URLS=$urls
+REFERENCE_STORE_BRIDGE_HOSTED_SERVICES=${hosted// /,}
+REFERENCE_STORE_PRINCIPAL_STORE_URL=$BASE/principal-store
+REFERENCE_STORE_GRANT_STORE_URL=$BASE/grant-store
 EOF
-  # permission-store reads no environment; its port and database are flags in
-  # its unit.
-  : > "$ROOT/env/permission-store.env"
-  rm -f "$ROOT/env/stores.env"
+  rm -f "$ROOT/env/stores.env" "$ROOT/env/tool-store.env" "$ROOT/env/principal-store.env" "$ROOT/env/grant-store.env" "$ROOT/env/permission-store.env"
 
   step "stopping what is running, to replace the binaries"
   systemctl --user stop "$UNIT_PREFIX-runner.service" "$UNIT_PREFIX.service" 2>/dev/null || true
-  for store in "${STORES[@]}"; do systemctl --user stop "$UNIT_PREFIX-$store.service" 2>/dev/null || true; done
+  for store in "${STORES[@]}" "${RETIRED_STORES[@]}"; do systemctl --user stop "$UNIT_PREFIX-$store.service" 2>/dev/null || true; done
   systemctl --user stop "$UNIT_PREFIX-postgres.service" 2>/dev/null || true
 
   prepare_postgres
@@ -307,17 +388,12 @@ EOF
 
   step "writing units"
   for store in "${STORES[@]}"; do
-    # Each store gets only its own files: grant-store presents the server's
-    # store tokens, kanban-store holds its two, reference-store its own.
+    # Each store gets only its own files. kanban-store and reference-store
+    # call the server, so they start after it.
     case "$store" in
-      grant-store)
-        write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" "$ROOT/env/secrets.env" </dev/null ;;
-      kanban-store)
-        write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" "$ROOT/env/kanban-store-secrets.env" </dev/null ;;
-      reference-store)
-        write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" "$ROOT/env/reference-store-secrets.env" </dev/null ;;
-      permission-store)
-        write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store --port $PERMISSION_STORE_PORT --db $ROOT/data/permission-store.db" "$ROOT/env/$store.env" </dev/null ;;
+      kanban-store|reference-store)
+        UNIT_SECTION_LINES="After=$UNIT_PREFIX.service" \
+        write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" "$ROOT/env/$store-secrets.env" </dev/null ;;
       *)
         write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" </dev/null ;;
     esac
@@ -330,7 +406,7 @@ TimeoutSec=120
 EOF
   UNIT_SECTION_LINES="Wants=$UNIT_PREFIX-postgres.service
 After=$UNIT_PREFIX-postgres.service" \
-  write_unit "$UNIT_PREFIX" "llm-bridge test instance: the server" llm-bridge-server "$ROOT/env/server.env" "$ROOT/env/secrets.env" <<EOF
+  write_unit "$UNIT_PREFIX" "llm-bridge test instance: the server" llm-bridge-server "$ROOT/env/server.env" "$ROOT/env/secrets.env" "$ROOT/env/server-store-tokens.env" <<EOF
 EOF
   # The runner's own environment reaches every harness it starts, so this is
   # where a test sets a harness's variables (the mock harness reads
@@ -352,19 +428,21 @@ EOF
   "$POSTGRES_BIN/pg_isready" -q -h "$POSTGRES_SOCKET_DIR" -p "$POSTGRES_PORT" ||
     fail "Postgres did not answer on $POSTGRES_SOCKET_DIR port $POSTGRES_PORT; see: journalctl --user -u $UNIT_PREFIX-postgres -n 50"
   make_postgres_login_and_database
+  import_retired_stores
+  remove_retired_store_units
 
-  step "starting the stores"
-  for store in "${STORES[@]}"; do systemctl --user enable --now "$UNIT_PREFIX-$store.service" >/dev/null 2>&1; done
-  wait_for principal-store "http://127.0.0.1:$PRINCIPAL_STORE_PORT/kinds"
-  wait_for tool-store "http://127.0.0.1:$TOOL_STORE_PORT/tools"
+  step "starting log-store"
+  systemctl --user enable --now "$UNIT_PREFIX-log-store.service" >/dev/null 2>&1
   wait_for log-store "http://127.0.0.1:$LOG_STORE_PORT/health"
-  wait_for kanban-store "http://127.0.0.1:$KANBAN_STORE_PORT/health"
-  wait_for reference-store "http://127.0.0.1:$REFERENCE_STORE_PORT/types"
-  wait_for permission-store "http://127.0.0.1:$PERMISSION_STORE_PORT/healthz"
 
   step "starting the server"
   systemctl --user enable --now "$UNIT_PREFIX.service" >/dev/null 2>&1
   wait_for "the server" "$BASE/health"
+
+  step "starting kanban-store and reference-store"
+  systemctl --user enable --now "$UNIT_PREFIX-kanban-store.service" "$UNIT_PREFIX-reference-store.service" >/dev/null 2>&1
+  wait_for kanban-store "http://127.0.0.1:$KANBAN_STORE_PORT/health"
+  wait_for reference-store "http://127.0.0.1:$REFERENCE_STORE_PORT/types"
 
   # A session needs a model that resolves, and a new registry is empty. The
   # server has no route that writes one, so the row goes into its database.
@@ -376,20 +454,19 @@ EOF
        INSERT INTO model_roles (role, model_id) VALUES ('default', 'test-instance-model');"
   fi
 
-  local principal_store="http://127.0.0.1:$PRINCIPAL_STORE_PORT"
-  if [ "$(curl -fsS "$principal_store/principals" | jq '[.[] | select(.kind == "human")] | length')" = "0" ]; then
+  local principal_store="$BASE/principal-store"
+  if [ "$(bridge_curl -f "$principal_store/principals" | jq '[.[] | select(.kind == "human")] | length')" = "0" ]; then
     step "making an administrator to sign in as"
     local principal_id
-    principal_id="$(curl -fsS -X POST "$principal_store/principals" -H 'Content-Type: application/json' \
+    principal_id="$(bridge_curl -f -X POST "$principal_store/principals" -H 'Content-Type: application/json' \
       -d '{"kind":"human","display_name":"Test operator"}' | jq -r '.id')"
-    curl -fsS -o /dev/null -X PATCH "$principal_store/principals/$principal_id" -H 'Content-Type: application/json' -d '{"is_administrator":true}'
+    bridge_curl -f -o /dev/null -X PATCH "$principal_store/principals/$principal_id" -H 'Content-Type: application/json' -d '{"is_administrator":true}'
   fi
 
   if [ ! -f "$ROOT/runner/config.json" ]; then
     step "enrolling the runner"
     local passphrase
-    passphrase="$( set -a; . "$ROOT/env/server.env"; . "$ROOT/env/secrets.env"; set +a
-                   HOME="$ROOT/home" "$ROOT/bin/llm-bridge-server" mint-enroll | sed -n 's/^passphrase: *//p' )"
+    passphrase="$(server_command mint-enroll | sed -n 's/^passphrase: *//p')"
     [ -n "$passphrase" ] || fail "the server printed no enrollment passphrase"
     HOME="$ROOT/home" PATH="$ROOT/bin:/usr/bin:/bin" LLMBRIDGE_RUNNER_CONFIG="$ROOT/runner/config.json" \
       "$ROOT/bin/llm-bridge-runner" enroll --server "$BASE" --passphrase "$passphrase" --name "test-instance-runner"
@@ -421,7 +498,7 @@ status_instance() {
   if curl -fsS -o /dev/null "$BASE/health" 2>/dev/null; then
     echo "  machines:   $(bridge_curl "$BASE/machines" | jq -r '[.[] | "\(.name) (\(.transport))"] | join(", ")')"
     echo "  instances:  $(bridge_curl "$BASE/instances" | jq -r '[.[] | "\(.id) \(.harness_type // .harness)"] | join(", ")')"
-    echo "  sign in as: $(curl -fsS "http://127.0.0.1:$PRINCIPAL_STORE_PORT/principals" | jq -r '[.[] | select(.kind == "human") | "\(.id) \(.display_name)"] | join(", ")')"
+    echo "  sign in as: $(bridge_curl -f "$BASE/principal-store/principals" | jq -r '[.[] | select(.kind == "human") | "\(.id) \(.display_name)"] | join(", ")')"
   else
     echo "  the server is not answering"
   fi
@@ -494,7 +571,7 @@ use_machine_logins() {
 
 uninstall_instance() {
   step "stopping and removing the units"
-  for unit in "$UNIT_PREFIX-runner" "$UNIT_PREFIX" $(printf "$UNIT_PREFIX-%s " "${STORES[@]}") "$UNIT_PREFIX-postgres"; do
+  for unit in "$UNIT_PREFIX-runner" $(printf "$UNIT_PREFIX-%s " "${STORES[@]}" "${RETIRED_STORES[@]}") "$UNIT_PREFIX" "$UNIT_PREFIX-postgres"; do
     systemctl --user disable --now "$unit.service" >/dev/null 2>&1 || true
     rm -f "$UNIT_DIR/$unit.service"
   done
