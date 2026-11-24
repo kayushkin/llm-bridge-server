@@ -27,9 +27,13 @@ const (
 type AccessChecker struct {
 	PrincipalStoreURL string
 	GrantStoreURL     string
-	HTTPClient        *http.Client
-	TTL               time.Duration
-	now               func() time.Time
+	// Credentials says whether principal-store and grant-store are served by
+	// llm-bridge-server, and holds the bridge's token for them when they are.
+	// Nil: both are standalone.
+	Credentials *Credentials
+	HTTPClient  *http.Client
+	TTL         time.Duration
+	now         func() time.Time
 
 	mu       sync.Mutex
 	accesses map[string]cachedAccess
@@ -92,7 +96,7 @@ func (c *AccessChecker) Of(ctx context.Context, principalID string) (PrincipalAc
 		IsAdministrator bool  `json:"is_administrator"`
 		DisabledAt      int64 `json:"disabled_at"`
 	}
-	if err := c.getJSON(ctx, strings.TrimRight(c.PrincipalStoreURL, "/")+"/principals/"+url.PathEscape(principalID), principalID, &principal); err != nil {
+	if err := c.getJSON(ctx, principalStoreService, strings.TrimRight(c.PrincipalStoreURL, "/")+"/principals/"+url.PathEscape(principalID), principalID, &principal); err != nil {
 		return PrincipalAccess{}, fmt.Errorf("principal-store: %w", err)
 	}
 	access := PrincipalAccess{Types: map[string]bool{}, Records: map[string]bool{}}
@@ -107,7 +111,7 @@ func (c *AccessChecker) Of(ctx context.Context, principalID string) (PrincipalAc
 			ResourceID   string `json:"resource_id"`
 			RevokedAt    int64  `json:"revoked_at"`
 		}
-		if err := c.getJSON(ctx, strings.TrimRight(c.GrantStoreURL, "/")+"/principals/"+url.PathEscape(principalID)+"/effective", principalID, &grants); err != nil {
+		if err := c.getJSON(ctx, grantStoreService, strings.TrimRight(c.GrantStoreURL, "/")+"/principals/"+url.PathEscape(principalID)+"/effective", principalID, &grants); err != nil {
 			return PrincipalAccess{}, fmt.Errorf("grant-store: %w", err)
 		}
 		for _, grant := range grants {
@@ -135,14 +139,34 @@ func (c *AccessChecker) Of(ctx context.Context, principalID string) (PrincipalAc
 	return access, nil
 }
 
+// The services the access check reads, by the names service_urls and
+// bridge_hosted_services use.
+const (
+	principalStoreService = "principal-store"
+	grantStoreService     = "grant-store"
+)
+
 // getJSON asks as the principal: grant-store lets a principal read its own
-// effective grants, and principal-store answers anyone.
-func (c *AccessChecker) getJSON(ctx context.Context, target, principalID string, into any) error {
+// effective grants, and a standalone principal-store answers anyone. When the
+// bridge serves the store, the request also carries the bridge's service
+// token. For principal-store it then names no principal, because the bridge
+// lets only an administrator read a principal's record, and the internal
+// service may read any; grant-store still gets the principal, so the bridge
+// answers with that principal's own grants as a standalone grant-store would.
+func (c *AccessChecker) getJSON(ctx context.Context, service, target, principalID string, into any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return err
 	}
-	request.Header.Set(PrincipalIDHeader, principalID)
+	servedByBridge := c.Credentials != nil && c.Credentials.BridgeHostedServices[service]
+	if servedByBridge {
+		if err := c.Credentials.applyBridgeServiceToken(request, service); err != nil {
+			return err
+		}
+	}
+	if !servedByBridge || service != principalStoreService {
+		request.Header.Set(PrincipalIDHeader, principalID)
+	}
 	response, err := c.HTTPClient.Do(request)
 	if err != nil {
 		return err

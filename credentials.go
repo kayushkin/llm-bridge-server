@@ -11,11 +11,19 @@ import (
 	"time"
 )
 
+// BridgeServiceTokenHeader is where llm-bridge-server reads its service token.
+const BridgeServiceTokenHeader = "X-LLM-Bridge-Service-Token"
+
 // Credentials presents each type's credential to its owning service.
 type Credentials struct {
 	BridgeServiceToken string
-	AuthStoreURL       string
-	AuthStoreToken     string
+	// BridgeHostedServices are the services llm-bridge-server serves in its
+	// own process. A call to one carries BridgeServiceToken whatever the
+	// type's own credential says, because the bridge answers nothing without
+	// one.
+	BridgeHostedServices map[string]bool
+	AuthStoreURL         string
+	AuthStoreToken       string
 	// AuthStoreProviders maps a service to its auth-store provider.
 	AuthStoreProviders map[string]string
 	HTTPClient         *http.Client
@@ -33,6 +41,9 @@ type cachedKey struct {
 
 // Apply sets the credential on a request to row's service.
 func (c *Credentials) Apply(ctx context.Context, request *http.Request, row *ReferenceType) error {
+	if c.BridgeHostedServices[row.Service] {
+		return c.applyBridgeServiceToken(request, row.Service)
+	}
 	switch row.Credential {
 	case CredentialNone:
 		return nil
@@ -40,7 +51,7 @@ func (c *Credentials) Apply(ctx context.Context, request *http.Request, row *Ref
 		if c.BridgeServiceToken == "" {
 			return fmt.Errorf("type %s needs bridge_service_token, which is not set", row.Type)
 		}
-		request.Header.Set("X-LLM-Bridge-Service-Token", c.BridgeServiceToken)
+		request.Header.Set(BridgeServiceTokenHeader, c.BridgeServiceToken)
 		return nil
 	case CredentialAuthStore:
 		key, err := c.authStoreKey(ctx, row.Service)
@@ -51,6 +62,16 @@ func (c *Credentials) Apply(ctx context.Context, request *http.Request, row *Ref
 		return nil
 	}
 	return fmt.Errorf("type %s has credential %q, which reference-store does not know", row.Type, row.Credential)
+}
+
+// applyBridgeServiceToken sets llm-bridge-server's service token on a
+// request to service, which the bridge serves.
+func (c *Credentials) applyBridgeServiceToken(request *http.Request, service string) error {
+	if c.BridgeServiceToken == "" {
+		return fmt.Errorf("%s is served by llm-bridge-server, which needs bridge_service_token, and it is not set", service)
+	}
+	request.Header.Set(BridgeServiceTokenHeader, c.BridgeServiceToken)
+	return nil
 }
 
 func (c *Credentials) authStoreKey(ctx context.Context, service string) (string, error) {

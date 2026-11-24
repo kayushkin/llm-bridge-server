@@ -31,21 +31,32 @@ func main() {
 	seconds := func(key string) time.Duration { return time.Duration(settings.Integer(key)) * time.Second }
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	accessTTL := seconds(referencestore.SettingAccessCacheSeconds)
+	bridgeHostedServices := map[string]bool{}
+	for _, service := range settings.StringList(referencestore.SettingBridgeHostedServices) {
+		bridgeHostedServices[service] = true
+	}
+	if len(bridgeHostedServices) > 0 && settings.String(referencestore.SettingBridgeServiceToken) == "" {
+		log.Fatalf("%s names services llm-bridge-server serves, and %s is not set, so every call to them would be refused",
+			"REFERENCE_STORE_BRIDGE_HOSTED_SERVICES", "REFERENCE_STORE_BRIDGE_SERVICE_TOKEN")
+	}
+	credentials := &referencestore.Credentials{
+		BridgeServiceToken:   settings.String(referencestore.SettingBridgeServiceToken),
+		BridgeHostedServices: bridgeHostedServices,
+		AuthStoreURL:         settings.String(referencestore.SettingAuthStoreURL),
+		AuthStoreToken:       settings.String(referencestore.SettingAuthStoreToken),
+		AuthStoreProviders:   settings.StringMap(referencestore.SettingAuthStoreProviders),
+		HTTPClient:           client,
+		TTL:                  5 * time.Minute,
+	}
 	resolver := &referencestore.Resolver{
 		Types:       referencestore.Types,
 		ServiceURLs: serviceURLs,
 		SiteURLs:    siteURLs,
-		Credentials: &referencestore.Credentials{
-			BridgeServiceToken: settings.String(referencestore.SettingBridgeServiceToken),
-			AuthStoreURL:       settings.String(referencestore.SettingAuthStoreURL),
-			AuthStoreToken:     settings.String(referencestore.SettingAuthStoreToken),
-			AuthStoreProviders: settings.StringMap(referencestore.SettingAuthStoreProviders),
-			HTTPClient:         client,
-			TTL:                5 * time.Minute,
-		},
+		Credentials: credentials,
 		Access: &referencestore.AccessChecker{
 			PrincipalStoreURL: settings.String(referencestore.SettingPrincipalStoreURL),
 			GrantStoreURL:     settings.String(referencestore.SettingGrantStoreURL),
+			Credentials:       credentials,
 			HTTPClient:        client,
 			TTL:               accessTTL,
 		},

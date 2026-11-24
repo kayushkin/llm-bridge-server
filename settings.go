@@ -26,6 +26,7 @@ const (
 	SettingAuthStoreToken          = "auth_store_token"
 	SettingAuthStoreProviders      = "auth_store_providers"
 	SettingBridgeServiceToken      = "bridge_service_token"
+	SettingBridgeHostedServices    = "bridge_hosted_services"
 	SettingServiceToken            = "service_token"
 	SettingRecordCacheSeconds      = "record_cache_seconds"
 	SettingMissCacheSeconds        = "miss_cache_seconds"
@@ -56,6 +57,7 @@ func SettingDefinitions() []servicesettings.Definition {
 	text := msg.ServiceSettingValueTypeString
 	pairs := msg.ServiceSettingValueTypeStringMap
 	integer := msg.ServiceSettingValueTypeInteger
+	list := msg.ServiceSettingValueTypeStringList
 	return []servicesettings.Definition{
 		{Key: SettingListenAddress, EnvironmentVariable: "REFERENCE_STORE_ADDR", Kind: wiring, ValueType: text, Default: DefaultListenAddress,
 			Description: "The address the HTTP server listens on. Keep it on loopback: the service trusts X-Principal-Id."},
@@ -75,6 +77,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "service:provider pairs: the auth-store provider whose api_key is sent as a bearer token to that service, e.g. multichat:multichat."},
 		{Key: SettingBridgeServiceToken, EnvironmentVariable: "REFERENCE_STORE_BRIDGE_SERVICE_TOKEN", Kind: secret, ValueType: text,
 			Description: "llm-bridge-server's service token, sent with X-Principal-Id so the bridge decides which sessions the caller may see."},
+		{Key: SettingBridgeHostedServices, EnvironmentVariable: "REFERENCE_STORE_BRIDGE_HOSTED_SERVICES", Kind: wiring, ValueType: list,
+			Description: "The services llm-bridge-server runs in its own process and serves under a prefix of its own, such as principal-store at http://127.0.0.1:8160/principal-store. Every call to one of them carries bridge_service_token, because the bridge answers nothing without a credential: record lookups and searches, and the principal-store and grant-store reads that decide what a caller may see. Empty: every service is a standalone one."},
 		{Key: SettingServiceToken, EnvironmentVariable: "REFERENCE_STORE_SERVICE_TOKEN", Kind: secret, ValueType: text, Required: true,
 			Description: "The token an internal caller sends in X-Reference-Store-Service-Token to look records up for nobody, unchecked."},
 		{Key: SettingRecordCacheSeconds, EnvironmentVariable: "REFERENCE_STORE_RECORD_CACHE_SECONDS", Kind: behavior, ValueType: integer, Default: "60",

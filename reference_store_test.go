@@ -2,6 +2,7 @@ package referencestore
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -305,5 +306,66 @@ func TestAPictureGoesOnlyToWhoMaySeeTheRecord(t *testing.T) {
 	}
 	if status, _, _ := get("principal_000003"); status != 404 {
 		t.Errorf("someone who may not see it: %d, want 404", status)
+	}
+}
+
+// A store llm-bridge-server runs in its own process answers nothing without
+// the bridge's token, and its principal-store lets only an administrator, or
+// the internal service naming nobody, read a principal.
+func TestStoresTheBridgeServesGetTheBridgeToken(t *testing.T) {
+	mux := http.NewServeMux()
+	requireToken := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get(BridgeServiceTokenHeader) != "bridge-token" {
+			http.Error(w, "no credential", http.StatusUnauthorized)
+			return false
+		}
+		return true
+	}
+	mux.HandleFunc("GET /principal-store/principals/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !requireToken(w, r) {
+			return
+		}
+		if r.Header.Get(PrincipalIDHeader) != "" {
+			http.Error(w, "operator route", http.StatusForbidden)
+			return
+		}
+		w.Write([]byte(`{"id":"` + r.PathValue("id") + `","display_name":"Someone","is_administrator":false}`))
+	})
+	mux.HandleFunc("GET /grant-store/principals/{id}/effective", func(w http.ResponseWriter, r *http.Request) {
+		if !requireToken(w, r) {
+			return
+		}
+		if r.Header.Get(PrincipalIDHeader) != r.PathValue("id") {
+			http.Error(w, "a principal reads only its own", http.StatusForbidden)
+			return
+		}
+		w.Write([]byte(`[{"relation":"can_see_references","resource_type":"reference_type","resource_id":"principal"}]`))
+	})
+	bridge := httptest.NewServer(mux)
+	t.Cleanup(bridge.Close)
+
+	credentials := &Credentials{BridgeServiceToken: "bridge-token", HTTPClient: http.DefaultClient,
+		BridgeHostedServices: map[string]bool{"principal-store": true, "grant-store": true}}
+	resolver := &Resolver{
+		Types: Types, ServiceURLs: map[string]string{"principal-store": bridge.URL + "/principal-store"},
+		Credentials: credentials,
+		Access: &AccessChecker{PrincipalStoreURL: bridge.URL + "/principal-store", GrantStoreURL: bridge.URL + "/grant-store",
+			Credentials: credentials, HTTPClient: http.DefaultClient, TTL: time.Minute},
+		HTTPClient: http.DefaultClient, RecordTTL: time.Minute, MissTTL: time.Minute, LookupTimeout: 5 * time.Second, Concurrency: 4,
+	}
+	serverMux := http.NewServeMux()
+	RegisterHandlers(serverMux, &Server{Resolver: resolver, ServiceToken: "service-token"})
+	server := httptest.NewServer(serverMux)
+	t.Cleanup(server.Close)
+
+	results := resolveAs(t, server, PrincipalIDHeader, "principal_000002", "principal_000005")
+	if m := results["principal_000005"]; len(m) != 1 || m[0].Refused || m[0].Label != "Someone" {
+		t.Errorf("a principal, through the bridge: %+v", m)
+	}
+
+	credentials.BridgeServiceToken = ""
+	request, _ := http.NewRequest(http.MethodGet, bridge.URL+"/principal-store/principals/principal_000005", nil)
+	if err := credentials.Apply(context.Background(), request, TypeNamed("principal")); err == nil {
+		t.Error("a bridge-hosted service with no bridge token set was asked anyway")
 	}
 }
