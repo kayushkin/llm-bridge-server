@@ -565,6 +565,57 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/prediction-store/predictions/{id}/restore` | Undo a soft delete | operator |
 | `GET` | `/prediction-store/tags` | Tags on live predictions with their counts, most used first | operator |
 | `GET` | `/prediction-store/vocabulary` | Categories, provenances, statuses, outcomes, `group_by` keys and the probability ladder | operator |
+
+### noteboard, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/noteboard/api/items` | List items by `type`, `tag`, `exclude_tag`, `status`, `list_id`, `created_by`, `parent_id`, `sort`, `limit`; held and deleted items only when asked for | operator |
+| `POST` | `/noteboard/api/items` | Make an item: `type` and `title` required; `hold` makes it held from the start | operator |
+| `POST` | `/noteboard/api/items/batch` | The named items in the order named, `null` for one that names no live item | operator |
+| `POST` | `/noteboard/api/items/query` | Of these ids, which match the filters, in what order; held items answered, gone ones in `missing_ids` | operator |
+| `GET` | `/noteboard/api/items/query-options` | The sorts and limits `/noteboard/api/items/query` takes | operator |
+| `POST` | `/noteboard/api/items/rerank` | Set the `rank` of each named item | operator |
+| `DELETE` | `/noteboard/api/items/{id}` | Soft delete, after a revision; `?hard=true` purges the row | operator |
+| `GET` | `/noteboard/api/items/{id}` | One live item, its `updated_at` as the `ETag`; `?include_deleted=true` for a deleted one | operator |
+| `PATCH` | `/noteboard/api/items/{id}` | Change the fields sent, after a revision of the old state; `If-Match` makes it conditional (412 with the current item) | operator |
+| `POST` | `/noteboard/api/items/{id}/hold` | Hold an item, and with it its children, out of list and search; optional `reason` | operator |
+| `GET` | `/noteboard/api/items/{id}/occurrences` | When the item's recurrence rule falls due and nags between `from` and `to` | operator |
+| `POST` | `/noteboard/api/items/{id}/restore` | Undo a soft delete | operator |
+| `GET` | `/noteboard/api/items/{id}/revisions` | Every prior state, newest first; `limit` and `offset` page it | operator |
+| `POST` | `/noteboard/api/items/{id}/unhold` | Clear a hold | operator |
+| `GET` | `/noteboard/api/lists` | Every `list_id` with its count of live items | operator |
+| `GET` | `/noteboard/api/search` | Full-text search of title and body for `q`, every word in each term, newest first; held items only with `include_held=true` | operator |
+| `GET` | `/noteboard/api/tags` | Every tag on live items with its count, most used first | operator |
+| `GET` | `/noteboard/health` | `{"status":"ok","items":N}`, live items not archived; 500 when the store cannot be read | operator |
+
+### project-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/project-store/digest` | Every live project's rollup as plain text for an agent | operator |
+| `GET` | `/project-store/health` | `{"status":"ok"}` | operator |
+| `GET` | `/project-store/links` | Which projects own a record, by `entity_type` and `entity_ref` | operator |
+| `GET` | `/project-store/projects` | Projects by name; `q`, `kind`, `parent_id`, `include_archived` | operator |
+| `POST` | `/project-store/projects` | Make a project; `name` required | operator |
+| `GET` | `/project-store/projects/{id}` | One project | operator |
+| `PATCH` | `/project-store/projects/{id}` | Change a project's fields, recording each change; `archived` archives or restores it | operator |
+| `GET` | `/project-store/projects/{id}/activity` | What happened in the project, newest first, over `days` (default 14) | operator |
+| `GET` | `/project-store/projects/{id}/changes` | Every change to the project's fields, oldest first | operator |
+| `GET` | `/project-store/projects/{id}/links` | What the project owns; `entity_type` narrows | operator |
+| `POST` | `/project-store/projects/{id}/links` | Link a record its own store has; 400 when it has none, 502 when it cannot answer, 409 when linked already | operator |
+| `DELETE` | `/project-store/projects/{id}/links/{link_id}` | Remove one link | operator |
+| `POST` | `/project-store/projects/{id}/next-steps` | Make a noteboard todo tagged `next-step` and link it to the project | operator |
+| `GET` | `/project-store/projects/{id}/rollup` | Worked out on request: children, links, cards, repos, notes and suggestions | operator |
+| `GET` | `/project-store/projects/{id}/suggestions` | The project's suggested next steps, oldest first; `status` narrows | operator |
+| `POST` | `/project-store/projects/{id}/suggestions` | Ask a model for up to five next steps, superseding the undecided ones | operator |
+| `GET` | `/project-store/session-filings` | What the session filer concluded about each chat, newest first; `status`, `session_id`, `project_id`, `limit` | operator |
+| `POST` | `/project-store/session-filings/run` | One filing pass over the chats changed in the window; 502 with the report when some session could not be judged, 409 while a pass runs | operator |
+| `POST` | `/project-store/session-filings/{session_filing_id}/accept` | File the session of a proposed filing; 409 when already decided | operator |
+| `POST` | `/project-store/session-filings/{session_filing_id}/dismiss` | Leave a proposed filing's session unfiled; 409 when already decided | operator |
+| `POST` | `/project-store/suggestions/{suggestion_id}/accept` | Make a suggestion a next step; 409 when already decided | operator |
+| `POST` | `/project-store/suggestions/{suggestion_id}/dismiss` | Dismiss a suggestion; 409 when already decided | operator |
+| `GET` | `/project-store/vocabulary` | Kinds, stages, statuses, activity kinds and the entity types a project can own | operator |
 <!-- route-table:end -->
 
 ## Testing

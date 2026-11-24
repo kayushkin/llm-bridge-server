@@ -231,6 +231,12 @@ func peerConnectionReadRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalSeesPeerConnectionsItMayCallThrough, reason: reason}
 }
 
+// noteboardRoute is the rule of every noteboard route.
+var noteboardRoute = operatorRoute("noteboard holds the operator's private notes and todos with no owner on a row, so any caller could read or rewrite all of them")
+
+// projectStoreRoute is the rule of every project-store route.
+var projectStoreRoute = operatorRoute("project-store keeps one set of projects with no owner on a row, and its links name sessions, people and notes, so any caller could read or rewrite all of them")
+
 // predictionStoreRoute is the rule of every prediction-store route.
 var predictionStoreRoute = operatorRoute("prediction-store keeps one ledger with no owner on a row, so any caller could rewrite, resolve or purge anyone's prediction")
 
@@ -593,6 +599,53 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /prediction-store/predictions/{id}/links":      predictionStoreRoute,
 	"POST /prediction-store/predictions/{id}/links":     predictionStoreRoute,
 	"DELETE /prediction-store/links/{id}":               predictionStoreRoute,
+
+	// noteboard, mounted in this process. Its notes are the operator's own,
+	// private, with no owner on a row, so it is the operator's, as
+	// prediction-store is. An administrator's session agent token reaches it.
+	"GET /noteboard/health":                     noteboardRoute,
+	"GET /noteboard/api/items":                  noteboardRoute,
+	"POST /noteboard/api/items":                 noteboardRoute,
+	"POST /noteboard/api/items/rerank":          noteboardRoute,
+	"POST /noteboard/api/items/query":           noteboardRoute,
+	"POST /noteboard/api/items/batch":           noteboardRoute,
+	"GET /noteboard/api/items/query-options":    noteboardRoute,
+	"GET /noteboard/api/items/{id}":             noteboardRoute,
+	"PATCH /noteboard/api/items/{id}":           noteboardRoute,
+	"DELETE /noteboard/api/items/{id}":          noteboardRoute,
+	"GET /noteboard/api/items/{id}/revisions":   noteboardRoute,
+	"POST /noteboard/api/items/{id}/restore":    noteboardRoute,
+	"POST /noteboard/api/items/{id}/hold":       noteboardRoute,
+	"POST /noteboard/api/items/{id}/unhold":     noteboardRoute,
+	"GET /noteboard/api/items/{id}/occurrences": noteboardRoute,
+	"GET /noteboard/api/lists":                  noteboardRoute,
+	"GET /noteboard/api/tags":                   noteboardRoute,
+	"GET /noteboard/api/search":                 noteboardRoute,
+
+	// project-store, mounted in this process, for the same reason.
+	"GET /project-store/health":                                       projectStoreRoute,
+	"GET /project-store/vocabulary":                                   projectStoreRoute,
+	"GET /project-store/projects":                                     projectStoreRoute,
+	"POST /project-store/projects":                                    projectStoreRoute,
+	"GET /project-store/digest":                                       projectStoreRoute,
+	"GET /project-store/projects/{id}":                                projectStoreRoute,
+	"PATCH /project-store/projects/{id}":                              projectStoreRoute,
+	"GET /project-store/projects/{id}/rollup":                         projectStoreRoute,
+	"GET /project-store/projects/{id}/changes":                        projectStoreRoute,
+	"GET /project-store/projects/{id}/links":                          projectStoreRoute,
+	"POST /project-store/projects/{id}/links":                         projectStoreRoute,
+	"DELETE /project-store/projects/{id}/links/{link_id}":             projectStoreRoute,
+	"GET /project-store/links":                                        projectStoreRoute,
+	"GET /project-store/projects/{id}/activity":                       projectStoreRoute,
+	"POST /project-store/projects/{id}/next-steps":                    projectStoreRoute,
+	"GET /project-store/projects/{id}/suggestions":                    projectStoreRoute,
+	"POST /project-store/projects/{id}/suggestions":                   projectStoreRoute,
+	"POST /project-store/suggestions/{suggestion_id}/accept":          projectStoreRoute,
+	"POST /project-store/suggestions/{suggestion_id}/dismiss":         projectStoreRoute,
+	"GET /project-store/session-filings":                              projectStoreRoute,
+	"POST /project-store/session-filings/run":                         projectStoreRoute,
+	"POST /project-store/session-filings/{session_filing_id}/accept":  projectStoreRoute,
+	"POST /project-store/session-filings/{session_filing_id}/dismiss": projectStoreRoute,
 
 	"POST /memories":         operatorRoute("memory-store is not partitioned by principal"),
 	"GET /memories/{id}":     operatorRoute("memory-store is not partitioned by principal"),

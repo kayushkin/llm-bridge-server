@@ -37,8 +37,14 @@ func main() {
 		case "import-prediction-store":
 			importPredictionStoreCmd(os.Args[2:])
 			return
+		case "import-noteboard":
+			importNoteboardCmd(os.Args[2:])
+			return
+		case "import-project-store":
+			importProjectStoreCmd(os.Args[2:])
+			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file>]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-noteboard -sqlite <file> | import-project-store -sqlite <file>]")
 			os.Exit(0)
 		}
 	}
@@ -188,7 +194,7 @@ func main() {
 	// off and their routes answer 503; with one, a module that cannot be
 	// provisioned, migrated or opened stops the server here.
 	if cfg.PostgresURL == "" {
-		log.Printf("postgres: %s is not set, so prediction-store is off and /prediction-store/ answers 503", config.PostgresURLEnvironmentVariable)
+		log.Printf("postgres: %s is not set, so prediction-store, noteboard and project-store are off and their routes answer 503", config.PostgresURLEnvironmentVariable)
 	} else {
 		predictionStoreDB, err := openPredictionStoreModule(context.Background(), cfg.PostgresURL)
 		if err != nil {
@@ -197,6 +203,11 @@ func main() {
 		defer predictionStoreDB.Close()
 		srv.EnablePredictionStore(predictionstore.New(predictionStoreDB))
 		log.Printf("postgres: prediction-store open, served at /prediction-store/")
+		closeTaskTrackingModules, err := enableTaskTrackingModules(context.Background(), cfg, srv)
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		defer closeTaskTrackingModules()
 	}
 
 	operationStore, err := operationstore.Open(cfg.OperationsDBPath)
