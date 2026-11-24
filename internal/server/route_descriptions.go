@@ -29,6 +29,7 @@ const (
 	routeGroupAgentStore       routeGroup = "agent-store, mounted in this process"
 	routeGroupAgentStorePrompt routeGroup = "agent-store prompt source, mounted in this process"
 	routeGroupMemoryStore      routeGroup = "memory-store, mounted in this process"
+	routeGroupPredictionStore  routeGroup = "prediction-store, mounted in this process"
 )
 
 // routeGroupsInReadmeOrder is the order the README lists the groups in.
@@ -48,6 +49,7 @@ var routeGroupsInReadmeOrder = []routeGroup{
 	routeGroupAgentStore,
 	routeGroupAgentStorePrompt,
 	routeGroupMemoryStore,
+	routeGroupPredictionStore,
 }
 
 var routeDescriptions = map[string]routeDescription{
@@ -337,6 +339,26 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /prompt-delivery-options":              {routeGroupAgentStorePrompt, "The ways a harness can get it"},
 
 	// memory-store.
+	// prediction-store, mounted in this process.
+	"GET /prediction-store/health":                      {routeGroupPredictionStore, "`{\"status\":\"ok\",\"counts\":{predictions,open,overdue}}`"},
+	"GET /prediction-store/vocabulary":                  {routeGroupPredictionStore, "Categories, provenances, statuses, outcomes, `group_by` keys and the probability ladder"},
+	"GET /prediction-store/categories":                  {routeGroupPredictionStore, "The same as `/prediction-store/vocabulary`"},
+	"GET /prediction-store/tags":                        {routeGroupPredictionStore, "Tags on live predictions with their counts, most used first"},
+	"GET /prediction-store/calibration":                 {routeGroupPredictionStore, "Brier, log score, overconfidence and Murphy decomposition of resolved predictions, by `group_by`"},
+	"GET /prediction-store/base-rates":                  {routeGroupPredictionStore, "How often claims of a kind came true, by `group_by` (default `category`)"},
+	"GET /prediction-store/predictions":                 {routeGroupPredictionStore, "List predictions, newest first, by status, category, tag, author, provenance, outcome, link, `q`, `overdue`, dates"},
+	"POST /prediction-store/predictions":                {routeGroupPredictionStore, "State a claim with its resolution criteria and odds on the ladder; writes the opening estimate"},
+	"GET /prediction-store/predictions/{id}":            {routeGroupPredictionStore, "One prediction with its estimates and links"},
+	"PATCH /prediction-store/predictions/{id}":          {routeGroupPredictionStore, "Edit the descriptive fields; never the probability, the outcome or the status"},
+	"DELETE /prediction-store/predictions/{id}":         {routeGroupPredictionStore, "Soft delete; `?hard=true` purges it with its estimates and links"},
+	"POST /prediction-store/predictions/{id}/restore":   {routeGroupPredictionStore, "Undo a soft delete"},
+	"GET /prediction-store/predictions/{id}/estimates":  {routeGroupPredictionStore, "Every estimate, oldest first"},
+	"POST /prediction-store/predictions/{id}/estimates": {routeGroupPredictionStore, "Append a revised probability; 409 unless the prediction is open"},
+	"POST /prediction-store/predictions/{id}/resolve":   {routeGroupPredictionStore, "Record the outcome, once: `true`, `false` or `void`"},
+	"GET /prediction-store/predictions/{id}/links":      {routeGroupPredictionStore, "What the prediction is about"},
+	"POST /prediction-store/predictions/{id}/links":     {routeGroupPredictionStore, "Link it to a record by the owning store's id; linking twice is a no-op"},
+	"DELETE /prediction-store/links/{id}":               {routeGroupPredictionStore, "Remove one link by its number"},
+
 	"POST /memories":         {routeGroupMemoryStore, "Save a memory"},
 	"GET /memories/{id}":     {routeGroupMemoryStore, "One memory"},
 	"DELETE /memories/{id}":  {routeGroupMemoryStore, "Delete one"},

@@ -230,6 +230,10 @@ func peerConnectionProxyRoute(reason string) routeAccessRule {
 func peerConnectionReadRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routePrincipalSeesPeerConnectionsItMayCallThrough, reason: reason}
 }
+
+// predictionStoreRoute is the rule of every prediction-store route.
+var predictionStoreRoute = operatorRoute("prediction-store keeps one ledger with no owner on a row, so any caller could rewrite, resolve or purge anyone's prediction")
+
 func operatorRoute(reason string) routeAccessRule {
 	return routeAccessRule{class: routeOperatorOnly, reason: reason}
 }
@@ -567,6 +571,29 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /context/resolve":                         operatorRoute("agent-store context"),
 
 	// memory-store's library routes.
+	// prediction-store, mounted in this process. Its ledger has no owner on a
+	// row, so any caller could rewrite, resolve or purge anyone's prediction;
+	// until rows carry an owning principal it is the operator's, as
+	// memory-store is. An administrator's session agent token reaches it.
+	"GET /prediction-store/health":                      predictionStoreRoute,
+	"GET /prediction-store/vocabulary":                  predictionStoreRoute,
+	"GET /prediction-store/categories":                  predictionStoreRoute,
+	"GET /prediction-store/tags":                        predictionStoreRoute,
+	"GET /prediction-store/calibration":                 predictionStoreRoute,
+	"GET /prediction-store/base-rates":                  predictionStoreRoute,
+	"GET /prediction-store/predictions":                 predictionStoreRoute,
+	"POST /prediction-store/predictions":                predictionStoreRoute,
+	"GET /prediction-store/predictions/{id}":            predictionStoreRoute,
+	"PATCH /prediction-store/predictions/{id}":          predictionStoreRoute,
+	"DELETE /prediction-store/predictions/{id}":         predictionStoreRoute,
+	"POST /prediction-store/predictions/{id}/restore":   predictionStoreRoute,
+	"GET /prediction-store/predictions/{id}/estimates":  predictionStoreRoute,
+	"POST /prediction-store/predictions/{id}/estimates": predictionStoreRoute,
+	"POST /prediction-store/predictions/{id}/resolve":   predictionStoreRoute,
+	"GET /prediction-store/predictions/{id}/links":      predictionStoreRoute,
+	"POST /prediction-store/predictions/{id}/links":     predictionStoreRoute,
+	"DELETE /prediction-store/links/{id}":               predictionStoreRoute,
+
 	"POST /memories":         operatorRoute("memory-store is not partitioned by principal"),
 	"GET /memories/{id}":     operatorRoute("memory-store is not partitioned by principal"),
 	"DELETE /memories/{id}":  operatorRoute("memory-store is not partitioned by principal"),

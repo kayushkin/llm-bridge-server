@@ -12,16 +12,17 @@ import (
 	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
-	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
+	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
+	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
 	memorystore "github.com/kayushkin/memory-store"
 	modelstore "github.com/kayushkin/model-store"
-	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 )
 
 func main() {
@@ -33,8 +34,11 @@ func main() {
 		case "mint-enroll":
 			mintEnrollCmd(os.Args[2:])
 			return
+		case "import-prediction-store":
+			importPredictionStoreCmd(os.Args[2:])
+			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m]]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file>]")
 			os.Exit(0)
 		}
 	}
@@ -180,6 +184,21 @@ func main() {
 
 	srv := server.New(st, as, ms, hs, hks, mds, ss, cfg)
 
+	// The modules that keep their records in Postgres. With no URL they are
+	// off and their routes answer 503; with one, a module that cannot be
+	// provisioned, migrated or opened stops the server here.
+	if cfg.PostgresURL == "" {
+		log.Printf("postgres: %s is not set, so prediction-store is off and /prediction-store/ answers 503", config.PostgresURLEnvironmentVariable)
+	} else {
+		predictionStoreDB, err := openPredictionStoreModule(context.Background(), cfg.PostgresURL)
+		if err != nil {
+			log.Fatalf("prediction-store: %v", err)
+		}
+		defer predictionStoreDB.Close()
+		srv.EnablePredictionStore(predictionstore.New(predictionStoreDB))
+		log.Printf("postgres: prediction-store open, served at /prediction-store/")
+	}
+
 	operationStore, err := operationstore.Open(cfg.OperationsDBPath)
 	if err != nil {
 		log.Fatalf("operations db: %v", err)
@@ -210,7 +229,7 @@ func main() {
 	srv.StartPeerDialers()                                    // Reopen the socket of every dial-out connection this server initiated
 	srv.StartMachineStatsSampler(context.Background())        // Read this machine every minute, keep runners' readings, delete old ones
 	go srv.RunChatLinks(context.Background())                 // Deliver what people send linked conversations, and send the replies
-	go func() { // Read messaging.inbound for chat links; a bus that is down is retried, not fatal to every session
+	go func() {                                               // Read messaging.inbound for chat links; a bus that is down is retried, not fatal to every session
 		for {
 			err := srv.StartChatLinkInbound(cfg.ChatLinksNATSURL)
 			if err == nil {
@@ -220,8 +239,8 @@ func main() {
 			time.Sleep(time.Minute)
 		}
 	}()
-	go srv.RunPeerMessageOutbox(context.Background())         // Deliver queued messages to connected servers, and report finished updates
-	stopKeepAwake := srv.StartKeepAwake()                     // Hold this machine awake while sessions run, when keep_awake.enabled is on
+	go srv.RunPeerMessageOutbox(context.Background()) // Deliver queued messages to connected servers, and report finished updates
+	stopKeepAwake := srv.StartKeepAwake()             // Hold this machine awake while sessions run, when keep_awake.enabled is on
 	defer stopKeepAwake()
 
 	go func() {
@@ -267,4 +286,40 @@ func mintEnrollCmd(args []string) {
 	fmt.Printf("passphrase:  %s\n", passphrase)
 	fmt.Printf("expires at:  %s (in %s)\n", enr.ExpiresAt.Local().Format(time.RFC3339), time.Until(enr.ExpiresAt).Round(time.Second))
 	fmt.Printf("enrollment:  %s\n", enr.ID)
+}
+
+// importPredictionStoreCmd copies a standalone prediction-store's SQLite file
+// into the Postgres module, keeping every id, number and time, and prints what
+// it copied. It refuses a module that already holds any row. It reads the
+// Postgres URL from the same setting the server does.
+func importPredictionStoreCmd(args []string) {
+	fs := flag.NewFlagSet("import-prediction-store", flag.ExitOnError)
+	sqlitePath := fs.String("sqlite", "", "the standalone prediction-store database to copy (a copy of it, made with sqlite3 .backup, while the store runs)")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	if *sqlitePath == "" || fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-prediction-store -sqlite <file>")
+		os.Exit(2)
+	}
+	cfg := config.Load()
+	if cfg.PostgresURL == "" {
+		fmt.Fprintf(os.Stderr, "error: %s is not set, so there is no module to import into\n", config.PostgresURLEnvironmentVariable)
+		os.Exit(1)
+	}
+	ctx := context.Background()
+	db, err := openPredictionStoreModule(ctx, cfg.PostgresURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	counts, err := predictionstore.ImportStandaloneDatabase(ctx, db, *sqlitePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: nothing was imported: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("predictions: %d (%d soft-deleted), last number %d\n", counts.Predictions, counts.DeletedPredictions, counts.LastPredictionSeq)
+	fmt.Printf("estimates:   %d, last id %d\n", counts.Estimates, counts.LastEstimateID)
+	fmt.Printf("links:       %d, last id %d\n", counts.Links, counts.LastLinkID)
 }

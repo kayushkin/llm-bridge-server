@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
@@ -32,6 +33,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
 	"github.com/kayushkin/llm-bridge-server/ui"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -67,6 +69,9 @@ type Server struct {
 	hookStore      *hookstore.Store
 	modelStore     *modelstore.Store
 	snapshotStore  *snapshotstore.Store
+	// predictionStore answers /prediction-store/ once the Postgres module is
+	// open (prediction_store_routes.go); nil answers those routes 503.
+	predictionStore atomic.Pointer[predictionstore.Handlers]
 	// userInterfaceBuild is the built front end served at /ui/ (user_interface.go).
 	userInterfaceBuild fs.FS
 	harness            *harness.Manager
@@ -309,6 +314,7 @@ func (s *Server) syncHarnessTypes() {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.registerLoginAndStoreProxyRoutes()
+	s.registerPredictionStoreRoutes()
 	// This server's own settings, served the way every service serves them.
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)

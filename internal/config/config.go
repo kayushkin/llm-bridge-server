@@ -124,6 +124,10 @@ type Config struct {
 	// /reference-store/ proxies to as the calling principal. Required, via
 	// LLMBRIDGE_REFERENCE_STORE_URL.
 	ReferenceStoreURL string
+	// PostgresURL is the Postgres the modules keep their records in, as the
+	// login that provisions them. Empty switches those modules off, and their
+	// routes answer 503. LLMBRIDGE_POSTGRES_URL.
+	PostgresURL string
 	// ChatLinksNATSURL and ChatLinksMultichatURL switch chat links on: NATS
 	// carries what people send our accounts, multichat sends the replies.
 	// Either empty turns them off. Configured via LLMBRIDGE_NATS_URL and
@@ -268,6 +272,10 @@ const (
 	// comes from this application; an agent holding it could redeem any
 	// authorization code meant for this server.
 	EntraClientSecretEnvironmentVariable = "LLMBRIDGE_ENTRA_CLIENT_SECRET"
+	// The Postgres URL names the login the modules' records are kept under,
+	// and may carry its password. An agent holding it could read and rewrite
+	// every module's tables past every rule this server enforces.
+	PostgresURLEnvironmentVariable = "LLMBRIDGE_POSTGRES_URL"
 )
 
 // SecretEnvironmentVariableNames lists every environment variable that must
@@ -277,7 +285,8 @@ const (
 // for any principal, the service token would make it the unrestricted
 // internal caller, a store service token would let it bypass that store's
 // per-principal enforcement, and the Entra client secret would let it redeem
-// an authorization code meant for this server. The kanban token is read by internal/kanbanclient rather than
+// an authorization code meant for this server, and the Postgres URL would
+// let it reach the modules' tables directly. The kanban token is read by internal/kanbanclient rather than
 // by Load, which is why its name is taken from that package: one spelling,
 // read in one place and stripped in another.
 func SecretEnvironmentVariableNames() []string {
@@ -288,6 +297,7 @@ func SecretEnvironmentVariableNames() []string {
 		KanbanStoreServiceTokenEnvironmentVariable,
 		FileStoreServiceTokenEnvironmentVariable,
 		EntraClientSecretEnvironmentVariable,
+		PostgresURLEnvironmentVariable,
 	}
 }
 
@@ -431,6 +441,7 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		BundleStoreURL:                   settings.String("bundle_store.url"),
 		KanbanStoreURL:                   settings.String("kanban_store.url"),
 		ReferenceStoreURL:                settings.String("reference_store.url"),
+		PostgresURL:                      settings.String("database.postgres_url"),
 		ChatLinksNATSURL:                 settings.String("chat_links.nats_url"),
 		ChatLinksMultichatURL:            settings.String("chat_links.multichat_url"),
 		ChatLinksPeopleStoreURL:          settings.String("chat_links.people_store_url"),

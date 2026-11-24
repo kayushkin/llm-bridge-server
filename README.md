@@ -542,6 +542,29 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/memories/search` | Search | operator |
 | `DELETE` | `/memories/{id}` | Delete one | operator |
 | `GET` | `/memories/{id}` | One memory | operator |
+
+### prediction-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/prediction-store/base-rates` | How often claims of a kind came true, by `group_by` (default `category`) | operator |
+| `GET` | `/prediction-store/calibration` | Brier, log score, overconfidence and Murphy decomposition of resolved predictions, by `group_by` | operator |
+| `GET` | `/prediction-store/categories` | The same as `/prediction-store/vocabulary` | operator |
+| `GET` | `/prediction-store/health` | `{"status":"ok","counts":{predictions,open,overdue}}` | operator |
+| `DELETE` | `/prediction-store/links/{id}` | Remove one link by its number | operator |
+| `GET` | `/prediction-store/predictions` | List predictions, newest first, by status, category, tag, author, provenance, outcome, link, `q`, `overdue`, dates | operator |
+| `POST` | `/prediction-store/predictions` | State a claim with its resolution criteria and odds on the ladder; writes the opening estimate | operator |
+| `DELETE` | `/prediction-store/predictions/{id}` | Soft delete; `?hard=true` purges it with its estimates and links | operator |
+| `GET` | `/prediction-store/predictions/{id}` | One prediction with its estimates and links | operator |
+| `PATCH` | `/prediction-store/predictions/{id}` | Edit the descriptive fields; never the probability, the outcome or the status | operator |
+| `GET` | `/prediction-store/predictions/{id}/estimates` | Every estimate, oldest first | operator |
+| `POST` | `/prediction-store/predictions/{id}/estimates` | Append a revised probability; 409 unless the prediction is open | operator |
+| `GET` | `/prediction-store/predictions/{id}/links` | What the prediction is about | operator |
+| `POST` | `/prediction-store/predictions/{id}/links` | Link it to a record by the owning store's id; linking twice is a no-op | operator |
+| `POST` | `/prediction-store/predictions/{id}/resolve` | Record the outcome, once: `true`, `false` or `void` | operator |
+| `POST` | `/prediction-store/predictions/{id}/restore` | Undo a soft delete | operator |
+| `GET` | `/prediction-store/tags` | Tags on live predictions with their counts, most used first | operator |
+| `GET` | `/prediction-store/vocabulary` | Categories, provenances, statuses, outcomes, `group_by` keys and the probability ladder | operator |
 <!-- route-table:end -->
 
 ## Testing
