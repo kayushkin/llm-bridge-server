@@ -1,0 +1,575 @@
+package server
+
+import (
+	"fmt"
+	"encoding/json"
+	"io"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	ls "github.com/kayushkin/log-store/internal/logstack"
+	"github.com/kayushkin/log-store/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
+)
+
+type Server struct {
+	store        *store.Store
+	forwarder    *ls.Forwarder
+	mux          *http.ServeMux
+	materializer *turnMaterializer
+}
+
+// New builds the server over s. settings is what GET /settings describes; a nil
+// one panics here, at boot, rather than at the first read of the route.
+func New(s *store.Store, forwarder *ls.Forwarder, settings *servicesettings.Registry) *Server {
+	if settings == nil {
+		panic("log-store: server.New needs the settings registry that GET /settings serves")
+	}
+	// The turn index records dual-emit candidates by the rule in dedup.go. Set before
+	// anything is served, so no event is indexed without it.
+	s.SetDedupCandidates(dedupCandidateOf, dedupCandidateVersion)
+	srv := &Server{store: s, forwarder: forwarder, mux: http.NewServeMux()}
+	srv.materializer = newTurnMaterializer(srv)
+	srv.mux.HandleFunc("POST /api/v1/events", srv.handleIngestEvent)
+	srv.mux.HandleFunc("GET /api/v1/sessions/search", srv.handleSearch)
+	srv.mux.HandleFunc("GET /api/v1/sessions/aggregates", srv.handleAggregates)
+	srv.mux.HandleFunc("GET /api/v1/sessions/{id}/messages", srv.handleMessages)
+	// The unprojected model, for the Raw pane and for audit. Its own route rather
+	// than a query param on the line above so the two answers cache separately and
+	// a caller cannot ask for the 10x payload by accident. See project.go.
+	srv.mux.HandleFunc("GET /api/v1/sessions/{id}/messages/raw", srv.handleMessagesRaw)
+	// One entry of the reading page with its full tool payloads — what a preview
+	// page (payload=preview) points at for a shortened tool input or output.
+	srv.mux.HandleFunc("GET /api/v1/sessions/{id}/entries/{eventId}", srv.handleEntry)
+	// The bytes of one image a tool result carries; the page lists them by index.
+	srv.mux.HandleFunc("GET /api/v1/sessions/{id}/entries/{eventId}/images/{index}", srv.handleEntryImage)
+	// chat-page endpoints — turn-model materialization + validators.
+	srv.mux.HandleFunc("GET /api/v1/sessions/validators", srv.handleValidators)
+	srv.mux.HandleFunc("GET /api/v1/sessions/bundle", srv.handleBundle)
+	srv.mux.HandleFunc("GET /api/v1/sessions/{id}/events", srv.handleEvents)
+	srv.mux.HandleFunc("GET /api/v1/sessions/{id}/turn-state", srv.handleTurnState)
+	// Deliberately a sibling of search/aggregates/validators/bundle rather
+	// than /sessions/by-harness-id/{id}: a five-segment pattern with a
+	// literal in the fourth position overlaps /sessions/{id}/messages, and
+	// Go's ServeMux PANICS at registration on an ambiguous pair.
+	srv.mux.HandleFunc("GET /api/v1/sessions/by-harness-id", srv.handleSessionsByHarnessID)
+	srv.mux.HandleFunc("GET /health", srv.handleHealth)
+	// Read-only, and as open as every other route. PUT /settings/{key} is not
+	// mounted: no setting is Editable, so there is nothing a write could change.
+	srv.mux.Handle("GET /settings", servicesettings.Handler(settings, "/settings"))
+	return srv
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mux.ServeHTTP(w, r)
+}
+
+// handleIngestEvent accepts a single msg.Event, stores it verbatim, and forwards result events to logstack.
+func (s *Server) handleIngestEvent(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, `{"error":"read body"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Parse just enough to extract session_id and type for indexing
+	var ev msg.Event
+	if err := json.Unmarshal(body, &ev); err != nil {
+		http.Error(w, `{"error":"invalid event JSON"}`, http.StatusBadRequest)
+		return
+	}
+
+	if ev.BridgeSessionID == "" {
+		http.Error(w, `{"error":"missing bridge_session_id"}`, http.StatusBadRequest)
+		return
+	}
+	storeID := ev.BridgeSessionID
+
+	// Store the raw body verbatim — no re-serialization
+	rowID, err := s.store.StoreEvent(storeID, string(ev.Type), body)
+	if err != nil {
+		log.Printf("[log-store] store error: %v", err)
+		http.Error(w, `{"error":"store failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	s.materializer.noteEvent(storeID, ev.Type)
+
+	// Forward result events to logstack
+	if ev.Type == msg.EventResult && ev.Result != nil {
+		s.forwarder.Forward(ev)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]int64{"id": rowID})
+}
+
+// handleMessages returns the reading page of a session: its newest `limit` turns,
+// or with `before` the turns older than the one holding that event, as a projected
+// TurnModel ({ model }) read from stored turns (stored_turns.go).
+//
+// A request naming neither `limit` nor `before` is refused. It used to answer a
+// different shape — every event of the session materialized as a message array,
+// 306 MB and 85 s for one real session — and its last caller, the kanban
+// classifier, stopped using it on 2026-09-16.
+func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	q := r.URL.Query()
+	limitStr := q.Get("limit")
+	beforeStr := q.Get("before")
+
+	if limitStr == "" && beforeStr == "" {
+		http.Error(w, "limit or before is required: /messages serves a bounded page of turns", http.StatusBadRequest)
+		return
+	}
+
+	limit := 30
+	if limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	var before int64
+	if beforeStr != "" {
+		if n, err := strconv.ParseInt(beforeStr, 10, 64); err == nil && n > 0 {
+			before = n
+		}
+	}
+	mode, err := parsePayloadMode(q.Get("payload"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	model, err := s.storedTail(id, limit, before, mode)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, MessagesResponse{Model: model})
+}
+
+// handleEntry returns one entry of the reading page with its full tool payloads:
+// GET /api/v1/sessions/{id}/entries/{eventId}. 404 when the event is not an entry of
+// that page — it does not exist, or the projection hides it as a duplicate copy.
+func (s *Server) handleEntry(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	eventID, err := strconv.ParseInt(r.PathValue("eventId"), 10, 64)
+	if err != nil || eventID <= 0 {
+		http.Error(w, "eventId must be a positive integer", http.StatusBadRequest)
+		return
+	}
+	entry, found, err := s.fullStoredEntry(id, eventID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "no such entry", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, entry)
+}
+
+// handleMessagesRaw serves the UNPROJECTED turn model: every entry the window
+// holds, duplicates included, each carrying its full `raw` source event.
+//
+// This is what `/messages` used to serve, and it is what the Raw pane and any audit
+// reader needs — a page it can reconstruct the event stream from. It is a separate
+// route because it is roughly ten times the size (measured 9.91 MB against 0.92 MB on
+// one real session), so asking for it has to be deliberate.
+//
+// Same bounds as `/messages`: `limit` defaults to 30 and `before` pages older. There
+// is no unbounded shape here — the legacy full-stream materialize is what produced
+// 306 MB and 85 seconds for one session, and it is not reachable from this route.
+func (s *Server) handleMessagesRaw(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	q := r.URL.Query()
+
+	limit := 30
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
+		limit = n
+	}
+	var before int64
+	if n, err := strconv.ParseInt(q.Get("before"), 10, 64); err == nil && n > 0 {
+		before = n
+	}
+
+	model, err := s.materializeTail(id, limit, before)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, MessagesResponse{Model: model})
+}
+
+// rawEventCap bounds the events one raw page may carry. The raw page ships every
+// event with its full source payload, so it is bounded by events as well as turns.
+const rawEventCap = 5000
+
+// materializeTail assembles the UNPROJECTED TurnModel for a session's newest turns
+// (or those older than the turn holding `before`): every event of those turns as an
+// entry, duplicates annotated rather than dropped, each with its raw source event.
+//
+// It chooses turns exactly as the reading page does (store.TurnWindow), so the two
+// views of one session agree on which turns a page holds and what each turn is
+// called. Whole older turns are left out while the page is over rawEventCap; a
+// newest turn that alone is over it is served as its newest rawEventCap events.
+func (s *Server) materializeTail(id string, limit int, before int64) (TurnModel, error) {
+	if err := s.store.BuildTurnIndex(id); err != nil {
+		return TurnModel{}, fmt.Errorf("index turns of %s: %w", id, err)
+	}
+	window, more, err := s.store.TurnWindow(id, limit, before)
+	if err != nil {
+		return TurnModel{}, fmt.Errorf("choose turns of %s: %w", id, err)
+	}
+
+	// Keep the newest turns that fit; the first turn that would overflow ends it.
+	first := len(window)
+	var events int64
+	for i := len(window) - 1; i >= 0; i-- {
+		if i < len(window)-1 && events+window[i].EventCount > rawEventCap {
+			more = true
+			break
+		}
+		events += window[i].EventCount
+		first = i
+	}
+	window = window[first:]
+
+	var rows []store.EventRow
+	for _, turn := range window {
+		var turnRows []store.EventRow
+		if turn.EventCount > rawEventCap {
+			turnRows, err = s.store.TurnEventsTail(id, turn, rawEventCap)
+			more = true
+		} else {
+			turnRows, err = s.store.TurnEvents(id, turn)
+		}
+		if err != nil {
+			return TurnModel{}, fmt.Errorf("read events of turn %d of %s: %w", turn.Seq, id, err)
+		}
+		rows = append(rows, turnRows...)
+	}
+
+	// Paired across the whole session, as the reading page is, so a copy whose twin
+	// sits outside this page is still recognized.
+	pairing, err := s.sessionPairing(id)
+	if err != nil {
+		return TurnModel{}, err
+	}
+	model, _ := buildTurnModelWithAggregateSources(id, rows, more, pairing.pairs)
+	if model.Turns == nil {
+		model.Turns = []Turn{}
+	}
+	validators, err := s.store.Validators([]string{id})
+	if err != nil {
+		return TurnModel{}, fmt.Errorf("validator for %s: %w", id, err)
+	}
+	model.Validator = toWireValidator(validators[id])
+	return model, nil
+}
+
+// handleValidators returns the per-session validator for a comma-separated set
+// of ids: GET /api/v1/sessions/validators?ids=a,b,c → { [id]: Validator }.
+func (s *Server) handleValidators(w http.ResponseWriter, r *http.Request) {
+	ids := splitIDs(r.URL.Query().Get("ids"))
+	if len(ids) == 0 {
+		writeJSON(w, map[string]Validator{})
+		return
+	}
+	vs, err := s.store.Validators(ids)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := make(map[string]Validator, len(vs))
+	for id, v := range vs {
+		out[id] = toWireValidator(v)
+	}
+	writeJSON(w, out)
+}
+
+// handleBundle returns a materialized tail TurnModel for each requested session
+// in one response: GET /api/v1/sessions/bundle?ids=a,b,c&turns=30 →
+// { [id]: TurnModel }. llm-bridge-server assembles the summary+model recent
+// bundle on top of this.
+func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
+	ids := splitIDs(r.URL.Query().Get("ids"))
+	turns := 30
+	if t := r.URL.Query().Get("turns"); t != "" {
+		if n, err := strconv.Atoi(t); err == nil && n > 0 {
+			turns = n
+		}
+	}
+	mode, err := parsePayloadMode(r.URL.Query().Get("payload"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	out := make(map[string]TurnModel, len(ids))
+	for _, id := range ids {
+		// Projected for the same reason `/messages` is, and it matters more here: the
+		// bundle is the COLD-BOOT payload and it multiplies by the session count.
+		// Measured 2026-08-25, `recent-bundle?n=20&turns=30` was 29.1 MB in a single
+		// response before this.
+		model, err := s.storedTail(id, turns, 0, mode)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out[id] = model
+	}
+	writeJSON(w, out)
+}
+
+// toWireValidator maps a store validator to the wire shape (RFC3339+offset).
+func toWireValidator(v store.SessionValidator) Validator {
+	updated := ""
+	if !v.UpdatedAt.IsZero() {
+		updated = v.UpdatedAt.Format(time.RFC3339)
+	}
+	return Validator{MaxEventID: v.MaxEventID, EventCount: v.EventCount, UpdatedAt: updated}
+}
+
+// splitIDs parses a comma-separated id list, trimming blanks.
+func splitIDs(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// handleEvents returns events after a given row ID (for polling/reconnection),
+// optionally filtered by ?types=foo,bar.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	afterStr := r.URL.Query().Get("after")
+	afterID := 0
+	if afterStr != "" {
+		afterID, _ = strconv.Atoi(afterStr)
+	}
+
+	events, err := s.store.ListEventsSinceID(id, afterID, parseTypes(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if events == nil {
+		events = []json.RawMessage{}
+	}
+	writeJSON(w, events)
+}
+
+// handleTurnState returns the in-flight turn state for a session, derived from
+// the latest user_message and result/error events.
+func (s *Server) handleTurnState(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ts, err := s.store.TurnState(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, ts)
+}
+
+// parseTypes splits the ?types= query into a non-empty slice of event types,
+// or returns nil if the parameter is absent / empty (callers treat nil as
+// "no filter").
+func parseTypes(r *http.Request) []string {
+	raw := r.URL.Query().Get("types")
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// handleSearch returns session IDs whose events contain the query substring.
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeJSON(w, []store.SearchHit{})
+		return
+	}
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	// Optional RFC3339 window. A malformed bound is a 400, never a silently
+	// unbounded scan: the caller asked for a window precisely because the
+	// unbounded scan takes ~50s on this host, and handing them that scan in
+	// place of an error would look like a hang.
+	var since, until time.Time
+	if v := r.URL.Query().Get("since"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			http.Error(w, `{"error":"since must be RFC3339"}`, http.StatusBadRequest)
+			return
+		}
+		since = t
+	}
+	if v := r.URL.Query().Get("until"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			http.Error(w, `{"error":"until must be RFC3339"}`, http.StatusBadRequest)
+			return
+		}
+		until = t
+	}
+	hits, err := s.store.SearchSessionsInWindow(q, limit, since, until)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if hits == nil {
+		hits = []store.SearchHit{}
+	}
+	writeJSON(w, hits)
+}
+
+// handleSessionsByHarnessID answers whether log-store already holds a
+// transcript for a harness-native session id, and under which of its own
+// session ids.
+//
+// It exists for llm-bridge-server's discovery import, which today asks its
+// own database whether a session is new and writes the answer's consequence
+// here. A caller can now put the question to the store that owns the write.
+//
+// A missing or empty harness_session_id is a 400, not an empty list: '' is
+// what every session whose events name no harness id carries, so answering
+// it would be answering a different question.
+func (s *Server) handleSessionsByHarnessID(w http.ResponseWriter, r *http.Request) {
+	harnessSessionID := r.URL.Query().Get("harness_session_id")
+	if harnessSessionID == "" {
+		http.Error(w, `{"error":"harness_session_id is required"}`, http.StatusBadRequest)
+		return
+	}
+	held, err := s.store.SessionsHoldingHarnessSessionID(harnessSessionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if held == nil {
+		held = []store.HeldSession{}
+	}
+	writeJSON(w, map[string]any{
+		"harness_session_id": harnessSessionID,
+		"sessions":           held,
+	})
+}
+
+// handleAggregates returns per-session token and duration totals: the result
+// events' sums, and the api_call events' sums per query source, which is
+// where a subagent's calls are counted.
+//
+// With no query it lists every session's whole-life totals, and no cost. With
+// ?since=<RFC 3339 time> it lists the sessions that used anything from the
+// clock hour holding that time on, with what each did from then on and how
+// much its cost estimate grew. See msg.SessionAggregate.
+func (s *Server) handleAggregates(w http.ResponseWriter, r *http.Request) {
+	var rows []store.SessionAggregateRow
+	var err error
+	if sinceText := r.URL.Query().Get("since"); sinceText != "" {
+		since, parseErr := time.Parse(time.RFC3339, sinceText)
+		if parseErr != nil {
+			http.Error(w, fmt.Sprintf("since must be an RFC 3339 time such as 2026-01-02T15:04:05Z: %v", parseErr), http.StatusBadRequest)
+			return
+		}
+		rows, err = s.store.ListSessionAggregatesSince(since)
+	} else {
+		rows, err = s.store.ListSessionAggregates()
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := make([]msg.SessionAggregate, 0, len(rows))
+	for _, r := range rows {
+		var apiCallUsage []msg.SessionAPICallUsage
+		for _, u := range r.APICallUsage {
+			apiCallUsage = append(apiCallUsage, msg.SessionAPICallUsage{
+				QuerySource:      u.QuerySource,
+				Calls:            u.Calls,
+				InputTokens:      u.InputTokens,
+				OutputTokens:     u.OutputTokens,
+				CacheReadTokens:  u.CacheReadTokens,
+				CacheWriteTokens: u.CacheWriteTokens,
+			})
+		}
+		out = append(out, msg.SessionAggregate{
+			SessionID:        r.SessionID,
+			Turns:            r.Turns,
+			InputTokens:      r.InputTokens,
+			OutputTokens:     r.OutputTokens,
+			CacheReadTokens:  r.CacheReadTokens,
+			CacheWriteTokens: r.CacheWriteTokens,
+			DurationMS:       r.DurationMS,
+			Model:            r.Model,
+			APICallUsage:     apiCallUsage,
+			SessionCostUSD:   r.SessionCostUSD,
+		})
+	}
+	writeJSON(w, out)
+}
+
+// healthResponse is what GET /health answers.
+//
+// It carries the logstack forwarder's record because the forwarder is the one
+// part of this service that can fail completely and continuously without
+// affecting any response it gives: ingest still returns 200, events are still
+// stored, and every forwarded event is dropped. Reporting only liveness here
+// is what let 287,106 consecutive forwarding failures go unnoticed for five
+// weeks.
+type healthResponse struct {
+	Status             string              `json:"status"`
+	LogstackForwarding ls.ForwardingHealth `json:"logstack_forwarding"`
+}
+
+const (
+	// statusOK means the process is serving and its forwarder is not failing.
+	statusOK = "ok"
+	// statusDegraded means the service answers, but something it is
+	// responsible for is not working. It is deliberately not "error": the
+	// store is fine and refusing traffic would be the wrong response.
+	statusDegraded = "degraded"
+)
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	forwarding := s.forwarder.Health()
+
+	status := statusOK
+	if forwarding.Degraded() {
+		status = statusDegraded
+	}
+
+	writeJSON(w, healthResponse{Status: status, LogstackForwarding: forwarding})
+}
+
+func writeJSON(w http.ResponseWriter, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v)
+}
