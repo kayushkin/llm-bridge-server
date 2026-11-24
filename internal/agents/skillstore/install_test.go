@@ -53,13 +53,13 @@ func ingestOneSkill(t *testing.T, s *Store, sourceName, dirName, skillName strin
 		}
 	}
 	src := &Source{Name: sourceName, Enabled: true, Kind: SourceKindLocal, LocalPath: root}
-	if err := s.UpsertSource(src); err != nil {
+	if err := s.UpsertSource(testContext, src); err != nil {
 		t.Fatalf("upsert source: %v", err)
 	}
-	if _, err := s.Sync(src.ID); err != nil {
+	if _, err := s.Sync(testContext, src.ID); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	skills, err := s.ListSkills(ListSkillsFilter{SourceID: src.ID})
+	skills, err := s.ListSkills(testContext, ListSkillsFilter{SourceID: src.ID})
 	if err != nil {
 		t.Fatalf("list skills: %v", err)
 	}
@@ -73,7 +73,7 @@ func ingestOneSkill(t *testing.T, s *Store, sourceName, dirName, skillName strin
 // written against what was reported without going back through the same code.
 func installationRow(t *testing.T, s *Store, skillID int64) (target string, installedAt int64, found bool) {
 	t.Helper()
-	err := s.DB().QueryRow(`SELECT target_path, installed_at FROM installations WHERE skill_id=?`, skillID).
+	err := s.DB().QueryRow(`SELECT target_path, installed_at FROM installations WHERE skill_id=$1`, skillID).
 		Scan(&target, &installedAt)
 	if err != nil {
 		return "", 0, false
@@ -96,7 +96,7 @@ func TestInstallWritesTheSkillToDiskAndRecordsTheRow(t *testing.T) {
 	s := newTestStore(t)
 	id := ingestOneSkill(t, s, "src", "alpha", "alpha", nil)
 
-	inst, err := s.Install(id, false)
+	inst, err := s.Install(testContext, id, false)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestInstallWritesTheSkillToDiskAndRecordsTheRow(t *testing.T) {
 	if inst.TargetPath != want {
 		t.Fatalf("target = %s, want %s", inst.TargetPath, want)
 	}
-	sk, err := s.GetSkill(id)
+	sk, err := s.GetSkill(testContext, id)
 	if err != nil {
 		t.Fatalf("get skill: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestTheReplyDescribesTheRowThatWasActuallyWritten(t *testing.T) {
 	s := newTestStore(t)
 	id := ingestOneSkill(t, s, "src", "alpha", "alpha", nil)
 
-	inst, err := s.Install(id, false)
+	inst, err := s.Install(testContext, id, false)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestInstallCopiesSiblingFilesAndKeepsTheirSubdirectories(t *testing.T) {
 		"scripts/run.sh":     "#!/bin/sh\necho hi\n",
 	})
 
-	inst, err := s.Install(id, false)
+	inst, err := s.Install(testContext, id, false)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestASkillWithNoSiblingFilesStillInstalls(t *testing.T) {
 		t.Fatalf("remove payload dir: %v", err)
 	}
 
-	inst, err := s.Install(id, false)
+	inst, err := s.Install(testContext, id, false)
 	if err != nil {
 		t.Fatalf("a skill with no payload dir failed to install: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestInstallingOverAnEarlierVersionRemovesTheFilesItDropped(t *testing.T) {
 	s := newTestStore(t)
 	id := ingestOneSkill(t, s, "src", "alpha", "alpha", nil)
 
-	inst, err := s.Install(id, false)
+	inst, err := s.Install(testContext, id, false)
 	if err != nil {
 		t.Fatalf("first install: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestInstallingOverAnEarlierVersionRemovesTheFilesItDropped(t *testing.T) {
 		t.Fatalf("write stale file: %v", err)
 	}
 
-	if _, err := s.Install(id, false); err != nil {
+	if _, err := s.Install(testContext, id, false); err != nil {
 		t.Fatalf("second install: %v", err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
@@ -225,12 +225,12 @@ func TestInstallingOverAnEarlierVersionRemovesTheFilesItDropped(t *testing.T) {
 func TestASecondSkillWantingTheSameDirectoryIsRefused(t *testing.T) {
 	s := newTestStore(t)
 	first := ingestOneSkill(t, s, "srcA", "alpha", "alpha", nil)
-	if _, err := s.Install(first, false); err != nil {
+	if _, err := s.Install(testContext, first, false); err != nil {
 		t.Fatalf("install first: %v", err)
 	}
 	second := ingestOneSkill(t, s, "srcB", "alpha", "alpha", nil)
 
-	_, err := s.Install(second, false)
+	_, err := s.Install(testContext, second, false)
 	if !errors.Is(err, ErrInstallConflict) {
 		t.Fatalf("installing a same-named skill from another source returned %v, want ErrInstallConflict; "+
 			"the target path is derived from the name alone, so two sources shipping one name collide", err)
@@ -243,14 +243,14 @@ func TestASecondSkillWantingTheSameDirectoryIsRefused(t *testing.T) {
 func TestARefusedInstallLeavesTheIncumbentUntouched(t *testing.T) {
 	s := newTestStore(t)
 	first := ingestOneSkill(t, s, "srcA", "alpha", "alpha", nil)
-	inst, err := s.Install(first, false)
+	inst, err := s.Install(testContext, first, false)
 	if err != nil {
 		t.Fatalf("install first: %v", err)
 	}
 	before := mustReadFile(t, filepath.Join(inst.TargetPath, "SKILL.md"))
 
 	second := ingestOneSkill(t, s, "srcB", "alpha", "alpha", nil)
-	if _, err := s.Install(second, false); !errors.Is(err, ErrInstallConflict) {
+	if _, err := s.Install(testContext, second, false); !errors.Is(err, ErrInstallConflict) {
 		t.Fatalf("want ErrInstallConflict, got %v", err)
 	}
 
@@ -273,12 +273,12 @@ func TestARefusedInstallLeavesTheIncumbentUntouched(t *testing.T) {
 func TestForceReplacesTheIncumbentAndLeavesExactlyOneOwner(t *testing.T) {
 	s := newTestStore(t)
 	first := ingestOneSkill(t, s, "srcA", "alpha", "alpha", nil)
-	if _, err := s.Install(first, false); err != nil {
+	if _, err := s.Install(testContext, first, false); err != nil {
 		t.Fatalf("install first: %v", err)
 	}
 	second := ingestOneSkill(t, s, "srcB", "alpha", "alpha", nil)
 
-	inst, err := s.Install(second, true)
+	inst, err := s.Install(testContext, second, true)
 	if err != nil {
 		t.Fatalf("forced install: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestForceReplacesTheIncumbentAndLeavesExactlyOneOwner(t *testing.T) {
 	if !found || target != inst.TargetPath {
 		t.Fatalf("the forcing skill did not take ownership: found=%v target=%s", found, target)
 	}
-	sk, err := s.GetSkill(second)
+	sk, err := s.GetSkill(testContext, second)
 	if err != nil {
 		t.Fatalf("get skill: %v", err)
 	}
@@ -306,11 +306,11 @@ func TestForceReplacesTheIncumbentAndLeavesExactlyOneOwner(t *testing.T) {
 func TestReinstallingTheSkillThatAlreadyOwnsTheTargetIsNotAConflict(t *testing.T) {
 	s := newTestStore(t)
 	id := ingestOneSkill(t, s, "src", "alpha", "alpha", nil)
-	if _, err := s.Install(id, false); err != nil {
+	if _, err := s.Install(testContext, id, false); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 
-	if _, err := s.Install(id, false); err != nil {
+	if _, err := s.Install(testContext, id, false); err != nil {
 		t.Fatalf("reinstalling the owning skill was refused: %v; no skill can be upgraded without force", err)
 	}
 	var rows int
@@ -330,14 +330,14 @@ func TestReinstallingTheSkillThatAlreadyOwnsTheTargetIsNotAConflict(t *testing.T
 func TestReinstallingAfterTheInstallDirMovesUpdatesTheRecordedTarget(t *testing.T) {
 	s := newTestStore(t)
 	id := ingestOneSkill(t, s, "src", "alpha", "alpha", nil)
-	first, err := s.Install(id, false)
+	first, err := s.Install(testContext, id, false)
 	if err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 
 	moved := filepath.Join(filepath.Dir(s.InstallDir()), "install-moved")
-	s.SetInstallDir(moved)
-	second, err := s.Install(id, false)
+	s = withInstallDir(t, s, moved)
+	second, err := s.Install(testContext, id, false)
 	if err != nil {
 		t.Fatalf("reinstall after move: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestReinstallingAfterTheInstallDirMovesUpdatesTheRecordedTarget(t *testing.
 		t.Fatalf("row still records %s, but the skill was installed to %s; "+
 			"Uninstall would remove the abandoned copy and leave the live one", target, second.TargetPath)
 	}
-	if _, err := s.Uninstall(id); err != nil {
+	if _, err := s.Uninstall(testContext, id); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 	if _, err := os.Stat(second.TargetPath); !os.IsNotExist(err) {
@@ -364,7 +364,7 @@ func TestReinstallingAfterTheInstallDirMovesUpdatesTheRecordedTarget(t *testing.
 func TestInstallingASkillThatDoesNotExistWritesNothing(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.Install(4242, false)
+	_, err := s.Install(testContext, 4242, false)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("install of a missing skill = %v, want ErrNotFound", err)
 	}
@@ -378,12 +378,12 @@ func TestInstallingASkillThatDoesNotExistWritesNothing(t *testing.T) {
 func TestUninstallRemovesBothTheDirectoryAndTheRow(t *testing.T) {
 	s := newTestStore(t)
 	id := ingestOneSkill(t, s, "src", "alpha", "alpha", nil)
-	inst, err := s.Install(id, false)
+	inst, err := s.Install(testContext, id, false)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
-	got, err := s.Uninstall(id)
+	got, err := s.Uninstall(testContext, id)
 	if err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestUninstallingSomethingThatWasNeverInstalledIsNotAnError(t *testing.T) {
 	s := newTestStore(t)
 	id := ingestOneSkill(t, s, "src", "alpha", "alpha", nil)
 
-	inst, err := s.Uninstall(id)
+	inst, err := s.Uninstall(testContext, id)
 	if err != nil {
 		t.Fatalf("uninstalling a skill that is not installed returned an error: %v", err)
 	}
@@ -418,14 +418,14 @@ func TestListInstallationsJoinsTheSkillAndSourceNamesAndSortsBySkillName(t *test
 	s := newTestStore(t)
 	zulu := ingestOneSkill(t, s, "src-zulu", "zulu", "zulu", nil)
 	alpha := ingestOneSkill(t, s, "src-alpha", "alpha", "alpha", nil)
-	if _, err := s.Install(zulu, false); err != nil {
+	if _, err := s.Install(testContext, zulu, false); err != nil {
 		t.Fatalf("install zulu: %v", err)
 	}
-	if _, err := s.Install(alpha, false); err != nil {
+	if _, err := s.Install(testContext, alpha, false); err != nil {
 		t.Fatalf("install alpha: %v", err)
 	}
 
-	got, err := s.ListInstallations()
+	got, err := s.ListInstallations(testContext)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestListInstallationsJoinsTheSkillAndSourceNamesAndSortsBySkillName(t *test
 func installTestServer(t *testing.T, s *Store) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s)
+	registerTestRoutes(mux, s)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -488,7 +488,7 @@ func TestTheInstallRouteReportsAConflictAs409(t *testing.T) {
 	s := newTestStore(t)
 	srv := installTestServer(t, s)
 	first := ingestOneSkill(t, s, "srcA", "alpha", "alpha", nil)
-	if _, err := s.Install(first, false); err != nil {
+	if _, err := s.Install(testContext, first, false); err != nil {
 		t.Fatalf("install first: %v", err)
 	}
 	ingestOneSkill(t, s, "srcB", "alpha", "alpha", nil)
@@ -526,7 +526,7 @@ func TestTheForceParameterIsTheLiteralStringTrue(t *testing.T) {
 	s := newTestStore(t)
 	srv := installTestServer(t, s)
 	first := ingestOneSkill(t, s, "srcA", "alpha", "alpha", nil)
-	if _, err := s.Install(first, false); err != nil {
+	if _, err := s.Install(testContext, first, false); err != nil {
 		t.Fatalf("install first: %v", err)
 	}
 	ingestOneSkill(t, s, "srcB", "alpha", "alpha", nil)
@@ -580,7 +580,7 @@ func TestTheUninstallRouteRemovesTheDirectoryAndTheRow(t *testing.T) {
 	s := newTestStore(t)
 	srv := installTestServer(t, s)
 	id := ingestOneSkill(t, s, "src", "alpha", "alpha", nil)
-	inst, err := s.Install(id, false)
+	inst, err := s.Install(testContext, id, false)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -643,7 +643,7 @@ func TestTheInstallationsRouteReportsWhatIsInstalled(t *testing.T) {
 	s := newTestStore(t)
 	srv := installTestServer(t, s)
 	id := ingestOneSkill(t, s, "src", "alpha", "alpha", nil)
-	if _, err := s.Install(id, false); err != nil {
+	if _, err := s.Install(testContext, id, false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -681,22 +681,22 @@ func TestARenamedSkillLeavesItsInstalledDirectoryBehindOwnedByNobody(t *testing.
 	root := filepath.Join(t.TempDir(), "authored")
 	writeSkill(t, root, "thing", "oldname", "v1")
 	src := &Source{Name: "renaming", Enabled: true, Kind: SourceKindLocal, LocalPath: root}
-	if err := s.UpsertSource(src); err != nil {
+	if err := s.UpsertSource(testContext, src); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if _, err := s.Sync(src.ID); err != nil {
+	if _, err := s.Sync(testContext, src.ID); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	before, err := s.ListSkills(ListSkillsFilter{SourceID: src.ID})
+	before, err := s.ListSkills(testContext, ListSkillsFilter{SourceID: src.ID})
 	if err != nil || len(before) != 1 {
 		t.Fatalf("list: %v %d", err, len(before))
 	}
-	if _, err := s.Install(before[0].ID, false); err != nil {
+	if _, err := s.Install(testContext, before[0].ID, false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
 	writeSkill(t, root, "thing", "newname", "v2")
-	if _, err := s.Sync(src.ID); err != nil {
+	if _, err := s.Sync(testContext, src.ID); err != nil {
 		t.Fatalf("resync: %v", err)
 	}
 
@@ -708,7 +708,7 @@ func TestARenamedSkillLeavesItsInstalledDirectoryBehindOwnedByNobody(t *testing.
 		t.Fatalf("the orphaned directory is gone (stat err = %v) — something now prunes installed "+
 			"directories, so delete this characterisation and close its card", err)
 	}
-	insts, err := s.ListInstallations()
+	insts, err := s.ListInstallations(testContext)
 	if err != nil {
 		t.Fatalf("list installations: %v", err)
 	}

@@ -2,18 +2,21 @@ package skillstore
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 )
 
 // SyncResult summarizes what happened during a Sync call.
@@ -32,8 +35,8 @@ type SyncResult struct {
 // source is cloned or updated first; a local source is read where it lies. Skill
 // files are copied into the store's data dir keyed by the skill's DB id, and
 // pruning removes skills that have disappeared from the source.
-func (s *Store) Sync(sourceID int64) (*SyncResult, error) {
-	src, err := s.GetSource(sourceID)
+func (s *Store) Sync(ctx context.Context, sourceID int64) (*SyncResult, error) {
+	src, err := s.GetSource(ctx, sourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +75,7 @@ func (s *Store) Sync(sourceID int64) (*SyncResult, error) {
 		if d.Name() != "SKILL.md" {
 			return nil
 		}
-		sk, inserted, ierr := s.ingestSkillFile(src, rootDir, path, commit)
+		sk, inserted, ierr := s.ingestSkillFile(ctx, src, rootDir, path, commit)
 		if ierr != nil {
 			res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", path, ierr))
 			return nil
@@ -90,18 +93,18 @@ func (s *Store) Sync(sourceID int64) (*SyncResult, error) {
 		return nil, fmt.Errorf("walk: %w", err)
 	}
 
-	pruned, err := s.DeleteSkillsForSourceExcept(sourceID, keepIDs)
+	pruned, err := s.DeleteSkillsForSourceExcept(ctx, sourceID, keepIDs)
 	if err != nil {
 		return nil, fmt.Errorf("prune: %w", err)
 	}
 	res.Pruned = pruned
 
 	// Remove orphaned skill file directories
-	if err := s.pruneOrphanSkillDirs(keepIDs); err != nil {
+	if err := s.pruneOrphanSkillDirs(ctx, keepIDs); err != nil {
 		res.Errors = append(res.Errors, fmt.Sprintf("prune dirs: %v", err))
 	}
 
-	if err := s.MarkSourceSynced(sourceID, commit, res.Found); err != nil {
+	if err := s.MarkSourceSynced(ctx, sourceID, commit, res.Found); err != nil {
 		return nil, fmt.Errorf("mark synced: %w", err)
 	}
 	return res, nil
@@ -183,7 +186,7 @@ func isWithin(child, parent string) bool {
 
 // ingestSkillFile parses a SKILL.md, upserts the skill row, and copies
 // sibling files into the store's files dir for that skill.
-func (s *Store) ingestSkillFile(src *Source, rootDir, skillMDPath, commit string) (*Skill, bool, error) {
+func (s *Store) ingestSkillFile(ctx context.Context, src *Source, rootDir, skillMDPath, commit string) (*Skill, bool, error) {
 	body, err := os.ReadFile(skillMDPath)
 	if err != nil {
 		return nil, false, err
@@ -214,7 +217,7 @@ func (s *Store) ingestSkillFile(src *Source, rootDir, skillMDPath, commit string
 		Tags:         tags,
 		Enabled:      true,
 	}
-	inserted, err := s.UpsertSkill(sk)
+	inserted, err := s.UpsertSkill(ctx, sk)
 	if err != nil {
 		return nil, false, err
 	}
@@ -228,7 +231,7 @@ func (s *Store) ingestSkillFile(src *Source, rootDir, skillMDPath, commit string
 		return nil, false, fmt.Errorf("copy files: %w", err)
 	}
 	sk.FileCount = fileCount
-	if _, err := s.UpsertSkill(sk); err != nil {
+	if _, err := s.UpsertSkill(ctx, sk); err != nil {
 		return nil, false, fmt.Errorf("update file_count: %w", err)
 	}
 	return sk, inserted, nil
@@ -283,7 +286,7 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
-func (s *Store) pruneOrphanSkillDirs(keepIDs []int64) error {
+func (s *Store) pruneOrphanSkillDirs(ctx context.Context, keepIDs []int64) error {
 	entries, err := os.ReadDir(s.SkillsDir())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -303,9 +306,16 @@ func (s *Store) pruneOrphanSkillDirs(keepIDs []int64) error {
 		if _, ok := keep[e.Name()]; ok {
 			continue
 		}
-		// Is there any row with this id? If not, remove.
-		var exists int
-		err := s.db.QueryRow(`SELECT 1 FROM skills WHERE id=?`, e.Name()).Scan(&exists)
+		// Is there any row with this id? If not, remove. A directory whose name
+		// is not a skill id names no row either, as it named none in SQLite.
+		id, parseErr := strconv.ParseInt(e.Name(), 10, 64)
+		var err error
+		if parseErr != nil {
+			err = sql.ErrNoRows
+		} else {
+			var exists int
+			err = s.db.QueryRowContext(ctx, `SELECT 1 FROM skills WHERE id=$1`, id).Scan(&exists)
+		}
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			if rerr := os.RemoveAll(filepath.Join(s.SkillsDir(), e.Name())); rerr != nil {

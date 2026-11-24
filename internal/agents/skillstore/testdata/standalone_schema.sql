@@ -1,3 +1,6 @@
+-- The schema of the standalone skill-store, as its last SQLite version wrote it.
+-- The import tests build a standalone database from it.
+
 -- skill-store schema
 -- Registry of Claude Code / Agent SKILL.md skills, ingested from upstream repos.
 

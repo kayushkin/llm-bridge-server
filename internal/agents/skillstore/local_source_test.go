@@ -7,20 +7,6 @@ import (
 	"testing"
 )
 
-// newTestStore opens a store in a temp dir with an install dir that is NOT a
-// parent or child of anything the tests use as a source root.
-func newTestStore(t *testing.T) *Store {
-	t.Helper()
-	dir := t.TempDir()
-	s, err := Open(filepath.Join(dir, "data"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	s.SetInstallDir(filepath.Join(dir, "install"))
-	return s
-}
-
 // writeSkill creates <root>/<name>/SKILL.md with the given frontmatter name.
 func writeSkill(t *testing.T, root, dirName, skillName, body string) string {
 	t.Helper()
@@ -36,40 +22,13 @@ func writeSkill(t *testing.T, root, dirName, skillName, body string) string {
 	return path
 }
 
-func TestMigrateAddsSourceColumnsAndIsIdempotent(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "data")
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatalf("first open: %v", err)
-	}
-	for _, col := range []string{"kind", "local_path"} {
-		present, err := hasColumn(s.DB(), "sources", col)
-		if err != nil {
-			t.Fatalf("hasColumn %s: %v", col, err)
-		}
-		if !present {
-			t.Fatalf("column sources.%s missing after migrate", col)
-		}
-	}
-	s.Close()
-
-	// Re-opening must not fail on the already-applied migrations.
-	s2, err := Open(dir)
-	if err != nil {
-		t.Fatalf("second open (migrations not idempotent): %v", err)
-	}
-	s2.Close()
-}
-
-// A source created without a kind must keep behaving as a git source, so rows
-// written before local sources existed are unaffected.
 func TestSourceDefaultsToGit(t *testing.T) {
 	s := newTestStore(t)
 	src := &Source{Name: "upstream", Enabled: true, RepoURL: "https://example.invalid/skills.git"}
-	if err := s.UpsertSource(src); err != nil {
+	if err := s.UpsertSource(testContext, src); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	got, err := s.GetSourceByName("upstream")
+	got, err := s.GetSourceByName(testContext, "upstream")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -84,10 +43,10 @@ func TestLocalSourceIngestsSkills(t *testing.T) {
 	writeSkill(t, root, "browser-automation", "browser-automation", "body text")
 
 	src := &Source{Name: "host", Enabled: true, Kind: SourceKindLocal, LocalPath: root, TrustTier: "personal"}
-	if err := s.UpsertSource(src); err != nil {
+	if err := s.UpsertSource(testContext, src); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	res, err := s.Sync(src.ID)
+	res, err := s.Sync(testContext, src.ID)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -99,7 +58,7 @@ func TestLocalSourceIngestsSkills(t *testing.T) {
 		t.Fatalf("commit = %q, want empty for a local source", res.Commit)
 	}
 
-	skills, err := s.ListSkills(ListSkillsFilter{SourceID: src.ID})
+	skills, err := s.ListSkills(testContext, ListSkillsFilter{SourceID: src.ID})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -139,10 +98,10 @@ func TestLocalSourceRefusesInstallDirOverlap(t *testing.T) {
 			writeSkill(t, tc.root, "some-skill", "some-skill", "body")
 
 			src := &Source{Name: "overlapping-" + tc.name, Enabled: true, Kind: SourceKindLocal, LocalPath: tc.root}
-			if err := s.UpsertSource(src); err != nil {
+			if err := s.UpsertSource(testContext, src); err != nil {
 				t.Fatalf("upsert: %v", err)
 			}
-			_, err := s.Sync(src.ID)
+			_, err := s.Sync(testContext, src.ID)
 			if err == nil {
 				t.Fatal("sync succeeded; want refusal for a source overlapping the install dir")
 			}
@@ -157,10 +116,10 @@ func TestLocalSourceRequiresExistingDirectory(t *testing.T) {
 	s := newTestStore(t)
 
 	missing := &Source{Name: "missing", Enabled: true, Kind: SourceKindLocal, LocalPath: filepath.Join(t.TempDir(), "nope")}
-	if err := s.UpsertSource(missing); err != nil {
+	if err := s.UpsertSource(testContext, missing); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if _, err := s.Sync(missing.ID); err == nil {
+	if _, err := s.Sync(testContext, missing.ID); err == nil {
 		t.Fatal("sync succeeded for a local_path that does not exist")
 	}
 
@@ -169,10 +128,10 @@ func TestLocalSourceRequiresExistingDirectory(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	notDir := &Source{Name: "not-a-dir", Enabled: true, Kind: SourceKindLocal, LocalPath: filePath}
-	if err := s.UpsertSource(notDir); err != nil {
+	if err := s.UpsertSource(testContext, notDir); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if _, err := s.Sync(notDir.ID); err == nil {
+	if _, err := s.Sync(testContext, notDir.ID); err == nil {
 		t.Fatal("sync succeeded for a local_path that is a file")
 	}
 }
@@ -180,10 +139,10 @@ func TestLocalSourceRequiresExistingDirectory(t *testing.T) {
 func TestLocalSourceWithoutPathIsRejected(t *testing.T) {
 	s := newTestStore(t)
 	src := &Source{Name: "pathless", Enabled: true, Kind: SourceKindLocal}
-	if err := s.UpsertSource(src); err != nil {
+	if err := s.UpsertSource(testContext, src); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if _, err := s.Sync(src.ID); err == nil {
+	if _, err := s.Sync(testContext, src.ID); err == nil {
 		t.Fatal("sync succeeded for a local source with no local_path")
 	}
 }
@@ -191,10 +150,10 @@ func TestLocalSourceWithoutPathIsRejected(t *testing.T) {
 func TestUnknownSourceKindIsRejected(t *testing.T) {
 	s := newTestStore(t)
 	src := &Source{Name: "weird", Enabled: true, Kind: SourceKind("carrier-pigeon"), RepoURL: "x"}
-	if err := s.UpsertSource(src); err != nil {
+	if err := s.UpsertSource(testContext, src); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	_, err := s.Sync(src.ID)
+	_, err := s.Sync(testContext, src.ID)
 	if err == nil {
 		t.Fatal("sync succeeded for an unknown source kind")
 	}

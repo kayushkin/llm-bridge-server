@@ -37,13 +37,7 @@ func seedTestStore(t *testing.T) *Store {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
-	s, err := Open(filepath.Join(dir, "data"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	s.SetInstallDir(filepath.Join(dir, "install"))
-	return s
+	return newTestStoreIn(t, filepath.Join(dir, "data"), filepath.Join(dir, "install"))
 }
 
 // installOneSkill ingests a one-file skill and installs it, so the machine has
@@ -54,20 +48,20 @@ func installOneSkill(t *testing.T, s *Store, name string) int64 {
 	writeSkill(t, root, name, name, "body text")
 
 	src := &Source{Name: "host-" + name, Enabled: true, Kind: SourceKindLocal, LocalPath: root}
-	if err := s.UpsertSource(src); err != nil {
+	if err := s.UpsertSource(testContext, src); err != nil {
 		t.Fatalf("upsert source: %v", err)
 	}
-	if _, err := s.Sync(src.ID); err != nil {
+	if _, err := s.Sync(testContext, src.ID); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	skills, err := s.ListSkills(ListSkillsFilter{SourceID: src.ID})
+	skills, err := s.ListSkills(testContext, ListSkillsFilter{SourceID: src.ID})
 	if err != nil {
 		t.Fatalf("list skills: %v", err)
 	}
 	if len(skills) != 1 {
 		t.Fatalf("got %d skills, want 1", len(skills))
 	}
-	if _, err := s.Install(skills[0].ID, false); err != nil {
+	if _, err := s.Install(testContext, skills[0].ID, false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	return skills[0].ID
@@ -80,7 +74,7 @@ func installOneSkill(t *testing.T, s *Store, name string) int64 {
 func TestAnUnconfiguredMachineSeedsByDefault(t *testing.T) {
 	s := seedTestStore(t)
 
-	prof, err := s.EnsureSeedProfile("fresh-box")
+	prof, err := s.EnsureSeedProfile(testContext, "fresh-box")
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -104,11 +98,11 @@ func TestAnUnconfiguredMachineSeedsByDefault(t *testing.T) {
 func TestEnsureDoesNotReEnableAMachineThatOptedOut(t *testing.T) {
 	s := seedTestStore(t)
 
-	if _, err := s.SetSeedProfileEnabled("opted-out", false); err != nil {
+	if _, err := s.SetSeedProfileEnabled(testContext, "opted-out", false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		prof, err := s.EnsureSeedProfile("opted-out")
+		prof, err := s.EnsureSeedProfile(testContext, "opted-out")
 		if err != nil {
 			t.Fatalf("ensure %d: %v", i, err)
 		}
@@ -124,7 +118,7 @@ func TestTheSwitchWritesBothValuesAndTheyRoundTrip(t *testing.T) {
 	s := seedTestStore(t)
 
 	for _, want := range []bool{false, true, false} {
-		returned, err := s.SetSeedProfileEnabled("box", want)
+		returned, err := s.SetSeedProfileEnabled(testContext, "box", want)
 		if err != nil {
 			t.Fatalf("set %v: %v", want, err)
 		}
@@ -132,7 +126,7 @@ func TestTheSwitchWritesBothValuesAndTheyRoundTrip(t *testing.T) {
 			t.Fatalf("returned profile says enabled=%v, want %v", returned.Enabled, want)
 		}
 		// The effect, read back independently of what the call answered.
-		stored, err := s.GetSeedProfile("box")
+		stored, err := s.GetSeedProfile(testContext, "box")
 		if err != nil {
 			t.Fatalf("get after set %v: %v", want, err)
 		}
@@ -149,17 +143,17 @@ func TestTheSwitchWritesBothValuesAndTheyRoundTrip(t *testing.T) {
 func TestTheSwitchCreatesTheRowItIsAboutToUpdate(t *testing.T) {
 	s := seedTestStore(t)
 
-	if _, err := s.GetSeedProfile("never-seen"); err == nil {
+	if _, err := s.GetSeedProfile(testContext, "never-seen"); err == nil {
 		t.Fatal("precondition failed: a profile already exists for never-seen")
 	}
-	prof, err := s.SetSeedProfileEnabled("never-seen", false)
+	prof, err := s.SetSeedProfileEnabled(testContext, "never-seen", false)
 	if err != nil {
 		t.Fatalf("set on an unknown machine: %v", err)
 	}
 	if prof.Enabled {
 		t.Fatal("disabling an unknown machine reported enabled=true")
 	}
-	stored, err := s.GetSeedProfile("never-seen")
+	stored, err := s.GetSeedProfile(testContext, "never-seen")
 	if err != nil {
 		t.Fatalf("the row was never created: %v", err)
 	}
@@ -175,15 +169,15 @@ func TestTheSwitchTouchesOnlyTheNamedMachine(t *testing.T) {
 	s := seedTestStore(t)
 
 	for _, id := range []string{"alpha", "beta", "gamma"} {
-		if _, err := s.EnsureSeedProfile(id); err != nil {
+		if _, err := s.EnsureSeedProfile(testContext, id); err != nil {
 			t.Fatalf("ensure %s: %v", id, err)
 		}
 	}
-	if _, err := s.SetSeedProfileEnabled("beta", false); err != nil {
+	if _, err := s.SetSeedProfileEnabled(testContext, "beta", false); err != nil {
 		t.Fatalf("disable beta: %v", err)
 	}
 	for _, id := range []string{"alpha", "gamma"} {
-		prof, err := s.GetSeedProfile(id)
+		prof, err := s.GetSeedProfile(testContext, id)
 		if err != nil {
 			t.Fatalf("get %s: %v", id, err)
 		}
@@ -191,7 +185,7 @@ func TestTheSwitchTouchesOnlyTheNamedMachine(t *testing.T) {
 			t.Fatalf("disabling beta also disabled %s", id)
 		}
 	}
-	beta, err := s.GetSeedProfile("beta")
+	beta, err := s.GetSeedProfile(testContext, "beta")
 	if err != nil {
 		t.Fatalf("get beta: %v", err)
 	}
@@ -205,11 +199,11 @@ func TestTheSwitchTouchesOnlyTheNamedMachine(t *testing.T) {
 func TestFlippingTheSwitchPreservesWhenTheMachineWasFirstSeen(t *testing.T) {
 	s := seedTestStore(t)
 
-	first, err := s.EnsureSeedProfile("box")
+	first, err := s.EnsureSeedProfile(testContext, "box")
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	after, err := s.SetSeedProfileEnabled("box", false)
+	after, err := s.SetSeedProfileEnabled(testContext, "box", false)
 	if err != nil {
 		t.Fatalf("disable: %v", err)
 	}
@@ -222,7 +216,7 @@ func TestFlippingTheSwitchPreservesWhenTheMachineWasFirstSeen(t *testing.T) {
 func TestASwitchWithNoMachineIsRefused(t *testing.T) {
 	s := seedTestStore(t)
 
-	if _, err := s.SetSeedProfileEnabled("", false); err == nil {
+	if _, err := s.SetSeedProfileEnabled(testContext, "", false); err == nil {
 		t.Fatal("setting the switch with an empty machine_id succeeded")
 	}
 }
@@ -235,7 +229,7 @@ func TestADisabledMachineGetsAnEmptyManifestAndAnEnabledOneDoesNot(t *testing.T)
 	s := seedTestStore(t)
 	installOneSkill(t, s, "browser-automation")
 
-	on, err := s.BuildSeedManifest("box")
+	on, err := s.BuildSeedManifest(testContext, "box")
 	if err != nil {
 		t.Fatalf("manifest while enabled: %v", err)
 	}
@@ -247,10 +241,10 @@ func TestADisabledMachineGetsAnEmptyManifestAndAnEnabledOneDoesNot(t *testing.T)
 			"every later assertion here would pass vacuously")
 	}
 
-	if _, err := s.SetSeedProfileEnabled("box", false); err != nil {
+	if _, err := s.SetSeedProfileEnabled(testContext, "box", false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	off, err := s.BuildSeedManifest("box")
+	off, err := s.BuildSeedManifest(testContext, "box")
 	if err != nil {
 		t.Fatalf("manifest while disabled: %v", err)
 	}
@@ -268,10 +262,10 @@ func TestOneMachineOptingOutDoesNotEmptyAnothersManifest(t *testing.T) {
 	s := seedTestStore(t)
 	installOneSkill(t, s, "browser-automation")
 
-	if _, err := s.SetSeedProfileEnabled("laptop", false); err != nil {
+	if _, err := s.SetSeedProfileEnabled(testContext, "laptop", false); err != nil {
 		t.Fatalf("disable laptop: %v", err)
 	}
-	desktop, err := s.BuildSeedManifest("desktop")
+	desktop, err := s.BuildSeedManifest(testContext, "desktop")
 	if err != nil {
 		t.Fatalf("manifest for desktop: %v", err)
 	}
@@ -286,7 +280,7 @@ func TestOneMachineOptingOutDoesNotEmptyAnothersManifest(t *testing.T) {
 func seedTestServer(t *testing.T, s *Store) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s)
+	registerTestRoutes(mux, s)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -329,7 +323,7 @@ func TestTheRouteWritesTheValueItWasGiven(t *testing.T) {
 		if prof.Enabled != tc.want {
 			t.Fatalf("reply says enabled=%v, want %v", prof.Enabled, tc.want)
 		}
-		stored, err := s.GetSeedProfile("box")
+		stored, err := s.GetSeedProfile(testContext, "box")
 		if err != nil {
 			t.Fatalf("get after PUT %s: %v", tc.body, err)
 		}
@@ -415,14 +409,14 @@ func TestTheRouteRefusesAnUnparseableBodyRatherThanReadingItAsOff(t *testing.T) 
 	s := seedTestStore(t)
 	srv := seedTestServer(t, s)
 
-	if _, err := s.EnsureSeedProfile("box"); err != nil {
+	if _, err := s.EnsureSeedProfile(testContext, "box"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	code, _ := putSeedProfileReq(t, srv, "?machine_id=box", `{"enabled":`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("PUT with a truncated body -> %d, want 400", code)
 	}
-	stored, err := s.GetSeedProfile("box")
+	stored, err := s.GetSeedProfile(testContext, "box")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -439,7 +433,7 @@ func TestAnInstallationOutsideHomeIsNotSeeded(t *testing.T) {
 	s := seedTestStore(t)
 	installOneSkill(t, s, "browser-automation")
 
-	full, err := s.BuildSeedManifest("box")
+	full, err := s.BuildSeedManifest(testContext, "box")
 	if err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
@@ -449,7 +443,7 @@ func TestAnInstallationOutsideHomeIsNotSeeded(t *testing.T) {
 
 	// Move HOME away from the install dir; the same installation is now outside it.
 	t.Setenv("HOME", t.TempDir())
-	outside, err := s.BuildSeedManifest("box")
+	outside, err := s.BuildSeedManifest(testContext, "box")
 	if err != nil {
 		t.Fatalf("manifest with HOME moved: %v", err)
 	}
@@ -489,7 +483,7 @@ func TestAnInstallationOutsideHomeIsNotEvenRead(t *testing.T) {
 		return n
 	}
 	before := countVersions()
-	if _, err := s.BuildSeedManifest("box"); err != nil {
+	if _, err := s.BuildSeedManifest(testContext, "box"); err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
 	if after := countVersions(); after != before {
@@ -516,7 +510,7 @@ func TestAFileWhoseNameContainsDotDotIsCapturedButNeverSeeded(t *testing.T) {
 	s := seedTestStore(t)
 	installOneSkill(t, s, "browser-automation")
 
-	insts, err := s.ListInstallations()
+	insts, err := s.ListInstallations(testContext)
 	if err != nil || len(insts) != 1 {
 		t.Fatalf("installations: %v (%d)", err, len(insts))
 	}
@@ -525,7 +519,7 @@ func TestAFileWhoseNameContainsDotDotIsCapturedButNeverSeeded(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	mf, err := s.BuildSeedManifest("box")
+	mf, err := s.BuildSeedManifest(testContext, "box")
 	if err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
@@ -541,7 +535,7 @@ func TestAFileWhoseNameContainsDotDotIsCapturedButNeverSeeded(t *testing.T) {
 	// captured while no machine will ever receive it.
 	var n int
 	if err := s.DB().QueryRow(
-		`SELECT count(*) FROM seed_file_versions WHERE relpath=?`, "notes..md").Scan(&n); err != nil {
+		`SELECT count(*) FROM seed_file_versions WHERE relpath=$1`, "notes..md").Scan(&n); err != nil {
 		t.Fatalf("count versions: %v", err)
 	}
 	if n == 0 {
@@ -557,7 +551,7 @@ func TestEverySeededEntryCarriesAResolvableVersion(t *testing.T) {
 	s := seedTestStore(t)
 	installOneSkill(t, s, "browser-automation")
 
-	mf, err := s.BuildSeedManifest("box")
+	mf, err := s.BuildSeedManifest(testContext, "box")
 	if err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
@@ -584,7 +578,7 @@ func TestEverySeededEntryCarriesAResolvableVersion(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(home, e.InstallPath)); err != nil {
 			t.Fatalf("install_path %q does not resolve under HOME: %v", e.InstallPath, err)
 		}
-		data, err := s.ReadSeedVersionContent(e.VersionID)
+		data, err := s.ReadSeedVersionContent(testContext, e.VersionID)
 		if err != nil {
 			t.Fatalf("version %d for %s is not fetchable: %v", e.VersionID, e.Relpath, err)
 		}

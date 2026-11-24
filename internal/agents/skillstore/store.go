@@ -1,150 +1,79 @@
-// Package skillstore is the canonical registry for Claude Code / Agent SKILL.md
-// skills, ingested from upstream GitHub repos and served on localhost:8301.
+// Package skillstore is the registry of Claude Code / Agent SKILL.md skills,
+// ingested from upstream git repositories or from directories on this host,
+// with their installations into the install directory and the per-machine
+// seeding of installed skill files to runners.
+//
+// The records live in Postgres, in the schema of Module, through
+// postgresstorage: each SKILL.md's text and the bytes of every seed file
+// version are rows there. A skill's sibling files are not. They stay on disk
+// under <data directory>/skills/<id>/, cloned sources under
+// <data directory>/repos/<name>/, and an install copies a skill into the
+// install directory. The server provisions, migrates and opens the module, then
+// hands the pool and both directories to New.
 package skillstore
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
+	"embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 // ErrNotFound is returned when a row lookup misses.
 var ErrNotFound = errors.New("not found")
 
-// DefaultDataDir is ~/.config/skill-store.
-func DefaultDataDir() string {
-	home, err := os.UserHomeDir()
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the store keeps its records in, with
+// the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
 	if err != nil {
-		home = "."
+		return postgresstorage.Module{}, err
 	}
-	return filepath.Join(home, ".config", "skill-store")
+	return postgresstorage.Module{Schema: "skills", Role: "skills_module", Migrations: migrations}, nil
 }
 
-// DefaultDBPath is ~/.config/skill-store/skill-store.db.
-func DefaultDBPath() string { return filepath.Join(DefaultDataDir(), "skill-store.db") }
-
-// Store is the SQLite-backed skill registry.
+// Store is the skill registry: its rows in Postgres and its files on disk.
 type Store struct {
 	db         *sql.DB
 	dataDir    string
 	installDir string // where installed skills are copied (e.g. ~/.claude/skills)
 }
 
-// DefaultInstallDir is ~/.claude/skills — where Claude Code picks up
-// user-installed skills.
-func DefaultInstallDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
+// New returns the store on db, the module's pool from postgresstorage.Open.
+// dataDirectory holds the skill files (skills/<id>/) and cloned sources
+// (repos/<name>/), and is made with both subfolders if missing; an install
+// copies a skill into installDirectory. Neither may be empty: the server's
+// settings name both, and the package guesses neither.
+func New(db *sql.DB, dataDirectory, installDirectory string) (*Store, error) {
+	if db == nil {
+		return nil, errors.New("skillstore: no database pool")
 	}
-	return filepath.Join(home, ".claude", "skills")
-}
-
-// Open opens or creates the store rooted at dataDir. The SQLite DB lives at
-// <dataDir>/skill-store.db; skill file payloads live at <dataDir>/skills/<id>/
-// and cloned source repos at <dataDir>/repos/<source-name>/.
-func Open(dataDir string) (*Store, error) {
-	if dataDir == "" {
-		dataDir = DefaultDataDir()
+	if strings.TrimSpace(dataDirectory) == "" {
+		return nil, errors.New("skillstore: the data directory is empty; it must name where skill files and cloned sources are kept")
+	}
+	if strings.TrimSpace(installDirectory) == "" {
+		return nil, errors.New("skillstore: the install directory is empty; it must name where installed skills are copied")
 	}
 	for _, sub := range []string{"", "skills", "repos"} {
-		if err := os.MkdirAll(filepath.Join(dataDir, sub), 0o755); err != nil {
-			return nil, fmt.Errorf("mkdir %s: %w", sub, err)
+		if err := os.MkdirAll(filepath.Join(dataDirectory, sub), 0o755); err != nil {
+			return nil, fmt.Errorf("mkdir %s: %w", filepath.Join(dataDirectory, sub), err)
 		}
 	}
-	dbPath := filepath.Join(dataDir, "skill-store.db")
-	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on")
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable WAL: %w", err)
-	}
-	if err := migrate(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	return &Store{db: db, dataDir: dataDir, installDir: DefaultInstallDir()}, nil
+	return &Store{db: db, dataDir: dataDirectory, installDir: installDirectory}, nil
 }
 
-// columnMigration adds one column to an existing table.
-type columnMigration struct {
-	table      string
-	column     string
-	definition string
-}
-
-// migrate applies the base schema, then every additive column migration.
-//
-// schema.sql carries only CREATE TABLE IF NOT EXISTS, so a column added there
-// alone reaches a fresh database and no other: an existing table is left
-// exactly as it was, silently. Any column added after a database first shipped
-// must therefore appear BOTH in schema.sql (for new installs) and here (for
-// existing ones).
-//
-// Each migration is checked against the live table rather than applied and
-// ignored on error, so a genuine failure still surfaces instead of hiding
-// behind an expected "duplicate column name".
-func migrate(db *sql.DB) error {
-	if _, err := db.Exec(schemaSQL); err != nil {
-		return fmt.Errorf("apply schema: %w", err)
-	}
-	migrations := []columnMigration{
-		{"sources", "kind", "TEXT NOT NULL DEFAULT 'git'"},
-		{"sources", "local_path", "TEXT NOT NULL DEFAULT ''"},
-	}
-	for _, m := range migrations {
-		present, err := hasColumn(db, m.table, m.column)
-		if err != nil {
-			return fmt.Errorf("inspect %s.%s: %w", m.table, m.column, err)
-		}
-		if present {
-			continue
-		}
-		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", m.table, m.column, m.definition)
-		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("add %s.%s: %w", m.table, m.column, err)
-		}
-	}
-	return nil
-}
-
-// hasColumn reports whether table already has the named column.
-func hasColumn(db *sql.DB, table, column string) (bool, error) {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			cid, notNull, primaryKey int
-			name, colType            string
-			defaultValue             any
-		)
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &primaryKey); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
-}
-
-// SetInstallDir overrides the default install dir (~/.claude/skills). Used in
-// tests or to relocate where Claude Code looks for user skills.
-func (s *Store) SetInstallDir(dir string) { s.installDir = dir }
-
-func (s *Store) Close() error       { return s.db.Close() }
 func (s *Store) DB() *sql.DB        { return s.db }
 func (s *Store) DataDir() string    { return s.dataDir }
 func (s *Store) InstallDir() string { return s.installDir }
@@ -210,7 +139,7 @@ type Source struct {
 	UpdatedAt      int64  `json:"updated_at"`
 }
 
-func (s *Store) UpsertSource(src *Source) error {
+func (s *Store) UpsertSource(ctx context.Context, src *Source) error {
 	if src.Kind == "" {
 		src.Kind = SourceKindGit
 	}
@@ -224,32 +153,31 @@ func (s *Store) UpsertSource(src *Source) error {
 		src.CreatedAt = now()
 	}
 	src.UpdatedAt = now()
-	_, err := s.db.Exec(`
+	return s.db.QueryRowContext(ctx, `
 		INSERT INTO sources (name, kind, local_path, repo_url, branch, subpath, trust_tier, license, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (name) DO UPDATE SET
 			kind=excluded.kind, local_path=excluded.local_path,
 			repo_url=excluded.repo_url, branch=excluded.branch, subpath=excluded.subpath,
 			trust_tier=excluded.trust_tier, license=excluded.license, enabled=excluded.enabled,
 			updated_at=excluded.updated_at
+		RETURNING id
 	`, src.Name, string(src.Kind), src.LocalPath, src.RepoURL, src.Branch, src.Subpath, src.TrustTier, src.License,
-		boolToInt(src.Enabled), src.CreatedAt, src.UpdatedAt)
-	if err != nil {
-		return err
-	}
-	return s.db.QueryRow(`SELECT id FROM sources WHERE name=?`, src.Name).Scan(&src.ID)
+		src.Enabled, src.CreatedAt, src.UpdatedAt).Scan(&src.ID)
 }
 
-func (s *Store) GetSource(id int64) (*Source, error) {
-	return scanSource(s.db.QueryRow(`SELECT `+sourceCols+` FROM sources WHERE id=?`, id))
+func (s *Store) GetSource(ctx context.Context, id int64) (*Source, error) {
+	return scanSource(s.db.QueryRowContext(ctx, `SELECT `+sourceCols+` FROM sources WHERE id=$1`, id))
 }
 
-func (s *Store) GetSourceByName(name string) (*Source, error) {
-	return scanSource(s.db.QueryRow(`SELECT `+sourceCols+` FROM sources WHERE name=?`, name))
+func (s *Store) GetSourceByName(ctx context.Context, name string) (*Source, error) {
+	return scanSource(s.db.QueryRowContext(ctx, `SELECT `+sourceCols+` FROM sources WHERE name=$1`, name))
 }
 
-func (s *Store) ListSources() ([]Source, error) {
-	rows, err := s.db.Query(`SELECT ` + sourceCols + ` FROM sources ORDER BY name`)
+// ListSources lists every source by name, in byte order as the standalone
+// SQLite store sorted them (COLLATE "C"), not the database's locale order.
+func (s *Store) ListSources(ctx context.Context) ([]Source, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+sourceCols+` FROM sources ORDER BY name COLLATE "C"`)
 	if err != nil {
 		return nil, err
 	}
@@ -265,13 +193,13 @@ func (s *Store) ListSources() ([]Source, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) DeleteSource(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM sources WHERE id=?`, id)
+func (s *Store) DeleteSource(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sources WHERE id=$1`, id)
 	return err
 }
 
-func (s *Store) MarkSourceSynced(id int64, commit string, skillCount int) error {
-	_, err := s.db.Exec(`UPDATE sources SET last_synced_at=?, last_commit=?, last_skill_count=?, updated_at=? WHERE id=?`,
+func (s *Store) MarkSourceSynced(ctx context.Context, id int64, commit string, skillCount int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sources SET last_synced_at=$1, last_commit=$2, last_skill_count=$3, updated_at=$4 WHERE id=$5`,
 		now(), commit, skillCount, now(), id)
 	return err
 }
@@ -282,12 +210,9 @@ const sourceCols = `id, name, COALESCE(kind,'git'), COALESCE(local_path,''), rep
 
 func scanSource(row interface{ Scan(...any) error }) (*Source, error) {
 	src := &Source{}
-	var (
-		enabled int
-		kind    string
-	)
+	var kind string
 	err := row.Scan(&src.ID, &src.Name, &kind, &src.LocalPath, &src.RepoURL, &src.Branch, &src.Subpath, &src.TrustTier,
-		&src.License, &src.LastSyncedAt, &src.LastCommit, &src.LastSkillCount, &enabled, &src.CreatedAt, &src.UpdatedAt)
+		&src.License, &src.LastSyncedAt, &src.LastCommit, &src.LastSkillCount, &src.Enabled, &src.CreatedAt, &src.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -295,7 +220,6 @@ func scanSource(row interface{ Scan(...any) error }) (*Source, error) {
 		return nil, err
 	}
 	src.Kind = SourceKind(kind)
-	src.Enabled = enabled == 1
 	return src, nil
 }
 
@@ -326,7 +250,7 @@ type Skill struct {
 
 // UpsertSkill inserts or updates by (source_id, name). On insert it sets the
 // skill's ID. Returns (inserted bool, err).
-func (s *Store) UpsertSkill(sk *Skill) (bool, error) {
+func (s *Store) UpsertSkill(ctx context.Context, sk *Skill) (bool, error) {
 	if sk.CreatedAt == 0 {
 		sk.CreatedAt = now()
 	}
@@ -335,31 +259,31 @@ func (s *Store) UpsertSkill(sk *Skill) (bool, error) {
 	tagsJSON := encodeTags(sk.Tags)
 
 	// Try update first
-	res, err := s.db.Exec(`
-		UPDATE skills SET display_name=?, description=?, skill_md=?, source_path=?, source_commit=?,
-			content_hash=?, file_count=?, tags=?, enabled=?, updated_at=?
-		WHERE source_id=? AND name=?
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE skills SET display_name=$1, description=$2, skill_md=$3, source_path=$4, source_commit=$5,
+			content_hash=$6, file_count=$7, tags=$8, enabled=$9, updated_at=$10
+		WHERE source_id=$11 AND name=$12
+		RETURNING id
 	`, sk.DisplayName, sk.Description, sk.SkillMD, sk.SourcePath, sk.SourceCommit,
-		sk.ContentHash, sk.FileCount, tagsJSON, boolToInt(sk.Enabled), sk.UpdatedAt,
-		sk.SourceID, sk.Name)
-	if err != nil {
+		sk.ContentHash, sk.FileCount, tagsJSON, sk.Enabled, sk.UpdatedAt,
+		sk.SourceID, sk.Name).Scan(&sk.ID)
+	if err == nil {
+		return false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	n, _ := res.RowsAffected()
-	if n > 0 {
-		return false, s.db.QueryRow(`SELECT id FROM skills WHERE source_id=? AND name=?`, sk.SourceID, sk.Name).Scan(&sk.ID)
-	}
 
-	res, err = s.db.Exec(`
+	err = s.db.QueryRowContext(ctx, `
 		INSERT INTO skills (source_id, name, display_name, description, skill_md, source_path, source_commit,
 			content_hash, file_count, tags, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING id
 	`, sk.SourceID, sk.Name, sk.DisplayName, sk.Description, sk.SkillMD, sk.SourcePath, sk.SourceCommit,
-		sk.ContentHash, sk.FileCount, tagsJSON, boolToInt(sk.Enabled), sk.CreatedAt, sk.UpdatedAt)
+		sk.ContentHash, sk.FileCount, tagsJSON, sk.Enabled, sk.CreatedAt, sk.UpdatedAt).Scan(&sk.ID)
 	if err != nil {
 		return false, wrapForeignKeyViolation(err, "source", sk.SourceID)
 	}
-	sk.ID, _ = res.LastInsertId()
 	return true, nil
 }
 
@@ -374,18 +298,16 @@ const skillFrom = ` FROM skills s
 
 func scanSkill(row interface{ Scan(...any) error }, includeBody bool) (*Skill, error) {
 	sk := &Skill{}
-	var enabled int
 	var tags string
 	err := row.Scan(&sk.ID, &sk.SourceID, &sk.SourceName, &sk.Name, &sk.DisplayName, &sk.Description,
 		&sk.SkillMD, &sk.SourcePath, &sk.SourceCommit, &sk.ContentHash, &sk.FileCount,
-		&tags, &enabled, &sk.CreatedAt, &sk.UpdatedAt, &sk.InstalledAt, &sk.InstallPath)
+		&tags, &sk.Enabled, &sk.CreatedAt, &sk.UpdatedAt, &sk.InstalledAt, &sk.InstallPath)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	sk.Enabled = enabled == 1
 	sk.Installed = sk.InstalledAt > 0
 	sk.Tags = decodeTags(tags)
 	if !includeBody {
@@ -404,38 +326,42 @@ type ListSkillsFilter struct {
 	Limit         int
 }
 
-// ListSkillsFilter narrows listSkills — extended from top of file. If
-// InstalledOnly is true, only rows that are currently installed are returned.
-func (s *Store) ListSkills(f ListSkillsFilter) ([]Skill, error) {
+// ListSkills lists the skills f selects, by source name and skill name in byte
+// order as the standalone SQLite store sorted them (COLLATE "C").
+//
+// Query and Tag match as SQLite's LIKE did: case-insensitive, with % and _ in
+// the caller's text acting as wildcards and no escape character (ESCAPE ”).
+// One difference remains: ILIKE folds the case of every letter, where SQLite's
+// LIKE folded ASCII letters only.
+func (s *Store) ListSkills(ctx context.Context, f ListSkillsFilter) ([]Skill, error) {
 	q := `SELECT ` + skillCols + skillFrom + ` WHERE 1=1`
 	var args []any
+	next := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
 	if f.SourceID > 0 {
-		q += ` AND s.source_id = ?`
-		args = append(args, f.SourceID)
+		q += ` AND s.source_id = ` + next(f.SourceID)
 	}
 	if f.SourceName != "" {
-		q += ` AND src.name = ?`
-		args = append(args, f.SourceName)
+		q += ` AND src.name = ` + next(f.SourceName)
 	}
 	if f.Query != "" {
-		like := "%" + f.Query + "%"
-		q += ` AND (s.name LIKE ? OR s.description LIKE ?)`
-		args = append(args, like, like)
+		like := next("%" + f.Query + "%")
+		q += ` AND (s.name ILIKE ` + like + ` ESCAPE '' OR s.description ILIKE ` + like + ` ESCAPE '')`
 	}
 	if f.Tag != "" {
-		// Cheap LIKE match on the JSON array; entries are quoted strings.
-		q += ` AND s.tags LIKE ?`
-		args = append(args, `%"`+f.Tag+`"%`)
+		// Cheap match on the JSON array; entries are quoted strings.
+		q += ` AND s.tags ILIKE ` + next(`%"`+f.Tag+`"%`) + ` ESCAPE ''`
 	}
 	if f.InstalledOnly {
 		q += ` AND i.skill_id IS NOT NULL`
 	}
-	q += ` ORDER BY src.name, s.name`
+	q += ` ORDER BY src.name COLLATE "C", s.name COLLATE "C"`
 	if f.Limit > 0 {
-		q += ` LIMIT ?`
-		args = append(args, f.Limit)
+		q += ` LIMIT ` + next(f.Limit)
 	}
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -451,52 +377,35 @@ func (s *Store) ListSkills(f ListSkillsFilter) ([]Skill, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) GetSkill(id int64) (*Skill, error) {
-	return scanSkill(s.db.QueryRow(`SELECT `+skillCols+skillFrom+` WHERE s.id=?`, id), true)
+func (s *Store) GetSkill(ctx context.Context, id int64) (*Skill, error) {
+	return scanSkill(s.db.QueryRowContext(ctx, `SELECT `+skillCols+skillFrom+` WHERE s.id=$1`, id), true)
 }
 
-func (s *Store) DeleteSkill(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM skills WHERE id=?`, id)
+func (s *Store) DeleteSkill(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM skills WHERE id=$1`, id)
 	return err
 }
 
 // DeleteSkillsForSourceExcept removes skills in source_id that are NOT in the keep list.
 // Used after a sync to prune skills that disappeared upstream.
-func (s *Store) DeleteSkillsForSourceExcept(sourceID int64, keepIDs []int64) (int, error) {
-	if len(keepIDs) == 0 {
-		res, err := s.db.Exec(`DELETE FROM skills WHERE source_id=?`, sourceID)
-		if err != nil {
-			return 0, err
-		}
-		n, _ := res.RowsAffected()
-		return int(n), nil
-	}
-	// Build IN-clause
-	q := `DELETE FROM skills WHERE source_id=? AND id NOT IN (`
+func (s *Store) DeleteSkillsForSourceExcept(ctx context.Context, sourceID int64, keepIDs []int64) (int, error) {
+	q := `DELETE FROM skills WHERE source_id=$1`
 	args := []any{sourceID}
-	for i, id := range keepIDs {
-		if i > 0 {
-			q += ","
+	if len(keepIDs) > 0 {
+		placeholders := make([]string, 0, len(keepIDs))
+		for _, id := range keepIDs {
+			args = append(args, id)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
 		}
-		q += "?"
-		args = append(args, id)
+		q += ` AND id NOT IN (` + strings.Join(placeholders, ",") + `)`
 	}
-	q += `)`
-	res, err := s.db.Exec(q, args...)
+	res, err := s.db.ExecContext(ctx, q, args...)
 	if err != nil {
 		return 0, err
 	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
-}
-
-// ============================================
-// helpers
-// ============================================
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
 	}
-	return 0
+	return int(n), nil
 }

@@ -2,36 +2,21 @@ package skillstore
 
 import (
 	"bytes"
-	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mattn/go-sqlite3"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// openTestStore opens a store on a fresh directory and proves foreign-key
-// enforcement is actually on before any test relies on it. Without the DSN
-// parameter SQLite defaults foreign keys OFF, and every test below would then
-// pass by never producing the error it is written to classify.
+// openTestStore opens a store on a fresh database. Postgres enforces every
+// foreign key on every connection, so unlike the SQLite store there is no
+// setting to prove before the tests below can produce the error they classify.
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	var enforced int
-	if err := s.db.QueryRow("PRAGMA foreign_keys").Scan(&enforced); err != nil {
-		t.Fatalf("read foreign_keys pragma: %v", err)
-	}
-	if enforced != 1 {
-		t.Fatalf("foreign_keys is %d, want 1: this suite cannot produce the violation it classifies", enforced)
-	}
-	return s
+	return newTestStore(t)
 }
 
 // insertTestSource creates a parent source through the store's own API, so no
@@ -40,7 +25,7 @@ func openTestStore(t *testing.T) *Store {
 func insertTestSource(t *testing.T, s *Store) int64 {
 	t.Helper()
 	src := &Source{Name: "test-source", RepoURL: "https://example.invalid/repo.git"}
-	if err := s.UpsertSource(src); err != nil {
+	if err := s.UpsertSource(testContext, src); err != nil {
 		t.Fatalf("upsert source: %v", err)
 	}
 	if src.ID == 0 {
@@ -55,7 +40,7 @@ const theMissingParentID = 424242
 
 func TestUpsertSkillWithAnAbsentSourceReportsTheSentinel(t *testing.T) {
 	s := openTestStore(t)
-	_, err := s.UpsertSkill(&Skill{SourceID: theMissingParentID, Name: "probe", SkillMD: "x"})
+	_, err := s.UpsertSkill(testContext, &Skill{SourceID: theMissingParentID, Name: "probe", SkillMD: "x"})
 	if !errors.Is(err, ErrReferencedRowNotFound) {
 		t.Fatalf("UpsertSkill error = %v, want it to wrap ErrReferencedRowNotFound", err)
 	}
@@ -66,7 +51,7 @@ func TestUpsertSkillWithAnAbsentSourceReportsTheSentinel(t *testing.T) {
 
 func TestAppendSeedVersionWithAnAbsentSkillReportsTheSentinel(t *testing.T) {
 	s := openTestStore(t)
-	_, err := s.AppendSeedVersion(theMissingParentID, "SKILL.md", []byte("x"), SeedSourceIngest, "", "")
+	_, err := s.AppendSeedVersion(testContext, theMissingParentID, "SKILL.md", []byte("x"), SeedSourceIngest, "", "")
 	if !errors.Is(err, ErrReferencedRowNotFound) {
 		t.Fatalf("AppendSeedVersion error = %v, want it to wrap ErrReferencedRowNotFound", err)
 	}
@@ -74,7 +59,7 @@ func TestAppendSeedVersionWithAnAbsentSkillReportsTheSentinel(t *testing.T) {
 
 func TestRecordObservedHashWithAnAbsentSkillReportsTheSentinel(t *testing.T) {
 	s := openTestStore(t)
-	err := s.RecordObservedHash("m1", theMissingParentID, "SKILL.md", "abc")
+	err := s.RecordObservedHash(testContext, "m1", theMissingParentID, "SKILL.md", "abc")
 	if !errors.Is(err, ErrReferencedRowNotFound) {
 		t.Fatalf("RecordObservedHash error = %v, want it to wrap ErrReferencedRowNotFound", err)
 	}
@@ -89,15 +74,15 @@ func TestAnUnrelatedConstraintIsNotClassifiedAsAMissingParent(t *testing.T) {
 	sourceID := insertTestSource(t, s)
 
 	_, err := s.db.Exec(`INSERT INTO skills (source_id, name, source_path, content_hash, created_at, updated_at)
-		VALUES (?, 'no-body', 'p', 'h', 0, 0)`, sourceID)
+		VALUES ($1, 'no-body', 'p', 'h', 0, 0)`, sourceID)
 	if err == nil {
 		t.Fatal("a row missing a NOT NULL column was accepted; this control cannot run")
 	}
-	var sqliteErr sqlite3.Error
-	if !errors.As(err, &sqliteErr) {
-		t.Fatalf("control produced %v, want a driver constraint error", err)
+	var postgresErr *pgconn.PgError
+	if !errors.As(err, &postgresErr) {
+		t.Fatalf("control produced %v, want a database constraint error", err)
 	}
-	if sqliteErr.ExtendedCode == sqlite3.ErrConstraintForeignKey {
+	if postgresErr.Code == foreignKeyViolation {
 		t.Fatalf("control produced a foreign-key breach; it must produce a different one to be a control")
 	}
 	if wrapped := wrapForeignKeyViolation(err, "source", sourceID); errors.Is(wrapped, ErrReferencedRowNotFound) {
@@ -136,7 +121,7 @@ func postJSON(t *testing.T, url string, payload map[string]any) (int, string) {
 func TestSeedRoutesAnswer404ForASkillThatDoesNotExist(t *testing.T) {
 	s := openTestStore(t)
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s)
+	registerTestRoutes(mux, s)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -162,12 +147,12 @@ func TestSeedRoutesAnswer404ForASkillThatDoesNotExist(t *testing.T) {
 func TestSeedRoutesStillAcceptASkillThatDoesExist(t *testing.T) {
 	s := openTestStore(t)
 	sk := &Skill{SourceID: insertTestSource(t, s), Name: "real", SkillMD: "# real"}
-	if _, err := s.UpsertSkill(sk); err != nil {
+	if _, err := s.UpsertSkill(testContext, sk); err != nil {
 		t.Fatalf("insert skill: %v", err)
 	}
 
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s)
+	registerTestRoutes(mux, s)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -185,58 +170,13 @@ func TestSeedRoutesStillAcceptASkillThatDoesExist(t *testing.T) {
 	}
 }
 
-// numberOfConnectionsProbed is how many pool connections the test below holds
-// open at once. It only has to exceed one: the defect it exists to catch is a
-// pragma that reaches exactly one connection.
-const numberOfConnectionsProbed = 8
-
-// Every classification above rests on SQLite actually refusing the write, and
-// foreign_keys is a PER-CONNECTION setting while *sql.DB is a pool. Asking one
-// connection is not enough to know the pool enforces it — schema.sql also runs
-// "PRAGMA foreign_keys = ON" during migration, which reaches whichever single
-// connection served the migration and reads back as 1 on that same connection.
-// Measured here: with the DSN parameter 8 of 8 connections enforce; with only
-// schema.sql's pragma, 1 of 8 does. So a suite that probes one connection
-// cannot tell the sound mechanism from the unsound one.
-func TestEveryPooledConnectionEnforcesForeignKeys(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-
-	var held []*sql.Conn
-	defer func() {
-		for _, c := range held {
-			c.Close()
-		}
-	}()
-
-	notEnforcing := 0
-	for i := 0; i < numberOfConnectionsProbed; i++ {
-		c, err := s.db.Conn(ctx)
-		if err != nil {
-			t.Fatalf("open pool connection %d: %v", i, err)
-		}
-		held = append(held, c)
-		var enforced int
-		if err := c.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&enforced); err != nil {
-			t.Fatalf("read foreign_keys on pool connection %d: %v", i, err)
-		}
-		if enforced != 1 {
-			notEnforcing++
-		}
-	}
-	if notEnforcing > 0 {
-		t.Errorf("%d of %d pooled connections do not enforce foreign keys: the setting is reaching one connection, not the pool",
-			notEnforcing, numberOfConnectionsProbed)
-	}
-}
-
 // The sentinel must be the only thing that becomes a 404. An edge that answers
 // 404 for any store error at all would report a broken database as a caller's
 // mistake, and the 404 test above cannot tell the two apart.
 func TestASeedRouteErrorThatIsNotTheSentinelIsStillA500(t *testing.T) {
 	s := openTestStore(t)
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s)
+	registerTestRoutes(mux, s)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

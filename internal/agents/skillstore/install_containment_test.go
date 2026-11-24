@@ -19,13 +19,13 @@ func ingestSkillNamed(t *testing.T, s *Store, sourceName, dirName, skillName str
 	root := filepath.Join(t.TempDir(), "authored")
 	writeSkill(t, root, dirName, skillName, "body")
 	src := &Source{Name: sourceName, Enabled: true, Kind: SourceKindLocal, LocalPath: root}
-	if err := s.UpsertSource(src); err != nil {
+	if err := s.UpsertSource(testContext, src); err != nil {
 		t.Fatalf("upsert source: %v", err)
 	}
-	if _, err := s.Sync(src.ID); err != nil {
+	if _, err := s.Sync(testContext, src.ID); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	skills, err := s.ListSkills(ListSkillsFilter{})
+	skills, err := s.ListSkills(testContext, ListSkillsFilter{})
 	if err != nil {
 		t.Fatalf("list skills: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestAnEscapingSkillNameIsRefusedBeforeAnythingIsErased(t *testing.T) {
 			}
 
 			id := ingestSkillNamed(t, s, "upstream", "escaper", tc.name)
-			inst, err := s.Install(id, false)
+			inst, err := s.Install(testContext, id, false)
 
 			if err == nil {
 				t.Fatalf("Install accepted the name %q and wrote %s", tc.name, inst.TargetPath)
@@ -103,7 +103,7 @@ func TestAnOrdinarySkillNameStillInstalls(t *testing.T) {
 	s := newTestStore(t)
 	id := ingestSkillNamed(t, s, "upstream", "ordinary", "ordinary-skill")
 
-	inst, err := s.Install(id, false)
+	inst, err := s.Install(testContext, id, false)
 	if err != nil {
 		t.Fatalf("Install refused an ordinary name: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestAnOrdinarySkillNameStillInstalls(t *testing.T) {
 func TestUninstallRefusesARecordedTargetOutsideTheInstallDir(t *testing.T) {
 	s := newTestStore(t)
 	id := ingestSkillNamed(t, s, "upstream", "ordinary", "ordinary-skill")
-	if _, err := s.Install(id, false); err != nil {
+	if _, err := s.Install(testContext, id, false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -135,11 +135,11 @@ func TestUninstallRefusesARecordedTargetOutsideTheInstallDir(t *testing.T) {
 	if err := os.WriteFile(bystander, []byte("owned by something else"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, err := s.DB().Exec(`UPDATE installations SET target_path=? WHERE skill_id=?`, outside, id); err != nil {
+	if _, err := s.DB().Exec(`UPDATE installations SET target_path=$1 WHERE skill_id=$2`, outside, id); err != nil {
 		t.Fatalf("forge row: %v", err)
 	}
 
-	_, err := s.Uninstall(id)
+	_, err := s.Uninstall(testContext, id)
 	if err == nil {
 		t.Fatalf("Uninstall erased a recorded path outside the install dir")
 	}
@@ -155,12 +155,12 @@ func TestUninstallRefusesARecordedTargetOutsideTheInstallDir(t *testing.T) {
 func TestUninstallStillRemovesAnOrdinaryInstallation(t *testing.T) {
 	s := newTestStore(t)
 	id := ingestSkillNamed(t, s, "upstream", "ordinary", "ordinary-skill")
-	inst, err := s.Install(id, false)
+	inst, err := s.Install(testContext, id, false)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
-	if _, err := s.Uninstall(id); err != nil {
+	if _, err := s.Uninstall(testContext, id); err != nil {
 		t.Fatalf("Uninstall refused an ordinary installation: %v", err)
 	}
 	if _, err := os.Stat(inst.TargetPath); !os.IsNotExist(err) {

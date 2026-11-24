@@ -1,6 +1,7 @@
 package skillstore
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -36,21 +37,21 @@ const (
 // recent version for that pair already has the same sha, nothing is inserted
 // and the existing row is returned — keeps history append-only without
 // inserting duplicates on every reconcile pass.
-func (s *Store) AppendSeedVersion(skillID int64, relpath string, content []byte, source, machineID, note string) (*SeedFileVersion, error) {
+func (s *Store) AppendSeedVersion(ctx context.Context, skillID int64, relpath string, content []byte, source, machineID, note string) (*SeedFileVersion, error) {
 	sum := sha256.Sum256(content)
 	sha := hex.EncodeToString(sum[:])
 
 	var lastID int64
 	var lastSHA string
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT id, sha256 FROM seed_file_versions
-		WHERE skill_id=? AND relpath=? ORDER BY created_at DESC, id DESC LIMIT 1
+		WHERE skill_id=$1 AND relpath=$2 ORDER BY created_at DESC, id DESC LIMIT 1
 	`, skillID, relpath).Scan(&lastID, &lastSHA)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("query last version: %w", err)
 	}
 	if err == nil && lastSHA == sha {
-		return s.GetSeedVersion(lastID)
+		return s.GetSeedVersion(ctx, lastID)
 	}
 
 	var machinePtr any
@@ -61,28 +62,33 @@ func (s *Store) AppendSeedVersion(skillID int64, relpath string, content []byte,
 	if note != "" {
 		notePtr = note
 	}
-	res, err := s.db.Exec(`
+	if content == nil {
+		// An empty file is zero bytes, never NULL: the column is NOT NULL.
+		content = []byte{}
+	}
+	var id int64
+	err = s.db.QueryRowContext(ctx, `
 		INSERT INTO seed_file_versions
 			(skill_id, relpath, sha256, size, content_bytes, source, machine_id, note, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, skillID, relpath, sha, int64(len(content)), content, source, machinePtr, notePtr, now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id
+	`, skillID, relpath, sha, int64(len(content)), content, source, machinePtr, notePtr, now()).Scan(&id)
 	if err != nil {
 		if wrapped := wrapForeignKeyViolation(err, "skill", skillID); wrapped != err {
 			return nil, wrapped
 		}
 		return nil, fmt.Errorf("insert version: %w", err)
 	}
-	id, _ := res.LastInsertId()
-	return s.GetSeedVersion(id)
+	return s.GetSeedVersion(ctx, id)
 }
 
 // GetSeedVersion fetches one version row (without content body).
-func (s *Store) GetSeedVersion(id int64) (*SeedFileVersion, error) {
+func (s *Store) GetSeedVersion(ctx context.Context, id int64) (*SeedFileVersion, error) {
 	v := &SeedFileVersion{}
 	var machine, note sql.NullString
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT id, skill_id, relpath, sha256, size, source, machine_id, note, created_at
-		FROM seed_file_versions WHERE id=?
+		FROM seed_file_versions WHERE id=$1
 	`, id).Scan(&v.ID, &v.SkillID, &v.Relpath, &v.SHA256, &v.Size, &v.Source, &machine, &note, &v.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -97,9 +103,9 @@ func (s *Store) GetSeedVersion(id int64) (*SeedFileVersion, error) {
 }
 
 // ReadSeedVersionContent returns the bytes for one version.
-func (s *Store) ReadSeedVersionContent(id int64) ([]byte, error) {
+func (s *Store) ReadSeedVersionContent(ctx context.Context, id int64) ([]byte, error) {
 	var data []byte
-	err := s.db.QueryRow(`SELECT content_bytes FROM seed_file_versions WHERE id=?`, id).Scan(&data)
+	err := s.db.QueryRowContext(ctx, `SELECT content_bytes FROM seed_file_versions WHERE id=$1`, id).Scan(&data)
 	if err != nil {
 		return nil, err
 	}
@@ -108,11 +114,11 @@ func (s *Store) ReadSeedVersionContent(id int64) ([]byte, error) {
 
 // LatestSeedVersion returns the most recent version for (skillID, relpath),
 // or nil (no error) if none exist.
-func (s *Store) LatestSeedVersion(skillID int64, relpath string) (*SeedFileVersion, error) {
+func (s *Store) LatestSeedVersion(ctx context.Context, skillID int64, relpath string) (*SeedFileVersion, error) {
 	var id int64
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT id FROM seed_file_versions
-		WHERE skill_id=? AND relpath=? ORDER BY created_at DESC, id DESC LIMIT 1
+		WHERE skill_id=$1 AND relpath=$2 ORDER BY created_at DESC, id DESC LIMIT 1
 	`, skillID, relpath).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -120,7 +126,7 @@ func (s *Store) LatestSeedVersion(skillID int64, relpath string) (*SeedFileVersi
 	if err != nil {
 		return nil, err
 	}
-	return s.GetSeedVersion(id)
+	return s.GetSeedVersion(ctx, id)
 }
 
 // ============================================
@@ -135,52 +141,46 @@ type SeedProfile struct {
 }
 
 // EnsureSeedProfile creates an enabled-by-default profile if none exists.
-func (s *Store) EnsureSeedProfile(machineID string) (*SeedProfile, error) {
+func (s *Store) EnsureSeedProfile(ctx context.Context, machineID string) (*SeedProfile, error) {
 	if machineID == "" {
 		return nil, fmt.Errorf("machine_id required")
 	}
-	prof, err := s.GetSeedProfile(machineID)
+	prof, err := s.GetSeedProfile(ctx, machineID)
 	if err == nil {
 		return prof, nil
 	}
 	if err != sql.ErrNoRows {
 		return nil, err
 	}
-	if _, err := s.db.Exec(`
+	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO machine_seed_profiles (machine_id, enabled, created_at, updated_at)
-		VALUES (?, 1, ?, ?)
+		VALUES ($1, true, $2, $3)
 	`, machineID, now(), now()); err != nil {
 		return nil, err
 	}
-	return s.GetSeedProfile(machineID)
+	return s.GetSeedProfile(ctx, machineID)
 }
 
-func (s *Store) GetSeedProfile(machineID string) (*SeedProfile, error) {
+func (s *Store) GetSeedProfile(ctx context.Context, machineID string) (*SeedProfile, error) {
 	prof := &SeedProfile{MachineID: machineID}
-	var enabled int
-	err := s.db.QueryRow(`
-		SELECT enabled, created_at, updated_at FROM machine_seed_profiles WHERE machine_id=?
-	`, machineID).Scan(&enabled, &prof.CreatedAt, &prof.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT enabled, created_at, updated_at FROM machine_seed_profiles WHERE machine_id=$1
+	`, machineID).Scan(&prof.Enabled, &prof.CreatedAt, &prof.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
-	prof.Enabled = enabled == 1
 	return prof, nil
 }
 
-func (s *Store) SetSeedProfileEnabled(machineID string, enabled bool) (*SeedProfile, error) {
-	if _, err := s.EnsureSeedProfile(machineID); err != nil {
+func (s *Store) SetSeedProfileEnabled(ctx context.Context, machineID string, enabled bool) (*SeedProfile, error) {
+	if _, err := s.EnsureSeedProfile(ctx, machineID); err != nil {
 		return nil, err
 	}
-	en := 0
-	if enabled {
-		en = 1
-	}
-	if _, err := s.db.Exec(`UPDATE machine_seed_profiles SET enabled=?, updated_at=? WHERE machine_id=?`,
-		en, now(), machineID); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE machine_seed_profiles SET enabled=$1, updated_at=$2 WHERE machine_id=$3`,
+		enabled, now(), machineID); err != nil {
 		return nil, err
 	}
-	return s.GetSeedProfile(machineID)
+	return s.GetSeedProfile(ctx, machineID)
 }
 
 // ============================================
@@ -197,11 +197,11 @@ type SeedState struct {
 	LastPushedAt        int64  `json:"last_pushed_at,omitempty"`
 }
 
-func (s *Store) RecordObservedHash(machineID string, skillID int64, relpath, sha string) error {
-	_, err := s.db.Exec(`
+func (s *Store) RecordObservedHash(ctx context.Context, machineID string, skillID int64, relpath, sha string) error {
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO machine_seed_state (machine_id, skill_id, relpath, observed_sha, observed_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(machine_id, skill_id, relpath) DO UPDATE SET
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (machine_id, skill_id, relpath) DO UPDATE SET
 			observed_sha=excluded.observed_sha, observed_at=excluded.observed_at
 	`, machineID, skillID, relpath, sha, now())
 	return wrapForeignKeyViolation(err, "skill", skillID)
@@ -235,8 +235,8 @@ type SeedManifest struct {
 //
 // If the machine's profile has enabled=false, the manifest is empty (the
 // runner removes any previously-seeded files).
-func (s *Store) BuildSeedManifest(machineID string) (*SeedManifest, error) {
-	prof, err := s.EnsureSeedProfile(machineID)
+func (s *Store) BuildSeedManifest(ctx context.Context, machineID string) (*SeedManifest, error) {
+	prof, err := s.EnsureSeedProfile(ctx, machineID)
 	if err != nil {
 		return nil, fmt.Errorf("ensure profile: %w", err)
 	}
@@ -249,7 +249,7 @@ func (s *Store) BuildSeedManifest(machineID string) (*SeedManifest, error) {
 		return mf, nil
 	}
 
-	insts, err := s.ListInstallations()
+	insts, err := s.ListInstallations(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list installations: %w", err)
 	}
@@ -260,7 +260,7 @@ func (s *Store) BuildSeedManifest(machineID string) (*SeedManifest, error) {
 	}
 
 	for _, inst := range insts {
-		entries, err := s.snapshotInstallation(inst, home)
+		entries, err := s.snapshotInstallation(ctx, inst, home)
 		if err != nil {
 			return nil, fmt.Errorf("snapshot %s: %w", inst.SkillName, err)
 		}
@@ -274,7 +274,7 @@ func (s *Store) BuildSeedManifest(machineID string) (*SeedManifest, error) {
 // the latest version per file. Files outside $HOME are skipped (refusing to
 // produce an unsafe install_path is better than reporting one we can't
 // rewrite).
-func (s *Store) snapshotInstallation(inst Installation, home string) ([]SeedManifestEntry, error) {
+func (s *Store) snapshotInstallation(ctx context.Context, inst Installation, home string) ([]SeedManifestEntry, error) {
 	if !strings.HasPrefix(inst.TargetPath, home+string(os.PathSeparator)) {
 		return nil, nil
 	}
@@ -294,7 +294,7 @@ func (s *Store) snapshotInstallation(inst Installation, home string) ([]SeedMani
 		if err != nil {
 			return err
 		}
-		v, err := s.AppendSeedVersion(inst.SkillID, rel, data, SeedSourceIngest, "", "")
+		v, err := s.AppendSeedVersion(ctx, inst.SkillID, rel, data, SeedSourceIngest, "", "")
 		if err != nil {
 			return err
 		}

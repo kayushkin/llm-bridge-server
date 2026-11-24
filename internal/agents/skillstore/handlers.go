@@ -13,40 +13,15 @@ import (
 	"strings"
 )
 
-// RegisterHandlers wires the HTTP API onto mux.
-func RegisterHandlers(mux *http.ServeMux, s *Store) {
-	h := &handler{s: s}
-
-	mux.HandleFunc("GET /health", h.health)
-
-	mux.HandleFunc("GET /sources", h.listSources)
-	mux.HandleFunc("POST /sources", h.createSource)
-	mux.HandleFunc("GET /sources/{id}", h.getSource)
-	mux.HandleFunc("DELETE /sources/{id}", h.deleteSource)
-	mux.HandleFunc("POST /sources/{id}/sync", h.syncSource)
-
-	mux.HandleFunc("GET /skills", h.listSkills)
-	mux.HandleFunc("GET /skills/{id}", h.getSkill)
-	mux.HandleFunc("DELETE /skills/{id}", h.deleteSkill)
-	mux.HandleFunc("GET /skills/{id}/files", h.listSkillFiles)
-	mux.HandleFunc("GET /skills/{id}/files/{path...}", h.getSkillFile)
-	mux.HandleFunc("POST /skills/{id}/install", h.installSkill)
-	mux.HandleFunc("POST /skills/{id}/uninstall", h.uninstallSkill)
-
-	mux.HandleFunc("GET /installations", h.listInstallations)
-
-	// Per-machine seeding for remote runners.
-	mux.HandleFunc("GET /seed/profile", h.getSeedProfile)
-	mux.HandleFunc("PUT /seed/profile", h.putSeedProfile)
-	mux.HandleFunc("GET /seed/manifest", h.getSeedManifest)
-	mux.HandleFunc("GET /versions/{vid}/content", h.getVersionContent)
-	mux.HandleFunc("POST /seed/observe", h.postSeedObserve)
-	mux.HandleFunc("POST /seed/drift", h.postSeedDrift)
-}
-
-type handler struct {
+// Handlers answers the store's HTTP routes. The server that mounts the store
+// registers each method under its own pattern, behind its own prefix and
+// access rules; the paths in the method comments are relative to that prefix.
+type Handlers struct {
 	s *Store
 }
+
+// NewHandlers returns the route handlers of store.
+func NewHandlers(store *Store) *Handlers { return &Handlers{s: store} }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -58,14 +33,16 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func (h *handler) health(w http.ResponseWriter, _ *http.Request) {
+// Health answers GET /health.
+func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
 // ---- sources ----
 
-func (h *handler) listSources(w http.ResponseWriter, _ *http.Request) {
-	srcs, err := h.s.ListSources()
+// ListSources answers GET /sources.
+func (h *Handlers) ListSources(w http.ResponseWriter, r *http.Request) {
+	srcs, err := h.s.ListSources(r.Context())
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -76,7 +53,8 @@ func (h *handler) listSources(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, srcs)
 }
 
-func (h *handler) createSource(w http.ResponseWriter, r *http.Request) {
+// CreateSource answers POST /sources.
+func (h *Handlers) CreateSource(w http.ResponseWriter, r *http.Request) {
 	var src Source
 	if err := json.NewDecoder(r.Body).Decode(&src); err != nil {
 		writeErr(w, 400, "invalid json: "+err.Error())
@@ -105,20 +83,21 @@ func (h *handler) createSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	src.Enabled = true
-	if err := h.s.UpsertSource(&src); err != nil {
+	if err := h.s.UpsertSource(r.Context(), &src); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	writeJSON(w, 201, src)
 }
 
-func (h *handler) getSource(w http.ResponseWriter, r *http.Request) {
+// GetSource answers GET /sources/{id}.
+func (h *Handlers) GetSource(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	src, err := h.s.GetSource(id)
+	src, err := h.s.GetSource(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeErr(w, 404, "source not found")
@@ -130,26 +109,28 @@ func (h *handler) getSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, src)
 }
 
-func (h *handler) deleteSource(w http.ResponseWriter, r *http.Request) {
+// DeleteSource answers DELETE /sources/{id}.
+func (h *Handlers) DeleteSource(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if err := h.s.DeleteSource(id); err != nil {
+	if err := h.s.DeleteSource(r.Context(), id); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
-func (h *handler) syncSource(w http.ResponseWriter, r *http.Request) {
+// SyncSource answers POST /sources/{id}/sync.
+func (h *Handlers) SyncSource(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	res, err := h.s.Sync(id)
+	res, err := h.s.Sync(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeErr(w, 404, "source not found")
@@ -163,7 +144,8 @@ func (h *handler) syncSource(w http.ResponseWriter, r *http.Request) {
 
 // ---- skills ----
 
-func (h *handler) listSkills(w http.ResponseWriter, r *http.Request) {
+// ListSkills answers GET /skills.
+func (h *Handlers) ListSkills(w http.ResponseWriter, r *http.Request) {
 	f := ListSkillsFilter{
 		SourceName:    r.URL.Query().Get("source"),
 		Query:         r.URL.Query().Get("q"),
@@ -186,7 +168,7 @@ func (h *handler) listSkills(w http.ResponseWriter, r *http.Request) {
 		}
 		f.Limit = n
 	}
-	skills, err := h.s.ListSkills(f)
+	skills, err := h.s.ListSkills(r.Context(), f)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -197,13 +179,14 @@ func (h *handler) listSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, skills)
 }
 
-func (h *handler) getSkill(w http.ResponseWriter, r *http.Request) {
+// GetSkill answers GET /skills/{id}.
+func (h *Handlers) GetSkill(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	sk, err := h.s.GetSkill(id)
+	sk, err := h.s.GetSkill(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeErr(w, 404, "skill not found")
@@ -215,13 +198,14 @@ func (h *handler) getSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, sk)
 }
 
-func (h *handler) deleteSkill(w http.ResponseWriter, r *http.Request) {
+// DeleteSkill answers DELETE /skills/{id}.
+func (h *Handlers) DeleteSkill(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if err := h.s.DeleteSkill(id); err != nil {
+	if err := h.s.DeleteSkill(r.Context(), id); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -234,7 +218,8 @@ type skillFileEntry struct {
 	Size int64  `json:"size"`
 }
 
-func (h *handler) listSkillFiles(w http.ResponseWriter, r *http.Request) {
+// ListSkillFiles answers GET /skills/{id}/files.
+func (h *Handlers) ListSkillFiles(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
@@ -270,7 +255,8 @@ func (h *handler) listSkillFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, files)
 }
 
-func (h *handler) getSkillFile(w http.ResponseWriter, r *http.Request) {
+// GetSkillFile answers GET /skills/{id}/files/{path...}.
+func (h *Handlers) GetSkillFile(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
@@ -309,14 +295,15 @@ func (h *handler) getSkillFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, full)
 }
 
-func (h *handler) installSkill(w http.ResponseWriter, r *http.Request) {
+// InstallSkill answers POST /skills/{id}/install.
+func (h *Handlers) InstallSkill(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
 	force := r.URL.Query().Get("force") == "true"
-	inst, err := h.s.Install(id, force)
+	inst, err := h.s.Install(r.Context(), id, force)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeErr(w, 404, "skill not found")
@@ -332,13 +319,14 @@ func (h *handler) installSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, inst)
 }
 
-func (h *handler) uninstallSkill(w http.ResponseWriter, r *http.Request) {
+// UninstallSkill answers POST /skills/{id}/uninstall.
+func (h *Handlers) UninstallSkill(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	inst, err := h.s.Uninstall(id)
+	inst, err := h.s.Uninstall(r.Context(), id)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -350,8 +338,9 @@ func (h *handler) uninstallSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, inst)
 }
 
-func (h *handler) listInstallations(w http.ResponseWriter, _ *http.Request) {
-	insts, err := h.s.ListInstallations()
+// ListInstallations answers GET /installations.
+func (h *Handlers) ListInstallations(w http.ResponseWriter, r *http.Request) {
+	insts, err := h.s.ListInstallations(r.Context())
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -372,13 +361,14 @@ func parseID(s string) (int64, error) {
 
 // === seed endpoints ===
 
-func (h *handler) getSeedProfile(w http.ResponseWriter, r *http.Request) {
+// GetSeedProfile answers GET /seed/profile.
+func (h *Handlers) GetSeedProfile(w http.ResponseWriter, r *http.Request) {
 	machineID := r.URL.Query().Get("machine_id")
 	if machineID == "" {
 		writeErr(w, 400, "machine_id required")
 		return
 	}
-	prof, err := h.s.EnsureSeedProfile(machineID)
+	prof, err := h.s.EnsureSeedProfile(r.Context(), machineID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -386,7 +376,8 @@ func (h *handler) getSeedProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, prof)
 }
 
-func (h *handler) putSeedProfile(w http.ResponseWriter, r *http.Request) {
+// PutSeedProfile answers PUT /seed/profile.
+func (h *Handlers) PutSeedProfile(w http.ResponseWriter, r *http.Request) {
 	machineID := r.URL.Query().Get("machine_id")
 	if machineID == "" {
 		writeErr(w, 400, "machine_id required")
@@ -399,7 +390,7 @@ func (h *handler) putSeedProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid json")
 		return
 	}
-	prof, err := h.s.SetSeedProfileEnabled(machineID, body.Enabled)
+	prof, err := h.s.SetSeedProfileEnabled(r.Context(), machineID, body.Enabled)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -407,13 +398,14 @@ func (h *handler) putSeedProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, prof)
 }
 
-func (h *handler) getSeedManifest(w http.ResponseWriter, r *http.Request) {
+// GetSeedManifest answers GET /seed/manifest.
+func (h *Handlers) GetSeedManifest(w http.ResponseWriter, r *http.Request) {
 	machineID := r.URL.Query().Get("machine_id")
 	if machineID == "" {
 		writeErr(w, 400, "machine_id required")
 		return
 	}
-	mf, err := h.s.BuildSeedManifest(machineID)
+	mf, err := h.s.BuildSeedManifest(r.Context(), machineID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -421,18 +413,19 @@ func (h *handler) getSeedManifest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, mf)
 }
 
-func (h *handler) getVersionContent(w http.ResponseWriter, r *http.Request) {
+// GetVersionContent answers GET /versions/{vid}/content.
+func (h *Handlers) GetVersionContent(w http.ResponseWriter, r *http.Request) {
 	vid, err := strconv.ParseInt(r.PathValue("vid"), 10, 64)
 	if err != nil {
 		writeErr(w, 400, "bad version id")
 		return
 	}
-	v, err := h.s.GetSeedVersion(vid)
+	v, err := h.s.GetSeedVersion(r.Context(), vid)
 	if err != nil {
 		writeErr(w, 404, err.Error())
 		return
 	}
-	data, err := h.s.ReadSeedVersionContent(vid)
+	data, err := h.s.ReadSeedVersionContent(r.Context(), vid)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -443,7 +436,8 @@ func (h *handler) getVersionContent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *handler) postSeedObserve(w http.ResponseWriter, r *http.Request) {
+// PostSeedObserve answers POST /seed/observe.
+func (h *Handlers) PostSeedObserve(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		MachineID string `json:"machine_id"`
 		SkillID   int64  `json:"skill_id"`
@@ -458,7 +452,7 @@ func (h *handler) postSeedObserve(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "machine_id, skill_id, relpath required")
 		return
 	}
-	if err := h.s.RecordObservedHash(body.MachineID, body.SkillID, body.Relpath, body.SHA256); err != nil {
+	if err := h.s.RecordObservedHash(r.Context(), body.MachineID, body.SkillID, body.Relpath, body.SHA256); err != nil {
 		if errors.Is(err, ErrReferencedRowNotFound) {
 			writeErr(w, 404, "skill not found")
 			return
@@ -469,7 +463,8 @@ func (h *handler) postSeedObserve(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
-func (h *handler) postSeedDrift(w http.ResponseWriter, r *http.Request) {
+// PostSeedDrift answers POST /seed/drift.
+func (h *Handlers) PostSeedDrift(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		MachineID string `json:"machine_id"`
 		SkillID   int64  `json:"skill_id"`
@@ -485,7 +480,7 @@ func (h *handler) postSeedDrift(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "machine_id, skill_id, relpath required")
 		return
 	}
-	v, err := h.s.AppendSeedVersion(body.SkillID, body.Relpath, []byte(body.Content), SeedSourceRunnerDrift, body.MachineID, body.Note)
+	v, err := h.s.AppendSeedVersion(r.Context(), body.SkillID, body.Relpath, []byte(body.Content), SeedSourceRunnerDrift, body.MachineID, body.Note)
 	if err != nil {
 		if errors.Is(err, ErrReferencedRowNotFound) {
 			writeErr(w, 404, "skill not found")
@@ -494,7 +489,7 @@ func (h *handler) postSeedDrift(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if err := h.s.RecordObservedHash(body.MachineID, body.SkillID, body.Relpath, v.SHA256); err != nil {
+	if err := h.s.RecordObservedHash(r.Context(), body.MachineID, body.SkillID, body.Relpath, v.SHA256); err != nil {
 		if errors.Is(err, ErrReferencedRowNotFound) {
 			writeErr(w, 404, "skill not found")
 			return

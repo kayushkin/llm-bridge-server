@@ -1,6 +1,7 @@
 package skillstore
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -85,8 +86,8 @@ type Installation struct {
 // ingest, refuse it here, or reduce it to one safe segment — is still open;
 // this only fixes the order, so the answer is not reached through a directory
 // that has already been deleted.
-func (s *Store) Install(skillID int64, force bool) (*Installation, error) {
-	sk, err := s.GetSkill(skillID)
+func (s *Store) Install(ctx context.Context, skillID int64, force bool) (*Installation, error) {
+	sk, err := s.GetSkill(ctx, skillID)
 	if err != nil {
 		return nil, err
 	}
@@ -100,12 +101,15 @@ func (s *Store) Install(skillID int64, force bool) (*Installation, error) {
 
 	// Check for another installation at this target path.
 	var existingSkillID int64
-	err = s.db.QueryRow(`SELECT skill_id FROM installations WHERE target_path=?`, target).Scan(&existingSkillID)
+	err = s.db.QueryRowContext(ctx, `SELECT skill_id FROM installations WHERE target_path=$1`, target).Scan(&existingSkillID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("look up the owner of %s: %w", target, err)
+	}
 	if err == nil && existingSkillID != skillID {
 		if !force {
 			return nil, fmt.Errorf("%w: skill_id=%d owns %s", ErrInstallConflict, existingSkillID, target)
 		}
-		if _, err := s.Uninstall(existingSkillID); err != nil {
+		if _, err := s.Uninstall(ctx, existingSkillID); err != nil {
 			return nil, fmt.Errorf("uninstall previous: %w", err)
 		}
 	}
@@ -136,10 +140,10 @@ func (s *Store) Install(skillID int64, force bool) (*Installation, error) {
 		return nil, fmt.Errorf("stat src: %w", err)
 	}
 
-	if _, err := s.db.Exec(`
+	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO installations (skill_id, target_path, installed_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(skill_id) DO UPDATE SET target_path=excluded.target_path, installed_at=excluded.installed_at
+		VALUES ($1, $2, $3)
+		ON CONFLICT (skill_id) DO UPDATE SET target_path=excluded.target_path, installed_at=excluded.installed_at
 	`, skillID, target, now()); err != nil {
 		return nil, fmt.Errorf("record installation: %w", err)
 	}
@@ -158,10 +162,10 @@ func (s *Store) Install(skillID int64, force bool) (*Installation, error) {
 // The recorded target path is re-checked against the install dir before it is
 // removed: a row written before Install started checking can name a directory
 // outside it, and that row is read back verbatim.
-func (s *Store) Uninstall(skillID int64) (*Installation, error) {
+func (s *Store) Uninstall(ctx context.Context, skillID int64) (*Installation, error) {
 	var target string
 	var installedAt int64
-	err := s.db.QueryRow(`SELECT target_path, installed_at FROM installations WHERE skill_id=?`, skillID).Scan(&target, &installedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT target_path, installed_at FROM installations WHERE skill_id=$1`, skillID).Scan(&target, &installedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -174,20 +178,21 @@ func (s *Store) Uninstall(skillID int64) (*Installation, error) {
 	if err := os.RemoveAll(target); err != nil {
 		return nil, fmt.Errorf("remove target: %w", err)
 	}
-	if _, err := s.db.Exec(`DELETE FROM installations WHERE skill_id=?`, skillID); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM installations WHERE skill_id=$1`, skillID); err != nil {
 		return nil, err
 	}
 	return &Installation{SkillID: skillID, TargetPath: target, InstalledAt: installedAt}, nil
 }
 
-// ListInstallations returns all currently installed skills.
-func (s *Store) ListInstallations() ([]Installation, error) {
-	rows, err := s.db.Query(`
+// ListInstallations returns all currently installed skills, by skill name in
+// byte order as the standalone SQLite store sorted them (COLLATE "C").
+func (s *Store) ListInstallations(ctx context.Context) ([]Installation, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT i.skill_id, s.name, src.name, i.target_path, i.installed_at
 		FROM installations i
 		JOIN skills s ON s.id = i.skill_id
 		JOIN sources src ON src.id = s.source_id
-		ORDER BY s.name
+		ORDER BY s.name COLLATE "C"
 	`)
 	if err != nil {
 		return nil, err
