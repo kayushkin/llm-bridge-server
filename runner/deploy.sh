@@ -46,6 +46,12 @@ COMPUTER_USE_TARGETS=(
   "darwin amd64"
 )
 
+# The disk-usage helper (cmd/llm-bridge-disk-usage), served as
+# llm-bridge-disk-usage-windows-amd64. A runner in WSL starts it through
+# interop to scan and delete on the Windows drives for the Machines page.
+DISK_USAGE_NAME="llm-bridge-disk-usage"
+DISK_USAGE_TARGETS=("windows amd64")
+
 TMPDIR_BUILD="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_BUILD"' EXIT
 
@@ -109,6 +115,17 @@ for t in "${COMPUTER_USE_TARGETS[@]}"; do
   check_provenance "$OUT" "$COMPUTER_USE_NAME $OS/$ARCH"
 done
 
+for t in "${DISK_USAGE_TARGETS[@]}"; do
+  read -r OS ARCH <<< "$t"
+  OUT="$TMPDIR_BUILD/$DISK_USAGE_NAME-$OS-$ARCH"
+  echo "==> Building $DISK_USAGE_NAME $OS/$ARCH..."
+  GOOS="$OS" GOARCH="$ARCH" go build \
+    -ldflags "-X main.Version=$VERSION" \
+    -o "$OUT" "./cmd/$DISK_USAGE_NAME"
+  echo "    $(ls -lh "$OUT" | awk '{print $5}')  $OUT"
+  check_provenance "$OUT" "$DISK_USAGE_NAME $OS/$ARCH"
+done
+
 # The launcher launchd starts on a Mac (cmd/llm-bridge-runner-launcher). The
 # installer fetches it only when a Mac has none, so a new build here reaches
 # only new installs; that is deliberate, since replacing it on a Mac costs
@@ -140,6 +157,12 @@ for t in "${COMPUTER_USE_TARGETS[@]}"; do
   read -r OS ARCH <<< "$t"
   sudo install -m 0755 "$TMPDIR_BUILD/$COMPUTER_USE_NAME-$OS-$ARCH" "$ASSETS_DIR/$COMPUTER_USE_NAME-$OS-$ARCH"
   echo "    -> $ASSETS_DIR/$COMPUTER_USE_NAME-$OS-$ARCH"
+done
+
+for t in "${DISK_USAGE_TARGETS[@]}"; do
+  read -r OS ARCH <<< "$t"
+  sudo install -m 0755 "$TMPDIR_BUILD/$DISK_USAGE_NAME-$OS-$ARCH" "$ASSETS_DIR/$DISK_USAGE_NAME-$OS-$ARCH"
+  echo "    -> $ASSETS_DIR/$DISK_USAGE_NAME-$OS-$ARCH"
 done
 
 echo "==> Done. version=$VERSION"
