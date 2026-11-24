@@ -106,7 +106,7 @@ func (s *Server) GetType(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Vocabulary(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"formats":  Formats,
-		"access":   []Access{AccessByGrant, AccessByOwner},
+		"access":   []Access{AccessByGrant, AccessByOwner, AccessByGrantAndOwner},
 		"relation": RelationCanSeeReferences,
 		"resource_types": map[string]string{
 			ResourceTypeReferenceType: "a reference type's name, or * for every type",
@@ -247,7 +247,7 @@ func (s *Server) Search(w http.ResponseWriter, r *http.Request) {
 
 // mayAskTypeWhole: an owner-decided type is searched as the caller, so the
 // owner narrows the answer; a grant-decided one only when the caller sees the
-// whole type.
+// whole type, and one decided by both only then, searched as the caller.
 func (s *Server) mayAskTypeWhole(ctx context.Context, caller Caller, row *ReferenceType) (bool, error) {
 	if row.Access == AccessByOwner {
 		return true, nil
@@ -262,7 +262,7 @@ func (s *Server) searchOne(ctx context.Context, caller Caller, row *ReferenceTyp
 	if err != nil {
 		return nil, err
 	}
-	if row.Access == AccessByOwner && !caller.Unchecked {
+	if row.Access.ownerDecides() && !caller.Unchecked {
 		request.Header.Set(PrincipalIDHeader, caller.PrincipalID)
 	}
 	response, err := client.Do(request)

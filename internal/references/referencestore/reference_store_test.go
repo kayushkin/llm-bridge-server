@@ -88,7 +88,20 @@ func newStores(t *testing.T) *stores {
 		}
 		w.Write([]byte(`{"id":"prediction_000001","claim":"it rains"}`))
 	})
+	// people-store keeps an owner on every person and shows a person only to
+	// its owner and an administrator: person_000007 and person_000008 are
+	// principal_000002's, person_000009 is principal_000003's, and the rest
+	// principal_000001's.
+	personOwners := map[string]string{"person_000007": "principal_000002", "person_000008": "principal_000002", "person_000009": "principal_000003"}
 	mux.HandleFunc("GET /persons/{id}", func(w http.ResponseWriter, r *http.Request) {
+		owner := personOwners[r.PathValue("id")]
+		if owner == "" {
+			owner = "principal_000001"
+		}
+		if caller := r.Header.Get(PrincipalIDHeader); caller != "" && caller != "principal_000001" && caller != owner {
+			http.NotFound(w, r)
+			return
+		}
 		w.Write([]byte(`{"id":"` + r.PathValue("id") + `","display_name":"Someone"}`))
 	})
 	mux.HandleFunc("GET /sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +122,8 @@ func newStores(t *testing.T) *stores {
 
 // fakeAccess is principal-store and grant-store: principal_000001 is an
 // administrator, principal_000002 holds a type grant on prediction, a record
-// grant on person_000007 and a revoked type grant on person, and every other
+// grant on person_000007 and on person_000009 (which another principal owns)
+// and a revoked type grant on person, and every other
 // principal holds nothing.
 type fakeAccess struct{}
 
@@ -124,6 +138,7 @@ func (fakeAccess) Grants(_ context.Context, principalID string) ([]HeldGrant, er
 	return []HeldGrant{
 		{Relation: RelationCanSeeReferences, ResourceType: ResourceTypeReferenceType, ResourceID: "prediction"},
 		{Relation: RelationCanSeeReferences, ResourceType: ResourceTypeReference, ResourceID: "person_000007"},
+		{Relation: RelationCanSeeReferences, ResourceType: ResourceTypeReference, ResourceID: "person_000009"},
 		{Relation: RelationCanSeeReferences, ResourceType: ResourceTypeReferenceType, ResourceID: "person", Revoked: true},
 	}, nil
 }
@@ -214,6 +229,23 @@ func TestGrantsOpenATypeOrOneRecordAndNothingElse(t *testing.T) {
 	// The type grant on person is revoked, so another person stays shut.
 	if m := results["person_000008"]; len(m) != 1 || !m[0].Refused || m[0].Data != nil || m[0].Label != "" {
 		t.Errorf("an ungranted record: %+v", m)
+	}
+}
+
+// A person is decided by both: the grant, and people-store asked as the
+// caller, which shows a person only to its owner. A record grant on someone
+// else's person shows nothing.
+func TestAGrantShowsNoPersonTheCallerDoesNotOwn(t *testing.T) {
+	server, _ := newTestServer(t)
+	results := resolveAs(t, server, PrincipalIDHeader, "principal_000002", "person_000007", "person_000009")
+	if m := results["person_000007"]; len(m) != 1 || m[0].Refused {
+		t.Errorf("an owned and granted person: %+v", m)
+	}
+	if m := results["person_000009"]; len(m) != 0 {
+		t.Errorf("a granted person another principal owns: %+v", m)
+	}
+	if m := resolveAs(t, server, PrincipalIDHeader, "principal_000001", "person_000009")["person_000009"]; len(m) != 1 || m[0].Refused {
+		t.Errorf("the administrator: %+v", m)
 	}
 }
 

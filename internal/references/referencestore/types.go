@@ -40,7 +40,23 @@ const (
 	// AccessByOwner: the owning service decides. It is asked as the caller
 	// (X-Principal-Id), and a refusal (403 or 404) is a refusal here.
 	AccessByOwner Access = "owner"
+	// AccessByGrantAndOwner: both. The caller needs what AccessByGrant asks,
+	// and the owning service, asked as the caller, must let it see the record
+	// too. A connected record (a person, a journal entry, a calendar event)
+	// has an owner, and its store shows it only to that owner and to an
+	// administrator, so a grant cannot show one person another's records.
+	AccessByGrantAndOwner Access = "grant_and_owner"
 )
+
+// ownerDecides reports whether the owning service is asked as the caller.
+func (access Access) ownerDecides() bool {
+	return access == AccessByOwner || access == AccessByGrantAndOwner
+}
+
+// grantDecides reports whether grant-store's can_see_references is checked.
+func (access Access) grantDecides() bool {
+	return access == AccessByGrant || access == AccessByGrantAndOwner
+}
 
 // Credential is what reference-store presents to the owning service.
 type Credential string
@@ -256,7 +272,7 @@ func buildTypes() []ReferenceType {
 			LabelField: "display_name",
 			Summary:    []SummaryField{text("how_met", "How met"), {"birthday", "Birthday", FormatDate}},
 			Page:       "/people?id={id}",
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "entry", Service: "journal-store", Glyph: "📓",
@@ -265,7 +281,7 @@ func buildTypes() []ReferenceType {
 			LabelField: "title",
 			Summary:    []SummaryField{text("kind", "Kind"), seconds("written_at", "Written")},
 			Page:       "/journal?id={id}",
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			// Get answers a page holding the one message; its fields are under
@@ -385,7 +401,7 @@ func buildTypes() []ReferenceType {
 			Get:         "/events/{id}", IDPatterns: []string{`calendar_event_\d{6,}`},
 			LabelField: "summary",
 			Summary:    []SummaryField{seconds("starts_at", "Starts"), text("location", "Where")},
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "time_entry", Service: "time-ledger-store", Glyph: "⏱️",
@@ -558,7 +574,7 @@ func ValidateReferenceConfiguration(types []ReferenceType, serviceURLs, siteURLs
 			problems = append(problems, fmt.Sprintf("type %q is declared twice", row.Type))
 		}
 		seen[row.Type] = true
-		if row.Access != AccessByGrant && row.Access != AccessByOwner {
+		if !row.Access.grantDecides() && !row.Access.ownerDecides() {
 			problems = append(problems, fmt.Sprintf("type %q has access %q", row.Type, row.Access))
 		}
 		for _, field := range row.Summary {
