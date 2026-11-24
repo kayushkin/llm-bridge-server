@@ -1,0 +1,25 @@
+[Unit]
+Description=people-store — the people in the user's own life (friends, family, coworkers), for a journal and messages
+After=network.target
+
+# A systemd user unit: install it to ~/.config/systemd/user/ and the binary to
+# ~/bin. %h is the user's home directory, so nothing here names a user.
+[Service]
+Type=simple
+ExecStart=%h/bin/people-store
+
+# Loopback, deliberately. This service has no auth of its own; put a front door
+# that adds it in front. A wildcard bind would put the user's address book on
+# the network. settings.go defaults to the same address, so an empty env is safe too.
+Environment=PEOPLE_STORE_ADDR=127.0.0.1:8321
+
+# Every principal_id written to a person is checked here; when principal-store
+# cannot answer, the write is refused with a 502.
+Environment=PEOPLE_STORE_PRINCIPAL_STORE_URL=http://127.0.0.1:8314
+
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

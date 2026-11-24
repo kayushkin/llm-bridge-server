@@ -1,0 +1,19 @@
+# TypeScript types generated from this store's Go wire types. The Go structs
+# are the source of truth; ts/ is a render of them. Regenerate with
+# ./generate-ts.sh after changing a wire type.
+packages:
+  - path: "github.com/kayushkin/people-store"
+    output_path: "ts/model.ts"
+    type_mappings:
+      "json.RawMessage": "unknown"
+      "time.Time": "string"
+    exclude_files:
+      - "store.go"
+      - "person.go"
+      - "identity.go"
+      - "relationship.go"
+      - "suggestion.go"
+      - "server.go"
+      - "settings.go"
+      - "principal_check.go"
+      - "schema_embed.go"
