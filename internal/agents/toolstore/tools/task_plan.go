@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/kayushkin/tool-store/internal/childprocess"
-	"github.com/kayushkin/tool-store/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/internal/childprocess"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
 )
 
 const taskPlanFile = ".task.md"
@@ -300,7 +301,7 @@ func runBuild(ctx context.Context, repoRoot string) BuildResult {
 
 	proc := childprocess.NewCommand(ctx, "bash", "-c", cmd)
 	proc.Dir = repoRoot
-	proc.Env = append(os.Environ(), "PATH="+os.Getenv("PATH"))
+	proc.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(), "PATH="+os.Getenv("PATH"))
 	out, err := proc.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if len(output) > 2000 {

@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	skillstore "github.com/kayushkin/llm-bridge-server/internal/agents/skillstore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	skillstore "github.com/kayushkin/skill-store"
 )
 
 func main() {

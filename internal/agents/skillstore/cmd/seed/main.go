@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"log"
 
+	skillstore "github.com/kayushkin/llm-bridge-server/internal/agents/skillstore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	skillstore "github.com/kayushkin/skill-store"
 )
 
 // seedSources is the canonical initial registry.

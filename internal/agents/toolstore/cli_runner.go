@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"os"
 	"regexp"
 	"time"
 
-	"github.com/kayushkin/tool-store/internal/childprocess"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/internal/childprocess"
 )
 
 // runCLI executes a kind=cli tool. The CLISpec.ArgsTemplate may contain
@@ -49,7 +50,7 @@ func runCLI(ctx context.Context, t *Tool, inputJSON string) (string, error) {
 		cmd.Dir = t.CLI.WorkingDir
 	}
 	if len(t.EnvKeys) > 0 {
-		env := os.Environ()
+		env := childprocessenv.EnvironmentWithoutServerSecrets()
 		for _, k := range t.EnvKeys {
 			if v, ok := os.LookupEnv(k); ok {
 				env = append(env, k+"="+v)

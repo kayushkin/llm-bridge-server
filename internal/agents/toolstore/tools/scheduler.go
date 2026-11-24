@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/tool-store/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
 )
 
 // Job represents a scheduler job (from scheduler/internal/db/db.go)

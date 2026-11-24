@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	toolstore "github.com/kayushkin/tool-store"
+	toolstore "github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 )
 
 // Tags on harness tools. A tool is tagged tagReadOnly when it only reads,

@@ -122,7 +122,7 @@ func TestEveryEnvironmentVariableTheServerReadsIsDeclared(t *testing.T) {
 		declared[definition.EnvironmentVariable] = true
 	}
 	// Read by name and not settings of this server.
-	notSettings := map[string]bool{"HOME": true}
+	notSettings := map[string]bool{"HOME": true, "PATH": true}
 
 	repositoryRoot := filepath.Join("..", "..")
 	for _, tree := range []string{"internal", filepath.Join("cmd", "llm-bridge-server")} {

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/tool-store/internal/childprocess"
-	"github.com/kayushkin/tool-store/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/internal/childprocess"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
 )
 
 // RecentFiles returns a tool that lists recently modified files with metadata.

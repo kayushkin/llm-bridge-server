@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	bundlestore "github.com/kayushkin/bundle-store"
+	bundlestore "github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
 )
 
 // The ids below are made up. They model no real skill-store or tool-store.

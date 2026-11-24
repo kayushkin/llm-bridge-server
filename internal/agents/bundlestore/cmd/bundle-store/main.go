@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	bundlestore "github.com/kayushkin/bundle-store"
+	bundlestore "github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 

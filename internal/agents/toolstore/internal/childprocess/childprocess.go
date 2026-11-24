@@ -22,6 +22,7 @@ package childprocess
 import (
 	"bytes"
 	"context"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"os/exec"
 	"time"
 )
@@ -58,6 +59,9 @@ type Command struct {
 // InterruptToKillGrace.
 func NewCommand(ctx context.Context, name string, arguments ...string) *Command {
 	cmd := exec.CommandContext(ctx, name, arguments...)
+	// The tools run inside the bridge server, so a child starts from the
+	// server's environment without its secrets; a caller may replace Env.
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	useOwnProcessGroup(cmd)
 	cmd.WaitDelay = WaitDelayAfterExit
 	cmd.Cancel = func() error { return interruptProcessGroup(cmd.Process) }

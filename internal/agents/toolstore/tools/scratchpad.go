@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kayushkin/tool-store/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
 )
 
 const scratchpadDir = ".scratchpad"

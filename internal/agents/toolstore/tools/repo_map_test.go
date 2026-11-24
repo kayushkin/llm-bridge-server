@@ -365,7 +365,7 @@ const sampleGo = `package sample
 import (
 	"fmt"
 	"encoding/json"
-	"github.com/kayushkin/tool-store/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
 )
 
 type Small struct {
@@ -441,7 +441,7 @@ func TestOnlyDottedImportPathsAreKept(t *testing.T) {
 	if imports == "" {
 		t.Fatalf("the summary lists no imports:\n%s", strings.Join(parts, "\n"))
 	}
-	if !strings.Contains(imports, "github.com/kayushkin/tool-store/schema") {
+	if !strings.Contains(imports, "github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema") {
 		t.Errorf("the third-party import was dropped: %q", imports)
 	}
 	for _, dropped := range []string{"encoding/json", `"fmt"`} {

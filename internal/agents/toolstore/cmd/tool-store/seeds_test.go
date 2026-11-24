@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	toolstore "github.com/kayushkin/tool-store"
-	"github.com/kayushkin/tool-store/tools"
+	toolstore "github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/tools"
 )
 
 func getSeededTool(t *testing.T, s *toolstore.Store, name string) *toolstore.Tool {

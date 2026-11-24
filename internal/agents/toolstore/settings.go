@@ -3,9 +3,9 @@ package toolstore
 import (
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/tools"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/kayushkin/tool-store/tools"
 )
 
 // ServiceName is this service's name in its own settings description, as

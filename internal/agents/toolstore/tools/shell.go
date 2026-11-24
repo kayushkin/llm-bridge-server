@@ -3,13 +3,14 @@ package tools
 import (
 	"context"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/kayushkin/tool-store/internal/childprocess"
-	"github.com/kayushkin/tool-store/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/internal/childprocess"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
 )
 
 // Shell returns a tool that executes shell commands via bash.
@@ -189,9 +190,9 @@ func tailCharacters(s string, n int) string {
 	return ""
 }
 
-// ensureDevToolsOnPath returns os.Environ() with mise shim paths prepended to PATH.
+// ensureDevToolsOnPath returns the environment without server secrets, with mise shim paths prepended to PATH.
 func ensureDevToolsOnPath() []string {
-	env := os.Environ()
+	env := childprocessenv.EnvironmentWithoutServerSecrets()
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		return env

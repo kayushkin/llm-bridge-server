@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/kayushkin/tool-store/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
 )
 
 // braveSearchBaseURL is the live Brave Search API endpoint. searchBrave takes

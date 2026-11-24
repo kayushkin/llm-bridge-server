@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kayushkin/tool-store/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
 )
 
 // RepoMap returns a tool that generates a structural map of a codebase.

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/kayushkin/tool-store/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
 )
 
 // Impl is one local tool: name, human description, JSON Schema for inputs, and

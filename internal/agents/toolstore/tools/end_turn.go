@@ -3,7 +3,7 @@ package tools
 import (
 	"context"
 
-	"github.com/kayushkin/tool-store/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
 )
 
 // EndTurn returns a tool that signals the end of a turn.

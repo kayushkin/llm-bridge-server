@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/kayushkin/tool-store/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
 )
 
 // DefaultPinchtabURL is where PinchTab answers when nothing says otherwise.

@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	toolstore "github.com/kayushkin/tool-store"
+	toolstore "github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 )
 
 func openSeedTestStore(t *testing.T) *toolstore.Store {

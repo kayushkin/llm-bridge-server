@@ -14,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/tools"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/kayushkin/tool-store/tools"
 )
 
 // The registry gives the service what its os.Getenv reads gave it before

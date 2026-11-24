@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"io"
 	"io/fs"
 	"os"
@@ -392,24 +393,33 @@ func syncRepo(src *Source, repoDir string) (string, error) {
 		if err := os.MkdirAll(filepath.Dir(repoDir), 0o755); err != nil {
 			return "", err
 		}
-		cmd := exec.Command("git", "clone", "--depth=1", "--branch", src.Branch, src.RepoURL, repoDir)
+		cmd := gitCommand("clone", "--depth=1", "--branch", src.Branch, src.RepoURL, repoDir)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("git clone: %w\n%s", err, strings.TrimSpace(string(out)))
 		}
 	} else {
-		cmd := exec.Command("git", "-C", repoDir, "fetch", "--depth=1", "origin", src.Branch)
+		cmd := gitCommand("-C", repoDir, "fetch", "--depth=1", "origin", src.Branch)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("git fetch: %w\n%s", err, strings.TrimSpace(string(out)))
 		}
-		cmd = exec.Command("git", "-C", repoDir, "reset", "--hard", "FETCH_HEAD")
+		cmd = gitCommand("-C", repoDir, "reset", "--hard", "FETCH_HEAD")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("git reset: %w\n%s", err, strings.TrimSpace(string(out)))
 		}
 	}
-	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+	cmd := gitCommand("-C", repoDir, "rev-parse", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// gitCommand builds a git command whose environment is this process's without
+// the bridge server's secrets: the store runs inside the server, and git runs
+// hooks and credential helpers that can read what they are handed.
+func gitCommand(arguments ...string) *exec.Cmd {
+	cmd := exec.Command("git", arguments...)
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
+	return cmd
 }

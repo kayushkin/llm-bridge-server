@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	toolstore "github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/tools"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	toolstore "github.com/kayushkin/tool-store"
-	"github.com/kayushkin/tool-store/tools"
 )
 
 func main() {
