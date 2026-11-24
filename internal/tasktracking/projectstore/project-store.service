@@ -1,0 +1,17 @@
+[Unit]
+Description=Project Store — projects: what each is for and what it owns in other stores
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/kayushkincom/bin/project-store
+Environment=PROJECT_STORE_ADDR=127.0.0.1:8320
+Environment=HOME=/home/kayushkincom
+WorkingDirectory=/home/kayushkincom/repos/project-store
+Restart=on-failure
+RestartSec=5
+# KANBAN_STORE_SERVICE_TOKEN comes from a host-local drop-in,
+# ~/.config/systemd/user/project-store.service.d/, never from this file.
+
+[Install]
+WantedBy=default.target
