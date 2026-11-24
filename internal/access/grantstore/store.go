@@ -1,23 +1,27 @@
-// Package grantstore is the registry of grants: which principal (a human or a
-// group from principal-store) stands in which relation to which resource — an
-// agent, harness instance, machine, skill or tool.
+// Package grantstore is the registry of grants: which principal (a human, a
+// group, a peer or a service from principal-store) stands in which relation to
+// which resource — an agent, harness instance, machine, skill, tool, board and
+// the rest of GET /resource-types.
 //
 // It exists because "who may use what" had no home. principal-store is a
 // directory, permission-store matches tool-call patterns with no subject, and
 // tool-store's per-instance opt-ins say where a tool is wired, not who may
 // have it. This store holds the tuples; llm-bridge-server reads a principal's
 // effective set at session start and offers only what it names.
+//
+// The records live in Postgres, in the schema of Module, through
+// postgresstorage. The server provisions, migrates and opens the module, then
+// hands the pool to New.
 package grantstore
 
 import (
+	"context"
 	"database/sql"
+	"embed"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 var (
@@ -40,6 +44,22 @@ var (
 	ErrOwnerUnavailable = errors.New("owner unavailable")
 )
 
+// GrantIDPrefix is the type part of a grant's public id: grant_000001.
+const GrantIDPrefix = "grant"
+
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the store keeps its grants in, with
+// the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
+	if err != nil {
+		return postgresstorage.Module{}, err
+	}
+	return postgresstorage.Module{Schema: "grants", Role: "grants_module", Migrations: migrations}, nil
+}
+
 // Active reports whether the grant has not been revoked.
 func (g *Grant) Active() bool { return g.RevokedAt == 0 }
 
@@ -54,118 +74,31 @@ type Filter struct {
 	Offset         int
 }
 
-// Store owns the database.
+// Store keeps the grants in the module's schema.
 type Store struct {
-	db      *sql.DB
-	dataDir string
+	db *sql.DB
 }
 
-// DefaultDataDir is where the database lives when the env says nothing.
-func DefaultDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	return filepath.Join(home, ".config", "grant-store")
-}
-
-// Open creates the data directory if needed, opens the database and applies the
-// schema. The schema is create-only, so this is safe on every boot.
-//
-// _txlock=immediate makes every transaction take the write lock at BEGIN, so
-// two concurrent creates cannot both read MAX(seq) and then collide on the
-// UNIQUE — the second waits, then reads the first's row.
-func Open(dataDir string) (*Store, error) {
-	if dataDir == "" {
-		dataDir = DefaultDataDir()
-	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create data dir: %w", err)
-	}
-	dbPath := filepath.Join(dataDir, "grant-store.db")
-	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on&_txlock=immediate")
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("set WAL: %w", err)
-	}
-	if _, err := db.Exec(schemaSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	s := &Store{db: db, dataDir: dataDir}
-	if err := s.ensureColumns(); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return s, nil
-}
-
-// ensureColumns is the additive migration path. A column added to a CREATE
-// TABLE in schema.sql never reaches a database that already exists, so new
-// columns are declared here instead, with their index (if any) created after.
-func (s *Store) ensureColumns() error {
-	additions := []struct{ table, column, ddl string }{
-		// Nothing yet. Append here rather than editing schema.sql's CREATE TABLE.
-	}
-	for _, a := range additions {
-		if err := s.ensureColumn(a.table, a.column, a.ddl); err != nil {
-			return fmt.Errorf("migrate %s.%s: %w", a.table, a.column, err)
-		}
-	}
-	return nil
-}
-
-func (s *Store) ensureColumn(table, column, ddl string) error {
-	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notnull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return err
-		}
-		if name == column {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	_, err = s.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, ddl))
-	return err
-}
-
-// Close releases the database handle.
-func (s *Store) Close() error { return s.db.Close() }
-
-// DataDir is the directory the database lives in.
-func (s *Store) DataDir() string { return s.dataDir }
+// New returns the store on db, a pool Module's schema has been migrated on.
+func New(db *sql.DB) *Store { return &Store{db: db} }
 
 // Counts answers /health.
-func (s *Store) Counts() (Counts, error) {
+func (s *Store) Counts(ctx context.Context) (Counts, error) {
 	var c Counts
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*),
-		       COALESCE(SUM(revoked_at = 0), 0),
-		       COALESCE(SUM(revoked_at <> 0), 0),
-		       COUNT(DISTINCT CASE WHEN revoked_at = 0 THEN principal_id END)
+		       COUNT(*) FILTER (WHERE revoked_at = 0),
+		       COUNT(*) FILTER (WHERE revoked_at <> 0),
+		       COUNT(DISTINCT principal_id) FILTER (WHERE revoked_at = 0)
 		FROM grants`).Scan(&c.Grants, &c.Active, &c.Revoked, &c.Principals)
 	return c, err
 }
 
 func now() int64 { return time.Now().Unix() }
 
-// formatID renders a sequence number as the public id. The prefix is not
+// formatID renders a grant's number as its public id. The prefix is not
 // decoration: dash's resolver probes every registry row whose id pattern
 // matches, and noteboard already claims the bare-uuid shape, so an id that
 // looked like a uuid would make every uuid in every chat message probe this
 // store too. The prefix also keeps '/' out of the id.
-func formatID(seq int64) string { return fmt.Sprintf("grant_%06d", seq) }
+func formatID(seq int64) string { return postgresstorage.FormatRecordID(GrantIDPrefix, seq) }

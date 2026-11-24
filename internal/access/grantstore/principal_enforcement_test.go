@@ -9,8 +9,6 @@ import (
 	"testing"
 )
 
-const enforcementTestServiceToken = "grant-store-test-service-token-0123456789"
-
 // In the fake directory principal_000001 is a human in group principal_000006,
 // principal_000002 is a human in no group, and principal_000006 is a group.
 const (
@@ -26,10 +24,7 @@ func newEnforcingTestServer(t *testing.T) *httptest.Server {
 
 func newEnforcingTestServerWith(t *testing.T, directory PrincipalDirectory) *httptest.Server {
 	t.Helper()
-	mux := http.NewServeMux()
-	RegisterHandlers(mux, newTestStore(t), directory, &fakeResourceChecker{},
-		PrincipalEnforcement{ServiceToken: enforcementTestServiceToken})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(mountForTest(NewHandlers(newTestStore(t), directory, &fakeResourceChecker{})))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -60,10 +55,10 @@ func doWithHeaders(t *testing.T, srv *httptest.Server, headers map[string]string
 	return response.StatusCode, raw
 }
 
-var asGrantStoreService = map[string]string{ServiceTokenHeader: enforcementTestServiceToken}
+var asGrantStoreService = map[string]string{testInternalServiceHeader: "yes"}
 
 func asGrantStorePrincipal(principalID string) map[string]string {
-	return map[string]string{PrincipalIDHeader: principalID}
+	return map[string]string{testPrincipalHeader: principalID}
 }
 
 func boardGrantBody(principalID, relation, boardID string) map[string]any {
@@ -83,8 +78,10 @@ func TestEnforcingGrantStoreIdentifiesTheCaller(t *testing.T) {
 	expectStatus(t, 200, status, body, "health is open")
 	status, body = doWithHeaders(t, srv, nil, "GET", "/grants?principal_id=principal_000001", nil)
 	expectStatus(t, 401, status, body, "no identity")
-	status, body = doWithHeaders(t, srv, map[string]string{ServiceTokenHeader: "wrong"}, "GET", "/grants", nil)
-	expectStatus(t, 401, status, body, "wrong service token")
+	status, body = doWithHeaders(t, srv, map[string]string{testInternalServiceHeader: "yes", testPrincipalHeader: plainMember}, "GET", "/grants", nil)
+	expectStatus(t, 500, status, body, "a caller that is both the internal service and a principal is a wiring bug")
+	status, body = doWithHeaders(t, srv, asGrantStorePrincipal("Slava"), "GET", "/grants?principal_id=Slava", nil)
+	expectStatus(t, 401, status, body, "a name is not a principal id")
 	status, body = doWithHeaders(t, srv, asGrantStorePrincipal("principal_000099"), "GET", "/grants?principal_id=principal_000099", nil)
 	expectStatus(t, 401, status, body, "unknown principal")
 	status, body = doWithHeaders(t, srv, asGrantStorePrincipal(administratorsGroup), "GET", "/grants?principal_id="+administratorsGroup, nil)
@@ -146,6 +143,14 @@ func TestPrincipalGrantsOnlyOnBoardsItAdministers(t *testing.T) {
 // principal_000008 in the fake directory carries is_administrator.
 const deploymentAdministrator = "principal_000008"
 
+// TestAHeaderNamesNoCaller: the standalone store's own headers are just
+// headers now, and a request carrying only them has no caller.
+func TestAHeaderNamesNoCaller(t *testing.T) {
+	srv := newEnforcingTestServer(t)
+	status, body := doWithHeaders(t, srv, map[string]string{"X-Principal-Id": deploymentAdministrator, "X-Grant-Store-Service-Token": "anything"}, "GET", "/grants", nil)
+	expectStatus(t, 401, status, body, "the old identity headers")
+}
+
 // TestAnAdministratorIsPastEveryRule pins the one fact that lets a person reach
 // a grant nobody gave them: administering the deployment includes handing out
 // and taking back access to it.
@@ -167,17 +172,4 @@ func TestAnAdministratorIsPastEveryRule(t *testing.T) {
 	// And a principal who is not an administrator is refused the same calls.
 	status, body = doWithHeaders(t, srv, asGrantStorePrincipal(plainMember), "GET", "/principals/"+deploymentAdministrator+"/effective", nil)
 	expectStatus(t, 403, status, body, "a plain principal reads an administrator's effective grants")
-}
-
-// TestAShortServiceTokenRefusesToRegister pins the boot-time refusal: an empty
-// token would match every request that leaves the header out, so the store
-// must not start rather than run open while its log says it is checking.
-func TestAShortServiceTokenRefusesToRegister(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("RegisterHandlers accepted a short service token")
-		}
-	}()
-	RegisterHandlers(http.NewServeMux(), newTestStore(t), newFakeDirectory(), &fakeResourceChecker{},
-		PrincipalEnforcement{ServiceToken: "too-short"})
 }

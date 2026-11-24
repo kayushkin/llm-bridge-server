@@ -9,64 +9,55 @@ import (
 	"strings"
 )
 
-// RegisterHandlers mounts the API on mux. Routes are rooted at / — dash adds
-// its own /api/grants prefix and supplies the auth this service has none of,
-// exactly as it does for principal-store. That is also why main.go binds
-// 127.0.0.1 and not *: with no auth of its own, the front door has to be the
-// only door.
-//
-// directory is principal-store and checker is the resource owners. Both are
-// required: a nil one panics here, at boot, rather than at the first POST.
-// Every route is gated; see principal_enforcement.go for who may call what.
-// A service token shorter than 32 characters panics here, at boot, rather than
-// leaving a store that believes it is checking callers and is not.
-func RegisterHandlers(mux *http.ServeMux, s *Store, directory PrincipalDirectory, checker ResourceChecker, enforcement PrincipalEnforcement) {
-	if len(enforcement.ServiceToken) < 32 {
-		panic("grant-store: needs a service token of at least 32 characters, or every request that omits the header would be unrestricted")
+// Handlers answers grant-store's routes. The server it is mounted in
+// registers each one under its own prefix, with the same paths and wildcard
+// names as the standalone store's: GET /grants/{id}, POST /grants/{id}/revoke,
+// GET /principals/{id}/effective and the rest. Every route but Health,
+// Relations and ResourceTypes reads the caller from the request's context; see
+// principal_enforcement.go.
+type Handlers struct {
+	store     *Store
+	directory PrincipalDirectory
+	checker   ResourceChecker
+}
+
+// NewHandlers answers the routes from store, checking principals with
+// directory and resources with checker. A nil one panics here, at start, rather
+// than at the first POST.
+func NewHandlers(store *Store, directory PrincipalDirectory, checker ResourceChecker) *Handlers {
+	if store == nil {
+		panic("grant-store: NewHandlers needs a Store")
 	}
 	if directory == nil {
-		panic("grant-store: RegisterHandlers needs a PrincipalDirectory; without one a grant's principal cannot be checked against principal-store")
+		panic("grant-store: NewHandlers needs a PrincipalDirectory; without one a grant's principal cannot be checked against principal-store")
 	}
 	if checker == nil {
-		panic("grant-store: RegisterHandlers needs a ResourceChecker; without one a grant's resource cannot be checked against its owner")
+		panic("grant-store: NewHandlers needs a ResourceChecker; without one a grant's resource cannot be checked against its owner")
 	}
-	h := &handler{s: s, directory: directory, checker: checker, enforcement: &enforcement}
-	mux.HandleFunc("GET /health", h.health)
-	mux.HandleFunc("GET /relations", h.relations)
-	mux.HandleFunc("GET /resource-types", h.resourceTypes)
-
-	mux.HandleFunc("GET /grants", h.listGrants)
-	mux.HandleFunc("POST /grants", h.createGrant)
-	mux.HandleFunc("GET /grants/{id}", h.getGrant)
-	mux.HandleFunc("POST /grants/{id}/revoke", h.revokeGrant)
-
-	mux.HandleFunc("GET /principals/{id}/effective", h.effective)
+	return &Handlers{store: store, directory: directory, checker: checker}
 }
 
-type handler struct {
-	s           *Store
-	directory   PrincipalDirectory
-	checker     ResourceChecker
-	enforcement *PrincipalEnforcement
-}
-
-func (h *handler) health(w http.ResponseWriter, r *http.Request) {
-	counts, err := h.s.Counts()
+// Health answers its route.
+func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
+	counts, err := h.store.Counts(r.Context())
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "counts": counts})
 }
 
-func (h *handler) relations(w http.ResponseWriter, r *http.Request) {
+// Relations answers its route.
+func (h *Handlers) Relations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Relations)
 }
 
-func (h *handler) resourceTypes(w http.ResponseWriter, r *http.Request) {
+// ResourceTypes answers its route.
+func (h *Handlers) ResourceTypes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ResourceTypes)
 }
 
-func (h *handler) listGrants(w http.ResponseWriter, r *http.Request) {
+// ListGrants answers its route.
+func (h *Handlers) ListGrants(w http.ResponseWriter, r *http.Request) {
 	caller, identified := h.identifyCaller(w, r)
 	if !identified {
 		return
@@ -86,7 +77,7 @@ func (h *handler) listGrants(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	grants, err := h.s.List(Filter{
+	grants, err := h.store.List(r.Context(), Filter{
 		PrincipalID:    q.Get("principal_id"),
 		Relation:       q.Get("relation"),
 		ResourceType:   q.Get("resource_type"),
@@ -101,7 +92,8 @@ func (h *handler) listGrants(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, grants)
 }
 
-func (h *handler) createGrant(w http.ResponseWriter, r *http.Request) {
+// CreateGrant answers its route.
+func (h *Handlers) CreateGrant(w http.ResponseWriter, r *http.Request) {
 	var request GrantRequest
 	caller, identified := h.identifyCaller(w, r)
 	if !identified {
@@ -112,7 +104,7 @@ func (h *handler) createGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	if !caller.unrestricted {
 		if request.ResourceType != ResourceTypeBoard {
-			writeErr(w, http.StatusForbidden, fmt.Sprintf("a principal may grant only on boards it administers; a %q grant needs the service token", request.ResourceType))
+			writeErr(w, http.StatusForbidden, fmt.Sprintf("a principal may grant only on boards it administers; a %q grant needs the internal service or an administrator", request.ResourceType))
 			return
 		}
 		administers, err := h.callerAdministersBoard(r, caller, request.ResourceID)
@@ -124,7 +116,7 @@ func (h *handler) createGrant(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	grant, created, err := h.s.Create(r.Context(), h.directory, h.checker, request)
+	grant, created, err := h.store.Create(r.Context(), h.directory, h.checker, request)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -135,12 +127,13 @@ func (h *handler) createGrant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, grant)
 }
 
-func (h *handler) getGrant(w http.ResponseWriter, r *http.Request) {
+// GetGrant answers its route.
+func (h *Handlers) GetGrant(w http.ResponseWriter, r *http.Request) {
 	caller, identified := h.identifyCaller(w, r)
 	if !identified {
 		return
 	}
-	grant, err := h.s.Get(r.PathValue("id"))
+	grant, err := h.store.Get(r.Context(), r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
@@ -155,13 +148,14 @@ func (h *handler) getGrant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, grant)
 }
 
-func (h *handler) revokeGrant(w http.ResponseWriter, r *http.Request) {
+// RevokeGrant answers its route.
+func (h *Handlers) RevokeGrant(w http.ResponseWriter, r *http.Request) {
 	caller, identified := h.identifyCaller(w, r)
 	if !identified {
 		return
 	}
 	if !caller.unrestricted {
-		existing, err := h.s.Get(r.PathValue("id"))
+		existing, err := h.store.Get(r.Context(), r.PathValue("id"))
 		if respondStoreError(w, err) {
 			return
 		}
@@ -185,14 +179,15 @@ func (h *handler) revokeGrant(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	grant, err := h.s.Revoke(r.PathValue("id"))
+	grant, err := h.store.Revoke(r.Context(), r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, grant)
 }
 
-func (h *handler) effective(w http.ResponseWriter, r *http.Request) {
+// Effective answers its route.
+func (h *Handlers) Effective(w http.ResponseWriter, r *http.Request) {
 	caller, identified := h.identifyCaller(w, r)
 	if !identified {
 		return
@@ -202,7 +197,7 @@ func (h *handler) effective(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	grants, err := h.s.Effective(r.Context(), h.directory, r.PathValue("id"), q.Get("relation"), q.Get("resource_type"))
+	grants, err := h.store.Effective(r.Context(), h.directory, r.PathValue("id"), q.Get("relation"), q.Get("resource_type"))
 	if respondStoreError(w, err) {
 		return
 	}

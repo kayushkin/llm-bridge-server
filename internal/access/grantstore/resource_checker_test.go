@@ -11,35 +11,15 @@ import (
 	"time"
 )
 
-// newOwnerServer stands in for llm-bridge-server, skill-store and tool-store at
+// newOwnerServer stands in for skill-store, tool-store and kanban-store at
 // once, answering the way each does live. Any path it does not know gets Go's
 // unrouted 404, as a real ServeMux would.
-func newOwnerServer(t *testing.T, agentsBody string, agentsStatus int) *httptest.Server {
+func newOwnerServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.EscapedPath() {
-		case "/agents":
-			w.WriteHeader(agentsStatus)
-			w.Write([]byte(agentsBody))
-		case "/instances/inst-cc-local", "/instances/inst%2Fslash", "/machines/m_localhost", "/peer-connections/peer_connection_000001":
-			if r.Header.Get(LLMBridgeServiceTokenHeader) != "bridge-service-token" {
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error":{"code":"service_token_required"}}`))
-				return
-			}
+		case "/skills/7", "/tools/3", "/tools/a%2Fslash":
 			w.Write([]byte(`{"id":"exists"}`))
-		case "/skills/7", "/tools/3", "/principals/principal_000001":
-			w.Write([]byte(`{"id":"exists"}`))
-		case "/principals/principal_000999":
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`{"error":"principal not found"}`))
-		case "/peer-connections/peer_connection_000999":
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`{"error":{"code":"peer_connection_not_found"}}`))
-		case "/instances/inst-gone":
-			http.Error(w, "instance not found", http.StatusNotFound)
-		case "/machines/m_gone":
-			http.Error(w, "machine not found", http.StatusNotFound)
 		case "/skills/8":
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(`{"error":"skill not found"}`))
@@ -56,9 +36,7 @@ func newOwnerServer(t *testing.T, agentsBody string, agentsStatus int) *httptest
 		case "/api/boards/board-gone":
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(`{"error":"not found"}`))
-		case "/operation-types":
-			w.Write([]byte(`[{"type":"classification.run","executor":"keyword-classifier"},{"type":"llm.completion","executor":"harness-oneshot"}]`))
-		case "/machines/m_boom":
+		case "/tools/boom":
 			http.Error(w, "boom", http.StatusInternalServerError)
 		default:
 			http.NotFound(w, r)
@@ -69,14 +47,14 @@ func newOwnerServer(t *testing.T, agentsBody string, agentsStatus int) *httptest
 }
 
 func newCheckerAgainst(srv *httptest.Server) *HTTPResourceChecker {
-	return NewHTTPResourceChecker(ResourceOwners{LLMBridgeServerURL: srv.URL + "/", LLMBridgeServiceToken: "bridge-service-token", PrincipalStoreURL: srv.URL, SkillStoreURL: srv.URL, ToolStoreURL: srv.URL, KanbanStoreURL: srv.URL, KanbanStoreServiceToken: "kanban-service-token"})
+	return NewHTTPResourceChecker(ResourceOwners{SkillStoreURL: srv.URL + "/", ToolStoreURL: srv.URL, KanbanStoreURL: srv.URL, KanbanStoreServiceToken: "kanban-service-token"})
 }
 
 // TestBoardCheckSendsTheKanbanServiceToken pins the one owner that is asked
 // with a credential: an enforcing kanban-store answers a bare request with 401,
 // and that must read as an owner that could not answer, not a missing board.
 func TestBoardCheckSendsTheKanbanServiceToken(t *testing.T) {
-	srv := newOwnerServer(t, `[]`, http.StatusOK)
+	srv := newOwnerServer(t)
 	ctx := context.Background()
 	if err := newCheckerAgainst(srv).CheckResourceExists(ctx, ResourceTypeBoard, "board-exists"); err != nil {
 		t.Fatalf("existing board with the token: %v", err)
@@ -85,7 +63,7 @@ func TestBoardCheckSendsTheKanbanServiceToken(t *testing.T) {
 	if !errors.Is(err, ErrResourceNotFound) {
 		t.Fatalf("missing board: want ErrResourceNotFound, got %v", err)
 	}
-	withoutToken := NewHTTPResourceChecker(ResourceOwners{LLMBridgeServerURL: srv.URL, LLMBridgeServiceToken: "", PrincipalStoreURL: srv.URL, SkillStoreURL: srv.URL, ToolStoreURL: srv.URL, KanbanStoreURL: srv.URL, KanbanStoreServiceToken: ""})
+	withoutToken := NewHTTPResourceChecker(ResourceOwners{SkillStoreURL: srv.URL, ToolStoreURL: srv.URL, KanbanStoreURL: srv.URL})
 	err = withoutToken.CheckResourceExists(ctx, ResourceTypeBoard, "board-exists")
 	if err == nil || errors.Is(err, ErrResourceNotFound) {
 		t.Fatalf("board check without the token: want an owner failure that is not ErrResourceNotFound, got %v", err)
@@ -96,32 +74,22 @@ func TestBoardCheckSendsTheKanbanServiceToken(t *testing.T) {
 }
 
 func TestHTTPCheckerReadsTheOwnersAnswer(t *testing.T) {
-	srv := newOwnerServer(t, `[{"id":12,"slug":"argraphments"},{"id":9,"slug":"bench"}]`, http.StatusOK)
+	srv := newOwnerServer(t)
 	checker := newCheckerAgainst(srv)
 	ctx := context.Background()
 
 	for _, ref := range [][2]string{
-		{ResourceTypeAgent, "12"},
-		{ResourceTypeInstance, "inst-cc-local"},
-		{ResourceTypeInstance, "inst/slash"}, // path-escaped, not split into two segments
-		{ResourceTypeMachine, "m_localhost"},
 		{ResourceTypeSkill, "7"},
 		{ResourceTypeTool, "3"},
-		{ResourceTypePrincipal, "principal_000001"},
-		{ResourceTypePeerConnection, "peer_connection_000001"},
+		{ResourceTypeTool, "a/slash"}, // path-escaped, not split into two segments
 	} {
 		if err := checker.CheckResourceExists(ctx, ref[0], ref[1]); err != nil {
 			t.Fatalf("%s %s should exist: %v", ref[0], ref[1], err)
 		}
 	}
 	for _, ref := range [][2]string{
-		{ResourceTypeAgent, "13"},
-		{ResourceTypeInstance, "inst-gone"},
-		{ResourceTypeMachine, "m_gone"},
 		{ResourceTypeSkill, "8"},
 		{ResourceTypeTool, "4"},
-		{ResourceTypePrincipal, "principal_000999"},
-		{ResourceTypePeerConnection, "peer_connection_000999"},
 	} {
 		if err := checker.CheckResourceExists(ctx, ref[0], ref[1]); !errors.Is(err, ErrResourceNotFound) {
 			t.Fatalf("%s %s: err = %v, want ErrResourceNotFound", ref[0], ref[1], err)
@@ -132,43 +100,25 @@ func TestHTTPCheckerReadsTheOwnersAnswer(t *testing.T) {
 func TestHTTPCheckerReportsAFailingOwnerAsAFailureNotAMissingResource(t *testing.T) {
 	ctx := context.Background()
 
-	srv := newOwnerServer(t, `[]`, http.StatusOK)
+	srv := newOwnerServer(t)
 	checker := newCheckerAgainst(srv)
-	err := checker.CheckResourceExists(ctx, ResourceTypeMachine, "m_boom")
+	err := checker.CheckResourceExists(ctx, ResourceTypeTool, "boom")
 	if err == nil || errors.Is(err, ErrResourceNotFound) || !strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("500: err = %v, want a failure carrying the status and body", err)
 	}
 
 	// A base URL pointing at a service without the route answers Go's unrouted
-	// 404. That is a misconfiguration, not a missing instance.
-	unrouted := NewHTTPResourceChecker(ResourceOwners{LLMBridgeServerURL: srv.URL + "/wrong-prefix", LLMBridgeServiceToken: "bridge-service-token", PrincipalStoreURL: srv.URL, SkillStoreURL: srv.URL, ToolStoreURL: srv.URL, KanbanStoreURL: srv.URL, KanbanStoreServiceToken: ""})
-	err = unrouted.CheckResourceExists(ctx, ResourceTypeInstance, "inst-cc-local")
-	if err == nil || errors.Is(err, ErrResourceNotFound) || !strings.Contains(err.Error(), "LLM_BRIDGE_URL") {
-		t.Fatalf("unrouted 404: err = %v, want a failure naming LLM_BRIDGE_URL", err)
-	}
-
-	failingAgents := newOwnerServer(t, `database is locked`, http.StatusInternalServerError)
-	err = newCheckerAgainst(failingAgents).CheckResourceExists(ctx, ResourceTypeAgent, "12")
-	if err == nil || errors.Is(err, ErrResourceNotFound) || !strings.Contains(err.Error(), "database is locked") {
-		t.Fatalf("agents 500: err = %v", err)
-	}
-
-	wrongShape := newOwnerServer(t, `{"agents":[{"id":12}]}`, http.StatusOK)
-	err = newCheckerAgainst(wrongShape).CheckResourceExists(ctx, ResourceTypeAgent, "12")
-	if err == nil || errors.Is(err, ErrResourceNotFound) {
-		t.Fatalf("agents not an array: err = %v, want a failure", err)
-	}
-
-	stringIDs := newOwnerServer(t, `[{"id":"12","slug":"argraphments"}]`, http.StatusOK)
-	err = newCheckerAgainst(stringIDs).CheckResourceExists(ctx, ResourceTypeAgent, "12")
-	if err == nil || errors.Is(err, ErrResourceNotFound) {
-		t.Fatalf("agents with string ids: err = %v, want a failure", err)
+	// 404. That is a misconfiguration, not a missing tool.
+	unrouted := NewHTTPResourceChecker(ResourceOwners{ToolStoreURL: srv.URL + "/wrong-prefix"})
+	err = unrouted.CheckResourceExists(ctx, ResourceTypeTool, "3")
+	if err == nil || errors.Is(err, ErrResourceNotFound) || !strings.Contains(err.Error(), "TOOL_STORE_URL") {
+		t.Fatalf("unrouted 404: err = %v, want a failure naming TOOL_STORE_URL", err)
 	}
 
 	gone := httptest.NewServer(http.NotFoundHandler())
 	goneURL := gone.URL
 	gone.Close()
-	err = NewHTTPResourceChecker(ResourceOwners{LLMBridgeServerURL: goneURL, LLMBridgeServiceToken: "", PrincipalStoreURL: goneURL, SkillStoreURL: goneURL, ToolStoreURL: goneURL, KanbanStoreURL: goneURL, KanbanStoreServiceToken: ""}).CheckResourceExists(ctx, ResourceTypeSkill, "7")
+	err = NewHTTPResourceChecker(ResourceOwners{SkillStoreURL: goneURL, ToolStoreURL: goneURL, KanbanStoreURL: goneURL}).CheckResourceExists(ctx, ResourceTypeSkill, "7")
 	if err == nil || errors.Is(err, ErrResourceNotFound) || !strings.Contains(err.Error(), "did not answer") {
 		t.Fatalf("unreachable: err = %v", err)
 	}
@@ -182,7 +132,7 @@ func TestHTTPCheckerTimesOut(t *testing.T) {
 		}
 	}))
 	t.Cleanup(slow.Close)
-	checker := NewHTTPResourceChecker(ResourceOwners{LLMBridgeServerURL: slow.URL, LLMBridgeServiceToken: "", PrincipalStoreURL: slow.URL, SkillStoreURL: slow.URL, ToolStoreURL: slow.URL, KanbanStoreURL: slow.URL, KanbanStoreServiceToken: ""})
+	checker := NewHTTPResourceChecker(ResourceOwners{SkillStoreURL: slow.URL, ToolStoreURL: slow.URL, KanbanStoreURL: slow.URL})
 	if checker.client.Timeout != ownerCheckTimeout || ownerCheckTimeout != 3*time.Second {
 		t.Fatalf("client timeout = %v, want 3s", checker.client.Timeout)
 	}
@@ -193,45 +143,26 @@ func TestHTTPCheckerTimesOut(t *testing.T) {
 	}
 }
 
-func TestEveryResourceTypeHasAnOwnerCheck(t *testing.T) {
-	srv := newOwnerServer(t, `[]`, http.StatusOK)
-	checker := newCheckerAgainst(srv)
-	for _, resourceType := range ResourceTypes {
-		err := checker.CheckResourceExists(context.Background(), resourceType, "1")
-		if err != nil && strings.Contains(err.Error(), "no owner check") {
-			t.Fatalf("%s: %v", resourceType, err)
-		}
+// TestTheHTTPCheckerAsksOnlyTheOwnersOutsideThisProcess: every resource type
+// is either checked over HTTP or owned in the mounting server's own process,
+// and asking this checker about one of the latter is an error naming why,
+// never a "does not exist".
+func TestTheHTTPCheckerAsksOnlyTheOwnersOutsideThisProcess(t *testing.T) {
+	overHTTP := map[string]bool{}
+	for _, resourceType := range ResourceTypesCheckedOverHTTP {
+		overHTTP[resourceType] = true
 		if _, err := lookupResourceType(resourceType); err != nil {
-			t.Fatalf("%s is served but has no definition: %v", resourceType, err)
+			t.Fatalf("%s is checked over HTTP but has no definition: %v", resourceType, err)
 		}
 	}
-}
-
-func TestOperationTypeCheckReadsTheBridgesList(t *testing.T) {
-	checker := newCheckerAgainst(newOwnerServer(t, `[]`, http.StatusOK))
-	if err := checker.CheckResourceExists(context.Background(), ResourceTypeOperationType, "llm.completion"); err != nil {
-		t.Fatalf("known type: %v", err)
-	}
-	err := checker.CheckResourceExists(context.Background(), ResourceTypeOperationType, "ticket.action")
-	if !errors.Is(err, ErrResourceNotFound) || !strings.Contains(err.Error(), "classification.run, llm.completion") {
-		t.Fatalf("unknown type: %v", err)
-	}
-}
-
-// llm-bridge-server answers its instance, machine and peer connection routes
-// only to the service token. Without it the check is the bridge's 401,
-// reported as an owner that could not answer, never as a missing resource.
-func TestBridgeChecksSendTheBridgeServiceToken(t *testing.T) {
-	srv := newOwnerServer(t, `[]`, http.StatusOK)
-	withoutToken := NewHTTPResourceChecker(ResourceOwners{LLMBridgeServerURL: srv.URL, PrincipalStoreURL: srv.URL, SkillStoreURL: srv.URL, ToolStoreURL: srv.URL, KanbanStoreURL: srv.URL})
-	for _, ref := range [][2]string{
-		{ResourceTypeInstance, "inst-cc-local"},
-		{ResourceTypeMachine, "m_localhost"},
-		{ResourceTypePeerConnection, "peer_connection_000001"},
-	} {
-		err := withoutToken.CheckResourceExists(context.Background(), ref[0], ref[1])
-		if err == nil || errors.Is(err, ErrResourceNotFound) || !strings.Contains(err.Error(), "401") {
-			t.Errorf("%s %s without the bridge token: want the bridge's 401 as an owner failure, got %v", ref[0], ref[1], err)
+	checker := newCheckerAgainst(newOwnerServer(t))
+	for _, resourceType := range ResourceTypes {
+		if overHTTP[resourceType] {
+			continue
+		}
+		err := checker.CheckResourceExists(context.Background(), resourceType, "1")
+		if err == nil || errors.Is(err, ErrResourceNotFound) || !strings.Contains(err.Error(), "own process") {
+			t.Fatalf("%s: want an error saying the mounting server checks it, got %v", resourceType, err)
 		}
 	}
 }

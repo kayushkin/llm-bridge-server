@@ -7,16 +7,19 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
+// newTestStore gives the test a store on a Postgres database of its own, made
+// from a template with the module migrated (postgresstorage/postgrestest).
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(t.TempDir())
+	module, err := Module()
 	if err != nil {
-		t.Fatalf("open: %v", err)
+		t.Fatalf("module: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
-	return s
+	return New(postgrestest.NewDatabase(t, module).Open(module))
 }
 
 // fakeDirectory stands in for principal-store. principals maps an id to the
@@ -164,7 +167,7 @@ func TestCreateRefusesWhatItCannotStoreBeforeAskingAnyone(t *testing.T) {
 			}
 		})
 	}
-	if counts, _ := s.Counts(); counts.Grants != 0 {
+	if counts, _ := s.Counts(context.Background()); counts.Grants != 0 {
 		t.Fatalf("%d grants written by refused requests", counts.Grants)
 	}
 }
@@ -209,7 +212,7 @@ func TestCreateAsksBothOwnersAndWritesNothingWhenEitherSaysNoOrCannotAnswer(t *t
 		t.Fatalf("owner down: err = %v", err)
 	}
 
-	if counts, _ := s.Counts(); counts.Grants != 0 {
+	if counts, _ := s.Counts(context.Background()); counts.Grants != 0 {
 		t.Fatalf("%d grants written despite refusals", counts.Grants)
 	}
 }
@@ -218,34 +221,34 @@ func TestRevokeIsIdempotentAndKeepsTheRow(t *testing.T) {
 	s := newTestStore(t)
 	g := mustGrant(t, s, "principal_000001", RelationCanUse, ResourceTypeTool, "13")
 
-	revoked, err := s.Revoke(g.ID)
+	revoked, err := s.Revoke(context.Background(), g.ID)
 	if err != nil || revoked.RevokedAt == 0 {
 		t.Fatalf("revoke: %+v %v", revoked, err)
 	}
-	again, err := s.Revoke(g.ID)
+	again, err := s.Revoke(context.Background(), g.ID)
 	if err != nil || again.RevokedAt != revoked.RevokedAt {
 		t.Fatalf("second revoke moved revoked_at: %d -> %d (%v)", revoked.RevokedAt, again.RevokedAt, err)
 	}
-	if _, err := s.Get(g.ID); err != nil {
+	if _, err := s.Get(context.Background(), g.ID); err != nil {
 		t.Fatalf("revoked grant gone: %v", err)
 	}
-	if _, err := s.Revoke("grant_000404"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Revoke(context.Background(), "grant_000404"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("revoke missing: err = %v", err)
 	}
 
 	// Hidden from the default list, visible with include_revoked, and the
 	// tuple can be granted again as a fresh row.
-	if active, _ := s.List(Filter{}); len(active) != 0 {
+	if active, _ := s.List(context.Background(), Filter{}); len(active) != 0 {
 		t.Fatalf("revoked grant still listed: %+v", active[0])
 	}
-	if all, _ := s.List(Filter{IncludeRevoked: true}); len(all) != 1 {
+	if all, _ := s.List(context.Background(), Filter{IncludeRevoked: true}); len(all) != 1 {
 		t.Fatalf("include_revoked listed %d", len(all))
 	}
 	fresh := mustGrant(t, s, "principal_000001", RelationCanUse, ResourceTypeTool, "13")
 	if fresh.ID == g.ID {
 		t.Fatalf("re-grant reused the revoked row")
 	}
-	counts, _ := s.Counts()
+	counts, _ := s.Counts(context.Background())
 	if counts.Grants != 2 || counts.Active != 1 || counts.Revoked != 1 || counts.Principals != 1 {
 		t.Fatalf("counts = %+v", counts)
 	}
@@ -258,24 +261,24 @@ func TestListFiltersAndRefusesAnUnknownVocabularyWord(t *testing.T) {
 	mustGrant(t, s, "principal_000006", RelationCanUse, ResourceTypeTool, "14")
 	mustGrant(t, s, "principal_000002", RelationCanRunAs, ResourceTypeAgent, "65")
 
-	byPrincipal, _ := s.List(Filter{PrincipalID: "principal_000001"})
+	byPrincipal, _ := s.List(context.Background(), Filter{PrincipalID: "principal_000001"})
 	if len(byPrincipal) != 2 {
 		t.Fatalf("by principal: %d", len(byPrincipal))
 	}
-	byResource, _ := s.List(Filter{ResourceType: ResourceTypeTool, ResourceID: "13"})
+	byResource, _ := s.List(context.Background(), Filter{ResourceType: ResourceTypeTool, ResourceID: "13"})
 	if len(byResource) != 2 {
 		t.Fatalf("by resource: %d", len(byResource))
 	}
-	byRelation, _ := s.List(Filter{Relation: RelationCanUse})
+	byRelation, _ := s.List(context.Background(), Filter{Relation: RelationCanUse})
 	if len(byRelation) != 2 {
 		t.Fatalf("by relation: %d", len(byRelation))
 	}
-	page, _ := s.List(Filter{Limit: 2, Offset: 2})
+	page, _ := s.List(context.Background(), Filter{Limit: 2, Offset: 2})
 	if len(page) != 2 {
 		t.Fatalf("page: %d", len(page))
 	}
 	for _, f := range []Filter{{Relation: "may_use"}, {ResourceType: "robot"}} {
-		if _, err := s.List(f); !errors.Is(err, ErrInvalidGrant) {
+		if _, err := s.List(context.Background(), f); !errors.Is(err, ErrInvalidGrant) {
 			t.Fatalf("filter %+v: err = %v, want ErrInvalidGrant, not an empty answer", f, err)
 		}
 	}
@@ -290,7 +293,7 @@ func TestEffectiveInheritsActiveGroupsFromTheDirectoryOnEveryCall(t *testing.T) 
 	mustGrant(t, s, "principal_000007", RelationCanUse, ResourceTypeTool, "15") // a group Slava is not in
 	mustGrant(t, s, "principal_000002", RelationCanRunAs, ResourceTypeAgent, "65")
 	revoked := mustGrant(t, s, "principal_000006", RelationCanRunAs, ResourceTypeAgent, "65")
-	if _, err := s.Revoke(revoked.ID); err != nil {
+	if _, err := s.Revoke(context.Background(), revoked.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -366,9 +369,65 @@ func TestConcurrentCreatesNeverCollideOnSeq(t *testing.T) {
 			t.Fatalf("concurrent create: %v", err)
 		}
 	}
-	counts, _ := s.Counts()
+	counts, _ := s.Counts(context.Background())
 	if counts.Grants != 20 {
 		t.Fatalf("grants = %d, want 20", counts.Grants)
+	}
+}
+
+// TestConcurrentIdenticalCreatesWriteOneRow: twenty creates of one tuple at
+// once leave one active row, and exactly one of them says it wrote it.
+func TestConcurrentIdenticalCreatesWriteOneRow(t *testing.T) {
+	s := newTestStore(t)
+	var wg sync.WaitGroup
+	type outcome struct {
+		grant   *Grant
+		created bool
+		err     error
+	}
+	outcomes := make(chan outcome, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			grant, created, err := s.Create(context.Background(), newFakeDirectory(), &fakeResourceChecker{},
+				GrantRequest{PrincipalID: "principal_000001", Relation: RelationCanUse, ResourceType: ResourceTypeTool, ResourceID: "13"})
+			outcomes <- outcome{grant, created, err}
+		}()
+	}
+	wg.Wait()
+	close(outcomes)
+	createdCount := 0
+	ids := map[string]bool{}
+	for o := range outcomes {
+		if o.err != nil {
+			t.Fatalf("concurrent identical create: %v", o.err)
+		}
+		if o.created {
+			createdCount++
+		}
+		ids[o.grant.ID] = true
+	}
+	if createdCount != 1 || len(ids) != 1 {
+		t.Fatalf("created %d times with ids %v, want once and one id", createdCount, ids)
+	}
+	if all, _ := s.List(context.Background(), Filter{IncludeRevoked: true}); len(all) != 1 {
+		t.Fatalf("rows = %d, want 1", len(all))
+	}
+}
+
+// TestOnlyTheExactFormOfAnIDNamesAGrant: grant_1 and a bare number are not
+// grant_000001.
+func TestOnlyTheExactFormOfAnIDNamesAGrant(t *testing.T) {
+	s := newTestStore(t)
+	g := mustGrant(t, s, "principal_000001", RelationCanUse, ResourceTypeTool, "13")
+	if g.ID != "grant_000001" {
+		t.Fatalf("id = %s", g.ID)
+	}
+	for _, id := range []string{"grant_1", "1", "grant_0000001", "prediction_000001", ""} {
+		if _, err := s.Get(context.Background(), id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("Get(%q) = %v, want ErrNotFound", id, err)
+		}
 	}
 }
 

@@ -1,3 +1,6 @@
+-- The schema the standalone grant-store kept in SQLite, copied here for the
+-- importer test. It is not this store's schema: migrations/ is.
+
 -- grant-store schema. Create-only and idempotent: Open() executes this whole
 -- file on every boot. New columns go in the ensureColumns loop in store.go,
 -- never in an edit to a CREATE TABLE below — an edited CREATE TABLE is a no-op

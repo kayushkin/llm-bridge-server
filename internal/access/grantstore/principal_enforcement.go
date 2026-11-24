@@ -1,7 +1,7 @@
 package grantstore
 
 import (
-	"crypto/subtle"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,26 +10,26 @@ import (
 
 // Who may read and change grants.
 //
-// There is no off switch: every route except /health, /relations and
-// /resource-types needs one of:
+// The caller comes from the request's context, put there by the server this
+// store is mounted in once it has verified the request's credential
+// (ContextWithCaller). Nothing a client sends — no header, no body field —
+// names the caller. Every route except /health, /relations and
+// /resource-types needs one:
 //
-//   - X-Grant-Store-Service-Token matching the configured token: an internal
-//     service (llm-bridge-server reading a session's grants at spawn,
-//     kanban-store reading a request's board grants, an operator's script).
-//     Unrestricted.
-//   - X-Principal-Id, set by a gateway from a verified login and trusted as
-//     sent. The principal must be a human principal-store knows and has not
-//     disabled.
+//   - InternalService: the server's own internal callers (reading a session's
+//     grants at spawn, kanban-store's board checks through the gateway, an
+//     operator's script with the service token). Unrestricted.
+//   - PrincipalID: a principal the server verified. It must be one
+//     principal-store knows, that acts as a caller (a human, a peer or a
+//     service) and is not disabled.
 //
-// Neither is 401. An **administrator** — principal-store's is_administrator on
-// a human — is unrestricted, like the service token: administering the
-// deployment includes handing out and taking back access to it. Any other
-// principal may:
+// Neither is 401. An **administrator** — principal-store's is_administrator —
+// is unrestricted, like the internal service: administering the deployment
+// includes handing out and taking back access to it. Any other principal may:
 //
 //   - create or revoke a board grant only on a board it holds can_administer on,
 //     directly or through a group. Every other resource type — tools, skills,
-//     agents, instances, machines — is the operator's, through the service
-//     token.
+//     agents, instances, machines — is the operator's.
 //   - read a grant held by itself, or any grant on a board it administers.
 //   - list grants only with principal_id set to itself, or with
 //     resource_type=board and resource_id set to a board it administers.
@@ -39,22 +39,28 @@ import (
 // A board administrator can grant can_administer to someone else, and that is
 // deliberate: handing a board over is part of administering it.
 
-const (
-	PrincipalIDHeader  = "X-Principal-Id"
-	ServiceTokenHeader = "X-Grant-Store-Service-Token"
-)
+// Caller is who a request to this store acts as, as the server it is mounted
+// in verified it. Exactly one of the two is set.
+type Caller struct {
+	// InternalService is the server's own unrestricted caller.
+	InternalService bool
+	// PrincipalID is the verified principal the request acts as.
+	PrincipalID string
+}
 
-// PrincipalEnforcement configures RegisterHandlers.
-type PrincipalEnforcement struct {
-	// ServiceToken must be at least 32 characters; an empty one would match
-	// every request that leaves the header out.
-	ServiceToken string
+type callerContextKey struct{}
+
+// ContextWithCaller returns ctx carrying caller, for the handlers to read.
+// Only the server this store is mounted in calls it, after verifying the
+// request's credential.
+func ContextWithCaller(ctx context.Context, caller Caller) context.Context {
+	return context.WithValue(ctx, callerContextKey{}, caller)
 }
 
 var principalIDShape = regexp.MustCompile(`^principal_\d{6,}$`)
 
-// grantCaller is who a request acts as. unrestricted is the service token or an
-// administrator.
+// grantCaller is who a request acts as. unrestricted is the internal service
+// or an administrator.
 type grantCaller struct {
 	unrestricted bool
 	principalID  string
@@ -62,26 +68,27 @@ type grantCaller struct {
 
 // identifyCaller answers the request itself (401 or 502) and returns false
 // when the caller cannot be established.
-func (h *handler) identifyCaller(w http.ResponseWriter, r *http.Request) (grantCaller, bool) {
-	if token := r.Header.Get(ServiceTokenHeader); token != "" {
-		if subtle.ConstantTimeCompare([]byte(token), []byte(h.enforcement.ServiceToken)) != 1 {
-			writeErr(w, http.StatusUnauthorized, ServiceTokenHeader+" does not match this store's service token")
+func (h *Handlers) identifyCaller(w http.ResponseWriter, r *http.Request) (grantCaller, bool) {
+	caller, carried := r.Context().Value(callerContextKey{}).(Caller)
+	if !carried || (!caller.InternalService && caller.PrincipalID == "") {
+		writeErr(w, http.StatusUnauthorized, "this request carries no verified caller: grant-store is reached only through the server it is mounted in, as a principal or as its internal service")
+		return grantCaller{}, false
+	}
+	if caller.InternalService {
+		if caller.PrincipalID != "" {
+			writeErr(w, http.StatusInternalServerError, "the request names both the internal service and principal "+caller.PrincipalID+" as its caller; exactly one is allowed")
 			return grantCaller{}, false
 		}
 		return grantCaller{unrestricted: true}, true
 	}
-	principalID := r.Header.Get(PrincipalIDHeader)
-	if principalID == "" {
-		writeErr(w, http.StatusUnauthorized, "principal enforcement is on: send "+PrincipalIDHeader+" (set by the gateway from a login) or "+ServiceTokenHeader)
-		return grantCaller{}, false
-	}
+	principalID := caller.PrincipalID
 	if !principalIDShape.MatchString(principalID) {
-		writeErr(w, http.StatusUnauthorized, fmt.Sprintf("%s %q is not a principal-store id (principal_000001)", PrincipalIDHeader, principalID))
+		writeErr(w, http.StatusUnauthorized, fmt.Sprintf("the caller %q is not a principal-store id (principal_000001)", principalID))
 		return grantCaller{}, false
 	}
 	summary, err := h.directory.LookupPrincipal(r.Context(), principalID)
 	if errors.Is(err, ErrPrincipalNotFound) {
-		writeErr(w, http.StatusUnauthorized, fmt.Sprintf("%s %s does not exist in principal-store", PrincipalIDHeader, principalID))
+		writeErr(w, http.StatusUnauthorized, fmt.Sprintf("the caller %s does not exist in principal-store", principalID))
 		return grantCaller{}, false
 	}
 	if err != nil {
@@ -89,7 +96,7 @@ func (h *handler) identifyCaller(w http.ResponseWriter, r *http.Request) (grantC
 		return grantCaller{}, false
 	}
 	if !summary.ActsAsCaller || summary.DisabledAt != 0 {
-		writeErr(w, http.StatusUnauthorized, fmt.Sprintf("%s %s is a %s principal that is disabled or does not act as a caller, by principal-store's answer; only an active human or peer acts", PrincipalIDHeader, principalID, summary.Kind))
+		writeErr(w, http.StatusUnauthorized, fmt.Sprintf("the caller %s is a %s principal that is disabled or does not act as a caller, by principal-store's answer; only an active human, peer or service acts", principalID, summary.Kind))
 		return grantCaller{}, false
 	}
 	// An administrator is past every rule below, and is still named in the
@@ -99,11 +106,11 @@ func (h *handler) identifyCaller(w http.ResponseWriter, r *http.Request) (grantC
 
 // callerAdministersBoard reads the caller's effective can_administer grants,
 // which include those held through a group.
-func (h *handler) callerAdministersBoard(r *http.Request, caller grantCaller, boardID string) (bool, error) {
+func (h *Handlers) callerAdministersBoard(r *http.Request, caller grantCaller, boardID string) (bool, error) {
 	if caller.unrestricted {
 		return true, nil
 	}
-	grants, err := h.s.Effective(r.Context(), h.directory, caller.principalID, RelationCanAdminister, ResourceTypeBoard)
+	grants, err := h.store.Effective(r.Context(), h.directory, caller.principalID, RelationCanAdminister, ResourceTypeBoard)
 	if err != nil {
 		return false, err
 	}
@@ -116,7 +123,7 @@ func (h *handler) callerAdministersBoard(r *http.Request, caller grantCaller, bo
 }
 
 // callerMayReadGrant: its own grant, or a grant on a board it administers.
-func (h *handler) callerMayReadGrant(r *http.Request, caller grantCaller, grant *Grant) (bool, error) {
+func (h *Handlers) callerMayReadGrant(r *http.Request, caller grantCaller, grant *Grant) (bool, error) {
 	if caller.unrestricted || grant.PrincipalID == caller.principalID {
 		return true, nil
 	}

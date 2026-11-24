@@ -1,31 +1,22 @@
 # grant-store — API contract
 
-`127.0.0.1:8315`. The registry of grants: which principal (a human or a group
-from principal-store) stands in which relation to which resource — an agent,
-harness instance, machine, skill or tool. "Who may use what" lives here and
-nowhere else.
+The registry of grants: which principal (a human, a group, a peer or a
+service from principal-store) stands in which relation to which resource — an
+agent, harness instance, machine, skill, tool, board and the rest of
+`GET /resource-types`. "Who may use what" lives here and nowhere else.
 
-Module `github.com/kayushkin/grant-store`, root package `grantstore`, binary
-`cmd/grant-store` installed at `~/bin/grant-store`. Env: `GRANT_STORE_ADDR`
-(default `127.0.0.1:8315`), `GRANT_STORE_DATA_DIR` (default
-`~/.config/grant-store`), and the owners a grant is checked against:
-`PRINCIPAL_STORE_URL` (default `http://127.0.0.1:8314`, also for principal
-resources), `LLM_BRIDGE_URL` (`http://127.0.0.1:8160`, for agents, instances,
-machines and peer connections, asked with `LLMBRIDGE_SERVICE_TOKEN`),
-`SKILL_STORE_URL` (`http://127.0.0.1:8301`), `TOOL_STORE_URL`
-(`http://127.0.0.1:8302`) — the names dash and principal-store already use.
-SQLite at `<data dir>/grant-store.db`, WAL, `?_foreign_keys=on&_txlock=immediate`.
+Package `internal/access/grantstore` of llm-bridge-server, mounted by that
+server under `/grant-store/`: every route below is served at
+`/grant-store<route>`, with the same paths and answers the standalone service
+on `127.0.0.1:8315` gave. The grants live in Postgres, in the module `grants`
+(role `grants_module`), built by `migrations/*.sql`. All timestamps are epoch
+seconds (`bigint`, 0 = unset).
 
-Routes are rooted at `/`, the same as principal-store; dash adds the
-`/api/grants` prefix and the auth this service has none of. All timestamps are
-epoch seconds (`INTEGER`, 0 = unset).
-
-**The bind is `127.0.0.1`, deliberately, and it is part of this contract.**
-This service has no auth of its own and the front door (dash) is the only
-door. The unit sets `GRANT_STORE_ADDR=127.0.0.1:8315`, `main.go` defaults to
-the same, and `deploy.sh` fails if the port is listening anywhere else.
-
-No build tag is needed: there is no full-text index here.
+The server decides who the caller is from its own credentials and hands the
+verified caller to the handlers in the request's context
+(`ContextWithCaller`); see [Who may read and change grants](#who-may-read-and-change-grants).
+`ImportStandaloneDatabase` copies a standalone store's SQLite file into an
+empty module, keeping every id, number, time and revoked row.
 
 ---
 
@@ -112,18 +103,6 @@ is written); anything else → 500.
 `{"status":"ok","counts":{"grants":N,"active":N,"revoked":N,"principals":N}}` —
 `principals` is distinct principals holding an active grant.
 
-### `GET /settings`
-
-Every environment variable the service reads, declared once in `settings.go`
-with llm-bridge `servicesettings`: `{"service":"grant-store","settings":[{key,
-environment_variable, kind, value_type, description, value, default_value,
-is_set, source, required, editable, notes}], "kinds":[…], "sources":[…]}`. A
-`secret` setting (`GRANT_STORE_SERVICE_TOKEN`, `KANBAN_STORE_SERVICE_TOKEN`)
-carries `is_set` and never a value. **Unrestricted callers only**: the service
-token or an administrator; any other principal is **403**, no caller is 401.
-Nothing is editable and no write route is mounted. A set `GRANT_STORE_` variable
-that is not declared stops the service at startup.
-
 ### `GET /relations`
 
 The table above as JSON: `[{"name","resource_types":[…],"enforced":bool,"accepts_all_resources":bool,"description"}]`,
@@ -131,8 +110,7 @@ in the order shown.
 
 ### `GET /resource-types`
 
-`["agent","instance","machine","skill","tool"]` — the same five names as
-kanban-store's entity-type registry and principal-store.
+`["agent","instance","machine","skill","tool","board","operation_type","principal","peer_connection","reference_type","reference"]`.
 
 ### `GET /grants`
 
@@ -165,10 +143,13 @@ asked before anything is written.
 when an identical active tuple already exists (same `granted_at`, same
 `note` — the repeat does not overwrite). A disabled principal and a disabled
 resource are both accepted: the grant is dormant, and comes back with them.
+Two identical creates at once write one row: the second meets the partial
+unique index, writes nothing and answers 200 with the first's row.
 
 ### `GET /grants/{id}`
 
-The grant, revoked or not. 404 if no such id.
+The grant, revoked or not. 404 if no such id; only the exact form names a
+grant, so `grant_1` is 404.
 
 ### `POST /grants/{id}/revoke`
 
@@ -206,38 +187,41 @@ would start a session with nothing offered and no explanation.
 
 | `resource_type` | Owner asked | Id wanted |
 |---|---|---|
-| `agent` | llm-bridge-server `GET /agents`, scanned for the numeric id | agent-store's `agents.id`. The slug is refused: agent-store lets it be renamed |
-| `instance` | llm-bridge-server `GET /instances/{id}` | harness-store's instance id, e.g. `inst-cc-local` |
-| `machine` | llm-bridge-server `GET /machines/{id}` | harness-store's machine id, e.g. `m_localhost` |
+| `agent` | the mounting server's agent-store, in its own process | agent-store's numeric `agents.id`. The slug is refused: agent-store lets it be renamed |
+| `instance`, `machine` | the mounting server's harness-store, in its own process | harness-store's instance id (`inst-cc-local`) or machine id (`m_localhost`) |
+| `peer_connection`, `operation_type` | the mounting server, in its own process | its peer connection id; the operation type's name |
+| `principal` | principal-store, in the same process | `principal_000001` |
 | `skill` | skill-store `GET /skills/{id}` | skill-store's numeric `skills.id` |
 | `tool` | tool-store `GET /tools/{id}` | tool-store's numeric `tools.id` |
-| `board` | kanban-store `GET /api/boards/{id}`, sending `X-Kanban-Store-Service-Token` from `KANBAN_STORE_SERVICE_TOKEN` when set | kanban-store's board id (a uuid) |
-| principal | principal-store `GET /principals/{id}` | `principal_000001`, human or group |
+| `board` | kanban-store `GET /api/boards/{id}`, sending `X-Kanban-Store-Service-Token` when set | kanban-store's board id (a uuid) |
+| `reference_type`, `reference` | reference-store `GET /types/{type}` and `POST /resolve`, sending `X-Reference-Store-Service-Token` | a type name; a record id as written in prose |
 
-Each call has a 3 s timeout. A 404 whose body is Go's own `404 page not found`
-(or, for principal-store, a 404 with no JSON error) is reported as a
-misconfigured URL — a 502 naming the env var — not as a missing record, because
-every owner answers a missing record with its own text.
+`HTTPResourceChecker` asks the owners that still run as services
+(`ResourceTypesCheckedOverHTTP`), each call with a 3 s timeout; a 404 whose
+body is Go's own `404 page not found` is reported as a misconfigured URL — a
+502 naming the variable — not as a missing record. Asked about any other type
+it answers an error saying the mounting server checks that one itself.
 
 ---
 
 ## Who may read and change grants
 
-There is no off switch. `GRANT_STORE_SERVICE_TOKEN` (at least 32 characters) is
-**required at startup**; without it the store refuses to start rather than run
-open. Every route except `/health`, `/relations` and `/resource-types` needs
-either:
+There is no off switch. Every route except `/health`, `/relations` and
+`/resource-types` reads the caller from the request's context, where the
+mounting server put it after verifying the request's own credential. No header
+or body field a client sends names the caller: the standalone store's
+`X-Grant-Store-Service-Token` and `X-Principal-Id` are gone. The caller is one
+of:
 
-- `X-Grant-Store-Service-Token` — an internal service or an operator;
-  unrestricted. llm-bridge-server's spawn-time read and kanban-store's
-  per-request board read both send it.
-- `X-Principal-Id` — set by a gateway from a verified login, trusted as sent, so
-  users must reach this store only through that gateway. The principal must be
-  active and of a kind principal-store says acts as a caller
-  (`acts_as_caller`): a human or a peer.
+- the **internal service** (`Caller{InternalService: true}`) — unrestricted.
+  The server's own reads at spawn, and a request carrying the server's service
+  token with no principal.
+- a **principal** (`Caller{PrincipalID: …}`) — a principal the server verified.
+  It must be active and of a kind principal-store says acts as a caller
+  (`acts_as_caller`): a human, a peer or a service.
 
-Neither, a wrong token, or an unknown, disabled, group or contact principal is **401**.
-principal-store that cannot be asked is **502**.
+No caller, a malformed id, or an unknown, disabled, group or contact principal
+is **401**. A principal-store that cannot be asked is **502**.
 
 | Route | A principal may |
 |---|---|
@@ -251,6 +235,6 @@ A board administrator may grant `can_administer` to others: handing a board over
 is part of administering it.
 
 **An administrator** — principal-store's `is_administrator` on a human or peer — is
-unrestricted here, like the service token: reads and writes every grant on
+unrestricted here, like the internal service: reads and writes every grant on
 every resource, whoever holds it. Administering the deployment includes handing
 out and taking back access to it.

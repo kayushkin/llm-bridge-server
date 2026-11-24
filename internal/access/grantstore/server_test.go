@@ -17,12 +17,39 @@ func newTestServer(t *testing.T) *httptest.Server {
 
 func newTestServerWith(t *testing.T, directory PrincipalDirectory, checker ResourceChecker) *httptest.Server {
 	t.Helper()
-	s := newTestStore(t)
-	mux := http.NewServeMux()
-	RegisterHandlers(mux, s, directory, checker, PrincipalEnforcement{ServiceToken: enforcementTestServiceToken})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(mountForTest(NewHandlers(newTestStore(t), directory, checker)))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// The headers a test sends to say who its request acts as. They exist only in
+// these tests: the mounting server puts a verified caller on the context, and
+// nothing a client sends reaches it. mountForTest plays that server's part.
+const (
+	testInternalServiceHeader = "X-Test-Internal-Service"
+	testPrincipalHeader       = "X-Test-Principal-Id"
+)
+
+// mountForTest registers every route at the paths the standalone store served
+// and sets the caller from the test headers.
+func mountForTest(h *Handlers) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", h.Health)
+	mux.HandleFunc("GET /relations", h.Relations)
+	mux.HandleFunc("GET /resource-types", h.ResourceTypes)
+	mux.HandleFunc("GET /grants", h.ListGrants)
+	mux.HandleFunc("POST /grants", h.CreateGrant)
+	mux.HandleFunc("GET /grants/{id}", h.GetGrant)
+	mux.HandleFunc("POST /grants/{id}/revoke", h.RevokeGrant)
+	mux.HandleFunc("GET /principals/{id}/effective", h.Effective)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		internal := r.Header.Get(testInternalServiceHeader) != ""
+		principalID := r.Header.Get(testPrincipalHeader)
+		if internal || principalID != "" {
+			r = r.WithContext(ContextWithCaller(r.Context(), Caller{InternalService: internal, PrincipalID: principalID}))
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func do(t *testing.T, srv *httptest.Server, method, path string, body any) (int, []byte) {
@@ -42,10 +69,10 @@ func do(t *testing.T, srv *httptest.Server, method, path string, body any) (int,
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// Every route is gated, so the plain helper acts as an internal service.
+	// Every route is gated, so the plain helper acts as the internal service.
 	// The per-principal rules have their own helper in
 	// principal_enforcement_test.go.
-	req.Header.Set(ServiceTokenHeader, enforcementTestServiceToken)
+	req.Header.Set(testInternalServiceHeader, "yes")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("do: %v", err)
@@ -219,7 +246,7 @@ func TestEffectiveRoute(t *testing.T) {
 	}
 }
 
-func TestRegisterHandlersRefusesANilOwner(t *testing.T) {
+func TestNewHandlersRefusesANilOwner(t *testing.T) {
 	for _, c := range []struct {
 		name      string
 		directory PrincipalDirectory
@@ -228,11 +255,10 @@ func TestRegisterHandlersRefusesANilOwner(t *testing.T) {
 		func() {
 			defer func() {
 				if recover() == nil {
-					t.Fatalf("%s: RegisterHandlers did not panic", c.name)
+					t.Fatalf("%s: NewHandlers did not panic", c.name)
 				}
 			}()
-			RegisterHandlers(http.NewServeMux(), newTestStore(t), c.directory, c.checker,
-				PrincipalEnforcement{ServiceToken: enforcementTestServiceToken})
+			NewHandlers(New(nil), c.directory, c.checker)
 		}()
 	}
 }

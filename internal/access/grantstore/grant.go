@@ -6,15 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
-const grantColumns = `id, seq, principal_id, relation, resource_type, resource_id, note, granted_at, revoked_at`
+const grantColumns = `seq, principal_id, relation, resource_type, resource_id, note, granted_at, revoked_at`
 
 func scanGrant(scan func(...any) error) (*Grant, error) {
 	var g Grant
-	if err := scan(&g.ID, &g.Seq, &g.PrincipalID, &g.Relation, &g.ResourceType, &g.ResourceID, &g.Note, &g.GrantedAt, &g.RevokedAt); err != nil {
+	if err := scan(&g.Seq, &g.PrincipalID, &g.Relation, &g.ResourceType, &g.ResourceID, &g.Note, &g.GrantedAt, &g.RevokedAt); err != nil {
 		return nil, err
 	}
+	g.ID = formatID(g.Seq)
 	return &g, nil
 }
 
@@ -100,43 +103,48 @@ func (s *Store) Create(ctx context.Context, directory PrincipalDirectory, checke
 		}
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, false, err
-	}
-	defer tx.Rollback()
-
-	existing, err := scanGrant(tx.QueryRowContext(ctx, `
-		SELECT `+grantColumns+` FROM grants
-		WHERE principal_id = ? AND relation = ? AND resource_type = ? AND resource_id = ? AND revoked_at = 0`,
-		request.PrincipalID, relation.Name, definition.name, request.ResourceID).Scan)
+	// The active tuple is unique by the partial index, so a create that
+	// finds its row already there answers with it. Two creates of the same
+	// tuple at once both miss it; the insert of the second meets the index and
+	// does nothing, and it reads the first's row.
+	tuple := []any{request.PrincipalID, relation.Name, definition.name, request.ResourceID}
+	existing, err := s.activeGrant(ctx, tuple)
 	if err == nil {
 		return existing, false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, false, err
 	}
-
-	var maxSeq sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM grants`).Scan(&maxSeq); err != nil {
+	var seq int64
+	err = s.db.QueryRowContext(ctx, `
+		INSERT INTO grants (principal_id, relation, resource_type, resource_id, note, granted_at, revoked_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 0)
+		ON CONFLICT (principal_id, relation, resource_type, resource_id) WHERE revoked_at = 0 DO NOTHING
+		RETURNING seq`,
+		request.PrincipalID, relation.Name, definition.name, request.ResourceID, strings.TrimSpace(request.Note), now()).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		existing, err := s.activeGrant(ctx, tuple)
+		if err != nil {
+			return nil, false, fmt.Errorf("another create of the same grant won, and its row could not be read: %w", err)
+		}
+		return existing, false, nil
+	}
+	if err != nil {
 		return nil, false, err
 	}
-	seq := maxSeq.Int64 + 1
-	id := formatID(seq)
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO grants (id, seq, principal_id, relation, resource_type, resource_id, note, granted_at, revoked_at)
-		VALUES (?,?,?,?,?,?,?,?,0)`,
-		id, seq, request.PrincipalID, relation.Name, definition.name, request.ResourceID, strings.TrimSpace(request.Note), now()); err != nil {
-		return nil, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, false, err
-	}
-	created, err := s.Get(id)
+	created, err := s.Get(ctx, formatID(seq))
 	if err != nil {
 		return nil, false, err
 	}
 	return created, true, nil
+}
+
+// activeGrant is the active row of one tuple, or sql.ErrNoRows.
+func (s *Store) activeGrant(ctx context.Context, tuple []any) (*Grant, error) {
+	return scanGrant(s.db.QueryRowContext(ctx, `
+		SELECT `+grantColumns+` FROM grants
+		WHERE principal_id = $1 AND relation = $2 AND resource_type = $3 AND resource_id = $4 AND revoked_at = 0`,
+		tuple...).Scan)
 }
 
 // validatePrincipalID checks the shape principal-store hands out. Nothing is
@@ -158,8 +166,15 @@ func validatePrincipalID(principalID string) error {
 }
 
 // Get returns one grant, revoked or not.
-func (s *Store) Get(id string) (*Grant, error) {
-	g, err := scanGrant(s.db.QueryRow(`SELECT `+grantColumns+` FROM grants WHERE id = ?`, id).Scan)
+//
+// Only the exact form of an id names a row: grant_1 or a name is not found,
+// the same answer as a number nobody was given.
+func (s *Store) Get(ctx context.Context, id string) (*Grant, error) {
+	seq, err := postgresstorage.ParseRecordID(GrantIDPrefix, id)
+	if err != nil || formatID(seq) != id {
+		return nil, fmt.Errorf("%w: grant %s", ErrNotFound, id)
+	}
+	g, err := scanGrant(s.db.QueryRowContext(ctx, `SELECT `+grantColumns+` FROM grants WHERE seq = $1`, seq).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: grant %s", ErrNotFound, id)
 	}
@@ -172,11 +187,15 @@ func (s *Store) Get(id string) (*Grant, error) {
 // Revoke marks a grant revoked. Idempotent: a grant already revoked is
 // returned unchanged, with its original revoked_at, so a repeat does not move
 // the timestamp. There is no delete.
-func (s *Store) Revoke(id string) (*Grant, error) {
-	if _, err := s.db.Exec(`UPDATE grants SET revoked_at = ? WHERE id = ? AND revoked_at = 0`, now(), id); err != nil {
+func (s *Store) Revoke(ctx context.Context, id string) (*Grant, error) {
+	existing, err := s.Get(ctx, id)
+	if err != nil {
 		return nil, err
 	}
-	return s.Get(id)
+	if _, err := s.db.ExecContext(ctx, `UPDATE grants SET revoked_at = $1 WHERE seq = $2 AND revoked_at = 0`, now(), existing.Seq); err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, id)
 }
 
 // List returns grants matching the filter, ordered by resource_type,
@@ -184,44 +203,45 @@ func (s *Store) Revoke(id string) (*Grant, error) {
 // unless IncludeRevoked. An unknown relation or resource type in the filter
 // is ErrInvalidGrant rather than an empty answer, so a misspelling is not
 // mistaken for "nobody has this".
-func (s *Store) List(f Filter) ([]*Grant, error) {
+func (s *Store) List(ctx context.Context, f Filter) ([]*Grant, error) {
 	where := ` WHERE 1=1`
 	var args []any
+	placeholder := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
 	if !f.IncludeRevoked {
 		where += ` AND revoked_at = 0`
 	}
 	if f.PrincipalID != "" {
-		where += ` AND principal_id = ?`
-		args = append(args, f.PrincipalID)
+		where += ` AND principal_id = ` + placeholder(f.PrincipalID)
 	}
 	if f.Relation != "" {
 		if _, err := lookupRelation(f.Relation); err != nil {
 			return nil, err
 		}
-		where += ` AND relation = ?`
-		args = append(args, f.Relation)
+		where += ` AND relation = ` + placeholder(f.Relation)
 	}
 	if f.ResourceType != "" {
 		if _, err := lookupResourceType(f.ResourceType); err != nil {
 			return nil, err
 		}
-		where += ` AND resource_type = ?`
-		args = append(args, f.ResourceType)
+		where += ` AND resource_type = ` + placeholder(f.ResourceType)
 	}
 	if f.ResourceID != "" {
-		where += ` AND resource_id = ?`
-		args = append(args, f.ResourceID)
+		where += ` AND resource_id = ` + placeholder(f.ResourceID)
 	}
-	query := `SELECT ` + grantColumns + ` FROM grants` + where + ` ORDER BY resource_type, resource_id, relation, principal_id, seq`
+	// COLLATE "C" orders by bytes, as SQLite's BINARY did, whatever the
+	// database's own collation is.
+	query := `SELECT ` + grantColumns + ` FROM grants` + where +
+		` ORDER BY resource_type COLLATE "C", resource_id COLLATE "C", relation COLLATE "C", principal_id COLLATE "C", seq`
 	if f.Limit > 0 {
-		query += ` LIMIT ?`
-		args = append(args, f.Limit)
+		query += ` LIMIT ` + placeholder(f.Limit)
 		if f.Offset > 0 {
-			query += ` OFFSET ?`
-			args = append(args, f.Offset)
+			query += ` OFFSET ` + placeholder(f.Offset)
 		}
 	}
-	return s.queryGrants(query, args...)
+	return s.queryGrants(ctx, query, args...)
 }
 
 // Effective returns every active grant a principal holds, directly or through
@@ -260,29 +280,24 @@ func (s *Store) Effective(ctx context.Context, directory PrincipalDirectory, pri
 			ErrOwnerUnavailable, principalID, err)
 	}
 	holders := append([]string{principalID}, summary.GroupIDs...)
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(holders)), ",")
-	args := make([]any, 0, len(holders)+3)
-	for _, holder := range holders {
-		args = append(args, holder)
-	}
-	where := ` WHERE revoked_at = 0 AND principal_id IN (` + placeholders + `)`
+	args := []any{holders, principalID}
+	where := ` WHERE revoked_at = 0 AND principal_id = ANY($1::text[])`
 	if relation != "" {
-		where += ` AND relation = ?`
 		args = append(args, relation)
+		where += fmt.Sprintf(` AND relation = $%d`, len(args))
 	}
 	if resourceType != "" {
-		where += ` AND resource_type = ?`
 		args = append(args, resourceType)
+		where += fmt.Sprintf(` AND resource_type = $%d`, len(args))
 	}
-	// principal_id <> ? sorts false (0, the principal's own row) before true.
+	// principal_id <> $2 sorts false (the principal's own row) before true.
 	query := `SELECT ` + grantColumns + ` FROM grants` + where +
-		` ORDER BY resource_type, resource_id, relation, principal_id <> ?, principal_id`
-	args = append(args, principalID)
-	return s.queryGrants(query, args...)
+		` ORDER BY resource_type COLLATE "C", resource_id COLLATE "C", relation COLLATE "C", principal_id <> $2, principal_id COLLATE "C"`
+	return s.queryGrants(ctx, query, args...)
 }
 
-func (s *Store) queryGrants(query string, args ...any) ([]*Grant, error) {
-	rows, err := s.db.Query(query, args...)
+func (s *Store) queryGrants(ctx context.Context, query string, args ...any) ([]*Grant, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

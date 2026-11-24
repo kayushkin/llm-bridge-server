@@ -1,13 +1,14 @@
 # grant-store
 
-`127.0.0.1:8315`. The registry of *grants* — which principal (a human or a
-group from principal-store) may use which tool or skill, run as which agent,
-and start sessions on which harness instance or machine.
+The registry of *grants* — which principal (a human, a group, a peer or a
+service from principal-store) may use which tool or skill, run as which agent,
+start sessions on which harness instance or machine, and see or change which
+board.
 
-Part of the store family alongside principal-store `:8314`, prediction-store
-`:8313` and quote-store `:8309`, and the same shape as all of them: one record
-type, ids handed out here (`grant_000001`) and joined on everywhere else,
-routes rooted at `/`, loopback bind with dash as the only door.
+A package of llm-bridge-server, `internal/access/grantstore`, which that server
+mounts under `/grant-store/` with the paths the standalone service on `:8315`
+served. One record type, ids handed out here (`grant_000001`) and joined on
+everywhere else, kept in the Postgres module `grants`.
 
 ## Why it exists
 
@@ -26,40 +27,25 @@ tools at spawn and refuses a session outside its `can_dispatch_on` /
 restricted by it); skills are not read yet — and `works_with` is advisory, the list
 principal-store used to keep, moved here so there is one place to look.
 
-## Run it
-
-```bash
-./deploy.sh          # test, build, install the unit, start, smoke-check the API and the bind
-make check           # fmt, vet, test, build
-```
-
-Env: `GRANT_STORE_ADDR` (default `127.0.0.1:8315`), `GRANT_STORE_DATA_DIR`
-(default `~/.config/grant-store`), and the owners a grant is checked against:
-`PRINCIPAL_STORE_URL` (`:8314`), `LLM_BRIDGE_URL` (`:8160`), `SKILL_STORE_URL`
-(`:8301`), `TOOL_STORE_URL` (`:8302`). SQLite at `<data dir>/grant-store.db`.
-Every variable the service reads is declared in `settings.go`, and `GET /settings`
-describes them to the service token or an administrator; `CONTRACT.md` has the full list.
-
-**The bind is loopback on purpose.** This service has no auth; dash is the front
-door that adds it at `/api/grants`. `deploy.sh` fails if it finds the port
-listening anywhere but `127.0.0.1`.
-
 ## Use it
+
+Through llm-bridge-server, as a principal or with its service token:
 
 ```bash
 # The Data Team may be offered Playwright (tool-store id 13)
-curl -s -X POST http://127.0.0.1:8315/grants -H 'Content-Type: application/json' \
+curl -s -X POST "$BRIDGE/grant-store/grants" -H "X-LLM-Bridge-Service-Token: $TOKEN" \
+  -H 'Content-Type: application/json' \
   -d '{"principal_id":"principal_000006","relation":"can_use","resource_type":"tool","resource_id":"13","note":"e2e"}'
 
-# What a session started as Slava would be offered — his own grants plus his groups'
-curl -s http://127.0.0.1:8315/principals/principal_000001/effective
-curl -s "http://127.0.0.1:8315/principals/principal_000001/effective?relation=can_use&resource_type=tool"
+# What a session started as principal_000001 would be offered — its own grants plus its groups'
+curl -s "$BRIDGE/grant-store/principals/principal_000001/effective?relation=can_use&resource_type=tool" -H "X-LLM-Bridge-Service-Token: $TOKEN"
 
 # Who holds a grant on tool 13
-curl -s "http://127.0.0.1:8315/grants?resource_type=tool&resource_id=13"
-
-curl -s -X POST http://127.0.0.1:8315/grants/grant_000001/revoke     # the only removal
+curl -s "$BRIDGE/grant-store/grants?resource_type=tool&resource_id=13" -H "X-LLM-Bridge-Service-Token: $TOKEN"
 ```
+
+Tests run on Postgres: `export POSTGRESTEST_ADMINISTRATOR_URL="$(scripts/test-postgres.sh start)"`
+at the repository root, then `go test ./internal/access/grantstore/`.
 
 `CONTRACT.md` is the route table and the field-by-field reference.
 
