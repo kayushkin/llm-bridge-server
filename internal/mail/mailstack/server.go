@@ -13,11 +13,11 @@ import (
 	"sync"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/kayushkin/mailstack/accounts"
-	"github.com/kayushkin/mailstack/apiauth"
-	"github.com/kayushkin/mailstack/backend"
-	"github.com/kayushkin/mailstack/filestore"
-	"github.com/kayushkin/mailstack/localmail"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/apiauth"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
 )
 
 type Server struct {

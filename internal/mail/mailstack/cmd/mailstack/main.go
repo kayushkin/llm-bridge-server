@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/kayushkin/mailstack"
-	"github.com/kayushkin/mailstack/accounts"
-	"github.com/kayushkin/mailstack/apiauth"
-	"github.com/kayushkin/mailstack/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/apiauth"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
 )
 
 func main() {

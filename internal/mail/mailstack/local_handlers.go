@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kayushkin/mailstack/accounts"
-	"github.com/kayushkin/mailstack/backend"
-	"github.com/kayushkin/mailstack/localmail"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
 )
 
 // localMailStore opens the synthetic mailbox on first use.

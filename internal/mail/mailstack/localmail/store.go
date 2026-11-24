@@ -31,7 +31,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kayushkin/mailstack/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
 	_ "modernc.org/sqlite"
 )
 

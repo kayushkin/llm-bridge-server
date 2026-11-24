@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/mailstack/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
 )
 
 func strPtr(s string) *string { return &s }

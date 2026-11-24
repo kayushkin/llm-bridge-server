@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kayushkin/mailstack/accounts"
-	"github.com/kayushkin/mailstack/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
 )
 
 // fakeFileStore answers the four file-store routes mailstack calls, with the

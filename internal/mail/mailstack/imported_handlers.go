@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/mailstack/accounts"
-	"github.com/kayushkin/mailstack/localmail"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
 )
 
 // ─── Imported mail and split reads ─────────────────────────────────────

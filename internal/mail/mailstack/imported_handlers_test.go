@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/mailstack/localmail"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
 )
 
 func serve(t *testing.T, s *Server, method, path, body string, header map[string]string) *httptest.ResponseRecorder {

@@ -6,8 +6,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/kayushkin/mailstack/accounts"
-	"github.com/kayushkin/mailstack/localmail"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
 )
 
 // ServiceName is this service's name in its own settings description, as

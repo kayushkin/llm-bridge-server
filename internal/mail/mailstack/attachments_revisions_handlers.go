@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/kayushkin/mailstack/filestore"
-	"github.com/kayushkin/mailstack/localmail"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
 )
 
 // ─── Attachments and revisions of imported mail ────────────────────────

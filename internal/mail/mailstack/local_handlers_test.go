@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/mailstack/accounts"
-	"github.com/kayushkin/mailstack/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
 )
 
 // localTestServer has one local account and one microsoft account, so both the

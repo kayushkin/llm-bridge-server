@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kayushkin/mailstack/accounts"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
 )
 
 // fakeAccessStores answers as principal-store, grant-store and kanban-store

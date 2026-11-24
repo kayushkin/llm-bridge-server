@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/mailstack/accounts"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
 )
 
 // The five write-op handlers — handleMarkRead, handleFlag, handleMove,

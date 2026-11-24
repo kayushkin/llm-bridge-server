@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/mailstack/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
 )
 
 // ============================ outbox ============================
