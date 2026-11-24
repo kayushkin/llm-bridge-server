@@ -143,11 +143,12 @@ func TestGuardedFieldSetsAgree(t *testing.T) {
 // the live log-store -- which is the one thing this file exists to stop.
 //
 // Raise it when a field is guarded. Lower it only in the commit that
-// deliberately stops guarding one. It went from 15 to 13 when agent-store,
-// memory-store and model-store moved into Postgres modules: their three
-// SQLite paths are gone, and a test reaches those stores only through
-// postgrestest's throwaway databases.
-const guardedFieldFloor = 13
+// deliberately stops guarding one. It went from 15 to 12 when agent-store,
+// memory-store and model-store moved into Postgres modules beside log-store:
+// their three SQLite paths and log-store's URL are gone from the guarded
+// fields, and a test reaches those stores only through postgrestest's
+// throwaway databases.
+const guardedFieldFloor = 12
 
 // TestEveryGuardedVariableIsReadByLoad proves the override named in the panic
 // message actually works. A guard that recommends a variable Load never reads
