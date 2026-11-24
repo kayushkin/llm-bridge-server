@@ -129,10 +129,18 @@ func scanAgent(row interface{ Scan(...any) error }) (*Agent, error) {
 		return nil, err
 	}
 	a.Enabled = enabled == 1
-	if emoji != nil { a.Emoji = *emoji }
-	if projects != nil { a.Projects = *projects }
-	if description != nil { a.Description = *description }
-	if role != nil { a.Role = *role }
+	if emoji != nil {
+		a.Emoji = *emoji
+	}
+	if projects != nil {
+		a.Projects = *projects
+	}
+	if description != nil {
+		a.Description = *description
+	}
+	if role != nil {
+		a.Role = *role
+	}
 	return a, nil
 }
 
@@ -165,18 +173,18 @@ func (s *Store) ListAgents() ([]Agent, error) {
 
 // AgentWithHarness is an agent entry expanded per harness.
 type AgentWithHarness struct {
-	Slug             string
-	DisplayName      string
-	Emoji            string
-	Projects         string
-	Description      string
-	Role             string
-	Enabled          bool
-	Harness     string // harness ID
-	HarnessName string // what the harness calls this agent
-	Model            string
-	IsDefault        bool   // true if this is the harness's default agent
-	HarnessEmoji        string // harness emoji
+	Slug         string
+	DisplayName  string
+	Emoji        string
+	Projects     string
+	Description  string
+	Role         string
+	Enabled      bool
+	Harness      string // harness ID
+	HarnessName  string // what the harness calls this agent
+	Model        string
+	IsDefault    bool   // true if this is the harness's default agent
+	HarnessEmoji string // harness emoji
 }
 
 // ListAgentsExpanded returns one row per agent+harness pair.
@@ -344,13 +352,27 @@ func scanAO(row interface{ Scan(...any) error }) (AgentHarness, error) {
 	ao.Enabled = enabled == 1
 	ao.Shelved = shelved == 1
 	ao.IsDefault = isDefault == 1
-	if harnessAgentID != nil { ao.HarnessAgentID = *harnessAgentID }
-	if modelFallbacks != nil { ao.ModelFallbacks = *modelFallbacks }
-	if workspacePath != nil { ao.WorkspacePath = *workspacePath }
-	if contextTags != nil { ao.ContextTags = *contextTags }
-	if systemPrompt != nil { ao.SystemPrompt = *systemPrompt }
-	if project != nil { ao.Project = *project }
-	if subagentAllow != nil { ao.SubagentAllow = *subagentAllow }
+	if harnessAgentID != nil {
+		ao.HarnessAgentID = *harnessAgentID
+	}
+	if modelFallbacks != nil {
+		ao.ModelFallbacks = *modelFallbacks
+	}
+	if workspacePath != nil {
+		ao.WorkspacePath = *workspacePath
+	}
+	if contextTags != nil {
+		ao.ContextTags = *contextTags
+	}
+	if systemPrompt != nil {
+		ao.SystemPrompt = *systemPrompt
+	}
+	if project != nil {
+		ao.Project = *project
+	}
+	if subagentAllow != nil {
+		ao.SubagentAllow = *subagentAllow
+	}
 	return ao, err
 }
 
@@ -448,27 +470,27 @@ func (s *Store) ListAgentTools(agentID int64, harnessID string) ([]string, error
 
 // FullAgentConfig is everything an harness needs for one agent.
 type FullAgentConfig struct {
-	Slug        string   `json:"slug"`
-	DisplayName string   `json:"name"`
-	Role        string   `json:"role"`
-	Emoji       string   `json:"emoji,omitempty"`
-	Model       string   `json:"model"`
-	Thinking    int      `json:"thinking,omitempty"`
-	Tools       []string `json:"tools"`
-	ContextTags []string `json:"context_tags,omitempty"`
-	ContextBudget int    `json:"context_budget,omitempty"`
-	MaxTurns      int    `json:"max_turns,omitempty"`
-	MaxInputTokens int   `json:"max_input_tokens,omitempty"`
-	MaxResponseTime int  `json:"max_response_time,omitempty"`
-	Workspace   string   `json:"workspace,omitempty"`
-	Project     string   `json:"project,omitempty"`
-	Projects    string   `json:"projects,omitempty"`
-	SystemPrompt string  `json:"system_prompt,omitempty"`
-	Shelved     bool     `json:"shelved,omitempty"`
+	Slug            string   `json:"slug"`
+	DisplayName     string   `json:"name"`
+	Role            string   `json:"role"`
+	Emoji           string   `json:"emoji,omitempty"`
+	Model           string   `json:"model"`
+	Thinking        int      `json:"thinking,omitempty"`
+	Tools           []string `json:"tools"`
+	ContextTags     []string `json:"context_tags,omitempty"`
+	ContextBudget   int      `json:"context_budget,omitempty"`
+	MaxTurns        int      `json:"max_turns,omitempty"`
+	MaxInputTokens  int      `json:"max_input_tokens,omitempty"`
+	MaxResponseTime int      `json:"max_response_time,omitempty"`
+	Workspace       string   `json:"workspace,omitempty"`
+	Project         string   `json:"project,omitempty"`
+	Projects        string   `json:"projects,omitempty"`
+	SystemPrompt    string   `json:"system_prompt,omitempty"`
+	Shelved         bool     `json:"shelved,omitempty"`
 	// Nature content
-	Soul       string `json:"soul,omitempty"`
-	Principles string `json:"principles,omitempty"`
-	Values     string `json:"values,omitempty"`
+	Soul        string `json:"soul,omitempty"`
+	Principles  string `json:"principles,omitempty"`
+	Values      string `json:"values,omitempty"`
 	UserContext string `json:"user_context,omitempty"`
 }
 
@@ -569,7 +591,7 @@ func (s *Store) GetAllAgentConfigs(harnessID string) ([]FullAgentConfig, string,
 // ============================================
 
 type AgentSystemPromptRef struct {
-	HarnessID    string
+	HarnessID         string
 	HostAgentID       int64
 	ReferencedAgentID int64
 	PromptLocation    string
@@ -755,7 +777,7 @@ func (s *Store) ResolveAgentName(name string) (*Agent, error) {
 type FileDistribution struct {
 	ID              int64
 	AgentID         int64
-	HarnessID  string
+	HarnessID       string
 	FilePath        string
 	ContentHash     string
 	DistributedAt   int64
@@ -886,6 +908,7 @@ func (s *Store) GetModifiedFiles() ([]FileScan, error) {
 	}
 	return out, rows.Err()
 }
+
 // ============================================
 // PROJECTS
 // ============================================
@@ -1015,15 +1038,15 @@ func (s *Store) DeleteProjectNature(projectID, natureID int64) error {
 
 // AgentStatus represents the runtime status of an agent on an harness.
 type AgentStatus struct {
-	AgentSlug    string  `json:"agent_slug"`
-	DisplayName  string  `json:"display_name"`
-	Emoji        string  `json:"emoji"`
-	Harness string  `json:"harness"`
-	Status       string  `json:"status"`
-	Task         *string `json:"task,omitempty"`
-	SessionID    *string `json:"session_id,omitempty"`
-	StartedAt    *int64  `json:"started_at,omitempty"`
-	UpdatedAt    int64   `json:"updated_at"`
+	AgentSlug   string  `json:"agent_slug"`
+	DisplayName string  `json:"display_name"`
+	Emoji       string  `json:"emoji"`
+	Harness     string  `json:"harness"`
+	Status      string  `json:"status"`
+	Task        *string `json:"task,omitempty"`
+	SessionID   *string `json:"session_id,omitempty"`
+	StartedAt   *int64  `json:"started_at,omitempty"`
+	UpdatedAt   int64   `json:"updated_at"`
 }
 
 // SetStatus upserts an agent status row. Sets started_at when transitioning to "working".

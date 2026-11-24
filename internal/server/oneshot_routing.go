@@ -9,12 +9,12 @@ import (
 	"net/http"
 	"strings"
 
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 )
 
 // Every background model call this server makes names a model-store role and

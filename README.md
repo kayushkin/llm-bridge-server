@@ -454,7 +454,10 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `*` | `/api/agent-store/` | Runners read agent-store through this | harness callback |
+| `POST` | `/api/agent-store/seed/drift` | A runner sends an agent file it changed | harness callback |
+| `GET` | `/api/agent-store/seed/manifest` | A runner's agent file seed manifest | harness callback |
+| `POST` | `/api/agent-store/seed/observe` | A runner reports the agent file hashes it holds | harness callback |
+| `GET` | `/api/agent-store/versions/{vid}/content` | A runner fetches one agent file version | harness callback |
 | `*` | `/api/harness-proxy/{harness}/{rest...}` | Forward to a harness backend (inber, hermes) on this host. Checks no credential; nothing calls it | harness callback |
 | `GET` | `/api/runner/binary` | Runner and wrapper binaries (`?os=&arch=&name=`) | harness callback |
 | `POST` | `/api/runner/enroll` | Trade a passphrase for a runner token | harness callback |
@@ -769,6 +772,18 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `DELETE` | `/permission-store/rules/{id}` | Delete a rule | operator |
 | `GET` | `/permission-store/rules/{id}` | One rule | operator |
 | `PATCH` | `/permission-store/rules/{id}` | Change a rule | operator |
+
+### model-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/model-store/api/health` | `{"ok":true}` | operator |
+| `GET` | `/model-store/api/models` | Every model with its health and aliases, by priority then id | operator |
+| `POST` | `/model-store/api/models/toggle` | Switch a model on or off: `{"model","enabled"}` | operator |
+| `GET` | `/model-store/api/roles` | Each role's first model, each role's list, and the canonical roles | operator |
+| `POST` | `/model-store/api/roles` | Set a role's first model (`model`) or its whole list (`models`) | operator |
+| `GET` | `/model-store/api/roles/{role}` | A role's first model, resolved | operator |
+| `GET` | `/model-store/api/roles/{role}/models` | Every model in a role's list, in the order to try them | operator |
 
 ### repo-store, mounted in this process
 

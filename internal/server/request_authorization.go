@@ -378,7 +378,6 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /api/runner/enroll":                    runnerRoute("runner enrollment; the handler checks the single-use passphrase"),
 	"GET /api/runner/install.sh":                 runnerRoute("bootstrap script fetched by a machine before it has a runner token"),
 	"GET /api/runner/binary":                     runnerRoute("runner and harness binaries fetched by a machine during bootstrap"),
-	"/api/agent-store/":                          runnerRoute("seed proxy for runners; the handler authenticates the runner's bearer token"),
 	"/api/harness-proxy/{harness}/{rest...}":     harnessCallbackRoute("harness backend proxy for wrappers on runners; unauthenticated today (noteboard card f4e5e1ef)"),
 
 	// Sessions.

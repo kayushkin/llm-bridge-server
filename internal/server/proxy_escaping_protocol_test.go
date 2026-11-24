@@ -4,10 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path"
 	"testing"
 
-	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -146,161 +144,6 @@ func TestLogStoreSessionURLIsGivenTheDecodedId(t *testing.T) {
 	}
 }
 
-// storeProxyRequest drives one of the two seed store proxies through the real
-// mux with a valid runner token, and returns what the upstream received.
-func storeProxyRequest(t *testing.T, envKey, requestPath string) string {
-	t.Helper()
-	up, got := recordUpstreamRequestLine(t)
-	t.Setenv(envKey, up.URL)
-
-	srv, _, _ := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, up.URL)
-	const token = "runner-token-for-this-test"
-	if err := srv.harnessStore.SetMachineRunnerTokenHash("m_test",
-		harnessstore.HashRunnerToken(token)); err != nil {
-		t.Fatalf("set runner token: %v", err)
-	}
-
-	ts := httptest.NewServer(asInternalService(srv))
-	t.Cleanup(ts.Close)
-
-	req, err := http.NewRequest(http.MethodGet, ts.URL+requestPath, nil)
-	if err != nil {
-		t.Fatalf("build request: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("GET %s: %v", requestPath, err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d; want 200 — the request never reached the proxy", resp.StatusCode)
-	}
-	return *got
-}
-
-// The seed store proxy is the same shape dash carries: a
-// mount prefix sliced off r.URL.Path and pasted onto the upstream base.
-func TestTheStoreProxiesForwardAnEscapedSegment(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		env     string
-		request string
-		want    string
-	}{
-		{"agent-store", "AGENT_STORE_URL", "/api/agent-store/agents/a%2Fb", "/agents/a%2Fb"},
-		{"encoded question mark", "AGENT_STORE_URL", "/api/agent-store/agents/a%3Fx=1", "/agents/a%3Fx=1"},
-		{"encoded hash", "AGENT_STORE_URL", "/api/agent-store/agents/a%23frag", "/agents/a%23frag"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := storeProxyRequest(t, tc.env, tc.request); got != tc.want {
-				t.Errorf("upstream received %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-// ⚠️ The store proxies normalize the remainder with path.Clean, and cleaning
-// the DECODED path is worse than the plain misrouting: an escaped %2F..%2F
-// decodes into real separators that Clean then RESOLVES, so a single segment
-// the caller sent walks up the upstream's path instead.
-//
-// Measured on the decoded read: /api/skill-store/a%2F..%2F..%2Fadmin (the
-// skill-store proxy, which was the same shape until skill-store moved in) reached
-// the upstream as /admin. On the escaped form a %2F is an ordinary character
-// and stays inside its segment, so it arrives whole.
-func TestCleanDoesNotResolveAnEscapedDotDotIntoATraversal(t *testing.T) {
-	got := storeProxyRequest(t, "AGENT_STORE_URL", "/api/agent-store/a%2F..%2F..%2Fadmin")
-
-	if want := "/a%2F..%2F..%2Fadmin"; got != want {
-		t.Errorf("upstream received %q, want %q\n"+
-			"  the caller sent ONE segment; Clean over the decoded path turned it into\n"+
-			"  a walk up the upstream's path", got, want)
-	}
-}
-
-// ⚠️ A dot segment the caller LITERALLY sent never reaches the handler, so a
-// case that sends one through the mux and finds it normalized is vacuous — it
-// is watching the mux work, not the handler.
-//
-// net/http's ServeMux redirects to the cleaned path and the request
-// is never routed. Which means the only dot segments the handler's path.Clean
-// ever saw were ones the DECODE manufactured out of an escaped %2F.., and
-// resolving those was the traversal the case above pins. Cleaning the escaped
-// form makes Clean a no-op for everything arriving this way, which is what it
-// should always have been.
-//
-// So this is stated at two layers, both named:
-//   - through the mux, the MUX normalizes and the handler is not involved;
-//   - called directly, the helper still cleans, for a caller that is not the mux.
-func TestRealDotSegmentsAreNormalizedByTheMuxNotTheHandler(t *testing.T) {
-	srv, _, _ := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, "http://unused")
-	ts := httptest.NewServer(asInternalService(srv))
-	t.Cleanup(ts.Close)
-
-	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	resp, err := noRedirect.Get(ts.URL + "/api/agent-store/agents/./x/../y")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	resp.Body.Close()
-
-	// Go releases differ in the redirect status; the standard mux owns it.
-	control := httptest.NewRecorder()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { t.Error("unclean path reached handler") })
-	mux.ServeHTTP(control, httptest.NewRequest(http.MethodGet, "/api/agent-store/agents/./x/../y", nil))
-	if resp.StatusCode != control.Code {
-		t.Errorf("status = %d, want standard mux status %d", resp.StatusCode, control.Code)
-	}
-	if got, want := resp.Header.Get("Location"), "/api/agent-store/agents/y"; got != want {
-		t.Errorf("Location = %q, want %q", got, want)
-	}
-
-	// The other layer: called directly, the helper does clean. This is the half
-	// that a caller which is not the mux relies on.
-	u, _ := url.Parse("/api/agent-store/agents/./x/../y")
-	if got, want := cleanEscapedPathAfterPrefix(u, "/api/agent-store"), "/agents/y"; got != want {
-		t.Errorf("cleanEscapedPathAfterPrefix = %q, want %q", got, want)
-	}
-	if path.Clean("/agents/./x/../y") != "/agents/y" {
-		t.Fatal("path.Clean no longer resolves dot segments; this case rests on it")
-	}
-}
-
-// ⚠️ This is the fixture trap, pinned so the next reader does not fall into it.
-// A space witnesses nothing: Go re-escapes %20 when http.NewRequest parses the
-// forwarded target, so the upstream sees a%20b either way.
-//
-// The claim is a WIRE-level one. At the string level the two reads visibly
-// differ ("a b" against "a%20b"); they converge only after the target is
-// parsed back. The assertion is two-sided so that if that ever stops being
-// true, this case fails and says the guidance is stale rather than quietly
-// becoming a real test.
-func TestASpaceDoesNotWitnessTheEscapingDefect(t *testing.T) {
-	fixed := storeProxyRequest(t, "AGENT_STORE_URL", "/api/agent-store/agents/a%20b")
-	if fixed != "/agents/a%20b" {
-		t.Errorf("upstream received %q, want /agents/a%%20b", fixed)
-	}
-
-	// The same value forwarded the broken way, through the decoded path.
-	up, got := recordUpstreamRequestLine(t)
-	u, _ := url.Parse("/api/agent-store/agents/a%20b")
-	resp, err := http.Get(up.URL + path.Clean("/"+u.Path[len("/api/agent-store"):]))
-	if err != nil {
-		t.Fatalf("probe the broken read: %v", err)
-	}
-	resp.Body.Close()
-
-	if *got != fixed {
-		t.Errorf("a space now DOES discriminate: fixed read put %q on the wire, the decoded read put %q.\n"+
-			"  A space fixture is no longer vacuous — update the guidance in proxy_path.go",
-			*got, fixed)
-	}
-}
-
 // A mount prefix that does not match forwards the path whole, so the miss
 // surfaces as an upstream 404 rather than a quiet hit on a different resource.
 func TestAPrefixMissForwardsThePathWhole(t *testing.T) {
@@ -325,9 +168,5 @@ func TestTheBareMountHasNoRemainder(t *testing.T) {
 	u, _ := url.Parse("/api/skill-store")
 	if got := escapedPathAfterPrefix(u, "/api/skill-store"); got != "" {
 		t.Errorf("escapedPathAfterPrefix = %q, want \"\"", got)
-	}
-	// The store proxies clean that into a bare "/", which is the upstream root.
-	if got := cleanEscapedPathAfterPrefix(u, "/api/skill-store"); got != "/" {
-		t.Errorf("cleanEscapedPathAfterPrefix = %q, want \"/\"", got)
 	}
 }

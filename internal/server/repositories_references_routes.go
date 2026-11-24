@@ -137,6 +137,7 @@ func (s *Server) checkFileStoreSettings() error {
 // names is asked over HTTP at reference_store.service_urls.
 var InProcessReferenceServices = map[string]string{
 	"llm-bridge-server": "",
+	"agent-store":       "",
 	"prediction-store":  "/prediction-store",
 	"noteboard":         "/noteboard",
 	"project-store":     "/project-store",

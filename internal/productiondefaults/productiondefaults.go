@@ -112,14 +112,6 @@ func SkillStoreInstallDirectory() string {
 	return filepath.Join(homeDirectory(), ".claude", "skills")
 }
 
-func AgentStoreDatabasePath() string {
-	return filepath.Join(homeDirectory(), ".config", "agent-store", "agents.db")
-}
-
-func MemoryStoreDatabasePath() string {
-	return filepath.Join(homeDirectory(), ".config", "memory-store", "memory.db")
-}
-
 func HarnessStoreDatabasePath() string {
 	return filepath.Join(homeDirectory(), ".config", "harness-store", "harness.db")
 }
@@ -128,7 +120,10 @@ func HookStoreDatabasePath() string {
 	return filepath.Join(homeDirectory(), ".config", "hook-store", "hooks.db")
 }
 
-func ModelStoreDatabasePath() string {
+// StandaloneModelStoreDatabasePath is the standalone model-store's SQLite
+// file, which this server read until the registry moved into Postgres. Only
+// the live harness test reads it now, to import a copy.
+func StandaloneModelStoreDatabasePath() string {
 	return filepath.Join(homeDirectory(), ".config", "model-store", "store.db")
 }
 
@@ -154,11 +149,8 @@ func ConformancePath() string {
 var EnvironmentVariableByConfigField = map[string]string{
 	"ListenAddr":       "LLMBRIDGE_LISTEN_ADDR",
 	"DBPath":           "LLMBRIDGE_DB_PATH",
-	"AgentStoreDB":     "LLMBRIDGE_AGENT_DB",
-	"MemoryStoreDB":    "LLMBRIDGE_MEMORY_DB",
 	"HarnessStoreDB":   "LLMBRIDGE_HARNESS_DB",
 	"HookStoreDB":      "LLMBRIDGE_HOOK_DB",
-	"ModelStoreDB":     "LLMBRIDGE_MODEL_STORE_DB",
 	"BridgePrefsPath":  "LLMBRIDGE_BRIDGE_PREFS",
 	"ConformancePath":  "LLMBRIDGE_CONFORMANCE_PATH",
 	"LogStoreURL":      "LLMBRIDGE_LOG_STORE_URL",
@@ -176,11 +168,8 @@ func AddressByConfigField() map[string]string {
 	return map[string]string{
 		"ListenAddr":       ListenAddr,
 		"DBPath":           BridgeDatabasePath(),
-		"AgentStoreDB":     AgentStoreDatabasePath(),
-		"MemoryStoreDB":    MemoryStoreDatabasePath(),
 		"HarnessStoreDB":   HarnessStoreDatabasePath(),
 		"HookStoreDB":      HookStoreDatabasePath(),
-		"ModelStoreDB":     ModelStoreDatabasePath(),
 		"BridgePrefsPath":  BridgePreferencesPath(),
 		"ConformancePath":  ConformancePath(),
 		"LogStoreURL":      LogStoreURL,

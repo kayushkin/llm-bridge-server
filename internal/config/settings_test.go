@@ -130,8 +130,6 @@ func TestEveryEnvironmentVariableTheServerReadsIsDeclared(t *testing.T) {
 		filepath.Join("internal", "repositories", "workgraphstore", "cmd", "work-graph-hook"): true,
 		// aiauth's own command line, which a person runs to sign in to a provider.
 		filepath.Join("internal", "agents", "aiauth", "cmd", "aiauth"): true,
-		// memory-store's standalone server, until its move to Postgres retires it.
-		filepath.Join("internal", "agents", "memorystore", "cmd", "memory-store"): true,
 	}
 
 	repositoryRoot := filepath.Join("..", "..")

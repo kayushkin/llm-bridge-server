@@ -7,12 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
 	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
-	memorystore "github.com/kayushkin/llm-bridge-server/internal/agents/memorystore"
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -122,17 +119,8 @@ func newServerWithAllStoresConfigured(t *testing.T, adjustConfig func(*config.Co
 	}
 	t.Cleanup(func() { st.Close() })
 
-	as, err := agentstore.Open(filepath.Join(dir, "agents.db"))
-	if err != nil {
-		t.Fatalf("open agent-store: %v", err)
-	}
-	t.Cleanup(func() { as.Close() })
-
-	ms, err := memorystore.NewStore(filepath.Join(dir, "memory.db"))
-	if err != nil {
-		t.Fatalf("open memory-store: %v", err)
-	}
-	t.Cleanup(func() { ms.Close() })
+	as := openTestAgentStore(t)
+	ms := openTestMemoryStore(t)
 
 	hs, err := harnessstore.Open(filepath.Join(dir, "harness.db"))
 	if err != nil {
@@ -146,11 +134,7 @@ func newServerWithAllStoresConfigured(t *testing.T, adjustConfig func(*config.Co
 	}
 	t.Cleanup(func() { hks.Close() })
 
-	mds, err := modelstore.Open(filepath.Join(dir, "models.db"))
-	if err != nil {
-		t.Fatalf("open model-store: %v", err)
-	}
-	t.Cleanup(func() { mds.Close() })
+	mds := openTestModelStore(t)
 
 	ss, err := snapshotstore.Open(snapshotstore.Config{
 		DBPath: filepath.Join(dir, "snapshots.db"),

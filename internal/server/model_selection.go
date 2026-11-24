@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"log"
 
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 )
 
 // The ONE place a session's model is decided.

@@ -293,7 +293,6 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /api/runner/install.sh":                 {routeGroupRunners, "Runner install script"},
 	"GET /api/runner/binary":                     {routeGroupRunners, "Runner and wrapper binaries (`?os=&arch=&name=`)"},
 	"POST /api/runner/seed/broadcast":            {routeGroupRunners, "Tell every runner to re-sync agent and skill files"},
-	"/api/agent-store/":                          {routeGroupRunners, "Runners read agent-store through this"},
 	"/api/harness-proxy/{harness}/{rest...}":     {routeGroupRunners, "Forward to a harness backend (inber, hermes) on this host. Checks no credential; nothing calls it"},
 	"POST /permission/cc-prehook/{bridge_id}":    {routeGroupRunners, "Claude Code's permission check before each tool call"},
 	"POST /permission/codex-prehook/{bridge_id}": {routeGroupRunners, "The same for codex"},

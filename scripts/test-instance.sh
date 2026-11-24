@@ -45,7 +45,9 @@
 # permission-store and kanban-store moved into the server ran each as a unit of its own. The
 # first install of a server that holds them copies each one's SQLite file into
 # the server's module, once (import-<store>, keeping every id), then removes
-# the unit and leaves the file where it was, unused.
+# the unit and leaves the file where it was, unused. agent-store, memory-store
+# and model-store ran inside the server with SQLite files under data/; their
+# files are imported the same way.
 #
 # Demo login lets anyone who can reach the server sign in as any person, with
 # no password. That is acceptable here only because the server listens on
@@ -59,6 +61,9 @@ STORES=(log-store reference-store)
 # The stores the server now holds, which an older instance ran as units of its
 # own. Only install's import and the unit clean-up name them.
 RETIRED_STORES=(principal-store grant-store tool-store permission-store kanban-store)
+# Stores the server embedded with a SQLite file of its own under data/, and
+# now keeps in Postgres. They had no unit, so there is none to remove.
+EMBEDDED_STORES=(agent-store memory-store model-store)
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 POSTGRES_BIN="${BRIDGE_TEST_POSTGRES_BIN:-/usr/lib/postgresql/18/bin}"
 # The login the server provisions its Postgres modules as, and its database.
@@ -183,6 +188,15 @@ SELECT 'CREATE DATABASE $POSTGRES_DATABASE OWNER $POSTGRES_SERVER_LOGIN'
 EOF
 }
 
+# model_registry_sql runs statements in the server's model-store module, as the
+# module's role, and prints what they answer. The server makes the module at
+# its first start.
+model_registry_sql() { # <statements>
+  "$POSTGRES_BIN/psql" -q -X -t -A -v ON_ERROR_STOP=1 -h "$POSTGRES_SOCKET_DIR" -p "$POSTGRES_PORT" \
+    -U "$POSTGRES_SERVER_LOGIN" -d "$POSTGRES_DATABASE" \
+    -c "SET ROLE models_module; SET search_path TO models;" -c "$1"
+}
+
 # retired_store_database is where an older instance's standalone store kept its
 # SQLite file: permission-store took a flag in its unit, the others their own
 # default under the test home.
@@ -190,6 +204,9 @@ retired_store_database() { # <store>
   case "$1" in
     permission-store) echo "$ROOT/data/permission-store.db" ;;
     kanban-store)     echo "$ROOT/data/kanban-store.db" ;;
+    agent-store)      echo "$ROOT/data/agents.db" ;;
+    memory-store)     echo "$ROOT/data/memory.db" ;;
+    model-store)      echo "$ROOT/data/models.db" ;;
     *)                echo "$ROOT/home/.config/$1/$1.db" ;;
   esac
 }
@@ -204,7 +221,7 @@ retired_store_database() { # <store>
 import_retired_stores() {
   local store database copy
   mkdir -p "$ROOT/data/imported"
-  for store in "${RETIRED_STORES[@]}"; do
+  for store in "${RETIRED_STORES[@]}" "${EMBEDDED_STORES[@]}"; do
     database="$(retired_store_database "$store")"
     [ -f "$ROOT/data/imported/$store" ] && continue
     [ -f "$database" ] || continue
@@ -306,11 +323,8 @@ EOF
 LLMBRIDGE_LISTEN_ADDR=127.0.0.1:$BRIDGE_PORT
 LLMBRIDGE_DEMO_LOGIN_ENABLED=true
 LLMBRIDGE_DB_PATH=$ROOT/data/bridge.db
-LLMBRIDGE_AGENT_DB=$ROOT/data/agents.db
-LLMBRIDGE_MEMORY_DB=$ROOT/data/memory.db
 LLMBRIDGE_HARNESS_DB=$ROOT/data/harness.db
 LLMBRIDGE_HOOK_DB=$ROOT/data/hooks.db
-LLMBRIDGE_MODEL_STORE_DB=$ROOT/data/models.db
 LLMBRIDGE_SNAPSHOT_DB=$ROOT/data/snapshots.db
 LLMBRIDGE_SNAPSHOT_GIT=$ROOT/data/snapshots.git
 LLMBRIDGE_OPERATIONS_DB=$ROOT/data/operations.db
@@ -425,13 +439,13 @@ EOF
   wait_for reference-store "http://127.0.0.1:$REFERENCE_STORE_PORT/types"
 
   # A session needs a model that resolves, and a new registry is empty. The
-  # server has no route that writes one, so the row goes into its database.
-  if [ "$(sqlite3 "$ROOT/data/models.db" "SELECT count(*) FROM model_roles WHERE role = 'default'")" = "0" ]; then
+  # server has no route that adds a model, so the rows go into its module.
+  if [ "$(model_registry_sql "SELECT count(*) FROM model_roles WHERE role = 'default'")" = "0" ]; then
     step "giving the model registry a default model for the mock harness"
-    sqlite3 "$ROOT/data/models.db" \
+    model_registry_sql \
       "INSERT INTO providers (id, name) VALUES ('test-instance', 'test instance');
        INSERT INTO models (id, provider, name) VALUES ('test-instance-model', 'test-instance', 'test instance model');
-       INSERT INTO model_roles (role, model_id) VALUES ('default', 'test-instance-model');"
+       INSERT INTO model_roles (role, model_id) VALUES ('default', 'test-instance-model');" >/dev/null
   fi
 
   local principal_store="$BASE/principal-store"
@@ -528,11 +542,11 @@ use_machine_logins() {
   grep -q '^DISABLE_AUTOUPDATER=' "$ROOT/env/runner.env" || echo 'DISABLE_AUTOUPDATER=1' >> "$ROOT/env/runner.env"
 
   # The sessions need models the agent programs know. The registry is the
-  # server's own database, which no route writes.
+  # server's model-store module, and no route adds a model.
   step "adding a Claude model and a codex model to the registry"
-  sqlite3 "$ROOT/data/models.db" \
-    "INSERT OR IGNORE INTO providers (id, name) VALUES ('anthropic', 'Anthropic'), ('openai', 'OpenAI');
-     INSERT OR IGNORE INTO models (id, provider, name) VALUES ('claude-haiku-5-5', 'anthropic', 'Claude Haiku 5.5'), ('gpt-5.6-luna', 'openai', 'GPT-5.6 Luna');"
+  model_registry_sql \
+    "INSERT INTO providers (id, name) VALUES ('anthropic', 'Anthropic'), ('openai', 'OpenAI') ON CONFLICT DO NOTHING;
+     INSERT INTO models (id, provider, name) VALUES ('claude-haiku-5-5', 'anthropic', 'Claude Haiku 5.5'), ('gpt-5.6-luna', 'openai', 'GPT-5.6 Luna') ON CONFLICT DO NOTHING;" >/dev/null
 
   # A chat started from the front end takes the harness's default model; the
   # registry's own default is the mock harness's stand-in, which Claude Code

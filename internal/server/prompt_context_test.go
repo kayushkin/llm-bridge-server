@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -35,11 +34,7 @@ func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *kanbanclient
 // context collections for every directory and for /work/northwind.
 func contextTestAgentStore(t *testing.T) *agentstore.Store {
 	t.Helper()
-	as, err := agentstore.Open(filepath.Join(t.TempDir(), "agents.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { as.Close() })
+	as := openTestAgentStore(t)
 	for _, delivery := range []agentstore.PromptHarnessDelivery{
 		{Harness: string(msg.HarnessClaudeCode), Delivery: agentstore.PromptDeliveryNativeFile, NativeRelativePath: "CLAUDE.md"},
 		{Harness: string(msg.HarnessCodex), Delivery: agentstore.PromptDeliveryInject},
