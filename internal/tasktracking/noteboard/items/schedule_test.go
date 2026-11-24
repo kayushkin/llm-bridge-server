@@ -1,4 +1,4 @@
-package db
+package items
 
 import (
 	"encoding/json"
@@ -82,7 +82,7 @@ func TestUnscheduledItemStoresNull(t *testing.T) {
 	}
 
 	var schedule any
-	if err := store.db.QueryRow("SELECT schedule FROM items WHERE id = ?", created.ID).Scan(&schedule); err != nil {
+	if err := store.db.QueryRow("SELECT schedule FROM items WHERE id = $1", created.ID).Scan(&schedule); err != nil {
 		t.Fatalf("scan schedule: %v", err)
 	}
 	if schedule != nil {
@@ -233,7 +233,8 @@ func TestDueDateCanBeClearedWhenNoRuleAnchorsOnIt(t *testing.T) {
 	}
 }
 
-// A schedule that stores but no longer parses would make the coordinator expand
+// A schedule that stores but no longer reads as a rule (the column takes only
+// JSON, so this is JSON of the wrong shape) would make the coordinator expand
 // it to nothing and remind nobody, forever — invisible by construction. It has to
 // fail loudly at the read, not degrade to "no schedule".
 func TestUnreadableScheduleFailsLoudly(t *testing.T) {
@@ -242,7 +243,7 @@ func TestUnreadableScheduleFailsLoudly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateItem: %v", err)
 	}
-	if _, err := store.db.Exec("UPDATE items SET schedule = ? WHERE id = ?", "{not json", created.ID); err != nil {
+	if _, err := store.db.Exec("UPDATE items SET schedule = $1 WHERE id = $2", `{"tzid": 5}`, created.ID); err != nil {
 		t.Fatalf("corrupt the row: %v", err)
 	}
 

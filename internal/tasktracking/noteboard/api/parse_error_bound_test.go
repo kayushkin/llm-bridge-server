@@ -125,10 +125,14 @@ func TestAnOversizedItemActionIsNotEchoedBack(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
+	// An action no route names is the router's 404 now, and the router says
+	// nothing of the path it was asked for.
 	if w.Code != 404 {
 		t.Fatalf("want 404 for an unknown action, got %d: %.200s", w.Code, w.Body.String())
 	}
-	assertBounded(t, "unknown item action", w.Body.Bytes())
+	if w.Body.Len() >= oversizedLength {
+		t.Fatalf("the 404 for an unknown action is %d bytes; it echoes the action back", w.Body.Len())
+	}
 }
 
 // The four schedule fields below are validated on write, so the bound is on a

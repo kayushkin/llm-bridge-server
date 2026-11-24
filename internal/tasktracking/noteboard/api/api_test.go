@@ -7,85 +7,32 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/internal/api"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/internal/db"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/internal/settings"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
-	_ "modernc.org/sqlite"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 func setup(t *testing.T) (*api.API, func()) {
 	t.Helper()
-	a, _, cleanup := setupWithPath(t)
+	a, _, cleanup := setupWithDatabase(t)
 	return a, cleanup
 }
 
-// setupWithPath also hands back the database file, for the one test that has to
-// break the store from underneath to produce a failure that is not a missing
-// row.
-func setupWithPath(t *testing.T) (*api.API, string, func()) {
+// setupWithDatabase also hands back the module's pool, for the one test that
+// has to break the store from underneath to produce a failure that is not a
+// missing row. The database is dropped when the test ends.
+func setupWithDatabase(t *testing.T) (*api.API, *sql.DB, func()) {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.db")
-	store, err := db.New(path)
+	module, err := items.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = os.MkdirAll(dir, 0755)
-	registry, err := settings.NewRegistry(servicesettings.MapEnvironment(map[string]string{"NOTEBOARD_PORT": "18191", "NOTEBOARD_DB": path}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := api.New(store, registry)
-	return a, path, func() { store.Close() }
-}
-
-func TestGetSettingsDescribesTheServiceAndNothingCanBeWritten(t *testing.T) {
-	a, path, cleanup := setupWithPath(t)
-	defer cleanup()
-
-	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/settings", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET /settings = %d: %s", w.Code, w.Body)
-	}
-	var described msg.ServiceSettings
-	if err := json.Unmarshal(w.Body.Bytes(), &described); err != nil {
-		t.Fatal(err)
-	}
-	if described.Service != settings.ServiceName || len(described.Settings) != len(settings.Definitions()) {
-		t.Fatalf("service=%q with %d settings, want %q with %d", described.Service, len(described.Settings), settings.ServiceName, len(settings.Definitions()))
-	}
-	for _, setting := range described.Settings {
-		if setting.Editable {
-			t.Errorf("%s is editable, and this service has no operator gate to put a write behind", setting.Key)
-		}
-		if setting.Key == settings.DatabasePath && (setting.Value != path || setting.Source != msg.ServiceSettingSourceEnvironment) {
-			t.Errorf("database path served as %q from %q, want %q from the environment", setting.Value, setting.Source, path)
-		}
-	}
-
-	w = httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/settings/"+settings.ListenPort, strings.NewReader(`{"value":"1"}`)))
-	if w.Code == http.StatusOK {
-		t.Errorf("PUT /settings/%s = 200: a write route is mounted", settings.ListenPort)
-	}
-}
-
-func TestNewRefusesAMissingSettingsRegistry(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Error("api.New(store, nil) did not panic: GET /settings would fail at its first read instead of at boot")
-		}
-	}()
-	api.New(nil, nil)
+	database := postgrestest.NewDatabase(t, module).Open(module)
+	return api.New(items.New(database)), database, func() {}
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -498,7 +445,7 @@ func TestEveryMissingItemRouteAnswersNotFound(t *testing.T) {
 // The failure is induced by taking away the table the snapshot writes to, so
 // DeleteItem fails after it has already found the row.
 func TestADeleteThatFailsForAnyOtherReasonIsStillAServerError(t *testing.T) {
-	a, path, cleanup := setupWithPath(t)
+	a, database, cleanup := setupWithDatabase(t)
 	defer cleanup()
 	h := a.Handler()
 
@@ -508,14 +455,9 @@ func TestADeleteThatFailsForAnyOtherReasonIsStillAServerError(t *testing.T) {
 	var item model.Item
 	json.NewDecoder(w.Body).Decode(&item)
 
-	sabotage, err := sql.Open("sqlite", path)
-	if err != nil {
+	if _, err := database.Exec("DROP TABLE item_revisions"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sabotage.Exec("DROP TABLE item_revisions"); err != nil {
-		t.Fatal(err)
-	}
-	sabotage.Close()
 
 	// The row is still there, so this is not a missing item by any reading.
 	w = httptest.NewRecorder()

@@ -6,11 +6,9 @@ import (
 	"net/http"
 )
 
-func (a *API) batchItems(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, 405, "method not allowed")
-		return
-	}
+// BatchItems is POST /api/items/batch: the named items in the order named,
+// with null for one that names no live item.
+func (a *API) BatchItems(w http.ResponseWriter, r *http.Request) {
 	var request model.ItemsBatchRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()

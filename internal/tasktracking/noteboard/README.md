@@ -12,61 +12,38 @@ a program never has to pick which store to talk to.
 Nothing here destroys data by accident. `DELETE` is reversible, every write
 snapshots the row it replaced, and a purge snapshots before it purges.
 
-## Requirements
+## Where it runs
 
-Go 1.24+. Nothing else — the SQLite driver is [`modernc.org/sqlite`][sqlite],
-which is pure Go, so `CGO_ENABLED=0` builds a static binary with FTS5 built in.
+noteboard is a module of llm-bridge-server. Its items live in the Postgres
+module `noteboard` (role `noteboard_module`), built by the migrations in
+`items/migrations/`, and the server answers its routes under `/noteboard/`
+with the same paths behind the prefix: `GET /noteboard/api/items`,
+`POST /noteboard/api/items/{id}/hold`, and so on. The server's
+`database.postgres_url` (`LLMBRIDGE_POSTGRES_URL`) names the Postgres; with it
+empty the routes answer 503 `noteboard_off`.
 
-[sqlite]: https://modernc.org/sqlite
+`llm-bridge-server import-noteboard -sqlite <file>` copies a standalone
+noteboard's SQLite file (a copy made with `sqlite3 .backup`) into an empty
+module, keeping every item id, revision number, hold, rule and soft-deleted
+row. Times keep microseconds, so the nanoseconds the standalone store wrote
+are cut off. Text holding U+0000, which Postgres cannot keep, is refused by
+name, in the import and on every write.
 
-## Running it
+Packages: `items` is the store, `api` the route handlers, `model` the wire
+types and the recurrence rules, `boundedtext` the cap on echoed input.
 
-```sh
-make build
-./bin/noteboard
-```
+## Who may call it
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `NOTEBOARD_PORT` | `8191` | Port to listen on |
-| `NOTEBOARD_DB` | `$HOME/.noteboard/noteboard.db` | SQLite file; schema and migrations run on open |
-
-Both are declared in `internal/settings` (llm-bridge `servicesettings`) and described, with the
-value in force, at `GET /settings`. A misspelling of either name (`NOTEBOARD_DB_PATH`), or a port
-that is not a number, stops the service at startup. `NOTEBOARD_URL` is how other programs find
-noteboard; noteboard does not read it and does not mind it being set.
-
-`deploy/noteboard.service` is a `--user` unit. `deploy.sh` reads the binary path,
-port and database path back *out of* that unit rather than restating them, then
-builds, tests, smokes on a throwaway database, installs, restarts and verifies.
-
-⚠️ **`deploy.sh` will not complete a first-ever deploy against an empty
-database.** It asserts `/health` reports more than zero items, which exists to
-catch a binary that silently opened the wrong database file. On a fresh install
-that assertion is a false alarm. Create an item first, or drop that check.
-
-## Security
-
-**There is no authentication and no authorization.** Every endpoint is open to
-anyone who can reach the port, and `Access-Control-Allow-Origin` is `*`
-(`internal/api/api.go:37`), so any web page in any browser that can route to the
-host can read and rewrite the whole store. The server binds every interface, not
-loopback (`cmd/noteboard/main.go:35`), and there is no option to change that —
-`NOTEBOARD_PORT` sets the port only.
-
+Every route is an operator route of llm-bridge-server: the service token, an
+administrator, or an administrator's session agent token
+(`$LLM_BRIDGE_PRINCIPAL_TOKEN`). The notes are the operator's own and private,
+and no row has an owner, so nobody else may read or write them.
 `created_by` is a caller-supplied string used as a list filter. **It is not an
 identity and nothing checks it.**
 
-There is also no request body size limit, no rate limiting, and no read/write
-timeouts on the HTTP server.
-
-This is a deliberate fit for one trusted host behind a firewall. It is **unsafe
-on any network you do not control**. Put it behind a reverse proxy that
-authenticates, or bind it to loopback, before it can be routed to.
-
 ## HTTP API
 
-All bodies are JSON. `OPTIONS` on any path returns `204`.
+Paths below are behind `/noteboard`. All bodies are JSON. A method a path does not take is the server's plain 405, and an item action no route names its plain 404.
 
 ### Items
 
@@ -111,9 +88,8 @@ leaving it out means "don't touch". Absent and null are different requests.
 |---|---|---|
 | `GET` | `/api/lists` | `list_id` values with their counts |
 | `GET` | `/api/tags` | Every unique tag with its count, most-used first |
-| `GET` | `/api/search?q=` | FTS5 over title and body; `&type=`, `&tag=`, `&status=`, `&limit=` (default 50), `&include_held=` |
+| `GET` | `/api/search?q=` | Full-text search over title and body; `&type=`, `&tag=`, `&status=`, `&limit=` (default 50), `&include_held=` |
 | `GET` | `/health` | `{"status":"ok","items":N}`; **500** if the database cannot be read |
-| `GET` | `/settings` | Every environment variable the service reads, with the value in force and its source; read-only |
 
 A **list is not a stored row.** `GET /api/lists` derives the set by grouping
 items on `list_id`, so a list exists exactly when an item claims it. There is no
@@ -163,7 +139,8 @@ to do, and so the schema can enforce one per job.
 ### Of these items, which match
 
 ```bash
-curl -s -X POST localhost:8191/api/items/query -H 'Content-Type: application/json' -d '{
+curl -s -X POST "$LLM_BRIDGE_GATEWAY_URL/noteboard/api/items/query" -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN" \
+  -H 'Content-Type: application/json' -d '{
   "ids":["<id>","<id>","…"], "tags":["billing"], "priorities":[3],
   "sort":"priority", "limit":25, "offset":0, "include_items":true}'
 # → {"total":310,"ids":[…the page, in order…],"items":[…],"missing_ids":[…]}
@@ -190,17 +167,9 @@ not fit in a URL. It changes nothing.
 - An unknown field, sort, or an empty tag is a **400**: a filter that was
   dropped would answer every item, which reads as "all of these match".
 
-⚠️ **Due dates are compared as instants.** `due_at` is stored as RFC 3339 with
-whatever offset its writer sent — on this host some rows end in `Z` and some in
-`-07:00`. As text, `10:00-07:00` sorts before `12:00Z` though it is five hours
-later, so the sort and `due_before` go through `julianday()`.
-
-⚠️ **The join is a `CROSS JOIN` on purpose.** Written as a plain `JOIN`, SQLite
-made `items` the outer loop and re-parsed the whole JSON list of ids once per
-item: 7,830 items times a 371 KB list ran for minutes at 100% CPU. `CROSS JOIN`
-is never reordered, so the ids are walked once. Measured on a copy of this
-host's data, 2026-09-20: about 100 ms for the largest board's 9,506 ids, 3 ms
-for 50. `TestItemsQueryWalksTheIdsOnce` pins the plan, not a time.
+⚠️ **Due dates are compared as instants.** `due_at` is kept as an instant
+beside the offset its writer sent, which only the answer uses: `10:00-07:00`
+sorts after `12:00Z`, five hours later.
 
 ### Saving over someone else's change
 
@@ -211,7 +180,7 @@ and neither of them sees it happen. A `PATCH` can refuse that:
 ```bash
 # The version is the item's updated_at, exactly as the item carries it.
 # GET also sends it as the ETag.
-curl -s -X PATCH http://localhost:8191/api/items/<id> \
+curl -s -X PATCH "$LLM_BRIDGE_GATEWAY_URL/noteboard/api/items/<id>" -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN" \
   -H 'If-Match: "2026-09-18T18:59:29.430695045Z"' \
   -H 'Content-Type: application/json' -d '{"title":"…"}'
 ```
@@ -268,17 +237,25 @@ sets `truncated` when the cap was hit.
 `rdate` and `exdate` modify the **due** series only. They do not move the nag: an
 extra due date does not buy an extra nag, and a skipped due week still nags.
 
+### Search
+
+`GET /api/search` splits `q` on whitespace into terms, and an item must match
+every term. Each term is literal text, never query syntax: a `-`, a quote or
+`OR` is punctuation or a word. Punctuation separates words in the text and in
+the query, as the FTS5 table this replaced did, so `deploy.sh` is the phrase
+"deploy sh", found by `deploy`, `sh` or `deploy.sh`, and a term matches only
+when its words stand together in that order. Words are folded to lower case
+and never stemmed. A term of punctuation alone is no term. Matches come
+newest first. Three things differ from FTS5: accents are kept, so `cafe` does
+not find `café`; a word over 2047 bytes is not indexed; and a single item's
+search document is limited to the 1 MB Postgres puts on a `tsvector`.
+
 ## Development
 
 ```sh
-make vet
-make test
-./scripts/e2e-smoke.sh   # boots the real binary on a throwaway DB and drives it over HTTP
+export POSTGRESTEST_ADMINISTRATOR_URL="$(scripts/test-postgres.sh start)"   # from the repo root
+go test ./internal/tasktracking/noteboard/...
 ```
-
-The smoke test is what catches the failures the compiler cannot: a build without
-FTS5 compiles green and fails at `CREATE VIRTUAL TABLE`, and a Go 1.22+
-`ServeMux` route conflict compiles green and panics at boot.
 
 ## License
 

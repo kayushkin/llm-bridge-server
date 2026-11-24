@@ -1,4 +1,4 @@
-package db
+package items
 
 import (
 	"testing"
@@ -63,7 +63,7 @@ func TestAHardDeleteDestroysTheRowAndLeavesThePurgeSnapshotBehind(t *testing.T) 
 	// leave nothing, so count the raw table rather than a read path that
 	// filters tombstones out and cannot tell the two apart.
 	var rows int
-	if err := s.db.QueryRow("SELECT count(*) FROM items WHERE id = ?", item.ID).Scan(&rows); err != nil {
+	if err := s.db.QueryRow("SELECT count(*) FROM items WHERE id = $1", item.ID).Scan(&rows); err != nil {
 		t.Fatalf("count items: %v", err)
 	}
 	if rows != 0 {
@@ -107,7 +107,7 @@ func TestAHardDeleteDestroysTheRowAndLeavesThePurgeSnapshotBehind(t *testing.T) 
 	// statement that purges the row and every assertion above would still
 	// pass except this one.
 	var kept int
-	if err := s.db.QueryRow("SELECT count(*) FROM item_revisions WHERE item_id = ?", item.ID).Scan(&kept); err != nil {
+	if err := s.db.QueryRow("SELECT count(*) FROM item_revisions WHERE item_id = $1", item.ID).Scan(&kept); err != nil {
 		t.Fatalf("count item_revisions: %v", err)
 	}
 	if kept != len(revisions) {
@@ -178,7 +178,7 @@ func TestAHardDeleteWhoseSnapshotFailsKeepsTheRow(t *testing.T) {
 	}
 
 	var rows int
-	if err := s.db.QueryRow("SELECT count(*) FROM items WHERE id = ?", item.ID).Scan(&rows); err != nil {
+	if err := s.db.QueryRow("SELECT count(*) FROM items WHERE id = $1", item.ID).Scan(&rows); err != nil {
 		t.Fatalf("count items: %v", err)
 	}
 	if rows != 1 {
@@ -186,11 +186,8 @@ func TestAHardDeleteWhoseSnapshotFailsKeepsTheRow(t *testing.T) {
 	}
 }
 
-// TestAHardDeleteTakesTheRowOutOfSearch. The items_ad trigger fires on
-// DELETE and nothing else, so a hard delete is the only thing that runs it
-// and it too had never been exercised. A stale FTS row does not just show a
-// deleted item: items_fts is an external-content index, and a row in it whose
-// item is gone points at a rowid that no longer resolves.
+// TestAHardDeleteTakesTheRowOutOfSearch. The search document is a column of
+// the row, so a purge takes it with the row; this holds that true.
 func TestAHardDeleteTakesTheRowOutOfSearch(t *testing.T) {
 	s := newTestStore(t)
 	item := mustCreateTyped(t, s, model.TypeNote, "xenophile", "body")
@@ -214,11 +211,4 @@ func TestAHardDeleteTakesTheRowOutOfSearch(t *testing.T) {
 		t.Errorf("search still returns %d item(s) for a purged row", len(found))
 	}
 
-	var indexed int
-	if err := s.db.QueryRow("SELECT count(*) FROM items_fts WHERE items_fts MATCH 'xenophile'").Scan(&indexed); err != nil {
-		t.Fatalf("count items_fts: %v", err)
-	}
-	if indexed != 0 {
-		t.Errorf("items_fts still holds %d row(s) for a purged item, so the index points at a rowid that no longer exists", indexed)
-	}
 }

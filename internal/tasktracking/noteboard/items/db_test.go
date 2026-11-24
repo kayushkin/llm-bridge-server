@@ -1,43 +1,23 @@
-package db
+package items
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
-	"regexp"
 	"testing"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
-
-// legacyTimeLayout is SQLite's own timestamp encoding, and the one
-// mattn/go-sqlite3 wrote for this table's entire history — every row in the
-// live database is stored in it.
-//
-// modernc.org/sqlite writes Go's time.Time.String() instead
-// ("2026-07-12 23:56:23.353827032 +0000 UTC") unless _time_format pins it to
-// this. The two are different strings in a TEXT column that ORDER BY compares
-// lexicographically, so a mismatch would not error anywhere — it would just
-// quietly interleave new rows with old ones in the wrong order.
-const legacyTimeLayout = "2006-01-02 15:04:05.999999999-07:00"
-
-var sqliteTimeText = regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,9})?\+00:00$`)
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	// New() runs migrate(), which issues CREATE VIRTUAL TABLE ... USING fts5.
-	// That statement is the reason this package used to need CGO_CFLAGS: a
-	// driver without the FTS5 module compiled in fails right here. Every test
-	// below therefore also asserts, just by getting a store, that a default
-	// `go build` produces a binary that can open its own database.
-	store, err := New(filepath.Join(t.TempDir(), "noteboard.db"))
+	module, err := Module()
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("Module: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
-	return store
+	return New(postgrestest.NewDatabase(t, module).Open(module))
 }
 
 func mustCreate(t *testing.T, s *Store, title string) *model.Item {
@@ -49,145 +29,44 @@ func mustCreate(t *testing.T, s *Store, title string) *model.Item {
 	return item
 }
 
-// rawText reads a column's stored bytes, bypassing the driver's habit of
-// decoding a DATETIME column into a time.Time. CAST(...) makes the result an
-// expression, which has no declared type, so the driver hands back the text.
-func rawText(t *testing.T, s *Store, col, id string) string {
+// insertRow writes a row with a chosen creation time and due date, written as
+// the RFC 3339 text a caller sends (or "" for none), so a test can pin an
+// ordering or a stored offset without racing the clock.
+func insertRow(t *testing.T, s *Store, id, title string, priority int, created time.Time, dueAt string) {
 	t.Helper()
-	var got string
-	q := fmt.Sprintf("SELECT CAST(%s AS TEXT) FROM items WHERE id = ?", col)
-	if err := s.db.QueryRow(q, id).Scan(&got); err != nil {
-		t.Fatalf("read raw %s: %v", col, err)
-	}
-	return got
-}
-
-// insertLegacyRow writes a row the way the mattn-era binary wrote it: the
-// timestamp columns as pre-formatted SQLite-format text, bound as a string so
-// nothing in the current driver touches the encoding. This is what all 4100
-// rows in the live database look like.
-//
-// schedule and held_at bind NULL, and hold_reason binds the empty string its
-// column defaults to — which is exactly what a row predating those columns holds,
-// since ALTER TABLE ADD COLUMN backfills the declared default. So these rows keep
-// testing the real legacy shape rather than a shape no row on disk has. A legacy
-// row is therefore un-held, which is the right default: the gate did not exist
-// when it was written.
-func insertLegacyRow(t *testing.T, s *Store, id, title string, created time.Time, dueAt any) {
-	t.Helper()
-	stamp := created.Format(legacyTimeLayout)
-	_, err := s.db.Exec(
-		"INSERT INTO items ("+insertCols+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		id, "todo", title, "", "[]", 0, 0.0, "open", "", dueAt, nil, "[]", "", stamp, stamp, nil,
-		nil, "", nil,
-	)
-	if err != nil {
-		t.Fatalf("insert legacy row: %v", err)
-	}
-}
-
-// TestTimestampsAreStoredInSQLiteFormat is the regression guard for the driver
-// swap. Drop _time_format=sqlite from the DSN and this fails: the stored text
-// becomes Go's time.Time.String().
-func TestTimestampsAreStoredInSQLiteFormat(t *testing.T) {
-	s := newTestStore(t)
-	item := mustCreate(t, s, "format check")
-
-	for _, col := range []string{"created_at", "updated_at"} {
-		got := rawText(t, s, col, item.ID)
-		if !sqliteTimeText.MatchString(got) {
-			t.Errorf("%s stored as %q, which is not SQLite's timestamp format\n"+
-				"(a Go time.Time.String() value looks like \"2026-07-12 23:56:23.35 +0000 UTC\")", col, got)
+	var dueAtValue, dueAtOffset any
+	if dueAt != "" {
+		due, err := time.Parse(time.RFC3339, dueAt)
+		if err != nil {
+			t.Fatalf("due date %q: %v", dueAt, err)
 		}
-		if _, err := time.Parse(legacyTimeLayout, got); err != nil {
-			t.Errorf("%s = %q does not parse as the format the live rows use: %v", col, got, err)
-		}
+		dueAtValue, dueAtOffset = dueAtColumns(&due)
 	}
-}
-
-// TestReadsRowsWrittenByTheLegacyDriver proves the swap can read the data
-// already on disk — the 4100 rows mattn/go-sqlite3 wrote.
-func TestReadsRowsWrittenByTheLegacyDriver(t *testing.T) {
-	s := newTestStore(t)
-	want := time.Date(2026, 7, 12, 23, 56, 23, 353827032, time.UTC)
-	insertLegacyRow(t, s, "legacy-1", "written by the old driver", want, nil)
-
-	got, err := s.GetItem("legacy-1")
-	if err != nil {
-		t.Fatalf("GetItem: %v", err)
-	}
-	if !got.CreatedAt.Equal(want) {
-		t.Errorf("CreatedAt = %v, want %v", got.CreatedAt, want)
-	}
-	if !got.UpdatedAt.Equal(want) {
-		t.Errorf("UpdatedAt = %v, want %v", got.UpdatedAt, want)
-	}
-}
-
-// TestStoredTimestampsAreReadableBySQLiteDateFunctions is the sharpest reason
-// the format pin exists. A Go time.Time.String() value is not a timestamp
-// SQLite recognizes, and SQLite does not complain about that — date() and
-// friends just return NULL. Any date arithmetic in SQL would quietly evaluate
-// to nothing, so the loud assertion belongs here.
-func TestStoredTimestampsAreReadableBySQLiteDateFunctions(t *testing.T) {
-	s := newTestStore(t)
-	item := mustCreate(t, s, "date function check")
-	today := time.Now().UTC().Format("2006-01-02")
-
-	var day, julian any
-	err := s.db.QueryRow(
-		"SELECT date(created_at), julianday(created_at) FROM items WHERE id = ?", item.ID,
-	).Scan(&day, &julian)
-	if err != nil {
-		t.Fatalf("date(created_at): %v", err)
-	}
-	if day == nil || julian == nil {
-		t.Fatalf("SQLite cannot parse the stored created_at: date()=%v julianday()=%v\n"+
-			"The value was written in an encoding SQLite does not recognize as a timestamp.", day, julian)
-	}
-	if day != today {
-		t.Errorf("date(created_at) = %v, want %v", day, today)
-	}
-}
-
-// TestListOrdersChronologicallyAcrossDriverEras covers rows written on either
-// side of the swap sorting together correctly. ORDER BY on these TEXT columns
-// is a lexicographic byte compare, so this is worth an assertion even though
-// the encodings do happen to collate consistently with each other.
-func TestListOrdersChronologicallyAcrossDriverEras(t *testing.T) {
-	s := newTestStore(t)
-
-	// Oldest, written the legacy way.
-	insertLegacyRow(t, s, "old", "oldest", time.Now().UTC().Add(-2*time.Hour), nil)
-	// Newest, written through CreateItem by the current driver.
-	newest := mustCreate(t, s, "newest")
-
-	items, err := s.ListItems(ListParams{Type: "todo", Sort: "created_at"})
-	if err != nil {
-		t.Fatalf("ListItems: %v", err)
-	}
-	if len(items) != 2 {
-		t.Fatalf("got %d items, want 2", len(items))
-	}
-	if items[0].ID != newest.ID {
-		t.Errorf("created_at DESC put %q first; want the newest row %q", items[0].Title, newest.Title)
-	}
-}
-
-// insertDatedRow writes a row with a chosen priority and creation time, so a
-// test can pin an ordering without racing the clock. Sorting is the one thing
-// CreateItem cannot set up: it stamps time.Now(), and rows created inside the
-// same test can land on the same timestamp.
-func insertDatedRow(t *testing.T, s *Store, id, title string, priority int, created time.Time) {
-	t.Helper()
-	stamp := created.Format(legacyTimeLayout)
 	_, err := s.db.Exec(
-		"INSERT INTO items ("+insertCols+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		id, "todo", title, "", "[]", priority, 0.0, "open", "", nil, nil, "[]", "", stamp, stamp, nil,
+		"INSERT INTO items ("+insertCols+") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)",
+		id, "todo", title, "", "[]", priority, 0.0, "open", "", dueAtValue, dueAtOffset, nil, "[]", "", created, created, nil,
 		nil, "", nil,
 	)
 	if err != nil {
 		t.Fatalf("insert row %q: %v", id, err)
+	}
+}
+
+// TestTimesComeBackAsWritten pins what a write answers against what a later
+// read gives back: the same updated_at to the microsecond, so an If-Match made
+// from the item a create answered with matches the stored version.
+func TestTimesComeBackAsWritten(t *testing.T) {
+	s := newTestStore(t)
+	item := mustCreate(t, s, "time check")
+	got, err := s.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if !got.CreatedAt.Equal(item.CreatedAt) || !got.UpdatedAt.Equal(item.UpdatedAt) {
+		t.Errorf("read back created_at %v and updated_at %v, the create answered %v and %v", got.CreatedAt, got.UpdatedAt, item.CreatedAt, item.UpdatedAt)
+	}
+	if got.UpdatedAt.Location() != time.UTC {
+		t.Errorf("updated_at comes back in %v, want UTC", got.UpdatedAt.Location())
 	}
 }
 
@@ -206,10 +85,10 @@ func TestPrioritySortBreaksTiesByRecency(t *testing.T) {
 
 	base := time.Now().UTC().Add(-24 * time.Hour)
 	// Inserted oldest-first, so rowid order is the exact reverse of the answer.
-	insertDatedRow(t, s, "tied-old", "tied, created first", 0, base)
-	insertDatedRow(t, s, "tied-mid", "tied, created second", 0, base.Add(time.Hour))
-	insertDatedRow(t, s, "tied-new", "tied, created last", 0, base.Add(2*time.Hour))
-	insertDatedRow(t, s, "urgent", "the only high-priority row", 4, base)
+	insertRow(t, s, "tied-old", "tied, created first", 0, base, "")
+	insertRow(t, s, "tied-mid", "tied, created second", 0, base.Add(time.Hour), "")
+	insertRow(t, s, "tied-new", "tied, created last", 0, base.Add(2*time.Hour), "")
+	insertRow(t, s, "urgent", "the only high-priority row", 4, base, "")
 
 	items, err := s.ListItems(ListParams{Type: "todo", Sort: "priority"})
 	if err != nil {
@@ -235,11 +114,11 @@ func TestLimitedPrioritySortKeepsTheHighestPriorityRows(t *testing.T) {
 	base := time.Now().UTC().Add(-48 * time.Hour)
 	// The low-priority rows are the newest, so a sort that ignores priority —
 	// or one whose ties are arbitrary — buries the urgent pair.
-	insertDatedRow(t, s, "urgent-a", "urgent, oldest row in the table", 4, base)
-	insertDatedRow(t, s, "urgent-b", "urgent, second oldest", 4, base.Add(time.Minute))
+	insertRow(t, s, "urgent-a", "urgent, oldest row in the table", 4, base, "")
+	insertRow(t, s, "urgent-b", "urgent, second oldest", 4, base.Add(time.Minute), "")
 	for i := 0; i < 20; i++ {
-		insertDatedRow(t, s, fmt.Sprintf("noise-%02d", i), "recent low-priority churn", 0,
-			base.Add(time.Duration(10+i)*time.Minute))
+		insertRow(t, s, fmt.Sprintf("noise-%02d", i), "recent low-priority churn", 0,
+			base.Add(time.Duration(10+i)*time.Minute), "")
 	}
 
 	items, err := s.ListItems(ListParams{Type: "todo", Sort: "priority", Limit: 2})
@@ -255,10 +134,8 @@ func TestLimitedPrioritySortKeepsTheHighestPriorityRows(t *testing.T) {
 	}
 }
 
-// TestSearchMatchesViaFTS5 exercises the FTS5 module at runtime. A build
-// without it never reaches this — it dies in migrate() — but the assertion also
-// covers the index and its triggers actually working.
-func TestSearchMatchesViaFTS5(t *testing.T) {
+// TestSearchMatchesAWord covers the generated search document and its index.
+func TestSearchMatchesAWord(t *testing.T) {
 	s := newTestStore(t)
 	item := mustCreate(t, s, "xylophone reconciliation")
 	mustCreate(t, s, "unrelated")
@@ -318,7 +195,7 @@ func TestSearchHandlesFTS5Operators(t *testing.T) {
 // being flattened to UTC.
 func TestDueAtPreservesStoredOffset(t *testing.T) {
 	s := newTestStore(t)
-	insertLegacyRow(t, s, "due-1", "has a due date", time.Now().UTC(), "2026-06-30T09:00:00-07:00")
+	insertRow(t, s, "due-1", "has a due date", 0, time.Now().UTC(), "2026-06-30T09:00:00-07:00")
 
 	got, err := s.GetItem("due-1")
 	if err != nil {
@@ -749,7 +626,7 @@ func TestHoldInheritanceSurvivesAParentCycle(t *testing.T) {
 		t.Fatalf("CreateItem: %v", err)
 	}
 	// Close the loop behind the API's back: a -> b -> a.
-	if _, err := s.db.Exec("UPDATE items SET parent_id = ? WHERE id = ?", b.ID, a.ID); err != nil {
+	if _, err := s.db.Exec("UPDATE items SET parent_id = $1 WHERE id = $2", b.ID, a.ID); err != nil {
 		t.Fatalf("create cycle: %v", err)
 	}
 	if _, err := s.HoldItem(a.ID, "cycle"); err != nil {
@@ -927,5 +804,55 @@ func TestASoftDeletedRowIsStillFound(t *testing.T) {
 	}
 	if err := s.DeleteItem(item.ID, false); err != nil {
 		t.Errorf("a second soft delete reported %v; it is a no-op, not a missing item", err)
+	}
+}
+
+// TestSearchReadsPunctuationAsSpace pins the split the search shares with the
+// FTS5 table it replaced: punctuation separates words in the text and in the
+// query, so deploy.sh is found by deploy, by sh and by deploy.sh, and a query
+// is never read as syntax.
+func TestSearchReadsPunctuationAsSpace(t *testing.T) {
+	s := newTestStore(t)
+	script := mustCreateTyped(t, s, model.TypeNote, "Run deploy.sh after tools/build.go", "bridge_server owns it")
+	mustCreateTyped(t, s, model.TypeNote, "unrelated", "nothing here")
+
+	for _, query := range []string{"deploy", "deploy.sh", "sh", "tools/build.go", "build", "bridge_server", "server", "DEPLOY", `"deploy"`, "-deploy"} {
+		found, err := s.Search(SearchParams{Query: query})
+		if err != nil {
+			t.Fatalf("Search(%q): %v", query, err)
+		}
+		if len(found) != 1 || found[0].ID != script.ID {
+			t.Errorf("Search(%q) found %d items, want the one with deploy.sh in it", query, len(found))
+		}
+	}
+	// Each token is a phrase of its words in order, so sh.deploy is not deploy.sh.
+	for _, query := range []string{"sh.deploy", "deploy nothing", "OR", "--"} {
+		found, err := s.Search(SearchParams{Query: query})
+		if err != nil {
+			t.Fatalf("Search(%q): %v", query, err)
+		}
+		if len(found) != 0 {
+			t.Errorf("Search(%q) found %d items, want none", query, len(found))
+		}
+	}
+}
+
+// Postgres text cannot keep U+0000, so a write holding it is refused by name
+// rather than failing in the database.
+func TestTextHoldingANulCharacterIsRefused(t *testing.T) {
+	s := newTestStore(t)
+	body := "before\x00after"
+	if _, err := s.CreateItem(&model.CreateItemRequest{Type: "note", Title: "nul", Body: &body}); !errors.Is(err, ErrTextHoldsNulCharacter) {
+		t.Errorf("create with a NUL in the body = %v, want ErrTextHoldsNulCharacter", err)
+	}
+	item := mustCreate(t, s, "plain")
+	if _, err := s.UpdateItem(item.ID, &model.UpdateItemRequest{HasTags: true, Tags: []string{"a\x00b"}}); !errors.Is(err, ErrTextHoldsNulCharacter) {
+		t.Errorf("update with a NUL in a tag = %v, want ErrTextHoldsNulCharacter", err)
+	}
+	if revisions, err := s.ListRevisions(item.ID, 0, 0); err != nil || len(revisions) != 0 {
+		t.Errorf("a refused update left %d revisions (%v)", len(revisions), err)
+	}
+	if _, err := s.HoldItem(item.ID, "why\x00"); !errors.Is(err, ErrTextHoldsNulCharacter) {
+		t.Errorf("hold with a NUL in the reason = %v, want ErrTextHoldsNulCharacter", err)
 	}
 }
