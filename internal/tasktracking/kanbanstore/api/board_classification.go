@@ -115,7 +115,7 @@ func callerClassificationActions(r *http.Request, boardID string) []msg.BoardCla
 }
 
 // principalOf is who a person-made write is by: the gate's principal, or an
-// administrator's own header. Empty for the service token.
+// administrator. Empty for the internal service.
 func principalOf(r *http.Request) string {
 	if calledWithServiceToken(r) {
 		return ""
@@ -123,7 +123,7 @@ func principalOf(r *http.Request) string {
 	if access := principalBoardAccessFrom(r); access != nil {
 		return access.PrincipalID
 	}
-	return r.Header.Get(PrincipalIDHeader)
+	return callerPrincipalID(r)
 }
 
 // revisionFromIfMatch reads If-Match: "<prefix><revision>". A missing header
@@ -270,7 +270,7 @@ func (a *API) listClassificationDecisions(w http.ResponseWriter, r *http.Request
 func (a *API) publishClassificationDecision(w http.ResponseWriter, r *http.Request, boardID string) {
 	if !calledWithServiceToken(r) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "service_token_required",
-			"error": "decisions are published by the classifier with " + ServiceTokenHeader})
+			"error": "decisions are published by the classifier, as the internal service"})
 		return
 	}
 	var publication msg.BoardClassificationDecisionPublication
@@ -320,7 +320,7 @@ func (a *API) reviewClassificationDecision(w http.ResponseWriter, r *http.Reques
 	reviewer := principalOf(r)
 	if reviewer == "" {
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "reviewer_required",
-			"error": "a review is a person's: send " + PrincipalIDHeader + " through the gateway, not the service token"})
+			"error": "a review is a person's: make it as a principal, not as the internal service"})
 		return
 	}
 	var request model.ClassificationReviewRequest

@@ -10,12 +10,6 @@ import (
 // model.SharedWorkState owns the rule; these only fetch its input, in one query
 // however many cards are asked about.
 
-// migrateWorkStates adds columns.work_state: nullable, because a column nobody
-// has mapped has no answer and must not be given one.
-func migrateWorkStates(db *sql.DB) error {
-	return addColumnIfMissing(db, "columns", "work_state", "TEXT")
-}
-
 // workStateValue renders a column's work_state for storage; absent is NULL.
 func workStateValue(state *model.WorkState) any {
 	if state == nil || *state == "" {
@@ -66,7 +60,8 @@ func (s *Store) ListPlacementWorkStatesForCards(cardIDs []string) (map[string][]
 	}
 	rows, err := s.db.Query(`SELECT p.card_id, `+placementWorkStateColumns+`
 		FROM placements p JOIN columns c ON c.id = p.column_id
-		WHERE p.card_id IN (`+placeholders(len(cardIDs))+`)`, anySlice(cardIDs)...)
+		WHERE p.card_id IN (`+placeholders(len(cardIDs))+`)
+		ORDER BY p.card_id, p.created_at, p.board_id`, anySlice(cardIDs)...)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +95,7 @@ type EntityLinkedCard struct {
 // The order is part of the answer, not a detail: a caller that has to pick a
 // single card out of several — "which todo is this session for?" — gets the
 // link that was made first, which is the one made before the entity did
-// anything. Without an ORDER BY, SQLite picks, and that caller silently picks a
+// anything. Without an ORDER BY, the database picks, and that caller silently picks a
 // different card as rows move around. Ties break on card_id so the order is
 // total.
 func (s *Store) ListCardsByEntity(entityType, entityRef string) ([]EntityLinkedCard, error) {

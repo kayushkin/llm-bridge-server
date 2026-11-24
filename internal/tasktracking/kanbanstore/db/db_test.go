@@ -1,7 +1,6 @@
 package db
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -22,16 +21,12 @@ import (
 // This has to insert rows directly, because through the public API a link's
 // created_at is stamped at insert time and therefore always agrees with the
 // order rows were written in. That agreement is what hides the defect: an
-// unordered SELECT returns rows in whatever order SQLite finds convenient,
+// unordered SELECT returns rows in whatever order the database finds convenient,
 // which today happens to match and stops matching the moment the planner
 // picks an index. Writing created_at out of step with insertion order is the
 // only way to ask which of the two the query is actually promising.
 func TestListCardsByEntityIsOldestLinkFirst(t *testing.T) {
-	store, err := New(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 
 	base := time.Date(2026, 7, 31, 5, 0, 0, 0, time.UTC)
 	// Written newest-first, so insertion order is the reverse of link age.

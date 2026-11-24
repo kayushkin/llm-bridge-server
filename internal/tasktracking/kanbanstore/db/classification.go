@@ -1,7 +1,6 @@
 package db
 
 import (
-	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
@@ -9,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,12 +15,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 	"github.com/kayushkin/llm-bridge/msg"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 // Board classification: taxonomy and policy revisions, the decisions a
 // classifier publishes, the reviews people add to them, and the labels a card
-// carries as a result. Every write here runs in one BEGIN IMMEDIATE
-// transaction, so two writers are served one after the other and each sees
+// carries as a result. Every write here runs through writeImmediately
+// (postgres.go), so two writers are served one after the other and each sees
 // what the other committed; a check and the write it guards never straddle
 // someone else's write.
 //
@@ -63,298 +63,17 @@ func refuse(kind ClassificationRefusalKind, code, format string, arguments ...an
 	return &ClassificationRefusal{Kind: kind, Code: code, Message: fmt.Sprintf(format, arguments...)}
 }
 
-// migrationPrincipal is written as created_by on what the one-time move of
-// name-only taxonomies created.
-const migrationPrincipal = "migration:classification-stable-ids"
-
-func migrateBoardClassification(db *sql.DB) error {
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS classification_identifiers (
-			sequence   INTEGER PRIMARY KEY AUTOINCREMENT,
-			id         TEXT NOT NULL UNIQUE,
-			kind       TEXT NOT NULL CHECK (kind IN ('axis', 'value')),
-			board_id   TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-			axis_id    TEXT NOT NULL DEFAULT '',
-			created_at DATETIME NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_classification_identifiers_board ON classification_identifiers(board_id);
-
-		CREATE TABLE IF NOT EXISTS classification_taxonomy_revisions (
-			board_id        TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-			revision        INTEGER NOT NULL,
-			taxonomy        TEXT,
-			semantic_digest TEXT NOT NULL DEFAULT '',
-			created_at      DATETIME NOT NULL,
-			created_by      TEXT NOT NULL,
-			PRIMARY KEY (board_id, revision)
-		);
-
-		CREATE TABLE IF NOT EXISTS classification_taxonomy_migrations (
-			board_id    TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-			axis_name   TEXT NOT NULL,
-			value_name  TEXT NOT NULL,
-			assigned_id TEXT NOT NULL,
-			migrated_at DATETIME NOT NULL,
-			PRIMARY KEY (board_id, axis_name, value_name)
-		);
-
-		CREATE TABLE IF NOT EXISTS classification_policy_revisions (
-			board_id          TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-			revision          INTEGER NOT NULL,
-			axis_policies     TEXT NOT NULL,
-			taxonomy_revision INTEGER NOT NULL,
-			created_at        DATETIME NOT NULL,
-			created_by        TEXT NOT NULL,
-			PRIMARY KEY (board_id, revision)
-		);
-
-		CREATE TABLE IF NOT EXISTS classification_decisions (
-			id                        TEXT PRIMARY KEY,
-			sequence                  INTEGER NOT NULL UNIQUE,
-			board_id                  TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-			organization_id           TEXT NOT NULL,
-			card_id                   TEXT NOT NULL,
-			publication_key           TEXT NOT NULL UNIQUE,
-			publication_digest        TEXT NOT NULL,
-			operation_id              TEXT NOT NULL,
-			checkpoint_id             TEXT NOT NULL,
-			attempt_number            INTEGER NOT NULL,
-			initiating_principal_id   TEXT NOT NULL,
-			source_digest             TEXT NOT NULL,
-			source_revision           TEXT NOT NULL DEFAULT '',
-			source_snapshot           TEXT,
-			source_removed_at         DATETIME,
-			taxonomy_revision         INTEGER NOT NULL,
-			taxonomy_digest           TEXT NOT NULL,
-			policy_revision           INTEGER NOT NULL,
-			prompt_revision           TEXT NOT NULL,
-			model                     TEXT NOT NULL,
-			origin                    TEXT NOT NULL,
-			selections                TEXT NOT NULL,
-			rationale                 TEXT NOT NULL DEFAULT '',
-			model_reported_confidence REAL,
-			needs_review              INTEGER NOT NULL,
-			review_reasons            TEXT NOT NULL,
-			completed_at              DATETIME NOT NULL,
-			published_at              DATETIME NOT NULL,
-			FOREIGN KEY (board_id, taxonomy_revision) REFERENCES classification_taxonomy_revisions(board_id, revision),
-			FOREIGN KEY (board_id, policy_revision) REFERENCES classification_policy_revisions(board_id, revision)
-		);
-		CREATE INDEX IF NOT EXISTS idx_classification_decisions_board     ON classification_decisions(board_id, sequence);
-		CREATE INDEX IF NOT EXISTS idx_classification_decisions_card      ON classification_decisions(board_id, card_id, sequence);
-		CREATE INDEX IF NOT EXISTS idx_classification_decisions_operation ON classification_decisions(board_id, operation_id);
-		CREATE INDEX IF NOT EXISTS idx_classification_decisions_source    ON classification_decisions(card_id);
-
-		CREATE TABLE IF NOT EXISTS classification_reviews (
-			id                        TEXT PRIMARY KEY,
-			decision_id               TEXT NOT NULL REFERENCES classification_decisions(id) ON DELETE CASCADE,
-			board_id                  TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-			card_id                   TEXT NOT NULL,
-			reviewer_principal_id     TEXT NOT NULL,
-			action                    TEXT NOT NULL,
-			axis_ids                  TEXT NOT NULL,
-			corrections               TEXT,
-			explanation               TEXT NOT NULL DEFAULT '',
-			supersedes_review_ids     TEXT NOT NULL,
-			expected_labels_revision  INTEGER NOT NULL,
-			resulting_labels_revision INTEGER NOT NULL,
-			taxonomy_revision         INTEGER NOT NULL,
-			policy_revision           INTEGER NOT NULL,
-			idempotency_key           TEXT NOT NULL,
-			request_digest            TEXT NOT NULL,
-			created_at                DATETIME NOT NULL,
-			UNIQUE (board_id, reviewer_principal_id, idempotency_key)
-		);
-		CREATE INDEX IF NOT EXISTS idx_classification_reviews_decision ON classification_reviews(decision_id, created_at);
-
-		CREATE TABLE IF NOT EXISTS classification_labels (
-			board_id           TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-			card_id            TEXT NOT NULL,
-			axis_id            TEXT NOT NULL,
-			value_ids          TEXT NOT NULL,
-			origin_decision_id TEXT NOT NULL,
-			origin_review_id   TEXT NOT NULL,
-			updated_at         DATETIME NOT NULL,
-			PRIMARY KEY (board_id, card_id, axis_id)
-		);
-
-		CREATE TABLE IF NOT EXISTS classification_label_revisions (
-			board_id   TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-			card_id    TEXT NOT NULL,
-			revision   INTEGER NOT NULL,
-			updated_at DATETIME NOT NULL,
-			PRIMARY KEY (board_id, card_id)
-		);
-	`); err != nil {
-		return err
-	}
-	return migrateNameOnlyTaxonomies(db)
-}
-
-// migrateNameOnlyTaxonomies moves each board's taxonomy out of the boards row,
-// where it had names and no ids, into revision 1 with an id minted for every
-// axis and value, and records which name got which id. It runs once, in one
-// transaction, and drops the column at the end, so a second start finds
-// nothing to do. A stored taxonomy that does not parse or validate stops the
-// start: guessing at it would give history ids that mean the wrong thing.
-func migrateNameOnlyTaxonomies(db *sql.DB) error {
-	present, err := columnExists(db, "boards", "taxonomy")
-	if err != nil || !present {
-		return err
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	rows, err := tx.Query(`SELECT id, taxonomy FROM boards WHERE taxonomy IS NOT NULL AND TRIM(taxonomy) != ''`)
-	if err != nil {
-		return err
-	}
-	stored := map[string]string{}
-	var boardIDs []string
-	for rows.Next() {
-		var boardID, taxonomy string
-		if err := rows.Scan(&boardID, &taxonomy); err != nil {
-			rows.Close()
-			return err
-		}
-		stored[boardID] = taxonomy
-		boardIDs = append(boardIDs, boardID)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	sort.Strings(boardIDs)
-	stamp := now()
-	for _, boardID := range boardIDs {
-		var taxonomy msg.ClassificationTaxonomy
-		if err := json.Unmarshal([]byte(stored[boardID]), &taxonomy); err != nil {
-			return fmt.Errorf("board %s: its stored taxonomy does not parse, so it cannot be given ids: %w", boardID, err)
-		}
-		if err := taxonomy.Validate(); err != nil {
-			return fmt.Errorf("board %s: its stored taxonomy does not validate, so it cannot be given ids: %w", boardID, err)
-		}
-		for axisIndex := range taxonomy.Axes {
-			axis := &taxonomy.Axes[axisIndex]
-			if axis.ID, err = mintClassificationIdentifier(tx, "axis", boardID, ""); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(`INSERT INTO classification_taxonomy_migrations (board_id, axis_name, value_name, assigned_id, migrated_at) VALUES (?, ?, '', ?, ?)`,
-				boardID, axis.Name, axis.ID, stamp); err != nil {
-				return err
-			}
-			for valueIndex := range axis.Values {
-				value := &axis.Values[valueIndex]
-				if value.ID, err = mintClassificationIdentifier(tx, "value", boardID, axis.ID); err != nil {
-					return err
-				}
-				if _, err := tx.Exec(`INSERT INTO classification_taxonomy_migrations (board_id, axis_name, value_name, assigned_id, migrated_at) VALUES (?, ?, ?, ?, ?)`,
-					boardID, axis.Name, value.Name, value.ID, stamp); err != nil {
-					return err
-				}
-			}
-		}
-		if err := insertTaxonomyRevision(tx, boardID, 1, &taxonomy, migrationPrincipal, stamp); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.Exec(`ALTER TABLE boards DROP COLUMN taxonomy`); err != nil {
-		return fmt.Errorf("drop boards.taxonomy after moving it to revisions: %w", err)
-	}
-	return tx.Commit()
-}
-
-func columnExists(db *sql.DB, table, column string) (bool, error) {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid, notNull, primaryKey int
-		var name, columnType string
-		var defaultValue sql.NullString
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
-}
-
-// executor is what both *sql.Tx and *sql.Conn offer.
-type executor interface {
-	Exec(query string, arguments ...any) (sql.Result, error)
-	Query(query string, arguments ...any) (*sql.Rows, error)
-	QueryRow(query string, arguments ...any) *sql.Row
-}
-
-// connectionExecutor runs statements on one connection, which is how a
-// BEGIN IMMEDIATE transaction is held: database/sql's Begin starts a deferred one.
-type connectionExecutor struct{ connection *sql.Conn }
-
-func (c connectionExecutor) Exec(query string, arguments ...any) (sql.Result, error) {
-	return c.connection.ExecContext(context.Background(), query, arguments...)
-}
-
-func (c connectionExecutor) Query(query string, arguments ...any) (*sql.Rows, error) {
-	return c.connection.QueryContext(context.Background(), query, arguments...)
-}
-
-func (c connectionExecutor) QueryRow(query string, arguments ...any) *sql.Row {
-	return c.connection.QueryRowContext(context.Background(), query, arguments...)
-}
-
-// writeImmediately runs work in a BEGIN IMMEDIATE transaction: it takes the
-// write lock before reading, so the reads it checks against are still true
-// when it writes. work's error rolls everything back.
-func (s *Store) writeImmediately(work func(executor) error) (err error) {
-	connection, err := s.db.Conn(context.Background())
-	if err != nil {
-		return err
-	}
-	defer connection.Close()
-	run := connectionExecutor{connection}
-	if _, err := run.Exec(`BEGIN IMMEDIATE`); err != nil {
-		return err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			if _, rollbackErr := run.Exec(`ROLLBACK`); rollbackErr != nil && err == nil {
-				err = rollbackErr
-			}
-		}
-	}()
-	if err := work(run); err != nil {
-		return err
-	}
-	if _, err := run.Exec(`COMMIT`); err != nil {
-		return err
-	}
-	committed = true
-	return nil
-}
-
 // mintClassificationIdentifier hands out the next axis or value id,
 // classification_axis_000001 or classification_value_000001, one sequence for
 // both kinds across every board. Ids are never reused.
 func mintClassificationIdentifier(run executor, kind, boardID, axisID string) (string, error) {
 	placeholder := "pending-" + uuid.NewString()
-	result, err := run.Exec(`INSERT INTO classification_identifiers (id, kind, board_id, axis_id, created_at) VALUES (?, ?, ?, ?, ?)`,
-		placeholder, kind, boardID, axisID, now())
-	if err != nil {
+	var sequence int64
+	if err := run.QueryRow(`INSERT INTO classification_identifiers (id, kind, board_id, axis_id, created_at) VALUES (?, ?, ?, ?, ?) RETURNING sequence`,
+		placeholder, kind, boardID, axisID, now()).Scan(&sequence); err != nil {
 		return "", err
 	}
-	sequence, err := result.LastInsertId()
-	if err != nil {
-		return "", err
-	}
-	id := fmt.Sprintf("classification_%s_%06d", kind, sequence)
+	id := postgresstorage.FormatRecordID("classification_"+kind, sequence)
 	if _, err := run.Exec(`UPDATE classification_identifiers SET id = ? WHERE sequence = ?`, id, sequence); err != nil {
 		return "", err
 	}
@@ -488,7 +207,7 @@ func boardClassification(run executor, boardID string) (*msg.BoardClassification
 // nothing. Nil clears the taxonomy, as a revision of its own.
 func (s *Store) SetBoardTaxonomy(boardID string, expectedRevision int64, taxonomy *msg.ClassificationTaxonomy, principalID string) (*model.TaxonomyUpdateResult, error) {
 	var result *model.TaxonomyUpdateResult
-	err := s.writeImmediately(func(run executor) error {
+	err := s.db.writeImmediately(func(run executor) error {
 		if _, err := boardOrganization(run, boardID); err != nil {
 			return err
 		}
@@ -675,7 +394,7 @@ func countLabelsOnRetiredEntries(run executor, boardID string, taxonomy msg.Clas
 	arguments = append(arguments, retired...)
 	var count int
 	err := run.QueryRow(`SELECT COUNT(*) FROM classification_labels label WHERE board_id = ? AND (axis_id IN (`+placeholders+`)
-		OR EXISTS (SELECT 1 FROM json_each(label.value_ids) WHERE json_each.value IN (`+placeholders+`)))`, arguments...).Scan(&count)
+		OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(label.value_ids::jsonb) AS held(value_id) WHERE held.value_id IN (`+placeholders+`)))`, arguments...).Scan(&count)
 	return count, err
 }
 
@@ -685,7 +404,7 @@ func countLabelsOnRetiredEntries(run executor, boardID string, taxonomy msg.Clas
 // nothing.
 func (s *Store) SetBoardClassificationPolicy(boardID string, expectedRevision int64, axisPolicies map[string]msg.ClassificationAxisPolicy, principalID string) (*msg.BoardClassification, error) {
 	var result *msg.BoardClassification
-	err := s.writeImmediately(func(run executor) error {
+	err := s.db.writeImmediately(func(run executor) error {
 		if _, err := boardOrganization(run, boardID); err != nil {
 			return err
 		}
@@ -744,7 +463,7 @@ func (s *Store) SetBoardClassificationPolicy(boardID string, expectedRevision in
 func (s *Store) PublishClassificationDecision(publication msg.BoardClassificationDecisionPublication) (*model.ClassificationDecision, bool, error) {
 	var decision *model.ClassificationDecision
 	created := false
-	err := s.writeImmediately(func(run executor) error {
+	err := s.db.writeImmediately(func(run executor) error {
 		organization, err := boardOrganization(run, publication.BoardID)
 		if err != nil {
 			return err
@@ -833,7 +552,7 @@ func (s *Store) PublishClassificationDecision(publication msg.BoardClassificatio
 			publication.SourceDigest, publication.Source.SourceRevision, string(source),
 			publication.TaxonomyRevision, publication.TaxonomyDigest, publication.PolicyRevision, publication.PromptRevision,
 			string(modelEvidence), string(publication.Origin), string(selections), publication.Rationale,
-			publication.ModelReportedConfidence, publication.NeedsReview, string(reviewReasons), publication.CompletedAt.UTC(), now()); err != nil {
+			publication.ModelReportedConfidence, publication.NeedsReview, string(reviewReasons), storedTime(publication.CompletedAt), now()); err != nil {
 			return err
 		}
 		created = true
@@ -958,16 +677,16 @@ func (s *Store) ListClassificationDecisions(boardID string, filter Classificatio
 	case model.ClassificationReviewStateReviewed:
 		where = append(where, "EXISTS (SELECT 1 FROM classification_reviews r WHERE r.decision_id = d.id)")
 	case model.ClassificationReviewStateNeedsReview:
-		where = append(where, "d.needs_review = 1 AND NOT EXISTS (SELECT 1 FROM classification_reviews r WHERE r.decision_id = d.id)")
+		where = append(where, "d.needs_review AND NOT EXISTS (SELECT 1 FROM classification_reviews r WHERE r.decision_id = d.id)")
 	default:
 		return nil, fmt.Errorf("review_state %q is not one of %v", filter.ReviewState, model.ClassificationReviewStates)
 	}
 	switch {
 	case filter.AxisID != "" && filter.ValueID != "":
-		where = append(where, "EXISTS (SELECT 1 FROM json_each(d.selections) axis, json_each(axis.value) chosen WHERE axis.key = ? AND chosen.value = ?)")
+		where = append(where, "EXISTS (SELECT 1 FROM jsonb_each(d.selections::jsonb) AS axis(key, value), jsonb_array_elements_text(axis.value) AS chosen(value_id) WHERE axis.key = ? AND chosen.value_id = ?)")
 		arguments = append(arguments, filter.AxisID, filter.ValueID)
 	case filter.AxisID != "":
-		where = append(where, "EXISTS (SELECT 1 FROM json_each(d.selections) axis WHERE axis.key = ?)")
+		where = append(where, "EXISTS (SELECT 1 FROM jsonb_each(d.selections::jsonb) AS axis(key, value) WHERE axis.key = ?)")
 		arguments = append(arguments, filter.AxisID)
 	case filter.ValueID != "":
 		return nil, errors.New("value_id needs axis_id")
@@ -1013,7 +732,7 @@ func (s *Store) ListClassificationDecisions(boardID string, filter Classificatio
 
 // sequencedRow scans a decision row followed by its sequence.
 type sequencedRow struct {
-	rows     *sql.Rows
+	rows     *resultRows
 	sequence *int64
 }
 
@@ -1127,7 +846,7 @@ func cardLabels(run executor, boardID, cardID string) (*model.CardClassification
 func (s *Store) ReviewClassificationDecision(boardID, decisionID, reviewerPrincipalID string, request model.ClassificationReviewRequest) (*model.ClassificationReviewResult, bool, error) {
 	var result *model.ClassificationReviewResult
 	created := false
-	err := s.writeImmediately(func(run executor) error {
+	err := s.db.writeImmediately(func(run executor) error {
 		encodedRequest, err := json.Marshal(request)
 		if err != nil {
 			return err

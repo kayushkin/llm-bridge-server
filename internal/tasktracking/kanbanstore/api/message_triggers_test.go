@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/bundlestore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db/dbtest"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/grantstore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/llmbridge"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/messaging"
@@ -66,22 +66,18 @@ func setupWithMessageSender(t *testing.T, sender messaging.Sender) (http.Handler
 	t.Cleanup(bundles.Close)
 	notes := httptest.NewServer(newFakeNoteboard().handler())
 	t.Cleanup(notes.Close)
-	store, err := db.New(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := dbtest.NewStore(t)
 	nb := noteboard.New(notes.URL)
-	a := api.New(store, nb, principalstore.New(principals.URL), llmbridge.New(bridge.URL), bundlestore.New(bundles.URL), settingsRegistryForTests(t))
+	a := api.New(store, nb, principalstore.New(principals.URL), llmbridge.New(bridge.URL), bundlestore.New(bundles.URL))
 	a.SetReferenceStore(fakeReferenceStore(t))
 	// Cleanups run last-registered first, so this waits for trigger
 	// dispatches before the store above is closed.
 	t.Cleanup(a.WaitForMessageTriggers)
-	a.SetPrincipalEnforcement(api.PrincipalEnforcement{ServiceToken: testServiceToken, Grants: grantstore.New("http://127.0.0.1:1", "")})
+	a.SetPrincipalEnforcement(api.PrincipalEnforcement{Grants: grantstore.New("http://127.0.0.1:1", "")})
 	if sender != nil {
 		a.SetMessageSender(sender)
 	}
-	return a.Handler(), store, nb
+	return callerFromTestHeaders(a.Handler()), store, nb
 }
 
 func putTestLadder(t *testing.T, h http.Handler, boardID string) {

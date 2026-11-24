@@ -7,7 +7,7 @@
 # The same for an attachment's file, which is file-store's record, and for a
 # board's taxonomy and classification records, which are llm-bridge's msg types.
 packages:
-  - path: "github.com/kayushkin/kanban-store/internal/model"
+  - path: "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
     output_path: "ts/model.ts"
     # The shared work_state rule's input type, never on the wire.
     exclude_files:

@@ -3,10 +3,10 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sort"
 	"sync"
 	"testing"
@@ -14,14 +14,13 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/bundlestore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db/dbtest"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/grantstore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/llmbridge"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/noteboard"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/principalstore"
 )
-
-const testServiceToken = "service-token-that-is-at-least-32-characters"
 
 // fakeGrantStore answers /principals/{id}/effective from a table that already
 // includes group grants, which is what grant-store's expansion produces, and
@@ -85,6 +84,14 @@ func (f *fakeGrantStore) handler() http.Handler {
 
 func setupWithPrincipalEnforcement(t *testing.T) (http.Handler, *fakeGrantStore, *db.Store) {
 	t.Helper()
+	handler, grants, store := setupStoreHandlerWithPrincipalEnforcement(t)
+	return callerFromTestHeaders(handler), grants, store
+}
+
+// setupStoreHandlerWithPrincipalEnforcement is the store's own handler, with no
+// stand-in for the mounting server in front of it: nothing names the caller.
+func setupStoreHandlerWithPrincipalEnforcement(t *testing.T) (http.Handler, *fakeGrantStore, *db.Store) {
+	t.Helper()
 	grants := &fakeGrantStore{grantsByPrincipal: map[string][]grantstore.BoardGrant{}}
 	grantServer := httptest.NewServer(grants.handler())
 	t.Cleanup(grantServer.Close)
@@ -94,19 +101,15 @@ func setupWithPrincipalEnforcement(t *testing.T) (http.Handler, *fakeGrantStore,
 	t.Cleanup(bridge.Close)
 	bundles := httptest.NewServer(newFakeBundleStore().handler())
 	t.Cleanup(bundles.Close)
-	store, err := db.New(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := dbtest.NewStore(t)
 	notes := httptest.NewServer(newFakeNoteboard().handler())
 	t.Cleanup(notes.Close)
-	a := api.New(store, noteboard.New(notes.URL), principalstore.New(principals.URL), llmbridge.New(bridge.URL), bundlestore.New(bundles.URL), settingsRegistryForTests(t))
+	a := api.New(store, noteboard.New(notes.URL), principalstore.New(principals.URL), llmbridge.New(bridge.URL), bundlestore.New(bundles.URL))
 	a.SetReferenceStore(fakeReferenceStore(t))
 	// Cleanups run last-registered first, so this waits for trigger
 	// dispatches before the store above is closed.
 	t.Cleanup(a.WaitForMessageTriggers)
-	a.SetPrincipalEnforcement(api.PrincipalEnforcement{ServiceToken: testServiceToken, Grants: grantstore.New(grantServer.URL, "grant-store-token")})
+	a.SetPrincipalEnforcement(api.PrincipalEnforcement{Grants: grantstore.New(grantServer.URL, "grant-store-token")})
 	return a.Handler(), grants, store
 }
 
@@ -131,10 +134,10 @@ func requestAs(t *testing.T, h http.Handler, headers map[string]string, method, 
 	return recorder
 }
 
-var asService = map[string]string{api.ServiceTokenHeader: testServiceToken}
+var asService = map[string]string{testServiceTokenHeader: testServiceToken}
 
 func asPrincipal(principalID string) map[string]string {
-	return map[string]string{api.PrincipalIDHeader: principalID}
+	return map[string]string{testPrincipalIDHeader: principalID}
 }
 
 func mustStatus(t *testing.T, w *httptest.ResponseRecorder, want int, what string) {
@@ -206,12 +209,40 @@ func boardIDsIn(t *testing.T, w *httptest.ResponseRecorder) []string {
 	return ids
 }
 
+// TestHeadersNameNobody pins the move into the server: the store takes its
+// caller from the request context alone. The headers the standalone store
+// trusted — X-Principal-Id, and its service token — name nobody now, so a
+// request carrying only them is a request from nobody, and writes nothing.
+func TestHeadersNameNobody(t *testing.T) {
+	raw, grants, store := setupStoreHandlerWithPrincipalEnforcement(t)
+	buildTwoBoards(t, callerFromTestHeaders(raw), grants)
+	before, err := store.Counts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, headers := range map[string]map[string]string{
+		"a principal header":          {testPrincipalIDHeader: "principal_000001"},
+		"an administrator's id in it": {testPrincipalIDHeader: "principal_000003"},
+		"the old service token":       {testServiceTokenHeader: testServiceToken},
+		"both":                        {testPrincipalIDHeader: "principal_000001", testServiceTokenHeader: testServiceToken},
+	} {
+		mustStatus(t, requestAs(t, raw, headers, "GET", "/api/boards", nil), 401, name+": list boards")
+		mustStatus(t, requestAs(t, raw, headers, "POST", "/api/boards", map[string]string{"name": "Forged"}), 401, name+": create a board")
+	}
+	after, err := store.Counts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(before) != fmt.Sprint(after) {
+		t.Fatalf("a refused request wrote: counts %v became %v", before, after)
+	}
+}
+
 func TestPrincipalEnforcementRefusesRequestsWithoutIdentity(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	buildTwoBoards(t, h, grants)
 
 	mustStatus(t, requestAs(t, h, nil, "GET", "/api/boards", nil), 401, "no principal and no token")
-	mustStatus(t, requestAs(t, h, map[string]string{api.ServiceTokenHeader: "wrong"}, "GET", "/api/boards", nil), 401, "wrong service token")
 	mustStatus(t, requestAs(t, h, asPrincipal("alice"), "GET", "/api/boards", nil), 401, "a name instead of a principal id")
 	mustStatus(t, requestAs(t, h, asPrincipal("principal_000099"), "GET", "/api/boards", nil), 401, "a principal grant-store does not know")
 	mustStatus(t, requestAs(t, h, nil, "GET", "/health", nil), 200, "health stays open")
@@ -362,18 +393,14 @@ func TestPrincipalIsTheActorWhateverTheQuerySays(t *testing.T) {
 }
 
 func TestGrantStoreDownRefusesRatherThanServing(t *testing.T) {
-	store, err := db.New(filepath.Join(t.TempDir(), "down.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := dbtest.NewStore(t)
 	closed := httptest.NewServer(http.NotFoundHandler())
 	closedURL := closed.URL
 	closed.Close()
-	a := api.New(store, noteboard.New(closedURL), principalstore.New(closedURL), llmbridge.New(closedURL), bundlestore.New(closedURL), settingsRegistryForTests(t))
+	a := api.New(store, noteboard.New(closedURL), principalstore.New(closedURL), llmbridge.New(closedURL), bundlestore.New(closedURL))
 	a.SetReferenceStore(fakeReferenceStore(t))
-	a.SetPrincipalEnforcement(api.PrincipalEnforcement{ServiceToken: testServiceToken, Grants: grantstore.New(closedURL, "")})
-	mustStatus(t, requestAs(t, a.Handler(), asPrincipal(alice), "GET", "/api/boards", nil), 502, "grant-store unreachable")
+	a.SetPrincipalEnforcement(api.PrincipalEnforcement{Grants: grantstore.New(closedURL, "")})
+	mustStatus(t, requestAs(t, callerFromTestHeaders(a.Handler()), asPrincipal(alice), "GET", "/api/boards", nil), 502, "grant-store unreachable")
 }
 
 // TestAnAdministratorSeesEveryBoard pins the one fact that reaches boards

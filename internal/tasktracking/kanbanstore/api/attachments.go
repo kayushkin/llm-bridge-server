@@ -116,7 +116,7 @@ func (a *API) attachFileToCard(w http.ResponseWriter, r *http.Request, cardID st
 		writeError(w, 404, "not found")
 		return
 	}
-	uploadedBy := r.Header.Get(PrincipalIDHeader) // empty for an internal service
+	uploadedBy := callerPrincipalID(r) // empty for an internal service
 	file, err := a.files.Upload(r.Body, r.ContentLength, r.Header.Get("Content-Type"), r.URL.Query().Get("filename"), cardID, uploadedBy)
 	if err != nil {
 		writeFileStoreFailure(w, err)

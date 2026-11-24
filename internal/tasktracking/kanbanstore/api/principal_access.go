@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log"
@@ -11,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/boundedtext"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/config"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/grantstore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
@@ -20,21 +18,20 @@ import (
 
 // Who may see and change which board.
 //
-// There is no off switch. Every request is one of two kinds:
+// The server this store is mounted in says who is calling, in the request
+// context (ContextWithCaller), from the credential it verified. Nothing a
+// client sends — no header, no body field — names the caller, so there is
+// nothing to strip and nothing to forge. Every request is one of two kinds:
 //
-//   - An internal service (grant-store checking a board exists, a dispatcher,
-//     the classifier) sends X-Kanban-Store-Service-Token. A matching token is
-//     unrestricted.
-//   - Anything else must carry X-Principal-Id, set by the gateway from a
-//     verified login. The principal's board grants are read from grant-store on
-//     every request, and the request is allowed, filtered or refused by them.
+//   - The internal service: the server itself, or a caller that presented the
+//     server's own service token. It is unrestricted.
+//   - A principal. Its board grants are read from grant-store on every request,
+//     and the request is allowed, filtered or refused by them.
 //
-// A request with neither is 401. The header is trusted as sent, so users must
-// never reach this store except through a gateway that removes any
-// X-Principal-Id or service token the client sent and sets its own.
+// A request with neither is 401.
 //
 // An **administrator** — principal-store's is_administrator on a human — is
-// unrestricted, like the service token: every board, every card, every list,
+// unrestricted, like the internal service: every board, every card, every list,
 // whether or not anything was granted. It is read from principal-store on each
 // request, so a demotion bites at once.
 //
@@ -50,10 +47,44 @@ import (
 // refused, so a route added later is closed until someone decides who may use
 // it.
 
-const (
-	PrincipalIDHeader  = "X-Principal-Id"
-	ServiceTokenHeader = "X-Kanban-Store-Service-Token"
-)
+// Caller is who a request comes from, as the mounting server verified it.
+type Caller struct {
+	// InternalService is the server itself, or a caller holding its service
+	// token: past every board check, as kanban-store's own service token was.
+	InternalService bool
+	// PrincipalID is the principal a request acts as; empty for the internal
+	// service.
+	PrincipalID string
+}
+
+type callerContextKey struct{}
+
+// ContextWithCaller returns ctx carrying caller, for the gate to read.
+func ContextWithCaller(ctx context.Context, caller Caller) context.Context {
+	return context.WithValue(ctx, callerContextKey{}, caller)
+}
+
+// CallerFrom is the caller ctx carries; false when the mounting server named
+// none.
+func CallerFrom(ctx context.Context) (Caller, bool) {
+	caller, named := ctx.Value(callerContextKey{}).(Caller)
+	return caller, named
+}
+
+// callerOf is the request's caller; false when the mounting server named none.
+func callerOf(r *http.Request) (Caller, bool) {
+	return CallerFrom(r.Context())
+}
+
+// callerPrincipalID is the principal the request acts as: the gate's principal
+// or an administrator. Empty for the internal service.
+func callerPrincipalID(r *http.Request) string {
+	caller, _ := callerOf(r)
+	if caller.InternalService {
+		return ""
+	}
+	return caller.PrincipalID
+}
 
 // BoardAccessLevel orders what a principal may do on one board.
 type BoardAccessLevel int
@@ -73,22 +104,15 @@ var boardAccessLevelOfRelation = map[string]BoardAccessLevel{
 
 // PrincipalEnforcement is what every API needs to answer a request at all.
 type PrincipalEnforcement struct {
-	// ServiceToken is compared in constant time. It must be at least 32
-	// characters: a short or empty token would match requests that should not
-	// be unrestricted.
-	ServiceToken string
-	Grants       *grantstore.Client
+	Grants grantstore.BoardGrants
 }
 
-// SetPrincipalEnforcement gives the API its service token and grant-store
-// client. It panics on a short token or a nil client, at boot, because either
-// would leave the store open while its log says it is checking callers.
+// SetPrincipalEnforcement gives the API its grant-store. It panics on a nil
+// one, at boot, because that would leave the store open while its log says it
+// is checking callers.
 func (a *API) SetPrincipalEnforcement(enforcement PrincipalEnforcement) {
-	if len(enforcement.ServiceToken) < config.MinimumServiceTokenLength {
-		panic(fmt.Sprintf("kanban-store: the service token must be at least %d characters, or requests that omit the header would be unrestricted", config.MinimumServiceTokenLength))
-	}
 	if enforcement.Grants == nil {
-		panic("kanban-store: a grant-store client is required; board access is read from it on every request")
+		panic("kanban-store: grant-store is required; board access is read from it on every request")
 	}
 	a.principalEnforcement = &enforcement
 }
@@ -139,7 +163,7 @@ func relationsHeldAt(level BoardAccessLevel) []string {
 func callerAccessAt(r *http.Request, access *PrincipalBoardAccess, level BoardAccessLevel) model.CallerAccess {
 	if access == nil {
 		return model.CallerAccess{
-			PrincipalID:  r.Header.Get(PrincipalIDHeader),
+			PrincipalID:  callerPrincipalID(r),
 			Unrestricted: true,
 			Relations:    relationsHeldAt(BoardAccessAdminister),
 		}
@@ -175,9 +199,9 @@ type principalBoardAccessContextKey struct{}
 
 type serviceCallerContextKey struct{}
 
-// calledWithServiceToken reports whether the request carried the service
-// token. An administrator is unrestricted too, but is a person: a route only
-// an internal service may use asks this, not whether access is nil.
+// calledWithServiceToken reports whether the request is the internal
+// service's. An administrator is unrestricted too, but is a person: a route
+// only an internal service may use asks this, not whether access is nil.
 func calledWithServiceToken(r *http.Request) bool {
 	service, _ := r.Context().Value(serviceCallerContextKey{}).(bool)
 	return service
@@ -194,27 +218,24 @@ func (a *API) principalGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		enforcement := a.principalEnforcement
 		if enforcement == nil {
-			// Nothing may answer without a configured token: a nil enforcement
+			// Nothing may answer without grant-store: a nil enforcement
 			// here means the binary was wired wrong, and serving would serve
 			// every board to anyone.
-			writeError(w, http.StatusInternalServerError, "kanban-store has no service token configured, so no request can be authorized")
+			writeError(w, http.StatusInternalServerError, "kanban-store has no grant-store configured, so no request can be authorized")
 			return
 		}
 		if r.Method == http.MethodOptions || r.URL.Path == "/health" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if token := r.Header.Get(ServiceTokenHeader); token != "" {
-			if subtle.ConstantTimeCompare([]byte(token), []byte(enforcement.ServiceToken)) != 1 {
-				writeError(w, http.StatusUnauthorized, ServiceTokenHeader+" does not match this store's service token")
-				return
-			}
+		caller, named := callerOf(r)
+		if named && caller.InternalService {
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), serviceCallerContextKey{}, true)))
 			return
 		}
-		principalID := r.Header.Get(PrincipalIDHeader)
+		principalID := caller.PrincipalID
 		if principalID == "" {
-			writeError(w, http.StatusUnauthorized, "principal enforcement is on: send "+PrincipalIDHeader+" (set by the gateway from a login) or "+ServiceTokenHeader)
+			writeError(w, http.StatusUnauthorized, "no caller: this store answers a principal or the internal service, as the server it is mounted in verified them")
 			return
 		}
 		access, administrator, refusal := a.boardAccessOfPrincipal(principalID)
@@ -247,18 +268,18 @@ func (a *API) principalGate(next http.Handler) http.Handler {
 // guess in either direction would be wrong.
 func (a *API) boardAccessOfPrincipal(principalID string) (access *PrincipalBoardAccess, administrator bool, refusal *accessRefusal) {
 	if !principalIDShape.MatchString(principalID) {
-		return nil, false, &accessRefusal{http.StatusUnauthorized, fmt.Sprintf("%s %q is not a principal-store id (principal_000001)", PrincipalIDHeader, boundedtext.Value(principalID))}
+		return nil, false, &accessRefusal{http.StatusUnauthorized, fmt.Sprintf("the caller %q is not a principal-store id (principal_000001)", boundedtext.Value(principalID))}
 	}
 	// An administrator is past every rule; principal-store owns that fact.
 	principal, err := a.principals.Get(principalID)
 	if errors.Is(err, principalstore.ErrNotFound) {
-		return nil, false, &accessRefusal{http.StatusUnauthorized, fmt.Sprintf("%s %s does not exist in principal-store", PrincipalIDHeader, boundedtext.Value(principalID))}
+		return nil, false, &accessRefusal{http.StatusUnauthorized, fmt.Sprintf("the caller %s does not exist in principal-store", boundedtext.Value(principalID))}
 	}
 	if err != nil {
 		return nil, false, &accessRefusal{http.StatusBadGateway, "could not read the principal, so access is unknown and nothing is served: " + err.Error()}
 	}
 	if principal.Disabled() {
-		return nil, false, &accessRefusal{http.StatusUnauthorized, fmt.Sprintf("%s %s is disabled in principal-store", PrincipalIDHeader, boundedtext.Value(principalID))}
+		return nil, false, &accessRefusal{http.StatusUnauthorized, fmt.Sprintf("the caller %s is disabled in principal-store", boundedtext.Value(principalID))}
 	}
 	if principal.IsAdministrator {
 		return nil, true, nil
@@ -341,11 +362,6 @@ func (a *API) authorizeRequest(r *http.Request, access *PrincipalBoardAccess) (*
 		return strings.Split(strings.TrimPrefix(path, prefix), "/")
 	}
 	switch {
-	case path == SettingsPath:
-		// Addresses, paths and which secrets are set: the operator's, so the
-		// service token or an administrator, both of whom are past this table.
-		return &accessRefusal{status: http.StatusForbidden, message: "settings are read with " + ServiceTokenHeader + " or by an administrator"}, nil
-
 	case path == "/api/entity-types", path == "/api/message-trigger-options",
 		path == "/api/ticket-channels", path == "/api/ticket-lifecycle-states", path == "/api/note-visibilities",
 		path == "/api/assignment-strategies", path == "/api/work-states":
@@ -406,7 +422,7 @@ func (a *API) authorizeRequest(r *http.Request, access *PrincipalBoardAccess) (*
 				if access.LevelOn(boardID) < BoardAccessView {
 					return refuseUnseen, nil
 				}
-				return &accessRefusal{status: http.StatusForbidden, message: "decisions are published by the classifier with " + ServiceTokenHeader}, nil
+				return &accessRefusal{status: http.StatusForbidden, message: "decisions are published by the classifier, as the internal service"}, nil
 			}
 		default:
 			return refuseUnseen, nil

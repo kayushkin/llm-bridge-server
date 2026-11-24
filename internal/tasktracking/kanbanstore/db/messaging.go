@@ -10,47 +10,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 )
 
-func migrateMessaging(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS message_triggers (
-			id                     TEXT PRIMARY KEY,
-			board_id               TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-			name                   TEXT NOT NULL,
-			event_kind             TEXT NOT NULL,
-			to_column_id           TEXT NOT NULL DEFAULT '',
-			priority_value         INTEGER,               -- NULL = any priority
-			recipient_user_id      TEXT NOT NULL,
-			recipient_display_name TEXT NOT NULL DEFAULT '',
-			message_template       TEXT NOT NULL,
-			enabled                INTEGER NOT NULL DEFAULT 1,
-			created_at             TEXT NOT NULL,
-			updated_at             TEXT NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_message_triggers_board ON message_triggers(board_id);
-
-		CREATE TABLE IF NOT EXISTS message_deliveries (
-			id                TEXT PRIMARY KEY,
-			trigger_id        TEXT NOT NULL REFERENCES message_triggers(id) ON DELETE CASCADE,
-			board_id          TEXT NOT NULL,
-			event_id          TEXT NOT NULL,
-			card_id           TEXT NOT NULL,
-			recipient_user_id TEXT NOT NULL,
-			rendered_message  TEXT NOT NULL DEFAULT '',
-			status            TEXT NOT NULL,
-			error             TEXT NOT NULL DEFAULT '',
-			room_id           TEXT NOT NULL DEFAULT '',
-			matrix_event_id   TEXT NOT NULL DEFAULT '',
-			created_at        TEXT NOT NULL,
-			UNIQUE (trigger_id, event_id)
-		);
-		CREATE INDEX IF NOT EXISTS idx_message_deliveries_board ON message_deliveries(board_id, created_at DESC);
-	`)
-	if err != nil {
-		return fmt.Errorf("migrate messaging: %w", err)
-	}
-	return nil
-}
-
 const messageTriggerColumns = `id, board_id, name, event_kind, to_column_id, priority_value, recipient_user_id, recipient_display_name, message_template, enabled, created_at, updated_at`
 
 func scanMessageTrigger(row interface{ Scan(...any) error }) (*model.MessageTrigger, error) {
@@ -106,7 +65,7 @@ func (s *Store) GetMessageTrigger(id string) (*model.MessageTrigger, error) {
 func (s *Store) ListMessageTriggers(boardID string, enabledOnly bool) ([]*model.MessageTrigger, error) {
 	query := `SELECT ` + messageTriggerColumns + ` FROM message_triggers WHERE board_id = ?`
 	if enabledOnly {
-		query += ` AND enabled = 1`
+		query += ` AND enabled`
 	}
 	rows, err := s.db.Query(query+` ORDER BY created_at, id`, boardID)
 	if err != nil {
@@ -159,9 +118,10 @@ var ErrAlreadyDelivered = errors.New("already delivered")
 func (s *Store) ClaimMessageDelivery(d *model.MessageDelivery) error {
 	d.ID = uuid.NewString()
 	d.CreatedAt = time.Now().UTC()
-	res, err := s.db.Exec(`INSERT OR IGNORE INTO message_deliveries
+	res, err := s.db.Exec(`INSERT INTO message_deliveries
 		(id, trigger_id, board_id, event_id, card_id, recipient_user_id, rendered_message, status, error, room_id, matrix_event_id, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT (trigger_id, event_id) DO NOTHING`,
 		d.ID, d.TriggerID, d.BoardID, d.EventID, d.CardID, d.RecipientUserID, d.RenderedMessage, d.Status, d.Error, d.RoomID, d.MatrixEventID,
 		d.CreatedAt.Format(time.RFC3339Nano))
 	if err != nil {

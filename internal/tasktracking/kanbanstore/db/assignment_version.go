@@ -1,7 +1,6 @@
 package db
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -22,53 +21,53 @@ func AssignmentVersion(rows []model.CardAssignment) string {
 	return fmt.Sprintf("\"%x\"", sha256.Sum256(data))
 }
 
-// The reserved SQLite writer lock covers both the snapshot check and insert.
+// AssignPrincipalToCardIfVersion assigns principalID to the card only when
+// the card's assignments are still the ones version was taken from. The check
+// and the insert run under writeImmediately, so no other such write lands
+// between them.
 func (s *Store) AssignPrincipalToCardIfVersion(cardID, principalID, actor, version string) (*model.CardAssignment, bool, error) {
 	if version == "" {
 		return s.AssignPrincipalToCard(cardID, principalID, actor)
 	}
-	ctx := context.Background()
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	defer conn.Close()
-	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return nil, false, err
-	}
-	defer conn.ExecContext(ctx, "ROLLBACK")
-	rows, err := conn.QueryContext(ctx, `SELECT `+cardAssignmentColumns+` FROM card_assignments WHERE card_id=? ORDER BY created_at ASC, principal_id ASC`, cardID)
-	if err != nil {
-		return nil, false, err
-	}
-	snapshot := []model.CardAssignment{}
-	for rows.Next() {
-		item, scanErr := scanCardAssignment(rows)
-		if scanErr != nil {
-			rows.Close()
-			return nil, false, scanErr
+	var assignment *model.CardAssignment
+	created := false
+	err := s.db.writeImmediately(func(run executor) error {
+		rows, err := run.Query(`SELECT `+cardAssignmentColumns+` FROM card_assignments WHERE card_id=? ORDER BY created_at ASC, principal_id ASC`, cardID)
+		if err != nil {
+			return err
 		}
-		snapshot = append(snapshot, item)
-	}
-	err = rows.Err()
-	rows.Close()
+		snapshot := []model.CardAssignment{}
+		for rows.Next() {
+			item, scanErr := scanCardAssignment(rows)
+			if scanErr != nil {
+				rows.Close()
+				return scanErr
+			}
+			snapshot = append(snapshot, item)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if AssignmentVersion(snapshot) != version {
+			return ErrAssignmentsChanged
+		}
+		for _, item := range snapshot {
+			if item.PrincipalID == principalID {
+				assignment = &item
+				return nil
+			}
+		}
+		candidate := &model.CardAssignment{CardID: cardID, PrincipalID: principalID, AssignedBy: actor, CreatedAt: now()}
+		if _, err := run.Exec(`INSERT INTO card_assignments (`+cardAssignmentColumns+`) VALUES (?, ?, ?, ?)`, cardID, principalID, actor, candidate.CreatedAt); err != nil {
+			return err
+		}
+		assignment, created = candidate, true
+		return nil
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	if AssignmentVersion(snapshot) != version {
-		return nil, false, ErrAssignmentsChanged
-	}
-	for _, item := range snapshot {
-		if item.PrincipalID == principalID {
-			return &item, false, nil
-		}
-	}
-	candidate := &model.CardAssignment{CardID: cardID, PrincipalID: principalID, AssignedBy: actor, CreatedAt: now()}
-	if _, err = conn.ExecContext(ctx, `INSERT INTO card_assignments (`+cardAssignmentColumns+`) VALUES (?, ?, ?, ?)`, cardID, principalID, actor, candidate.CreatedAt); err != nil {
-		return nil, false, err
-	}
-	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return nil, false, err
-	}
-	return candidate, true, nil
+	return assignment, created, nil
 }

@@ -5,14 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/bundlestore"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db/dbtest"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/grantstore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/llmbridge"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
@@ -45,18 +44,14 @@ func buildContentDesk(t *testing.T) *contentDesk {
 		t.Cleanup(server.Close)
 		urls[name] = server.URL
 	}
-	store, err := db.New(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	a := api.New(store, noteboard.New(urls["notes"]), principalstore.New(urls["principals"]), llmbridge.New(urls["bridge"]), bundlestore.New(urls["bundles"]), settingsRegistryForTests(t))
+	store := dbtest.NewStore(t)
+	a := api.New(store, noteboard.New(urls["notes"]), principalstore.New(urls["principals"]), llmbridge.New(urls["bridge"]), bundlestore.New(urls["bundles"]))
 	a.SetReferenceStore(fakeReferenceStore(t))
 	// Cleanups run last-registered first, so this waits for trigger
 	// dispatches before the store above is closed.
 	t.Cleanup(a.WaitForMessageTriggers)
-	a.SetPrincipalEnforcement(api.PrincipalEnforcement{ServiceToken: testServiceToken, Grants: grantstore.New(urls["grants"], "grant-store-token")})
-	d := &contentDesk{h: a.Handler(), notes: notes, titleOf: map[string]string{}}
+	a.SetPrincipalEnforcement(api.PrincipalEnforcement{Grants: grantstore.New(urls["grants"], "grant-store-token")})
+	d := &contentDesk{h: callerFromTestHeaders(a.Handler()), notes: notes, titleOf: map[string]string{}}
 
 	w := requestAs(t, d.h, asService, "POST", "/api/boards", model.CreateBoardRequest{Name: "Support Desk"})
 	mustStatus(t, w, 201, "board")

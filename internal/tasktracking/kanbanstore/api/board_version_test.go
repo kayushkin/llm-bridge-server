@@ -5,8 +5,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 )
 
 func TestBoardETagConditionalPatch(t *testing.T) {
@@ -20,7 +18,7 @@ func TestBoardETagConditionalPatch(t *testing.T) {
 	}
 	patch := func(condition, name string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest("PATCH", "/api/boards/"+id, strings.NewReader(`{"name":"`+name+`"}`))
-		request.Header.Set(api.ServiceTokenHeader, testServiceToken)
+		request.Header.Set(testServiceTokenHeader, testServiceToken)
 		if condition != "" {
 			request.Header.Set("If-Match", condition)
 		}

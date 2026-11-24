@@ -12,112 +12,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 )
 
-// migrateActivity adds the tables that make a card's history readable: the event
-// log every figure is computed from, the notes written onto cards, and each
-// board's priority ladder.
-//
-// It also widens two existing tables. Both ALTERs are guarded by a lookup rather
-// than by swallowing the "duplicate column" error, so a genuinely failed
-// migration still surfaces instead of being mistaken for one that already ran.
-func migrateActivity(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS card_events (
-			id             TEXT PRIMARY KEY,
-			card_id        TEXT NOT NULL,
-			board_id       TEXT NOT NULL DEFAULT '',
-			kind           TEXT NOT NULL,
-			clock_state    TEXT NOT NULL,
-			actor          TEXT NOT NULL DEFAULT '',
-			summary        TEXT NOT NULL DEFAULT '',
-			from_column_id TEXT NOT NULL DEFAULT '',
-			to_column_id   TEXT NOT NULL DEFAULT '',
-			note_id        TEXT NOT NULL DEFAULT '',
-			detail         TEXT NOT NULL DEFAULT '',
-			occurred_at    DATETIME NOT NULL,
-			recorded_at    DATETIME NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_card_events_card  ON card_events(card_id, occurred_at);
-		CREATE INDEX IF NOT EXISTS idx_card_events_board ON card_events(board_id, occurred_at);
-
-		CREATE TABLE IF NOT EXISTS card_notes (
-			id         TEXT PRIMARY KEY,
-			card_id    TEXT NOT NULL,
-			board_id   TEXT NOT NULL DEFAULT '',
-			kind       TEXT NOT NULL DEFAULT 'note',
-			body       TEXT NOT NULL,
-			actor      TEXT NOT NULL DEFAULT '',
-			created_at DATETIME NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_card_notes_card ON card_notes(card_id, created_at);
-
-		CREATE TABLE IF NOT EXISTS board_priority_levels (
-			board_id       TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-			priority_value INTEGER NOT NULL,
-			label          TEXT NOT NULL,
-			budget_seconds INTEGER,
-			PRIMARY KEY (board_id, priority_value)
-		);
-	`)
-	if err != nil {
-		return err
-	}
-	if err := addColumnIfMissing(db, "card_events", "supersedes_event_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	// One successor per event, as a rule of the database and not of the code
-	// that writes: two corrections of the same entry made at once cannot both
-	// land, so an entry's history is a line and never a fork.
-	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_card_events_supersedes
-		ON card_events(supersedes_event_id) WHERE supersedes_event_id != ''`); err != nil {
-		return err
-	}
-	// Every note written before visibility existed was written for the people
-	// working the card, so the column's default is the right value for them.
-	if err := addColumnIfMissing(db, "card_notes", "visibility", "TEXT NOT NULL DEFAULT 'internal'"); err != nil {
-		return err
-	}
-	if err := addColumnIfMissing(db, "boards", "business_hours", "TEXT"); err != nil {
-		return err
-	}
-	// Board settings a dispatcher, a classifier or llm-bridge-server reads
-	// instead of taking as a flag. Every one is nullable: absent means "no
-	// board-level answer".
-	for _, column := range []string{"default_principal_id", "default_agent_id", "default_instance_id", "default_bundle_id", "classifier", "assignment_pool", "organization_id"} {
-		if err := addColumnIfMissing(db, "boards", column, "TEXT"); err != nil {
-			return err
-		}
-	}
-	if err := addColumnIfMissing(db, "board_priority_levels", "default_auto_hold_at_usd", "REAL"); err != nil {
-		return err
-	}
-	return addColumnIfMissing(db, "columns", "budget_clock_state", "TEXT")
-}
-
-func addColumnIfMissing(db *sql.DB, table, column, decl string) error {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notNull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
-			return err
-		}
-		if name == column {
-			return rows.Err()
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	_, err = db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl))
-	return err
-}
-
 // clockStateValue renders a column's clock setting for storage: an unset one is
 // stored as NULL, not as an empty string that would read back as a state.
 func clockStateValue(s *model.ClockState) any {
@@ -148,7 +42,7 @@ func (s *Store) RecordCardEvent(e *model.CardEvent) (*model.CardEvent, error) {
 	if stored.OccurredAt.IsZero() {
 		stored.OccurredAt = stored.RecordedAt
 	}
-	stored.OccurredAt = stored.OccurredAt.UTC()
+	stored.OccurredAt = storedTime(stored.OccurredAt)
 	detail := ""
 	if len(stored.Detail) > 0 {
 		detail = string(stored.Detail)
@@ -164,7 +58,7 @@ func (s *Store) RecordCardEvent(e *model.CardEvent) (*model.CardEvent, error) {
 	if err != nil {
 		// The only unique rule on this table besides the primary key is "one
 		// successor per event", and the id above is freshly minted.
-		if stored.SupersedesEventID != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if stored.SupersedesEventID != "" && isUniqueViolation(err, "card_events_supersedes_event_id_index") {
 			return nil, ErrEventAlreadySuperseded
 		}
 		return nil, err
@@ -293,7 +187,7 @@ func (s *Store) CreateCardNote(cardID string, req *model.CreateCardNoteRequest) 
 		n.Visibility = model.DefaultNoteVisibility
 	}
 	if req.OccurredAt != nil {
-		n.CreatedAt = req.OccurredAt.UTC()
+		n.CreatedAt = storedTime(*req.OccurredAt)
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO card_notes (id, card_id, board_id, kind, visibility, body, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -389,31 +283,29 @@ func (s *Store) SetPriorityLadder(boardID string, levels []model.BoardPriorityLe
 	if _, err := s.GetBoard(boardID); err != nil {
 		return nil, err
 	}
-	tx, err := s.db.Begin()
+	err := s.db.inTransaction(func(tx executor) error {
+		if _, err := tx.Exec(`DELETE FROM board_priority_levels WHERE board_id = ?`, boardID); err != nil {
+			return err
+		}
+		for _, lv := range levels {
+			var budget any
+			if lv.BudgetSeconds != nil {
+				budget = *lv.BudgetSeconds
+			}
+			var defaultAutoHoldAtUSD any
+			if lv.DefaultAutoHoldAtUSD != nil {
+				defaultAutoHoldAtUSD = *lv.DefaultAutoHoldAtUSD
+			}
+			if _, err := tx.Exec(
+				`INSERT INTO board_priority_levels (board_id, priority_value, label, budget_seconds, default_auto_hold_at_usd) VALUES (?, ?, ?, ?, ?)`,
+				boardID, lv.PriorityValue, lv.Label, budget, defaultAutoHoldAtUSD,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM board_priority_levels WHERE board_id = ?`, boardID); err != nil {
-		return nil, err
-	}
-	for _, lv := range levels {
-		var budget any
-		if lv.BudgetSeconds != nil {
-			budget = *lv.BudgetSeconds
-		}
-		var defaultAutoHoldAtUSD any
-		if lv.DefaultAutoHoldAtUSD != nil {
-			defaultAutoHoldAtUSD = *lv.DefaultAutoHoldAtUSD
-		}
-		if _, err := tx.Exec(
-			`INSERT INTO board_priority_levels (board_id, priority_value, label, budget_seconds, default_auto_hold_at_usd) VALUES (?, ?, ?, ?, ?)`,
-			boardID, lv.PriorityValue, lv.Label, budget, defaultAutoHoldAtUSD,
-		); err != nil {
-			return nil, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return s.GetPriorityLadder(boardID)
@@ -427,7 +319,7 @@ func EventTime(at *time.Time) time.Time {
 	if at == nil {
 		return now()
 	}
-	return at.UTC()
+	return storedTime(*at)
 }
 
 // ============================ Paged reads ============================

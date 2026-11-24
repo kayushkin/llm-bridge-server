@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/bundlestore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db/dbtest"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/grantstore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/llmbridge"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
@@ -546,14 +546,10 @@ func setupExposingStore(t *testing.T, principalStoreURL string) (http.Handler, *
 // instances. Point either at a closed port to exercise the unreachable path.
 func setupWithOwners(t *testing.T, principalStoreURL, llmBridgeServerURL, bundleStoreURL string) (http.Handler, *fakeNoteboard, *db.Store, func()) {
 	t.Helper()
-	dir := t.TempDir()
-	store, err := db.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := dbtest.NewStore(t)
 	nb := newFakeNoteboard()
 	srv := httptest.NewServer(nb.handler())
-	a := api.New(store, noteboard.New(srv.URL), principalstore.New(principalStoreURL), llmbridge.New(llmBridgeServerURL), bundlestore.New(bundleStoreURL), settingsRegistryForTests(t))
+	a := api.New(store, noteboard.New(srv.URL), principalstore.New(principalStoreURL), llmbridge.New(llmBridgeServerURL), bundlestore.New(bundleStoreURL))
 	a.SetReferenceStore(fakeReferenceStore(t))
 	// Registered after t.TempDir, so it runs before the directory is removed —
 	// and here rather than only in the returned cleanup, which some callers
@@ -565,10 +561,9 @@ func setupWithOwners(t *testing.T, principalStoreURL, llmBridgeServerURL, bundle
 	// the grant-store client at a fake; a service-token request never reaches
 	// grant-store, so an unused address is right here.
 	a.SetPrincipalEnforcement(api.PrincipalEnforcement{
-		ServiceToken: testServiceToken,
-		Grants:       grantstore.New("http://127.0.0.1:1", ""),
+		Grants: grantstore.New("http://127.0.0.1:1", ""),
 	})
-	return a.Handler(), nb, store, func() {
+	return callerFromTestHeaders(a.Handler()), nb, store, func() {
 		a.WaitForMessageTriggers()
 		srv.Close()
 		store.Close()
@@ -588,7 +583,7 @@ func do(t *testing.T, h http.Handler, method, path string, body any) *httptest.R
 		r = bytes.NewReader(b)
 	}
 	req := httptest.NewRequest(method, path, r)
-	req.Header.Set(api.ServiceTokenHeader, testServiceToken)
+	req.Header.Set(testServiceTokenHeader, testServiceToken)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	return w
@@ -740,7 +735,7 @@ func TestBoardErrors(t *testing.T) {
 	}
 	// Invalid JSON → 400
 	req := httptest.NewRequest("POST", "/api/boards", strings.NewReader("{not json"))
-	req.Header.Set(api.ServiceTokenHeader, testServiceToken)
+	req.Header.Set(testServiceTokenHeader, testServiceToken)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != 400 {

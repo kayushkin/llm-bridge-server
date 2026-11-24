@@ -2,10 +2,11 @@ package api_test
 
 import (
 	"fmt"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 	"net/url"
 	"reflect"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 )
 
 func TestGlobalBoardPageFiltersBeforePagingAcrossColumns(t *testing.T) {

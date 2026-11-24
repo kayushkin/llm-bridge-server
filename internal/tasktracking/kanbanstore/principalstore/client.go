@@ -29,6 +29,15 @@ import (
 	"time"
 )
 
+// Directory is what the store asks principal-store: who a principal is, and
+// which members of a group are available at an instant. Client answers it over
+// HTTP; the server this store is mounted in answers it from principal-store in
+// its own process.
+type Directory interface {
+	Get(id string) (*Principal, error)
+	ListAvailableMembers(groupID string, at time.Time) ([]Principal, error)
+}
+
 // Client talks to one principal-store.
 type Client struct {
 	BaseURL string

@@ -3,10 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
-
-	sqlite3 "github.com/mattn/go-sqlite3"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 )
@@ -16,32 +13,6 @@ import (
 // One row per card, created when a card becomes a ticket and deleted when it
 // stops being one. The card outlives both: deleting a ticket leaves the card
 // where it is, because "this is not a ticket" is not "this is not work".
-
-// ensureTicketTables is called from the schema path; see db.go.
-func ensureTicketTables(db *sql.DB) error {
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS tickets (
-			card_id                TEXT PRIMARY KEY,
-			requester_principal_id TEXT NOT NULL,
-			channel                TEXT NOT NULL,
-			created_at             DATETIME NOT NULL,
-			updated_at             DATETIME NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_tickets_requester ON tickets(requester_principal_id);
-	`); err != nil {
-		return err
-	}
-	// The record a ticket came from; see model.Ticket. Empty on rows written
-	// before these columns existed.
-	for _, column := range []string{"source_entity_type", "source_entity_ref"} {
-		if err := addColumnIfMissing(db, "tickets", column, "TEXT NOT NULL DEFAULT ''"); err != nil {
-			return err
-		}
-	}
-	// A column's lifecycle state: nullable, because a board that is not a
-	// ticket board has no answer and must not be given one.
-	return addColumnIfMissing(db, "columns", "lifecycle_state", "TEXT")
-}
 
 // ErrTicketSourceConflict is a write naming a source other than the one the
 // ticket already records. A ticket comes from one place, once.
@@ -191,7 +162,7 @@ func (s *Store) ListTickets(filter TicketListFilter, limit int) ([]model.TicketL
 	for rows.Next() {
 		ticket := &model.Ticket{}
 		var channel string
-		var cardCreatedAt sql.NullString
+		var cardCreatedAt sql.NullTime
 		if err := rows.Scan(&ticket.CardID, &ticket.RequesterPrincipalID, &channel,
 			&ticket.SourceEntityType, &ticket.SourceEntityRef, &ticket.CreatedAt, &ticket.UpdatedAt,
 			&cardCreatedAt); err != nil {
@@ -200,11 +171,8 @@ func (s *Store) ListTickets(filter TicketListFilter, limit int) ([]model.TicketL
 		ticket.Channel = model.TicketChannel(channel)
 		entry := model.TicketLogEntry{TicketView: model.TicketView{Ticket: ticket}}
 		if cardCreatedAt.Valid {
-			parsed, err := parseStoredTime(cardCreatedAt.String)
-			if err != nil {
-				return nil, fmt.Errorf("card %s card_created time %q: %w", ticket.CardID, cardCreatedAt.String, err)
-			}
-			entry.CardCreatedAt = &parsed
+			created := cardCreatedAt.Time
+			entry.CardCreatedAt = &created
 		}
 		entries = append(entries, entry)
 	}
@@ -257,17 +225,4 @@ func lifecycleStateFromRequest(raw *string) *model.TicketLifecycleState {
 	}
 	state := model.TicketLifecycleState(*raw)
 	return &state
-}
-
-// parseStoredTime reads a DATETIME that reached Go as text. The driver turns a
-// DATETIME column into a time.Time itself, but not the result of an aggregate
-// such as MIN(), which has no declared type; it wrote the text in one of these
-// layouts.
-func parseStoredTime(text string) (time.Time, error) {
-	for _, layout := range sqlite3.SQLiteTimestampFormats {
-		if parsed, err := time.Parse(layout, text); err == nil {
-			return parsed.UTC(), nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("not a time the sqlite driver writes")
 }

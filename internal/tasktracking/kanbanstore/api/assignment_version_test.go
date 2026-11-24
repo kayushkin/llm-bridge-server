@@ -21,7 +21,7 @@ func TestAssignmentETagRejectsStaleAutomaticAssignment(t *testing.T) {
 	}
 	req := httptest.NewRequest("PUT", path+"/"+otherActivePrincipal, nil)
 	req.Header.Set("If-Match", version)
-	req.Header.Set("X-Kanban-Store-Service-Token", testServiceToken)
+	req.Header.Set(testServiceTokenHeader, testServiceToken)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != 412 {

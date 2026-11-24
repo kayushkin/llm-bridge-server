@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 )
 
@@ -189,7 +188,7 @@ func TestAnUnknownChannelNamesTheVocabulary(t *testing.T) {
 	// An unknown field is refused too, rather than dropped.
 	raw := httptest.NewRequest("PUT", "/api/cards/"+f.cardID+"/ticket",
 		strings.NewReader(`{"requester_principal_id":"`+requesterContact+`","channel":"email","status":"open"}`))
-	raw.Header.Set(api.ServiceTokenHeader, testServiceToken)
+	raw.Header.Set(testServiceTokenHeader, testServiceToken)
 	recorder := httptest.NewRecorder()
 	f.handler.ServeHTTP(recorder, raw)
 	if recorder.Code != 400 || !strings.Contains(recorder.Body.String(), "status") {

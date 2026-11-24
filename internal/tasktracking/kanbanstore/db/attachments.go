@@ -7,26 +7,11 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 )
 
-func migrateCardAttachments(db *sql.DB) error {
-	// file_id is the key: file-store mints one id per upload, and one upload
-	// hangs on one card. card_id is not a foreign key — cards are noteboard's.
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS card_attachments (
-			file_id     TEXT PRIMARY KEY,
-			card_id     TEXT NOT NULL,
-			visibility  TEXT NOT NULL DEFAULT 'internal',
-			attached_by TEXT NOT NULL DEFAULT '',
-			created_at  DATETIME NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_card_attachments_card ON card_attachments(card_id, created_at);
-	`)
-	return err
-}
-
 func (s *Store) CreateCardAttachment(attachment *model.CardAttachment) error {
 	if attachment.CreatedAt.IsZero() {
 		attachment.CreatedAt = now()
 	}
+	attachment.CreatedAt = storedTime(attachment.CreatedAt)
 	_, err := s.db.Exec(`INSERT INTO card_attachments (file_id, card_id, visibility, attached_by, created_at) VALUES (?, ?, ?, ?, ?)`,
 		attachment.FileID, attachment.CardID, string(attachment.Visibility), attachment.AttachedBy, attachment.CreatedAt)
 	return err

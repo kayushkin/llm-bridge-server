@@ -36,6 +36,15 @@ const (
 // ServiceTokenHeader is where grant-store reads its service token.
 const ServiceTokenHeader = "X-Grant-Store-Service-Token"
 
+// BoardGrants is what the store asks grant-store: a principal's effective
+// board grants, and can_administer for the creator of a new board. Client
+// answers it over HTTP; the server this store is mounted in answers it from
+// grant-store in its own process.
+type BoardGrants interface {
+	EffectiveBoardGrants(principalID string) ([]BoardGrant, error)
+	GrantBoardAdministration(principalID, boardID string) error
+}
+
 // Client talks to one grant-store.
 type Client struct {
 	BaseURL string

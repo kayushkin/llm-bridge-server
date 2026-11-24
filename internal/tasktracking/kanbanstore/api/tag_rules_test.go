@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 )
 
@@ -113,7 +112,7 @@ func TestTagRulesRefusals(t *testing.T) {
 	}
 	// A misspelled field is refused, not dropped.
 	raw := httptest.NewRequest("PUT", "/api/boards/"+boardID+"/tag-rules", strings.NewReader(`{"rules":[{"tags":["a"],"instance_id":"inst-test"}]}`))
-	raw.Header.Set(api.ServiceTokenHeader, testServiceToken)
+	raw.Header.Set(testServiceTokenHeader, testServiceToken)
 	recorder := httptest.NewRecorder()
 	h.ServeHTTP(recorder, raw)
 	if recorder.Code != 400 || !strings.Contains(recorder.Body.String(), "instance_id") {

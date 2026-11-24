@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -14,135 +12,26 @@ import (
 	"github.com/google/uuid"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 	"github.com/kayushkin/llm-bridge/msg"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 var ErrNotFound = errors.New("not found")
 
 var ErrBoardChanged = errors.New("board changed; reload before saving")
 
+// Store reads and writes boards, cards and everything hung on them through
+// the module's connection pool.
 type Store struct {
-	db *sql.DB
+	db pool
 }
 
-func New(dbPath string) (*Store, error) {
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create db dir: %w", err)
-	}
-
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on")
-	if err != nil {
-		return nil, err
-	}
-	if err := migrate(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err := migrateActivity(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err := migrateMessaging(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err := migrateBoardTagRules(db); err != nil {
-		return nil, err
-	}
-	if err := migrateCardAttachments(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err := migrateBoardClassification(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err := migrateWorkStates(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return &Store{db: db}, nil
+// New returns the store over database, the pool postgresstorage.Open gave
+// Module. The schema must already be migrated.
+func New(database *sql.DB) *Store {
+	return &Store{db: pool{postgresExecutor: postgresExecutor{database}, database: database}}
 }
 
-func (s *Store) Close() error { return s.db.Close() }
-
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS boards (
-			id          TEXT PRIMARY KEY,
-			name        TEXT NOT NULL,
-			description TEXT DEFAULT '',
-			archived    INTEGER NOT NULL DEFAULT 0,
-			created_at  DATETIME NOT NULL,
-			updated_at  DATETIME NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_boards_archived ON boards(archived);
-
-		CREATE TABLE IF NOT EXISTS columns (
-			id          TEXT PRIMARY KEY,
-			board_id    TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-			name        TEXT NOT NULL,
-			position    REAL NOT NULL,
-			color       TEXT DEFAULT '',
-			wip_limit   INTEGER,
-			auto_status TEXT,
-			created_at  DATETIME NOT NULL,
-			updated_at  DATETIME NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_columns_board ON columns(board_id, position);
-
-		CREATE TABLE IF NOT EXISTS placements (
-			card_id     TEXT NOT NULL,
-			board_id    TEXT NOT NULL REFERENCES boards(id)  ON DELETE CASCADE,
-			column_id   TEXT NOT NULL REFERENCES columns(id) ON DELETE CASCADE,
-			position    REAL NOT NULL,
-			created_at  DATETIME NOT NULL,
-			updated_at  DATETIME NOT NULL,
-			PRIMARY KEY (card_id, board_id)
-		);
-		CREATE INDEX IF NOT EXISTS idx_placements_board   ON placements(board_id, column_id, position);
-		CREATE INDEX IF NOT EXISTS idx_placements_column  ON placements(column_id, position);
-		CREATE INDEX IF NOT EXISTS idx_placements_card    ON placements(card_id);
-
-		CREATE TABLE IF NOT EXISTS card_links (
-			id          TEXT PRIMARY KEY,
-			card_id     TEXT NOT NULL,
-			entity_type TEXT NOT NULL,
-			entity_ref  TEXT NOT NULL,
-			label       TEXT DEFAULT '',
-			created_at  DATETIME NOT NULL,
-			UNIQUE (card_id, entity_type, entity_ref)
-		);
-		CREATE INDEX IF NOT EXISTS idx_card_links_card   ON card_links(card_id);
-		CREATE INDEX IF NOT EXISTS idx_card_links_entity ON card_links(entity_type, entity_ref);
-
-		CREATE TABLE IF NOT EXISTS card_assignments (
-			card_id      TEXT NOT NULL,
-			principal_id TEXT NOT NULL,
-			assigned_by  TEXT NOT NULL DEFAULT '',
-			created_at   DATETIME NOT NULL,
-			PRIMARY KEY (card_id, principal_id)
-		);
-		CREATE INDEX IF NOT EXISTS idx_card_assignments_principal ON card_assignments(principal_id);
-
-		CREATE TABLE IF NOT EXISTS entity_tags (
-			entity_type TEXT NOT NULL,
-			entity_ref  TEXT NOT NULL,
-			tag         TEXT NOT NULL,
-			created_at  DATETIME NOT NULL,
-			PRIMARY KEY (entity_type, entity_ref, tag)
-		);
-		CREATE INDEX IF NOT EXISTS idx_entity_tags_tag    ON entity_tags(tag);
-		CREATE INDEX IF NOT EXISTS idx_entity_tags_entity ON entity_tags(entity_type, entity_ref);
-	`)
-	if err != nil {
-		return err
-	}
-	return ensureTicketTables(db)
-}
-
-func now() time.Time { return time.Now().UTC() }
+// Close closes the pool.
+func (s *Store) Close() error { return s.db.database.Close() }
 
 // ============================ Boards ============================
 
@@ -354,7 +243,7 @@ func (s *Store) UpdateBoardIfVersion(id string, req *model.UpdateBoardRequest, e
 	}
 	b.UpdatedAt = now()
 	if !b.UpdatedAt.After(previousVersion) {
-		b.UpdatedAt = previousVersion.Add(time.Nanosecond)
+		b.UpdatedAt = previousVersion.Add(time.Microsecond)
 	}
 	arch := 0
 	if b.Archived {
@@ -690,7 +579,7 @@ func (s *Store) ListPlacementsByBoard(boardID string) ([]*model.Placement, error
 func (s *Store) ListPlacementsByCard(cardID string) ([]*model.Placement, error) {
 	rows, err := s.db.Query(
 		`SELECT card_id, board_id, column_id, position, created_at, updated_at
-		 FROM placements WHERE card_id=?`, cardID,
+		 FROM placements WHERE card_id=? ORDER BY created_at, board_id`, cardID,
 	)
 	if err != nil {
 		return nil, err
@@ -811,15 +700,21 @@ func (s *Store) AssignPrincipalToCard(cardID, principalID, assignedBy string) (a
 	candidate := &model.CardAssignment{
 		CardID: cardID, PrincipalID: principalID, AssignedBy: assignedBy, CreatedAt: now(),
 	}
-	res, err := s.db.Exec(
-		`INSERT INTO card_assignments (`+cardAssignmentColumns+`) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(card_id, principal_id) DO NOTHING`,
-		candidate.CardID, candidate.PrincipalID, candidate.AssignedBy, candidate.CreatedAt,
-	)
-	if err != nil {
-		return nil, false, err
-	}
-	n, err := res.RowsAffected()
+	// Under the store's write lock, so it never lands between the check and
+	// the insert of AssignPrincipalToCardIfVersion.
+	var n int64
+	err = s.db.writeImmediately(func(run executor) error {
+		res, err := run.Exec(
+			`INSERT INTO card_assignments (`+cardAssignmentColumns+`) VALUES (?, ?, ?, ?)
+			 ON CONFLICT(card_id, principal_id) DO NOTHING`,
+			candidate.CardID, candidate.PrincipalID, candidate.AssignedBy, candidate.CreatedAt,
+		)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
 	if err != nil {
 		return nil, false, err
 	}
@@ -921,11 +816,18 @@ func (s *Store) queryCardAssignments(q string, args ...any) ([]model.CardAssignm
 // there, so a DELETE of a principal who was never on the card is a 404 rather
 // than a 204 that claims to have changed something.
 func (s *Store) UnassignPrincipalFromCard(cardID, principalID string) error {
-	res, err := s.db.Exec(`DELETE FROM card_assignments WHERE card_id=? AND principal_id=?`, cardID, principalID)
+	var n int64
+	err := s.db.writeImmediately(func(run executor) error {
+		res, err := run.Exec(`DELETE FROM card_assignments WHERE card_id=? AND principal_id=?`, cardID, principalID)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
 	if n == 0 {
 		return ErrNotFound
 	}
@@ -1049,6 +951,3 @@ func (s *Store) Counts() (map[string]int, error) {
 	}
 	return out, nil
 }
-
-// utility: stable ordering helper used for Position fan-out elsewhere
-var _ = strings.Contains

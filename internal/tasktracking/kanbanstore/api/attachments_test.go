@@ -9,13 +9,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/bundlestore"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db/dbtest"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/grantstore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/llmbridge"
@@ -145,19 +144,15 @@ func setupWithAttachments(t *testing.T) (http.Handler, *fakeGrantStore, *fakeFil
 		t.Cleanup(server.Close)
 		urls[name] = server.URL
 	}
-	store, err := db.New(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	a := api.New(store, noteboard.New(urls["notes"]), principalstore.New(urls["principals"]), llmbridge.New(urls["bridge"]), bundlestore.New(urls["bundles"]), settingsRegistryForTests(t))
+	store := dbtest.NewStore(t)
+	a := api.New(store, noteboard.New(urls["notes"]), principalstore.New(urls["principals"]), llmbridge.New(urls["bridge"]), bundlestore.New(urls["bundles"]))
 	a.SetReferenceStore(fakeReferenceStore(t))
 	// Cleanups run last-registered first, so this waits for trigger
 	// dispatches before the store above is closed.
 	t.Cleanup(a.WaitForMessageTriggers)
-	a.SetPrincipalEnforcement(api.PrincipalEnforcement{ServiceToken: testServiceToken, Grants: grantstore.New(urls["grants"], "grant-store-token")})
+	a.SetPrincipalEnforcement(api.PrincipalEnforcement{Grants: grantstore.New(urls["grants"], "grant-store-token")})
 	a.SetFileStore(filestore.New(urls["files"], fakeFileStoreToken))
-	return a.Handler(), grants, files
+	return callerFromTestHeaders(a.Handler()), grants, files
 }
 
 func sendBytes(t *testing.T, h http.Handler, who map[string]string, target, contentType string, body []byte) *httptest.ResponseRecorder {

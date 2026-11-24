@@ -2,7 +2,6 @@ package db
 
 import (
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
 
@@ -10,11 +9,7 @@ import (
 )
 
 func TestBoardVersionConcurrentWriters(t *testing.T) {
-	store, err := New(filepath.Join(t.TempDir(), "boards.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 	description := "Must survive"
 	board, err := store.CreateBoard(&model.CreateBoardRequest{Name: "Original", Description: &description})
 	if err != nil {

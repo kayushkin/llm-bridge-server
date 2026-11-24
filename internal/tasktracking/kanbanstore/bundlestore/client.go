@@ -17,6 +17,13 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/boundedtext"
 )
 
+// Bundles is what the store asks bundle-store: whether a bundle exists.
+// Client answers it over HTTP; the server this store is mounted in answers it
+// from bundle-store in its own process.
+type Bundles interface {
+	CheckBundleExists(id string) error
+}
+
 // Client talks to one bundle-store.
 type Client struct {
 	BaseURL string

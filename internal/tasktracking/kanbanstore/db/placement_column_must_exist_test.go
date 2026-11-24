@@ -2,7 +2,6 @@ package db
 
 import (
 	"errors"
-	"path/filepath"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
@@ -33,12 +32,7 @@ import (
 
 func newPlacementTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := New(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
-	return store
+	return newTestStore(t)
 }
 
 func TestAttachCardToAColumnThatDoesNotExistIsAnsweredByGo(t *testing.T) {

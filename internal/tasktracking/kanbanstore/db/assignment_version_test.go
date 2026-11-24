@@ -2,18 +2,13 @@ package db
 
 import (
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
 )
 
 func TestAssignmentSnapshotRejectsConcurrentOwners(t *testing.T) {
-	s, err := New(filepath.Join(t.TempDir(), "assignments.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if _, _, err = s.AssignPrincipalToCard("card", "team", "operator"); err != nil {
+	s := newTestStore(t)
+	if _, _, err := s.AssignPrincipalToCard("card", "team", "operator"); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := s.ListCardAssignments("card")

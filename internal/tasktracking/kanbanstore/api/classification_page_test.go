@@ -2,8 +2,9 @@ package api_test
 
 import (
 	"encoding/json"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 )
 
 func TestCardPageIncludesReviewedLabelsAndTheirVersion(t *testing.T) {

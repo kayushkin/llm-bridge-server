@@ -21,7 +21,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/principalstore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/timeaccounting"
-	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 type API struct {
@@ -30,14 +29,14 @@ type API struct {
 	// principals is consulted on exactly one write: assigning a principal to a
 	// card. See internal/principalstore for why this otherwise-dumb store checks
 	// that one reference.
-	principals *principalstore.Client
+	principals principalstore.Directory
 	// references is reference-store, which owns the list of reference types.
 	references *referencestore.Client
 	// bridge is consulted on one write: setting a board's default agent or
 	// default instance. See internal/llmbridge for why.
-	bridge *llmbridge.Client
+	bridge llmbridge.AgentsAndInstances
 	// bundles is consulted on one write: setting a board's default bundle.
-	bundles *bundlestore.Client
+	bundles bundlestore.Bundles
 	// messages fires the board's message triggers after a card event is
 	// recorded. It has no sender until SetMessageSender is called.
 	messages *messaging.Dispatcher
@@ -50,23 +49,14 @@ type API struct {
 	// files is file-store, which owns uploaded bytes. Nil until SetFileStore is
 	// called, and then every attachment route answers 503; see attachments.go.
 	files *filestore.Client
-	// settings is what GET /settings describes: every environment variable the
-	// process reads, as config.SettingDefinitions declares them.
-	settings *servicesettings.Registry
 }
 
-// New panics on a nil settings registry, at boot: the registry is an argument
-// rather than a setter so that no command can serve boards and forget
-// GET /settings.
-func New(store *db.Store, nb *noteboard.Client, principals *principalstore.Client, bridge *llmbridge.Client, bundles *bundlestore.Client, settings *servicesettings.Registry) *API {
-	if settings == nil {
-		panic("kanban-store: a settings registry is required; GET /settings describes the service from it")
-	}
-	return &API{store: store, noteboard: nb, principals: principals, bridge: bridge, bundles: bundles, messages: messaging.NewDispatcher(store, nb), settings: settings}
+// New builds the API over its store and the owners it asks. What the process
+// was started with is the mounting server's to describe, so the store has no
+// /settings of its own.
+func New(store *db.Store, nb *noteboard.Client, principals principalstore.Directory, bridge llmbridge.AgentsAndInstances, bundles bundlestore.Bundles) *API {
+	return &API{store: store, noteboard: nb, principals: principals, bridge: bridge, bundles: bundles, messages: messaging.NewDispatcher(store, nb)}
 }
-
-// SettingsPath is where servicesettings.Handler is mounted.
-const SettingsPath = "/settings"
 
 func (a *API) Handler() http.Handler {
 	return cors(a.principalGate(a.routes()))
@@ -78,10 +68,6 @@ func (a *API) Handler() http.Handler {
 func (a *API) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", a.health)
-
-	// what the process was started with; the service token or an administrator.
-	// Nothing is Editable, so PUT /settings/{key} is not mounted.
-	mux.Handle(SettingsPath, servicesettings.Handler(a.settings, SettingsPath))
 
 	// boards
 	mux.HandleFunc("/api/boards", a.boards)
@@ -142,7 +128,7 @@ func cors(h http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Expose-Headers", "ETag")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-Match, "+PrincipalIDHeader)
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-Match")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(204)
 			return

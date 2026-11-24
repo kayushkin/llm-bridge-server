@@ -120,7 +120,7 @@ func (a *API) createTimeEntry(w http.ResponseWriter, r *http.Request, cardID str
 		if access := principalBoardAccessFrom(r); access != nil {
 			workerID = access.PrincipalID
 		} else {
-			workerID = r.Header.Get(PrincipalIDHeader) // an administrator
+			workerID = callerPrincipalID(r) // an administrator
 		}
 	}
 	if workerID == "" {

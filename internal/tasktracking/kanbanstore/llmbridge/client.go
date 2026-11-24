@@ -27,6 +27,14 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/boundedtext"
 )
 
+// AgentsAndInstances is what the store asks the owner of agents and harness
+// instances: whether one exists. Client answers it over HTTP; the server this
+// store is mounted in answers it from its own agent-store and harness-store.
+type AgentsAndInstances interface {
+	CheckInstanceExists(id string) error
+	CheckAgentExists(id string) error
+}
+
 // Client talks to one llm-bridge-server.
 type Client struct {
 	BaseURL string

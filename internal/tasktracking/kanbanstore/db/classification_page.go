@@ -23,7 +23,7 @@ func (s *Store) ClassificationLabelsForCards(boardID string, ids []string) (map[
 	}
 	rows, err := s.db.Query(`SELECT r.card_id, r.revision, l.axis_id, l.value_ids, l.origin_decision_id, l.origin_review_id, l.updated_at
  FROM classification_label_revisions r LEFT JOIN classification_labels l ON l.board_id=r.board_id AND l.card_id=r.card_id
- WHERE r.board_id=? AND r.card_id IN (SELECT value FROM json_each(?)) ORDER BY r.card_id,l.axis_id`, boardID, string(encoded))
+ WHERE r.board_id=? AND r.card_id IN (SELECT requested.card_id FROM jsonb_array_elements_text(?::jsonb) AS requested(card_id)) ORDER BY r.card_id,l.axis_id`, boardID, string(encoded))
 	if err != nil {
 		return nil, err
 	}
