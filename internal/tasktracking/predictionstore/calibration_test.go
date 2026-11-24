@@ -154,7 +154,7 @@ func TestCalibrationSlicesByCategoryWorstFirst(t *testing.T) {
 		p.Category = "root-cause"
 		p.Probability = 0.9
 		created := mustCreate(t, s, p)
-		if _, err := s.Resolve(created.ID, "false", ""); err != nil {
+		if _, err := s.Resolve(testContext, created.ID, "false", ""); err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
 	}
@@ -163,11 +163,11 @@ func TestCalibrationSlicesByCategoryWorstFirst(t *testing.T) {
 		p.Category = "behavior"
 		p.Probability = 0.9
 		created := mustCreate(t, s, p)
-		if _, err := s.Resolve(created.ID, "true", ""); err != nil {
+		if _, err := s.Resolve(testContext, created.ID, "true", ""); err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
 	}
-	report, err := s.Calibration(Filter{}, "category")
+	report, err := s.Calibration(testContext, Filter{}, "category")
 	if err != nil {
 		t.Fatalf("calibration: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestCalibrationSlicesByCategoryWorstFirst(t *testing.T) {
 
 func TestUnknownGroupByNamesTheFields(t *testing.T) {
 	s := newTestStore(t)
-	_, err := s.Calibration(Filter{}, "astrology")
+	_, err := s.Calibration(testContext, Filter{}, "astrology")
 	if err == nil {
 		t.Fatal("expected an error for an unknown group_by")
 	}
@@ -201,11 +201,11 @@ func TestBaseRatesAnswerHowOftenAKindOfClaimIsTrue(t *testing.T) {
 		p := samplePrediction()
 		p.Category = "will-fix"
 		created := mustCreate(t, s, p)
-		if _, err := s.Resolve(created.ID, o, ""); err != nil {
+		if _, err := s.Resolve(testContext, created.ID, o, ""); err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
 	}
-	report, err := s.BaseRates(Filter{}, "category")
+	report, err := s.BaseRates(testContext, Filter{}, "category")
 	if err != nil {
 		t.Fatalf("base rates: %v", err)
 	}
@@ -223,10 +223,10 @@ func TestOpenPredictionsAreCountedButNotScored(t *testing.T) {
 	s := newTestStore(t)
 	mustCreate(t, s, samplePrediction())
 	resolved := mustCreate(t, s, samplePrediction())
-	if _, err := s.Resolve(resolved.ID, "true", ""); err != nil {
+	if _, err := s.Resolve(testContext, resolved.ID, "true", ""); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	report, err := s.Calibration(Filter{}, "")
+	report, err := s.Calibration(testContext, Filter{}, "")
 	if err != nil {
 		t.Fatalf("calibration: %v", err)
 	}

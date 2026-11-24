@@ -1,22 +1,27 @@
 # prediction-store — API contract
 
-`:8313`. The calibration ledger: resolvable claims, the odds stated for them,
-and what actually happened.
+The calibration ledger: resolvable claims, the odds stated for them, and what
+actually happened.
 
-Module `github.com/kayushkin/prediction-store`, root package `predictionstore`,
-binary `cmd/prediction-store` installed at `~/bin/prediction-store`. Env:
-`PREDICTION_STORE_ADDR` (default `:8313`), `PREDICTION_STORE_DATA_DIR` (default
-`~/.config/prediction-store`). SQLite at `<data dir>/prediction-store.db`, WAL,
-`?_foreign_keys=on`.
+Package `internal/tasktracking/predictionstore` of llm-bridge-server, mounted
+by the server under `/prediction-store/`: every route below is served behind
+that prefix (`GET /prediction-store/calibration`). The routes are operator
+routes (`routeOperatorOnly`): the service token, an administrator, or the
+session agent token of an administrator's session. The rows have no owning
+principal, so any caller could rewrite or purge anyone's prediction; that
+changes when they get one.
 
-Routes are rooted at `/`, the same as quote-store and job-store; dash adds the
-`/api/predictions` prefix and the auth this service has none of. All timestamps
-are epoch seconds (`INTEGER`, 0 = unset). Tags are a JSON-encoded `TEXT` column
-in SQLite and a real JSON array over HTTP.
+The records are in Postgres, in schema `predictions` acting as role
+`predictions_module` (`postgresstorage`), built by the `.sql` files in
+`migrations/`. The server provisions, migrates and opens the module at start
+when `LLMBRIDGE_POSTGRES_URL` is set; without it the routes answer 503
+`prediction_store_off`. All timestamps are epoch seconds (`bigint`, 0 =
+unset). Tags are a `jsonb` array.
 
-Build with `-tags sqlite_fts5`. The schema creates an FTS5 virtual table, so a
-binary built without the tag starts and dies at the first boot with `no such
-module: fts5` — `Open()` says so and names the flag.
+`llm-bridge-server import-prediction-store -sqlite <file>` copies a standalone
+prediction-store's SQLite file in, keeping every number, id, time and
+soft-deleted row, into an empty module only, and numbers on after the highest
+it copied.
 
 ---
 
@@ -26,8 +31,8 @@ module: fts5` — `Open()` says so and names the flag.
 
 | Field | Meaning |
 |---|---|
-| `id` | `prediction_000142`. What links and estimates join on |
-| `seq` | monotonic, assigned here; generates `id` and is the FTS rowid |
+| `id` | `prediction_000142`: `prediction_` and `seq`, written by `postgresstorage.FormatRecordID`. Not stored; only the exact form names a row |
+| `seq` | the identity column. Postgres hands each number out once, so a purged number is never reused; links and estimates join on it |
 | `claim` | what you are asserting, in one sentence. Required |
 | `resolution_criteria` | what will settle it, and how. Required |
 | `category` | the kind of claim — one of the vocabulary below. A synonym resolves; anything else is a 400 |
@@ -51,7 +56,7 @@ module: fts5` — `Open()` says so and names the flag.
 
 | Field | Meaning |
 |---|---|
-| `id` | integer, autoincrement |
+| `id` | integer, an identity column |
 | `prediction_id` | cascades on purge |
 | `probability` | the odds as of this revision, on the ladder |
 | `rationale` | what moved you. The opening row is written with `initial estimate` |
@@ -66,7 +71,7 @@ odds is how a calibration record becomes a flattering one.
 
 | Field | Meaning |
 |---|---|
-| `id` | integer, autoincrement. `DELETE /links/{id}` takes this, not the prediction id |
+| `id` | integer, an identity column. `DELETE /links/{id}` takes this, not the prediction id |
 | `prediction_id` | cascades on purge |
 | `entity_type` | free text, a type from reference-store's list of reference types (`GET /types`). **Not validated here** — kanban-store does not validate it either, and a hardcoded copy of somebody else's vocabulary goes stale silently |
 | `entity_ref` | the id in the store that owns the record |
@@ -74,7 +79,7 @@ odds is how a calibration record becomes a flattering one.
 | `created_at` | |
 
 `(prediction_id, entity_type, entity_ref)` is unique and the insert is
-`INSERT OR IGNORE`, so re-linking the same entity is idempotent — the same
+`ON CONFLICT DO NOTHING`, so re-linking the same entity is idempotent — the same
 uniqueness kanban-store uses.
 
 ---
@@ -201,10 +206,11 @@ caller builds a filter from whatever values the rows happen to hold.
 
 ## Routes
 
+Each path is behind `/prediction-store`.
+
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/health` | `{"status":"ok","counts":{predictions,open,overdue}}` |
-| GET | `/settings` | every environment variable the service reads, as llm-bridge `msg.ServiceSettings`: the value in force, its default and where it came from. Read-only: no setting is editable and `PUT /settings/{key}` is not mounted |
 | GET | `/vocabulary` | `{categories, provenances, statuses, outcomes, group_by, probability_ladder}` |
 | GET | `/categories` | the same payload, same handler |
 | GET | `/tags` | `{"tags":[{tag,count}]}` over live predictions, most used first |
@@ -286,12 +292,16 @@ previously get.
 
 ## Search
 
-`q` is an FTS5 `MATCH` expression over `claim`, `resolution_criteria`, `tags`
-and `resolution_note`. It is probed before the listing query runs, so a
-malformed expression is a **400** naming the query rather than a 500 from inside
-the handler.
+`q` is read as a web search (`websearch_to_tsquery`, simple configuration: no
+stemming, no stop words, case folded) over `claim`, `resolution_criteria`,
+`tags` and `resolution_note`: every word must appear, `"quoted words"` must
+appear together, `or` between two words lets either match, and `-word` must not
+appear. Every ASCII punctuation mark separates words, in the text and in the
+query, as the FTS5 tokenizer this store used before did, so `deploy` finds
+`deploy.sh`, and `deploy.sh` is the phrase `"deploy sh"`. An unclosed quote, or
+a query with no word in it, is a **400** naming the query. FTS5's prefix
+(`word*`), `NEAR` and column filters are gone; `NOT` is `-`.
 
-`predictions_fts` is content-carrying, not external-content, so the triggers
-stay plain deletes and inserts instead of fts5 `delete` commands. They key on
-`seq`, not `id` — `seq` is the integer rowid the index is built on. Insert,
-update and delete on `predictions` each fire one.
+The search document is a generated `tsvector` column with a GIN index, so it
+follows every write without triggers. On a copy of the live ledger taken
+2026-11-23, thirteen one-word queries found exactly the rows FTS5 found.

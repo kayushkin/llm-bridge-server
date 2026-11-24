@@ -4,39 +4,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 )
 
-// RegisterHandlers mounts the API on mux. Routes are rooted at / — dash adds
-// its own /api/predictions prefix and supplies the auth this service has none
-// of, exactly as it does for quote-store and job-store.
-func RegisterHandlers(mux *http.ServeMux, s *Store) {
-	h := &handler{s: s}
-	mux.HandleFunc("GET /health", h.health)
-	mux.HandleFunc("GET /vocabulary", h.vocabulary)
-	mux.HandleFunc("GET /categories", h.vocabulary)
-	mux.HandleFunc("GET /tags", h.listTags)
-	mux.HandleFunc("GET /calibration", h.calibration)
-	mux.HandleFunc("GET /base-rates", h.baseRates)
+// Handlers answers the store's HTTP routes. The server that mounts the store
+// registers each method under its own pattern, behind its own prefix and
+// access rules; the paths in the method comments are relative to that prefix.
+type Handlers struct{ s *Store }
 
-	mux.HandleFunc("GET /predictions", h.listPredictions)
-	mux.HandleFunc("POST /predictions", h.createPrediction)
-	mux.HandleFunc("GET /predictions/{id}", h.getPrediction)
-	mux.HandleFunc("PATCH /predictions/{id}", h.patchPrediction)
-	mux.HandleFunc("DELETE /predictions/{id}", h.deletePrediction)
-	mux.HandleFunc("POST /predictions/{id}/restore", h.restorePrediction)
-	mux.HandleFunc("GET /predictions/{id}/estimates", h.listEstimates)
-	mux.HandleFunc("POST /predictions/{id}/estimates", h.addEstimate)
-	mux.HandleFunc("POST /predictions/{id}/resolve", h.resolvePrediction)
-	mux.HandleFunc("GET /predictions/{id}/links", h.listLinks)
-	mux.HandleFunc("POST /predictions/{id}/links", h.addLink)
-	mux.HandleFunc("DELETE /links/{id}", h.deleteLink)
-}
-
-type handler struct{ s *Store }
+// NewHandlers returns the route handlers of store.
+func NewHandlers(store *Store) *Handlers { return &Handlers{s: store} }
 
 // patchableFields is every key PATCH /predictions/{id} accepts, matching the
 // json tags on Patch. probability, outcome and status are deliberately absent
@@ -63,16 +44,17 @@ func sortedPatchableFields() []string {
 	return out
 }
 
-func (h *handler) health(w http.ResponseWriter, r *http.Request) {
-	total, err := h.s.Count(Filter{})
+// Health answers GET /health.
+func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
+	total, err := h.s.Count(r.Context(), Filter{})
 	if respondStoreError(w, err) {
 		return
 	}
-	open, err := h.s.Count(Filter{Status: "open"})
+	open, err := h.s.Count(r.Context(), Filter{Status: "open"})
 	if respondStoreError(w, err) {
 		return
 	}
-	overdue, err := h.s.Count(Filter{Overdue: true})
+	overdue, err := h.s.Count(r.Context(), Filter{Overdue: true})
 	if respondStoreError(w, err) {
 		return
 	}
@@ -82,7 +64,8 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *handler) vocabulary(w http.ResponseWriter, r *http.Request) {
+// Vocabulary answers GET /vocabulary and GET /categories.
+func (h *Handlers) Vocabulary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"categories":         Categories,
 		"provenances":        Provenances,
@@ -93,8 +76,9 @@ func (h *handler) vocabulary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *handler) listTags(w http.ResponseWriter, r *http.Request) {
-	tags, err := h.s.ListTags()
+// ListTags answers GET /tags.
+func (h *Handlers) ListTags(w http.ResponseWriter, r *http.Request) {
+	tags, err := h.s.ListTags(r.Context())
 	if respondStoreError(w, err) {
 		return
 	}
@@ -123,20 +107,22 @@ func filterFrom(r *http.Request) Filter {
 	}
 }
 
-func (h *handler) listPredictions(w http.ResponseWriter, r *http.Request) {
+// ListPredictions answers GET /predictions.
+func (h *Handlers) ListPredictions(w http.ResponseWriter, r *http.Request) {
 	f := filterFrom(r)
-	predictions, err := h.s.List(f)
+	predictions, err := h.s.List(r.Context(), f)
 	if respondStoreError(w, err) {
 		return
 	}
-	total, err := h.s.Count(f)
+	total, err := h.s.Count(r.Context(), f)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"predictions": predictions, "total": total})
 }
 
-func (h *handler) createPrediction(w http.ResponseWriter, r *http.Request) {
+// CreatePrediction answers POST /predictions.
+func (h *Handlers) CreatePrediction(w http.ResponseWriter, r *http.Request) {
 	var p Prediction
 	if !decode(w, r, &p) {
 		return
@@ -150,22 +136,24 @@ func (h *handler) createPrediction(w http.ResponseWriter, r *http.Request) {
 				`Send it with the outcome to POST /predictions/{id}/resolve.`)
 		return
 	}
-	created, err := h.s.Create(&p)
+	created, err := h.s.Create(r.Context(), &p)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
 }
 
-func (h *handler) getPrediction(w http.ResponseWriter, r *http.Request) {
-	p, err := h.s.Get(r.PathValue("id"))
+// GetPrediction answers GET /predictions/{id}.
+func (h *Handlers) GetPrediction(w http.ResponseWriter, r *http.Request) {
+	p, err := h.s.Get(r.Context(), r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
 }
 
-func (h *handler) patchPrediction(w http.ResponseWriter, r *http.Request) {
+// PatchPrediction answers PATCH /predictions/{id}.
+func (h *Handlers) PatchPrediction(w http.ResponseWriter, r *http.Request) {
 	// Decoded strictly so that PATCHing "probability" or "outcome" is a loud
 	// 400 naming the right route, not a silent no-op that leaves the caller
 	// believing the number moved.
@@ -204,57 +192,62 @@ func (h *handler) patchPrediction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
 		return
 	}
-	updated, err := h.s.Patch(r.PathValue("id"), patch)
+	updated, err := h.s.Patch(r.Context(), r.PathValue("id"), patch)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
-func (h *handler) deletePrediction(w http.ResponseWriter, r *http.Request) {
+// DeletePrediction answers DELETE /predictions/{id}.
+func (h *Handlers) DeletePrediction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if isTrue(r.URL.Query().Get("hard")) {
-		if respondStoreError(w, h.s.Purge(id)) {
+		if respondStoreError(w, h.s.Purge(r.Context(), id)) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"purged": id})
 		return
 	}
-	if respondStoreError(w, h.s.SoftDelete(id)) {
+	if respondStoreError(w, h.s.SoftDelete(r.Context(), id)) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
-func (h *handler) restorePrediction(w http.ResponseWriter, r *http.Request) {
-	p, err := h.s.Restore(r.PathValue("id"))
+// RestorePrediction answers POST /predictions/{id}/restore.
+func (h *Handlers) RestorePrediction(w http.ResponseWriter, r *http.Request) {
+	p, err := h.s.Restore(r.Context(), r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
 }
 
-func (h *handler) listEstimates(w http.ResponseWriter, r *http.Request) {
-	estimates, err := h.s.ListEstimates(r.PathValue("id"))
+// ListEstimates answers GET /predictions/{id}/estimates.
+func (h *Handlers) ListEstimates(w http.ResponseWriter, r *http.Request) {
+	estimates, err := h.s.ListEstimates(r.Context(), r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"estimates": estimates})
 }
 
-func (h *handler) addEstimate(w http.ResponseWriter, r *http.Request) {
+// AddEstimate answers POST /predictions/{id}/estimates.
+func (h *Handlers) AddEstimate(w http.ResponseWriter, r *http.Request) {
 	var e Estimate
 	if !decode(w, r, &e) {
 		return
 	}
-	p, err := h.s.AddEstimate(r.PathValue("id"), &e)
+	p, err := h.s.AddEstimate(r.Context(), r.PathValue("id"), &e)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, p)
 }
 
-func (h *handler) resolvePrediction(w http.ResponseWriter, r *http.Request) {
+// ResolvePrediction answers POST /predictions/{id}/resolve.
+func (h *Handlers) ResolvePrediction(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Outcome string `json:"outcome"`
 		Note    string `json:"note"`
@@ -262,55 +255,60 @@ func (h *handler) resolvePrediction(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	p, err := h.s.Resolve(r.PathValue("id"), body.Outcome, body.Note)
+	p, err := h.s.Resolve(r.Context(), r.PathValue("id"), body.Outcome, body.Note)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
 }
 
-func (h *handler) listLinks(w http.ResponseWriter, r *http.Request) {
-	links, err := h.s.ListLinks(r.PathValue("id"))
+// ListLinks answers GET /predictions/{id}/links.
+func (h *Handlers) ListLinks(w http.ResponseWriter, r *http.Request) {
+	links, err := h.s.ListLinks(r.Context(), r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"links": links})
 }
 
-func (h *handler) addLink(w http.ResponseWriter, r *http.Request) {
+// AddLink answers POST /predictions/{id}/links.
+func (h *Handlers) AddLink(w http.ResponseWriter, r *http.Request) {
 	var l Link
 	if !decode(w, r, &l) {
 		return
 	}
-	created, err := h.s.AddLink(r.PathValue("id"), &l)
+	created, err := h.s.AddLink(r.Context(), r.PathValue("id"), &l)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
 }
 
-func (h *handler) deleteLink(w http.ResponseWriter, r *http.Request) {
+// DeleteLink answers DELETE /links/{id}.
+func (h *Handlers) DeleteLink(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "link id must be a number: "+err.Error())
 		return
 	}
-	if respondStoreError(w, h.s.DeleteLink(id)) {
+	if respondStoreError(w, h.s.DeleteLink(r.Context(), id)) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
-func (h *handler) calibration(w http.ResponseWriter, r *http.Request) {
-	report, err := h.s.Calibration(filterFrom(r), r.URL.Query().Get("group_by"))
+// Calibration answers GET /calibration.
+func (h *Handlers) Calibration(w http.ResponseWriter, r *http.Request) {
+	report, err := h.s.Calibration(r.Context(), filterFrom(r), r.URL.Query().Get("group_by"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
 }
 
-func (h *handler) baseRates(w http.ResponseWriter, r *http.Request) {
-	report, err := h.s.BaseRates(filterFrom(r), r.URL.Query().Get("group_by"))
+// BaseRates answers GET /base-rates.
+func (h *Handlers) BaseRates(w http.ResponseWriter, r *http.Request) {
+	report, err := h.s.BaseRates(r.Context(), filterFrom(r), r.URL.Query().Get("group_by"))
 	if respondStoreError(w, err) {
 		return
 	}
@@ -333,7 +331,7 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		fmt.Printf("prediction-store: encode response: %v\n", err)
+		log.Printf("prediction-store: ERROR: writing a response: %v", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package predictionstore
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -150,7 +151,7 @@ func leadTimeGroup(created, resolved int64) string {
 
 // gather loads every prediction matching the filter and reduces the resolved
 // ones to scoreable rows, tagged with their group keys.
-func (s *Store) gather(f Filter, groupBy string) ([]scored, int, int, error) {
+func (s *Store) gather(ctx context.Context, f Filter, groupBy string) ([]scored, int, int, error) {
 	// Validated before the rows are read, not inside the loop over them: an
 	// empty result set would otherwise accept any group_by at all and answer
 	// with an ungrouped report, which reads as "no data" rather than "you asked
@@ -159,17 +160,17 @@ func (s *Store) gather(f Filter, groupBy string) ([]scored, int, int, error) {
 		return nil, 0, 0, err
 	}
 	f.Limit, f.Offset, f.Expand = 0, 0, false
-	predictions, err := s.List(f)
+	predictions, err := s.List(ctx, f)
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	revisions, err := s.revisionCounts()
+	revisions, err := s.revisionCounts(ctx)
 	if err != nil {
 		return nil, 0, 0, err
 	}
 	var entityTypes map[string][]string
 	if groupBy == "entity_type" {
-		if entityTypes, err = s.entityTypesByPrediction(); err != nil {
+		if entityTypes, err = s.entityTypesByPrediction(ctx); err != nil {
 			return nil, 0, 0, err
 		}
 	}
@@ -230,36 +231,38 @@ func (s *Store) gather(f Filter, groupBy string) ([]scored, int, int, error) {
 	return rows, open, void, nil
 }
 
-func (s *Store) revisionCounts() (map[string]int, error) {
-	rows, err := s.db.Query(`SELECT prediction_id, COUNT(*) FROM estimates GROUP BY prediction_id`)
+func (s *Store) revisionCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT prediction_seq, COUNT(*) FROM estimates GROUP BY prediction_seq`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := map[string]int{}
 	for rows.Next() {
-		var id string
+		var seq int64
 		var n int
-		if err := rows.Scan(&id, &n); err != nil {
+		if err := rows.Scan(&seq, &n); err != nil {
 			return nil, err
 		}
-		out[id] = n
+		out[formatPredictionID(seq)] = n
 	}
 	return out, rows.Err()
 }
 
-func (s *Store) entityTypesByPrediction() (map[string][]string, error) {
-	rows, err := s.db.Query(`SELECT DISTINCT prediction_id, entity_type FROM links`)
+func (s *Store) entityTypesByPrediction(ctx context.Context) (map[string][]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT prediction_seq, entity_type FROM links`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := map[string][]string{}
 	for rows.Next() {
-		var id, entityType string
-		if err := rows.Scan(&id, &entityType); err != nil {
+		var seq int64
+		var entityType string
+		if err := rows.Scan(&seq, &entityType); err != nil {
 			return nil, err
 		}
+		id := formatPredictionID(seq)
 		out[id] = append(out[id], entityType)
 	}
 	return out, rows.Err()
@@ -370,9 +373,9 @@ func decileBuckets(rows []scored) []Bucket {
 }
 
 // Calibration scores the predictions matching f, optionally sliced by groupBy.
-func (s *Store) Calibration(f Filter, groupBy string) (*CalibrationReport, error) {
+func (s *Store) Calibration(ctx context.Context, f Filter, groupBy string) (*CalibrationReport, error) {
 	groupBy = strings.ToLower(strings.TrimSpace(groupBy))
-	rows, open, void, err := s.gather(f, groupBy)
+	rows, open, void, err := s.gather(ctx, f, groupBy)
 	if err != nil {
 		return nil, err
 	}
@@ -403,12 +406,12 @@ func (s *Store) Calibration(f Filter, groupBy string) (*CalibrationReport, error
 }
 
 // BaseRates answers how often claims of a kind came true.
-func (s *Store) BaseRates(f Filter, groupBy string) (*BaseRateReport, error) {
+func (s *Store) BaseRates(ctx context.Context, f Filter, groupBy string) (*BaseRateReport, error) {
 	groupBy = strings.ToLower(strings.TrimSpace(groupBy))
 	if groupBy == "" {
 		groupBy = "category"
 	}
-	rows, _, _, err := s.gather(f, groupBy)
+	rows, _, _, err := s.gather(ctx, f, groupBy)
 	if err != nil {
 		return nil, err
 	}

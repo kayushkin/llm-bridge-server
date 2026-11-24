@@ -1,3 +1,6 @@
+-- The schema of the standalone prediction-store, as its last SQLite version
+-- wrote it. The import tests build a standalone database from it.
+
 -- prediction-store schema. Create-only and idempotent: Open() executes this
 -- whole file on every boot. New columns go in the ensureColumn loop in Open(),
 -- never in an edit to a CREATE TABLE above — an edited CREATE TABLE is a no-op
