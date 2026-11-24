@@ -13,6 +13,10 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
+	// The standalone store wrote through mattn/go-sqlite3, so the files the
+	// tests import are written through it too; the import reads them with
+	// the pure-Go driver.
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // standaloneFile builds a SQLite file with the standalone store's last schema

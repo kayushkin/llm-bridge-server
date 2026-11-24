@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
@@ -20,9 +20,12 @@ import (
 // migrations, in the order the tables must be written for their foreign keys.
 //
 // Each column says how a value is read from SQLite and written to Postgres.
-// The standalone store wrote through the mattn/go-sqlite3 driver, which hands
-// back a DATETIME column as a time.Time, so the import reads the file through
-// the same driver.
+// The standalone store wrote DATETIME columns through the mattn/go-sqlite3
+// driver, as text in one of that driver's layouts. The import reads the file
+// with the pure-Go driver the rest of this server uses (the server is built
+// with no C), which hands such a column back as a time.Time when it can parse
+// it, and as text when not; the text is parsed in mattn's own layouts, read
+// as UTC when it carries no offset, as mattn read it.
 
 type importedColumnKind int
 
@@ -322,8 +325,13 @@ func importedValue(column importedColumn, value any) (any, error) {
 			return value, nil
 		}
 	case importedTime:
-		if typed, ok := value.(time.Time); ok {
+		switch typed := value.(type) {
+		case time.Time:
 			return storedTime(typed), nil
+		case string:
+			return parsedStandaloneTime(column.name, typed)
+		case []byte:
+			return parsedStandaloneTime(column.name, string(typed))
 		}
 	case importedFlag:
 		if typed, ok := value.(int64); ok && (typed == 0 || typed == 1) {
@@ -331,6 +339,31 @@ func importedValue(column importedColumn, value any) (any, error) {
 		}
 	}
 	return nil, fmt.Errorf("column %s holds %T %v, which the import cannot copy as that column's kind", column.name, value, value)
+}
+
+// standaloneTimeLayouts are the layouts mattn/go-sqlite3 writes and reads a
+// DATETIME in (its SQLiteTimestampFormats), in its order.
+var standaloneTimeLayouts = []string{
+	"2006-01-02 15:04:05.999999999-07:00",
+	"2006-01-02T15:04:05.999999999-07:00",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02 15:04:05",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04",
+	"2006-01-02T15:04",
+	"2006-01-02",
+}
+
+// parsedStandaloneTime reads a DATETIME the standalone store wrote as text.
+func parsedStandaloneTime(columnName, text string) (time.Time, error) {
+	trimmed := strings.TrimSuffix(text, "Z")
+	for _, layout := range standaloneTimeLayouts {
+		if parsed, err := time.ParseInLocation(layout, trimmed, time.UTC); err == nil {
+			return storedTime(parsed), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("column %s holds %q, which is not a time in any layout the standalone store wrote", columnName, text)
 }
 
 // lastClassificationIdentifierHandedOut is the highest identifier number the
