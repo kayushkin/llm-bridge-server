@@ -279,7 +279,6 @@ var routeDescriptions = map[string]routeDescription{
 	"POST /admin/identity-bindings/{id}/unlink":                   {routeGroupLogin, "Unlink an identity and revoke its live login sessions"},
 	kanbanProxyMountPrefix + "/":                                  {routeGroupLogin, "kanban-store `/api/…`, as the caller"},
 	kanbanStoreProxyMountPrefix + "/":                             {routeGroupLogin, "kanban-store at its root (`/api/…`, `/settings`), as the caller"},
-	referenceStoreProxyMountPrefix + "/":                          {routeGroupLogin, "reference-store (`/types`, `/resolve`, `/search`): what an id names, narrowed to what the caller may see"},
 	mailstackProxyMountPrefix + "/":                               {routeGroupLogin, "mailstack `/…`, as the caller, checked against their mail grants and tickets"},
 
 	// Runners and harness callbacks.

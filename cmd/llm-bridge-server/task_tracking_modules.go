@@ -55,8 +55,9 @@ func ownAddress(listenAddress string) (string, error) {
 // starts the filer's passes. project-store calls noteboard in this process,
 // and calls this server's own routes (sessions, briefs, the one-shot router)
 // over HTTP with the service token, as it did when it was a service of its
-// own: the passes move to bridge-worker, another process, in the end. The
-// returned function closes the pools.
+// own: the passes move to bridge-worker, another process, in the end. It
+// reads repo-store and work-graph-store in this process. The returned
+// function closes the pools.
 func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *server.Server, principals *principalstore.Store) (func(), error) {
 	noteboardDB, err := openNoteboardModule(ctx, cfg.PostgresURL)
 	if err != nil {
@@ -85,14 +86,13 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 	projects := projectstore.New(projectStoreDB)
 	owners := &projectstore.Owners{
 		HTTP:                    &http.Client{Timeout: 10 * time.Second},
-		RepoStoreURL:            cfg.RepoStoreURL,
+		Repositories:            srv.RepositoriesHandler(),
 		KanbanStoreURL:          cfg.KanbanStoreURL,
 		KanbanStoreServiceToken: settings.String("kanban_store.service_token"),
 		SchedulerURL:            cfg.SchedulerURL,
 		HealthcheckURL:          cfg.HealthcheckURL,
 		Principals:              projectstore.PrincipalStoreModule{Store: principals},
 		Noteboard:               projectstore.NoteboardModule{Store: noteboardStore},
-		WorkGraphStoreURL:       settings.String(config.SettingWorkGraphStoreURL),
 		BridgeURL:               bridgeURL,
 		BridgeServiceToken:      cfg.ServiceToken,
 		SuggestionModelRole:     settings.String(config.SettingProjectStoreSuggestionModelRole),

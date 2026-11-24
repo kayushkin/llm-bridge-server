@@ -14,15 +14,12 @@ package server
 // left alone, as is an id several stores claim.
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"mime"
-	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
@@ -31,15 +28,16 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
-// chatLinkReferencePatternsLifetime is how long reference-store's id patterns
-// are reused before they are read again.
+// chatLinkReferencePatternsLifetime is how long the joined id patterns are
+// reused before they are joined again.
 const chatLinkReferencePatternsLifetime = 5 * time.Minute
 
 // chatLinkReferencePatterns is reference-store's id patterns, joined into one
-// expression, read at most every chatLinkReferencePatternsLifetime.
+// expression, joined at most every chatLinkReferencePatternsLifetime.
 type chatLinkReferencePatterns struct {
 	mu      sync.Mutex
 	pattern *regexp.Regexp
@@ -48,36 +46,22 @@ type chatLinkReferencePatterns struct {
 	fetchedAt    time.Time
 }
 
-func (p *chatLinkReferencePatterns) get(ctx context.Context, client *http.Client, referenceStoreURL string, now time.Time) (*regexp.Regexp, map[string]bool, error) {
+func (p *chatLinkReferencePatterns) get(types []referencestore.ReferenceType, now time.Time) (*regexp.Regexp, map[string]bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.pattern != nil && now.Sub(p.fetchedAt) < chatLinkReferencePatternsLifetime {
 		return p.pattern, p.withPictures, nil
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(referenceStoreURL, "/")+"/types", nil)
-	if err != nil {
-		return nil, nil, err
+	rows := make([]referenceTypeRow, 0, len(types))
+	for _, row := range types {
+		rows = append(rows, referenceTypeRow{Type: row.Type, Get: row.Get, IDPatterns: row.IDPatterns, Attachment: row.Attachment})
 	}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, nil, fmt.Errorf("reference-store's GET /types: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("reference-store's GET /types answered %d", response.StatusCode)
-	}
-	var answer struct {
-		Types []referenceTypeRow `json:"types"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
-		return nil, nil, fmt.Errorf("reference-store's GET /types: %w", err)
-	}
-	pattern, err := joinReferencePatterns(answer.Types)
+	pattern, err := joinReferencePatterns(rows)
 	if err != nil {
 		return nil, nil, err
 	}
 	withPictures := map[string]bool{}
-	for _, row := range answer.Types {
+	for _, row := range rows {
 		if row.Attachment != "" {
 			withPictures[row.Type] = true
 		}
@@ -146,7 +130,8 @@ const chatLinkMaximumAttachments = 10
 // has one. A failure anywhere is logged and the reply goes as it was written,
 // or without a picture: a missing link is not a wrong one.
 func (s *Server) chatLinkReplyForRecipient(ctx context.Context, link store.ChatLink, body string) (string, []chatLinkFile) {
-	if s.cfg.ReferenceStoreURL == "" || s.chatLinks == nil {
+	resolver := s.referenceResolver.Load()
+	if resolver == nil || s.chatLinks == nil {
 		return body, nil
 	}
 	session, err := s.store.GetSession(link.SessionID)
@@ -162,14 +147,14 @@ func (s *Server) chatLinkReplyForRecipient(ctx context.Context, link store.ChatL
 	if recipient == "" {
 		return body, nil
 	}
-	pattern, withPictures, err := s.chatLinks.references.get(ctx, s.chatLinks.httpClient, s.cfg.ReferenceStoreURL, s.chatLinks.now())
+	pattern, withPictures, err := s.chatLinks.references.get(resolver.Types, s.chatLinks.now())
 	if err != nil {
 		log.Printf("[chat-links] ERROR: %s: %v; the reply goes with its ids as written", link.ID, err)
 		return body, nil
 	}
 	drawn, linked, err := drawReferencesForRecipient(ctx, body, pattern, s.settings.String(config.SettingChatLinksReferencePageBaseURL),
 		func(ctx context.Context, ids []string) (map[string][]referenceMatch, error) {
-			return resolveReferencesAs(ctx, s.chatLinks.httpClient, s.cfg.ReferenceStoreURL, recipient, ids)
+			return resolveReferencesAs(ctx, resolver, recipient, ids)
 		})
 	if err != nil {
 		log.Printf("[chat-links] ERROR: %s: look the reply's ids up for %s: %v; the reply goes with its ids as written", link.ID, recipient, err)
@@ -183,7 +168,7 @@ func (s *Server) chatLinkReplyForRecipient(ctx context.Context, link store.ChatL
 		if !withPictures[reference.Type] {
 			continue
 		}
-		file, found, err := pictureOfReferenceAs(ctx, s.chatLinks.httpClient, s.cfg.ReferenceStoreURL, recipient, reference.ID)
+		file, found, err := pictureOfReferenceAs(ctx, resolver, recipient, reference.ID)
 		if err != nil {
 			log.Printf("[chat-links] ERROR: %s: the picture of %s for %s: %v; sent without it", link.ID, reference.ID, recipient, err)
 			continue
@@ -202,32 +187,16 @@ type linkedReference struct {
 }
 
 // pictureOfReferenceAs asks reference-store for a picture of the record, as
-// principalID. A 404 is no picture, not a failure.
-func pictureOfReferenceAs(ctx context.Context, client *http.Client, referenceStoreURL, principalID, id string) (chatLinkFile, bool, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(referenceStoreURL, "/")+"/attachments/"+url.PathEscape(id), nil)
-	if err != nil {
-		return chatLinkFile{}, false, err
-	}
-	request.Header.Set(principalIdentityHeader, principalID)
-	response, err := client.Do(request)
-	if err != nil {
-		return chatLinkFile{}, false, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotFound {
+// principalID. A record with none, or one the principal may not see, is no
+// picture, not a failure.
+func pictureOfReferenceAs(ctx context.Context, resolver *referencestore.Resolver, principalID, id string) (chatLinkFile, bool, error) {
+	contentType, data, err := resolver.Attachment(ctx, referencestore.Caller{PrincipalID: principalID}, id)
+	if errors.Is(err, referencestore.ErrNoAttachment) {
 		return chatLinkFile{}, false, nil
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, 10<<20+1))
 	if err != nil {
 		return chatLinkFile{}, false, err
 	}
-	if response.StatusCode != http.StatusOK {
-		return chatLinkFile{}, false, fmt.Errorf("reference-store answered %d: %s", response.StatusCode, strings.TrimSpace(string(data)))
-	}
-	if len(data) > 10<<20 {
-		return chatLinkFile{}, false, fmt.Errorf("the picture is over 10 MiB")
-	}
-	contentType := response.Header.Get("Content-Type")
 	extensions, _ := mime.ExtensionsByType(contentType)
 	name := id
 	if len(extensions) > 0 {
@@ -327,35 +296,19 @@ func referencePageForChat(pageURL, id, pageBaseURL string) string {
 	return base + "/ref/" + url.PathEscape(id)
 }
 
-// resolveReferencesAs asks reference-store what each id names, as principalID.
-func resolveReferencesAs(ctx context.Context, client *http.Client, referenceStoreURL, principalID string, ids []string) (map[string][]referenceMatch, error) {
-	payload, err := json.Marshal(map[string][]string{"ids": ids})
-	if err != nil {
-		return nil, err
+// resolveReferencesAs asks reference-store what each id names, as
+// principalID. A store that could not answer is logged and its ids stay as
+// written, as when reference-store ran apart and listed it in errors.
+func resolveReferencesAs(ctx context.Context, resolver *referencestore.Resolver, principalID string, ids []string) (map[string][]referenceMatch, error) {
+	results, lookupErrors := resolver.Resolve(ctx, referencestore.Caller{PrincipalID: principalID}, ids)
+	for _, lookupError := range lookupErrors {
+		log.Printf("[chat-links] ERROR: reference-store could not say what %s names as %s (%s): %s", lookupError.ID, lookupError.Type, principalID, lookupError.Error)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(referenceStoreURL, "/")+"/resolve", bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
+	matches := make(map[string][]referenceMatch, len(results))
+	for id, found := range results {
+		for _, match := range found {
+			matches[id] = append(matches[id], referenceMatch{Type: match.Type, Label: match.Label, PageURL: match.PageURL, Refused: match.Refused})
+		}
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(principalIdentityHeader, principalID)
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("reference-store answered %d: %s", response.StatusCode, strings.TrimSpace(string(answer)))
-	}
-	var decoded struct {
-		Results map[string][]referenceMatch `json:"results"`
-	}
-	if err := json.Unmarshal(answer, &decoded); err != nil {
-		return nil, err
-	}
-	return decoded.Results, nil
+	return matches, nil
 }

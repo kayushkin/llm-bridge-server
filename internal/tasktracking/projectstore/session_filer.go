@@ -208,8 +208,8 @@ func (owners *Owners) sessionReposSince(ctx context.Context, since time.Time) (m
 			sessionRepoRefUpdates
 		} `json:"session_repos"`
 	}
-	rawURL := owners.WorkGraphStoreURL + "/session-repos?since_unix_nano=" + strconv.FormatInt(since.UnixNano(), 10)
-	if err := owners.getJSON(ctx, rawURL, nil, &answer); err != nil {
+	path := "/work-graph-store/session-repos?since_unix_nano=" + strconv.FormatInt(since.UnixNano(), 10)
+	if err := owners.repositoriesGetJSON(ctx, path, &answer); err != nil {
 		return nil, fmt.Errorf("read the repos sessions changed: %w", err)
 	}
 	repos := map[string][]sessionRepoRefUpdates{}

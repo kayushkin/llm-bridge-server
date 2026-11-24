@@ -19,12 +19,13 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// fakeSessionActionStores is repo-store's GET /repos/{id} and the scheduler's
-// job routes, as session actions use them.
+// fakeSessionActionStores is repo-store's registry and the scheduler's job
+// routes, as session actions use them.
 type fakeSessionActionStores struct {
 	mu               sync.Mutex
 	repoPaths        map[int64]string
@@ -39,13 +40,6 @@ func newFakeSessionActionStores(t *testing.T) (*fakeSessionActionStores, *httpte
 		defer fake.mu.Unlock()
 		var id int64
 		switch {
-		case r.Method == http.MethodGet && sscanPath(r.URL.Path, "/repos/%d", &id):
-			path, ok := fake.repoPaths[id]
-			if !ok {
-				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]any{"id": id, "name": filepath.Base(path), "path": path})
 		case r.Method == http.MethodGet && sscanPath(r.URL.Path, "/api/jobs/%d", &id) && !strings.HasSuffix(r.URL.Path, "/run"):
 			if id != 76 {
 				http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
@@ -61,6 +55,17 @@ func newFakeSessionActionStores(t *testing.T) (*fakeSessionActionStores, *httpte
 	}))
 	t.Cleanup(server.Close)
 	return fake, server
+}
+
+// GetRepo is repo-store's registry as a deploy action reads it.
+func (fake *fakeSessionActionStores) GetRepo(id int64) (*repostore.Repo, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	path, ok := fake.repoPaths[id]
+	if !ok {
+		return nil, repostore.ErrNotFound
+	}
+	return &repostore.Repo{ID: id, Name: filepath.Base(path), Path: path}, nil
 }
 
 func sscanPath(path, format string, id *int64) bool {
@@ -81,12 +86,12 @@ func testServerForSessionActions(t *testing.T) (*Server, *store.Store, *fakeSess
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 		LogStoreURL:     fakeLogStore(t).URL,
-		RepoStoreURL:    storesServer.URL,
 		SchedulerURL:    storesServer.URL,
 		ListenAddr:      "127.0.0.1:8160",
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
+	srv.repoRegistryForDeploys = fake
 	return srv, st, fake
 }
 

@@ -21,6 +21,17 @@ func RegisterPullRequestHandlers(mux *http.ServeMux, store *Store, syncer *PullR
 	mux.HandleFunc("POST /repos/{id}/pull-requests/sync", handler.syncPullRequestsOfRepo)
 }
 
+// RegisterPullRequestHandlersWithoutSync wires the pull-request routes for a
+// server that cannot run gh: the stored pull requests stay readable, and a
+// sync answers 503 with why.
+func RegisterPullRequestHandlersWithoutSync(mux *http.ServeMux, store *Store, whyNoSync string) {
+	handler := &pullRequestHandler{store: store}
+	mux.HandleFunc("GET /pull-requests", handler.listPullRequests)
+	mux.HandleFunc("POST /repos/{id}/pull-requests/sync", func(w http.ResponseWriter, _ *http.Request) {
+		writeErr(w, http.StatusServiceUnavailable, "no pull-request sync here: "+whyNoSync)
+	})
+}
+
 type pullRequestHandler struct {
 	store  *Store
 	syncer *PullRequestSyncer

@@ -178,7 +178,7 @@ func newSessionFilerClient(t *testing.T, bridge *fakeBridge) (client, *time.Time
 	store := newTestStore(t)
 	storeTime := bridge.now.Add(-4 * time.Hour)
 	store.now = func() time.Time { return storeTime }
-	owners := &Owners{HTTP: server.Client(), ModelHTTP: server.Client(), RepoStoreURL: server.URL, WorkGraphStoreURL: server.URL, BridgeURL: server.URL, BridgeServiceToken: "bridge-token"}
+	owners := &Owners{HTTP: server.Client(), ModelHTTP: server.Client(), Repositories: repositoriesAtTheirRoots(server.Config.Handler), BridgeURL: server.URL, BridgeServiceToken: "bridge-token"}
 	filer := &SessionFiler{Store: store, Owners: owners, ModelRole: "balanced", MinimumConfidence: 0.8, QuietBeforeFilingWithoutABrief: time.Hour, Window: 48 * time.Hour, SessionsPerPass: 20}
 	mux := http.NewServeMux()
 	RegisterHandlers(mux, &Handlers{Store: store, Owners: owners, SessionFiler: filer})

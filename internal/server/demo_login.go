@@ -114,7 +114,6 @@ func (s *Server) registerLoginAndStoreProxyRoutes() {
 	s.mux.HandleFunc(kanbanProxyMountPrefix+"/", s.handleKanbanStoreProxyAsPrincipal)
 	s.mux.HandleFunc(kanbanStoreProxyMountPrefix+"/", s.handleKanbanStoreRootProxyAsPrincipal)
 	s.mux.HandleFunc(mailstackProxyMountPrefix+"/", s.handleMailstackProxyAsPrincipal)
-	s.mux.HandleFunc(referenceStoreProxyMountPrefix+"/", s.handleReferenceStoreProxyAsPrincipal)
 }
 
 type demoLoginRequest struct {

@@ -509,7 +509,6 @@ func TestStartupIsRefusedWithoutEachRequiredSetting(t *testing.T) {
 	complete := config.Config{
 		DemoLoginSigningKey: testSigningKey, ServiceToken: testServiceToken,
 		KanbanStoreURL: "http://kanban.invalid", PostgresURL: "postgres://postgres.invalid/bridge",
-		ReferenceStoreURL: "http://reference.invalid",
 	}
 	if err := complete.ValidateRequestAuthorizationSettings(); err != nil {
 		t.Fatalf("complete configuration: %v, want no error", err)
@@ -524,7 +523,6 @@ func TestStartupIsRefusedWithoutEachRequiredSetting(t *testing.T) {
 		"short service token": {func(c *config.Config) { c.ServiceToken = "short" }, "LLMBRIDGE_SERVICE_TOKEN"},
 		"no postgres":         {func(c *config.Config) { c.PostgresURL = "" }, "LLMBRIDGE_POSTGRES_URL"},
 		"no kanban-store":     {func(c *config.Config) { c.KanbanStoreURL = "" }, "LLMBRIDGE_KANBAN_STORE_URL"},
-		"no reference-store":  {func(c *config.Config) { c.ReferenceStoreURL = "" }, "LLMBRIDGE_REFERENCE_STORE_URL"},
 	} {
 		candidate := complete
 		testCase.mutate(&candidate)

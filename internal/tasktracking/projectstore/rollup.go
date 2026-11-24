@@ -334,7 +334,7 @@ func (graph repoGraph) defaultBranchCommits(since int64, limit int) []Commit {
 
 func (owners *Owners) repoGraph(ctx context.Context, repoStoreID int64) (repoGraph, error) {
 	var graph repoGraph
-	err := owners.getJSON(ctx, owners.WorkGraphStoreURL+"/repos/"+strconv.FormatInt(repoStoreID, 10)+"/graph?max_commits="+strconv.Itoa(graphCommitsRead), nil, &graph)
+	err := owners.repositoriesGetJSON(ctx, "/work-graph-store/repos/"+strconv.FormatInt(repoStoreID, 10)+"/graph?max_commits="+strconv.Itoa(graphCommitsRead), &graph)
 	if err != nil {
 		return graph, fmt.Errorf("graph of repo %d: %w", repoStoreID, err)
 	}
@@ -349,7 +349,7 @@ func (owners *Owners) RepoName(ctx context.Context, repoStoreID int64) (string, 
 	var repo struct {
 		Name string `json:"name"`
 	}
-	err := owners.getJSON(ctx, owners.RepoStoreURL+"/repos/"+strconv.FormatInt(repoStoreID, 10), nil, &repo)
+	err := owners.repositoriesGetJSON(ctx, "/repo-store/repos/"+strconv.FormatInt(repoStoreID, 10), &repo)
 	if errors.Is(err, ErrNotFound) {
 		return "", fmt.Errorf("%w: repo-store has no repo %d, which a project link names", ErrOwnerUnavailable, repoStoreID)
 	}
@@ -365,7 +365,7 @@ func (owners *Owners) PullRequests(ctx context.Context, repoStoreID int64, state
 	var answer struct {
 		PullRequests []PullRequest `json:"pull_requests"`
 	}
-	err := owners.getJSON(ctx, owners.RepoStoreURL+"/pull-requests?repo_id="+strconv.FormatInt(repoStoreID, 10)+"&state="+url.QueryEscape(state), nil, &answer)
+	err := owners.repositoriesGetJSON(ctx, "/repo-store/pull-requests?repo_id="+strconv.FormatInt(repoStoreID, 10)+"&state="+url.QueryEscape(state), &answer)
 	if errors.Is(err, ErrNotFound) {
 		// The project links the repo, so repo-store knowing no such repo, or
 		// no such route, is repo-store failing, not the caller's mistake.
@@ -405,7 +405,7 @@ func (owners *Owners) RepoRollup(ctx context.Context, repoStoreID int64, name st
 	})
 
 	var deploys []Deploy
-	if err := owners.getJSON(ctx, owners.RepoStoreURL+"/deployments?repo_id="+strconv.FormatInt(repoStoreID, 10)+"&limit=1", nil, &deploys); err != nil {
+	if err := owners.repositoriesGetJSON(ctx, "/repo-store/deployments?repo_id="+strconv.FormatInt(repoStoreID, 10)+"&limit=1", &deploys); err != nil {
 		return rollup, fmt.Errorf("deploys of repo %d: %w", repoStoreID, err)
 	}
 	if len(deploys) > 0 {

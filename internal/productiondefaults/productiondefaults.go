@@ -95,6 +95,15 @@ func SkillStoreDataDirectory() string {
 	return filepath.Join(homeDirectory(), ".llm-bridge", "skill-store")
 }
 
+// FileStoreDataDirectory is where the file-store module keeps the bytes of
+// every file (blobs/, named by their SHA-256). It is under this server's own
+// folder, not the standalone store's ~/.config/file-store, so the module and
+// a standalone store still running beside it never purge each other's
+// blobs.
+func FileStoreDataDirectory() string {
+	return filepath.Join(homeDirectory(), ".llm-bridge", "file-store")
+}
+
 // SkillStoreInstallDirectory is where an installed skill is copied: where
 // Claude Code reads a user's skills.
 func SkillStoreInstallDirectory() string {

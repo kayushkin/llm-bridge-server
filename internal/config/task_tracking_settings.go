@@ -9,7 +9,6 @@ import (
 // prediction-store: noteboard needs none of its own, and project-store's are
 // these. Each is read once, at start.
 const (
-	SettingWorkGraphStoreURL                                      = "work_graph_store.url"
 	SettingProjectStoreSuggestionModelRole                        = "project_store.suggestion_model_role"
 	SettingProjectStoreSessionFilerEnabled                        = "project_store.session_filer.enabled"
 	SettingProjectStoreSessionFilerInterval                       = "project_store.session_filer.interval"
@@ -28,8 +27,6 @@ func taskTrackingSettingDefinitions() []servicesettings.Definition {
 		text     = msg.ServiceSettingValueTypeString
 	)
 	return []servicesettings.Definition{
-		{Key: SettingWorkGraphStoreURL, EnvironmentVariable: "LLMBRIDGE_WORK_GRAPH_STORE_URL", Kind: wiring, ValueType: text,
-			Description: "work-graph-store. project-store reads a project's branches and commits there, and which sessions moved refs in which repos, for the session filer. Empty fails each of those calls with 502, naming the store."},
 		{Key: SettingProjectStoreSuggestionModelRole, EnvironmentVariable: "LLMBRIDGE_PROJECT_STORE_SUGGESTION_MODEL_ROLE", Kind: behavior, ValueType: text, Default: "balanced",
 			Description: "The model-store role this server's one-shot router asks for a project's suggested next steps (POST /project-store/projects/{id}/suggestions). Empty refuses suggestions. Read at start."},
 		{Key: SettingProjectStoreSessionFilerEnabled, EnvironmentVariable: "LLMBRIDGE_PROJECT_STORE_SESSION_FILER_ENABLED", Kind: behavior, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "false",

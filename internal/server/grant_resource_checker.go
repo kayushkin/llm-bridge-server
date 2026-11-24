@@ -5,9 +5,9 @@ package server
 // service token for agents, instances, machines, peer connections and
 // operation types, and principal-store for principals. Inside this process
 // those owners are this server's own stores, so they are asked directly, and
-// so are tool-store and skill-store, which also moved into this process. The
-// owners that still run apart (kanban-store and reference-store) are asked
-// over HTTP as before.
+// so are tool-store, skill-store and reference-store, which also moved into
+// this process. The owner that still runs apart (kanban-store) is asked over
+// HTTP as before.
 
 import (
 	"context"
@@ -22,6 +22,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/skillstore"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
@@ -37,10 +38,8 @@ func (s *Server) grantResourceChecker(principals *principalstore.Store) grantsto
 		server:     s,
 		principals: principals,
 		overHTTP: grantstore.NewHTTPResourceChecker(grantstore.ResourceOwners{
-			KanbanStoreURL:             s.cfg.KanbanStoreURL,
-			KanbanStoreServiceToken:    s.cfg.KanbanStoreServiceToken,
-			ReferenceStoreURL:          s.cfg.ReferenceStoreURL,
-			ReferenceStoreServiceToken: s.cfg.ReferenceStoreServiceToken,
+			KanbanStoreURL:          s.cfg.KanbanStoreURL,
+			KanbanStoreServiceToken: s.cfg.KanbanStoreServiceToken,
 		}),
 	}
 }
@@ -132,6 +131,30 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 			known = append(known, string(description.Type))
 		}
 		return fmt.Errorf("%w: this server runs no operation type %q; it runs %s", grantstore.ErrResourceNotFound, resourceID, strings.Join(known, ", "))
+	case grantstore.ResourceTypeReferenceType:
+		resolver := s.referenceResolver.Load()
+		if resolver == nil {
+			return fmt.Errorf("this server's reference-store is off, so reference type %q cannot be checked", resourceID)
+		}
+		if referencestore.TypeNamed(resourceID) == nil {
+			return notFound("reference-store")
+		}
+		return nil
+	case grantstore.ResourceTypeReference:
+		resolver := s.referenceResolver.Load()
+		if resolver == nil {
+			return fmt.Errorf("this server's reference-store is off, so reference %q cannot be checked", resourceID)
+		}
+		// Asked for nobody, so a record exists whoever may see it; a store
+		// that could not say is a failure, never "does not exist".
+		results, lookupErrors := resolver.Resolve(ctx, referencestore.Caller{Unchecked: true}, []string{resourceID})
+		if len(results[resourceID]) > 0 {
+			return nil
+		}
+		if len(lookupErrors) > 0 {
+			return fmt.Errorf("reference-store could not say whether %q names a record: %s: %s", resourceID, lookupErrors[0].Type, lookupErrors[0].Error)
+		}
+		return notFound("reference-store")
 	case grantstore.ResourceTypePrincipal:
 		if _, err := checker.principals.Get(ctx, resourceID, false); errors.Is(err, principalstore.ErrNotFound) {
 			return notFound("principal-store")

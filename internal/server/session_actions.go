@@ -32,6 +32,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -459,22 +461,26 @@ func (s *Server) describeSessionAction(ctx context.Context, session *store.Sessi
 
 // repoStoreRepo is the part of repo-store's repo record a deploy reads.
 type repoStoreRepo struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
-	Path string `json:"path"`
+	ID   int64
+	Name string
+	Path string
 }
 
-// deployableRepo reads a repo from repo-store and checks it has a deploy.sh
-// this server can run.
+// deployableRepo reads a repo from the repo-store module in this process and
+// checks it has a deploy.sh this server can run.
 func (s *Server) deployableRepo(ctx context.Context, repoID int64) (repoStoreRepo, *sessionActionRefusal) {
-	if s.cfg.RepoStoreURL == "" {
+	if s.repoRegistryForDeploys == nil {
 		return repoStoreRepo{}, &sessionActionRefusal{http.StatusServiceUnavailable, "repo_store_not_configured",
-			"LLMBRIDGE_REPO_STORE_URL is not set, so this server cannot find a repo to deploy"}
+			config.PostgresURLEnvironmentVariable + " is not set, so this server keeps no repos and cannot find one to deploy"}
 	}
-	var repo repoStoreRepo
-	if refusal := s.getJSONForSessionAction(ctx, fmt.Sprintf("%s/repos/%d", strings.TrimRight(s.cfg.RepoStoreURL, "/"), repoID), "repo-store", &repo); refusal != nil {
-		return repoStoreRepo{}, refusal
+	stored, err := s.repoRegistryForDeploys.GetRepo(repoID)
+	if errors.Is(err, repostore.ErrNotFound) {
+		return repoStoreRepo{}, &sessionActionRefusal{http.StatusUnprocessableEntity, "unknown_record", fmt.Sprintf("repo-store has no repo %d", repoID)}
 	}
+	if err != nil {
+		return repoStoreRepo{}, &sessionActionRefusal{http.StatusBadGateway, "store_unavailable", fmt.Sprintf("repo-store could not read repo %d: %v", repoID, err)}
+	}
+	repo := repoStoreRepo{ID: stored.ID, Name: stored.Name, Path: stored.Path}
 	if repo.ID != repoID || repo.Path == "" {
 		return repoStoreRepo{}, &sessionActionRefusal{http.StatusBadGateway, "repo_store_answer_unusable",
 			fmt.Sprintf("repo-store answered repo %d with id %d and path %q", repoID, repo.ID, repo.Path)}

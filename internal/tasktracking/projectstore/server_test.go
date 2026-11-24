@@ -157,8 +157,8 @@ func fakeOwners(t *testing.T) *Owners {
 		}
 	}))
 	t.Cleanup(server.Close)
-	return &Owners{HTTP: server.Client(), RepoStoreURL: server.URL, KanbanStoreURL: server.URL, KanbanStoreServiceToken: "service-token",
-		SchedulerURL: server.URL, HealthcheckURL: server.URL, Principals: httpPrincipals{client: server.Client(), url: server.URL}, Noteboard: httpNoteboard{client: server.Client(), url: server.URL}, WorkGraphStoreURL: server.URL, BridgeURL: server.URL, BridgeServiceToken: "bridge-token",
+	return &Owners{HTTP: server.Client(), Repositories: repositoriesAtTheirRoots(server.Config.Handler), KanbanStoreURL: server.URL, KanbanStoreServiceToken: "service-token",
+		SchedulerURL: server.URL, HealthcheckURL: server.URL, Principals: httpPrincipals{client: server.Client(), url: server.URL}, Noteboard: httpNoteboard{client: server.Client(), url: server.URL}, BridgeURL: server.URL, BridgeServiceToken: "bridge-token",
 		SuggestionModelRole: "balanced", ModelHTTP: server.Client()}
 }
 
@@ -418,4 +418,19 @@ func TestARenamedRepoIsNamedAsRepoStoreNamesItNow(t *testing.T) {
 			t.Fatalf("the link event names the repo %v", event["label"])
 		}
 	}
+}
+
+// repositoriesAtTheirRoots serves repo-store's /repo-store/… and
+// work-graph-store's /work-graph-store/… from a fake that answers both at its
+// root, as the standalone stores did.
+func repositoriesAtTheirRoots(fake http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		for _, prefix := range []string{"/repo-store", "/work-graph-store"} {
+			if strings.HasPrefix(request.URL.Path, prefix+"/") {
+				http.StripPrefix(prefix, fake).ServeHTTP(writer, request)
+				return
+			}
+		}
+		http.NotFound(writer, request)
+	})
 }

@@ -100,7 +100,7 @@ func TestStoredSettingSeedsNameOnlyEditableSettings(t *testing.T) {
 			editable[definition.Key] = true
 		}
 	}
-	seeds := (&Config{SignalClassifierMaxChars: 10, OneShotInstanceByProvider: map[string]string{"anthropic": "i"}, OperationsCompletionModelRole: "balanced", OperationsGrantEnforcement: "lenient", SessionActionsReviewModelRole: "balanced", ImageGenerationInstanceID: "inst-codex-local", ServerName: "laptop", ChatLinksReferencePageBaseURL: "https://dash.example", SelfUpdateCommand: "true", OrchestratorURL: "http://127.0.0.1:1", KeepAwakeEnabled: true, KeepAwakeGraceMinutes: 30, SessionHostHoldSessions: true, SessionHostHoldMinutes: 30, PeerAttachmentMaximumBytes: 1, PeerAttachmentsMaximumTotalBytes: 1}).StoredSettingSeeds()
+	seeds := (&Config{SignalClassifierMaxChars: 10, OneShotInstanceByProvider: map[string]string{"anthropic": "i"}, OperationsCompletionModelRole: "balanced", OperationsGrantEnforcement: "lenient", SessionActionsReviewModelRole: "balanced", ImageGenerationInstanceID: "inst-codex-local", ServerName: "laptop", ChatLinksReferencePageBaseURL: "https://dash.example", SelfUpdateCommand: "true", OrchestratorURL: "http://127.0.0.1:1", KeepAwakeEnabled: true, KeepAwakeGraceMinutes: 30, SessionHostHoldSessions: true, SessionHostHoldMinutes: 30, PeerAttachmentMaximumBytes: 1, PeerAttachmentsMaximumTotalBytes: 1, FileStoreMaximumFileBytes: 1, FileStoreInlineContentTypes: []string{"image/png"}}).StoredSettingSeeds()
 	for key := range seeds {
 		if !editable[key] {
 			t.Errorf("a seed names %s, which is not an editable setting", key)
@@ -124,11 +124,21 @@ func TestEveryEnvironmentVariableTheServerReadsIsDeclared(t *testing.T) {
 	// Read by name and not settings of this server.
 	notSettings := map[string]bool{"HOME": true, "PATH": true}
 
+	// Programs kept in this repo that are not this server and read their own
+	// environment: the git hook git runs for every command.
+	otherPrograms := map[string]bool{filepath.Join("internal", "repositories", "workgraphstore", "cmd", "work-graph-hook"): true}
+
 	repositoryRoot := filepath.Join("..", "..")
 	for _, tree := range []string{"internal", filepath.Join("cmd", "llm-bridge-server")} {
 		err := filepath.WalkDir(filepath.Join(repositoryRoot, tree), func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			if err != nil {
 				return err
+			}
+			if entry.IsDir() && otherPrograms[strings.TrimPrefix(path, repositoryRoot+string(os.PathSeparator))] {
+				return filepath.SkipDir
+			}
+			if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
 			}
 			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 			if err != nil {
