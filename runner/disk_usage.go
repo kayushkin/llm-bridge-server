@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 	"github.com/kayushkin/llm-bridge-server/runner/internal/diskusage"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -71,12 +72,13 @@ func installCurrentDiskUsageTool(serverURL string) (*msg.DiskUsageTool, error) {
 	return &msg.DiskUsageTool{Command: command, Version: strings.TrimSpace(string(version))}, nil
 }
 
-// diskUsageHelper is the helper run with arguments. cmd.exe and Windows
-// programs complain when started in a Linux directory, so it starts in
-// /mnt/c.
+// diskUsageHelper is the helper run with arguments, with none of the
+// server's secrets in its environment. cmd.exe and Windows programs complain
+// when started in a Linux directory, so it starts in /mnt/c.
 func diskUsageHelper(ctx context.Context, command string, arguments ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, command, arguments...)
 	cmd.Dir = "/mnt/c"
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	return cmd
 }
 
