@@ -1,0 +1,133 @@
+{
+  "agents": [
+    {
+      "emoji": "🦀",
+      "id": "claxon",
+      "inber": "claxon",
+      "openclaw": "main",
+      "project": "orchestrator"
+    },
+    {
+      "emoji": "🔥",
+      "id": "brigid",
+      "inber": "brigid",
+      "openclaw": "brigid",
+      "project": "kayushkin.com"
+    },
+    {
+      "emoji": "🦌",
+      "id": "fionn",
+      "inber": "fionn",
+      "openclaw": "inber",
+      "project": "inber"
+    },
+    {
+      "emoji": "📨",
+      "id": "oisin",
+      "inber": "oisin",
+      "openclaw": "oisin",
+      "project": "si,dash"
+    },
+    {
+      "emoji": "🔨",
+      "id": "goibniu",
+      "inber": "goibniu",
+      "openclaw": "forge",
+      "project": "forge"
+    },
+    {
+      "emoji": "🌊",
+      "id": "manannan",
+      "inber": "manannan",
+      "openclaw": "downloadstack",
+      "project": "downloadstack"
+    },
+    {
+      "emoji": "📜",
+      "id": "ogma",
+      "inber": "ogma",
+      "openclaw": "logstack",
+      "project": "logstack"
+    },
+    {
+      "emoji": "⚔️",
+      "id": "scathach",
+      "inber": "scathach",
+      "openclaw": "claxon-android",
+      "project": "claxon-android"
+    },
+    {
+      "emoji": "📊",
+      "id": "bench",
+      "inber": "bench",
+      "openclaw": "agent-bench",
+      "project": "agent-bench"
+    },
+    {
+      "emoji": "🏺",
+      "id": "dagda",
+      "inber": "dagda",
+      "openclaw": [
+        "scheduler",
+        "noteboard"
+      ],
+      "project": "noteboard,scheduler"
+    },
+    {
+      "emoji": "☀️",
+      "id": "lugh",
+      "inber": "lugh",
+      "openclaw": "agent-store",
+      "project": "agent-store,model-store"
+    },
+    {
+      "emoji": "🐦",
+      "id": "bran",
+      "inber": "bran",
+      "openclaw": null,
+      "project": ""
+    },
+    {
+      "emoji": "📝",
+      "id": "argraphments",
+      "inber": null,
+      "openclaw": "argraphments",
+      "project": "argraphments"
+    },
+    {
+      "emoji": "⌨️",
+      "id": "keyboard",
+      "inber": null,
+      "openclaw": "keyboard",
+      "project": "keyboard"
+    },
+    {
+      "emoji": "⌚",
+      "id": "claxon-watch",
+      "inber": null,
+      "openclaw": "claxon-watch",
+      "project": "claxon-watch"
+    },
+    {
+      "emoji": "🏥",
+      "id": "healthcheck",
+      "inber": null,
+      "openclaw": "healthcheck",
+      "project": "healthcheck"
+    },
+    {
+      "emoji": "🎉",
+      "id": "inber-party",
+      "inber": null,
+      "openclaw": "inber-party",
+      "project": "inber-party"
+    },
+    {
+      "emoji": "📈",
+      "id": "agent-dashboard",
+      "inber": null,
+      "openclaw": "agent-dashboard",
+      "project": "agent-dashboard"
+    }
+  ]
+}
