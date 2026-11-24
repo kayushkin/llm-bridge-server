@@ -197,7 +197,6 @@ func (s *Store) insertRun(tx *sql.Tx, run *Run) (string, error) {
 		`suite_id, candidate_model_ids, judge_model_ids, original_answer_model_id, case_selection, case_ids, status, status_reason,
 		 budget_limits, concurrency, organization_id, model_prices, prices_note, prediction_id, note, origin,
 		 created_at, started_at, finished_at, updated_at`,
-		"?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?",
 		run.SuiteID, mustJSON(run.CandidateModelIDs), mustJSON(run.JudgeModelIDs), run.OriginalAnswerModelID, mustJSON(run.CaseSelection),
 		mustJSON(run.CaseIDs), run.Status, run.StatusReason, mustJSON(run.BudgetLimits), run.Concurrency, run.OrganizationID,
 		mustJSON(run.ModelPrices), run.PricesNote, run.PredictionID, run.Note, run.Origin, now, run.StartedAt, run.FinishedAt, now)
@@ -231,7 +230,7 @@ func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 
 // GetRun reads one run.
 func (s *Store) GetRun(id string) (*Run, error) {
-	run, err := scanRun(s.db.QueryRow("SELECT "+runColumns+" FROM runs WHERE id = ?", id))
+	run, err := scanRun(s.db.QueryRow("SELECT "+runColumns+" FROM runs WHERE id = $1", id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: run %s", ErrNotFound, id)
 	}
@@ -242,7 +241,7 @@ func (s *Store) GetRun(id string) (*Run, error) {
 func (s *Store) ListRuns(suiteID string) ([]*Run, error) {
 	query, arguments := "SELECT "+runColumns+" FROM runs", []any{}
 	if suiteID != "" {
-		query += " WHERE suite_id = ?"
+		query += " WHERE suite_id = $1"
 		arguments = append(arguments, suiteID)
 	}
 	rows, err := s.db.Query(query+" ORDER BY seq DESC", arguments...)
@@ -270,21 +269,21 @@ func (s *Store) setRunStatus(id, status, reason string) error {
 	case RunStatusStopped, RunStatusStoppedBudget, RunStatusCompleted, RunStatusFailed, RunStatusInterrupted:
 		finishedAt = now
 	}
-	_, err := s.db.Exec("UPDATE runs SET status=?, status_reason=?, finished_at=?, updated_at=? WHERE id=?", status, reason, finishedAt, now, id)
+	_, err := s.db.Exec("UPDATE runs SET status=$1, status_reason=$2, finished_at=$3, updated_at=$4 WHERE id=$5", status, reason, finishedAt, now, id)
 	return err
 }
 
 func (s *Store) markRunStarted(id, organizationID string) error {
 	now := s.unixNow()
-	_, err := s.db.Exec(`UPDATE runs SET status=?, status_reason='', organization_id=?, started_at=?, finished_at=0, updated_at=?
-		WHERE id=?`, RunStatusRunning, organizationID, now, now, id)
+	_, err := s.db.Exec(`UPDATE runs SET status=$1, status_reason='', organization_id=$2, started_at=$3, finished_at=0, updated_at=$4
+		WHERE id=$5`, RunStatusRunning, organizationID, now, now, id)
 	return err
 }
 
 // MarkInterruptedRuns is called at boot: a run the last process left running
 // or stopping did not finish, and nothing is working on it now.
 func (s *Store) MarkInterruptedRuns() (int64, error) {
-	result, err := s.db.Exec("UPDATE runs SET status=?, status_reason=?, finished_at=?, updated_at=? WHERE status IN (?, ?)",
+	result, err := s.db.Exec("UPDATE runs SET status=$1, status_reason=$2, finished_at=$3, updated_at=$4 WHERE status IN ($5, $6)",
 		RunStatusInterrupted, "the service stopped while the run was going; resume it", s.unixNow(), s.unixNow(), RunStatusRunning, RunStatusStopping)
 	if err != nil {
 		return 0, err
@@ -302,7 +301,7 @@ func (s *Store) DeleteRun(id string) error {
 	if run.Status == RunStatusRunning || run.Status == RunStatusStopping {
 		return conflictf("run %s is %s; stop it first", id, run.Status)
 	}
-	_, err = s.db.Exec("DELETE FROM runs WHERE id = ?", id)
+	_, err = s.db.Exec("DELETE FROM runs WHERE id = $1", id)
 	return err
 }
 
@@ -333,7 +332,7 @@ func (s *Store) PatchRun(id string, patch RunPatch) (*Run, error) {
 	if run.PredictionID != "" && !strings.HasPrefix(run.PredictionID, "prediction_") {
 		return nil, invalidf("prediction_id must be a prediction-store id (prediction_000001)")
 	}
-	if _, err := s.db.Exec("UPDATE runs SET prediction_id=?, note=?, updated_at=? WHERE id=?", run.PredictionID, run.Note, s.unixNow(), id); err != nil {
+	if _, err := s.db.Exec("UPDATE runs SET prediction_id=$1, note=$2, updated_at=$3 WHERE id=$4", run.PredictionID, run.Note, s.unixNow(), id); err != nil {
 		return nil, err
 	}
 	return s.GetRun(id)

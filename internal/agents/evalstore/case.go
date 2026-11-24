@@ -103,11 +103,10 @@ func insertCase(tx *sql.Tx, suite *Suite, c *Case, now int64) (string, error) {
 		`suite_id, source_kind, source_ref, system_prompt, user_prompt, original_model_id, original_answer, original_usage_known,
 		 original_input_tokens, original_cache_read_tokens, original_cache_write_tokens, original_output_tokens, original_duration_ms,
 		 original_at, features, created_at, expected_answer`,
-		"?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?",
 		suite.ID, c.SourceKind, c.SourceRef, c.SystemPrompt, c.UserPrompt, c.OriginalModelID, nullableRaw(c.OriginalAnswer), boolToInt(c.OriginalUsageKnown),
 		c.OriginalInputTokens, c.OriginalCacheReadTokens, c.OriginalCacheWriteTokens, c.OriginalOutputTokens, nullableInt(c.OriginalDurationMs),
 		c.OriginalAt, mustJSON(features), now, nullableRaw(c.ExpectedAnswer))
-	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: cases.suite_id") {
+	if violatesConstraint(err, "cases_one_per_source") {
 		return "", conflictf("suite %s already has a case from %s %s", suite.ID, c.SourceKind, c.SourceRef)
 	}
 	return id, err
@@ -161,7 +160,7 @@ func (s *Store) PatchCase(id string, patch CasePatch) (*Case, error) {
 	}
 	c.ExpectedAnswer = patch.ExpectedAnswer
 	features := checkers[suite.CheckerName].Features(c)
-	if _, err := s.db.Exec("UPDATE cases SET expected_answer = ?, features = ? WHERE id = ?", string(patch.ExpectedAnswer), mustJSON(features), id); err != nil {
+	if _, err := s.db.Exec("UPDATE cases SET expected_answer = $1, features = $2 WHERE id = $3", string(patch.ExpectedAnswer), mustJSON(features), id); err != nil {
 		return nil, fmt.Errorf("update case %s: %w", id, err)
 	}
 	return s.GetCase(id)
@@ -169,7 +168,7 @@ func (s *Store) PatchCase(id string, patch CasePatch) (*Case, error) {
 
 // GetCase reads one case with its prompts and original answer.
 func (s *Store) GetCase(id string) (*Case, error) {
-	c, err := scanCase(s.db.QueryRow("SELECT "+caseSummaryColumns+", system_prompt, user_prompt, original_answer, expected_answer FROM cases WHERE id = ?", id), true)
+	c, err := scanCase(s.db.QueryRow("SELECT "+caseSummaryColumns+", system_prompt, user_prompt, original_answer, expected_answer FROM cases WHERE id = $1", id), true)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: case %s", ErrNotFound, id)
 	}
@@ -181,7 +180,7 @@ func (s *Store) ListCases(suiteID string) ([]*Case, error) {
 	if _, err := s.GetSuite(suiteID); err != nil {
 		return nil, err
 	}
-	return s.queryCases("SELECT "+caseSummaryColumns+" FROM cases WHERE suite_id = ? ORDER BY seq", false, suiteID)
+	return s.queryCases("SELECT "+caseSummaryColumns+" FROM cases WHERE suite_id = $1 ORDER BY seq", false, suiteID)
 }
 
 // casesWithBodies reads the named cases with their prompts, in the order

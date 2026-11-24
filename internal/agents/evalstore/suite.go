@@ -205,7 +205,6 @@ func (s *Store) CreateSuite(suite *Suite) (*Suite, error) {
 		id, err = insertWithID(tx, "suites", suiteIDPrefix,
 			`name, description, task_kind, judge_instructions, judge_failure_kinds, output_schema, max_tokens, judge_max_tokens,
 			 checker_name, baseline_model_id, weekly_calls_source, cost_model, created_at, updated_at`,
-			"?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?",
 			suite.Name, suite.Description, suite.TaskKind, suite.JudgeInstructions, mustJSON(suite.JudgeFailureKinds), string(suite.OutputSchema),
 			suite.MaxTokens, suite.JudgeMaxTokens, suite.CheckerName, suite.BaselineModelID, mustJSON(suite.WeeklyCallsSource), mustJSON(suite.CostModel), now, now)
 		return err
@@ -218,7 +217,7 @@ func (s *Store) CreateSuite(suite *Suite) (*Suite, error) {
 
 // GetSuite reads one suite.
 func (s *Store) GetSuite(id string) (*Suite, error) {
-	suite, err := scanSuite(s.db.QueryRow("SELECT "+suiteColumns+" FROM suites WHERE id = ?", id))
+	suite, err := scanSuite(s.db.QueryRow("SELECT "+suiteColumns+" FROM suites WHERE id = $1", id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: suite %s", ErrNotFound, id)
 	}
@@ -264,8 +263,8 @@ func (s *Store) PatchSuite(id string, patch SuitePatch) (*Suite, error) {
 	if err := suite.validate(); err != nil {
 		return nil, err
 	}
-	_, err = s.db.Exec(`UPDATE suites SET name=?, description=?, task_kind=?, judge_instructions=?, judge_failure_kinds=?, output_schema=?,
-		max_tokens=?, judge_max_tokens=?, checker_name=?, baseline_model_id=?, weekly_calls_source=?, cost_model=?, updated_at=? WHERE id=?`,
+	_, err = s.db.Exec(`UPDATE suites SET name=$1, description=$2, task_kind=$3, judge_instructions=$4, judge_failure_kinds=$5, output_schema=$6,
+		max_tokens=$7, judge_max_tokens=$8, checker_name=$9, baseline_model_id=$10, weekly_calls_source=$11, cost_model=$12, updated_at=$13 WHERE id=$14`,
 		suite.Name, suite.Description, suite.TaskKind, suite.JudgeInstructions, mustJSON(suite.JudgeFailureKinds), string(suite.OutputSchema),
 		suite.MaxTokens, suite.JudgeMaxTokens, suite.CheckerName, suite.BaselineModelID, mustJSON(suite.WeeklyCallsSource), mustJSON(suite.CostModel),
 		s.unixNow(), id)
@@ -282,13 +281,13 @@ func (s *Store) DeleteSuite(id string) error {
 		return err
 	}
 	var runs int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM runs WHERE suite_id = ?", id).Scan(&runs); err != nil {
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM runs WHERE suite_id = $1", id).Scan(&runs); err != nil {
 		return err
 	}
 	if runs > 0 {
 		return conflictf("suite %s has %d runs; delete them first", id, runs)
 	}
-	_, err := s.db.Exec("DELETE FROM suites WHERE id = ?", id)
+	_, err := s.db.Exec("DELETE FROM suites WHERE id = $1", id)
 	return err
 }
 

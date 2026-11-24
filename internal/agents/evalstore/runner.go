@@ -32,6 +32,10 @@ type Runner struct {
 	usage    UsageReader
 	defaults RunDefaults
 
+	// runsOffReason, when set, says why this process starts no run: StartRun
+	// refuses with ErrRunsOff, and every other route still answers.
+	runsOffReason string
+
 	mutex   sync.Mutex
 	going   map[string]*goingRun
 	waiting sync.WaitGroup
@@ -50,6 +54,10 @@ func NewRunner(store *Store, caller ModelCaller, catalog ModelCatalog, usage Usa
 	return &Runner{store: store, caller: caller, catalog: catalog, usage: usage, defaults: defaults,
 		going: map[string]*goingRun{}, shutdown: shutdown, cancelShutdown: cancel}
 }
+
+// SwitchRunsOff makes the runner refuse to start or resume a run, saying why.
+// Call it before the runner serves a request.
+func (r *Runner) SwitchRunsOff(reason string) { r.runsOffReason = reason }
 
 // Close ends every going run without canceling the calls in flight on the
 // bridge: they finish there, and a resumed run collects them by their
@@ -131,6 +139,9 @@ func (r *Runner) CreateRun(ctx context.Context, request NewRun) (*Run, error) {
 // and verdicts that are missing are made. retryFailed also makes again the
 // ones that failed, under a new idempotency key.
 func (r *Runner) StartRun(id string, retryFailed bool) (*Run, error) {
+	if r.runsOffReason != "" {
+		return nil, fmt.Errorf("%w: run %s cannot start here: %s", ErrRunsOff, id, r.runsOffReason)
+	}
 	run, err := r.store.GetRun(id)
 	if err != nil {
 		return nil, err
@@ -148,7 +159,7 @@ func (r *Runner) StartRun(id string, retryFailed bool) (*Run, error) {
 		organizationID = r.defaults.OrganizationID
 	}
 	if organizationID == "" {
-		return nil, invalidf("run %s names no organization and EVAL_STORE_ORGANIZATION_ID is not set: the bridge needs a principal-store group to bill", id)
+		return nil, invalidf("run %s names no organization and eval_store.organization_id is not set: the bridge needs a principal-store group to bill", id)
 	}
 	if err := r.store.markRunStarted(id, organizationID); err != nil {
 		return nil, err
@@ -527,11 +538,11 @@ func (s *Store) RunProgress(runID string) (RunProgress, error) {
 	}
 	progress := RunProgress{Cases: len(run.CaseIDs), AnswersExpected: len(run.CaseIDs) * len(run.CandidateModelIDs),
 		VerdictsExpected: len(run.CaseIDs) * len(run.JudgeModelIDs)}
-	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(error != ''), 0) FROM answers WHERE run_id = ?`, runID).
+	if err := s.db.QueryRow(`SELECT COUNT(*), COUNT(*) FILTER (WHERE error != '') FROM answers WHERE run_id = $1`, runID).
 		Scan(&progress.AnswersRecorded, &progress.AnswerErrors); err != nil {
 		return RunProgress{}, err
 	}
-	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(error != ''), 0), COALESCE(SUM(error = '' AND valid = 0), 0) FROM verdicts WHERE run_id = ?`, runID).
+	if err := s.db.QueryRow(`SELECT COUNT(*), COUNT(*) FILTER (WHERE error != ''), COUNT(*) FILTER (WHERE error = '' AND valid = 0) FROM verdicts WHERE run_id = $1`, runID).
 		Scan(&progress.VerdictsRecorded, &progress.VerdictErrors, &progress.VerdictsMalformed); err != nil {
 		return RunProgress{}, err
 	}

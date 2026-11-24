@@ -73,8 +73,8 @@ func (s *Store) saveAnswer(a *Answer) error {
 func (s *Store) saveAnswerIn(tx *sql.Tx, a *Answer) error {
 	values := []any{a.Origin, a.Attempt, nullableRaw(a.Parsed), a.Error, a.InputTokens, a.CacheReadTokens, a.CacheWriteTokens, a.OutputTokens,
 		boolToInt(a.UsageKnown), nullableInt(a.DurationMs), a.OperationID, a.AnsweredBy}
-	result, err := tx.Exec(`UPDATE answers SET origin=?, attempt=?, parsed=?, error=?, input_tokens=?, cache_read_tokens=?, cache_write_tokens=?,
-		output_tokens=?, usage_known=?, duration_ms=?, operation_id=?, answered_by=? WHERE run_id=? AND case_id=? AND model_id=?`,
+	result, err := tx.Exec(`UPDATE answers SET origin=$1, attempt=$2, parsed=$3, error=$4, input_tokens=$5, cache_read_tokens=$6, cache_write_tokens=$7,
+		output_tokens=$8, usage_known=$9, duration_ms=$10, operation_id=$11, answered_by=$12 WHERE run_id=$13 AND case_id=$14 AND model_id=$15`,
 		append(values, a.RunID, a.CaseID, a.ModelID)...)
 	if err != nil {
 		return fmt.Errorf("save answer: %w", err)
@@ -85,7 +85,6 @@ func (s *Store) saveAnswerIn(tx *sql.Tx, a *Answer) error {
 	_, err = insertWithID(tx, "answers", answerIDPrefix,
 		`run_id, case_id, model_id, origin, attempt, parsed, error, input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
 		 usage_known, duration_ms, operation_id, answered_by, created_at`,
-		"?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?",
 		append(append([]any{a.RunID, a.CaseID, a.ModelID}, values...), s.unixNow())...)
 	if err != nil {
 		return fmt.Errorf("save answer: %w", err)
@@ -101,14 +100,14 @@ type AnswerFilter struct {
 
 // ListAnswers reads a run's answers in case and model order.
 func (s *Store) ListAnswers(runID string, filter AnswerFilter) ([]*Answer, error) {
-	query, arguments := "SELECT "+answerColumns+" FROM answers WHERE run_id = ?", []any{runID}
+	query, arguments := "SELECT "+answerColumns+" FROM answers WHERE run_id = $1", []any{runID}
 	if filter.CaseID != "" {
-		query += " AND case_id = ?"
 		arguments = append(arguments, filter.CaseID)
+		query += fmt.Sprintf(" AND case_id = $%d", len(arguments))
 	}
 	if filter.ModelID != "" {
-		query += " AND model_id = ?"
 		arguments = append(arguments, filter.ModelID)
+		query += fmt.Sprintf(" AND model_id = $%d", len(arguments))
 	}
 	rows, err := s.db.Query(query+" ORDER BY seq", arguments...)
 	if err != nil {
@@ -239,13 +238,12 @@ func (s *Store) saveVerdictIn(tx *sql.Tx, v *Verdict) error {
 	values := []any{v.JudgeProvider, v.Attempt, mustJSON(v.LabelMapping), nullableRaw(v.Parsed), boolToInt(v.Valid), v.InvalidReason, v.Error,
 		v.InputTokens, v.OutputTokens, nullableInt(v.DurationMs), v.OperationID}
 	var id string
-	err := tx.QueryRow("SELECT id FROM verdicts WHERE run_id=? AND case_id=? AND judge_model_id=?", v.RunID, v.CaseID, v.JudgeModelID).Scan(&id)
+	err := tx.QueryRow("SELECT id FROM verdicts WHERE run_id=$1 AND case_id=$2 AND judge_model_id=$3", v.RunID, v.CaseID, v.JudgeModelID).Scan(&id)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		id, err = insertWithID(tx, "verdicts", verdictIDPrefix,
 			`run_id, case_id, judge_model_id, judge_provider, attempt, label_mapping, parsed, valid, invalid_reason, error, input_tokens,
 			 output_tokens, duration_ms, operation_id, created_at`,
-			"?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?",
 			append(append([]any{v.RunID, v.CaseID, v.JudgeModelID}, values...), s.unixNow())...)
 		if err != nil {
 			return fmt.Errorf("save verdict: %w", err)
@@ -253,18 +251,18 @@ func (s *Store) saveVerdictIn(tx *sql.Tx, v *Verdict) error {
 	case err != nil:
 		return err
 	default:
-		if _, err := tx.Exec(`UPDATE verdicts SET judge_provider=?, attempt=?, label_mapping=?, parsed=?, valid=?, invalid_reason=?, error=?,
-			input_tokens=?, output_tokens=?, duration_ms=?, operation_id=? WHERE id=?`, append(values, id)...); err != nil {
+		if _, err := tx.Exec(`UPDATE verdicts SET judge_provider=$1, attempt=$2, label_mapping=$3, parsed=$4, valid=$5, invalid_reason=$6, error=$7,
+			input_tokens=$8, output_tokens=$9, duration_ms=$10, operation_id=$11 WHERE id=$12`, append(values, id)...); err != nil {
 			return fmt.Errorf("save verdict: %w", err)
 		}
-		if _, err := tx.Exec("DELETE FROM verdict_candidates WHERE verdict_id = ?", id); err != nil {
+		if _, err := tx.Exec("DELETE FROM verdict_candidates WHERE verdict_id = $1", id); err != nil {
 			return err
 		}
 	}
 	v.ID = id
 	for _, c := range v.Candidates {
 		if _, err := tx.Exec(`INSERT INTO verdict_candidates (verdict_id, model_id, label, rank, acceptable, failure_kind, reason)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`, id, c.ModelID, c.Label, c.Rank, boolToInt(c.Acceptable), c.FailureKind, c.Reason); err != nil {
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, id, c.ModelID, c.Label, c.Rank, boolToInt(c.Acceptable), c.FailureKind, c.Reason); err != nil {
 			return fmt.Errorf("save verdict line: %w", err)
 		}
 	}
@@ -282,14 +280,14 @@ type VerdictFilter struct {
 
 // ListVerdicts reads a run's verdicts with their candidate lines.
 func (s *Store) ListVerdicts(runID string, filter VerdictFilter) ([]*Verdict, error) {
-	query, arguments := "SELECT "+verdictColumns+" FROM verdicts WHERE run_id = ?", []any{runID}
+	query, arguments := "SELECT "+verdictColumns+" FROM verdicts WHERE run_id = $1", []any{runID}
 	if filter.CaseID != "" {
-		query += " AND case_id = ?"
 		arguments = append(arguments, filter.CaseID)
+		query += fmt.Sprintf(" AND case_id = $%d", len(arguments))
 	}
 	if filter.JudgeModelID != "" {
-		query += " AND judge_model_id = ?"
 		arguments = append(arguments, filter.JudgeModelID)
+		query += fmt.Sprintf(" AND judge_model_id = $%d", len(arguments))
 	}
 	rows, err := s.db.Query(query+" ORDER BY seq", arguments...)
 	if err != nil {
@@ -321,7 +319,7 @@ func (s *Store) ListVerdicts(runID string, filter VerdictFilter) ([]*Verdict, er
 		return nil, err
 	}
 	lines, err := s.db.Query(`SELECT c.verdict_id, c.model_id, c.label, c.rank, c.acceptable, c.failure_kind, c.reason
-		FROM verdict_candidates c JOIN verdicts v ON v.id = c.verdict_id WHERE v.run_id = ? ORDER BY c.verdict_id, c.rank`, runID)
+		FROM verdict_candidates c JOIN verdicts v ON v.id = c.verdict_id WHERE v.run_id = $1 ORDER BY c.verdict_id COLLATE "C", c.rank`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -354,11 +352,11 @@ type CheckResult struct {
 
 func (s *Store) replaceChecks(runID string, results []CheckResult) error {
 	return s.inTransaction(func(tx *sql.Tx) error {
-		if _, err := tx.Exec("DELETE FROM checks WHERE run_id = ?", runID); err != nil {
+		if _, err := tx.Exec("DELETE FROM checks WHERE run_id = $1", runID); err != nil {
 			return err
 		}
 		for _, r := range results {
-			if _, err := tx.Exec(`INSERT INTO checks (run_id, case_id, model_id, check_name, passed, count, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			if _, err := tx.Exec(`INSERT INTO checks (run_id, case_id, model_id, check_name, passed, count, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 				runID, r.CaseID, r.ModelID, r.CheckName, boolToInt(r.Passed), r.Count, r.Detail); err != nil {
 				return fmt.Errorf("save check %s: %w", r.CheckName, err)
 			}
@@ -370,7 +368,7 @@ func (s *Store) replaceChecks(runID string, results []CheckResult) error {
 // ListChecks reads a run's check results.
 func (s *Store) ListChecks(runID string) ([]CheckResult, error) {
 	rows, err := s.db.Query(`SELECT k.run_id, k.case_id, k.model_id, k.check_name, k.passed, k.count, k.detail
-		FROM checks k JOIN cases c ON c.id = k.case_id WHERE k.run_id = ? ORDER BY c.seq, k.model_id, k.check_name`, runID)
+		FROM checks k JOIN cases c ON c.id = k.case_id WHERE k.run_id = $1 ORDER BY c.seq, k.model_id COLLATE "C", k.check_name COLLATE "C"`, runID)
 	if err != nil {
 		return nil, err
 	}

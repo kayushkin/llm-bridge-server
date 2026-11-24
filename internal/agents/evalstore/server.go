@@ -426,6 +426,8 @@ func writeStoreError(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrConflict):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrRunsOff):
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 	default:
 		log.Printf("request failed: %v", err)
 		writeError(w, http.StatusInternalServerError, err.Error())

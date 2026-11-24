@@ -10,24 +10,39 @@ package evalstore
 
 import (
 	"database/sql"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
-//go:embed schema.sql
-var schemaSQL string
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the store keeps its records in, with
+// the migrations that build them. Cases hold real mail: only this module's
+// role, and the login that provisions it, can read the schema.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
+	if err != nil {
+		return postgresstorage.Module{}, err
+	}
+	return postgresstorage.Module{Schema: "evaluations", Role: "evaluations_module", Migrations: migrations}, nil
+}
 
 var (
 	ErrNotFound = errors.New("not found")
 	ErrInvalid  = errors.New("invalid")
 	ErrConflict = errors.New("conflict")
+	// ErrRunsOff: this process makes no model calls for runs, so a run can be
+	// created and read but not started or resumed.
+	ErrRunsOff = errors.New("runs are off")
 )
 
 func invalidf(format string, arguments ...any) error {
@@ -41,105 +56,23 @@ func conflictf(format string, arguments ...any) error {
 // Id prefixes. The prefix keeps an id from looking like a uuid, which
 // noteboard already claims in dash's resolver, and says what the id names.
 const (
-	suiteIDPrefix   = "eval_suite_"
-	caseIDPrefix    = "eval_case_"
-	runIDPrefix     = "eval_run_"
-	answerIDPrefix  = "eval_answer_"
-	verdictIDPrefix = "eval_verdict_"
+	suiteIDPrefix   = "eval_suite"
+	caseIDPrefix    = "eval_case"
+	runIDPrefix     = "eval_run"
+	answerIDPrefix  = "eval_answer"
+	verdictIDPrefix = "eval_verdict"
 )
 
-func formatID(prefix string, seq int64) string { return fmt.Sprintf("%s%06d", prefix, seq) }
-
-// Store owns the database.
+// Store keeps the records in the module's schema. The server provisions,
+// migrates and opens the module, then hands the pool to New.
 type Store struct {
-	db      *sql.DB
-	dataDir string
+	db *sql.DB
 	// now is the clock; tests replace it.
 	now func() time.Time
 }
 
-const databaseFileName = "eval-store.db"
-
-// Open creates the data directory (mode 700) and the database file (mode
-// 600) if needed, opens it and applies the schema. Cases hold real prompts,
-// so a directory or file anyone else can read is refused rather than used.
-func Open(dataDir string) (*Store, error) {
-	if dataDir == "" {
-		return nil, errors.New("open: no data directory given")
-	}
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create data directory: %w", err)
-	}
-	if err := requirePrivateMode(dataDir, 0o700); err != nil {
-		return nil, err
-	}
-	databasePath := filepath.Join(dataDir, databaseFileName)
-	file, err := os.OpenFile(databasePath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("create database file: %w", err)
-	}
-	file.Close()
-	if err := requirePrivateMode(databasePath, 0o600); err != nil {
-		return nil, err
-	}
-	// Transactions begin IMMEDIATE: a run records answers from several
-	// goroutines, and a transaction that reads before it writes would otherwise
-	// fail with "database is locked" when two upgrade at once.
-	db, err := sql.Open("sqlite3", databasePath+"?_foreign_keys=on&_busy_timeout=10000&_journal_mode=WAL&_txlock=immediate")
-	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
-	}
-	if _, err := db.Exec(schemaSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-	if err := addMissingColumns(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return &Store{db: db, dataDir: dataDir, now: time.Now}, nil
-}
-
-// columnsAddedAfterCreation are columns schema.sql declares that a database
-// created before them lacks. CREATE TABLE IF NOT EXISTS leaves an existing
-// table alone, so each is added here when missing.
-var columnsAddedAfterCreation = []struct{ table, column, definition string }{
-	{"cases", "expected_answer", "TEXT"},
-}
-
-func addMissingColumns(db *sql.DB) error {
-	for _, added := range columnsAddedAfterCreation {
-		var count int
-		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", added.table, added.column).Scan(&count); err != nil {
-			return fmt.Errorf("read columns of %s: %w", added.table, err)
-		}
-		if count > 0 {
-			continue
-		}
-		if _, err := db.Exec("ALTER TABLE " + added.table + " ADD COLUMN " + added.column + " " + added.definition); err != nil {
-			return fmt.Errorf("add column %s.%s: %w", added.table, added.column, err)
-		}
-	}
-	return nil
-}
-
-// requirePrivateMode refuses a path that group or others can reach.
-func requirePrivateMode(path string, want os.FileMode) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("%s has mode %v; it holds real prompts and must be %v (chmod %o %s)", path, info.Mode().Perm(), want, want, path)
-	}
-	return nil
-}
-
-// Close releases the database handle.
-func (s *Store) Close() error { return s.db.Close() }
-
-// DataDir is the directory the database lives in.
-func (s *Store) DataDir() string { return s.dataDir }
+// New returns the store over db, the module's pool from postgresstorage.Open.
+func New(db *sql.DB) *Store { return &Store{db: db, now: time.Now} }
 
 func (s *Store) unixNow() int64 { return s.now().Unix() }
 
@@ -150,23 +83,35 @@ type queryer interface {
 	QueryRow(query string, arguments ...any) *sql.Row
 }
 
-// insertWithID inserts a row whose id is derived from its sequence: insert
-// with an empty id, then set the real one. It takes a transaction because the
-// empty id is unique too, so two of these may not interleave.
-func insertWithID(q *sql.Tx, table, prefix, columns, placeholders string, arguments ...any) (string, error) {
-	result, err := q.Exec(fmt.Sprintf("INSERT INTO %s (id, %s) VALUES ('', %s)", table, columns, placeholders), arguments...)
-	if err != nil {
-		return "", err
+// insertWithID inserts a row whose id is derived from its sequence number:
+// it takes the number from the table's identity first, so the row is written
+// once, whole.
+func insertWithID(tx *sql.Tx, table, prefix, columns string, arguments ...any) (string, error) {
+	var seq int64
+	if err := tx.QueryRow("SELECT nextval(pg_get_serial_sequence($1, 'seq'))", table).Scan(&seq); err != nil {
+		return "", fmt.Errorf("numbering a row of %s: %w", table, err)
 	}
-	seq, err := result.LastInsertId()
-	if err != nil {
-		return "", err
+	id := postgresstorage.FormatRecordID(prefix, seq)
+	placeholders := make([]string, len(arguments))
+	for index := range arguments {
+		placeholders[index] = fmt.Sprintf("$%d", index+3)
 	}
-	id := formatID(prefix, seq)
-	if _, err := q.Exec(fmt.Sprintf("UPDATE %s SET id = ? WHERE seq = ?", table), id, seq); err != nil {
+	statement := fmt.Sprintf("INSERT INTO %s (seq, id, %s) OVERRIDING SYSTEM VALUE VALUES ($1, $2, %s)", table, columns, strings.Join(placeholders, ", "))
+	if _, err := tx.Exec(statement, append([]any{seq, id}, arguments...)...); err != nil {
 		return "", err
 	}
 	return id, nil
+}
+
+// uniqueViolation is Postgres's error code for a row a unique constraint
+// refuses.
+const uniqueViolation = "23505"
+
+// violatesConstraint says whether err is the unique constraint named refusing
+// a row.
+func violatesConstraint(err error, constraint string) bool {
+	var postgresError *pgconn.PgError
+	return errors.As(err, &postgresError) && postgresError.Code == uniqueViolation && postgresError.ConstraintName == constraint
 }
 
 func (s *Store) inTransaction(work func(tx *sql.Tx) error) error {

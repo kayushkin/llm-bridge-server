@@ -4,24 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 // Every fixture here is synthetic. Cases in a real database hold real mail;
 // none of it may reach the repository.
 
+// openTestStore gives the test an empty store on a Postgres database of its
+// own.
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(filepath.Join(t.TempDir(), "data"))
+	module, err := Module()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("eval-store module: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
-	return store
+	return New(postgrestest.NewDatabase(t, module).Open(module))
 }
 
 const (

@@ -47,7 +47,7 @@ func (s *Store) ImportOperations(ctx context.Context, suiteID string, request Im
 		return nil, err
 	}
 	if source == nil {
-		return nil, invalidf("EVAL_STORE_LLM_BRIDGE_URL is not set, so there are no operations to import")
+		return nil, invalidf("this eval-store was given no llm-bridge-server, so there are no operations to import")
 	}
 	if request.Type == "" {
 		request.Type = string(msg.OperationTypeLLMCompletion)
@@ -64,7 +64,7 @@ func (s *Store) ImportOperations(ctx context.Context, suiteID string, request Im
 	}
 	result := &ImportOperationsResult{Matched: len(receipts), Imported: []string{}, SchemaDiffers: []string{}}
 	existing := map[string]bool{}
-	cases, err := s.queryCases("SELECT "+caseSummaryColumns+" FROM cases WHERE suite_id = ? AND source_kind = ?", false, suite.ID, SourceKindLLMBridgeOperation)
+	cases, err := s.queryCases("SELECT "+caseSummaryColumns+" FROM cases WHERE suite_id = $1 AND source_kind = $2", false, suite.ID, SourceKindLLMBridgeOperation)
 	if err != nil {
 		return nil, err
 	}

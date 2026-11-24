@@ -3,39 +3,9 @@ package evalstore
 import (
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func TestTheDatabaseIsPrivateAndAReadableDirectoryIsRefused(t *testing.T) {
-	directory := filepath.Join(t.TempDir(), "data")
-	store, err := Open(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.Close()
-	for path, want := range map[string]os.FileMode{directory: 0o700, filepath.Join(directory, databaseFileName): 0o600} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != want {
-			t.Errorf("%s has mode %v, want %v", path, info.Mode().Perm(), want)
-		}
-	}
-	open := filepath.Join(t.TempDir(), "open")
-	if err := os.MkdirAll(open, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(open, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Open(open); err == nil {
-		t.Fatal("Open accepted a directory others can read")
-	}
-}
 
 func TestSuiteValidationNamesEveryProblem(t *testing.T) {
 	store := openTestStore(t)

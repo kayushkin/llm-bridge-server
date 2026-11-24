@@ -24,7 +24,7 @@ type fakeBridge struct {
 	reads      map[string]int
 	finish     func(intent msg.OperationIntent, receipt *msg.OperationReceipt)
 	refuseNext bool
-	canceled  []string
+	canceled   []string
 }
 
 func newFakeBridge(finish func(msg.OperationIntent, *msg.OperationReceipt)) (*fakeBridge, *httptest.Server) {
@@ -81,7 +81,7 @@ func succeedWithAnswer(intent msg.OperationIntent, receipt *msg.OperationReceipt
 }
 
 func testBridgeClient(url string) *BridgeClient {
-	return &BridgeClient{BaseURL: url, ServiceToken: "synthetic-service-token", PollInterval: time.Millisecond}
+	return &BridgeClient{BaseURL: url, PollInterval: time.Millisecond, HTTP: http.DefaultClient}
 }
 
 func TestTheBridgeClientCallsAsAnInternalServiceAndReadsTheReceipt(t *testing.T) {
@@ -98,7 +98,7 @@ func TestTheBridgeClientCallsAsAnInternalServiceAndReadsTheReceipt(t *testing.T)
 		t.Errorf("outcome %+v", outcome)
 	}
 	header := bridge.headers[0]
-	if header.Get("X-LLM-Bridge-Service-Token") != "synthetic-service-token" || header.Get("X-Principal-Id") != "" {
+	if header.Get("X-LLM-Bridge-Service-Token") != "" || header.Get("X-Principal-Id") != "" || header.Get("Authorization") != "" {
 		t.Errorf("headers %v", header)
 	}
 	for _, intent := range bridge.intents {
@@ -148,9 +148,9 @@ func TestTheBridgeClientCancelsATimedOutCallButNotOneItsCallerLeft(t *testing.T)
 	}
 }
 
-func TestTheBridgeClientRefusesToCallWithoutTheServiceToken(t *testing.T) {
+func TestTheBridgeClientRefusesToCallWithNoServerToCall(t *testing.T) {
 	client := &BridgeClient{BaseURL: "http://127.0.0.1:1"}
-	if _, err := client.Complete(context.Background(), CompletionRequest{Timeout: time.Second}); err == nil || !strings.Contains(err.Error(), "LLMBRIDGE_SERVICE_TOKEN") {
+	if _, err := client.Complete(context.Background(), CompletionRequest{Timeout: time.Second}); err == nil || !strings.Contains(err.Error(), "no llm-bridge-server") {
 		t.Errorf("Complete = %v", err)
 	}
 }

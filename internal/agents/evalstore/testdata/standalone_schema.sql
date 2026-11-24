@@ -1,3 +1,6 @@
+-- The schema of a standalone eval-store's SQLite file, as its last version
+-- wrote it, for the import tests. Every row the tests put in it is made up.
+
 -- eval-store: judged runs of several models on a fixed set of real model calls.
 --
 -- Every id is a prefix and a six-digit sequence (eval_suite_000001), assigned

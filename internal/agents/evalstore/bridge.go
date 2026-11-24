@@ -54,22 +54,21 @@ type ModelCaller interface {
 // A run stops on it rather than failing every remaining call the same way.
 var ErrBridgeBudgetRefused = errors.New("llm-bridge-server refused the call for budget")
 
-// BridgeClient speaks to llm-bridge-server's operations API as an internal
-// service, as scheduler does: the service token alone, acting as no
-// principal. Each call is billed to the organization the intent names.
+// BridgeClient speaks to llm-bridge-server's operations API as its internal
+// service, acting as no principal, as scheduler does. eval-store runs inside
+// llm-bridge-server, so HTTP serves each request with that server's own
+// routes in this process, as the internal service, and no credential is sent:
+// whoever builds the client decides what it reaches. Each call is billed to
+// the organization the intent names.
 type BridgeClient struct {
 	BaseURL      string
-	ServiceToken string
 	PollInterval time.Duration
 	HTTP         *http.Client
 }
 
 func (b *BridgeClient) configured() error {
-	switch {
-	case b.BaseURL == "":
-		return errors.New("EVAL_STORE_LLM_BRIDGE_URL is not set, so there is no llm-bridge-server to call")
-	case b.ServiceToken == "":
-		return errors.New("LLMBRIDGE_SERVICE_TOKEN is not set, so llm-bridge-server would answer 401")
+	if b.BaseURL == "" || b.HTTP == nil {
+		return errors.New("this eval-store was given no llm-bridge-server to call")
 	}
 	return nil
 }
@@ -82,12 +81,7 @@ func (b *BridgeClient) do(ctx context.Context, method, path string, body []byte)
 		return 0, nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-LLM-Bridge-Service-Token", b.ServiceToken)
-	client := b.HTTP
-	if client == nil {
-		client = http.DefaultClient
-	}
-	response, err := client.Do(request)
+	response, err := b.HTTP.Do(request)
 	if err != nil {
 		return 0, nil, fmt.Errorf("%s %s: %w", method, path, err)
 	}

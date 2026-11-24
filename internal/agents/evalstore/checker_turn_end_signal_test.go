@@ -1,11 +1,8 @@
 package evalstore
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -158,41 +155,6 @@ func TestACaseKeepsItsExpectedAnswerAndABadOneIsRefused(t *testing.T) {
 		UserPrompt: syntheticFilingPrompt("e1"), ExpectedAnswer: json.RawMessage(`{"kind":"neither"}`)})
 	if !errors.Is(err, ErrInvalid) {
 		t.Errorf("expectation on a suite whose checker reads none = %v, want invalid", err)
-	}
-}
-
-// A database made before expected_answer existed gets the column on open,
-// and its cases read back with none.
-func TestOpenAddsExpectedAnswerToAnOlderDatabase(t *testing.T) {
-	dataDir := filepath.Join(t.TempDir(), "data")
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	databasePath := filepath.Join(dataDir, databaseFileName)
-	older, err := sql.Open("sqlite3", databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := older.Exec(strings.Replace(schemaSQL, "  expected_answer              TEXT,\n", "", 1)); err != nil {
-		t.Fatal(err)
-	}
-	var count int
-	if err := older.QueryRow("SELECT COUNT(*) FROM pragma_table_info('cases') WHERE name = 'expected_answer'").Scan(&count); err != nil || count != 0 {
-		t.Fatalf("the older schema already has the column (%d, %v); the test no longer builds an older database", count, err)
-	}
-	older.Close()
-	if err := os.Chmod(databasePath, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err := Open(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	c := addEmailCase(t, store, emailSuite(t, store), "old")
-	if c.ExpectedAnswer != nil {
-		t.Errorf("expected_answer = %s, want none", c.ExpectedAnswer)
 	}
 }
 

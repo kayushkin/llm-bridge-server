@@ -50,7 +50,7 @@ type ModelStoreClient struct {
 // fields are missing gets Known false; nothing is guessed.
 func (m *ModelStoreClient) Models(ctx context.Context) (map[string]ModelPrice, error) {
 	if m.BaseURL == "" {
-		return nil, errors.New("EVAL_STORE_MODEL_STORE_URL is not set, so model prices cannot be read")
+		return nil, errors.New("this eval-store was given no model-store, so model prices cannot be read")
 	}
 	var rows []struct {
 		ID         string   `json:"id"`
@@ -82,7 +82,7 @@ type UsageStoreClient struct {
 // Limits reads the current usage of every subscription.
 func (u *UsageStoreClient) Limits(ctx context.Context) (UsageLimits, error) {
 	if u.BaseURL == "" {
-		return nil, errors.New("EVAL_STORE_USAGE_STORE_URL is not set, so the budget cannot be checked")
+		return nil, errors.New("this eval-store was given no usage-store, so the budget cannot be checked")
 	}
 	var limits UsageLimits
 	if err := getJSON(ctx, u.HTTP, strings.TrimRight(u.BaseURL, "/")+"/api/usage/limits", &limits); err != nil {
@@ -146,7 +146,7 @@ func getJSON(ctx context.Context, client *http.Client, endpoint string, target a
 	return nil
 }
 
-// ParseBudgetLimits reads the default_budget_limits setting's
+// ParseBudgetLimits reads the eval_store.default_budget_limits setting's
 // subscription.window:percent pairs, in a stable order.
 func ParseBudgetLimits(pairs map[string]string) ([]BudgetLimit, error) {
 	keys := make([]string, 0, len(pairs))

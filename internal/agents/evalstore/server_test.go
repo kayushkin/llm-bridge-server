@@ -128,3 +128,27 @@ func TestStoppingARunThatIsNotGoingIsAConflict(t *testing.T) {
 	server, _ := testServer(t)
 	request(t, http.MethodPost, server.URL+"/runs/eval_run_000001/stop", "", http.StatusConflict)
 }
+
+func TestARunCannotStartWhileRunsAreOffAndEverythingElseStillAnswers(t *testing.T) {
+	server, runner := testServer(t)
+	runner.SwitchRunsOff("a setting is off")
+	base := server.URL
+	var suite Suite
+	json.Unmarshal(request(t, http.MethodPost, base+"/suites", syntheticSuiteJSON, http.StatusCreated), &suite)
+	body := mustJSON(map[string]any{"source_kind": SourceKindLLMBridgeOperation, "source_ref": "operation_off", "system_prompt": "File mail.",
+		"user_prompt": syntheticFilingPrompt("e-off"), "original_model_id": "model-original"})
+	request(t, http.MethodPost, base+"/suites/"+suite.ID+"/cases", body, http.StatusCreated)
+	var run Run
+	json.Unmarshal(request(t, http.MethodPost, base+"/runs", mustJSON(map[string]any{"suite_id": suite.ID,
+		"candidate_model_ids": []string{"model-small", "model-large"}, "judge_model_ids": []string{"judge-a"}, "case_selection": map[string]string{"mode": "all"}}), http.StatusCreated), &run)
+	refusal := request(t, http.MethodPost, base+"/runs/"+run.ID+"/start", "", http.StatusServiceUnavailable)
+	if !strings.Contains(string(refusal), "a setting is off") {
+		t.Errorf("the refusal does not say why: %s", refusal)
+	}
+	request(t, http.MethodPost, base+"/runs/"+run.ID+"/resume", "", http.StatusServiceUnavailable)
+	var read Run
+	json.Unmarshal(request(t, http.MethodGet, base+"/runs/"+run.ID, "", http.StatusOK), &read)
+	if read.Status != RunStatusCreated {
+		t.Errorf("a refused run moved to %s", read.Status)
+	}
+}

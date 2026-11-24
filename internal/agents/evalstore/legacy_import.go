@@ -205,7 +205,7 @@ func (s *Store) ImportLegacyBench(ctx context.Context, dir string, catalog Model
 	err = s.inTransaction(func(tx *sql.Tx) error {
 		for _, c := range cases {
 			var existing string
-			err := tx.QueryRow("SELECT id FROM cases WHERE source_kind = ? AND source_ref = ?", SourceKindClaudeCodeTranscript, c.ID).Scan(&existing)
+			err := tx.QueryRow("SELECT id FROM cases WHERE source_kind = $1 AND source_ref = $2", SourceKindClaudeCodeTranscript, c.ID).Scan(&existing)
 			if err == nil {
 				return conflictf("the bench is already imported: its case %s is %s", c.ID, existing)
 			}
@@ -232,7 +232,6 @@ func (s *Store) ImportLegacyBench(ctx context.Context, dir string, catalog Model
 			suiteID, err := insertWithID(tx, "suites", suiteIDPrefix,
 				`name, description, task_kind, judge_instructions, judge_failure_kinds, output_schema, max_tokens, judge_max_tokens,
 				 checker_name, baseline_model_id, weekly_calls_source, cost_model, created_at, updated_at`,
-				"?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?",
 				suite.Name, suite.Description, suite.TaskKind, suite.JudgeInstructions, mustJSON(suite.JudgeFailureKinds), string(suite.OutputSchema),
 				suite.MaxTokens, suite.JudgeMaxTokens, suite.CheckerName, suite.BaselineModelID, mustJSON(suite.WeeklyCallsSource), mustJSON(suite.CostModel), now, now)
 			if err != nil {
