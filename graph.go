@@ -217,12 +217,17 @@ func worktreesByBranch(ctx context.Context, repositoryPath string) (map[string]s
 	return byBranch, nil
 }
 
+// branchSessionsQuery reads one repo's ref updates that a session made, the
+// earliest first. It is read by index ref_updates_by_repo_store_id, which
+// also holds its order.
+const branchSessionsQuery = `SELECT ref, session_id, hook, git_subcommand, recorded_at_unix_nano FROM ref_updates
+	WHERE repo_store_id = ? AND session_id != '' AND ref != 'HEAD' ORDER BY recorded_at_unix_nano ASC, id ASC`
+
 // BranchSessions returns, for each branch ref of a repo, the sessions that
 // moved it or checked it out, the earliest first. Updates no session made are
 // left out.
 func (store *Store) BranchSessions(repoStoreID int64) (map[string][]BranchSession, error) {
-	rows, err := store.database.Query(`SELECT ref, session_id, hook, git_subcommand, recorded_at_unix_nano FROM ref_updates
-		WHERE repo_store_id = ? AND session_id != '' AND ref != 'HEAD' ORDER BY recorded_at_unix_nano ASC, id ASC`, repoStoreID)
+	rows, err := store.database.Query(branchSessionsQuery, repoStoreID)
 	if err != nil {
 		return nil, err
 	}

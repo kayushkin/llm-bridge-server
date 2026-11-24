@@ -20,3 +20,7 @@ CREATE TABLE IF NOT EXISTS ref_updates (
 CREATE INDEX IF NOT EXISTS ref_updates_by_session ON ref_updates (session_id, recorded_at_unix_nano);
 CREATE INDEX IF NOT EXISTS ref_updates_by_repository ON ref_updates (repository_path, recorded_at_unix_nano);
 CREATE INDEX IF NOT EXISTS ref_updates_by_new_sha ON ref_updates (new_sha);
+-- A repo's graph reads every update of that repo in time order. Most rows
+-- belong to clones repo-store does not know (NULL), so without this index
+-- each graph scans the whole table for a few hundred rows.
+CREATE INDEX IF NOT EXISTS ref_updates_by_repo_store_id ON ref_updates (repo_store_id, recorded_at_unix_nano, id);
