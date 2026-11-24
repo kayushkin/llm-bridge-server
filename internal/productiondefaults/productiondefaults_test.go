@@ -7,16 +7,16 @@ import (
 
 func TestUsedByConfigFieldReportsOnlyProductionAddresses(t *testing.T) {
 	used := UsedByConfigField(map[string]string{
-		"LogStoreURL":        LogStoreURL,
+		"HealthcheckURL":     HealthcheckURL,
 		"PermissionStoreURL": "http://localhost:0",
 		"DBPath":             "/tmp/whatever/test.db",
 	})
 
 	if len(used) != 1 {
-		t.Fatalf("used = %v, want exactly LogStoreURL", used)
+		t.Fatalf("used = %v, want exactly HealthcheckURL", used)
 	}
-	if used["LogStoreURL"] != LogStoreURL {
-		t.Errorf("used[LogStoreURL] = %q, want %q", used["LogStoreURL"], LogStoreURL)
+	if used["HealthcheckURL"] != HealthcheckURL {
+		t.Errorf("used[HealthcheckURL] = %q, want %q", used["HealthcheckURL"], HealthcheckURL)
 	}
 }
 
@@ -25,8 +25,8 @@ func TestUsedByConfigFieldReportsOnlyProductionAddresses(t *testing.T) {
 // package has no opinion about is not evidence either way.
 func TestUsedByConfigFieldIgnoresFieldsItDoesNotGuard(t *testing.T) {
 	used := UsedByConfigField(map[string]string{
-		"PublicURL":     LogStoreURL,
-		"AgentStoreURL": LogStoreURL,
+		"PublicURL":     HealthcheckURL,
+		"AgentStoreURL": HealthcheckURL,
 		"ImagesDir":     "images",
 	})
 	if len(used) != 0 {
@@ -40,7 +40,7 @@ func TestPanicIfUsedUnderTestIsQuietWhenNothingPointsAtProduction(t *testing.T) 
 			t.Fatalf("panicked on a clean config: %v", recovered)
 		}
 	}()
-	PanicIfUsedUnderTest(map[string]string{"LogStoreURL": "http://localhost:0"})
+	PanicIfUsedUnderTest(map[string]string{"HealthcheckURL": "http://localhost:0"})
 }
 
 func TestPanicMessageListsEveryLeakedFieldInAStableOrder(t *testing.T) {
@@ -51,20 +51,20 @@ func TestPanicMessageListsEveryLeakedFieldInAStableOrder(t *testing.T) {
 		}
 		message := recovered.(string)
 		mailstack := strings.Index(message, "MailstackURL")
-		logStore := strings.Index(message, "LogStoreURL")
-		if mailstack < 0 || logStore < 0 {
-			t.Fatalf("message names %d of 2 leaked fields:\n%s", 2-btoi(mailstack < 0)-btoi(logStore < 0), message)
+		healthcheck := strings.Index(message, "HealthcheckURL")
+		if mailstack < 0 || healthcheck < 0 {
+			t.Fatalf("message names %d of 2 leaked fields:\n%s", 2-btoi(mailstack < 0)-btoi(healthcheck < 0), message)
 		}
 		// Sorted by field name, so the same two leaks always read the same
 		// way and a diff of two failures is meaningful.
-		if logStore > mailstack {
+		if healthcheck > mailstack {
 			t.Errorf("fields are not sorted by name:\n%s", message)
 		}
 	}()
 
 	PanicIfUsedUnderTest(map[string]string{
-		"MailstackURL": MailstackURL,
-		"LogStoreURL":  LogStoreURL,
+		"MailstackURL":   MailstackURL,
+		"HealthcheckURL": HealthcheckURL,
 	})
 }
 

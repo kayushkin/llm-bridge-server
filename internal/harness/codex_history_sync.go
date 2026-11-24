@@ -69,7 +69,7 @@ func (m *Manager) SyncCodexHistory(ctx context.Context, bridgeID string) (int, e
 		return 0, nil
 	}
 	// Refuse a second destination for an already imported native transcript.
-	held, err := m.logStore.SessionsHoldingHarnessSessionID(sess.HarnessSessionID)
+	held, err := m.sessionEventLog().SessionsHoldingHarnessSessionID(sess.HarnessSessionID)
 	if err != nil {
 		return 0, err
 	}
@@ -78,7 +78,7 @@ func (m *Manager) SyncCodexHistory(ctx context.Context, bridgeID string) (int, e
 			return 0, fmt.Errorf("Codex transcript already belongs to %s", holder.SessionID)
 		}
 	}
-	existing, err := m.logStore.ListEvents(bridgeID, 0, nil)
+	existing, err := m.sessionEventLog().ListEvents(bridgeID, 0, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -95,7 +95,7 @@ func (m *Manager) SyncCodexHistory(ctx context.Context, bridgeID string) (int, e
 		ev.BridgeSessionID = bridgeID
 		// Make the canonical transcript durable first. If an acknowledgement is
 		// lost, the next attempt re-reads log-store and skips this exact record.
-		if _, err := m.logStore.PushEvent(*ev); err != nil {
+		if _, err := m.sessionEventLog().PushEvent(*ev); err != nil {
 			return i, err
 		}
 		data, err := json.Marshal(ev)

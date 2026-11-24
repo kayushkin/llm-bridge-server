@@ -28,9 +28,8 @@
 #   prediction-store, repo-store, work-graph-store and file-store in its own
 #   process, in Postgres modules, each under /<store>/ (kanban-store under
 #   /kanban/ and /kanban-store/), with file-store's bytes under
-#   data/file-store; and reference-store, which keeps no records, at
-#   /reference-store/
-#   log-store, a unit of its own
+#   data/file-store; log-store, the session event log, under /log-store/;
+#   and reference-store, which keeps no records, at /reference-store/
 #   a Postgres of its own (llm-bridge-test-postgres), data under data/postgres,
 #   on 127.0.0.1 and a socket inside the folder, holding database bridge for
 #   the server's login bridge_server, which may create roles
@@ -57,10 +56,10 @@ set -euo pipefail
 ROOT="${BRIDGE_TEST_INSTANCE_DIR:-$HOME/.local/opt/llm-bridge-test}"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_PREFIX="llm-bridge-test"
-STORES=(log-store)
+STORES=()
 # The stores the server now holds, which an older instance ran as units of its
 # own. Only install's import and the unit clean-up name them.
-RETIRED_STORES=(principal-store grant-store tool-store permission-store kanban-store reference-store)
+RETIRED_STORES=(principal-store grant-store tool-store permission-store kanban-store reference-store log-store)
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 POSTGRES_BIN="${BRIDGE_TEST_POSTGRES_BIN:-/usr/lib/postgresql/18/bin}"
 # The login the server provisions its Postgres modules as, and its database.
@@ -195,6 +194,7 @@ retired_store_database() { # <store>
     permission-store) echo "$ROOT/data/permission-store.db" ;;
     kanban-store)     echo "$ROOT/data/kanban-store.db" ;;
     reference-store)  ;;
+    log-store)        echo "$ROOT/data/log-store.db" ;;
     *)                echo "$ROOT/home/.config/$1/$1.db" ;;
   esac
 }
@@ -268,12 +268,11 @@ install_instance() {
     grep -q "^$1=" "$ROOT/env/ports.env" || echo "$1=$2" >> "$ROOT/env/ports.env"
   }
   add_port BRIDGE_PORT "$base"
-  add_port LOG_STORE_PORT $((base + 15))
   # A real Postgres is on 5432, below the server's port, so there is no offset
   # to keep; 18432 says which it is.
   add_port POSTGRES_PORT $((base + 272))
   # The retired stores' ports go: nothing listens on them any more.
-  sed -i -E '/^(TOOL_STORE|PRINCIPAL_STORE|GRANT_STORE|PERMISSION_STORE|KANBAN_STORE|REFERENCE_STORE)_PORT=/d' "$ROOT/env/ports.env"
+  sed -i -E '/^(TOOL_STORE|PRINCIPAL_STORE|GRANT_STORE|PERMISSION_STORE|KANBAN_STORE|REFERENCE_STORE|LOG_STORE)_PORT=/d' "$ROOT/env/ports.env"
   load_settings
   local nowhere="http://127.0.0.1:1"
 
@@ -308,7 +307,6 @@ LLMBRIDGE_CONFORMANCE_PATH=$ROOT/data/conformance.json
 LLMBRIDGE_IMAGES_DIR=$ROOT/data/images
 LLMBRIDGE_SESSION_FILES_DIR=$ROOT/data/session-files
 LLMBRIDGE_RUNNER_ASSETS_DIR=$ROOT/runner-assets
-LLMBRIDGE_LOG_STORE_URL=http://127.0.0.1:$LOG_STORE_PORT
 LLMBRIDGE_SKILL_STORE_DATA_DIRECTORY=$ROOT/data/skill-store
 LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_URL=$nowhere
 AUTH_STORE_URL=$nowhere
@@ -319,11 +317,6 @@ EOF
 
   # One file per store: a store refuses to start when a variable carrying its
   # own prefix is set that it does not declare.
-  cat > "$ROOT/env/log-store.env" <<EOF
-LOG_STORE_LISTEN_ADDR=127.0.0.1:$LOG_STORE_PORT
-LOG_STORE_DB_PATH=$ROOT/data/log-store.db
-LOG_STORE_LOGSTACK_URL=$nowhere
-EOF
   # The files of the stores the server now holds.
   rm -f "$ROOT/env/stores.env" "$ROOT/env/tool-store.env" "$ROOT/env/principal-store.env" "$ROOT/env/grant-store.env" "$ROOT/env/permission-store.env" \
     "$ROOT/env/kanban-store.env" "$ROOT/env/kanban-store-secrets.env" \
@@ -387,10 +380,6 @@ EOF
   import_retired_stores
   remove_retired_store_units
 
-  step "starting log-store"
-  systemctl --user enable --now "$UNIT_PREFIX-log-store.service" >/dev/null 2>&1
-  wait_for log-store "http://127.0.0.1:$LOG_STORE_PORT/health"
-
   step "starting the server"
   systemctl --user enable --now "$UNIT_PREFIX.service" >/dev/null 2>&1
   wait_for "the server" "$BASE/health"
@@ -431,7 +420,7 @@ EOF
 status_instance() {
   load_settings
   echo "test instance in $ROOT"
-  for unit in "$UNIT_PREFIX" "$UNIT_PREFIX-runner" "$UNIT_PREFIX-postgres" $(printf "$UNIT_PREFIX-%s " "${STORES[@]}"); do
+  for unit in "$UNIT_PREFIX" "$UNIT_PREFIX-runner" "$UNIT_PREFIX-postgres" $(for store in "${STORES[@]}"; do printf "%s-%s " "$UNIT_PREFIX" "$store"; done); do
     printf '  %-36s %s\n' "$unit" "$(systemctl --user is-active "$unit.service" 2>/dev/null || true)"
   done
   echo "  server:     $BASE   (front end: $BASE/ui/)"

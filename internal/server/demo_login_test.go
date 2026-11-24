@@ -212,7 +212,6 @@ func demoLoginTestServer(t *testing.T, principalStoreURL string, kanban *fakeKan
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(directory, "images"),
 		BridgePrefsPath: filepath.Join(directory, "prefs.json"),
-		LogStoreURL:     "http://localhost:0",
 	}
 	testAuthorizationConfig(cfg)
 	server := New(bridgeStore, nil, nil, nil, nil, testModelStore(t), nil, cfg)
@@ -591,7 +590,6 @@ func TestNewRefusesAServerThatCouldNotIdentifyACaller(t *testing.T) {
 			New(bridgeStore, nil, nil, nil, nil, testModelStore(t), nil, &config.Config{
 				ImagesDir:           filepath.Join(directory, "images"),
 				BridgePrefsPath:     filepath.Join(directory, "prefs.json"),
-				LogStoreURL:         "http://localhost:0",
 				DemoLoginSigningKey: credentials.signingKey,
 				ServiceToken:        credentials.serviceToken,
 			})

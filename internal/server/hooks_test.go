@@ -33,7 +33,6 @@ func testServerWithHookStore(t *testing.T) (*Server, *hookstore.Store) {
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		LogStoreURL:     "http://localhost:0",
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, hks, nil, nil, cfg)

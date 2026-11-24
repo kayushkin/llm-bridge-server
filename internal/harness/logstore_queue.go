@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net"
@@ -8,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	logstore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/client"
 	"github.com/kayushkin/llm-bridge/msg"
-	logstore "github.com/kayushkin/log-store/client"
 )
 
 // logStoreQueueDepth bounds how many events may sit unwritten per session.
@@ -323,7 +324,22 @@ func (q *logStoreQueue) pushOrDrop(label string, ev msg.Event) {
 // stream delta corrupts a transcript in a way a missing one does not.
 // Everything else — connection refused, reset, EOF before a response,
 // 5xx — means log-store stored nothing, so a retry cannot duplicate.
+//
+// In process the same two cases read differently: a rejection is an
+// *EventRejectedError, and a push that outlived its time is
+// context.DeadlineExceeded, which may have been stored too. A log that is not
+// enabled is final as well: nothing will enable it under a running queue.
 func whyNotToRetryLogStorePush(err error) string {
+	var rejected *logstore.EventRejectedError
+	if errors.As(err, &rejected) {
+		return "log-store rejected it, so re-sending the same event cannot help"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "the write outlived its time, so log-store may already hold it and a retry could store it twice"
+	}
+	if errors.Is(err, ErrSessionEventLogNotEnabled) {
+		return "this server has no session event log enabled"
+	}
 	var status *logstore.StatusError
 	if errors.As(err, &status) {
 		if status.StatusCode < 500 {

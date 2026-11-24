@@ -378,8 +378,12 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /api/runner/enroll":                    runnerRoute("runner enrollment; the handler checks the single-use passphrase"),
 	"GET /api/runner/install.sh":                 runnerRoute("bootstrap script fetched by a machine before it has a runner token"),
 	"GET /api/runner/binary":                     runnerRoute("runner and harness binaries fetched by a machine during bootstrap"),
-	"/api/agent-store/":                          runnerRoute("seed proxy for runners; the handler authenticates the runner's bearer token"),
-	"/api/harness-proxy/{harness}/{rest...}":     harnessCallbackRoute("harness backend proxy for wrappers on runners; unauthenticated today (noteboard card f4e5e1ef)"),
+	// log-store, mounted in this process: every event of every session, with no
+	// owner on a row it could narrow by, and an ingest route that writes into
+	// any session. The bridge's own session routes answer a principal from it.
+	"/log-store/":                            operatorRoute("log-store holds every session's events and takes events into any session, and has no owner on a row to narrow an answer by"),
+	"/api/agent-store/":                      runnerRoute("seed proxy for runners; the handler authenticates the runner's bearer token"),
+	"/api/harness-proxy/{harness}/{rest...}": harnessCallbackRoute("harness backend proxy for wrappers on runners; unauthenticated today (noteboard card f4e5e1ef)"),
 
 	// Sessions.
 	"POST /sessions":              {class: routePrincipalCreatesSession, sessionAgentAccess: sessionAgentCreatesItsDelegate, reason: "a principal creates sessions as itself, and a session's agent its delegates as its own session's principal"},
