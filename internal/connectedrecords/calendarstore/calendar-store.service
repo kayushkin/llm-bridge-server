@@ -1,0 +1,20 @@
+[Unit]
+Description=calendar-store — calendar events as their calendars wrote them, and who each was with
+After=network.target
+
+# A systemd user unit: install it to ~/.config/systemd/user/ and the binary to
+# ~/bin. %h is the user's home directory, so nothing here names a user.
+[Service]
+Type=simple
+ExecStart=%h/bin/calendar-store
+
+# Loopback, deliberately. A calendar is private and the service has no auth
+# of its own; put a front door that adds it in front.
+Environment=CALENDAR_STORE_ADDR=127.0.0.1:8342
+
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
