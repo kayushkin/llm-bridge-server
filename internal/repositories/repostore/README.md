@@ -1,5 +1,7 @@
 # repo-store
 
+> **In llm-bridge-server.** This package is repo-store moved into the bridge: its routes are served under `/repo-store/` (operator routes), its records are in the Postgres module `repos`, and `llm-bridge-server import-repo-store -sqlite <copy>` copies a standalone store's file in. The pull-request sync runs in the bridge only with `repo_store.pull_request_sync.enabled`. Where this README says `:8306`, SQLite or the unit, it describes the standalone service.
+
 A small Go service that keeps the canonical registry of **repositories and
 their detected signature** — the stable answer to *"what is this repo?"*
 (languages, frameworks, build tools, test tools) as a flat set of tags — plus

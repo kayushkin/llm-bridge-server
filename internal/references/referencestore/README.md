@@ -1,5 +1,7 @@
 # reference-store
 
+> **In llm-bridge-server.** This package is reference-store moved into the bridge, served under `/reference-store/`: the catalog is open, and lookups run as the verified caller from the request context. It looks up the stores the bridge runs in process, and the rest over HTTP at `reference_store.service_urls`. The type list stays in code (`types.go`); there is no table of types. Where this README says `:8343`, `X-Principal-Id` or a service token, it describes the standalone service.
+
 What an id written in prose names, who may see it, and where its page is.
 
 Chats and pages draw ids such as `prediction_000012`, `repo:dash` or `dash@8487d32` as chips. reference-store holds the one list of those reference types — how each id looks, which service owns it, which field names a record, a few fields worth showing, its page — and looks ids up in the stores that own them, for a caller, under that caller's access.

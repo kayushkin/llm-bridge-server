@@ -54,23 +54,22 @@ BACKUP_BIN="$SYSTEM_BIN.backup-$STAMP"
 mkdir -p "$HOME/.cache"
 BUILD_DIR="$(mktemp -d "$HOME/.cache/llm-bridge-build.XXXXXX")"
 BACKUP_DROPIN=""
-# file-store.conf gives the server file-store's address and token (session files).
-# Tracked separately because a rollback must also take it AWAY when this run is the
-# one that added it: a binary from before session files refuses to start on
-# LLMBRIDGE_FILE_STORE_URL, an LLMBRIDGE_ variable it does not declare, and does not
-# strip FILE_STORE_SERVICE_TOKEN from its harness children.
+# file-store.conf gave an older server file-store's address and token (session
+# files). file-store now runs in this server, and this binary refuses to start
+# on LLMBRIDGE_FILE_STORE_URL, so the deploy removes the drop-in; a rollback
+# puts back the one it backed up, which the older binary needs.
 FILE_STORE_DROPIN="$DROPIN_DIR/file-store.conf"
 BACKUP_FILE_STORE_DROPIN=""
-# session-actions.conf gives the server repo-store's and the scheduler's
-# addresses, read from their own units, for the deploy and scheduler job
-# actions. Rolled back the same way, and for the same reason: a binary from
-# before session actions refuses to start on LLMBRIDGE_REPO_STORE_URL.
+# session-actions.conf gives the server the scheduler's address, read from its
+# own unit, for the scheduler job actions; repo-store runs in this server. Rolled
+# back the same way: an older binary needs LLMBRIDGE_REPO_STORE_URL, which this
+# one refuses.
 SESSION_ACTIONS_DROPIN="$DROPIN_DIR/session-actions.conf"
 BACKUP_SESSION_ACTIONS_DROPIN=""
-# reference-store.conf gives the server reference-store's address, read from
-# reference-store's own unit, for the /reference-store/ proxy. It is required,
-# so it is read before the stop; rolled back the same way, because a binary
-# from before the proxy refuses to start on LLMBRIDGE_REFERENCE_STORE_URL.
+# reference-store.conf gave an older server reference-store's address for the
+# /reference-store/ proxy. reference-store now runs in this server, and this
+# binary refuses to start on LLMBRIDGE_REFERENCE_STORE_URL, so the deploy
+# removes the drop-in; a rollback puts back the one it backed up.
 REFERENCE_STORE_DROPIN="$DROPIN_DIR/reference-store.conf"
 BACKUP_REFERENCE_STORE_DROPIN=""
 # chat-links.conf gives the server multichat's address and the NATS multichat
@@ -245,14 +244,6 @@ if [ -f "$CHAT_LINKS_DROPIN" ]; then
   BACKUP_CHAT_LINKS_DROPIN="$CHAT_LINKS_DROPIN.backup-$STAMP"
   sudo cp -p "$CHAT_LINKS_DROPIN" "$BACKUP_CHAT_LINKS_DROPIN"
   echo "    chat-links drop-in -> $BACKUP_CHAT_LINKS_DROPIN"
-fi
-
-# reference-store's address, from its own unit. Required at startup, so a
-# missing one stops the deploy here, before the service is touched.
-REFERENCE_STORE_ADDR="$(grep -oP '^Environment=REFERENCE_STORE_ADDR=\K.*' "$HOME/.config/systemd/user/reference-store.service" 2>/dev/null || true)"
-if [ -z "$REFERENCE_STORE_ADDR" ]; then
-  echo "ERROR: no REFERENCE_STORE_ADDR in reference-store's unit; deploy reference-store first. The service was not touched"
-  exit 1
 fi
 
 # Every route but /health is gated. The idle wait below and the readiness poll
@@ -447,44 +438,15 @@ rm -f "$TMP_DROPIN"
 # Remove the hand-rolled drop-in left over from before deploy.sh owned this.
 sudo rm -f "$DROPIN_DIR/path.conf"
 
-# Session files: file-store's address from file-store's own unit, and its token from
-# its own host-local file -- never the shared principal-gating file. Either missing
-# leaves session files off (their routes answer 503) rather than failing the deploy.
-FILE_STORE_TOKENS="$HOME/.config/file-store-tokens.env"
-FILE_STORE_UNIT="$HOME/.config/systemd/user/file-store.service"
-FILE_STORE_ADDR="$(grep -oP '^Environment=FILE_STORE_ADDR=\K.*' "$FILE_STORE_UNIT" 2>/dev/null || true)"
-if [ -f "$FILE_STORE_TOKENS" ] && [ -n "$FILE_STORE_ADDR" ]; then
-  if [ "$(stat -c '%a' "$FILE_STORE_TOKENS")" != "600" ]; then
-    echo "ERROR: $FILE_STORE_TOKENS must be mode 600: its token reads every file file-store holds."
-    rollback
-    exit 1
-  fi
-  TMP_FILE_STORE_DROPIN=$(mktemp)
-  printf '[Service]\nEnvironmentFile=%s\nEnvironment=LLMBRIDGE_FILE_STORE_URL=http://%s\n' \
-    "$FILE_STORE_TOKENS" "$FILE_STORE_ADDR" > "$TMP_FILE_STORE_DROPIN"
-  sudo cp "$TMP_FILE_STORE_DROPIN" "$FILE_STORE_DROPIN"
-  rm -f "$TMP_FILE_STORE_DROPIN"
-  echo "    file-store drop-in: LLMBRIDGE_FILE_STORE_URL=http://$FILE_STORE_ADDR, token from $FILE_STORE_TOKENS"
-else
-  echo "WARNING: no $FILE_STORE_TOKENS or no FILE_STORE_ADDR in $FILE_STORE_UNIT; session files stay off"
-  sudo rm -f "$FILE_STORE_DROPIN"
-fi
+# Session files: file-store runs in this server, so the drop-in that gave an
+# older binary its address and token goes.
+sudo rm -f "$FILE_STORE_DROPIN"
 
-# The deploy and scheduler job actions need repo-store's and the scheduler's
-# addresses; each is read from that service's own unit, never written here.
-REPO_STORE_ADDR="$(grep -oP '^Environment=REPO_STORE_ADDR=\K.*' "$HOME/.config/systemd/user/repo-store.service" 2>/dev/null || true)"
+# The scheduler job actions need the scheduler's address, read from its own
+# unit, never written here. The deploy actions read repo-store in this server.
 SCHEDULER_PORT="$(grep -oP '^Environment=SCHEDULER_PORT=\K.*' "$HOME/.config/systemd/user/scheduler.service" 2>/dev/null || true)"
 TMP_SESSION_ACTIONS_DROPIN=$(mktemp)
 printf '[Service]\n' > "$TMP_SESSION_ACTIONS_DROPIN"
-if [ -n "$REPO_STORE_ADDR" ]; then
-  # REPO_STORE_ADDR is a listen address such as :8306; an empty host is this machine.
-  REPO_STORE_HOST_PORT="$REPO_STORE_ADDR"
-  case "$REPO_STORE_HOST_PORT" in :*) REPO_STORE_HOST_PORT="localhost$REPO_STORE_HOST_PORT" ;; esac
-  printf 'Environment=LLMBRIDGE_REPO_STORE_URL=http://%s\n' "$REPO_STORE_HOST_PORT" >> "$TMP_SESSION_ACTIONS_DROPIN"
-  echo "    session-actions drop-in: LLMBRIDGE_REPO_STORE_URL=http://$REPO_STORE_HOST_PORT"
-else
-  echo "WARNING: no REPO_STORE_ADDR in repo-store's unit; deploy actions are refused"
-fi
 if [ -n "$SCHEDULER_PORT" ]; then
   printf 'Environment=LLMBRIDGE_SCHEDULER_URL=http://localhost:%s\n' "$SCHEDULER_PORT" >> "$TMP_SESSION_ACTIONS_DROPIN"
   echo "    session-actions drop-in: LLMBRIDGE_SCHEDULER_URL=http://localhost:$SCHEDULER_PORT"
@@ -494,8 +456,9 @@ fi
 sudo cp "$TMP_SESSION_ACTIONS_DROPIN" "$SESSION_ACTIONS_DROPIN"
 rm -f "$TMP_SESSION_ACTIONS_DROPIN"
 
-printf '[Service]\nEnvironment=LLMBRIDGE_REFERENCE_STORE_URL=http://%s\n' "$REFERENCE_STORE_ADDR" | sudo tee "$REFERENCE_STORE_DROPIN" >/dev/null
-echo "    reference-store drop-in: LLMBRIDGE_REFERENCE_STORE_URL=http://$REFERENCE_STORE_ADDR"
+# reference-store runs in this server, so the drop-in that gave an older
+# binary its address goes.
+sudo rm -f "$REFERENCE_STORE_DROPIN"
 
 # Chat links: multichat's port and the NATS it publishes messaging.inbound on,
 # both from multichat's own unit, and people-store's address from its unit,
