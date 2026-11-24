@@ -799,7 +799,7 @@ func TestListSessionSummaries_CarriesTheWorkingDirectory(t *testing.T) {
 	}
 }
 
-// The principal axis narrows to the sessions started as one principal, '' to
+// The principal axis narrows to the sessions started as one principal, ” to
 // those started as none, and the counts by principal agree with it.
 func TestListSessionSummaries_PrincipalAxisAndCounts(t *testing.T) {
 	s := testStore(t)

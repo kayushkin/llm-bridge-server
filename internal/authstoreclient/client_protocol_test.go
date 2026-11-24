@@ -174,7 +174,7 @@ func TestResolveRoutesCarryTheHeadersKeyAccessDemands(t *testing.T) {
 // used to send the header only when a reason was supplied, and no CRUD call
 // supplies one, so every credential llm-bridge-server created or deleted was
 // anonymous in the credential vault's audit log. Confirmed against a real
-// auth-store: two rows, action=create and action=delete, both app=''.
+// auth-store: two rows, action=create and action=delete, both app=”.
 //
 // list and get are covered too. auth-store does not audit them today, so
 // those two cases pin a cheap consistency rather than a known defect: one

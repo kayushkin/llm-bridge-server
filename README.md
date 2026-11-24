@@ -321,6 +321,12 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/machines/{id}` | One machine (harness-store) | operator |
 | `PUT` | `/machines/{id}` | Change a machine (harness-store) | operator |
 | `PUT` | `/machines/{id}/computer-use` | Switch computer use on or off for a machine's sessions (`{"allowed": bool}`) | operator |
+| `GET` | `/machines/{id}/disk-usage` | A runner machine's drives, its scans, its deletion in progress and its recorded deletions | operator |
+| `POST` | `/machines/{id}/disk-usage/deletion-checks` | Whether an entry may be deleted, why not and what to know first; deletes nothing (`{"path"}`) | operator |
+| `GET` | `/machines/{id}/disk-usage/deletions` | Every recorded deletion on a machine, newest first | operator |
+| `POST` | `/machines/{id}/disk-usage/deletions` | Delete a file or folder on a runner machine for good, recorded first (`{"path","kind","confirmation_name","expected_size_bytes"}`) | operator |
+| `GET` | `/machines/{id}/disk-usage/entries` | An entry of a drive's latest scan and the entries directly inside it, largest first (`?path=C:\`) | operator |
+| `POST` | `/machines/{id}/disk-usage/scans` | Start a scan of one of a runner machine's drives (`{"drive":"C:"}`) | operator |
 | `GET` | `/machines/{id}/stats/history` | A machine's health readings over a time range, grouped into steps | operator |
 
 ### Hooks

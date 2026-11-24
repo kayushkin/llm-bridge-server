@@ -39,6 +39,12 @@ type RunnerRegistry struct {
 	// machineStatsReceiver gets each machine_stats frame, filed under the
 	// machine the runner's token belongs to. Nil drops them.
 	machineStatsReceiver func(machineID string, stats msg.MachineStats)
+
+	// diskUsageDeletionReceiver records a deletion a runner reports
+	// finished; disconnectReceiver is told when a runner connection closes.
+	// Nil drops them (runner_disk_usage.go).
+	diskUsageDeletionReceiver func(machineID string, deletion msg.DiskUsageDeletion)
+	disconnectReceiver        func(machineID string)
 }
 
 // SetMachineStatsReceiver sets what receives runners' machine stats.
@@ -109,6 +115,11 @@ type RunnerConnection struct {
 	mu       sync.Mutex
 	sessions map[string]*RunnerProcess // sessionID → RunnerProcess
 	closed   bool
+
+	// diskUsageWaiters holds a channel per disk-usage request awaiting its
+	// answer; closedSignal closes with the connection, ending every wait.
+	diskUsageWaiters map[string]chan *msg.DiskUsageAnswer
+	closedSignal     chan struct{}
 }
 
 // MachineName getter for external use.
@@ -161,6 +172,9 @@ func (c *RunnerConnection) close() {
 		return
 	}
 	c.closed = true
+	if c.closedSignal != nil {
+		close(c.closedSignal)
+	}
 	sessions := make([]*RunnerProcess, 0, len(c.sessions))
 	for _, p := range c.sessions {
 		sessions = append(sessions, p)
@@ -173,6 +187,12 @@ func (c *RunnerConnection) close() {
 		p.closeEvents()
 	}
 	c.registry.deregister(c)
+	c.registry.mu.RLock()
+	disconnected := c.registry.disconnectReceiver
+	c.registry.mu.RUnlock()
+	if disconnected != nil {
+		disconnected(c.MachineID)
+	}
 }
 
 // AcceptRunner wraps a freshly-upgraded WebSocket. The caller has already
@@ -201,6 +221,8 @@ func (r *RunnerRegistry) AcceptRunner(ctx context.Context, conn *websocket.Conn,
 		registry:    r,
 		outgoing:    make(chan *msg.RunnerMessage, runnerOutgoingBuffer),
 		sessions:    make(map[string]*RunnerProcess),
+
+		closedSignal: make(chan struct{}),
 	}
 
 	if prev := r.register(rc); prev != nil {
@@ -277,6 +299,8 @@ func (c *RunnerConnection) reader() error {
 			_ = c.Send(&msg.RunnerMessage{Type: msg.RunnerMsgPong})
 		case msg.RunnerMsgMachineStats:
 			c.handleMachineStats(&m)
+		case msg.RunnerMsgDiskUsage:
+			c.handleDiskUsage(&m)
 		default:
 			log.Printf("[runner-server] unexpected message from %s: %s", c.MachineName, m.Type)
 		}
