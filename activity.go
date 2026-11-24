@@ -26,12 +26,15 @@ const (
 	ActivityNoteCompleted       = "note_completed"
 	ActivitySuggestionAccepted  = "suggestion_accepted"
 	ActivitySuggestionDismissed = "suggestion_dismissed"
+	ActivityGoalCreated         = "goal_created"
+	ActivityGoalStateChanged    = "goal_state_changed"
+	ActivityGoalLinkAdded       = "goal_link_added"
 )
 
 // ActivityKinds lists every kind of activity event.
 var ActivityKinds = []string{ActivityProjectChanged, ActivityLinkAdded, ActivityCommitLanded, ActivityDeployed,
 	ActivityPullRequestOpened, ActivityPullRequestMerged, ActivityPullRequestClosed, ActivityNoteCompleted,
-	ActivitySuggestionAccepted, ActivitySuggestionDismissed}
+	ActivitySuggestionAccepted, ActivitySuggestionDismissed, ActivityGoalCreated, ActivityGoalStateChanged, ActivityGoalLinkAdded}
 
 // ActivityEvent is one thing that happened in a project. Kind says which of
 // the other fields are set; the rest are empty.
@@ -55,18 +58,23 @@ type ActivityEvent struct {
 	PullRequestTitle  string `json:"pull_request_title"`
 	URL               string `json:"url"`
 
-	// Field, OldValue and NewValue describe a project_changed event.
+	// Field, OldValue and NewValue describe a project_changed event, and a
+	// goal_state_changed one (field state).
 	Field    string `json:"field"`
 	OldValue string `json:"old_value"`
 	NewValue string `json:"new_value"`
 
-	// EntityType, EntityRef and Label describe a link_added event, and a
-	// note_completed one (entity_type note).
+	// EntityType, EntityRef and Label describe a link_added or goal_link_added
+	// event, and a note_completed one (entity_type note). On goal_created and
+	// goal_state_changed, Label is the goal's statement.
 	EntityType string `json:"entity_type"`
 	EntityRef  string `json:"entity_ref"`
 	Label      string `json:"label"`
 
 	SuggestionID string `json:"suggestion_id"`
+
+	// GoalID is set on goal_created, goal_state_changed and goal_link_added.
+	GoalID string `json:"goal_id"`
 }
 
 // DefaultActivityDays and MaximumActivityDays bound ?days= on the activity route.
@@ -165,6 +173,12 @@ func BuildActivity(ctx context.Context, store *Store, owners *Owners, projectID 
 		events = append(events, event)
 	}
 
+	goalEvents, err := goalActivity(store, projectID, sinceUnix)
+	if err != nil {
+		return nil, err
+	}
+	events = append(events, goalEvents...)
+
 	for _, link := range links {
 		if link.EntityType != EntityRepo {
 			continue
@@ -180,6 +194,50 @@ func BuildActivity(ctx context.Context, store *Store, owners *Owners, projectID 
 		events = append(events, repoEvents...)
 	}
 	sort.SliceStable(events, func(left, right int) bool { return events[left].At > events[right].At })
+	return events, nil
+}
+
+// goalActivity is which of a project's goals were created, which changed
+// state and what was linked to them since the given unix time. Every state
+// counts, a dismissed proposal too.
+func goalActivity(store *Store, projectID string, since int64) ([]ActivityEvent, error) {
+	events := []ActivityEvent{}
+	goals, err := store.Goals(GoalFilter{ProjectID: projectID})
+	if err != nil {
+		return nil, err
+	}
+	statementByGoal := map[string]string{}
+	for _, goal := range goals {
+		statementByGoal[goal.ID] = goal.Statement
+		if goal.CreatedAt >= since {
+			events = append(events, ActivityEvent{Kind: ActivityGoalCreated, At: goal.CreatedAt, Actor: goal.CreatedBy, GoalID: goal.ID, Label: goal.Statement})
+		}
+	}
+	changes, err := store.goalChangesOfProject(projectID)
+	if err != nil {
+		return nil, err
+	}
+	for _, change := range changes {
+		if change.Field == "state" && change.ChangedAt >= since {
+			events = append(events, ActivityEvent{Kind: ActivityGoalStateChanged, At: change.ChangedAt, Actor: change.ChangedBy, GoalID: change.GoalID,
+				Label: statementByGoal[change.GoalID], Field: change.Field, OldValue: change.OldValue, NewValue: change.NewValue})
+		}
+	}
+	links, err := store.GoalLinks(GoalLinkFilter{ProjectID: projectID})
+	if err != nil {
+		return nil, err
+	}
+	for _, link := range links {
+		if link.CreatedAt < since {
+			continue
+		}
+		event := ActivityEvent{Kind: ActivityGoalLinkAdded, At: link.CreatedAt, Actor: link.CreatedBy, GoalID: link.GoalID,
+			EntityType: link.EntityType, EntityRef: link.EntityRef, Label: link.Label}
+		if link.EntityType == EntitySession {
+			event.SessionID = link.EntityRef
+		}
+		events = append(events, event)
+	}
 	return events, nil
 }
 

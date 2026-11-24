@@ -97,3 +97,53 @@ CREATE TABLE IF NOT EXISTS session_filings (
 );
 CREATE INDEX IF NOT EXISTS session_filings_by_session ON session_filings (session_id, id);
 CREATE INDEX IF NOT EXISTS session_filings_by_status ON session_filings (status, id);
+
+-- A goal of a project: something wanted that finishes. A sub-project is a
+-- lasting area with its own repos; a goal is reached or dropped. A goal a
+-- model or agent suggested is proposed until a person accepts or dismisses it.
+CREATE TABLE IF NOT EXISTS goals (
+    id             TEXT PRIMARY KEY,              -- goal_000001
+    project_id     TEXT NOT NULL REFERENCES projects (id),
+    parent_goal_id TEXT REFERENCES goals (id),    -- a goal of the same project; NULL at the top
+    statement      TEXT NOT NULL,                 -- one sentence: what is wanted
+    done_when      TEXT NOT NULL DEFAULT '',      -- how anyone can tell it is reached
+    state          TEXT NOT NULL,                 -- proposed | open | reached | dropped | dismissed
+    priority       INTEGER NOT NULL DEFAULT 0,    -- as noteboard's: a higher number is more urgent
+    target_at      INTEGER NOT NULL DEFAULT 0,    -- unix seconds; 0 when no date is set
+    created_by     TEXT NOT NULL DEFAULT '',
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    -- Set while the goal is reached, dropped or dismissed; cleared on reopen.
+    closed_by      TEXT NOT NULL DEFAULT '',
+    closed_at      INTEGER NOT NULL DEFAULT 0,
+    closed_because TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS goals_by_project ON goals (project_id, state, id);
+
+-- Every change to a goal's own fields, oldest first.
+CREATE TABLE IF NOT EXISTS goal_changes (
+    id         INTEGER PRIMARY KEY,
+    goal_id    TEXT NOT NULL REFERENCES goals (id),
+    field      TEXT NOT NULL,
+    old_value  TEXT NOT NULL,
+    new_value  TEXT NOT NULL,
+    changed_by TEXT NOT NULL DEFAULT '',
+    changed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS goal_changes_by_goal ON goal_changes (goal_id, id);
+
+-- The work that serves a goal, each thing named by the id its own store gave
+-- it: a noteboard item (usually a todo) or a session. label is the owner's
+-- name for it when linked, for display only.
+CREATE TABLE IF NOT EXISTS goal_links (
+    id          INTEGER PRIMARY KEY,
+    goal_id     TEXT NOT NULL REFERENCES goals (id),
+    entity_type TEXT NOT NULL,                    -- note | session
+    entity_ref  TEXT NOT NULL,
+    label       TEXT NOT NULL DEFAULT '',
+    note        TEXT NOT NULL DEFAULT '',
+    created_by  TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    UNIQUE (goal_id, entity_type, entity_ref)
+);
+CREATE INDEX IF NOT EXISTS goal_links_by_entity ON goal_links (entity_type, entity_ref);
