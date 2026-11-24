@@ -90,6 +90,22 @@ func SkillStoreDataDirectory() string {
 	return filepath.Join(homeDirectory(), ".llm-bridge", "skill-store")
 }
 
+// FileStoreDataDirectory is where the file-store module keeps the bytes of
+// every file (blobs/, named by their SHA-256). It is under this server's own
+// folder, not the standalone store's ~/.config/file-store, so the module and
+// a standalone store still running beside it never purge each other's
+// blobs.
+func FileStoreDataDirectory() string {
+	return filepath.Join(homeDirectory(), ".llm-bridge", "file-store")
+}
+
+// WorkGraphHookSpoolPath is the file work-graph-store's git hook appends ref
+// updates to and the store's ingest reads. The hook reads no settings, so
+// this is the one place both agree on.
+func WorkGraphHookSpoolPath() string {
+	return filepath.Join(homeDirectory(), ".local", "state", "work-graph-store", "ref-updates.jsonl")
+}
+
 // SkillStoreInstallDirectory is where an installed skill is copied: where
 // Claude Code reads a user's skills.
 func SkillStoreInstallDirectory() string {

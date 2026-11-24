@@ -190,8 +190,6 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The URL remote runners fetch harness binaries from. Empty makes a runner use the address it reached the server on."},
 		{Key: "peer_connections.public_url", EnvironmentVariable: "LLMBRIDGE_PEER_CONNECTIONS_PUBLIC_URL", Kind: wiring, ValueType: text,
 			Description: "The https address other llm-bridge-servers reach this one at, shown beside a connection passphrase so the administrator can give both to the other server. Nothing else reads it; public_url is the address runners and this server's own agents use."},
-		{Key: "reference_store.url", EnvironmentVariable: "LLMBRIDGE_REFERENCE_STORE_URL", Kind: wiring, ValueType: text, Required: true,
-			Description: "reference-store, which says what an id written in prose names and who may see it, mounted at /reference-store/ as the caller. It has no default."},
 		{Key: "chat_links.nats_url", EnvironmentVariable: "LLMBRIDGE_NATS_URL", Kind: wiring, ValueType: text,
 			Description: "NATS, whose messaging.inbound subject multichat publishes what people send our accounts on. Chat links read it through a durable consumer. Empty switches chat links off, and their routes answer 503."},
 		{Key: "multichat.url", EnvironmentVariable: "LLMBRIDGE_MULTICHAT_URL", Kind: wiring, ValueType: text,
@@ -210,10 +208,6 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The auth-store credential holding that application's OAuth2 client secret, read each time a code is traded."},
 		{Key: "sign_in.discord_redirect_url", EnvironmentVariable: "LLMBRIDGE_SIGN_IN_DISCORD_REDIRECT_URL", Kind: wiring, ValueType: text,
 			Description: "Where Discord sends the browser back: GET /sign-in-store/discord/callback as the browser reaches it. It must be on the application's OAuth2 redirect list on Discord's developer portal, or Discord refuses every sign-in."},
-		{Key: "file_store.url", EnvironmentVariable: "LLMBRIDGE_FILE_STORE_URL", Kind: wiring, ValueType: text,
-			Description: "file-store, which keeps the bytes of every file shared into a session. It has no default; empty switches session files off, and their routes answer 503."},
-		{Key: "repo_store.url", EnvironmentVariable: "LLMBRIDGE_REPO_STORE_URL", Kind: wiring, ValueType: text,
-			Description: "repo-store, asked for the directory of the repo a deploy action names. It has no default; empty refuses deploy actions."},
 		{Key: "scheduler.url", EnvironmentVariable: "LLMBRIDGE_SCHEDULER_URL", Kind: wiring, ValueType: text,
 			Description: "the scheduler, which runs the job a scheduler job action names. It has no default; empty refuses those actions."},
 		{Key: "local_tools.pinchtab_url", EnvironmentVariable: "LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_URL", Kind: wiring, ValueType: text, Default: productiondefaults.PinchtabURL,
@@ -291,11 +285,11 @@ func SettingDefinitions() []servicesettings.Definition {
 		{Key: "kanban_store.service_token", EnvironmentVariable: KanbanStoreServiceTokenEnvironmentVariable, Kind: secret, ValueType: text,
 			Description: "Not read: kanban-store runs in this server, and the internal service reaches /kanban/ with this server's own service token. Declared because the shared token file this unit loads still sets it for the standalone kanban-store and its callers, and it gives unrestricted access to that store: so GET /settings says only whether it is set, and no harness child gets it."},
 		{Key: "file_store.service_token", EnvironmentVariable: FileStoreServiceTokenEnvironmentVariable, Kind: secret, ValueType: text,
-			Description: "Sent to file-store on every call. It reads every file file-store holds, so it never reaches a harness child."},
+			Description: "Not read: file-store runs in this server. Declared because a drop-in may still load the standalone file-store's token file, and that token reads every file the standalone store holds: so GET /settings says only whether it is set, and no harness child gets it."},
 		{Key: "mailstack.token", EnvironmentVariable: "LLMBRIDGE_MAILSTACK_TOKEN", Kind: secret, ValueType: text,
 			Description: "mailstack's bearer token, presented on the sender lookup and on every /mailstack/ proxy request. Unset switches the sender lookup off, a customer reply draft carries no recipient, and /mailstack/ answers 503."},
 		{Key: "database.postgres_url", EnvironmentVariable: PostgresURLEnvironmentVariable, Kind: secret, ValueType: text, Required: true,
-			Description: "The Postgres database the modules moved into this server keep their records in: access (principal-store, grant-store, sign-in-store and permission-store), prediction-store, noteboard, project-store, tool-store, skill-store and bundle-store, each mounted under its own /<store>/ prefix. It is a URL naming a login that may create roles and schemas (CREATEROLE and CREATE on the database). At start the server makes each module's role and schema if they are missing, migrates it and opens it, and refuses to start if any step fails. It is required: every request's principal is read from access. It may carry a password, so it is a secret and never reaches a harness child."},
+			Description: "The Postgres database the modules moved into this server keep their records in: access (principal-store, grant-store, sign-in-store and permission-store), prediction-store, noteboard, project-store, tool-store, skill-store, bundle-store, repo-store, work-graph-store and file-store, each mounted under its own /<store>/ prefix. It is a URL naming a login that may create roles and schemas (CREATEROLE and CREATE on the database). At start the server makes each module's role and schema if they are missing, migrates it and opens it, and refuses to start if any step fails. It is required: every request's principal is read from access. It may carry a password, so it is a secret and never reaches a harness child."},
 		{Key: "local_tools.pinchtab_token", EnvironmentVariable: LocalToolsPinchtabTokenEnvironmentVariable, Kind: secret, ValueType: text,
 			Description: "The bearer token tool-store's in-process browser tool presents to PinchTab. Unset, it sends no Authorization header."},
 		{Key: "local_tools.brave_api_key", EnvironmentVariable: LocalToolsBraveAPIKeyEnvironmentVariable, Kind: secret, ValueType: text,
@@ -305,10 +299,11 @@ func SettingDefinitions() []servicesettings.Definition {
 		{Key: "auth_store.token", EnvironmentVariable: "AUTH_STORE_TOKEN", Kind: secret, ValueType: text,
 			Description: "auth-store's bearer token. sign-in-store presents it to read multichat's token and Discord's client secret."},
 		{Key: "reference_store.service_token", EnvironmentVariable: ReferenceStoreServiceTokenEnvironmentVariable, Kind: secret, ValueType: text,
-			Description: "Sent to reference-store when grant-store checks that a reference or reference type it is asked to grant exists. Unset, reference-store answers that check 401 and the grant is refused 502. It lets its holder look up any record for nobody, so it never reaches a harness child."},
+			Description: "Not read: reference-store runs in this server. Declared because the shared token file this unit loads still sets it for the standalone reference-store, where it lets its holder look up any record for nobody: so GET /settings says only whether it is set, and no harness child gets it."},
 	}
 
 	definitions = append(definitions, taskTrackingSettingDefinitions()...)
+	definitions = append(definitions, repositoriesAndReferencesSettingDefinitions()...)
 	definitions = append(definitions, kanbanStoreSettingDefinitions()...)
 
 	// One proxy backend per known harness. The variable is per harness, so the
@@ -400,6 +395,12 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 	}
 	if c.PeerAttachmentMaximumBytes > 0 {
 		seeds[SettingPeerAttachmentMaximumBytes] = strconv.Itoa(c.PeerAttachmentMaximumBytes)
+	}
+	if c.FileStoreMaximumFileBytes > 0 {
+		seeds[SettingFileStoreMaximumFileBytes] = strconv.Itoa(c.FileStoreMaximumFileBytes)
+	}
+	if len(c.FileStoreInlineContentTypes) > 0 {
+		seeds[SettingFileStoreInlineContentTypes] = strings.Join(c.FileStoreInlineContentTypes, ",")
 	}
 	if c.PeerAttachmentsMaximumTotalBytes > 0 {
 		seeds[SettingPeerAttachmentsMaximumTotalBytes] = strconv.Itoa(c.PeerAttachmentsMaximumTotalBytes)

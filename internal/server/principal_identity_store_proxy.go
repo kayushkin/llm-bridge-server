@@ -42,9 +42,6 @@ const (
 	// mailstackProxyMountPrefix is where mailstack is mounted; the remainder of
 	// the path is forwarded under mailstack's root, where /api/… lives.
 	mailstackProxyMountPrefix = "/mailstack"
-	// referenceStoreProxyMountPrefix is where reference-store is mounted; the
-	// remainder is forwarded under its root (/types, /resolve, /search).
-	referenceStoreProxyMountPrefix = "/reference-store"
 )
 
 // principalIdentityHeader is the header the stores read the caller's principal
@@ -92,29 +89,15 @@ type principalIdentityStoreProxy struct {
 	// upstreamBaseURL is the store's base URL.
 	upstreamBaseURL string
 	// upstreamPathPrefix is prepended to the path after mountPrefix: "" for
-	// both stores still proxied.
+	// mailstack, the one store still proxied.
 	upstreamPathPrefix string
 	// unavailableErrorCode is the error code of the 502 answered when the
 	// store cannot be reached.
 	unavailableErrorCode string
 	// upstreamAuthorization, when set, is the Authorization header the proxy
 	// presents to the store, after the client's own is deleted. mailstack
-	// takes one bearer for every caller and narrows by X-Principal-Id;
-	// reference-store trusts X-Principal-Id alone.
+	// takes one bearer for every caller and narrows by X-Principal-Id.
 	upstreamAuthorization string
-}
-
-// handleReferenceStoreProxyAsPrincipal forwards /reference-store/<rest> to
-// reference-store /<rest>. reference-store narrows each record to what the
-// caller may see, by X-Principal-Id.
-func (s *Server) handleReferenceStoreProxyAsPrincipal(w http.ResponseWriter, r *http.Request) {
-	s.serveStoreProxyAsPrincipal(w, r, principalIdentityStoreProxy{
-		storeName:            "reference-store",
-		mountPrefix:          referenceStoreProxyMountPrefix,
-		upstreamBaseURL:      s.cfg.ReferenceStoreURL,
-		upstreamPathPrefix:   "",
-		unavailableErrorCode: "reference_store_unavailable",
-	})
 }
 
 // handleMailstackProxyAsPrincipal forwards /mailstack/<rest> to mailstack

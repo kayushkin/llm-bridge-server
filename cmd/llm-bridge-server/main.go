@@ -47,6 +47,15 @@ func main() {
 		case "import-bundle-store":
 			importBundleStoreCmd(os.Args[2:])
 			return
+		case "import-repo-store":
+			importRepoStoreCmd(os.Args[2:])
+			return
+		case "import-work-graph-store":
+			importWorkGraphStoreCmd(os.Args[2:])
+			return
+		case "import-file-store":
+			importFileStoreCmd(os.Args[2:])
+			return
 		case "import-noteboard":
 			importNoteboardCmd(os.Args[2:])
 			return
@@ -63,7 +72,7 @@ func main() {
 			makeSignInLinkCmd(os.Args[2:])
 			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file>]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link]]")
 			os.Exit(0)
 		}
 	}
@@ -237,6 +246,11 @@ func main() {
 			log.Fatalf("%v", err)
 		}
 		defer closeTaskTrackingModules()
+		closeRepositoriesAndReferences, err := enableRepositoriesAndReferences(context.Background(), cfg, srv, accessStores)
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		defer closeRepositoriesAndReferences()
 	}
 
 	closeAgentsStoreModules := enableAgentsStoreModules(context.Background(), srv, cfg)

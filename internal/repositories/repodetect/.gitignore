@@ -1,0 +1,5 @@
+# host-specific config
+/.local/
+
+# editor / OS noise
+.DS_Store

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -25,7 +26,6 @@ var (
 	standaloneGrantStoreCopy     = flag.String("standalone-grant-store-copy", "", "a copy of a standalone grant-store database to import beside it")
 	kanbanComparisonRequests     = flag.String("kanban-comparison-requests", "", `a file of "<principal id or -> <path>" lines to ask /kanban-store/ as`)
 	kanbanComparisonOutput       = flag.String("kanban-comparison-output", "", "where to write the answers, one JSON object a line")
-	kanbanComparisonReferences   = flag.String("kanban-comparison-reference-store-url", "", "the reference-store whose list of types GET /api/entity-types serves; empty answers it 502")
 )
 
 // TestImportedStandaloneKanbanStoreAnswers imports copies of a standalone
@@ -52,7 +52,9 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 	}
 	ctx := context.Background()
 	server, _, _ := testServerWithInstance(t, msg.HarnessMock)
-	server.cfg.ReferenceStoreURL = *kanbanComparisonReferences
+	// GET /api/entity-types serves reference-store's list of types, from
+	// reference-store in this process.
+	server.EnableReferenceStore(&referencestore.Resolver{Types: referencestore.Types, Credentials: &referencestore.Credentials{}})
 
 	accessModules, err := access.Modules()
 	if err != nil {

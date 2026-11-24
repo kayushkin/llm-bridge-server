@@ -28,15 +28,15 @@ type fakeFileStore struct {
 	uploads          map[string][]byte
 	contentTypes     map[string]string
 	ownerRefs        map[string]string
-	tokensSeen       []string
 }
 
-func newFakeFileStore(t *testing.T) (*fakeFileStore, *httptest.Server) {
+// newFakeFileStore is the fake and the handler the file-store client is
+// given, as the module's handler is in production.
+func newFakeFileStore() (*fakeFileStore, http.Handler) {
 	fake := &fakeFileStore{maximumFileBytes: 1024, uploads: map[string][]byte{}, contentTypes: map[string]string{}, ownerRefs: map[string]string{}}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
-		fake.tokensSeen = append(fake.tokensSeen, r.Header.Get(filestoreclient.ServiceTokenHeader))
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/limits":
 			json.NewEncoder(w).Encode(map[string]any{"maximum_file_bytes": fake.maximumFileBytes})
@@ -63,9 +63,8 @@ func newFakeFileStore(t *testing.T) (*fakeFileStore, *httptest.Server) {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return fake, server
+	})
+	return fake, handler
 }
 
 // fakeLogStore takes every event push, as log-store does.
@@ -87,19 +86,18 @@ func testServerWithFileStore(t *testing.T) (*Server, *store.Store, *fakeFileStor
 		t.Fatalf("new store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	fake, fileStoreServer := newFakeFileStore(t)
+	fake, fileStoreHandler := newFakeFileStore()
 	sessionFilesDir := filepath.Join(dir, "session-files")
 	cfg := &config.Config{
-		ImagesDir:             filepath.Join(dir, "images"),
-		BridgePrefsPath:       filepath.Join(dir, "prefs.json"),
-		LogStoreURL:           fakeLogStore(t).URL,
-		FileStoreURL:          fileStoreServer.URL,
-		FileStoreServiceToken: "file-store-token",
-		SessionFilesDir:       sessionFilesDir,
-		ListenAddr:            "127.0.0.1:8160",
+		ImagesDir:       filepath.Join(dir, "images"),
+		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
+		LogStoreURL:     fakeLogStore(t).URL,
+		SessionFilesDir: sessionFilesDir,
+		ListenAddr:      "127.0.0.1:8160",
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
+	srv.fileStore = filestoreclient.New(fileStoreHandler)
 	return srv, st, fake, sessionFilesDir
 }
 
@@ -126,8 +124,8 @@ func TestTheUserSharesAFileIntoASession(t *testing.T) {
 	if shared.SharedBy != msg.SessionFileSharedByUser || shared.Filename != "chart.png" || shared.MediaType != "image/png" || shared.SizeBytes != 8 {
 		t.Errorf("shared = %+v", shared)
 	}
-	if fake.ownerRefs[shared.FileID] != "br_files" || fake.tokensSeen[0] != "file-store-token" {
-		t.Errorf("file-store got owner %q and token %q", fake.ownerRefs[shared.FileID], fake.tokensSeen[0])
+	if fake.ownerRefs[shared.FileID] != "br_files" {
+		t.Errorf("file-store got owner %q", fake.ownerRefs[shared.FileID])
 	}
 
 	// The agent reads the same bytes at the path the record gives.

@@ -535,8 +535,7 @@ func TestAClientSentPrincipalHeaderIsRefusedWithoutTheServiceToken(t *testing.T)
 func TestStartupIsRefusedWithoutEachRequiredSetting(t *testing.T) {
 	complete := config.Config{
 		DemoLoginSigningKey: testSigningKey, ServiceToken: testServiceToken,
-		PostgresURL:       "postgres://postgres.invalid/bridge",
-		ReferenceStoreURL: "http://reference.invalid",
+		PostgresURL: "postgres://postgres.invalid/bridge",
 	}
 	if err := complete.ValidateRequestAuthorizationSettings(); err != nil {
 		t.Fatalf("complete configuration: %v, want no error", err)
@@ -550,7 +549,6 @@ func TestStartupIsRefusedWithoutEachRequiredSetting(t *testing.T) {
 		"no service token":    {func(c *config.Config) { c.ServiceToken = "" }, "LLMBRIDGE_SERVICE_TOKEN"},
 		"short service token": {func(c *config.Config) { c.ServiceToken = "short" }, "LLMBRIDGE_SERVICE_TOKEN"},
 		"no postgres":         {func(c *config.Config) { c.PostgresURL = "" }, "LLMBRIDGE_POSTGRES_URL"},
-		"no reference-store":  {func(c *config.Config) { c.ReferenceStoreURL = "" }, "LLMBRIDGE_REFERENCE_STORE_URL"},
 	} {
 		candidate := complete
 		testCase.mutate(&candidate)

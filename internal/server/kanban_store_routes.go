@@ -78,10 +78,15 @@ func (s *Server) EnableKanbanStore(store *kanbandb.Store, owners KanbanStoreOwne
 		kanbanPrincipalDirectory{principals: owners.Access.Principals},
 		kanbanAgentsAndInstances{server: s},
 		kanbanBundles{server: s})
-	api.SetReferenceStore(kanbanreferences.New(s.cfg.ReferenceStoreURL))
-	if s.cfg.FileStoreURL != "" && s.cfg.FileStoreServiceToken != "" {
-		api.SetFileStore(kanbanfiles.New(s.cfg.FileStoreURL, s.cfg.FileStoreServiceToken))
-	}
+	// reference-store and file-store run in this process too; kanban-store's
+	// clients of them reach their handlers through inprocesshttp, with no
+	// socket and no token. Each answers 503 until its module is enabled.
+	references := kanbanreferences.New(inprocesshttp.BaseURL)
+	references.HTTP = inprocesshttp.Client(s.ReferenceStoreModuleHandler())
+	api.SetReferenceStore(references)
+	files := kanbanfiles.New(inprocesshttp.BaseURL, "")
+	files.HTTP = inprocesshttp.Client(s.FileStoreModuleHandler())
+	api.SetFileStore(files)
 	if owners.MessageTriggersEnabled {
 		api.SetMessageSender(kanbanmultichat.New(s.cfg.MultichatURL, kanbanmultichat.AuthStoreTokenSource(s.cfg.AuthStoreURL, s.cfg.AuthStoreToken)))
 	}
@@ -98,10 +103,6 @@ func (s *Server) EnableKanbanStore(store *kanbandb.Store, owners KanbanStoreOwne
 // KanbanStoreDescription says, for the start log, what kanban-store was
 // joined to.
 func (s *Server) KanbanStoreDescription() string {
-	files := "file-store is not wired, so the attachment routes answer 503"
-	if s.cfg.FileStoreURL != "" && s.cfg.FileStoreServiceToken != "" {
-		files = "attachments in file-store at " + s.cfg.FileStoreURL
-	}
 	handlers := s.kanbanStore.Load()
 	if handlers == nil {
 		return errKanbanStoreOff.Error()
@@ -110,13 +111,12 @@ func (s *Server) KanbanStoreDescription() string {
 	if handlers.messageTriggersEnabled {
 		triggers = "message triggers send through multichat at " + s.cfg.MultichatURL
 	}
-	return fmt.Sprintf("%s; %s; reference types from reference-store at %s", files, triggers, s.cfg.ReferenceStoreURL)
+	return fmt.Sprintf("attachments in the file-store module and reference types from reference-store, both in this process; %s", triggers)
 }
 
 // CheckKanbanStoreConfiguration refuses what the store would refuse at start:
 // message triggers switched on with no multichat to send through, or no
-// auth-store token to read multichat's from, and a file-store address with no
-// token beside it.
+// auth-store token to read multichat's from.
 func CheckKanbanStoreConfiguration(cfg *config.Config, messageTriggersEnabled bool) error {
 	if messageTriggersEnabled {
 		if cfg.MultichatURL == "" {
@@ -125,9 +125,6 @@ func CheckKanbanStoreConfiguration(cfg *config.Config, messageTriggersEnabled bo
 		if cfg.AuthStoreToken == "" {
 			return fmt.Errorf("%s is on but auth_store.token is not set: message triggers read multichat's API token from auth-store provider \"multichat\"", config.SettingKanbanStoreMessageTriggersEnabled)
 		}
-	}
-	if cfg.FileStoreURL != "" && cfg.FileStoreServiceToken == "" {
-		return fmt.Errorf("file_store.url is set but %s is not: file-store takes no call without it", config.FileStoreServiceTokenEnvironmentVariable)
 	}
 	return nil
 }

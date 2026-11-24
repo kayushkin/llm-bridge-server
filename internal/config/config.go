@@ -59,6 +59,11 @@ type Config struct {
 	// the two limits on files in messages between servers, when set.
 	PeerAttachmentMaximumBytes       int
 	PeerAttachmentsMaximumTotalBytes int
+	// FileStoreMaximumFileBytes and FileStoreInlineContentTypes seed
+	// file_store.maximum_file_bytes and file_store.inline_content_types, the
+	// first start each key exists; the stored row decides after.
+	FileStoreMaximumFileBytes   int
+	FileStoreInlineContentTypes []string
 	// UsageStoreURL is usage-store, read for subscription limits before a
 	// routed one-shot call. Empty switches the check off.
 	UsageStoreURL  string
@@ -73,19 +78,12 @@ type Config struct {
 	// SessionFilesDir is where a file shared into a session is copied for its
 	// agent to read: <dir>/<session id>/<file id>/<filename>.
 	SessionFilesDir string
-	// FileStoreURL is file-store's base URL. Empty switches session files off.
-	FileStoreURL string
-	// RepoStoreURL is repo-store's base URL, where a deploy action finds its
-	// repo's directory. Empty refuses deploy actions.
-	RepoStoreURL string
 	// SchedulerURL is the scheduler's base URL, which runs a scheduler job
 	// action. Empty refuses those actions.
-	SchedulerURL string
-	// FileStoreServiceToken is sent to file-store as X-File-Store-Service-Token.
-	FileStoreServiceToken string
-	BridgePrefsPath       string
-	ConformancePath       string
-	LogStoreURL           string
+	SchedulerURL    string
+	BridgePrefsPath string
+	ConformancePath string
+	LogStoreURL     string
 	// PublicURL is the externally-reachable bridge URL that runners use
 	// to fetch backend binaries listed in HarnessService.BinaryURL. Empty
 	// → manifests fall back to the runner's own server_url, which works
@@ -109,10 +107,6 @@ type Config struct {
 	LocalToolsPinchtabToken  string
 	LocalToolsBraveAPIKey    string
 	LocalToolsSchedulerToken string
-	// ReferenceStoreURL is the base URL of reference-store, which
-	// /reference-store/ proxies to as the calling principal. Required, via
-	// LLMBRIDGE_REFERENCE_STORE_URL.
-	ReferenceStoreURL string
 	// PostgresURL is the Postgres the modules keep their records in, as the
 	// login that provisions them. Empty switches those modules off, and their
 	// routes answer 503. LLMBRIDGE_POSTGRES_URL.
@@ -132,9 +126,6 @@ type Config struct {
 	// reads multichat's token and Discord's client secret from.
 	AuthStoreURL   string
 	AuthStoreToken string
-	// ReferenceStoreServiceToken is sent when grant-store checks that a
-	// reference or a reference type exists.
-	ReferenceStoreServiceToken string
 	// Sign-in-store's wiring (sign_in.*). SignInPageURL and
 	// SignInCookieDomain empty switch its routes off.
 	SignInPageURL                         string
@@ -271,12 +262,16 @@ const (
 	GrantStoreServiceTokenEnvironmentVariable  = "GRANT_STORE_SERVICE_TOKEN"
 	KanbanStoreServiceTokenEnvironmentVariable = "KANBAN_STORE_SERVICE_TOKEN"
 	// reference-store's own name for the token it takes from an internal
-	// service, in the same shared file. Read here for grant-store's check that
-	// a reference exists; whoever holds it looks any record up for nobody.
+	// service, in the same shared file. Not read: reference-store runs in
+	// this server. The file still sets it for the standalone reference-store
+	// until that stops, and whoever holds it looks any record up there for
+	// nobody, so it stays on the strip list.
 	ReferenceStoreServiceTokenEnvironmentVariable = "REFERENCE_STORE_SERVICE_TOKEN"
-	// file-store's token is file-store's own name for it, loaded from its own
-	// host-local file (~/.config/file-store-tokens.env) — never the shared
-	// principal-gating file. It reads every file file-store holds.
+	// file-store's token, in its own host-local file
+	// (~/.config/file-store-tokens.env). Not read: file-store runs in this
+	// server. A unit drop-in may still load the file for the standalone
+	// file-store until that stops, and the token reads every file there, so
+	// it stays on the strip list.
 	FileStoreServiceTokenEnvironmentVariable = "FILE_STORE_SERVICE_TOKEN"
 	// The Entra ID client secret proves to Microsoft that a token request
 	// comes from this application; an agent holding it could redeem any
@@ -379,7 +374,6 @@ func (c *Config) ValidateRequestAuthorizationSettings() error {
 		purpose             string
 	}{
 		{PostgresURLEnvironmentVariable, c.PostgresURL, "the Postgres every caller's principal and grants are read from (access)"},
-		{"LLMBRIDGE_REFERENCE_STORE_URL", c.ReferenceStoreURL, "the reference-store /reference-store/ forwards to"},
 	} {
 		if strings.TrimSpace(required.value) == "" {
 			return fmt.Errorf("%s is unset: it is %s, and it has no default", required.environmentVariable, required.purpose)
@@ -447,17 +441,13 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		AgentStoreURL:                         settings.String("agent_store.url"),
 		ImagesDir:                             settings.String("images.directory"),
 		SessionFilesDir:                       settings.String("session_files.directory"),
-		FileStoreURL:                          settings.String("file_store.url"),
-		RepoStoreURL:                          settings.String("repo_store.url"),
 		SchedulerURL:                          settings.String("scheduler.url"),
-		FileStoreServiceToken:                 settings.String("file_store.service_token"),
 		BridgePrefsPath:                       settings.String("bridge_preferences.path"),
 		ConformancePath:                       settings.String("conformance.path"),
 		LogStoreURL:                           settings.String("log_store.url"),
 		PublicURL:                             settings.String("public_url"),
 		AuthStoreURL:                          settings.String("auth_store.url"),
 		AuthStoreToken:                        settings.String("auth_store.token"),
-		ReferenceStoreServiceToken:            settings.String("reference_store.service_token"),
 		SignInPageURL:                         settings.String("sign_in.page_url"),
 		SignInCookieDomain:                    settings.String("sign_in.cookie_domain"),
 		SignInMultichatCredentialID:           settings.String("sign_in.multichat_credential_id"),
@@ -471,7 +461,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		LocalToolsPinchtabToken:               settings.String("local_tools.pinchtab_token"),
 		LocalToolsBraveAPIKey:                 settings.String("local_tools.brave_api_key"),
 		LocalToolsSchedulerToken:              settings.String("local_tools.scheduler_token"),
-		ReferenceStoreURL:                     settings.String("reference_store.url"),
 		PostgresURL:                           settings.String("database.postgres_url"),
 		ChatLinksNATSURL:                      settings.String("chat_links.nats_url"),
 		MultichatURL:                          settings.String("multichat.url"),
@@ -502,6 +491,8 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		ServiceToken:                          settings.String("service_token"),
 		PeerAttachmentMaximumBytes:            settings.Integer(SettingPeerAttachmentMaximumBytes),
 		PeerAttachmentsMaximumTotalBytes:      settings.Integer(SettingPeerAttachmentsMaximumTotalBytes),
+		FileStoreMaximumFileBytes:             settings.Integer(SettingFileStoreMaximumFileBytes),
+		FileStoreInlineContentTypes:           settings.StringList(SettingFileStoreInlineContentTypes),
 	}
 	productiondefaults.PanicIfUsedUnderTest(cfg.GuardedAddresses())
 	return cfg, nil

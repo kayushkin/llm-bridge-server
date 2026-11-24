@@ -6,8 +6,8 @@ import (
 )
 
 // Keys of kanban-store's settings in this server. Its other owners are this
-// server's own settings: multichat.url, auth_store.*, file_store.* and
-// reference_store.url. Each is read once, at start.
+// server's own settings (multichat.url, auth_store.*) and the file-store and
+// reference-store modules in this process. Each is read once, at start.
 const (
 	SettingKanbanStoreMessageTriggersEnabled = "kanban_store.message_triggers.enabled"
 )

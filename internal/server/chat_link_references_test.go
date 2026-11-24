@@ -7,6 +7,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 )
 
 func TestAReplyDrawsOnlyTheRecordsItsRecipientMaySee(t *testing.T) {
@@ -65,26 +68,42 @@ func TestAnIdTwoStoresClaimStaysAsWritten(t *testing.T) {
 	}
 }
 
+// administratorOnlyReferenceAccess makes principal_000009 an administrator
+// and every other principal someone who holds no grant.
+type administratorOnlyReferenceAccess struct{}
+
+func (administratorOnlyReferenceAccess) Standing(_ context.Context, principalID string) (referencestore.PrincipalStanding, error) {
+	return referencestore.PrincipalStanding{IsAdministrator: principalID == "principal_000009"}, nil
+}
+
+func (administratorOnlyReferenceAccess) Grants(context.Context, string) ([]referencestore.HeldGrant, error) {
+	return nil, nil
+}
+
 func TestAPictureIsFetchedAsTheRecipientAndNamedByItsType(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(principalIdentityHeader) != "principal_000009" {
-			http.NotFound(w, r)
-			return
-		}
+	photos := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/attachments/photo_000009":
+		case "/photos/photo_000009":
+			w.Write([]byte(`{"id":"photo_000009","description":"a beach"}`))
+		case "/photos/photo_000009/thumbnail":
 			w.Header().Set("Content-Type", "image/jpeg")
 			w.Write([]byte{0xff, 0xd8, 0xff})
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
-	file, found, err := pictureOfReferenceAs(context.Background(), http.DefaultClient, server.URL, "principal_000009", "photo_000009")
+	defer photos.Close()
+	resolver := &referencestore.Resolver{
+		Types: referencestore.Types, ServiceURLs: map[string]string{"photo-store": photos.URL},
+		Credentials: &referencestore.Credentials{HTTPClient: http.DefaultClient},
+		Access:      &referencestore.AccessChecker{Directory: administratorOnlyReferenceAccess{}, TTL: time.Minute},
+		HTTPClient:  http.DefaultClient, RecordTTL: time.Minute, MissTTL: time.Minute, LookupTimeout: 5 * time.Second, Concurrency: 2,
+	}
+	file, found, err := pictureOfReferenceAs(context.Background(), resolver, "principal_000009", "photo_000009")
 	if err != nil || !found || file.ContentType != "image/jpeg" || !strings.HasPrefix(file.Name, "photo_000009.") || file.DataBase64 != "/9j/" {
 		t.Fatalf("picture: %+v %v %v", file, found, err)
 	}
-	if _, found, err := pictureOfReferenceAs(context.Background(), http.DefaultClient, server.URL, "principal_000004", "photo_000009"); err != nil || found {
+	if _, found, err := pictureOfReferenceAs(context.Background(), resolver, "principal_000004", "photo_000009"); err != nil || found {
 		t.Fatalf("someone else: %v %v", found, err)
 	}
 }

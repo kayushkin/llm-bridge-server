@@ -2,9 +2,11 @@ package projectstore
 
 import (
 	"context"
+
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 	"io"
 	"net/http"
 	"net/url"
@@ -20,8 +22,12 @@ var ErrOwnerUnavailable = errors.New("owner unavailable")
 // checked with its owner before it is written, and the owner's name for it is
 // kept beside it for display.
 type Owners struct {
-	HTTP         *http.Client
-	RepoStoreURL string
+	HTTP *http.Client
+	// Repositories serves repo-store's routes under /repo-store and
+	// work-graph-store's under /work-graph-store. Both run in this process,
+	// so they are asked through their handlers (internal/inprocesshttp), not
+	// over a socket.
+	Repositories http.Handler
 	// Kanban carries the calls to kanban-store at KanbanStoreURL. In this
 	// server kanban-store runs in the same process, and Kanban serves each
 	// call with its handler as the internal service, with no socket between.
@@ -35,7 +41,6 @@ type Owners struct {
 	// Noteboard is noteboard itself, in this process: what a note link names
 	// and where a next step is written.
 	Noteboard          Noteboard
-	WorkGraphStoreURL  string
 	BridgeURL          string
 	BridgeServiceToken string
 	// SuggestionModelRole is the model-store role asked for suggested next
@@ -50,6 +55,15 @@ type Owners struct {
 
 // BridgeServiceTokenHeader is how llm-bridge-server recognizes an internal service.
 const BridgeServiceTokenHeader = "X-LLM-Bridge-Service-Token"
+
+// repositoriesGetJSON fetches path from repo-store or work-graph-store in
+// this process into target, as getJSON does over HTTP.
+func (owners *Owners) repositoriesGetJSON(ctx context.Context, path string, target any) error {
+	if owners.Repositories == nil {
+		return fmt.Errorf("%w: repo-store and work-graph-store are not open on this server, so %s cannot be read", ErrOwnerUnavailable, path)
+	}
+	return getJSONWith(ctx, inprocesshttp.Client(owners.Repositories), inprocesshttp.BaseURL+path, nil, target)
+}
 
 // getJSON fetches a URL into target. A 404 is ErrNotFound; anything else that
 // is not 200 is ErrOwnerUnavailable.
@@ -70,6 +84,10 @@ func fetchJSON(ctx context.Context, client *http.Client, rawURL string, headers 
 	if err := ownerAddressIsSet(rawURL); err != nil {
 		return err
 	}
+	return getJSONWith(ctx, client, rawURL, headers, target)
+}
+
+func getJSONWith(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, target any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err
@@ -116,7 +134,7 @@ func (owners *Owners) Label(ctx context.Context, entityType, entityRef string) (
 		var repo struct {
 			Name string `json:"name"`
 		}
-		err = owners.getJSON(ctx, owners.RepoStoreURL+"/repos/"+escaped, nil, &repo)
+		err = owners.repositoriesGetJSON(ctx, "/repo-store/repos/"+escaped, &repo)
 		label = repo.Name
 	case EntityBoard:
 		var board struct {

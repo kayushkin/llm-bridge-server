@@ -29,6 +29,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
+	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -135,14 +136,24 @@ type Server struct {
 	// kanbanStore answers /kanban/ and /kanban-store/ once EnableKanbanStore
 	// has run (kanban_store_routes.go); nil answers them 503.
 	kanbanStore atomic.Pointer[kanbanStoreHandlers]
-	// fileStore keeps the bytes of files shared into sessions. Nil when
-	// file-store is not wired, which switches session files off.
-	fileStore     *filestoreclient.Client
-	bridgePrefs   *bridgePrefsStore
-	cfState       *conformanceState
-	sessionHub    *sessionHub
-	parkedAsks    *parkedAsks
-	responseCache *responseCache
+	// fileStore keeps the bytes of files shared into sessions, through the
+	// file-store module in this process. Nil until EnableFileStore, which
+	// switches session files off.
+	fileStore *filestoreclient.Client
+	// The repositories, file_storage and references modules
+	// (repositories_references_routes.go); nil answers their routes 503.
+	repositories          atomic.Pointer[repositoryStores]
+	fileStoreHandler      atomic.Pointer[mountedStore]
+	referenceStoreHandler atomic.Pointer[mountedStore]
+	referenceResolver     atomic.Pointer[referencestore.Resolver]
+	// repoRegistryForDeploys is repo-store as a deploy action reads it; nil
+	// until EnableRepositories, which refuses deploy actions.
+	repoRegistryForDeploys repoRegistry
+	bridgePrefs            *bridgePrefsStore
+	cfState                *conformanceState
+	sessionHub             *sessionHub
+	parkedAsks             *parkedAsks
+	responseCache          *responseCache
 	// signalClassifier is the derived signal producer: a cheap-model pass
 	// over each turn-end. Nil only in tests that never exercise it.
 	signalClassifier *signalClassifier
@@ -263,11 +274,6 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	} else {
 		log.Printf("[chat-links] off: %v", errChatLinksOff)
 	}
-	if cfg.FileStoreURL != "" {
-		srv.fileStore = filestoreclient.New(cfg.FileStoreURL, cfg.FileStoreServiceToken)
-	} else {
-		log.Printf("[session-files] LLMBRIDGE_FILE_STORE_URL is not set; session files are off")
-	}
 	srv.harness.SetSessionInfoObserver(srv.onSessionInfo)
 	// The classifier runs its call through the server's one-shot router, so
 	// it is wired here, after the server that owns the router exists.
@@ -347,6 +353,7 @@ func (s *Server) routes() {
 	s.registerNoteboardRoutes()
 	s.registerProjectStoreRoutes()
 	s.registerAccessRoutes()
+	s.registerRepositoriesAndReferencesRoutes()
 	// This server's own settings, served the way every service serves them.
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)

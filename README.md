@@ -407,7 +407,6 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `*` | `/kanban-store/` | kanban-store at its root (`/api/…`, `/health`), as the caller | principal or session agent |
 | `*` | `/kanban/` | kanban-store `/api/…`, as the caller | principal or session agent |
 | `*` | `/mailstack/` | mailstack `/…`, as the caller, checked against their mail grants and tickets | principal or session agent |
-| `*` | `/reference-store/` | reference-store (`/types`, `/resolve`, `/search`): what an id names, narrowed to what the caller may see | principal or session agent |
 | `GET` | `/self` | Who the request acts as: its principal and whether it is an administrator, or the internal service | principal |
 | `GET` | `/service-principal-tokens` | Every service principal token's record, revoked or not; never a token | operator |
 | `POST` | `/service-principal-tokens` | Issue a token for a service principal (principal-store kind `service`); the token is answered once and kept as its SHA-256 | operator |
@@ -770,6 +769,64 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `DELETE` | `/permission-store/rules/{id}` | Delete a rule | operator |
 | `GET` | `/permission-store/rules/{id}` | One rule | operator |
 | `PATCH` | `/permission-store/rules/{id}` | Change a rule | operator |
+
+### repo-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/repo-store/by-path` | One repo by `path` | operator |
+| `GET` | `/repo-store/deployments` | One repo's deploys (`repo_id`, `limit`), newest first | operator |
+| `GET` | `/repo-store/deployments/latest` | The newest deploy of every repo | operator |
+| `POST` | `/repo-store/detect` | Detect the tags of a `path`, storing nothing | operator |
+| `GET` | `/repo-store/health` | `{"status":"ok"}` | operator |
+| `GET` | `/repo-store/pull-requests` | Pull requests by `repo_id`, `state` (`open`, `closed`, `merged`, `all`) and `limit` | operator |
+| `GET` | `/repo-store/repos` | List repos by `tag`, `q`, `provenance` (`ours`, `vendored`, `unstated`) and `limit`, by name | operator |
+| `POST` | `/repo-store/repos` | Make or refresh a repo by name, its tags detected from `path`; 201 when new | operator |
+| `GET` | `/repo-store/repos/by-mention/{mention}` | One repo by a `repo:<name>` mention | operator |
+| `GET` | `/repo-store/repos/by-name/{name}` | One repo by name | operator |
+| `DELETE` | `/repo-store/repos/{id}` | Delete a repo, its deploys and pull requests | operator |
+| `GET` | `/repo-store/repos/{id}` | One repo, with `github_url` and `effective_tags` | operator |
+| `POST` | `/repo-store/repos/{id}/deployments` | Append a deploy to the ledger, as deploy-gate does | operator |
+| `POST` | `/repo-store/repos/{id}/detect` | Detect its tags from its path again | operator |
+| `PUT` | `/repo-store/repos/{id}/identity` | Rename it and move its path and remote, keeping its id; 409 when another repo holds the name or path | operator |
+| `PUT` | `/repo-store/repos/{id}/provenance` | Say who authors it: `ours`, `vendored` or `""` | operator |
+| `POST` | `/repo-store/repos/{id}/pull-requests/sync` | Read the repo's pull requests from GitHub now; 503 when this server cannot run gh | operator |
+
+### work-graph-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/work-graph-store/activity` | The branches sessions touched in the last `hours`; `format=text` for an agent | operator |
+| `GET` | `/work-graph-store/commits/{mention...}` | One commit by a `<repo>@<sha>` mention, with its repo and maker | operator |
+| `GET` | `/work-graph-store/health` | `{"status":"ok"}` | operator |
+| `GET` | `/work-graph-store/ref-updates` | Ref updates by `repo_store_id`, `session_id`, `ref`, `since_unix_nano` and `limit`, newest first | operator |
+| `GET` | `/work-graph-store/repos/{repo_store_id}/graph` | A repo's commit graph with each commit's maker and each branch's sessions | operator |
+| `GET` | `/work-graph-store/session-repos` | How many refs each session moved in each repo since `since_unix_nano` | operator |
+
+### file-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/file-store/files` | Files by `owner_service`, `owner_ref`, `sha256`, `include_deleted`, `limit` and `offset`, oldest first | operator |
+| `POST` | `/file-store/files` | Keep the body as a file of `owner_service` and `owner_ref`, named `filename`; 201 and the record | operator |
+| `DELETE` | `/file-store/files/{id}` | Delete, reversibly; `hard=true` purges the row and, with the last row naming them, the bytes | operator |
+| `GET` | `/file-store/files/{id}` | One file's record; `include_deleted=true` for a deleted one | operator |
+| `GET` | `/file-store/files/{id}/content` | The bytes, as a download unless `inline=true` and the type is on the inline list; ranges work | operator |
+| `POST` | `/file-store/files/{id}/restore` | Undo a delete | operator |
+| `GET` | `/file-store/health` | `{"status":"ok","files":…,"blobs":…,"blob_bytes":…}` | operator |
+| `GET` | `/file-store/limits` | The size limit and the inline content types in force | operator |
+
+### reference-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/reference-store/attachments/{id}` | A picture of the record, when the caller may see it | principal or session agent |
+| `GET` | `/reference-store/health` | `{"status":"ok"}` | anyone |
+| `POST` | `/reference-store/resolve` | What each of `ids` (at most 128) names, narrowed to what the caller may see | principal or session agent |
+| `GET` | `/reference-store/search` | Records matching `q` in every mentionable type the caller may see whole | principal or session agent |
+| `GET` | `/reference-store/types` | Every reference type: id patterns, owning service, label and summary fields, page, access | anyone |
+| `GET` | `/reference-store/types/{type}` | One reference type | anyone |
+| `GET` | `/reference-store/vocabulary` | The summary formats, the access rules and the grant names the types use | anyone |
 <!-- route-table:end -->
 
 ## Testing
