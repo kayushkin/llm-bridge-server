@@ -264,7 +264,7 @@ func (s *Store) UpsertSkill(ctx context.Context, sk *Skill) (bool, error) {
 			content_hash=$6, file_count=$7, tags=$8, enabled=$9, updated_at=$10
 		WHERE source_id=$11 AND name=$12
 		RETURNING id
-	`, sk.DisplayName, sk.Description, sk.SkillMD, sk.SourcePath, sk.SourceCommit,
+	`, sk.DisplayName, sk.Description, []byte(sk.SkillMD), sk.SourcePath, sk.SourceCommit,
 		sk.ContentHash, sk.FileCount, tagsJSON, sk.Enabled, sk.UpdatedAt,
 		sk.SourceID, sk.Name).Scan(&sk.ID)
 	if err == nil {
@@ -279,7 +279,7 @@ func (s *Store) UpsertSkill(ctx context.Context, sk *Skill) (bool, error) {
 			content_hash, file_count, tags, enabled, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id
-	`, sk.SourceID, sk.Name, sk.DisplayName, sk.Description, sk.SkillMD, sk.SourcePath, sk.SourceCommit,
+	`, sk.SourceID, sk.Name, sk.DisplayName, sk.Description, []byte(sk.SkillMD), sk.SourcePath, sk.SourceCommit,
 		sk.ContentHash, sk.FileCount, tagsJSON, sk.Enabled, sk.CreatedAt, sk.UpdatedAt).Scan(&sk.ID)
 	if err != nil {
 		return false, wrapForeignKeyViolation(err, "source", sk.SourceID)
@@ -299,8 +299,9 @@ const skillFrom = ` FROM skills s
 func scanSkill(row interface{ Scan(...any) error }, includeBody bool) (*Skill, error) {
 	sk := &Skill{}
 	var tags string
+	var skillMD []byte
 	err := row.Scan(&sk.ID, &sk.SourceID, &sk.SourceName, &sk.Name, &sk.DisplayName, &sk.Description,
-		&sk.SkillMD, &sk.SourcePath, &sk.SourceCommit, &sk.ContentHash, &sk.FileCount,
+		&skillMD, &sk.SourcePath, &sk.SourceCommit, &sk.ContentHash, &sk.FileCount,
 		&tags, &sk.Enabled, &sk.CreatedAt, &sk.UpdatedAt, &sk.InstalledAt, &sk.InstallPath)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -308,6 +309,7 @@ func scanSkill(row interface{ Scan(...any) error }, includeBody bool) (*Skill, e
 	if err != nil {
 		return nil, err
 	}
+	sk.SkillMD = string(skillMD)
 	sk.Installed = sk.InstalledAt > 0
 	sk.Tags = decodeTags(tags)
 	if !includeBody {

@@ -279,7 +279,8 @@ func importSkills(ctx context.Context, source *sql.DB, tx *sql.Tx) (copied int, 
 	for rows.Next() {
 		var (
 			id, sourceID, fileCount, enabled, createdAt, updatedAt int64
-			name, skillMD, sourcePath, contentHash                 string
+			name, sourcePath, contentHash                          string
+			skillMD                                                []byte
 			displayName, description, sourceCommit, tags           sql.NullString
 		)
 		if err := rows.Scan(&id, &sourceID, &name, &displayName, &description, &skillMD, &sourcePath,

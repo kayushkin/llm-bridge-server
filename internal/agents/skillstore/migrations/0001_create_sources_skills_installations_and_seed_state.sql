@@ -38,7 +38,9 @@ CREATE TABLE skills (
     name          TEXT NOT NULL,                       -- from SKILL.md frontmatter
     display_name  TEXT,
     description   TEXT,
-    skill_md      TEXT NOT NULL,                       -- full SKILL.md content
+    skill_md      BYTEA NOT NULL,                      -- full SKILL.md content, as its bytes:
+                                                       -- a SKILL.md may hold a NUL or bytes
+                                                       -- that are not UTF-8, which TEXT refuses
     source_path   TEXT NOT NULL,                       -- path within the source
     source_commit TEXT,
     content_hash  TEXT NOT NULL,                       -- sha256 of SKILL.md

@@ -10,7 +10,8 @@ import (
 
 // newStandaloneDatabase writes a SQLite file the way the standalone store kept
 // one, with a few made-up rows: two sources, three skills with NULLs where the
-// old schema allowed them, an installation, seed versions holding bytes, two
+// old schema allowed them (one SKILL.md holding a NUL and a byte that is not
+// UTF-8), an installation, seed versions holding bytes, two
 // machine profiles and seed state pointing at a version, gaps in every
 // numbering, and a sqlite_sequence above the last skill (the newest was
 // deleted).
@@ -36,7 +37,7 @@ func newStandaloneDatabase(t *testing.T, extraStatements ...string) string {
 			VALUES (3, 'authored', 'local', '/srv/authored', '', 'main', '', 'personal', 'MIT', NULL, NULL, 1, 0, 1800000200, 1800000200)`,
 		`INSERT INTO skills VALUES (2, 1, 'alpha', 'Alpha', 'the first skill', '---\nname: alpha\n---\nbody', 'skills/alpha', 'abc123', 'hash-a', 1, '["go","test"]', 1, 1800000000, 1800000100)`,
 		`INSERT INTO skills VALUES (5, 1, 'beta', NULL, NULL, '---\nname: beta\n---\n', 'skills/beta', NULL, 'hash-b', 0, NULL, 0, 1800000000, 1800000000)`,
-		`INSERT INTO skills VALUES (6, 3, 'gamma', '', '', 'gamma body', 'gamma', '', 'hash-c', 0, '', 1, 1800000200, 1800000200)`,
+		`INSERT INTO skills VALUES (6, 3, 'gamma', '', '', CAST(X'67616D6D6120626F647900FF' AS TEXT), 'gamma', '', 'hash-c', 0, '', 1, 1800000200, 1800000200)`,
 		`UPDATE sqlite_sequence SET seq = 9 WHERE name = 'skills'`,
 		`INSERT INTO installations VALUES (2, '/home/someone/.claude/skills/alpha', 1800000300)`,
 		`INSERT INTO seed_file_versions VALUES (4, 2, 'SKILL.md', 'sha-one', 5, X'68656C6C6F', 'ingest', NULL, NULL, 1800000300)`,
@@ -92,6 +93,16 @@ func TestImportCopiesEveryRowAsItWasAndNumbersOnAfterIt(t *testing.T) {
 	}
 	if beta.DisplayName != "" || beta.Description != "" || beta.Tags != nil || beta.Enabled || beta.Installed {
 		t.Fatalf("beta = %+v", beta)
+	}
+
+	// A SKILL.md holding a NUL and a byte that is not UTF-8 is copied as its
+	// bytes: a live skill ends in a NUL, which a text column refuses.
+	gamma, err := s.GetSkill(testContext, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gamma.SkillMD != "gamma body\x00\xff" {
+		t.Fatalf("gamma's SKILL.md = %q, want its bytes, NUL and 0xff included", gamma.SkillMD)
 	}
 
 	drift, err := s.GetSeedVersion(testContext, 7)
