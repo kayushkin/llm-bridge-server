@@ -25,11 +25,7 @@ func newPromptFixture(t *testing.T) *promptFixture {
 	f := &promptFixture{t: t, home: home}
 	f.write("AGENTS.md", testHostDirectives)
 	f.write("CLAUDE.md", testHostOverview)
-	store, err := Open(filepath.Join(home, "agents.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := testStoreWithHome(t, home)
 	f.store = store
 	if _, err := store.Scan(); err != nil {
 		t.Fatal(err)
@@ -388,44 +384,6 @@ func TestWorktreeCopiesAreIgnoredNotDeleted(t *testing.T) {
 	}
 }
 
-func TestPerFileSectionsTableIsSetAsideNotDropped(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	path := filepath.Join(home, "agents.db")
-	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Put the database back into the shape the first prompt-collections commit left.
-	for _, statement := range []string{
-		`DROP TABLE prompt_sections`,
-		`CREATE TABLE prompt_sections (id INTEGER PRIMARY KEY, collection_id INTEGER NOT NULL, title TEXT NOT NULL, heading TEXT, body TEXT NOT NULL, applies_to TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, source_path TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
-		`CREATE INDEX idx_prompt_sections_collection ON prompt_sections(collection_id, priority, id)`,
-		`INSERT INTO prompt_sections (collection_id, title, body, applies_to, created_at, updated_at) VALUES (1, 'old', 'old body', 'claude', 1, 1)`,
-	} {
-		if _, err := store.db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	store.Close()
-
-	store, err = Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	var kept, fresh int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM prompt_sections_legacy_per_file`).Scan(&kept); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM prompt_sections`).Scan(&fresh); err != nil {
-		t.Fatal(err)
-	}
-	if kept != 1 || fresh != 0 {
-		t.Fatalf("legacy rows = %d, new rows = %d; want 1 and 0", kept, fresh)
-	}
-}
-
 func TestLevelAndTitleDescribeASectionAndTheHeadingFollows(t *testing.T) {
 	f := newPromptFixture(t)
 	id := f.importHost()
@@ -651,16 +609,16 @@ func TestAHeldDriftForContentTheSectionsAlreadyRenderIsSettledByTheNextScan(t *t
 	if !claude.MatchesRender {
 		t.Fatal("setup: CLAUDE.md should already hold the render")
 	}
-	if _, err := f.store.db.Exec(`UPDATE prompt_collection_outputs SET accounted_sha256=? WHERE id=?`, staleSHA, claude.ID); err != nil {
+	if _, err := f.store.db.Exec(`UPDATE prompt_collection_outputs SET accounted_sha256=$1 WHERE id=$2`, staleSHA, claude.ID); err != nil {
 		t.Fatal(err)
 	}
-	res, err := f.store.db.Exec(`INSERT INTO prompt_drifts (collection_id, output_id, accounted_sha256, disk_sha256, disk_content, status, held_reason, operations, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?)`, id, claude.ID, staleSHA, claude.DiskSHA256, []byte(f.read("CLAUDE.md")), PromptDriftStatusHeld,
-		`the section "## Services" this edit touches has itself changed in the sections since the file was last accounted for`, now())
+	var stuckID int64
+	err := f.store.db.QueryRow(`INSERT INTO prompt_drifts (collection_id, output_id, accounted_sha256, disk_sha256, disk_content, status, held_reason, operations, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, '[]', $8) RETURNING id`, id, claude.ID, staleSHA, claude.DiskSHA256, []byte(f.read("CLAUDE.md")), PromptDriftStatusHeld,
+		`the section "## Services" this edit touches has itself changed in the sections since the file was last accounted for`, now()).Scan(&stuckID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stuckID, _ := res.LastInsertId()
 
 	reconciliation, err := f.store.ReconcilePromptDrifts()
 	if err != nil {

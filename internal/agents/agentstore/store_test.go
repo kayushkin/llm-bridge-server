@@ -2,11 +2,11 @@ package agentstore
 
 import (
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
+	"os"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 func hashContent(s string) string {
@@ -14,18 +14,40 @@ func hashContent(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// testStore gives the test a store on a Postgres database of its own, made
+// from a template with the module migrated (postgresstorage/postgrestest).
+// Its home directory is $HOME as the test has it: the temporary folder
+// TestMain set, or the one scanFixture or newPromptFixture set after it.
 func testStore(t *testing.T) *Store {
 	t.Helper()
-	db, err := sql.Open("sqlite3", ":memory:?_foreign_keys=on")
+	return testStoreWithHome(t, testHomeDirectory(t))
+}
+
+// testStoreWithHome is testStore with the home directory named.
+func testStoreWithHome(t *testing.T, home string) *Store {
+	t.Helper()
+	module, err := Module()
+	if err != nil {
+		t.Fatalf("module: %v", err)
+	}
+	database := postgrestest.NewDatabase(t, module)
+	s, err := New(database.Open(module), home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Store{db: db, embedder: NewEmbedder()}
-	if err := s.migrate(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
 	return s
+}
+
+// testHomeDirectory is $HOME, refused when it is the home the tests started
+// with: every test runs in a temporary home, so nothing it scans, renders or
+// writes can reach the real one.
+func testHomeDirectory(t *testing.T) string {
+	t.Helper()
+	home := os.Getenv("HOME")
+	if home == "" || home == homeTheTestsStartedWith {
+		t.Fatalf("HOME is %q, the home the tests started with; a test must run in a temporary one", home)
+	}
+	return home
 }
 
 func TestSeedAndResolve(t *testing.T) {

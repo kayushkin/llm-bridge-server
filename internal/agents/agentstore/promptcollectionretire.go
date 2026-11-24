@@ -61,7 +61,7 @@ func (s *Store) RetirePromptCollection(collectionID int64, note string) (*Prompt
 		DeletedSectionIDs: []int64{}, RemovedOutputPaths: []string{}}
 	err = s.inPromptTransaction(func(tx *sql.Tx) error {
 		var waitingDrifts int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM prompt_drifts WHERE collection_id=? AND status IN (?, ?)`,
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM prompt_drifts WHERE collection_id=$1 AND status IN ($2, $3)`,
 			collectionID, PromptDriftStatusOpen, PromptDriftStatusHeld).Scan(&waitingDrifts); err != nil {
 			return err
 		}
@@ -69,7 +69,7 @@ func (s *Store) RetirePromptCollection(collectionID int64, note string) (*Prompt
 			return fmt.Errorf("%w: collection %d has %d open or held drifts; apply or dismiss them first", ErrPromptCollectionRetireRefused, collectionID, waitingDrifts)
 		}
 		var sectionsNow int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=?`, collectionID).Scan(&sectionsNow); err != nil {
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=$1`, collectionID).Scan(&sectionsNow); err != nil {
 			return err
 		}
 		if sectionsNow != len(sections) {
@@ -82,7 +82,7 @@ func (s *Store) RetirePromptCollection(collectionID int64, note string) (*Prompt
 			retirement.DeletedSectionIDs = append(retirement.DeletedSectionIDs, sections[i].ID)
 		}
 
-		rows, err := tx.Query(`SELECT relative_path FROM prompt_collection_outputs WHERE collection_id=? ORDER BY id`, collectionID)
+		rows, err := tx.Query(`SELECT relative_path FROM prompt_collection_outputs WHERE collection_id=$1 ORDER BY id`, collectionID)
 		if err != nil {
 			return err
 		}
@@ -98,12 +98,12 @@ func (s *Store) RetirePromptCollection(collectionID int64, note string) (*Prompt
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`DELETE FROM prompt_collection_outputs WHERE collection_id=?`, collectionID); err != nil {
+		if _, err := tx.Exec(`DELETE FROM prompt_collection_outputs WHERE collection_id=$1`, collectionID); err != nil {
 			return err
 		}
 
 		retirement.RetiredAt = now()
-		_, err = tx.Exec(`UPDATE prompt_collections SET retired_at=?, updated_at=? WHERE id=?`, retirement.RetiredAt, retirement.RetiredAt, collectionID)
+		_, err = tx.Exec(`UPDATE prompt_collections SET retired_at=$1, updated_at=$2 WHERE id=$3`, retirement.RetiredAt, retirement.RetiredAt, collectionID)
 		return err
 	})
 	if err != nil {

@@ -47,7 +47,7 @@ func (s *Store) AppendVersion(trackedFileID int64, content []byte, source, machi
 	var lastSHA string
 	err := s.db.QueryRow(`
 		SELECT id, sha256 FROM tracked_file_versions
-		WHERE tracked_file_id=? ORDER BY created_at DESC, id DESC LIMIT 1
+		WHERE tracked_file_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1
 	`, trackedFileID).Scan(&lastID, &lastSHA)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("query last version: %w", err)
@@ -64,15 +64,16 @@ func (s *Store) AppendVersion(trackedFileID int64, content []byte, source, machi
 	if note != "" {
 		notePtr = note
 	}
-	res, err := s.db.Exec(`
+	var id int64
+	err = s.db.QueryRow(`
 		INSERT INTO tracked_file_versions
 			(tracked_file_id, sha256, size, content_bytes, source, machine_id, note, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, trackedFileID, sha, int64(len(content)), content, source, machinePtr, notePtr, now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id
+	`, trackedFileID, sha, int64(len(content)), content, source, machinePtr, notePtr, now()).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("insert version: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	return s.GetVersion(id)
 }
 
@@ -83,7 +84,7 @@ func (s *Store) GetVersion(id int64) (*TrackedFileVersion, error) {
 	var machine, note sql.NullString
 	err := s.db.QueryRow(`
 		SELECT id, tracked_file_id, sha256, size, source, machine_id, note, created_at
-		FROM tracked_file_versions WHERE id=?
+		FROM tracked_file_versions WHERE id=$1
 	`, id).Scan(&v.ID, &v.TrackedFileID, &v.SHA256, &v.Size, &v.Source, &machine, &note, &v.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -100,7 +101,7 @@ func (s *Store) GetVersion(id int64) (*TrackedFileVersion, error) {
 // ReadVersionContent returns the stored bytes for a version.
 func (s *Store) ReadVersionContent(id int64) ([]byte, error) {
 	var content []byte
-	err := s.db.QueryRow(`SELECT content_bytes FROM tracked_file_versions WHERE id=?`, id).Scan(&content)
+	err := s.db.QueryRow(`SELECT content_bytes FROM tracked_file_versions WHERE id=$1`, id).Scan(&content)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +113,7 @@ func (s *Store) ReadVersionContent(id int64) ([]byte, error) {
 func (s *Store) ListVersions(trackedFileID int64) ([]TrackedFileVersion, error) {
 	rows, err := s.db.Query(`
 		SELECT id, tracked_file_id, sha256, size, source, COALESCE(machine_id,''), COALESCE(note,''), created_at
-		FROM tracked_file_versions WHERE tracked_file_id=?
+		FROM tracked_file_versions WHERE tracked_file_id=$1
 		ORDER BY created_at DESC, id DESC
 	`, trackedFileID)
 	if err != nil {
@@ -143,7 +144,7 @@ func (s *Store) LatestVersion(trackedFileID int64) (*TrackedFileVersion, error) 
 	var id int64
 	err := s.db.QueryRow(`
 		SELECT id FROM tracked_file_versions
-		WHERE tracked_file_id=? ORDER BY created_at DESC, id DESC LIMIT 1
+		WHERE tracked_file_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1
 	`, trackedFileID).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -160,7 +161,7 @@ func (s *Store) FindVersionByHash(trackedFileID int64, sha string) (*TrackedFile
 	var id int64
 	err := s.db.QueryRow(`
 		SELECT id FROM tracked_file_versions
-		WHERE tracked_file_id=? AND sha256=? ORDER BY created_at DESC, id DESC LIMIT 1
+		WHERE tracked_file_id=$1 AND sha256=$2 ORDER BY created_at DESC, id DESC LIMIT 1
 	`, trackedFileID, sha).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -204,7 +205,7 @@ func (s *Store) EnsureSeedProfile(machineID string) (*MachineSeedProfile, error)
 	scopes, _ := json.Marshal(DefaultSeedScopes)
 	if _, err := s.db.Exec(`
 		INSERT INTO machine_seed_profiles (machine_id, scopes, created_at, updated_at)
-		VALUES (?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4)
 	`, machineID, string(scopes), now(), now()); err != nil {
 		return nil, fmt.Errorf("insert profile: %w", err)
 	}
@@ -217,7 +218,7 @@ func (s *Store) GetSeedProfile(machineID string) (*MachineSeedProfile, error) {
 	var raw string
 	prof := &MachineSeedProfile{MachineID: machineID}
 	err := s.db.QueryRow(`
-		SELECT scopes, created_at, updated_at FROM machine_seed_profiles WHERE machine_id=?
+		SELECT scopes, created_at, updated_at FROM machine_seed_profiles WHERE machine_id=$1
 	`, machineID).Scan(&raw, &prof.CreatedAt, &prof.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -235,7 +236,7 @@ func (s *Store) SetSeedProfileScopes(machineID string, scopes []string) (*Machin
 	}
 	encoded, _ := json.Marshal(scopes)
 	if _, err := s.db.Exec(`
-		UPDATE machine_seed_profiles SET scopes=?, updated_at=? WHERE machine_id=?
+		UPDATE machine_seed_profiles SET scopes=$1, updated_at=$2 WHERE machine_id=$3
 	`, string(encoded), now(), machineID); err != nil {
 		return nil, err
 	}
@@ -285,7 +286,7 @@ type MachineSeedState struct {
 func (s *Store) RecordObservedHash(machineID string, trackedFileID int64, sha string) error {
 	_, err := s.db.Exec(`
 		INSERT INTO machine_seed_state (machine_id, tracked_file_id, observed_sha, observed_at)
-		VALUES (?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT(machine_id, tracked_file_id) DO UPDATE SET
 			observed_sha=excluded.observed_sha, observed_at=excluded.observed_at
 	`, machineID, trackedFileID, sha, now())
@@ -297,7 +298,7 @@ func (s *Store) RecordObservedHash(machineID string, trackedFileID int64, sha st
 func (s *Store) RecordPushedVersion(machineID string, trackedFileID int64, versionID int64) error {
 	_, err := s.db.Exec(`
 		INSERT INTO machine_seed_state (machine_id, tracked_file_id, last_pushed_version_id, last_pushed_at)
-		VALUES (?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT(machine_id, tracked_file_id) DO UPDATE SET
 			last_pushed_version_id=excluded.last_pushed_version_id,
 			last_pushed_at=excluded.last_pushed_at
@@ -314,7 +315,7 @@ func (s *Store) GetSeedState(machineID string, trackedFileID int64) (*MachineSee
 	var versionID sql.NullInt64
 	err := s.db.QueryRow(`
 		SELECT observed_sha, observed_at, last_pushed_version_id, last_pushed_at
-		FROM machine_seed_state WHERE machine_id=? AND tracked_file_id=?
+		FROM machine_seed_state WHERE machine_id=$1 AND tracked_file_id=$2
 	`, machineID, trackedFileID).Scan(&sha, &observed, &versionID, &pushedAt)
 	if err != nil {
 		return nil, err
@@ -339,7 +340,7 @@ func (s *Store) ListSeedStateForMachine(machineID string) ([]MachineSeedState, e
 	rows, err := s.db.Query(`
 		SELECT tracked_file_id, COALESCE(observed_sha,''), COALESCE(observed_at,0),
 		       COALESCE(last_pushed_version_id,0), COALESCE(last_pushed_at,0)
-		FROM machine_seed_state WHERE machine_id=?
+		FROM machine_seed_state WHERE machine_id=$1 ORDER BY tracked_file_id
 	`, machineID)
 	if err != nil {
 		return nil, err
@@ -408,10 +409,7 @@ func (s *Store) BuildSeedManifest(machineID string) (*SeedManifest, error) {
 		return nil, fmt.Errorf("list files: %w", err)
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("home: %w", err)
-	}
+	home := s.homeDirectory
 
 	mf := &SeedManifest{
 		MachineID: machineID,

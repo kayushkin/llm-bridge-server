@@ -3,6 +3,7 @@ package agentstore
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -148,7 +149,7 @@ func (s *Store) agentSlugFromPath(path, scope string) string {
 		return ""
 	}
 	var slug string
-	err := s.db.QueryRow("SELECT slug FROM agents WHERE slug = ?", stem).Scan(&slug)
+	err := s.db.QueryRow("SELECT slug FROM agents WHERE slug = $1", stem).Scan(&slug)
 	if err != nil {
 		return ""
 	}
@@ -227,17 +228,14 @@ const (
 	upsertUnchanged
 )
 
-// Scan walks $HOME (with a curated set of skip paths), classifies every
+// Scan walks the store's home directory (with a curated set of skip paths), classifies every
 // matching file, and upserts tracked_files rows. Rows whose underlying file
 // has disappeared (in both enabled and .disabled variants) are marked missing.
 //
 // We skip third-party caches (~/.config, ~/.codex) and ephemeral forge envs
 // so imported plugin/skill bundles don't pollute the index.
 func (s *Store) Scan() (*ScanResult, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("home: %w", err)
-	}
+	home := s.homeDirectory
 
 	// Absolute paths to skip during the walk.
 	skipPaths := map[string]bool{
@@ -345,7 +343,7 @@ func (s *Store) Scan() (*ScanResult, error) {
 	}
 
 	// Mark rows whose underlying file (in either variant) no longer exists.
-	rows, err := s.db.Query("SELECT id, path, enabled FROM tracked_files WHERE status != 'missing'")
+	rows, err := s.db.Query("SELECT id, path, enabled FROM tracked_files WHERE status != 'missing' ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +373,7 @@ func (s *Store) Scan() (*ScanResult, error) {
 		if _, err := os.Stat(c.path + ".disabled"); err == nil {
 			continue
 		}
-		if _, err := s.db.Exec("UPDATE tracked_files SET status='missing', updated_at=? WHERE id=?", now(), c.id); err != nil {
+		if _, err := s.db.Exec("UPDATE tracked_files SET status='missing', updated_at=$1 WHERE id=$2", now(), c.id); err != nil {
 			// The row still says 'present'. Reporting it as Missing would
 			// claim a write that did not happen -- the same lie as dropping a
 			// failed file, in the other direction.
@@ -397,15 +395,15 @@ func (s *Store) Scan() (*ScanResult, error) {
 func (s *Store) upsertTrackedFile(path, scope, agentSlug string, enabled bool, hash string, size, mtime int64) (int64, upsertOutcome, error) {
 	var id int64
 	var storedHash string
-	err := s.db.QueryRow("SELECT id, COALESCE(fs_hash,'') FROM tracked_files WHERE path = ?", path).Scan(&id, &storedHash)
+	err := s.db.QueryRow("SELECT id, COALESCE(fs_hash,'') FROM tracked_files WHERE path = $1", path).Scan(&id, &storedHash)
 	if err == nil {
 		// The row is rewritten either way: scope, agent_slug and enabled can
 		// change without the content changing, and last_scanned_at has to
 		// advance on every pass. Only the reported outcome turns on the hash.
 		_, err := s.db.Exec(`
 			UPDATE tracked_files
-			SET scope=?, agent_slug=?, enabled=?, fs_hash=?, size=?, mtime=?, last_scanned_at=?, status='present', updated_at=?
-			WHERE id=?`,
+			SET scope=$1, agent_slug=$2, enabled=$3, fs_hash=$4, size=$5, mtime=$6, last_scanned_at=$7, status='present', updated_at=$8
+			WHERE id=$9`,
 			scope, nullIfEmpty(agentSlug), boolToInt(enabled), hash, size, mtime, now(), now(), id)
 		if err != nil {
 			return id, upsertUnchanged, err
@@ -415,14 +413,14 @@ func (s *Store) upsertTrackedFile(path, scope, agentSlug string, enabled bool, h
 		}
 		return id, upsertUpdated, nil
 	}
-	res, err := s.db.Exec(`
+	err = s.db.QueryRow(`
 		INSERT INTO tracked_files (path, scope, agent_slug, enabled, fs_hash, size, mtime, last_scanned_at, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'present', ?, ?)`,
-		path, scope, nullIfEmpty(agentSlug), boolToInt(enabled), hash, size, mtime, now(), now(), now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'present', $9, $10)
+		RETURNING id`,
+		path, scope, nullIfEmpty(agentSlug), boolToInt(enabled), hash, size, mtime, now(), now(), now()).Scan(&id)
 	if err != nil {
 		return 0, upsertUnchanged, err
 	}
-	id, _ = res.LastInsertId()
 	return id, upsertAdded, nil
 }
 
@@ -452,12 +450,12 @@ func (s *Store) listTrackedFiles(scope, agentSlug string, includeIgnored bool) (
 		q += " AND ignored_by_rule_id IS NULL"
 	}
 	if scope != "" {
-		q += " AND scope = ?"
 		args = append(args, scope)
+		q += fmt.Sprintf(" AND scope = $%d", len(args))
 	}
 	if agentSlug != "" {
-		q += " AND agent_slug = ?"
 		args = append(args, agentSlug)
+		q += fmt.Sprintf(" AND agent_slug = $%d", len(args))
 	}
 	q += " ORDER BY scope, path"
 	rows, err := s.db.Query(q, args...)
@@ -482,7 +480,7 @@ func (s *Store) listTrackedFiles(scope, agentSlug string, includeIgnored bool) (
 func (s *Store) GetTrackedFile(id int64) (*TrackedFile, error) {
 	var f TrackedFile
 	var en int
-	err := s.db.QueryRow("SELECT id, path, scope, COALESCE(agent_slug,''), enabled, COALESCE(fs_hash,''), COALESCE(size,0), COALESCE(mtime,0), COALESCE(last_scanned_at,0), status, COALESCE(ignored_by_rule_id,0), created_at, updated_at FROM tracked_files WHERE id=?", id).
+	err := s.db.QueryRow("SELECT id, path, scope, COALESCE(agent_slug,''), enabled, COALESCE(fs_hash,''), COALESCE(size,0), COALESCE(mtime,0), COALESCE(last_scanned_at,0), status, COALESCE(ignored_by_rule_id,0), created_at, updated_at FROM tracked_files WHERE id=$1", id).
 		Scan(&f.ID, &f.Path, &f.Scope, &f.AgentSlug, &en, &f.FSHash, &f.Size, &f.MTime, &f.LastScannedAt, &f.Status, &f.IgnoredByRuleID, &f.CreatedAt, &f.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -538,6 +536,9 @@ func (s *Store) WriteTrackedFileVersioned(id int64, content []byte, source, mach
 	}
 
 	diskPath := f.DiskPath()
+	if err := s.refuseWriteOutsideHome(diskPath); err != nil {
+		return nil, nil, err
+	}
 	tmp := diskPath + ".tmp"
 	if err := os.WriteFile(tmp, content, 0644); err != nil {
 		return nil, nil, err
@@ -554,7 +555,7 @@ func (s *Store) WriteTrackedFileVersioned(id int64, content []byte, source, mach
 		size = info.Size()
 		mtime = info.ModTime().Unix()
 	}
-	if _, err := s.db.Exec("UPDATE tracked_files SET fs_hash=?, size=?, mtime=?, last_scanned_at=?, status='present', updated_at=? WHERE id=?",
+	if _, err := s.db.Exec("UPDATE tracked_files SET fs_hash=$1, size=$2, mtime=$3, last_scanned_at=$4, status='present', updated_at=$5 WHERE id=$6",
 		hash, size, mtime, now(), now(), id); err != nil {
 		return nil, nil, err
 	}
@@ -611,15 +612,37 @@ func (s *Store) SetTrackedFileEnabled(id int64, enable bool) (*TrackedFile, erro
 	if !enable {
 		to = f.Path + ".disabled"
 	}
+	if err := s.refuseWriteOutsideHome(from); err != nil {
+		return nil, err
+	}
+	if err := s.refuseWriteOutsideHome(to); err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(from); err != nil {
 		return nil, fmt.Errorf("source file missing: %s", from)
 	}
 	if err := os.Rename(from, to); err != nil {
 		return nil, err
 	}
-	_, err = s.db.Exec("UPDATE tracked_files SET enabled=?, updated_at=? WHERE id=?", boolToInt(enable), now(), id)
+	_, err = s.db.Exec("UPDATE tracked_files SET enabled=$1, updated_at=$2 WHERE id=$3", boolToInt(enable), now(), id)
 	if err != nil {
 		return nil, err
 	}
 	return s.GetTrackedFile(id)
+}
+
+// ErrWriteOutsideHome is what a write answers when its path is not inside the
+// store's home directory. Every file the store writes, renames or renders is
+// one the scan would track, so it is inside the home; a path outside it is a
+// row from another home, such as a database imported from another machine or
+// a test that pointed the store at a temporary folder.
+var ErrWriteOutsideHome = errors.New("the path is outside the store's home directory")
+
+// refuseWriteOutsideHome refuses path unless it is inside s.homeDirectory.
+func (s *Store) refuseWriteOutsideHome(path string) error {
+	relative, err := filepath.Rel(s.homeDirectory, filepath.Clean(path))
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return fmt.Errorf("%w: %s is not inside %s", ErrWriteOutsideHome, path, s.homeDirectory)
+	}
+	return nil
 }

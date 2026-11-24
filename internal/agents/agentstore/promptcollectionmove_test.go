@@ -26,7 +26,7 @@ func newMoveFixture(t *testing.T) (*promptFixture, int64, *http.ServeMux) {
 		t.Fatal(err)
 	}
 	var id int64
-	if err := f.store.db.QueryRow(`SELECT id FROM prompt_collections WHERE scope='project' AND root_path=?`,
+	if err := f.store.db.QueryRow(`SELECT id FROM prompt_collections WHERE scope='project' AND root_path=$1`,
 		filepath.Join(f.home, "repos", "producer")).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
@@ -69,8 +69,8 @@ func TestMovingACollectionRootKeepsItsIdHistoryAndFileVersions(t *testing.T) {
 		}
 		trackedIDs[output.RelativePath] = output.TrackedFileID
 	}
-	revisionsBefore := f.count(`SELECT COUNT(*) FROM prompt_section_revisions WHERE collection_id=?`, id)
-	versionsBefore := f.count(`SELECT COUNT(*) FROM tracked_file_versions WHERE tracked_file_id IN (SELECT id FROM tracked_files WHERE path LIKE ?)`, oldRoot+"/%")
+	revisionsBefore := f.count(`SELECT COUNT(*) FROM prompt_section_revisions WHERE collection_id=$1`, id)
+	versionsBefore := f.count(`SELECT COUNT(*) FROM tracked_file_versions WHERE tracked_file_id IN (SELECT id FROM tracked_files WHERE path LIKE $1)`, oldRoot+"/%")
 
 	if err := os.Rename(oldRoot, newRoot); err != nil {
 		t.Fatal(err)
@@ -106,10 +106,10 @@ func TestMovingACollectionRootKeepsItsIdHistoryAndFileVersions(t *testing.T) {
 			t.Fatalf("%s tracked file id = %d, want %d kept", output.RelativePath, output.TrackedFileID, trackedIDs[output.RelativePath])
 		}
 	}
-	if got := f.count(`SELECT COUNT(*) FROM prompt_section_revisions WHERE collection_id=?`, id); got != revisionsBefore {
+	if got := f.count(`SELECT COUNT(*) FROM prompt_section_revisions WHERE collection_id=$1`, id); got != revisionsBefore {
 		t.Fatalf("revisions = %d, want %d", got, revisionsBefore)
 	}
-	if got := f.count(`SELECT COUNT(*) FROM tracked_file_versions WHERE tracked_file_id IN (SELECT id FROM tracked_files WHERE path LIKE ?)`, newRoot+"/%"); got != versionsBefore {
+	if got := f.count(`SELECT COUNT(*) FROM tracked_file_versions WHERE tracked_file_id IN (SELECT id FROM tracked_files WHERE path LIKE $1)`, newRoot+"/%"); got != versionsBefore {
 		t.Fatalf("versions under the new root = %d, want the %d from the old root", got, versionsBefore)
 	}
 
@@ -118,10 +118,10 @@ func TestMovingACollectionRootKeepsItsIdHistoryAndFileVersions(t *testing.T) {
 	if _, err := f.store.Scan(); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE ?`, newRoot+"/%"); got != 2 {
+	if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE $1`, newRoot+"/%"); got != 2 {
 		t.Fatalf("tracked files under the new root after a scan = %d, want 2", got)
 	}
-	if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE ?`, oldRoot+"/%"); got != 0 {
+	if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE $1`, oldRoot+"/%"); got != 0 {
 		t.Fatalf("tracked files left at the old root = %d", got)
 	}
 	reconciliation, err := f.store.ReconcilePromptDrifts()
@@ -166,7 +166,7 @@ func TestMovingACollectionRootMergesRowsTheScanMadeAtTheNewPaths(t *testing.T) {
 	if _, err := f.store.Scan(); err != nil {
 		t.Fatal(err)
 	}
-	scannedRows := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE ?`, newRoot+"/%")
+	scannedRows := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE $1`, newRoot+"/%")
 	if scannedRows != 2 {
 		t.Fatalf("the scan tracked %d files at the new root, want 2 for the test to mean anything", scannedRows)
 	}
@@ -188,10 +188,10 @@ func TestMovingACollectionRootMergesRowsTheScanMadeAtTheNewPaths(t *testing.T) {
 			t.Errorf("merge %+v went into the wrong row; want %d", merge, historyIDs[filepath.Base(merge.Path)])
 		}
 	}
-	if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE ?`, newRoot+"/%"); got != 2 {
+	if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE $1`, newRoot+"/%"); got != 2 {
 		t.Fatalf("tracked files under the new root = %d, want 2", got)
 	}
-	if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE ?`, oldRoot+"/%"); got != 0 {
+	if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE $1`, oldRoot+"/%"); got != 0 {
 		t.Fatalf("tracked files left at the old root = %d", got)
 	}
 	if got := f.count(`SELECT COUNT(*) FROM tracked_file_versions`); got != versionsAfterScan || got < versionsBefore {
@@ -207,7 +207,7 @@ func TestMovingACollectionRootMergesRowsTheScanMadeAtTheNewPaths(t *testing.T) {
 		}
 	}
 	var status string
-	if err := f.store.db.QueryRow(`SELECT status FROM tracked_files WHERE id=?`, historyIDs["CLAUDE.md"]).Scan(&status); err != nil || status != "present" {
+	if err := f.store.db.QueryRow(`SELECT status FROM tracked_files WHERE id=$1`, historyIDs["CLAUDE.md"]).Scan(&status); err != nil || status != "present" {
 		t.Fatalf("history row status = %q (%v), want present taken from the scanned row", status, err)
 	}
 
@@ -216,7 +216,7 @@ func TestMovingACollectionRootMergesRowsTheScanMadeAtTheNewPaths(t *testing.T) {
 	if _, err := f.store.Scan(); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE ?`, newRoot+"/%"); got != 2 {
+	if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE $1`, newRoot+"/%"); got != 2 {
 		t.Fatalf("tracked files under the new root after a scan = %d, want 2", got)
 	}
 	reconciliation, err := f.store.ReconcilePromptDrifts()
@@ -282,7 +282,7 @@ func TestMovingACollectionRootRefusesAndChangesNothing(t *testing.T) {
 				root = strings.TrimPrefix(tc.root, "!")
 			}
 			before := f.collectionRow(id)
-			pathsBefore := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE ?`, before.RootPath+"/%")
+			pathsBefore := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE $1`, before.RootPath+"/%")
 
 			body, _ := json.Marshal(map[string]string{"root_path": root, "slug": tc.slug})
 			response := do(t, mux, "PUT", "/prompt-collections/"+itoa(id)+"/root", string(body))
@@ -292,7 +292,7 @@ func TestMovingACollectionRootRefusesAndChangesNothing(t *testing.T) {
 			if after := f.collectionRow(id); after != before {
 				t.Fatalf("a refused move changed the collection: %+v -> %+v", before, after)
 			}
-			if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE ?`, before.RootPath+"/%"); got != pathsBefore {
+			if got := f.count(`SELECT COUNT(*) FROM tracked_files WHERE path LIKE $1`, before.RootPath+"/%"); got != pathsBefore {
 				t.Fatalf("a refused move renamed tracked files: %d -> %d under %s", pathsBefore, got, before.RootPath)
 			}
 		})

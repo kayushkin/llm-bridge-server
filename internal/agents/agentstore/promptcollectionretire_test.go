@@ -13,7 +13,7 @@ import (
 func TestRetiringACollectionDeletesItsSectionsWithRevisionsAndHidesIt(t *testing.T) {
 	f, id, _ := newMoveFixture(t)
 	root := filepath.Join(f.home, "repos", "producer")
-	sectionsBefore := f.count(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=?`, id)
+	sectionsBefore := f.count(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=$1`, id)
 	if sectionsBefore == 0 {
 		t.Fatal("fixture collection has no sections")
 	}
@@ -28,13 +28,13 @@ func TestRetiringACollectionDeletesItsSectionsWithRevisionsAndHidesIt(t *testing
 	if strings.Join(retirement.RemovedOutputPaths, ",") != "AGENTS.md,CLAUDE.md" {
 		t.Fatalf("removed outputs %v", retirement.RemovedOutputPaths)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=?`, id); n != 0 {
+	if n := f.count(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=$1`, id); n != 0 {
 		t.Fatalf("%d sections remain", n)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM prompt_collection_outputs WHERE collection_id=?`, id); n != 0 {
+	if n := f.count(`SELECT COUNT(*) FROM prompt_collection_outputs WHERE collection_id=$1`, id); n != 0 {
 		t.Fatalf("%d outputs remain", n)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM prompt_section_revisions WHERE collection_id=? AND operation='delete' AND note=?`,
+	if n := f.count(`SELECT COUNT(*) FROM prompt_section_revisions WHERE collection_id=$1 AND operation='delete' AND note=$2`,
 		id, "an import made it for a copy of the repo"); n != sectionsBefore {
 		t.Fatalf("%d delete revisions carry the note, want %d", n, sectionsBefore)
 	}
@@ -74,7 +74,7 @@ func TestARetiredRootIsNeitherReusedNorReimported(t *testing.T) {
 	if _, err := f.store.ImportUntrackedPromptFiles([]string{"AGENTS.md", "CLAUDE.md"}); err != nil {
 		t.Fatalf("import after retiring: %v", err)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=?`, id); n != 0 {
+	if n := f.count(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=$1`, id); n != 0 {
 		t.Fatalf("import put %d sections back", n)
 	}
 	if _, err := f.store.RetirePromptCollection(id, "again"); !errors.Is(err, ErrPromptCollectionRetired) {

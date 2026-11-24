@@ -146,7 +146,7 @@ func scanPromptDrift(row rowScanner) (*PromptDrift, error) {
 }
 
 func (s *Store) GetPromptDrift(id int64) (*PromptDrift, error) {
-	drift, err := scanPromptDrift(s.db.QueryRow(`SELECT `+promptDriftColumns+promptDriftJoins+`WHERE d.id=?`, id))
+	drift, err := scanPromptDrift(s.db.QueryRow(`SELECT `+promptDriftColumns+promptDriftJoins+`WHERE d.id=$1`, id))
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func (s *Store) findPromptDriftTwins(drift *PromptDrift) error {
 		return nil
 	}
 	rows, err := s.db.Query(`SELECT d.id, d.output_id, c.root_path, o.relative_path`+promptDriftJoins+`
-		WHERE d.collection_id=? AND d.disk_sha256=? AND d.id<>? AND d.status IN (?, ?) ORDER BY d.id`,
+		WHERE d.collection_id=$1 AND d.disk_sha256=$2 AND d.id<>$3 AND d.status IN ($4, $5) ORDER BY d.id`,
 		drift.CollectionID, drift.DiskSHA256, drift.ID, PromptDriftStatusOpen, PromptDriftStatusHeld)
 	if err != nil {
 		return err
@@ -184,7 +184,7 @@ func (s *Store) findPromptDriftTwins(drift *PromptDrift) error {
 // GetPromptDriftDiskContent returns the file content the drift was seen with.
 func (s *Store) GetPromptDriftDiskContent(id int64) ([]byte, error) {
 	var content []byte
-	err := s.db.QueryRow(`SELECT disk_content FROM prompt_drifts WHERE id=?`, id).Scan(&content)
+	err := s.db.QueryRow(`SELECT disk_content FROM prompt_drifts WHERE id=$1`, id).Scan(&content)
 	return content, err
 }
 
@@ -194,14 +194,16 @@ func (s *Store) ListPromptDrifts(collectionID int64, statuses []string) ([]Promp
 	query := `SELECT ` + promptDriftColumns + promptDriftJoins + `WHERE 1=1`
 	var args []any
 	if collectionID != 0 {
-		query += ` AND d.collection_id=?`
 		args = append(args, collectionID)
+		query += fmt.Sprintf(` AND d.collection_id=$%d`, len(args))
 	}
 	if len(statuses) > 0 {
-		query += ` AND d.status IN (?` + strings.Repeat(",?", len(statuses)-1) + `)`
-		for _, status := range statuses {
+		placeholders := make([]string, len(statuses))
+		for index, status := range statuses {
 			args = append(args, status)
+			placeholders[index] = fmt.Sprintf("$%d", len(args))
 		}
+		query += ` AND d.status IN (` + strings.Join(placeholders, ",") + `)`
 	}
 	query += ` ORDER BY d.id DESC LIMIT 500`
 	rows, err := s.db.Query(query, args...)
@@ -231,7 +233,7 @@ func (s *Store) ListPromptDrifts(collectionID int64, statuses []string) ([]Promp
 
 func (s *Store) promptDriftDismissed(outputID int64, diskSHA string) (bool, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM prompt_drifts WHERE output_id=? AND disk_sha256=? AND status=?`, outputID, diskSHA, PromptDriftStatusDismissed).Scan(&count)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM prompt_drifts WHERE output_id=$1 AND disk_sha256=$2 AND status=$3`, outputID, diskSHA, PromptDriftStatusDismissed).Scan(&count)
 	return count > 0, err
 }
 
@@ -280,8 +282,8 @@ func (s *Store) DetectPromptDrifts(collectionID int64) ([]PromptDrift, error) {
 		WHERE o.enabled=1 AND o.accounted_sha256 IS NOT NULL`
 	var args []any
 	if collectionID != 0 {
-		query += ` AND o.collection_id=?`
 		args = append(args, collectionID)
+		query += fmt.Sprintf(` AND o.collection_id=$%d`, len(args))
 	}
 	query += ` ORDER BY o.id`
 	rows, err := s.db.Query(query, args...)
@@ -336,7 +338,7 @@ func (s *Store) DetectPromptDrifts(collectionID int64) ([]PromptDrift, error) {
 		}
 		var knownID int64
 		var knownStatus string
-		err = s.db.QueryRow(`SELECT id, status FROM prompt_drifts WHERE output_id=? AND disk_sha256=?`, c.outputID, diskSHA).Scan(&knownID, &knownStatus)
+		err = s.db.QueryRow(`SELECT id, status FROM prompt_drifts WHERE output_id=$1 AND disk_sha256=$2`, c.outputID, diskSHA).Scan(&knownID, &knownStatus)
 		if err != nil && err != sql.ErrNoRows {
 			return detected, err
 		}
@@ -345,7 +347,7 @@ func (s *Store) DetectPromptDrifts(collectionID int64) ([]PromptDrift, error) {
 		}
 
 		// Whatever was pending for this file described content that is gone.
-		if _, err := s.db.Exec(`UPDATE prompt_drifts SET status=?, resolved_at=? WHERE output_id=? AND status IN (?, ?)`,
+		if _, err := s.db.Exec(`UPDATE prompt_drifts SET status=$1, resolved_at=$2 WHERE output_id=$3 AND status IN ($4, $5)`,
 			PromptDriftStatusSuperseded, now(), c.outputID, PromptDriftStatusOpen, PromptDriftStatusHeld); err != nil {
 			return detected, err
 		}
@@ -364,17 +366,14 @@ func (s *Store) DetectPromptDrifts(collectionID int64) ([]PromptDrift, error) {
 			// The file has gone back to content seen before. Reopen that row
 			// rather than break the (output, content) uniqueness.
 			driftID = knownID
-			_, err = s.db.Exec(`UPDATE prompt_drifts SET accounted_sha256=?, status=?, held_reason=?, operations=?, annotation=NULL, resolved_at=NULL WHERE id=?`,
+			_, err = s.db.Exec(`UPDATE prompt_drifts SET accounted_sha256=$1, status=$2, held_reason=$3, operations=$4, annotation=NULL, resolved_at=NULL WHERE id=$5`,
 				c.accountedSHA, status, nullIfEmpty(heldReason), string(encoded), driftID)
 		} else {
-			var res sql.Result
-			res, err = s.db.Exec(`
+			err = s.db.QueryRow(`
 				INSERT INTO prompt_drifts (collection_id, output_id, accounted_sha256, disk_sha256, disk_content, status, held_reason, operations, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				c.collectionID, c.outputID, c.accountedSHA, diskSHA, data, status, nullIfEmpty(heldReason), string(encoded), now())
-			if err == nil {
-				driftID, err = res.LastInsertId()
-			}
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+				RETURNING id`,
+				c.collectionID, c.outputID, c.accountedSHA, diskSHA, data, status, nullIfEmpty(heldReason), string(encoded), now()).Scan(&driftID)
 		}
 		if err != nil {
 			return detected, err
@@ -455,14 +454,14 @@ func (s *Store) settleOutputTheSectionsAlreadyRender(outputID int64, renderedSHA
 		if err := s.markPromptOutputAccounted(tx, outputID, renderedSHA); err != nil {
 			return err
 		}
-		_, err := tx.Exec(`UPDATE prompt_drifts SET status=?, held_reason=NULL, resolved_at=? WHERE output_id=? AND disk_sha256=? AND status IN (?, ?)`,
+		_, err := tx.Exec(`UPDATE prompt_drifts SET status=$1, held_reason=NULL, resolved_at=$2 WHERE output_id=$3 AND disk_sha256=$4 AND status IN ($5, $6)`,
 			PromptDriftStatusAlreadyAccounted, now(), outputID, renderedSHA, PromptDriftStatusOpen, PromptDriftStatusHeld)
 		return err
 	})
 }
 
 func (s *Store) holdPromptDrift(id int64, reason string) error {
-	_, err := s.db.Exec(`UPDATE prompt_drifts SET status=?, held_reason=? WHERE id=?`, PromptDriftStatusHeld, reason, id)
+	_, err := s.db.Exec(`UPDATE prompt_drifts SET status=$1, held_reason=$2 WHERE id=$3`, PromptDriftStatusHeld, reason, id)
 	return err
 }
 
@@ -578,7 +577,7 @@ func (s *Store) SetPromptDriftAnnotation(id int64, annotation PromptDriftAnnotat
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.db.Exec(`UPDATE prompt_drifts SET annotation=? WHERE id=?`, string(encoded), id); err != nil {
+	if _, err := s.db.Exec(`UPDATE prompt_drifts SET annotation=$1 WHERE id=$2`, string(encoded), id); err != nil {
 		return nil, err
 	}
 	// An edit that only adds sections was waiting for exactly these labels.
@@ -676,7 +675,7 @@ func (s *Store) ApplyPromptDrift(id int64, annotation *PromptDriftAnnotation) er
 		for index, operation := range drift.Operations {
 			switch operation.Kind {
 			case PromptMarkdownEditUpdate:
-				section, err := scanPromptSection(tx.QueryRow(`SELECT id, collection_id, title, heading, body, tags, position, enabled, created_at, updated_at FROM prompt_sections WHERE id=?`, operation.SectionID))
+				section, err := scanPromptSection(tx.QueryRow(`SELECT id, collection_id, title, heading, body, tags, position, enabled, created_at, updated_at FROM prompt_sections WHERE id=$1`, operation.SectionID))
 				if err != nil {
 					return fmt.Errorf("operation %d: section %d: %w", index, operation.SectionID, err)
 				}
@@ -685,7 +684,7 @@ func (s *Store) ApplyPromptDrift(id int64, annotation *PromptDriftAnnotation) er
 					return fmt.Errorf("operation %d: %w", index, err)
 				}
 			case PromptMarkdownEditDelete:
-				section, err := scanPromptSection(tx.QueryRow(`SELECT id, collection_id, title, heading, body, tags, position, enabled, created_at, updated_at FROM prompt_sections WHERE id=?`, operation.SectionID))
+				section, err := scanPromptSection(tx.QueryRow(`SELECT id, collection_id, title, heading, body, tags, position, enabled, created_at, updated_at FROM prompt_sections WHERE id=$1`, operation.SectionID))
 				if err != nil {
 					return fmt.Errorf("operation %d: section %d: %w", index, operation.SectionID, err)
 				}
@@ -728,7 +727,7 @@ func (s *Store) ApplyPromptDrift(id int64, annotation *PromptDriftAnnotation) er
 			if err := s.markPromptOutputAccounted(tx, settledDrift.OutputID, drift.DiskSHA256); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`UPDATE prompt_drifts SET status=?, held_reason=NULL, annotation=?, resolved_at=? WHERE id=?`, PromptDriftStatusApplied, string(encoded), now(), settledDrift.ID); err != nil {
+			if _, err := tx.Exec(`UPDATE prompt_drifts SET status=$1, held_reason=NULL, annotation=$2, resolved_at=$3 WHERE id=$4`, PromptDriftStatusApplied, string(encoded), now(), settledDrift.ID); err != nil {
 				return err
 			}
 		}
@@ -748,7 +747,7 @@ func promptDriftTwinIDs(twins []PromptDriftTwin) []int64 {
 // operation names, renumbering the collection first when they leave no room.
 func promptSectionPositionForInsert(tx *sql.Tx, collectionID int64, operation PromptDriftOperation) (int, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		rows, err := tx.Query(`SELECT id, position FROM prompt_sections WHERE collection_id=? ORDER BY position, id`, collectionID)
+		rows, err := tx.Query(`SELECT id, position FROM prompt_sections WHERE collection_id=$1 ORDER BY position, id`, collectionID)
 		if err != nil {
 			return 0, err
 		}
@@ -794,7 +793,7 @@ func promptSectionPositionForInsert(tx *sql.Tx, collectionID int64, operation Pr
 			return lower + (upper-lower)/2, nil
 		}
 		for i, id := range ids {
-			if _, err := tx.Exec(`UPDATE prompt_sections SET position=? WHERE id=?`, (i+1)*promptSectionPositionStep, id); err != nil {
+			if _, err := tx.Exec(`UPDATE prompt_sections SET position=$1 WHERE id=$2`, (i+1)*promptSectionPositionStep, id); err != nil {
 				return 0, err
 			}
 		}
@@ -806,7 +805,7 @@ func promptSectionPositionForInsert(tx *sql.Tx, collectionID int64, operation Pr
 // every section of the file, heading and body, must be found among the
 // collection's enabled sections, in the same order as in the file.
 func verifySectionsAccountForFile(tx *sql.Tx, collectionID int64, disk []byte) error {
-	rows, err := tx.Query(`SELECT heading, body FROM prompt_sections WHERE collection_id=? AND enabled=1 ORDER BY position, id`, collectionID)
+	rows, err := tx.Query(`SELECT heading, body FROM prompt_sections WHERE collection_id=$1 AND enabled=1 ORDER BY position, id`, collectionID)
 	if err != nil {
 		return err
 	}
@@ -849,7 +848,7 @@ func (s *Store) DismissPromptDrift(id int64) (*PromptDrift, error) {
 	}
 	err = s.inPromptTransaction(func(tx *sql.Tx) error {
 		for _, dismissedID := range append([]int64{id}, promptDriftTwinIDs(drift.Twins)...) {
-			if _, err := tx.Exec(`UPDATE prompt_drifts SET status=?, resolved_at=? WHERE id=?`, PromptDriftStatusDismissed, now(), dismissedID); err != nil {
+			if _, err := tx.Exec(`UPDATE prompt_drifts SET status=$1, resolved_at=$2 WHERE id=$3`, PromptDriftStatusDismissed, now(), dismissedID); err != nil {
 				return err
 			}
 		}

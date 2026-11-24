@@ -23,60 +23,29 @@ Multiple harnesses — inber, openclaw, dash — each have their own config form
      └─────────────────┘  └────────────────┘
 ```
 
-Default database location: `~/.config/agent-store/agents.db`
+## Where it runs
 
-## Usage
+agent-store is a module of llm-bridge-server. Its records live in Postgres
+(schema `agents`, role `agents_module`), built by the embedded migrations in
+`migrations/`, and the server mounts its routes. The standalone server, its
+settings, its deploy script and the `cmd/seed`, `cmd/test-cycle` and
+`cmd/migrate-inber` commands are gone: each opened the SQLite file directly.
+`ImportStandaloneDatabase` copies a standalone store's SQLite file into an
+empty module in one transaction, keeping every id, and the module numbers on
+from that store's own high-water marks.
 
-### As a library
-
-```go
-import agentstore "github.com/kayushkin/agent-store"
-
-store, _ := agentstore.Open("") // uses default path
-
-// Create agent
-store.UpsertAgent(&agentstore.Agent{
-    Slug:        "claxon",
-    DisplayName: "Claxon",
-    Emoji:       "🦀",
-    Role:        "main harness",
-    Enabled:     true,
-})
-
-// Add nature (identity content)
-store.UpsertAgentNature(&agentstore.AgentNature{
-    AgentID: claxon.ID,
-    Kind:    "identity",
-    Content: "# Claxon 🦀\nI'm the main session agent...",
-})
-
-// Register with harness
-store.UpsertAgentOrchestrator(&agentstore.AgentOrchestrator{
-    AgentID:              claxon.ID,
-    OrchestratorID:       "inber",
-    OrchestratorAgentID:  "claxon",
-    ModelPrimary:         "claude-opus-4-6",
-    ThinkingBudget:       2048,
-})
-
-// Set tools
-store.SetAgentTools(claxon.ID, "inber", []string{"shell", "spawn_agent", "file_read"})
-
-// Get full runtime config
-cfg, _ := store.GetFullAgentConfig("claxon", "inber")
-// cfg.Model, cfg.Tools, cfg.ThinkingBudget, cfg.NatureContent, ...
-```
-
-### As an HTTP server
-
-Register handlers on any `http.ServeMux`:
+`New(db, homeDirectory)` is given the folder the scan walks and the prompt
+renders into. The store never reads `$HOME`, and it refuses to write, rename
+or render a file outside that folder (`ErrWriteOutsideHome`), so a store a
+test opens on a temporary folder cannot touch the real home.
 
 ```go
-store, _ := agentstore.Open("")
+store, err := agentstore.New(pool, homeDirectory) // pool from postgresstorage.Open
 agentstore.RegisterHandlers(mux, store)
 ```
 
-When used with [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server), the handlers are mounted automatically.
+Tests run on `postgrestest` databases (`POSTGRESTEST_ADMINISTRATOR_URL`), in
+a temporary `$HOME` that `TestMain` sets.
 
 ## HTTP API
 
@@ -104,8 +73,7 @@ When used with [llm-bridge-server](https://github.com/kayushkin/llm-bridge-serve
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/reconcile` | Check for missing registrations and file drift |
-| `GET` | `/health` | Health check (standalone server only; hosts that embed the library serve their own) |
-| `GET` | `/settings` | The standalone server's environment variables, their values and where each came from (standalone server only; declared in `internal/config/settings.go`) |
+| `GET` | `/health` | Health check, mounted only by `RegisterHealthHandler`, for a host that does not serve its own |
 
 ## Schema
 
@@ -116,7 +84,7 @@ When used with [llm-bridge-server](https://github.com/kayushkin/llm-bridge-serve
 | `agents` | Canonical agent definitions — slug, display name, emoji, role |
 | `harnesses` | Orchestrator systems (inber, openclaw, dash) with default agent and endpoint |
 | `agent_harnesses` | Agent-to-harness configs — model, thinking budget, context tags, limits |
-| `agent_tools` | Tool assignments per agent/harness pair |
+| `agent_harness_tools` | Tool assignments per agent/harness pair |
 | `agent_nature` | Identity and personality content (kind: identity, principle, value, user, project) |
 | `agent_name_aliases` | Alternative names per context for agent resolution |
 | `agent_system_prompt_refs` | Tracks which agents appear in other agents' system prompts |
@@ -141,34 +109,6 @@ When used with [llm-bridge-server](https://github.com/kayushkin/llm-bridge-serve
 | `project` | Project-specific knowledge |
 
 **File distribution** tracks when nature content is written out to harness config files (e.g. soul.md). **File scans** detect when those files have been externally modified, enabling a bidirectional sync loop.
-
-## CLI tools
-
-### `cmd/seed`
-
-Populates agent-store from existing config files:
-
-```bash
-go run ./cmd/seed
-```
-
-Reads from `mapping.json`, `inber/agents.json`, and agent soul files to bootstrap the database.
-
-### `cmd/test-cycle`
-
-Exercises the full nature → distribute → scan → drift detection cycle:
-
-```bash
-go run ./cmd/test-cycle
-```
-
-### `cmd/migrate-inber`
-
-One-time migration of configs from inber to agent-store:
-
-```bash
-go run ./cmd/migrate-inber
-```
 
 ## Part of the llm-bridge ecosystem
 

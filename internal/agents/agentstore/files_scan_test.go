@@ -4,15 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // scanFixture builds a throwaway $HOME containing exactly the files we want
 // Scan() to classify, and points the process at it for the duration of the
-// test. Scan() resolves its root through os.UserHomeDir(), which reads $HOME
-// on Unix, so this is the real walk over a real tree -- not a substitute for
-// one. Returns the fake home.
+// test. testStore hands the store that home as its home directory, so Scan()
+// does the real walk over a real tree -- not a substitute for one. Returns the
+// fake home.
 func scanFixture(t *testing.T, files map[string]string) string {
 	t.Helper()
 	home := t.TempDir()
@@ -197,7 +195,7 @@ func TestScanDoesNotAppendVersionsWhenNothingChanged(t *testing.T) {
 	countVersions := func() int {
 		t.Helper()
 		var n int
-		if err := s.db.QueryRow("SELECT count(*) FROM tracked_file_versions WHERE tracked_file_id = ?", id).Scan(&n); err != nil {
+		if err := s.db.QueryRow("SELECT count(*) FROM tracked_file_versions WHERE tracked_file_id = $1", id).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -241,7 +239,7 @@ func TestScanRevertToEarlierContentIsUpdatedButAppendsNoVersion(t *testing.T) {
 	}
 	id := files[0].ID
 	var beforeRevert int
-	if err := s.db.QueryRow("SELECT count(*) FROM tracked_file_versions WHERE tracked_file_id = ?", id).Scan(&beforeRevert); err != nil {
+	if err := s.db.QueryRow("SELECT count(*) FROM tracked_file_versions WHERE tracked_file_id = $1", id).Scan(&beforeRevert); err != nil {
 		t.Fatal(err)
 	}
 	if beforeRevert != 2 {
@@ -261,7 +259,7 @@ func TestScanRevertToEarlierContentIsUpdatedButAppendsNoVersion(t *testing.T) {
 		t.Errorf("want Unchanged 0 after a revert, got %d (%+v)", res.Unchanged, res)
 	}
 	var afterRevert int
-	if err := s.db.QueryRow("SELECT count(*) FROM tracked_file_versions WHERE tracked_file_id = ?", id).Scan(&afterRevert); err != nil {
+	if err := s.db.QueryRow("SELECT count(*) FROM tracked_file_versions WHERE tracked_file_id = $1", id).Scan(&afterRevert); err != nil {
 		t.Fatal(err)
 	}
 	if afterRevert != beforeRevert {
@@ -367,9 +365,7 @@ func TestScanNamesAFileTheDatabaseRefusesToUpsert(t *testing.T) {
 	})
 	s := testStore(t)
 
-	if _, err := s.db.Exec("PRAGMA query_only = ON"); err != nil {
-		t.Fatal(err)
-	}
+	makeTheDatabaseReadOnly(t, s)
 
 	res, err := s.Scan()
 	if err != nil {
@@ -410,9 +406,7 @@ func TestScanDoesNotCountAMissingRowItFailedToMark(t *testing.T) {
 	if err := os.Remove(gone); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec("PRAGMA query_only = ON"); err != nil {
-		t.Fatal(err)
-	}
+	makeTheDatabaseReadOnly(t, s)
 
 	res, err := s.Scan()
 	if err != nil {
@@ -433,10 +427,21 @@ func TestScanDoesNotCountAMissingRowItFailedToMark(t *testing.T) {
 	// And the row really is still present, which is what makes Missing 0 the
 	// honest answer rather than a smaller lie.
 	var status string
-	if err := s.db.QueryRow("SELECT status FROM tracked_files WHERE path = ?", gone).Scan(&status); err != nil {
+	if err := s.db.QueryRow("SELECT status FROM tracked_files WHERE path = $1", gone).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != "present" {
 		t.Errorf("want the row left at present after a failed mark, got %q", status)
+	}
+}
+
+// makeTheDatabaseReadOnly makes every later write through s fail for real,
+// without mocking the store: the pool is held to one connection, and that
+// connection's transactions are read only.
+func makeTheDatabaseReadOnly(t *testing.T, s *Store) {
+	t.Helper()
+	s.db.SetMaxOpenConns(1)
+	if _, err := s.db.Exec("SET default_transaction_read_only = on"); err != nil {
+		t.Fatal(err)
 	}
 }

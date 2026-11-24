@@ -75,20 +75,20 @@ func (s *Store) CreateTrackedFileIgnoreRule(kind, pathPattern, reason string) (*
 		return nil, fmt.Errorf("reason is required: say why these files are not prompts")
 	}
 	if _, err := s.db.Exec(`
-		INSERT INTO tracked_file_ignore_rules (kind, path_pattern, reason, enabled, created_at) VALUES (?, ?, ?, 1, ?)
+		INSERT INTO tracked_file_ignore_rules (kind, path_pattern, reason, enabled, created_at) VALUES ($1, $2, $3, 1, $4)
 		ON CONFLICT (kind, path_pattern) DO NOTHING`, kind, pathPattern, reason, now()); err != nil {
 		return nil, err
 	}
 	var rule TrackedFileIgnoreRule
 	var enabled int
-	err := s.db.QueryRow(`SELECT id, kind, path_pattern, reason, enabled, created_at FROM tracked_file_ignore_rules WHERE kind=? AND path_pattern=?`, kind, pathPattern).
+	err := s.db.QueryRow(`SELECT id, kind, path_pattern, reason, enabled, created_at FROM tracked_file_ignore_rules WHERE kind=$1 AND path_pattern=$2`, kind, pathPattern).
 		Scan(&rule.ID, &rule.Kind, &rule.PathPattern, &rule.Reason, &enabled, &rule.CreatedAt)
 	rule.Enabled = enabled == 1
 	return &rule, err
 }
 
 func (s *Store) SetTrackedFileIgnoreRuleEnabled(id int64, enabled bool) error {
-	res, err := s.db.Exec(`UPDATE tracked_file_ignore_rules SET enabled=? WHERE id=?`, boolToInt(enabled), id)
+	res, err := s.db.Exec(`UPDATE tracked_file_ignore_rules SET enabled=$1 WHERE id=$2`, boolToInt(enabled), id)
 	if err != nil {
 		return err
 	}
@@ -149,6 +149,6 @@ func (s *Store) stampTrackedFileIgnore(fileID int64, path, home string, rules []
 	if ruleID != 0 {
 		value = ruleID
 	}
-	_, err := s.db.Exec(`UPDATE tracked_files SET ignored_by_rule_id=? WHERE id=? AND COALESCE(ignored_by_rule_id,0) != ?`, value, fileID, ruleID)
+	_, err := s.db.Exec(`UPDATE tracked_files SET ignored_by_rule_id=$1 WHERE id=$2 AND COALESCE(ignored_by_rule_id,0) != $3`, value, fileID, ruleID)
 	return ruleID, err
 }

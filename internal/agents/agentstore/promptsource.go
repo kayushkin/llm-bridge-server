@@ -189,7 +189,7 @@ func (s *Store) getPromptCollection(id int64) (*PromptCollection, error) {
 	var c PromptCollection
 	err := s.db.QueryRow(`
 		SELECT id, slug, title, scope, root_path, COALESCE(description,''), created_at, updated_at, retired_at
-		FROM prompt_collections WHERE id=?`, id).
+		FROM prompt_collections WHERE id=$1`, id).
 		Scan(&c.ID, &c.Slug, &c.Title, &c.Scope, &c.RootPath, &c.Description, &c.CreatedAt, &c.UpdatedAt, &c.RetiredAt)
 	if err != nil {
 		return nil, err
@@ -203,7 +203,7 @@ func (s *Store) ListPromptCollections() ([]PromptCollection, error) {
 	rows, err := s.db.Query(`
 		SELECT id, slug, title, scope, root_path, COALESCE(description,''), created_at, updated_at
 		FROM prompt_collections WHERE retired_at=0
-		ORDER BY CASE scope WHEN 'global' THEN 0 ELSE 1 END, root_path`)
+		ORDER BY CASE scope WHEN 'global' THEN 0 ELSE 1 END, root_path, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +282,7 @@ func (s *Store) EnsurePromptCollection(scope, rootPath, title, description strin
 		return nil, fmt.Errorf("scope must be %q, %q or %q", promptCollectionScopeGlobal, promptCollectionScopeProject, promptCollectionScopeContext)
 	}
 	var id, retiredAt int64
-	err := s.db.QueryRow(`SELECT id, retired_at FROM prompt_collections WHERE scope=? AND root_path=?`, scope, rootPath).Scan(&id, &retiredAt)
+	err := s.db.QueryRow(`SELECT id, retired_at FROM prompt_collections WHERE scope=$1 AND root_path=$2`, scope, rootPath).Scan(&id, &retiredAt)
 	if err == nil && retiredAt != 0 {
 		return nil, fmt.Errorf("%w: collection %d, the %s collection rooted at %s, was retired", ErrPromptCollectionRetired, id, scope, rootPath)
 	}
@@ -303,13 +303,10 @@ func (s *Store) EnsurePromptCollection(scope, rootPath, title, description strin
 		return nil, err
 	}
 	ts := now()
-	res, err := s.db.Exec(`
+	err = s.db.QueryRow(`
 		INSERT INTO prompt_collections (slug, title, scope, root_path, description, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, slug, title, scope, rootPath, description, ts, ts)
-	if err != nil {
-		return nil, err
-	}
-	id, err = res.LastInsertId()
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id`, slug, title, scope, rootPath, description, ts, ts).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +327,7 @@ func (s *Store) unusedPromptCollectionSlug(scope, rootPath string) (string, erro
 	slug := base
 	for attempt := 2; ; attempt++ {
 		var taken int
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM prompt_collections WHERE slug=?`, slug).Scan(&taken); err != nil {
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM prompt_collections WHERE slug=$1`, slug).Scan(&taken); err != nil {
 			return "", err
 		}
 		if taken == 0 {
@@ -405,7 +402,7 @@ func (s *Store) MovePromptCollectionRoot(collectionID int64, newRootPath, newSlu
 	move := &PromptCollectionRootMove{CollectionID: collectionID, RenamedTrackedFiles: []TrackedFileRename{}, MergedTrackedFiles: []TrackedFileMerge{}}
 	err := s.inPromptTransaction(func(tx *sql.Tx) error {
 		var scope, oldRootPath, oldSlug string
-		if err := tx.QueryRow(`SELECT scope, root_path, slug FROM prompt_collections WHERE id=?`, collectionID).
+		if err := tx.QueryRow(`SELECT scope, root_path, slug FROM prompt_collections WHERE id=$1`, collectionID).
 			Scan(&scope, &oldRootPath, &oldSlug); err != nil {
 			return err
 		}
@@ -418,14 +415,14 @@ func (s *Store) MovePromptCollectionRoot(collectionID int64, newRootPath, newSlu
 		}
 
 		var otherID int64
-		err := tx.QueryRow(`SELECT id FROM prompt_collections WHERE scope=? AND root_path=? AND id<>?`, scope, newRootPath, collectionID).Scan(&otherID)
+		err := tx.QueryRow(`SELECT id FROM prompt_collections WHERE scope=$1 AND root_path=$2 AND id<>$3`, scope, newRootPath, collectionID).Scan(&otherID)
 		if err == nil {
 			return fmt.Errorf("%w: collection %d is already the %s collection rooted at %s", ErrPromptCollectionMoveConflict, otherID, scope, newRootPath)
 		} else if err != sql.ErrNoRows {
 			return err
 		}
 		if newSlug != "" {
-			err := tx.QueryRow(`SELECT id FROM prompt_collections WHERE slug=? AND id<>?`, newSlug, collectionID).Scan(&otherID)
+			err := tx.QueryRow(`SELECT id FROM prompt_collections WHERE slug=$1 AND id<>$2`, newSlug, collectionID).Scan(&otherID)
 			if err == nil {
 				return fmt.Errorf("%w: slug %q belongs to collection %d", ErrPromptCollectionMoveConflict, newSlug, otherID)
 			} else if err != sql.ErrNoRows {
@@ -434,7 +431,7 @@ func (s *Store) MovePromptCollectionRoot(collectionID int64, newRootPath, newSlu
 		}
 
 		var waitingDriftIDs []int64
-		rows, err := tx.Query(`SELECT id FROM prompt_drifts WHERE collection_id=? AND status IN (?, ?) ORDER BY id`,
+		rows, err := tx.Query(`SELECT id FROM prompt_drifts WHERE collection_id=$1 AND status IN ($2, $3) ORDER BY id`,
 			collectionID, PromptDriftStatusOpen, PromptDriftStatusHeld)
 		if err != nil {
 			return err
@@ -456,7 +453,7 @@ func (s *Store) MovePromptCollectionRoot(collectionID int64, newRootPath, newSlu
 		}
 
 		var relativePaths []string
-		rows, err = tx.Query(`SELECT relative_path FROM prompt_collection_outputs WHERE collection_id=? ORDER BY id`, collectionID)
+		rows, err = tx.Query(`SELECT relative_path FROM prompt_collection_outputs WHERE collection_id=$1 ORDER BY id`, collectionID)
 		if err != nil {
 			return err
 		}
@@ -482,7 +479,7 @@ func (s *Store) MovePromptCollectionRoot(collectionID int64, newRootPath, newSlu
 				err := tx.QueryRow(`
 					SELECT o.collection_id FROM prompt_collection_outputs o
 					JOIN prompt_collections c ON c.id = o.collection_id
-					WHERE o.collection_id <> ? AND c.root_path || '/' || o.relative_path = ?`,
+					WHERE o.collection_id <> $1 AND c.root_path || '/' || o.relative_path = $2`,
 					collectionID, newPath).Scan(&claimingCollectionID)
 				if err == nil {
 					return fmt.Errorf("%w: %s is an output of collection %d", ErrPromptCollectionMoveConflict, newPath, claimingCollectionID)
@@ -490,14 +487,14 @@ func (s *Store) MovePromptCollectionRoot(collectionID int64, newRootPath, newSlu
 					return err
 				}
 				var scannedAtTargetID int64
-				err = tx.QueryRow(`SELECT id FROM tracked_files WHERE path=?`, newPath).Scan(&scannedAtTargetID)
+				err = tx.QueryRow(`SELECT id FROM tracked_files WHERE path=$1`, newPath).Scan(&scannedAtTargetID)
 				if err == sql.ErrNoRows {
 					scannedAtTargetID = 0
 				} else if err != nil {
 					return err
 				}
 				var trackedFileID int64
-				err = tx.QueryRow(`SELECT id FROM tracked_files WHERE path=?`, oldPath).Scan(&trackedFileID)
+				err = tx.QueryRow(`SELECT id FROM tracked_files WHERE path=$1`, oldPath).Scan(&trackedFileID)
 				if err == sql.ErrNoRows {
 					continue // never scanned or rendered at the old path: the row at the new path, if any, is the whole history
 				} else if err != nil {
@@ -510,7 +507,7 @@ func (s *Store) MovePromptCollectionRoot(collectionID int64, newRootPath, newSlu
 					}
 					move.MergedTrackedFiles = append(move.MergedTrackedFiles, merge)
 				}
-				if _, err := tx.Exec(`UPDATE tracked_files SET path=?, updated_at=? WHERE id=?`, newPath, ts, trackedFileID); err != nil {
+				if _, err := tx.Exec(`UPDATE tracked_files SET path=$1, updated_at=$2 WHERE id=$3`, newPath, ts, trackedFileID); err != nil {
 					return err
 				}
 				move.RenamedTrackedFiles = append(move.RenamedTrackedFiles, TrackedFileRename{TrackedFileID: trackedFileID, PreviousPath: oldPath, Path: newPath})
@@ -521,7 +518,7 @@ func (s *Store) MovePromptCollectionRoot(collectionID int64, newRootPath, newSlu
 		if newSlug != "" {
 			slug = newSlug
 		}
-		_, err = tx.Exec(`UPDATE prompt_collections SET root_path=?, slug=?, updated_at=? WHERE id=?`, newRootPath, slug, ts, collectionID)
+		_, err = tx.Exec(`UPDATE prompt_collections SET root_path=$1, slug=$2, updated_at=$3 WHERE id=$4`, newRootPath, slug, ts, collectionID)
 		return err
 	})
 	if err != nil {
@@ -548,29 +545,34 @@ func (s *Store) MovePromptCollectionRoot(collectionID int64, newRootPath, newSlu
 // caller then renames the old row to path.
 func mergeScannedTrackedFile(tx *sql.Tx, scannedID, intoID int64, path string, ts int64) (TrackedFileMerge, error) {
 	merge := TrackedFileMerge{MergedTrackedFileID: scannedID, IntoTrackedFileID: intoID, Path: path}
-	result, err := tx.Exec(`UPDATE tracked_file_versions SET tracked_file_id=? WHERE tracked_file_id=?`, intoID, scannedID)
+	result, err := tx.Exec(`UPDATE tracked_file_versions SET tracked_file_id=$1 WHERE tracked_file_id=$2`, intoID, scannedID)
 	if err != nil {
 		return merge, err
 	}
 	if merge.VersionsMoved, err = result.RowsAffected(); err != nil {
 		return merge, err
 	}
-	if _, err := tx.Exec(`UPDATE OR IGNORE machine_seed_state SET tracked_file_id=? WHERE tracked_file_id=?`, intoID, scannedID); err != nil {
+	// A machine that already has seed state for the old row keeps it; its
+	// state for the scanned row stays behind and goes with that row below.
+	if _, err := tx.Exec(`
+		UPDATE machine_seed_state moved SET tracked_file_id=$1
+		WHERE moved.tracked_file_id=$2
+		  AND NOT EXISTS (SELECT 1 FROM machine_seed_state kept WHERE kept.machine_id=moved.machine_id AND kept.tracked_file_id=$1)`, intoID, scannedID); err != nil {
 		return merge, err
 	}
 	if _, err := tx.Exec(`
 		UPDATE tracked_files SET
-			fs_hash = (SELECT fs_hash FROM tracked_files WHERE id=?),
-			size = (SELECT size FROM tracked_files WHERE id=?),
-			mtime = (SELECT mtime FROM tracked_files WHERE id=?),
-			last_scanned_at = (SELECT last_scanned_at FROM tracked_files WHERE id=?),
-			status = (SELECT status FROM tracked_files WHERE id=?),
-			updated_at = ?
-		WHERE id=?`, scannedID, scannedID, scannedID, scannedID, scannedID, ts, intoID); err != nil {
+			fs_hash = (SELECT fs_hash FROM tracked_files WHERE id=$1),
+			size = (SELECT size FROM tracked_files WHERE id=$2),
+			mtime = (SELECT mtime FROM tracked_files WHERE id=$3),
+			last_scanned_at = (SELECT last_scanned_at FROM tracked_files WHERE id=$4),
+			status = (SELECT status FROM tracked_files WHERE id=$5),
+			updated_at = $6
+		WHERE id=$7`, scannedID, scannedID, scannedID, scannedID, scannedID, ts, intoID); err != nil {
 		return merge, err
 	}
 	// ON DELETE CASCADE takes any seed state the old row already had for that machine.
-	if _, err := tx.Exec(`DELETE FROM tracked_files WHERE id=?`, scannedID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM tracked_files WHERE id=$1`, scannedID); err != nil {
 		return merge, err
 	}
 	return merge, nil
@@ -581,7 +583,7 @@ func mergeScannedTrackedFile(tx *sql.Tx, scannedID, intoID int64, path string, t
 func (s *Store) ListPromptSections(collectionID int64) ([]PromptSection, error) {
 	rows, err := s.db.Query(`
 		SELECT id, collection_id, title, heading, body, tags, position, enabled, created_at, updated_at
-		FROM prompt_sections WHERE collection_id=? ORDER BY position, id`, collectionID)
+		FROM prompt_sections WHERE collection_id=$1 ORDER BY position, id`, collectionID)
 	if err != nil {
 		return nil, err
 	}
@@ -615,7 +617,7 @@ func scanPromptSection(row rowScanner) (*PromptSection, error) {
 func (s *Store) GetPromptSection(id int64) (*PromptSection, error) {
 	return scanPromptSection(s.db.QueryRow(`
 		SELECT id, collection_id, title, heading, body, tags, position, enabled, created_at, updated_at
-		FROM prompt_sections WHERE id=?`, id))
+		FROM prompt_sections WHERE id=$1`, id))
 }
 
 func renderPromptSections(sections []PromptSection) string {
@@ -717,7 +719,7 @@ func writePromptSectionRevision(w promptSectionWriter, section *PromptSection, o
 	_, err := w.Exec(`
 		INSERT INTO prompt_section_revisions
 			(section_id, collection_id, operation, title, heading, body, tags, position, enabled, source, drift_id, note, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		section.ID, section.CollectionID, operation, section.Title, section.Heading, section.Body,
 		encodeTags(section.Tags), section.Position, boolToInt(section.Enabled), ctx.Source, drift, nullIfEmpty(ctx.Note), now())
 	return err
@@ -728,14 +730,11 @@ func insertPromptSection(w promptSectionWriter, section *PromptSection, ctx prom
 		return err
 	}
 	ts := now()
-	res, err := w.Exec(`
+	if err := w.QueryRow(`
 		INSERT INTO prompt_sections (collection_id, title, heading, body, tags, position, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		section.CollectionID, section.Title, section.Heading, section.Body, encodeTags(section.Tags), section.Position, boolToInt(section.Enabled), ts, ts)
-	if err != nil {
-		return err
-	}
-	if section.ID, err = res.LastInsertId(); err != nil {
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id`,
+		section.CollectionID, section.Title, section.Heading, section.Body, encodeTags(section.Tags), section.Position, boolToInt(section.Enabled), ts, ts).Scan(&section.ID); err != nil {
 		return err
 	}
 	section.Tags = normalizeTags(section.Tags)
@@ -747,7 +746,7 @@ func updatePromptSection(w promptSectionWriter, section *PromptSection, ctx prom
 		return err
 	}
 	res, err := w.Exec(`
-		UPDATE prompt_sections SET title=?, heading=?, body=?, tags=?, position=?, enabled=?, updated_at=? WHERE id=?`,
+		UPDATE prompt_sections SET title=$1, heading=$2, body=$3, tags=$4, position=$5, enabled=$6, updated_at=$7 WHERE id=$8`,
 		section.Title, section.Heading, section.Body, encodeTags(section.Tags), section.Position, boolToInt(section.Enabled), now(), section.ID)
 	if err != nil {
 		return err
@@ -763,7 +762,7 @@ func deletePromptSection(w promptSectionWriter, section *PromptSection, ctx prom
 	if err := writePromptSectionRevision(w, section, "delete", ctx); err != nil {
 		return err
 	}
-	_, err := w.Exec(`DELETE FROM prompt_sections WHERE id=?`, section.ID)
+	_, err := w.Exec(`DELETE FROM prompt_sections WHERE id=$1`, section.ID)
 	return err
 }
 
@@ -792,7 +791,7 @@ func (s *Store) CreatePromptSection(collectionID int64, section *PromptSection, 
 		switch {
 		case afterSectionID != 0:
 			var owner int64
-			if err := tx.QueryRow(`SELECT collection_id FROM prompt_sections WHERE id=?`, afterSectionID).Scan(&owner); err != nil || owner != collectionID {
+			if err := tx.QueryRow(`SELECT collection_id FROM prompt_sections WHERE id=$1`, afterSectionID).Scan(&owner); err != nil || owner != collectionID {
 				return fmt.Errorf("after_section_id %d is not a section of collection %d", afterSectionID, collectionID)
 			}
 			position, err := promptSectionPositionForInsert(tx, collectionID, PromptDriftOperation{AfterSectionID: afterSectionID})
@@ -802,7 +801,7 @@ func (s *Store) CreatePromptSection(collectionID int64, section *PromptSection, 
 			section.Position = position
 		case section.Position == 0:
 			var last sql.NullInt64
-			if err := tx.QueryRow(`SELECT MAX(position) FROM prompt_sections WHERE collection_id=?`, collectionID).Scan(&last); err != nil {
+			if err := tx.QueryRow(`SELECT MAX(position) FROM prompt_sections WHERE collection_id=$1`, collectionID).Scan(&last); err != nil {
 				return err
 			}
 			section.Position = int(last.Int64) + promptSectionPositionStep
@@ -850,14 +849,14 @@ func (s *Store) ListPromptSectionRevisions(collectionID, sectionID int64, limit 
 		limit = 200
 	}
 	query := `SELECT id, section_id, collection_id, operation, title, heading, body, tags, position, enabled, source, COALESCE(drift_id,0), COALESCE(note,''), created_at
-		FROM prompt_section_revisions WHERE collection_id=?`
+		FROM prompt_section_revisions WHERE collection_id=$1`
 	args := []any{collectionID}
 	if sectionID != 0 {
-		query += ` AND section_id=?`
 		args = append(args, sectionID)
+		query += fmt.Sprintf(` AND section_id=$%d`, len(args))
 	}
-	query += ` ORDER BY id DESC LIMIT ?`
 	args = append(args, limit)
+	query += fmt.Sprintf(` ORDER BY id DESC LIMIT $%d`, len(args))
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -908,7 +907,7 @@ func (s *Store) AddPromptCollectionOutput(collectionID int64, relativePath strin
 	ts := now()
 	if _, err := s.db.Exec(`
 		INSERT INTO prompt_collection_outputs (collection_id, relative_path, enabled, created_at, updated_at)
-		VALUES (?, ?, 1, ?, ?) ON CONFLICT (collection_id, relative_path) DO NOTHING`, collectionID, relativePath, ts, ts); err != nil {
+		VALUES ($1, $2, 1, $3, $4) ON CONFLICT (collection_id, relative_path) DO NOTHING`, collectionID, relativePath, ts, ts); err != nil {
 		return nil, err
 	}
 	return s.GetPromptCollectionView(collectionID)
@@ -918,10 +917,10 @@ func (s *Store) AddPromptCollectionOutput(collectionID int64, relativePath strin
 // disabled output is left on disk exactly as it is.
 func (s *Store) SetPromptCollectionOutputEnabled(outputID int64, enabled bool) (*PromptCollectionView, error) {
 	var collectionID int64
-	if err := s.db.QueryRow(`SELECT collection_id FROM prompt_collection_outputs WHERE id=?`, outputID).Scan(&collectionID); err != nil {
+	if err := s.db.QueryRow(`SELECT collection_id FROM prompt_collection_outputs WHERE id=$1`, outputID).Scan(&collectionID); err != nil {
 		return nil, err
 	}
-	if _, err := s.db.Exec(`UPDATE prompt_collection_outputs SET enabled=?, updated_at=? WHERE id=?`, boolToInt(enabled), now(), outputID); err != nil {
+	if _, err := s.db.Exec(`UPDATE prompt_collection_outputs SET enabled=$1, updated_at=$2 WHERE id=$3`, boolToInt(enabled), now(), outputID); err != nil {
 		return nil, err
 	}
 	return s.GetPromptCollectionView(collectionID)
@@ -930,7 +929,7 @@ func (s *Store) SetPromptCollectionOutputEnabled(outputID int64, enabled bool) (
 func (s *Store) listPromptCollectionOutputs(c PromptCollection, rendered string) ([]PromptCollectionOutput, error) {
 	rows, err := s.db.Query(`
 		SELECT id, collection_id, relative_path, enabled, COALESCE(accounted_sha256,''), COALESCE(accounted_at,0)
-		FROM prompt_collection_outputs WHERE collection_id=? ORDER BY id`, c.ID)
+		FROM prompt_collection_outputs WHERE collection_id=$1 ORDER BY id`, c.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -972,14 +971,14 @@ func (s *Store) listPromptCollectionOutputs(c PromptCollection, rendered string)
 
 func (s *Store) findTrackedFileByPath(path string) (*TrackedFile, error) {
 	var id int64
-	if err := s.db.QueryRow(`SELECT id FROM tracked_files WHERE path=?`, filepath.Clean(path)).Scan(&id); err != nil {
+	if err := s.db.QueryRow(`SELECT id FROM tracked_files WHERE path=$1`, filepath.Clean(path)).Scan(&id); err != nil {
 		return nil, err
 	}
 	return s.GetTrackedFile(id)
 }
 
 func (s *Store) markPromptOutputAccounted(w promptSectionWriter, outputID int64, sha string) error {
-	_, err := w.Exec(`UPDATE prompt_collection_outputs SET accounted_sha256=?, accounted_at=?, updated_at=? WHERE id=?`, sha, now(), now(), outputID)
+	_, err := w.Exec(`UPDATE prompt_collection_outputs SET accounted_sha256=$1, accounted_at=$2, updated_at=$3 WHERE id=$4`, sha, now(), now(), outputID)
 	return err
 }
 
@@ -1047,7 +1046,7 @@ func (s *Store) RenderPromptCollection(collectionID int64) (*PromptRenderResult,
 		}
 		result.WrittenFiles = append(result.WrittenFiles, *file)
 	}
-	if _, err := s.db.Exec(`UPDATE prompt_collections SET updated_at=? WHERE id=?`, now(), collectionID); err != nil {
+	if _, err := s.db.Exec(`UPDATE prompt_collections SET updated_at=$1 WHERE id=$2`, now(), collectionID); err != nil {
 		return nil, err
 	}
 	if result.View, err = s.GetPromptCollectionView(collectionID); err != nil {
@@ -1057,16 +1056,15 @@ func (s *Store) RenderPromptCollection(collectionID int64) (*PromptRenderResult,
 }
 
 func (s *Store) writePromptOutputFile(c PromptCollection, output PromptCollectionOutput, content []byte) (*TrackedFile, error) {
+	if err := s.refuseWriteOutsideHome(output.Path); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(output.Path), 0755); err != nil {
 		return nil, err
 	}
 	file, err := s.findTrackedFileByPath(output.Path)
 	if err == sql.ErrNoRows {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return nil, homeErr
-		}
-		scope, ok := classifyFile(output.Path, home)
+		scope, ok := classifyFile(output.Path, s.homeDirectory)
 		if !ok {
 			return nil, fmt.Errorf("%s is not a path the scan would track", output.Path)
 		}
@@ -1114,7 +1112,7 @@ func (s *Store) ImportPromptCollectionFromDisk(collectionID int64, relativePaths
 		return nil, err
 	}
 	var existing int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=?`, collectionID).Scan(&existing); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=$1`, collectionID).Scan(&existing); err != nil {
 		return nil, err
 	}
 	if existing > 0 {
@@ -1166,7 +1164,7 @@ func (s *Store) ImportPromptCollectionFromDisk(collectionID int64, relativePaths
 			ts := now()
 			if _, err := tx.Exec(`
 				INSERT INTO prompt_collection_outputs (collection_id, relative_path, enabled, accounted_sha256, accounted_at, created_at, updated_at)
-				VALUES (?, ?, 1, ?, ?, ?, ?)
+				VALUES ($1, $2, 1, $3, $4, $5, $6)
 				ON CONFLICT (collection_id, relative_path) DO UPDATE SET accounted_sha256=excluded.accounted_sha256, accounted_at=excluded.accounted_at, updated_at=excluded.updated_at`,
 				collectionID, file.relativePath, file.sha, ts, ts, ts); err != nil {
 				return err
@@ -1206,10 +1204,7 @@ func PromptCollectionRootForFile(path string) (root, relativePath string) {
 // folders) share a collection. globalImportOrder names the order the global
 // files are read in, by relative path; files not named follow in path order.
 func (s *Store) ImportUntrackedPromptFiles(globalImportOrder []string) ([]PromptImportReport, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
+	home := s.homeDirectory
 	files, err := s.ListTrackedFiles("", "")
 	if err != nil {
 		return nil, err
@@ -1250,7 +1245,7 @@ func (s *Store) ImportUntrackedPromptFiles(globalImportOrder []string) ([]Prompt
 		var claimed int
 		if err := s.db.QueryRow(`
 			SELECT COUNT(*) FROM prompt_collection_outputs o JOIN prompt_collections c ON c.id=o.collection_id
-			WHERE c.root_path=? AND o.relative_path=?`, root, relativePath).Scan(&claimed); err != nil {
+			WHERE c.root_path=$1 AND o.relative_path=$2`, root, relativePath).Scan(&claimed); err != nil {
 			return nil, err
 		}
 		if claimed > 0 {
@@ -1280,7 +1275,7 @@ func (s *Store) ImportUntrackedPromptFiles(globalImportOrder []string) ([]Prompt
 			return nil, err
 		}
 		var sectionCount int
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=?`, c.ID).Scan(&sectionCount); err != nil {
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM prompt_sections WHERE collection_id=$1`, c.ID).Scan(&sectionCount); err != nil {
 			return nil, err
 		}
 		if sectionCount > 0 {

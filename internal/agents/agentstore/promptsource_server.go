@@ -321,7 +321,7 @@ func (h *handler) listPromptSectionRevisions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var collectionID int64
-	if err := h.s.db.QueryRow(`SELECT collection_id FROM prompt_section_revisions WHERE section_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&collectionID); err != nil {
+	if err := h.s.db.QueryRow(`SELECT collection_id FROM prompt_section_revisions WHERE section_id=$1 ORDER BY id DESC LIMIT 1`, id).Scan(&collectionID); err != nil {
 		writeStoreErr(w, err, 500)
 		return
 	}

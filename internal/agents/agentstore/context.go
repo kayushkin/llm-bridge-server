@@ -66,7 +66,7 @@ func (s *Store) ListPromptHarnessDeliveries() ([]PromptHarnessDelivery, error) {
 
 func (s *Store) GetPromptHarnessDelivery(harness string) (*PromptHarnessDelivery, error) {
 	var delivery PromptHarnessDelivery
-	err := s.db.QueryRow(`SELECT harness, delivery, COALESCE(native_relative_path,''), COALESCE(note,''), updated_at FROM prompt_harness_deliveries WHERE harness=?`, harness).
+	err := s.db.QueryRow(`SELECT harness, delivery, COALESCE(native_relative_path,''), COALESCE(note,''), updated_at FROM prompt_harness_deliveries WHERE harness=$1`, harness).
 		Scan(&delivery.Harness, &delivery.Delivery, &delivery.NativeRelativePath, &delivery.Note, &delivery.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("%w: %q", ErrPromptHarnessDeliveryUnknown, harness)
@@ -105,7 +105,7 @@ func (s *Store) SetPromptHarnessDelivery(delivery PromptHarnessDelivery) (*Promp
 		return nil, err
 	}
 	if _, err := s.db.Exec(`
-		INSERT INTO prompt_harness_deliveries (harness, delivery, native_relative_path, note, updated_at) VALUES (?, ?, ?, ?, ?)
+		INSERT INTO prompt_harness_deliveries (harness, delivery, native_relative_path, note, updated_at) VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (harness) DO UPDATE SET delivery=excluded.delivery, native_relative_path=excluded.native_relative_path, note=excluded.note, updated_at=excluded.updated_at`,
 		delivery.Harness, delivery.Delivery, nullIfEmpty(delivery.NativeRelativePath), nullIfEmpty(delivery.Note), now()); err != nil {
 		return nil, err
@@ -121,7 +121,7 @@ func (s *Store) RecordPromptHarnessDeliveryIfAbsent(delivery PromptHarnessDelive
 		return err
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO prompt_harness_deliveries (harness, delivery, native_relative_path, note, updated_at) VALUES (?, ?, ?, ?, ?)
+		INSERT INTO prompt_harness_deliveries (harness, delivery, native_relative_path, note, updated_at) VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (harness) DO NOTHING`,
 		delivery.Harness, delivery.Delivery, nullIfEmpty(delivery.NativeRelativePath), nullIfEmpty(delivery.Note), now())
 	return err
@@ -235,7 +235,7 @@ func (s *Store) ResolveContext(harness, workDir string, contextTags []string) (*
 		entry := ResolvedContextEntry{CollectionID: c.ID, Slug: c.Slug, Scope: c.Scope, RootPath: c.RootPath, Bytes: len(rendered)}
 		if delivery.Delivery == PromptDeliveryNativeFile {
 			var rendersToNativeFile int
-			if err := s.db.QueryRow(`SELECT COUNT(*) FROM prompt_collection_outputs WHERE collection_id=? AND relative_path=? AND enabled=1`, c.ID, delivery.NativeRelativePath).Scan(&rendersToNativeFile); err != nil {
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM prompt_collection_outputs WHERE collection_id=$1 AND relative_path=$2 AND enabled=1`, c.ID, delivery.NativeRelativePath).Scan(&rendersToNativeFile); err != nil {
 				return nil, err
 			}
 			if rendersToNativeFile > 0 {

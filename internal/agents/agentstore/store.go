@@ -3,147 +3,61 @@ package agentstore
 
 import (
 	"database/sql"
+	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
-// DefaultPath returns the default database path (~/.config/agent-store/agents.db)
-func DefaultPath() string {
-	homeDir, err := os.UserHomeDir()
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the store keeps its records in, with
+// the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
 	if err != nil {
-		homeDir = "."
+		return postgresstorage.Module{}, err
 	}
-	return filepath.Join(homeDir, ".config", "agent-store", "agents.db")
+	return postgresstorage.Module{Schema: "agents", Role: "agents_module", Migrations: migrations}, nil
 }
 
-// Store is the main handle for agent storage.
+// Store is the main handle for agent storage. The server provisions, migrates
+// and opens the module, then hands the pool to New.
 type Store struct {
 	db       *sql.DB
 	embedder *Embedder
+	// homeDirectory is the folder the scan walks, and the one every tracked
+	// path, rendered output and imported prompt file is judged against. It
+	// is given, never read from the process, so a test that passes a
+	// temporary folder cannot reach the real home's files.
+	homeDirectory string
 }
 
-// Open opens or creates the agent store at the given path.
-func Open(path string) (*Store, error) {
-	if path == "" {
-		path = DefaultPath()
+// New returns the store over db, the module's pool from postgresstorage.Open.
+// homeDirectory is the folder the scan walks and the prompt renders into: an
+// absolute path, refused when empty or relative.
+func New(db *sql.DB, homeDirectory string) (*Store, error) {
+	if homeDirectory == "" {
+		return nil, errors.New("agent-store: the home directory is required")
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create config dir: %w", err)
+	if !filepath.IsAbs(homeDirectory) {
+		return nil, fmt.Errorf("agent-store: the home directory %q is not an absolute path", homeDirectory)
 	}
-	db, err := sql.Open("sqlite3", path+"?_foreign_keys=on")
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable WAL: %w", err)
-	}
-	s := &Store{db: db, embedder: NewEmbedder()}
-	if err := s.migrate(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	return s, nil
+	return &Store{db: db, embedder: NewEmbedder(), homeDirectory: filepath.Clean(homeDirectory)}, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
-func (s *Store) DB() *sql.DB  { return s.db }
+// DB is the module's pool.
+func (s *Store) DB() *sql.DB { return s.db }
 
-func (s *Store) migrate() error {
-	// Pre-schema renames (2026-05-11): must run BEFORE schemaSQL, otherwise
-	// the CREATE TABLE IF NOT EXISTS in schemaSQL would create empty new-name
-	// tables alongside the existing old-name ones, splitting data.
-	//
-	// Partial-state recovery: if a previous migration attempt got far enough
-	// to run schemaSQL but didn't complete the renames, we'll have empty
-	// new-name placeholder tables blocking the RENAME. Drop those first when
-	// the old-name table still has data to migrate.
-	renamePairs := []struct{ oldName, newName string }{
-		{"orchestrators", "harness"},
-		{"agent_orchestrators", "agent_harness"},
-		{"agent_tools", "agent_harness_tools"},
-	}
-	for _, p := range renamePairs {
-		var oldExists, newExists int
-		s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, p.oldName).Scan(&oldExists)
-		s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, p.newName).Scan(&newExists)
-		if oldExists == 1 && newExists == 1 {
-			// Both exist; drop the new-name table if it's empty (placeholder from a previously failed migration).
-			var rowCount int
-			if err := s.db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, p.newName)).Scan(&rowCount); err == nil && rowCount == 0 {
-				s.db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, p.newName))
-			}
-		}
-	}
-	preMigrations := []string{
-		// Table renames (FROM old name TO new name)
-		"ALTER TABLE orchestrators RENAME TO harness",
-		"ALTER TABLE agent_orchestrators RENAME TO agent_harness",
-		"ALTER TABLE agent_tools RENAME TO agent_harness_tools",
-		// Column renames (FROM old name TO new name, run after table renames)
-		"ALTER TABLE agent_harness RENAME COLUMN orchestrator_id TO harness_id",
-		"ALTER TABLE agent_harness RENAME COLUMN orchestrator_agent_id TO harness_agent_id",
-		"ALTER TABLE agent_harness_tools RENAME COLUMN orchestrator_id TO harness_id",
-		"ALTER TABLE agent_system_prompt_refs RENAME COLUMN orchestrator_id TO harness_id",
-		"ALTER TABLE file_distributions RENAME COLUMN orchestrator_id TO harness_id",
-		"ALTER TABLE agent_status RENAME COLUMN orchestrator_id TO harness_id",
-		// Drop the old index names; new indexes are created by schemaSQL.
-		"DROP INDEX IF EXISTS idx_agent_orch_orch",
-		"DROP INDEX IF EXISTS idx_file_dist_orch",
-		// Add parent_agent_id BEFORE schemaSQL runs so the CREATE INDEX in schema can succeed.
-		"ALTER TABLE agents ADD COLUMN parent_agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL",
-	}
-	for _, m := range preMigrations {
-		s.db.Exec(m) // ignore errors when rename already happened, table never existed, or column already renamed
-	}
-	if err := s.setAsidePerFilePromptSections(); err != nil {
-		return fmt.Errorf("set aside per-file prompt sections: %w", err)
-	}
-	if _, err := s.db.Exec(schemaSQL); err != nil {
-		return err
-	}
-	// Post-schema migrations: add columns that may not exist in older databases.
-	postMigrations := []string{
-		"ALTER TABLE agent_harness ADD COLUMN is_default INTEGER DEFAULT 0",
-		"ALTER TABLE agent_harness ADD COLUMN subagent_allow TEXT",
-		"ALTER TABLE tracked_files ADD COLUMN ignored_by_rule_id INTEGER",
-		"ALTER TABLE prompt_collections ADD COLUMN retired_at INTEGER NOT NULL DEFAULT 0",
-	}
-	for _, m := range postMigrations {
-		s.db.Exec(m) // ignore "duplicate column" errors
-	}
-	return nil
-}
-
-// setAsidePerFilePromptSections moves the first prompt_sections table out of
-// the way before schemaSQL creates its replacement. That table tied every
-// section to a file through applies_to ('claude' | 'agents'); the replacement
-// names no file. The old rows are renamed, not dropped: they were imported by
-// a splitter that broke on code fences, so nothing reads them, but a rename
-// costs nothing and a drop cannot be undone.
-func (s *Store) setAsidePerFilePromptSections() error {
-	var hasAppliesTo int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('prompt_sections') WHERE name='applies_to'`).Scan(&hasAppliesTo)
-	if err != nil {
-		return err
-	}
-	if hasAppliesTo == 0 {
-		return nil
-	}
-	if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_prompt_sections_collection`); err != nil {
-		return err
-	}
-	_, err = s.db.Exec(`ALTER TABLE prompt_sections RENAME TO prompt_sections_legacy_per_file`)
-	return err
-}
+// HomeDirectory is the folder the scan walks and the prompt renders into.
+func (s *Store) HomeDirectory() string { return s.homeDirectory }
 
 func now() int64 { return time.Now().Unix() }
 
@@ -186,14 +100,14 @@ func (s *Store) UpsertAgent(a *Agent) error {
 	a.UpdatedAt = now()
 	if a.ID > 0 {
 		_, err := s.db.Exec(`
-			UPDATE agents SET slug=?, display_name=?, emoji=?, projects=?, description=?, role=?, enabled=?, updated_at=?
-			WHERE id=?`,
+			UPDATE agents SET slug=$1, display_name=$2, emoji=$3, projects=$4, description=$5, role=$6, enabled=$7, updated_at=$8
+			WHERE id=$9`,
 			a.Slug, a.DisplayName, a.Emoji, a.Projects, a.Description, a.Role, boolToInt(a.Enabled), a.UpdatedAt, a.ID)
 		return err
 	}
 	_, err := s.db.Exec(`
 		INSERT INTO agents (slug, display_name, emoji, projects, description, role, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT(slug) DO UPDATE SET
 			display_name=excluded.display_name, emoji=excluded.emoji, projects=excluded.projects,
 			description=excluded.description, role=excluded.role, enabled=excluded.enabled,
@@ -203,7 +117,7 @@ func (s *Store) UpsertAgent(a *Agent) error {
 		return err
 	}
 	// Always fetch the canonical ID — LastInsertId is unreliable with ON CONFLICT
-	return s.db.QueryRow(`SELECT id FROM agents WHERE slug=?`, a.Slug).Scan(&a.ID)
+	return s.db.QueryRow(`SELECT id FROM agents WHERE slug=$1`, a.Slug).Scan(&a.ID)
 }
 
 func scanAgent(row interface{ Scan(...any) error }) (*Agent, error) {
@@ -225,11 +139,11 @@ func scanAgent(row interface{ Scan(...any) error }) (*Agent, error) {
 const agentCols = `id, slug, display_name, emoji, projects, description, role, enabled, created_at, updated_at`
 
 func (s *Store) GetAgent(id int64) (*Agent, error) {
-	return scanAgent(s.db.QueryRow(`SELECT `+agentCols+` FROM agents WHERE id=?`, id))
+	return scanAgent(s.db.QueryRow(`SELECT `+agentCols+` FROM agents WHERE id=$1`, id))
 }
 
 func (s *Store) GetAgentBySlug(slug string) (*Agent, error) {
-	return scanAgent(s.db.QueryRow(`SELECT `+agentCols+` FROM agents WHERE slug=?`, slug))
+	return scanAgent(s.db.QueryRow(`SELECT `+agentCols+` FROM agents WHERE slug=$1`, slug))
 }
 
 func (s *Store) ListAgents() ([]Agent, error) {
@@ -300,7 +214,7 @@ func (s *Store) ListAgentsExpanded() ([]AgentWithHarness, error) {
 }
 
 func (s *Store) DeleteAgent(id int64) error {
-	_, err := s.db.Exec("DELETE FROM agents WHERE id=?", id)
+	_, err := s.db.Exec("DELETE FROM agents WHERE id=$1", id)
 	return err
 }
 
@@ -325,7 +239,7 @@ func (s *Store) UpsertHarness(o *Harness) error {
 	o.UpdatedAt = now()
 	_, err := s.db.Exec(`
 		INSERT INTO harness (id, display_name, default_agent_id, config_path, api_endpoint, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT(id) DO UPDATE SET
 			display_name=excluded.display_name, default_agent_id=excluded.default_agent_id,
 			config_path=excluded.config_path, api_endpoint=excluded.api_endpoint,
@@ -338,7 +252,7 @@ func (s *Store) GetHarness(id string) (*Harness, error) {
 	o := &Harness{ID: id}
 	err := s.db.QueryRow(`
 		SELECT display_name, default_agent_id, config_path, api_endpoint, created_at, updated_at
-		FROM harness WHERE id=?`, id).Scan(
+		FROM harness WHERE id=$1`, id).Scan(
 		&o.DisplayName, &o.DefaultAgentID, &o.ConfigPath, &o.APIEndpoint, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -364,7 +278,7 @@ func (s *Store) ListHarnesses() ([]Harness, error) {
 }
 
 func (s *Store) DeleteHarness(id string) error {
-	_, err := s.db.Exec("DELETE FROM harness WHERE id=?", id)
+	_, err := s.db.Exec("DELETE FROM harness WHERE id=$1", id)
 	return err
 }
 
@@ -406,7 +320,7 @@ func (s *Store) UpsertAgentHarness(ao *AgentHarness) error {
 	ao.UpdatedAt = now()
 	_, err := s.db.Exec(`
 		INSERT INTO agent_harness (agent_id, harness_id, harness_agent_id, enabled, model_primary, model_fallbacks, workspace_path, thinking_budget, context_budget, context_tags, max_turns, max_input_tokens, max_response_time, system_prompt, project, shelved, is_default, subagent_allow, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		ON CONFLICT(agent_id, harness_id) DO UPDATE SET
 			harness_agent_id=excluded.harness_agent_id, enabled=excluded.enabled,
 			model_primary=excluded.model_primary, model_fallbacks=excluded.model_fallbacks,
@@ -441,7 +355,7 @@ func scanAO(row interface{ Scan(...any) error }) (AgentHarness, error) {
 }
 
 func (s *Store) GetAgentHarnesses(agentID int64) ([]AgentHarness, error) {
-	rows, err := s.db.Query(`SELECT `+aoCols+` FROM agent_harness WHERE agent_id=? ORDER BY harness_id`, agentID)
+	rows, err := s.db.Query(`SELECT `+aoCols+` FROM agent_harness WHERE agent_id=$1 ORDER BY harness_id`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -458,7 +372,7 @@ func (s *Store) GetAgentHarnesses(agentID int64) ([]AgentHarness, error) {
 }
 
 func (s *Store) GetHarnessAgents(harnessID string) ([]AgentHarness, error) {
-	rows, err := s.db.Query(`SELECT `+aoCols+` FROM agent_harness WHERE harness_id=? ORDER BY agent_id`, harnessID)
+	rows, err := s.db.Query(`SELECT `+aoCols+` FROM agent_harness WHERE harness_id=$1 ORDER BY agent_id`, harnessID)
 	if err != nil {
 		return nil, err
 	}
@@ -477,7 +391,7 @@ func (s *Store) GetHarnessAgents(harnessID string) ([]AgentHarness, error) {
 // GetAgentByHarnessID finds an agent by its harness-specific ID.
 func (s *Store) GetAgentByHarnessID(harnessID, harnessAgentID string) (*Agent, error) {
 	var agentID int64
-	err := s.db.QueryRow(`SELECT agent_id FROM agent_harness WHERE harness_id=? AND harness_agent_id=?`,
+	err := s.db.QueryRow(`SELECT agent_id FROM agent_harness WHERE harness_id=$1 AND harness_agent_id=$2 ORDER BY agent_id LIMIT 1`,
 		harnessID, harnessAgentID).Scan(&agentID)
 	if err != nil {
 		return nil, err
@@ -486,7 +400,7 @@ func (s *Store) GetAgentByHarnessID(harnessID, harnessAgentID string) (*Agent, e
 }
 
 func (s *Store) DeleteAgentHarness(agentID int64, harnessID string) error {
-	_, err := s.db.Exec("DELETE FROM agent_harness WHERE agent_id=? AND harness_id=?", agentID, harnessID)
+	_, err := s.db.Exec("DELETE FROM agent_harness WHERE agent_id=$1 AND harness_id=$2", agentID, harnessID)
 	return err
 }
 
@@ -500,11 +414,11 @@ func (s *Store) SetAgentTools(agentID int64, harnessID string, tools []string) e
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec("DELETE FROM agent_harness_tools WHERE agent_id=? AND harness_id=?", agentID, harnessID); err != nil {
+	if _, err := tx.Exec("DELETE FROM agent_harness_tools WHERE agent_id=$1 AND harness_id=$2", agentID, harnessID); err != nil {
 		return err
 	}
 	for _, t := range tools {
-		if _, err := tx.Exec("INSERT INTO agent_harness_tools (agent_id, harness_id, tool_name) VALUES (?, ?, ?)", agentID, harnessID, t); err != nil {
+		if _, err := tx.Exec("INSERT INTO agent_harness_tools (agent_id, harness_id, tool_name) VALUES ($1, $2, $3)", agentID, harnessID, t); err != nil {
 			return err
 		}
 	}
@@ -512,7 +426,7 @@ func (s *Store) SetAgentTools(agentID int64, harnessID string, tools []string) e
 }
 
 func (s *Store) ListAgentTools(agentID int64, harnessID string) ([]string, error) {
-	rows, err := s.db.Query("SELECT tool_name FROM agent_harness_tools WHERE agent_id=? AND harness_id=? ORDER BY tool_name", agentID, harnessID)
+	rows, err := s.db.Query("SELECT tool_name FROM agent_harness_tools WHERE agent_id=$1 AND harness_id=$2 ORDER BY tool_name", agentID, harnessID)
 	if err != nil {
 		return nil, err
 	}
@@ -565,7 +479,7 @@ func (s *Store) GetFullAgentConfig(slug string, harnessID string) (*FullAgentCon
 	}
 
 	// Get harness config
-	row := s.db.QueryRow(`SELECT `+aoCols+` FROM agent_harness WHERE agent_id=? AND harness_id=?`, a.ID, harnessID)
+	row := s.db.QueryRow(`SELECT `+aoCols+` FROM agent_harness WHERE agent_id=$1 AND harness_id=$2`, a.ID, harnessID)
 	ao, err := scanAO(row)
 	if err != nil {
 		return nil, fmt.Errorf("agent %s not registered with harness %s", slug, harnessID)
@@ -667,8 +581,9 @@ func (s *Store) UpsertSystemPromptRef(r *AgentSystemPromptRef) error {
 		r.CreatedAt = now()
 	}
 	_, err := s.db.Exec(`
-		INSERT OR IGNORE INTO agent_system_prompt_refs (harness_id, host_agent_id, referenced_agent_id, prompt_location, created_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO agent_system_prompt_refs (harness_id, host_agent_id, referenced_agent_id, prompt_location, created_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT DO NOTHING
 	`, r.HarnessID, r.HostAgentID, r.ReferencedAgentID, r.PromptLocation, r.CreatedAt)
 	return err
 }
@@ -676,7 +591,8 @@ func (s *Store) UpsertSystemPromptRef(r *AgentSystemPromptRef) error {
 func (s *Store) ListSystemPromptRefs(hostAgentID int64) ([]AgentSystemPromptRef, error) {
 	rows, err := s.db.Query(`
 		SELECT harness_id, host_agent_id, referenced_agent_id, prompt_location, created_at
-		FROM agent_system_prompt_refs WHERE host_agent_id=?`, hostAgentID)
+		FROM agent_system_prompt_refs WHERE host_agent_id=$1
+		ORDER BY harness_id, host_agent_id, referenced_agent_id, prompt_location`, hostAgentID)
 	if err != nil {
 		return nil, err
 	}
@@ -693,7 +609,7 @@ func (s *Store) ListSystemPromptRefs(hostAgentID int64) ([]AgentSystemPromptRef,
 }
 
 func (s *Store) DeleteSystemPromptRef(harnessID string, hostID, refID int64, location string) error {
-	_, err := s.db.Exec(`DELETE FROM agent_system_prompt_refs WHERE harness_id=? AND host_agent_id=? AND referenced_agent_id=? AND prompt_location=?`,
+	_, err := s.db.Exec(`DELETE FROM agent_system_prompt_refs WHERE harness_id=$1 AND host_agent_id=$2 AND referenced_agent_id=$3 AND prompt_location=$4`,
 		harnessID, hostID, refID, location)
 	return err
 }
@@ -721,26 +637,22 @@ func (s *Store) UpsertAgentNature(n *AgentNature) error {
 	n.UpdatedAt = now()
 	if n.ID > 0 {
 		_, err := s.db.Exec(`
-			UPDATE agent_nature SET agent_id=?, kind=?, content=?, content_hash=?, priority=?, source_path=?, updated_at=?
-			WHERE id=?`, n.AgentID, n.Kind, n.Content, n.ContentHash, n.Priority, n.SourcePath, n.UpdatedAt, n.ID)
+			UPDATE agent_nature SET agent_id=$1, kind=$2, content=$3, content_hash=$4, priority=$5, source_path=$6, updated_at=$7
+			WHERE id=$8`, n.AgentID, n.Kind, n.Content, n.ContentHash, n.Priority, n.SourcePath, n.UpdatedAt, n.ID)
 		return err
 	}
-	res, err := s.db.Exec(`
+	return s.db.QueryRow(`
 		INSERT INTO agent_nature (agent_id, kind, content, content_hash, priority, source_path, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, n.AgentID, n.Kind, n.Content, n.ContentHash, n.Priority, n.SourcePath, n.CreatedAt, n.UpdatedAt)
-	if err != nil {
-		return err
-	}
-	n.ID, _ = res.LastInsertId()
-	return nil
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id
+	`, n.AgentID, n.Kind, n.Content, n.ContentHash, n.Priority, n.SourcePath, n.CreatedAt, n.UpdatedAt).Scan(&n.ID)
 }
 
 func (s *Store) GetAgentNature(id int64) (*AgentNature, error) {
 	n := &AgentNature{}
 	err := s.db.QueryRow(`
 		SELECT id, agent_id, kind, content, content_hash, priority, source_path, created_at, updated_at
-		FROM agent_nature WHERE id=?`, id).Scan(
+		FROM agent_nature WHERE id=$1`, id).Scan(
 		&n.ID, &n.AgentID, &n.Kind, &n.Content, &n.ContentHash, &n.Priority, &n.SourcePath, &n.CreatedAt, &n.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -751,7 +663,7 @@ func (s *Store) GetAgentNature(id int64) (*AgentNature, error) {
 func (s *Store) ListAgentNature(agentID int64) ([]AgentNature, error) {
 	rows, err := s.db.Query(`
 		SELECT id, agent_id, kind, content, content_hash, priority, source_path, created_at, updated_at
-		FROM agent_nature WHERE agent_id=? ORDER BY priority, id`, agentID)
+		FROM agent_nature WHERE agent_id=$1 ORDER BY priority, id`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -768,7 +680,7 @@ func (s *Store) ListAgentNature(agentID int64) ([]AgentNature, error) {
 }
 
 func (s *Store) DeleteAgentNature(id int64) error {
-	_, err := s.db.Exec("DELETE FROM agent_nature WHERE id=?", id)
+	_, err := s.db.Exec("DELETE FROM agent_nature WHERE id=$1", id)
 	return err
 }
 
@@ -789,14 +701,14 @@ func (s *Store) UpsertAlias(a *AgentNameAlias) error {
 	}
 	_, err := s.db.Exec(`
 		INSERT INTO agent_name_aliases (agent_id, alias, context, created_at)
-		VALUES (?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT(agent_id, alias) DO UPDATE SET context=excluded.context
 	`, a.AgentID, a.Alias, a.Context, a.CreatedAt)
 	return err
 }
 
 func (s *Store) GetAgentAliases(agentID int64) ([]AgentNameAlias, error) {
-	rows, err := s.db.Query(`SELECT agent_id, alias, context, created_at FROM agent_name_aliases WHERE agent_id=?`, agentID)
+	rows, err := s.db.Query(`SELECT agent_id, alias, context, created_at FROM agent_name_aliases WHERE agent_id=$1 ORDER BY agent_id, alias`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -813,7 +725,7 @@ func (s *Store) GetAgentAliases(agentID int64) ([]AgentNameAlias, error) {
 }
 
 func (s *Store) DeleteAlias(agentID int64, alias string) error {
-	_, err := s.db.Exec("DELETE FROM agent_name_aliases WHERE agent_id=? AND alias=?", agentID, alias)
+	_, err := s.db.Exec("DELETE FROM agent_name_aliases WHERE agent_id=$1 AND alias=$2", agentID, alias)
 	return err
 }
 
@@ -829,7 +741,7 @@ func (s *Store) ResolveAgentName(name string) (*Agent, error) {
 	}
 	// Try alias
 	var agentID int64
-	err = s.db.QueryRow(`SELECT agent_id FROM agent_name_aliases WHERE alias=?`, name).Scan(&agentID)
+	err = s.db.QueryRow(`SELECT agent_id FROM agent_name_aliases WHERE alias=$1 ORDER BY agent_id LIMIT 1`, name).Scan(&agentID)
 	if err != nil {
 		return nil, fmt.Errorf("agent not found: %q", name)
 	}
@@ -856,21 +768,20 @@ func (s *Store) RecordDistribution(agentID int64, harnessID string, filePath str
 		b, _ := json.Marshal(sourceNatureIDs)
 		idsJSON = string(b)
 	}
-	res, err := s.db.Exec(`
+	var id int64
+	err := s.db.QueryRow(`
 		INSERT INTO file_distributions (agent_id, harness_id, file_path, content_hash, distributed_at, source_nature_ids)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, agentID, harnessID, filePath, contentHash, now(), idsJSON)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id
+	`, agentID, harnessID, filePath, contentHash, now(), idsJSON).Scan(&id)
+	return id, err
 }
 
 func (s *Store) GetLatestDistribution(filePath string) (*FileDistribution, error) {
 	d := &FileDistribution{}
 	err := s.db.QueryRow(`
 		SELECT id, agent_id, harness_id, file_path, content_hash, distributed_at, COALESCE(source_nature_ids,'')
-		FROM file_distributions WHERE file_path=? ORDER BY distributed_at DESC LIMIT 1`, filePath).Scan(
+		FROM file_distributions WHERE file_path=$1 ORDER BY distributed_at DESC LIMIT 1`, filePath).Scan(
 		&d.ID, &d.AgentID, &d.HarnessID, &d.FilePath, &d.ContentHash, &d.DistributedAt, &d.SourceNatureIDs)
 	if err != nil {
 		return nil, err
@@ -881,7 +792,7 @@ func (s *Store) GetLatestDistribution(filePath string) (*FileDistribution, error
 func (s *Store) ListDistributions(agentID int64) ([]FileDistribution, error) {
 	rows, err := s.db.Query(`
 		SELECT id, agent_id, harness_id, file_path, content_hash, distributed_at, COALESCE(source_nature_ids,'')
-		FROM file_distributions WHERE agent_id=? ORDER BY distributed_at DESC`, agentID)
+		FROM file_distributions WHERE agent_id=$1 ORDER BY distributed_at DESC`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -898,7 +809,7 @@ func (s *Store) ListDistributions(agentID int64) ([]FileDistribution, error) {
 }
 
 func (s *Store) DeleteDistribution(id int64) error {
-	_, err := s.db.Exec("DELETE FROM file_distributions WHERE id=?", id)
+	_, err := s.db.Exec("DELETE FROM file_distributions WHERE id=$1", id)
 	return err
 }
 
@@ -917,18 +828,17 @@ type FileScan struct {
 }
 
 func (s *Store) RecordScan(distributionID int64, currentHash string, status string, diffSummary string) (int64, error) {
-	res, err := s.db.Exec(`
+	var id int64
+	err := s.db.QueryRow(`
 		INSERT INTO file_scans (file_distribution_id, scanned_at, current_hash, status, diff_summary)
-		VALUES (?, ?, ?, ?, ?)
-	`, distributionID, now(), currentHash, status, diffSummary)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id
+	`, distributionID, now(), currentHash, status, diffSummary).Scan(&id)
+	return id, err
 }
 
 func (s *Store) MarkIngested(scanID int64) error {
-	_, err := s.db.Exec(`UPDATE file_scans SET ingested=1 WHERE id=?`, scanID)
+	_, err := s.db.Exec(`UPDATE file_scans SET ingested=1 WHERE id=$1`, scanID)
 	return err
 }
 
@@ -997,31 +907,24 @@ func (s *Store) UpsertProject(p *Project) error {
 	p.UpdatedAt = now()
 	if p.ID > 0 {
 		_, err := s.db.Exec(`
-			UPDATE projects SET slug=?, name=?, path=?, description=?, updated_at=? WHERE id=?`,
+			UPDATE projects SET slug=$1, name=$2, path=$3, description=$4, updated_at=$5 WHERE id=$6`,
 			p.Slug, p.Name, p.Path, p.Description, p.UpdatedAt, p.ID)
 		return err
 	}
-	res, err := s.db.Exec(`
+	// RETURNING names the row on both paths: the one inserted, or the one
+	// the slug already held.
+	return s.db.QueryRow(`
 		INSERT INTO projects (slug, name, path, description, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT(slug) DO UPDATE SET
 			name=excluded.name, path=excluded.path, description=excluded.description, updated_at=excluded.updated_at
-	`, p.Slug, p.Name, p.Path, p.Description, p.CreatedAt, p.UpdatedAt)
-	if err != nil {
-		return err
-	}
-	id, _ := res.LastInsertId()
-	if id > 0 {
-		p.ID = id
-	} else {
-		return s.db.QueryRow(`SELECT id FROM projects WHERE slug=?`, p.Slug).Scan(&p.ID)
-	}
-	return nil
+		RETURNING id
+	`, p.Slug, p.Name, p.Path, p.Description, p.CreatedAt, p.UpdatedAt).Scan(&p.ID)
 }
 
 func (s *Store) GetProject(id int64) (*Project, error) {
 	p := &Project{}
-	err := s.db.QueryRow(`SELECT id, slug, name, path, description, created_at, updated_at FROM projects WHERE id=?`, id).Scan(
+	err := s.db.QueryRow(`SELECT id, slug, name, path, description, created_at, updated_at FROM projects WHERE id=$1`, id).Scan(
 		&p.ID, &p.Slug, &p.Name, &p.Path, &p.Description, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -1031,7 +934,7 @@ func (s *Store) GetProject(id int64) (*Project, error) {
 
 func (s *Store) GetProjectBySlug(slug string) (*Project, error) {
 	p := &Project{}
-	err := s.db.QueryRow(`SELECT id, slug, name, path, description, created_at, updated_at FROM projects WHERE slug=?`, slug).Scan(
+	err := s.db.QueryRow(`SELECT id, slug, name, path, description, created_at, updated_at FROM projects WHERE slug=$1`, slug).Scan(
 		&p.ID, &p.Slug, &p.Name, &p.Path, &p.Description, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -1057,7 +960,7 @@ func (s *Store) ListProjects() ([]Project, error) {
 }
 
 func (s *Store) DeleteProject(id int64) error {
-	_, err := s.db.Exec("DELETE FROM projects WHERE id=?", id)
+	_, err := s.db.Exec("DELETE FROM projects WHERE id=$1", id)
 	return err
 }
 
@@ -1074,14 +977,14 @@ type ProjectNature struct {
 func (s *Store) UpsertProjectNature(pn *ProjectNature) error {
 	_, err := s.db.Exec(`
 		INSERT INTO project_nature (project_id, nature_id, priority)
-		VALUES (?, ?, ?)
+		VALUES ($1, $2, $3)
 		ON CONFLICT(project_id, nature_id) DO UPDATE SET priority=excluded.priority
 	`, pn.ProjectID, pn.NatureID, pn.Priority)
 	return err
 }
 
 func (s *Store) ListProjectNature(projectID int64) ([]ProjectNature, error) {
-	rows, err := s.db.Query(`SELECT project_id, nature_id, priority FROM project_nature WHERE project_id=? ORDER BY priority`, projectID)
+	rows, err := s.db.Query(`SELECT project_id, nature_id, priority FROM project_nature WHERE project_id=$1 ORDER BY priority`, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -1098,7 +1001,7 @@ func (s *Store) ListProjectNature(projectID int64) ([]ProjectNature, error) {
 }
 
 func (s *Store) DeleteProjectNature(projectID, natureID int64) error {
-	_, err := s.db.Exec("DELETE FROM project_nature WHERE project_id=? AND nature_id=?", projectID, natureID)
+	_, err := s.db.Exec("DELETE FROM project_nature WHERE project_id=$1 AND nature_id=$2", projectID, natureID)
 	return err
 }
 
@@ -1139,7 +1042,7 @@ func (s *Store) SetStatus(agentSlug, harnessID, status, task, sessionID string) 
 	}
 	_, err = s.db.Exec(`
 		INSERT INTO agent_status (agent_id, harness_id, status, task, session_id, started_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT(agent_id, harness_id) DO UPDATE SET
 			status=excluded.status, task=excluded.task, session_id=excluded.session_id,
 			started_at=CASE WHEN agent_status.status != 'working' AND excluded.status = 'working' THEN excluded.updated_at ELSE agent_status.started_at END,
@@ -1155,8 +1058,8 @@ func (s *Store) ClearStatus(agentSlug, harnessID string) error {
 		return err
 	}
 	_, err = s.db.Exec(`
-		UPDATE agent_status SET status='idle', task=NULL, session_id=NULL, updated_at=?
-		WHERE agent_id=? AND harness_id=?
+		UPDATE agent_status SET status='idle', task=NULL, session_id=NULL, updated_at=$1
+		WHERE agent_id=$2 AND harness_id=$3
 	`, now(), agent.ID, harnessID)
 	return err
 }
@@ -1170,7 +1073,8 @@ func (s *Store) GetStatus(agentSlug string) ([]AgentStatus, error) {
 	rows, err := s.db.Query(`
 		SELECT a.slug, a.display_name, COALESCE(a.emoji,''), s.harness_id, s.status, s.task, s.session_id, s.started_at, s.updated_at
 		FROM agent_status s JOIN agents a ON a.id = s.agent_id
-		WHERE s.agent_id=?`, agent.ID)
+		WHERE s.agent_id=$1
+		ORDER BY s.agent_id, s.harness_id`, agent.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1213,7 +1117,8 @@ func (s *Store) ResolveHarnessAgent(harnessID, harnessAgentName string) (string,
 	err := s.db.QueryRow(`
 		SELECT a.slug FROM agents a
 		JOIN agent_harness ao ON a.id = ao.agent_id
-		WHERE ao.harness_id=? AND ao.harness_agent_id=?
+		WHERE ao.harness_id=$1 AND ao.harness_agent_id=$2
+		ORDER BY a.id LIMIT 1
 	`, harnessID, harnessAgentName).Scan(&slug)
 	if err != nil {
 		return "", fmt.Errorf("no agent found for harness=%s agent=%s", harnessID, harnessAgentName)

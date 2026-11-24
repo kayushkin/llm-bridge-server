@@ -138,7 +138,7 @@ func TestSeedManifestSkipsAFileWhoseDiskContentWasNeverRecorded(t *testing.T) {
 	f := onlyTrackedFile(t, s)
 
 	const unrecorded = "0000000000000000000000000000000000000000000000000000000000000000"
-	if _, err := s.db.Exec("UPDATE tracked_files SET fs_hash=? WHERE id=?", unrecorded, f.ID); err != nil {
+	if _, err := s.db.Exec("UPDATE tracked_files SET fs_hash=$1 WHERE id=$2", unrecorded, f.ID); err != nil {
 		t.Fatal(err)
 	}
 
