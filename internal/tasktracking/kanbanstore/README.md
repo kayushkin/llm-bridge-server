@@ -1,5 +1,20 @@
 # kanban-store
 
+> **In llm-bridge-server.** This copy runs inside llm-bridge-server on a
+> Postgres module (`kanban`), not as a service of its own. Its routes are the
+> server's `/kanban/<rest>` (this store's `/api/<rest>`) and
+> `/kanban-store/<rest>` (its `/<rest>`). The server names the caller in the
+> request context from the credential it verified, so `X-Principal-Id` and
+> `X-Kanban-Store-Service-Token` below name nobody: a principal comes from a
+> login or a session agent token, and the internal service is the server's own
+> service token. There is no `GET /settings`, no unit and no environment of the
+> store's own; the server's `kanban_store.*`, `multichat.url`, `auth_store.*`,
+> `file_store.*` and `reference_store.url` settings wire it. Noteboard,
+> principal-store, grant-store, bundle-store, agent-store and harness-store are
+> asked in the same process. `llm-bridge-server import-kanban-store -sqlite
+> <file>` copies a standalone database in. The rest of this file describes the
+> standalone service, which still runs until the landing day.
+
 A kanban service that stores **where a card sits and what has happened to it**.
 
 Boards, columns and placements live here. Card *content* — title, body, tags,
@@ -1081,7 +1096,7 @@ Behaviors it relies on:
 
 ```sh
 make test            # go test ./...
-./scripts/e2e-smoke.sh   # boots the real binary against a stub noteboard
+# scripts/e2e-smoke.sh is gone: it booted the standalone binary.
 ./deploy.sh          # vet, test, smoke, install, restart, verify, roll back on failure
 ```
 
