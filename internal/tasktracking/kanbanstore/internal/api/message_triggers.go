@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kayushkin/kanban-store/internal/db"
-	"github.com/kayushkin/kanban-store/internal/messaging"
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/messaging"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 // Message triggers — board settings that send a text message through

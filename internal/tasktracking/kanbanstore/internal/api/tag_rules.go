@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/kayushkin/kanban-store/internal/boundedtext"
-	"github.com/kayushkin/kanban-store/internal/db"
-	"github.com/kayushkin/kanban-store/internal/model"
-	"github.com/kayushkin/kanban-store/internal/noteboard"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/boundedtext"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/noteboard"
 )
 
 // Tag rules and the effective defaults they produce.

@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kayushkin/kanban-store/internal/referencestore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/referencestore"
 )
 
 // fakeReferenceStoreTypes is a few rows in reference-store's shape: enough for

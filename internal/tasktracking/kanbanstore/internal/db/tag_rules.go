@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 // ErrTagRuleNotOnBoard is a PUT naming a rule id that is not one of this

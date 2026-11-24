@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 // clockState is a pointer helper: the column and ladder requests take pointers so

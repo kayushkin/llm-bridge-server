@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 func dollars(v float64) *float64 { return &v }

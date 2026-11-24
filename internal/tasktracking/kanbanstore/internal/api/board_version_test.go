@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/kanban-store/internal/api"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/api"
 )
 
 func TestBoardETagConditionalPatch(t *testing.T) {

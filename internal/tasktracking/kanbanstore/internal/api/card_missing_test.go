@@ -3,7 +3,7 @@ package api_test
 import (
 	"testing"
 
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 // A write to a card noteboard does not have is a 404: the caller asked about

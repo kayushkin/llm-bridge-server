@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/kayushkin/kanban-store/internal/model"
-	"github.com/kayushkin/kanban-store/internal/noteboard"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/noteboard"
 )
 
 // workStates serves the shared work-state vocabulary, each state with its

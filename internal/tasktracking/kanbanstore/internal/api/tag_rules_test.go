@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/kanban-store/internal/api"
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/api"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 func putTagRules(t *testing.T, h http.Handler, boardID string, rules []model.BoardTagRuleInput) *httptest.ResponseRecorder {

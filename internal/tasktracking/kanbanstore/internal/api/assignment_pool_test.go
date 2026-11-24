@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 // setupWithPrincipals is the harness with the fake principal-store in the

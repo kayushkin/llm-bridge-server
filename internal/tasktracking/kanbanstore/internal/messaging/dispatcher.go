@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kayushkin/kanban-store/internal/db"
-	"github.com/kayushkin/kanban-store/internal/model"
-	"github.com/kayushkin/kanban-store/internal/multichat"
-	"github.com/kayushkin/kanban-store/internal/noteboard"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/multichat"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/noteboard"
 )
 
 // Sender delivers one rendered message. *multichat.Client is the real one.

@@ -10,14 +10,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/kanban-store/internal/api"
-	"github.com/kayushkin/kanban-store/internal/bundlestore"
-	"github.com/kayushkin/kanban-store/internal/db"
-	"github.com/kayushkin/kanban-store/internal/grantstore"
-	"github.com/kayushkin/kanban-store/internal/llmbridge"
-	"github.com/kayushkin/kanban-store/internal/model"
-	"github.com/kayushkin/kanban-store/internal/noteboard"
-	"github.com/kayushkin/kanban-store/internal/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/api"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/bundlestore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/grantstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/llmbridge"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/noteboard"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/principalstore"
 )
 
 type contentDesk struct {

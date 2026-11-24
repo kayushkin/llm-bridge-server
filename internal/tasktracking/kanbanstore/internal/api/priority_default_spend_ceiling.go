@@ -3,7 +3,7 @@ package api
 import (
 	"fmt"
 
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 // A rung of a board's priority ladder may carry default_auto_hold_at_usd: the

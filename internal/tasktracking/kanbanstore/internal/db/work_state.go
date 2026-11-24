@@ -3,7 +3,7 @@ package db
 import (
 	"database/sql"
 
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 // A column's work_state, and the reads that turn it into a card's shared state.

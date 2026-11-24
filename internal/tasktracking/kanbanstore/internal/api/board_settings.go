@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/kanban-store/internal/boundedtext"
-	"github.com/kayushkin/kanban-store/internal/bundlestore"
-	"github.com/kayushkin/kanban-store/internal/config"
-	"github.com/kayushkin/kanban-store/internal/llmbridge"
-	"github.com/kayushkin/kanban-store/internal/model"
-	"github.com/kayushkin/kanban-store/internal/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/boundedtext"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/bundlestore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/llmbridge"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/principalstore"
 )
 
 // Board settings — the defaults a dispatcher or classifier reads off the board

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/kanban-store/internal/api"
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/api"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 // ticketFixture is a board whose columns are classified for tickets, with one

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 // mkColumnWithWorkState creates a column mapped onto the shared vocabulary;

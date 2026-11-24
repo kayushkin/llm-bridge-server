@@ -2,7 +2,7 @@ package api_test
 
 import (
 	"fmt"
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 	"net/url"
 	"reflect"
 	"testing"

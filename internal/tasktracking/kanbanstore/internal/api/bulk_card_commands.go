@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kayushkin/kanban-store/internal/boundedtext"
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/boundedtext"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 // Bulk card commands: one command applied to many cards.

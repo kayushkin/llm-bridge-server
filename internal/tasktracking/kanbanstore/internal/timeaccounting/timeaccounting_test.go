@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/kanban-store/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
 )
 
 func event(id string, at time.Time, kind model.EventKind, state model.ClockState) model.CardEvent {

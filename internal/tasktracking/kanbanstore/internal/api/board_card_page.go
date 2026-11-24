@@ -2,8 +2,8 @@ package api
 
 import (
 	"fmt"
-	"github.com/kayushkin/kanban-store/internal/model"
-	"github.com/kayushkin/kanban-store/internal/noteboard"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/noteboard"
 	"net/http"
 	"strconv"
 	"time"

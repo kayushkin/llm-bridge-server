@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/kanban-store/internal/boundedtext"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/internal/boundedtext"
 )
 
 // ============================ The budget clock ============================
