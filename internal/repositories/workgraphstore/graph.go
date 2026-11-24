@@ -2,7 +2,9 @@ package workgraphstore
 
 import (
 	"context"
+
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"os/exec"
 	"slices"
 	"sort"
@@ -68,6 +70,7 @@ type Graph struct {
 
 func git(ctx context.Context, repositoryPath string, arguments ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", repositoryPath}, arguments...)...)
+	command.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	output, err := command.Output()
 	if err != nil {
 		if exitError, isExitError := err.(*exec.ExitError); isExitError {

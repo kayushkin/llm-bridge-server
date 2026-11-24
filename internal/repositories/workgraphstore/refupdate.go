@@ -5,21 +5,14 @@
 package workgraphstore
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 )
 
 // DefaultSpoolPath is the file the git hook appends to and the store's
-// ingester reads. The hook reads no settings, so this function is the one
-// place both agree on.
-func DefaultSpoolPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	return filepath.Join(home, ".local", "state", "work-graph-store", "ref-updates.jsonl")
-}
+// ingester reads (productiondefaults.WorkGraphHookSpoolPath).
+func DefaultSpoolPath() string { return productiondefaults.WorkGraphHookSpoolPath() }
 
 // ZeroSHA is git's name for "no commit": the old side of a ref that was just
 // created, or the new side of one just deleted.

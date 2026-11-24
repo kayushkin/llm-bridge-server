@@ -2,10 +2,12 @@ package repostore
 
 import (
 	"bytes"
+
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"log"
 	"os/exec"
 	"strings"
@@ -44,6 +46,7 @@ func NewGitHubCommandLine(program string) (*GitHubCommandLine, error) {
 
 func (commandLine *GitHubCommandLine) Get(ctx context.Context, path string) ([]byte, error) {
 	command := exec.CommandContext(ctx, commandLine.Program, "api", "--method", "GET", path)
+	command.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	var standardError bytes.Buffer
 	command.Stderr = &standardError
 	output, err := command.Output()

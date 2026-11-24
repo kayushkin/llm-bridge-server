@@ -3,7 +3,6 @@ package config
 import (
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
@@ -49,7 +48,7 @@ func repositoriesAndReferencesSettingDefinitions() []servicesettings.Definition 
 			Description: "The gh program repo-store runs (`gh api …`) to read pull requests, as whatever account gh is logged in to under this server's HOME. A full path, or a name on PATH; the server will not start if it cannot find it. Changing it may change which GitHub account the pull requests are read as."},
 		{Key: SettingWorkGraphStoreIngestEnabled, EnvironmentVariable: "LLMBRIDGE_WORK_GRAPH_STORE_INGEST_ENABLED", Kind: behavior, ValueType: boolean, Default: "false",
 			Description: "Move the git hook's spool into work-graph-store in this server, every two seconds. The ingest renames the spool aside and deletes it once stored, so only one reader may run: off by default, while the standalone work-graph-store still reads it. Read at start."},
-		{Key: SettingWorkGraphStoreSpoolPath, EnvironmentVariable: "LLMBRIDGE_WORK_GRAPH_STORE_SPOOL_PATH", Kind: path, ValueType: text, Default: workgraphstore.DefaultSpoolPath(),
+		{Key: SettingWorkGraphStoreSpoolPath, EnvironmentVariable: "LLMBRIDGE_WORK_GRAPH_STORE_SPOOL_PATH", Kind: path, ValueType: text, Default: productiondefaults.WorkGraphHookSpoolPath(),
 			Description: "The file the git hook (work-graph-hook) appends ref updates to, which the ingest reads. The hook always writes to the default, so changing this makes the ingest read a file nobody writes."},
 		{Key: SettingFileStoreDataDirectory, EnvironmentVariable: "LLMBRIDGE_FILE_STORE_DATA_DIRECTORY", Kind: path, ValueType: text, Default: productiondefaults.FileStoreDataDirectory(),
 			Description: "The directory the file-store module keeps every file's bytes in (blobs/<aa>/<bb>/<sha256>); the records are in Postgres. Moving it leaves the bytes behind: move blobs/ along, or every file reads as damaged. Only this server may write it."},

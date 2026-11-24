@@ -104,6 +104,13 @@ func FileStoreDataDirectory() string {
 	return filepath.Join(homeDirectory(), ".llm-bridge", "file-store")
 }
 
+// WorkGraphHookSpoolPath is the file work-graph-store's git hook appends ref
+// updates to and the store's ingest reads. The hook reads no settings, so
+// this is the one place both agree on.
+func WorkGraphHookSpoolPath() string {
+	return filepath.Join(homeDirectory(), ".local", "state", "work-graph-store", "ref-updates.jsonl")
+}
+
 // SkillStoreInstallDirectory is where an installed skill is copied: where
 // Claude Code reads a user's skills.
 func SkillStoreInstallDirectory() string {

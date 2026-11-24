@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"io"
 	"os"
 	"os/exec"
@@ -187,6 +188,9 @@ func runRepositoryHook(path string, arguments []string, standardInput []byte) in
 		return 0
 	}
 	command := exec.Command(path, arguments...)
+	// The hook runs in git's environment, not the server's; the secrets the
+	// server keeps from its children are removed all the same.
+	command.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	command.Stdin = bytes.NewReader(standardInput)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
