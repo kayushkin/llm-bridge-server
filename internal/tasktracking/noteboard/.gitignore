@@ -1,0 +1,14 @@
+bin/
+
+# SQLite. The store runs in WAL mode, so the -wal and -shm sidecars hold
+# recently-written rows — real note and todo text. `*.db` does not match them.
+*.db
+*.db-wal
+*.db-shm
+
+# defensive
+.env
+.env.*
+*.key
+*.pem
+credentials.json

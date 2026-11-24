@@ -292,7 +292,7 @@ func SettingDefinitions() []servicesettings.Definition {
 		{Key: "mailstack.token", EnvironmentVariable: "LLMBRIDGE_MAILSTACK_TOKEN", Kind: secret, ValueType: text,
 			Description: "mailstack's bearer token, presented on the sender lookup and on every /mailstack/ proxy request. Unset switches the sender lookup off, a customer reply draft carries no recipient, and /mailstack/ answers 503."},
 		{Key: "database.postgres_url", EnvironmentVariable: PostgresURLEnvironmentVariable, Kind: secret, ValueType: text,
-			Description: "The Postgres database the modules moved into this server keep their records in (prediction-store, tool-store, skill-store and bundle-store, mounted at /prediction-store/, /tool-store/, /skill-store/ and /bundle-store/), as a URL naming a login that may create roles and schemas (CREATEROLE and CREATE on the database). At start the server makes each module's role and schema if they are missing, migrates it and opens it, and refuses to start if any step fails. Empty switches those modules off, and their routes answer 503. It may carry a password, so it is a secret and never reaches a harness child."},
+			Description: "The Postgres database the modules moved into this server keep their records in (prediction-store at /prediction-store/, noteboard at /noteboard/, project-store at /project-store/, tool-store at /tool-store/, skill-store at /skill-store/ and bundle-store at /bundle-store/), as a URL naming a login that may create roles and schemas (CREATEROLE and CREATE on the database). At start the server makes each module's role and schema if they are missing, migrates it and opens it, and refuses to start if any step fails. Empty switches those modules off, and their routes answer 503. It may carry a password, so it is a secret and never reaches a harness child."},
 		{Key: "local_tools.pinchtab_token", EnvironmentVariable: LocalToolsPinchtabTokenEnvironmentVariable, Kind: secret, ValueType: text,
 			Description: "The bearer token tool-store's in-process browser tool presents to PinchTab. Unset, it sends no Authorization header."},
 		{Key: "local_tools.brave_api_key", EnvironmentVariable: LocalToolsBraveAPIKeyEnvironmentVariable, Kind: secret, ValueType: text,
@@ -302,6 +302,8 @@ func SettingDefinitions() []servicesettings.Definition {
 		{Key: "auth_store.token", EnvironmentVariable: "AUTH_STORE_TOKEN", Kind: secret, ValueType: text,
 			Description: "auth-store's bearer token."},
 	}
+
+	definitions = append(definitions, taskTrackingSettingDefinitions()...)
 
 	// One proxy backend per known harness. The variable is per harness, so the
 	// declarations are read off the harness registry rather than listed.

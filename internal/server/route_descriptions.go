@@ -33,6 +33,8 @@ const (
 	routeGroupToolStore        routeGroup = "tool-store, mounted in this process"
 	routeGroupSkillStore       routeGroup = "skill-store, mounted in this process"
 	routeGroupBundleStore      routeGroup = "bundle-store, mounted in this process"
+	routeGroupNoteboard        routeGroup = "noteboard, mounted in this process"
+	routeGroupProjectStore     routeGroup = "project-store, mounted in this process"
 )
 
 // routeGroupsInReadmeOrder is the order the README lists the groups in.
@@ -56,6 +58,8 @@ var routeGroupsInReadmeOrder = []routeGroup{
 	routeGroupToolStore,
 	routeGroupSkillStore,
 	routeGroupBundleStore,
+	routeGroupNoteboard,
+	routeGroupProjectStore,
 }
 
 var routeDescriptions = map[string]routeDescription{
@@ -418,6 +422,59 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /prediction-store/predictions/{id}/links":      {routeGroupPredictionStore, "What the prediction is about"},
 	"POST /prediction-store/predictions/{id}/links":     {routeGroupPredictionStore, "Link it to a record by the owning store's id; linking twice is a no-op"},
 	"DELETE /prediction-store/links/{id}":               {routeGroupPredictionStore, "Remove one link by its number"},
+
+	// noteboard and project-store, mounted in this process.
+	"GET /noteboard/health":                                           {routeGroupNoteboard, "`{\"status\":\"ok\",\"items\":N}`, live items not archived; 500 when the store cannot be read"},
+	"GET /noteboard/api/items":                                        {routeGroupNoteboard, "List items by `type`, `tag`, `exclude_tag`, `status`, `list_id`, `created_by`, `parent_id`, `sort`, `limit`; held and deleted items only when asked for"},
+	"POST /noteboard/api/items":                                       {routeGroupNoteboard, "Make an item: `type` and `title` required; `hold` makes it held from the start"},
+	"POST /noteboard/api/items/rerank":                                {routeGroupNoteboard, "Set the `rank` of each named item"},
+	"POST /noteboard/api/items/query":                                 {routeGroupNoteboard, "Of these ids, which match the filters, in what order; held items answered, gone ones in `missing_ids`"},
+	"POST /noteboard/api/items/batch":                                 {routeGroupNoteboard, "The named items in the order named, `null` for one that names no live item"},
+	"GET /noteboard/api/items/query-options":                          {routeGroupNoteboard, "The sorts and limits `/noteboard/api/items/query` takes"},
+	"GET /noteboard/api/items/{id}":                                   {routeGroupNoteboard, "One live item, its `updated_at` as the `ETag`; `?include_deleted=true` for a deleted one"},
+	"PATCH /noteboard/api/items/{id}":                                 {routeGroupNoteboard, "Change the fields sent, after a revision of the old state; `If-Match` makes it conditional (412 with the current item)"},
+	"DELETE /noteboard/api/items/{id}":                                {routeGroupNoteboard, "Soft delete, after a revision; `?hard=true` purges the row"},
+	"GET /noteboard/api/items/{id}/revisions":                         {routeGroupNoteboard, "Every prior state, newest first; `limit` and `offset` page it"},
+	"POST /noteboard/api/items/{id}/restore":                          {routeGroupNoteboard, "Undo a soft delete"},
+	"POST /noteboard/api/items/{id}/hold":                             {routeGroupNoteboard, "Hold an item, and with it its children, out of list and search; optional `reason`"},
+	"POST /noteboard/api/items/{id}/unhold":                           {routeGroupNoteboard, "Clear a hold"},
+	"GET /noteboard/api/items/{id}/occurrences":                       {routeGroupNoteboard, "When the item's recurrence rule falls due and nags between `from` and `to`"},
+	"GET /noteboard/api/lists":                                        {routeGroupNoteboard, "Every `list_id` with its count of live items"},
+	"GET /noteboard/api/tags":                                         {routeGroupNoteboard, "Every tag on live items with its count, most used first"},
+	"GET /noteboard/api/search":                                       {routeGroupNoteboard, "Full-text search of title and body for `q`, every word in each term, newest first; held items only with `include_held=true`"},
+	"GET /project-store/health":                                       {routeGroupProjectStore, "`{\"status\":\"ok\"}`"},
+	"GET /project-store/vocabulary":                                   {routeGroupProjectStore, "Kinds, stages, statuses, activity kinds and the entity types a project can own"},
+	"GET /project-store/projects":                                     {routeGroupProjectStore, "Projects by name; `q`, `kind`, `parent_id`, `include_archived`"},
+	"POST /project-store/projects":                                    {routeGroupProjectStore, "Make a project; `name` required"},
+	"GET /project-store/digest":                                       {routeGroupProjectStore, "Every live project's rollup as plain text for an agent"},
+	"GET /project-store/projects/{id}":                                {routeGroupProjectStore, "One project"},
+	"PATCH /project-store/projects/{id}":                              {routeGroupProjectStore, "Change a project's fields, recording each change; `archived` archives or restores it"},
+	"GET /project-store/projects/{id}/rollup":                         {routeGroupProjectStore, "Worked out on request: children, links, cards, repos, notes, suggestions and goals"},
+	"GET /project-store/projects/{id}/changes":                        {routeGroupProjectStore, "Every change to the project's fields, oldest first"},
+	"GET /project-store/projects/{id}/links":                          {routeGroupProjectStore, "What the project owns; `entity_type` narrows"},
+	"POST /project-store/projects/{id}/links":                         {routeGroupProjectStore, "Link a record its own store has; 400 when it has none, 502 when it cannot answer, 409 when linked already"},
+	"DELETE /project-store/projects/{id}/links/{link_id}":             {routeGroupProjectStore, "Remove one link"},
+	"GET /project-store/links":                                        {routeGroupProjectStore, "Which projects own a record, by `entity_type` and `entity_ref`"},
+	"GET /project-store/projects/{id}/activity":                       {routeGroupProjectStore, "What happened in the project, newest first, over `days` (default 14)"},
+	"POST /project-store/projects/{id}/next-steps":                    {routeGroupProjectStore, "Make a noteboard todo tagged `next-step` and link it to the project"},
+	"GET /project-store/projects/{id}/suggestions":                    {routeGroupProjectStore, "The project's suggested next steps, oldest first; `status` narrows"},
+	"POST /project-store/projects/{id}/suggestions":                   {routeGroupProjectStore, "Ask a model for up to five next steps, superseding the undecided ones"},
+	"POST /project-store/suggestions/{suggestion_id}/accept":          {routeGroupProjectStore, "Make a suggestion a next step; 409 when already decided"},
+	"POST /project-store/suggestions/{suggestion_id}/dismiss":         {routeGroupProjectStore, "Dismiss a suggestion; 409 when already decided"},
+	"GET /project-store/projects/{id}/goals":                          {routeGroupProjectStore, "One project's goals, parents before their children; `state` narrows, and without it every state but `dismissed`"},
+	"POST /project-store/projects/{id}/goals":                         {routeGroupProjectStore, "Make a goal of a project: `statement` required, `open` or `proposed`; 400 for an archived project"},
+	"GET /project-store/goals":                                        {routeGroupProjectStore, "Every project's goals, each project's together; `state`, `project_id`"},
+	"GET /project-store/goals/{goal_id}":                              {routeGroupProjectStore, "One goal"},
+	"PATCH /project-store/goals/{goal_id}":                            {routeGroupProjectStore, "Change a goal's fields, recording each change; a state move the rules do not allow is 409"},
+	"GET /project-store/goals/{goal_id}/changes":                      {routeGroupProjectStore, "Every change to the goal's fields, oldest first"},
+	"GET /project-store/goals/{goal_id}/links":                        {routeGroupProjectStore, "What serves the goal; `entity_type` narrows"},
+	"POST /project-store/goals/{goal_id}/links":                       {routeGroupProjectStore, "Link a note or a session its own store has to the goal; 400, 502 or 409 as a project link"},
+	"DELETE /project-store/goals/{goal_id}/links/{link_id}":           {routeGroupProjectStore, "Remove one goal link"},
+	"GET /project-store/goal-links":                                   {routeGroupProjectStore, "Which goals a record serves, by `entity_type` and `entity_ref`"},
+	"GET /project-store/session-filings":                              {routeGroupProjectStore, "What the session filer concluded about each chat, newest first; `status`, `session_id`, `project_id`, `limit`"},
+	"POST /project-store/session-filings/run":                         {routeGroupProjectStore, "One filing pass over the chats changed in the window; 502 with the report when some session could not be judged, 409 while a pass runs"},
+	"POST /project-store/session-filings/{session_filing_id}/accept":  {routeGroupProjectStore, "File the session of a proposed filing; 409 when already decided"},
+	"POST /project-store/session-filings/{session_filing_id}/dismiss": {routeGroupProjectStore, "Leave a proposed filing's session unfiled; 409 when already decided"},
 
 	"POST /memories":         {routeGroupMemoryStore, "Save a memory"},
 	"GET /memories/{id}":     {routeGroupMemoryStore, "One memory"},

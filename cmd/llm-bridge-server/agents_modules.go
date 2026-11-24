@@ -20,40 +20,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
-// openPostgresModule makes module's role and schema on the Postgres at url if
-// they are missing, brings its schema up to this binary's migrations, and
-// opens its pool. url names a login that may create roles and schemas; each
-// step that fails is the error, and nothing carries on without it.
-func openPostgresModule(ctx context.Context, url string, module postgresstorage.Module) (*sql.DB, error) {
-	administrator, err := sql.Open("pgx", url)
-	if err != nil {
-		return nil, fmt.Errorf("the Postgres URL: %w", err)
-	}
-	defer administrator.Close()
-	if err := administrator.PingContext(ctx); err != nil {
-		return nil, fmt.Errorf("reaching Postgres: %w", err)
-	}
-	if err := postgresstorage.Provision(ctx, administrator, module); err != nil {
-		return nil, err
-	}
-	db, err := postgresstorage.Open(ctx, url, module)
-	if err != nil {
-		return nil, err
-	}
-	report, err := postgresstorage.Migrate(ctx, db, module)
-	if err != nil {
-		db.Close()
-		return nil, err
-	}
-	for _, migration := range report.Applied {
-		log.Printf("postgres: module %s: applied migration %d (%s)", module.Schema, migration.Version, migration.Name)
-	}
-	if len(report.NewerThanThisBinary) > 0 {
-		log.Printf("postgres: module %s: the database has migrations %v that this binary does not know; a newer server migrated it", module.Schema, report.NewerThanThisBinary)
-	}
-	return db, nil
-}
-
 // openAgentsModule opens the module a store's Module function describes.
 func openAgentsModule(ctx context.Context, url string, describe func() (postgresstorage.Module, error)) (*sql.DB, error) {
 	module, err := describe()
