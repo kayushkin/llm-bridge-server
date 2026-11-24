@@ -20,3 +20,6 @@ func RequireFixedDrive(drive string) error { return errOnlyOnWindows }
 
 // Drives lists nothing off Windows.
 func Drives() ([]msg.DiskUsageDrive, error) { return nil, errOnlyOnWindows }
+
+// WSLDisks lists nothing off Windows.
+func WSLDisks() ([]msg.DiskUsageWSLDisk, error) { return nil, errOnlyOnWindows }

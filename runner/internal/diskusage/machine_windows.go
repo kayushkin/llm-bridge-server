@@ -283,7 +283,7 @@ func Drives() ([]msg.DiskUsageDrive, error) {
 		if err := windows.GetVolumeInformation(root, &label[0], uint32(len(label)), nil, nil, nil, nil, 0); err != nil {
 			label[0] = 0
 		}
-		drives = append(drives, msg.DiskUsageDrive{Drive: drive, Label: windows.UTF16ToString(label), TotalBytes: total, FreeBytes: freeToUser})
+		drives = append(drives, msg.DiskUsageDrive{Drive: drive, Kind: msg.DiskUsageDriveWindows, RootPath: drive + `\`, Label: windows.UTF16ToString(label), TotalBytes: total, FreeBytes: freeToUser})
 	}
 	return drives, nil
 }
@@ -294,3 +294,43 @@ const (
 	fileNameNormalized = 0x0
 	volumeNameDOS      = 0x0
 )
+
+// WSLDisks lists each registered WSL distribution's disk file and its size,
+// from the registry WSL itself keeps. A distribution whose disk file is not
+// where the registry says is an error: a disk this cannot find is not one
+// it can report on.
+func WSLDisks() ([]msg.DiskUsageWSLDisk, error) {
+	distributions, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Lxss`, registry.READ)
+	if err != nil {
+		return nil, fmt.Errorf("open the registry's list of WSL distributions: %w", err)
+	}
+	defer distributions.Close()
+	keys, err := distributions.ReadSubKeyNames(-1)
+	if err != nil {
+		return nil, fmt.Errorf("list WSL distributions: %w", err)
+	}
+	disks := []msg.DiskUsageWSLDisk{}
+	for _, keyName := range keys {
+		key, err := registry.OpenKey(distributions, keyName, registry.READ)
+		if err != nil {
+			return nil, fmt.Errorf("open WSL distribution %s: %w", keyName, err)
+		}
+		name, _, nameErr := key.GetStringValue("DistributionName")
+		basePath, basePathErr := expandedString(key, "BasePath")
+		vhdName, _, vhdErr := key.GetStringValue("VhdFileName")
+		key.Close()
+		if nameErr != nil || basePathErr != nil {
+			return nil, fmt.Errorf("read WSL distribution %s: %v, %v", keyName, nameErr, basePathErr)
+		}
+		if vhdErr != nil || vhdName == "" {
+			vhdName = "ext4.vhdx"
+		}
+		diskFile := CleanWindowsPath(basePath) + `\` + vhdName
+		info, err := os.Stat(diskFile)
+		if err != nil {
+			return nil, fmt.Errorf("WSL distribution %s: its disk file: %w", name, err)
+		}
+		disks = append(disks, msg.DiskUsageWSLDisk{Distribution: name, DiskFilePath: diskFile, DiskFileBytes: uint64(info.Size())})
+	}
+	return disks, nil
+}

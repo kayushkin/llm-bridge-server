@@ -161,6 +161,18 @@ func (d *DiskUsage) status(command string) (*msg.DiskUsageStatus, error) {
 	if err := json.Unmarshal(output, &status.Drives); err != nil {
 		return nil, fmt.Errorf("read the helper's list of drives: %w", err)
 	}
+	// The WSL parts are read apart, so a failure there still shows the
+	// Windows drives, and says what went wrong.
+	if drive, err := wslDrive(); err != nil {
+		status.Errors = append(status.Errors, fmt.Sprintf("could not read WSL's own file system: %v", err))
+	} else {
+		status.Drives = append(status.Drives, drive)
+	}
+	if disks, err := wslDisks(command); err != nil {
+		status.Errors = append(status.Errors, err.Error())
+	} else {
+		status.WSLDisks = disks
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	status.Scans = []msg.DiskUsageScan{}
@@ -180,7 +192,7 @@ func (scan *driveScan) describe() msg.DiskUsageScan {
 	described := scan.state
 	if scan.tree != nil {
 		if scan.state.State == msg.DiskUsageScanFinished {
-			root := scan.tree.Entry(scan.state.Drive + `\`)
+			root := scan.tree.Entry(driveRootPath(scan.state.Drive))
 			described.Root = &root
 		} else {
 			finishedAt := scan.treeFinishedAt
@@ -190,9 +202,28 @@ func (scan *driveScan) describe() msg.DiskUsageScan {
 	return described
 }
 
+// driveRootPath is where a drive's tree starts: `C:\`, or / for WSL.
+func driveRootPath(drive string) string {
+	if drive == msg.DiskUsageWSLDrive {
+		return wslRootPath
+	}
+	return drive + `\`
+}
+
+// driveOfPath is the drive a path the bridge sent belongs to.
+func driveOfPath(path string) (string, error) {
+	if isWSLPath(path) {
+		return msg.DiskUsageWSLDrive, nil
+	}
+	if len(path) < 3 || !driveLetterForm.MatchString(path[:2]) || path[2] != '\\' {
+		return "", fmt.Errorf("%q is not a path on a drive", path)
+	}
+	return path[:2], nil
+}
+
 func (d *DiskUsage) startScan(command, drive string) error {
-	if !driveLetterForm.MatchString(drive) {
-		return fmt.Errorf("%q is not a drive like C:", drive)
+	if !driveLetterForm.MatchString(drive) && drive != msg.DiskUsageWSLDrive {
+		return fmt.Errorf("%q is not a drive like C: or %s", drive, msg.DiskUsageWSLDrive)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -205,12 +236,21 @@ func (d *DiskUsage) startScan(command, drive string) error {
 		return fmt.Errorf("%s is already being scanned", drive)
 	}
 	scan.state = msg.DiskUsageScan{Drive: drive, State: msg.DiskUsageScanRunning, StartedAt: time.Now().UTC()}
-	go d.runScan(command, drive)
+	if drive == msg.DiskUsageWSLDrive {
+		go d.runWSLScan()
+	} else {
+		go d.runScan(command, drive)
+	}
 	return nil
 }
 
 func (d *DiskUsage) runScan(command, drive string) {
 	tree, err := d.scanWithHelper(command, drive)
+	d.finishScan(drive, tree, err)
+}
+
+// finishScan records how a drive's scan ended.
+func (d *DiskUsage) finishScan(drive string, tree *diskusage.Node, err error) {
 	finishedAt := time.Now().UTC()
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -276,16 +316,17 @@ func (d *DiskUsage) scanWithHelper(command, drive string) (*diskusage.Node, erro
 // find returns the scan of path's drive and the node at path in it.
 // The caller holds d.mu.
 func (d *DiskUsage) find(path string) (*driveScan, *diskusage.Node, []*diskusage.Node, error) {
-	if len(path) < 3 || !driveLetterForm.MatchString(path[:2]) || path[2] != '\\' {
-		return nil, nil, nil, fmt.Errorf("%q is not a path on a drive", path)
+	drive, err := driveOfPath(path)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	scan := d.scans[path[:2]]
+	scan := d.scans[drive]
 	if scan == nil || scan.tree == nil {
-		return nil, nil, nil, fmt.Errorf("%s has not been scanned since the runner started; scan it first", path[:2])
+		return nil, nil, nil, fmt.Errorf("%s has not been scanned since the runner started; scan it first", drive)
 	}
-	node, ancestors := scan.tree.Find(path[:3], path)
+	node, ancestors := scan.tree.Find(driveRootPath(drive), path)
 	if node == nil {
-		return nil, nil, nil, fmt.Errorf("the latest scan of %s holds no %s", path[:2], path)
+		return nil, nil, nil, fmt.Errorf("the latest scan of %s holds no %s", drive, path)
 	}
 	return scan, node, ancestors, nil
 }
@@ -297,7 +338,8 @@ func (d *DiskUsage) listChildren(path string) (*msg.DiskUsageChildren, error) {
 	if err != nil {
 		return nil, err
 	}
-	children := &msg.DiskUsageChildren{Drive: path[:2], ScannedAt: scan.treeFinishedAt, Entry: node.Entry(path), Children: []msg.DiskUsageEntry{}}
+	drive, _ := driveOfPath(path)
+	children := &msg.DiskUsageChildren{Drive: drive, ScannedAt: scan.treeFinishedAt, Entry: node.Entry(path), Children: []msg.DiskUsageEntry{}}
 	for _, child := range node.Children {
 		children.Children = append(children.Children, child.Entry(diskusage.ChildPath(path, child.Name)))
 	}
@@ -337,7 +379,7 @@ func (d *DiskUsage) runnerDeletionCheck(path string) (*msg.DiskUsageDeletionChec
 		check.Warnings = append(check.Warnings, "An earlier deletion removed part of this; its size here is a guess until you scan again.")
 	}
 	if scan.tree.SizeBytes > 0 && node.SizeBytes*2 > scan.tree.SizeBytes {
-		check.Warnings = append(check.Warnings, fmt.Sprintf("This is %d%% of everything the scan found on %s.", node.SizeBytes*100/scan.tree.SizeBytes, path[:2]))
+		check.Warnings = append(check.Warnings, fmt.Sprintf("This is %d%% of everything the scan found on %s.", node.SizeBytes*100/scan.tree.SizeBytes, scan.state.Drive))
 	}
 	return check, nil
 }
@@ -348,6 +390,10 @@ func (d *DiskUsage) checkDeletion(command, path string) (*msg.DiskUsageDeletionC
 	d.mu.Unlock()
 	if err != nil || !check.Allowed {
 		return check, err
+	}
+	if isWSLPath(path) {
+		mergeVerdict(check, wslDeletionVerdict(path, check.Kind))
+		return check, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), diskUsageAnswerTimeout)
 	defer cancel()
@@ -395,6 +441,22 @@ func (d *DiskUsage) startDeletion(command string, request *msg.DiskUsageRequest)
 		ExpectedSizeBytes: check.SizeBytes,
 	}
 	d.mu.Unlock()
+
+	if isWSLPath(request.Path) {
+		verdict := wslDeletionVerdict(request.Path, check.Kind)
+		mergeVerdict(check, verdict)
+		if !verdict.Allowed {
+			d.releaseDeletion(previous)
+			log.Printf("[disk-usage] refused to delete %s: %s", request.Path, verdict.RefusalReason)
+			return &msg.DiskUsageAnswer{DeletionCheck: check}, nil
+		}
+		log.Printf("[disk-usage] deleting %s inside WSL (%s, %d bytes in the scan) for deletion %s", request.Path, check.Kind, check.SizeBytes, request.DeletionID)
+		go d.runWSLDeletion(request.Path, check.Kind)
+		d.mu.Lock()
+		deletion := *d.deletion
+		d.mu.Unlock()
+		return &msg.DiskUsageAnswer{DeletionCheck: check, Status: &msg.DiskUsageStatus{Deletion: &deletion}}, nil
+	}
 
 	cmd := diskUsageHelper(context.Background(), command, "delete", request.Path, string(check.Kind))
 	stdout, err := cmd.StdoutPipe()
@@ -473,15 +535,25 @@ func (d *DiskUsage) finishDeletion(cmd *exec.Cmd, stdout *bufio.Reader, stderr i
 	decodeErr := json.NewDecoder(stdout).Decode(&result)
 	<-stderrDone
 	waitErr := cmd.Wait()
+	var failure error
+	if waitErr != nil || decodeErr != nil {
+		failure = fmt.Errorf("the helper did not finish cleanly (%v, %v)", waitErr, decodeErr)
+	}
+	d.endDeletion(&result, failure, stderrTail.String())
+}
 
+// endDeletion records how the running deletion ended, takes it out of its
+// drive's scan and reports it to the bridge. failure is set when the
+// deleting program did not finish cleanly, and result is then not read.
+func (d *DiskUsage) endDeletion(result *helperDeleteResult, failure error, stderrTail string) {
 	finishedAt := time.Now().UTC()
 	d.mu.Lock()
 	deletion := d.deletion
 	deletion.FinishedAt = &finishedAt
 	switch {
-	case waitErr != nil || decodeErr != nil:
+	case failure != nil:
 		deletion.State = msg.DiskUsageDeletionFailed
-		deletion.Errors = append(deletion.Errors, fmt.Sprintf("the helper did not finish cleanly (%v, %v): %s", waitErr, decodeErr, stderrTail.String()))
+		deletion.Errors = append(deletion.Errors, fmt.Sprintf("%v: %s", failure, stderrTail))
 	default:
 		deletion.DeletedBytes = result.DeletedBytes
 		deletion.DeletedFileCount = result.DeletedFileCount

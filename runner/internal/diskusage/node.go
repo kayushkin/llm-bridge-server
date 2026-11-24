@@ -158,18 +158,28 @@ func sortLargestFirst(nodes []*Node) {
 	})
 }
 
+// separatorOf is the separator of paths like path: "/" for a Linux path,
+// a backslash for a Windows one.
+func separatorOf(path string) string {
+	if strings.HasPrefix(path, "/") {
+		return "/"
+	}
+	return `\`
+}
+
 // ChildPath is the path of a child named name inside the directory at
-// parentPath, in Windows form: `C:\` + `Games` is `C:\Games`.
+// parentPath: `C:\` + `Games` is `C:\Games`, "/home" + "name" is "/home/name".
 func ChildPath(parentPath, name string) string {
-	if strings.HasSuffix(parentPath, `\`) {
+	separator := separatorOf(parentPath)
+	if strings.HasSuffix(parentPath, separator) {
 		return parentPath + name
 	}
-	return parentPath + `\` + name
+	return parentPath + separator + name
 }
 
 // Find returns the node at path in the tree whose root is at rootPath
-// (`C:\`), and the chain of its ancestors from the root, or nil when the
-// tree does not hold it. Names match exactly: paths come from the tree.
+// (`C:\` or "/"), and the chain of its ancestors from the root, or nil when
+// the tree does not hold it. Names match exactly: paths come from the tree.
 func (root *Node) Find(rootPath, path string) (*Node, []*Node) {
 	if path == rootPath {
 		return root, nil
@@ -177,16 +187,17 @@ func (root *Node) Find(rootPath, path string) (*Node, []*Node) {
 	if !strings.HasPrefix(path, rootPath) {
 		return nil, nil
 	}
+	separator := separatorOf(rootPath)
 	rest := strings.TrimPrefix(path, rootPath)
-	if rest == "" || strings.HasPrefix(rest, `\`) || strings.HasSuffix(rest, `\`) {
+	if rest == "" || strings.HasPrefix(rest, separator) || strings.HasSuffix(rest, separator) {
 		return nil, nil
 	}
 	current := root
 	var ancestors []*Node
-	for _, name := range strings.Split(rest, `\`) {
+	for _, name := range strings.Split(rest, separator) {
 		var next *Node
 		for _, child := range current.Children {
-			if child.Kind != msg.DiskUsageEntrySmallerItems && child.Name == name {
+			if child.Kind != msg.DiskUsageEntrySmallerItems && child.Name == name && name != "" {
 				next = child
 				break
 			}

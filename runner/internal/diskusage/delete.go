@@ -18,6 +18,14 @@ const maximumReportedErrors = 20
 // is left alone. It carries on past a file it cannot delete (one a program
 // has open, say) and reports what it could not.
 type Deletion struct {
+	// StayOnDevice leaves alone any directory on another device than the
+	// deleted path's, such as a Windows drive mounted inside WSL.
+	StayOnDevice bool
+	// CountDiskBlocks counts what a deleted file freed by the space it took
+	// on disk, and nothing for a link to a file that still has others.
+	CountDiskBlocks bool
+
+	rootDevice       uint64
 	mu               sync.Mutex
 	deletedBytes     uint64
 	deletedFileCount int64
@@ -56,6 +64,13 @@ func (d *Deletion) Run(path string, expectedKind msg.DiskUsageEntryKind) error {
 	if kind != expectedKind {
 		return fmt.Errorf("%s is now a %s, not a %s; nothing was deleted", path, kind, expectedKind)
 	}
+	if d.StayOnDevice {
+		device, ok := deviceOf(info)
+		if !ok {
+			return fmt.Errorf("cannot tell which device %s is on; nothing was deleted", path)
+		}
+		d.rootDevice = device
+	}
 	d.remove(path, info)
 	return nil
 }
@@ -64,6 +79,12 @@ func (d *Deletion) remove(path string, info fs.FileInfo) {
 	kind, cloudOnly := classify(info)
 	switch kind {
 	case msg.DiskUsageEntryDirectory:
+		if d.StayOnDevice {
+			if device, ok := deviceOf(info); !ok || device != d.rootDevice {
+				d.failed(path, fmt.Errorf("another file system is mounted here; it was left alone"))
+				return
+			}
+		}
 		entries, err := os.ReadDir(path)
 		if err != nil {
 			d.failed(path, err)
@@ -93,10 +114,19 @@ func (d *Deletion) remove(path string, info fs.FileInfo) {
 			}
 			return
 		}
+		freed := uint64(info.Size())
+		if d.CountDiskBlocks {
+			if bytes, _, linkCount, ok := fileDiskBytes(info); ok {
+				freed = bytes
+				if linkCount > 1 {
+					freed = 0 // another link keeps the file
+				}
+			}
+		}
 		d.mu.Lock()
 		d.deletedFileCount++
 		if !cloudOnly {
-			d.deletedBytes += uint64(info.Size())
+			d.deletedBytes += freed
 		}
 		d.mu.Unlock()
 	}

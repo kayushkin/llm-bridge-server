@@ -17,6 +17,19 @@ type Scanner struct {
 	// Parallelism is how many directories it reads at once. Reading several
 	// at once is much faster on a solid-state drive.
 	Parallelism int
+	// StayOnDevice keeps the scan on the root's file system: a directory on
+	// another device (Windows' drives under /mnt in WSL, /proc) becomes a
+	// mount_point entry and is not read.
+	StayOnDevice bool
+	// CountDiskBlocks counts each file by the space it takes on disk rather
+	// than its length, and a file with several hard links once. Inside WSL a
+	// scan by length found 796 GB where Linux said 552 GB was in use
+	// (2026-11-24): sparse files and hard links.
+	CountDiskBlocks bool
+
+	rootDevice uint64
+	linksMu    sync.Mutex
+	linksSeen  map[[2]uint64]bool
 
 	slots        chan struct{}
 	entriesSeen  atomic.Int64
@@ -41,6 +54,14 @@ func (s *Scanner) Scan(root, name string) (*Node, error) {
 	if kind, _ := classify(info); kind != msg.DiskUsageEntryDirectory {
 		return nil, fmt.Errorf("%s is a %s, not a directory", root, kind)
 	}
+	if s.StayOnDevice {
+		device, ok := deviceOf(info)
+		if !ok {
+			return nil, fmt.Errorf("cannot tell which device %s is on, so the scan could not stay on it", root)
+		}
+		s.rootDevice = device
+	}
+	s.linksSeen = map[[2]uint64]bool{}
 	s.slots = make(chan struct{}, s.Parallelism-1)
 	return s.directory(root, name, info), nil
 }
@@ -62,6 +83,11 @@ func (s *Scanner) directory(path, name string, info fs.FileInfo) *Node {
 			continue // it went away between listing and reading
 		}
 		kind, cloudOnly := classify(entryInfo)
+		if kind == msg.DiskUsageEntryDirectory && s.StayOnDevice {
+			if device, ok := deviceOf(entryInfo); !ok || device != s.rootDevice {
+				kind = msg.DiskUsageEntryMountPoint
+			}
+		}
 		switch kind {
 		case msg.DiskUsageEntryDirectory:
 			childPath := filepath.Join(path, entry.Name())
@@ -77,12 +103,15 @@ func (s *Scanner) directory(path, name string, info fs.FileInfo) *Node {
 			}
 		case msg.DiskUsageEntryFile:
 			file := &Node{Name: entry.Name(), Kind: kind, ModifiedAtUnixSeconds: entryInfo.ModTime().Unix()}
-			if cloudOnly {
+			switch {
+			case cloudOnly:
 				file.CloudOnlyFileCount = 1
-			} else {
+			case s.CountDiskBlocks:
+				file.SizeBytes = s.diskBytesCountedOnce(entryInfo)
+			default:
 				file.SizeBytes = uint64(entryInfo.Size())
-				s.bytesCounted.Add(file.SizeBytes)
 			}
+			s.bytesCounted.Add(file.SizeBytes)
 			children[i] = file
 		default:
 			children[i] = &Node{Name: entry.Name(), Kind: kind, ModifiedAtUnixSeconds: entryInfo.ModTime().Unix()}
@@ -91,4 +120,23 @@ func (s *Scanner) directory(path, name string, info fs.FileInfo) *Node {
 	wait.Wait()
 	node.finishDirectory(children, s.Keep, unreadable)
 	return node
+}
+
+// diskBytesCountedOnce is the space a file takes on disk, or 0 for a hard
+// link to a file the scan has already counted.
+func (s *Scanner) diskBytesCountedOnce(info fs.FileInfo) uint64 {
+	bytes, linkKey, linkCount, ok := fileDiskBytes(info)
+	if !ok {
+		return uint64(info.Size())
+	}
+	if linkCount > 1 {
+		s.linksMu.Lock()
+		seen := s.linksSeen[linkKey]
+		s.linksSeen[linkKey] = true
+		s.linksMu.Unlock()
+		if seen {
+			return 0
+		}
+	}
+	return bytes
 }

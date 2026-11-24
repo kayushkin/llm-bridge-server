@@ -6,6 +6,7 @@
 //
 //	llm-bridge-disk-usage -version
 //	llm-bridge-disk-usage drives                 JSON list of fixed drives
+//	llm-bridge-disk-usage wsl-disks              JSON list of WSL distributions' disk files and their sizes
 //	llm-bridge-disk-usage scan C:                JSON tree on stdout; "progress <entries> <bytes>" lines on stderr
 //	llm-bridge-disk-usage check <path> <kind>    JSON verdict: may it be deleted?
 //	llm-bridge-disk-usage delete <path> <kind>   JSON verdict line, then, if allowed, deletes and prints a JSON result line;
@@ -37,7 +38,7 @@ const scanParallelism = 8
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage: llm-bridge-disk-usage -version | drives | scan <drive> | check <path> <kind> | delete <path> <kind>")
+		fail("usage: llm-bridge-disk-usage -version | drives | wsl-disks | scan <drive> | check <path> <kind> | delete <path> <kind>")
 	}
 	switch command := os.Args[1]; {
 	case command == "-version" && len(os.Args) == 2:
@@ -48,6 +49,12 @@ func main() {
 			fail("list drives: %v", err)
 		}
 		printJSON(drives)
+	case command == "wsl-disks" && len(os.Args) == 2:
+		disks, err := diskusage.WSLDisks()
+		if err != nil {
+			fail("list WSL disks: %v", err)
+		}
+		printJSON(disks)
 	case command == "scan" && len(os.Args) == 3:
 		scan(os.Args[2])
 	case command == "check" && len(os.Args) == 4:
