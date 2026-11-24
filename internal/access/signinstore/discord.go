@@ -17,8 +17,8 @@ package signinstore
 //
 // The app is the operator's Event-Manager Discord application, shared with
 // discord-signup-store. Discord sends a browser back only to an address
-// registered on the application, so SIGN_IN_STORE_DISCORD_REDIRECT_URL must be
-// in its OAuth2 redirect list. Only the user id is read (scope identify); the
+// registered on the application, so the configured redirect URL must be in
+// its OAuth2 redirect list. Only the user id is read (scope identify); the
 // access token is used once and dropped.
 //
 // Each round trip is an attempt row: the state Discord carries and a
@@ -39,6 +39,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 const (
@@ -90,26 +92,24 @@ type discordAttempt struct {
 	returnTo           string
 }
 
-func (s *Store) insertDiscordAttempt(stateHash, browserSecretHash, purpose, linkingPrincipalID, linkingSessionID, returnTo string) error {
+func (s *Store) insertDiscordAttempt(ctx context.Context, stateHash, browserSecretHash, purpose, linkingPrincipalID, linkingSessionID, returnTo string) error {
 	now := s.now()
-	_, err := s.db.Exec(`INSERT INTO discord_attempts (state_sha256, browser_secret_sha256, purpose, linking_principal_id, linking_session_id, return_to, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, stateHash, browserSecretHash, purpose, linkingPrincipalID, linkingSessionID, returnTo,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO discord_attempts (state_sha256, browser_secret_sha256, purpose, linking_principal_id, linking_session_id, return_to, created_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, stateHash, browserSecretHash, purpose, linkingPrincipalID, linkingSessionID, returnTo,
 		now.Unix(), now.Add(discordAttemptLifetime).Unix())
 	return err
 }
 
 // spendDiscordAttempt marks the attempt with this state spent and returns it,
-// or ErrNotFound when no unspent, unexpired attempt has it.
-func (s *Store) spendDiscordAttempt(stateHash string) (discordAttempt, error) {
-	transaction, err := s.db.Begin()
-	if err != nil {
-		return discordAttempt{}, err
-	}
-	defer transaction.Rollback()
+// or ErrNotFound when no unspent, unexpired attempt has it. It is one
+// conditional update, so two callbacks with the same state cannot both spend
+// it: the second finds consumed_at already set.
+func (s *Store) spendDiscordAttempt(ctx context.Context, stateHash string) (discordAttempt, error) {
 	now := s.now().Unix()
 	var attempt discordAttempt
-	err = transaction.QueryRow(`SELECT seq, browser_secret_sha256, purpose, linking_principal_id, linking_session_id, return_to FROM discord_attempts
-		WHERE state_sha256 = ? AND consumed_at = 0 AND expires_at > ?`, stateHash, now).
+	err := s.db.QueryRowContext(ctx, `UPDATE discord_attempts SET consumed_at = $1
+		WHERE state_sha256 = $2 AND consumed_at = 0 AND expires_at > $1
+		RETURNING seq, browser_secret_sha256, purpose, linking_principal_id, linking_session_id, return_to`, now, stateHash).
 		Scan(&attempt.seq, &attempt.browserSecretHash, &attempt.purpose, &attempt.linkingPrincipalID, &attempt.linkingSessionID, &attempt.returnTo)
 	if errors.Is(err, sql.ErrNoRows) {
 		return discordAttempt{}, ErrNotFound
@@ -117,41 +117,39 @@ func (s *Store) spendDiscordAttempt(stateHash string) (discordAttempt, error) {
 	if err != nil {
 		return discordAttempt{}, err
 	}
-	if _, err := transaction.Exec(`UPDATE discord_attempts SET consumed_at = ? WHERE seq = ?`, now, attempt.seq); err != nil {
-		return discordAttempt{}, err
-	}
-	return attempt, transaction.Commit()
+	return attempt, nil
 }
 
 // OpenSession records a session for a principal signed in some way other than
 // a link, and returns it with its cookie secret.
-func (s *Store) OpenSession(principalID, method string, facts SessionRequestFacts) (Session, string, error) {
-	transaction, err := s.db.Begin()
+func (s *Store) OpenSession(ctx context.Context, principalID, method string, facts SessionRequestFacts) (Session, string, error) {
+	var session Session
+	var secret string
+	err := postgresstorage.InTransaction(ctx, s.db, func(tx *sql.Tx) error {
+		var err error
+		session, secret, err = insertSession(ctx, tx, principalID, method, "", facts, s.now())
+		return err
+	})
 	if err != nil {
 		return Session{}, "", err
 	}
-	defer transaction.Rollback()
-	session, secret, err := insertSession(transaction, principalID, method, "", facts, s.now())
-	if err != nil {
-		return Session{}, "", err
-	}
-	return session, secret, transaction.Commit()
+	return session, secret, nil
 }
 
 // returnToOf checks where a round trip may end: an https address on the
 // cookie domain or a name under it. Anything else would make the callback an
 // open redirect. Empty means the sign-in page.
-func (s *server) returnToOf(raw string) (string, error) {
+func (h *Handlers) returnToOf(raw string) (string, error) {
 	if raw == "" {
-		return s.config.SignInPageURL, nil
+		return h.config.SignInPageURL, nil
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme != "https" || parsed.User != nil {
 		return "", fmt.Errorf("return_to %q must be an https address", raw)
 	}
 	host := parsed.Hostname()
-	if host != s.config.CookieDomain && !strings.HasSuffix(host, "."+s.config.CookieDomain) {
-		return "", fmt.Errorf("return_to %q is not on %s", raw, s.config.CookieDomain)
+	if host != h.config.CookieDomain && !strings.HasSuffix(host, "."+h.config.CookieDomain) {
+		return "", fmt.Errorf("return_to %q is not on %s", raw, h.config.CookieDomain)
 	}
 	return parsed.String(), nil
 }
@@ -168,13 +166,13 @@ func withQuery(address, name, value string) string {
 	return parsed.String()
 }
 
-// GET /discord/start?purpose=sign_in|link&return_to=
-func (s *server) startDiscord(w http.ResponseWriter, r *http.Request) {
-	if !s.config.Discord.configured() {
+// StartDiscord is GET /discord/start?purpose=sign_in|link&return_to=
+func (h *Handlers) StartDiscord(w http.ResponseWriter, r *http.Request) {
+	if !h.config.Discord.configured() {
 		writeError(w, http.StatusServiceUnavailable, "discord_not_configured", "Sign in with Discord is not set up on this server")
 		return
 	}
-	returnTo, err := s.returnToOf(r.URL.Query().Get("return_to"))
+	returnTo, err := h.returnToOf(r.URL.Query().Get("return_to"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_return_to", err.Error())
 		return
@@ -187,7 +185,7 @@ func (s *server) startDiscord(w http.ResponseWriter, r *http.Request) {
 	switch purpose {
 	case discordPurposeSignIn:
 	case discordPurposeLink:
-		session, principal, status, code := s.liveSessionOf(r)
+		session, principal, status, code := h.liveSessionOf(r)
 		if status != http.StatusOK {
 			writeError(w, status, code, "sign in first, then link your Discord account")
 			return
@@ -207,26 +205,26 @@ func (s *server) startDiscord(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
 		return
 	}
-	if err := s.store.insertDiscordAttempt(stateHash, browserSecretHash, purpose, linkingPrincipalID, linkingSessionID, returnTo); err != nil {
+	if err := h.store.insertDiscordAttempt(r.Context(), stateHash, browserSecretHash, purpose, linkingPrincipalID, linkingSessionID, returnTo); err != nil {
 		writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: discordAttemptCookieName, Value: browserSecret, Path: "/", MaxAge: int(discordAttemptLifetime / time.Second),
 		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
-	query := url.Values{"client_id": {s.config.Discord.ApplicationID}, "redirect_uri": {s.config.Discord.RedirectURL},
+	query := url.Values{"client_id": {h.config.Discord.ApplicationID}, "redirect_uri": {h.config.Discord.RedirectURL},
 		"response_type": {"code"}, "scope": {"identify"}, "state": {state}}
 	http.Redirect(w, r, discordAuthorizeURL+"?"+query.Encode(), http.StatusFound)
 }
 
-// GET /discord/callback?code=&state= (or ?error=)
-func (s *server) finishDiscord(w http.ResponseWriter, r *http.Request) {
+// FinishDiscord is GET /discord/callback?code=&state= (or ?error=)
+func (h *Handlers) FinishDiscord(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: discordAttemptCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	query := r.URL.Query()
-	attempt, err := s.store.spendDiscordAttempt(hashSecret(query.Get("state")))
+	attempt, err := h.store.spendDiscordAttempt(r.Context(), hashSecret(query.Get("state")))
 	if err != nil {
 		// No attempt means no trusted return_to: go to the sign-in page.
 		log.Printf("[discord] callback with no usable attempt: %v", err)
-		http.Redirect(w, r, withQuery(s.config.SignInPageURL, "sign_in_error", discordErrorAttempt), http.StatusFound)
+		http.Redirect(w, r, withQuery(h.config.SignInPageURL, "sign_in_error", discordErrorAttempt), http.StatusFound)
 		return
 	}
 	fail := func(code string, detail error) {
@@ -242,16 +240,16 @@ func (s *server) finishDiscord(w http.ResponseWriter, r *http.Request) {
 		fail(discordErrorDenied, fmt.Errorf("discord answered error %q", query.Get("error")))
 		return
 	}
-	discordUserID, err := s.discordUserIDOfCode(r.Context(), query.Get("code"))
+	discordUserID, err := h.discordUserIDOfCode(r.Context(), query.Get("code"))
 	if err != nil {
 		fail(discordErrorUnavailable, err)
 		return
 	}
 	if attempt.purpose == discordPurposeLink {
-		s.linkDiscord(w, r, attempt, discordUserID, fail)
+		h.linkDiscord(w, r, attempt, discordUserID, fail)
 		return
 	}
-	principal, err := s.directory.PrincipalOfIdentity(r.Context(), "discord", "", discordUserID)
+	principal, err := h.directory.PrincipalOfIdentity(r.Context(), "discord", "", discordUserID)
 	if errors.Is(err, ErrNotFound) {
 		fail(discordErrorNotLinked, fmt.Errorf("no principal has Discord user %s", discordUserID))
 		return
@@ -264,27 +262,27 @@ func (s *server) finishDiscord(w http.ResponseWriter, r *http.Request) {
 		fail(discordErrorMayNotSignIn, err)
 		return
 	}
-	session, secret, err := s.store.OpenSession(principal.ID, MethodDiscord, SessionRequestFacts{UserAgent: r.UserAgent(), RemoteAddress: clientAddress(r)})
+	session, secret, err := h.store.OpenSession(r.Context(), principal.ID, MethodDiscord, SessionRequestFacts{UserAgent: r.UserAgent(), RemoteAddress: clientAddress(r)})
 	if err != nil {
 		fail(discordErrorUnavailable, err)
 		return
 	}
-	s.setSessionCookie(w, secret, session.ExpiresAt)
+	h.setSessionCookie(w, secret, session.ExpiresAt)
 	log.Printf("[discord] %s (%s) signed in as %s with Discord user %s", principal.ID, principal.DisplayName, session.ID, discordUserID)
 	http.Redirect(w, r, attempt.returnTo, http.StatusFound)
 }
 
 // linkDiscord binds the proven Discord account to the principal that started
 // the link, if that session is still live.
-func (s *server) linkDiscord(w http.ResponseWriter, r *http.Request, attempt discordAttempt, discordUserID string, fail func(string, error)) {
-	session, err := s.store.GetSession(attempt.linkingSessionID)
-	if err != nil || session.RevokedAt != 0 || s.store.now().Unix() >= session.ExpiresAt || session.PrincipalID != attempt.linkingPrincipalID {
+func (h *Handlers) linkDiscord(w http.ResponseWriter, r *http.Request, attempt discordAttempt, discordUserID string, fail func(string, error)) {
+	session, err := h.store.GetSession(r.Context(), attempt.linkingSessionID)
+	if err != nil || session.RevokedAt != 0 || h.store.now().Unix() >= session.ExpiresAt || session.PrincipalID != attempt.linkingPrincipalID {
 		fail(discordErrorSignedOut, fmt.Errorf("session %s that started the link is not live: %v", attempt.linkingSessionID, err))
 		return
 	}
 	note := fmt.Sprintf("linked by the person themselves while signed in as %s, proving the Discord account through OAuth", session.ID)
-	err = s.directory.LinkIdentity(r.Context(), attempt.linkingPrincipalID, "discord", "", discordUserID, attempt.linkingPrincipalID, note)
-	if errors.Is(err, errIdentityAlreadyBound) {
+	err = h.directory.LinkIdentity(r.Context(), attempt.linkingPrincipalID, "discord", "", discordUserID, attempt.linkingPrincipalID, note)
+	if errors.Is(err, ErrIdentityAlreadyBound) {
 		fail(discordErrorAlreadyLinked, err)
 		return
 	}
@@ -298,22 +296,22 @@ func (s *server) linkDiscord(w http.ResponseWriter, r *http.Request, attempt dis
 
 // discordUserIDOfCode trades an authorization code for the Discord user id.
 // The access token is used for that one read and never kept.
-func (s *server) discordUserIDOfCode(ctx context.Context, code string) (string, error) {
+func (h *Handlers) discordUserIDOfCode(ctx context.Context, code string) (string, error) {
 	if code == "" {
 		return "", errors.New("discord sent no code")
 	}
-	clientSecret, err := s.directory.resolveCredential(ctx, s.config.Discord.ClientSecretCredentialID, "trade a Sign in with Discord code")
+	clientSecret, err := h.directory.resolveCredential(ctx, h.config.Discord.ClientSecretCredentialID, "trade a Sign in with Discord code")
 	if err != nil {
 		return "", err
 	}
-	form := url.Values{"client_id": {s.config.Discord.ApplicationID}, "client_secret": {clientSecret}, "grant_type": {"authorization_code"},
-		"code": {code}, "redirect_uri": {s.config.Discord.RedirectURL}}
+	form := url.Values{"client_id": {h.config.Discord.ApplicationID}, "client_secret": {clientSecret}, "grant_type": {"authorization_code"},
+		"code": {code}, "redirect_uri": {h.config.Discord.RedirectURL}}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, discordAPIBase+"/oauth2/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := s.directory.client.Do(request)
+	response, err := h.directory.client.Do(request)
 	if err != nil {
 		return "", fmt.Errorf("discord token exchange: %w", err)
 	}
@@ -331,7 +329,7 @@ func (s *server) discordUserIDOfCode(ctx context.Context, code string) (string, 
 	var user struct {
 		ID string `json:"id"`
 	}
-	if err := s.directory.getJSON(ctx, discordAPIBase+"/users/@me", map[string]string{"Authorization": "Bearer " + token.AccessToken}, &user); err != nil {
+	if err := h.directory.getJSON(ctx, discordAPIBase+"/users/@me", map[string]string{"Authorization": "Bearer " + token.AccessToken}, &user); err != nil {
 		return "", fmt.Errorf("discord /users/@me: %w", err)
 	}
 	if user.ID == "" {

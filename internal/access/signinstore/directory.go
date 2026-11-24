@@ -14,6 +14,11 @@ import (
 	"time"
 )
 
+// authStoreApplicationName is how auth-store's audit trail names this store
+// when it reads a credential. It keeps the standalone service's name, so the
+// audit and any grant auth-store keeps per application stay the same.
+const authStoreApplicationName = "sign-in-store"
+
 // errNotFoundUpstream is another store answering 404.
 var errNotFoundUpstream = errors.New("not found upstream")
 
@@ -63,17 +68,33 @@ var ErrMayNotSignIn = errors.New("may not sign in")
 // few seconds of playback, so asking every time would be thousands of reads.
 const principalCacheLifetime = 30 * time.Second
 
-// Directory reads principal-store and people-store, and sends through
-// multichat.
+// PrincipalDirectory is principal-store as this store needs it, answered in
+// process by the server that mounts the routes. Principal and
+// PrincipalOfIdentity return an error wrapping ErrNotFound for a principal
+// principal-store does not have or an identity bound to nobody; LinkIdentity
+// returns one wrapping ErrIdentityAlreadyBound when the identity is bound
+// already, to anyone. Any other error is principal-store failing to answer.
+type PrincipalDirectory interface {
+	Principal(ctx context.Context, principalID string) (Principal, error)
+	PrincipalOfIdentity(ctx context.Context, provider, tenantID, subject string) (Principal, error)
+	LinkIdentity(ctx context.Context, principalID, provider, tenantID, subject, linkedBy, note string) error
+}
+
+// ErrIdentityAlreadyBound is principal-store refusing a link because the
+// identity is bound to someone already.
+var ErrIdentityAlreadyBound = errors.New("identity already bound")
+
+// Directory reads principal-store through a PrincipalDirectory, and
+// people-store, auth-store and multichat over HTTP.
 type Directory struct {
-	principalStoreURL string
-	peopleStoreURL    string
-	multichatURL      string
-	authStoreURL      string
-	authStoreToken    string
-	multichatCredID   string
-	client            *http.Client
-	now               func() time.Time
+	principals      PrincipalDirectory
+	peopleStoreURL  string
+	multichatURL    string
+	authStoreURL    string
+	authStoreToken  string
+	multichatCredID string
+	client          *http.Client
+	now             func() time.Time
 
 	cacheMutex sync.Mutex
 	cache      map[string]cachedPrincipal
@@ -84,9 +105,8 @@ type cachedPrincipal struct {
 	readAt    time.Time
 }
 
-// DirectoryConfig is where the other services are.
+// DirectoryConfig is where the services outside this process are.
 type DirectoryConfig struct {
-	PrincipalStoreURL     string
 	PeopleStoreURL        string
 	MultichatURL          string
 	AuthStoreURL          string
@@ -94,11 +114,11 @@ type DirectoryConfig struct {
 	MultichatCredentialID string
 }
 
-// NewDirectory builds a Directory.
-func NewDirectory(config DirectoryConfig) *Directory {
+// NewDirectory builds a Directory over principals and the services config names.
+func NewDirectory(principals PrincipalDirectory, config DirectoryConfig) *Directory {
 	trim := func(raw string) string { return strings.TrimRight(raw, "/") }
 	return &Directory{
-		principalStoreURL: trim(config.PrincipalStoreURL), peopleStoreURL: trim(config.PeopleStoreURL),
+		principals: principals, peopleStoreURL: trim(config.PeopleStoreURL),
 		multichatURL: trim(config.MultichatURL), authStoreURL: trim(config.AuthStoreURL),
 		authStoreToken: config.AuthStoreToken, multichatCredID: config.MultichatCredentialID,
 		client: &http.Client{Timeout: 15 * time.Second}, now: time.Now, cache: map[string]cachedPrincipal{},
@@ -143,13 +163,9 @@ func (d *Directory) Principal(ctx context.Context, principalID string) (Principa
 	if known && d.now().Sub(cached.readAt) < principalCacheLifetime {
 		return cached.principal, nil
 	}
-	var principal Principal
-	err := d.getJSON(ctx, d.principalStoreURL+"/principals/"+url.PathEscape(principalID), nil, &principal)
-	if errors.Is(err, errNotFoundUpstream) {
-		return Principal{}, fmt.Errorf("%w: principal-store has no %s", ErrNotFound, principalID)
-	}
+	principal, err := d.principals.Principal(ctx, principalID)
 	if err != nil {
-		return Principal{}, fmt.Errorf("principal-store: %w", err)
+		return Principal{}, err
 	}
 	if principal.ID != principalID || principal.Kind == "" {
 		return Principal{}, fmt.Errorf("principal-store answered for %q kind %q, not %s", principal.ID, principal.Kind, principalID)
@@ -223,7 +239,7 @@ func (d *Directory) resolveCredential(ctx context.Context, credentialID, reason 
 		AccessToken string `json:"access_token"`
 		APIKey      string `json:"api_key"`
 	}
-	headers := map[string]string{"Authorization": "Bearer " + d.authStoreToken, "X-Auth-App": ServiceName, "X-Auth-Reason": reason}
+	headers := map[string]string{"Authorization": "Bearer " + d.authStoreToken, "X-Auth-App": authStoreApplicationName, "X-Auth-Reason": reason}
 	if err := d.getJSON(ctx, d.authStoreURL+"/api/credentials/"+url.PathEscape(credentialID)+"/resolve", headers, &resolved); err != nil {
 		return "", fmt.Errorf("auth-store credential %s: %w", credentialID, err)
 	}
@@ -242,54 +258,22 @@ func (d *Directory) multichatToken(ctx context.Context) (string, error) {
 }
 
 // PrincipalOfIdentity is the principal an outside identity is bound to in
-// principal-store, or ErrNotFound when none is.
+// principal-store, or ErrNotFound when none is. It is never cached: a
+// sign-in reads the binding as it is now.
 func (d *Directory) PrincipalOfIdentity(ctx context.Context, provider, tenantID, subject string) (Principal, error) {
-	var resolution struct {
-		Principal Principal `json:"principal"`
-	}
-	query := url.Values{"provider": {provider}, "tenant_id": {tenantID}, "subject": {subject}}
-	err := d.getJSON(ctx, d.principalStoreURL+"/identity-bindings/resolve?"+query.Encode(), nil, &resolution)
-	if errors.Is(err, errNotFoundUpstream) {
-		return Principal{}, fmt.Errorf("%w: no %s identity %s is bound", ErrNotFound, provider, subject)
-	}
+	principal, err := d.principals.PrincipalOfIdentity(ctx, provider, tenantID, subject)
 	if err != nil {
-		return Principal{}, fmt.Errorf("principal-store: %w", err)
+		return Principal{}, err
 	}
-	if resolution.Principal.ID == "" {
+	if principal.ID == "" {
 		return Principal{}, fmt.Errorf("principal-store resolved %s identity %s to no principal", provider, subject)
 	}
-	return resolution.Principal, nil
+	return principal, nil
 }
-
-// errIdentityAlreadyBound is principal-store refusing a link because the
-// identity is bound to someone already.
-var errIdentityAlreadyBound = errors.New("identity already bound")
 
 // LinkIdentity binds an outside identity to a principal in principal-store.
 func (d *Directory) LinkIdentity(ctx context.Context, principalID, provider, tenantID, subject, linkedBy, note string) error {
-	payload, err := json.Marshal(map[string]string{"principal_id": principalID, "provider": provider, "tenant_id": tenantID,
-		"subject": subject, "linked_by": linkedBy, "note": note})
-	if err != nil {
-		return err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, d.principalStoreURL+"/identity-bindings", bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := d.client.Do(request)
-	if err != nil {
-		return fmt.Errorf("principal-store: %w", err)
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-	switch {
-	case response.StatusCode == http.StatusConflict:
-		return fmt.Errorf("%w: %s", errIdentityAlreadyBound, strings.TrimSpace(string(body)))
-	case response.StatusCode/100 != 2:
-		return fmt.Errorf("principal-store POST /identity-bindings answered %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return nil
+	return d.principals.LinkIdentity(ctx, principalID, provider, tenantID, subject, linkedBy, note)
 }
 
 // directRoomWith finds the one-to-one conversation with a bridged chat

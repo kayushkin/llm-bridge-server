@@ -1,7 +1,7 @@
 package signinstore
 
 import (
-	"crypto/subtle"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,10 +19,6 @@ const (
 	// SessionCookieName is the cookie that carries a session's secret. It is
 	// set for the whole domain, HttpOnly, Secure and SameSite=Lax.
 	SessionCookieName = "sign_in_session"
-	// ServiceTokenHeader carries the service token on the administrator routes.
-	ServiceTokenHeader = "X-Sign-In-Store-Service-Token"
-	// PrincipalIDHeader names the administrator a service-token call acts for.
-	PrincipalIDHeader = "X-Principal-Id"
 	// SignedInPrincipalHeader is set on a 200 from GET /session, so a gate
 	// such as Caddy's forward_auth can pass who it is on without reading JSON.
 	SignedInPrincipalHeader = "X-Signed-In-Principal-Id"
@@ -36,45 +32,48 @@ const (
 	maximumListLimit    = 1000
 )
 
-// ServerConfig is what the routes need besides the store and the directory.
-type ServerConfig struct {
-	ServiceToken  string
+// HandlersConfig is what the routes need besides the store and the directory.
+type HandlersConfig struct {
+	// SignInPageURL is the page a link opens: a link is this URL, "#" and the
+	// link's secret.
 	SignInPageURL string
-	CookieDomain  string
-	Discord       DiscordConfig
+	// CookieDomain is the domain the session cookie is set for, with every
+	// name under it.
+	CookieDomain string
+	Discord      DiscordConfig
 }
 
-type server struct {
+// Handlers answers sign-in-store's routes. The server that mounts them
+// decides who reaches each one; the browser routes check their own cookie or
+// secret, and the administrator routes read the administrator from the
+// request context (ContextWithAdministrator), never from a header.
+type Handlers struct {
 	store     *Store
 	directory *Directory
-	config    ServerConfig
+	config    HandlersConfig
 
 	limitMutex   sync.Mutex
 	requestTimes map[string][]time.Time
 }
 
-// RegisterHandlers mounts every route. It panics on a short service token, at
-// boot, because a short token would let a caller guess its way to every
-// session.
-func RegisterHandlers(mux *http.ServeMux, store *Store, directory *Directory, config ServerConfig) {
-	if len(config.ServiceToken) < MinimumServiceTokenLength {
-		panic(fmt.Sprintf("sign-in-store: the service token must be at least %d characters", MinimumServiceTokenLength))
-	}
-	s := &server{store: store, directory: directory, config: config, requestTimes: map[string][]time.Time{}}
-	mux.HandleFunc("GET /health", s.health)
-	// What a browser reaches, through nginx.
-	mux.HandleFunc("POST /link-requests", s.requestLink)
-	mux.HandleFunc("POST /redeem", s.redeem)
-	mux.HandleFunc("GET /session", s.currentSession)
-	mux.HandleFunc("POST /sign-out", s.signOut)
-	mux.HandleFunc("GET /discord/start", s.startDiscord)
-	mux.HandleFunc("GET /discord/callback", s.finishDiscord)
-	// The operator's, through dash with the service token.
-	mux.HandleFunc("POST /sign-in-links", s.administrator(s.makeLink))
-	mux.HandleFunc("GET /sign-in-links", s.administrator(s.listLinks))
-	mux.HandleFunc("GET /sessions", s.administrator(s.listSessions))
-	mux.HandleFunc("POST /sessions/{id}/revoke", s.administrator(s.revokeSession))
-	mux.HandleFunc("POST /principals/{id}/discord-messages", s.administrator(s.sendDiscordMessage))
+// NewHandlers returns the routes over store and directory.
+func NewHandlers(store *Store, directory *Directory, config HandlersConfig) *Handlers {
+	return &Handlers{store: store, directory: directory, config: config, requestTimes: map[string][]time.Time{}}
+}
+
+type administratorContextKey struct{}
+
+// ContextWithAdministrator says which principal an administrator route acts
+// for. The server that mounts the routes sets it from a credential it has
+// verified; the route checks once more with principal-store that the
+// principal is an enabled administrator, and records the id on what it does.
+func ContextWithAdministrator(ctx context.Context, principalID string) context.Context {
+	return context.WithValue(ctx, administratorContextKey{}, principalID)
+}
+
+func administratorOf(ctx context.Context) string {
+	principalID, _ := ctx.Value(administratorContextKey{}).(string)
+	return principalID
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -98,7 +97,8 @@ func decodeBody(w http.ResponseWriter, r *http.Request, target any) bool {
 	return true
 }
 
-func (s *server) health(w http.ResponseWriter, r *http.Request) {
+// Health is GET /health.
+func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -119,24 +119,24 @@ func clientAddress(r *http.Request) string {
 }
 
 // allowRequest limits link requests to linkRequestsPerHour per key.
-func (s *server) allowRequest(keys ...string) bool {
-	s.limitMutex.Lock()
-	defer s.limitMutex.Unlock()
+func (h *Handlers) allowRequest(keys ...string) bool {
+	h.limitMutex.Lock()
+	defer h.limitMutex.Unlock()
 	cutoff := time.Now().Add(-time.Hour)
 	for _, key := range keys {
-		recent := s.requestTimes[key][:0]
-		for _, at := range s.requestTimes[key] {
+		recent := h.requestTimes[key][:0]
+		for _, at := range h.requestTimes[key] {
 			if at.After(cutoff) {
 				recent = append(recent, at)
 			}
 		}
-		s.requestTimes[key] = recent
+		h.requestTimes[key] = recent
 		if len(recent) >= linkRequestsPerHour {
 			return false
 		}
 	}
 	for _, key := range keys {
-		s.requestTimes[key] = append(s.requestTimes[key], time.Now())
+		h.requestTimes[key] = append(h.requestTimes[key], time.Now())
 	}
 	return true
 }
@@ -164,8 +164,8 @@ func chatAccountPrefixesFor(kind string) []string {
 	return []string{"@gmessages_", "@whatsapp_", "@signal_"}
 }
 
-// POST /link-requests {"handle": "…"}: always the same answer.
-func (s *server) requestLink(w http.ResponseWriter, r *http.Request) {
+// RequestLink is POST /link-requests {"handle": "…"}: always the same answer.
+func (h *Handlers) RequestLink(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Handle string `json:"handle"`
 	}
@@ -177,38 +177,38 @@ func (s *server) requestLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind, value := handleKind(request.Handle)
-	if !s.allowRequest("address:"+clientAddress(r), "handle:"+kind+":"+strings.ToLower(value)) {
+	if !h.allowRequest("address:"+clientAddress(r), "handle:"+kind+":"+strings.ToLower(value)) {
 		writeError(w, http.StatusTooManyRequests, "too_many_requests", "Too many sign-in requests. Try again in an hour.")
 		return
 	}
-	if err := s.sendLinkForHandle(r, kind, value); err != nil {
+	if err := h.sendLinkForHandle(r, kind, value); err != nil {
 		// Logged, never shown: the answer must not say whether the handle has an account.
 		log.Printf("[link-request] %s %q: %v", kind, value, err)
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": linkRequestAnswer})
 }
 
-func (s *server) sendLinkForHandle(r *http.Request, kind, value string) error {
-	person, err := s.directory.PersonOwningHandle(r.Context(), kind, value)
+func (h *Handlers) sendLinkForHandle(r *http.Request, kind, value string) error {
+	person, err := h.directory.PersonOwningHandle(r.Context(), kind, value)
 	if err != nil {
 		return err
 	}
 	if person == nil || person.PrincipalID == "" {
 		return errors.New("no person with a principal owns this handle")
 	}
-	principal, err := s.directory.Principal(r.Context(), person.PrincipalID)
+	principal, err := h.directory.Principal(r.Context(), person.PrincipalID)
 	if err != nil {
 		return err
 	}
 	if err := principal.refusalToSignIn(); err != nil {
 		return err
 	}
-	link, secret, err := s.store.MakeSignInLink(principal.ID, kind, "")
+	link, secret, err := h.store.MakeSignInLink(r.Context(), principal.ID, kind, "")
 	if err != nil {
 		return err
 	}
-	message := "Your sign-in link for kayushkin.com. It works once, within 7 days: " + s.config.SignInPageURL + "#" + secret
-	sent, err := s.directory.SendToPersonsChat(r.Context(), person, chatAccountPrefixesFor(kind), message)
+	message := "Your sign-in link for kayushkin.com. It works once, within 7 days: " + h.config.SignInPageURL + "#" + secret
+	sent, err := h.directory.SendToPersonsChat(r.Context(), person, chatAccountPrefixesFor(kind), message)
 	if err != nil {
 		return fmt.Errorf("%s made for %s, and sending it failed: %w", link.ID, principal.ID, err)
 	}
@@ -236,8 +236,8 @@ func answerFor(session Session, principal Principal) sessionAnswer {
 		GroupIDs: principal.GroupIDs(), Method: session.Method, ExpiresAt: session.ExpiresAt}
 }
 
-func (s *server) setSessionCookie(w http.ResponseWriter, secret string, expiresAt int64) {
-	cookie := &http.Cookie{Name: SessionCookieName, Value: secret, Path: "/", Domain: s.config.CookieDomain,
+func (h *Handlers) setSessionCookie(w http.ResponseWriter, secret string, expiresAt int64) {
+	cookie := &http.Cookie{Name: SessionCookieName, Value: secret, Path: "/", Domain: h.config.CookieDomain,
 		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}
 	if secret == "" {
 		cookie.MaxAge = -1
@@ -247,8 +247,8 @@ func (s *server) setSessionCookie(w http.ResponseWriter, secret string, expiresA
 	http.SetCookie(w, cookie)
 }
 
-// POST /redeem {"secret": "…"}: spends a link and signs the browser in.
-func (s *server) redeem(w http.ResponseWriter, r *http.Request) {
+// Redeem is POST /redeem {"secret": "…"}: spends a link and signs the browser in.
+func (h *Handlers) Redeem(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Secret string `json:"secret"`
 	}
@@ -260,11 +260,11 @@ func (s *server) redeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var principal Principal
-	session, secret, err := s.store.RedeemSignInLink(request.Secret,
+	session, secret, err := h.store.RedeemSignInLink(r.Context(), request.Secret,
 		SessionRequestFacts{UserAgent: r.UserAgent(), RemoteAddress: clientAddress(r)},
 		func(principalID string) error {
 			var lookupErr error
-			principal, lookupErr = s.directory.Principal(r.Context(), principalID)
+			principal, lookupErr = h.directory.Principal(r.Context(), principalID)
 			if lookupErr != nil {
 				return lookupErr
 			}
@@ -282,7 +282,7 @@ func (s *server) redeem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "could_not_sign_in", err.Error())
 		return
 	}
-	s.setSessionCookie(w, secret, session.ExpiresAt)
+	h.setSessionCookie(w, secret, session.ExpiresAt)
 	log.Printf("[redeem] %s (%s) signed in as %s through %s", principal.ID, principal.DisplayName, session.ID, session.SignInLinkID)
 	writeJSON(w, http.StatusOK, answerFor(session, principal))
 }
@@ -290,12 +290,12 @@ func (s *server) redeem(w http.ResponseWriter, r *http.Request) {
 // liveSessionOf returns the request's session and its principal, or a status
 // and code saying why there is none. The principal is read from
 // principal-store (cached 30 s), so a disabled person is signed out.
-func (s *server) liveSessionOf(r *http.Request) (Session, Principal, int, string) {
+func (h *Handlers) liveSessionOf(r *http.Request) (Session, Principal, int, string) {
 	cookie, err := r.Cookie(SessionCookieName)
 	if err != nil || cookie.Value == "" {
 		return Session{}, Principal{}, http.StatusUnauthorized, "not_signed_in"
 	}
-	session, err := s.store.SessionBySecret(cookie.Value)
+	session, err := h.store.SessionBySecret(r.Context(), cookie.Value)
 	if errors.Is(err, ErrNotFound) {
 		return Session{}, Principal{}, http.StatusUnauthorized, "session_unknown"
 	}
@@ -305,10 +305,10 @@ func (s *server) liveSessionOf(r *http.Request) (Session, Principal, int, string
 	if session.RevokedAt != 0 {
 		return Session{}, Principal{}, http.StatusUnauthorized, "session_revoked"
 	}
-	if s.store.now().Unix() >= session.ExpiresAt {
+	if h.store.now().Unix() >= session.ExpiresAt {
 		return Session{}, Principal{}, http.StatusUnauthorized, "session_expired"
 	}
-	principal, err := s.directory.Principal(r.Context(), session.PrincipalID)
+	principal, err := h.directory.Principal(r.Context(), session.PrincipalID)
 	if errors.Is(err, ErrNotFound) {
 		return Session{}, Principal{}, http.StatusUnauthorized, "principal_unknown"
 	}
@@ -319,16 +319,16 @@ func (s *server) liveSessionOf(r *http.Request) (Session, Principal, int, string
 	if principal.refusalToSignIn() != nil {
 		return Session{}, Principal{}, http.StatusUnauthorized, "principal_may_not_sign_in"
 	}
-	if err := s.store.TouchSession(session); err != nil {
+	if err := h.store.TouchSession(r.Context(), session); err != nil {
 		log.Printf("ERROR: [session] touch %s: %v", session.ID, err)
 	}
 	return session, principal, http.StatusOK, ""
 }
 
-// GET /session: who the browser's cookie signs in as. Apps and Caddy's
+// CurrentSession is GET /session: who the browser's cookie signs in as. Apps and Caddy's
 // forward_auth ask it with the browser's cookies.
-func (s *server) currentSession(w http.ResponseWriter, r *http.Request) {
-	session, principal, status, code := s.liveSessionOf(r)
+func (h *Handlers) CurrentSession(w http.ResponseWriter, r *http.Request) {
+	session, principal, status, code := h.liveSessionOf(r)
 	if status != http.StatusOK {
 		writeError(w, status, code, "no live session")
 		return
@@ -337,51 +337,71 @@ func (s *server) currentSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, answerFor(session, principal))
 }
 
-// POST /sign-out: revokes the browser's session and clears the cookie. A
+// SignOut is POST /sign-out: revokes the browser's session and clears the cookie. A
 // browser with no live session gets its cookie cleared all the same.
-func (s *server) signOut(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) SignOut(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(SessionCookieName); err == nil && cookie.Value != "" {
-		if session, err := s.store.SessionBySecret(cookie.Value); err == nil && session.RevokedAt == 0 {
-			if _, err := s.store.RevokeSession(session.ID, session.PrincipalID, "signed out"); err != nil && !errors.Is(err, ErrAlreadyRevoked) {
+		if session, err := h.store.SessionBySecret(r.Context(), cookie.Value); err == nil && session.RevokedAt == 0 {
+			if _, err := h.store.RevokeSession(r.Context(), session.ID, session.PrincipalID, "signed out"); err != nil && !errors.Is(err, ErrAlreadyRevoked) {
 				writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
 				return
 			}
 		}
 	}
-	s.setSessionCookie(w, "", 0)
+	h.setSessionCookie(w, "", 0)
 	writeJSON(w, http.StatusOK, map[string]bool{"signed_out": true})
 }
 
-// administrator wraps a route the operator calls through dash: the service
-// token, and X-Principal-Id naming an enabled administrator, whose id the
-// handler records.
-func (s *server) administrator(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		presented := r.Header.Get(ServiceTokenHeader)
-		if presented == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(s.config.ServiceToken)) != 1 {
-			writeError(w, http.StatusUnauthorized, "service_token_required", "this route takes "+ServiceTokenHeader)
-			return
-		}
-		administratorID := r.Header.Get(PrincipalIDHeader)
-		if administratorID == "" {
-			writeError(w, http.StatusForbidden, "administrator_required", "send "+PrincipalIDHeader+" naming the administrator this change is recorded as")
-			return
-		}
-		principal, err := s.directory.Principal(r.Context(), administratorID)
-		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusForbidden, "administrator_required", err.Error())
-			return
-		}
-		if err != nil {
-			writeError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
-			return
-		}
-		if !principal.IsAdministrator || principal.DisabledAt != 0 {
-			writeError(w, http.StatusForbidden, "administrator_required", administratorID+" is not an enabled administrator")
-			return
-		}
-		next(w, r, administratorID)
+// asAdministrator runs next for the administrator the request context names,
+// after checking with principal-store that it is an enabled administrator.
+// No administrator in the context is 403: the change has nobody to be
+// recorded as.
+func (h *Handlers) asAdministrator(w http.ResponseWriter, r *http.Request, next func(http.ResponseWriter, *http.Request, string)) {
+	administratorID := administratorOf(r.Context())
+	if administratorID == "" {
+		writeError(w, http.StatusForbidden, "administrator_required", "this route acts for an administrator, and the request names none")
+		return
 	}
+	principal, err := h.directory.Principal(r.Context(), administratorID)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusForbidden, "administrator_required", err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
+		return
+	}
+	if !principal.IsAdministrator || principal.DisabledAt != 0 {
+		writeError(w, http.StatusForbidden, "administrator_required", administratorID+" is not an enabled administrator")
+		return
+	}
+	next(w, r, administratorID)
+}
+
+// MakeLink is POST /sign-in-links, an administrator route.
+func (h *Handlers) MakeLink(w http.ResponseWriter, r *http.Request) {
+	h.asAdministrator(w, r, h.makeLink)
+}
+
+// ListLinks is GET /sign-in-links, an administrator route.
+func (h *Handlers) ListLinks(w http.ResponseWriter, r *http.Request) {
+	h.asAdministrator(w, r, h.listLinks)
+}
+
+// ListSessions is GET /sessions, an administrator route.
+func (h *Handlers) ListSessions(w http.ResponseWriter, r *http.Request) {
+	h.asAdministrator(w, r, h.listSessions)
+}
+
+// RevokeSession is POST /sessions/{id}/revoke, an administrator route.
+func (h *Handlers) RevokeSession(w http.ResponseWriter, r *http.Request) {
+	h.asAdministrator(w, r, h.revokeSession)
+}
+
+// SendDiscordMessage is POST /principals/{id}/discord-messages, an
+// administrator route.
+func (h *Handlers) SendDiscordMessage(w http.ResponseWriter, r *http.Request) {
+	h.asAdministrator(w, r, h.sendDiscordMessage)
 }
 
 // POST /sign-in-links {"principal_id": "…"}: the operator makes a link to
@@ -392,7 +412,7 @@ func (s *server) administrator(next func(http.ResponseWriter, *http.Request, str
 // Discord account. A site uses it to pass on something one member sent
 // another; the body must say who it is from. 404 when no person points at the
 // principal, 409 when they have no one-to-one Discord chat here.
-func (s *server) sendDiscordMessage(w http.ResponseWriter, r *http.Request, administratorID string) {
+func (h *Handlers) sendDiscordMessage(w http.ResponseWriter, r *http.Request, administratorID string) {
 	principalID := r.PathValue("id")
 	var request struct {
 		Body string `json:"body"`
@@ -404,14 +424,14 @@ func (s *server) sendDiscordMessage(w http.ResponseWriter, r *http.Request, admi
 		writeError(w, http.StatusBadRequest, "body_required", `send {"body": "<the message>"}`)
 		return
 	}
-	if _, err := s.directory.Principal(r.Context(), principalID); errors.Is(err, ErrNotFound) {
+	if _, err := h.directory.Principal(r.Context(), principalID); errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, "unknown_principal", err.Error())
 		return
 	} else if err != nil {
 		writeError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
 		return
 	}
-	person, err := s.directory.PersonPointingAtPrincipal(r.Context(), principalID)
+	person, err := h.directory.PersonPointingAtPrincipal(r.Context(), principalID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "people_store_unavailable", err.Error())
 		return
@@ -420,7 +440,7 @@ func (s *server) sendDiscordMessage(w http.ResponseWriter, r *http.Request, admi
 		writeError(w, http.StatusNotFound, "no_person", "no person in people-store points at "+principalID)
 		return
 	}
-	sent, err := s.directory.SendToPersonsChat(r.Context(), person, chatAccountPrefixesFor(SentByDiscord), request.Body)
+	sent, err := h.directory.SendToPersonsChat(r.Context(), person, chatAccountPrefixesFor(SentByDiscord), request.Body)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "send_failed", err.Error())
 		return
@@ -433,14 +453,14 @@ func (s *server) sendDiscordMessage(w http.ResponseWriter, r *http.Request, admi
 	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "person_id": person.ID})
 }
 
-func (s *server) makeLink(w http.ResponseWriter, r *http.Request, administratorID string) {
+func (h *Handlers) makeLink(w http.ResponseWriter, r *http.Request, administratorID string) {
 	var request struct {
 		PrincipalID string `json:"principal_id"`
 	}
 	if !decodeBody(w, r, &request) {
 		return
 	}
-	principal, err := s.directory.Principal(r.Context(), request.PrincipalID)
+	principal, err := h.directory.Principal(r.Context(), request.PrincipalID)
 	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusBadRequest, "unknown_principal", err.Error())
 		return
@@ -453,13 +473,13 @@ func (s *server) makeLink(w http.ResponseWriter, r *http.Request, administratorI
 		writeError(w, http.StatusBadRequest, "may_not_sign_in", err.Error())
 		return
 	}
-	link, secret, err := s.store.MakeSignInLink(principal.ID, SentByOperator, administratorID)
+	link, secret, err := h.store.MakeSignInLink(r.Context(), principal.ID, SentByOperator, administratorID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	log.Printf("[sign-in-link] %s made %s for %s (%s)", administratorID, link.ID, principal.ID, principal.DisplayName)
-	writeJSON(w, http.StatusCreated, map[string]any{"link": link, "url": s.config.SignInPageURL + "#" + secret, "display_name": principal.DisplayName})
+	writeJSON(w, http.StatusCreated, map[string]any{"link": link, "url": h.config.SignInPageURL + "#" + secret, "display_name": principal.DisplayName})
 }
 
 // listLimit reads ?limit=, 1 to maximumListLimit.
@@ -477,12 +497,12 @@ func listLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 }
 
 // GET /sign-in-links?principal_id=&limit=
-func (s *server) listLinks(w http.ResponseWriter, r *http.Request, _ string) {
+func (h *Handlers) listLinks(w http.ResponseWriter, r *http.Request, _ string) {
 	limit, ok := listLimit(w, r)
 	if !ok {
 		return
 	}
-	links, err := s.store.ListSignInLinks(r.URL.Query().Get("principal_id"), limit)
+	links, err := h.store.ListSignInLinks(r.Context(), r.URL.Query().Get("principal_id"), limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -491,12 +511,12 @@ func (s *server) listLinks(w http.ResponseWriter, r *http.Request, _ string) {
 }
 
 // GET /sessions?principal_id=&limit=
-func (s *server) listSessions(w http.ResponseWriter, r *http.Request, _ string) {
+func (h *Handlers) listSessions(w http.ResponseWriter, r *http.Request, _ string) {
 	limit, ok := listLimit(w, r)
 	if !ok {
 		return
 	}
-	sessions, err := s.store.ListSessions(r.URL.Query().Get("principal_id"), limit)
+	sessions, err := h.store.ListSessions(r.Context(), r.URL.Query().Get("principal_id"), limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -505,7 +525,7 @@ func (s *server) listSessions(w http.ResponseWriter, r *http.Request, _ string) 
 }
 
 // POST /sessions/{id}/revoke {"reason": "…"}
-func (s *server) revokeSession(w http.ResponseWriter, r *http.Request, administratorID string) {
+func (h *Handlers) revokeSession(w http.ResponseWriter, r *http.Request, administratorID string) {
 	var request struct {
 		Reason string `json:"reason"`
 	}
@@ -516,7 +536,7 @@ func (s *server) revokeSession(w http.ResponseWriter, r *http.Request, administr
 		writeError(w, http.StatusBadRequest, "reason_required", "say why; the reason stays on the row")
 		return
 	}
-	session, err := s.store.RevokeSession(r.PathValue("id"), administratorID, request.Reason)
+	session, err := h.store.RevokeSession(r.Context(), r.PathValue("id"), administratorID, request.Reason)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, "session_not_found", "no session has id "+r.PathValue("id"))

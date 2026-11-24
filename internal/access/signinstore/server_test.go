@@ -2,6 +2,7 @@ package signinstore
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,10 +11,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 const (
-	testServiceToken    = "a-service-token-that-is-long-enough-for-the-check"
 	testAdministrator   = "principal_000001"
 	testPerson          = "principal_000002"
 	testGroup           = "principal_000006"
@@ -22,11 +24,12 @@ const (
 	testDiscordRedirect = "https://kayushkin.com/api/sign-in/discord/callback"
 )
 
-// fakeWorld stands in for principal-store, people-store, auth-store and
-// multichat, and records what multichat was asked to send.
+// fakeWorld stands in for people-store, auth-store, multichat and Discord over
+// HTTP, and for principal-store in Go (fakePrincipalDirectory), and records
+// what multichat was asked to send.
 type fakeWorld struct {
 	mutex      sync.Mutex
-	principals map[string]map[string]any
+	principals map[string]Principal
 	sent       []string
 	server     *httptest.Server
 	// discordBindings maps a Discord user id to the principal bound to it.
@@ -36,38 +39,17 @@ type fakeWorld struct {
 
 func newFakeWorld(t *testing.T) *fakeWorld {
 	t.Helper()
-	world := &fakeWorld{principals: map[string]map[string]any{
-		testAdministrator: {"id": testAdministrator, "kind": "human", "display_name": "Operator", "disabled_at": 0, "is_administrator": true, "groups": []any{}},
-		testPerson:        {"id": testPerson, "kind": "human", "display_name": "Viewer", "disabled_at": 0, "is_administrator": false, "groups": []any{map[string]any{"id": "principal_000130"}}},
-		testGroup:         {"id": testGroup, "kind": "group", "display_name": "Library members", "disabled_at": 0, "is_administrator": false, "members": []any{}},
+	viewer := Principal{ID: testPerson, Kind: "human", DisplayName: "Viewer"}
+	viewer.Groups = append(viewer.Groups, struct {
+		ID string `json:"id"`
+	}{ID: "principal_000130"})
+	world := &fakeWorld{principals: map[string]Principal{
+		testAdministrator: {ID: testAdministrator, Kind: "human", DisplayName: "Operator", IsAdministrator: true},
+		testPerson:        viewer,
+		testGroup:         {ID: testGroup, Kind: "group", DisplayName: "Library members"},
 	}}
 	world.discordBindings, world.linkedBy = map[string]string{}, map[string]string{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /identity-bindings/resolve", func(w http.ResponseWriter, r *http.Request) {
-		world.mutex.Lock()
-		principalID, bound := world.discordBindings[r.URL.Query().Get("subject")]
-		record := world.principals[principalID]
-		world.mutex.Unlock()
-		if r.URL.Query().Get("provider") != "discord" || r.URL.Query().Get("tenant_id") != "" || !bound {
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]any{"binding": map[string]any{"id": "identity_binding_000001"}, "principal": record})
-	})
-	mux.HandleFunc("POST /identity-bindings", func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body)
-		world.mutex.Lock()
-		defer world.mutex.Unlock()
-		if _, bound := world.discordBindings[body["subject"]]; bound {
-			http.Error(w, `{"error":"identity already bound"}`, http.StatusConflict)
-			return
-		}
-		world.discordBindings[body["subject"]] = body["principal_id"]
-		world.linkedBy[body["subject"]] = body["linked_by"]
-		w.WriteHeader(http.StatusCreated)
-		fmt.Fprint(w, `{"id":"identity_binding_000001"}`)
-	})
 	// Discord: a code becomes an access token, and the token names a user.
 	mux.HandleFunc("POST /oauth2/token", func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
@@ -80,16 +62,6 @@ func newFakeWorld(t *testing.T) *fakeWorld {
 	mux.HandleFunc("GET /users/@me", func(w http.ResponseWriter, r *http.Request) {
 		user := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer access-for-")
 		fmt.Fprintf(w, `{"id":%q}`, user)
-	})
-	mux.HandleFunc("GET /principals/{id}", func(w http.ResponseWriter, r *http.Request) {
-		world.mutex.Lock()
-		record, known := world.principals[r.PathValue("id")]
-		world.mutex.Unlock()
-		if !known {
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-			return
-		}
-		json.NewEncoder(w).Encode(record)
 	})
 	mux.HandleFunc("GET /identities/resolve", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("kind") == "discord" && r.URL.Query().Get("value") == "viewer" {
@@ -141,10 +113,48 @@ func newFakeWorld(t *testing.T) *fakeWorld {
 	return world
 }
 
-func (world *fakeWorld) setPrincipalField(principalID, field string, value any) {
+// disablePrincipal stamps a principal disabled, as principal-store would.
+func (world *fakeWorld) disablePrincipal(principalID string, at int64) {
 	world.mutex.Lock()
 	defer world.mutex.Unlock()
-	world.principals[principalID][field] = value
+	principal := world.principals[principalID]
+	principal.DisabledAt = at
+	world.principals[principalID] = principal
+}
+
+// fakePrincipalDirectory is principal-store as the server answers it in
+// process: the world's principals and Discord bindings.
+type fakePrincipalDirectory struct{ world *fakeWorld }
+
+func (directory fakePrincipalDirectory) Principal(ctx context.Context, principalID string) (Principal, error) {
+	directory.world.mutex.Lock()
+	defer directory.world.mutex.Unlock()
+	principal, known := directory.world.principals[principalID]
+	if !known {
+		return Principal{}, fmt.Errorf("%w: principal-store has no %s", ErrNotFound, principalID)
+	}
+	return principal, nil
+}
+
+func (directory fakePrincipalDirectory) PrincipalOfIdentity(ctx context.Context, provider, tenantID, subject string) (Principal, error) {
+	directory.world.mutex.Lock()
+	defer directory.world.mutex.Unlock()
+	principalID, bound := directory.world.discordBindings[subject]
+	if provider != "discord" || tenantID != "" || !bound {
+		return Principal{}, fmt.Errorf("%w: no %s identity %s is bound", ErrNotFound, provider, subject)
+	}
+	return directory.world.principals[principalID], nil
+}
+
+func (directory fakePrincipalDirectory) LinkIdentity(ctx context.Context, principalID, provider, tenantID, subject, linkedBy, note string) error {
+	directory.world.mutex.Lock()
+	defer directory.world.mutex.Unlock()
+	if _, bound := directory.world.discordBindings[subject]; bound {
+		return fmt.Errorf("%w: %s", ErrIdentityAlreadyBound, subject)
+	}
+	directory.world.discordBindings[subject] = principalID
+	directory.world.linkedBy[subject] = linkedBy
+	return nil
 }
 
 type testService struct {
@@ -155,26 +165,62 @@ type testService struct {
 	clock     time.Time
 }
 
+// newTestStore gives the test a store on a Postgres database of its own, made
+// from a template with the module migrated (postgresstorage/postgrestest).
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+	module, err := Module()
+	if err != nil {
+		t.Fatalf("module: %v", err)
+	}
+	database := postgrestest.NewDatabase(t, module)
+	return New(database.Open(module))
+}
+
+// testAdministratorHeader is how a test request names the administrator it
+// acts for; the test mux turns it into ContextWithAdministrator, as the server
+// that mounts these routes does from a verified credential. The routes
+// themselves never read it.
+const testAdministratorHeader = "X-Test-Administrator"
+
 func newTestService(t *testing.T) *testService {
 	t.Helper()
 	world := newFakeWorld(t)
-	store, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	directory := NewDirectory(DirectoryConfig{PrincipalStoreURL: world.server.URL, PeopleStoreURL: world.server.URL, MultichatURL: world.server.URL,
+	store := newTestStore(t)
+	directory := NewDirectory(fakePrincipalDirectory{world: world}, DirectoryConfig{PeopleStoreURL: world.server.URL, MultichatURL: world.server.URL,
 		AuthStoreURL: world.server.URL, AuthStoreToken: "auth-store-token", MultichatCredentialID: "cred_multichat"})
 	service := &testService{store: store, directory: directory, world: world, clock: time.Now()}
 	store.now = func() time.Time { return service.clock }
 	directory.now = func() time.Time { return service.clock }
-	mux := http.NewServeMux()
-	RegisterHandlers(mux, store, directory, ServerConfig{ServiceToken: testServiceToken, SignInPageURL: "https://kayushkin.com/signin", CookieDomain: "kayushkin.com",
+	handlers := NewHandlers(store, directory, HandlersConfig{SignInPageURL: "https://kayushkin.com/signin", CookieDomain: "kayushkin.com",
 		Discord: DiscordConfig{ApplicationID: "discord-app", ClientSecretCredentialID: "cred_discord", RedirectURL: testDiscordRedirect}})
+	mux := http.NewServeMux()
+	for pattern, route := range map[string]http.HandlerFunc{
+		"GET /health":                            handlers.Health,
+		"POST /link-requests":                    handlers.RequestLink,
+		"POST /redeem":                           handlers.Redeem,
+		"GET /session":                           handlers.CurrentSession,
+		"POST /sign-out":                         handlers.SignOut,
+		"GET /discord/start":                     handlers.StartDiscord,
+		"GET /discord/callback":                  handlers.FinishDiscord,
+		"POST /sign-in-links":                    handlers.MakeLink,
+		"GET /sign-in-links":                     handlers.ListLinks,
+		"GET /sessions":                          handlers.ListSessions,
+		"POST /sessions/{id}/revoke":             handlers.RevokeSession,
+		"POST /principals/{id}/discord-messages": handlers.SendDiscordMessage,
+	} {
+		mux.HandleFunc(pattern, route)
+	}
 	previousAuthorize, previousAPI := discordAuthorizeURL, discordAPIBase
 	discordAuthorizeURL, discordAPIBase = world.server.URL+"/oauth2/authorize", world.server.URL
 	t.Cleanup(func() { discordAuthorizeURL, discordAPIBase = previousAuthorize, previousAPI })
-	service.handler = mux
+	service.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if administratorID := r.Header.Get(testAdministratorHeader); administratorID != "" {
+			r.Header.Del(testAdministratorHeader)
+			r = r.WithContext(ContextWithAdministrator(r.Context(), administratorID))
+		}
+		mux.ServeHTTP(w, r)
+	})
 	return service
 }
 
@@ -203,7 +249,7 @@ func (service *testService) do(t *testing.T, method, path string, body any, head
 	return recorder
 }
 
-var asAdministrator = map[string]string{ServiceTokenHeader: testServiceToken, PrincipalIDHeader: testAdministrator}
+var asAdministrator = map[string]string{testAdministratorHeader: testAdministrator}
 
 // makeLink has the operator make a link and returns its secret.
 func (service *testService) makeLink(t *testing.T, principalID string) string {
@@ -271,22 +317,38 @@ func TestALinkTheOperatorMakesSignsInOnceAcrossTheDomain(t *testing.T) {
 	}
 }
 
-func TestTheAdministratorRoutesNeedTheTokenAndAnAdministrator(t *testing.T) {
+func TestTheAdministratorRoutesNeedAnEnabledAdministratorInTheContext(t *testing.T) {
 	service := newTestService(t)
 	body := map[string]string{"principal_id": testPerson}
-	if answer := service.do(t, "POST", "/sign-in-links", body, nil, nil); answer.Code != http.StatusUnauthorized {
-		t.Errorf("no token = %d, want 401", answer.Code)
+	routes := []struct{ method, path string }{
+		{"POST", "/sign-in-links"}, {"GET", "/sign-in-links"}, {"GET", "/sessions"},
+		{"POST", "/sessions/session_000001/revoke"}, {"POST", "/principals/" + testPerson + "/discord-messages"},
 	}
-	if answer := service.do(t, "POST", "/sign-in-links", body, map[string]string{ServiceTokenHeader: "wrong"}, nil); answer.Code != http.StatusUnauthorized {
-		t.Errorf("wrong token = %d, want 401", answer.Code)
+	for _, route := range routes {
+		for name, headers := range map[string]map[string]string{
+			"no administrator":                        nil,
+			"a principal who is not an administrator": {testAdministratorHeader: testPerson},
+			"a principal principal-store lacks":       {testAdministratorHeader: "principal_000999"},
+			"a group":                                 {testAdministratorHeader: testGroup},
+		} {
+			if answer := service.do(t, route.method, route.path, body, headers, nil); answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), "administrator_required") {
+				t.Errorf("%s %s with %s = %d %s, want 403 administrator_required", route.method, route.path, name, answer.Code, answer.Body)
+			}
+		}
 	}
-	if answer := service.do(t, "POST", "/sign-in-links", body, map[string]string{ServiceTokenHeader: testServiceToken}, nil); answer.Code != http.StatusForbidden {
-		t.Errorf("token with no administrator = %d, want 403", answer.Code)
+	// An X-Principal-Id header names nobody: the routes read the context only.
+	if answer := service.do(t, "POST", "/sign-in-links", body, map[string]string{"X-Principal-Id": testAdministrator}, nil); answer.Code != http.StatusForbidden {
+		t.Errorf("X-Principal-Id naming an administrator = %d, want 403", answer.Code)
 	}
-	notAdministrator := map[string]string{ServiceTokenHeader: testServiceToken, PrincipalIDHeader: testPerson}
-	if answer := service.do(t, "POST", "/sign-in-links", body, notAdministrator, nil); answer.Code != http.StatusForbidden {
-		t.Errorf("token naming a non-administrator = %d, want 403", answer.Code)
+	service.world.disablePrincipal(testAdministrator, 1790000000)
+	service.clock = service.clock.Add(principalCacheLifetime + time.Second)
+	if answer := service.do(t, "POST", "/sign-in-links", body, asAdministrator, nil); answer.Code != http.StatusForbidden {
+		t.Errorf("a disabled administrator = %d, want 403", answer.Code)
 	}
+}
+
+func TestALinkForAGroupIsRefused(t *testing.T) {
+	service := newTestService(t)
 	if answer := service.do(t, "POST", "/sign-in-links", map[string]string{"principal_id": testGroup}, asAdministrator, nil); answer.Code != http.StatusBadRequest {
 		t.Errorf("a link for a group = %d, want 400", answer.Code)
 	}
@@ -295,7 +357,7 @@ func TestTheAdministratorRoutesNeedTheTokenAndAnAdministrator(t *testing.T) {
 func TestADisabledPersonIsSignedOutOnceTheCacheExpires(t *testing.T) {
 	service := newTestService(t)
 	cookie := sessionCookieFrom(t, service.do(t, "POST", "/redeem", map[string]string{"secret": service.makeLink(t, testPerson)}, nil, nil))
-	service.world.setPrincipalField(testPerson, "disabled_at", 1790000000)
+	service.world.disablePrincipal(testPerson, 1790000000)
 	if still := service.do(t, "GET", "/session", nil, nil, cookie); still.Code != http.StatusOK {
 		t.Fatalf("within the cache lifetime = %d", still.Code)
 	}
@@ -391,7 +453,7 @@ func TestOnlyALoopbackCallerMayNameTheClientAddress(t *testing.T) {
 func TestADiscordMessageReachesThePersonPointingAtThePrincipal(t *testing.T) {
 	service := newTestService(t)
 	body := map[string]string{"body": "Member recommends Dune (2021): kayushkin.com/library/movies"}
-	if answer := service.do(t, "POST", "/principals/"+testPerson+"/discord-messages", body, map[string]string{ServiceTokenHeader: testServiceToken, PrincipalIDHeader: testPerson}, nil); answer.Code != http.StatusForbidden {
+	if answer := service.do(t, "POST", "/principals/"+testPerson+"/discord-messages", body, map[string]string{testAdministratorHeader: testPerson}, nil); answer.Code != http.StatusForbidden {
 		t.Fatalf("from a principal who is not an administrator = %d, want 403", answer.Code)
 	}
 	answer := service.do(t, "POST", "/principals/"+testPerson+"/discord-messages", body, asAdministrator, nil)
