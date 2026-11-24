@@ -1,3 +1,6 @@
+-- The schema the standalone principal-store (SQLite) kept, for the import tests.
+-- It is not run against Postgres; migrations/ builds the module.
+
 -- principal-store schema. Create-only and idempotent: Open() executes this
 -- whole file on every boot. New columns go in the ensureColumns loop in
 -- store.go, never in an edit to a CREATE TABLE below — an edited CREATE TABLE
@@ -104,3 +107,8 @@ CREATE TRIGGER IF NOT EXISTS principals_fts_after_update AFTER UPDATE ON princip
     INSERT INTO principals_fts(rowid, display_name, email)
     VALUES (new.seq, new.display_name, new.email);
 END;
+
+-- The columns the standalone store's ensureColumns added to every database
+-- after its first boot; a live database carries both.
+ALTER TABLE principals ADD COLUMN availability TEXT NOT NULL DEFAULT '';
+ALTER TABLE principals ADD COLUMN is_administrator INTEGER NOT NULL DEFAULT 0;

@@ -1,6 +1,7 @@
 package principalstore
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,15 +10,23 @@ import (
 )
 
 const principalColumns = `
-	p.id, p.seq, p.kind, p.display_name, p.email, p.disabled_at, p.created_at, p.updated_at, p.availability, p.is_administrator`
+	p.seq, p.kind, p.display_name, p.email, p.disabled_at, p.created_at, p.updated_at, p.availability, p.is_administrator`
+
+// displayNameOrder is how every list is sorted: by display name with ASCII
+// letters folded to one case, then by number. It is the order the standalone
+// store's SQLite gave (COLLATE NOCASE, which folds ASCII only, then bytes),
+// written for Postgres: lower() under the C collation folds ASCII only, and
+// the C collation compares bytes.
+const displayNameOrder = ` ORDER BY lower(p.display_name COLLATE "C"), p.seq ASC`
 
 func scanPrincipal(scan func(...any) error) (*Principal, error) {
 	var p Principal
 	var availability string
-	err := scan(&p.ID, &p.Seq, &p.Kind, &p.DisplayName, &p.Email, &p.DisabledAt, &p.CreatedAt, &p.UpdatedAt, &availability, &p.IsAdministrator)
+	err := scan(&p.Seq, &p.Kind, &p.DisplayName, &p.Email, &p.DisabledAt, &p.CreatedAt, &p.UpdatedAt, &availability, &p.IsAdministrator)
 	if err != nil {
 		return nil, err
 	}
+	p.ID = formatID(p.Seq)
 	if p.Availability, err = decodeAvailability(availability); err != nil {
 		return nil, fmt.Errorf("principal %s: %w", p.ID, err)
 	}
@@ -43,43 +52,33 @@ func validateForWrite(p *Principal) error {
 	return nil
 }
 
-// Create records a new principal and hands back its id.
-func (s *Store) Create(input *Principal) (*Principal, error) {
+// Create records a new principal and hands back its id. The number comes from
+// the table's identity column, so it is never handed out twice.
+func (s *Store) Create(ctx context.Context, input *Principal) (*Principal, error) {
 	if err := validateForWrite(input); err != nil {
 		return nil, err
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	var maxSeq sql.NullInt64
-	if err := tx.QueryRow(`SELECT MAX(seq) FROM principals`).Scan(&maxSeq); err != nil {
-		return nil, err
-	}
-	seq := maxSeq.Int64 + 1
-	id := formatID(seq)
 	ts := now()
-
-	_, err = tx.Exec(`
-		INSERT INTO principals (id, seq, kind, display_name, email, disabled_at, created_at, updated_at)
-		VALUES (?,?,?,?,?,0,?,?)`,
-		id, seq, input.Kind, input.DisplayName, input.Email, ts, ts)
-	if err != nil {
+	var seq int64
+	if err := s.db.QueryRowContext(ctx, `
+		INSERT INTO principals (kind, display_name, email, disabled_at, created_at, updated_at, search_document)
+		VALUES ($1, $2, $3, 0, $4, $5, `+searchDocumentSQL(6, 7)+`) RETURNING seq`,
+		input.Kind, input.DisplayName, input.Email, ts, ts, searchTextOf(input.DisplayName), searchTextOf(input.Email)).Scan(&seq); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return s.Get(id, false)
+	return s.Get(ctx, formatID(seq), false)
 }
 
 // getRow reads one principal without expanding its memberships. Disabled rows
 // are returned like any other: a card assigned to a departed human still has
-// to render their name.
-func (s *Store) getRow(id string) (*Principal, error) {
-	row := s.db.QueryRow(`SELECT `+principalColumns+` FROM principals p WHERE p.id = ?`, id)
+// to render their name. An id that is not exactly the form this store hands
+// out names no row.
+func (s *Store) getRow(ctx context.Context, id string) (*Principal, error) {
+	seq, ok := principalNumberOf(id)
+	if !ok {
+		return nil, fmt.Errorf("%w: principal %s", ErrNotFound, id)
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT `+principalColumns+` FROM principals p WHERE p.seq = $1`, seq)
 	p, err := scanPrincipal(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: principal %s", ErrNotFound, id)
@@ -94,18 +93,18 @@ func (s *Store) getRow(id string) (*Principal, error) {
 // belongs to, or the members a group holds. Disabled principals are always
 // returned; includeDisabledMemberships says whether disabled rows appear in
 // the expanded list as well.
-func (s *Store) Get(id string, includeDisabledMemberships bool) (*Principal, error) {
-	p, err := s.getRow(id)
+func (s *Store) Get(ctx context.Context, id string, includeDisabledMemberships bool) (*Principal, error) {
+	p, err := s.getRow(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	switch {
 	case p.ActsAsCaller:
-		if p.Groups, err = s.ListGroups(id, includeDisabledMemberships); err != nil {
+		if p.Groups, err = s.ListGroups(ctx, id, includeDisabledMemberships); err != nil {
 			return nil, err
 		}
 	case p.Kind == KindGroup:
-		if p.Members, err = s.ListMembers(id, includeDisabledMemberships); err != nil {
+		if p.Members, err = s.ListMembers(ctx, id, includeDisabledMemberships); err != nil {
 			return nil, err
 		}
 	}
@@ -115,7 +114,11 @@ func (s *Store) Get(id string, includeDisabledMemberships bool) (*Principal, err
 // buildQuery assembles the shared WHERE for List and Count.
 func (s *Store) buildQuery(f Filter, selectClause string) (string, []any, error) {
 	var args []any
-	where := ` FROM principals p WHERE 1=1`
+	argument := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	where := ` FROM principals p WHERE true`
 	if !f.IncludeDisabled {
 		where += ` AND p.disabled_at = 0`
 	}
@@ -127,61 +130,22 @@ func (s *Store) buildQuery(f Filter, selectClause string) (string, []any, error)
 		if f.AvailableAt != nil && kind != KindHuman {
 			return "", nil, fmt.Errorf("%w: available_at applies to humans only — a group has no hours of its own; drop kind or set kind=human", ErrInvalidAvailability)
 		}
-		where += ` AND p.kind = ?`
-		args = append(args, kind)
+		where += ` AND p.kind = ` + argument(kind)
 	} else if f.AvailableAt != nil {
-		where += ` AND p.kind = ?`
-		args = append(args, KindHuman)
+		where += ` AND p.kind = ` + argument(KindHuman)
 	}
 	if strings.TrimSpace(f.Query) != "" {
-		expression := searchExpression(f.Query)
-		if err := s.validateSearchQuery(expression); err != nil {
+		query, err := searchTSQueryOf(f.Query)
+		if err != nil {
 			return "", nil, err
 		}
-		where += ` AND p.seq IN (SELECT rowid FROM principals_fts WHERE principals_fts MATCH ?)`
-		args = append(args, expression)
-	}
-	return selectClause + where, args, nil
-}
-
-// searchExpression turns what a caller typed into the FTS5 MATCH expression.
-//
-// Bare words become prefix terms — "pri" finds Priya Raman — because the main
-// caller is an assignee picker reading keystrokes, and FTS5's default is a
-// whole-token match that would find her only once the whole name was typed.
-// Anything that already carries FTS5 syntax (a quote, a star, a colon,
-// parentheses, or an uppercase AND / OR / NOT / NEAR) is passed through
-// untouched, so an exact-phrase lookup like "Vlad Kayushkin" still means
-// exactly that, which is what the seed script relies on.
-func searchExpression(q string) string {
-	q = strings.TrimSpace(q)
-	if strings.ContainsAny(q, `"*:()`) {
-		return q
-	}
-	words := strings.Fields(q)
-	for _, w := range words {
-		switch w {
-		case "AND", "OR", "NOT", "NEAR":
-			return q
+		if query == "" {
+			where += ` AND false`
+		} else {
+			where += ` AND p.search_document @@ to_tsquery('simple', ` + argument(query) + `)`
 		}
 	}
-	terms := make([]string, 0, len(words))
-	for _, w := range words {
-		terms = append(terms, `"`+w+`"*`)
-	}
-	return strings.Join(terms, " ")
-}
-
-// validateSearchQuery probes the FTS index so a malformed query is the caller's
-// 400 rather than a 500 from deep inside the list handler.
-func (s *Store) validateSearchQuery(expression string) error {
-	var discard int
-	err := s.db.QueryRow(
-		`SELECT 1 FROM principals_fts WHERE principals_fts MATCH ? LIMIT 1`, expression).Scan(&discard)
-	if err == nil || errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	return fmt.Errorf("%w: bad search query %q: %v", ErrInvalidPrincipal, expression, err)
+	return selectClause + where, args, nil
 }
 
 // List returns principals in display-name order. Memberships are not expanded
@@ -190,16 +154,16 @@ func (s *Store) validateSearchQuery(expression string) error {
 // With AvailableAt set the week is evaluated in Go, so the page is cut after
 // the filter rather than before — otherwise a page of ten could come back as
 // three with seven more hiding behind the next offset.
-func (s *Store) List(f Filter) ([]*Principal, error) {
+func (s *Store) List(ctx context.Context, f Filter) ([]*Principal, error) {
 	query, args, err := s.buildQuery(f, `SELECT `+principalColumns)
 	if err != nil {
 		return nil, err
 	}
-	query += ` ORDER BY p.display_name COLLATE NOCASE ASC, p.seq ASC`
+	query += displayNameOrder
 	if f.AvailableAt == nil {
 		query += pageClause(f.Limit, f.Offset)
 	}
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +180,7 @@ func (s *Store) List(f Filter) ([]*Principal, error) {
 		return nil, err
 	}
 	if f.AvailableAt != nil {
-		if out, err = s.filterAvailable(out, *f.AvailableAt); err != nil {
+		if out, err = s.filterAvailable(ctx, out, *f.AvailableAt); err != nil {
 			return nil, err
 		}
 		out = page(out, f.Limit, f.Offset)
@@ -224,15 +188,14 @@ func (s *Store) List(f Filter) ([]*Principal, error) {
 	return out, nil
 }
 
+// pageClause is the LIMIT and OFFSET of a page. A limit or offset of zero or
+// less is no limit and no offset, as the standalone store read them.
 func pageClause(limit, offset int) string {
 	clause := ""
 	if limit > 0 {
 		clause += fmt.Sprintf(` LIMIT %d`, limit)
 	}
 	if offset > 0 {
-		if limit <= 0 {
-			clause += ` LIMIT -1`
-		}
 		clause += fmt.Sprintf(` OFFSET %d`, offset)
 	}
 	return clause
@@ -252,10 +215,10 @@ func page(principals []*Principal, limit, offset int) []*Principal {
 }
 
 // Count is List's total, ignoring limit and offset.
-func (s *Store) Count(f Filter) (int, error) {
+func (s *Store) Count(ctx context.Context, f Filter) (int, error) {
 	if f.AvailableAt != nil {
 		f.Limit, f.Offset = 0, 0
-		principals, err := s.List(f)
+		principals, err := s.List(ctx, f)
 		if err != nil {
 			return 0, err
 		}
@@ -266,20 +229,20 @@ func (s *Store) Count(f Filter) (int, error) {
 		return 0, err
 	}
 	var n int
-	if err := s.db.QueryRow(query, args...).Scan(&n); err != nil {
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil
 }
 
 // Counts is the /health summary over every row, disabled included.
-func (s *Store) Counts() (Counts, error) {
+func (s *Store) Counts(ctx context.Context) (Counts, error) {
 	var c Counts
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*),
-		       COALESCE(SUM(kind = ?), 0),
-		       COALESCE(SUM(kind = ?), 0),
-		       COALESCE(SUM(disabled_at > 0), 0)
+		       COUNT(*) FILTER (WHERE kind = $1),
+		       COUNT(*) FILTER (WHERE kind = $2),
+		       COUNT(*) FILTER (WHERE disabled_at > 0)
 		FROM principals`, KindHuman, KindGroup).
 		Scan(&c.Principals, &c.Humans, &c.Groups, &c.Disabled)
 	return c, err
@@ -288,8 +251,8 @@ func (s *Store) Counts() (Counts, error) {
 // Patch edits the display fields. It refuses kind and disabled_at by having
 // nowhere to put them: kind is fixed at creation, and disabled_at moves through
 // Disable and Enable so removal is always an explicit act.
-func (s *Store) Patch(id string, patch Patch) (*Principal, error) {
-	current, err := s.getRow(id)
+func (s *Store) Patch(ctx context.Context, id string, patch Patch) (*Principal, error) {
+	current, err := s.getRow(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -322,12 +285,14 @@ func (s *Store) Patch(id string, patch Patch) (*Principal, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, err = s.db.Exec(`UPDATE principals SET display_name=?, email=?, availability=?, is_administrator=?, updated_at=? WHERE id=?`,
-		current.DisplayName, current.Email, encoded, current.IsAdministrator, now(), id)
+	_, err = s.db.ExecContext(ctx, `UPDATE principals SET display_name = $1, email = $2, availability = $3, is_administrator = $4, updated_at = $5,
+		search_document = `+searchDocumentSQL(7, 8)+` WHERE seq = $6`,
+		current.DisplayName, current.Email, encoded, current.IsAdministrator, now(), current.Seq,
+		searchTextOf(current.DisplayName), searchTextOf(current.Email))
 	if err != nil {
 		return nil, err
 	}
-	return s.Get(id, false)
+	return s.Get(ctx, id, false)
 }
 
 // decodeAvailabilityPatch reads the availability key of a PATCH: `null` and
@@ -349,26 +314,28 @@ func decodeAvailabilityPatch(raw json.RawMessage) (*Availability, error) {
 // Disable is the only removal. The row stays, so every reference from another
 // store keeps resolving; it just drops out of default listings. Idempotent: a
 // second call leaves the original disabled_at alone.
-func (s *Store) Disable(id string) (*Principal, error) {
-	if _, err := s.getRow(id); err != nil {
+func (s *Store) Disable(ctx context.Context, id string) (*Principal, error) {
+	current, err := s.getRow(ctx, id)
+	if err != nil {
 		return nil, err
 	}
 	ts := now()
-	if _, err := s.db.Exec(`UPDATE principals SET disabled_at=?, updated_at=? WHERE id=? AND disabled_at=0`, ts, ts, id); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE principals SET disabled_at = $1, updated_at = $2 WHERE seq = $3 AND disabled_at = 0`, ts, ts, current.Seq); err != nil {
 		return nil, err
 	}
-	return s.Get(id, false)
+	return s.Get(ctx, id, false)
 }
 
 // Enable undoes Disable. Idempotent.
-func (s *Store) Enable(id string) (*Principal, error) {
-	if _, err := s.getRow(id); err != nil {
+func (s *Store) Enable(ctx context.Context, id string) (*Principal, error) {
+	current, err := s.getRow(ctx, id)
+	if err != nil {
 		return nil, err
 	}
-	if _, err := s.db.Exec(`UPDATE principals SET disabled_at=0, updated_at=? WHERE id=? AND disabled_at<>0`, now(), id); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE principals SET disabled_at = 0, updated_at = $1 WHERE seq = $2 AND disabled_at <> 0`, now(), current.Seq); err != nil {
 		return nil, err
 	}
-	return s.Get(id, false)
+	return s.Get(ctx, id, false)
 }
 
 // The wire types below moved here from store.go so the TypeScript render

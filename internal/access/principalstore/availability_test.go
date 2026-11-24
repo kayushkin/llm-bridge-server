@@ -28,7 +28,7 @@ func patchAvailability(t *testing.T, s *Store, id string, a *Availability) *Prin
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := s.Patch(id, Patch{Availability: raw})
+	p, err := s.Patch(testContext, id, Patch{Availability: raw})
 	if err != nil {
 		t.Fatalf("patch availability: %v", err)
 	}
@@ -65,21 +65,21 @@ func TestAvailabilityIsReadInThePrincipalsOwnZoneAcrossDST(t *testing.T) {
 	helena := mustCreate(t, s, KindHuman, "Helena Vos", "")
 	patchAvailability(t, s, helena.ID, amsterdamWeek())
 
-	before, err := s.Availability(helena.ID, mondayBeforeDST)
+	before, err := s.Availability(testContext, helena.ID, mondayBeforeDST)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if before.Available || before.Reason != ReasonOffHours {
 		t.Fatalf("07:30 UTC on 2026-03-23 is 08:30 CET, before the day starts; got %+v", before)
 	}
-	after, err := s.Availability(helena.ID, mondayAfterDST)
+	after, err := s.Availability(testContext, helena.ID, mondayAfterDST)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !after.Available || after.Reason != ReasonInHours {
 		t.Fatalf("07:30 UTC on 2026-03-30 is 09:30 CEST, inside the day; got %+v", after)
 	}
-	weekend, err := s.Availability(helena.ID, saturday)
+	weekend, err := s.Availability(testContext, helena.ID, saturday)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,37 +95,37 @@ func TestAvailabilityReasonsInOrder(t *testing.T) {
 	s := newTestStore(t)
 	inHours := mondayAfterDST
 	nobody := mustCreate(t, s, KindHuman, "No Schedule", "")
-	answer, _ := s.Availability(nobody.ID, inHours)
+	answer, _ := s.Availability(testContext, nobody.ID, inHours)
 	if answer.Available || answer.Reason != ReasonNoSchedule {
 		t.Fatalf("no schedule must be unknown, never available; got %+v", answer)
 	}
 
 	away := mustCreate(t, s, KindHuman, "Away", "")
 	patchAvailability(t, s, away.ID, amsterdamWeek())
-	if _, err := s.AddTimeOff(away.ID, inHours.Add(-time.Hour).Unix(), inHours.Add(time.Hour).Unix(), "dentist"); err != nil {
+	if _, err := s.AddTimeOff(testContext, away.ID, inHours.Add(-time.Hour).Unix(), inHours.Add(time.Hour).Unix(), "dentist"); err != nil {
 		t.Fatal(err)
 	}
-	answer, _ = s.Availability(away.ID, inHours)
+	answer, _ = s.Availability(testContext, away.ID, inHours)
 	if answer.Available || answer.Reason != ReasonTimeOff {
 		t.Fatalf("time off must override the week; got %+v", answer)
 	}
-	answer, _ = s.Availability(away.ID, inHours.Add(2*time.Hour))
+	answer, _ = s.Availability(testContext, away.ID, inHours.Add(2*time.Hour))
 	if !answer.Available {
 		t.Fatalf("after the absence ends the week applies again; got %+v", answer)
 	}
 
 	gone := mustCreate(t, s, KindHuman, "Gone", "")
 	patchAvailability(t, s, gone.ID, amsterdamWeek())
-	if _, err := s.Disable(gone.ID); err != nil {
+	if _, err := s.Disable(testContext, gone.ID); err != nil {
 		t.Fatal(err)
 	}
-	answer, _ = s.Availability(gone.ID, inHours)
+	answer, _ = s.Availability(testContext, gone.ID, inHours)
 	if answer.Available || answer.Reason != ReasonDisabled {
 		t.Fatalf("disabled wins over hours; got %+v", answer)
 	}
 
 	group := mustCreate(t, s, KindGroup, "Team", "")
-	if _, err := s.Availability(group.ID, inHours); err == nil {
+	if _, err := s.Availability(testContext, group.ID, inHours); err == nil {
 		t.Fatal("a group has no hours of its own and must be refused")
 	}
 }
@@ -134,32 +134,32 @@ func TestTimeOffRangeMustBeNonEmptyAndOnAHuman(t *testing.T) {
 	s := newTestStore(t)
 	human := mustCreate(t, s, KindHuman, "H", "")
 	group := mustCreate(t, s, KindGroup, "G", "")
-	if _, err := s.AddTimeOff(human.ID, 200, 100, ""); err == nil {
+	if _, err := s.AddTimeOff(testContext, human.ID, 200, 100, ""); err == nil {
 		t.Fatal("starts_at after ends_at must be refused")
 	}
-	if _, err := s.AddTimeOff(human.ID, 100, 100, ""); err == nil {
+	if _, err := s.AddTimeOff(testContext, human.ID, 100, 100, ""); err == nil {
 		t.Fatal("an empty range must be refused")
 	}
-	if _, err := s.AddTimeOff(group.ID, 100, 200, ""); err == nil {
+	if _, err := s.AddTimeOff(testContext, group.ID, 100, 200, ""); err == nil {
 		t.Fatal("a group cannot take time off")
 	}
-	if _, err := s.AddTimeOff("principal_999999", 100, 200, ""); err == nil {
+	if _, err := s.AddTimeOff(testContext, "principal_999999", 100, 200, ""); err == nil {
 		t.Fatal("unknown principal must be refused")
 	}
-	row, err := s.AddTimeOff(human.ID, 100, 200, "  holiday ")
+	row, err := s.AddTimeOff(testContext, human.ID, 100, 200, "  holiday ")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if row.ID != "timeoff_000001" || row.Note != "holiday" {
 		t.Fatalf("unexpected row: %+v", row)
 	}
-	if err := s.RemoveTimeOff(group.ID, row.ID); err == nil {
+	if err := s.RemoveTimeOff(testContext, group.ID, row.ID); err == nil {
 		t.Fatal("a time_off row must not be removable through another principal's path")
 	}
-	if err := s.RemoveTimeOff(human.ID, row.ID); err != nil {
+	if err := s.RemoveTimeOff(testContext, human.ID, row.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RemoveTimeOff(human.ID, row.ID); err == nil {
+	if err := s.RemoveTimeOff(testContext, human.ID, row.ID); err == nil {
 		t.Fatal("second remove must be a not-found")
 	}
 }
@@ -173,7 +173,7 @@ func TestPatchClearsAvailabilityWithEmptyObjectOrNull(t *testing.T) {
 	}
 	// A patch that says nothing about availability leaves it alone.
 	name := "Renamed"
-	p, err := s.Patch(human.ID, Patch{DisplayName: &name})
+	p, err := s.Patch(testContext, human.ID, Patch{DisplayName: &name})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestPatchClearsAvailabilityWithEmptyObjectOrNull(t *testing.T) {
 	}
 	for _, clear := range []string{"{}", "null"} {
 		patchAvailability(t, s, human.ID, amsterdamWeek())
-		p, err := s.Patch(human.ID, Patch{Availability: json.RawMessage(clear)})
+		p, err := s.Patch(testContext, human.ID, Patch{Availability: json.RawMessage(clear)})
 		if err != nil {
 			t.Fatalf("clear with %s: %v", clear, err)
 		}
@@ -192,10 +192,10 @@ func TestPatchClearsAvailabilityWithEmptyObjectOrNull(t *testing.T) {
 	}
 	group := mustCreate(t, s, KindGroup, "G", "")
 	raw, _ := json.Marshal(amsterdamWeek())
-	if _, err := s.Patch(group.ID, Patch{Availability: raw}); err == nil {
+	if _, err := s.Patch(testContext, group.ID, Patch{Availability: raw}); err == nil {
 		t.Fatal("a group must not carry a week")
 	}
-	if _, err := s.Patch(human.ID, Patch{Availability: json.RawMessage(`{"tzid":"Europe/Amsterdam","dyas":["MO"],"start":"09:00","end":"17:00"}`)}); err == nil {
+	if _, err := s.Patch(testContext, human.ID, Patch{Availability: json.RawMessage(`{"tzid":"Europe/Amsterdam","dyas":["MO"],"start":"09:00","end":"17:00"}`)}); err == nil {
 		t.Fatal("a misspelled key inside availability must be refused, not dropped")
 	}
 }
@@ -211,50 +211,50 @@ func TestListAvailableAtFiltersHumansAndPagesAfterTheFilter(t *testing.T) {
 			patchAvailability(t, s, p.ID, amsterdamWeek())
 		case strings.HasSuffix(name, "Off"):
 			patchAvailability(t, s, p.ID, amsterdamWeek())
-			if _, err := s.AddTimeOff(p.ID, inHours.Add(-time.Hour).Unix(), inHours.Add(time.Hour).Unix(), ""); err != nil {
+			if _, err := s.AddTimeOff(testContext, p.ID, inHours.Add(-time.Hour).Unix(), inHours.Add(time.Hour).Unix(), ""); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
 	group := mustCreate(t, s, KindGroup, "Team", "")
-	all, _ := s.List(Filter{})
+	all, _ := s.List(testContext, Filter{})
 	for _, p := range all {
 		if p.Kind == KindHuman {
-			if _, err := s.AddMember(group.ID, p.ID); err != nil {
+			if _, err := s.AddMember(testContext, group.ID, p.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
 
-	got, err := s.List(Filter{AvailableAt: &inHours})
+	got, err := s.List(testContext, Filter{AvailableAt: &inHours})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 3 || got[0].DisplayName != "A Available" || got[2].DisplayName != "C Available" {
 		t.Fatalf("expected the three available humans, got %v", displayNames(got))
 	}
-	paged, err := s.List(Filter{AvailableAt: &inHours, Limit: 2, Offset: 1})
+	paged, err := s.List(testContext, Filter{AvailableAt: &inHours, Limit: 2, Offset: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(paged) != 2 || paged[0].DisplayName != "B Available" || paged[1].DisplayName != "C Available" {
 		t.Fatalf("page must be cut after the filter, got %v", displayNames(paged))
 	}
-	n, err := s.Count(Filter{AvailableAt: &inHours})
+	n, err := s.Count(testContext, Filter{AvailableAt: &inHours})
 	if err != nil || n != 3 {
 		t.Fatalf("count = %d, %v", n, err)
 	}
-	if _, err := s.List(Filter{AvailableAt: &inHours, Kind: KindGroup}); err == nil {
+	if _, err := s.List(testContext, Filter{AvailableAt: &inHours, Kind: KindGroup}); err == nil {
 		t.Fatal("available_at with kind=group must be refused")
 	}
-	members, err := s.ListAvailableMembers(group.ID, inHours)
+	members, err := s.ListAvailableMembers(testContext, group.ID, inHours)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(members) != 3 {
 		t.Fatalf("expected 3 available members, got %v", displayNames(members))
 	}
-	if _, err := s.ListAvailableMembers(all[0].ID, inHours); err == nil {
+	if _, err := s.ListAvailableMembers(testContext, all[0].ID, inHours); err == nil {
 		t.Fatal("members of a human must be refused")
 	}
 }

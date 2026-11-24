@@ -1,11 +1,16 @@
 package principalstore
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 // Binding a sign-in identity to a principal.
@@ -82,7 +87,9 @@ type IdentityBindingFilter struct {
 	IncludeUnlinked bool
 }
 
-func formatIdentityBindingID(seq int64) string { return fmt.Sprintf("identity_binding_%06d", seq) }
+func formatIdentityBindingID(seq int64) string {
+	return postgresstorage.FormatRecordID(IdentityBindingIDPrefix, seq)
+}
 
 // entraIdentifierPattern is the shape of an Entra tenant id and object id: a
 // GUID. Checking it catches the mistake that matters most — an email address
@@ -123,47 +130,59 @@ func normalizeIdentity(provider, tenantID, subject string) (string, string, stri
 	return provider, tenantID, subject, nil
 }
 
-// requireActingHuman checks that an administrator id names an active human.
-// The store has no auth, so it cannot check that this person is an
+// requireActingHuman checks that an administrator id names an active human,
+// and returns its number. The store cannot check that this person is an
 // administrator — the caller does that — but it can refuse an audit field
 // that points at nobody.
-func (s *Store) requireActingHuman(id, field string) error {
+func (s *Store) requireActingHuman(ctx context.Context, id, field string) (int64, error) {
 	if strings.TrimSpace(id) == "" {
-		return fmt.Errorf("%w: %s is required — the principal who made this change", ErrInvalidIdentityBinding, field)
+		return 0, fmt.Errorf("%w: %s is required — the principal who made this change", ErrInvalidIdentityBinding, field)
 	}
-	actor, err := s.getRow(id)
+	actor, err := s.getRow(ctx, id)
 	if errors.Is(err, ErrNotFound) {
-		return fmt.Errorf("%w: %s %s is not a principal", ErrInvalidIdentityBinding, field, id)
+		return 0, fmt.Errorf("%w: %s %s is not a principal", ErrInvalidIdentityBinding, field, id)
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if actor.Kind != KindHuman || actor.DisabledAt != 0 {
-		return fmt.Errorf("%w: %s %s must be an active human", ErrInvalidIdentityBinding, field, id)
+		return 0, fmt.Errorf("%w: %s %s must be an active human", ErrInvalidIdentityBinding, field, id)
 	}
-	return nil
+	return actor.Seq, nil
 }
 
-const identityBindingColumns = `id, seq, principal_id, provider, tenant_id, subject, linked_at, linked_by, link_note, unlinked_at, unlinked_by, unlink_reason`
+const identityBindingColumns = `seq, principal_seq, provider, tenant_id, subject, linked_at, linked_by_seq, link_note, unlinked_at, unlinked_by_seq, unlink_reason`
 
 func scanIdentityBinding(scan func(...any) error) (*IdentityBinding, error) {
 	b := &IdentityBinding{}
-	if err := scan(&b.ID, &b.Seq, &b.PrincipalID, &b.Provider, &b.TenantID, &b.Subject,
-		&b.LinkedAt, &b.LinkedBy, &b.LinkNote, &b.UnlinkedAt, &b.UnlinkedBy, &b.UnlinkReason); err != nil {
+	var principalSeq, linkedBySeq int64
+	var unlinkedBySeq sql.NullInt64
+	if err := scan(&b.Seq, &principalSeq, &b.Provider, &b.TenantID, &b.Subject,
+		&b.LinkedAt, &linkedBySeq, &b.LinkNote, &b.UnlinkedAt, &unlinkedBySeq, &b.UnlinkReason); err != nil {
 		return nil, err
+	}
+	b.ID = formatIdentityBindingID(b.Seq)
+	b.PrincipalID = formatID(principalSeq)
+	b.LinkedBy = formatID(linkedBySeq)
+	if unlinkedBySeq.Valid {
+		b.UnlinkedBy = formatID(unlinkedBySeq.Int64)
 	}
 	return b, nil
 }
 
+// activeIdentityIndex is the partial unique index that holds one active
+// binding per identity when two links race.
+const activeIdentityIndex = "identity_bindings_active_identity_index"
+
 // LinkIdentity binds an identity to a human principal. An identity that
 // already has an active binding is ErrIdentityAlreadyBound, even to the same
 // principal: a second link is a mistake to show, not a no-op to hide.
-func (s *Store) LinkIdentity(principalID, provider, tenantID, subject, linkedBy, note string) (*IdentityBinding, error) {
+func (s *Store) LinkIdentity(ctx context.Context, principalID, provider, tenantID, subject, linkedBy, note string) (*IdentityBinding, error) {
 	provider, tenantID, subject, err := normalizeIdentity(provider, tenantID, subject)
 	if err != nil {
 		return nil, err
 	}
-	target, err := s.getRow(principalID)
+	target, err := s.getRow(ctx, principalID)
 	if err != nil {
 		return nil, err
 	}
@@ -173,48 +192,44 @@ func (s *Store) LinkIdentity(principalID, provider, tenantID, subject, linkedBy,
 	if target.DisabledAt != 0 {
 		return nil, fmt.Errorf("%w: %s is disabled — enable it before giving it a sign-in", ErrInvalidIdentityBinding, principalID)
 	}
-	if err := s.requireActingHuman(linkedBy, "linked_by"); err != nil {
+	linkedBySeq, err := s.requireActingHuman(ctx, linkedBy, "linked_by")
+	if err != nil {
 		return nil, err
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	existing, err := activeBinding(tx, provider, tenantID, subject)
-	if err != nil {
-		return nil, err
-	}
-	if existing != nil {
-		return nil, fmt.Errorf("%w: %s %s/%s is already %s, signing in as %s — unlink it first",
-			ErrIdentityAlreadyBound, provider, tenantID, subject, existing.ID, existing.PrincipalID)
-	}
-	var maxSeq sql.NullInt64
-	if err := tx.QueryRow(`SELECT MAX(seq) FROM identity_bindings`).Scan(&maxSeq); err != nil {
-		return nil, err
-	}
-	b := &IdentityBinding{
-		Seq: maxSeq.Int64 + 1, PrincipalID: principalID, Provider: provider, TenantID: tenantID, Subject: subject,
-		LinkedAt: now(), LinkedBy: linkedBy, LinkNote: strings.TrimSpace(note),
-	}
-	b.ID = formatIdentityBindingID(b.Seq)
-	if _, err := tx.Exec(`INSERT INTO identity_bindings (`+identityBindingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		b.ID, b.Seq, b.PrincipalID, b.Provider, b.TenantID, b.Subject, b.LinkedAt, b.LinkedBy, b.LinkNote, 0, "", ""); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed: identity_bindings.provider") {
-			return nil, fmt.Errorf("%w: %s %s/%s was linked by another request at the same moment", ErrIdentityAlreadyBound, provider, tenantID, subject)
+	var linked *IdentityBinding
+	err = s.inTransaction(ctx, func(tx *sql.Tx) error {
+		existing, err := activeBinding(ctx, tx, provider, tenantID, subject)
+		if err != nil {
+			return err
 		}
+		if existing != nil {
+			return fmt.Errorf("%w: %s %s/%s is already %s, signing in as %s — unlink it first",
+				ErrIdentityAlreadyBound, provider, tenantID, subject, existing.ID, existing.PrincipalID)
+		}
+		var seq int64
+		if err := tx.QueryRowContext(ctx, `
+			INSERT INTO identity_bindings (principal_seq, provider, tenant_id, subject, linked_at, linked_by_seq, link_note)
+			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING seq`,
+			target.Seq, provider, tenantID, subject, now(), linkedBySeq, strings.TrimSpace(note)).Scan(&seq); err != nil {
+			var postgresError *pgconn.PgError
+			if errors.As(err, &postgresError) && postgresError.Code == "23505" && postgresError.ConstraintName == activeIdentityIndex {
+				return fmt.Errorf("%w: %s %s/%s was linked by another request at the same moment", ErrIdentityAlreadyBound, provider, tenantID, subject)
+			}
+			return err
+		}
+		linked, err = scanIdentityBinding(tx.QueryRowContext(ctx, `SELECT `+identityBindingColumns+` FROM identity_bindings WHERE seq = $1`, seq).Scan)
+		return err
+	})
+	if err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return b, nil
+	return linked, nil
 }
 
-func activeBinding(tx *sql.Tx, provider, tenantID, subject string) (*IdentityBinding, error) {
-	b, err := scanIdentityBinding(tx.QueryRow(
-		`SELECT `+identityBindingColumns+` FROM identity_bindings WHERE provider = ? AND tenant_id = ? AND subject = ? AND unlinked_at = 0`,
+func activeBinding(ctx context.Context, tx *sql.Tx, provider, tenantID, subject string) (*IdentityBinding, error) {
+	b, err := scanIdentityBinding(tx.QueryRowContext(ctx,
+		`SELECT `+identityBindingColumns+` FROM identity_bindings WHERE provider = $1 AND tenant_id = $2 AND subject = $3 AND unlinked_at = 0`,
 		provider, tenantID, subject).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -224,25 +239,34 @@ func activeBinding(tx *sql.Tx, provider, tenantID, subject string) (*IdentityBin
 
 // UnlinkIdentity ends a binding. Idempotent: a second unlink answers the row
 // as the first one left it, without moving the stamp or the reason.
-func (s *Store) UnlinkIdentity(id, unlinkedBy, reason string) (*IdentityBinding, error) {
-	if err := s.requireActingHuman(unlinkedBy, "unlinked_by"); err != nil {
+func (s *Store) UnlinkIdentity(ctx context.Context, id, unlinkedBy, reason string) (*IdentityBinding, error) {
+	unlinkedBySeq, err := s.requireActingHuman(ctx, unlinkedBy, "unlinked_by")
+	if err != nil {
 		return nil, err
 	}
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return nil, fmt.Errorf("%w: reason is required — the next administrator needs to know why this sign-in stopped working", ErrInvalidIdentityBinding)
 	}
-	if _, err := s.db.Exec(
-		`UPDATE identity_bindings SET unlinked_at = ?, unlinked_by = ?, unlink_reason = ? WHERE id = ? AND unlinked_at = 0`,
-		now(), unlinkedBy, reason, id); err != nil {
+	seq, ok := numberOfID(IdentityBindingIDPrefix, id)
+	if !ok {
+		return nil, fmt.Errorf("%w: identity binding %s", ErrNotFound, id)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE identity_bindings SET unlinked_at = $1, unlinked_by_seq = $2, unlink_reason = $3 WHERE seq = $4 AND unlinked_at = 0`,
+		now(), unlinkedBySeq, reason, seq); err != nil {
 		return nil, err
 	}
-	return s.GetIdentityBinding(id)
+	return s.GetIdentityBinding(ctx, id)
 }
 
 // GetIdentityBinding returns one binding, active or not.
-func (s *Store) GetIdentityBinding(id string) (*IdentityBinding, error) {
-	b, err := scanIdentityBinding(s.db.QueryRow(`SELECT `+identityBindingColumns+` FROM identity_bindings WHERE id = ?`, id).Scan)
+func (s *Store) GetIdentityBinding(ctx context.Context, id string) (*IdentityBinding, error) {
+	seq, ok := numberOfID(IdentityBindingIDPrefix, id)
+	if !ok {
+		return nil, fmt.Errorf("%w: identity binding %s", ErrNotFound, id)
+	}
+	b, err := scanIdentityBinding(s.db.QueryRowContext(ctx, `SELECT `+identityBindingColumns+` FROM identity_bindings WHERE seq = $1`, seq).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: identity binding %s", ErrNotFound, id)
 	}
@@ -251,13 +275,13 @@ func (s *Store) GetIdentityBinding(id string) (*IdentityBinding, error) {
 
 // ResolveIdentity finds the principal an identity signs in as. No active
 // binding is ErrNotFound: the identity is unprovisioned.
-func (s *Store) ResolveIdentity(provider, tenantID, subject string) (*IdentityBindingResolution, error) {
+func (s *Store) ResolveIdentity(ctx context.Context, provider, tenantID, subject string) (*IdentityBindingResolution, error) {
 	provider, tenantID, subject, err := normalizeIdentity(provider, tenantID, subject)
 	if err != nil {
 		return nil, err
 	}
-	b, err := scanIdentityBinding(s.db.QueryRow(
-		`SELECT `+identityBindingColumns+` FROM identity_bindings WHERE provider = ? AND tenant_id = ? AND subject = ? AND unlinked_at = 0`,
+	b, err := scanIdentityBinding(s.db.QueryRowContext(ctx,
+		`SELECT `+identityBindingColumns+` FROM identity_bindings WHERE provider = $1 AND tenant_id = $2 AND subject = $3 AND unlinked_at = 0`,
 		provider, tenantID, subject).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no active binding for %s %s/%s — this identity is not provisioned", ErrNotFound, provider, tenantID, subject)
@@ -265,28 +289,34 @@ func (s *Store) ResolveIdentity(provider, tenantID, subject string) (*IdentityBi
 	if err != nil {
 		return nil, err
 	}
-	p, err := s.Get(b.PrincipalID, false)
+	p, err := s.Get(ctx, b.PrincipalID, false)
 	if err != nil {
 		return nil, err
 	}
 	return &IdentityBindingResolution{Binding: b, Principal: p}, nil
 }
 
-// ListIdentityBindings returns bindings oldest first.
-func (s *Store) ListIdentityBindings(f IdentityBindingFilter) ([]*IdentityBinding, error) {
+// ListIdentityBindings returns bindings oldest first. A principal_id filter
+// that is not a principal id matches nothing, as it did when ids were text.
+func (s *Store) ListIdentityBindings(ctx context.Context, f IdentityBindingFilter) ([]*IdentityBinding, error) {
 	var where []string
 	var args []any
+	argument := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
 	if f.PrincipalID != "" {
-		where = append(where, "principal_id = ?")
-		args = append(args, f.PrincipalID)
+		seq, ok := principalNumberOf(f.PrincipalID)
+		if !ok {
+			return []*IdentityBinding{}, nil
+		}
+		where = append(where, "principal_seq = "+argument(seq))
 	}
 	if f.Provider != "" {
-		where = append(where, "provider = ?")
-		args = append(args, strings.ToLower(strings.TrimSpace(f.Provider)))
+		where = append(where, "provider = "+argument(strings.ToLower(strings.TrimSpace(f.Provider))))
 	}
 	if f.TenantID != "" {
-		where = append(where, "tenant_id = ?")
-		args = append(args, strings.ToLower(strings.TrimSpace(f.TenantID)))
+		where = append(where, "tenant_id = "+argument(strings.ToLower(strings.TrimSpace(f.TenantID))))
 	}
 	if !f.IncludeUnlinked {
 		where = append(where, "unlinked_at = 0")
@@ -295,7 +325,7 @@ func (s *Store) ListIdentityBindings(f IdentityBindingFilter) ([]*IdentityBindin
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	rows, err := s.db.Query(query+" ORDER BY seq ASC", args...)
+	rows, err := s.db.QueryContext(ctx, query+" ORDER BY seq ASC", args...)
 	if err != nil {
 		return nil, err
 	}

@@ -18,13 +18,13 @@ type IdentityBindingUnlink struct {
 	Reason     string `json:"reason"`
 }
 
-func (h *handler) identityProviders(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) IdentityProviders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, IdentityProviders)
 }
 
-func (h *handler) listIdentityBindings(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) ListIdentityBindings(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	bindings, err := h.s.ListIdentityBindings(IdentityBindingFilter{
+	bindings, err := h.s.ListIdentityBindings(r.Context(), IdentityBindingFilter{
 		PrincipalID:     q.Get("principal_id"),
 		Provider:        q.Get("provider"),
 		TenantID:        q.Get("tenant_id"),
@@ -36,41 +36,41 @@ func (h *handler) listIdentityBindings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, bindings)
 }
 
-func (h *handler) linkIdentity(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) LinkIdentity(w http.ResponseWriter, r *http.Request) {
 	var body IdentityBindingLink
 	if !decode(w, r, &body) {
 		return
 	}
-	b, err := h.s.LinkIdentity(body.PrincipalID, body.Provider, body.TenantID, body.Subject, body.LinkedBy, body.Note)
+	b, err := h.s.LinkIdentity(r.Context(), body.PrincipalID, body.Provider, body.TenantID, body.Subject, body.LinkedBy, body.Note)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, b)
 }
 
-func (h *handler) resolveIdentity(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) ResolveIdentity(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	resolution, err := h.s.ResolveIdentity(q.Get("provider"), q.Get("tenant_id"), q.Get("subject"))
+	resolution, err := h.s.ResolveIdentity(r.Context(), q.Get("provider"), q.Get("tenant_id"), q.Get("subject"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resolution)
 }
 
-func (h *handler) getIdentityBinding(w http.ResponseWriter, r *http.Request) {
-	b, err := h.s.GetIdentityBinding(r.PathValue("id"))
+func (h *Handlers) GetIdentityBinding(w http.ResponseWriter, r *http.Request) {
+	b, err := h.s.GetIdentityBinding(r.Context(), r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, b)
 }
 
-func (h *handler) unlinkIdentity(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) UnlinkIdentity(w http.ResponseWriter, r *http.Request) {
 	var body IdentityBindingUnlink
 	if !decode(w, r, &body) {
 		return
 	}
-	b, err := h.s.UnlinkIdentity(r.PathValue("id"), body.UnlinkedBy, body.Reason)
+	b, err := h.s.UnlinkIdentity(r.Context(), r.PathValue("id"), body.UnlinkedBy, body.Reason)
 	if respondStoreError(w, err) {
 		return
 	}

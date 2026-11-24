@@ -10,11 +10,43 @@ import (
 	"testing"
 )
 
+// registerTestRoutes mounts the handlers at the paths the bridge serves them
+// under /principal-store/, without the prefix.
+func registerTestRoutes(mux *http.ServeMux, s *Store) {
+	h := NewHandlers(s)
+	mux.HandleFunc("GET /health", h.Health)
+	mux.HandleFunc("GET /kinds", h.Kinds)
+	mux.HandleFunc("GET /kind-definitions", h.KindDefinitions)
+	mux.HandleFunc("GET /availability-reasons", h.AvailabilityReasons)
+	mux.HandleFunc("GET /weekday-codes", h.WeekdayCodes)
+	mux.HandleFunc("GET /principals", h.ListPrincipals)
+	mux.HandleFunc("POST /principals", h.CreatePrincipal)
+	mux.HandleFunc("POST /contacts/resolve", h.ResolveContact)
+	mux.HandleFunc("GET /principals/{id}", h.GetPrincipal)
+	mux.HandleFunc("PATCH /principals/{id}", h.PatchPrincipal)
+	mux.HandleFunc("POST /principals/{id}/disable", h.DisablePrincipal)
+	mux.HandleFunc("POST /principals/{id}/enable", h.EnablePrincipal)
+	mux.HandleFunc("GET /principals/{id}/members", h.ListMembers)
+	mux.HandleFunc("PUT /principals/{group}/members/{member}", h.PutMember)
+	mux.HandleFunc("DELETE /principals/{group}/members/{member}", h.DeleteMember)
+	mux.HandleFunc("GET /principals/{id}/groups", h.ListGroups)
+	mux.HandleFunc("GET /principals/{id}/availability", h.Availability)
+	mux.HandleFunc("GET /principals/{id}/time-off", h.ListTimeOff)
+	mux.HandleFunc("POST /principals/{id}/time-off", h.AddTimeOff)
+	mux.HandleFunc("DELETE /principals/{id}/time-off/{timeOffID}", h.DeleteTimeOff)
+	mux.HandleFunc("GET /identity-providers", h.IdentityProviders)
+	mux.HandleFunc("GET /identity-bindings", h.ListIdentityBindings)
+	mux.HandleFunc("POST /identity-bindings", h.LinkIdentity)
+	mux.HandleFunc("GET /identity-bindings/resolve", h.ResolveIdentity)
+	mux.HandleFunc("GET /identity-bindings/{id}", h.GetIdentityBinding)
+	mux.HandleFunc("POST /identity-bindings/{id}/unlink", h.UnlinkIdentity)
+}
+
 func newTestServer(t *testing.T) (*httptest.Server, *Store) {
 	t.Helper()
 	s := newTestStore(t)
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s)
+	registerTestRoutes(mux, s)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, s

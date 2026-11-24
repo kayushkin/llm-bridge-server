@@ -1,13 +1,15 @@
 package principalstore
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 // Availability is a human's declared working week, in their own zone. It is
@@ -155,7 +157,7 @@ type TimeOff struct {
 
 var ErrInvalidAvailability = errors.New("invalid availability")
 
-func formatTimeOffID(seq int64) string { return fmt.Sprintf("timeoff_%06d", seq) }
+func formatTimeOffID(seq int64) string { return postgresstorage.FormatRecordID(TimeOffIDPrefix, seq) }
 
 // evaluate decides one principal's availability at an instant, given the
 // absences that overlap it. onTimeOff is whether any time_off row covers at.
@@ -179,65 +181,58 @@ func evaluate(p *Principal, at time.Time, onTimeOff bool) AvailabilityAnswer {
 
 // Availability answers whether one principal is available at an instant.
 // A group has no hours of its own — ask its members.
-func (s *Store) Availability(id string, at time.Time) (AvailabilityAnswer, error) {
-	p, err := s.getRow(id)
+func (s *Store) Availability(ctx context.Context, id string, at time.Time) (AvailabilityAnswer, error) {
+	p, err := s.getRow(ctx, id)
 	if err != nil {
 		return AvailabilityAnswer{}, err
 	}
 	if p.Kind == KindGroup {
 		return AvailabilityAnswer{}, fmt.Errorf("%w: %s is a group and has no hours of its own — read GET /principals/%s/members?available_at=%d", ErrInvalidAvailability, id, id, at.Unix())
 	}
-	off, err := s.principalsOnTimeOff(at, []string{id})
+	off, err := s.principalsOnTimeOff(ctx, at, []*Principal{p})
 	if err != nil {
 		return AvailabilityAnswer{}, err
 	}
-	return evaluate(p, at, off[id]), nil
+	return evaluate(p, at, off[p.Seq]), nil
 }
 
-// principalsOnTimeOff returns which of the given principals have an absence
-// covering the instant, in one query.
-func (s *Store) principalsOnTimeOff(at time.Time, ids []string) (map[string]bool, error) {
-	out := map[string]bool{}
-	if len(ids) == 0 {
+// principalsOnTimeOff returns which of the given principals, by number, have
+// an absence covering the instant, in one query.
+func (s *Store) principalsOnTimeOff(ctx context.Context, at time.Time, principals []*Principal) (map[int64]bool, error) {
+	out := map[int64]bool{}
+	if len(principals) == 0 {
 		return out, nil
 	}
-	placeholders := strings.Repeat("?,", len(ids))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, 0, len(ids)+2)
-	args = append(args, at.Unix(), at.Unix())
-	for _, id := range ids {
-		args = append(args, id)
+	numbers := make([]int64, 0, len(principals))
+	for _, p := range principals {
+		numbers = append(numbers, p.Seq)
 	}
-	rows, err := s.db.Query(`SELECT DISTINCT principal_id FROM time_off
-		WHERE starts_at <= ? AND ends_at > ? AND principal_id IN (`+placeholders+`)`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT principal_seq FROM time_off
+		WHERE starts_at <= $1 AND ends_at > $1 AND principal_seq = ANY($2)`, at.Unix(), numbers)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
 			return nil, err
 		}
-		out[id] = true
+		out[seq] = true
 	}
 	return out, rows.Err()
 }
 
 // filterAvailable keeps the principals available at the instant. The caller
 // has already restricted the list to humans.
-func (s *Store) filterAvailable(principals []*Principal, at time.Time) ([]*Principal, error) {
-	ids := make([]string, 0, len(principals))
-	for _, p := range principals {
-		ids = append(ids, p.ID)
-	}
-	off, err := s.principalsOnTimeOff(at, ids)
+func (s *Store) filterAvailable(ctx context.Context, principals []*Principal, at time.Time) ([]*Principal, error) {
+	off, err := s.principalsOnTimeOff(ctx, at, principals)
 	if err != nil {
 		return nil, err
 	}
 	out := []*Principal{}
 	for _, p := range principals {
-		if evaluate(p, at, off[p.ID]).Available {
+		if evaluate(p, at, off[p.Seq]).Available {
 			out = append(out, p)
 		}
 	}
@@ -292,8 +287,9 @@ func decodeAvailability(raw string) (*Availability, error) {
 // AddTimeOff records an absence for a human. The range must be non-empty;
 // overlapping ranges are allowed, since two reasons to be away on one day
 // are still one day away.
-func (s *Store) AddTimeOff(principalID string, startsAt, endsAt int64, note string) (*TimeOff, error) {
-	if _, err := s.requireKind(principalID, KindHuman, "time off belongs to a human"); err != nil {
+func (s *Store) AddTimeOff(ctx context.Context, principalID string, startsAt, endsAt int64, note string) (*TimeOff, error) {
+	owner, err := s.requireKind(ctx, principalID, KindHuman, "time off belongs to a human")
+	if err != nil {
 		if errors.Is(err, ErrInvalidMembership) {
 			return nil, fmt.Errorf("%w: %s is a group — time off belongs to a human", ErrInvalidAvailability, principalID)
 		}
@@ -305,52 +301,41 @@ func (s *Store) AddTimeOff(principalID string, startsAt, endsAt int64, note stri
 	if startsAt >= endsAt {
 		return nil, fmt.Errorf("%w: starts_at %d must be before ends_at %d", ErrInvalidAvailability, startsAt, endsAt)
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	var maxSeq sql.NullInt64
-	if err := tx.QueryRow(`SELECT MAX(seq) FROM time_off`).Scan(&maxSeq); err != nil {
-		return nil, err
-	}
 	row := &TimeOff{
-		Seq: maxSeq.Int64 + 1, PrincipalID: principalID, StartsAt: startsAt, EndsAt: endsAt,
+		PrincipalID: principalID, StartsAt: startsAt, EndsAt: endsAt,
 		Note: strings.TrimSpace(note), CreatedAt: now(),
 	}
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO time_off (principal_seq, starts_at, ends_at, note, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING seq`,
+		owner.Seq, row.StartsAt, row.EndsAt, row.Note, row.CreatedAt).Scan(&row.Seq); err != nil {
+		return nil, err
+	}
 	row.ID = formatTimeOffID(row.Seq)
-	if _, err := tx.Exec(`INSERT INTO time_off (id, seq, principal_id, starts_at, ends_at, note, created_at) VALUES (?,?,?,?,?,?,?)`,
-		row.ID, row.Seq, row.PrincipalID, row.StartsAt, row.EndsAt, row.Note, row.CreatedAt); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
 	return row, nil
 }
 
 // ListTimeOff returns a principal's absences, soonest first. Disabled rows
 // answer like any other; a group is a 400 because it has none.
-func (s *Store) ListTimeOff(principalID string) ([]*TimeOff, error) {
-	p, err := s.getRow(principalID)
+func (s *Store) ListTimeOff(ctx context.Context, principalID string) ([]*TimeOff, error) {
+	p, err := s.getRow(ctx, principalID)
 	if err != nil {
 		return nil, err
 	}
 	if p.Kind == KindGroup {
 		return nil, fmt.Errorf("%w: %s is a group — time off belongs to a human", ErrInvalidAvailability, principalID)
 	}
-	rows, err := s.db.Query(`SELECT id, seq, principal_id, starts_at, ends_at, note, created_at
-		FROM time_off WHERE principal_id = ? ORDER BY starts_at ASC, seq ASC`, principalID)
+	rows, err := s.db.QueryContext(ctx, `SELECT seq, starts_at, ends_at, note, created_at
+		FROM time_off WHERE principal_seq = $1 ORDER BY starts_at ASC, seq ASC`, p.Seq)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []*TimeOff{}
 	for rows.Next() {
-		var t TimeOff
-		if err := rows.Scan(&t.ID, &t.Seq, &t.PrincipalID, &t.StartsAt, &t.EndsAt, &t.Note, &t.CreatedAt); err != nil {
+		t := TimeOff{PrincipalID: p.ID}
+		if err := rows.Scan(&t.Seq, &t.StartsAt, &t.EndsAt, &t.Note, &t.CreatedAt); err != nil {
 			return nil, err
 		}
+		t.ID = formatTimeOffID(t.Seq)
 		out = append(out, &t)
 	}
 	return out, rows.Err()
@@ -359,11 +344,16 @@ func (s *Store) ListTimeOff(principalID string) ([]*TimeOff, error) {
 // RemoveTimeOff deletes one absence. This is a real delete — unlike a
 // principal, nothing joins on a time_off id — and the pair must match, so a
 // row cannot be removed through another principal's path.
-func (s *Store) RemoveTimeOff(principalID, timeOffID string) error {
-	if _, err := s.getRow(principalID); err != nil {
+func (s *Store) RemoveTimeOff(ctx context.Context, principalID, timeOffID string) error {
+	p, err := s.getRow(ctx, principalID)
+	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(`DELETE FROM time_off WHERE id = ? AND principal_id = ?`, timeOffID, principalID)
+	seq, ok := numberOfID(TimeOffIDPrefix, timeOffID)
+	if !ok {
+		return fmt.Errorf("%w: time off %s on principal %s", ErrNotFound, timeOffID, principalID)
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM time_off WHERE seq = $1 AND principal_seq = $2`, seq, p.Seq)
 	if err != nil {
 		return err
 	}

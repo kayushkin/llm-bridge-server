@@ -1,29 +1,16 @@
 # principal-store — API contract
 
-`127.0.0.1:8314`. The registry of principals: the humans and groups a permission
-can be granted to and a card can be assigned to. This store hands out the id
-everything else joins on.
+The registry of principals: the humans and groups a permission can be granted
+to and a card can be assigned to. This store hands out the id everything else
+joins on.
 
-Module `github.com/kayushkin/principal-store`, root package `principalstore`,
-binary `cmd/principal-store` installed at `~/bin/principal-store`. Env:
-`PRINCIPAL_STORE_ADDR` (default `127.0.0.1:8314`), `PRINCIPAL_STORE_DATA_DIR`
-(default `~/.config/principal-store`). SQLite at
-`<data dir>/principal-store.db`, WAL, `?_foreign_keys=on`.
-
-Routes are rooted at `/`, the same as prediction-store, quote-store and
-job-store; dash adds the `/api/principals` prefix and the auth this service has
-none of. All timestamps are epoch seconds (`INTEGER`, 0 = unset).
-
-**The bind is `127.0.0.1`, deliberately, and it is part of this contract.** The
-older store siblings bind `*`; this one must not, because it has no auth of its
-own and the front door (dash) is the only door. The unit sets
-`PRINCIPAL_STORE_ADDR=127.0.0.1:8314`, `settings.go` defaults to the same, and
-`deploy.sh` fails if the port is listening anywhere else. Nothing off-host may
-reach this service directly.
-
-Build with `-tags sqlite_fts5`. The schema creates an FTS5 virtual table, so a
-binary built without the tag starts and dies at the first boot with `no such
-module: fts5` — `Open()` says so and names the flag.
+Package `internal/access/principalstore` of llm-bridge-server. The bridge
+mounts every route below under `/principal-store/` (so `GET /principals/{id}`
+is `GET /principal-store/principals/{id}`), decides who may call each one, and
+keeps the records in the Postgres module `principals` (role
+`principals_module`). Until the landing day the standalone service answers the
+same routes at the root of `127.0.0.1:8314` from its SQLite file, with no auth
+of its own. All timestamps are epoch seconds (0 = unset).
 
 ---
 
@@ -34,7 +21,7 @@ module: fts5` — `Open()` says so and names the flag.
 | Field | Meaning |
 |---|---|
 | `id` | `principal_000001`. What every other store joins on |
-| `seq` | monotonic, assigned here; generates `id` and is the FTS rowid |
+| `seq` | the identity column's number, assigned here and never handed out again; generates `id` |
 | `kind` | `human` \| `group` \| `contact` \| `peer`. Fixed at creation; enforced in Go against `kind.go` |
 | `display_name` | required. Display only — never a join key, and not unique |
 | `email` | humans, free text, trimmed. **Not unique and never a join key** — two rows may share one |
@@ -56,7 +43,7 @@ from the shape as well as from `kind`. Neither is expanded by `GET /principals`.
 | `member_id` | a `human`, `peer` or `service` principal (a kind with `acts_as_caller`). A group here is a 400: **no nested groups in v1** |
 | `created_at` | |
 
-`(group_id, member_id)` is the primary key and the insert is `INSERT OR IGNORE`,
+`(group_id, member_id)` is the primary key and the insert does nothing on a conflict,
 so adding the same member twice is idempotent.
 
 ### `time_off`
@@ -203,7 +190,6 @@ grant, every session, granted or not. This store only records it.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/health` | `{"status":"ok","counts":{principals,humans,groups,disabled}}`. Every count is over all rows, disabled included. `principals` counts every kind, so it is `humans + groups` plus the `contact` rows, which have no count of their own |
-| GET | `/settings` | every environment variable the service reads, as llm-bridge `msg.ServiceSettings`: the value in force, its default and where it came from. Read-only: no setting is editable and `PUT /settings/{key}` is not mounted |
 | GET | `/kinds` | `["human","group","contact","peer"]` |
 | GET | `/kind-definitions` | `[KindDefinition]`: each kind with `acts_in_this_deployment`, `acts_as_caller`, `restricted_to_its_grants` and a description |
 | GET | `/availability-reasons` | `["in_hours","off_hours","time_off","no_schedule","disabled"]` |
@@ -274,22 +260,34 @@ caller, never from the body.
 
 ## Search
 
-`q` is matched against an FTS5 index over `display_name` and `email`, kept true
-by triggers on insert, update and delete, keyed on `seq`.
+`q` is matched against a `tsvector` over `display_name` (weight A) and
+`email` (weight B) with a GIN index, written with every name and email.
+Words split at every space and ASCII punctuation mark, are lower-cased, and
+lose their diacritics (José is `jose`), in the text and in the query alike, as
+the FTS5 index the standalone store kept read them.
 
 **Bare words are prefix terms.** `q=pri` finds Priya Raman and `q=priya northwind`
 finds her by name and email domain together, because the main caller is an
-assignee picker reading keystrokes and FTS5's default whole-token match would
-find her only once the whole name was typed. Anything that already carries FTS5
-syntax — a double quote, `*`, `:`, parentheses, or an uppercase `AND` / `OR` /
-`NOT` / `NEAR` — is passed through exactly as written. So `q="Slava Kayushkin"`
-(quotes included, URL-encoded) is an exact phrase match, which is what
-`scripts/seed-sample-principals.sh` relies on; note that a phrase can still
-over-match (`"Data Team"` also finds `Data Team Leads`), so an exact-name lookup
-narrows the result by `display_name` on the caller's side.
+assignee picker reading keystrokes. A bare word with punctuation inside it,
+`marcus.feld`, is the phrase `marcus feld` with the last word a prefix.
+Punctuation alone, `q=-`, holds no word and matches nothing.
 
-The expression is probed before the listing query runs, so a malformed one is a
-**400** naming the query rather than a 500 from inside the handler.
+**A query with search syntax means exactly what it says.** A double quote, `*`,
+`:`, parentheses, or an upper-case `AND` / `OR` / `NOT` switch a query to it:
+`"Slava Kayushkin"` (quotes included, URL-encoded) is an exact phrase, which is
+what `scripts/seed-sample-principals.sh` relies on; a bare word is that whole
+word; `word*` or `"a phrase"*` makes the last word a prefix; `display_name:data`
+or `email:"northwind eng"` searches one field; `NOT` is binary (`a NOT b`), and
+`NOT` binds tighter than `AND` (or two terms side by side), which binds tighter
+than `OR`. A phrase never runs from the end of the name into the address. A
+phrase can still over-match (`"Data Team"` also finds `Data Team Leads`), so an
+exact-name lookup narrows the result by `display_name` on the caller's side.
+
+A malformed query is a **400** naming what is wrong: an unclosed quote or
+parenthesis, a dangling operator, a `*` or `:` with nothing before it, a column
+other than `display_name` or `email`, a phrase with no word, and the FTS5
+syntax that did not survive the move to Postgres — `NEAR`, `{column lists}` and
+`^`.
 
 ---
 

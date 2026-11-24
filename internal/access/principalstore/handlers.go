@@ -11,45 +11,18 @@ import (
 	"time"
 )
 
-// RegisterHandlers mounts the API on mux. Routes are rooted at / — dash adds
-// its own /api/principals prefix and supplies the auth this service has none
-// of, exactly as it does for prediction-store, quote-store and job-store. That
-// is also why main.go binds 127.0.0.1 and not *: with no auth of its own, the
-// front door has to be the only door.
-func RegisterHandlers(mux *http.ServeMux, s *Store) {
-	h := &handler{s: s}
-	mux.HandleFunc("GET /health", h.health)
-	mux.HandleFunc("GET /kinds", h.kinds)
-	mux.HandleFunc("GET /kind-definitions", h.kindDefinitions)
-	mux.HandleFunc("GET /availability-reasons", h.availabilityReasons)
-	mux.HandleFunc("GET /weekday-codes", h.weekdayCodes)
-
-	mux.HandleFunc("GET /principals", h.listPrincipals)
-	mux.HandleFunc("POST /principals", h.createPrincipal)
-	mux.HandleFunc("POST /contacts/resolve", h.resolveContact)
-	mux.HandleFunc("GET /principals/{id}", h.getPrincipal)
-	mux.HandleFunc("PATCH /principals/{id}", h.patchPrincipal)
-	mux.HandleFunc("POST /principals/{id}/disable", h.disablePrincipal)
-	mux.HandleFunc("POST /principals/{id}/enable", h.enablePrincipal)
-	mux.HandleFunc("GET /principals/{id}/members", h.listMembers)
-	mux.HandleFunc("PUT /principals/{group}/members/{member}", h.putMember)
-	mux.HandleFunc("DELETE /principals/{group}/members/{member}", h.deleteMember)
-	mux.HandleFunc("GET /principals/{id}/groups", h.listGroups)
-	mux.HandleFunc("GET /principals/{id}/availability", h.availability)
-	mux.HandleFunc("GET /principals/{id}/time-off", h.listTimeOff)
-	mux.HandleFunc("POST /principals/{id}/time-off", h.addTimeOff)
-	mux.HandleFunc("DELETE /principals/{id}/time-off/{timeOffID}", h.deleteTimeOff)
-
-	mux.HandleFunc("GET /identity-providers", h.identityProviders)
-	mux.HandleFunc("GET /identity-bindings", h.listIdentityBindings)
-	mux.HandleFunc("POST /identity-bindings", h.linkIdentity)
-	mux.HandleFunc("GET /identity-bindings/resolve", h.resolveIdentity)
-	mux.HandleFunc("GET /identity-bindings/{id}", h.getIdentityBinding)
-	mux.HandleFunc("POST /identity-bindings/{id}/unlink", h.unlinkIdentity)
+// Handlers answers the store's routes. The bridge mounts each method under
+// /principal-store/ with the paths the standalone store served at its root, so
+// every route reads its path values by the same names ({id}, {group},
+// {member}, {timeOffID}). Who may call which route is the bridge's decision;
+// nothing here checks a caller.
+type Handlers struct {
+	s *Store
 }
 
-type handler struct {
-	s *Store
+// NewHandlers returns the handlers of store's routes.
+func NewHandlers(store *Store) *Handlers {
+	return &Handlers{s: store}
 }
 
 // patchableFields is every key PATCH /principals/{id} accepts, matching the
@@ -79,27 +52,27 @@ func sortedPatchableFields() []string {
 	return out
 }
 
-func (h *handler) health(w http.ResponseWriter, r *http.Request) {
-	counts, err := h.s.Counts()
+func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
+	counts, err := h.s.Counts(r.Context())
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "counts": counts})
 }
 
-func (h *handler) kinds(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) Kinds(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Kinds)
 }
 
-func (h *handler) kindDefinitions(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) KindDefinitions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, KindDefinitions)
 }
 
-func (h *handler) availabilityReasons(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) AvailabilityReasons(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, AvailabilityReasons)
 }
 
-func (h *handler) weekdayCodes(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) WeekdayCodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, WeekdayCodes)
 }
 
@@ -143,19 +116,19 @@ func filterFrom(w http.ResponseWriter, r *http.Request) (Filter, bool) {
 	return f, true
 }
 
-func (h *handler) listPrincipals(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) ListPrincipals(w http.ResponseWriter, r *http.Request) {
 	f, ok := filterFrom(w, r)
 	if !ok {
 		return
 	}
-	principals, err := h.s.List(f)
+	principals, err := h.s.List(r.Context(), f)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, principals)
 }
 
-func (h *handler) availability(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) Availability(w http.ResponseWriter, r *http.Request) {
 	at, ok := instantFrom(w, r, "at")
 	if !ok {
 		return
@@ -164,22 +137,22 @@ func (h *handler) availability(w http.ResponseWriter, r *http.Request) {
 		t := time.Now().UTC()
 		at = &t
 	}
-	answer, err := h.s.Availability(r.PathValue("id"), *at)
+	answer, err := h.s.Availability(r.Context(), r.PathValue("id"), *at)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, answer)
 }
 
-func (h *handler) listTimeOff(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.s.ListTimeOff(r.PathValue("id"))
+func (h *Handlers) ListTimeOff(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.s.ListTimeOff(r.Context(), r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rows)
 }
 
-func (h *handler) addTimeOff(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) AddTimeOff(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		StartsAt int64  `json:"starts_at"`
 		EndsAt   int64  `json:"ends_at"`
@@ -188,15 +161,15 @@ func (h *handler) addTimeOff(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	created, err := h.s.AddTimeOff(r.PathValue("id"), body.StartsAt, body.EndsAt, body.Note)
+	created, err := h.s.AddTimeOff(r.Context(), r.PathValue("id"), body.StartsAt, body.EndsAt, body.Note)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
 }
 
-func (h *handler) deleteTimeOff(w http.ResponseWriter, r *http.Request) {
-	if respondStoreError(w, h.s.RemoveTimeOff(r.PathValue("id"), r.PathValue("timeOffID"))) {
+func (h *Handlers) DeleteTimeOff(w http.ResponseWriter, r *http.Request) {
+	if respondStoreError(w, h.s.RemoveTimeOff(r.Context(), r.PathValue("id"), r.PathValue("timeOffID"))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -206,7 +179,7 @@ func (h *handler) deleteTimeOff(w http.ResponseWriter, r *http.Request) {
 // contact the first time that address is seen. It is how mail intake gives a
 // ticket a requester it can join on; see contact.go for why this is the one
 // lookup by name in the store.
-func (h *handler) resolveContact(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) ResolveContact(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`
@@ -214,7 +187,7 @@ func (h *handler) resolveContact(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	resolution, err := h.s.ResolveContact(body.Email, body.DisplayName)
+	resolution, err := h.s.ResolveContact(r.Context(), body.Email, body.DisplayName)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -225,7 +198,7 @@ func (h *handler) resolveContact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, resolution)
 }
 
-func (h *handler) createPrincipal(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) CreatePrincipal(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Kind        string `json:"kind"`
 		DisplayName string `json:"display_name"`
@@ -234,22 +207,22 @@ func (h *handler) createPrincipal(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	created, err := h.s.Create(&Principal{Kind: body.Kind, DisplayName: body.DisplayName, Email: body.Email})
+	created, err := h.s.Create(r.Context(), &Principal{Kind: body.Kind, DisplayName: body.DisplayName, Email: body.Email})
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
 }
 
-func (h *handler) getPrincipal(w http.ResponseWriter, r *http.Request) {
-	p, err := h.s.Get(r.PathValue("id"), isTrue(r.URL.Query().Get("include_disabled")))
+func (h *Handlers) GetPrincipal(w http.ResponseWriter, r *http.Request) {
+	p, err := h.s.Get(r.Context(), r.PathValue("id"), isTrue(r.URL.Query().Get("include_disabled")))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
 }
 
-func (h *handler) patchPrincipal(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) PatchPrincipal(w http.ResponseWriter, r *http.Request) {
 	// Decoded strictly so that PATCHing "kind" or "disabled_at" is a loud 400
 	// naming what does move them, not a silent no-op that leaves the caller
 	// believing the row changed.
@@ -283,30 +256,30 @@ func (h *handler) patchPrincipal(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
 		return
 	}
-	updated, err := h.s.Patch(r.PathValue("id"), patch)
+	updated, err := h.s.Patch(r.Context(), r.PathValue("id"), patch)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
-func (h *handler) disablePrincipal(w http.ResponseWriter, r *http.Request) {
-	p, err := h.s.Disable(r.PathValue("id"))
+func (h *Handlers) DisablePrincipal(w http.ResponseWriter, r *http.Request) {
+	p, err := h.s.Disable(r.Context(), r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
 }
 
-func (h *handler) enablePrincipal(w http.ResponseWriter, r *http.Request) {
-	p, err := h.s.Enable(r.PathValue("id"))
+func (h *Handlers) EnablePrincipal(w http.ResponseWriter, r *http.Request) {
+	p, err := h.s.Enable(r.Context(), r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
 }
 
-func (h *handler) listMembers(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) ListMembers(w http.ResponseWriter, r *http.Request) {
 	if _, present := r.URL.Query()["available_at"]; present {
 		at, ok := instantFrom(w, r, "available_at")
 		if !ok {
@@ -316,31 +289,31 @@ func (h *handler) listMembers(w http.ResponseWriter, r *http.Request) {
 			t := time.Now().UTC()
 			at = &t
 		}
-		members, err := h.s.ListAvailableMembers(r.PathValue("id"), *at)
+		members, err := h.s.ListAvailableMembers(r.Context(), r.PathValue("id"), *at)
 		if respondStoreError(w, err) {
 			return
 		}
 		writeJSON(w, http.StatusOK, members)
 		return
 	}
-	members, err := h.s.ListMembers(r.PathValue("id"), isTrue(r.URL.Query().Get("include_disabled")))
+	members, err := h.s.ListMembers(r.Context(), r.PathValue("id"), isTrue(r.URL.Query().Get("include_disabled")))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, members)
 }
 
-func (h *handler) listGroups(w http.ResponseWriter, r *http.Request) {
-	groups, err := h.s.ListGroups(r.PathValue("id"), isTrue(r.URL.Query().Get("include_disabled")))
+func (h *Handlers) ListGroups(w http.ResponseWriter, r *http.Request) {
+	groups, err := h.s.ListGroups(r.Context(), r.PathValue("id"), isTrue(r.URL.Query().Get("include_disabled")))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, groups)
 }
 
-func (h *handler) putMember(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) PutMember(w http.ResponseWriter, r *http.Request) {
 	groupID, memberID := r.PathValue("group"), r.PathValue("member")
-	created, err := h.s.AddMember(groupID, memberID)
+	created, err := h.s.AddMember(r.Context(), groupID, memberID)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -351,8 +324,8 @@ func (h *handler) putMember(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, GroupMembership{GroupID: groupID, MemberID: memberID, Created: created})
 }
 
-func (h *handler) deleteMember(w http.ResponseWriter, r *http.Request) {
-	if respondStoreError(w, h.s.RemoveMember(r.PathValue("group"), r.PathValue("member"))) {
+func (h *Handlers) DeleteMember(w http.ResponseWriter, r *http.Request) {
+	if respondStoreError(w, h.s.RemoveMember(r.Context(), r.PathValue("group"), r.PathValue("member"))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -14,7 +14,7 @@ import (
 func TestAPeerActsHoldsGrantsAndIsRestrictedToThem(t *testing.T) {
 	s := newTestStore(t)
 	peer := mustCreate(t, s, KindPeer, "bridge on laptop", "")
-	readBack, err := s.Get(peer.ID, false)
+	readBack, err := s.Get(testContext, peer.ID, false)
 	if err != nil {
 		t.Fatalf("get peer: %v", err)
 	}
@@ -45,24 +45,24 @@ func TestAPeerCanBeAnAdministratorAndAGroupMember(t *testing.T) {
 	s := newTestStore(t)
 	peer := mustCreate(t, s, KindPeer, "bridge on laptop", "")
 	yes := true
-	promoted, err := s.Patch(peer.ID, Patch{IsAdministrator: &yes})
+	promoted, err := s.Patch(testContext, peer.ID, Patch{IsAdministrator: &yes})
 	if err != nil || !promoted.IsAdministrator {
 		t.Fatalf("promote a peer: %+v %v", promoted, err)
 	}
 	role := mustCreate(t, s, KindGroup, "Dispatch only", "")
-	if _, err := s.AddMember(role.ID, peer.ID); err != nil {
+	if _, err := s.AddMember(testContext, role.ID, peer.ID); err != nil {
 		t.Fatalf("a peer joins a group: %v", err)
 	}
-	withGroups, err := s.Get(peer.ID, false)
+	withGroups, err := s.Get(testContext, peer.ID, false)
 	if err != nil || len(withGroups.Groups) != 1 || withGroups.Groups[0].ID != role.ID {
 		t.Fatalf("the peer's groups: %+v %v", withGroups, err)
 	}
 	other := mustCreate(t, s, KindGroup, "Nested", "")
-	if _, err := s.AddMember(role.ID, other.ID); !errors.Is(err, ErrInvalidMembership) {
+	if _, err := s.AddMember(testContext, role.ID, other.ID); !errors.Is(err, ErrInvalidMembership) {
 		t.Fatalf("a group in the member slot is still refused, got %v", err)
 	}
 	contact := mustCreate(t, s, KindContact, "Customer", "c@example.com")
-	if _, err := s.Patch(contact.ID, Patch{IsAdministrator: &yes}); !errors.Is(err, ErrInvalidPrincipal) {
+	if _, err := s.Patch(testContext, contact.ID, Patch{IsAdministrator: &yes}); !errors.Is(err, ErrInvalidPrincipal) {
 		t.Fatalf("a contact is refused administrator, got %v", err)
 	}
 }
@@ -71,9 +71,9 @@ func TestAPeerHasNoAvailability(t *testing.T) {
 	s := newTestStore(t)
 	peer := mustCreate(t, s, KindPeer, "bridge on laptop", "")
 	week := json.RawMessage(`{"tzid":"America/Los_Angeles","days":["MO"],"start":"09:00","end":"17:00"}`)
-	if _, err := s.Patch(peer.ID, Patch{Availability: week}); !errors.Is(err, ErrInvalidAvailability) {
+	if _, err := s.Patch(testContext, peer.ID, Patch{Availability: week}); !errors.Is(err, ErrInvalidAvailability) {
 		t.Fatalf("a peer is refused a working week, got %v", err)
-	} else if _, err := s.Patch(peer.ID, Patch{Availability: week}); !strings.Contains(err.Error(), "is a peer") {
+	} else if _, err := s.Patch(testContext, peer.ID, Patch{Availability: week}); !strings.Contains(err.Error(), "is a peer") {
 		t.Fatalf("the refusal should be for being a peer, not for the week's shape: %v", err)
 	}
 }

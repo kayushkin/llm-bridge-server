@@ -11,7 +11,7 @@ import (
 func TestResolveContactGivesOneRequesterOneID(t *testing.T) {
 	s := newTestStore(t)
 
-	first, err := s.ResolveContact("Dana.Whitfield@example.com", "Dana Whitfield")
+	first, err := s.ResolveContact(testContext, "Dana.Whitfield@example.com", "Dana Whitfield")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func TestResolveContactGivesOneRequesterOneID(t *testing.T) {
 	}
 
 	// Same person, different capitals, different name on the mail.
-	again, err := s.ResolveContact("  DANA.WHITFIELD@example.com ", "D. Whitfield")
+	again, err := s.ResolveContact(testContext, "  DANA.WHITFIELD@example.com ", "D. Whitfield")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,11 +39,11 @@ func TestResolveContactGivesOneRequesterOneID(t *testing.T) {
 
 	// A human with the same address is a different row on purpose: one can log
 	// in, the other must never be able to.
-	human, err := s.Create(&Principal{Kind: KindHuman, DisplayName: "Dana at work", Email: "dana.whitfield@example.com"})
+	human, err := s.Create(testContext, &Principal{Kind: KindHuman, DisplayName: "Dana at work", Email: "dana.whitfield@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	third, err := s.ResolveContact("dana.whitfield@example.com", "")
+	third, err := s.ResolveContact(testContext, "dana.whitfield@example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,10 +51,10 @@ func TestResolveContactGivesOneRequesterOneID(t *testing.T) {
 		t.Fatal("resolving a contact must never return a human")
 	}
 
-	if _, err := s.ResolveContact("", "Nobody"); !errors.Is(err, ErrInvalidContact) {
+	if _, err := s.ResolveContact(testContext, "", "Nobody"); !errors.Is(err, ErrInvalidContact) {
 		t.Fatalf("an empty address must be refused, got %v", err)
 	}
-	if _, err := s.ResolveContact("not-an-address", "Nobody"); !errors.Is(err, ErrInvalidContact) {
+	if _, err := s.ResolveContact(testContext, "not-an-address", "Nobody"); !errors.Is(err, ErrInvalidContact) {
 		t.Fatalf("a string with no @ must be refused, got %v", err)
 	}
 }
@@ -63,7 +63,7 @@ func TestResolveContactGivesOneRequesterOneID(t *testing.T) {
 // outside party on a ticket, never someone this deployment gives access to.
 func TestAContactActsOnNothing(t *testing.T) {
 	s := newTestStore(t)
-	resolution, err := s.ResolveContact("outside@example.com", "Outside Person")
+	resolution, err := s.ResolveContact(testContext, "outside@example.com", "Outside Person")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,12 +77,12 @@ func TestAContactActsOnNothing(t *testing.T) {
 	}
 
 	yes := true
-	if _, err := s.Patch(contact.ID, Patch{IsAdministrator: &yes}); err == nil {
+	if _, err := s.Patch(testContext, contact.ID, Patch{IsAdministrator: &yes}); err == nil {
 		t.Fatal("a contact must not be promoted to administrator")
 	}
 
 	group := mustCreate(t, s, KindGroup, "Support team", "")
-	if _, err := s.AddMember(group.ID, contact.ID); err == nil {
+	if _, err := s.AddMember(testContext, group.ID, contact.ID); err == nil {
 		t.Fatal("a contact must not join a group")
 	}
 }

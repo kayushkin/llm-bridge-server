@@ -24,12 +24,12 @@ func TestAnIdentitySignsInAsTheOnePrincipalItWasLinkedTo(t *testing.T) {
 	priya := mustCreate(t, s, KindHuman, "Priya", "priya@example.com")
 	marcus := mustCreate(t, s, KindHuman, "Marcus", "")
 
-	if _, err := s.ResolveIdentity("entra", testTenant, testSubject); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ResolveIdentity(testContext, "entra", testTenant, testSubject); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("an identity nobody linked must be unprovisioned, got %v", err)
 	}
 
 	// Capitals in, lowercase stored: the login writes the claim as Entra sends it.
-	b, err := s.LinkIdentity(priya.ID, "Entra", "72F988BF-86F1-41AF-91AB-2D7CD011DB47", testSubject, admin.ID, "onboarding")
+	b, err := s.LinkIdentity(testContext, priya.ID, "Entra", "72F988BF-86F1-41AF-91AB-2D7CD011DB47", testSubject, admin.ID, "onboarding")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestAnIdentitySignsInAsTheOnePrincipalItWasLinkedTo(t *testing.T) {
 		t.Fatalf("unexpected binding %+v", b)
 	}
 
-	resolved, err := s.ResolveIdentity("entra", testTenant, testSubject)
+	resolved, err := s.ResolveIdentity(testContext, "entra", testTenant, testSubject)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,46 +45,46 @@ func TestAnIdentitySignsInAsTheOnePrincipalItWasLinkedTo(t *testing.T) {
 		t.Fatalf("resolved to %+v", resolved)
 	}
 
-	if _, err := s.LinkIdentity(marcus.ID, "entra", testTenant, testSubject, admin.ID, ""); !errors.Is(err, ErrIdentityAlreadyBound) {
+	if _, err := s.LinkIdentity(testContext, marcus.ID, "entra", testTenant, testSubject, admin.ID, ""); !errors.Is(err, ErrIdentityAlreadyBound) {
 		t.Fatalf("a bound identity must not be linked to a second principal, got %v", err)
 	}
-	if _, err := s.LinkIdentity(priya.ID, "entra", testTenant, testSubject, admin.ID, ""); !errors.Is(err, ErrIdentityAlreadyBound) {
+	if _, err := s.LinkIdentity(testContext, priya.ID, "entra", testTenant, testSubject, admin.ID, ""); !errors.Is(err, ErrIdentityAlreadyBound) {
 		t.Fatalf("linking twice to the same principal is a mistake to show, got %v", err)
 	}
 
-	if _, err := s.UnlinkIdentity(b.ID, admin.ID, ""); !errors.Is(err, ErrInvalidIdentityBinding) {
+	if _, err := s.UnlinkIdentity(testContext, b.ID, admin.ID, ""); !errors.Is(err, ErrInvalidIdentityBinding) {
 		t.Fatalf("an unlink without a reason must be refused, got %v", err)
 	}
-	unlinked, err := s.UnlinkIdentity(b.ID, admin.ID, "left the support team")
+	unlinked, err := s.UnlinkIdentity(testContext, b.ID, admin.ID, "left the support team")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if unlinked.UnlinkedAt == 0 || unlinked.UnlinkedBy != admin.ID {
 		t.Fatalf("unlink must stamp who and when: %+v", unlinked)
 	}
-	again, err := s.UnlinkIdentity(b.ID, marcus.ID, "second click")
+	again, err := s.UnlinkIdentity(testContext, b.ID, marcus.ID, "second click")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if again.UnlinkedAt != unlinked.UnlinkedAt || again.UnlinkReason != "left the support team" || again.UnlinkedBy != admin.ID {
 		t.Fatalf("a second unlink must not move the stamp or the reason: %+v", again)
 	}
-	if _, err := s.ResolveIdentity("entra", testTenant, testSubject); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ResolveIdentity(testContext, "entra", testTenant, testSubject); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("an unlinked identity must stop resolving, got %v", err)
 	}
 
-	relinked, err := s.LinkIdentity(marcus.ID, "entra", testTenant, testSubject, admin.ID, "")
+	relinked, err := s.LinkIdentity(testContext, marcus.ID, "entra", testTenant, testSubject, admin.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if relinked.ID == b.ID {
 		t.Fatal("linking again after an unlink must write a new row, keeping the old one as history")
 	}
-	all, err := s.ListIdentityBindings(IdentityBindingFilter{IncludeUnlinked: true})
+	all, err := s.ListIdentityBindings(testContext, IdentityBindingFilter{IncludeUnlinked: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	active, err := s.ListIdentityBindings(IdentityBindingFilter{})
+	active, err := s.ListIdentityBindings(testContext, IdentityBindingFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,16 +101,16 @@ func TestOnlyAnActiveHumanCanBeGivenASignIn(t *testing.T) {
 	group := mustCreate(t, s, KindGroup, "Support", "")
 	contact := mustCreate(t, s, KindContact, "Requester", "r@example.com")
 	gone := mustCreate(t, s, KindHuman, "Gone", "")
-	if _, err := s.Disable(gone.ID); err != nil {
+	if _, err := s.Disable(testContext, gone.ID); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{group.ID, contact.ID, gone.ID} {
-		if _, err := s.LinkIdentity(id, "entra", testTenant, testSubject, admin.ID, ""); !errors.Is(err, ErrInvalidIdentityBinding) {
+		if _, err := s.LinkIdentity(testContext, id, "entra", testTenant, testSubject, admin.ID, ""); !errors.Is(err, ErrInvalidIdentityBinding) {
 			t.Fatalf("%s must be refused a sign-in, got %v", id, err)
 		}
 	}
 	for _, actor := range []string{"", group.ID, gone.ID, "principal_999999"} {
-		if _, err := s.LinkIdentity(admin.ID, "entra", testTenant, testSubject, actor, ""); !errors.Is(err, ErrInvalidIdentityBinding) {
+		if _, err := s.LinkIdentity(testContext, admin.ID, "entra", testTenant, testSubject, actor, ""); !errors.Is(err, ErrInvalidIdentityBinding) {
 			t.Fatalf("linked_by %q must be refused, got %v", actor, err)
 		}
 	}
@@ -126,7 +126,7 @@ func TestAnEmailIsNotAnIdentity(t *testing.T) {
 		{"google", testTenant, testSubject},
 	}
 	for _, c := range cases {
-		if _, err := s.LinkIdentity(admin.ID, c.provider, c.tenant, c.subject, admin.ID, ""); !errors.Is(err, ErrInvalidIdentityBinding) {
+		if _, err := s.LinkIdentity(testContext, admin.ID, c.provider, c.tenant, c.subject, admin.ID, ""); !errors.Is(err, ErrInvalidIdentityBinding) {
 			t.Fatalf("%+v must be refused, got %v", c, err)
 		}
 	}
@@ -147,7 +147,7 @@ func TestConcurrentLinksOfOneIdentityLeaveOneBinding(t *testing.T) {
 		wg.Add(1)
 		go func(i int, id string) {
 			defer wg.Done()
-			_, errs[i] = s.LinkIdentity(id, "entra", testTenant, testSubject, admin.ID, "")
+			_, errs[i] = s.LinkIdentity(testContext, id, "entra", testTenant, testSubject, admin.ID, "")
 		}(i, p.ID)
 	}
 	wg.Wait()
@@ -155,9 +155,11 @@ func TestConcurrentLinksOfOneIdentityLeaveOneBinding(t *testing.T) {
 	for _, err := range errs {
 		if err == nil {
 			succeeded++
+		} else if !errors.Is(err, ErrIdentityAlreadyBound) {
+			t.Fatalf("a losing link failed with %v, want ErrIdentityAlreadyBound", err)
 		}
 	}
-	active, err := s.ListIdentityBindings(IdentityBindingFilter{})
+	active, err := s.ListIdentityBindings(testContext, IdentityBindingFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +174,7 @@ func TestIdentityBindingRoutes(t *testing.T) {
 	admin := mustCreate(t, s, KindHuman, "Admin", "")
 	priya := mustCreate(t, s, KindHuman, "Priya", "")
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s)
+	registerTestRoutes(mux, s)
 	call := func(method, path string, body any) *httptest.ResponseRecorder {
 		var buf bytes.Buffer
 		if body != nil {
@@ -224,16 +226,16 @@ func TestIdentityBindingRoutes(t *testing.T) {
 func TestADiscordIdentityBindsByUserIDWithNoTenant(t *testing.T) {
 	s := newTestStore(t)
 	person := mustCreate(t, s, KindHuman, "Slava Kayushkin", "")
-	binding, err := s.LinkIdentity(person.ID, IdentityProviderDiscord, "", "104357516833472512", person.ID, "linked while signed in")
+	binding, err := s.LinkIdentity(testContext, person.ID, IdentityProviderDiscord, "", "104357516833472512", person.ID, "linked while signed in")
 	if err != nil {
 		t.Fatalf("link a Discord id: %v", err)
 	}
-	resolution, err := s.ResolveIdentity(IdentityProviderDiscord, "", "104357516833472512")
+	resolution, err := s.ResolveIdentity(testContext, IdentityProviderDiscord, "", "104357516833472512")
 	if err != nil || resolution.Principal.ID != person.ID || resolution.Binding.ID != binding.ID {
 		t.Fatalf("resolve: %+v %v", resolution, err)
 	}
 	for _, bad := range []struct{ tenant, subject string }{{"", "nrmh"}, {"guild", "104357516833472512"}, {"", "123"}} {
-		if _, err := s.LinkIdentity(person.ID, IdentityProviderDiscord, bad.tenant, bad.subject, person.ID, ""); !errors.Is(err, ErrInvalidIdentityBinding) {
+		if _, err := s.LinkIdentity(testContext, person.ID, IdentityProviderDiscord, bad.tenant, bad.subject, person.ID, ""); !errors.Is(err, ErrInvalidIdentityBinding) {
 			t.Errorf("tenant %q subject %q: got %v, want a refusal", bad.tenant, bad.subject, err)
 		}
 	}

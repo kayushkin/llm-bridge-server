@@ -14,7 +14,7 @@ import (
 func TestAServiceActsHoldsGrantsIsRestrictedToThemAndHoldsTokens(t *testing.T) {
 	s := newTestStore(t)
 	service := mustCreate(t, s, KindService, "orchestratord", "")
-	readBack, err := s.Get(service.ID, false)
+	readBack, err := s.Get(testContext, service.ID, false)
 	if err != nil {
 		t.Fatalf("get service: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestAServiceActsHoldsGrantsIsRestrictedToThemAndHoldsTokens(t *testing.T) {
 		t.Fatal("a service carries its groups, [] when none, as a human does")
 	}
 	role := mustCreate(t, s, KindGroup, "Session readers", "")
-	if _, err := s.AddMember(role.ID, service.ID); err != nil {
+	if _, err := s.AddMember(testContext, role.ID, service.ID); err != nil {
 		t.Fatalf("a service joins a group: %v", err)
 	}
 	for _, kind := range []string{KindHuman, KindPeer, KindGroup} {
@@ -40,7 +40,7 @@ func TestAServiceHasNoAvailability(t *testing.T) {
 	s := newTestStore(t)
 	service := mustCreate(t, s, KindService, "orchestratord", "")
 	week := json.RawMessage(`{"tzid":"America/Los_Angeles","days":["MO"],"start":"09:00","end":"17:00"}`)
-	_, err := s.Patch(service.ID, Patch{Availability: week})
+	_, err := s.Patch(testContext, service.ID, Patch{Availability: week})
 	if !errors.Is(err, ErrInvalidAvailability) || !strings.Contains(err.Error(), "is a service") {
 		t.Fatalf("a service is refused a working week for being a service, got %v", err)
 	}

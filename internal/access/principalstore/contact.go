@@ -1,6 +1,7 @@
 package principalstore
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -50,7 +51,7 @@ func normalizeContactEmail(email string) string {
 // it has, because the name on a later mail is not more true than the one a
 // person typed when the contact was made, and overwriting it would rewrite
 // every ticket's requester display on every mail.
-func (s *Store) ResolveContact(email, displayName string) (*ContactResolution, error) {
+func (s *Store) ResolveContact(ctx context.Context, email, displayName string) (*ContactResolution, error) {
 	address := normalizeContactEmail(email)
 	if address == "" {
 		return nil, fmt.Errorf("%w: email is required — it is what the address is matched on", ErrInvalidContact)
@@ -59,7 +60,7 @@ func (s *Store) ResolveContact(email, displayName string) (*ContactResolution, e
 		return nil, fmt.Errorf("%w: %q is not an email address", ErrInvalidContact, email)
 	}
 
-	existing, err := s.contactByEmail(address)
+	existing, err := s.contactByEmail(ctx, address)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +75,7 @@ func (s *Store) ResolveContact(email, displayName string) (*ContactResolution, e
 		// name can be edited later.
 		name = address
 	}
-	created, err := s.Create(&Principal{Kind: KindContact, DisplayName: name, Email: address})
+	created, err := s.Create(ctx, &Principal{Kind: KindContact, DisplayName: name, Email: address})
 	if err != nil {
 		return nil, err
 	}
@@ -86,16 +87,18 @@ func (s *Store) ResolveContact(email, displayName string) (*ContactResolution, e
 // Oldest rather than newest: if two rows ever exist for one address — two
 // mails resolved at the same instant, before the index below was added — the
 // first one is the one earlier tickets already point at.
-func (s *Store) contactByEmail(address string) (*Principal, error) {
-	var id string
-	err := s.db.QueryRow(
-		`SELECT id FROM principals WHERE kind = ? AND disabled_at = 0 AND LOWER(TRIM(email)) = ? ORDER BY seq ASC LIMIT 1`,
-		KindContact, address).Scan(&id)
+func (s *Store) contactByEmail(ctx context.Context, address string) (*Principal, error) {
+	// lower() under the C collation folds ASCII letters only, as SQLite's
+	// LOWER did; btrim with no characters trims spaces, as its TRIM did.
+	var seq int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT seq FROM principals WHERE kind = $1 AND disabled_at = 0 AND lower(btrim(email) COLLATE "C") = $2 ORDER BY seq ASC LIMIT 1`,
+		KindContact, address).Scan(&seq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return s.Get(id, false)
+	return s.Get(ctx, formatID(seq), false)
 }
