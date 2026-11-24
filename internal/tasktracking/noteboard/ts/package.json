@@ -1,0 +1,21 @@
+{
+  "name": "@kayushkin/noteboard-types",
+  "version": "0.1.0",
+  "description": "TypeScript types for noteboard's wire format. Generated from the Go types in model/ — the Go package is the source of truth.",
+  "type": "module",
+  "types": "./model.ts",
+  "exports": {
+    ".": {
+      "types": "./model.ts",
+      "default": "./model.ts"
+    }
+  },
+  "files": ["model.ts", "README.md"],
+  "license": "Apache-2.0",
+  "author": "kayushkin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kayushkin/noteboard.git",
+    "directory": "ts"
+  }
+}

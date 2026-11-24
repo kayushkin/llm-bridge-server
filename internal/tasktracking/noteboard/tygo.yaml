@@ -1,0 +1,9 @@
+# TypeScript types generated from this store's Go types. The Go structs in
+# model/ are the source of truth; ts/ is a render of them. Regenerate with
+# ./generate-ts.sh after changing a wire type.
+packages:
+  - path: "github.com/kayushkin/noteboard/model"
+    output_path: "ts/model.ts"
+    type_mappings:
+      "json.RawMessage": "unknown"
+      "time.Time": "string"

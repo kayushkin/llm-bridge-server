@@ -1,0 +1,21 @@
+[Unit]
+Description=Noteboard — unified notes/todos/lists REST API
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/bin/noteboard
+Environment=NOTEBOARD_PORT=8191
+Environment=NOTEBOARD_DB=%h/.noteboard/noteboard.db
+Environment=HOME=%h
+# %h, not the repo checkout. noteboard reads nothing relative to its cwd (every
+# path it touches comes from the environment above), and a WorkingDirectory that
+# can stop existing is a live failure class here: systemd fails the start with an
+# opaque 200/CHDIR and Restart= loops it forever. Three services on this host
+# burned ~1.9M failed starts that way.
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
