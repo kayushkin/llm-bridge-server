@@ -33,7 +33,7 @@ func TestExternalDiscoveryRetainsConfiguredOwnerAndRejectsDisabledOwner(t *testi
 			}))
 			defer directory.Close()
 			srv.cfg.DiscoveryPrincipalID = owner.ID
-			srv.principalClient = principalclient.New(directory.URL)
+			srv.principalClient = testPrincipalDirectoryAt(directory.URL)
 			now := time.Now().UTC()
 			srv.recordExternalSession(context.Background(), msg.StoredSession{Harness: msg.HarnessCodex, HarnessSessionID: "external-owner-fixture", Source: msg.PurposeChat, CreatedAt: now, UpdatedAt: now}, "")
 			row, err := st.GetSessionByHarnessSessionID("external-owner-fixture")

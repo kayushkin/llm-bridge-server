@@ -16,6 +16,7 @@ import (
 // module is provisioned, migrated and open, before the server takes requests;
 // until then, and on a server with no Postgres URL, the routes answer 503.
 func (s *Server) EnableSkillStore(store *skillstore.Store) {
+	s.skillStoreForResourceChecks.Store(store)
 	s.skillStoreHandlers.Store(skillstore.NewHandlers(store))
 }
 

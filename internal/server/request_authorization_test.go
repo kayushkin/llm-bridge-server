@@ -144,13 +144,11 @@ func newGatedTestServerConfigured(t *testing.T, grantsByPrincipal map[string]map
 		grantsByPrincipal[administratorTestPrincipalID] = map[string][]string{}
 	}
 	cfg := &config.Config{
-		ImagesDir:         filepath.Join(directory, "images"),
-		BridgePrefsPath:   filepath.Join(directory, "prefs.json"),
-		LogStoreURL:       "http://localhost:0",
-		PrincipalStoreURL: principals.server.URL,
-		GrantStoreURL:     fakeGrantStoreForPrincipals(t, grantsByPrincipal).URL,
-		KanbanStoreURL:    kanban.server.URL,
-		PublicURL:         gatedTestServerPublicURL,
+		ImagesDir:       filepath.Join(directory, "images"),
+		BridgePrefsPath: filepath.Join(directory, "prefs.json"),
+		LogStoreURL:     "http://localhost:0",
+		KanbanStoreURL:  kanban.server.URL,
+		PublicURL:       gatedTestServerPublicURL,
 	}
 	testAuthorizationConfig(cfg)
 	if configure != nil {
@@ -163,6 +161,8 @@ func newGatedTestServerConfigured(t *testing.T, grantsByPrincipal map[string]map
 		principals: principals,
 		clock:      &testClock{now: time.Now()},
 	}
+	useFakePrincipalStore(gated.server, principals.server.URL)
+	gated.server.grantClient = testGrantReaderAt(fakeGrantStoreForPrincipals(t, grantsByPrincipal).URL)
 	gated.server.principalLookupCache.now = gated.clock.Now
 	return gated
 }

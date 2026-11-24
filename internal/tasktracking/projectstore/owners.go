@@ -26,7 +26,9 @@ type Owners struct {
 	KanbanStoreServiceToken string
 	SchedulerURL            string
 	HealthcheckURL          string
-	PrincipalStoreURL       string
+	// Principals is principal-store, in this process: what a principal link
+	// names.
+	Principals Principals
 	// Noteboard is noteboard itself, in this process: what a note link names
 	// and where a next step is written.
 	Noteboard          Noteboard
@@ -138,11 +140,7 @@ func (owners *Owners) Label(ctx context.Context, entityType, entityRef string) (
 			}
 		}
 	case EntityPrincipal:
-		var principal struct {
-			DisplayName string `json:"display_name"`
-		}
-		err = owners.getJSON(ctx, owners.PrincipalStoreURL+"/principals/"+escaped, nil, &principal)
-		label = principal.DisplayName
+		label, err = owners.Principals.DisplayName(ctx, entityRef)
 	case EntityNote:
 		label, err = owners.Noteboard.ItemTitle(ctx, entityRef)
 	case EntitySession:

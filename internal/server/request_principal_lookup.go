@@ -55,12 +55,20 @@ type principalLookupCache struct {
 	readFromUpstream func(ctx context.Context, principalID string) (principalclient.Principal, error)
 }
 
-func newPrincipalLookupCache(client *principalclient.Client) *principalLookupCache {
+// newPrincipalLookupCache reads through the server's principal directory as
+// it is at the time of each read, so a server whose access stores open after
+// New still reads them, and one with none answers that access is off.
+func newPrincipalLookupCache(server *Server) *principalLookupCache {
 	return &principalLookupCache{
-		principalsByID:   map[string]cachedPrincipal{},
-		lifetime:         principalLookupCacheLifetime,
-		now:              time.Now,
-		readFromUpstream: client.Get,
+		principalsByID: map[string]cachedPrincipal{},
+		lifetime:       principalLookupCacheLifetime,
+		now:            time.Now,
+		readFromUpstream: func(ctx context.Context, principalID string) (principalclient.Principal, error) {
+			if server.principalClient == nil {
+				return principalclient.Principal{}, errAccessOff
+			}
+			return server.principalClient.Get(ctx, principalID)
+		},
 	}
 }
 
@@ -116,6 +124,10 @@ func (s *Server) callerForPrincipalID(ctx context.Context, principalID, subjectD
 		if errors.Is(err, principalclient.ErrNotFound) {
 			return requestCaller{}, &requestCredentialError{http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
 				"%s %s, which principal-store does not have: %v", subjectDescription, principalID, err)}
+		}
+		if errors.Is(err, errAccessOff) {
+			return requestCaller{}, &requestCredentialError{http.StatusServiceUnavailable, "access_off", fmt.Sprintf(
+				"%s %s, and this server cannot read principals: %v", subjectDescription, principalID, err)}
 		}
 		return requestCaller{}, &requestCredentialError{http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
 			"could not read principal %s from principal-store, so this request is refused rather than answered as a principal nobody confirmed: %v", principalID, err)}
@@ -207,4 +219,13 @@ func (cache *principalLookupCache) forget(principalID string) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	delete(cache.principalsByID, principalID)
+}
+
+// forgetEveryone drops every cached answer. A write through the mounted
+// principal-store calls it, so a principal disabled or demoted there is read
+// again on its next request instead of up to 30 seconds later.
+func (cache *principalLookupCache) forgetEveryone() {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	cache.principalsByID = map[string]cachedPrincipal{}
 }

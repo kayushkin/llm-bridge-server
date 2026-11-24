@@ -1,43 +1,42 @@
-// Package principalclient asks principal-store (:8314) whether a principal
-// exists, so a session is never created as an id nobody hands out.
+// Package principalclient is principal-store as this server reads and writes
+// it: whether a principal exists, what its kind may do, which groups it is in,
+// which principal an outside identity signs in as, and the few writes peer
+// provisioning makes.
+//
+// principal-store runs in this process (internal/access/principalstore), so
+// every call here is a call into its store, not a request over HTTP. The
+// types below are the part of its records this server reads.
 //
 // principal-store answers a disabled principal like any other — a departed
 // human's grants are dormant, not invalid — so "exists" here includes
-// disabled. A 404 with principal-store's own {"error":…} body means the id is
-// unknown; Go's plain "404 page not found" means the URL points at a service
-// without the route, which is a misconfiguration and reported as one.
+// disabled.
 package principalclient
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strings"
-	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
 )
 
 // ErrNotFound is principal-store answering that it has no such principal.
 var ErrNotFound = errors.New("principal not found")
 
-// Client talks to one principal-store.
-type Client struct {
-	url  string
-	http *http.Client
-}
-
-// New builds a client against base (e.g. http://127.0.0.1:8314).
-func New(base string) *Client {
-	return &Client{url: strings.TrimSuffix(base, "/"), http: &http.Client{Timeout: 5 * time.Second}}
-}
+// ErrIdentityNotProvisioned is principal-store answering that no active
+// binding links the identity to a principal: the person has not been
+// provisioned, and may not sign in.
+var ErrIdentityNotProvisioned = errors.New("identity is not bound to any principal")
 
 // KindPeer is principal-store's kind for another llm-bridge-server linked to
 // this one. Spelled here because a peer invite may be made only for one: what
 // a peer may do is read from the answers below, never from this word.
 const KindPeer = "peer"
+
+// KindGroup is principal-store's kind for a group, which a level's
+// provisioning makes. Spelled here because creating one must name it.
+const KindGroup = "group"
 
 // Principal is the part of principal-store's principal record this server
 // reads. DisabledAt is 0 for an active principal and the epoch second it was
@@ -47,146 +46,23 @@ const KindPeer = "peer"
 // anything?", and it is read, never derived: this server does not keep a list
 // of administrators and must not infer one from a name, an email or a group.
 //
-// ActsAsCaller and RestrictedToItsGrants are principal-store's answers for the
-// principal's kind: may a request act as it (a human or a peer), and does
-// holding no grant of a relation refuse it (a peer) rather than leave it
-// unrestricted (a human). This server reads them instead of comparing Kind to
-// a word.
-//
-// HoldsServicePrincipalTokens is principal-store's answer for whether the kind
-// may be issued a service principal token (a service). A principal-store
-// older than that answer sends none, which reads as false: no token is issued
-// or accepted until principal-store says the kind may hold one.
+// ActsAsCaller, RestrictedToItsGrants and HoldsServicePrincipalTokens are
+// principal-store's answers for the principal's kind: may a request act as it
+// (a human, a peer or a service), does holding no grant of a relation refuse it
+// (a peer, a service) rather than leave it unrestricted (a human), and may it
+// be issued a service principal token (a service). This server reads them
+// instead of comparing Kind to a word.
 type Principal struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
 	// DisplayName is for showing only; never look a principal up by it.
-	DisplayName           string `json:"display_name"`
-	DisabledAt            int64  `json:"disabled_at"`
-	IsAdministrator       bool   `json:"is_administrator"`
-	ActsAsCaller          bool   `json:"acts_as_caller"`
-	RestrictedToItsGrants bool   `json:"restricted_to_its_grants"`
-	// HoldsServicePrincipalTokens: see above.
-	HoldsServicePrincipalTokens bool `json:"holds_service_principal_tokens"`
+	DisplayName                 string `json:"display_name"`
+	DisabledAt                  int64  `json:"disabled_at"`
+	IsAdministrator             bool   `json:"is_administrator"`
+	ActsAsCaller                bool   `json:"acts_as_caller"`
+	RestrictedToItsGrants       bool   `json:"restricted_to_its_grants"`
+	HoldsServicePrincipalTokens bool   `json:"holds_service_principal_tokens"`
 }
-
-// UnmarshalJSON refuses a record without acts_as_caller or
-// restricted_to_its_grants: a principal-store older than those answers would
-// otherwise read as a principal that may do nothing and is never restricted,
-// with nothing saying why.
-func (principal *Principal) UnmarshalJSON(data []byte) error {
-	var wire struct {
-		ID                    string `json:"id"`
-		Kind                  string `json:"kind"`
-		DisplayName           string `json:"display_name"`
-		DisabledAt            int64  `json:"disabled_at"`
-		IsAdministrator       bool   `json:"is_administrator"`
-		ActsAsCaller          *bool  `json:"acts_as_caller"`
-		RestrictedToItsGrants *bool  `json:"restricted_to_its_grants"`
-		// Absent from a principal-store older than the service kind.
-		HoldsServicePrincipalTokens bool `json:"holds_service_principal_tokens"`
-	}
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return err
-	}
-	if wire.ActsAsCaller == nil || wire.RestrictedToItsGrants == nil {
-		return fmt.Errorf("principal %q has no acts_as_caller or restricted_to_its_grants, so principal-store is older than this server needs: deploy principal-store first", wire.ID)
-	}
-	*principal = Principal{ID: wire.ID, Kind: wire.Kind, DisplayName: wire.DisplayName, DisabledAt: wire.DisabledAt, IsAdministrator: wire.IsAdministrator,
-		ActsAsCaller: *wire.ActsAsCaller, RestrictedToItsGrants: *wire.RestrictedToItsGrants, HoldsServicePrincipalTokens: wire.HoldsServicePrincipalTokens}
-	return nil
-}
-
-// CheckExists returns nil when principal-store has the principal, an error
-// wrapping ErrNotFound when it says it does not, and any other error when it
-// could not be asked or answered something else.
-func (c *Client) CheckExists(ctx context.Context, principalID string) error {
-	_, err := c.Get(ctx, principalID)
-	return err
-}
-
-// Get returns principal-store's record for principalID, with the same error
-// contract as CheckExists. A 2xx whose body is not a principal record with the
-// requested id and a kind is an error, not an empty principal.
-func (c *Client) Get(ctx context.Context, principalID string) (Principal, error) {
-	requestURL := c.url + "/principals/" + url.PathEscape(principalID)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return Principal{}, fmt.Errorf("build GET %s: %w", requestURL, err)
-	}
-	response, err := c.http.Do(request)
-	if err != nil {
-		return Principal{}, fmt.Errorf("principal-store unreachable: GET %s: %w", requestURL, err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return Principal{}, fmt.Errorf("read principal-store response: %w", err)
-	}
-	if response.StatusCode/100 == 2 {
-		var principal Principal
-		if err := json.Unmarshal(body, &principal); err != nil {
-			return Principal{}, fmt.Errorf("principal-store answered GET %s with %s and a body that is not a principal: %w", requestURL, response.Status, err)
-		}
-		if principal.ID != principalID || principal.Kind == "" {
-			return Principal{}, fmt.Errorf("principal-store answered GET %s with a record for id %q kind %q, not the principal asked for", requestURL, principal.ID, principal.Kind)
-		}
-		return principal, nil
-	}
-	var parsed struct {
-		Error string `json:"error"`
-	}
-	_ = json.Unmarshal(body, &parsed)
-	switch {
-	case response.StatusCode == http.StatusNotFound && parsed.Error != "":
-		return Principal{}, fmt.Errorf("%w: %s", ErrNotFound, parsed.Error)
-	case response.StatusCode == http.StatusNotFound:
-		return Principal{}, fmt.Errorf("principal-store answered GET %s with 404 and no JSON error, which is Go's answer for a route that does not exist, not for a missing principal: check LLMBRIDGE_PRINCIPAL_STORE_URL", requestURL)
-	default:
-		return Principal{}, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
-	}
-}
-
-// GroupIDsOf returns the ids of the active groups principalID is a direct
-// member of. principal-store answers only for a human; asking about any
-// other kind is an error from the store, passed on.
-func (c *Client) GroupIDsOf(ctx context.Context, principalID string) ([]string, error) {
-	requestURL := c.url + "/principals/" + url.PathEscape(principalID) + "/groups"
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build GET %s: %w", requestURL, err)
-	}
-	response, err := c.http.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("principal-store unreachable: GET %s: %w", requestURL, err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read principal-store response: %w", err)
-	}
-	if response.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
-	}
-	// Only the ids are read, so a group's own record is not held to
-	// Principal's checks.
-	var groups []struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(body, &groups); err != nil {
-		return nil, fmt.Errorf("principal-store answered GET %s with a body that is not a list of principals: %w", requestURL, err)
-	}
-	ids := make([]string, 0, len(groups))
-	for _, group := range groups {
-		ids = append(ids, group.ID)
-	}
-	return ids, nil
-}
-
-// ErrIdentityNotProvisioned is principal-store answering that no active
-// binding links the identity to a principal: the person has not been
-// provisioned, and may not sign in.
-var ErrIdentityNotProvisioned = errors.New("identity is not bound to any principal")
 
 // IdentityBinding is principal-store's record linking an outside identity —
 // for Entra ID the tenant id and object id — to one human principal.
@@ -213,55 +89,122 @@ type IdentityResolution struct {
 	Principal Principal       `json:"principal"`
 }
 
-// ResolveIdentityBinding asks principal-store which principal an outside
-// identity is bound to. It returns an error wrapping ErrIdentityNotProvisioned
-// when principal-store answers 404 with its own error body, and any other
-// error when it could not be asked or answered something else. A 2xx whose
-// binding does not name the identity asked about is an error, not a match.
-func (c *Client) ResolveIdentityBinding(ctx context.Context, provider, tenantID, subject string) (IdentityResolution, error) {
-	query := url.Values{"provider": {provider}, "tenant_id": {tenantID}, "subject": {subject}}
-	requestURL := c.url + "/identity-bindings/resolve?" + query.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return IdentityResolution{}, fmt.Errorf("build GET %s: %w", requestURL, err)
-	}
-	response, err := c.http.Do(request)
-	if err != nil {
-		return IdentityResolution{}, fmt.Errorf("principal-store unreachable: GET %s: %w", requestURL, err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return IdentityResolution{}, fmt.Errorf("read principal-store response: %w", err)
-	}
-	if response.StatusCode/100 == 2 {
-		var resolution IdentityResolution
-		if err := json.Unmarshal(body, &resolution); err != nil {
-			return IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with %s and a body that is not an identity resolution: %w", requestURL, response.Status, err)
-		}
-		binding := resolution.Binding
-		if binding.ID == "" || binding.Provider != provider || !strings.EqualFold(binding.TenantID, tenantID) || !strings.EqualFold(binding.Subject, subject) ||
-			binding.UnlinkedAt != 0 || resolution.Principal.ID == "" || resolution.Principal.ID != binding.PrincipalID || resolution.Principal.Kind == "" {
-			return IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with binding %+v and principal %q, which is not an active binding of the identity asked about", requestURL, binding, resolution.Principal.ID)
-		}
-		return resolution, nil
-	}
-	var parsed struct {
-		Error string `json:"error"`
-	}
-	_ = json.Unmarshal(body, &parsed)
-	switch {
-	case response.StatusCode == http.StatusNotFound && parsed.Error != "":
-		return IdentityResolution{}, fmt.Errorf("%w: %s", ErrIdentityNotProvisioned, parsed.Error)
-	case response.StatusCode == http.StatusNotFound:
-		return IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with 404 and no JSON error, which is Go's answer for a route that does not exist, not for an unprovisioned identity: check LLMBRIDGE_PRINCIPAL_STORE_URL", requestURL)
-	default:
-		return IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
-	}
+// Client is principal-store in this process.
+type Client struct {
+	store *principalstore.Store
 }
 
-// BaseURL is principal-store's base URL, for the administrator routes that
-// pass a request through to it unchanged.
-func (c *Client) BaseURL() string {
-	return c.url
+// New reads and writes principals through store.
+func New(store *principalstore.Store) *Client {
+	return &Client{store: store}
+}
+
+// principalOf is the part of a store record this server reads.
+func principalOf(record *principalstore.Principal) Principal {
+	return Principal{ID: record.ID, Kind: record.Kind, DisplayName: record.DisplayName, DisabledAt: record.DisabledAt,
+		IsAdministrator: record.IsAdministrator, ActsAsCaller: record.ActsAsCaller, RestrictedToItsGrants: record.RestrictedToItsGrants,
+		HoldsServicePrincipalTokens: record.HoldsServicePrincipalTokens}
+}
+
+// CheckExists returns nil when principal-store has the principal, an error
+// wrapping ErrNotFound when it does not, and any other error when it could not
+// answer.
+func (c *Client) CheckExists(ctx context.Context, principalID string) error {
+	_, err := c.Get(ctx, principalID)
+	return err
+}
+
+// Get returns principal-store's record for principalID, with the same error
+// contract as CheckExists.
+func (c *Client) Get(ctx context.Context, principalID string) (Principal, error) {
+	record, err := c.store.Get(ctx, principalID, false)
+	if errors.Is(err, principalstore.ErrNotFound) {
+		return Principal{}, fmt.Errorf("%w: %v", ErrNotFound, err)
+	}
+	if err != nil {
+		return Principal{}, fmt.Errorf("principal-store: reading %s: %w", principalID, err)
+	}
+	return principalOf(record), nil
+}
+
+// GroupIDsOf returns the ids of the active groups principalID is a direct
+// member of. principal-store answers only for a kind that joins groups;
+// asking about any other is its error, passed on.
+func (c *Client) GroupIDsOf(ctx context.Context, principalID string) ([]string, error) {
+	groups, err := c.store.ListGroups(ctx, principalID, false)
+	if err != nil {
+		return nil, fmt.Errorf("principal-store: the groups of %s: %w", principalID, err)
+	}
+	ids := make([]string, 0, len(groups))
+	for _, group := range groups {
+		ids = append(ids, group.ID)
+	}
+	return ids, nil
+}
+
+// ResolveIdentityBinding asks principal-store which principal an outside
+// identity is bound to. It returns an error wrapping ErrIdentityNotProvisioned
+// when no active binding names the identity, and any other error when the
+// store could not answer. An answer whose binding does not name the identity
+// asked about is an error, not a match.
+func (c *Client) ResolveIdentityBinding(ctx context.Context, provider, tenantID, subject string) (IdentityResolution, error) {
+	resolution, err := c.store.ResolveIdentity(ctx, provider, tenantID, subject)
+	if errors.Is(err, principalstore.ErrNotFound) {
+		return IdentityResolution{}, fmt.Errorf("%w: %v", ErrIdentityNotProvisioned, err)
+	}
+	if err != nil {
+		return IdentityResolution{}, fmt.Errorf("principal-store: resolving a %s identity: %w", provider, err)
+	}
+	if resolution.Binding == nil || resolution.Principal == nil {
+		return IdentityResolution{}, fmt.Errorf("principal-store resolved a %s identity to no binding or no principal", provider)
+	}
+	stored := resolution.Binding
+	binding := IdentityBinding{ID: stored.ID, Seq: stored.Seq, PrincipalID: stored.PrincipalID, Provider: stored.Provider,
+		TenantID: stored.TenantID, Subject: stored.Subject, LinkedAt: stored.LinkedAt, LinkedBy: stored.LinkedBy, LinkNote: stored.LinkNote,
+		UnlinkedAt: stored.UnlinkedAt, UnlinkedBy: stored.UnlinkedBy, UnlinkReason: stored.UnlinkReason}
+	principal := principalOf(resolution.Principal)
+	if binding.Provider != provider || !strings.EqualFold(binding.TenantID, tenantID) || !strings.EqualFold(binding.Subject, subject) ||
+		binding.UnlinkedAt != 0 || principal.ID != binding.PrincipalID {
+		return IdentityResolution{}, fmt.Errorf("principal-store resolved a %s identity to binding %s of principal %s, which is not an active binding of the identity asked about",
+			provider, binding.ID, principal.ID)
+	}
+	return IdentityResolution{Binding: binding, Principal: principal}, nil
+}
+
+// The writes below are made for one purpose: granting another
+// llm-bridge-server access (internal/server/peers.go). This server makes the
+// peer principal it grants to, sets its administrator flag, and puts it in or
+// takes it out of the level's group. It writes nothing else there.
+
+// Create makes a principal of the given kind and returns its id.
+func (c *Client) Create(ctx context.Context, kind, displayName string) (string, error) {
+	created, err := c.store.Create(ctx, &principalstore.Principal{Kind: kind, DisplayName: displayName})
+	if err != nil {
+		return "", fmt.Errorf("principal-store: creating a %s principal: %w", kind, err)
+	}
+	return created.ID, nil
+}
+
+// SetAdministrator sets principal-store's is_administrator on a principal.
+func (c *Client) SetAdministrator(ctx context.Context, principalID string, isAdministrator bool) error {
+	if _, err := c.store.Patch(ctx, principalID, principalstore.Patch{IsAdministrator: &isAdministrator}); err != nil {
+		return fmt.Errorf("principal-store: setting is_administrator on %s: %w", principalID, err)
+	}
+	return nil
+}
+
+// AddMember puts a principal in a group. Already a member is not an error.
+func (c *Client) AddMember(ctx context.Context, groupID, memberID string) error {
+	if _, err := c.store.AddMember(ctx, groupID, memberID); err != nil {
+		return fmt.Errorf("principal-store: adding %s to group %s: %w", memberID, groupID, err)
+	}
+	return nil
+}
+
+// RemoveMember takes a principal out of a group.
+func (c *Client) RemoveMember(ctx context.Context, groupID, memberID string) error {
+	if err := c.store.RemoveMember(ctx, groupID, memberID); err != nil {
+		return fmt.Errorf("principal-store: removing %s from group %s: %w", memberID, groupID, err)
+	}
+	return nil
 }

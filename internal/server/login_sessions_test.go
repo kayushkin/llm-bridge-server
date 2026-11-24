@@ -287,14 +287,14 @@ func TestDemoLoginSwitchedOffIs404AndSetsNoCookie(t *testing.T) {
 	}
 	t.Cleanup(func() { bridgeStore.Close() })
 	cfg := &config.Config{
-		ImagesDir:         filepath.Join(directory, "images"),
-		BridgePrefsPath:   filepath.Join(directory, "prefs.json"),
-		LogStoreURL:       "http://localhost:0",
-		PrincipalStoreURL: standardPrincipalDirectory(t).server.URL,
+		ImagesDir:       filepath.Join(directory, "images"),
+		BridgePrefsPath: filepath.Join(directory, "prefs.json"),
+		LogStoreURL:     "http://localhost:0",
 	}
 	testAuthorizationConfig(cfg)
 	cfg.DemoLoginEnabled = false
 	server := New(bridgeStore, nil, nil, nil, nil, testModelStore(t), nil, cfg)
+	useFakePrincipalStore(server, standardPrincipalDirectory(t).server.URL)
 
 	response := demoLogin(t, server, "principal_000001")
 	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "demo_login_disabled") {

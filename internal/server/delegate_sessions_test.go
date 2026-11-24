@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -117,9 +115,9 @@ func TestADelegatingAgentReachesNoSessionItDidNotStart(t *testing.T) {
 
 func TestADelegateRunsWithItsSessionsPrincipalAndNoOther(t *testing.T) {
 	srv, st, instanceID := testServerWithInstance(t, msg.HarnessMock)
-	srv.principalClient = principalclient.New(fakePrincipalStore(t, "principal_000001").URL)
-	srv.principalLookupCache = newPrincipalLookupCache(srv.principalClient)
-	srv.grantClient = grantclient.New(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{}).URL, "")
+	srv.principalClient = testPrincipalDirectoryAt(fakePrincipalStore(t, "principal_000001").URL)
+	srv.principalLookupCache = newPrincipalLookupCache(srv)
+	srv.grantClient = testGrantReaderAt(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{}).URL)
 
 	withoutPrincipal := newSessionForSignals(t, st, "br_without_principal", msg.SessionTypeInteractive)
 	request := delegateRequest(instanceID)

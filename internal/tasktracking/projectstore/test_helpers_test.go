@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
@@ -79,4 +80,36 @@ func (noteboard httpNoteboard) CreateTodo(ctx context.Context, title, body strin
 	var item NoteboardItem
 	err := noteboard.call(ctx, http.MethodPost, "/api/items", todo, http.StatusCreated, &item)
 	return item, err
+}
+
+// httpPrincipals answers Principals from a fake principal-store's
+// GET /principals/{id}, so the tests' fake owners serve principals as before.
+type httpPrincipals struct {
+	client *http.Client
+	url    string
+}
+
+func (principals httpPrincipals) DisplayName(ctx context.Context, id string) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, principals.url+"/principals/"+url.PathEscape(id), nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := principals.client.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrOwnerUnavailable, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return "", ErrNotFound
+	}
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("%w: principal-store answered %d", ErrOwnerUnavailable, response.StatusCode)
+	}
+	var principal struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&principal); err != nil {
+		return "", err
+	}
+	return principal.DisplayName, nil
 }

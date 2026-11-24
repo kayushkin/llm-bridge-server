@@ -1,25 +1,26 @@
-// Package grantclient reads grant-store (:8315): which tools a principal's
-// effective grants say a session started as them may be offered.
+// Package grantclient is grant-store as this server reads and writes it: which
+// resources a principal's effective grants name, and the grants peer
+// provisioning makes.
 //
-// grant-store's effective set is the principal's own active grants plus
-// every active group's, with the groups read live from principal-store on
-// each call — so a membership change is visible at the next spawn without
-// this server being told. The store answers 404 for a principal it does not
-// know and 502 when principal-store is down, never an empty list; this
-// client keeps those apart so the spawn can tell "nothing granted" from
-// "could not find out".
+// grant-store runs in this process (internal/access/grantstore), so every call
+// here is a call into its store, not a request over HTTP. This server calls it
+// as the internal service, the way it called the standalone store with its
+// service token.
+//
+// The effective set is the principal's own active grants plus every active
+// group's, with the groups read from principal-store on each call — so a
+// membership change is visible at the next spawn without this server being
+// told. A principal principal-store does not know is ErrPrincipalUnknown,
+// never an empty list, so the spawn can tell "nothing granted" from "no such
+// principal".
 package grantclient
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"strings"
-	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
 )
 
 // ErrPrincipalUnknown is grant-store answering that principal-store has no
@@ -27,39 +28,21 @@ import (
 // that has since lost the row, or never had it.
 var ErrPrincipalUnknown = errors.New("principal unknown")
 
-// ServiceTokenHeader is the header grant-store accepts an internal service's
-// token in, for unrestricted access.
-const ServiceTokenHeader = "X-Grant-Store-Service-Token"
-
 // AllResources is the resource_id grant-store stores for a grant on every
 // resource of its type, now and later.
-const AllResources = "*"
+const AllResources = grantstore.AllResources
 
-// Client talks to one grant-store.
+// Client is grant-store in this process.
 type Client struct {
-	url          string
-	serviceToken string
-	http         *http.Client
+	store     *grantstore.Store
+	directory grantstore.PrincipalDirectory
+	checker   grantstore.ResourceChecker
 }
 
-// New builds a client against base (e.g. http://127.0.0.1:8315).
-//
-// serviceToken, when non-empty, is sent as X-Grant-Store-Service-Token on
-// every call. This server reads a session principal's effective grants as
-// itself, not as that principal, and a grant-store that enforces who may read
-// what answers 401 to a call carrying neither a principal nor the token. Empty
-// sends no such header, which is what a grant-store that does not enforce
-// expects.
-func New(base, serviceToken string) *Client {
-	return &Client{url: strings.TrimSuffix(base, "/"), serviceToken: serviceToken, http: &http.Client{Timeout: 5 * time.Second}}
-}
-
-// grant is the part of a grant-store row this client reads.
-type grant struct {
-	ID           string `json:"id"`
-	PrincipalID  string `json:"principal_id"`
-	ResourceType string `json:"resource_type"`
-	ResourceID   string `json:"resource_id"`
+// New reads and writes grants through store, asking directory about
+// principals and checker about resources, as grant-store's own routes do.
+func New(store *grantstore.Store, directory grantstore.PrincipalDirectory, checker grantstore.ResourceChecker) *Client {
+	return &Client{store: store, directory: directory, checker: checker}
 }
 
 // EffectiveResourceIDs returns the resource ids the principal's effective
@@ -67,90 +50,38 @@ type grant struct {
 // the principal — and every group they are in — holds no such grant; it is
 // not an error.
 func (c *Client) EffectiveResourceIDs(ctx context.Context, principalID, relation, resourceType string) ([]string, error) {
-	grants, err := c.effective(ctx, principalID, relation, resourceType)
+	grants, err := c.store.Effective(ctx, c.directory, principalID, relation, resourceType)
+	if errors.Is(err, grantstore.ErrNotFound) {
+		return nil, fmt.Errorf("%w: %v", ErrPrincipalUnknown, err)
+	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("grant-store: the effective %s grants of %s on %s: %w", relation, principalID, resourceType, err)
 	}
 	ids := make([]string, 0, len(grants))
-	for _, g := range grants {
-		ids = append(ids, g.ResourceID)
+	for _, grant := range grants {
+		ids = append(ids, grant.ResourceID)
 	}
 	return ids, nil
 }
 
-func (c *Client) effective(ctx context.Context, principalID, relation, resourceType string) ([]grant, error) {
-	requestURL := fmt.Sprintf("%s/principals/%s/effective?relation=%s&resource_type=%s",
-		c.url, url.PathEscape(principalID), url.QueryEscape(relation), url.QueryEscape(resourceType))
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build GET %s: %w", requestURL, err)
-	}
-	if c.serviceToken != "" {
-		request.Header.Set(ServiceTokenHeader, c.serviceToken)
-	}
-	response, err := c.http.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("grant-store unreachable: GET %s: %w", requestURL, err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read grant-store response: %w", err)
-	}
-	switch {
-	case response.StatusCode == http.StatusNotFound:
-		return nil, fmt.Errorf("%w: grant-store answered GET %s with 404: %s", ErrPrincipalUnknown, requestURL, strings.TrimSpace(string(body)))
-	case response.StatusCode/100 != 2:
-		return nil, fmt.Errorf("grant-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
-	}
-	var grants []grant
-	if err := json.Unmarshal(body, &grants); err != nil {
-		return nil, fmt.Errorf("grant-store answered GET %s with a body that is not a list of grants: %w", requestURL, err)
-	}
-	return grants, nil
-}
-
-// GrantInput is the body of grant-store's POST /grants.
+// GrantInput is a grant to record.
 type GrantInput struct {
-	PrincipalID  string `json:"principal_id"`
-	Relation     string `json:"relation"`
-	ResourceType string `json:"resource_type"`
-	ResourceID   string `json:"resource_id"`
-	Note         string `json:"note"`
+	PrincipalID  string
+	Relation     string
+	ResourceType string
+	ResourceID   string
+	Note         string
 }
 
-// Create records a grant with the service token and returns its id. grant-store
-// is idempotent on the active tuple, so a grant that already exists answers
-// with its id too.
+// Create records a grant and returns its id. grant-store is idempotent on the
+// active tuple, so a grant that already exists answers with its id too.
 func (c *Client) Create(ctx context.Context, input GrantInput) (string, error) {
-	data, err := json.Marshal(input)
+	grant, _, err := c.store.Create(ctx, c.directory, c.checker, grantstore.GrantRequest{
+		PrincipalID: input.PrincipalID, Relation: input.Relation, ResourceType: input.ResourceType,
+		ResourceID: input.ResourceID, Note: input.Note,
+	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("grant-store: granting %s %s on %s %s: %w", input.PrincipalID, input.Relation, input.ResourceType, input.ResourceID, err)
 	}
-	requestURL := c.url + "/grants"
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, strings.NewReader(string(data)))
-	if err != nil {
-		return "", fmt.Errorf("build POST %s: %w", requestURL, err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if c.serviceToken != "" {
-		request.Header.Set(ServiceTokenHeader, c.serviceToken)
-	}
-	response, err := c.http.Do(request)
-	if err != nil {
-		return "", fmt.Errorf("grant-store unreachable: POST %s: %w", requestURL, err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return "", fmt.Errorf("read grant-store response: %w", err)
-	}
-	if response.StatusCode/100 != 2 {
-		return "", fmt.Errorf("grant-store answered POST %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
-	}
-	var created grant
-	if err := json.Unmarshal(body, &created); err != nil || created.ID == "" {
-		return "", fmt.Errorf("grant-store answered POST %s with a body that is not a grant: %s", requestURL, strings.TrimSpace(string(body)))
-	}
-	return created.ID, nil
+	return grant.ID, nil
 }

@@ -143,20 +143,16 @@ const (
 )
 
 // testAuthorizationConfig fills in the settings request authorization needs on
-// a config a test built for something else. The store URLs point at addresses
-// nothing answers on: a test that exercises a store replaces them.
+// a config a test built for something else. A server built from it has no
+// access stores: a request that needs a principal answers that access is off,
+// and a test that exercises one gives it a fake (useFakePrincipalStore) or the
+// real stores (access_routes_test.go).
 func testAuthorizationConfig(cfg *config.Config) {
 	cfg.DemoLoginSigningKey = testSigningKey
 	cfg.ServiceToken = testServiceToken
 	// Demo login is on by default, so tests have it on unless they are
 	// about switching it off.
 	cfg.DemoLoginEnabled = true
-	if cfg.PrincipalStoreURL == "" {
-		cfg.PrincipalStoreURL = "http://principal-store.invalid"
-	}
-	if cfg.GrantStoreURL == "" {
-		cfg.GrantStoreURL = "http://grant-store.invalid"
-	}
 }
 
 // asInternalService presents this server's service token on every request, the

@@ -23,7 +23,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -269,9 +268,9 @@ func newPeerTestServer(t *testing.T, demoLoginEnabled bool, configure ...func(*c
 	directory := newWritablePrincipalDirectory(t)
 	grants := newRecordingGrantStore(t)
 	auth, authServer := newFakeAuthStore(t)
-	gated.server.principalClient = principalclient.New(directory.server.URL)
-	gated.server.principalLookupCache = newPrincipalLookupCache(gated.server.principalClient)
-	gated.server.grantClient = grantclient.New(grants.server.URL, "")
+	gated.server.principalClient = testPrincipalDirectoryAt(directory.server.URL)
+	gated.server.principalLookupCache = newPrincipalLookupCache(gated.server)
+	gated.server.grantClient = testGrantReaderAt(grants.server.URL)
 	gated.server.authClient = authstoreclient.New(authServer.URL, "test-token", "llm-bridge-server")
 	return &peerTestServer{gatedTestServer: gated, directory: directory, grants: grants, auth: auth}
 }

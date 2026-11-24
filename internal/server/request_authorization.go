@@ -237,10 +237,17 @@ func peerConnectionReadRoute(reason string) routeAccessRule {
 // operator's, as they were behind dash's login. Runners keep their four
 // skill-store seed routes.
 var (
-	toolStoreRoute            = operatorRoute("tool-store is one registry with no owner on a row; provision answers resolved credentials and invoke runs tools in this process")
-	skillStoreRoute           = operatorRoute("skill-store is one registry with no owner on a row, and install writes into this host's skills directory")
-	bundleStoreRoute          = operatorRoute("bundle-store is one registry with no owner on a row, and every session given a bundle is composed from it")
-	skillStoreRunnerSeedRoute = runnerRoute("skill-store seed route for runners; the handler authenticates the runner's bearer token")
+	principalStoreOperatorRoute   = operatorRoute("principal-store has no owner on a row: whoever reaches it may create principals, make an administrator, disable anyone and read every email")
+	principalStoreVocabularyRoute = catalogRoute("a vocabulary principal-store serves, nothing about anyone")
+	identityBindingOperatorRoute  = operatorRoute("which outside identity signs in as which principal")
+	grantStoreRoute               = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "grant-store as the caller's principal: it narrows every read and write to what that principal may see and administer, and the internal service is unrestricted"}
+	signInStoreBrowserRoute       = signInRoute("a browser signing in or out through sign-in-store; the route checks the browser's own cookie or link secret")
+	signInStoreAdministratorRoute = operatorRoute("mints sign-in links, lists or ends anyone's sessions, or messages a member: whoever reaches it could sign in as anyone")
+	permissionStoreOperatorRoute  = operatorRoute("permission-store's rules decide which tool calls every session may make, and its audit holds every gated tool input")
+	toolStoreRoute                = operatorRoute("tool-store is one registry with no owner on a row; provision answers resolved credentials and invoke runs tools in this process")
+	skillStoreRoute               = operatorRoute("skill-store is one registry with no owner on a row, and install writes into this host's skills directory")
+	bundleStoreRoute              = operatorRoute("bundle-store is one registry with no owner on a row, and every session given a bundle is composed from it")
+	skillStoreRunnerSeedRoute     = runnerRoute("skill-store seed route for runners; the handler authenticates the runner's bearer token")
 )
 
 // noteboardRoute is the rule of every noteboard route.
@@ -249,6 +256,14 @@ var noteboardRoute = operatorRoute("noteboard holds the operator's private notes
 // projectStoreRoute is the rule of every project-store route.
 var projectStoreRoute = operatorRoute("project-store keeps one set of projects with no owner on a row, and its links name sessions, people and notes, so any caller could read or rewrite all of them")
 
+// The access stores' rules (access_routes.go). principal-store and
+// permission-store have no owner on a row and no rule of their own about who
+// may call them, so every route that changes or reveals more than a
+// vocabulary is the operator's. grant-store narrows every answer to the
+// caller itself, so it takes the store proxies' class and the verified
+// principal in the request context. sign-in-store's browser routes check the
+// browser's own cookie or secret, and its administrator routes record the
+// administrator who acted.
 // predictionStoreRoute is the rule of every prediction-store route.
 var predictionStoreRoute = operatorRoute("prediction-store keeps one ledger with no owner on a row, so any caller could rewrite, resolve or purge anyone's prediction")
 
@@ -463,7 +478,6 @@ var routeAccessRules = map[string]routeAccessRule{
 	// Identity-carrying store proxies.
 	kanbanProxyMountPrefix + "/":         {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store as the caller's principal"},
 	kanbanStoreProxyMountPrefix + "/":    {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store, rooted, as the caller's principal"},
-	grantStoreProxyMountPrefix + "/":     {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "grant-store as the caller's principal"},
 	mailstackProxyMountPrefix + "/":      {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "mailstack as the caller's principal"},
 	referenceStoreProxyMountPrefix + "/": {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "reference-store as the caller's principal"},
 
@@ -688,6 +702,37 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /noteboard/api/tags":                   noteboardRoute,
 	"GET /noteboard/api/search":                 noteboardRoute,
 
+	// permission-store, mounted in this process.
+	"GET /permission-store/healthz":       permissionStoreOperatorRoute,
+	"GET /permission-store/rules":         permissionStoreOperatorRoute,
+	"POST /permission-store/rules":        permissionStoreOperatorRoute,
+	"GET /permission-store/rules/{id}":    permissionStoreOperatorRoute,
+	"PATCH /permission-store/rules/{id}":  permissionStoreOperatorRoute,
+	"DELETE /permission-store/rules/{id}": permissionStoreOperatorRoute,
+	"POST /permission-store/evaluate":     permissionStoreOperatorRoute,
+	"GET /permission-store/audit":         permissionStoreOperatorRoute,
+	// sign-in-store, mounted in this process.
+	"GET /sign-in-store/health":                            openRoute("says sign-in-store answers, nothing about anyone"),
+	"POST /sign-in-store/link-requests":                    signInStoreBrowserRoute,
+	"POST /sign-in-store/redeem":                           signInStoreBrowserRoute,
+	"GET /sign-in-store/session":                           signInStoreBrowserRoute,
+	"POST /sign-in-store/sign-out":                         signInStoreBrowserRoute,
+	"GET /sign-in-store/discord/start":                     signInStoreBrowserRoute,
+	"GET /sign-in-store/discord/callback":                  signInStoreBrowserRoute,
+	"POST /sign-in-store/sign-in-links":                    signInStoreAdministratorRoute,
+	"GET /sign-in-store/sign-in-links":                     signInStoreAdministratorRoute,
+	"GET /sign-in-store/sessions":                          signInStoreAdministratorRoute,
+	"POST /sign-in-store/sessions/{id}/revoke":             signInStoreAdministratorRoute,
+	"POST /sign-in-store/principals/{id}/discord-messages": signInStoreAdministratorRoute,
+	// grant-store, mounted in this process.
+	"GET /grant-store/health":                    grantStoreRoute,
+	"GET /grant-store/relations":                 grantStoreRoute,
+	"GET /grant-store/resource-types":            grantStoreRoute,
+	"GET /grant-store/grants":                    grantStoreRoute,
+	"POST /grant-store/grants":                   grantStoreRoute,
+	"GET /grant-store/grants/{id}":               grantStoreRoute,
+	"POST /grant-store/grants/{id}/revoke":       grantStoreRoute,
+	"GET /grant-store/principals/{id}/effective": grantStoreRoute,
 	// project-store, mounted in this process, for the same reason.
 	"GET /project-store/health":                                       projectStoreRoute,
 	"GET /project-store/vocabulary":                                   projectStoreRoute,
@@ -723,6 +768,33 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /project-store/session-filings/{session_filing_id}/accept":  projectStoreRoute,
 	"POST /project-store/session-filings/{session_filing_id}/dismiss": projectStoreRoute,
 
+	// principal-store, mounted in this process.
+	"GET /principal-store/health":                                  principalStoreOperatorRoute,
+	"GET /principal-store/kinds":                                   principalStoreVocabularyRoute,
+	"GET /principal-store/kind-definitions":                        principalStoreVocabularyRoute,
+	"GET /principal-store/availability-reasons":                    principalStoreVocabularyRoute,
+	"GET /principal-store/weekday-codes":                           principalStoreVocabularyRoute,
+	"GET /principal-store/identity-providers":                      principalStoreVocabularyRoute,
+	"GET /principal-store/principals":                              principalStoreOperatorRoute,
+	"POST /principal-store/principals":                             principalStoreOperatorRoute,
+	"POST /principal-store/contacts/resolve":                       principalStoreOperatorRoute,
+	"GET /principal-store/principals/{id}":                         principalStoreOperatorRoute,
+	"PATCH /principal-store/principals/{id}":                       principalStoreOperatorRoute,
+	"POST /principal-store/principals/{id}/disable":                principalStoreOperatorRoute,
+	"POST /principal-store/principals/{id}/enable":                 principalStoreOperatorRoute,
+	"GET /principal-store/principals/{id}/members":                 principalStoreOperatorRoute,
+	"PUT /principal-store/principals/{group}/members/{member}":     principalStoreOperatorRoute,
+	"DELETE /principal-store/principals/{group}/members/{member}":  principalStoreOperatorRoute,
+	"GET /principal-store/principals/{id}/groups":                  principalStoreOperatorRoute,
+	"GET /principal-store/principals/{id}/availability":            principalStoreOperatorRoute,
+	"GET /principal-store/principals/{id}/time-off":                principalStoreOperatorRoute,
+	"POST /principal-store/principals/{id}/time-off":               principalStoreOperatorRoute,
+	"DELETE /principal-store/principals/{id}/time-off/{timeOffID}": principalStoreOperatorRoute,
+	"GET /principal-store/identity-bindings":                       identityBindingOperatorRoute,
+	"GET /principal-store/identity-bindings/resolve":               identityBindingOperatorRoute,
+	"GET /principal-store/identity-bindings/{id}":                  identityBindingOperatorRoute,
+	"POST /principal-store/identity-bindings":                      operatorRoute("decides who an outside identity signs in as"),
+	"POST /principal-store/identity-bindings/{id}/unlink":          operatorRoute("stops an outside identity signing in, and ends its login sessions"),
 	"POST /memories":         operatorRoute("memory-store is not partitioned by principal"),
 	"GET /memories/{id}":     operatorRoute("memory-store is not partitioned by principal"),
 	"DELETE /memories/{id}":  operatorRoute("memory-store is not partitioned by principal"),

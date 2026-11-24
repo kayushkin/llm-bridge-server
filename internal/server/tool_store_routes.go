@@ -21,6 +21,7 @@ import (
 // answer 503 and sessions get no tools from the registry.
 func (s *Server) EnableToolStore(store *toolstore.Store, resolveCredential toolstore.ResolveCredentialFunc) {
 	s.toolRegistry = inProcessToolRegistry{store: store, resolveCredential: resolveCredential}
+	s.toolStoreForResourceChecks.Store(store)
 	s.toolStoreHandlers.Store(toolstore.NewHandlers(store, toolstore.HandlerOptions{
 		ResolveCredential: resolveCredential,
 		InvokeLocal:       toolstore.InvokeRegisteredLocalTool,

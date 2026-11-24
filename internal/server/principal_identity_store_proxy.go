@@ -2,7 +2,7 @@ package server
 
 // Identity-carrying store proxies.
 //
-// kanban-store and grant-store trust X-Principal-Id and filter what a caller
+// kanban-store, mailstack and reference-store trust X-Principal-Id and filter what a caller
 // may see and do by it. These proxies are the only place that header is set:
 // from the principal request authorization established (a login cookie, a
 // session agent token, or an X-Principal-Id the internal service asserted with
@@ -21,8 +21,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 )
 
 const (
@@ -35,9 +33,9 @@ const (
 	// treats a base path as kanban-store itself, as bridge-ui does through a
 	// connected server, uses this one; /kanban/ stays for the agents that call it.
 	kanbanStoreProxyMountPrefix = "/kanban-store"
-	// grantStoreProxyMountPrefix is where grant-store is mounted; the remainder
-	// of the path is forwarded under grant-store's root, where all its routes
-	// live (/grants, /principals/{id}/effective, /relations, /resource-types).
+	// grantStoreProxyMountPrefix is where grant-store's routes are mounted.
+	// grant-store runs in this process (access_routes.go), so they are not
+	// proxied: the caller reaches it through the request context, not a header.
 	grantStoreProxyMountPrefix = "/grant-store"
 	// mailstackProxyMountPrefix is where mailstack is mounted; the remainder of
 	// the path is forwarded under mailstack's root, where /api/… lives.
@@ -59,7 +57,7 @@ const principalIdentityHeader = "X-Principal-Id"
 var requestHeadersNeverForwardedToStores = []string{
 	principalIdentityHeader,
 	"X-Kanban-Store-Service-Token",
-	grantclient.ServiceTokenHeader,
+	"X-Grant-Store-Service-Token",
 	"X-Reference-Store-Service-Token",
 	serviceTokenHeader,
 	peerTokenHeader,
@@ -123,20 +121,6 @@ func (s *Server) handleKanbanStoreRootProxyAsPrincipal(w http.ResponseWriter, r 
 		upstreamBaseURL:      s.cfg.KanbanStoreURL,
 		upstreamPathPrefix:   "",
 		unavailableErrorCode: "kanban_store_unavailable",
-	})
-}
-
-// handleGrantStoreProxyAsPrincipal forwards /grant-store/<rest> to grant-store
-// /<rest>: grant-store's routes are rooted at /, so /grant-store/grants,
-// /grant-store/grants/{id}/revoke, /grant-store/principals/{id}/effective,
-// /grant-store/relations and /grant-store/resource-types all reach it.
-func (s *Server) handleGrantStoreProxyAsPrincipal(w http.ResponseWriter, r *http.Request) {
-	s.serveStoreProxyAsPrincipal(w, r, principalIdentityStoreProxy{
-		storeName:            "grant-store",
-		mountPrefix:          grantStoreProxyMountPrefix,
-		upstreamBaseURL:      s.cfg.GrantStoreURL,
-		upstreamPathPrefix:   "",
-		unavailableErrorCode: "grant_store_unavailable",
 	})
 }
 

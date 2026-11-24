@@ -50,21 +50,21 @@ func TestPanicMessageListsEveryLeakedFieldInAStableOrder(t *testing.T) {
 			t.Fatal("did not panic on two production addresses")
 		}
 		message := recovered.(string)
-		permissionStore := strings.Index(message, "PermissionStoreURL")
+		mailstack := strings.Index(message, "MailstackURL")
 		logStore := strings.Index(message, "LogStoreURL")
-		if permissionStore < 0 || logStore < 0 {
-			t.Fatalf("message names %d of 2 leaked fields:\n%s", 2-btoi(permissionStore < 0)-btoi(logStore < 0), message)
+		if mailstack < 0 || logStore < 0 {
+			t.Fatalf("message names %d of 2 leaked fields:\n%s", 2-btoi(mailstack < 0)-btoi(logStore < 0), message)
 		}
 		// Sorted by field name, so the same two leaks always read the same
 		// way and a diff of two failures is meaningful.
-		if logStore > permissionStore {
+		if logStore > mailstack {
 			t.Errorf("fields are not sorted by name:\n%s", message)
 		}
 	}()
 
 	PanicIfUsedUnderTest(map[string]string{
-		"PermissionStoreURL": PermissionStoreURL,
-		"LogStoreURL":        LogStoreURL,
+		"MailstackURL": MailstackURL,
+		"LogStoreURL":  LogStoreURL,
 	})
 }
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
 	"log"
 	"net"
 	"net/http"
@@ -56,7 +57,7 @@ func ownAddress(listenAddress string) (string, error) {
 // over HTTP with the service token, as it did when it was a service of its
 // own: the passes move to bridge-worker, another process, in the end. The
 // returned function closes the pools.
-func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *server.Server) (func(), error) {
+func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *server.Server, principals *principalstore.Store) (func(), error) {
 	noteboardDB, err := openNoteboardModule(ctx, cfg.PostgresURL)
 	if err != nil {
 		return nil, fmt.Errorf("noteboard: %w", err)
@@ -89,7 +90,7 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 		KanbanStoreServiceToken: settings.String("kanban_store.service_token"),
 		SchedulerURL:            cfg.SchedulerURL,
 		HealthcheckURL:          cfg.HealthcheckURL,
-		PrincipalStoreURL:       cfg.PrincipalStoreURL,
+		Principals:              projectstore.PrincipalStoreModule{Store: principals},
 		Noteboard:               projectstore.NoteboardModule{Store: noteboardStore},
 		WorkGraphStoreURL:       settings.String(config.SettingWorkGraphStoreURL),
 		BridgeURL:               bridgeURL,
