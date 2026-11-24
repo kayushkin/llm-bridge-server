@@ -1,0 +1,28 @@
+[Unit]
+Description=reference-store — what each id in prose names, who may see it, and where its page is
+After=network.target
+
+# A systemd user unit: install it to ~/.config/systemd/user/ and the binary to
+# ~/bin. %h is the user's home directory, so nothing here names a user.
+# Secrets (the service token, llm-bridge-server's and auth-store's tokens) are
+# written by deploy.sh to reference-store.service.d/tokens.conf, mode 600.
+[Service]
+Type=simple
+ExecStart=%h/bin/reference-store
+
+# Loopback, deliberately: the service trusts X-Principal-Id, so only
+# llm-bridge-server's gateway may reach it.
+Environment=REFERENCE_STORE_ADDR=127.0.0.1:8343
+Environment=REFERENCE_STORE_SERVICE_URLS=llm-bridge-server:http://127.0.0.1:8160,scheduler:http://localhost:8092,healthcheck:http://localhost:8099,skill-store:http://localhost:8301,tool-store:http://localhost:8302,repo-store:http://localhost:8306,work-graph-store:http://127.0.0.1:8319,agent-store:http://localhost:8300,noteboard:http://localhost:8191,prediction-store:http://localhost:8313,article-store:http://127.0.0.1:8318,project-store:http://127.0.0.1:8320,principal-store:http://127.0.0.1:8314,people-store:http://127.0.0.1:8321,journal-store:http://127.0.0.1:8322,multichat:http://127.0.0.1:8402,photo-store:http://127.0.0.1:8329,location-store:http://127.0.0.1:8333,message-store:http://127.0.0.1:8337,discord-signup-store:http://127.0.0.1:8312,calendar-store:http://127.0.0.1:8342,time-ledger-store:http://127.0.0.1:8344,activity-store:http://127.0.0.1:8336,music-practice-store:http://127.0.0.1:8331,budget-store:http://127.0.0.1:8340,possession-store:http://127.0.0.1:8341
+Environment=REFERENCE_STORE_SITE_URLS=music:https://kayushkin.com
+Environment=REFERENCE_STORE_PRINCIPAL_STORE_URL=http://127.0.0.1:8314
+Environment=REFERENCE_STORE_GRANT_STORE_URL=http://127.0.0.1:8315
+Environment=REFERENCE_STORE_AUTH_STORE_URL=http://127.0.0.1:8303
+Environment=REFERENCE_STORE_AUTH_STORE_PROVIDERS=multichat:multichat,music-practice-store:music-practice-store-reader
+
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
